@@ -562,6 +562,138 @@ public final class DorydService: NSObject, DorydControl {
         }
     }
 
+    public func machineGuestExportStart(
+        _ machineID: String,
+        request: NSDictionary,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        guard let machineManager else {
+            reply(false, [:], "machine manager is not configured")
+            return
+        }
+        do {
+            let parsedRequest = try MachineGuestExportRequest(xpcDictionary: request)
+            let status = try machineManager.beginGuestFileExport(
+                id: machineID,
+                guestSource: parsedRequest.guestSource
+            )
+            incidentWriter?.record(
+                type: "machine.guest_file_export_started",
+                detail: "\(machineID) \(status.operationID)"
+            )
+            reply(
+                true,
+                status.xpcDictionary(exposesCompletedResult: false),
+                ""
+            )
+        } catch {
+            incidentWriter?.record(
+                type: "machine.guest_file_export_start_failed",
+                detail: "\(machineID): \(error)"
+            )
+            reply(false, [:], String(describing: error))
+        }
+    }
+
+    public func machineGuestExportStatus(
+        _ machineID: String,
+        operationID: String,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        guard let machineManager else {
+            reply(false, [:], "machine manager is not configured")
+            return
+        }
+        guard MachineTransferRequest.isValidOperationID(operationID) else {
+            reply(false, [:], "invalid guest file export operation identifier")
+            return
+        }
+        do {
+            let status = try machineManager.guestFileExportStatus(
+                id: machineID,
+                operationID: operationID
+            )
+            reply(true, status.xpcDictionary, "")
+        } catch {
+            reply(false, [:], String(describing: error))
+        }
+    }
+
+    public func machineGuestExportCurrent(
+        _ machineID: String,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        guard let machineManager else {
+            reply(false, [:], "machine manager is not configured")
+            return
+        }
+        let operation = machineManager.currentGuestFileExportStatus(id: machineID)
+        var body: [String: Any] = [
+            "schema": UInt16(1),
+            "active": operation != nil,
+        ]
+        if let operation {
+            body["operation"] = operation.xpcDictionary
+        }
+        reply(true, body as NSDictionary, "")
+    }
+
+    public func machineGuestExportCancel(
+        _ machineID: String,
+        operationID: String,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        guard let machineManager else {
+            reply(false, [:], "machine manager is not configured")
+            return
+        }
+        guard MachineTransferRequest.isValidOperationID(operationID) else {
+            reply(false, [:], "invalid guest file export operation identifier")
+            return
+        }
+        do {
+            let status = try machineManager.cancelGuestFileExport(
+                id: machineID,
+                operationID: operationID
+            )
+            incidentWriter?.record(
+                type: "machine.guest_file_export_cancel",
+                detail: "\(machineID) \(operationID)"
+            )
+            reply(true, status.xpcDictionary, "")
+        } catch {
+            reply(false, [:], String(describing: error))
+        }
+    }
+
+    public func machineGuestExportDiscard(
+        _ machineID: String,
+        operationID: String,
+        reply: @escaping (Bool, String) -> Void
+    ) {
+        guard let machineManager else {
+            reply(false, "machine manager is not configured")
+            return
+        }
+        guard MachineTransferRequest.isValidOperationID(operationID) else {
+            reply(false, "invalid guest file export operation identifier")
+            return
+        }
+        do {
+            try machineManager.discardGuestFileExport(
+                id: machineID,
+                operationID: operationID
+            )
+            incidentWriter?.record(
+                type: "machine.guest_file_export_discard",
+                detail: "\(machineID) \(operationID)"
+            )
+            reply(true, "")
+        } catch {
+            reply(false, String(describing: error))
+        }
+    }
+
     public func machineProvision(
         _ machineID: String,
         request: NSDictionary,
@@ -1426,6 +1558,26 @@ private struct MachineTransferRequest: Sendable {
     }
 }
 
+private struct MachineGuestExportRequest: Sendable {
+    var guestSource: String
+
+    init(xpcDictionary dictionary: NSDictionary) throws {
+        guard let keys = dictionary.allKeys as? [String],
+              Set(keys) == ["schema", "guestSource"],
+              let schema = dictionary["schema"] as? NSNumber,
+              CFGetTypeID(schema) != CFBooleanGetTypeID(),
+              schema.uint16Value == 1,
+              schema.doubleValue == 1,
+              let source = dictionary["guestSource"] as? String,
+              source.hasPrefix("/"),
+              source.utf8.count <= 4_096,
+              !source.contains("\0") else {
+            throw XPCRemoteConfigError.invalid("machineGuestExport")
+        }
+        guestSource = source
+    }
+}
+
 private struct MachineProvisionRequest {
     var recipeID: String
 
@@ -1599,6 +1751,52 @@ private extension DoryMachineFileTransferOperationStatus {
             dictionary["guestDestination"] = guestDestination
         }
         if let result {
+            dictionary["result"] = result.xpcDictionary
+        }
+        if let failure {
+            dictionary["failure"] = [
+                "schema": UInt16(1),
+                "code": failure.code.rawValue,
+                "message": failure.message,
+            ] as NSDictionary
+        }
+        return dictionary as NSDictionary
+    }
+}
+
+private extension DoryMachineGuestFileExportResult {
+    var xpcDictionary: NSDictionary {
+        [
+            "schema": UInt16(1),
+            "exportID": exportID,
+            "privateStagingRoot": privateStagingRoot,
+            "filesReceived": filesReceived,
+            "directoriesReceived": directoriesReceived,
+            "bytesReceived": bytesReceived,
+        ]
+    }
+}
+
+private extension DoryMachineGuestFileExportOperationStatus {
+    var xpcDictionary: NSDictionary {
+        xpcDictionary(exposesCompletedResult: true)
+    }
+
+    func xpcDictionary(exposesCompletedResult: Bool) -> NSDictionary {
+        var dictionary: [String: Any] = [
+            "schema": UInt16(1),
+            "operationID": operationID,
+            "machineID": machineID,
+            "phase": phase.rawValue,
+            "filesTotal": filesTotal,
+            "filesCompleted": filesCompleted,
+            "bytesTotal": bytesTotal,
+            "bytesCompleted": bytesCompleted,
+        ]
+        if let currentPath {
+            dictionary["currentPath"] = currentPath
+        }
+        if exposesCompletedResult, let result {
             dictionary["result"] = result.xpcDictionary
         }
         if let failure {

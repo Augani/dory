@@ -1940,6 +1940,7 @@ final class DorydServiceTests: XCTestCase {
                 agentProtocolVersion: DoryCore.protocolVersion(),
                 agentCapabilities: [
                     DoryAgentCapability(id: "exec", version: 1),
+                    DoryAgentCapability(id: "sync-pull", version: 1),
                     DoryAgentCapability(id: "sync-push", version: 1),
                 ],
                 agentSocketPath: "/run/agent.sock"
@@ -2082,6 +2083,157 @@ final class DorydServiceTests: XCTestCase {
             invalidStatus.fulfill()
         }
         wait(for: [invalidStatus], timeout: 5)
+
+        let malformedGuestExports: [NSDictionary] = [
+            [
+                "schema": UInt16(2),
+                "guestSource": "/home/developer/Documents",
+            ],
+            [
+                "schema": UInt16(1),
+                "guestSource": "/home/developer/Documents",
+                "unexpected": true,
+            ],
+            [
+                "schema": UInt16(1),
+                "guestSource": "Documents",
+            ],
+            [
+                "schema": true,
+                "guestSource": "/home/developer/Documents",
+            ],
+        ]
+        for malformed in malformedGuestExports {
+            let rejected = expectation(description: "malformed guest export rejected")
+            proxy.machineGuestExportStart("dev", request: malformed) { ok, body, message in
+                XCTAssertFalse(ok)
+                XCTAssertTrue(body.isEqual(to: [:]))
+                XCTAssertTrue(message.contains("machineGuestExport"), message)
+                rejected.fulfill()
+            }
+            wait(for: [rejected], timeout: 5)
+        }
+
+        let guestExportStart = expectation(description: "machineGuestExportStart reply")
+        var exportOperationID = ""
+        proxy.machineGuestExportStart("dev", request: [
+            "schema": UInt16(1),
+            "guestSource": "/home/developer/Documents",
+        ]) { ok, body, message in
+            XCTAssertTrue(ok, message)
+            exportOperationID = body["operationID"] as? String ?? ""
+            XCTAssertEqual(exportOperationID.utf8.count, 32)
+            XCTAssertEqual(body["machineID"] as? String, "dev")
+            XCTAssertEqual((body["schema"] as? NSNumber)?.uint16Value, 1)
+            XCTAssertNil(body["result"])
+            XCTAssertFalse(body.description.contains("/home/developer/Documents"))
+            XCTAssertFalse(body.description.contains("/export-"))
+            guestExportStart.fulfill()
+        }
+        wait(for: [guestExportStart], timeout: 5)
+
+        var guestExportTerminalBody: NSDictionary?
+        let guestExportDeadline = Date().addingTimeInterval(5)
+        while guestExportTerminalBody == nil, Date() < guestExportDeadline {
+            let statusReply = expectation(description: "machineGuestExportStatus reply")
+            proxy.machineGuestExportStatus(
+                "dev",
+                operationID: exportOperationID
+            ) { ok, body, message in
+                XCTAssertTrue(ok, message)
+                if let phase = body["phase"] as? String,
+                   ["completed", "cancelled", "failed"].contains(phase) {
+                    guestExportTerminalBody = body
+                }
+                statusReply.fulfill()
+            }
+            wait(for: [statusReply], timeout: 5)
+            if guestExportTerminalBody == nil {
+                Thread.sleep(forTimeInterval: 0.01)
+            }
+        }
+        let exportBody = try XCTUnwrap(guestExportTerminalBody)
+        XCTAssertEqual(exportBody["phase"] as? String, "completed")
+        XCTAssertEqual(
+            Set(exportBody.allKeys.compactMap { $0 as? String }),
+            [
+                "schema", "operationID", "machineID", "phase", "filesTotal",
+                "filesCompleted", "bytesTotal", "bytesCompleted", "result",
+            ]
+        )
+        XCTAssertEqual(exportBody["filesTotal"] as? UInt64, 1)
+        XCTAssertEqual(exportBody["filesCompleted"] as? UInt64, 1)
+        XCTAssertEqual(exportBody["bytesTotal"] as? UInt64, 12)
+        XCTAssertEqual(exportBody["bytesCompleted"] as? UInt64, 12)
+        let exportResult = try XCTUnwrap(exportBody["result"] as? NSDictionary)
+        XCTAssertEqual(
+            Set(exportResult.allKeys.compactMap { $0 as? String }),
+            [
+                "schema", "exportID", "privateStagingRoot", "filesReceived",
+                "directoriesReceived", "bytesReceived",
+            ]
+        )
+        XCTAssertEqual(exportResult["exportID"] as? String, exportOperationID)
+        XCTAssertEqual(exportResult["filesReceived"] as? UInt64, 1)
+        XCTAssertEqual(exportResult["directoriesReceived"] as? UInt64, 1)
+        XCTAssertEqual(exportResult["bytesReceived"] as? UInt64, 12)
+        let privateExportRoot = try XCTUnwrap(
+            exportResult["privateStagingRoot"] as? String
+        )
+        XCTAssertTrue(privateExportRoot.contains("/export-"))
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: privateExportRoot + "/nested/guest.txt"
+        ))
+
+        let currentGuestExport = expectation(
+            description: "machineGuestExportCurrent inactive reply"
+        )
+        proxy.machineGuestExportCurrent("dev") { ok, body, message in
+            XCTAssertTrue(ok, message)
+            XCTAssertEqual(
+                Set(body.allKeys.compactMap { $0 as? String }),
+                ["schema", "active"]
+            )
+            XCTAssertEqual(body["active"] as? Bool, false)
+            XCTAssertFalse(body.description.contains(privateExportRoot))
+            currentGuestExport.fulfill()
+        }
+        wait(for: [currentGuestExport], timeout: 5)
+
+        let discardGuestExport = expectation(description: "machineGuestExportDiscard reply")
+        proxy.machineGuestExportDiscard("dev", operationID: exportOperationID) { ok, message in
+            XCTAssertTrue(ok, message)
+            discardGuestExport.fulfill()
+        }
+        wait(for: [discardGuestExport], timeout: 5)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: privateExportRoot))
+
+        let discardedStatus = expectation(description: "discarded guest export is unknown")
+        proxy.machineGuestExportStatus(
+            "dev",
+            operationID: exportOperationID
+        ) { ok, body, message in
+            XCTAssertFalse(ok)
+            XCTAssertTrue(body.isEqual(to: [:]))
+            XCTAssertTrue(message.contains("unknown file transfer"), message)
+            XCTAssertFalse(message.contains(privateExportRoot))
+            discardedStatus.fulfill()
+        }
+        wait(for: [discardedStatus], timeout: 5)
+
+        let invalidGuestExportStatus = expectation(
+            description: "invalid guest export status rejected"
+        )
+        proxy.machineGuestExportStatus(
+            "dev",
+            operationID: "NOT-AN-OPERATION"
+        ) { ok, body, message in
+            XCTAssertFalse(ok)
+            XCTAssertTrue(body.isEqual(to: [:]))
+            XCTAssertEqual(message, "invalid guest file export operation identifier")
+            invalidGuestExportStatus.fulfill()
+        }
+        wait(for: [invalidGuestExportStatus], timeout: 5)
     }
 
     func testMachineProvisionOverXPCInstallsRecipeThroughMachineAgent() throws {
@@ -2416,6 +2568,47 @@ private final class ServiceFakeAgentControlClient: AgentControlClient, @unchecke
     ) throws -> DoryPushStats {
         _ = control
         return try push(localRoot: localRoot, remoteRoot: remoteRoot)
+    }
+
+    func pull(
+        remoteRoot: String,
+        localRoot: String,
+        limits: DoryPullLimits
+    ) throws -> DoryPullStats {
+        _ = remoteRoot
+        _ = limits
+        try FileManager.default.createDirectory(
+            atPath: localRoot,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        try FileManager.default.createDirectory(
+            atPath: localRoot + "/nested",
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        try Data("guest-export".utf8).write(
+            to: URL(fileURLWithPath: localRoot + "/nested/guest.txt")
+        )
+        return DoryPullStats(
+            filesReceived: 1,
+            directoriesReceived: 1,
+            bytesReceived: 12
+        )
+    }
+
+    func pull(
+        remoteRoot: String,
+        localRoot: String,
+        limits: DoryPullLimits,
+        control: DoryPullControl
+    ) throws -> DoryPullStats {
+        _ = control
+        return try pull(
+            remoteRoot: remoteRoot,
+            localRoot: localRoot,
+            limits: limits
+        )
     }
 
     func exec(

@@ -3621,6 +3621,54 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         )
     }
 
+    func machineGuestExportStart(
+        _ machineID: String,
+        request: NSDictionary,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        _ = machineID
+        _ = request
+        reply(false, [:], "guest file export is not configured")
+    }
+
+    func machineGuestExportCurrent(
+        _ machineID: String,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        _ = machineID
+        reply(true, ["schema": UInt16(1), "active": false], "")
+    }
+
+    func machineGuestExportStatus(
+        _ machineID: String,
+        operationID: String,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        _ = machineID
+        _ = operationID
+        reply(false, [:], "guest file export is not configured")
+    }
+
+    func machineGuestExportCancel(
+        _ machineID: String,
+        operationID: String,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        _ = machineID
+        _ = operationID
+        reply(false, [:], "guest file export is not configured")
+    }
+
+    func machineGuestExportDiscard(
+        _ machineID: String,
+        operationID: String,
+        reply: @escaping (Bool, String) -> Void
+    ) {
+        _ = machineID
+        _ = operationID
+        reply(false, "guest file export is not configured")
+    }
+
     func machineProvision(_ machineID: String, request: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void) {
         let recipe = request["recipe"] as? String ?? "rust"
         lock.lock()
