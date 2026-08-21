@@ -124,6 +124,7 @@ private struct MachineCard: View {
     @Environment(\.openWindow) private var openWindow
     let machine: Machine
     @State private var confirmingDelete = false
+    @State private var isTransferDropTargeted = false
 
     private var isRunning: Bool { machine.status == .running }
     private var isPaused: Bool { machine.status == .paused }
@@ -220,7 +221,46 @@ private struct MachineCard: View {
         }
         .padding(16)
         .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 14))
-        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(p.border))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14)
+                .strokeBorder(
+                    isTransferDropTargeted ? p.accent : p.border,
+                    lineWidth: isTransferDropTargeted ? 2 : 1
+                )
+        )
+        .overlay {
+            if isTransferDropTargeted {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 14)
+                        .fill(p.accentSoft.opacity(0.96))
+                    VStack(spacing: 8) {
+                        Image(systemName: "arrow.down.doc.fill")
+                            .font(.system(size: 24, weight: .semibold))
+                        Text(store.canTransferFolders(to: machine)
+                            ? "Send files or folders"
+                            : "Send files")
+                            .font(.system(size: 13, weight: .semibold))
+                        Text("Copies into a new Downloads folder")
+                            .font(.system(size: 11))
+                            .foregroundStyle(p.text2)
+                    }
+                    .foregroundStyle(p.accentText)
+                }
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+            }
+        }
+        .dropDestination(for: URL.self) { urls, _ in
+            guard store.canTransferFiles(to: machine),
+                  !urls.isEmpty,
+                  urls.allSatisfy(\.isFileURL) else {
+                return false
+            }
+            Task { await store.transferFiles(urls, to: machine) }
+            return true
+        } isTargeted: { targeted in
+            isTransferDropTargeted = targeted && store.canTransferFiles(to: machine)
+        }
         .confirmationDialog("Delete machine \(machine.name)?", isPresented: $confirmingDelete, titleVisibility: .visible) {
             Button("Delete", role: .destructive) { store.deleteMachine(machine) }
             Button("Cancel", role: .cancel) {}
