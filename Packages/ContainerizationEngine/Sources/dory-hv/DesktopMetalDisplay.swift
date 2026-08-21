@@ -71,6 +71,20 @@ final class DesktopFrameMailbox: @unchecked Sendable {
     }
 }
 
+/// Moves copied cursor-plane updates from a vCPU thread to AppKit without retaining the guest
+/// resource or touching NSCursor off the main thread.
+final class DesktopCursorMailbox: @unchecked Sendable {
+    nonisolated(unsafe) weak var view: DesktopMetalView?
+
+    func submit(_ update: VirtioGPUCursorUpdate?) {
+        DispatchQueue.main.async { [weak self] in
+            MainActor.assumeIsolated {
+                self?.view?.presentCursor(update)
+            }
+        }
+    }
+}
+
 @MainActor
 final class DesktopMetalView: MTKView, MTKViewDelegate {
     private let commandQueue: MTLCommandQueue
@@ -79,6 +93,8 @@ final class DesktopMetalView: MTKView, MTKViewDelegate {
     private var resourceTextures: [UInt32: MTLTexture] = [:]
     private var scanoutTexture: MTLTexture?
     private var scanoutSize = CGSize.zero
+    private var guestCursor = NSCursor.arrow
+    private var guestCursorUpdate: VirtioGPUCursorUpdate?
     private var tracking: NSTrackingArea?
     private var scrollAccumulator = VirtioInputScrollAccumulator()
     private var resizeGeneration: UInt64 = 0
@@ -143,6 +159,29 @@ final class DesktopMetalView: MTKView, MTKViewDelegate {
 
     func release(resourceID: UInt32) {
         resourceTextures.removeValue(forKey: resourceID)
+    }
+
+    func presentCursor(_ update: VirtioGPUCursorUpdate?) {
+        guestCursorUpdate = update
+        rebuildGuestCursor()
+    }
+
+    private func rebuildGuestCursor(pixelSize: CGSize? = nil) {
+        guard let update = guestCursorUpdate else {
+            guestCursor = Self.transparentCursor
+            window?.invalidateCursorRects(for: self)
+            return
+        }
+        let effectivePixelSize = pixelSize ?? drawableSize
+        let cursorScale = bounds.width > 0
+            ? max(1, effectivePixelSize.width / bounds.width)
+            : CGFloat(1)
+        guestCursor = Self.makeCursor(update, scale: cursorScale) ?? Self.transparentCursor
+        window?.invalidateCursorRects(for: self)
+    }
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: guestCursor)
     }
 
     private func presentUpdate(_ frame: VirtioGPUScanoutFrame) -> Bool {
@@ -221,6 +260,7 @@ final class DesktopMetalView: MTKView, MTKViewDelegate {
     }
 
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
+        if guestCursorUpdate != nil { rebuildGuestCursor(pixelSize: size) }
         let width = UInt32(clamping: max(1, Int(size.width.rounded())))
         let height = UInt32(clamping: max(1, Int(size.height.rounded())))
         resizeGeneration &+= 1
@@ -353,6 +393,59 @@ final class DesktopMetalView: MTKView, MTKViewDelegate {
         case 3, 4, 67, 68, 121, 134: .rgba8Unorm
         default: nil
         }
+    }
+
+    private static let transparentCursor: NSCursor = {
+        let image = NSImage(
+            size: NSSize(width: 1, height: 1),
+            flipped: false,
+            drawingHandler: { _ in true }
+        )
+        return NSCursor(image: image, hotSpot: .zero)
+    }()
+
+    private static func makeCursor(
+        _ update: VirtioGPUCursorUpdate,
+        scale: CGFloat
+    ) -> NSCursor? {
+        guard update.width > 0, update.height > 0,
+              update.width <= 256, update.height <= 256,
+              update.hotX < update.width, update.hotY < update.height,
+              update.bytes.count == Int(update.width * update.height * 4),
+              let provider = CGDataProvider(data: update.bytes as CFData),
+              let image = CGImage(
+                  width: Int(update.width),
+                  height: Int(update.height),
+                  bitsPerComponent: 8,
+                  bitsPerPixel: 32,
+                  bytesPerRow: Int(update.width) * 4,
+                  space: CGColorSpaceCreateDeviceRGB(),
+                  bitmapInfo: CGBitmapInfo.byteOrder32Little.union(CGBitmapInfo(
+                      rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue
+                  )),
+                  provider: provider,
+                  decode: nil,
+                  shouldInterpolate: false,
+                  intent: .defaultIntent
+              ) else {
+            return nil
+        }
+        let cursorImage = NSImage(
+            cgImage: image,
+            size: NSSize(
+                width: CGFloat(update.width) / scale,
+                height: CGFloat(update.height) / scale
+            )
+        )
+        // VirtIO cursor hotspots are top-left based; NSCursor image coordinates are bottom-left.
+        let appKitHotY = update.height - 1 - update.hotY
+        return NSCursor(
+            image: cursorImage,
+            hotSpot: NSPoint(
+                x: CGFloat(update.hotX) / scale,
+                y: CGFloat(appKitHotY) / scale
+            )
+        )
     }
 
     private static func modifierFlag(macKeyCode: UInt16) -> NSEvent.ModifierFlags? {

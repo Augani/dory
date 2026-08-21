@@ -134,6 +134,7 @@ enum DesktopMode {
 
             self.input = VirtioInput()
             self.mailbox = DesktopFrameMailbox()
+            let cursorMailbox = DesktopCursorMailbox()
             let firstFrame = FirstFrameGate()
             self.firstFrame = firstFrame
             self.display = try DesktopMetalView(
@@ -141,6 +142,7 @@ enum DesktopMode {
                 input: input
             )
             mailbox.view = display
+            cursorMailbox.view = display
 
             let renderer = resolvedGraphics.renderer
             let hostVisibleMemory = try renderer.map { _ in
@@ -160,6 +162,9 @@ enum DesktopMode {
                 },
                 onScanoutResourceReleased: { [mailbox] resourceID in
                     mailbox.release(resourceID: resourceID)
+                },
+                onCursorUpdate: { [cursorMailbox] update in
+                    cursorMailbox.submit(update)
                 }
             )
             self.vsock = VirtioVsock(guestCID: 3)

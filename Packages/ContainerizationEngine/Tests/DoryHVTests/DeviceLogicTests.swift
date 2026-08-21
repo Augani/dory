@@ -946,6 +946,172 @@ import Testing
         #expect(interruptCount == 1)
     }
 
+    @Test func cursorQueuePublishesCopiedShapeAndHotspotAndRejectsInvalidUpdates() throws {
+        let memory = try GuestMemory(guestBase: base, size: 64 * HostPage.size)
+        let cursorBox = CursorUpdateBox()
+        let gpu = VirtioGPU(
+            hostMemoryBase: 0x1_0000_0000,
+            scanoutCount: 1,
+            scanoutWidth: 2_560,
+            scanoutHeight: 1_600,
+            onCursorUpdate: { cursorBox.store($0) }
+        )
+        let transport = VirtioMMIOTransport(
+            baseAddress: GuestLayout.virtioBase,
+            backend: gpu,
+            memory: memory
+        ) {}
+        transport.queues[0].configure(
+            size: 8,
+            descriptorTable: descTable,
+            availRing: availRing,
+            usedRing: usedRing
+        )
+        transport.queues[0].setReady(true)
+
+        var controlAvailableIndex = UInt16(0)
+        func submitControl(_ request: [UInt8]) throws -> [UInt8] {
+            try writeDescriptor(
+                memory,
+                index: 0,
+                addr: requestBuffer,
+                len: UInt32(request.count),
+                flags: 0x1,
+                next: 1
+            )
+            try writeDescriptor(
+                memory,
+                index: 1,
+                addr: responseBuffer,
+                len: 512,
+                flags: 0x2,
+                next: 0
+            )
+            try memory.write(request, at: requestBuffer)
+            let slot = UInt64(controlAvailableIndex % 8)
+            try memory.write(UInt16(0), at: availRing + 4 + slot * 2)
+            controlAvailableIndex &+= 1
+            try memory.write(controlAvailableIndex, at: availRing + 2)
+            gpu.handleKick(queue: 0, transport: transport)
+            let usedSlot = UInt64((controlAvailableIndex - 1) % 8)
+            let responseLength = try memory.read(UInt32.self, at: usedRing + 8 + usedSlot * 8)
+            return try memory.readBytes(at: responseBuffer, count: Int(responseLength))
+        }
+
+        var create = gpuRequest(type: 0x0101, fenceID: 0, contextID: 0, ringIndex: 0)
+        create.appendLE(UInt32(7))
+        create.appendLE(UInt32(1))  // B8G8R8A8_UNORM
+        create.appendLE(UInt32(2))
+        create.appendLE(UInt32(2))
+        #expect(leUInt32(try submitControl(create), at: 0) == 0x1100)
+
+        let pixelBuffer = base + 0x6000
+        let pixels: [UInt8] = [
+            1, 2, 3, 4, 5, 6, 7, 8,
+            9, 10, 11, 12, 13, 14, 15, 16,
+        ]
+        try memory.write(pixels, at: pixelBuffer)
+        var attach = gpuRequest(type: 0x0106, fenceID: 0, contextID: 0, ringIndex: 0)
+        attach.appendLE(UInt32(7))
+        attach.appendLE(UInt32(1))
+        attach.appendLE(pixelBuffer)
+        attach.appendLE(UInt32(pixels.count))
+        attach.appendLE(UInt32(0))
+        #expect(leUInt32(try submitControl(attach), at: 0) == 0x1100)
+
+        let cursorDescriptorTable = base + 0x7000
+        let cursorAvailableRing = base + 0x8000
+        let cursorUsedRing = base + 0x9000
+        let cursorRequestBuffer = base + 0xA000
+        let cursorResponseBuffer = base + 0xB000
+        transport.queues[1].configure(
+            size: 8,
+            descriptorTable: cursorDescriptorTable,
+            availRing: cursorAvailableRing,
+            usedRing: cursorUsedRing
+        )
+        transport.queues[1].setReady(true)
+
+        var cursorAvailableIndex = UInt16(0)
+        func writeCursorDescriptor(
+            index: UInt64,
+            address: UInt64,
+            length: UInt32,
+            flags: UInt16,
+            next: UInt16
+        ) throws {
+            let descriptor = cursorDescriptorTable + index * 16
+            try memory.write(address, at: descriptor)
+            try memory.write(length, at: descriptor + 8)
+            try memory.write(flags, at: descriptor + 12)
+            try memory.write(next, at: descriptor + 14)
+        }
+        func submitCursor(_ request: [UInt8]) throws -> [UInt8] {
+            try writeCursorDescriptor(
+                index: 0,
+                address: cursorRequestBuffer,
+                length: UInt32(request.count),
+                flags: 0x1,
+                next: 1
+            )
+            try writeCursorDescriptor(
+                index: 1,
+                address: cursorResponseBuffer,
+                length: 512,
+                flags: 0x2,
+                next: 0
+            )
+            try memory.write(request, at: cursorRequestBuffer)
+            let slot = UInt64(cursorAvailableIndex % 8)
+            try memory.write(UInt16(0), at: cursorAvailableRing + 4 + slot * 2)
+            cursorAvailableIndex &+= 1
+            try memory.write(cursorAvailableIndex, at: cursorAvailableRing + 2)
+            gpu.handleKick(queue: 1, transport: transport)
+            let usedSlot = UInt64((cursorAvailableIndex - 1) % 8)
+            let responseLength = try memory.read(
+                UInt32.self,
+                at: cursorUsedRing + 8 + usedSlot * 8
+            )
+            return try memory.readBytes(at: cursorResponseBuffer, count: Int(responseLength))
+        }
+
+        func cursorRequest(resourceID: UInt32, hotX: UInt32, hotY: UInt32) -> [UInt8] {
+            var request = gpuRequest(type: 0x0300, fenceID: 0, contextID: 0, ringIndex: 0)
+            request.appendLE(UInt32(0))  // scanout_id
+            request.appendLE(UInt32(111))
+            request.appendLE(UInt32(222))
+            request.appendLE(UInt32(0))
+            request.appendLE(resourceID)
+            request.appendLE(hotX)
+            request.appendLE(hotY)
+            request.appendLE(UInt32(0))
+            return request
+        }
+
+        #expect(leUInt32(try submitCursor(cursorRequest(resourceID: 7, hotX: 1, hotY: 0)), at: 0) == 0x1100)
+        let update = try #require(cursorBox.values.last ?? nil)
+        #expect(update.scanoutID == 0)
+        #expect(update.resourceID == 7)
+        #expect(update.x == 111)
+        #expect(update.y == 222)
+        #expect(update.width == 2)
+        #expect(update.height == 2)
+        #expect(update.hotX == 1)
+        #expect(update.hotY == 0)
+        #expect(Array(update.bytes) == pixels)
+
+        try memory.write([UInt8](repeating: 0xFF, count: pixels.count), at: pixelBuffer)
+        #expect(Array(update.bytes) == pixels)  // callback owns a stable copy, never guest memory
+
+        let countBeforeInvalid = cursorBox.values.count
+        #expect(leUInt32(try submitCursor(cursorRequest(resourceID: 7, hotX: 2, hotY: 0)), at: 0) == 0x1202)
+        #expect(cursorBox.values.count == countBeforeInvalid)
+
+        #expect(leUInt32(try submitCursor(cursorRequest(resourceID: 0, hotX: 0, hotY: 0)), at: 0) == 0x1100)
+        #expect(cursorBox.values.count == countBeforeInvalid + 1)
+        #expect(cursorBox.values.last! == nil)
+    }
+
     @Test func scanoutDisableAcceptsTheEmptyRectangleUsedDuringModesets() throws {
         let gpu = VirtioGPU(
             hostMemoryBase: 0x1_0000_0000,
@@ -1563,6 +1729,23 @@ private final class ScanoutFrameBox: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return frame
+    }
+}
+
+private final class CursorUpdateBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var updates = [VirtioGPUCursorUpdate?]()
+
+    func store(_ update: VirtioGPUCursorUpdate?) {
+        lock.lock()
+        updates.append(update)
+        lock.unlock()
+    }
+
+    var values: [VirtioGPUCursorUpdate?] {
+        lock.lock()
+        defer { lock.unlock() }
+        return updates
     }
 }
 

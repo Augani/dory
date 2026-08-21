@@ -119,6 +119,43 @@ public struct VirtioGPUScanoutFrame: Sendable, Equatable {
     }
 }
 
+/// A copied guest cursor plane ready for the host window. Cursor bytes are never exposed through
+/// guest-owned pointers: the device snapshots the complete 32-bit BGRA resource at the
+/// UPDATE_CURSOR command boundary and carries the guest hotspot with it.
+public struct VirtioGPUCursorUpdate: Sendable, Equatable {
+    public var scanoutID: UInt32
+    public var resourceID: UInt32
+    public var x: UInt32
+    public var y: UInt32
+    public var width: UInt32
+    public var height: UInt32
+    public var hotX: UInt32
+    public var hotY: UInt32
+    public var bytes: Data
+
+    public init(
+        scanoutID: UInt32,
+        resourceID: UInt32,
+        x: UInt32,
+        y: UInt32,
+        width: UInt32,
+        height: UInt32,
+        hotX: UInt32,
+        hotY: UInt32,
+        bytes: Data
+    ) {
+        self.scanoutID = scanoutID
+        self.resourceID = resourceID
+        self.x = x
+        self.y = y
+        self.width = width
+        self.height = height
+        self.hotX = hotX
+        self.hotY = hotY
+        self.bytes = bytes
+    }
+}
+
 public protocol VirtioGPURenderer: AnyObject {
     var capsets: [VirtioGPUCapset] { get }
     func createContext(id: UInt32, flags: UInt32, name: String) throws
@@ -238,6 +275,7 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
     private var pendingDisplayEvents: UInt32 = 0
     private let onScanoutFrame: (@Sendable (VirtioGPUScanoutFrame) -> Void)?
     private let onScanoutResourceReleased: (@Sendable (UInt32) -> Void)?
+    private let onCursorUpdate: (@Sendable (VirtioGPUCursorUpdate?) -> Void)?
     private let renderer: VirtioGPURenderer?
     private let capsets: [VirtioGPUCapset]
     private let hostVisibleMemory: VirtioGPUHostVisibleMemory?
@@ -283,9 +321,14 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
     /// full-resource offset lets later scanout extraction use ordinary resource coordinates.
     private var rendererReadbackBuffers: [UInt32: Data] = [:]
     private var scanouts: [UInt32: ScanoutBinding] = [:]
+    private var cursorResourceID: UInt32?
     private var commandFailureCounts: [UInt32: Int] = [:]
     private let traceResourceLifecycle: Bool
     private var resourceTraceSequence: UInt64 = 0
+    /// The cursor virtqueue reads resources created and retired on the control virtqueue. VCPU
+    /// kicks may arrive concurrently, so serialize command interpretation while leaving descriptor
+    /// dequeue/completion and renderer fence delivery on their existing independent locks.
+    private let commandLock = NSLock()
 
     // Real fence signalling: a fenced command's descriptor is held here and completed only when the
     // renderer signals the fence (from its own thread), per the virtio-gpu contract — responding
@@ -380,7 +423,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         hostVisibleMemory: VirtioGPUHostVisibleMemory? = nil,
         traceResourceLifecycle: Bool = ProcessInfo.processInfo.environment["DORY_GPU_TRACE_RESOURCES"] == "1",
         onScanoutFrame: (@Sendable (VirtioGPUScanoutFrame) -> Void)? = nil,
-        onScanoutResourceReleased: (@Sendable (UInt32) -> Void)? = nil
+        onScanoutResourceReleased: (@Sendable (UInt32) -> Void)? = nil,
+        onCursorUpdate: (@Sendable (VirtioGPUCursorUpdate?) -> Void)? = nil
     ) {
         let boundedScanoutCount = min(scanoutCount, 16)
         self.renderer = renderer
@@ -398,6 +442,7 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         self.hostVisibleMemory = hostVisibleMemory
         self.onScanoutFrame = onScanoutFrame
         self.onScanoutResourceReleased = onScanoutResourceReleased
+        self.onCursorUpdate = onCursorUpdate
         renderer?.onFenceSignaled = { [weak self] contextID, ringIndex, fenceID in
             self?.fenceSignaled(contextID: contextID, ringIndex: ringIndex, fenceID: fenceID)
         }
@@ -460,7 +505,13 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         var interrupt = false
         while let chain = (try? virtqueue.pop()) ?? nil {
             let request = chain.readBytes()
-            let response = process(request: request, cursorQueue: queue == 1, transport: transport)
+            commandLock.lock()
+            let response = process(
+                request: request,
+                cursorQueue: queue == 1,
+                transport: transport
+            )
+            commandLock.unlock()
             if queue == 0, deferForFence(request: request, response: response, chain: chain) {
                 continue
             }
@@ -554,12 +605,7 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
 
         let command = request.leUInt32(at: 0)
         if cursorQueue {
-            switch command {
-            case Command.updateCursor, Command.moveCursor:
-                return responseHeader(type: Response.okNoData, request: request)
-            default:
-                return responseHeader(type: Response.errorInvalidParameter, request: request)
-            }
+            return cursorCommand(command, request: request)
         }
 
         switch command {
@@ -881,6 +927,10 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
             return scanoutCommand(request: request) {
                 try requireLength(request, 32)
                 let resourceID = request.leUInt32(at: 24)
+                if cursorResourceID == resourceID {
+                    cursorResourceID = nil
+                    onCursorUpdate?(nil)
+                }
                 if var resource = resources2D[resourceID] {
                     if let renderer {
                         try renderer.detachBacking(resourceID: resourceID)
@@ -976,6 +1026,10 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
             return scanoutCommand(request: request) {
                 try requireLength(request, 32)
                 let resourceID = request.leUInt32(at: 24)
+                if cursorResourceID == resourceID {
+                    cursorResourceID = nil
+                    onCursorUpdate?(nil)
+                }
                 resourceUUIDs.removeValue(forKey: resourceID)
                 traceResourceEvent("unref-begin", contextID: request.leUInt32(at: 16), resourceID: resourceID)
                 if resources2D.removeValue(forKey: resourceID) != nil {
@@ -1249,11 +1303,57 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
             && finalPixel <= resourceSize - UInt64(offset) - finalRow
     }
 
-    private func scanoutFrames(
-        resourceID: UInt32,
-        resource: Resource2D,
-        dirtyRect: VirtioGPURect
-    ) throws -> [VirtioGPUScanoutFrame] {
+    private func cursorCommand(_ command: UInt32, request: [UInt8]) -> [UInt8] {
+        scanoutCommand(request: request) {
+            guard command == Command.updateCursor || command == Command.moveCursor else {
+                throw VMError.invalidConfiguration("unsupported virtio-gpu cursor command")
+            }
+            try requireLength(request, 56)
+            let scanoutID = request.leUInt32(at: 24)
+            guard scanoutID < scanoutCount else {
+                throw VMError.invalidConfiguration("invalid virtio-gpu cursor scanout")
+            }
+            if command == Command.moveCursor {
+                return responseHeader(type: Response.okNoData, request: request)
+            }
+
+            let resourceID = request.leUInt32(at: 40)
+            if resourceID == 0 {
+                cursorResourceID = nil
+                onCursorUpdate?(nil)
+                return responseHeader(type: Response.okNoData, request: request)
+            }
+            guard let resource = resources2D[resourceID],
+                  resource.format == 1,
+                  resource.width > 0, resource.height > 0,
+                  resource.width <= 256, resource.height <= 256 else {
+                throw VMError.invalidConfiguration(
+                    "virtio-gpu cursor requires a bounded B8G8R8A8 2D resource"
+                )
+            }
+            let hotX = request.leUInt32(at: 44)
+            let hotY = request.leUInt32(at: 48)
+            guard hotX < resource.width, hotY < resource.height else {
+                throw VMError.invalidConfiguration("virtio-gpu cursor hotspot is outside the image")
+            }
+            let pixels = try copiedBytes(for: resource)
+            cursorResourceID = resourceID
+            onCursorUpdate?(VirtioGPUCursorUpdate(
+                scanoutID: scanoutID,
+                resourceID: resourceID,
+                x: request.leUInt32(at: 28),
+                y: request.leUInt32(at: 32),
+                width: resource.width,
+                height: resource.height,
+                hotX: hotX,
+                hotY: hotY,
+                bytes: pixels
+            ))
+            return responseHeader(type: Response.okNoData, request: request)
+        }
+    }
+
+    private func copiedBytes(for resource: Resource2D) throws -> Data {
         let resourceByteCount = Int(UInt64(resource.width) * UInt64(resource.height) * 4)
         var source = Data(capacity: resourceByteCount)
         for entry in resource.backing where source.count < resourceByteCount {
@@ -1261,8 +1361,17 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
             source.append(entry.pointer.assumingMemoryBound(to: UInt8.self), count: count)
         }
         guard source.count == resourceByteCount else {
-            throw VMError.invalidConfiguration("virtio-gpu scanout backing is incomplete")
+            throw VMError.invalidConfiguration("virtio-gpu 2D backing is incomplete")
         }
+        return source
+    }
+
+    private func scanoutFrames(
+        resourceID: UInt32,
+        resource: Resource2D,
+        dirtyRect: VirtioGPURect
+    ) throws -> [VirtioGPUScanoutFrame] {
+        let source = try copiedBytes(for: resource)
 
         let sourceStride = Int(resource.width) * 4
         var frames = [VirtioGPUScanoutFrame]()
