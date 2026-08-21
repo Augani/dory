@@ -164,7 +164,7 @@ func usage(exitCode: Int32 = 2) -> Never {
           dorydctl [global] machine list
           dorydctl [global] machine status NAME
           dorydctl [global] machine stats NAME
-          dorydctl [global] machine create NAME (--kernel PATH --rootfs PATH | --installer-iso PATH [--disk-size-gb N]) [--memory-mb N] [--cpus N] [--display-mode headless|desktop] [--dns-target IPv4] [--share TAG=HOST:GUEST[:ro|rw] | JSON] [--guest-user NAME] [--guest-uid N] [--desktop-distro ID] [--desktop-name NAME] [--desktop-version VERSION] [--desktop-environment NAME] [--clipboard off|host-to-guest|guest-to-host|bidirectional] [--runtime auto|accelerated|compatible] [--graphics auto|virgl|virgl-venus|software] [--network shared-nat|disconnected|isolated|bridged]
+          dorydctl [global] machine create NAME (--kernel PATH --rootfs PATH | --installer-iso PATH [--disk-size-gb N]) [--memory-mb N] [--cpus N] [--display-mode headless|desktop] [--dns-target IPv4] [--share TAG=HOST:GUEST[:ro|rw] | JSON] [--guest-user NAME] [--guest-uid N] [--desktop-distro ID] [--desktop-name NAME] [--desktop-version VERSION] [--desktop-environment NAME] [--clipboard off|host-to-guest|guest-to-host|bidirectional] [--runtime auto|accelerated|compatible] [--graphics auto|virgl|virgl-venus|software] [--network shared-nat|disconnected|isolated|bridged] [--sandbox [--sandbox-expires-at UNIX_SECONDS] [--sandbox-ssh-agent denied|granted] [--sandbox-profile standard|agent-ready] [--sandbox-tool TOOL ...] [--sandbox-baseline ID]]
           dorydctl [global] machine update NAME [--memory-mb N] [--cpus N] [--dns-target IPv4 | --clear-dns-target] [--share TAG=HOST:GUEST[:ro|rw] | JSON ... | --clear-shares] [typed create options | --clear-guest-account | --clear-desktop-identity | --clear-clipboard | --clear-runtime | --clear-graphics | --clear-network] [--attach-installer | --eject-installer]
           dorydctl [global] machine start|stop|pause|resume|restart|delete NAME
           dorydctl [global] machine exec NAME [--json] [--cwd PATH] [--env KEY=VALUE] [--env-json-stdin] [--timeout-ms N] [--output-limit-bytes N] -- COMMAND [ARG...]
@@ -540,6 +540,19 @@ func mergeMachineTypedSettings(
     for (rawKey, value) in patch.xpcDictionary {
         guard let key = rawKey as? String else { continue }
         configuration[key] = value
+    }
+}
+
+func parseMachineSandboxPolicyDictionary(
+    cursor: inout ArgumentCursor
+) throws -> NSDictionary? {
+    do {
+        guard let policy = try DoryMachineSandboxPolicyWriteAuthority.consumeCLIArguments(
+            &cursor.values
+        ) else { return nil }
+        return try DoryMachineSandboxPolicyWriteAuthority.xpcDictionary(policy)
+    } catch {
+        throw DorydCtlError.usage("\(error)")
     }
 }
 
@@ -1101,6 +1114,7 @@ func runMachine(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
         }
         let shares = try cursor.optionValues("--share").map { try DoryMachineShareConfiguration(argument: $0) }
         let typedSettings = try parseMachineTypedSettings(cursor: &cursor, allowsClears: false)
+        let sandboxPolicy = try parseMachineSandboxPolicyDictionary(cursor: &cursor)
         let address = try cursor.optionValue("--dns-target")
         guard cursor.values.isEmpty else {
             throw DorydCtlError.usage("unexpected machine create argument: \(cursor.values[0])")
@@ -1145,6 +1159,9 @@ func runMachine(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
             }
         }
         mergeMachineTypedSettings(typedSettings, into: &config)
+        if let sandboxPolicy {
+            config[DoryMachineSandboxPolicyWriteAuthority.xpcKey] = sandboxPolicy
+        }
         // Creating a machine can copy a multi-gigabyte root disk or installer ISO.
         // Keep the request alive long enough for that transactional mutation to
         // finish so the CLI cannot report a timeout after the daemon has succeeded.

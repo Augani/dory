@@ -1,16 +1,16 @@
 import Foundation
 
-public enum DoryVMSandboxSSHAgentAccess: String, Codable, Sendable, CaseIterable {
+public enum DoryVMSandboxSSHAgentAccess: String, Codable, Sendable, CaseIterable, Hashable {
     case denied
     case granted
 }
 
-public enum DoryVMSandboxProfile: String, Codable, Sendable, CaseIterable {
+public enum DoryVMSandboxProfile: String, Codable, Sendable, CaseIterable, Hashable {
     case standard
     case agentReady = "agent-ready"
 }
 
-public enum DoryVMSandboxTool: String, Codable, Sendable, CaseIterable, Comparable {
+public enum DoryVMSandboxTool: String, Codable, Sendable, CaseIterable, Comparable, Hashable {
     case agentCore = "agent-core"
     case node
     case pythonML = "python-ml"
@@ -31,7 +31,7 @@ public enum DoryVMSandboxTool: String, Codable, Sendable, CaseIterable, Comparab
 ///
 /// Network destinations, command environments, host paths, and secret values deliberately live
 /// outside this definition. They are scoped operation inputs and must never become VM metadata.
-public struct DoryVMSandboxPolicy: Codable, Sendable, Equatable {
+public struct DoryVMSandboxPolicy: Codable, Sendable, Equatable, Hashable {
     public static let currentSchemaVersion: UInt16 = 1
 
     public static let legacyMarkerEnvironmentKey = "DORY_SANDBOX"

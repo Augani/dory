@@ -1,13 +1,14 @@
 import DorydKit
+import DoryOperations
 import Foundation
 import XCTest
 
 final class SandboxTTLReconcilerTests: XCTestCase {
     func testReconcileDeletesOnlyExpiredPersistedSandboxes() {
         let machines = SandboxMachineFake(statuses: [
-            status("expired", expiration: "99"),
-            status("future", expiration: "101"),
-            status("permanent", expiration: "0"),
+            status("expired", expiration: 99),
+            status("future", expiration: 101),
+            status("permanent", expiration: nil),
             DoryMachineStatus(id: "ordinary", state: .running, environment: [:]),
         ])
         let events = SandboxEventBox()
@@ -25,11 +26,11 @@ final class SandboxTTLReconcilerTests: XCTestCase {
 
     func testMalformedExpirationFailsClosedWithoutDeletingUnrelatedMachine() {
         let machines = SandboxMachineFake(statuses: [
-            status("malformed", expiration: "tomorrow"),
+            DoryMachineStatus(id: "malformed", state: .running),
             DoryMachineStatus(
                 id: "marker-only",
                 state: .stopped,
-                environment: [SandboxTTLReconciler.sandboxMarkerKey: "1"]
+                environment: [DoryVMSandboxPolicy.legacyMarkerEnvironmentKey: "1"]
             ),
         ])
         let reconciler = SandboxTTLReconciler(
@@ -53,7 +54,7 @@ final class SandboxTTLReconcilerTests: XCTestCase {
             "credentials": ["secretEnvironmentNames": ["TOKEN"]],
         ]
         try JSONSerialization.data(withJSONObject: original).write(to: URL(fileURLWithPath: path))
-        let machines = SandboxMachineFake(statuses: [status("expired", expiration: "99")])
+        let machines = SandboxMachineFake(statuses: [status("expired", expiration: 99)])
         let reconciler = SandboxTTLReconciler(
             machines: machines,
             manifestDirectory: root,
@@ -75,14 +76,13 @@ final class SandboxTTLReconcilerTests: XCTestCase {
         XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o600)
     }
 
-    private func status(_ id: String, expiration: String) -> DoryMachineStatus {
+    private func status(_ id: String, expiration: UInt64?) -> DoryMachineStatus {
         DoryMachineStatus(
             id: id,
             state: .running,
-            environment: [
-                SandboxTTLReconciler.sandboxMarkerKey: "1",
-                SandboxTTLReconciler.expiresAtKey: expiration,
-            ]
+            sandboxPolicy: DoryVMSandboxPolicy(
+                expiresAtUnixSeconds: expiration
+            )
         )
     }
 }

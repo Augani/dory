@@ -1506,6 +1506,83 @@ final class DorydServiceTests: XCTestCase {
         XCTAssertEqual(manager.status(id: "legacy")?.environment["PRIVATE_TOKEN"], "opaque-legacy-value")
     }
 
+    func testMachineCreateAcceptsExactTypedSandboxPolicyAndProjectsSafeStatus() throws {
+        let base = "/tmp/doryd-service-sandbox-policy-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: base,
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: false
+        ))
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let service = DorydService(
+            socketPath: "/tmp/doryd-test.sock",
+            machineManager: manager
+        )
+        let policy: NSDictionary = [
+            "schemaVersion": UInt16(1),
+            "expiresAtUnixSeconds": UInt64(2_000),
+            "sshAgentAccess": "granted",
+            "profile": "agent-ready",
+            "tools": ["agent-core", "node"],
+            "baselineSnapshotID": "baseline-v1",
+        ]
+
+        let created = expectation(description: "typed sandbox created")
+        service.machineCreate([
+            "id": "sandbox",
+            "kernelPath": doryTestKernelPath,
+            "rootfsPath": doryTestRootfsPath,
+            "sandboxPolicy": policy,
+        ]) { ok, body, message in
+            XCTAssertTrue(ok, message)
+            XCTAssertNil(body["env"])
+            let projected = body["sandboxPolicy"] as? NSDictionary
+            XCTAssertEqual(projected?["profile"] as? String, "agent-ready")
+            XCTAssertEqual(projected?["sshAgentAccess"] as? String, "granted")
+            XCTAssertEqual(projected?["tools"] as? [String], ["agent-core", "node"])
+            created.fulfill()
+        }
+        wait(for: [created], timeout: 5)
+        XCTAssertEqual(manager.status(id: "sandbox")?.sandboxPolicy?.profile, .agentReady)
+        XCTAssertEqual(
+            manager.status(id: "sandbox")?.environment["DORY_SANDBOX"],
+            "1"
+        )
+
+        let malformed = expectation(description: "unknown sandbox policy rejected")
+        var unknown = policy as! [String: Any]
+        unknown["secret"] = "opaque"
+        service.machineCreate([
+            "id": "malformed",
+            "kernelPath": doryTestKernelPath,
+            "rootfsPath": doryTestRootfsPath,
+            "sandboxPolicy": unknown as NSDictionary,
+        ]) { ok, _, message in
+            XCTAssertFalse(ok)
+            XCTAssertTrue(message.contains("sandboxPolicy"), message)
+            malformed.fulfill()
+        }
+        wait(for: [malformed], timeout: 5)
+        XCTAssertNil(manager.status(id: "malformed"))
+
+        let desktop = expectation(description: "desktop sandbox rejected")
+        service.machineCreate([
+            "id": "desktop-sandbox",
+            "kernelPath": doryTestKernelPath,
+            "rootfsPath": doryTestRootfsPath,
+            "displayMode": "desktop",
+            "sandboxPolicy": policy,
+        ]) { ok, _, message in
+            XCTAssertFalse(ok)
+            XCTAssertTrue(message.contains("headless Linux"), message)
+            desktop.fulfill()
+        }
+        wait(for: [desktop], timeout: 5)
+        XCTAssertNil(manager.status(id: "desktop-sandbox"))
+    }
+
     func testPerWorkspaceCreateInvokesProductionPlanningAndFailsClosed() throws {
         let base = "/tmp/doryd-service-production-plan-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let manager = MachineManager(
@@ -1535,6 +1612,13 @@ final class DorydServiceTests: XCTestCase {
                 "account": ["username": "developer"] as NSDictionary,
             ] as NSDictionary,
             "networkMode": "disconnected",
+            "sandboxPolicy": [
+                "schemaVersion": UInt16(1),
+                "expiresAtUnixSeconds": UInt64(2_000),
+                "sshAgentAccess": "denied",
+                "profile": "standard",
+                "tools": [] as [String],
+            ] as NSDictionary,
         ]) { ok, _, message in
             XCTAssertFalse(ok)
             XCTAssertTrue(message.contains("production planning failed closed"), message)
@@ -1551,6 +1635,10 @@ final class DorydServiceTests: XCTestCase {
             "developer"
         )
         XCTAssertEqual(captured.request.planning.definition.networkMode, .disconnected)
+        XCTAssertEqual(
+            captured.request.planning.definition.sandboxPolicy?.expiresAtUnixSeconds,
+            2_000
+        )
         XCTAssertEqual(captured.request.workspacePublication, .retainExistingExact)
         XCTAssertEqual(captured.artifacts.count, 2)
         XCTAssertTrue(captured.artifacts.allSatisfy { $0.path.hasPrefix(base + "/planned/") })
@@ -1561,6 +1649,10 @@ final class DorydServiceTests: XCTestCase {
             "developer"
         )
         XCTAssertTrue(manager.status(id: "planned")?.environment.isEmpty == true)
+        XCTAssertEqual(
+            manager.status(id: "planned")?.sandboxPolicy?.sshAgentAccess,
+            .denied
+        )
         let persisted = try JSONDecoder().decode(
             DoryMachineConfiguration.self,
             from: Data(contentsOf: URL(fileURLWithPath: base + "/planned/machine.json"))

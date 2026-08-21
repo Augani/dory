@@ -241,10 +241,14 @@ public final class DorydService: NSObject, DorydControl {
                 xpcDictionary: config,
                 allowsClears: false
             )
+            let sandboxPolicy = try DoryMachineSandboxPolicyWriteAuthority.decodeXPC(
+                config
+            )
             let machine = try DoryMachineConfiguration(xpcDictionary: config)
             var status = try machineManager.create(
                 machine,
-                typedSettings: typedSettings.isEmpty ? nil : typedSettings
+                typedSettings: typedSettings.isEmpty ? nil : typedSettings,
+                sandboxPolicy: sandboxPolicy
             )
             if machineManager.configuredLaunchPolicy == .perWorkspaceAuthority {
                 guard let productionPlanningController else {
@@ -1447,6 +1451,11 @@ private struct MachineUpdateRequest {
     var installerMediaAttached: Bool?
 
     init(xpcDictionary dictionary: NSDictionary) throws {
+        guard dictionary[DoryMachineSandboxPolicyWriteAuthority.xpcKey] == nil else {
+            throw XPCRemoteConfigError.invalid(
+                DoryMachineSandboxPolicyWriteAuthority.xpcKey
+            )
+        }
         self.memoryMB = try dictionary.optionalUInt64("memoryMB")
         self.cpuCount = try dictionary.optionalInt("cpuCount")
         self.updatesAddress = dictionary["address"] != nil
@@ -1873,6 +1882,12 @@ private extension DoryMachineStatus {
         dictionary["installerMediaAttached"] = installerMediaAttached
         if let typedSettings {
             dictionary["typedSettings"] = typedSettings.xpcDictionary
+        }
+        if let sandboxPolicy,
+           let encoded = try? DoryMachineSandboxPolicyWriteAuthority.xpcDictionary(
+               sandboxPolicy
+           ) {
+            dictionary[DoryMachineSandboxPolicyWriteAuthority.xpcKey] = encoded
         }
         dictionary["runtimeIdentity"] = runtimeIdentity.xpcDictionary
         if let installedDesktopPayloadReceipt {

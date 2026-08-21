@@ -30,7 +30,8 @@ public struct MachineManagerConfiguration: Sendable, Equatable {
     public var startupRestartPolicy: HvRestartPolicy
     public var guestArchitecture: String
     /// Host SSH agent made available to ordinary machines. Sandboxes only receive it when their
-    /// persisted policy contains the explicit DORY_SANDBOX_SSH_AGENT=1 grant.
+    /// typed policy contains an explicit `.granted` credential grant. Legacy records are decoded
+    /// through the bounded compatibility parser.
     public var sshAgentSocketPath: String?
 
     public init(
@@ -331,6 +332,7 @@ public struct DoryMachineStatus: Sendable, Equatable {
     public var shares: [DoryMachineShareConfiguration]
     public var environment: [String: String]
     public var typedSettings: DoryMachineTypedSettingsSnapshot?
+    public var sandboxPolicy: DoryVMSandboxPolicy?
     public var runtimeIdentity: DoryMachineRuntimeIdentity
     public var installedDesktopPayloadReceipt: DoryInstalledDesktopPayloadReceipt?
 
@@ -360,6 +362,7 @@ public struct DoryMachineStatus: Sendable, Equatable {
         shares: [DoryMachineShareConfiguration] = [],
         environment: [String: String] = [:],
         typedSettings: DoryMachineTypedSettingsSnapshot? = nil,
+        sandboxPolicy: DoryVMSandboxPolicy? = nil,
         runtimeIdentity: DoryMachineRuntimeIdentity = .legacyCompatibility(
             virtualHardwareABIVersion:
                 DoryVirtualMachineDefinition.currentVirtualHardwareABIVersion
@@ -391,6 +394,7 @@ public struct DoryMachineStatus: Sendable, Equatable {
         self.shares = shares
         self.environment = environment
         self.typedSettings = typedSettings
+        self.sandboxPolicy = sandboxPolicy
         self.runtimeIdentity = runtimeIdentity
         self.installedDesktopPayloadReceipt = installedDesktopPayloadReceipt
     }
@@ -452,6 +456,7 @@ public struct DoryMachineSnapshot: Sendable, Equatable, Hashable, Codable {
     public var shares: [DoryMachineShareConfiguration]
     public var environment: [String: String]
     public var typedSettings: DoryMachineTypedSettingsSnapshot?
+    public var sandboxPolicy: DoryVMSandboxPolicy?
     public var bootMode: DoryMachineBootMode
     public var machineIdentifierPath: String?
     public var nvramPath: String?
@@ -477,6 +482,7 @@ public struct DoryMachineSnapshot: Sendable, Equatable, Hashable, Codable {
         shares: [DoryMachineShareConfiguration] = [],
         environment: [String: String] = [:],
         typedSettings: DoryMachineTypedSettingsSnapshot? = nil,
+        sandboxPolicy: DoryVMSandboxPolicy? = nil,
         bootMode: DoryMachineBootMode = .linuxKernel,
         machineIdentifierPath: String? = nil,
         nvramPath: String? = nil,
@@ -504,6 +510,7 @@ public struct DoryMachineSnapshot: Sendable, Equatable, Hashable, Codable {
         self.shares = shares
         self.environment = environment
         self.typedSettings = typedSettings
+        self.sandboxPolicy = sandboxPolicy
         self.bootMode = bootMode
         self.machineIdentifierPath = machineIdentifierPath
         self.nvramPath = nvramPath
@@ -530,6 +537,7 @@ public struct DoryMachineSnapshot: Sendable, Equatable, Hashable, Codable {
         case shares
         case environment
         case typedSettings
+        case sandboxPolicy
         case bootMode
         case machineIdentifierPath
         case nvramPath
@@ -577,6 +585,7 @@ public struct DoryMachineSnapshot: Sendable, Equatable, Hashable, Codable {
                 DoryMachineTypedSettingsSnapshot.self,
                 forKey: .typedSettings
             ),
+            sandboxPolicy: try Self.decodeSandboxPolicy(from: container),
             bootMode: try container.decodeIfPresent(DoryMachineBootMode.self, forKey: .bootMode) ?? .linuxKernel,
             machineIdentifierPath: try container.decodeIfPresent(String.self, forKey: .machineIdentifierPath),
             nvramPath: try container.decodeIfPresent(String.self, forKey: .nvramPath),
@@ -598,6 +607,30 @@ public struct DoryMachineSnapshot: Sendable, Equatable, Hashable, Codable {
             consistency: consistency,
             guestQuiesceReceipt: guestQuiesceReceipt
         )
+        guard sandboxPolicy == nil || displayMode == .headless else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .sandboxPolicy,
+                in: container,
+                debugDescription: "sandbox policy requires a headless Linux snapshot"
+            )
+        }
+    }
+
+    private static func decodeSandboxPolicy(
+        from container: KeyedDecodingContainer<CodingKeys>
+    ) throws -> DoryVMSandboxPolicy? {
+        let policy = try container.decodeIfPresent(
+            DoryVMSandboxPolicy.self,
+            forKey: .sandboxPolicy
+        )
+        guard policy?.isValidForPersistence ?? true else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .sandboxPolicy,
+                in: container,
+                debugDescription: "snapshot sandbox policy is invalid"
+            )
+        }
+        return policy
     }
 }
 
@@ -1046,7 +1079,8 @@ public final class MachineManager: @unchecked Sendable {
     @discardableResult
     public func create(
         _ machine: DoryMachineConfiguration,
-        typedSettings: DoryMachineTypedSettingsPatch? = nil
+        typedSettings: DoryMachineTypedSettingsPatch? = nil,
+        sandboxPolicy: DoryVMSandboxPolicy? = nil
     ) throws -> DoryMachineStatus {
         operationLock.lock()
         defer { operationLock.unlock() }
@@ -1061,10 +1095,38 @@ public final class MachineManager: @unchecked Sendable {
                     "native workspace creation does not accept persisted environment values"
                 )
             }
-        } else if let typedSettings {
-            machine.environment = try typedSettings.applying(
-                to: machine.environment,
-                displayMode: machine.displayMode
+        } else {
+            if let typedSettings {
+                machine.environment = try typedSettings.applying(
+                    to: machine.environment,
+                    displayMode: machine.displayMode
+                )
+            }
+            if let sandboxPolicy {
+                for key in [
+                    DoryVMSandboxPolicy.legacyMarkerEnvironmentKey,
+                    DoryVMSandboxPolicy.legacyExpirationEnvironmentKey,
+                    DoryVMSandboxPolicy.legacySSHAgentEnvironmentKey,
+                    DoryVMSandboxPolicy.legacyProfileEnvironmentKey,
+                    DoryVMSandboxPolicy.legacyToolsEnvironmentKey,
+                    DoryVMSandboxPolicy.legacyBaselineEnvironmentKey,
+                ] {
+                    machine.environment.removeValue(forKey: key)
+                }
+                machine.environment.merge(
+                    try DoryMachineSandboxPolicyWriteAuthority.legacyEnvironment(
+                        for: sandboxPolicy
+                    ),
+                    uniquingKeysWith: { _, new in new }
+                )
+            }
+        }
+        guard sandboxPolicy?.isValidForPersistence ?? true else {
+            throw MachineManagerError.persistence("sandbox policy is invalid")
+        }
+        guard sandboxPolicy == nil || machine.displayMode == .headless else {
+            throw MachineManagerError.persistence(
+                "sandbox policy is supported only for headless Linux machines"
             )
         }
         try Self.validateLaunchConfiguration(machine)
@@ -1153,10 +1215,16 @@ public final class MachineManager: @unchecked Sendable {
                 preparedMachine,
                 facts: facts
             )
-            let definition = try (typedSettings ?? DoryMachineTypedSettingsPatch()).applying(
+            var definition = try (typedSettings ?? DoryMachineTypedSettingsPatch()).applying(
                 to: migration.definition,
                 displayMode: preparedMachine.displayMode
             )
+            definition.sandboxPolicy = sandboxPolicy
+            guard definition.validate().isEmpty else {
+                throw MachineManagerError.persistence(
+                    "sandbox policy is incompatible with the machine definition"
+                )
+            }
             try workspaceRepository.create(definition)
             nativeDefinition = definition
         }
@@ -1211,6 +1279,8 @@ public final class MachineManager: @unchecked Sendable {
             shares: preparedMachine.shares,
             environment: preparedMachine.environment,
             typedSettings: typedSettingsSnapshot,
+            sandboxPolicy: sandboxPolicy
+                ?? DoryVMSandboxPolicy.legacyEnvironment(preparedMachine.environment),
             runtimeIdentity: initialRuntimeIdentity
         )
     }
@@ -2972,6 +3042,7 @@ public final class MachineManager: @unchecked Sendable {
             candidate.graphics = nativeRecord.definition.graphics
             candidate.guestIdentityIntent = nativeRecord.definition.guestIdentityIntent
             candidate.clipboardPolicy = nativeRecord.definition.clipboardPolicy
+            candidate.sandboxPolicy = nativeRecord.definition.sandboxPolicy
             if let typedSettingsPatch {
                 candidate = try typedSettingsPatch.applying(
                     to: candidate,
@@ -3226,6 +3297,10 @@ public final class MachineManager: @unchecked Sendable {
             shares: machine.shares,
             environment: machine.environment,
             typedSettings: nativeTypedSettingsSnapshot(id: id),
+            sandboxPolicy: try effectiveSandboxPolicy(
+                id: id,
+                configuration: machine
+            ),
             bootMode: machine.bootMode,
             machineIdentifierPath: machine.bootMode == .efi ? machineIdentifierPath : nil,
             nvramPath: machine.bootMode == .efi ? nvramPath : nil,
@@ -3705,7 +3780,8 @@ public final class MachineManager: @unchecked Sendable {
         )
         let created = try create(
             machine,
-            typedSettings: snapshot.typedSettings?.replacementPatch
+            typedSettings: snapshot.typedSettings?.replacementPatch,
+            sandboxPolicy: snapshot.sandboxPolicy
         )
         do {
             if snapshot.bootMode == .efi {
@@ -3791,6 +3867,7 @@ public final class MachineManager: @unchecked Sendable {
                 candidate.graphics = record.definition.graphics
                 candidate.guestIdentityIntent = record.definition.guestIdentityIntent
                 candidate.clipboardPolicy = record.definition.clipboardPolicy
+                candidate.sandboxPolicy = snapshot.sandboxPolicy
                 if let typedSettings = snapshot.typedSettings {
                     candidate = try typedSettings.applyingAsReplacement(
                         to: candidate,
@@ -4184,6 +4261,10 @@ public final class MachineManager: @unchecked Sendable {
                 shares: entry.configuration.shares,
                 environment: entry.configuration.environment,
                 typedSettings: typedSettings,
+                sandboxPolicy: try? effectiveSandboxPolicy(
+                    id: id,
+                    configuration: entry.configuration
+                ),
                 runtimeIdentity: entry.runtimeIdentity,
                 installedDesktopPayloadReceipt:
                     entry.configuration.effectiveInstalledDesktopPayloadReceipt
@@ -4215,6 +4296,10 @@ public final class MachineManager: @unchecked Sendable {
             shares: entry.configuration.shares,
             environment: entry.configuration.environment,
             typedSettings: typedSettings,
+            sandboxPolicy: try? effectiveSandboxPolicy(
+                id: id,
+                configuration: entry.configuration
+            ),
             runtimeIdentity: entry.runtimeIdentity,
             installedDesktopPayloadReceipt:
                 entry.configuration.effectiveInstalledDesktopPayloadReceipt
@@ -4231,6 +4316,30 @@ public final class MachineManager: @unchecked Sendable {
             return nil
         }
         return try? DoryMachineTypedSettingsSnapshot(definition: record.definition)
+    }
+
+    private func effectiveSandboxPolicy(
+        id: String,
+        configuration: DoryMachineConfiguration
+    ) throws -> DoryVMSandboxPolicy? {
+        if launchPolicy == .perWorkspaceAuthority {
+            let record = try workspaceRepository.readPersistedRecord(id: id)
+            if record.legacyConfigurationSHA256 == nil,
+               record.legacyMigrationFactsSHA256 == nil {
+                guard record.definition.sandboxPolicy?.isValidForPersistence ?? true else {
+                    throw MachineManagerError.persistence(
+                        "native sandbox policy is invalid"
+                    )
+                }
+                return record.definition.sandboxPolicy
+            }
+        }
+        let policy = DoryVMSandboxPolicy.legacyEnvironment(configuration.environment)
+        if configuration.environment[DoryVMSandboxPolicy.legacyMarkerEnvironmentKey] == "1",
+           policy == nil {
+            throw MachineManagerError.persistence("legacy sandbox policy is invalid")
+        }
+        return policy
     }
 
     private func processConfiguration(
@@ -4450,8 +4559,12 @@ public final class MachineManager: @unchecked Sendable {
         for (key, value) in launchEnvironment.sorted(by: { $0.key < $1.key }) {
             arguments.append(contentsOf: ["--env", "\(key)=\(value)"])
         }
-        let isSandbox = machine.environment["DORY_SANDBOX"] == "1"
-        let sandboxSSHAgentGranted = machine.environment["DORY_SANDBOX_SSH_AGENT"] == "1"
+        let sandboxPolicy = try effectiveSandboxPolicy(
+            id: machine.id,
+            configuration: machine
+        )
+        let isSandbox = sandboxPolicy != nil
+        let sandboxSSHAgentGranted = sandboxPolicy?.sshAgentAccess == .granted
         if let sshAgentSocketPath = configuration.sshAgentSocketPath,
            !sshAgentSocketPath.isEmpty,
            !isSandbox || sandboxSSHAgentGranted {
@@ -6399,6 +6512,7 @@ public final class MachineManager: @unchecked Sendable {
         expected.graphics = definition.graphics
         expected.guestIdentityIntent = definition.guestIdentityIntent
         expected.clipboardPolicy = definition.clipboardPolicy
+        expected.sandboxPolicy = definition.sandboxPolicy
         expected.networkMode = definition.networkMode
         return expected == definition && definition.validate().isEmpty
     }

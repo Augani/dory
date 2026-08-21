@@ -70,4 +70,19 @@ grep -F "machine create no longer accepts persistent environment values" "$TMP/r
   exit 1
 }
 
+# Sandbox lifecycle/credential grants use the typed machine-create contract. The shell must not
+# resurrect the retired persistent environment escape hatch, and retained status must consume the
+# daemon's safe first-class projection rather than a raw environment payload.
+grep -F 'create_args+=(--sandbox --sandbox-ssh-agent' "$ROOT/scripts/dory" >/dev/null
+grep -F 'policy = status.get("sandboxPolicy")' "$ROOT/scripts/dory" >/dev/null
+if grep -F 'create_args+=(--env "DORY_SANDBOX' "$ROOT/scripts/dory" >/dev/null; then
+  echo "sandbox creation still persists lifecycle authority through raw environment" >&2
+  exit 1
+fi
+if grep -F 'environment = {row["key"]: row["value"] for row in status.get("env", [])}' \
+  "$ROOT/scripts/dory" >/dev/null; then
+  echo "sandbox status still depends on raw environment disclosure" >&2
+  exit 1
+fi
+
 echo "dory machine create regression test: PASS"

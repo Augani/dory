@@ -2142,6 +2142,63 @@ final class MachineManagerTests: XCTestCase {
             ["DORY_SANDBOX": "1", "DORY_SANDBOX_SSH_AGENT": "1"],
             true
         )
+
+        try? FileManager.default.removeItem(atPath: argsPath)
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "sandbox-malformed",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath,
+            environment: [
+                "DORY_SANDBOX": "1",
+                "DORY_SANDBOX_SSH_AGENT": "implicit",
+            ]
+        ))
+        XCTAssertThrowsError(try manager.start(id: "sandbox-malformed"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: argsPath))
+    }
+
+    func testNativeSandboxPolicyPersistsWithoutEnvironmentAndSurvivesSnapshotRestore() throws {
+        let base = "/tmp/dory-machine-native-sandbox-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let configuration = MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: base,
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: false
+        )
+        let policy = DoryVMSandboxPolicy(
+            expiresAtUnixSeconds: 2_000,
+            sshAgentAccess: .denied
+        )
+        var manager: MachineManager? = MachineManager(
+            configuration: configuration,
+            launchPolicy: .perWorkspaceAuthority
+        )
+        let created = try XCTUnwrap(manager).create(
+            DoryMachineConfiguration(
+                id: "sandbox",
+                kernelPath: doryTestKernelPath,
+                rootfsPath: doryTestRootfsPath
+            ),
+            sandboxPolicy: policy
+        )
+        XCTAssertTrue(created.environment.isEmpty)
+        XCTAssertEqual(created.sandboxPolicy, policy)
+
+        manager = nil
+        let reloaded = MachineManager(
+            configuration: configuration,
+            launchPolicy: .perWorkspaceAuthority
+        )
+        XCTAssertTrue(try XCTUnwrap(reloaded.status(id: "sandbox")).environment.isEmpty)
+        XCTAssertEqual(reloaded.status(id: "sandbox")?.sandboxPolicy, policy)
+
+        let snapshot = try reloaded.snapshot(id: "sandbox", snapshotID: "policy-v1")
+        XCTAssertEqual(snapshot.sandboxPolicy, policy)
+        _ = try reloaded.restoreSnapshot(machineID: "sandbox", snapshotID: "policy-v1")
+        XCTAssertEqual(reloaded.status(id: "sandbox")?.sandboxPolicy, policy)
+        XCTAssertTrue(try XCTUnwrap(reloaded.status(id: "sandbox")).environment.isEmpty)
     }
 
     func testMachineDefinitionsLoadWithoutOptionalShareField() throws {

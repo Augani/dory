@@ -2490,9 +2490,16 @@ PY
     elif [ "$keep" -eq 0 ]; then
       expires_epoch=$((now_epoch + wall_seconds + 300))
     fi
-    create_args+=(--env "DORY_SANDBOX=1" --env "DORY_SANDBOX_EXPIRES_AT=$expires_epoch" --env "DORY_SANDBOX_SSH_AGENT=$ssh_agent")
+    create_args+=(--sandbox --sandbox-ssh-agent "$([ "$ssh_agent" -eq 1 ] && printf granted || printf denied)")
+    if [ "$expires_epoch" -gt 0 ]; then
+      create_args+=(--sandbox-expires-at "$expires_epoch")
+    fi
     if [ "$agent_ready" -eq 1 ]; then
-      create_args+=(--env "DORY_SANDBOX_PROFILE=$profile_kind" --env "DORY_SANDBOX_TOOLS=$profile_tools_csv" --env "DORY_SANDBOX_BASELINE=$baseline_snapshot_id")
+      create_args+=(--sandbox-profile "$profile_kind" --sandbox-baseline "$baseline_snapshot_id")
+      local persisted_tool
+      for persisted_tool in "${profile_tools[@]}"; do
+        create_args+=(--sandbox-tool "$persisted_tool")
+      done
       if ! sandbox_prepare_agent_rootfs "$rootfs" "$tmp/agent-rootfs.ext4" 8192; then
         echo "Dory could not prepare sparse storage for the Agent-ready Sandbox." >&2
         rm -rf "$tmp"
@@ -2521,13 +2528,13 @@ requested_ssh = sys.argv[3] == "1"
 ssh_was_explicit = sys.argv[4] == "1"
 now = int(sys.argv[5])
 network_was_explicit = sys.argv[6] == "1"
-environment = {row["key"]: row["value"] for row in status.get("env", [])}
-if environment.get("DORY_SANDBOX") != "1":
+policy = status.get("sandboxPolicy")
+if not isinstance(policy, dict) or policy.get("schemaVersion") != 1:
     raise SystemExit("refusing to reuse a machine that was not created as a sandbox")
-expires = int(environment.get("DORY_SANDBOX_EXPIRES_AT", "0"))
+expires = int(policy.get("expiresAtUnixSeconds") or 0)
 if expires and expires <= now:
     raise SystemExit("sandbox TTL has expired; wait for daemon cleanup or kill it explicitly")
-granted_ssh = environment.get("DORY_SANDBOX_SSH_AGENT") == "1"
+granted_ssh = policy.get("sshAgentAccess") == "granted"
 if ssh_was_explicit and granted_ssh != requested_ssh:
     raise SystemExit("--ssh-agent must exactly match the retained sandbox credential grant")
 expected_mounts = manifest.get("mounts", [])
@@ -2538,6 +2545,12 @@ if expected != actual:
     raise SystemExit("retained sandbox mounts differ from its manifest; refusing reuse")
 limits = manifest.get("limits", {})
 profile = manifest.get("profile") or {}
+if str(policy.get("profile") or "") != str(profile.get("kind") or "standard"):
+    raise SystemExit("retained sandbox profile differs from its manifest; refusing reuse")
+if sorted(str(tool) for tool in policy.get("tools", [])) != sorted(str(tool) for tool in profile.get("tools", [])):
+    raise SystemExit("retained sandbox tools differ from its manifest; refusing reuse")
+if str(policy.get("baselineSnapshotID") or "") != str(profile.get("baselineSnapshotID") or ""):
+    raise SystemExit("retained sandbox baseline differs from its manifest; refusing reuse")
 persisted_network = str(manifest.get("network", {}).get("mode") or "none")
 if persisted_network not in ("none", "outbound", "full"):
     raise SystemExit("retained sandbox manifest has an invalid network policy")
@@ -2821,9 +2834,13 @@ if profile.get("kind") != "agent-ready":
 baseline = str(profile.get("baselineSnapshotID") or "")
 if not baseline:
     raise SystemExit("Agent-ready Sandbox has no prepared baseline")
-environment = {row["key"]: row["value"] for row in status.get("env", [])}
-if environment.get("DORY_SANDBOX") != "1" or environment.get("DORY_SANDBOX_PROFILE") != "agent-ready":
+policy = status.get("sandboxPolicy")
+if not isinstance(policy, dict) or policy.get("schemaVersion") != 1 or policy.get("profile") != "agent-ready":
     raise SystemExit("machine identity does not match the Agent-ready Sandbox manifest")
+if str(policy.get("baselineSnapshotID") or "") != baseline:
+    raise SystemExit("machine baseline does not match the Agent-ready Sandbox manifest")
+if sorted(str(tool) for tool in policy.get("tools", [])) != sorted(str(tool) for tool in profile.get("tools", [])):
+    raise SystemExit("machine tools do not match the Agent-ready Sandbox manifest")
 expected = sorted((m["tag"], m["hostPath"], m["guestPath"], bool(m["readOnly"])) for m in manifest.get("mounts", []))
 actual = sorted((m["tag"], m["hostPath"], m["guestPath"], bool(m["readOnly"])) for m in status.get("shares", []))
 if expected != actual:
