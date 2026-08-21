@@ -20,7 +20,12 @@ public struct DoryStagedMachineFileTransfer: Sendable, Equatable {
     }
 
     public func remove() throws {
-        try FileManager.default.removeItem(atPath: rootPath)
+        do {
+            try FileManager.default.removeItem(atPath: rootPath)
+        } catch let error as CocoaError where error.code == .fileNoSuchFile {
+            // An asynchronous daemon transfer atomically claims the handoff before replying.
+            // Client cleanup is therefore deliberately idempotent when ownership has moved.
+        }
     }
 }
 
@@ -77,6 +82,15 @@ public enum DoryMachineFileTransferStager {
     private static let copyBufferBytes = 1024 * 1024
     private static let maximumDirectoryDepth = 128
     private static let reservedRootName = ".dory-sync-tmp"
+    private static let stagingDirectoryName = "dory-machine-transfer-imports"
+    private static let clientStagePrefix = "transfer-"
+    private static let daemonStagePrefix = "owned-"
+
+    public static var defaultStagingDirectory: URL {
+        URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent(stagingDirectoryName, isDirectory: true)
+            .standardizedFileURL
+    }
 
     private struct StageState {
         var fileCount = 0
@@ -128,9 +142,7 @@ public enum DoryMachineFileTransferStager {
             throw DoryMachineFileTransferStagingError.unsupportedFile(name)
         }
 
-        let stagingDirectory = requestedDirectory
-            ?? URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
-                .appendingPathComponent("dory-machine-transfer-imports", isDirectory: true)
+        let stagingDirectory = requestedDirectory ?? defaultStagingDirectory
         if mkdir(stagingDirectory.path, mode_t(0o700)) != 0, errno != EEXIST {
             throw DoryMachineFileTransferStagingError.io("directory creation", errno)
         }
@@ -146,7 +158,7 @@ public enum DoryMachineFileTransferStager {
             throw DoryMachineFileTransferStagingError.unsafeStagingDirectory
         }
 
-        let transferName = "transfer-" + UUID().uuidString.lowercased()
+        let transferName = clientStagePrefix + UUID().uuidString.lowercased()
         guard mkdirat(baseDescriptor, transferName, mode_t(0o700)) == 0 else {
             throw DoryMachineFileTransferStagingError.io("transfer creation", errno)
         }
@@ -225,6 +237,185 @@ public enum DoryMachineFileTransferStager {
             directoryCount: UInt64(state.directoryCount),
             byteCount: state.byteCount
         )
+    }
+
+    /// Returns true only for an app-authored handoff in Dory's exact shared staging namespace.
+    /// Arbitrary owner-private directories are intentionally not accepted as transfer authority.
+    package static func isClientStagingRoot(_ path: String) -> Bool {
+        guard let root = managedRoot(path), root.kind == .client else { return false }
+        return isPrivateManagedRoot(root)
+    }
+
+    /// Returns true for either a client handoff or a handoff atomically claimed by doryd.
+    package static func isManagedStagingRoot(_ path: String) -> Bool {
+        guard let root = managedRoot(path) else { return false }
+        return isPrivateManagedRoot(root)
+    }
+
+    /// Moves one client handoff to an operation-specific daemon-owned name without opening an
+    /// app/daemon cleanup race. Once this succeeds, the daemon is solely responsible for removal.
+    package static func claimForDaemon(
+        _ path: String,
+        operationID: String,
+        ownerProcessID: pid_t = getpid()
+    ) throws -> String {
+        guard let source = managedRoot(path), source.kind == .client,
+              isValidOperationID(operationID), ownerProcessID > 0 else {
+            throw DoryMachineFileTransferStagingError.unsafeStagingDirectory
+        }
+        let baseDescriptor = try openPrivateStagingDirectory()
+        defer { close(baseDescriptor) }
+        let sourceDescriptor = openat(
+            baseDescriptor,
+            source.name,
+            O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW
+        )
+        guard sourceDescriptor >= 0 else {
+            throw DoryMachineFileTransferStagingError.io("claim source open", errno)
+        }
+        let sourceIsPrivate = isPrivateDirectory(descriptor: sourceDescriptor)
+        close(sourceDescriptor)
+        guard sourceIsPrivate else {
+            throw DoryMachineFileTransferStagingError.unsafeStagingDirectory
+        }
+
+        let destinationName = daemonStagePrefix + String(ownerProcessID) + "-" + operationID
+        let result = source.name.withCString { sourceName in
+            destinationName.withCString { destinationName in
+                renameatx_np(
+                    baseDescriptor,
+                    sourceName,
+                    baseDescriptor,
+                    destinationName,
+                    UInt32(RENAME_EXCL)
+                )
+            }
+        }
+        guard result == 0 else {
+            throw DoryMachineFileTransferStagingError.io("claim rename", errno)
+        }
+        let claimedPath = defaultStagingDirectory
+            .appendingPathComponent(destinationName, isDirectory: true).path
+        guard fsync(baseDescriptor) == 0 else {
+            let code = errno
+            try? removeManagedStagingRoot(claimedPath)
+            throw DoryMachineFileTransferStagingError.io("claim sync", code)
+        }
+        return claimedPath
+    }
+
+    /// Removes a syntactically exact managed handoff. Missing roots are already clean and succeed.
+    package static func removeManagedStagingRoot(_ path: String) throws {
+        guard managedRoot(path) != nil else {
+            throw DoryMachineFileTransferStagingError.unsafeStagingDirectory
+        }
+        var status = stat()
+        guard lstat(path, &status) == 0 else {
+            if errno == ENOENT { return }
+            throw DoryMachineFileTransferStagingError.io("cleanup stat", errno)
+        }
+        guard (status.st_mode & S_IFMT) == S_IFDIR,
+              status.st_uid == geteuid(),
+              (status.st_mode & 0o077) == 0 else {
+            throw DoryMachineFileTransferStagingError.unsafeStagingDirectory
+        }
+        try FileManager.default.removeItem(atPath: path)
+        let baseDescriptor = try openPrivateStagingDirectory()
+        defer { close(baseDescriptor) }
+        guard fsync(baseDescriptor) == 0 else {
+            throw DoryMachineFileTransferStagingError.io("cleanup sync", errno)
+        }
+    }
+
+    /// Reclaims handoffs owned by daemon processes that no longer exist. Live process names are
+    /// left untouched, allowing multiple test/manager instances in one process to coexist safely.
+    package static func removeAbandonedDaemonStages() {
+        let base = defaultStagingDirectory
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: base.path) else {
+            return
+        }
+        for name in names {
+            guard let owner = daemonOwnerProcessID(name), !processExists(owner) else { continue }
+            try? removeManagedStagingRoot(
+                base.appendingPathComponent(name, isDirectory: true).path
+            )
+        }
+    }
+
+    private enum ManagedStageKind {
+        case client
+        case daemon
+    }
+
+    private struct ManagedStageRoot {
+        var name: String
+        var kind: ManagedStageKind
+    }
+
+    private static func managedRoot(_ path: String) -> ManagedStageRoot? {
+        guard path.hasPrefix("/"), !path.contains("\0") else { return nil }
+        let url = URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
+        guard url.path == path,
+              url.deletingLastPathComponent().path == defaultStagingDirectory.path else {
+            return nil
+        }
+        let name = url.lastPathComponent
+        if name.hasPrefix(clientStagePrefix) {
+            let suffix = String(name.dropFirst(clientStagePrefix.count))
+            guard let uuid = UUID(uuidString: suffix),
+                  uuid.uuidString.lowercased() == suffix else { return nil }
+            return ManagedStageRoot(name: name, kind: .client)
+        }
+        guard daemonOwnerProcessID(name) != nil else { return nil }
+        return ManagedStageRoot(name: name, kind: .daemon)
+    }
+
+    private static func daemonOwnerProcessID(_ name: String) -> pid_t? {
+        guard name.hasPrefix(daemonStagePrefix) else { return nil }
+        let fields = name.dropFirst(daemonStagePrefix.count).split(separator: "-", maxSplits: 1)
+        guard fields.count == 2,
+              let owner = pid_t(fields[0]), owner > 0,
+              isValidOperationID(String(fields[1])) else { return nil }
+        return owner
+    }
+
+    private static func isValidOperationID(_ value: String) -> Bool {
+        value.utf8.count == 32 && value.utf8.allSatisfy {
+            ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x61 && $0 <= 0x66)
+        }
+    }
+
+    private static func isPrivateManagedRoot(_ root: ManagedStageRoot) -> Bool {
+        guard let baseDescriptor = try? openPrivateStagingDirectory() else { return false }
+        defer { close(baseDescriptor) }
+        let descriptor = openat(
+            baseDescriptor,
+            root.name,
+            O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW
+        )
+        guard descriptor >= 0 else { return false }
+        defer { close(descriptor) }
+        return isPrivateDirectory(descriptor: descriptor)
+    }
+
+    private static func openPrivateStagingDirectory() throws -> Int32 {
+        let descriptor = open(
+            defaultStagingDirectory.path,
+            O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW
+        )
+        guard descriptor >= 0 else {
+            throw DoryMachineFileTransferStagingError.io("directory open", errno)
+        }
+        guard isPrivateDirectory(descriptor: descriptor) else {
+            close(descriptor)
+            throw DoryMachineFileTransferStagingError.unsafeStagingDirectory
+        }
+        return descriptor
+    }
+
+    private static func processExists(_ processID: pid_t) -> Bool {
+        if kill(processID, 0) == 0 { return true }
+        return errno != ESRCH
     }
 
     private static func stageFile(

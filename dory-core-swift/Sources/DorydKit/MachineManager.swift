@@ -906,6 +906,7 @@ public final class MachineManager: @unchecked Sendable {
                 includeDescendants: true
             )
         }
+        DoryMachineFileTransferStager.removeAbandonedDaemonStages()
         let lifecycleRecoveryDiagnostics = Self.recoverInterruptedLifecycleOperations(
             store: lifecycleJournalStore,
             configuration: configuration
@@ -5017,14 +5018,12 @@ public final class MachineManager: @unchecked Sendable {
     /// Copies a daemon-private staging tree into a fresh guest-owned Downloads subdirectory.
     /// The destination is intentionally derived here rather than accepted from XPC: `sync-push`
     /// makes its target an exact replica, so pointing it at an existing user directory could erase
-    /// unrelated files. The caller remains responsible for deleting its staging root afterwards.
+    /// unrelated files. Synchronous compatibility callers remain responsible for deleting their
+    /// staging root afterwards.
     public func transferStagedFiles(
         id: String,
         privateStagingRoot: String
     ) throws -> DoryMachineFileTransferResult {
-        guard Self.isPrivateTransferStagingRoot(privateStagingRoot) else {
-            throw DoryMachineFileTransferError.invalidPrivateStagingRoot
-        }
         let transferID = Self.makeMachineFileTransferID()
         fileTransferLock.lock()
         pruneFileTransferOperationsLocked(now: Date())
@@ -5041,6 +5040,9 @@ public final class MachineManager: @unchecked Sendable {
             }
             fileTransferLock.unlock()
         }
+        guard DoryMachineFileTransferStager.isClientStagingRoot(privateStagingRoot) else {
+            throw DoryMachineFileTransferError.invalidPrivateStagingRoot
+        }
         return try performStagedFileTransfer(
             id: id,
             privateStagingRoot: privateStagingRoot,
@@ -5056,9 +5058,6 @@ public final class MachineManager: @unchecked Sendable {
         id: String,
         privateStagingRoot: String
     ) throws -> DoryMachineFileTransferOperationStatus {
-        guard Self.isPrivateTransferStagingRoot(privateStagingRoot) else {
-            throw DoryMachineFileTransferError.invalidPrivateStagingRoot
-        }
         guard let machineStatus = status(id: id) else {
             throw MachineManagerError.unknownMachine(id)
         }
@@ -5072,26 +5071,36 @@ public final class MachineManager: @unchecked Sendable {
         }
 
         let transferID = Self.makeMachineFileTransferID()
-        let operation = MachineFileTransferOperation(
-            operationID: transferID,
-            machineID: id
-        )
         fileTransferLock.lock()
         pruneFileTransferOperationsLocked(now: Date())
         if activeFileTransferByMachine[id] != nil {
             fileTransferLock.unlock()
             throw DoryMachineFileTransferError.transferAlreadyInProgress(id)
         }
+        let claimedStagingRoot: String
+        do {
+            claimedStagingRoot = try DoryMachineFileTransferStager.claimForDaemon(
+                privateStagingRoot,
+                operationID: transferID
+            )
+        } catch {
+            fileTransferLock.unlock()
+            throw DoryMachineFileTransferError.invalidPrivateStagingRoot
+        }
+        let operation = MachineFileTransferOperation(
+            operationID: transferID,
+            machineID: id
+        )
         fileTransferOperations[transferID] = operation
         activeFileTransferByMachine[id] = transferID
         fileTransferLock.unlock()
 
         fileTransferQueue.async { [self, operation] in
-            let outcome: MachineFileTransferTerminalOutcome
+            var outcome: MachineFileTransferTerminalOutcome
             do {
                 let result = try performStagedFileTransfer(
                     id: id,
-                    privateStagingRoot: privateStagingRoot,
+                    privateStagingRoot: claimedStagingRoot,
                     transferID: transferID,
                     operation: operation
                 )
@@ -5106,6 +5115,16 @@ public final class MachineManager: @unchecked Sendable {
                 } else {
                     outcome = .failed(Self.fileTransferFailure(error, machineID: id))
                 }
+            }
+            do {
+                try DoryMachineFileTransferStager.removeManagedStagingRoot(
+                    claimedStagingRoot
+                )
+            } catch {
+                outcome = .failed(.init(
+                    code: .transferFailed,
+                    message: "File transfer cleanup failed for \(id)."
+                ))
             }
             fileTransferLock.lock()
             switch outcome {
@@ -5158,7 +5177,7 @@ public final class MachineManager: @unchecked Sendable {
         transferID: String,
         operation: MachineFileTransferOperation?
     ) throws -> DoryMachineFileTransferResult {
-        guard Self.isPrivateTransferStagingRoot(privateStagingRoot) else {
+        guard DoryMachineFileTransferStager.isManagedStagingRoot(privateStagingRoot) else {
             throw DoryMachineFileTransferError.invalidPrivateStagingRoot
         }
         guard let machineStatus = status(id: id) else {
@@ -5369,18 +5388,6 @@ public final class MachineManager: @unchecked Sendable {
         error: DoryMachineFileTransferError
     ) throws {
         guard result.exitCode == 0, !result.timedOut else { throw error }
-    }
-
-    private static func isPrivateTransferStagingRoot(_ path: String) -> Bool {
-        guard path.hasPrefix("/"), !path.contains("\0") else { return false }
-        var info = stat()
-        guard lstat(path, &info) == 0,
-              (info.st_mode & S_IFMT) == S_IFDIR,
-              info.st_uid == geteuid(),
-              (info.st_mode & 0o077) == 0 else {
-            return false
-        }
-        return true
     }
 
     private func withAgentClient<T>(

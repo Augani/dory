@@ -89,6 +89,33 @@ final class MachineManagerFileTransferTests: XCTestCase {
         XCTAssertTrue(fixture.agent.pushes.isEmpty)
     }
 
+    func testTransferRejectsUnrelatedPrivateDirectoryWithoutDeletingIt() throws {
+        let fixture = try makeRunningFixture(tag: "unrelated-private")
+        defer { fixture.cleanup() }
+        let unrelated = fixture.stateRoot + "/private-user-data"
+        try FileManager.default.createDirectory(
+            atPath: unrelated,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        try Data("keep".utf8).write(to: URL(fileURLWithPath: unrelated + "/keep.txt"))
+
+        XCTAssertThrowsError(try fixture.manager.transferStagedFiles(
+            id: "desktop",
+            privateStagingRoot: unrelated
+        )) { error in
+            XCTAssertEqual(
+                error as? DoryMachineFileTransferError,
+                .invalidPrivateStagingRoot
+            )
+        }
+        XCTAssertEqual(
+            try Data(contentsOf: URL(fileURLWithPath: unrelated + "/keep.txt")),
+            Data("keep".utf8)
+        )
+        XCTAssertTrue(fixture.agent.pushes.isEmpty)
+    }
+
     func testAsynchronousTransferPublishesTerminalResult() throws {
         let fixture = try makeRunningFixture(tag: "async-success")
         defer { fixture.cleanup() }
@@ -99,6 +126,7 @@ final class MachineManagerFileTransferTests: XCTestCase {
         )
         XCTAssertEqual(started.machineID, "desktop")
         XCTAssertEqual(started.operationID.utf8.count, 32)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.stagingRoot))
 
         let completed = try waitForTransfer(
             manager: fixture.manager,
@@ -114,6 +142,9 @@ final class MachineManagerFileTransferTests: XCTestCase {
         XCTAssertEqual(completed.fractionCompleted, 1)
         XCTAssertNil(completed.currentPath)
         XCTAssertEqual(fixture.agent.controlledPushCount, 1)
+        let claimedRoot = try XCTUnwrap(fixture.agent.pushes.first?.localRoot)
+        XCTAssertTrue(claimedRoot.contains("/owned-"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: claimedRoot))
         XCTAssertThrowsError(try fixture.manager.stagedFileTransferStatus(
             id: "another-machine",
             operationID: started.operationID
@@ -179,6 +210,8 @@ final class MachineManagerFileTransferTests: XCTestCase {
             $0.argv == ["/bin/rm", "-rf", "--", destination]
         })
         XCTAssertFalse(fixture.agent.execs.contains { $0.argv.first == "/bin/chown" })
+        let claimedRoot = try XCTUnwrap(fixture.agent.pushes.first?.localRoot)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: claimedRoot))
     }
 
     func testAsynchronousTransferFailureUsesStableSafeEvidence() throws {
@@ -199,6 +232,33 @@ final class MachineManagerFileTransferTests: XCTestCase {
         XCTAssertEqual(failed.failure?.message, "File transfer failed for desktop.")
         XCTAssertNil(failed.result)
         XCTAssertFalse(failed.failure?.message.contains(fixture.stagingRoot) == true)
+        let claimedRoot = try XCTUnwrap(fixture.agent.pushes.first?.localRoot)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: claimedRoot))
+    }
+
+    func testInitializationReapsAStageClaimedByDeadDaemon() throws {
+        let suffix = "\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let root = URL(fileURLWithPath: "/tmp/dory-machine-transfer-reap-\(suffix)")
+        let source = root.appendingPathComponent("source.txt")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        try Data("secret".utf8).write(to: source)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let staged = try DoryMachineFileTransferStager.stage(fileURLs: [source])
+        let claimed = try DoryMachineFileTransferStager.claimForDaemon(
+            staged.rootPath,
+            operationID: String(repeating: "a", count: 32),
+            ownerProcessID: 2_000_000_000
+        )
+        XCTAssertTrue(FileManager.default.fileExists(atPath: claimed))
+
+        _ = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: root.appendingPathComponent("state").path,
+            baseArguments: ["30"],
+            passMachineArguments: false
+        ))
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: claimed))
     }
 
     private func waitForTransfer(
@@ -230,7 +290,18 @@ final class MachineManagerFileTransferTests: XCTestCase {
     ) throws -> TransferFixture {
         let suffix = "\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let stateRoot = "/tmp/dory-machine-transfer-\(tag)-\(suffix)"
-        let stagingRoot = "/tmp/dory-machine-transfer-stage-\(tag)-\(suffix)"
+        let stagingDirectory = DoryMachineFileTransferStager.defaultStagingDirectory
+        try FileManager.default.createDirectory(
+            at: stagingDirectory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        XCTAssertEqual(chmod(stagingDirectory.path, 0o700), 0)
+        let stagingRoot = stagingDirectory
+            .appendingPathComponent(
+                "transfer-" + UUID().uuidString.lowercased(),
+                isDirectory: true
+            ).path
         try FileManager.default.createDirectory(
             atPath: stagingRoot,
             withIntermediateDirectories: false,

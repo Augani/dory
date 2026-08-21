@@ -31,6 +31,8 @@ final class DoryMachineFileTransferStagerTests: XCTestCase {
         )
         XCTAssertEqual(try permissions(staged.rootPath) & 0o777, 0o700)
         XCTAssertEqual(try permissions(staged.rootPath + "/hello.txt") & 0o777, 0o600)
+        try staged.remove()
+        try staged.remove()
     }
 
     func testStagesNestedFoldersIncludingEmptyDirectories() throws {

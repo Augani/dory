@@ -1674,7 +1674,17 @@ final class DorydServiceTests: XCTestCase {
     func testMachineTransferOverXPCUsesExactShapeAndOmitsHostPath() throws {
         let suffix = "\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let base = "/tmp/doryd-service-machine-transfer-\(suffix)"
-        let staging = "/tmp/doryd-service-machine-transfer-stage-\(suffix)"
+        let stagingDirectory = DoryMachineFileTransferStager.defaultStagingDirectory
+        try FileManager.default.createDirectory(
+            at: stagingDirectory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        XCTAssertEqual(chmod(stagingDirectory.path, 0o700), 0)
+        let staging = stagingDirectory.appendingPathComponent(
+            "transfer-" + UUID().uuidString.lowercased(),
+            isDirectory: true
+        ).path
         try FileManager.default.createDirectory(
             atPath: staging,
             withIntermediateDirectories: false,
