@@ -107,6 +107,7 @@ final class DoryMacAudioBackend: VirtioSoundHost, @unchecked Sendable {
     private var outputRunning = false
     private var inputRunning = false
     private var inputTapInstalled = false
+    private var microphoneAccessDenied = false
     private var permissionRequestInFlight = false
     private var captureBytes = Data()
     private var captureRequests = [CaptureRequest]()
@@ -203,6 +204,7 @@ final class DoryMacAudioBackend: VirtioSoundHost, @unchecked Sendable {
                 captureTapCount = 0
                 captureFallbackLogged = false
                 nextCaptureFallbackUptime = 0
+                microphoneAccessDenied = false
                 inputParameters = parameters
                 inputRunning = false
             }
@@ -262,6 +264,7 @@ final class DoryMacAudioBackend: VirtioSoundHost, @unchecked Sendable {
                 outputRunning = false
             case .input:
                 inputRunning = false
+                microphoneAccessDenied = false
                 removeInputTap()
                 inputEngine.stop()
                 nextCaptureFallbackUptime = 0
@@ -281,6 +284,7 @@ final class DoryMacAudioBackend: VirtioSoundHost, @unchecked Sendable {
                 outputParameters = nil
             case .input:
                 inputRunning = false
+                microphoneAccessDenied = false
                 removeInputTap()
                 inputEngine.stop()
                 inputParameters = nil
@@ -348,7 +352,9 @@ final class DoryMacAudioBackend: VirtioSoundHost, @unchecked Sendable {
         queue.sync {
             // Linux primes capture descriptors while the PCM is prepared, before PCM_START. Keep
             // those requests pending just as playback keeps its pre-roll buffers scheduled.
-            guard byteCount > 0, inputParameters == parameters else { return false }
+            guard byteCount > 0,
+                  inputParameters == parameters,
+                  !microphoneAccessDenied else { return false }
             guard DoryMacAudioQueueCapacity.accepts(
                 currentBytes: pendingCaptureBytes,
                 requestBytes: byteCount,
@@ -382,6 +388,7 @@ final class DoryMacAudioBackend: VirtioSoundHost, @unchecked Sendable {
             inputParameters = nil
             outputRunning = false
             inputRunning = false
+            microphoneAccessDenied = false
             failPlaybackRequests()
             captureBytes.removeAll(keepingCapacity: false)
             nextCaptureFallbackUptime = 0
@@ -392,8 +399,10 @@ final class DoryMacAudioBackend: VirtioSoundHost, @unchecked Sendable {
     private func startInputWhenAuthorized() -> Bool {
         switch microphoneAuthorizationStatus() {
         case .authorized:
+            microphoneAccessDenied = false
             return installInputTapAndStartEngine()
         case .notDetermined:
+            microphoneAccessDenied = false
             guard !permissionRequestInFlight else { return true }
             permissionRequestInFlight = true
             log("requesting Mac microphone access; Linux capture will provide paced silence until permission is resolved")
@@ -404,6 +413,7 @@ final class DoryMacAudioBackend: VirtioSoundHost, @unchecked Sendable {
                     guard self.inputRunning else { return }
                     guard granted else {
                         self.inputRunning = false
+                        self.microphoneAccessDenied = true
                         self.log("microphone access was denied; Linux capture requests were stopped")
                         self.failCaptureRequests()
                         return
@@ -415,10 +425,12 @@ final class DoryMacAudioBackend: VirtioSoundHost, @unchecked Sendable {
             }
             return true
         case .denied, .restricted:
+            microphoneAccessDenied = true
             log("microphone access is denied; enable it for Dory in System Settings > Privacy & Security > Microphone")
             inputRunning = false
             return false
         @unknown default:
+            microphoneAccessDenied = true
             inputRunning = false
             return false
         }

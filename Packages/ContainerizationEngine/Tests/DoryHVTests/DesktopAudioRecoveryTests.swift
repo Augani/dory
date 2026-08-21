@@ -124,6 +124,41 @@ struct DesktopAudioRecoveryTests {
         #expect(!backend.start(streamID: 1, direction: .input))
         #expect(completion.wait(timeout: .now() + 1) == .success)
         #expect(result.snapshot == (completed: true, dataWasNil: true))
+        #expect(!backend.requestCapture(byteCount: 4, parameters: parameters) { _, _ in })
+        #expect(backend.runtimeMetrics.pendingCaptureBytes == 0)
+        #expect(backend.runtimeMetrics.droppedCapturePeriods == 1)
+    }
+
+    @Test("permission prompt denial latches capture unavailable")
+    func asynchronousMicrophoneDenialRejectsLaterCapture() {
+        let completion = DispatchSemaphore(value: 0)
+        let result = LockedCaptureCompletion()
+        let backend = DoryMacAudioBackend(
+            log: { _ in },
+            microphoneAuthorizationStatus: { .notDetermined },
+            requestMicrophoneAccess: { callback in callback(false) }
+        )
+        let parameters = VirtioSoundPCMParameters(
+            bufferBytes: 8,
+            periodBytes: 4,
+            sampleRate: 48_000,
+            channels: 2
+        )
+        #expect(backend.configure(
+            streamID: 1,
+            direction: .input,
+            parameters: parameters
+        ))
+        #expect(backend.requestCapture(byteCount: 4, parameters: parameters) { data, _ in
+            result.record(data)
+            completion.signal()
+        })
+
+        // The guest may enter PCM_RUNNING while macOS displays its asynchronous permission prompt.
+        #expect(backend.start(streamID: 1, direction: .input))
+        #expect(completion.wait(timeout: .now() + 1) == .success)
+        #expect(result.snapshot == (completed: true, dataWasNil: true))
+        #expect(!backend.requestCapture(byteCount: 4, parameters: parameters) { _, _ in })
         #expect(backend.runtimeMetrics.pendingCaptureBytes == 0)
         #expect(backend.runtimeMetrics.droppedCapturePeriods == 1)
     }
