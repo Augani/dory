@@ -455,6 +455,90 @@ public final class DorydService: NSObject, DorydControl {
         }
     }
 
+    public func machineTransferStart(
+        _ machineID: String,
+        request: NSDictionary,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        guard let machineManager else {
+            reply(false, [:], "machine manager is not configured")
+            return
+        }
+        do {
+            let parsedRequest = try MachineTransferRequest(
+                xpcDictionary: request,
+                expectedSchema: 2
+            )
+            let status = try machineManager.beginStagedFileTransfer(
+                id: machineID,
+                privateStagingRoot: parsedRequest.privateStagingRoot
+            )
+            incidentWriter?.record(
+                type: "machine.file_transfer_started",
+                detail: "\(machineID) \(status.operationID)"
+            )
+            reply(true, status.xpcDictionary, "")
+        } catch {
+            incidentWriter?.record(
+                type: "machine.file_transfer_start_failed",
+                detail: "\(machineID): \(error)"
+            )
+            reply(false, [:], String(describing: error))
+        }
+    }
+
+    public func machineTransferStatus(
+        _ machineID: String,
+        operationID: String,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        guard let machineManager else {
+            reply(false, [:], "machine manager is not configured")
+            return
+        }
+        guard MachineTransferRequest.isValidOperationID(operationID) else {
+            reply(false, [:], "invalid machine transfer operation identifier")
+            return
+        }
+        do {
+            let status = try machineManager.stagedFileTransferStatus(
+                id: machineID,
+                operationID: operationID
+            )
+            reply(true, status.xpcDictionary, "")
+        } catch {
+            reply(false, [:], String(describing: error))
+        }
+    }
+
+    public func machineTransferCancel(
+        _ machineID: String,
+        operationID: String,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        guard let machineManager else {
+            reply(false, [:], "machine manager is not configured")
+            return
+        }
+        guard MachineTransferRequest.isValidOperationID(operationID) else {
+            reply(false, [:], "invalid machine transfer operation identifier")
+            return
+        }
+        do {
+            let status = try machineManager.cancelStagedFileTransfer(
+                id: machineID,
+                operationID: operationID
+            )
+            incidentWriter?.record(
+                type: "machine.file_transfer_cancel",
+                detail: "\(machineID) \(operationID)"
+            )
+            reply(true, status.xpcDictionary, "")
+        } catch {
+            reply(false, [:], String(describing: error))
+        }
+    }
+
     public func machineProvision(
         _ machineID: String,
         request: NSDictionary,
@@ -1272,19 +1356,28 @@ private struct MachineExecRequest {
 private struct MachineTransferRequest: Sendable {
     var privateStagingRoot: String
 
-    init(xpcDictionary dictionary: NSDictionary) throws {
+    init(
+        xpcDictionary dictionary: NSDictionary,
+        expectedSchema: UInt16 = 1
+    ) throws {
         guard let keys = dictionary.allKeys as? [String],
               Set(keys) == ["schema", "privateStagingRoot"],
               let schema = dictionary["schema"] as? NSNumber,
               CFGetTypeID(schema) != CFBooleanGetTypeID(),
-              schema.uint16Value == 1,
-              schema.doubleValue == 1,
+              schema.uint16Value == expectedSchema,
+              schema.doubleValue == Double(expectedSchema),
               let root = dictionary["privateStagingRoot"] as? String,
               root.hasPrefix("/"),
               !root.contains("\0") else {
             throw XPCRemoteConfigError.invalid("machineTransfer")
         }
         privateStagingRoot = root
+    }
+
+    static func isValidOperationID(_ value: String) -> Bool {
+        value.utf8.count == 32 && value.utf8.allSatisfy { byte in
+            (byte >= 48 && byte <= 57) || (byte >= 97 && byte <= 102)
+        }
     }
 }
 
@@ -1434,6 +1527,38 @@ private extension DoryMachineFileTransferResult {
             "filesSent": filesSent,
             "bytesSent": bytesSent,
         ]
+    }
+}
+
+private extension DoryMachineFileTransferOperationStatus {
+    var xpcDictionary: NSDictionary {
+        var dictionary: [String: Any] = [
+            "schema": UInt16(1),
+            "operationID": operationID,
+            "machineID": machineID,
+            "phase": phase.rawValue,
+            "filesTotal": filesTotal,
+            "filesCompleted": filesCompleted,
+            "bytesTotal": bytesTotal,
+            "bytesCompleted": bytesCompleted,
+        ]
+        if let currentPath {
+            dictionary["currentPath"] = currentPath
+        }
+        if let guestDestination {
+            dictionary["guestDestination"] = guestDestination
+        }
+        if let result {
+            dictionary["result"] = result.xpcDictionary
+        }
+        if let failure {
+            dictionary["failure"] = [
+                "schema": UInt16(1),
+                "code": failure.code.rawValue,
+                "message": failure.message,
+            ] as NSDictionary
+        }
+        return dictionary as NSDictionary
     }
 }
 

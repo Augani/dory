@@ -1790,6 +1790,88 @@ final class DorydServiceTests: XCTestCase {
             transfer.fulfill()
         }
         wait(for: [transfer], timeout: 5)
+
+        let malformedStart = expectation(description: "malformed machineTransferStart rejected")
+        proxy.machineTransferStart("dev", request: [
+            "schema": UInt16(1),
+            "privateStagingRoot": staging,
+        ]) { ok, body, message in
+            XCTAssertFalse(ok)
+            XCTAssertTrue(body.isEqual(to: [:]))
+            XCTAssertTrue(message.contains("machineTransfer"), message)
+            malformedStart.fulfill()
+        }
+        wait(for: [malformedStart], timeout: 5)
+
+        let asyncStart = expectation(description: "machineTransferStart reply")
+        var operationID = ""
+        proxy.machineTransferStart("dev", request: [
+            "schema": UInt16(2),
+            "privateStagingRoot": staging,
+        ]) { ok, body, message in
+            XCTAssertTrue(ok, message)
+            operationID = body["operationID"] as? String ?? ""
+            XCTAssertEqual(operationID.utf8.count, 32)
+            XCTAssertEqual(body["machineID"] as? String, "dev")
+            XCTAssertEqual((body["schema"] as? NSNumber)?.uint16Value, 1)
+            XCTAssertFalse(body.description.contains(staging))
+            asyncStart.fulfill()
+        }
+        wait(for: [asyncStart], timeout: 5)
+
+        var terminalBody: NSDictionary?
+        let deadline = Date().addingTimeInterval(5)
+        while terminalBody == nil, Date() < deadline {
+            let statusReply = expectation(description: "machineTransferStatus reply")
+            proxy.machineTransferStatus("dev", operationID: operationID) { ok, body, message in
+                XCTAssertTrue(ok, message)
+                if let phase = body["phase"] as? String,
+                   ["completed", "cancelled", "failed"].contains(phase) {
+                    terminalBody = body
+                }
+                statusReply.fulfill()
+            }
+            wait(for: [statusReply], timeout: 5)
+            if terminalBody == nil {
+                Thread.sleep(forTimeInterval: 0.01)
+            }
+        }
+        let completedBody = try XCTUnwrap(terminalBody)
+        XCTAssertEqual(completedBody["phase"] as? String, "completed")
+        XCTAssertEqual(
+            Set(completedBody.allKeys.compactMap { $0 as? String }),
+            [
+                "schema", "operationID", "machineID", "phase", "filesTotal",
+                "filesCompleted", "bytesTotal", "bytesCompleted", "guestDestination",
+                "result",
+            ]
+        )
+        XCTAssertEqual(completedBody["filesTotal"] as? UInt64, 2)
+        XCTAssertEqual(completedBody["filesCompleted"] as? UInt64, 2)
+        XCTAssertEqual(completedBody["bytesTotal"] as? UInt64, 7)
+        XCTAssertEqual(completedBody["bytesCompleted"] as? UInt64, 7)
+        let asyncResult = try XCTUnwrap(completedBody["result"] as? NSDictionary)
+        XCTAssertEqual(asyncResult["transferID"] as? String, operationID)
+        XCTAssertEqual(asyncResult["filesSent"] as? UInt64, 2)
+        XCTAssertEqual(asyncResult["bytesSent"] as? UInt64, 7)
+        XCTAssertFalse(completedBody.description.contains(staging))
+
+        let cancelCompleted = expectation(description: "machineTransferCancel terminal reply")
+        proxy.machineTransferCancel("dev", operationID: operationID) { ok, body, message in
+            XCTAssertTrue(ok, message)
+            XCTAssertEqual(body["phase"] as? String, "completed")
+            cancelCompleted.fulfill()
+        }
+        wait(for: [cancelCompleted], timeout: 5)
+
+        let invalidStatus = expectation(description: "invalid transfer status rejected")
+        proxy.machineTransferStatus("dev", operationID: "NOT-AN-OPERATION") { ok, body, message in
+            XCTAssertFalse(ok)
+            XCTAssertTrue(body.isEqual(to: [:]))
+            XCTAssertEqual(message, "invalid machine transfer operation identifier")
+            invalidStatus.fulfill()
+        }
+        wait(for: [invalidStatus], timeout: 5)
     }
 
     func testMachineProvisionOverXPCInstallsRecipeThroughMachineAgent() throws {
@@ -2115,6 +2197,15 @@ private final class ServiceFakeAgentControlClient: AgentControlClient, @unchecke
         _ = localRoot
         _ = remoteRoot
         return DoryPushStats(filesSent: 2, bytesSent: 7, filesDeleted: 0)
+    }
+
+    func push(
+        localRoot: String,
+        remoteRoot: String,
+        control: DoryPushControl
+    ) throws -> DoryPushStats {
+        _ = control
+        return try push(localRoot: localRoot, remoteRoot: remoteRoot)
     }
 
     func exec(
