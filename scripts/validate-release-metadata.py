@@ -148,6 +148,8 @@ def validate_catalog(
     catalog_path = component_dir / "catalog.json"
     digest_path = component_dir / "catalog.json.sha256"
     signature_path = component_dir / "catalog.json.sig"
+    for path in (catalog_path, digest_path, signature_path):
+        require(path.is_file() and not path.is_symlink(), f"component catalog input is missing or indirect: {path.name}")
     catalog_bytes = catalog_path.read_bytes()
     require(0 < len(catalog_bytes) <= 2 * 1_024 * 1_024, "component catalog size is invalid")
     expected_digest = hashlib.sha256(catalog_bytes).hexdigest()
@@ -295,6 +297,7 @@ def validate_catalog(
 
 def validate_manifest(build_dir: pathlib.Path, version: str, build: str) -> tuple[dict, str]:
     path = build_dir / "release-manifest.json"
+    require(path.is_file() and not path.is_symlink(), "release manifest is missing or indirect")
     manifest = json.loads(
         path.read_text(encoding="utf-8"),
         object_pairs_hook=unique_json_object,
@@ -343,7 +346,7 @@ def validate_manifest(build_dir: pathlib.Path, version: str, build: str) -> tupl
         require(record["path"] == expected_path, f"manifest path is not portable: {name}")
         require(isinstance(record["kind"], str) and record["kind"], f"manifest kind is invalid: {name}")
         artifact = build_dir / record["path"]
-        require(artifact.is_file(), f"manifest artifact is missing: {name}")
+        require(artifact.is_file() and not artifact.is_symlink(), f"manifest artifact is missing or indirect: {name}")
         require(record["bytes"] == artifact.stat().st_size, f"manifest byte count mismatch: {name}")
         require(record["sha256"] == sha256_file(artifact), f"manifest SHA-256 mismatch: {name}")
     require(by_name[f"Dory-{version}.cdx.json"]["kind"] == "cyclonedx-json", "SBOM artifact kind mismatch")
@@ -453,6 +456,8 @@ def main() -> None:
     if len(sys.argv) != 4:
         raise SystemExit("usage: validate-release-metadata.py <build-dir> <version> <build>")
     build_dir = pathlib.Path(sys.argv[1])
+    require(build_dir.is_dir() and not build_dir.is_symlink(), "build directory is missing or indirect")
+    require(build_dir.resolve() == build_dir.absolute(), "build directory must be canonical")
     version, build = sys.argv[2:]
     _, source_commit = validate_manifest(build_dir, version, build)
     validate_appcast(

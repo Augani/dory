@@ -212,6 +212,14 @@ class ReleaseCatalogTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "shape is invalid"):
             self.validate()
 
+    def test_catalog_symlink_is_rejected_before_signature_verification(self) -> None:
+        self.publish()
+        direct = self.components / "catalog-direct.json"
+        self.catalog_path.rename(direct)
+        self.catalog_path.symlink_to(direct.name)
+        with self.assertRaisesRegex(ValueError, "missing or indirect"):
+            self.validate()
+
     def test_qualification_must_use_the_pinned_signing_key(self) -> None:
         self.catalog["virtualMachineQualification"]["signingKeyID"] = "e" * 64
         self.publish()
