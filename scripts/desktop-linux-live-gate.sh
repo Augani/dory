@@ -607,6 +607,73 @@ APPLESCRIPT
   printf '%s\n' "$guest_to_host_clipboard" \
     > "$WORKROOT/evidence/$distro-clipboard-guest-to-host.txt"
 
+  input_token="doryinputpass$distro"
+  assert_exec_token "$machine" input-window-ready sh -lc "
+    set -eu
+    uid=\$(id -u dorygate)
+    runtime=/run/user/\$uid
+    session_env=\$(runuser -u dorygate -- env XDG_RUNTIME_DIR=\"\$runtime\" \
+      DBUS_SESSION_BUS_ADDRESS=\"unix:path=\$runtime/bus\" systemctl --user show-environment \
+      | grep -E '^(DISPLAY|XAUTHORITY)=')
+    display=\$(printf '%s\n' \"\$session_env\" | sed -n 's/^DISPLAY=//p')
+    xauth=\$(printf '%s\n' \"\$session_env\" | sed -n 's/^XAUTHORITY=//p')
+    marker=/home/dorygate/.dory-release-input
+    reader=/tmp/dory-release-input-reader
+    rm -f \"\$marker\"
+    printf '%s' \
+      'IyEvYmluL3NoCklGUz0gcmVhZCAtciBsaW5lCnByaW50ZiAiJXMiICIkbGluZSIgPiAvaG9tZS9kb3J5Z2F0ZS8uZG9yeS1yZWxlYXNlLWlucHV0Cg==' \
+      | base64 -d > \"\$reader\"
+    chmod 0755 \"\$reader\"
+    chown dorygate:dorygate \"\$reader\"
+    runuser -u dorygate -- env DISPLAY=\"\$display\" XAUTHORITY=\"\$xauth\" \
+      setsid -f xterm -title DoryInputGate -geometry 200x60+0+0 -e \"\$reader\"
+    for _ in \$(seq 1 30); do
+      if runuser -u dorygate -- env DISPLAY=\"\$display\" XAUTHORITY=\"\$xauth\" \
+          xwininfo -root -tree 2>/dev/null | grep -Fq 'DoryInputGate'; then
+        echo input-window-ready
+        exit 0
+      fi
+      sleep 1
+    done
+    echo 'guest input window did not map' >&2
+    exit 1
+  " > "$WORKROOT/evidence/$distro-input-window.json"
+
+  osascript - "$machine_pid" "$input_token" <<'APPLESCRIPT'
+on run argv
+  set targetPID to (item 1 of argv) as integer
+  set inputToken to item 2 of argv
+  tell application "System Events"
+    set targetProcess to first process whose unix id is targetPID
+    set frontmost of targetProcess to true
+    set targetWindow to front window of targetProcess
+    set windowPosition to position of targetWindow
+    set windowSize to size of targetWindow
+    set clickX to (item 1 of windowPosition) + ((item 1 of windowSize) div 2)
+    set clickY to (item 2 of windowPosition) + ((item 2 of windowSize) div 2)
+    delay 0.25
+    click at {clickX, clickY}
+    delay 0.25
+    keystroke inputToken
+    key code 36
+  end tell
+end run
+APPLESCRIPT
+
+  assert_exec_token "$machine" keyboard-pointer-input-pass sh -lc "
+    set -eu
+    marker=/home/dorygate/.dory-release-input
+    for _ in \$(seq 1 30); do
+      if test -f \"\$marker\" && test \"\$(cat \"\$marker\")\" = '$input_token'; then
+        echo keyboard-pointer-input-pass
+        exit 0
+      fi
+      sleep 1
+    done
+    echo 'host keyboard/pointer input did not reach the guest exactly' >&2
+    exit 1
+  " > "$WORKROOT/evidence/$distro-keyboard-pointer-input.json"
+
   assert_exec_token "$machine" browser-window-mapped sh -lc "
     set -eu
     uid=\$(id -u dorygate)
@@ -985,6 +1052,7 @@ fi
   printf 'graceful_shutdown=PASS\n'
   printf 'dynamic_retina_display=PASS\n'
   printf 'clipboard_bidirectional=PASS\n'
+  printf 'keyboard_pointer_input=PASS\n'
   if [ "$SELECTED_DISTRO" = all ] || [ "$SELECTED_DISTRO" = debian ]; then
     printf 'debian_rootfs_sha256=%s\n' "$(shasum -a 256 "$DEBIAN_ROOTFS" | awk '{print $1}')"
     printf 'debian_update_sha256=%s\n' "$(shasum -a 256 "$DEBIAN_UPDATE" | awk '{print $1}')"

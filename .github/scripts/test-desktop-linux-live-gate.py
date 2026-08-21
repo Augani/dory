@@ -69,6 +69,13 @@ class DesktopLinuxLiveGateTests(unittest.TestCase):
             "/usr/lib/dory/clipboard set 'text/plain;charset=utf-8'",
             "guest clipboard did not reach the host",
             "clipboard_bidirectional=PASS",
+            "input-window-ready",
+            "xterm -title DoryInputGate",
+            "click at {clickX, clickY}",
+            "keystroke inputToken",
+            "keyboard-pointer-input-pass",
+            "host keyboard/pointer input did not reach the guest exactly",
+            "keyboard_pointer_input=PASS",
             "workroot must be a strict child of RUNNER_TEMP",
         )
         for proof in required:
