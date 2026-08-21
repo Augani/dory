@@ -36,7 +36,9 @@ DORY_MACHINE_CREATE_CAPTURE="$capture" \
 DORYDCTL_BIN="$TMP/dorydctl" \
 DORY_SANDBOX_KERNEL="$TMP/kernel" \
 DORY_SANDBOX_ROOTFS="$TMP/rootfs" \
-DORY_MACHINE_ENV_ALLOW_LIST= \
+DORY_MACHINE_ENV_ALLOW_LIST='ANTHROPIC_API_KEY,GH_TOKEN' \
+ANTHROPIC_API_KEY='opaque-anthropic-secret' \
+GH_TOKEN='opaque-github-secret' \
 HOME="$TMP/home" \
   /bin/bash "$ROOT/scripts/dory" machine create test
 
@@ -50,5 +52,22 @@ printf '%s\n' \
   --rootfs \
   "$TMP/rootfs" > "$expected"
 cmp "$expected" "$capture"
+
+rm -f "$capture"
+if DORY_MACHINE_CREATE_CAPTURE="$capture" \
+  DORYDCTL_BIN="$TMP/dorydctl" \
+  DORY_SANDBOX_KERNEL="$TMP/kernel" \
+  DORY_SANDBOX_ROOTFS="$TMP/rootfs" \
+  HOME="$TMP/home" \
+  /bin/bash "$ROOT/scripts/dory" machine create rejected --env API_TOKEN=opaque-value \
+    >"$TMP/rejected.out" 2>"$TMP/rejected.err"; then
+  echo "persistent machine environment was accepted" >&2
+  exit 1
+fi
+grep -F "machine create no longer accepts persistent environment values" "$TMP/rejected.err" >/dev/null
+[ ! -e "$capture" ] || {
+  echo "dorydctl was invoked for rejected persistent environment" >&2
+  exit 1
+}
 
 echo "dory machine create regression test: PASS"
