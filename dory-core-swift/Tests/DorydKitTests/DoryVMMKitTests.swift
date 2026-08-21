@@ -131,6 +131,19 @@ final class DoryVMMKitTests: XCTestCase {
         )
     }
 
+    func testGuestUIScalePersistenceKeepsTheValueOutOfShellSource() throws {
+        let command = try XCTUnwrap(
+            DoryVMMGuestDisplayScale.persistenceCommand(scaleFactor: 1)
+        )
+        XCTAssertEqual(command[0...1], ["/bin/sh", "-c"])
+        XCTAssertEqual(command[3], "dory-guest-display-scale")
+        XCTAssertEqual(command[4], "1")
+        XCTAssertFalse(command[2].contains("guest-ui-scale 1"))
+        XCTAssertTrue(command[2].contains("\"$1\""))
+        XCTAssertNil(DoryVMMGuestDisplayScale.persistenceCommand(scaleFactor: 0))
+        XCTAssertNil(DoryVMMGuestDisplayScale.persistenceCommand(scaleFactor: 3))
+    }
+
     func testVZSSHAgentBridgeRejectsNonSocketSymlinkAndWrongOwner() throws {
         let root = "/tmp/dory-vz-ssh-\(getpid())-\(UInt32.random(in: 0...UInt32.max))"
         try FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: false)

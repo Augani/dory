@@ -565,6 +565,20 @@ enum DesktopMode {
                         directSocketPath: configuration.agentSocketPath
                     ))
                     let info = try control.info()
+                    if let display = configuration.resolvedDevices?.display {
+                        guard let command = DoryVMMGuestDisplayScale.persistenceCommand(
+                            scaleFactor: display.guestUIScaleFactor
+                        ) else {
+                            throw VMError.bootFailure(
+                                "resolved guest UI scale is not supported by Dory Tools"
+                            )
+                        }
+                        try requireSuccess(control.exec(
+                            argv: command,
+                            timeoutMs: 10_000,
+                            outputLimitBytes: 64 * 1_024
+                        ), operation: "persist guest UI scale")
+                    }
                     try requireSuccess(control.exec(
                         argv: ["/usr/lib/dory/configure-machine"],
                         env: configuration.environment.sorted(by: { $0.key < $1.key }).map {

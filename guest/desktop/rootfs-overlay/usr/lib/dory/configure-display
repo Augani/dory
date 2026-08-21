@@ -10,6 +10,26 @@ set_xfce_value() {
   fi
 }
 
+guest_ui_scale() {
+  local scale
+  scale="$(cat /var/lib/dory/guest-ui-scale 2>/dev/null || printf '2\n')"
+  case "$scale" in
+    1|2) printf '%s\n' "$scale" ;;
+    *) printf '2\n' ;;
+  esac
+}
+
+apply_gnome_scale() {
+  local scale="$1"
+  gsettings set org.gnome.desktop.interface scaling-factor "$scale"
+  gsettings set org.gnome.desktop.interface text-scaling-factor 1.0
+  gsettings set org.gnome.desktop.interface cursor-size "$((16 * scale))"
+}
+
+apply_xfce_scale() {
+  set_xfce_value /Gdk/WindowScalingFactor int "$1"
+}
+
 configure_gnome() {
   # GNOME autostart begins before Ubuntu's shell has finished loading its vendor defaults. Wait
   # until the shell is reachable so those defaults cannot overwrite Dory's display and launcher
@@ -28,9 +48,7 @@ configure_gnome() {
     done
   fi
 
-  gsettings set org.gnome.desktop.interface scaling-factor 2
-  gsettings set org.gnome.desktop.interface text-scaling-factor 1.0
-  gsettings set org.gnome.desktop.interface cursor-size 32
+  apply_gnome_scale "$(guest_ui_scale)"
   # Software scanout benefits from fewer compositor effects. Both qualified accelerated modes can
   # retain Ubuntu's normal motion without coupling the desktop policy to a particular renderer.
   if [ "$(cat /run/dory/graphics-backend 2>/dev/null || printf software)" != software ]; then
@@ -59,9 +77,18 @@ configure_gnome() {
 }
 
 follow_preferred_display_mode() {
-  local current_mode output_name preferred_mode snapshot
+  local desktop="$1" current_mode output_name preferred_mode snapshot
+  local applied_scale="" scale
 
   while :; do
+    scale="$(guest_ui_scale)"
+    if [[ "$scale" != "$applied_scale" ]]; then
+      case "$desktop" in
+        gnome) apply_gnome_scale "$scale" ;;
+        xfce) apply_xfce_scale "$scale" ;;
+      esac
+      applied_scale="$scale"
+    fi
     if snapshot="$(xrandr --query 2>/dev/null)"; then
       output_name="$(awk '$2 == "connected" { print $1; exit }' <<<"$snapshot")"
       preferred_mode="$(awk '$1 ~ /^[0-9]+x[0-9]+$/ && index($0, "+") { print $1; exit }' <<<"$snapshot")"
@@ -81,15 +108,15 @@ for _ in $(seq 1 100); do
       && gsettings writable org.gnome.desktop.interface scaling-factor 2>/dev/null \
       | grep -qx true; then
     configure_gnome
-    follow_preferred_display_mode
+    follow_preferred_display_mode gnome
   fi
   if xfconf-query --channel xsettings --list >/dev/null 2>&1; then
-    set_xfce_value /Gdk/WindowScalingFactor int 2
+    apply_xfce_scale "$(guest_ui_scale)"
     set_xfce_value /Xft/Antialias int 1
     set_xfce_value /Xft/Hinting int 1
     set_xfce_value /Xft/HintStyle string hintslight
     set_xfce_value /Xft/RGBA string rgb
-    follow_preferred_display_mode
+    follow_preferred_display_mode xfce
   fi
   sleep 0.1
 done

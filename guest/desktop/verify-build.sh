@@ -308,7 +308,7 @@ grep -Fq 'xrandr --output "$output_name" --mode "$preferred_mode"' <<<"$DISPLAY_
   || fail "dynamic desktop resizing is not configured"
 case "$DISTRO" in
   ubuntu)
-    grep -Fq 'gsettings set org.gnome.desktop.interface scaling-factor 2' <<<"$DISPLAY_CONFIGURATION" \
+    grep -Fq 'gsettings set org.gnome.desktop.interface scaling-factor "$scale"' <<<"$DISPLAY_CONFIGURATION" \
       || fail "GNOME Retina scaling is not configured"
     grep -Fq '/run/dory/graphics-backend' <<<"$DISPLAY_CONFIGURATION" \
       || fail "GNOME does not select effects based on the active graphics backend"
@@ -346,7 +346,7 @@ case "$DISTRO" in
     fi
     ;;
   *)
-    grep -Fq 'set_xfce_value /Gdk/WindowScalingFactor int 2' <<<"$DISPLAY_CONFIGURATION" \
+    grep -Fq 'apply_xfce_scale "$(guest_ui_scale)"' <<<"$DISPLAY_CONFIGURATION" \
       || fail "Xfce Retina scaling is not configured"
     grep -q $'^xfce4\t' "$PACKAGES" || fail "Xfce package provenance is missing"
     grep -q $'^lightdm\t' "$PACKAGES" || fail "LightDM package provenance is missing"
@@ -357,6 +357,10 @@ case "$DISTRO" in
     fi
     ;;
 esac
+grep -Fq '/var/lib/dory/guest-ui-scale' <<<"$DISPLAY_CONFIGURATION" \
+  || fail "the resolved guest UI scale is not consumed"
+grep -Fq 'apply_xfce_scale "$scale"' <<<"$DISPLAY_CONFIGURATION" \
+  || fail "Xfce does not refresh the resolved guest UI scale"
 grep -q $'^spice-vdagent\t' "$PACKAGES" || fail "SPICE package provenance is missing"
 grep -q $'^x11-utils\t' "$PACKAGES" || fail "X11 window qualification tools are missing"
 grep -q $'^wl-clipboard\t' "$PACKAGES" || fail "Wayland clipboard package provenance is missing"

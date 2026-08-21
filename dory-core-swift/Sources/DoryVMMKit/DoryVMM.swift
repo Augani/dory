@@ -1243,7 +1243,8 @@ public enum DoryVMMMain {
             from: agentConnection,
             displayMode: displayMode,
             environment: environment,
-            shares: shares
+            shares: shares,
+            resolvedDevices: resolvedDevices
         )
         // For the Docker VM, this handoff means VM + guest-agent readiness. doryd owns the next
         // ordered stages (data mount, route/resolver, dockerd /version, and host socket), so a VMM
@@ -1269,7 +1270,8 @@ public enum DoryVMMMain {
         from connection: VZVirtioSocketConnection,
         displayMode: DoryMachineDisplayMode,
         environment: [String: String],
-        shares: [DoryMachineShareConfiguration]
+        shares: [DoryMachineShareConfiguration],
+        resolvedDevices: DoryVirtualMachineDeviceCapabilityRequest?
     ) throws -> DoryAgentInfo {
         let fd = dup(connection.fileDescriptor)
         guard fd >= 0 else {
@@ -1279,6 +1281,21 @@ public enum DoryVMMMain {
         defer { control.close() }
         let info = try control.info()
         guard displayMode == .desktop else { return info }
+
+        if let display = resolvedDevices?.display {
+            guard let command = DoryVMMGuestDisplayScale.persistenceCommand(
+                scaleFactor: display.guestUIScaleFactor
+            ) else {
+                throw DoryVZMachineError.validation(
+                    "resolved guest UI scale is not supported by Dory Tools"
+                )
+            }
+            try requireSuccessfulDesktopExec(control.exec(
+                argv: command,
+                timeoutMs: 10_000,
+                outputLimitBytes: 64 * 1_024
+            ), operation: "persist guest UI scale")
+        }
 
         try requireSuccessfulDesktopExec(control.exec(
             argv: ["/usr/lib/dory/configure-machine"],
