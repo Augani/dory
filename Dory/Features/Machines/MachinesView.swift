@@ -615,6 +615,7 @@ private struct MachineEditSheet: View {
         var host = ""
         var guest = ""
         var readOnly = false
+        var shareTag: String? = nil
     }
 
     @State private var mountRows: [MountRow] = []
@@ -667,7 +668,9 @@ private struct MachineEditSheet: View {
         runtimePreference = typedSettings.runtimePreference ?? .automatic
         graphicsPreference = typedSettings.graphicsPreference ?? .automatic
         networkMode = typedSettings.networkMode ?? .sharedNAT
-        mountRows = settings.mounts.map { MountRow(host: $0.host, guest: $0.guest, readOnly: $0.readOnly) }
+        mountRows = settings.mounts.map {
+            MountRow(host: $0.host, guest: $0.guest, readOnly: $0.readOnly, shareTag: $0.shareTag)
+        }
     }
 
     private var header: some View {
@@ -958,7 +961,12 @@ private struct MachineEditSheet: View {
             let host = row.host.trimmingCharacters(in: .whitespaces)
             let guest = row.guest.trimmingCharacters(in: .whitespaces)
             guard !host.isEmpty, !guest.isEmpty else { return nil }
-            return MountPair(host: host, guest: guest, readOnly: row.readOnly)
+            return MountPair(
+                host: host,
+                guest: guest,
+                readOnly: row.readOnly,
+                shareTag: row.shareTag
+            )
         }
         typedSettings.networkMode = networkMode
         if displayMode == .desktop, machine.bootMode != .efi {
@@ -973,7 +981,8 @@ private struct MachineEditSheet: View {
                     return MountPair(
                         host: mount.host,
                         guest: updatedHome + String(mount.guest.dropFirst(previousHome.count)),
-                        readOnly: mount.readOnly
+                        readOnly: mount.readOnly,
+                        shareTag: mount.shareTag
                     )
                 }
             }

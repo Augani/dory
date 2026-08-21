@@ -5,6 +5,23 @@ import Testing
 
 @Suite(.serialized)
 struct DorydClientTests {
+    @Test func dorydSharesPreserveStableTagsAndAllocateAroundExistingIdentity() {
+        let mounts = [
+            MountPair(host: "/tmp/first", guest: "/workspace/first", shareTag: "doryapp0"),
+            MountPair(host: "/tmp/new-a", guest: "/workspace/new-a"),
+            MountPair(host: "/tmp/stable", guest: "/workspace/stable", shareTag: "project-src"),
+            MountPair(host: "/tmp/new-b", guest: "/workspace/new-b"),
+        ]
+
+        let shares = AppStore.dorydShares(from: mounts)
+
+        #expect(shares.map(\.tag) == ["doryapp0", "doryapp1", "project-src", "doryapp2"])
+        #expect(
+            AppStore.dorydShares(from: [mounts[2], mounts[0]]).map(\.tag)
+                == ["project-src", "doryapp0"]
+        )
+    }
+
     @MainActor
     @Test func machineTransferUsesPrivateStageAndRejectsMalformedEvidence() async throws {
         let root = URL(fileURLWithPath: "/tmp/dory-client-transfer-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))")
@@ -1329,7 +1346,12 @@ struct DorydClientTests {
         #expect(machine.memoryDisplay == "1 GB / 2 GB")
         #expect(machine.ip == "192.168.215.40")
         #expect(machine.displayMode == .desktop)
-        #expect(machine.mounts == [MountPair(host: "/Users/me/src", guest: "/workspace/src", readOnly: true)])
+        #expect(machine.mounts == [MountPair(
+            host: "/Users/me/src",
+            guest: "/workspace/src",
+            readOnly: true,
+            shareTag: "src"
+        )])
         #expect(machine.containerID.isEmpty)
         #expect(store.machineTerminalCommand(machine) == "dory machine shell dev")
         #expect(store.canUseMachineArtifacts(machine))
@@ -1426,7 +1448,12 @@ struct DorydClientTests {
         #expect(currentSettings.memoryMB == 2048)
         #expect(currentSettings.address == "192.168.215.40")
         #expect(currentSettings.displayMode == .desktop)
-        #expect(currentSettings.mounts == [MountPair(host: "/Users/me/src", guest: "/workspace/src", readOnly: true)])
+        #expect(currentSettings.mounts == [MountPair(
+            host: "/Users/me/src",
+            guest: "/workspace/src",
+            readOnly: true,
+            shareTag: "src"
+        )])
         #expect(currentSettings.env.isEmpty)
 
         store.toggleMachine(machine)
@@ -1467,7 +1494,11 @@ struct DorydClientTests {
             settings: MachineSettings(
                 cpus: 4,
                 memoryMB: 4096,
-                mounts: [MountPair(host: "/Users/me/app", guest: "/workspace/app")],
+                mounts: [MountPair(
+                    host: "/Users/me/app",
+                    guest: "/workspace/app",
+                    shareTag: "src"
+                )],
                 address: "192.168.215.41"
             )
         )
@@ -1483,6 +1514,7 @@ struct DorydClientTests {
         #expect(updateShares.first?["hostPath"] as? String == "/Users/me/app")
         #expect(updateShares.first?["guestPath"] as? String == "/workspace/app")
         #expect(updateShares.first?["readOnly"] as? Bool == false)
+        #expect(updateShares.first?["tag"] as? String == "src")
         #expect(service.latestMachineUpdateConfig?["env"] == nil)
 
         machine = try #require(store.machines.first { $0.name == "dev" })
@@ -1491,7 +1523,11 @@ struct DorydClientTests {
             settings: MachineSettings(
                 cpus: 4,
                 memoryMB: 4096,
-                mounts: [MountPair(host: "/Users/me/app", guest: "/workspace/app")],
+                mounts: [MountPair(
+                    host: "/Users/me/app",
+                    guest: "/workspace/app",
+                    shareTag: "src"
+                )],
                 address: ""
             )
         )

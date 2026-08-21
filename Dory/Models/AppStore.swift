@@ -5229,27 +5229,52 @@ final class AppStore {
     }
 
     nonisolated private static func mountPair(fromDoryd share: DorydMachineShareConfiguration) -> MountPair {
-        MountPair(host: share.hostPath, guest: share.guestPath, readOnly: share.readOnly)
+        MountPair(
+            host: share.hostPath,
+            guest: share.guestPath,
+            readOnly: share.readOnly,
+            shareTag: share.tag
+        )
     }
 
-    nonisolated private static func dorydShares(from mounts: [MountPair]) -> [DorydMachineShareConfiguration] {
-        mounts.enumerated().compactMap { index, mount in
+    nonisolated static func dorydShares(from mounts: [MountPair]) -> [DorydMachineShareConfiguration] {
+        var usedTags = Set(mounts.compactMap { mount -> String? in
+            let tag = mount.shareTag?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return tag?.isEmpty == false ? tag : nil
+        })
+        var nextGeneratedTag = 0
+        var shares: [DorydMachineShareConfiguration] = []
+
+        for mount in mounts {
             let host = mount.host.trimmingCharacters(in: .whitespacesAndNewlines)
             let guest = mount.guest.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !host.isEmpty, !guest.isEmpty else { return nil }
+            guard !host.isEmpty, !guest.isEmpty else { continue }
+            let explicitTag = mount.shareTag?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let tag: String
+            if let explicitTag, !explicitTag.isEmpty {
+                tag = explicitTag
+            } else {
+                while usedTags.contains("doryapp\(nextGeneratedTag)") {
+                    nextGeneratedTag += 1
+                }
+                tag = "doryapp\(nextGeneratedTag)"
+                nextGeneratedTag += 1
+                usedTags.insert(tag)
+            }
             let bookmark = try? URL(fileURLWithPath: host).bookmarkData(
                 options: [.minimalBookmark],
                 includingResourceValuesForKeys: [.fileResourceIdentifierKey, .volumeIdentifierKey],
                 relativeTo: nil
             )
-            return DorydMachineShareConfiguration(
-                tag: "doryapp\(index)",
+            shares.append(DorydMachineShareConfiguration(
+                tag: tag,
                 hostPath: host,
                 guestPath: guest,
                 readOnly: mount.readOnly,
                 authorizationBookmark: bookmark
-            )
+            ))
         }
+        return shares
     }
 
     func machineTerminalCommand(_ machine: Machine) -> String? {

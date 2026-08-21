@@ -1,6 +1,13 @@
 import Foundation
 
-nonisolated struct MountPair: Sendable, Hashable { var host: String; var guest: String; var readOnly: Bool = false }
+nonisolated struct MountPair: Sendable, Hashable {
+    var host: String
+    var guest: String
+    var readOnly: Bool = false
+    /// Stable daemon-owned VirtioFS share identity. New mounts leave this nil until their
+    /// first write assigns a collision-free tag; subsequent reads and edits preserve it.
+    var shareTag: String? = nil
+}
 nonisolated struct PortPair: Sendable, Hashable { var host: Int; var guest: Int }
 nonisolated enum MachineDisplayMode: String, Sendable, Hashable, CaseIterable {
     case headless
