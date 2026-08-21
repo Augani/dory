@@ -31,6 +31,17 @@ public protocol AgentControlClient: Sendable {
         remoteRoot: String,
         control: DoryPushControl
     ) throws -> DoryPushStats
+    func pull(
+        remoteRoot: String,
+        localRoot: String,
+        limits: DoryPullLimits
+    ) throws -> DoryPullStats
+    func pull(
+        remoteRoot: String,
+        localRoot: String,
+        limits: DoryPullLimits,
+        control: DoryPullControl
+    ) throws -> DoryPullStats
     func snapshotFreeze(receiptID: String) throws -> String
     func snapshotThaw(receiptID: String) throws
     func exec(
@@ -72,6 +83,30 @@ public extension AgentControlClient {
         _ = remoteRoot
         _ = control
         throw AgentControlError.capabilityUnavailable("sync-push-control")
+    }
+
+    func pull(
+        remoteRoot: String,
+        localRoot: String,
+        limits: DoryPullLimits
+    ) throws -> DoryPullStats {
+        _ = remoteRoot
+        _ = localRoot
+        _ = limits
+        throw AgentControlError.capabilityUnavailable("sync-pull")
+    }
+
+    func pull(
+        remoteRoot: String,
+        localRoot: String,
+        limits: DoryPullLimits,
+        control: DoryPullControl
+    ) throws -> DoryPullStats {
+        _ = remoteRoot
+        _ = localRoot
+        _ = limits
+        _ = control
+        throw AgentControlError.capabilityUnavailable("sync-pull-control")
     }
 
     func snapshotThaw(receiptID: String) throws {
@@ -169,6 +204,32 @@ public final class AgentControl: @unchecked Sendable {
         try client(requiring: "sync-push").push(
             localRoot: localRoot,
             remoteRoot: remoteRoot,
+            control: control
+        )
+    }
+
+    public func pull(
+        remoteRoot: String,
+        localRoot: String,
+        limits: DoryPullLimits = DoryPullLimits()
+    ) throws -> DoryPullStats {
+        try client(requiring: "sync-pull").pull(
+            remoteRoot: remoteRoot,
+            localRoot: localRoot,
+            limits: limits
+        )
+    }
+
+    public func pull(
+        remoteRoot: String,
+        localRoot: String,
+        limits: DoryPullLimits = DoryPullLimits(),
+        control: DoryPullControl
+    ) throws -> DoryPullStats {
+        try client(requiring: "sync-pull").pull(
+            remoteRoot: remoteRoot,
+            localRoot: localRoot,
+            limits: limits,
             control: control
         )
     }

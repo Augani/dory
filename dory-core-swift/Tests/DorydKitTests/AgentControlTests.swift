@@ -18,8 +18,8 @@ final class AgentControlTests: XCTestCase {
         let info = try control.info()
         XCTAssertEqual(info.agentBuild, "fake-agent")
         XCTAssertEqual(info.capabilities.map(\.id), [
-            "clock-sync", "exec", "exec-stdin", "ports-watch", "snapshot-quiesce", "sync-push",
-            "telemetry",
+            "clock-sync", "exec", "exec-stdin", "ports-watch", "snapshot-quiesce", "sync-pull",
+            "sync-push", "telemetry",
         ])
         XCTAssertEqual(counter.value, 1)
 
@@ -40,6 +40,26 @@ final class AgentControlTests: XCTestCase {
             DoryPushStats(filesSent: 1, bytesSent: 12, filesDeleted: 0)
         )
         XCTAssertEqual(fake.controlledPushes, 1)
+        let pullLimits = DoryPullLimits(maxFiles: 7, maxDirectories: 8, maxBytes: 9)
+        XCTAssertEqual(
+            try control.pull(
+                remoteRoot: "/guest/source",
+                localRoot: "/tmp/pulled",
+                limits: pullLimits
+            ),
+            DoryPullStats(filesReceived: 2, directoriesReceived: 1, bytesReceived: 12)
+        )
+        XCTAssertEqual(
+            try control.pull(
+                remoteRoot: "/guest/source",
+                localRoot: "/tmp/pulled",
+                limits: pullLimits,
+                control: DoryPullControl()
+            ),
+            DoryPullStats(filesReceived: 2, directoriesReceived: 1, bytesReceived: 12)
+        )
+        XCTAssertEqual(fake.controlledPulls, 1)
+        XCTAssertEqual(fake.pullLimits, [pullLimits, pullLimits])
         let receiptID = String(repeating: "a", count: 32)
         XCTAssertEqual(try control.snapshotFreeze(receiptID: receiptID), receiptID)
         try control.snapshotThaw(receiptID: receiptID)
@@ -128,6 +148,8 @@ private final class FakeAgentControlClient: AgentControlClient, @unchecked Senda
     private var closes = 0
     private var telemetryCallCount = 0
     private var controlledPushCallCount = 0
+    private var controlledPullCallCount = 0
+    private var receivedPullLimits: [DoryPullLimits] = []
     private var freezeReceipts: [String] = []
     private var thawReceipts: [String] = []
 
@@ -139,6 +161,7 @@ private final class FakeAgentControlClient: AgentControlClient, @unchecked Senda
             DoryAgentCapability(id: "exec-stdin", version: 1),
             DoryAgentCapability(id: "ports-watch", version: 1),
             DoryAgentCapability(id: "snapshot-quiesce", version: 2),
+            DoryAgentCapability(id: "sync-pull", version: 1),
             DoryAgentCapability(id: "sync-push", version: 1),
             DoryAgentCapability(id: "telemetry", version: 1),
         ]
@@ -169,6 +192,18 @@ private final class FakeAgentControlClient: AgentControlClient, @unchecked Senda
         lock.lock()
         defer { lock.unlock() }
         return controlledPushCallCount
+    }
+
+    var controlledPulls: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return controlledPullCallCount
+    }
+
+    var pullLimits: [DoryPullLimits] {
+        lock.lock()
+        defer { lock.unlock() }
+        return receivedPullLimits
     }
 
     var snapshotFreezeReceipts: [String] {
@@ -243,6 +278,32 @@ private final class FakeAgentControlClient: AgentControlClient, @unchecked Senda
         controlledPushCallCount += 1
         lock.unlock()
         return try push(localRoot: localRoot, remoteRoot: remoteRoot)
+    }
+
+    func pull(
+        remoteRoot: String,
+        localRoot: String,
+        limits: DoryPullLimits
+    ) throws -> DoryPullStats {
+        XCTAssertEqual(remoteRoot, "/guest/source")
+        XCTAssertEqual(localRoot, "/tmp/pulled")
+        lock.lock()
+        receivedPullLimits.append(limits)
+        lock.unlock()
+        return DoryPullStats(filesReceived: 2, directoriesReceived: 1, bytesReceived: 12)
+    }
+
+    func pull(
+        remoteRoot: String,
+        localRoot: String,
+        limits: DoryPullLimits,
+        control: DoryPullControl
+    ) throws -> DoryPullStats {
+        _ = control
+        lock.lock()
+        controlledPullCallCount += 1
+        lock.unlock()
+        return try pull(remoteRoot: remoteRoot, localRoot: localRoot, limits: limits)
     }
 
     func snapshotThaw(receiptID: String) throws {
