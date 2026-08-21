@@ -1399,7 +1399,17 @@ public enum DoryAppleSiliconCapabilityEvaluator {
                     message: "The selected backend does not implement disconnected networking."
                 )
             }
-        case .bridged, .isolated:
+        case .isolated:
+            guard request.guest.family == .linux,
+                  request.backend == .appleVirtualizationFramework
+                    || request.backend == .doryHypervisor else {
+                return unavailable(
+                    tier: tier,
+                    code: .networkAttachmentUnsupported,
+                    message: "The selected backend does not implement host-only networking."
+                )
+            }
+        case .bridged:
             return unavailable(
                 tier: tier,
                 code: .networkAttachmentUnsupported,

@@ -359,6 +359,18 @@ struct DoryMachineTypedWriteAuthorityTests {
         #expect(patch.xpcDictionary["env"] == nil)
     }
 
+    @Test("CLI presents host-only while preserving the historical isolated wire identity")
+    func cliHostOnlyAlias() throws {
+        var arguments = ["--network", "host-only"]
+        let patch = try DoryMachineTypedSettingsPatch.consumeCLIArguments(
+            &arguments,
+            allowsClears: false
+        )
+        #expect(patch.networkMode == .set(.isolated))
+        #expect(patch.xpcDictionary["networkMode"] as? String == "isolated")
+        #expect(arguments.isEmpty)
+    }
+
     @Test("CLI clear groups are explicit and conflict with replacement values")
     func cliClearSemantics() throws {
         var clearing = [

@@ -177,6 +177,8 @@ public enum DoryVMNetworkMode: String, Codable, Sendable, CaseIterable {
     case disconnected
     case sharedNAT = "shared-nat"
     case bridged
+    /// Deterministic host-only connectivity. The historical wire value remains `isolated` so
+    /// existing schema-v2/v3 definitions and canonical plan digests stay readable.
     case isolated
 }
 

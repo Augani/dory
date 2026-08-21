@@ -376,7 +376,10 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
             patch.graphicsPreference = .set(preference)
         }
         if let raw = try takeOption("--network", from: &arguments) {
-            guard let mode = DoryVMNetworkMode(rawValue: raw) else {
+            let mode = raw == "host-only"
+                ? DoryVMNetworkMode.isolated
+                : DoryVMNetworkMode(rawValue: raw)
+            guard let mode else {
                 throw DoryMachineTypedWriteAuthorityError.invalidField("--network")
             }
             patch.networkMode = .set(mode)

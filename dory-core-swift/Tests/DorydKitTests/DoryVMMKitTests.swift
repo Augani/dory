@@ -348,6 +348,13 @@ final class DoryVMMKitTests: XCTestCase {
         )
     }
 
+    func testHostOnlyGVProxyPlanDisablesExternalConnectivity() {
+        let plan = DoryVMMNativeIPv6Plan(hostOnly: true)
+        XCTAssertTrue(plan.gvproxyYAML.contains("connectivity: host-only"))
+        XCTAssertTrue(plan.gvproxyYAML.contains("192.168.127.254\": \"127.0.0.1"))
+        XCTAssertTrue(plan.gvproxyYAML.contains("\"fd7d:6f72:7900::1\": \"::1\""))
+    }
+
     func testExitAfterHandoffKeepsContractShimMode() throws {
         let arguments = try parseDoryVMMArguments([
             "--machine-id", "dev",
@@ -513,6 +520,58 @@ final class DoryVMMKitTests: XCTestCase {
         )
         XCTAssertEqual(configuration.socketDevices.count, 1)
         XCTAssertEqual(configuration.storageDevices.count, 1)
+    }
+
+    func testHostOnlyVZConfigurationRequiresFileHandleDatapath() throws {
+        let base = "/tmp/dory-vmm-host-only-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let kernel = "\(base)/vmlinux"
+        let rootfs = "\(base)/rootfs.raw"
+        XCTAssertTrue(FileManager.default.createFile(
+            atPath: kernel,
+            contents: Data([0x7f, 0x45, 0x4c, 0x46])
+        ))
+        XCTAssertTrue(FileManager.default.createFile(atPath: rootfs, contents: nil))
+        XCTAssertEqual(truncate(rootfs, 1_024 * 1_024), 0)
+        let spec = DoryVZMachineSpec(
+            machineID: "host-only",
+            stateDirectory: base,
+            kernelPath: kernel,
+            rootfsPath: rootfs,
+            memoryMB: 2_048,
+            cpuCount: 2,
+            resolvedDevices: .init(networkAttachment: .isolated),
+            nativeIPv6: true
+        )
+
+        XCTAssertThrowsError(try DoryVZConfigurationBuilder.makeConfiguration(
+            spec: spec,
+            serialOutput: nil,
+            networkAttachment: VZNATNetworkDeviceAttachment()
+        )) { error in
+            XCTAssertTrue("\(error)".contains("restricted gvproxy attachment"))
+        }
+
+        var descriptors = [Int32](repeating: -1, count: 2)
+        XCTAssertEqual(socketpair(AF_UNIX, SOCK_DGRAM, 0, &descriptors), 0)
+        let guestNetworkHandle = FileHandle(fileDescriptor: descriptors[0], closeOnDealloc: true)
+        let peerHandle = FileHandle(fileDescriptor: descriptors[1], closeOnDealloc: true)
+        defer {
+            try? guestNetworkHandle.close()
+            try? peerHandle.close()
+        }
+        let attachment = VZFileHandleNetworkDeviceAttachment(fileHandle: guestNetworkHandle)
+        let configuration = try DoryVZConfigurationBuilder.makeConfiguration(
+            spec: spec,
+            serialOutput: nil,
+            networkAttachment: attachment
+        )
+        let network = try XCTUnwrap(
+            configuration.networkDevices.first as? VZVirtioNetworkDeviceConfiguration
+        )
+        XCTAssertTrue(network.attachment is VZFileHandleNetworkDeviceAttachment)
+        XCTAssertEqual(network.macAddress.string, DoryVMMNativeIPv6Plan.guestMAC)
     }
 
     func testEFIProfileSeparatesInstallerAndInstalledFirmwareAndAttachesISOReadOnly() throws {

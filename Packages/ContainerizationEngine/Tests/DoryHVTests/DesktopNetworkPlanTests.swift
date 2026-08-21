@@ -27,16 +27,21 @@ import Testing
         #expect(plan.attachesNetworkDevice)
     }
 
-    @Test func unimplementedNetworkModesFailClosed() {
-        for mode in [
-            DoryVirtualMachineNetworkAttachmentMode.bridged,
-            .isolated,
-        ] {
-            #expect(throws: VMError.self) {
-                _ = try DesktopMode.NetworkPlan(
-                    resolvedDevices: .init(networkAttachment: mode)
-                )
-            }
+    @Test func isolatedUsesHostOnlyGVProxyWithoutExternalConnectivity() throws {
+        let plan = try DesktopMode.NetworkPlan(
+            resolvedDevices: .init(networkAttachment: .isolated)
+        )
+        #expect(plan == .hostOnly)
+        #expect(plan.startsGVProxy)
+        #expect(plan.attachesNetworkDevice)
+        #expect(plan.gvproxyConfigurationYAML?.contains("connectivity: host-only") == true)
+    }
+
+    @Test func bridgedFailsClosedUntilQualified() {
+        #expect(throws: VMError.self) {
+            _ = try DesktopMode.NetworkPlan(
+                resolvedDevices: .init(networkAttachment: .bridged)
+            )
         }
     }
 }

@@ -818,6 +818,14 @@ struct VirtualMachineCapabilitiesTests {
             graphics: .software,
             devices: DoryVirtualMachineDeviceCapabilityRequest(networkAttachment: .disconnected)
         )
+        let hostOnly = evaluate(
+            family: .linux,
+            media: .virtualDisk,
+            source: .userProvided,
+            backend: .appleVirtualizationFramework,
+            graphics: .software,
+            devices: DoryVirtualMachineDeviceCapabilityRequest(networkAttachment: .isolated)
+        )
         let qualifiedVZSharing = evaluate(
             family: .linux,
             media: .virtualDisk,
@@ -839,6 +847,8 @@ struct VirtualMachineCapabilitiesTests {
         )
         var qualifiedRawDisconnectedDevices = qualifiedRawDesktopDevices
         qualifiedRawDisconnectedDevices.networkAttachment = .disconnected
+        var qualifiedRawHostOnlyDevices = qualifiedRawDesktopDevices
+        qualifiedRawHostOnlyDevices.networkAttachment = .isolated
         let qualifiedRawDesktop = evaluate(
             family: .linux,
             media: .installedLinuxBootBundle,
@@ -857,6 +867,15 @@ struct VirtualMachineCapabilitiesTests {
             mediaArtifactSHA256: Self.guestArtifactSHA256,
             devices: qualifiedRawDisconnectedDevices
         )
+        let qualifiedRawHostOnly = evaluate(
+            family: .linux,
+            media: .installedLinuxBootBundle,
+            source: .userProvided,
+            backend: .doryHypervisor,
+            graphics: .hostAcceleratedDisplay,
+            mediaArtifactSHA256: Self.guestArtifactSHA256,
+            devices: qualifiedRawHostOnlyDevices
+        )
         let unsupportedAudioShape = evaluate(
             family: .linux,
             media: .installedLinuxBootBundle,
@@ -870,12 +889,16 @@ struct VirtualMachineCapabilitiesTests {
         #expect(resolved.resolvedDevices == .minimumBootable)
         #expect(disconnected.availability.isUsable)
         #expect(disconnected.resolvedDevices?.networkAttachment == .disconnected)
+        #expect(hostOnly.availability.isUsable)
+        #expect(hostOnly.resolvedDevices?.networkAttachment == .isolated)
         #expect(qualifiedVZSharing.availability.isUsable)
         #expect(qualifiedVZSharing.resolvedDevices?.directorySharing == true)
         #expect(qualifiedRawDesktop.availability.isUsable)
         #expect(qualifiedRawDesktop.resolvedDevices == qualifiedRawDesktopDevices)
         #expect(qualifiedRawDisconnected.availability.isUsable)
         #expect(qualifiedRawDisconnected.resolvedDevices == qualifiedRawDisconnectedDevices)
+        #expect(qualifiedRawHostOnly.availability.isUsable)
+        #expect(qualifiedRawHostOnly.resolvedDevices == qualifiedRawHostOnlyDevices)
         #expect(unsupportedAudioShape.availability.reason?.code == .audioOutputUnsupported)
     }
 

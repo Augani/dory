@@ -1,5 +1,6 @@
 import Darwin
 import DoryCore
+import DoryOperations
 import Foundation
 @preconcurrency import Virtualization
 
@@ -13,10 +14,13 @@ struct DoryVMMNativeIPv6Plan: Sendable, Equatable {
     static let hostGateway = "fd7d:6f72:7900::1"
     static let guestMAC = "5a:94:ef:e4:0c:ee"
 
+    var hostOnly = false
+
     var gvproxyYAML: String {
-        """
+        let connectivity = hostOnly ? "  connectivity: host-only\n" : ""
+        return """
         stack:
-          ipv6Subnet: \(Self.virtualNetwork)
+        \(connectivity)  ipv6Subnet: \(Self.virtualNetwork)
           ipv6GatewayIP: \(Self.hostGateway)
           nat:
             "192.168.127.254": "127.0.0.1"
@@ -55,9 +59,19 @@ final class DoryVMMGVProxyNetwork: @unchecked Sendable {
     private let lock = NSLock()
     private var stopped = false
 
-    init(gvproxyPath: String, stateDirectory: String, sourcePreservingLAN: Bool = false) throws {
+    init(
+        gvproxyPath: String,
+        stateDirectory: String,
+        networkAttachment: DoryVirtualMachineNetworkAttachmentMode = .sharedNAT,
+        sourcePreservingLAN: Bool = false
+    ) throws {
         guard FileManager.default.isExecutableFile(atPath: gvproxyPath) else {
             throw DoryVZMachineError.missingFile(gvproxyPath)
+        }
+        guard networkAttachment == .sharedNAT || networkAttachment == .isolated else {
+            throw DoryVZMachineError.validation(
+                "gvproxy implements only shared-NAT and host-only network attachments"
+            )
         }
         try FileManager.default.createDirectory(atPath: stateDirectory, withIntermediateDirectories: true)
 
@@ -71,7 +85,7 @@ final class DoryVMMGVProxyNetwork: @unchecked Sendable {
             try Self.validateUnixPath(path)
             unlink(path)
         }
-        try DoryVMMNativeIPv6Plan().gvproxyYAML.write(
+        try DoryVMMNativeIPv6Plan(hostOnly: networkAttachment == .isolated).gvproxyYAML.write(
             toFile: configurationPath,
             atomically: true,
             encoding: .utf8

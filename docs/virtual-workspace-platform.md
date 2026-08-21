@@ -512,10 +512,15 @@ Each NIC has a stable MAC, MTU, DNS policy, address policy, firewall/ingress pol
 Port forwards are resources with conflict detection and lifecycle reconciliation. Network changes
 must survive host sleep, Wi-Fi/interface changes, VPN route changes, and daemon restarts.
 
-The first adapter continues to use the provenance-pinned `gvproxy` launch path in
+The Linux VZ and raw-HV adapters use the provenance-pinned `gvproxy` launch path in
 [`GVProxyDesktopLaunchPlan`](../Packages/ContainerizationEngine/Sources/DoryHV/GVProxyDesktopLaunchPlan.swift)
-and existing Dory DNS/routing. Bridged and host-only modes remain unavailable until an adapter
-reports and passes those capabilities; the UI must not imply that NAT is bridged networking.
+and existing Dory DNS/routing. Shared/NAT, host-only, and disconnected are exact resolved device
+contracts on both adapters. Host-only uses the audited `host-only-connectivity-v1` gvproxy policy:
+guest TCP/UDP cannot open arbitrary host-network sockets, upstream DNS resolution is disabled, and
+only explicit virtual-host mappings remain reachable. The historical schema value `isolated` is
+retained on the wire for compatibility while product surfaces call it **Host-only**. Bridged mode
+remains unavailable until an adapter and physical-host qualification prove it; the UI must not
+imply that NAT or host-only is bridged networking.
 
 ### Display and graphics
 

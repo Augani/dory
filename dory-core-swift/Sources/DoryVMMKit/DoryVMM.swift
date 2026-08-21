@@ -379,6 +379,7 @@ public enum DoryVZConfigurationBuilder {
         }
         if let devices = spec.resolvedDevices {
             guard devices.networkAttachment == .sharedNAT
+                    || devices.networkAttachment == .isolated
                     || devices.networkAttachment == .disconnected else {
                 throw DoryVZMachineError.validation(
                     "resolved device contract contains a device not implemented by this VZ launch"
@@ -388,6 +389,12 @@ public enum DoryVZConfigurationBuilder {
                networkAttachment != nil || spec.nativeIPv6 {
                 throw DoryVZMachineError.validation(
                     "disconnected networking cannot attach a host network backend"
+                )
+            }
+            if devices.networkAttachment == .isolated,
+               !(networkAttachment is VZFileHandleNetworkDeviceAttachment) || !spec.nativeIPv6 {
+                throw DoryVZMachineError.validation(
+                    "host-only networking requires the restricted gvproxy attachment"
                 )
             }
             guard devices.directorySharing == !spec.shares.isEmpty else {
@@ -1081,16 +1088,24 @@ public enum DoryVMMMain {
         } else {
             dataDrive = nil
         }
+        let requestedNetwork = resolvedDevices?.networkAttachment ?? .sharedNAT
+        let usesGVProxy = machineID == "docker" || requestedNetwork == .isolated
         let gvproxyNetwork: DoryVMMGVProxyNetwork?
-        if machineID == "docker" {
+        if usesGVProxy, requestedNetwork != .disconnected {
             guard let gvproxyPath else { throw DoryVMMArgumentError.missingGVProxy }
             guard publishHost == "127.0.0.1" || publishHost == "0.0.0.0" else {
                 throw DoryVMMArgumentError.invalidPublishHost(publishHost)
             }
+            if requestedNetwork == .isolated, publishHost != "127.0.0.1" {
+                throw DoryVZMachineError.validation(
+                    "host-only networking cannot publish a source-preserving LAN route"
+                )
+            }
             gvproxyNetwork = try DoryVMMGVProxyNetwork(
                 gvproxyPath: gvproxyPath,
                 stateDirectory: stateDirectory,
-                sourcePreservingLAN: publishHost == "0.0.0.0"
+                networkAttachment: requestedNetwork,
+                sourcePreservingLAN: requestedNetwork == .sharedNAT && publishHost == "0.0.0.0"
             )
         } else {
             gvproxyNetwork = nil

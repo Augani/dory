@@ -919,6 +919,7 @@ final class DorydConfigurationTests: XCTestCase {
         )
         let accelerated = try XCTUnwrap(supported.machineManagerConfiguration())
         XCTAssertEqual(accelerated.acceleratedDesktopExecutablePath, hv)
+        XCTAssertEqual(accelerated.baseArguments, ["--gvproxy", gvproxy])
         XCTAssertEqual(accelerated.acceleratedDesktopBaseArguments, ["desktop", "--gvproxy", gvproxy])
 
         let disabled = DorydEnvironment(

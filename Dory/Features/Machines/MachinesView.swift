@@ -1227,6 +1227,7 @@ private struct MachineEditSheet: View {
             sectionLabel("NETWORK")
             Picker("Network", selection: $networkMode) {
                 Text("Shared NAT").tag(DoryVMNetworkMode.sharedNAT)
+                Text("Host-only").tag(DoryVMNetworkMode.isolated)
                 Text("Disconnected").tag(DoryVMNetworkMode.disconnected)
             }
             .labelsHidden()
@@ -1234,7 +1235,9 @@ private struct MachineEditSheet: View {
             .accessibilityIdentifier("edit-machine-network-mode")
             Text(networkMode == .disconnected
                  ? "Disconnected keeps the virtual adapter present with its link down."
-                 : "Shared NAT provides outbound access through your Mac without exposing the machine directly.")
+                 : networkMode == .isolated
+                    ? "Host-only allows private Mac-to-machine connectivity with no external route."
+                    : "Shared NAT provides outbound access through your Mac without exposing the machine directly.")
                 .font(.system(size: 11)).foregroundStyle(p.text3)
         }
     }

@@ -275,12 +275,20 @@ public struct DorydEnvironment: Sendable {
             guard let drive = dataDrive() else { return nil }
             stateDirectory = drive.machinesDirectory
         }
+        var baseArguments = splitArguments(string("DORYD_VMM_ARGS") ?? "")
+        if !baseArguments.contains("--gvproxy"),
+           let gvproxy = executablePath(
+            firstOf: ["DORYD_GVPROXY", "DORY_GVPROXY"],
+            fallbackCandidates: gvproxyCandidates()
+           ) {
+            baseArguments.append(contentsOf: ["--gvproxy", gvproxy])
+        }
         return MachineManagerConfiguration(
             vmmExecutablePath: helper,
             acceleratedDesktopExecutablePath: acceleratedDesktop?.executablePath,
             stateDirectory: stateDirectory,
             runtimeDirectory: string("DORYD_MACHINE_RUNTIME_DIR") ?? "\(home)/.dory/machines",
-            baseArguments: splitArguments(string("DORYD_VMM_ARGS") ?? ""),
+            baseArguments: baseArguments,
             acceleratedDesktopBaseArguments: acceleratedDesktop?.arguments ?? [],
             passMachineArguments: bool("DORYD_VMM_PASS_MACHINE_ARGS", default: true),
             logDirectory: string("DORYD_MACHINE_LOG_DIR") ?? "\(stateDirectory)/logs",

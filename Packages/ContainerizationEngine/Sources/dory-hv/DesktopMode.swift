@@ -31,6 +31,7 @@ enum DesktopMode {
 
     enum NetworkPlan: Equatable {
         case sharedNAT
+        case hostOnly
         case disconnected
 
         init(resolvedDevices: DoryVirtualMachineDeviceCapabilityRequest?) throws {
@@ -39,15 +40,20 @@ enum DesktopMode {
                 self = .sharedNAT
             case .disconnected:
                 self = .disconnected
-            case .bridged, .isolated:
+            case .isolated:
+                self = .hostOnly
+            case .bridged:
                 throw VMError.bootFailure(
                     "resolved device contract contains a network mode not implemented by raw-HV"
                 )
             }
         }
 
-        var startsGVProxy: Bool { self == .sharedNAT }
+        var startsGVProxy: Bool { self != .disconnected }
         var attachesNetworkDevice: Bool { true }
+        var gvproxyConfigurationYAML: String? {
+            self == .hostOnly ? GVProxyDesktopLaunchPlan.hostOnlyConfigurationYAML : nil
+        }
     }
 
     struct DisplayPlan: Equatable {
@@ -662,15 +668,23 @@ enum DesktopMode {
             let gvproxySocket = "\(runtimeDirectory)/\(token)-gv.sock"
             let vmNetworkSocket = "\(runtimeDirectory)/\(token)-vm.sock"
             let apiSocket = "\(runtimeDirectory)/\(token)-api.sock"
+            let configurationPath = plan.gvproxyConfigurationYAML.map { _ in
+                "\(runtimeDirectory)/\(token)-network.yaml"
+            }
             let socketPaths = [gvproxySocket, vmNetworkSocket, apiSocket]
+                + [configurationPath].compactMap { $0 }
             for path in socketPaths { unlink(path) }
+            if let configurationPath, let yaml = plan.gvproxyConfigurationYAML {
+                try yaml.write(toFile: configurationPath, atomically: true, encoding: .utf8)
+            }
 
             let process = Process()
             process.executableURL = URL(fileURLWithPath: gvproxyPath)
             process.arguments = GVProxyDesktopLaunchPlan.arguments(
                 mtu: DoryNetworkMTU.resolved(),
                 datapathSocket: gvproxySocket,
-                apiSocket: apiSocket
+                apiSocket: apiSocket,
+                configurationPath: configurationPath
             )
             process.standardOutput = FileHandle.standardError
             process.standardError = FileHandle.standardError
