@@ -511,6 +511,25 @@ public final class DorydService: NSObject, DorydControl {
         }
     }
 
+    public func machineTransferCurrent(
+        _ machineID: String,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        guard let machineManager else {
+            reply(false, [:], "machine manager is not configured")
+            return
+        }
+        let operation = machineManager.currentStagedFileTransferStatus(id: machineID)
+        var body: [String: Any] = [
+            "schema": UInt16(1),
+            "active": operation != nil,
+        ]
+        if let operation {
+            body["operation"] = operation.xpcDictionary
+        }
+        reply(true, body as NSDictionary, "")
+    }
+
     public func machineTransferCancel(
         _ machineID: String,
         operationID: String,

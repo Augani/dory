@@ -82,6 +82,36 @@ struct DorydClientTests {
         #expect(service.latestMachineTransferStartRequest?["privateStagingRoot"] as? String == staged.rootPath)
         #expect(service.latestMachineTransferStartRequest?["schema"] as? UInt16 == 2)
 
+        service.setMachineTransferCurrentResponse([
+            "schema": UInt16(1),
+            "active": true,
+            "operation": service.machineTransferOperationResponse(
+                operationID: started.operationID,
+                phase: "transferring"
+            ),
+        ])
+        let current = try #require(try await client.machineTransferCurrent("dev"))
+        #expect(current.operationID == started.operationID)
+        #expect(current.phase == .transferring)
+
+        service.setMachineTransferCurrentResponse([
+            "schema": UInt16(1),
+            "active": false,
+        ])
+        #expect(try await client.machineTransferCurrent("dev") == nil)
+        service.setMachineTransferCurrentResponse([
+            "schema": UInt16(1),
+            "active": false,
+            "operation": service.machineTransferOperationResponse(
+                operationID: started.operationID,
+                phase: "transferring"
+            ),
+        ])
+        await #expect(throws: (any Error).self) {
+            _ = try await client.machineTransferCurrent("dev")
+        }
+        service.setMachineTransferCurrentResponse(nil)
+
         let completed = try await client.machineTransferStatus(
             "dev",
             operationID: started.operationID
@@ -2784,6 +2814,7 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     private var _latestMachineTransferStartRequest: NSDictionary?
     private var _machineTransferResponseOverride: NSDictionary?
     private var _machineTransferOperationResponseOverride: NSDictionary?
+    private var _machineTransferCurrentResponseOverride: NSDictionary?
     private var _machineTransferCancelCount = 0
     private var runtimeIdentityOverride: NSDictionary?
     private var artifactEvidenceOverride: NSDictionary?
@@ -2820,6 +2851,11 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     func setMachineTransferOperationResponse(_ response: NSDictionary?) {
         lock.lock(); defer { lock.unlock() }
         _machineTransferOperationResponseOverride = response
+    }
+
+    func setMachineTransferCurrentResponse(_ response: NSDictionary?) {
+        lock.lock(); defer { lock.unlock() }
+        _machineTransferCurrentResponseOverride = response
     }
 
     func machineTransferOperationResponse(
@@ -3386,6 +3422,21 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
                 machineID: machineID,
                 phase: "completed"
             ),
+            ""
+        )
+    }
+
+    func machineTransferCurrent(
+        _ machineID: String,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        _ = machineID
+        lock.lock()
+        let override = _machineTransferCurrentResponseOverride
+        lock.unlock()
+        reply(
+            true,
+            override ?? ["schema": UInt16(1), "active": false],
             ""
         )
     }

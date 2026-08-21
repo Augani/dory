@@ -1866,6 +1866,19 @@ final class DorydServiceTests: XCTestCase {
         XCTAssertEqual(asyncResult["bytesSent"] as? UInt64, 7)
         XCTAssertFalse(completedBody.description.contains(staging))
 
+        let currentCompleted = expectation(description: "machineTransferCurrent inactive reply")
+        proxy.machineTransferCurrent("dev") { ok, body, message in
+            XCTAssertTrue(ok, message)
+            XCTAssertEqual(
+                Set(body.allKeys.compactMap { $0 as? String }),
+                ["schema", "active"]
+            )
+            XCTAssertEqual((body["schema"] as? NSNumber)?.uint16Value, 1)
+            XCTAssertEqual(body["active"] as? Bool, false)
+            currentCompleted.fulfill()
+        }
+        wait(for: [currentCompleted], timeout: 5)
+
         let cancelCompleted = expectation(description: "machineTransferCancel terminal reply")
         proxy.machineTransferCancel("dev", operationID: operationID) { ok, body, message in
             XCTAssertTrue(ok, message)

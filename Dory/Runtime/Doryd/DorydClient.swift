@@ -27,6 +27,7 @@ nonisolated protocol DorydControlXPC {
     func machineExec(_ machineID: String, request: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineTransfer(_ machineID: String, request: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineTransferStart(_ machineID: String, request: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void)
+    func machineTransferCurrent(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineTransferStatus(_ machineID: String, operationID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineTransferCancel(_ machineID: String, operationID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineProvision(_ machineID: String, request: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void)
@@ -1052,6 +1053,10 @@ nonisolated struct DorydMachineFileTransferOperation: Sendable, Equatable {
     }
 }
 
+nonisolated private struct DorydMachineFileTransferCurrent: Sendable {
+    var operation: DorydMachineFileTransferOperation?
+}
+
 nonisolated struct DorydRemoteMachineStatus: Sendable, Equatable {
     var id: String
     var state: String
@@ -1537,6 +1542,19 @@ nonisolated final class DorydClient: @unchecked Sendable {
             }
             return operation
         }
+    }
+
+    func machineTransferCurrent(
+        _ machineID: String
+    ) async throws -> DorydMachineFileTransferOperation? {
+        let current: DorydMachineFileTransferCurrent = try await withTimeout(
+            atLeast: 10
+        ).statusCommand { proxy, reply in
+            proxy.machineTransferCurrent(machineID, reply: reply)
+        } decode: { dictionary in
+            Self.machineFileTransferCurrent(from: dictionary, machineID: machineID)
+        }
+        return current.operation
     }
 
     func machineTransferCancel(
@@ -2886,6 +2904,31 @@ nonisolated final class DorydClient: @unchecked Sendable {
             result: result,
             failure: failure
         )
+    }
+
+    nonisolated private static func machineFileTransferCurrent(
+        from dictionary: NSDictionary,
+        machineID: String
+    ) -> DorydMachineFileTransferCurrent? {
+        guard let keys = dictionary.allKeys as? [String],
+              keys.count == dictionary.allKeys.count,
+              strictUInt64(dictionary["schema"]) == 1,
+              let activeNumber = dictionary["active"] as? NSNumber,
+              CFGetTypeID(activeNumber) == CFBooleanGetTypeID() else {
+            return nil
+        }
+        if activeNumber.boolValue {
+            guard Set(keys) == ["schema", "active", "operation"],
+                  let row = dictionary["operation"] as? NSDictionary,
+                  let operation = machineFileTransferOperation(from: row),
+                  operation.machineID == machineID,
+                  !operation.phase.isTerminal else {
+                return nil
+            }
+            return DorydMachineFileTransferCurrent(operation: operation)
+        }
+        guard Set(keys) == ["schema", "active"] else { return nil }
+        return DorydMachineFileTransferCurrent(operation: nil)
     }
 
     nonisolated private static func isValidMachineTransferOperationID(_ value: String) -> Bool {

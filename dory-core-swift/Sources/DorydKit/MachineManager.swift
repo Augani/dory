@@ -5157,6 +5157,24 @@ public final class MachineManager: @unchecked Sendable {
         return operation.status()
     }
 
+    /// Returns the one active transfer for a machine so a reconnecting app can resume polling
+    /// without retaining an operation identifier across process lifetime. Terminal history is not
+    /// rediscovered: it remains available only through the exact operation-ID status endpoint.
+    public func currentStagedFileTransferStatus(
+        id: String
+    ) -> DoryMachineFileTransferOperationStatus? {
+        fileTransferLock.lock()
+        pruneFileTransferOperationsLocked(now: Date())
+        guard let operationID = activeFileTransferByMachine[id],
+              let operation = fileTransferOperations[operationID] else {
+            activeFileTransferByMachine.removeValue(forKey: id)
+            fileTransferLock.unlock()
+            return nil
+        }
+        fileTransferLock.unlock()
+        return operation.status()
+    }
+
     public func cancelStagedFileTransfer(
         id: String,
         operationID: String

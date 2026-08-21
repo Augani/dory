@@ -171,6 +171,10 @@ final class MachineManagerFileTransferTests: XCTestCase {
             privateStagingRoot: fixture.stagingRoot
         )
         XCTAssertTrue(fixture.agent.waitForControlledPush())
+        XCTAssertEqual(
+            fixture.manager.currentStagedFileTransferStatus(id: "desktop")?.operationID,
+            started.operationID
+        )
         XCTAssertThrowsError(try fixture.manager.beginStagedFileTransfer(
             id: "desktop",
             privateStagingRoot: fixture.stagingRoot
@@ -212,6 +216,7 @@ final class MachineManagerFileTransferTests: XCTestCase {
         XCTAssertFalse(fixture.agent.execs.contains { $0.argv.first == "/bin/chown" })
         let claimedRoot = try XCTUnwrap(fixture.agent.pushes.first?.localRoot)
         XCTAssertFalse(FileManager.default.fileExists(atPath: claimedRoot))
+        XCTAssertNil(fixture.manager.currentStagedFileTransferStatus(id: "desktop"))
     }
 
     func testAsynchronousTransferFailureUsesStableSafeEvidence() throws {
