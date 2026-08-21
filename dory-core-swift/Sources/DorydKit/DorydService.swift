@@ -417,6 +417,44 @@ public final class DorydService: NSObject, DorydControl {
         }
     }
 
+    public func machineTransfer(
+        _ machineID: String,
+        request: NSDictionary,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        guard let machineManager else {
+            reply(false, [:], "machine manager is not configured")
+            return
+        }
+        let parsedRequest: MachineTransferRequest
+        do {
+            parsedRequest = try MachineTransferRequest(xpcDictionary: request)
+        } catch {
+            reply(false, [:], String(describing: error))
+            return
+        }
+        let reply = StatusReply(reply)
+        DispatchQueue.global(qos: .utility).async { [incidentWriter] in
+            do {
+                let result = try machineManager.transferStagedFiles(
+                    id: machineID,
+                    privateStagingRoot: parsedRequest.privateStagingRoot
+                )
+                incidentWriter?.record(
+                    type: "machine.file_transfer",
+                    detail: "\(machineID) \(result.transferID) files=\(result.filesSent) bytes=\(result.bytesSent)"
+                )
+                reply.reply(true, result.xpcDictionary, "")
+            } catch {
+                incidentWriter?.record(
+                    type: "machine.file_transfer_failed",
+                    detail: "\(machineID): \(error)"
+                )
+                reply.reply(false, [:], String(describing: error))
+            }
+        }
+    }
+
     public func machineProvision(
         _ machineID: String,
         request: NSDictionary,
@@ -1231,6 +1269,25 @@ private struct MachineExecRequest {
     }
 }
 
+private struct MachineTransferRequest: Sendable {
+    var privateStagingRoot: String
+
+    init(xpcDictionary dictionary: NSDictionary) throws {
+        guard let keys = dictionary.allKeys as? [String],
+              Set(keys) == ["schema", "privateStagingRoot"],
+              let schema = dictionary["schema"] as? NSNumber,
+              CFGetTypeID(schema) != CFBooleanGetTypeID(),
+              schema.uint16Value == 1,
+              schema.doubleValue == 1,
+              let root = dictionary["privateStagingRoot"] as? String,
+              root.hasPrefix("/"),
+              !root.contains("\0") else {
+            throw XPCRemoteConfigError.invalid("machineTransfer")
+        }
+        privateStagingRoot = root
+    }
+}
+
 private struct MachineProvisionRequest {
     var recipeID: String
 
@@ -1365,6 +1422,18 @@ private extension DoryMachineConfiguration {
             shares: try dictionary.optionalMachineShares("shares"),
             environment: [:]
         )
+    }
+}
+
+private extension DoryMachineFileTransferResult {
+    var xpcDictionary: NSDictionary {
+        [
+            "schema": UInt16(1),
+            "transferID": transferID,
+            "guestDestination": guestDestination,
+            "filesSent": filesSent,
+            "bytesSent": bytesSent,
+        ]
     }
 }
 

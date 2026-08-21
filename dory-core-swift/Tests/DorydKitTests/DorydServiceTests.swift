@@ -1671,6 +1671,127 @@ final class DorydServiceTests: XCTestCase {
         wait(for: [exec], timeout: 5)
     }
 
+    func testMachineTransferOverXPCUsesExactShapeAndOmitsHostPath() throws {
+        let suffix = "\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let base = "/tmp/doryd-service-machine-transfer-\(suffix)"
+        let staging = "/tmp/doryd-service-machine-transfer-stage-\(suffix)"
+        try FileManager.default.createDirectory(
+            atPath: staging,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        try Data("payload".utf8).write(
+            to: URL(fileURLWithPath: staging + "/payload.txt")
+        )
+        let manager = MachineManager(
+            configuration: MachineManagerConfiguration(
+                vmmExecutablePath: "/bin/sleep",
+                stateDirectory: base,
+                baseArguments: ["30"],
+                passMachineArguments: false,
+                requiresReadyHandoff: true
+            ),
+            agentConnector: { _ in ServiceFakeAgentControlClient() }
+        )
+        defer {
+            try? manager.delete(id: "dev")
+            try? FileManager.default.removeItem(atPath: base)
+            try? FileManager.default.removeItem(atPath: staging)
+        }
+        let service = DorydService(socketPath: "/tmp/doryd-test.sock", machineManager: manager)
+        let listener = makeAnonymousListener(service: service)
+        listener.resume()
+        defer { listener.invalidate() }
+
+        let connection = NSXPCConnection(listenerEndpoint: listener.endpoint)
+        connection.remoteObjectInterface = NSXPCInterface(with: DorydControl.self)
+        connection.resume()
+        defer { connection.invalidate() }
+        let proxy = try XCTUnwrap(connection.remoteObjectProxy as? DorydControl)
+
+        let create = expectation(description: "machineCreate reply")
+        proxy.machineCreate([
+            "id": "dev",
+            "kernelPath": doryTestKernelPath,
+            "rootfsPath": doryTestRootfsPath,
+            "displayMode": "desktop",
+            "guestIdentityIntent": [
+                "account": [
+                    "username": "developer",
+                    "numericUserID": UInt32(1_000),
+                ] as NSDictionary,
+            ] as NSDictionary,
+        ]) { ok, _, message in
+            XCTAssertTrue(ok, message)
+            create.fulfill()
+        }
+        wait(for: [create], timeout: 5)
+
+        let start = expectation(description: "machineStart reply")
+        var handoffPath = ""
+        proxy.machineStart("dev") { ok, body, message in
+            XCTAssertTrue(ok, message)
+            handoffPath = body["handoffSocketPath"] as? String ?? ""
+            start.fulfill()
+        }
+        wait(for: [start], timeout: 5)
+        try sendVmmHandoff(
+            path: try XCTUnwrap(handoffPath.isEmpty ? nil : handoffPath),
+            ready: VmmReadyMessage(
+                machineID: "dev",
+                agentBuild: "dory-agent/test",
+                agentProtocolVersion: DoryCore.protocolVersion(),
+                agentCapabilities: [
+                    DoryAgentCapability(id: "exec", version: 1),
+                    DoryAgentCapability(id: "sync-push", version: 1),
+                ],
+                agentSocketPath: "/run/agent.sock"
+            ),
+            fileDescriptors: []
+        )
+        _ = try waitForServiceMachineState(manager, id: "dev", state: .running)
+
+        for malformed in [
+            ["schema": UInt16(2), "privateStagingRoot": staging] as NSDictionary,
+            [
+                "schema": UInt16(1),
+                "privateStagingRoot": staging,
+                "unexpected": true,
+            ] as NSDictionary,
+        ] {
+            let rejected = expectation(description: "malformed transfer rejected")
+            proxy.machineTransfer("dev", request: malformed) { ok, body, message in
+                XCTAssertFalse(ok)
+                XCTAssertTrue(body.isEqual(to: [:]))
+                XCTAssertTrue(message.contains("machineTransfer"), message)
+                rejected.fulfill()
+            }
+            wait(for: [rejected], timeout: 5)
+        }
+
+        let transfer = expectation(description: "machineTransfer reply")
+        proxy.machineTransfer("dev", request: [
+            "schema": UInt16(1),
+            "privateStagingRoot": staging,
+        ]) { ok, body, message in
+            XCTAssertTrue(ok, message)
+            XCTAssertEqual(
+                Set(body.allKeys.compactMap { $0 as? String }),
+                ["schema", "transferID", "guestDestination", "filesSent", "bytesSent"]
+            )
+            XCTAssertEqual((body["schema"] as? NSNumber)?.uint16Value, 1)
+            XCTAssertEqual(body["filesSent"] as? UInt64, 2)
+            XCTAssertEqual(body["bytesSent"] as? UInt64, 7)
+            XCTAssertTrue(
+                (body["guestDestination"] as? String)?
+                    .hasPrefix("/home/developer/Downloads/Dory Transfer ") == true
+            )
+            XCTAssertFalse(body.description.contains(staging))
+            transfer.fulfill()
+        }
+        wait(for: [transfer], timeout: 5)
+    }
+
     func testMachineProvisionOverXPCInstallsRecipeThroughMachineAgent() throws {
         let base = "/tmp/doryd-service-machine-provision-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let manager = MachineManager(
@@ -1990,6 +2111,12 @@ private final class ServiceFakeAgentControlClient: AgentControlClient, @unchecke
         )
     }
 
+    func push(localRoot: String, remoteRoot: String) throws -> DoryPushStats {
+        _ = localRoot
+        _ = remoteRoot
+        return DoryPushStats(filesSent: 2, bytesSent: 7, filesDeleted: 0)
+    }
+
     func exec(
         argv: [String],
         cwd: String,
@@ -1999,7 +2126,10 @@ private final class ServiceFakeAgentControlClient: AgentControlClient, @unchecke
     ) throws -> DoryExecResult {
         let command = argv.joined(separator: " ")
         let output: String
-        if command.contains("apk add --no-cache cargo rust") {
+        if argv.prefix(2) == ["/usr/bin/id", "-u"]
+            || argv.prefix(2) == ["/usr/bin/id", "-g"] {
+            output = "1000\n"
+        } else if command.contains("apk add --no-cache cargo rust") {
             output = "installed rust\n"
         } else if command.contains("cargo --version") {
             output = "cargo 1.0\n"
