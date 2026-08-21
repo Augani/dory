@@ -46,6 +46,7 @@ jobs:
           python3 .github/scripts/test-nonnative-build-smoke.py
           python3 .github/scripts/test-external-volume-bind-gate.py
           python3 .github/scripts/test-host-network-integrity-gate.py
+          python3 .github/scripts/test-readiness-gate.py
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
       - name: Install Protocol Buffers compiler
