@@ -19,4 +19,6 @@ pub use agent_client::AgentClient;
 pub use error::RemoteError;
 pub use keys::{private_key_from_openssh, public_key_from_openssh};
 pub use ssh::{AgentEndpoint, HostKeyPolicy, SshAgent, SshConfig};
-pub use sync_push::{push, PushStats, SyncTarget};
+pub use sync_push::{
+    push, push_observed, PushObserver, PushPhase, PushProgress, PushStats, SyncTarget,
+};
