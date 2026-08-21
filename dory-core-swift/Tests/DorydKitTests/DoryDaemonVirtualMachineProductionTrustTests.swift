@@ -360,6 +360,10 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
         #expect(context.planning.workspaces.root
             == context.machineManager.managedStateDirectory)
         #expect(context.inventory is DoryProductionDaemonVirtualMachineTrustInventory)
+        #expect(context.machineImportEnvironment.backendRuntimeBuildIdentifiers[.doryHypervisor]
+            == fixture.runtimeBuildIdentifier)
+        #expect(context.machineImportEnvironment.backendComponents[.doryHypervisor]?.first?
+            .artifactSHA256 == fixture.helperDigest)
         #expect(trustFloor.activationCount == 1)
     }
 

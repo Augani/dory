@@ -45,6 +45,7 @@ public struct DoryDaemonVirtualMachineProductionActivationContext: Sendable {
     public let backendRuntimeBuildIdentifiers: [
         DoryVirtualizationBackendIdentity: String
     ]
+    public let machineImportEnvironment: DoryMachineImportEnvironment
 
     public var inventory: any DoryDaemonVirtualMachineTrustInventory {
         planning.inventory
@@ -57,12 +58,14 @@ public struct DoryDaemonVirtualMachineProductionActivationContext: Sendable {
             DoryDaemonVirtualMachineProductionPlanningController,
         backendRuntimeBuildIdentifiers: [
             DoryVirtualizationBackendIdentity: String
-        ]
+        ],
+        machineImportEnvironment: DoryMachineImportEnvironment
     ) {
         self.machineManager = machineManager
         self.planning = planning
         self.planningController = planningController
         self.backendRuntimeBuildIdentifiers = backendRuntimeBuildIdentifiers
+        self.machineImportEnvironment = machineImportEnvironment
     }
 }
 
@@ -231,14 +234,23 @@ extension DoryDaemonVirtualMachineProductionTrustFactory {
             )
         }
 
+        let backendRuntimeBuildIdentifiers = Dictionary(
+            uniqueKeysWithValues: material.runtimes.map {
+                ($0.descriptor.identity, $0.runtimeBuildIdentifier)
+            }
+        )
         return .activated(DoryDaemonVirtualMachineProductionActivationContext(
             machineManager: machineManager,
             planning: planning,
             planningController: planningController,
-            backendRuntimeBuildIdentifiers: Dictionary(
-                uniqueKeysWithValues: material.runtimes.map {
-                    ($0.descriptor.identity, $0.runtimeBuildIdentifier)
-                }
+            backendRuntimeBuildIdentifiers: backendRuntimeBuildIdentifiers,
+            machineImportEnvironment: DoryMachineImportEnvironment(
+                backendRuntimeBuildIdentifiers: backendRuntimeBuildIdentifiers,
+                backendComponents: Dictionary(
+                    uniqueKeysWithValues: material.runtimes.map {
+                        ($0.descriptor.identity, $0.componentEvidence)
+                    }
+                )
             )
         ))
     }

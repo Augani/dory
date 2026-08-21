@@ -780,6 +780,76 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: machineJSON)), raw)
     }
 
+    func testImportAssessmentVerifiesEveryArtifactBeforeWritingAndBindsContentID() throws {
+        let base = "/tmp/dory-machine-import-assessment-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let state = base + "/machines"
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: state,
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: false
+        ))
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "dev",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath
+        ))
+        let source = try manager.snapshot(id: "dev", snapshotID: "portable")
+        let rootfs = try Data(contentsOf: URL(fileURLWithPath: source.rootfsPath))
+        let kernel = try Data(contentsOf: URL(fileURLWithPath: source.kernelPath))
+        let bundle = base + "/dev.dorymachine"
+        try manager.exportSnapshot(machineID: "dev", snapshotID: source.id, toPath: bundle)
+        try manager.deleteSnapshot(machineID: "dev", snapshotID: source.id)
+        XCTAssertTrue(try manager.listSnapshots(machineID: "dev").isEmpty)
+
+        let assessment = try manager.assessSnapshotImport(fromPath: bundle)
+        XCTAssertEqual(assessment.schemaVersion, 1)
+        XCTAssertEqual(assessment.sourceMachineID, "dev")
+        XCTAssertEqual(assessment.sourceSnapshotID, "portable")
+        XCTAssertEqual(assessment.disposition, .ready)
+        XCTAssertTrue(assessment.portable)
+        XCTAssertEqual(assessment.contentID.count, 64)
+        XCTAssertTrue(assessment.components.isEmpty)
+        XCTAssertTrue(try manager.listSnapshots(machineID: "dev").isEmpty)
+
+        let imported = try manager.importSnapshot(
+            fromPath: bundle,
+            expectedContentID: assessment.contentID
+        )
+        XCTAssertEqual(imported.id, "portable")
+        try manager.deleteSnapshot(machineID: "dev", snapshotID: imported.id)
+
+        var changed = try Data(contentsOf: URL(fileURLWithPath: bundle))
+        changed[changed.index(before: changed.endIndex)] ^= 0xff
+        try changed.write(to: URL(fileURLWithPath: bundle))
+        XCTAssertThrowsError(try manager.importSnapshot(
+            fromPath: bundle,
+            expectedContentID: assessment.contentID
+        )) { error in
+            XCTAssertTrue(String(describing: error).contains("corrupt dory machine bundle artifact"))
+        }
+        XCTAssertTrue(try manager.listSnapshots(machineID: "dev").isEmpty)
+
+        var incompatible = source
+        incompatible.architecture = "x86_64"
+        let incompatibleBundle = base + "/incompatible.dorymachine"
+        try writeMachineBundle(
+            toPath: incompatibleBundle,
+            snapshot: incompatible,
+            rootfs: rootfs,
+            kernel: kernel
+        )
+        let incompatibleAssessment = try manager.assessSnapshotImport(
+            fromPath: incompatibleBundle
+        )
+        XCTAssertFalse(incompatibleAssessment.portable)
+        XCTAssertEqual(incompatibleAssessment.disposition, .unavailable)
+        XCTAssertTrue(incompatibleAssessment.issues.contains(.architectureMismatch))
+        XCTAssertTrue(try manager.listSnapshots(machineID: "dev").isEmpty)
+    }
+
     func testConflictingTypedAndLegacyDesktopReceiptIsRejectedOnCreateImportAndRestore() throws {
         let base = "/tmp/dory-machine-desktop-receipt-conflict-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let state = base + "/machines"

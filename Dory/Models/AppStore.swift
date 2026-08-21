@@ -7050,7 +7050,47 @@ final class AppStore {
         Task {
             defer { busyMachines.remove(Self.importBusyKey) }
             do {
-                let snapshot = try await dorydClient.machineImportSnapshot(from: url.path)
+                let assessment = try await dorydClient.machineAssessSnapshotImport(
+                    from: url.path
+                )
+                appendMachineCreationLog(
+                    "Verified complete archive \(assessment.contentID.prefix(12))… "
+                        + "(\(assessment.architecture), ABI "
+                        + "\(assessment.virtualHardwareABIVersion))."
+                )
+                appendMachineCreationLog(
+                    "Portability: \(assessment.disposition.rawValue)."
+                )
+                let unavailableComponents = assessment.components.filter {
+                    $0.availability != .available
+                }
+                if !unavailableComponents.isEmpty {
+                    appendMachineCreationLog(
+                        "Required components: " + unavailableComponents.map {
+                            "\($0.componentIdentifier)@\($0.buildIdentifier) "
+                                + "(\($0.availability.rawValue))"
+                        }.joined(separator: ", ")
+                    )
+                }
+                switch assessment.disposition {
+                case .ready, .requiresReplanning:
+                    break
+                case .requiresComponents:
+                    throw DorydClientError.daemon(
+                        "Import requires unavailable or different Dory components: "
+                            + unavailableComponents.map(\.componentIdentifier)
+                                .joined(separator: ", ")
+                    )
+                case .unavailable:
+                    throw DorydClientError.daemon(
+                        "This archive is not portable to the current host ("
+                            + assessment.issues.joined(separator: ", ") + ")."
+                    )
+                }
+                let snapshot = try await dorydClient.machineImportSnapshot(
+                    from: url.path,
+                    expectedContentID: assessment.contentID
+                )
                 appendMachineCreationLog("Verified snapshot \(snapshot.id).")
                 let newName: String
                 do {

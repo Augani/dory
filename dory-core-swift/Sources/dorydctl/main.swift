@@ -204,6 +204,7 @@ func usage(exitCode: Int32 = 2) -> Never {
           dorydctl [global] machine restore-snapshot NAME SNAPSHOT_ID
           dorydctl [global] machine delete-snapshot NAME SNAPSHOT_ID
           dorydctl [global] machine export-snapshot NAME SNAPSHOT_ID PATH
+          dorydctl [global] machine inspect-import PATH
           dorydctl [global] machine import-snapshot PATH
           dorydctl [global] machine backup status [NAME]
           dorydctl [global] machine backup schedule NAME [--frequency hourly|daily|weekly] [--keep N] [--verify-every N]
@@ -1313,13 +1314,35 @@ func runMachine(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
         try emitCommandResult(try client.withTimeout(atLeast: machineFileMutationTimeout).command { proxy, reply in
             proxy.machineExportSnapshot(name, snapshotID: snapshotID, path: path, reply: reply)
         })
+    case "inspect-import":
+        let path = try cursor.take("usage: dorydctl machine inspect-import PATH")
+        guard cursor.values.isEmpty else {
+            throw DorydCtlError.usage("unexpected inspect-import argument: \(cursor.values[0])")
+        }
+        let assessment = try client.withTimeout(atLeast: machineFileMutationTimeout)
+            .statusCommand { proxy, reply in
+                proxy.machineAssessSnapshotImport(path, reply: reply)
+            }
+        try emitJSON(assessment)
     case "import-snapshot":
         let path = try cursor.take("usage: dorydctl machine import-snapshot PATH")
         guard cursor.values.isEmpty else {
             throw DorydCtlError.usage("unexpected import-snapshot argument: \(cursor.values[0])")
         }
+        let assessment = try client.withTimeout(atLeast: machineFileMutationTimeout)
+            .statusCommand { proxy, reply in
+                proxy.machineAssessSnapshotImport(path, reply: reply)
+            }
+        guard let disposition = assessment["disposition"] as? String,
+              let contentID = assessment["contentID"] as? String else {
+            throw DorydCtlError.daemon("invalid machine import assessment")
+        }
+        guard disposition == "ready" || disposition == "requires-replanning" else {
+            let issues = (assessment["issues"] as? [String])?.joined(separator: ", ") ?? disposition
+            throw DorydCtlError.daemon("machine import preflight rejected: \(issues)")
+        }
         let imported = try client.withTimeout(atLeast: machineFileMutationTimeout).statusCommand { proxy, reply in
-            proxy.machineImportSnapshot(path, reply: reply)
+            proxy.machineImportSnapshot(path, expectedContentID: contentID, reply: reply)
         }
         try emitJSON(imported)
     case "backup":

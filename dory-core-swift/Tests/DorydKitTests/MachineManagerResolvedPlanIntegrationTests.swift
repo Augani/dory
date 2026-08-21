@@ -73,6 +73,28 @@ struct MachineManagerResolvedPlanIntegrationTests {
             #expect(snapshot.runtimeIdentity == status.runtimeIdentity)
             #expect(snapshot.artifactEvidence?.rootfs.sha256.count == 64)
             #expect(snapshot.artifactEvidence?.kernel.sha256.count == 64)
+            let bundle = state + "/resolved.dorymachine"
+            try manager.exportSnapshot(
+                machineID: "dev",
+                snapshotID: snapshot.id,
+                toPath: bundle
+            )
+            let component = try #require(snapshot.runtimeIdentity.components.first)
+            let exactAssessment = try manager.assessSnapshotImport(
+                fromPath: bundle,
+                environment: DoryMachineImportEnvironment(
+                    backendRuntimeBuildIdentifiers: [.doryHypervisor: "raw-runtime-1"],
+                    backendComponents: [.doryHypervisor: [component]]
+                )
+            )
+            #expect(exactAssessment.disposition == .requiresReplanning)
+            #expect(exactAssessment.portable)
+            #expect(exactAssessment.components.map(\.availability) == [.available])
+            #expect(exactAssessment.issues == [.resolvedPlanRequiresReplanning])
+            let missingAssessment = try manager.assessSnapshotImport(fromPath: bundle)
+            #expect(missingAssessment.disposition == .requiresComponents)
+            #expect(missingAssessment.components.map(\.availability) == [.missing])
+            #expect(missingAssessment.issues.contains(.missingComponents))
             var tamperedIdentity = snapshot.runtimeIdentity
             tamperedIdentity.resolvedPlanSHA256 = String(repeating: "0", count: 64)
             #expect(tamperedIdentity.validate().contains { $0.code == .planDigestMismatch })

@@ -10,6 +10,7 @@ public final class DorydService: NSObject, DorydControl {
     private let machineManager: MachineManager?
     private let productionPlanningController:
         (any DoryDaemonVirtualMachineProductionPlanningControlling)?
+    private let machineImportEnvironment: DoryMachineImportEnvironment
     private let machineBackupScheduler: MachineBackupScheduler?
     private let remoteManager: RemoteMachineManager?
     private let networkingController: NetworkingController?
@@ -30,6 +31,7 @@ public final class DorydService: NSObject, DorydControl {
         machineManager: MachineManager? = nil,
         productionPlanningController:
             (any DoryDaemonVirtualMachineProductionPlanningControlling)? = nil,
+        machineImportEnvironment: DoryMachineImportEnvironment = .unverified,
         machineBackupScheduler: MachineBackupScheduler? = nil,
         remoteManager: RemoteMachineManager? = nil,
         networkingController: NetworkingController? = nil,
@@ -47,6 +49,7 @@ public final class DorydService: NSObject, DorydControl {
         self.dockerTier = dockerTier
         self.machineManager = machineManager
         self.productionPlanningController = productionPlanningController
+        self.machineImportEnvironment = machineImportEnvironment
         self.machineBackupScheduler = machineBackupScheduler
         self.remoteManager = remoteManager
         self.networkingController = networkingController
@@ -878,6 +881,25 @@ public final class DorydService: NSObject, DorydControl {
         }
     }
 
+    public func machineAssessSnapshotImport(
+        _ path: String,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        guard let machineManager else {
+            reply(false, [:], "machine manager is not configured")
+            return
+        }
+        do {
+            let assessment = try machineManager.assessSnapshotImport(
+                fromPath: path,
+                environment: machineImportEnvironment
+            )
+            reply(true, assessment.xpcDictionary, "")
+        } catch {
+            reply(false, [:], "\(error)")
+        }
+    }
+
     public func machineImportSnapshot(
         _ path: String,
         reply: @escaping (Bool, NSDictionary, String) -> Void
@@ -887,8 +909,65 @@ public final class DorydService: NSObject, DorydControl {
             return
         }
         do {
-            let snapshot = try machineManager.importSnapshot(fromPath: path)
+            let assessment = try machineManager.assessSnapshotImport(
+                fromPath: path,
+                environment: machineImportEnvironment
+            )
+            guard assessment.disposition == .ready
+                    || assessment.disposition == .requiresReplanning else {
+                throw MachineManagerError.persistence(
+                    "machine import preflight rejected: \(assessment.issues.map(\.rawValue).joined(separator: ", "))"
+                )
+            }
+            let snapshot = try machineManager.importSnapshot(
+                fromPath: path,
+                expectedContentID: assessment.contentID
+            )
             incidentWriter?.record(type: "machine.import_snapshot", detail: "\(snapshot.machineID) \(snapshot.id)")
+            reply(true, snapshot.xpcDictionary, "")
+        } catch {
+            incidentWriter?.record(type: "machine.import_snapshot_failed", detail: "\(error)")
+            reply(false, [:], "\(error)")
+        }
+    }
+
+    public func machineImportSnapshot(
+        _ path: String,
+        expectedContentID: String,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        guard let machineManager else {
+            reply(false, [:], "machine manager is not configured")
+            return
+        }
+        do {
+            guard expectedContentID.count == 64,
+                  expectedContentID.allSatisfy({ $0.isHexDigit && !$0.isUppercase }) else {
+                throw MachineManagerError.persistence("invalid machine import content identifier")
+            }
+            let assessment = try machineManager.assessSnapshotImport(
+                fromPath: path,
+                environment: machineImportEnvironment
+            )
+            guard assessment.contentID == expectedContentID else {
+                throw MachineManagerError.persistence(
+                    "machine bundle changed after import assessment"
+                )
+            }
+            guard assessment.disposition == .ready
+                    || assessment.disposition == .requiresReplanning else {
+                throw MachineManagerError.persistence(
+                    "machine import preflight rejected: \(assessment.issues.map(\.rawValue).joined(separator: ", "))"
+                )
+            }
+            let snapshot = try machineManager.importSnapshot(
+                fromPath: path,
+                expectedContentID: expectedContentID
+            )
+            incidentWriter?.record(
+                type: "machine.import_snapshot",
+                detail: "\(snapshot.machineID) \(snapshot.id) \(expectedContentID)"
+            )
             reply(true, snapshot.xpcDictionary, "")
         } catch {
             incidentWriter?.record(type: "machine.import_snapshot_failed", detail: "\(error)")
@@ -2162,6 +2241,35 @@ private extension DoryMachineStatus {
                 "portable": false,
             ] as NSDictionary
         }
+        return dictionary as NSDictionary
+    }
+}
+
+private extension DoryMachineImportAssessment {
+    var xpcDictionary: NSDictionary {
+        var dictionary: [String: Any] = [
+            "schemaVersion": schemaVersion,
+            "contentID": contentID,
+            "sourceMachineID": sourceMachineID,
+            "sourceSnapshotID": sourceSnapshotID,
+            "architecture": architecture,
+            "bootMode": bootMode.rawValue,
+            "diskSizeBytes": diskSizeBytes,
+            "virtualHardwareABIVersion": virtualHardwareABIVersion,
+            "sourceRuntimeMode": sourceRuntimeMode.rawValue,
+            "portable": portable,
+            "disposition": disposition.rawValue,
+            "issues": issues.map(\.rawValue),
+            "components": components.map { component in
+                [
+                    "componentIdentifier": component.componentIdentifier,
+                    "buildIdentifier": component.buildIdentifier,
+                    "artifactSHA256": component.artifactSHA256,
+                    "availability": component.availability.rawValue,
+                ] as NSDictionary
+            },
+        ]
+        if let sourceBackend { dictionary["sourceBackend"] = sourceBackend.rawValue }
         return dictionary as NSDictionary
     }
 }

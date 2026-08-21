@@ -620,6 +620,47 @@ struct DorydClientTests {
     }
 
     @MainActor
+    @Test func machineImportAssessmentRequiresExactClosedEvidence() async throws {
+        let listener = NSXPCListener.anonymous()
+        let service = FakeDorydService()
+        let delegate = FakeDorydListenerDelegate(service: service)
+        listener.delegate = delegate
+        listener.resume()
+        defer { listener.invalidate() }
+        let client = DorydClient(endpoint: listener.endpoint)
+
+        let valid = FakeDorydService.importAssessmentRow()
+        service.setMachineImportAssessment(valid)
+        let assessment = try await client.machineAssessSnapshotImport(
+            from: "/tmp/dev.dorymachine"
+        )
+        #expect(assessment.contentID == String(repeating: "a", count: 64))
+        #expect(assessment.disposition == .ready)
+        #expect(assessment.portable)
+
+        let unknown = valid.mutableCopy() as! NSMutableDictionary
+        unknown["unexpected"] = "claim"
+        service.setMachineImportAssessment(unknown)
+        await #expect(throws: (any Error).self) {
+            _ = try await client.machineAssessSnapshotImport(from: "/tmp/dev.dorymachine")
+        }
+
+        let wrongWireType = valid.mutableCopy() as! NSMutableDictionary
+        wrongWireType["diskSizeBytes"] = "4096"
+        service.setMachineImportAssessment(wrongWireType)
+        await #expect(throws: (any Error).self) {
+            _ = try await client.machineAssessSnapshotImport(from: "/tmp/dev.dorymachine")
+        }
+
+        let contradictory = valid.mutableCopy() as! NSMutableDictionary
+        contradictory["disposition"] = "requires-components"
+        service.setMachineImportAssessment(contradictory)
+        await #expect(throws: (any Error).self) {
+            _ = try await client.machineAssessSnapshotImport(from: "/tmp/dev.dorymachine")
+        }
+    }
+
+    @MainActor
     @Test func readsDoctorJSONAndIncidentsOverXPC() async throws {
         let listener = NSXPCListener.anonymous()
         let service = FakeDorydService()
@@ -3456,6 +3497,7 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     private var _machineGuestExportStartResponseOverride: NSDictionary?
     private var _machineGuestExportOperationResponseOverride: NSDictionary?
     private var _machineGuestExportCurrentResponseOverride: NSDictionary?
+    private var _machineImportAssessmentOverride: NSDictionary?
     private var _machineGuestExportCancelCount = 0
     private var _machineGuestExportDiscardCount = 0
     private var runtimeIdentityOverride: NSDictionary?
@@ -3535,6 +3577,11 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     func setMachineGuestExportCurrentResponse(_ response: NSDictionary?) {
         lock.lock(); defer { lock.unlock() }
         _machineGuestExportCurrentResponseOverride = response
+    }
+
+    func setMachineImportAssessment(_ response: NSDictionary?) {
+        lock.lock(); defer { lock.unlock() }
+        _machineImportAssessmentOverride = response
     }
 
     func machineGuestExportOperationResponse(
@@ -4428,6 +4475,16 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         reply(true, "")
     }
 
+    func machineAssessSnapshotImport(
+        _ path: String,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        lock.lock()
+        let row = _machineImportAssessmentOverride ?? Self.importAssessmentRow()
+        lock.unlock()
+        reply(true, row, "")
+    }
+
     func machineImportSnapshot(_ path: String, reply: @escaping (Bool, NSDictionary, String) -> Void) {
         let row = Self.snapshotRow(
             id: "imported",
@@ -4439,6 +4496,18 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         snapshots["dev", default: []].insert(row, at: 0)
         lock.unlock()
         reply(true, row, "")
+    }
+
+    func machineImportSnapshot(
+        _ path: String,
+        expectedContentID: String,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        guard expectedContentID == String(repeating: "a", count: 64) else {
+            reply(false, [:], "machine bundle changed after import assessment")
+            return
+        }
+        machineImportSnapshot(path, reply: reply)
     }
 
     func machineBackupSchedules(reply: @escaping (NSArray, String) -> Void) {
@@ -5022,6 +5091,24 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
             "stdoutTruncated": false,
             "stderrTruncated": false,
         ] as NSDictionary
+    }
+
+    static func importAssessmentRow() -> NSDictionary {
+        [
+            "schemaVersion": 1,
+            "contentID": String(repeating: "a", count: 64),
+            "sourceMachineID": "dev",
+            "sourceSnapshotID": "imported",
+            "architecture": "arm64",
+            "bootMode": "linux-kernel",
+            "diskSizeBytes": 4_096,
+            "virtualHardwareABIVersion": 1,
+            "sourceRuntimeMode": "legacy-compatibility",
+            "portable": true,
+            "disposition": "ready",
+            "issues": [] as [String],
+            "components": [] as [NSDictionary],
+        ]
     }
 
     private static func snapshotRow(id: String, machineID: String, note: String, createdISO: String) -> NSDictionary {

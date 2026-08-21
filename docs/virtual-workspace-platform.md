@@ -631,6 +631,14 @@ Export uses a versioned archive with a signed/checksummed manifest and never ass
 supports the original backend. Import first reports portability and missing components; it does not
 partially create a workspace.
 
+The daemon implements that first phase as a read-only, content-bound assessment. It opens the
+archive without following symlinks, streams and verifies every declared disk/kernel/firmware body,
+checks metadata, architecture, hardware ABI, backend runtime, and exact component evidence, and
+returns a path-free content ID plus one of `ready`, `requires-components`, `requires-replanning`, or
+`unavailable`. The later import must present that same content ID and reverify the archive before
+writing any snapshot artifact; incompatible or missing-evidence assessments cannot cross the XPC
+import boundary.
+
 Extend the proven snapshot/export logic in `MachineManager`, rather than maintaining the older
 container-image snapshots in [`MachineSnapshot`](../Dory/Runtime/Machines/MachineSnapshot.swift)
 as a second VM truth.

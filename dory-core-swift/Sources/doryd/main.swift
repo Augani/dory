@@ -69,6 +69,7 @@ let desktopUpdateArtifactResolver = DoryComponentStoreDesktopUpdateArtifactResol
 )
 var productionPlanningController:
     (any DoryDaemonVirtualMachineProductionPlanningControlling)?
+var machineImportEnvironment = DoryMachineImportEnvironment.unverified
 let machineManager = dorydEnvironment.machineManagerConfiguration().flatMap { configuration -> MachineManager? in
     let readiness = DoryDaemonVirtualMachineProductionTrustFactory().activate(
         store: DoryComponentStore(drive: dataDrive),
@@ -81,6 +82,7 @@ let machineManager = dorydEnvironment.machineManagerConfiguration().flatMap { co
                 .appending("(production planning recovered and activated)\n").utf8
         ))
         productionPlanningController = context.planningController
+        machineImportEnvironment = context.machineImportEnvironment
         context.machineManager.installDesktopUpdateArtifactResolver(desktopUpdateArtifactResolver)
         return context.machineManager
     case let .unavailable(failure):
@@ -257,6 +259,7 @@ let service = DorydService(
     dockerTier: dockerTier,
     machineManager: machineManager,
     productionPlanningController: productionPlanningController,
+    machineImportEnvironment: machineImportEnvironment,
     machineBackupScheduler: machineBackupScheduler,
     remoteManager: remoteManager,
     networkingController: networkingController,

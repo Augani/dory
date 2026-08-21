@@ -44,7 +44,9 @@ nonisolated protocol DorydControlXPC {
     func machineRestoreSnapshot(_ machineID: String, snapshotID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineDeleteSnapshot(_ machineID: String, snapshotID: String, reply: @escaping (Bool, String) -> Void)
     func machineExportSnapshot(_ machineID: String, snapshotID: String, path: String, reply: @escaping (Bool, String) -> Void)
+    func machineAssessSnapshotImport(_ path: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineImportSnapshot(_ path: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
+    func machineImportSnapshot(_ path: String, expectedContentID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineBackupSchedules(reply: @escaping (NSArray, String) -> Void)
     func machineBackupSet(_ schedule: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineBackupRemove(_ machineID: String, reply: @escaping (Bool, String) -> Void)
@@ -612,6 +614,17 @@ nonisolated private extension String {
         }
     }
 
+    var isSafeMachineIdentifier: Bool {
+        let bytes = Array(utf8)
+        guard (1...63).contains(bytes.count) else { return false }
+        return bytes.allSatisfy { byte in
+            (byte >= 48 && byte <= 57)
+                || (byte >= 65 && byte <= 90)
+                || (byte >= 97 && byte <= 122)
+                || byte == 45 || byte == 46 || byte == 95
+        }
+    }
+
     var isSafeComponentInstallationName: Bool {
         let bytes = Array(utf8)
         guard (1...255).contains(bytes.count),
@@ -890,6 +903,43 @@ nonisolated struct DorydDesktopUpdateResult: Sendable, Equatable {
     var snapshotID: String
     var status: DorydMachineStatus
     var restoredRunningState: Bool
+}
+
+nonisolated enum DorydMachineImportDisposition: String, Sendable, Equatable {
+    case ready
+    case requiresComponents = "requires-components"
+    case requiresReplanning = "requires-replanning"
+    case unavailable
+}
+
+nonisolated enum DorydMachineImportComponentAvailability: String, Sendable, Equatable {
+    case available
+    case mismatched
+    case missing
+}
+
+nonisolated struct DorydMachineImportComponentAssessment: Sendable, Equatable {
+    var componentIdentifier: String
+    var buildIdentifier: String
+    var artifactSHA256: String
+    var availability: DorydMachineImportComponentAvailability
+}
+
+nonisolated struct DorydMachineImportAssessment: Sendable, Equatable {
+    var schemaVersion: UInt16
+    var contentID: String
+    var sourceMachineID: String
+    var sourceSnapshotID: String
+    var architecture: String
+    var bootMode: String
+    var diskSizeBytes: UInt64
+    var virtualHardwareABIVersion: UInt16
+    var sourceRuntimeMode: String
+    var sourceBackend: DoryVirtualizationBackendIdentity?
+    var portable: Bool
+    var disposition: DorydMachineImportDisposition
+    var issues: [String]
+    var components: [DorydMachineImportComponentAssessment]
 }
 
 nonisolated struct DorydMachineSnapshot: Sendable, Equatable {
@@ -1846,12 +1896,39 @@ nonisolated final class DorydClient: @unchecked Sendable {
         }
     }
 
-    func machineImportSnapshot(from path: String) async throws -> DorydMachineSnapshot {
+    func machineAssessSnapshotImport(
+        from path: String
+    ) async throws -> DorydMachineImportAssessment {
         try await withTimeout(atLeast: 120).statusCommand { proxy, reply in
-            proxy.machineImportSnapshot(path, reply: reply)
+            proxy.machineAssessSnapshotImport(path, reply: reply)
+        } decode: {
+            Self.machineImportAssessment(from: $0)
+        }
+    }
+
+    func machineImportSnapshot(
+        from path: String,
+        expectedContentID: String
+    ) async throws -> DorydMachineSnapshot {
+        try await withTimeout(atLeast: 120).statusCommand { proxy, reply in
+            proxy.machineImportSnapshot(
+                path,
+                expectedContentID: expectedContentID,
+                reply: reply
+            )
         } decode: {
             Self.machineSnapshot(from: $0)
         }
+    }
+
+    /// Compatibility entry for older call sites. New product flows assess first and use the
+    /// content-bound overload above.
+    func machineImportSnapshot(from path: String) async throws -> DorydMachineSnapshot {
+        let assessment = try await machineAssessSnapshotImport(from: path)
+        return try await machineImportSnapshot(
+            from: path,
+            expectedContentID: assessment.contentID
+        )
     }
 
     func machineBackupSchedules() async throws -> [DorydMachineBackupStatus] {
@@ -2913,6 +2990,123 @@ nonisolated final class DorydClient: @unchecked Sendable {
             restoredRunningState: restoredRunningState
         )
     }
+
+    nonisolated private static func machineImportAssessment(
+        from dictionary: NSDictionary
+    ) -> DorydMachineImportAssessment? {
+        let requiredKeys: Set<String> = [
+            "schemaVersion", "contentID", "sourceMachineID", "sourceSnapshotID",
+            "architecture", "bootMode", "diskSizeBytes", "virtualHardwareABIVersion",
+            "sourceRuntimeMode", "portable", "disposition", "issues", "components",
+        ]
+        guard let rawKeys = dictionary.allKeys as? [String] else { return nil }
+        let keys = Set(rawKeys)
+        guard rawKeys.count == keys.count,
+              requiredKeys.isSubset(of: keys),
+              keys.subtracting(requiredKeys).isSubset(of: ["sourceBackend"]),
+              let schemaVersion = uint16(dictionary["schemaVersion"]),
+              schemaVersion == 1,
+              let contentID = dictionary["contentID"] as? String,
+              contentID.isLowercaseSHA256,
+              let sourceMachineID = dictionary["sourceMachineID"] as? String,
+              sourceMachineID.isSafeMachineIdentifier,
+              let sourceSnapshotID = dictionary["sourceSnapshotID"] as? String,
+              sourceSnapshotID.isSafeMachineIdentifier,
+              let architecture = dictionary["architecture"] as? String,
+              ["arm64", "x86_64"].contains(architecture),
+              let bootMode = dictionary["bootMode"] as? String,
+              ["linux-kernel", "efi"].contains(bootMode),
+              let diskSizeBytes = uint64(dictionary["diskSizeBytes"]), diskSizeBytes > 0,
+              let virtualHardwareABIVersion = uint16(
+                  dictionary["virtualHardwareABIVersion"]
+              ), virtualHardwareABIVersion > 0,
+              let sourceRuntimeMode = dictionary["sourceRuntimeMode"] as? String,
+              ["legacy-compatibility", "resolved-plan", "requires-replanning"]
+                .contains(sourceRuntimeMode),
+              let portable = dictionary["portable"] as? Bool,
+              let dispositionRaw = dictionary["disposition"] as? String,
+              let disposition = DorydMachineImportDisposition(rawValue: dispositionRaw),
+              let issueRows = dictionary["issues"] as? NSArray,
+              let issues = issueRows as? [String],
+              Set(issues).count == issues.count,
+              issues.allSatisfy({ Self.machineImportIssueCodes.contains($0) }),
+              let componentRows = dictionary["components"] as? NSArray else {
+            return nil
+        }
+        let sourceBackend: DoryVirtualizationBackendIdentity?
+        if let rawBackend = dictionary["sourceBackend"] {
+            guard let encoded = rawBackend as? String,
+                  let decoded = DoryVirtualizationBackendIdentity(rawValue: encoded) else {
+                return nil
+            }
+            sourceBackend = decoded
+        } else {
+            sourceBackend = nil
+        }
+        var components: [DorydMachineImportComponentAssessment] = []
+        for row in componentRows {
+            guard let component = row as? NSDictionary,
+                  let componentKeys = component.allKeys as? [String],
+                  componentKeys.count == 4,
+                  Set(componentKeys) == [
+                      "componentIdentifier", "buildIdentifier", "artifactSHA256",
+                      "availability",
+                  ],
+                  let componentIdentifier = component["componentIdentifier"] as? String,
+                  componentIdentifier.isSafeEvidenceIdentifier,
+                  let buildIdentifier = component["buildIdentifier"] as? String,
+                  buildIdentifier.isSafeEvidenceIdentifier,
+                  let artifactSHA256 = component["artifactSHA256"] as? String,
+                  artifactSHA256.isLowercaseSHA256,
+                  let availabilityRaw = component["availability"] as? String,
+                  let availability = DorydMachineImportComponentAvailability(
+                      rawValue: availabilityRaw
+                  ) else {
+                return nil
+            }
+            components.append(DorydMachineImportComponentAssessment(
+                componentIdentifier: componentIdentifier,
+                buildIdentifier: buildIdentifier,
+                artifactSHA256: artifactSHA256,
+                availability: availability
+            ))
+        }
+        let hasUnavailableComponents = components.contains {
+            $0.availability != .available
+        }
+        guard Set(components.map(\.componentIdentifier)).count == components.count,
+              (sourceRuntimeMode == "resolved-plan") == (sourceBackend != nil),
+              (sourceRuntimeMode == "resolved-plan") == !components.isEmpty,
+              portable == (disposition != .unavailable),
+              (disposition == .requiresComponents) == (portable && hasUnavailableComponents),
+              disposition == .unavailable || !hasUnavailableComponents,
+              disposition != .ready || sourceRuntimeMode == "legacy-compatibility" else {
+            return nil
+        }
+        return DorydMachineImportAssessment(
+            schemaVersion: schemaVersion,
+            contentID: contentID,
+            sourceMachineID: sourceMachineID,
+            sourceSnapshotID: sourceSnapshotID,
+            architecture: architecture,
+            bootMode: bootMode,
+            diskSizeBytes: diskSizeBytes,
+            virtualHardwareABIVersion: virtualHardwareABIVersion,
+            sourceRuntimeMode: sourceRuntimeMode,
+            sourceBackend: sourceBackend,
+            portable: portable,
+            disposition: disposition,
+            issues: issues,
+            components: components
+        )
+    }
+
+    nonisolated private static let machineImportIssueCodes: Set<String> = [
+        "architecture-mismatch", "virtual-hardware-abi-mismatch",
+        "backend-runtime-differs", "missing-components", "mismatched-components",
+        "resolved-plan-requires-replanning", "source-requires-replanning",
+        "legacy-requires-migration",
+    ]
 
     nonisolated private static func machineSnapshot(from dictionary: NSDictionary) -> DorydMachineSnapshot? {
         guard let id = dictionary["id"] as? String,

@@ -2471,8 +2471,41 @@ final class DorydServiceTests: XCTestCase {
         }
         wait(for: [deleteReply], timeout: 5)
 
+        var assessedContentID = ""
+        let assessmentReply = expectation(description: "machineAssessSnapshotImport reply")
+        proxy.machineAssessSnapshotImport(bundle) { ok, body, message in
+            XCTAssertTrue(ok, message)
+            XCTAssertEqual(body["schemaVersion"] as? Int, 1)
+            XCTAssertEqual(body["sourceMachineID"] as? String, "dev")
+            XCTAssertEqual(body["sourceSnapshotID"] as? String, "s1")
+            XCTAssertEqual(body["disposition"] as? String, "ready")
+            XCTAssertEqual(body["portable"] as? Bool, true)
+            XCTAssertEqual((body["components"] as? NSArray)?.count, 0)
+            assessedContentID = body["contentID"] as? String ?? ""
+            XCTAssertEqual(assessedContentID.count, 64)
+            assessmentReply.fulfill()
+        }
+        wait(for: [assessmentReply], timeout: 5)
+        XCTAssertTrue(try manager.listSnapshots(machineID: "dev").isEmpty)
+
+        let staleReply = expectation(description: "stale machineImportSnapshot reply")
+        proxy.machineImportSnapshot(
+            bundle,
+            expectedContentID: String(repeating: "0", count: 64)
+        ) { ok, body, message in
+            XCTAssertFalse(ok)
+            XCTAssertEqual(body.count, 0)
+            XCTAssertTrue(message.contains("changed after import assessment"))
+            staleReply.fulfill()
+        }
+        wait(for: [staleReply], timeout: 5)
+        XCTAssertTrue(try manager.listSnapshots(machineID: "dev").isEmpty)
+
         let importReply = expectation(description: "machineImportSnapshot reply")
-        proxy.machineImportSnapshot(bundle) { ok, body, message in
+        proxy.machineImportSnapshot(
+            bundle,
+            expectedContentID: assessedContentID
+        ) { ok, body, message in
             XCTAssertTrue(ok, message)
             XCTAssertEqual(body["id"] as? String, "s1")
             XCTAssertEqual(body["machineID"] as? String, "dev")

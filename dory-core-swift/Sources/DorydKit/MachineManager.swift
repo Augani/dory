@@ -4584,7 +4584,112 @@ public final class MachineManager: @unchecked Sendable {
         }
     }
 
+    public func assessSnapshotImport(
+        fromPath path: String,
+        environment: DoryMachineImportEnvironment = .unverified
+    ) throws -> DoryMachineImportAssessment {
+        operationLock.lock()
+        defer { operationLock.unlock() }
+        let bundle = try MachineSnapshotBundle.verifyDescriptor(fromPath: path)
+        let snapshot = bundle.snapshot
+        guard Self.isValidID(snapshot.machineID), Self.isValidID(snapshot.id) else {
+            throw MachineManagerError.persistence("invalid snapshot metadata")
+        }
+        try Self.validateResources(memoryMB: snapshot.memoryMB, cpuCount: snapshot.cpuCount)
+        try Self.validateSnapshotRuntimeIdentity(snapshot)
+
+        var issues: [DoryMachineImportIssueCode] = []
+        let architectureMatches = snapshot.architecture == configuration.guestArchitecture
+        if !architectureMatches { issues.append(.architectureMismatch) }
+        let abiMatches = snapshot.runtimeIdentity.virtualHardwareABIVersion
+            == DoryVirtualMachineDefinition.currentVirtualHardwareABIVersion
+        if !abiMatches { issues.append(.virtualHardwareABIMismatch) }
+
+        var components: [DoryMachineImportComponentAssessment] = []
+        if let plan = snapshot.runtimeIdentity.resolvedPlan {
+            let available = environment.backendComponents[plan.backend] ?? []
+            let exactAvailable = Set(available)
+            let availableIdentifiers = Set(available.map(\.componentIdentifier))
+            components = plan.components.map { required in
+                let availability: DoryMachineImportComponentAvailability
+                if exactAvailable.contains(required) {
+                    availability = .available
+                } else if availableIdentifiers.contains(required.componentIdentifier) {
+                    availability = .mismatched
+                } else {
+                    availability = .missing
+                }
+                return DoryMachineImportComponentAssessment(
+                    componentIdentifier: required.componentIdentifier,
+                    buildIdentifier: required.buildIdentifier,
+                    artifactSHA256: required.artifactSHA256,
+                    availability: availability
+                )
+            }
+            if components.contains(where: { $0.availability == .missing }) {
+                issues.append(.missingComponents)
+            }
+            if components.contains(where: { $0.availability == .mismatched }) {
+                issues.append(.mismatchedComponents)
+            }
+            if environment.backendRuntimeBuildIdentifiers[plan.backend]
+                != plan.backendRuntimeBuildIdentifier {
+                issues.append(.backendRuntimeDiffers)
+            }
+        }
+
+        let portable = architectureMatches && abiMatches
+        let disposition: DoryMachineImportDisposition
+        if !portable {
+            disposition = .unavailable
+        } else if components.contains(where: { $0.availability != .available }) {
+            disposition = .requiresComponents
+        } else {
+            switch snapshot.runtimeIdentity.mode {
+            case .resolvedPlan:
+                // Portable archives are checksummed, not a signed authority transfer. The exact
+                // source plan is useful evidence, but the destination must mint its own media,
+                // host-qualification, resource-admission, and plan authority.
+                issues.append(.resolvedPlanRequiresReplanning)
+                disposition = .requiresReplanning
+            case .requiresReplanning:
+                issues.append(.sourceRequiresReplanning)
+                disposition = .requiresReplanning
+            case .legacyCompatibility:
+                if launchPolicy == .perWorkspaceAuthority {
+                    issues.append(.legacyRequiresMigration)
+                    disposition = .requiresReplanning
+                } else {
+                    disposition = .ready
+                }
+            }
+        }
+
+        return DoryMachineImportAssessment(
+            contentID: MachineSnapshotBundle.digestHex(bundle.contentID),
+            sourceMachineID: snapshot.machineID,
+            sourceSnapshotID: snapshot.id,
+            architecture: snapshot.architecture,
+            bootMode: snapshot.bootMode,
+            diskSizeBytes: UInt64(snapshot.sizeBytes),
+            virtualHardwareABIVersion: snapshot.runtimeIdentity.virtualHardwareABIVersion,
+            sourceRuntimeMode: snapshot.runtimeIdentity.mode,
+            sourceBackend: snapshot.runtimeIdentity.backend,
+            portable: portable,
+            disposition: disposition,
+            issues: issues,
+            components: components
+        )
+    }
+
     public func importSnapshot(fromPath path: String) throws -> DoryMachineSnapshot {
+        try importSnapshot(fromPath: path, expectedContentID: nil)
+    }
+
+    public func importSnapshot(
+        fromPath path: String,
+        expectedContentID: String?
+    ) throws -> DoryMachineSnapshot {
         operationLock.lock()
         defer { operationLock.unlock() }
         var extractedRootfsPath: String?
@@ -4593,7 +4698,14 @@ public final class MachineManager: @unchecked Sendable {
         var extractedNVRAMPath: String?
         var importedMachineID: String?
         do {
-            let bundle = try MachineSnapshotBundle.readDescriptor(fromPath: path)
+            let bundle = try MachineSnapshotBundle.verifyDescriptor(fromPath: path)
+            if let expectedContentID {
+                guard expectedContentID == MachineSnapshotBundle.digestHex(bundle.contentID) else {
+                    throw MachineManagerError.persistence(
+                        "machine bundle changed after import assessment"
+                    )
+                }
+            }
             var snapshot = bundle.snapshot
             guard Self.isValidID(snapshot.machineID), Self.isValidID(snapshot.id) else {
                 throw MachineManagerError.persistence("invalid snapshot metadata")
@@ -10273,6 +10385,16 @@ public final class MachineManager: @unchecked Sendable {
 }
 
 private enum MachineSnapshotBundle {
+    private struct FileSnapshot: Equatable {
+        var device: UInt64
+        var inode: UInt64
+        var size: Int64
+        var modifiedSeconds: Int64
+        var modifiedNanoseconds: Int64
+        var changedSeconds: Int64
+        var changedNanoseconds: Int64
+    }
+
     private struct Header {
         var snapshot: DoryMachineSnapshot
         var rootfsOffset: UInt64
@@ -10465,10 +10587,39 @@ private enum MachineSnapshotBundle {
         }
     }
 
-    static func readDescriptor(fromPath path: String) throws -> (snapshot: DoryMachineSnapshot, contentID: Data) {
+    static func verifyDescriptor(
+        fromPath path: String
+    ) throws -> (snapshot: DoryMachineSnapshot, contentID: Data) {
         let input = try openRegularFileForReading(path: path)
         defer { try? input.close() }
+        let before = try fileSnapshot(input)
         let header = try readHeader(from: input)
+        var artifacts: [(UInt64, UInt64, Data)] = [
+            (header.rootfsOffset, header.rootfsLength, header.rootfsDigest),
+            (header.kernelOffset, header.kernelLength, header.kernelDigest),
+        ]
+        if let offset = header.machineIdentifierOffset,
+           let length = header.machineIdentifierLength,
+           let digest = header.machineIdentifierDigest {
+            artifacts.append((offset, length, digest))
+        }
+        if let offset = header.nvramOffset,
+           let length = header.nvramLength,
+           let digest = header.nvramDigest {
+            artifacts.append((offset, length, digest))
+        }
+        for (offset, length, expectedDigest) in artifacts {
+            try input.seek(toOffset: offset)
+            guard try hashExactly(from: input, byteCount: length) == expectedDigest else {
+                throw MachineManagerError.persistence("corrupt dory machine bundle artifact")
+            }
+        }
+        let after = try fileSnapshot(input)
+        guard before == after else {
+            throw MachineManagerError.persistence(
+                "machine bundle changed during import assessment"
+            )
+        }
         return (header.snapshot, header.contentID)
     }
 
@@ -10726,8 +10877,41 @@ private enum MachineSnapshotBundle {
         )
     }
 
-    private static func digestHex(_ digest: Data) -> String {
+    static func digestHex(_ digest: Data) -> String {
         digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func fileSnapshot(_ handle: FileHandle) throws -> FileSnapshot {
+        var info = stat()
+        guard fstat(handle.fileDescriptor, &info) == 0 else {
+            throw MachineManagerError.persistence(
+                "could not inspect machine bundle file: \(String(cString: strerror(errno)))"
+            )
+        }
+        return FileSnapshot(
+            device: UInt64(info.st_dev),
+            inode: UInt64(info.st_ino),
+            size: info.st_size,
+            modifiedSeconds: Int64(info.st_mtimespec.tv_sec),
+            modifiedNanoseconds: Int64(info.st_mtimespec.tv_nsec),
+            changedSeconds: Int64(info.st_ctimespec.tv_sec),
+            changedNanoseconds: Int64(info.st_ctimespec.tv_nsec)
+        )
+    }
+
+    private static func hashExactly(from input: FileHandle, byteCount: UInt64) throws -> Data {
+        var remaining = byteCount
+        var hasher = SHA256()
+        while remaining > 0 {
+            let requested = Int(min(remaining, UInt64(copyChunkSize)))
+            let chunk = try input.read(upToCount: requested) ?? Data()
+            guard !chunk.isEmpty else {
+                throw MachineManagerError.persistence("truncated dory machine bundle payload")
+            }
+            hasher.update(data: chunk)
+            remaining -= UInt64(chunk.count)
+        }
+        return Data(hasher.finalize())
     }
 
     private static func openRegularFileForReading(
