@@ -363,6 +363,7 @@ jobs:
           python3 .github/scripts/test-ecr-registry-retry-gate.py
           python3 .github/scripts/test-private-registry-auth-gate.py
           python3 .github/scripts/test-offline-bundled-boot-gate.py
+          python3 .github/scripts/test-competitor-runtime-regression-gate.py
       - name: P0 smoke harness regression tests
         run: bash scripts/test-p0-smoke.sh
       - name: Dory app and offline quality suite
