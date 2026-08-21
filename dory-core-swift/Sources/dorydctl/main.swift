@@ -170,7 +170,7 @@ func usage(exitCode: Int32 = 2) -> Never {
           dorydctl [global] machine exec NAME [--json] [--cwd PATH] [--env KEY=VALUE] [--env-json-stdin] [--timeout-ms N] [--output-limit-bytes N] -- COMMAND [ARG...]
           dorydctl [global] machine shell NAME
           dorydctl [global] machine provision NAME --recipe RECIPE
-          dorydctl [global] machine desktop-update NAME --distro debian|ubuntu|kali --version VERSION --bundle PATH --kernel PATH
+          dorydctl [global] machine desktop-update NAME --distro debian|ubuntu|kali --version VERSION --distribution-installation ID --runtime-installation ID
           dorydctl [global] machine snapshots [NAME]
           dorydctl [global] machine snapshot NAME [--note NOTE] [--id ID]
           dorydctl [global] machine clone-snapshot NAME SNAPSHOT_ID NEW_NAME
@@ -184,6 +184,7 @@ func usage(exitCode: Int32 = 2) -> Never {
           dorydctl [global] machine backup remove NAME
           dorydctl [global] component list [--json] [--offline]
           dorydctl [global] component install|update ID [--json]
+          dorydctl [global] component install-candidate ID --candidate-dir PATH [--json]
           dorydctl [global] component verify [ID|all] [--json] [--offline]
           dorydctl [global] component remove ID [--json] [--offline]
           dorydctl [global] remote connect NAME --host HOST --user USER --private-key-id ID --remote-root PATH (--host-key KEY | --known-hosts PATH) [--port N] [--endpoint-unix PATH | --endpoint-tcp HOST:PORT]
@@ -389,6 +390,39 @@ private func runComponent(cursor: inout ArgumentCursor) throws {
             throw DoryComponentError.unknownComponent(rawID)
         }
         print(path)
+        return
+    }
+    if subcommand == "install-candidate" {
+        let rawID = try cursor.take(
+            "usage: dorydctl component install-candidate ID --candidate-dir PATH [--json]"
+        )
+        let candidateDirectory = try requiredOption(
+            "--candidate-dir",
+            cursor: &cursor,
+            usage: "usage: dorydctl component install-candidate ID --candidate-dir PATH [--json]"
+        )
+        guard cursor.values.isEmpty, let id = DoryComponentID(rawValue: rawID), id.isRemovable else {
+            throw DoryComponentError.unknownComponent(rawID)
+        }
+        let importer = DorySignedComponentCandidateImporter(
+            store: store,
+            appVersion: componentAppVersion()
+        )
+        let result = try importer.install(id, from: candidateDirectory)
+        if json {
+            try emitJSON([
+                "schema": "dev.dory.component-candidate-import",
+                "schemaVersion": 1,
+                "catalogDigest": result.catalogDigest,
+                "installations": Dictionary(uniqueKeysWithValues: result.installed.map {
+                    ($0.id.rawValue, $0.installationName)
+                }),
+            ] as NSDictionary)
+        } else {
+            for component in result.installed {
+                print("\(component.id.rawValue)\t\(component.installationName)")
+            }
+        }
         return
     }
     let catalog = try loadComponentCatalog(store: store, offline: offline)
