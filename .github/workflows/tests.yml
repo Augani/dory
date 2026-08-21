@@ -36,6 +36,7 @@ jobs:
       - name: Signed release metadata contract
         run: |
           python3 .github/scripts/test-release-metadata.py
+          python3 .github/scripts/test-release-output-validator.py
           python3 .github/scripts/test-generate-appcast.py
           python3 .github/scripts/test-release-sbom.py
           python3 .github/scripts/test-direct-dmg-install-gate.py
