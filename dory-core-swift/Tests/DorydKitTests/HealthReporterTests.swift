@@ -358,7 +358,11 @@ final class HealthReporterTests: XCTestCase {
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath,
-            environment: ["OPAQUE_SECRET": "sk-opaque-value"]
+            environment: [
+                "OPAQUE_SECRET": "sk-opaque-value",
+                "DORY_GPU_TRACE_RESOURCES": "1",
+                "DORY_VIRGLRENDERER_PATH": "/private/opaque-renderer.dylib",
+            ]
         ))
         _ = try manager.start(id: "dev")
 
@@ -383,12 +387,17 @@ final class HealthReporterTests: XCTestCase {
         XCTAssertEqual(runtime.code, "machine.runtime_legacy_compatibility")
         XCTAssertEqual(runtime.data["runtime_identity_mode"], "legacy-compatibility")
         XCTAssertEqual(runtime.data["virtual_hardware_abi"], "1")
+        XCTAssertEqual(
+            runtime.data["diagnostic_overrides"],
+            "gpu-resource-tracing,virgl-renderer-path"
+        )
         XCTAssertNil(runtime.data["environment"])
 
         let doctor = reporter.doctorReport()
         XCTAssertTrue(doctor.results.contains { $0.id == "machine.local" })
         XCTAssertTrue(doctor.results.contains { $0.id == "machine.local.dev" })
         XCTAssertNil(try doctor.jsonString().range(of: "sk-opaque-value"))
+        XCTAssertNil(try doctor.jsonString().range(of: "/private/opaque-renderer.dylib"))
 
         _ = try manager.pause(id: "dev")
         let pausedHealth = reporter.report()

@@ -333,6 +333,7 @@ public struct DoryMachineStatus: Sendable, Equatable {
     public var environment: [String: String]
     public var typedSettings: DoryMachineTypedSettingsSnapshot?
     public var sandboxPolicy: DoryVMSandboxPolicy?
+    public var diagnosticOverrides: [DoryMachineDiagnosticOverride]
     public var runtimeIdentity: DoryMachineRuntimeIdentity
     public var installedDesktopPayloadReceipt: DoryInstalledDesktopPayloadReceipt?
 
@@ -363,6 +364,7 @@ public struct DoryMachineStatus: Sendable, Equatable {
         environment: [String: String] = [:],
         typedSettings: DoryMachineTypedSettingsSnapshot? = nil,
         sandboxPolicy: DoryVMSandboxPolicy? = nil,
+        diagnosticOverrides: [DoryMachineDiagnosticOverride] = [],
         runtimeIdentity: DoryMachineRuntimeIdentity = .legacyCompatibility(
             virtualHardwareABIVersion:
                 DoryVirtualMachineDefinition.currentVirtualHardwareABIVersion
@@ -395,6 +397,7 @@ public struct DoryMachineStatus: Sendable, Equatable {
         self.environment = environment
         self.typedSettings = typedSettings
         self.sandboxPolicy = sandboxPolicy
+        self.diagnosticOverrides = diagnosticOverrides
         self.runtimeIdentity = runtimeIdentity
         self.installedDesktopPayloadReceipt = installedDesktopPayloadReceipt
     }
@@ -1281,6 +1284,9 @@ public final class MachineManager: @unchecked Sendable {
             typedSettings: typedSettingsSnapshot,
             sandboxPolicy: sandboxPolicy
                 ?? DoryVMSandboxPolicy.legacyEnvironment(preparedMachine.environment),
+            diagnosticOverrides: DoryMachineDiagnosticOverride.configured(
+                in: preparedMachine.environment
+            ),
             runtimeIdentity: initialRuntimeIdentity
         )
     }
@@ -4265,6 +4271,9 @@ public final class MachineManager: @unchecked Sendable {
                     id: id,
                     configuration: entry.configuration
                 ),
+                diagnosticOverrides: DoryMachineDiagnosticOverride.configured(
+                    in: entry.configuration.environment
+                ),
                 runtimeIdentity: entry.runtimeIdentity,
                 installedDesktopPayloadReceipt:
                     entry.configuration.effectiveInstalledDesktopPayloadReceipt
@@ -4299,6 +4308,9 @@ public final class MachineManager: @unchecked Sendable {
             sandboxPolicy: try? effectiveSandboxPolicy(
                 id: id,
                 configuration: entry.configuration
+            ),
+            diagnosticOverrides: DoryMachineDiagnosticOverride.configured(
+                in: entry.configuration.environment
             ),
             runtimeIdentity: entry.runtimeIdentity,
             installedDesktopPayloadReceipt:

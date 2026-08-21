@@ -2070,6 +2070,11 @@ public final class HealthReporter: @unchecked Sendable {
             "virtual_hardware_abi": String(identity.virtualHardwareABIVersion),
             "runtime_identity_valid": issues.isEmpty ? "true" : "false",
         ]
+        if !status.diagnosticOverrides.isEmpty {
+            data["diagnostic_overrides"] = status.diagnosticOverrides
+                .map(\.rawValue)
+                .joined(separator: ",")
+        }
         if !issues.isEmpty {
             data["runtime_identity_issues"] = issues
                 .map { "\($0.code.rawValue):\($0.field)" }

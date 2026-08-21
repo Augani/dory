@@ -1889,6 +1889,9 @@ private extension DoryMachineStatus {
            ) {
             dictionary[DoryMachineSandboxPolicyWriteAuthority.xpcKey] = encoded
         }
+        if !diagnosticOverrides.isEmpty {
+            dictionary["diagnosticOverrides"] = diagnosticOverrides.map(\.rawValue)
+        }
         dictionary["runtimeIdentity"] = runtimeIdentity.xpcDictionary
         if let installedDesktopPayloadReceipt {
             dictionary["installedDesktopPayloadReceipt"] =

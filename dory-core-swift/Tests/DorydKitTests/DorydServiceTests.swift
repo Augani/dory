@@ -1397,6 +1397,7 @@ final class DorydServiceTests: XCTestCase {
             environment: [
                 "DORY_GUEST_USER": "../../unsafe-old-user",
                 "DORY_GUEST_UID": "not-a-uid",
+                "DORY_VIRGLRENDERER_PATH": "/private/opaque-renderer.dylib",
                 "PRIVATE_TOKEN": "opaque-legacy-value",
             ]
         ))
@@ -1490,6 +1491,11 @@ final class DorydServiceTests: XCTestCase {
             XCTAssertEqual(desktop?["displayName"] as? String, "Ubuntu Legacy")
             XCTAssertEqual(typed?["desktopRuntimePreference"] as? String, "compatible")
             XCTAssertEqual(typed?["desktopGraphicsPreference"] as? String, "software")
+            XCTAssertEqual(
+                body["diagnosticOverrides"] as? [String],
+                ["virgl-renderer-path"]
+            )
+            XCTAssertFalse(body.description.contains("/private/opaque-renderer.dylib"))
             typedUpdate.fulfill()
         }
         wait(for: [typedUpdate], timeout: 5)
