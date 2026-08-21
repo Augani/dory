@@ -30,6 +30,7 @@ class ReleaseCandidateLiveSmokeTests(unittest.TestCase):
             "required offline release fixture is missing",
             "ISOLATED-DORY-MACHINE-RESOURCES",
             "EXACT-CANDIDATE-DESKTOPS",
+            '--component-dir "$DESKTOP_COMPONENT_DIR"',
             "ISOLATED-EXTERNAL-APFS-BIND",
             "ISOLATED-DORY-BIND-LOCKS",
             "SLEEP-AND-WAKE-THIS-MAC",
@@ -39,6 +40,12 @@ class ReleaseCandidateLiveSmokeTests(unittest.TestCase):
             'READINESS_NONNATIVE_BUILD_IMAGE="$NONNATIVE_BUILD_IMAGE"',
             "live-manifest.txt",
             "live_candidate=PASS",
+            "zed-linux-aarch64.tar.gz",
+            'ZED_VERSION="1.16.1"',
+            "releases/download/v$ZED_VERSION/zed-linux-aarch64.tar.gz",
+            "384499c75d75c6aab53110dbc1d8856f6f774baaa32dc57b9963f9e29f8d007b",
+            "zed_native_venus=PASS",
+            "signed desktop component candidate is unavailable or indirect",
         ):
             self.assertIn(proof, text, proof)
         for stale in ("alpine:latest", "nginx:alpine", "node:20-alpine", "assert "):

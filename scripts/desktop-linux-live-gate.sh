@@ -15,13 +15,16 @@ KALI_ROOTFS=""
 DEBIAN_UPDATE=""
 UBUNTU_UPDATE=""
 KALI_UPDATE=""
+ZED_ARCHIVE=""
+ZED_VERSION=""
+ZED_SHA256=""
 DESKTOP_VERSION=""
 SELECTED_DISTRO="all"
 WORKROOT="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/dory-desktop-linux-live"
 CONFIRM=""
 
 usage() {
-  echo "usage: desktop-linux-live-gate.sh --ctl PATH --component-dir PATH --kernel PATH [--distro all|debian|ubuntu|kali] [desktop assets] --version VERSION --workroot PATH --confirm EXACT-CANDIDATE-DESKTOPS" >&2
+  echo "usage: desktop-linux-live-gate.sh --ctl PATH --component-dir PATH --kernel PATH [--distro all|debian|ubuntu|kali] [desktop assets] --zed-archive PATH --zed-version VERSION --zed-sha256 SHA256 --version VERSION --workroot PATH --confirm EXACT-CANDIDATE-DESKTOPS" >&2
   exit 64
 }
 
@@ -36,6 +39,9 @@ while [ "$#" -gt 0 ]; do
     --debian-update) DEBIAN_UPDATE="${2:?missing path}"; shift 2 ;;
     --ubuntu-update) UBUNTU_UPDATE="${2:?missing path}"; shift 2 ;;
     --kali-update) KALI_UPDATE="${2:?missing path}"; shift 2 ;;
+    --zed-archive) ZED_ARCHIVE="${2:?missing path}"; shift 2 ;;
+    --zed-version) ZED_VERSION="${2:?missing version}"; shift 2 ;;
+    --zed-sha256) ZED_SHA256="${2:?missing digest}"; shift 2 ;;
     --distro) SELECTED_DISTRO="${2:?missing distro}"; shift 2 ;;
     --version) DESKTOP_VERSION="${2:?missing version}"; shift 2 ;;
     --workroot) WORKROOT="${2:?missing path}"; shift 2 ;;
@@ -57,7 +63,7 @@ VMM="$HELPERS/dory-hv"
 VZ_VMM="$HELPERS/dory-vmm"
 [ -x "$VMM" ] || { echo "desktop live gate: accelerated candidate dory-hv is missing: $VMM" >&2; exit 66; }
 [ -x "$VZ_VMM" ] || { echo "desktop live gate: fallback candidate dory-vmm is missing: $VZ_VMM" >&2; exit 66; }
-assets=("$KERNEL")
+assets=("$KERNEL" "$ZED_ARCHIVE")
 case "$SELECTED_DISTRO" in
   all) assets+=("$DEBIAN_ROOTFS" "$UBUNTU_ROOTFS" "$KALI_ROOTFS" "$DEBIAN_UPDATE" "$UBUNTU_UPDATE" "$KALI_UPDATE") ;;
   debian) assets+=("$DEBIAN_ROOTFS" "$DEBIAN_UPDATE") ;;
@@ -75,6 +81,7 @@ absolute_asset() {
   printf '%s/%s\n' "$asset_directory" "$(basename "$asset_input")"
 }
 KERNEL="$(absolute_asset "$KERNEL")"
+ZED_ARCHIVE="$(absolute_asset "$ZED_ARCHIVE")"
 COMPONENT_DIR="$(cd "$COMPONENT_DIR" && pwd -P)"
 case "$SELECTED_DISTRO" in
   all)
@@ -100,6 +107,12 @@ case "$SELECTED_DISTRO" in
 esac
 printf '%s\n' "$DESKTOP_VERSION" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$' \
   || { echo "desktop live gate: invalid desktop version: $DESKTOP_VERSION" >&2; exit 64; }
+printf '%s\n' "$ZED_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' \
+  || { echo "desktop live gate: invalid Zed version: $ZED_VERSION" >&2; exit 64; }
+printf '%s\n' "$ZED_SHA256" | grep -Eq '^[0-9a-f]{64}$' \
+  || { echo "desktop live gate: invalid Zed digest" >&2; exit 64; }
+[ "$(shasum -a 256 "$ZED_ARCHIVE" | awk '{print $1}')" = "$ZED_SHA256" ] \
+  || { echo "desktop live gate: Zed archive digest mismatch" >&2; exit 66; }
 [ -n "${RUNNER_TEMP:-}" ] \
   || { echo "desktop live gate: RUNNER_TEMP must identify the dedicated release workspace" >&2; exit 64; }
 case "$RUNNER_TEMP" in /*) ;; *) echo "desktop live gate: RUNNER_TEMP must be absolute" >&2; exit 64 ;; esac
@@ -120,6 +133,8 @@ PY
 rm -rf "$WORKROOT"
 mkdir -p "$WORKROOT/share" "$WORKROOT/evidence"
 printf 'Dory desktop release gate\n' > "$WORKROOT/share/host-marker.txt"
+cp "$ZED_ARCHIVE" "$WORKROOT/share/zed-linux-aarch64.tar.gz"
+[ "$(shasum -a 256 "$WORKROOT/share/zed-linux-aarch64.tar.gz" | awk '{print $1}')" = "$ZED_SHA256" ]
 codesign --verify --strict "$VMM"
 codesign -d --entitlements :- "$VMM" > "$WORKROOT/evidence/dory-hv-entitlements.plist" 2>&1
 grep -q 'com.apple.security.hypervisor' "$WORKROOT/evidence/dory-hv-entitlements.plist"
@@ -131,6 +146,7 @@ grep -q 'com.apple.security.virtualization' "$WORKROOT/evidence/dory-vmm-entitle
 grep -q 'com.apple.security.device.audio-input' "$WORKROOT/evidence/dory-vmm-entitlements.plist"
 grep -q 'NSMicrophoneUsageDescription' "$HELPERS/../Info.plist"
 ACTIVE_MACHINE=""
+ZED_QUALIFIED=0
 
 cleanup() {
   result=$?
@@ -505,6 +521,58 @@ PY
         /tmp/dory-release-settings.log /tmp/dory-release-terminal.log >&2
       exit 1
     " > "$WORKROOT/evidence/$distro-gtk-windows.json"
+
+    assert_exec_token "$machine" zed-native-venus sh -lc "
+      set -eu
+      uid=\$(id -u dorygate)
+      runtime=/run/user/\$uid
+      session_env=\$(runuser -u dorygate -- env XDG_RUNTIME_DIR=\"\$runtime\" \\
+        DBUS_SESSION_BUS_ADDRESS=\"unix:path=\$runtime/bus\" systemctl --user show-environment \\
+        | grep -E '^(DISPLAY|DBUS_SESSION_BUS_ADDRESS|XAUTHORITY|XDG_RUNTIME_DIR|VK_DRIVER_FILES|LD_LIBRARY_PATH)=')
+      display=\$(printf '%s\n' \"\$session_env\" | sed -n 's/^DISPLAY=//p')
+      dbus=\$(printf '%s\n' \"\$session_env\" | sed -n 's/^DBUS_SESSION_BUS_ADDRESS=//p')
+      xauth=\$(printf '%s\n' \"\$session_env\" | sed -n 's/^XAUTHORITY=//p')
+      vk_driver=\$(printf '%s\n' \"\$session_env\" | sed -n 's/^VK_DRIVER_FILES=//p')
+      library_path=\$(printf '%s\n' \"\$session_env\" | sed -n 's/^LD_LIBRARY_PATH=//p')
+      test -n \"\$display\"
+      test -n \"\$xauth\"
+      test -n \"\$vk_driver\"
+      test -n \"\$library_path\"
+      rm -rf /home/dorygate/.local/zed.app
+      runuser -u dorygate -- mkdir -p /home/dorygate/.local /home/dorygate/Projects/dory-gate
+      test \"\$(sha256sum /home/dorygate/Mac/zed-linux-aarch64.tar.gz | awk '{print \$1}')\" \\
+        = '$ZED_SHA256'
+      printf 'fn main() { println!(\"Dory Venus gate\"); }\n' \\
+        > /home/dorygate/Projects/dory-gate/main.rs
+      chown -R dorygate:dorygate /home/dorygate/Projects/dory-gate
+      runuser -u dorygate -- tar -xzf /home/dorygate/Mac/zed-linux-aarch64.tar.gz \\
+        -C /home/dorygate/.local
+      test -x /home/dorygate/.local/zed.app/bin/zed
+      runuser -u dorygate -- /home/dorygate/.local/zed.app/bin/zed --version \\
+        | grep -F '$ZED_VERSION'
+      runuser -u dorygate -- env -u ZED_ALLOW_EMULATED_GPU \\
+        DISPLAY=\"\$display\" XAUTHORITY=\"\$xauth\" \\
+        XDG_RUNTIME_DIR=\"\$runtime\" DBUS_SESSION_BUS_ADDRESS=\"\$dbus\" \\
+        VK_DRIVER_FILES=\"\$vk_driver\" LD_LIBRARY_PATH=\"\$library_path\" \\
+        /home/dorygate/.local/zed.app/bin/zed /home/dorygate/Projects/dory-gate/main.rs \\
+        >/tmp/dory-release-zed.log 2>&1
+      for _ in \$(seq 1 60); do
+        zed_pid=\$(pgrep -n -u dorygate -f '/zed.app/libexec/zed-editor' || true)
+        if test -n \"\$zed_pid\" \\
+            && tr '\\0' '\\n' <\"/proc/\$zed_pid/environ\" | grep -Fqx \"VK_DRIVER_FILES=\$vk_driver\" \\
+            && tr '\\0' '\\n' <\"/proc/\$zed_pid/environ\" | grep -Fqx \"LD_LIBRARY_PATH=\$library_path\" \\
+            && ! tr '\\0' '\\n' <\"/proc/\$zed_pid/environ\" | grep -q '^ZED_ALLOW_EMULATED_GPU=' \\
+            && runuser -u dorygate -- env DISPLAY=\"\$display\" XAUTHORITY=\"\$xauth\" \\
+              xwininfo -root -tree 2>/dev/null | grep -Eiq 'zed|dory-gate/main.rs'; then
+          echo zed-native-venus
+          exit 0
+        fi
+        sleep 1
+      done
+      cat /tmp/dory-release-zed.log >&2
+      exit 1
+    " > "$WORKROOT/evidence/$distro-zed.json"
+    ZED_QUALIFIED=1
   fi
 
   "$CTL" machine stop "$machine" > "$WORKROOT/evidence/$distro-stop.json"
@@ -607,6 +675,13 @@ fi
   printf 'source_commit=%s\n' "${GITHUB_SHA:-local}"
   printf 'distros=%s\n' "$SELECTED_DISTRO"
   printf 'kernel_sha256=%s\n' "$(shasum -a 256 "$KERNEL" | awk '{print $1}')"
+  printf 'zed_version=%s\n' "$ZED_VERSION"
+  printf 'zed_sha256=%s\n' "$ZED_SHA256"
+  if [ "$ZED_QUALIFIED" = 1 ]; then
+    printf 'zed_native_venus=PASS\n'
+  else
+    printf 'zed_native_venus=NOT-RUN\n'
+  fi
   if [ "$SELECTED_DISTRO" = all ] || [ "$SELECTED_DISTRO" = debian ]; then
     printf 'debian_rootfs_sha256=%s\n' "$(shasum -a 256 "$DEBIAN_ROOTFS" | awk '{print $1}')"
     printf 'debian_update_sha256=%s\n' "$(shasum -a 256 "$DEBIAN_UPDATE" | awk '{print $1}')"
@@ -621,5 +696,9 @@ fi
   fi
   printf 'status=PASS\n'
 } > "$WORKROOT/evidence/manifest.txt"
+
+rm -f "$WORKROOT/share/zed-linux-aarch64.tar.gz"
+[ "$SELECTED_DISTRO" != all ] && [ "$SELECTED_DISTRO" != ubuntu ] \
+  || [ "$ZED_QUALIFIED" = 1 ]
 
 echo "Desktop Linux exact-candidate live gate: PASS ($WORKROOT/evidence/manifest.txt)"

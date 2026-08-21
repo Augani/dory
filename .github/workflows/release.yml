@@ -709,6 +709,7 @@ jobs:
           DORY_RELEASE_CORPORATE_VPN_PROBE_HOST: ${{ vars.DORY_CORPORATE_VPN_PROBE_HOST }}
           DORY_RELEASE_CORPORATE_VPN_PROBE_URL: ${{ vars.DORY_CORPORATE_VPN_PROBE_URL }}
           DORY_RELEASE_TAILSCALE_EXIT_NODE: ${{ vars.DORY_TAILSCALE_EXIT_NODE }}
+          DORY_RELEASE_COMPONENT_DIR: ${{ github.workspace }}/release-build/components/arm64
           DORY_RELEASE_DESKTOP_KERNEL: ${{ github.workspace }}/guest/out/Image-desktop
           DORY_RELEASE_DESKTOP_DEBIAN_ROOTFS: ${{ github.workspace }}/guest/out/dory-desktop-debian-rootfs-arm64.ext4
           DORY_RELEASE_DESKTOP_UBUNTU_ROOTFS: ${{ github.workspace }}/guest/out/dory-desktop-ubuntu-rootfs-arm64.ext4

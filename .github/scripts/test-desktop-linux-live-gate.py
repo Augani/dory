@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import pathlib
 import subprocess
@@ -35,6 +36,14 @@ class DesktopLinuxLiveGateTests(unittest.TestCase):
             '--runtime-installation "$runtime_installation"',
             '"provenance": "verified-update-bundle"',
             "stale-update-rejected",
+            "--zed-archive",
+            "zed-native-venus",
+            "/zed.app/libexec/zed-editor",
+            "zed --version",
+            "zed_native_venus=NOT-RUN",
+            "VK_DRIVER_FILES",
+            "LD_LIBRARY_PATH",
+            "-u ZED_ALLOW_EMULATED_GPU",
             "workroot must be a strict child of RUNNER_TEMP",
         )
         for proof in required:
@@ -84,6 +93,12 @@ class DesktopLinuxLiveGateTests(unittest.TestCase):
                     str(assets[1]),
                     "--ubuntu-update",
                     str(assets[2]),
+                    "--zed-archive",
+                    str(assets[2]),
+                    "--zed-version",
+                    "1.16.1",
+                    "--zed-sha256",
+                    hashlib.sha256(assets[2].read_bytes()).hexdigest(),
                     "--distro",
                     "ubuntu",
                     "--version",

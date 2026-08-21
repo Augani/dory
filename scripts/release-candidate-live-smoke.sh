@@ -36,6 +36,7 @@ CORPORATE_PROBE_HOST="${DORY_RELEASE_CORPORATE_VPN_PROBE_HOST:-}"
 CORPORATE_PROBE_URL="${DORY_RELEASE_CORPORATE_VPN_PROBE_URL:-}"
 TAILSCALE_EXIT_NODE="${DORY_RELEASE_TAILSCALE_EXIT_NODE:-}"
 DESKTOP_KERNEL="${DORY_RELEASE_DESKTOP_KERNEL:-}"
+DESKTOP_COMPONENT_DIR="${DORY_RELEASE_COMPONENT_DIR:-}"
 DESKTOP_DEBIAN_ROOTFS="${DORY_RELEASE_DESKTOP_DEBIAN_ROOTFS:-}"
 DESKTOP_UBUNTU_ROOTFS="${DORY_RELEASE_DESKTOP_UBUNTU_ROOTFS:-}"
 DESKTOP_KALI_ROOTFS="${DORY_RELEASE_DESKTOP_KALI_ROOTFS:-}"
@@ -43,6 +44,12 @@ DESKTOP_DEBIAN_UPDATE="${DORY_RELEASE_DESKTOP_DEBIAN_UPDATE:-}"
 DESKTOP_UBUNTU_UPDATE="${DORY_RELEASE_DESKTOP_UBUNTU_UPDATE:-}"
 DESKTOP_KALI_UPDATE="${DORY_RELEASE_DESKTOP_KALI_UPDATE:-}"
 DESKTOP_VERSION="${DORY_RELEASE_DESKTOP_VERSION:-}"
+# Official stable ARM64 artifact published by zed-industries/zed. The physical gate downloads this
+# exact version and refuses any byte change before exposing it through the read-only guest share.
+ZED_VERSION="1.16.1"
+ZED_SHA256="384499c75d75c6aab53110dbc1d8856f6f774baaa32dc57b9963f9e29f8d007b"
+ZED_URL="https://github.com/zed-industries/zed/releases/download/v$ZED_VERSION/zed-linux-aarch64.tar.gz"
+ZED_ARCHIVE=""
 SOURCE_COMMIT="${DORY_RELEASE_SOURCE_COMMIT:-${GITHUB_SHA:-}}"
 APP_PID=""
 PREVIOUS_CONTEXT="default"
@@ -83,6 +90,9 @@ cleanup() {
   rm -rf "$STATE" "$APP_SUPPORT"
   defaults delete "$PREF_DOMAIN" >/dev/null 2>&1 || true
   rm -f "$PREF_PLIST"
+  if [ -n "$ZED_ARCHIVE" ]; then
+    rm -f "$ZED_ARCHIVE"
+  fi
   /usr/bin/killall -u "$(/usr/bin/id -un)" cfprefsd >/dev/null 2>&1 || true
   rm -f "$PREF_PLIST"
   for index in "${!PROFILE_PATHS[@]}"; do
@@ -156,6 +166,8 @@ if [ "$REQUIRED_ARCH" = arm64 ]; then
     [ -f "$asset" ] && [ ! -L "$asset" ] && [ -s "$asset" ] \
       || fail "same-commit desktop release asset is unavailable or indirect: $asset"
   done
+  [ -d "$DESKTOP_COMPONENT_DIR" ] && [ ! -L "$DESKTOP_COMPONENT_DIR" ] \
+    || fail "signed desktop component candidate is unavailable or indirect: $DESKTOP_COMPONENT_DIR"
   [ -n "$DESKTOP_VERSION" ] || fail "DORY_RELEASE_DESKTOP_VERSION is required"
   [ -n "${SSH_AUTH_SOCK:-}" ] && [ -S "$SSH_AUTH_SOCK" ] \
     || fail "physical release qualification requires a live SSH_AUTH_SOCK"
@@ -224,6 +236,15 @@ mkdir -p "$LOG_ROOT"
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
+if [ "$REQUIRED_ARCH" = arm64 ]; then
+  ZED_ARCHIVE="$RUNNER_TEMP/dory-zed-$ZED_VERSION-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}.tar.gz"
+  [ ! -e "$ZED_ARCHIVE" ] && [ ! -L "$ZED_ARCHIVE" ] \
+    || fail "Zed fixture path already exists or is indirect: $ZED_ARCHIVE"
+  curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 15 --max-time 600 \
+    "$ZED_URL" -o "$ZED_ARCHIVE"
+  [ "$(shasum -a 256 "$ZED_ARCHIVE" | awk '{print $1}')" = "$ZED_SHA256" ] \
+    || fail "pinned Zed $ZED_VERSION ARM64 archive digest mismatch"
+fi
 defaults write "$PREF_DOMAIN" dory.hasCompletedOnboarding -bool true
 defaults write "$PREF_DOMAIN" dory.keepDorydRunningAfterQuit -bool false
 if [ "$REQUIRED_ARCH" = arm64 ]; then
@@ -345,6 +366,7 @@ if [ "$REQUIRED_ARCH" = arm64 ]; then
 
   scripts/desktop-linux-live-gate.sh \
     --ctl "$APP/Contents/Helpers/dorydctl" \
+    --component-dir "$DESKTOP_COMPONENT_DIR" \
     --kernel "$DESKTOP_KERNEL" \
     --debian-rootfs "$DESKTOP_DEBIAN_ROOTFS" \
     --ubuntu-rootfs "$DESKTOP_UBUNTU_ROOTFS" \
@@ -352,6 +374,9 @@ if [ "$REQUIRED_ARCH" = arm64 ]; then
     --debian-update "$DESKTOP_DEBIAN_UPDATE" \
     --ubuntu-update "$DESKTOP_UBUNTU_UPDATE" \
     --kali-update "$DESKTOP_KALI_UPDATE" \
+    --zed-archive "$ZED_ARCHIVE" \
+    --zed-version "$ZED_VERSION" \
+    --zed-sha256 "$ZED_SHA256" \
     --version "$DESKTOP_VERSION" \
     --workroot "$LOG_ROOT/desktop-linux" \
     --confirm EXACT-CANDIDATE-DESKTOPS
@@ -438,6 +463,11 @@ fi
   echo "dory_vmm_sha256=$(shasum -a 256 "$APP/Contents/Helpers/dory-vmm" | awk '{print $1}')"
   echo "fixture_image=$FIXTURE_IMAGE"
   echo "nonnative_build_image=$NONNATIVE_BUILD_IMAGE"
+  if [ "$REQUIRED_ARCH" = arm64 ]; then
+    echo "zed_version=$ZED_VERSION"
+    echo "zed_sha256=$ZED_SHA256"
+    echo "zed_native_venus=PASS"
+  fi
   echo "p0_smoke=PASS"
   echo "live_candidate=PASS"
 } > "$LOG_ROOT/live-manifest.txt"

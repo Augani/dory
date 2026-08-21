@@ -54,6 +54,11 @@ require(
     "DORY_RELEASE_DESKTOP_KERNEL: ${{ github.workspace }}/guest/out/Image-desktop",
     "physical release gate does not receive its same-commit desktop kernel",
 )
+require(
+    workflow,
+    "DORY_RELEASE_COMPONENT_DIR: ${{ github.workspace }}/release-build/components/arm64",
+    "physical release gate does not receive its signed component candidate",
+)
 live_smoke = Path("scripts/release-candidate-live-smoke.sh").read_text(encoding="utf-8")
 desktop_gate_path = Path("scripts/desktop-linux-live-gate.sh")
 if not desktop_gate_path.stat().st_mode & 0o100:
