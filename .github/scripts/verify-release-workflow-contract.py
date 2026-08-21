@@ -77,8 +77,8 @@ for proof in (
     "com.apple.security.device.audio-input",
     'grep -F "$VMM"',
     "machine desktop-update",
-    "rollback-pass",
-    "last-good snapshot",
+    'body.get("snapshotID")',
+    '"provenance": "verified-update-bundle"',
 ):
     require(desktop_gate, proof, f"desktop live gate omits required proof: {proof}")
 
