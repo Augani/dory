@@ -5006,6 +5006,180 @@ public final class MachineManager: @unchecked Sendable {
         }
     }
 
+    /// Copies a daemon-private staging tree into a fresh guest-owned Downloads subdirectory.
+    /// The destination is intentionally derived here rather than accepted from XPC: `sync-push`
+    /// makes its target an exact replica, so pointing it at an existing user directory could erase
+    /// unrelated files. The caller remains responsible for deleting its staging root afterwards.
+    public func transferStagedFiles(
+        id: String,
+        privateStagingRoot: String
+    ) throws -> DoryMachineFileTransferResult {
+        guard Self.isPrivateTransferStagingRoot(privateStagingRoot) else {
+            throw DoryMachineFileTransferError.invalidPrivateStagingRoot
+        }
+        guard let machineStatus = status(id: id) else {
+            throw MachineManagerError.unknownMachine(id)
+        }
+        guard machineStatus.state == .running,
+              machineStatus.agentSocketPath != nil else {
+            throw MachineManagerError.agentUnavailable(id)
+        }
+        for capability in ["exec", "sync-push"] where
+            !machineStatus.supportsAgentCapability(capability) {
+            throw MachineManagerError.agentCapabilityUnavailable(id, capability)
+        }
+
+        guard let account = machineStatus.typedSettings?.guestIdentityIntent.account,
+              let username = account.username,
+              DoryVMGuestAccountIntent.isValidUsername(username),
+              username != "root" else {
+            throw DoryMachineFileTransferError.guestAccountUnavailable(id)
+        }
+
+        let transferID = UUID().uuidString
+            .replacingOccurrences(of: "-", with: "")
+            .lowercased()
+        let guestHome = "/home/\(username)"
+        let downloads = guestHome + "/Downloads"
+        let guestDestination = downloads + "/Dory Transfer " + transferID
+
+        return try withAgentClient(id: id) { client in
+            let uid = try Self.guestNumericIdentity(
+                client: client,
+                program: "/usr/bin/id",
+                argument: "-u",
+                username: username,
+                machineID: id
+            )
+            let gid = try Self.guestNumericIdentity(
+                client: client,
+                program: "/usr/bin/id",
+                argument: "-g",
+                username: username,
+                machineID: id
+            )
+            if let expectedUID = account.numericUserID, expectedUID != uid {
+                throw DoryMachineFileTransferError.guestAccountUnavailable(id)
+            }
+            let guestIdentityEnvironment = [
+                DoryExecEnvironment(key: "DORY_AGENT_RUN_UID", value: String(uid)),
+                DoryExecEnvironment(key: "DORY_AGENT_RUN_GID", value: String(gid)),
+            ]
+            try Self.requireSuccessfulTransferCommand(
+                client.exec(
+                    argv: ["/bin/mkdir", "-p", "--", downloads],
+                    cwd: guestHome,
+                    env: guestIdentityEnvironment,
+                    timeoutMs: 30_000,
+                    outputLimitBytes: 64 * 1024
+                ),
+                error: .guestPreparationFailed(id)
+            )
+            // No `-p`: a collision or pre-existing attacker-controlled directory must fail rather
+            // than becoming the exact-replica target.
+            try Self.requireSuccessfulTransferCommand(
+                client.exec(
+                    argv: ["/bin/mkdir", "--", guestDestination],
+                    cwd: downloads,
+                    env: guestIdentityEnvironment,
+                    timeoutMs: 30_000,
+                    outputLimitBytes: 64 * 1024
+                ),
+                error: .guestPreparationFailed(id)
+            )
+
+            var completed = false
+            defer {
+                if !completed {
+                    _ = try? client.exec(
+                        argv: ["/bin/rm", "-rf", "--", guestDestination],
+                        cwd: downloads,
+                        env: [],
+                        timeoutMs: 30_000,
+                        outputLimitBytes: 64 * 1024
+                    )
+                }
+            }
+            let stats: DoryPushStats
+            do {
+                stats = try client.push(
+                    localRoot: privateStagingRoot,
+                    remoteRoot: guestDestination
+                )
+            } catch {
+                throw DoryMachineFileTransferError.transferFailed(id)
+            }
+            guard stats.filesDeleted == 0 else {
+                throw DoryMachineFileTransferError.transferFailed(id)
+            }
+            try Self.requireSuccessfulTransferCommand(
+                client.exec(
+                    argv: [
+                        "/bin/chown", "-R", "--", "\(uid):\(gid)", guestDestination,
+                    ],
+                    cwd: downloads,
+                    env: [],
+                    timeoutMs: 30_000,
+                    outputLimitBytes: 64 * 1024
+                ),
+                error: .guestFinalizationFailed(id)
+            )
+            completed = true
+            return DoryMachineFileTransferResult(
+                transferID: transferID,
+                guestDestination: guestDestination,
+                stats: stats
+            )
+        }
+    }
+
+    private static func guestNumericIdentity(
+        client: any AgentControlClient,
+        program: String,
+        argument: String,
+        username: String,
+        machineID: String
+    ) throws -> UInt32 {
+        let result = try client.exec(
+            argv: [program, argument, "--", username],
+            cwd: "/",
+            env: [],
+            timeoutMs: 10_000,
+            outputLimitBytes: 4 * 1024
+        )
+        guard result.exitCode == 0,
+              !result.timedOut,
+              !result.stdoutTruncated,
+              !result.stderrTruncated,
+              let value = UInt32(
+                  String(decoding: result.stdout, as: UTF8.self)
+                      .trimmingCharacters(in: .whitespacesAndNewlines)
+              ),
+              DoryVMGuestAccountIntent.isValidNumericUserID(value) else {
+            throw DoryMachineFileTransferError.guestAccountUnavailable(machineID)
+        }
+        return value
+    }
+
+    private static func requireSuccessfulTransferCommand(
+        _ result: DoryExecResult,
+        error: DoryMachineFileTransferError
+    ) throws {
+        guard result.exitCode == 0, !result.timedOut else { throw error }
+    }
+
+    private static func isPrivateTransferStagingRoot(_ path: String) -> Bool {
+        guard path.hasPrefix("/"), !path.contains("\0") else { return false }
+        var info = stat()
+        guard lstat(path, &info) == 0,
+              (info.st_mode & S_IFMT) == S_IFDIR,
+              info.st_uid == geteuid(),
+              (info.st_mode & 0o077) == 0 else {
+            return false
+        }
+        return true
+    }
+
     private func withAgentClient<T>(
         id: String,
         requiredCapability: String? = nil,
