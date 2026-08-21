@@ -26,6 +26,8 @@ nonisolated protocol DorydControlXPC {
     func machineList(reply: @escaping (NSArray, String) -> Void)
     func machineEvents(_ afterSequence: UInt64, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineFlightRecorder(_ machineID: String, afterSequence: UInt64, reply: @escaping (Bool, NSDictionary, String) -> Void)
+    func machineSerialConsoleRead(_ machineID: String, cursor: NSDictionary, limit: UInt32, reply: @escaping (Bool, NSDictionary, String) -> Void)
+    func machineSerialConsoleWrite(_ machineID: String, data: NSData, reply: @escaping (Bool, String) -> Void)
     func machineStats(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineExec(_ machineID: String, request: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineTransfer(_ machineID: String, request: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void)
@@ -1085,6 +1087,35 @@ nonisolated struct DorydMachineFlightRecorderBatch: Sendable, Equatable {
     var headSequence: UInt64
     var snapshotRequired: Bool
     var events: [DorydMachineFlightEvent]
+}
+
+nonisolated struct DorydMachineSerialConsoleCursor: Sendable, Equatable, Hashable {
+    var generation: String? = nil
+    var offset: UInt64 = 0
+
+    var xpcDictionary: NSDictionary {
+        var dictionary: [String: Any] = [
+            "schemaVersion": UInt16(1),
+            "offset": offset,
+        ]
+        if let generation { dictionary["generation"] = generation }
+        return dictionary as NSDictionary
+    }
+}
+
+nonisolated struct DorydMachineSerialConsoleBatch: Sendable, Equatable {
+    var machineID: String
+    var generation: String?
+    var startOffset: UInt64
+    var nextOffset: UInt64
+    var totalBytes: UInt64
+    var snapshotRequired: Bool
+    var inputAvailable: Bool
+    var bytes: Data
+
+    var cursor: DorydMachineSerialConsoleCursor {
+        DorydMachineSerialConsoleCursor(generation: generation, offset: nextOffset)
+    }
 }
 
 nonisolated enum DorydMachineImportDisposition: String, Sendable, Equatable {
@@ -2175,6 +2206,40 @@ nonisolated final class DorydClient: @unchecked Sendable {
                 machineID: machineID,
                 afterSequence: afterSequence
             )
+        }
+    }
+
+    func machineSerialConsole(
+        machineID: String,
+        cursor: DorydMachineSerialConsoleCursor = .init(),
+        limit: UInt32 = 64 * 1_024
+    ) async throws -> DorydMachineSerialConsoleBatch {
+        try await statusCommand { proxy, reply in
+            proxy.machineSerialConsoleRead(
+                machineID,
+                cursor: cursor.xpcDictionary,
+                limit: limit,
+                reply: reply
+            )
+        } decode: {
+            Self.machineSerialConsoleBatch(
+                from: $0,
+                machineID: machineID,
+                cursor: cursor,
+                limit: limit
+            )
+        }
+    }
+
+    func writeMachineSerialConsole(
+        machineID: String,
+        data: Data
+    ) async throws -> DorydCommandResult {
+        guard !data.isEmpty, data.count <= 4 * 1_024 else {
+            throw DorydClientError.daemon("machine serial console input is invalid")
+        }
+        return try await command { proxy, reply in
+            proxy.machineSerialConsoleWrite(machineID, data: data as NSData, reply: reply)
         }
     }
 
@@ -3443,6 +3508,68 @@ nonisolated final class DorydClient: @unchecked Sendable {
             headSequence: headSequence,
             snapshotRequired: snapshot.boolValue,
             events: events
+        )
+    }
+
+    nonisolated private static func machineSerialConsoleBatch(
+        from dictionary: NSDictionary,
+        machineID: String,
+        cursor: DorydMachineSerialConsoleCursor,
+        limit: UInt32
+    ) -> DorydMachineSerialConsoleBatch? {
+        let required: Set<String> = [
+            "schemaVersion", "machineID", "startOffset", "nextOffset", "totalBytes",
+            "snapshotRequired", "inputAvailable", "bytesBase64",
+        ]
+        let optional: Set<String> = ["generation"]
+        guard machineID.isSafeMachineIdentifier,
+              limit > 0, limit <= 64 * 1_024,
+              let rawKeys = dictionary.allKeys as? [String] else { return nil }
+        let keys = Set(rawKeys)
+        guard rawKeys.count == keys.count,
+              required.isSubset(of: keys),
+              keys.subtracting(required).isSubset(of: optional),
+              strictUInt64(dictionary["schemaVersion"]) == 1,
+              dictionary["machineID"] as? String == machineID,
+              let startOffset = strictUInt64(dictionary["startOffset"]),
+              let nextOffset = strictUInt64(dictionary["nextOffset"]),
+              let totalBytes = strictUInt64(dictionary["totalBytes"]),
+              let snapshot = dictionary["snapshotRequired"] as? NSNumber,
+              CFGetTypeID(snapshot) == CFBooleanGetTypeID(),
+              let input = dictionary["inputAvailable"] as? NSNumber,
+              CFGetTypeID(input) == CFBooleanGetTypeID(),
+              let encoded = dictionary["bytesBase64"] as? String,
+              let bytes = Data(base64Encoded: encoded),
+              bytes.base64EncodedString() == encoded,
+              bytes.count <= Int(limit),
+              startOffset <= nextOffset,
+              nextOffset <= totalBytes,
+              nextOffset - startOffset == UInt64(bytes.count),
+              dictionary["generation"] == nil
+                || dictionary["generation"] is String else {
+            return nil
+        }
+        let generation = dictionary["generation"] as? String
+        guard generation.map(\.isLowercaseSHA256) ?? true else { return nil }
+        if generation == nil {
+            guard startOffset == 0, nextOffset == 0, totalBytes == 0, bytes.isEmpty else {
+                return nil
+            }
+        }
+        if !snapshot.boolValue {
+            guard generation == cursor.generation, startOffset == cursor.offset else {
+                return nil
+            }
+        }
+        return DorydMachineSerialConsoleBatch(
+            machineID: machineID,
+            generation: generation,
+            startOffset: startOffset,
+            nextOffset: nextOffset,
+            totalBytes: totalBytes,
+            snapshotRequired: snapshot.boolValue,
+            inputAvailable: input.boolValue,
+            bytes: bytes
         )
     }
 

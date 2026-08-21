@@ -5078,6 +5078,64 @@ public final class MachineManager: @unchecked Sendable {
         )
     }
 
+    /// Reads a bounded cursor-based tail of the helper-owned serial/firmware console. This path
+    /// does not depend on the guest agent and remains available after a failed or stopped boot.
+    public func serialConsole(
+        id: String,
+        cursor: DoryMachineSerialConsoleCursor = .init(),
+        limit: Int = 64 * 1_024
+    ) throws -> DoryMachineSerialConsoleBatch {
+        operationLock.lock()
+        defer { operationLock.unlock() }
+        lock.lock()
+        let state = machines[id]?.state
+        lock.unlock()
+        guard let state else { throw MachineManagerError.unknownMachine(id) }
+        do {
+            var batch = try DoryMachineSerialConsoleAuthority.read(
+                machineID: id,
+                machineDirectory: machineStateDirectory(id: id),
+                consoleSocketPath: consoleSocketPath(id: id),
+                cursor: cursor,
+                limit: limit
+            )
+            batch.inputAvailable = [.starting, .running].contains(state)
+                && batch.inputAvailable
+            return batch
+        } catch {
+            throw MachineManagerError.persistence(
+                "machine serial console is unavailable: \(error)"
+            )
+        }
+    }
+
+    /// Sends one bounded input frame to a helper's private recovery-console socket. Raw-HV's
+    /// current UART is output-only, so its missing socket is reported as unavailable rather than
+    /// pretending that input was accepted.
+    public func writeSerialConsole(id: String, data: Data) throws {
+        operationLock.lock()
+        defer { operationLock.unlock() }
+        lock.lock()
+        let state = machines[id]?.state
+        lock.unlock()
+        guard let state else { throw MachineManagerError.unknownMachine(id) }
+        guard [.starting, .running].contains(state) else {
+            throw MachineManagerError.persistence(
+                "machine serial console input requires a starting or running machine"
+            )
+        }
+        do {
+            try DoryMachineSerialConsoleAuthority.write(
+                data,
+                consoleSocketPath: consoleSocketPath(id: id)
+            )
+        } catch {
+            throw MachineManagerError.persistence(
+                "machine serial console input is unavailable: \(error)"
+            )
+        }
+    }
+
     private func statusLocked(id: String, entry: MachineEntry) -> DoryMachineStatus {
         let typedSettings = nativeTypedSettingsSnapshot(id: id)
             ?? DoryMachineTypedSettingsSnapshot(
@@ -5612,6 +5670,10 @@ public final class MachineManager: @unchecked Sendable {
 
     private func handoffSocketPath(id: String) -> String {
         "\(machineRuntimeDirectory(id: id))/h.sock"
+    }
+
+    private func consoleSocketPath(id: String) -> String {
+        "\(machineRuntimeDirectory(id: id))/\(DoryMachineSerialConsoleAuthority.socketFileName)"
     }
 
     private func desktopUpdateJournalPath(machineID: String) -> String {

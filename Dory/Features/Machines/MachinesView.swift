@@ -126,6 +126,7 @@ private struct MachineCard: View {
     @State private var confirmingDelete = false
     @State private var confirmingToolsRepair = false
     @State private var showingIntegrationHealth = false
+    @State private var showingSerialConsole = false
     @State private var isTransferDropTargeted = false
 
     private var isRunning: Bool { machine.status == .running }
@@ -158,6 +159,7 @@ private struct MachineCard: View {
                 }
                 Spacer(minLength: 8)
                 statusPill
+                serialConsoleButton
                 overflowMenu
             }
 
@@ -283,6 +285,9 @@ private struct MachineCard: View {
         }
         .sheet(isPresented: $showingIntegrationHealth) {
             MachineIntegrationHealthSheet(machine: machine)
+        }
+        .sheet(isPresented: $showingSerialConsole) {
+            MachineSerialConsoleSheet(machine: machine)
         }
         .confirmationDialog("Delete machine \(machine.name)?", isPresented: $confirmingDelete, titleVisibility: .visible) {
             Button("Delete", role: .destructive) { store.deleteMachine(machine) }
@@ -545,6 +550,9 @@ private struct MachineCard: View {
             Button { showingIntegrationHealth = true } label: {
                 Label("Integration Health…", systemImage: "stethoscope")
             }
+            Button { showingSerialConsole = true } label: {
+                Label("Serial Console…", systemImage: "text.line.first.and.arrowtriangle.forward")
+            }
             if store.canRepairMachineTools(machine) {
                 Button { confirmingToolsRepair = true } label: {
                     Label("Repair Dory Tools…", systemImage: "wrench.and.screwdriver")
@@ -570,6 +578,18 @@ private struct MachineCard: View {
         .frame(width: 22)
         .fixedSize()
         .disabled(store.isMachineBusy(machine.name) || !store.canUseMachineArtifacts(machine))
+    }
+
+    private var serialConsoleButton: some View {
+        Button { showingSerialConsole = true } label: {
+            Image(systemName: "text.line.first.and.arrowtriangle.forward")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(p.text2)
+                .frame(width: 22, height: 22)
+        }
+        .buttonStyle(.plain)
+        .help("Open serial console")
+        .accessibilityLabel("Open serial console for \(machine.name)")
     }
 
     private func selectAndSendFiles() {
@@ -779,6 +799,202 @@ private func logoName(for distro: String) -> String? {
         if lower.contains(family) { return "logo-\(family)" }
     }
     return nil
+}
+
+private struct MachineSerialConsoleSheet: View {
+    @Environment(AppStore.self) private var store
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.palette) private var p
+
+    let machine: Machine
+
+    @State private var cursor = DorydMachineSerialConsoleCursor()
+    @State private var consoleBytes = Data()
+    @State private var displayedStartOffset: UInt64 = 0
+    @State private var inputAvailable = false
+    @State private var input = ""
+    @State private var errorMessage: String?
+    @State private var isSending = false
+    @State private var hasConnected = false
+
+    private let maximumDisplayedBytes = 1_024 * 1_024
+
+    private var consoleText: String {
+        guard !consoleBytes.isEmpty else {
+            return "Waiting for serial output…"
+        }
+        return String(decoding: consoleBytes, as: UTF8.self)
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+            Divider().overlay(p.border)
+            console
+            Divider().overlay(p.border)
+            inputBar
+        }
+        .frame(minWidth: 720, idealWidth: 820, minHeight: 500, idealHeight: 620)
+        .background(p.bgContent)
+        .task(id: machine.id) {
+            while !Task.isCancelled {
+                await refresh()
+                try? await Task.sleep(for: .milliseconds(inputAvailable ? 250 : 750))
+            }
+        }
+    }
+
+    private var header: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "text.line.first.and.arrowtriangle.forward")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(p.accentText)
+                .frame(width: 38, height: 38)
+                .background(p.accentSoft, in: RoundedRectangle(cornerRadius: 10))
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Serial Console")
+                    .font(.system(size: 17, weight: .bold))
+                    .foregroundStyle(p.text)
+                Text(machine.name)
+                    .font(.mono(11.5, weight: .semibold))
+                    .foregroundStyle(p.text3)
+            }
+            Spacer()
+            statusPill
+            Button("Done") { dismiss() }
+                .keyboardShortcut(.cancelAction)
+        }
+        .padding(16)
+    }
+
+    private var statusPill: some View {
+        let title = errorMessage != nil ? "RETRYING" : (hasConnected ? "CONNECTED" : "CONNECTING")
+        let color = errorMessage != nil ? p.amber : (hasConnected ? p.green : p.text3)
+        let background = errorMessage != nil ? p.amberWeak : (hasConnected ? p.greenWeak : p.pill)
+        return HStack(spacing: 5) {
+            Circle()
+                .fill(color)
+                .frame(width: 6, height: 6)
+            Text(title)
+                .font(.system(size: 9, weight: .bold))
+                .tracking(0.5)
+        }
+        .foregroundStyle(color)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(background, in: Capsule())
+    }
+
+    private var console: some View {
+        ScrollViewReader { proxy in
+            ScrollView([.horizontal, .vertical]) {
+                Text(consoleText)
+                    .font(.system(size: 11.5, design: .monospaced))
+                    .foregroundStyle(p.monoText)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, minHeight: 400, alignment: .topLeading)
+                    .padding(14)
+                Color.clear.frame(width: 1, height: 1).id("serial-console-end")
+            }
+            .background(p.monoBg)
+            .onChange(of: cursor.offset) {
+                proxy.scrollTo("serial-console-end", anchor: .bottom)
+            }
+        }
+        .overlay(alignment: .topTrailing) {
+            if let errorMessage {
+                Text(errorMessage)
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundStyle(p.amber)
+                    .lineLimit(2)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 6)
+                    .background(p.monoBg.opacity(0.94), in: RoundedRectangle(cornerRadius: 7))
+                    .padding(10)
+            }
+        }
+    }
+
+    private var inputBar: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 8) {
+                Text("offset \(displayedStartOffset)–\(cursor.offset)")
+                    .font(.mono(9.5, weight: .medium))
+                    .foregroundStyle(p.text3)
+                Spacer()
+                Text(inputAvailable ? "INPUT AVAILABLE" : "READ-ONLY ON THIS BACKEND")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(inputAvailable ? p.green : p.text3)
+                    .tracking(0.45)
+            }
+
+            HStack(spacing: 8) {
+                TextField(inputAvailable ? "Send input to the guest" : "Serial input is unavailable", text: $input)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 11.5, design: .monospaced))
+                    .padding(.horizontal, 10)
+                    .frame(height: 32)
+                    .background(p.bgInput, in: RoundedRectangle(cornerRadius: 7))
+                    .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(p.border))
+                    .disabled(!inputAvailable || isSending)
+                    .onSubmit { sendInput() }
+                Button("Send") { sendInput() }
+                    .disabled(!canSend)
+            }
+        }
+        .padding(12)
+        .background(p.bgWindow)
+    }
+
+    private var canSend: Bool {
+        inputAvailable && !isSending && !input.isEmpty && pendingInputData.count <= 4 * 1_024
+    }
+
+    private var pendingInputData: Data {
+        var data = Data(input.utf8)
+        if data.last != 0x0A { data.append(0x0A) }
+        return data
+    }
+
+    private func refresh() async {
+        do {
+            let batch = try await store.readMachineSerialConsole(machine, cursor: cursor)
+            if batch.snapshotRequired || batch.generation != cursor.generation {
+                consoleBytes = batch.bytes
+                displayedStartOffset = batch.startOffset
+            } else if !batch.bytes.isEmpty {
+                consoleBytes.append(batch.bytes)
+            }
+            if consoleBytes.count > maximumDisplayedBytes {
+                let excess = consoleBytes.count - maximumDisplayedBytes
+                consoleBytes.removeFirst(excess)
+                displayedStartOffset += UInt64(excess)
+            }
+            cursor = batch.cursor
+            inputAvailable = batch.inputAvailable
+            errorMessage = nil
+            hasConnected = true
+        } catch {
+            errorMessage = String(describing: error)
+            inputAvailable = false
+        }
+    }
+
+    private func sendInput() {
+        guard canSend else { return }
+        let data = pendingInputData
+        isSending = true
+        Task {
+            defer { isSending = false }
+            do {
+                try await store.writeMachineSerialConsole(machine, data: data)
+                input = ""
+                errorMessage = nil
+            } catch {
+                errorMessage = String(describing: error)
+            }
+        }
+    }
 }
 
 private struct MachineIntegrationHealthSheet: View {

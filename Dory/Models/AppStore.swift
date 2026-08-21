@@ -5350,6 +5350,28 @@ final class AppStore {
         runtimeOwnedByDoryd && !machine.shellSocketPath.isEmpty && HostTools.userFacingDoryCommand() != nil
     }
 
+    func readMachineSerialConsole(
+        _ machine: Machine,
+        cursor: DorydMachineSerialConsoleCursor,
+        limit: UInt32 = 64 * 1_024
+    ) async throws -> DorydMachineSerialConsoleBatch {
+        guard runtimeOwnedByDoryd else {
+            throw DorydClientError.daemon(Self.dorydMachineManagerRequired("machine serial console"))
+        }
+        return try await dorydClient.machineSerialConsole(
+            machineID: machine.name,
+            cursor: cursor,
+            limit: limit
+        )
+    }
+
+    func writeMachineSerialConsole(_ machine: Machine, data: Data) async throws {
+        guard runtimeOwnedByDoryd else {
+            throw DorydClientError.daemon(Self.dorydMachineManagerRequired("machine serial console"))
+        }
+        _ = try await dorydClient.writeMachineSerialConsole(machineID: machine.name, data: data)
+    }
+
     func canOpenMachineDesktop(_ machine: Machine) -> Bool {
         runtimeOwnedByDoryd
             && machine.displayMode == .desktop

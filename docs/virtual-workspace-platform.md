@@ -709,9 +709,14 @@ the durable monotonic event cursor, XPC, `HealthReporter`, and Dory.app project 
 without relying on free-form error text. `lastError` remains a same-user compatibility field for
 older clients, but public CLI/support projections omit it along with environment values and host
 paths. Active lifecycle journals expose their operation ID and kind until completion, and terminal
-failures retain the originating operation ID across daemon restart. Full operation-ID propagation
-through backend/helper/guest/component boundaries, device-level telemetry, and a bounded
-per-workspace flight recorder remain required before this section is complete.
+failures retain the originating operation ID across daemon restart. Each workspace also has an
+owner-only, crash-durable, size-bounded flight recorder with a monotonic cursor. Serial/firmware
+output is available independently of Dory Tools through a generation-and-offset cursor in Dory.app,
+`dorydctl`, and XPC; reads are bounded and path-free, while input is accepted only through the
+private VMM console socket and is reported read-only for the current raw-HV UART. Console bytes are
+never copied into status, incidents, flight-recorder events, diagnostics, or support bundles. Full
+operation-ID propagation through backend/helper/guest/component boundaries and device-level
+telemetry remain required before this section is complete.
 
 ## Qualification and release gates
 

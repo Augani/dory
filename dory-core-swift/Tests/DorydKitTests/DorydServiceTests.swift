@@ -1195,6 +1195,118 @@ final class DorydServiceTests: XCTestCase {
         wait(for: [deletedFlight], timeout: 5)
     }
 
+    func testMachineSerialConsoleOverXPCIsBoundedCursorBasedAndExactShape() throws {
+        let base = "/tmp/doryd-service-console-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: base,
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: false
+        ))
+        defer {
+            try? manager.delete(id: "dev")
+            try? FileManager.default.removeItem(atPath: base)
+        }
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "dev",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath
+        ))
+        let logPath = base + "/dev/serial.log"
+        FileManager.default.createFile(
+            atPath: logPath,
+            contents: Data("firmware\nboot\n".utf8),
+            attributes: [.posixPermissions: 0o600]
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: logPath
+        )
+
+        let service = DorydService(
+            socketPath: "/tmp/doryd-test.sock",
+            machineManager: manager
+        )
+        let listener = makeAnonymousListener(service: service)
+        listener.resume()
+        defer { listener.invalidate() }
+        let connection = NSXPCConnection(listenerEndpoint: listener.endpoint)
+        connection.remoteObjectInterface = NSXPCInterface(with: DorydControl.self)
+        connection.resume()
+        defer { connection.invalidate() }
+        let proxy = try XCTUnwrap(connection.remoteObjectProxy as? DorydControl)
+
+        var generation = ""
+        var nextOffset: UInt64 = 0
+        let initial = expectation(description: "machine serial console initial reply")
+        proxy.machineSerialConsoleRead(
+            "dev",
+            cursor: ["schemaVersion": UInt16(1), "offset": UInt64(0)],
+            limit: 5
+        ) { ok, body, message in
+            XCTAssertTrue(ok, message)
+            XCTAssertEqual(body["schemaVersion"] as? Int, 1)
+            XCTAssertEqual(body["machineID"] as? String, "dev")
+            XCTAssertEqual(body["snapshotRequired"] as? Bool, true)
+            XCTAssertEqual(body["inputAvailable"] as? Bool, false)
+            let encoded = body["bytesBase64"] as? String
+            XCTAssertEqual(encoded.flatMap { Data(base64Encoded: $0) }, Data("boot\n".utf8))
+            generation = body["generation"] as? String ?? ""
+            nextOffset = (body["nextOffset"] as? NSNumber)?.uint64Value ?? 0
+            XCTAssertFalse(body.description.contains(base))
+            initial.fulfill()
+        }
+        wait(for: [initial], timeout: 5)
+        XCTAssertEqual(generation.count, 64)
+
+        let handle = try FileHandle(forWritingTo: URL(fileURLWithPath: logPath))
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data("ready\n".utf8))
+        try handle.close()
+        let incremental = expectation(description: "machine serial console incremental reply")
+        proxy.machineSerialConsoleRead(
+            "dev",
+            cursor: [
+                "schemaVersion": UInt16(1),
+                "generation": generation,
+                "offset": nextOffset,
+            ],
+            limit: 64
+        ) { ok, body, message in
+            XCTAssertTrue(ok, message)
+            XCTAssertEqual(body["snapshotRequired"] as? Bool, false)
+            let encoded = body["bytesBase64"] as? String
+            XCTAssertEqual(encoded.flatMap { Data(base64Encoded: $0) }, Data("ready\n".utf8))
+            incremental.fulfill()
+        }
+        wait(for: [incremental], timeout: 5)
+
+        let malformed = expectation(description: "machine serial console malformed cursor")
+        proxy.machineSerialConsoleRead(
+            "dev",
+            cursor: ["schemaVersion": true, "offset": UInt64(0)],
+            limit: 64
+        ) { ok, body, message in
+            XCTAssertFalse(ok)
+            XCTAssertTrue(body.isEqual(to: [:]))
+            XCTAssertTrue(message.contains("unavailable"))
+            malformed.fulfill()
+        }
+        wait(for: [malformed], timeout: 5)
+
+        let oversized = expectation(description: "machine serial console oversized input")
+        proxy.machineSerialConsoleWrite(
+            "dev",
+            data: Data(repeating: 1, count: 4 * 1_024 + 1) as NSData
+        ) { ok, message in
+            XCTAssertFalse(ok)
+            XCTAssertTrue(message.contains("invalid"))
+            oversized.fulfill()
+        }
+        wait(for: [oversized], timeout: 5)
+    }
+
     func testMachineStatusPublishesStructuredFailureWithoutFreeFormEvidence() throws {
         let base = "/tmp/dsf-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let manager = MachineManager(configuration: MachineManagerConfiguration(

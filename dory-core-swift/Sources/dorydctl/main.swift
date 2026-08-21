@@ -192,6 +192,7 @@ func usage(exitCode: Int32 = 2) -> Never {
           dorydctl [global] machine status NAME
           dorydctl [global] machine stats NAME
           dorydctl [global] machine flight-recorder NAME [--after SEQUENCE]
+          dorydctl [global] machine console NAME [--generation SHA256 --after OFFSET] [--limit BYTES] [--input TEXT]
           dorydctl [global] machine create NAME (--kernel PATH --rootfs PATH | --installer-iso PATH [--disk-size-gb N]) [--memory-mb N] [--cpus N] [--display-mode headless|desktop] [--dns-target IPv4] [--share TAG=HOST:GUEST[:ro|rw] | JSON] [--guest-user NAME] [--guest-uid N] [--desktop-distro ID] [--desktop-name NAME] [--desktop-version VERSION] [--desktop-environment NAME] [--clipboard off|host-to-guest|guest-to-host|bidirectional] [--runtime auto|accelerated|compatible] [--graphics auto|virgl|virgl-venus|software] [--network shared-nat|host-only|disconnected|bridged] [--sandbox [--sandbox-expires-at UNIX_SECONDS] [--sandbox-ssh-agent denied|granted] [--sandbox-profile standard|agent-ready] [--sandbox-tool TOOL ...] [--sandbox-baseline ID]]
           dorydctl [global] machine update NAME [--memory-mb N] [--cpus N] [--dns-target IPv4 | --clear-dns-target] [--share TAG=HOST:GUEST[:ro|rw] | JSON ... | --clear-shares] [typed create options | --clear-guest-account | --clear-desktop-identity | --clear-clipboard | --clear-runtime | --clear-graphics | --clear-network] [--attach-installer | --eject-installer]
           dorydctl [global] machine start|stop|pause|suspend|resume|restart|delete NAME
@@ -1126,7 +1127,7 @@ func runBalloon(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
 }
 
 func runMachine(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
-    let subcommand = try cursor.take("usage: dorydctl machine list|status|stats|flight-recorder|create|update|desktop-update|start|stop|pause|suspend|resume|restart|delete|exec|shell|provision|snapshots|snapshot|backup")
+    let subcommand = try cursor.take("usage: dorydctl machine list|status|stats|flight-recorder|console|create|update|desktop-update|start|stop|pause|suspend|resume|restart|delete|exec|shell|provision|snapshots|snapshot|backup")
     switch subcommand {
     case "list":
         let rows: NSArray = try client.call { proxy, finish in
@@ -1168,6 +1169,80 @@ func runMachine(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
         }
         let batch: NSDictionary = try client.statusCommand { proxy, reply in
             proxy.machineFlightRecorder(name, afterSequence: after, reply: reply)
+        }
+        try emitJSON(batch)
+    case "console":
+        let name = try cursor.take(
+            "usage: dorydctl machine console NAME [--generation SHA256 --after OFFSET] [--limit BYTES] [--input TEXT]"
+        )
+        let input = try cursor.optionValue("--input")
+        let generation = try cursor.optionValue("--generation")
+        let rawAfter = try cursor.optionValue("--after")
+        let rawLimit = try cursor.optionValue("--limit")
+        guard cursor.values.isEmpty else {
+            throw DorydCtlError.usage(
+                "unexpected machine console argument: \(cursor.values[0])"
+            )
+        }
+        if let input {
+            guard generation == nil, rawAfter == nil, rawLimit == nil else {
+                throw DorydCtlError.usage(
+                    "--input cannot be combined with cursor or limit options"
+                )
+            }
+            let data = Data(input.utf8)
+            guard !data.isEmpty, data.count <= 4 * 1_024 else {
+                throw DorydCtlError.usage("--input must contain 1...4096 UTF-8 bytes")
+            }
+            let result: NSDictionary = try client.command { proxy, reply in
+                proxy.machineSerialConsoleWrite(name, data: data as NSData, reply: reply)
+            }
+            try emitJSON(result)
+            return
+        }
+        let after: UInt64
+        if let rawAfter {
+            guard let value = UInt64(rawAfter) else {
+                throw DorydCtlError.usage("--after must be an unsigned integer")
+            }
+            after = value
+        } else {
+            after = 0
+        }
+        guard (generation == nil) == (rawAfter == nil) else {
+            throw DorydCtlError.usage(
+                "--generation and --after must be supplied together"
+            )
+        }
+        if let generation {
+            guard generation.utf8.count == 64,
+                  generation.utf8.allSatisfy({ byte in
+                      (48...57).contains(byte) || (97...102).contains(byte)
+                  }) else {
+                throw DorydCtlError.usage("--generation must be a lowercase SHA-256 digest")
+            }
+        }
+        let limit: UInt32
+        if let rawLimit {
+            guard let value = UInt32(rawLimit), (1...(64 * 1_024)).contains(value) else {
+                throw DorydCtlError.usage("--limit must be between 1 and 65536 bytes")
+            }
+            limit = value
+        } else {
+            limit = 64 * 1_024
+        }
+        var cursorDictionary: [String: Any] = [
+            "schemaVersion": UInt16(1),
+            "offset": after,
+        ]
+        if let generation { cursorDictionary["generation"] = generation }
+        let batch: NSDictionary = try client.statusCommand { proxy, reply in
+            proxy.machineSerialConsoleRead(
+                name,
+                cursor: cursorDictionary as NSDictionary,
+                limit: limit,
+                reply: reply
+            )
         }
         try emitJSON(batch)
     case "create":

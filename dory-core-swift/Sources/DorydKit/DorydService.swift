@@ -436,6 +436,56 @@ public final class DorydService: NSObject, DorydControl {
         }
     }
 
+    public func machineSerialConsoleRead(
+        _ machineID: String,
+        cursor: NSDictionary,
+        limit: UInt32,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        guard let machineManager else {
+            reply(false, [:], "machine serial console is not configured")
+            return
+        }
+        do {
+            let request = try MachineSerialConsoleCursorRequest(xpcDictionary: cursor)
+            guard limit > 0,
+                  limit <= UInt32(DoryMachineSerialConsoleAuthority.maximumReadBytes) else {
+                throw XPCRemoteConfigError.invalid("machineSerialConsole.limit")
+            }
+            let batch = try machineManager.serialConsole(
+                id: machineID,
+                cursor: request.cursor,
+                limit: Int(limit)
+            )
+            reply(true, batch.xpcDictionary, "")
+        } catch {
+            reply(false, [:], "machine serial console is unavailable: \(error)")
+        }
+    }
+
+    public func machineSerialConsoleWrite(
+        _ machineID: String,
+        data: NSData,
+        reply: @escaping (Bool, String) -> Void
+    ) {
+        guard let machineManager else {
+            reply(false, "machine serial console is not configured")
+            return
+        }
+        let bytes = data as Data
+        guard !bytes.isEmpty,
+              bytes.count <= DoryMachineSerialConsoleAuthority.maximumWriteBytes else {
+            reply(false, "machine serial console input is invalid")
+            return
+        }
+        do {
+            try machineManager.writeSerialConsole(id: machineID, data: bytes)
+            reply(true, "")
+        } catch {
+            reply(false, "machine serial console input is unavailable: \(error)")
+        }
+    }
+
     public func machineStats(
         _ machineID: String,
         reply: @escaping (Bool, NSDictionary, String) -> Void
@@ -1664,6 +1714,44 @@ private struct MachineExecRequest {
     }
 }
 
+private struct MachineSerialConsoleCursorRequest {
+    var cursor: DoryMachineSerialConsoleCursor
+
+    init(xpcDictionary dictionary: NSDictionary) throws {
+        let required: Set<String> = ["schemaVersion", "offset"]
+        let optional: Set<String> = ["generation"]
+        guard let rawKeys = dictionary.allKeys as? [String] else {
+            throw XPCRemoteConfigError.invalid("machineSerialConsole.cursor")
+        }
+        let keys = Set(rawKeys)
+        guard rawKeys.count == keys.count,
+              required.isSubset(of: keys),
+              keys.subtracting(required).isSubset(of: optional),
+              let schema = Self.strictUInt64(dictionary["schemaVersion"]), schema == 1,
+              let offset = Self.strictUInt64(dictionary["offset"]),
+              dictionary["generation"] == nil
+                || dictionary["generation"] is String else {
+            throw XPCRemoteConfigError.invalid("machineSerialConsole.cursor")
+        }
+        cursor = DoryMachineSerialConsoleCursor(
+            generation: dictionary["generation"] as? String,
+            offset: offset
+        )
+        guard cursor.isValid else {
+            throw XPCRemoteConfigError.invalid("machineSerialConsole.cursor")
+        }
+    }
+
+    private static func strictUInt64(_ value: Any?) -> UInt64? {
+        guard let number = value as? NSNumber,
+              CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
+        let type = String(cString: number.objCType)
+        guard ["c", "C", "s", "S", "i", "I", "l", "L", "q", "Q"]
+            .contains(type) else { return nil }
+        return UInt64(number.stringValue)
+    }
+}
+
 private struct MachineTransferRequest: Sendable {
     var privateStagingRoot: String
 
@@ -2373,6 +2461,23 @@ private extension DoryMachineFlightRecorderBatch {
             "snapshotRequired": snapshotRequired,
             "events": events.map(\.xpcDictionary),
         ]
+    }
+}
+
+private extension DoryMachineSerialConsoleBatch {
+    var xpcDictionary: NSDictionary {
+        var dictionary: [String: Any] = [
+            "schemaVersion": schemaVersion,
+            "machineID": machineID,
+            "startOffset": startOffset,
+            "nextOffset": nextOffset,
+            "totalBytes": totalBytes,
+            "snapshotRequired": snapshotRequired,
+            "inputAvailable": inputAvailable,
+            "bytesBase64": bytes.base64EncodedString(),
+        ]
+        if let generation { dictionary["generation"] = generation }
+        return dictionary as NSDictionary
     }
 }
 

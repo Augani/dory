@@ -919,6 +919,86 @@ struct DorydClientTests {
     }
 
     @MainActor
+    @Test func machineSerialConsoleRequiresExactBoundedCursorEvidence() async throws {
+        let listener = NSXPCListener.anonymous()
+        let service = FakeDorydService()
+        let delegate = FakeDorydListenerDelegate(service: service)
+        listener.delegate = delegate
+        listener.resume()
+        defer { listener.invalidate() }
+        let client = DorydClient(endpoint: listener.endpoint)
+        let generation = String(repeating: "a", count: 64)
+        service.setMachineSerialConsoleBatch([
+            "schemaVersion": UInt16(1),
+            "machineID": "dev",
+            "generation": generation,
+            "startOffset": UInt64(0),
+            "nextOffset": UInt64(4),
+            "totalBytes": UInt64(4),
+            "snapshotRequired": true,
+            "inputAvailable": false,
+            "bytesBase64": Data("boot".utf8).base64EncodedString(),
+        ])
+        let initial = try await client.machineSerialConsole(machineID: "dev", limit: 64)
+        #expect(initial.bytes == Data("boot".utf8))
+        #expect(initial.snapshotRequired)
+        #expect(initial.cursor.generation == generation)
+        #expect(initial.cursor.offset == 4)
+        #expect(service.latestMachineSerialConsoleCursor?["offset"] as? UInt64 == 0)
+
+        service.setMachineSerialConsoleBatch([
+            "schemaVersion": UInt16(1),
+            "machineID": "dev",
+            "generation": generation,
+            "startOffset": UInt64(4),
+            "nextOffset": UInt64(10),
+            "totalBytes": UInt64(10),
+            "snapshotRequired": false,
+            "inputAvailable": true,
+            "bytesBase64": Data("ready\n".utf8).base64EncodedString(),
+        ])
+        let appended = try await client.machineSerialConsole(
+            machineID: "dev",
+            cursor: initial.cursor,
+            limit: 64
+        )
+        #expect(appended.bytes == Data("ready\n".utf8))
+        #expect(!appended.snapshotRequired)
+        #expect(appended.inputAvailable)
+
+        let valid = service.machineSerialConsoleBatchResponse
+        for malformed in [
+            valid.adding("hostPath", "/private/opaque"),
+            valid.replacing("bytesBase64", with: "not-base64"),
+            valid.replacing("startOffset", with: UInt64(3)),
+            valid.replacing("snapshotRequired", with: 0),
+        ] {
+            service.setMachineSerialConsoleBatch(malformed)
+            await #expect(throws: (any Error).self) {
+                _ = try await client.machineSerialConsole(
+                    machineID: "dev",
+                    cursor: initial.cursor,
+                    limit: 64
+                )
+            }
+        }
+
+        service.setMachineSerialConsoleBatch(nil)
+        let write = try await client.writeMachineSerialConsole(
+            machineID: "dev",
+            data: Data("recovery\n".utf8)
+        )
+        #expect(write.ok)
+        #expect(service.latestMachineSerialConsoleInput == Data("recovery\n".utf8))
+        await #expect(throws: (any Error).self) {
+            _ = try await client.writeMachineSerialConsole(
+                machineID: "dev",
+                data: Data(repeating: 1, count: 4 * 1_024 + 1)
+            )
+        }
+    }
+
+    @MainActor
     @Test func machineImportAssessmentRequiresExactClosedEvidence() async throws {
         let listener = NSXPCListener.anonymous()
         let service = FakeDorydService()
@@ -3799,6 +3879,9 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     private var _machineImportAssessmentOverride: NSDictionary?
     private var _machineEventBatchOverride: NSDictionary?
     private var _machineFlightRecorderBatchOverride: NSDictionary?
+    private var _machineSerialConsoleBatchOverride: NSDictionary?
+    private var _latestMachineSerialConsoleCursor: NSDictionary?
+    private var _latestMachineSerialConsoleInput: Data?
     private var _machineEventQueryCount = 0
     private var _machineListCount = 0
     private var _machineGuestExportCancelCount = 0
@@ -4182,6 +4265,30 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         lock.unlock()
     }
 
+    func setMachineSerialConsoleBatch(_ response: NSDictionary?) {
+        lock.lock()
+        _machineSerialConsoleBatchOverride = response
+        lock.unlock()
+    }
+
+    var machineSerialConsoleBatchResponse: NSDictionary {
+        lock.lock()
+        defer { lock.unlock() }
+        return _machineSerialConsoleBatchOverride ?? [:]
+    }
+
+    var latestMachineSerialConsoleCursor: NSDictionary? {
+        lock.lock()
+        defer { lock.unlock() }
+        return _latestMachineSerialConsoleCursor
+    }
+
+    var latestMachineSerialConsoleInput: Data? {
+        lock.lock()
+        defer { lock.unlock() }
+        return _latestMachineSerialConsoleInput
+    }
+
     func setEngineStartResult(ok: Bool, message: String = "") {
         lock.lock()
         _engineStartOK = ok
@@ -4537,6 +4644,39 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         ]
         lock.unlock()
         reply(true, row, "")
+    }
+
+    func machineSerialConsoleRead(
+        _ machineID: String,
+        cursor: NSDictionary,
+        limit: UInt32,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        lock.lock()
+        _latestMachineSerialConsoleCursor = cursor
+        let row = _machineSerialConsoleBatchOverride ?? [
+            "schemaVersion": UInt16(1),
+            "machineID": machineID,
+            "startOffset": UInt64(0),
+            "nextOffset": UInt64(0),
+            "totalBytes": UInt64(0),
+            "snapshotRequired": false,
+            "inputAvailable": false,
+            "bytesBase64": "",
+        ]
+        lock.unlock()
+        reply(true, row, "")
+    }
+
+    func machineSerialConsoleWrite(
+        _ machineID: String,
+        data: NSData,
+        reply: @escaping (Bool, String) -> Void
+    ) {
+        lock.lock()
+        _latestMachineSerialConsoleInput = data as Data
+        lock.unlock()
+        reply(true, "")
     }
 
     func machineStats(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void) {
