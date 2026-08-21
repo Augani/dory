@@ -5113,6 +5113,7 @@ final class AppStore {
 
     private(set) var busyMachines: Set<String> = []
     private(set) var machineFileTransfers: [String: DorydMachineFileTransferOperation] = [:]
+    private var recoveringMachineFileTransfers: Set<String> = []
     var machineBusy: Bool { !busyMachines.isEmpty }
     func isMachineBusy(_ name: String) -> Bool { busyMachines.contains(name) }
     func machineFileTransfer(for name: String) -> DorydMachineFileTransferOperation? {
@@ -5149,6 +5150,7 @@ final class AppStore {
                     self.machines[index].cpuPercent = stats.cpuPercent
                     self.machines[index].memoryDisplay = Self.machineMemoryDisplay(stats)
                 }
+                recoverActiveFileTransfer(for: machine)
             }
             return machines
         } catch {
@@ -5353,6 +5355,85 @@ final class AppStore {
         }
     }
 
+    private func recoverActiveFileTransfer(for machine: Machine) {
+        guard machineFileTransfers[machine.name] == nil,
+              !busyMachines.contains(machine.name),
+              recoveringMachineFileTransfers.insert(machine.name).inserted else {
+            return
+        }
+        Task { [weak self] in
+            await self?.recoverActiveFileTransfer(machineID: machine.name)
+        }
+    }
+
+    private func recoverActiveFileTransfer(machineID: String) async {
+        defer { recoveringMachineFileTransfers.remove(machineID) }
+        let discovered: DorydMachineFileTransferOperation?
+        do {
+            discovered = try await dorydClient.machineTransferCurrent(machineID)
+        } catch {
+            return
+        }
+        guard let operation = discovered,
+              !operation.phase.isTerminal,
+              machineFileTransfers[machineID] == nil,
+              !busyMachines.contains(machineID) else {
+            return
+        }
+
+        let operationID = operation.operationID
+        busyMachines.insert(machineID)
+        machineFileTransfers[machineID] = operation
+        defer {
+            if machineFileTransfers[machineID]?.operationID == operationID {
+                machineFileTransfers.removeValue(forKey: machineID)
+                busyMachines.remove(machineID)
+            }
+        }
+
+        do {
+            var current = operation
+            while !current.phase.isTerminal {
+                try await Task.sleep(for: .milliseconds(150))
+                current = try await dorydClient.machineTransferStatus(
+                    machineID,
+                    operationID: operationID
+                )
+                guard current.operationID == operationID,
+                      machineFileTransfers[machineID]?.operationID == operationID else {
+                    throw DoryMachineFileTransferUIError.authorityChanged
+                }
+                machineFileTransfers[machineID] = current
+            }
+
+            switch current.phase {
+            case .completed:
+                guard let result = current.result else {
+                    throw DoryMachineFileTransferUIError.invalidCompletion
+                }
+                let fileLabel = result.filesSent == 1 ? "file" : "files"
+                let bytes = ByteCountFormatter.string(
+                    fromByteCount: Int64(clamping: result.bytesSent),
+                    countStyle: .file
+                )
+                showSettingsSuccess(
+                    "Sent \(result.filesSent) \(fileLabel) (\(bytes)) to \(result.guestDestination)."
+                )
+            case .cancelled:
+                showSettingsSuccess("Cancelled the file transfer to \(machineID).")
+            case .failed:
+                let message = current.failure?.message ?? "The daemon reported a failed transfer."
+                throw DoryMachineFileTransferUIError.remoteFailure(message)
+            case .preparing, .transferring, .finalizing, .cancelling:
+                throw DoryMachineFileTransferUIError.invalidCompletion
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            actionError = "Could not restore the file transfer to \(machineID): \(Self.userFacingError(error))"
+        }
+    }
+
     @discardableResult
     func transferFiles(
         _ fileURLs: [URL],
@@ -5362,7 +5443,10 @@ final class AppStore {
             actionError = "Start \(machine.name) and update Dory Tools before sending files."
             return nil
         }
-        guard !busyMachines.contains(machine.name) else { return nil }
+        guard !busyMachines.contains(machine.name),
+              !recoveringMachineFileTransfers.contains(machine.name) else {
+            return nil
+        }
         busyMachines.insert(machine.name)
         defer {
             busyMachines.remove(machine.name)

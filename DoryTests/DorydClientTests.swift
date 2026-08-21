@@ -1214,6 +1214,53 @@ struct DorydClientTests {
     }
 
     @MainActor
+    @Test func appStoreRecoversAnActiveDaemonFileTransferAfterReconnect() async throws {
+        let listener = NSXPCListener.anonymous()
+        let service = FakeDorydService()
+        let operationID = String(repeating: "r", count: 32)
+        let active = service.machineTransferOperationResponse(
+            operationID: operationID,
+            phase: "transferring"
+        )
+        service.setMachineTransferCurrentResponse([
+            "schema": UInt16(1),
+            "active": true,
+            "operation": active,
+        ])
+        service.setMachineTransferOperationResponse(active)
+        let delegate = FakeDorydListenerDelegate(service: service)
+        listener.delegate = delegate
+        listener.resume()
+        defer { listener.invalidate() }
+
+        let store = AppStore(
+            dorydClient: DorydClient(endpoint: listener.endpoint),
+            useDorydEngine: true
+        )
+        store.routeDockerCLI = false
+        await store.connectBackend()
+        store.loadMachines()
+
+        try await waitUntil {
+            store.machineFileTransfer(for: "dev")?.operationID == operationID
+                && store.isMachineBusy("dev")
+        }
+        #expect(store.machineFileTransfer(for: "dev")?.phase == .transferring)
+
+        service.setMachineTransferOperationResponse(
+            service.machineTransferOperationResponse(
+                operationID: operationID,
+                phase: "completed"
+            )
+        )
+        try await waitUntil {
+            store.machineFileTransfer(for: "dev") == nil
+                && !store.isMachineBusy("dev")
+        }
+        #expect(store.settingsNotice?.message.contains("Sent 1 file") == true)
+    }
+
+    @MainActor
     @Test func appStoreRoutesMachineLifecycleToDorydVMs() async throws {
         let base = "/tmp/dam-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let socketPath = base + "/doryd.sock"
