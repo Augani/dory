@@ -18,7 +18,8 @@ final class AgentControlTests: XCTestCase {
         let info = try control.info()
         XCTAssertEqual(info.agentBuild, "fake-agent")
         XCTAssertEqual(info.capabilities.map(\.id), [
-            "clock-sync", "exec", "exec-stdin", "ports-watch", "snapshot-quiesce", "telemetry",
+            "clock-sync", "exec", "exec-stdin", "ports-watch", "snapshot-quiesce", "sync-push",
+            "telemetry",
         ])
         XCTAssertEqual(counter.value, 1)
 
@@ -26,6 +27,10 @@ final class AgentControlTests: XCTestCase {
         XCTAssertEqual(fake.clockSyncInputs, [1_500_000_000])
         XCTAssertEqual(try control.portsWatch().ports.first?.port, 8080)
         XCTAssertEqual(try control.telemetry().memTotalKB, 1024)
+        XCTAssertEqual(
+            try control.push(localRoot: "/tmp/local", remoteRoot: "/tmp/remote"),
+            DoryPushStats(filesSent: 1, bytesSent: 12, filesDeleted: 0)
+        )
         let receiptID = String(repeating: "a", count: 32)
         XCTAssertEqual(try control.snapshotFreeze(receiptID: receiptID), receiptID)
         try control.snapshotThaw(receiptID: receiptID)
@@ -124,6 +129,7 @@ private final class FakeAgentControlClient: AgentControlClient, @unchecked Senda
             DoryAgentCapability(id: "exec-stdin", version: 1),
             DoryAgentCapability(id: "ports-watch", version: 1),
             DoryAgentCapability(id: "snapshot-quiesce", version: 2),
+            DoryAgentCapability(id: "sync-push", version: 1),
             DoryAgentCapability(id: "telemetry", version: 1),
         ]
     ) {
@@ -203,6 +209,12 @@ private final class FakeAgentControlClient: AgentControlClient, @unchecked Senda
         freezeReceipts.append(receiptID)
         lock.unlock()
         return receiptID
+    }
+
+    func push(localRoot: String, remoteRoot: String) throws -> DoryPushStats {
+        XCTAssertEqual(localRoot, "/tmp/local")
+        XCTAssertEqual(remoteRoot, "/tmp/remote")
+        return DoryPushStats(filesSent: 1, bytesSent: 12, filesDeleted: 0)
     }
 
     func snapshotThaw(receiptID: String) throws {

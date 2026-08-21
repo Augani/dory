@@ -397,6 +397,17 @@ public final class DoryAgentControlHandle: @unchecked Sendable {
         )
     }
 
+    public func push(localRoot: String, remoteRoot: String) throws -> DoryPushStats {
+        let raw = try withControl {
+            try $0.push(localRoot: localRoot, remoteRoot: remoteRoot)
+        }
+        return DoryPushStats(
+            filesSent: raw.filesSent,
+            bytesSent: raw.bytesSent,
+            filesDeleted: raw.filesDeleted
+        )
+    }
+
     public func snapshotFreeze(receiptID: String) throws -> String {
         try withControl { try $0.snapshotFreeze(receiptId: receiptID) }
     }

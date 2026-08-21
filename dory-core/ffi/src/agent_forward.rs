@@ -10,12 +10,12 @@ use std::sync::Arc;
 
 use dory_proto::channels::PORT_CONTROL;
 use dory_proto::preamble::{write_preamble, Direction, Preamble};
-use dory_remote::AgentClient;
+use dory_remote::{push, AgentClient};
 use tokio::net::UnixStream;
 
 use crate::remote::{
-    exec_result, AgentCapabilityFfi, AgentInfoFfi, ExecEnvFfi, ExecResultFfi, RemoteFfiError,
-    TelemetryFfi,
+    exec_result, AgentCapabilityFfi, AgentInfoFfi, ExecEnvFfi, ExecResultFfi, PushStatsFfi,
+    RemoteFfiError, TelemetryFfi,
 };
 
 #[derive(uniffi::Record)]
@@ -161,6 +161,27 @@ impl AgentControl {
             mem_available_kb: t.mem_available_kb,
             psi_some_avg10: t.psi_some_avg10,
             psi_full_avg10: t.psi_full_avg10,
+        })
+    }
+
+    /// Push a host directory through the local VM agent transport. File bytes stay inside Rust;
+    /// Swift supplies only the two roots and receives bounded aggregate statistics.
+    pub fn push(
+        &self,
+        local_root: String,
+        remote_root: String,
+    ) -> Result<PushStatsFfi, RemoteFfiError> {
+        let guard = self.runtime.lock().unwrap();
+        let runtime = guard.as_ref().ok_or_else(shutdown_error)?;
+        let stats = runtime.block_on(push(
+            std::path::Path::new(&local_root),
+            &remote_root,
+            &self.client,
+        ))?;
+        Ok(PushStatsFfi {
+            files_sent: stats.files_sent,
+            bytes_sent: stats.bytes_sent,
+            files_deleted: stats.files_deleted,
         })
     }
 
@@ -351,6 +372,29 @@ mod tests {
             .expect("exec with input");
         assert_eq!(echoed.exit_code, 0);
         assert_eq!(echoed.stdout, input);
+        let transfer_root = base.join(format!(
+            "dory-ffi-agent-push-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        let local_root = transfer_root.join("local");
+        let remote_root = transfer_root.join("remote");
+        std::fs::create_dir_all(&local_root).unwrap();
+        std::fs::create_dir_all(&remote_root).unwrap();
+        std::fs::write(local_root.join("payload.txt"), b"agent-push").unwrap();
+        let stats = control
+            .push(
+                local_root.to_string_lossy().into_owned(),
+                remote_root.to_string_lossy().into_owned(),
+            )
+            .expect("push");
+        assert_eq!(stats.files_sent, 1);
+        assert_eq!(stats.bytes_sent, 10);
+        assert_eq!(
+            std::fs::read(remote_root.join("payload.txt")).unwrap(),
+            b"agent-push"
+        );
+        let _ = std::fs::remove_dir_all(&transfer_root);
         let _ = std::fs::remove_file(&path);
     }
 
