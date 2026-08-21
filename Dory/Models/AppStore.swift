@@ -5228,6 +5228,7 @@ final class AppStore {
             agentBuild: status.agentBuild,
             agentProtocolVersion: status.agentProtocolVersion,
             agentCapabilities: status.agentCapabilities,
+            integrationHealth: status.integrationHealth,
             mounts: status.shares.map(Self.mountPair(fromDoryd:))
         )
     }

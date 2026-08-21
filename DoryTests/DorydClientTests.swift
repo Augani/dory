@@ -927,7 +927,7 @@ struct DorydClientTests {
             "telemetry",
         ])
         #expect(machine.runtimeEvidence.map(\.label) == [
-            "Supported", "Raw HV", "Qualified 3D", "Tools ready",
+            "Supported", "Raw HV", "Qualified 3D", "Tools partially ready",
         ])
         #expect(machine.runtimeEvidence.first { $0.id == "authority" }?.detail
             == "runtime-qualification-1")
@@ -949,7 +949,7 @@ struct DorydClientTests {
         var legacyHandshake = machine
         legacyHandshake.agentProtocolVersion = nil
         legacyHandshake.agentCapabilities = []
-        #expect(legacyHandshake.runtimeEvidence.last?.label == "Tools unversioned")
+        #expect(legacyHandshake.runtimeEvidence.last?.label == "Tools unavailable")
 
         var partialHandshake = machine
         partialHandshake.agentCapabilities = [DorydAgentCapability(id: "exec", version: 1)]
@@ -962,7 +962,9 @@ struct DorydClientTests {
                 ? DorydAgentCapability(id: $0.id, version: 1) : $0
         }
         #expect(oldQuiesceHandshake.runtimeEvidence.last?.label == "Tools partially ready")
-        #expect(oldQuiesceHandshake.runtimeEvidence.last?.detail.contains("snapshot-quiesce@2") == true)
+        #expect(oldQuiesceHandshake.integrationHealthProjection.features.first {
+            $0.id == .snapshotQuiesce
+        }?.state == .updateRequired)
 
         var oldSyncHandshake = machine
         oldSyncHandshake.agentCapabilities = machine.agentCapabilities.map {
@@ -970,11 +972,108 @@ struct DorydClientTests {
                 ? DorydAgentCapability(id: $0.id, version: 1) : $0
         }
         #expect(oldSyncHandshake.runtimeEvidence.last?.label == "Tools partially ready")
-        #expect(oldSyncHandshake.runtimeEvidence.last?.detail.contains("sync-push@2") == true)
+        #expect(oldSyncHandshake.integrationHealthProjection.features.first {
+            $0.id == .fileTransferPush
+        }?.state == .updateRequired)
 
         var incompatibleHandshake = machine
         incompatibleHandshake.agentProtocolVersion = 2
         #expect(incompatibleHandshake.runtimeEvidence.last?.label == "Tools incompatible")
+    }
+
+    @Test func machineIntegrationHealthUsesExactPresentShapeAndRejectsContradictions() async throws {
+        let listener = NSXPCListener.anonymous()
+        let service = FakeDorydService(runtimeIdentityOverride: validResolvedRuntimeIdentity())
+        let delegate = FakeDorydListenerDelegate(service: service)
+        listener.delegate = delegate
+        listener.resume()
+        defer { listener.invalidate() }
+        let client = DorydClient(endpoint: listener.endpoint)
+
+        let health = DoryGuestIntegrationHealth.evaluate(
+            machineIsRunning: true,
+            runtimeAuthority: .resolvedPlan,
+            desktopIntegrationsExpected: true,
+            clipboardTextExpected: true,
+            clipboardImageExpected: true,
+            sharedFoldersExpected: true,
+            qualifiedRuntimeFeatures: [
+                .clipboardImage, .clipboardText, .displayResize, .gracefulShutdown,
+                .sharedFolderDiscovery, .sharedFolderMountStatus,
+            ],
+            agentBuild: "agent-test",
+            agentProtocolVersion: 1,
+            agentCapabilities: [
+                .init(id: "clock-sync", version: 1),
+                .init(id: "exec", version: 1),
+                .init(id: "exec-stdin", version: 1),
+                .init(id: "ports-watch", version: 1),
+                .init(id: "snapshot-quiesce", version: 2),
+                .init(id: "sync-push", version: 2),
+                .init(id: "telemetry", version: 1),
+            ]
+        )
+        let validDictionary = try integrationHealthDictionary(health)
+        service.setMachineIntegrationHealth("dev", validDictionary)
+
+        let status = try #require((try await client.machineList()).first)
+        #expect(status.integrationHealth == health)
+        let machine = AppStore.machine(fromDoryd: status)
+        #expect(machine.integrationHealthProjection == health)
+        #expect(machine.runtimeEvidence.last?.label == "Tools ready")
+
+        let inactive = DoryGuestIntegrationHealth.evaluate(
+            machineIsRunning: false,
+            runtimeAuthority: .resolvedPlan,
+            desktopIntegrationsExpected: true,
+            clipboardTextExpected: true,
+            clipboardImageExpected: true,
+            sharedFoldersExpected: true,
+            qualifiedRuntimeFeatures: [],
+            agentBuild: "stale-agent-build",
+            agentProtocolVersion: 1,
+            agentCapabilities: []
+        )
+        service.setMachineState("dev", "paused")
+        service.setMachineIntegrationHealth(
+            "dev",
+            try integrationHealthDictionary(inactive)
+        )
+        let paused = try #require((try await client.machineList()).first)
+        #expect(paused.integrationHealth?.state == .inactive)
+
+        service.setMachineState("dev", "running")
+
+        let malformed = NSMutableDictionary(dictionary: validDictionary)
+        malformed["unexpected"] = true
+        service.setMachineIntegrationHealth("dev", malformed)
+        do {
+            _ = try await client.machineList()
+            Issue.record("present integration health with unknown fields must fail closed")
+        } catch let error as DorydClientError {
+            #expect(error.description.contains("invalid machine list"))
+        }
+
+        let truncated = NSMutableDictionary(dictionary: validDictionary)
+        let features = try #require(validDictionary["features"] as? [NSDictionary])
+        truncated["features"] = Array(features.dropLast())
+        service.setMachineIntegrationHealth("dev", truncated)
+        do {
+            _ = try await client.machineList()
+            Issue.record("truncated integration health must fail closed")
+        } catch let error as DorydClientError {
+            #expect(error.description.contains("invalid machine list"))
+        }
+
+        let contradictory = NSMutableDictionary(dictionary: validDictionary)
+        contradictory["runtimeAuthority"] = "legacy-compatibility"
+        service.setMachineIntegrationHealth("dev", contradictory)
+        do {
+            _ = try await client.machineList()
+            Issue.record("integration health contradicting runtime authority must fail closed")
+        } catch let error as DorydClientError {
+            #expect(error.description.contains("invalid machine list"))
+        }
     }
 
     @Test func machineCapabilityHandshakeRejectsMalformedPresentClaims() async throws {
@@ -1367,6 +1466,15 @@ struct DorydClientTests {
                 "artifactSHA256": String(repeating: "6", count: 64),
             ],
         ] as NSDictionary
+    }
+
+    private func integrationHealthDictionary(
+        _ health: DoryGuestIntegrationHealth
+    ) throws -> NSDictionary {
+        let data = try JSONEncoder().encode(health)
+        return try #require(
+            JSONSerialization.jsonObject(with: data, options: []) as? NSDictionary
+        )
     }
 
     @MainActor
@@ -3450,6 +3558,31 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         }
         machines[machineID] = current
     }
+
+    func setMachineIntegrationHealth(_ machineID: String, _ health: Any?) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let current = machines[machineID]?.mutableCopy() as? NSMutableDictionary else {
+            return
+        }
+        if let health {
+            current["integrationHealth"] = health
+        } else {
+            current.removeObject(forKey: "integrationHealth")
+        }
+        machines[machineID] = current.copy() as? NSDictionary
+    }
+
+    func setMachineState(_ machineID: String, _ state: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let current = machines[machineID]?.mutableCopy() as? NSMutableDictionary else {
+            return
+        }
+        current["state"] = state
+        machines[machineID] = current.copy() as? NSDictionary
+    }
+
     var machineStopCount: Int {
         lock.lock(); defer { lock.unlock() }
         return _machineStopCount

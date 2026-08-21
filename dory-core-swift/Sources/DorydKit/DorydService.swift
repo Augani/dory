@@ -2094,6 +2094,7 @@ private extension DoryMachineStatus {
                 ["id": $0.id, "version": $0.version] as NSDictionary
             }
         }
+        dictionary["integrationHealth"] = integrationHealth.xpcDictionary
         if let agentSocketPath {
             dictionary["agentSocketPath"] = agentSocketPath
         }
@@ -2325,6 +2326,36 @@ private extension DoryAgentInfo {
                 ["id": $0.id, "version": $0.version] as NSDictionary
             },
         ]
+    }
+}
+
+private extension DoryGuestIntegrationHealth {
+    var xpcDictionary: NSDictionary {
+        var dictionary: [String: Any] = [
+            "schemaVersion": schemaVersion,
+            "state": state.rawValue,
+            "runtimeAuthority": runtimeAuthority.rawValue,
+            "features": features.map(\.xpcDictionary),
+        ]
+        if let agentBuild { dictionary["agentBuild"] = agentBuild }
+        if let agentProtocolVersion {
+            dictionary["agentProtocolVersion"] = agentProtocolVersion
+        }
+        return dictionary as NSDictionary
+    }
+}
+
+private extension DoryGuestIntegrationFeatureHealth {
+    var xpcDictionary: NSDictionary {
+        var dictionary: [String: Any] = [
+            "id": id.rawValue,
+            "provider": provider.rawValue,
+            "required": required,
+            "state": state.rawValue,
+        ]
+        if let minimumVersion { dictionary["minimumVersion"] = minimumVersion }
+        if let negotiatedVersion { dictionary["negotiatedVersion"] = negotiatedVersion }
+        return dictionary as NSDictionary
     }
 }
 

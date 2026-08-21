@@ -125,6 +125,7 @@ private struct MachineCard: View {
     let machine: Machine
     @State private var confirmingDelete = false
     @State private var confirmingToolsRepair = false
+    @State private var showingIntegrationHealth = false
     @State private var isTransferDropTargeted = false
 
     private var isRunning: Bool { machine.status == .running }
@@ -278,6 +279,9 @@ private struct MachineCard: View {
             isTransferDropTargeted = targeted
                 && store.canTransferFiles(to: machine)
                 && !store.isMachineBusy(machine.name)
+        }
+        .sheet(isPresented: $showingIntegrationHealth) {
+            MachineIntegrationHealthSheet(machine: machine)
         }
         .confirmationDialog("Delete machine \(machine.name)?", isPresented: $confirmingDelete, titleVisibility: .visible) {
             Button("Delete", role: .destructive) { store.deleteMachine(machine) }
@@ -534,6 +538,9 @@ private struct MachineCard: View {
             Button { store.openMachineEdit(machine) } label: {
                 Label("Edit…", systemImage: "slider.horizontal.3")
             }
+            Button { showingIntegrationHealth = true } label: {
+                Label("Integration Health…", systemImage: "stethoscope")
+            }
             if store.canRepairMachineTools(machine) {
                 Button { confirmingToolsRepair = true } label: {
                     Label("Repair Dory Tools…", systemImage: "wrench.and.screwdriver")
@@ -768,6 +775,283 @@ private func logoName(for distro: String) -> String? {
         if lower.contains(family) { return "logo-\(family)" }
     }
     return nil
+}
+
+private struct MachineIntegrationHealthSheet: View {
+    @Environment(AppStore.self) private var store
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.palette) private var p
+    let machine: Machine
+    @State private var confirmingRepair = false
+
+    private var health: DoryGuestIntegrationHealth { machine.integrationHealthProjection }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .top, spacing: 14) {
+                Image(systemName: healthIcon)
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundStyle(healthColor)
+                    .frame(width: 42, height: 42)
+                    .background(healthBackground, in: RoundedRectangle(cornerRadius: 11))
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Integration Health")
+                        .font(.system(size: 18, weight: .bold))
+                        .foregroundStyle(p.text)
+                    Text(machine.name)
+                        .font(.mono(12, weight: .semibold))
+                        .foregroundStyle(p.text3)
+                }
+                Spacer()
+                Button("Done") { dismiss() }
+                    .keyboardShortcut(.defaultAction)
+            }
+            .padding(20)
+
+            Divider().overlay(p.border)
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    healthSummary
+
+                    VStack(alignment: .leading, spacing: 9) {
+                        Text("INTEGRATIONS")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(p.text3)
+                            .tracking(0.7)
+                        ForEach(health.features, id: \.id) { feature in
+                            featureRow(feature)
+                        }
+                    }
+                }
+                .padding(20)
+            }
+
+            if store.canRepairMachineTools(machine) {
+                Divider().overlay(p.border)
+                HStack {
+                    Text("Repair reinstalls the active signed Dory Tools payload with rollback.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(p.text3)
+                    Spacer()
+                    Button("Repair Dory Tools…") { confirmingRepair = true }
+                        .disabled(store.isMachineBusy(machine.name))
+                }
+                .padding(16)
+            }
+        }
+        .frame(width: 610, height: 650)
+        .background(p.bgContent)
+        .confirmationDialog(
+            "Repair Dory Tools in \(machine.name)?",
+            isPresented: $confirmingRepair,
+            titleVisibility: .visible
+        ) {
+            Button("Repair Dory Tools") {
+                store.repairMachineTools(machine)
+                dismiss()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Dory will create a last-good snapshot, reinstall the active signed desktop and tools payload, restart the machine, and roll back automatically if verification fails.")
+        }
+    }
+
+    private var healthSummary: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Text(healthTitle)
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(healthColor)
+                Text(health.runtimeAuthority.rawValue)
+                    .font(.mono(10, weight: .semibold))
+                    .foregroundStyle(p.text2)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(p.pill, in: Capsule())
+            }
+            Text(healthDescription)
+                .font(.system(size: 12))
+                .foregroundStyle(p.text2)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 16) {
+                summaryValue("TOOLS BUILD", health.agentBuild ?? "Not connected")
+                summaryValue(
+                    "PROTOCOL",
+                    health.agentProtocolVersion.map(String.init) ?? "—"
+                )
+                summaryValue(
+                    "ACTIVE",
+                    "\(health.features.filter { $0.state == .active }.count)/\(health.features.count)"
+                )
+            }
+        }
+        .padding(14)
+        .background(healthBackground.opacity(0.55), in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(p.border))
+    }
+
+    private func summaryValue(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(label)
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(p.text3)
+                .tracking(0.5)
+            Text(value)
+                .font(.mono(11, weight: .semibold))
+                .foregroundStyle(p.text)
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func featureRow(_ feature: DoryGuestIntegrationFeatureHealth) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: featureIcon(feature.state))
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(featureColor(feature.state))
+                .frame(width: 24, height: 24)
+                .background(featureBackground(feature.state), in: RoundedRectangle(cornerRadius: 6))
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(featureTitle(feature.id))
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(p.text)
+                    if feature.required {
+                        Text("REQUIRED")
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundStyle(p.text3)
+                    }
+                }
+                Text("\(feature.provider.rawValue) · \(featureVersion(feature))")
+                    .font(.mono(9.5))
+                    .foregroundStyle(p.text3)
+            }
+            Spacer()
+            Text(featureStateTitle(feature.state))
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(featureColor(feature.state))
+        }
+        .padding(.horizontal, 11)
+        .padding(.vertical, 9)
+        .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 9))
+        .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(p.border))
+    }
+
+    private var healthTitle: String {
+        switch health.state {
+        case .inactive: "Inactive"
+        case .missingTools: "Dory Tools missing"
+        case .incompatible: "Dory Tools incompatible"
+        case .degraded: "Integration degraded"
+        case .compatibility: "Compatibility mode"
+        case .healthy: "All required integrations healthy"
+        }
+    }
+
+    private var healthDescription: String {
+        switch health.state {
+        case .inactive: "The workspace is stopped. Live guest-integration evidence is intentionally inactive."
+        case .missingTools: "The running guest has not completed a valid Dory Tools handshake."
+        case .incompatible: "The running guest reported a tools protocol this version of Dory cannot use."
+        case .degraded: "One or more required capabilities are unavailable, outdated, or need a current runtime plan."
+        case .compatibility: "Guest capabilities are negotiated, but host runtime integrations are not backed by a qualified resolved plan."
+        case .healthy: "The daemon verified the runtime authority and every required integration is active."
+        }
+    }
+
+    private var healthIcon: String {
+        switch health.state {
+        case .healthy: "checkmark.seal.fill"
+        case .inactive: "pause.circle.fill"
+        case .compatibility: "arrow.triangle.2.circlepath"
+        default: "exclamationmark.triangle.fill"
+        }
+    }
+
+    private var healthColor: Color {
+        switch health.state {
+        case .healthy: p.green
+        case .inactive, .compatibility: p.text2
+        default: p.amber
+        }
+    }
+
+    private var healthBackground: Color {
+        switch health.state {
+        case .healthy: p.greenWeak
+        case .inactive, .compatibility: p.pill
+        default: p.amberWeak
+        }
+    }
+
+    private func featureTitle(_ id: DoryGuestIntegrationCapabilityID) -> String {
+        switch id {
+        case .readiness: "Guest readiness"
+        case .gracefulShutdown: "Graceful shutdown"
+        case .reboot: "Guest reboot"
+        case .clockSynchronization: "Clock synchronization"
+        case .health: "Health reporting"
+        case .displayTopology: "Display topology"
+        case .displayResize: "Dynamic display resize"
+        case .clipboardText: "Text clipboard"
+        case .clipboardImage: "Image clipboard"
+        case .sharedFolderDiscovery: "Shared-folder discovery"
+        case .sharedFolderMountStatus: "Shared-folder mount status"
+        case .fileTransferPush: "Host-to-guest transfer"
+        case .fileTransferPull: "Guest-to-host transfer"
+        case .networkIdentity: "Network identity"
+        case .processLaunch: "Process launch"
+        case .processInput: "Process input"
+        case .listenPorts: "Port discovery"
+        case .telemetry: "Telemetry"
+        case .snapshotQuiesce: "Snapshot freeze/thaw"
+        case .packageUpdate: "Tools update"
+        }
+    }
+
+    private func featureVersion(_ feature: DoryGuestIntegrationFeatureHealth) -> String {
+        guard let minimum = feature.minimumVersion else { return "runtime-qualified" }
+        if let negotiated = feature.negotiatedVersion {
+            return "v\(negotiated), requires v\(minimum)+"
+        }
+        return "requires v\(minimum)+"
+    }
+
+    private func featureStateTitle(_ state: DoryGuestIntegrationFeatureState) -> String {
+        switch state {
+        case .inactive: "Inactive"
+        case .active: "Active"
+        case .unavailable: "Unavailable"
+        case .updateRequired: "Update required"
+        case .unqualified: "Unqualified"
+        }
+    }
+
+    private func featureIcon(_ state: DoryGuestIntegrationFeatureState) -> String {
+        switch state {
+        case .active: "checkmark"
+        case .inactive: "pause.fill"
+        case .updateRequired: "arrow.clockwise"
+        case .unavailable, .unqualified: "exclamationmark"
+        }
+    }
+
+    private func featureColor(_ state: DoryGuestIntegrationFeatureState) -> Color {
+        switch state {
+        case .active: p.green
+        case .inactive, .unqualified: p.text3
+        case .unavailable, .updateRequired: p.amber
+        }
+    }
+
+    private func featureBackground(_ state: DoryGuestIntegrationFeatureState) -> Color {
+        switch state {
+        case .active: p.greenWeak
+        case .inactive, .unqualified: p.pill
+        case .unavailable, .updateRequired: p.amberWeak
+        }
+    }
 }
 
 private struct MachineEditSheet: View {

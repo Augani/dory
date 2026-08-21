@@ -822,6 +822,7 @@ nonisolated struct DorydMachineStatus: Sendable, Equatable {
     var agentBuild: String?
     var agentProtocolVersion: UInt32? = nil
     var agentCapabilities: [DorydAgentCapability] = []
+    var integrationHealth: DoryGuestIntegrationHealth? = nil
     var agentSocketPath: String?
     var dockerdSocketPath: String?
     var shellSocketPath: String?
@@ -2211,15 +2212,37 @@ nonisolated final class DorydClient: @unchecked Sendable {
         guard let shares = machineShares(from: dictionary["shares"]) else {
             return nil
         }
+        let displayMode = (dictionary["displayMode"] as? String)
+            .flatMap(MachineDisplayMode.init(rawValue:)) ?? .headless
+        let agentBuild = nonEmptyString(dictionary["agentBuild"])
+        let clipboardPolicy = typedSettings.value?.clipboardPolicy
+            ?? (displayMode == .desktop
+                ? DoryVMClipboardPolicy.legacyDesktop(.bidirectional)
+                : .disabled)
+        guard let integrationHealth = machineIntegrationHealth(
+            from: dictionary,
+            machineIsRunning: state == "running",
+            desktopIntegrationsExpected: displayMode == .desktop,
+            clipboardTextExpected: clipboardPolicy.text != .off,
+            clipboardImageExpected: clipboardPolicy.image != .off,
+            sharedFoldersExpected: !shares.isEmpty,
+            expectedRuntimeIdentityMode: runtimeIdentity.mode,
+            expectedAgentBuild: state == "running" ? agentBuild : nil,
+            expectedAgentProtocolVersion: state == "running"
+                ? agentHandshake.protocolVersion : nil
+        ) else {
+            return nil
+        }
         return DorydMachineStatus(
             id: id,
             state: state,
             pid: int32(dictionary["pid"]),
             lastError: nonEmptyString(dictionary["lastError"]),
             handoffSocketPath: nonEmptyString(dictionary["handoffSocketPath"]),
-            agentBuild: nonEmptyString(dictionary["agentBuild"]),
+            agentBuild: agentBuild,
             agentProtocolVersion: agentHandshake.protocolVersion,
             agentCapabilities: agentHandshake.capabilities,
+            integrationHealth: integrationHealth.value,
             agentSocketPath: nonEmptyString(dictionary["agentSocketPath"]),
             dockerdSocketPath: nonEmptyString(dictionary["dockerdSocketPath"]),
             shellSocketPath: nonEmptyString(dictionary["shellSocketPath"]),
@@ -2231,7 +2254,7 @@ nonisolated final class DorydClient: @unchecked Sendable {
             memoryMB: uint64(dictionary["memoryMB"]),
             currentBalloonTargetMB: uint64(dictionary["currentBalloonTargetMB"]),
             cpuCount: int(dictionary["cpuCount"]),
-            displayMode: (dictionary["displayMode"] as? String).flatMap(MachineDisplayMode.init(rawValue:)) ?? .headless,
+            displayMode: displayMode,
             bootMode: (dictionary["bootMode"] as? String).flatMap(MachineBootMode.init(rawValue:)) ?? .linuxKernel,
             installerMediaAttached: (dictionary["installerMediaAttached"] as? Bool)
                 ?? (dictionary["installerMediaAttached"] as? NSNumber)?.boolValue
@@ -2247,6 +2270,135 @@ nonisolated final class DorydClient: @unchecked Sendable {
     private struct ParsedMachineAgentHandshake {
         var protocolVersion: UInt32?
         var capabilities: [DorydAgentCapability]
+    }
+
+    private struct ParsedMachineIntegrationHealth {
+        var value: DoryGuestIntegrationHealth?
+    }
+
+    /// Older daemons may omit the projection. Once present, this is a capability claim used for
+    /// repair and product support decisions, so malformed/future shapes reject the machine row.
+    nonisolated private static func machineIntegrationHealth(
+        from dictionary: NSDictionary,
+        machineIsRunning: Bool,
+        desktopIntegrationsExpected: Bool,
+        clipboardTextExpected: Bool,
+        clipboardImageExpected: Bool,
+        sharedFoldersExpected: Bool,
+        expectedRuntimeIdentityMode: String,
+        expectedAgentBuild: String?,
+        expectedAgentProtocolVersion: UInt32?
+    ) -> ParsedMachineIntegrationHealth? {
+        guard let encoded = dictionary["integrationHealth"] else {
+            return ParsedMachineIntegrationHealth(value: nil)
+        }
+        guard let value = encoded as? NSDictionary,
+              let rawKeys = value.allKeys as? [String],
+              rawKeys.count == Set(rawKeys).count,
+              Set(rawKeys).isSuperset(of: [
+                "schemaVersion", "state", "runtimeAuthority", "features",
+              ]),
+              Set(rawKeys).isSubset(of: [
+                "schemaVersion", "state", "runtimeAuthority", "agentBuild",
+                "agentProtocolVersion", "features",
+              ]),
+              let schema = strictUInt64(value["schemaVersion"]),
+              schema <= UInt16.max,
+              let rawState = value["state"] as? String,
+              let state = DoryGuestIntegrationHealthState(rawValue: rawState),
+              let rawAuthority = value["runtimeAuthority"] as? String,
+              let authority = DoryGuestIntegrationRuntimeAuthority(rawValue: rawAuthority),
+              let rawFeatures = value["features"] as? NSArray else {
+            return nil
+        }
+        let agentBuild: String?
+        if let encodedBuild = value["agentBuild"] {
+            guard let build = encodedBuild as? String else { return nil }
+            agentBuild = build
+        } else {
+            agentBuild = nil
+        }
+        let agentProtocolVersion: UInt32?
+        if let encodedProtocol = value["agentProtocolVersion"] {
+            guard let version = strictUInt64(encodedProtocol),
+                  version <= UInt32.max else { return nil }
+            agentProtocolVersion = UInt32(version)
+        } else {
+            agentProtocolVersion = nil
+        }
+
+        var features: [DoryGuestIntegrationFeatureHealth] = []
+        features.reserveCapacity(rawFeatures.count)
+        for rawFeature in rawFeatures {
+            guard let feature = rawFeature as? NSDictionary,
+                  let keys = feature.allKeys as? [String],
+                  keys.count == Set(keys).count,
+                  Set(keys).isSuperset(of: ["id", "provider", "required", "state"]),
+                  Set(keys).isSubset(of: [
+                    "id", "provider", "required", "minimumVersion",
+                    "negotiatedVersion", "state",
+                  ]),
+                  let rawID = feature["id"] as? String,
+                  let id = DoryGuestIntegrationCapabilityID(rawValue: rawID),
+                  let rawProvider = feature["provider"] as? String,
+                  let provider = DoryGuestIntegrationFeatureProvider(rawValue: rawProvider),
+                  let requiredNumber = feature["required"] as? NSNumber,
+                  CFGetTypeID(requiredNumber) == CFBooleanGetTypeID(),
+                  let rawFeatureState = feature["state"] as? String,
+                  let featureState = DoryGuestIntegrationFeatureState(
+                    rawValue: rawFeatureState
+                  ) else {
+                return nil
+            }
+            func version(_ key: String) -> UInt32? {
+                guard let encoded = feature[key],
+                      let value = strictUInt64(encoded),
+                      value <= UInt32.max else { return nil }
+                return UInt32(value)
+            }
+            let minimumVersion = feature["minimumVersion"] == nil
+                ? nil : version("minimumVersion")
+            let negotiatedVersion = feature["negotiatedVersion"] == nil
+                ? nil : version("negotiatedVersion")
+            if feature["minimumVersion"] != nil && minimumVersion == nil { return nil }
+            if feature["negotiatedVersion"] != nil && negotiatedVersion == nil { return nil }
+            features.append(DoryGuestIntegrationFeatureHealth(
+                id: id,
+                provider: provider,
+                required: requiredNumber.boolValue,
+                minimumVersion: minimumVersion,
+                negotiatedVersion: negotiatedVersion,
+                state: featureState
+            ))
+        }
+        let health = DoryGuestIntegrationHealth(
+            schemaVersion: UInt16(schema),
+            state: state,
+            runtimeAuthority: authority,
+            agentBuild: agentBuild,
+            agentProtocolVersion: agentProtocolVersion,
+            features: features
+        )
+        let expectedAuthority: DoryGuestIntegrationRuntimeAuthority
+        switch expectedRuntimeIdentityMode {
+        case "resolved-plan": expectedAuthority = .resolvedPlan
+        case "requires-replanning": expectedAuthority = .requiresReplanning
+        case "legacy-compatibility": expectedAuthority = .legacyCompatibility
+        default: return nil
+        }
+        guard health.isValid(
+            desktopIntegrationsExpected: desktopIntegrationsExpected,
+            clipboardTextExpected: clipboardTextExpected,
+            clipboardImageExpected: clipboardImageExpected,
+            sharedFoldersExpected: sharedFoldersExpected
+        ),
+        health.runtimeAuthority == expectedAuthority,
+        health.agentBuild == expectedAgentBuild,
+        health.agentProtocolVersion == expectedAgentProtocolVersion,
+        machineIsRunning ? health.state != .inactive : health.state == .inactive else {
+            return nil
+        }
+        return ParsedMachineIntegrationHealth(value: health)
     }
 
     nonisolated private static func machineAgentHandshake(

@@ -1,3 +1,4 @@
+import DoryOperations
 import SwiftUI
 
 enum AppSection: String, CaseIterable, Identifiable, Sendable {
@@ -305,6 +306,7 @@ struct Machine: Identifiable, Hashable, Sendable {
     var agentBuild: String? = nil
     var agentProtocolVersion: UInt32? = nil
     var agentCapabilities: [DorydAgentCapability] = []
+    var integrationHealth: DoryGuestIntegrationHealth? = nil
     var mounts: [MountPair] = []
     var id: String { name }
 
@@ -375,73 +377,91 @@ struct Machine: Identifiable, Hashable, Sendable {
         return evidence
     }
 
+    var integrationHealthProjection: DoryGuestIntegrationHealth {
+        if let integrationHealth, integrationHealth.isValid {
+            return integrationHealth
+        }
+        let authority: DoryGuestIntegrationRuntimeAuthority
+        switch runtimeIdentity.mode {
+        case "resolved-plan": authority = .resolvedPlan
+        case "requires-replanning": authority = .requiresReplanning
+        default: authority = .legacyCompatibility
+        }
+        return DoryGuestIntegrationHealth.evaluate(
+            machineIsRunning: status == .running,
+            runtimeAuthority: authority,
+            desktopIntegrationsExpected: displayMode == .desktop,
+            clipboardTextExpected: displayMode == .desktop,
+            clipboardImageExpected: displayMode == .desktop,
+            sharedFoldersExpected: !mounts.isEmpty,
+            // Older daemons did not expose the plan's exact device contract. The compatibility
+            // projection therefore stays fail-closed instead of inferring host integrations.
+            qualifiedRuntimeFeatures: [],
+            agentBuild: agentBuild,
+            agentProtocolVersion: agentProtocolVersion,
+            agentCapabilities: agentCapabilities.map {
+                DoryGuestIntegrationNegotiatedCapability(id: $0.id, version: $0.version)
+            }
+        )
+    }
+
     private var toolsRuntimeEvidence: MachineRuntimeEvidence {
-        guard let agentBuild, !agentBuild.isEmpty else {
+        let health = integrationHealthProjection
+        switch health.state {
+        case .inactive:
+            return MachineRuntimeEvidence(
+                id: "tools",
+                label: "Tools inactive",
+                systemImage: "wrench.and.screwdriver",
+                tone: .standard,
+                detail: "Integration checks resume when the workspace is running"
+            )
+        case .missingTools:
             return MachineRuntimeEvidence(
                 id: "tools",
                 label: "Tools unavailable",
                 systemImage: "wrench.and.screwdriver",
                 tone: .warning,
-                detail: "The guest has not reported a Dory Tools handshake"
+                detail: "The guest has not reported a valid Dory Tools handshake"
             )
-        }
-        guard let agentProtocolVersion else {
-            return MachineRuntimeEvidence(
-                id: "tools",
-                label: "Tools unversioned",
-                systemImage: "wrench.and.screwdriver",
-                tone: .warning,
-                detail: "\(agentBuild) does not report a protocol contract"
-            )
-        }
-        guard agentProtocolVersion == 1 else {
+        case .incompatible:
             return MachineRuntimeEvidence(
                 id: "tools",
                 label: "Tools incompatible",
                 systemImage: "exclamationmark.triangle.fill",
                 tone: .warning,
-                detail: "\(agentBuild) uses unsupported protocol \(agentProtocolVersion)"
+                detail: "\(health.agentBuild ?? "Dory Tools") uses unsupported protocol \(health.agentProtocolVersion ?? 0)"
             )
-        }
-        guard !agentCapabilities.isEmpty else {
-            return MachineRuntimeEvidence(
-                id: "tools",
-                label: "Tools need an update",
-                systemImage: "arrow.triangle.2.circlepath",
-                tone: .warning,
-                detail: "\(agentBuild) does not report versioned capabilities"
-            )
-        }
-        let versions = Dictionary(uniqueKeysWithValues: agentCapabilities.map { ($0.id, $0.version) })
-        let required: [(id: String, version: UInt32)] = [
-            ("clock-sync", 1),
-            ("exec", 1),
-            ("exec-stdin", 1),
-            ("ports-watch", 1),
-            ("snapshot-quiesce", 2),
-            ("sync-push", 2),
-            ("telemetry", 1),
-        ]
-        let missing = required.compactMap { requirement in
-            (versions[requirement.id] ?? 0) < requirement.version
-                ? "\(requirement.id)@\(requirement.version)" : nil
-        }
-        guard missing.isEmpty else {
+        case .degraded:
+            let unavailable = health.features
+                .filter { $0.required && $0.state != .active }
+                .map(\.id.rawValue)
             return MachineRuntimeEvidence(
                 id: "tools",
                 label: "Tools partially ready",
-                systemImage: "wrench.and.screwdriver",
+                systemImage: "arrow.triangle.2.circlepath",
                 tone: .warning,
-                detail: "\(agentBuild) is missing \(missing.joined(separator: ", "))"
+                detail: unavailable.isEmpty
+                    ? "The workspace needs a current resolved runtime plan"
+                    : "Unavailable: \(unavailable.joined(separator: ", "))"
+            )
+        case .compatibility:
+            return MachineRuntimeEvidence(
+                id: "tools",
+                label: "Tools compatibility",
+                systemImage: "wrench.and.screwdriver",
+                tone: .standard,
+                detail: "\(health.agentBuild ?? "Dory Tools") · guest capabilities negotiated; runtime integrations unqualified"
+            )
+        case .healthy:
+            return MachineRuntimeEvidence(
+                id: "tools",
+                label: "Tools ready",
+                systemImage: "wrench.and.screwdriver.fill",
+                tone: .positive,
+                detail: "\(health.agentBuild ?? "Dory Tools") · \(health.features.filter { $0.state == .active }.count) active integrations"
             )
         }
-        return MachineRuntimeEvidence(
-            id: "tools",
-            label: "Tools ready",
-            systemImage: "wrench.and.screwdriver.fill",
-            tone: .positive,
-            detail: "\(agentBuild) · \(agentCapabilities.count) versioned capabilities"
-        )
     }
 
     private static func backendLabel(_ backend: String) -> String {

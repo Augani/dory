@@ -443,31 +443,49 @@ final class HealthReporterTests: XCTestCase {
         ) == true)
     }
 
-    func testMachineToolsHealthRequiresCanonicalVersionedCapabilities() {
+    func testMachineToolsHealthUsesDaemonIntegrationProjection() throws {
         let capabilities = [
             "clock-sync", "exec", "exec-stdin", "ports-watch", "sync-push", "telemetry",
         ].map { DoryAgentCapability(id: $0, version: 1) }
+        let plan = healthResolvedPlan()
+        let resolvedIdentity = try DoryMachineRuntimeIdentity(
+            resolvedPlan: plan,
+            planSHA256: DoryMachineRuntimeIdentity.planSHA256(plan)
+        )
         let ready = HealthReporter.machineToolsCheck(DoryMachineStatus(
             id: "ready",
             state: .running,
             agentBuild: "dory-agent/1.0",
             agentProtocolVersion: DoryCore.protocolVersion(),
-            agentCapabilities: capabilities
+            agentCapabilities: capabilities,
+            runtimeIdentity: resolvedIdentity
         ))
         XCTAssertEqual(ready.status, .pass)
         XCTAssertEqual(ready.code, "machine.tools.ready")
-        XCTAssertEqual(ready.data["capabilities"], capabilities.map {
-            "\($0.id)@\($0.version)"
-        }.joined(separator: ","))
+        XCTAssertEqual(ready.data["integration_state"], "healthy")
+        XCTAssertEqual(ready.data["runtime_authority"], "resolved-plan")
+        XCTAssertTrue(ready.data["features"]?.contains("telemetry=active@1") == true)
 
-        let legacy = HealthReporter.machineToolsCheck(DoryMachineStatus(
-            id: "legacy",
+        let degraded = HealthReporter.machineToolsCheck(DoryMachineStatus(
+            id: "degraded",
             state: .running,
             agentBuild: "dory-agent/0.9",
             agentProtocolVersion: DoryCore.protocolVersion()
         ))
-        XCTAssertEqual(legacy.status, .warn)
-        XCTAssertEqual(legacy.code, "machine.tools.legacy_handshake")
+        XCTAssertEqual(degraded.status, .warn)
+        XCTAssertEqual(degraded.code, "machine.tools.partial")
+        XCTAssertTrue(degraded.data["unavailable_required"]?.contains("clock-sync") == true)
+
+        let compatibility = HealthReporter.machineToolsCheck(DoryMachineStatus(
+            id: "compatibility",
+            state: .running,
+            agentBuild: "dory-agent/1.0",
+            agentProtocolVersion: DoryCore.protocolVersion(),
+            agentCapabilities: capabilities
+        ))
+        XCTAssertEqual(compatibility.status, .warn)
+        XCTAssertEqual(compatibility.code, "machine.tools.compatibility")
+        XCTAssertEqual(compatibility.data["integration_state"], "compatibility")
 
         let invalid = HealthReporter.machineToolsCheck(DoryMachineStatus(
             id: "invalid",
@@ -762,7 +780,7 @@ final class HealthReporterTests: XCTestCase {
 private func healthResolvedPlan() -> DoryResolvedMachinePlan {
     let artifact = healthDigest("a")
     let guest = DoryGuestPlatform(family: .linux, architecture: .arm64)
-    let devices = DoryVirtualMachineDeviceCapabilityRequest.minimumBootable
+    let devices = DoryVirtualMachineDeviceCapabilityRequest(gracefulShutdown: true)
     let media = DoryBootMedia(
         kind: .installedLinuxBootBundle,
         source: .bundledByDory,

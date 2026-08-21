@@ -423,6 +423,50 @@ public struct DoryMachineStatus: Sendable, Equatable {
         self.runtimeIdentity = runtimeIdentity
         self.installedDesktopPayloadReceipt = installedDesktopPayloadReceipt
     }
+
+    public var integrationHealth: DoryGuestIntegrationHealth {
+        let authority: DoryGuestIntegrationRuntimeAuthority
+        switch runtimeIdentity.mode {
+        case .legacyCompatibility: authority = .legacyCompatibility
+        case .resolvedPlan: authority = .resolvedPlan
+        case .requiresReplanning: authority = .requiresReplanning
+        }
+        let clipboardPolicy = typedSettings?.clipboardPolicy
+            ?? (displayMode == .desktop
+                ? DoryVMClipboardPolicy.legacyDesktop(.bidirectional)
+                : .disabled)
+        var qualifiedRuntimeFeatures: Set<DoryGuestIntegrationCapabilityID> = []
+        if let devices = runtimeIdentity.resolvedPlan?.devices {
+            if devices.gracefulShutdown {
+                qualifiedRuntimeFeatures.insert(.gracefulShutdown)
+            }
+            if devices.dynamicDisplay {
+                qualifiedRuntimeFeatures.insert(.displayResize)
+            }
+            if devices.clipboard {
+                qualifiedRuntimeFeatures.formUnion([.clipboardText, .clipboardImage])
+            }
+            if devices.directorySharing {
+                qualifiedRuntimeFeatures.formUnion([
+                    .sharedFolderDiscovery, .sharedFolderMountStatus,
+                ])
+            }
+        }
+        return DoryGuestIntegrationHealth.evaluate(
+            machineIsRunning: state == .running,
+            runtimeAuthority: authority,
+            desktopIntegrationsExpected: displayMode == .desktop,
+            clipboardTextExpected: clipboardPolicy.text != .off,
+            clipboardImageExpected: clipboardPolicy.image != .off,
+            sharedFoldersExpected: !shares.isEmpty,
+            qualifiedRuntimeFeatures: qualifiedRuntimeFeatures,
+            agentBuild: agentBuild,
+            agentProtocolVersion: agentProtocolVersion,
+            agentCapabilities: agentCapabilities.map {
+                DoryGuestIntegrationNegotiatedCapability(id: $0.id, version: $0.version)
+            }
+        )
+    }
 }
 
 public enum DoryMachineSnapshotConsistency: String, Sendable, Equatable, Hashable, Codable {

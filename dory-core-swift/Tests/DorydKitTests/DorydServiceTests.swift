@@ -765,6 +765,23 @@ final class DorydServiceTests: XCTestCase {
             let capabilities = status?["agentCapabilities"] as? [NSDictionary]
             XCTAssertEqual(capabilities?.first?["id"] as? String, "exec")
             XCTAssertEqual((capabilities?.first?["version"] as? NSNumber)?.uint32Value, 1)
+            let health = status?["integrationHealth"] as? NSDictionary
+            XCTAssertEqual((health?["schemaVersion"] as? NSNumber)?.uint16Value, 1)
+            XCTAssertEqual(health?["state"] as? String, "degraded")
+            XCTAssertEqual(health?["runtimeAuthority"] as? String, "legacy-compatibility")
+            let features = health?["features"] as? [NSDictionary]
+            XCTAssertEqual(
+                features?.compactMap { $0["id"] as? String },
+                features?.compactMap { $0["id"] as? String }.sorted()
+            )
+            XCTAssertEqual(
+                features?.first { $0["id"] as? String == "telemetry" }?["state"] as? String,
+                "active"
+            )
+            XCTAssertEqual(
+                features?.first { $0["id"] as? String == "clock-sync" }?["state"] as? String,
+                "unavailable"
+            )
             machineStatus.fulfill()
         }
         wait(for: [machineStatus], timeout: 5)
