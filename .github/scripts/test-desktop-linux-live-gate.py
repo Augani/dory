@@ -56,6 +56,13 @@ class DesktopLinuxLiveGateTests(unittest.TestCase):
             "ExecStop=/bin/sh -c 'printf graceful-shutdown-pass",
             "machine stop did not complete cleanly",
             "graceful_shutdown=PASS",
+            "display-baseline-ready",
+            "Accessibility permission is required for display qualification",
+            "set size of front window of targetProcess to {960, 640}",
+            "dynamic-display-resized",
+            "guest display mode did not follow the host window resize",
+            "dynamic-display-restored",
+            "dynamic_retina_display=PASS",
             "workroot must be a strict child of RUNNER_TEMP",
         )
         for proof in required:

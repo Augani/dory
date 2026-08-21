@@ -459,6 +459,102 @@ PY
     echo graceful-shutdown-armed
   " > "$WORKROOT/evidence/$distro-graceful-shutdown-armed.json"
 
+  assert_exec_token "$machine" display-baseline-ready sh -lc "
+    set -eu
+    uid=\$(id -u dorygate)
+    runtime=/run/user/\$uid
+    session_env=\$(runuser -u dorygate -- env XDG_RUNTIME_DIR=\"\$runtime\" \
+      DBUS_SESSION_BUS_ADDRESS=\"unix:path=\$runtime/bus\" systemctl --user show-environment \
+      | grep -E '^(DISPLAY|XAUTHORITY)=')
+    display=\$(printf '%s\n' \"\$session_env\" | sed -n 's/^DISPLAY=//p')
+    xauth=\$(printf '%s\n' \"\$session_env\" | sed -n 's/^XAUTHORITY=//p')
+    mode=\$(runuser -u dorygate -- env DISPLAY=\"\$display\" XAUTHORITY=\"\$xauth\" \
+      xrandr --current | awk '\$2 ~ /\\*/ { print \$1; exit }')
+    printf '%s\n' \"\$mode\" | grep -Eq '^[0-9]+x[0-9]+$'
+    printf '%s\n' \"\$mode\" > /var/lib/dory/release-display-baseline
+    echo display-baseline-ready
+  " > "$WORKROOT/evidence/$distro-display-baseline.json"
+
+  original_window_size="$(osascript - "$machine_pid" <<'APPLESCRIPT'
+on run argv
+  set targetPID to (item 1 of argv) as integer
+  tell application "System Events"
+    if not UI elements enabled then error "Accessibility permission is required for display qualification"
+    set targetProcess to first process whose unix id is targetPID
+    set originalSize to size of front window of targetProcess
+    set size of front window of targetProcess to {960, 640}
+    return ((item 1 of originalSize) as text) & "x" & ((item 2 of originalSize) as text)
+  end tell
+end run
+APPLESCRIPT
+)"
+  printf '%s\n' "$original_window_size" | grep -Eq '^[0-9]+x[0-9]+$' \
+    || { echo "desktop live gate: invalid original window size: $original_window_size" >&2; exit 1; }
+  printf '%s\n' "$original_window_size" \
+    > "$WORKROOT/evidence/$distro-display-original-window.txt"
+
+  assert_exec_token "$machine" dynamic-display-resized sh -lc "
+    set -eu
+    uid=\$(id -u dorygate)
+    runtime=/run/user/\$uid
+    session_env=\$(runuser -u dorygate -- env XDG_RUNTIME_DIR=\"\$runtime\" \
+      DBUS_SESSION_BUS_ADDRESS=\"unix:path=\$runtime/bus\" systemctl --user show-environment \
+      | grep -E '^(DISPLAY|XAUTHORITY)=')
+    display=\$(printf '%s\n' \"\$session_env\" | sed -n 's/^DISPLAY=//p')
+    xauth=\$(printf '%s\n' \"\$session_env\" | sed -n 's/^XAUTHORITY=//p')
+    baseline=\$(cat /var/lib/dory/release-display-baseline)
+    for _ in \$(seq 1 30); do
+      current=\$(runuser -u dorygate -- env DISPLAY=\"\$display\" XAUTHORITY=\"\$xauth\" \
+        xrandr --current | awk '\$2 ~ /\\*/ { print \$1; exit }')
+      if printf '%s\n' \"\$current\" | grep -Eq '^[0-9]+x[0-9]+$' \
+          && test \"\$current\" != \"\$baseline\"; then
+        printf '%s\n' \"\$current\" > /var/lib/dory/release-display-resized
+        echo dynamic-display-resized
+        exit 0
+      fi
+      sleep 1
+    done
+    echo 'guest display mode did not follow the host window resize' >&2
+    exit 1
+  " > "$WORKROOT/evidence/$distro-display-resized.json"
+
+  original_window_width="${original_window_size%x*}"
+  original_window_height="${original_window_size#*x}"
+  osascript - "$machine_pid" "$original_window_width" "$original_window_height" <<'APPLESCRIPT'
+on run argv
+  set targetPID to (item 1 of argv) as integer
+  set restoredWidth to (item 2 of argv) as integer
+  set restoredHeight to (item 3 of argv) as integer
+  tell application "System Events"
+    set targetProcess to first process whose unix id is targetPID
+    set size of front window of targetProcess to {restoredWidth, restoredHeight}
+  end tell
+end run
+APPLESCRIPT
+
+  assert_exec_token "$machine" dynamic-display-restored sh -lc "
+    set -eu
+    uid=\$(id -u dorygate)
+    runtime=/run/user/\$uid
+    session_env=\$(runuser -u dorygate -- env XDG_RUNTIME_DIR=\"\$runtime\" \
+      DBUS_SESSION_BUS_ADDRESS=\"unix:path=\$runtime/bus\" systemctl --user show-environment \
+      | grep -E '^(DISPLAY|XAUTHORITY)=')
+    display=\$(printf '%s\n' \"\$session_env\" | sed -n 's/^DISPLAY=//p')
+    xauth=\$(printf '%s\n' \"\$session_env\" | sed -n 's/^XAUTHORITY=//p')
+    baseline=\$(cat /var/lib/dory/release-display-baseline)
+    for _ in \$(seq 1 30); do
+      current=\$(runuser -u dorygate -- env DISPLAY=\"\$display\" XAUTHORITY=\"\$xauth\" \
+        xrandr --current | awk '\$2 ~ /\\*/ { print \$1; exit }')
+      if test \"\$current\" = \"\$baseline\"; then
+        echo dynamic-display-restored
+        exit 0
+      fi
+      sleep 1
+    done
+    echo 'guest display mode did not return after restoring the host window' >&2
+    exit 1
+  " > "$WORKROOT/evidence/$distro-display-restored.json"
+
   assert_exec_token "$machine" browser-window-mapped sh -lc "
     set -eu
     uid=\$(id -u dorygate)
@@ -835,6 +931,7 @@ fi
   fi
   printf 'snapshot_restore_exact_bytes=PASS\n'
   printf 'graceful_shutdown=PASS\n'
+  printf 'dynamic_retina_display=PASS\n'
   if [ "$SELECTED_DISTRO" = all ] || [ "$SELECTED_DISTRO" = debian ]; then
     printf 'debian_rootfs_sha256=%s\n' "$(shasum -a 256 "$DEBIAN_ROOTFS" | awk '{print $1}')"
     printf 'debian_update_sha256=%s\n' "$(shasum -a 256 "$DEBIAN_UPDATE" | awk '{print $1}')"
