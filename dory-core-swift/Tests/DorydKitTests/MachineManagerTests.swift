@@ -3327,7 +3327,13 @@ final class MachineManagerTests: XCTestCase {
             rootfsPath: doryTestRootfsPath
         ))
 
-        let starting = try manager.start(id: "dev")
+        let requestedOperationID = UUID(
+            uuidString: "01234567-89ab-4cde-8f01-23456789abcd"
+        )!
+        let starting = try manager.start(
+            id: "dev",
+            operationID: requestedOperationID
+        )
         XCTAssertEqual(starting.state, .starting)
         let handoffPath = try XCTUnwrap(starting.handoffSocketPath)
 
@@ -3702,7 +3708,18 @@ final class MachineManagerTests: XCTestCase {
             rootfsPath: doryTestRootfsPath,
             displayMode: .desktop
         ))
-        let starting = try manager.start(id: "dev")
+        XCTAssertThrowsError(try manager.start(
+            id: "dev",
+            operationID: UUID(uuidString: "00000000-0000-0000-0000-000000000000")!
+        ))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: capture))
+        let requestedOperationID = UUID(
+            uuidString: "fedcba98-7654-4321-8fed-cba987654321"
+        )!
+        let starting = try manager.start(
+            id: "dev",
+            operationID: requestedOperationID
+        )
         for _ in 0..<100 where !FileManager.default.fileExists(atPath: capture) {
             Thread.sleep(forTimeInterval: 0.01)
         }
@@ -3714,7 +3731,14 @@ final class MachineManagerTests: XCTestCase {
         }
 
         XCTAssertEqual(try value(after: "--state-dir"), durable + "/dev")
-        XCTAssertEqual(try value(after: "--operation-id"), starting.activeOperationID)
+        XCTAssertEqual(
+            starting.activeOperationID,
+            requestedOperationID.uuidString.lowercased()
+        )
+        XCTAssertEqual(
+            try value(after: "--operation-id"),
+            requestedOperationID.uuidString.lowercased()
+        )
         XCTAssertEqual(try value(after: "--display-mode"), "desktop")
         for flag in ["--dockerd-sock", "--agent-sock", "--shell-sock", "--control-sock"] {
             let path = try value(after: flag)

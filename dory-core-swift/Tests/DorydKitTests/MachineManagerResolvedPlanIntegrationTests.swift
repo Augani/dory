@@ -29,7 +29,16 @@ struct MachineManagerResolvedPlanIntegrationTests {
                 expectedPlanRevision: { _ in 1 }
             )
 
-            let status = try manager.start(id: "dev")
+            let requestedOperationID = UUID(
+                uuidString: "01234567-89ab-4cde-8f01-23456789abcd"
+            )!
+            let requestedOperationToken = DoryOperationIdentity.canonical(
+                requestedOperationID
+            )
+            let status = try manager.start(
+                id: "dev",
+                operationID: requestedOperationID
+            )
             #expect(status.state == .running)
             #expect(starter.count == 1)
             #expect(resolver.callCount == 1)
@@ -46,6 +55,10 @@ struct MachineManagerResolvedPlanIntegrationTests {
             )
             #expect(status.runtimeIdentity.virtualHardwareABIVersion == 1)
             #expect(status.runtimeIdentity.components.count == 1)
+            let startEvents = try manager.flightRecorder(id: "dev", afterSequence: 0).events
+                .filter { $0.operationKind == DoryWorkspaceMutationKind.starting.rawValue }
+            #expect(!startEvents.isEmpty)
+            #expect(startEvents.allSatisfy { $0.operationID == requestedOperationToken })
             let service = DorydService(
                 socketPath: state + "/service.sock",
                 machineManager: manager

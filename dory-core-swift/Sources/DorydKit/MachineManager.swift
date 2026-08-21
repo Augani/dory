@@ -1639,9 +1639,17 @@ public final class MachineManager: @unchecked Sendable {
     }
 
     @discardableResult
-    public func start(id: String) throws -> DoryMachineStatus {
+    public func start(
+        id: String,
+        operationID: UUID? = nil
+    ) throws -> DoryMachineStatus {
         operationLock.lock()
         defer { operationLock.unlock() }
+        if operationID == UUID(uuidString: "00000000-0000-0000-0000-000000000000") {
+            throw MachineManagerError.persistence(
+                "machine start operation identifier cannot be zero"
+            )
+        }
         try requireNoActivePlanningMutation(id: id)
         lock.lock()
         guard let startEntry = machines[id] else {
@@ -1676,18 +1684,24 @@ public final class MachineManager: @unchecked Sendable {
         try refreshResolvedAdmissionForStartIfNeeded(id: id)
         let directMutation = try retainDirectWorkspaceMutationLock(id: id)
         defer { releaseDirectWorkspaceMutationLock(id: id, retention: directMutation) }
-        return try startImplementation(id: id, journalLifecycle: true)
+        return try startImplementation(
+            id: id,
+            journalLifecycle: true,
+            requestedOperationID: operationID
+        )
     }
 
     private func startImplementation(
         id: String,
-        journalLifecycle: Bool
+        journalLifecycle: Bool,
+        requestedOperationID: UUID? = nil
     ) throws -> DoryMachineStatus {
         switch launchPolicy {
         case .legacyCompatibility:
             return try startLegacyMachine(
                 id: id,
                 journalLifecycle: journalLifecycle,
+                requestedOperationID: requestedOperationID,
                 expectedDurableIdentity: nil
             )
         case .requireResolvedPlan:
@@ -1706,6 +1720,7 @@ public final class MachineManager: @unchecked Sendable {
                 planStore: planStore,
                 revisionProvider: revisionProvider,
                 journalLifecycle: journalLifecycle,
+                requestedOperationID: requestedOperationID,
                 expectedRuntimeIdentity: nil
             )
         case .perWorkspaceAuthority:
@@ -1715,6 +1730,7 @@ public final class MachineManager: @unchecked Sendable {
                 return try startLegacyMachine(
                     id: id,
                     journalLifecycle: journalLifecycle,
+                    requestedOperationID: requestedOperationID,
                     expectedDurableIdentity: identity
                 )
             case .requiresReplanning:
@@ -1737,6 +1753,7 @@ public final class MachineManager: @unchecked Sendable {
                     planStore: planStore,
                     revisionProvider: revisionProvider,
                     journalLifecycle: journalLifecycle,
+                    requestedOperationID: requestedOperationID,
                     expectedRuntimeIdentity: identity
                 )
             }
@@ -1746,6 +1763,7 @@ public final class MachineManager: @unchecked Sendable {
     private func startLegacyMachine(
         id: String,
         journalLifecycle: Bool,
+        requestedOperationID: UUID?,
         expectedDurableIdentity: DoryMachineRuntimeIdentity?
     ) throws -> DoryMachineStatus {
         let prepared = try prepareMachineStartWithLifecycle(
@@ -1769,7 +1787,8 @@ public final class MachineManager: @unchecked Sendable {
         let lifecycle = try journalLifecycle
             ? beginLifecycleStart(
                 machine: prepared.authoritativeMachine,
-                targetIdentity: identity
+                targetIdentity: identity,
+                operationID: requestedOperationID
             )
             : nil
         let operationID = try launchOperationID(id: id, lifecycle: lifecycle)
@@ -1807,6 +1826,7 @@ public final class MachineManager: @unchecked Sendable {
         planStore: any DoryResolvedMachinePlanStoring,
         revisionProvider: ResolvedPlanRevisionProvider,
         journalLifecycle: Bool,
+        requestedOperationID: UUID?,
         expectedRuntimeIdentity: DoryMachineRuntimeIdentity?
     ) throws -> DoryMachineStatus {
         let prepared = try prepareMachineStartWithLifecycle(
@@ -1875,7 +1895,8 @@ public final class MachineManager: @unchecked Sendable {
         let lifecycle = try journalLifecycle
             ? beginLifecycleStart(
                 machine: prepared.authoritativeMachine,
-                targetIdentity: runtimeIdentity
+                targetIdentity: runtimeIdentity,
+                operationID: requestedOperationID
             )
             : nil
         let operationID = try launchOperationID(id: id, lifecycle: lifecycle)
@@ -10018,10 +10039,12 @@ public final class MachineManager: @unchecked Sendable {
 
     private func beginLifecycleStart(
         machine: DoryMachineConfiguration,
-        targetIdentity: DoryMachineRuntimeIdentity
+        targetIdentity: DoryMachineRuntimeIdentity,
+        operationID: UUID?
     ) throws -> MachineLifecycleJournalContext {
         let sourceIdentity = try currentRuntimeIdentity(id: machine.id)
         return try beginLifecycleOperation(
+            operationID: operationID,
             kind: .starting,
             source: lifecycleCondition(
                 machine: machine,
@@ -10254,6 +10277,7 @@ public final class MachineManager: @unchecked Sendable {
     }
 
     private func beginLifecycleOperation(
+        operationID: UUID? = nil,
         kind: DoryWorkspaceMutationKind,
         source: DoryWorkspaceLifecycleCondition,
         target: DoryWorkspaceLifecycleCondition,
@@ -10284,6 +10308,7 @@ public final class MachineManager: @unchecked Sendable {
         let deadlineDelta: Int64 = 15 * 60 * 1_000
         let deadline = created > Int64.max - deadlineDelta ? Int64.max : created + deadlineDelta
         let operation = DoryWorkspaceLifecycleOperation(
+            operationID: operationID ?? UUID(),
             kind: kind,
             source: source,
             target: target,

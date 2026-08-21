@@ -16,6 +16,7 @@ import Foundation
     func dockerAgentClockSync(reply: @escaping (NSDictionary, String) -> Void)
     func machineCreate(_ config: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineStart(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
+    func machineStart(_ machineID: String, operationID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineStop(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machinePause(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineSuspend(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)

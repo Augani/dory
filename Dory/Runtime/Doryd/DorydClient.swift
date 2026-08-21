@@ -16,6 +16,7 @@ nonisolated protocol DorydControlXPC {
     func dockerAgentTelemetry(reply: @escaping (NSDictionary, String) -> Void)
     func machineCreate(_ config: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineStart(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
+    func machineStart(_ machineID: String, operationID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineStop(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machinePause(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineSuspend(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
@@ -1712,9 +1713,16 @@ nonisolated final class DorydClient: @unchecked Sendable {
         }
     }
 
-    func machineStart(_ machineID: String) async throws -> DorydMachineStatus {
+    func machineStart(
+        _ machineID: String,
+        operationID: UUID = UUID()
+    ) async throws -> DorydMachineStatus {
         try await withTimeout(atLeast: 120).statusCommand { proxy, reply in
-            proxy.machineStart(machineID, reply: reply)
+            proxy.machineStart(
+                machineID,
+                operationID: operationID.uuidString.lowercased(),
+                reply: reply
+            )
         } decode: {
             Self.machineStatus(from: $0)
         }

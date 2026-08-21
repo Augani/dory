@@ -1096,7 +1096,15 @@ struct DorydClientTests {
                 networkMode: .disconnected
             )
         ))
-        let startedMachine = try await client.machineStart("dev")
+        let startOperationID = UUID(uuidString: "01234567-89ab-4cde-8f01-23456789abcd")!
+        let startedMachine = try await client.machineStart(
+            "dev",
+            operationID: startOperationID
+        )
+        #expect(
+            service.latestMachineStartOperationID
+                == startOperationID.uuidString.lowercased()
+        )
         let pausedMachine = try await client.machinePause("dev")
         let resumedMachine = try await client.machineResume("dev")
         let restartedMachine = try await client.machineRestart("dev")
@@ -3843,6 +3851,7 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         )
     ]
     private var _machineStartCount = 0
+    private var _latestMachineStartOperationID: String?
     private var _machineStopCount = 0
     private var _machinePauseCount = 0
     private var _machineSuspendCount = 0
@@ -4006,6 +4015,11 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     var machineStartCount: Int {
         lock.lock(); defer { lock.unlock() }
         return _machineStartCount
+    }
+
+    var latestMachineStartOperationID: String? {
+        lock.lock(); defer { lock.unlock() }
+        return _latestMachineStartOperationID
     }
 
     func setMachineEnvironment(_ machineID: String, _ environment: [String: String]) {
@@ -4446,6 +4460,17 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         machines[machineID] = row
         lock.unlock()
         reply(true, row, "")
+    }
+
+    func machineStart(
+        _ machineID: String,
+        operationID: String,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        lock.lock()
+        _latestMachineStartOperationID = operationID
+        lock.unlock()
+        machineStart(machineID, reply: reply)
     }
 
     func machineStop(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void) {

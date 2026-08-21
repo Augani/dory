@@ -1324,7 +1324,10 @@ func runMachine(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
         try emitJSON(status)
     case "start":
         let name = try cursor.take("usage: dorydctl machine start NAME")
-        try emitJSON(try client.statusCommand { $0.machineStart(name, reply: $1) })
+        let operationID = DoryOperationIdentity.canonical(UUID())
+        try emitJSON(try client.statusCommand {
+            $0.machineStart(name, operationID: operationID, reply: $1)
+        })
     case "stop":
         let name = try cursor.take("usage: dorydctl machine stop NAME")
         try emitJSON(try client.withTimeout(atLeast: engineShutdownTimeout).statusCommand {

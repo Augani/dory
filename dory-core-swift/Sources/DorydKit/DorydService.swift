@@ -281,8 +281,24 @@ public final class DorydService: NSObject, DorydControl {
         _ machineID: String,
         reply: @escaping (Bool, NSDictionary, String) -> Void
     ) {
+        machineStart(
+            machineID,
+            operationID: DoryOperationIdentity.canonical(UUID()),
+            reply: reply
+        )
+    }
+
+    public func machineStart(
+        _ machineID: String,
+        operationID: String,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        guard let parsedOperationID = DoryOperationIdentity.parseCanonical(operationID) else {
+            reply(false, [:], "machine start requires a canonical operation ID")
+            return
+        }
         machineControl(machineID, action: "start", reply: reply) { manager, id in
-            try manager.start(id: id)
+            try manager.start(id: id, operationID: parsedOperationID)
         }
     }
 

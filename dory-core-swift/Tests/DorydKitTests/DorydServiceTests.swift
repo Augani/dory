@@ -1432,8 +1432,25 @@ final class DorydServiceTests: XCTestCase {
         }
         wait(for: [create], timeout: 5)
 
+        let invalidStart = expectation(description: "machineStart invalid operation reply")
+        proxy.machineStart(
+            "dev",
+            operationID: "01234567-89AB-4CDE-8F01-23456789ABCD"
+        ) { ok, body, message in
+            XCTAssertFalse(ok)
+            XCTAssertEqual(body.count, 0)
+            XCTAssertTrue(message.contains("canonical operation ID"), message)
+            invalidStart.fulfill()
+        }
+        wait(for: [invalidStart], timeout: 5)
+        XCTAssertEqual(manager.status(id: "dev")?.state, .created)
+
+        let startOperationID = UUID(
+            uuidString: "01234567-89ab-4cde-8f01-23456789abcd"
+        )!
+        let startOperationToken = DoryOperationIdentity.canonical(startOperationID)
         let start = expectation(description: "machineStart reply")
-        proxy.machineStart("dev") { ok, body, message in
+        proxy.machineStart("dev", operationID: startOperationToken) { ok, body, message in
             XCTAssertTrue(ok, message)
             XCTAssertEqual(body["state"] as? String, "running")
             XCTAssertNotNil(body["pid"])
@@ -1444,6 +1461,10 @@ final class DorydServiceTests: XCTestCase {
             start.fulfill()
         }
         wait(for: [start], timeout: 5)
+        let startEvents = try manager.flightRecorder(id: "dev", afterSequence: 0).events
+            .filter { $0.operationKind == DoryWorkspaceMutationKind.starting.rawValue }
+        XCTAssertFalse(startEvents.isEmpty)
+        XCTAssertTrue(startEvents.allSatisfy { $0.operationID == startOperationToken })
 
         let pause = expectation(description: "machinePause reply")
         proxy.machinePause("dev") { ok, body, message in

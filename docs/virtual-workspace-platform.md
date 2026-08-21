@@ -715,12 +715,14 @@ output is available independently of Dory Tools through a generation-and-offset 
 `dorydctl`, and XPC; reads are bounded and path-free, while input is accepted only through the
 private VMM console socket and is reported read-only for the current raw-HV UART. Console bytes are
 never copied into status, incidents, flight-recorder events, diagnostics, or support bundles. Full
-start-operation propagation now carries the daemon's durable lifecycle UUID through the backend
-registry, exact adapter launch binding, helper arguments, serial boot marker, Linux kernel/boot
-context, guest-agent configuration, and the readiness echo; an absent, malformed, stale, or
-different readiness UUID is rejected before the machine can become running. UI-originated
-round-trip identity plus stop/pause/resume, component-installer, and device-event propagation and
-device-level telemetry remain required before this section is complete.
+start-operation propagation now carries the durable lifecycle UUID accepted by `doryd` through
+the backend registry, exact adapter launch binding, helper arguments, serial boot marker, Linux
+kernel/boot context, guest-agent configuration, and the readiness echo; an absent, malformed,
+stale, or different readiness UUID is rejected before the machine can become running. The app and
+CLI mint the canonical start UUID and round-trip it through the XPC boundary into that exact
+durable operation; the retained legacy start selector mints at the daemon boundary for upgrade
+compatibility. Stop/pause/resume, component-installer, and device-event propagation and device-level
+telemetry remain required before this section is complete.
 
 ## Qualification and release gates
 
