@@ -225,9 +225,12 @@ public struct DoryMachineTypedSettingsSnapshot: Codable, Sendable, Equatable, Ha
             desktopEnvironment: replacement(
                 guestIdentityIntent.desktop?.desktopEnvironment
             ),
-            clipboardPolicy: replacement(clipboardPolicy),
-            runtimePreference: replacement(runtimePreference),
-            graphicsPreference: replacement(graphicsPreference),
+            // Headless snapshots intentionally omit desktop-only values. Absence therefore
+            // means “not represented by this display contract,” not “reset the backend and
+            // graphics policy to desktop defaults.”
+            clipboardPolicy: update(clipboardPolicy),
+            runtimePreference: update(runtimePreference),
+            graphicsPreference: update(graphicsPreference),
             networkMode: .set(networkMode)
         )
     }

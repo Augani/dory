@@ -158,6 +158,40 @@ struct DoryMachineTypedWriteAuthorityTests {
         }
     }
 
+    @Test("headless snapshot replacement preserves desktop-only launch policy")
+    func headlessSnapshotPreservesLaunchPolicy() throws {
+        let migration = try DoryMachineConfigurationMigrationBridge.migrate(
+            DoryMachineConfiguration(
+                id: "headless-snapshot",
+                kernelPath: "/fixture/kernel",
+                rootfsPath: "/fixture/rootfs",
+                displayMode: .headless
+            ),
+            facts: DoryMachineConfigurationMigrationFacts(
+                guestArchitecture: .arm64,
+                systemDiskCapacityBytes: 32 * 1_024 * 1_024 * 1_024,
+                lifecycle: DoryVMLifecycleMetadata(
+                    revision: 1,
+                    createdAtUnixMilliseconds: 1_700_000_000_000,
+                    updatedAtUnixMilliseconds: 1_700_000_000_000
+                )
+            )
+        )
+        let snapshot = try DoryMachineTypedSettingsSnapshot(
+            definition: migration.definition
+        )
+        let restored = try snapshot.applyingAsReplacement(
+            to: migration.definition,
+            displayMode: .headless
+        )
+
+        #expect(snapshot.runtimePreference == nil)
+        #expect(snapshot.graphicsPreference == nil)
+        #expect(restored.backendPreference == migration.definition.backendPreference)
+        #expect(restored.graphics == migration.definition.graphics)
+        #expect(restored.clipboardPolicy == migration.definition.clipboardPolicy)
+    }
+
     @Test("hostile and out of range guest fields fail closed")
     func hostileGuestFields() {
         let cases: [NSDictionary] = [

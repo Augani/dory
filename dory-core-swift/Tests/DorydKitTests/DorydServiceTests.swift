@@ -1700,6 +1700,35 @@ final class DorydServiceTests: XCTestCase {
             .sharedNAT
         )
         XCTAssertEqual(manager.status(id: "planned")?.runtimeIdentity.mode, .requiresReplanning)
+
+        let managedRootfs = base + "/planned/rootfs.ext4"
+        let snapshotBytes = try Data(contentsOf: URL(fileURLWithPath: managedRootfs))
+        XCTAssertFalse(snapshotBytes.isEmpty)
+        _ = try manager.snapshot(id: "planned", snapshotID: "before-restore")
+        var mutatedBytes = snapshotBytes
+        mutatedBytes[mutatedBytes.startIndex] ^= 0xff
+        try mutatedBytes.write(to: URL(fileURLWithPath: managedRootfs))
+
+        let restoreReply = expectation(description: "production restore planning rejection")
+        service.machineRestoreSnapshot("planned", snapshotID: "before-restore") {
+            ok, _, message in
+            XCTAssertFalse(ok)
+            XCTAssertTrue(message.contains("production planning failed closed"), message)
+            restoreReply.fulfill()
+        }
+        wait(for: [restoreReply], timeout: 5)
+        XCTAssertEqual(controller.captures.count, 3)
+        XCTAssertEqual(
+            controller.captures.last?.request.planning.definition.identity.id,
+            "planned"
+        )
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: managedRootfs)), snapshotBytes)
+        XCTAssertEqual(manager.status(id: "planned")?.state, .created)
+        XCTAssertEqual(manager.status(id: "planned")?.runtimeIdentity.mode, .requiresReplanning)
+        XCTAssertEqual(
+            manager.status(id: "planned")?.runtimeIdentity.invalidationReason,
+            .restoredSnapshot
+        )
     }
 
     func testMachineExecOverXPCUsesMachineAgent() throws {

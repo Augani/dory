@@ -676,7 +676,29 @@ public final class DorydService: NSObject, DorydControl {
         reply: @escaping (Bool, NSDictionary, String) -> Void
     ) {
         machineControl("\(machineID)/\(snapshotID)", action: "restore_snapshot", reply: reply) { manager, _ in
-            try manager.restoreSnapshot(machineID: machineID, snapshotID: snapshotID)
+            guard let source = manager.status(id: machineID) else {
+                throw MachineManagerError.unknownMachine(machineID)
+            }
+            let shouldRestart = source.state == .starting || source.state == .running
+            var status = try manager.restoreSnapshot(
+                machineID: machineID,
+                snapshotID: snapshotID
+            )
+            if manager.configuredLaunchPolicy == .perWorkspaceAuthority {
+                guard let productionPlanningController else {
+                    throw MachineManagerError.persistence(
+                        "production planning controller is not configured"
+                    )
+                }
+                status = try manager.resolveAndPublishProductionPlan(
+                    id: machineID,
+                    controller: productionPlanningController
+                )
+                if shouldRestart {
+                    status = try manager.start(id: machineID)
+                }
+            }
+            return status
         }
     }
 
