@@ -188,7 +188,7 @@ private final class CompositionFixture: @unchecked Sendable {
         var requests: [String: DoryDaemonVirtualMachinePlanningTransactionRequest] = [:]
         var snapshots: [String: DoryDaemonVirtualMachineTrustedInventorySnapshot] = [:]
         for id in ids {
-            let prepared = Self.requestAndSnapshot(id: id)
+            let prepared = try Self.requestAndSnapshot(id: id, root: root)
             requests[id] = prepared.request
             snapshots[id] = prepared.snapshot
         }
@@ -272,8 +272,9 @@ private final class CompositionFixture: @unchecked Sendable {
     }
 
     private static func requestAndSnapshot(
-        id: String
-    ) -> (
+        id: String,
+        root: String
+    ) throws -> (
         request: DoryDaemonVirtualMachinePlanningTransactionRequest,
         snapshot: DoryDaemonVirtualMachineTrustedInventorySnapshot
     ) {
@@ -320,11 +321,22 @@ private final class CompositionFixture: @unchecked Sendable {
                 updatedAtUnixMilliseconds: 1_700_000_000_000
             )
         )
+        let bootBundlePath = root + "/\(id).installed-linux.boot"
+        try DoryInstalledLinuxBootBundle.write(
+            assets: DoryLinuxInstallerBootAssets(
+                kernel: Data("composition-kernel-\(id)".utf8),
+                initrd: Data("composition-initrd-\(id)".utf8),
+                kernelISOPath: "/boot/vmlinuz",
+                initrdISOPath: "/boot/initrd"
+            ),
+            rootDevice: "/dev/vda2",
+            toPath: bootBundlePath
+        )
         let machine = DoryMachineConfiguration(
             id: id,
-            kernelPath: "/fixture/\(id)-kernel",
+            kernelPath: bootBundlePath,
             rootfsPath: "/fixture/\(id).raw",
-            bootMode: .linuxKernel,
+            bootMode: .efi,
             displayMode: .desktop
         )
         let media = DoryBootMedia(

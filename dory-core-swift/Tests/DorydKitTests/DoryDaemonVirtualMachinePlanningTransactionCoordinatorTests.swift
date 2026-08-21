@@ -464,11 +464,22 @@ private final class TransactionFixture: @unchecked Sendable {
                 updatedAtUnixMilliseconds: 1_700_000_000_000
             )
         )
+        let bootBundlePath = root + "/installed-linux.boot"
+        try DoryInstalledLinuxBootBundle.write(
+            assets: DoryLinuxInstallerBootAssets(
+                kernel: Data("transaction-kernel".utf8),
+                initrd: Data("transaction-initrd".utf8),
+                kernelISOPath: "/boot/vmlinuz",
+                initrdISOPath: "/boot/initrd"
+            ),
+            rootDevice: "/dev/vda2",
+            toPath: bootBundlePath
+        )
         machine = DoryMachineConfiguration(
             id: definition.identity.id,
-            kernelPath: "/fixture/direct-kernel",
+            kernelPath: bootBundlePath,
             rootfsPath: "/fixture/linux.raw",
-            bootMode: .linuxKernel,
+            bootMode: .efi,
             displayMode: .desktop
         )
         media = DoryBootMedia(

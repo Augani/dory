@@ -535,7 +535,7 @@ struct DoryVirtualMachineBackendPlannerTests {
         }
     }
 
-    @Test("planner carries the exact device request and rejects unsupported modes")
+    @Test("planner carries the exact supported device request")
     func plannerNegotiatesDevices() throws {
         let minimum = plan(
             family: .linux,
@@ -550,10 +550,9 @@ struct DoryVirtualMachineBackendPlannerTests {
         )
 
         #expect(try #require(minimum.selectedDescriptor).resolvedDevices == .minimumBootable)
-        #expect(disconnected.failure?.code == .noCandidate)
-        #expect(disconnected.evaluatedDescriptors.allSatisfy {
-            $0.availability.reason?.code == .networkAttachmentUnsupported
-        })
+        #expect(disconnected.failure == nil)
+        #expect(try #require(disconnected.selectedDescriptor).resolvedDevices
+            == DoryVirtualMachineDeviceCapabilityRequest(networkAttachment: .disconnected))
     }
 
     @Test("legacy planner requests decode with conservative policy and device defaults")
