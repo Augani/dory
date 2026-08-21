@@ -13,8 +13,9 @@ use dory_pb::agent::{
     self, agent_request::Method, agent_response::Result as Res, AgentRequest, AgentResponse,
     ClockSyncRequest, ExecEnv, ExecRequest, ExecResponse, InfoRequest, PortsWatchRequest,
     SnapshotQuiesceRequest, SnapshotQuiesceResponse, SyncDeleteRequest, SyncDeleteResponse,
-    SyncFileStatusRequest, SyncFileStatusResponse, SyncManifestRequest, SyncManifestResponse,
-    SyncPutChunkRequest, SyncPutChunkResponse, TelemetryRequest, TelemetryResponse,
+    SyncFileStatusRequest, SyncFileStatusResponse, SyncGetChunkRequest, SyncGetChunkResponse,
+    SyncManifestRequest, SyncManifestResponse, SyncPutChunkRequest, SyncPutChunkResponse,
+    SyncReadTreeRequest, SyncReadTreeResponse, TelemetryRequest, TelemetryResponse,
 };
 use dory_proto::handshake::{handshake, Hello};
 use dory_proto::mux::Mux;
@@ -258,6 +259,32 @@ impl AgentClient {
             _ => Err(RemoteError::UnexpectedVariant),
         }
     }
+
+    pub async fn sync_read_tree(
+        &self,
+        req: SyncReadTreeRequest,
+    ) -> Result<SyncReadTreeResponse, RemoteError> {
+        match self
+            .call_with_deadline(Method::SyncReadTree(req), SYNC_MANIFEST_DEADLINE)
+            .await?
+        {
+            Res::SyncReadTree(response) => Ok(response),
+            _ => Err(RemoteError::UnexpectedVariant),
+        }
+    }
+
+    pub async fn sync_get_chunk(
+        &self,
+        req: SyncGetChunkRequest,
+    ) -> Result<SyncGetChunkResponse, RemoteError> {
+        match self
+            .call_with_deadline(Method::SyncGetChunk(req), SYNC_IO_DEADLINE)
+            .await?
+        {
+            Res::SyncGetChunk(response) => Ok(response),
+            _ => Err(RemoteError::UnexpectedVariant),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -311,6 +338,29 @@ mod tests {
                 stdout_truncated: false,
                 stderr_truncated: false,
             }),
+            Some(Method::SyncReadTree(_)) => Res::SyncReadTree(agent::SyncReadTreeResponse {
+                files: vec![agent::SyncFileEntry {
+                    path: "report.txt".into(),
+                    size: 6,
+                    mtime_ns: 1,
+                    mode: 0o644,
+                    hash: vec![7; dory_sync::HASH_LEN],
+                }],
+                directories: vec![agent::SyncDirectoryEntry {
+                    path: "empty".into(),
+                    mode: 0o755,
+                }],
+            }),
+            Some(Method::SyncGetChunk(request)) => {
+                let data = b"report";
+                let start = request.offset as usize;
+                let end = (start + request.max_bytes as usize).min(data.len());
+                Res::SyncGetChunk(agent::SyncGetChunkResponse {
+                    data: data[start..end].to_vec(),
+                    next_offset: end as u64,
+                    eof: end == data.len(),
+                })
+            }
             _ => Res::Error(agent::RpcError {
                 code: 400,
                 message: "unsupported in this fake".into(),
@@ -353,6 +403,30 @@ mod tests {
             .unwrap();
         assert_eq!(exec.exit_code, 0);
         assert_eq!(exec.stdout, b"exec-ok");
+
+        let tree = client
+            .sync_read_tree(SyncReadTreeRequest {
+                root: "/home/dory/Downloads".into(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(tree.files.len(), 1);
+        assert_eq!(tree.files[0].path, "report.txt");
+        assert_eq!(tree.directories[0].path, "empty");
+
+        let chunk = client
+            .sync_get_chunk(SyncGetChunkRequest {
+                root: "/home/dory/Downloads".into(),
+                path: "report.txt".into(),
+                offset: 2,
+                max_bytes: 2,
+                expected_size: 6,
+            })
+            .await
+            .unwrap();
+        assert_eq!(chunk.data, b"po");
+        assert_eq!(chunk.next_offset, 4);
+        assert!(!chunk.eof);
     }
 
     #[tokio::test]

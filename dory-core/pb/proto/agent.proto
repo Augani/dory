@@ -176,6 +176,31 @@ message SyncTreeResponse {
   uint32 directories_created = 2;
 }
 
+// Read-only counterpart used for guest-to-host transfers. The manifest is a point-in-time content
+// authority; the host must hash the fully assembled destination and reject it if guest bytes change
+// while they are being read. Empty directories are explicit so a pull never invents sentinel files.
+message SyncReadTreeRequest { string root = 1; }
+message SyncReadTreeResponse {
+  repeated SyncFileEntry files = 1;
+  repeated SyncDirectoryEntry directories = 2;
+}
+
+// Read one bounded range from a regular file observed in SyncReadTreeResponse. `expected_size`
+// makes growth/truncation fail before bytes are accepted; the manifest SHA-256 remains the final
+// authority for same-size concurrent mutation. Responses are capped by the agent at CHUNK_BYTES.
+message SyncGetChunkRequest {
+  string root = 1;
+  string path = 2;
+  uint64 offset = 3;
+  uint32 max_bytes = 4;
+  uint64 expected_size = 5;
+}
+message SyncGetChunkResponse {
+  bytes data = 1;
+  uint64 next_offset = 2;
+  bool eof = 3;
+}
+
 message AgentRequest {
   oneof method {
     ClockSyncRequest clock_sync = 1;
@@ -189,6 +214,8 @@ message AgentRequest {
     ExecRequest exec = 9;
     SnapshotQuiesceRequest snapshot_quiesce = 10;
     SyncTreeRequest sync_tree = 11;
+    SyncReadTreeRequest sync_read_tree = 12;
+    SyncGetChunkRequest sync_get_chunk = 13;
   }
 }
 
@@ -206,5 +233,7 @@ message AgentResponse {
     ExecResponse exec = 10;
     SnapshotQuiesceResponse snapshot_quiesce = 11;
     SyncTreeResponse sync_tree = 12;
+    SyncReadTreeResponse sync_read_tree = 13;
+    SyncGetChunkResponse sync_get_chunk = 14;
   }
 }

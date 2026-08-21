@@ -10,8 +10,9 @@ use std::sync::OnceLock;
 
 use dory_pb::agent::{
     SyncDeleteRequest, SyncDeleteResponse, SyncFileEntry, SyncFileStatusRequest,
-    SyncFileStatusResponse, SyncManifestRequest, SyncManifestResponse, SyncPutChunkRequest,
-    SyncPutChunkResponse, SyncTreeRequest, SyncTreeResponse,
+    SyncFileStatusResponse, SyncGetChunkRequest, SyncGetChunkResponse, SyncManifestRequest,
+    SyncManifestResponse, SyncPutChunkRequest, SyncPutChunkResponse, SyncReadTreeRequest,
+    SyncReadTreeResponse, SyncTreeRequest, SyncTreeResponse,
 };
 
 const STAGING_DIR: &str = ".dory-sync-tmp";
@@ -37,6 +38,10 @@ pub enum SyncError {
     ChunkRangeOverflow,
     #[error("invalid sync tree authority")]
     InvalidTree,
+    #[error("invalid sync read authority")]
+    InvalidRead,
+    #[error("source file changed during sync read")]
+    SourceChanged,
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
@@ -50,6 +55,8 @@ impl SyncError {
             SyncError::HashMismatch => 422,
             SyncError::ChunkRangeOverflow => 400,
             SyncError::InvalidTree => 400,
+            SyncError::InvalidRead => 400,
+            SyncError::SourceChanged => 409,
             SyncError::Io(_) => 500,
         }
     }
@@ -75,6 +82,170 @@ pub async fn manifest(req: SyncManifestRequest) -> Result<SyncManifestResponse, 
         })
         .collect();
     Ok(SyncManifestResponse { entries })
+}
+
+/// Capture the complete regular-file and directory topology for a guest-to-host transfer. This is
+/// read-only and excludes the agent's private push staging subtree. The returned hashes are the
+/// authority the host must verify after assembling every bounded chunk.
+pub async fn read_tree(req: SyncReadTreeRequest) -> Result<SyncReadTreeResponse, SyncError> {
+    let root = canonical_root(&req.root).await?;
+    let _root_guard = root_lock(&root).write().await;
+    let snapshot =
+        tokio::task::spawn_blocking(move || dory_sync::walk_tree_excluding(&root, &[STAGING_DIR]))
+            .await
+            .map_err(|error| SyncError::Io(std::io::Error::other(error)))??;
+    let files = snapshot
+        .manifest
+        .entries
+        .into_iter()
+        .map(|entry| SyncFileEntry {
+            path: entry.path,
+            size: entry.size,
+            mtime_ns: entry.mtime_ns,
+            mode: entry.mode,
+            hash: entry.hash.to_vec(),
+        })
+        .collect();
+    let directories = snapshot
+        .directories
+        .into_iter()
+        .map(|entry| dory_pb::agent::SyncDirectoryEntry {
+            path: entry.path,
+            mode: entry.mode,
+        })
+        .collect();
+    Ok(SyncReadTreeResponse { files, directories })
+}
+
+/// Return one bounded range from a regular source file. Path confinement rejects absolute,
+/// traversal, and symlink components. Size is checked on every request; the host verifies the
+/// manifest digest after the last response to detect same-size concurrent mutation.
+pub async fn get_chunk(req: SyncGetChunkRequest) -> Result<SyncGetChunkResponse, SyncError> {
+    use tokio::io::{AsyncReadExt, AsyncSeekExt};
+
+    if req.max_bytes == 0 || req.max_bytes as usize > dory_sync::CHUNK_BYTES {
+        return Err(SyncError::InvalidRead);
+    }
+    let root = canonical_root(&req.root).await?;
+    let _root_guard = root_lock(&root).read().await;
+    let _path_guard = path_lock(&root, &req.path).lock().await;
+    // The agent may run with more privilege than the guest desktop user. Open every component
+    // relative to directory descriptors with O_NOFOLLOW instead of validating a pathname and then
+    // reopening it; otherwise a guest-side rename could turn a checked path into an escape.
+    let root_for_open = root.clone();
+    let path_for_open = req.path.clone();
+    let source =
+        tokio::task::spawn_blocking(move || open_regular_beneath(&root_for_open, &path_for_open))
+            .await
+            .map_err(|error| SyncError::Io(std::io::Error::other(error)))??;
+    let metadata = source.metadata()?;
+    if !metadata.is_file() || metadata.len() != req.expected_size || req.offset > req.expected_size
+    {
+        return Err(SyncError::SourceChanged);
+    }
+
+    let remaining = req.expected_size - req.offset;
+    let count = remaining.min(req.max_bytes as u64) as usize;
+    let mut file = tokio::fs::File::from_std(source);
+    file.seek(std::io::SeekFrom::Start(req.offset)).await?;
+    let mut data = vec![0; count];
+    file.read_exact(&mut data).await?;
+    let next_offset = req
+        .offset
+        .checked_add(data.len() as u64)
+        .ok_or(SyncError::ChunkRangeOverflow)?;
+    let after = file.metadata().await?;
+    if !after.is_file() || after.len() != req.expected_size {
+        return Err(SyncError::SourceChanged);
+    }
+    Ok(SyncGetChunkResponse {
+        data,
+        next_offset,
+        eof: next_offset == req.expected_size,
+    })
+}
+
+#[cfg(unix)]
+fn open_regular_beneath(root: &Path, rel: &str) -> Result<std::fs::File, SyncError> {
+    use std::ffi::CString;
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::unix::ffi::OsStrExt;
+    use std::path::Component;
+
+    if !root.is_absolute() || rel.is_empty() || rel.starts_with('/') {
+        return Err(SyncError::PathEscape);
+    }
+
+    fn open_at(
+        parent: &std::fs::File,
+        name: &[u8],
+        directory: bool,
+    ) -> Result<std::fs::File, SyncError> {
+        let name = CString::new(name).map_err(|_| SyncError::PathEscape)?;
+        let mut flags = libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW;
+        if directory {
+            flags |= libc::O_DIRECTORY;
+        }
+        let descriptor = unsafe { libc::openat(parent.as_raw_fd(), name.as_ptr(), flags) };
+        if descriptor < 0 {
+            let error = std::io::Error::last_os_error();
+            return if error.raw_os_error() == Some(libc::ELOOP) {
+                Err(SyncError::PathEscape)
+            } else {
+                Err(SyncError::Io(error))
+            };
+        }
+        Ok(unsafe { std::fs::File::from_raw_fd(descriptor) })
+    }
+
+    let slash = CString::new("/").expect("static path has no NUL");
+    let descriptor = unsafe {
+        libc::open(
+            slash.as_ptr(),
+            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_DIRECTORY | libc::O_NOFOLLOW,
+        )
+    };
+    if descriptor < 0 {
+        return Err(SyncError::Io(std::io::Error::last_os_error()));
+    }
+    let mut directory = unsafe { std::fs::File::from_raw_fd(descriptor) };
+    for component in root.components() {
+        match component {
+            Component::RootDir => {}
+            Component::Normal(name) => {
+                directory = open_at(&directory, name.as_bytes(), true)?;
+            }
+            _ => return Err(SyncError::PathEscape),
+        }
+    }
+
+    let components = rel.split('/').collect::<Vec<_>>();
+    if components
+        .iter()
+        .any(|part| part.is_empty() || *part == "." || *part == "..")
+    {
+        return Err(SyncError::PathEscape);
+    }
+    for component in &components[..components.len() - 1] {
+        directory = open_at(&directory, component.as_bytes(), true)?;
+    }
+    let file = open_at(
+        &directory,
+        components
+            .last()
+            .expect("non-empty relative path")
+            .as_bytes(),
+        false,
+    )?;
+    if !file.metadata()?.is_file() {
+        return Err(SyncError::SourceChanged);
+    }
+    Ok(file)
+}
+
+#[cfg(not(unix))]
+fn open_regular_beneath(_root: &Path, _rel: &str) -> Result<std::fs::File, SyncError> {
+    Err(SyncError::InvalidRead)
 }
 
 pub async fn file_status(req: SyncFileStatusRequest) -> Result<SyncFileStatusResponse, SyncError> {
@@ -847,6 +1018,107 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.path);
         }
+    }
+
+    #[tokio::test]
+    async fn read_tree_and_chunks_preserve_topology_and_bound_reads() {
+        let root = TempRoot::new("read-tree");
+        fs::create_dir_all(root.path.join("empty/nested")).unwrap();
+        fs::create_dir_all(root.path.join(STAGING_DIR)).unwrap();
+        fs::write(root.path.join(STAGING_DIR).join("private"), b"hidden").unwrap();
+        fs::write(root.path.join("hello.txt"), b"hello").unwrap();
+
+        let snapshot = read_tree(SyncReadTreeRequest { root: root.root() })
+            .await
+            .unwrap();
+        assert_eq!(
+            snapshot
+                .files
+                .iter()
+                .map(|entry| entry.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["hello.txt"]
+        );
+        assert_eq!(
+            snapshot
+                .directories
+                .iter()
+                .map(|entry| entry.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["empty", "empty/nested"]
+        );
+
+        let first = get_chunk(SyncGetChunkRequest {
+            root: root.root(),
+            path: "hello.txt".into(),
+            offset: 0,
+            max_bytes: 2,
+            expected_size: 5,
+        })
+        .await
+        .unwrap();
+        assert_eq!(first.data, b"he");
+        assert_eq!(first.next_offset, 2);
+        assert!(!first.eof);
+
+        let last = get_chunk(SyncGetChunkRequest {
+            root: root.root(),
+            path: "hello.txt".into(),
+            offset: first.next_offset,
+            max_bytes: dory_sync::CHUNK_BYTES as u32,
+            expected_size: 5,
+        })
+        .await
+        .unwrap();
+        assert_eq!(last.data, b"llo");
+        assert_eq!(last.next_offset, 5);
+        assert!(last.eof);
+
+        fs::write(root.path.join("hello.txt"), b"changed").unwrap();
+        assert!(matches!(
+            get_chunk(SyncGetChunkRequest {
+                root: root.root(),
+                path: "hello.txt".into(),
+                offset: 0,
+                max_bytes: 1,
+                expected_size: 5,
+            })
+            .await,
+            Err(SyncError::SourceChanged)
+        ));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn read_chunks_reject_escape_symlinks_and_unbounded_requests() {
+        use std::os::unix::fs::symlink;
+
+        let root = TempRoot::new("read-reject");
+        fs::write(root.path.join("real"), b"content").unwrap();
+        symlink("real", root.path.join("alias")).unwrap();
+
+        for path in ["../outside", "/etc/passwd", "alias"] {
+            assert!(get_chunk(SyncGetChunkRequest {
+                root: root.root(),
+                path: path.into(),
+                offset: 0,
+                max_bytes: 1,
+                expected_size: 7,
+            })
+            .await
+            .is_err());
+        }
+        assert!(matches!(
+            get_chunk(SyncGetChunkRequest {
+                root: root.root(),
+                path: "real".into(),
+                offset: 0,
+                max_bytes: dory_sync::CHUNK_BYTES as u32 + 1,
+                expected_size: 7,
+            })
+            .await,
+            Err(SyncError::InvalidRead)
+        ));
     }
 
     #[cfg(unix)]
