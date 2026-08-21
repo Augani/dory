@@ -214,7 +214,8 @@ jobs:
           with open(sys.argv[1], encoding="utf-8") as handle:
               metadata = json.load(handle)
           keys = metadata.get("ssh_keys", [])
-          assert keys and all(key.startswith("ssh-") for key in keys), "GitHub SSH metadata is missing"
+          if not keys or not all(isinstance(key, str) and key.startswith("ssh-") for key in keys):
+              raise SystemExit("GitHub SSH metadata is missing")
           with open(sys.argv[2], "w", encoding="utf-8") as handle:
               for key in keys:
                   handle.write(f"github.com {key}\n")
@@ -544,10 +545,11 @@ jobs:
           ET.register_namespace("dory", dory)
           tree = ET.parse(sys.argv[1])
           items = tree.getroot().findall("./channel/item")
-          assert items, "previous release appcast has no item"
+          if not items:
+              raise SystemExit("previous release appcast has no item")
           for item in items:
-              assert item.findtext(f"{{{sparkle}}}minimumSystemVersion") == "14.0", \
-                  "previous release appcast would regress the macOS 14 floor"
+              if item.findtext(f"{{{sparkle}}}minimumSystemVersion") != "14.0":
+                  raise SystemExit("previous release appcast would regress the macOS 14 floor")
               # Releases before 0.4 all use data/component schema 1. Normalize their
               # historical items once so the first transactional updater can enforce an
               # exact contract without dropping the signed enclosure history.
@@ -596,6 +598,7 @@ jobs:
           DORY_RELEASE_VARIANTS: 'arm64'
           DORY_BUILD_APPCAST: '1'
           DORY_BUILD_APP_UPDATE: '1'
+          DORY_COMPONENT_CATALOG_SCHEMA: '2'
           DORY_RELEASE_ASSET_BASE_URL: https://github.com/Augani/dory/releases/download/v${{ steps.ver.outputs.version }}
           DORY_SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY || secrets.SPARKLE_ED_PRIVATE_KEY }}
           DORY_RELEASE_SOURCE_COMMIT: ${{ github.sha }}
@@ -641,9 +644,13 @@ jobs:
           with open(manifest_path, encoding="utf-8") as handle:
               manifest = json.load(handle)
           expected_name = pathlib.Path(archive_path).name
-          records = {record["name"]: record for record in manifest["artifacts"]}
-          record = records[expected_name]
-          assert record["sha256"] == digest.hexdigest(), "Sparkle candidate ZIP differs from release manifest"
+          artifacts = manifest.get("artifacts") if isinstance(manifest, dict) else None
+          if not isinstance(artifacts, list):
+              raise SystemExit("release manifest artifact list is invalid")
+          matches = [record for record in artifacts
+                     if isinstance(record, dict) and record.get("name") == expected_name]
+          if len(matches) != 1 or matches[0].get("sha256") != digest.hexdigest():
+              raise SystemExit("Sparkle candidate ZIP differs from release manifest")
           PY
           ditto -x -k "$UPDATE_ZIP" "$candidate_root/extracted"
           test -d "$candidate_root/extracted/Dory.app"
@@ -666,8 +673,10 @@ jobs:
           with open("Dory.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved", encoding="utf-8") as handle:
               payload = json.load(handle)
           pins = [pin for pin in payload["pins"] if pin["identity"] == "sparkle"]
-          assert len(pins) == 1, "expected one Sparkle package pin"
-          assert pins[0]["state"].get("version") == "2.9.4", "unexpected Sparkle release pin"
+          if len(pins) != 1:
+              raise SystemExit("expected one Sparkle package pin")
+          if pins[0]["state"].get("version") != "2.9.4":
+              raise SystemExit("unexpected Sparkle release pin")
           print(pins[0]["state"]["revision"])
           PY
           )"
@@ -1214,31 +1223,36 @@ jobs:
           import hashlib, json, pathlib, sys
           manifest_path, release_path, update_path, sbom_path, version, build, commit = sys.argv[1:]
           manifest = json.loads(pathlib.Path(manifest_path).read_text(encoding="utf-8"))
-          assert manifest == {**manifest}, "performance manifest must be an object"
-          assert manifest["schemaVersion"] == 1
-          assert manifest["kind"] == "dev.dory.performance-qualification"
-          assert manifest["status"] == "PASS" and manifest["releaseQualifying"] is True
+          def require(condition, message):
+              if not condition:
+                  raise SystemExit(message)
+          require(isinstance(manifest, dict), "performance manifest must be an object")
+          require(manifest.get("schemaVersion") == 1, "performance manifest schema mismatch")
+          require(manifest.get("kind") == "dev.dory.performance-qualification", "performance manifest kind mismatch")
+          require(manifest.get("status") == "PASS" and manifest.get("releaseQualifying") is True,
+                  "performance qualification did not pass")
           candidate = manifest["candidate"]
-          assert candidate["version"] == version
-          assert candidate["build"] == build
-          assert candidate["sourceCommit"] == commit
+          require(isinstance(candidate, dict), "performance candidate binding is invalid")
+          require(candidate.get("version") == version, "performance candidate version mismatch")
+          require(candidate.get("build") == build, "performance candidate build mismatch")
+          require(candidate.get("sourceCommit") == commit, "performance candidate source mismatch")
           def digest(path):
               value = hashlib.sha256()
               with open(path, "rb") as handle:
                   for chunk in iter(lambda: handle.read(1024 * 1024), b""):
                       value.update(chunk)
               return value.hexdigest()
-          assert candidate["releaseManifestSHA256"] == digest(release_path)
-          assert candidate["appUpdateSHA256"] == digest(update_path)
-          assert candidate["sbomSHA256"] == digest(sbom_path)
+          require(candidate.get("releaseManifestSHA256") == digest(release_path), "performance release manifest mismatch")
+          require(candidate.get("appUpdateSHA256") == digest(update_path), "performance app update mismatch")
+          require(candidate.get("sbomSHA256") == digest(sbom_path), "performance SBOM mismatch")
           sbom = json.loads(pathlib.Path(sbom_path).read_text(encoding="utf-8"))
           values = [row["value"] for row in sbom["metadata"]["component"]["properties"]
                     if row["name"] == "dev.dory.app.tree.sha256"]
-          assert values == [candidate["appTreeSHA256"]]
-          assert manifest["campaigns"] == [
+          require(values == [candidate.get("appTreeSHA256")], "performance app tree mismatch")
+          require(manifest.get("campaigns") == [
               "isolated", "user-workflows", "developer-workflows", "registry-npm", "external-network"
-          ]
-          assert manifest["cleanup"] == "PASS"
+          ], "performance campaign set mismatch")
+          require(manifest.get("cleanup") == "PASS", "performance cleanup did not pass")
           PY
       - name: Verify Homebrew audit evidence binding
         env:
@@ -1775,17 +1789,20 @@ jobs:
           sparkle = "http://www.andymatuschak.org/xml-namespaces/sparkle"
           dory = "https://augani.github.io/dory/appcast"
           item = ET.parse(path).getroot().find("./channel/item")
-          assert item is not None, "generated appcast has no current item"
-          assert item.findtext(f"{{{sparkle}}}shortVersionString") == version, "generated appcast version mismatch"
-          assert item.findtext(f"{{{sparkle}}}minimumSystemVersion") == "14.0", "generated appcast macOS floor mismatch"
-          assert item.findtext(f"{{{dory}}}dataSchemaVersion") == "1", "generated appcast data schema mismatch"
-          assert item.findtext(f"{{{dory}}}minimumReadableDataSchema") == "1", "generated appcast minimum readable schema mismatch"
-          assert item.findtext(f"{{{dory}}}maximumReadableDataSchema") == "1", "generated appcast maximum readable schema mismatch"
-          assert item.findtext(f"{{{dory}}}componentCatalogSchema") == "1", "generated appcast component schema mismatch"
+          def require(condition, message):
+              if not condition:
+                  raise SystemExit(message)
+          require(item is not None, "generated appcast has no current item")
+          require(item.findtext(f"{{{sparkle}}}shortVersionString") == version, "generated appcast version mismatch")
+          require(item.findtext(f"{{{sparkle}}}minimumSystemVersion") == "14.0", "generated appcast macOS floor mismatch")
+          require(item.findtext(f"{{{dory}}}dataSchemaVersion") == "1", "generated appcast data schema mismatch")
+          require(item.findtext(f"{{{dory}}}minimumReadableDataSchema") == "1", "generated appcast minimum readable schema mismatch")
+          require(item.findtext(f"{{{dory}}}maximumReadableDataSchema") == "1", "generated appcast maximum readable schema mismatch")
+          require(item.findtext(f"{{{dory}}}componentCatalogSchema") == "2", "generated appcast component schema mismatch")
           enclosure = item.find("enclosure")
-          assert enclosure is not None, "generated appcast has no enclosure"
+          require(enclosure is not None, "generated appcast has no enclosure")
           name = os.path.basename(urllib.parse.urlparse(enclosure.attrib["url"]).path)
-          assert name == f"Dory-{version}-app-update.zip", f"generated appcast points at {name}"
+          require(name == f"Dory-{version}-app-update.zip", f"generated appcast points at {name}")
           PY
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
@@ -1893,7 +1910,8 @@ jobs:
 
           with open(sys.argv[1], encoding="utf-8") as handle:
               keys = json.load(handle).get("ssh_keys", [])
-          assert keys and all(key.startswith("ssh-") for key in keys), "GitHub SSH metadata is missing"
+          if not keys or not all(isinstance(key, str) and key.startswith("ssh-") for key in keys):
+              raise SystemExit("GitHub SSH metadata is missing")
           with open(sys.argv[2], "w", encoding="utf-8") as handle:
               for key in keys:
                   handle.write(f"github.com {key}\n")

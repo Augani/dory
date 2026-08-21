@@ -10,7 +10,14 @@ def require(text: str, value: str, message: str) -> None:
 
 
 workflow = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
+pages_workflow = Path(".github/workflows/pages.yml").read_text(encoding="utf-8")
 publisher = Path("scripts/publish-release.sh").read_text(encoding="utf-8")
+
+for name, source in (("release", workflow), ("pages", pages_workflow)):
+    if "assert " in source:
+        raise SystemExit(
+            f"release workflow contract: {name} workflow uses optimization-sensitive Python assert"
+        )
 
 candidate = workflow.split("      - name: Stage immutable public candidate", 1)[1].split(
     "\n  homebrew_install_certification:", 1
@@ -83,6 +90,11 @@ for proof in (
     require(desktop_gate, proof, f"desktop live gate omits required proof: {proof}")
 
 require(candidate, "release-build/components/arm64/*", "candidate omits component payloads")
+require(
+    workflow,
+    "DORY_COMPONENT_CATALOG_SCHEMA: '2'",
+    "signed release build does not stamp component catalog schema 2 into the appcast",
+)
 require(publication, "release-build/components/arm64/*", "GitHub release omits component payloads")
 for name in ("catalog.json", "catalog.json.sha256", "catalog.json.sig"):
     require(publication, f"release-build/components/arm64/{name}", f"metadata artifact omits {name}")
@@ -95,6 +107,11 @@ require(bump, "git@github.com:Augani/homebrew-dory.git", "standalone Homebrew ta
 require(bump, 'grep -qF "sha256 \\"$S\\"" <<< "$remote"', "standalone tap checksum is not verified")
 require(final, "needs: [publish_release, publish-pages, bump-cask]", "no terminal publication gate")
 require(final, ".github/scripts/verify-public-release.py", "terminal publication verifier is not run")
+require(
+    pages,
+    'componentCatalogSchema\") == \"2\"',
+    "published appcast does not require component catalog schema 2",
+)
 
 require(publisher, 'gh workflow run "$WORKFLOW"', "publisher does not dispatch the release workflow")
 require(publisher, 'gh run watch "$RUN_ID"', "publisher does not wait for the complete workflow")
