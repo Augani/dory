@@ -356,6 +356,7 @@ jobs:
           python3 .github/scripts/test-supabase-compatibility-gate.py
           python3 .github/scripts/test-kubernetes-tooling-compatibility-gate.py
           python3 .github/scripts/test-default-platform-image-gate.py
+          python3 .github/scripts/test-bind-file-coherence-gate.py
       - name: P0 smoke harness regression tests
         run: bash scripts/test-p0-smoke.sh
       - name: Dory app and offline quality suite
