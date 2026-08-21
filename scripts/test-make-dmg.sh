@@ -4,6 +4,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/dory-make-dmg.XXXXXX")"
+TMP="$(cd "$TMP" && pwd -P)"
 trap 'rm -rf "$TMP"' EXIT
 BIN="$TMP/bin"
 APP="$TMP/Dory.app"
@@ -71,5 +72,23 @@ if DORY_TEST_DISKUTIL_SUPPORTED=0 \
 fi
 [ -z "$(find "$FAIL_TMP" -mindepth 1 -print -quit)" ] \
   || { echo "test-make-dmg: retained staging data after failure" >&2; exit 1; }
+
+APP_LINK="$TMP/linked-Dory.app"
+ln -s "$APP" "$APP_LINK"
+if PATH="$BIN:/usr/bin:/bin" \
+  "$ROOT/scripts/make-dmg.sh" "$APP_LINK" 0.3.0 "$TMP/linked.dmg" \
+  >"$TMP/indirect.out" 2>&1; then
+  echo "test-make-dmg: accepted an indirect candidate app" >&2
+  exit 1
+fi
+grep -F 'input must be a direct Dory.app directory' "$TMP/indirect.out" >/dev/null
+
+if PATH="$BIN:/usr/bin:/bin" \
+  "$ROOT/scripts/make-dmg.sh" "$APP" '../unsafe' "$TMP/unsafe.dmg" \
+  >"$TMP/version.out" 2>&1; then
+  echo "test-make-dmg: accepted unsafe release version input" >&2
+  exit 1
+fi
+grep -F 'version must be SemVer-like' "$TMP/version.out" >/dev/null
 
 echo "test-make-dmg: PASS"

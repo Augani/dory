@@ -341,6 +341,9 @@ jobs:
           python3 .github/scripts/test-source-preserving-lan-gate.py
           python3 .github/scripts/test-sparkle-install-relaunch-gate.py
           python3 .github/scripts/test-vz-native-ipv6-gate.py
+          bash scripts/test-make-dmg.sh
+          bash scripts/test-app-update-payload.sh
+          bash scripts/test-verify-macos-deployment-targets.sh
           python3 .github/scripts/test-generate-appcast.py
           python3 .github/scripts/test-release-sbom.py
           python3 .github/scripts/test-direct-dmg-install-gate.py
