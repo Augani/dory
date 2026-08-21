@@ -21,6 +21,8 @@ pub enum RemoteError {
     UnexpectedVariant,
     #[error("local source changed while the transfer was in progress")]
     SourceChanged,
+    #[error("remote agent capability unavailable: {0}")]
+    CapabilityUnavailable(&'static str),
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }

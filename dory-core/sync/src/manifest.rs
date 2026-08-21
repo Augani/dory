@@ -61,7 +61,15 @@ pub fn walk_manifest_excluding(
     root: &Path,
     excluded_root_children: &[&str],
 ) -> std::io::Result<Manifest> {
-    Ok(walk_tree_impl(root, excluded_root_children, true)?.manifest)
+    Ok(walk_tree_excluding(root, excluded_root_children)?.manifest)
+}
+
+/// Directory-aware counterpart to [`walk_manifest_excluding`].
+pub fn walk_tree_excluding(
+    root: &Path,
+    excluded_root_children: &[&str],
+) -> std::io::Result<TreeSnapshot> {
+    walk_tree_impl(root, excluded_root_children, true)
 }
 
 fn walk_tree_impl(

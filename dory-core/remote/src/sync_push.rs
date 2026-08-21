@@ -10,9 +10,12 @@ use std::io::SeekFrom;
 use std::path::Path;
 
 use dory_pb::agent::{
-    SyncDeleteRequest, SyncFileStatusRequest, SyncManifestRequest, SyncPutChunkRequest,
+    SyncDeleteRequest, SyncDirectoryEntry, SyncFileStatusRequest, SyncManifestRequest,
+    SyncPutChunkRequest, SyncTreeRequest,
 };
-use dory_sync::{plan, walk_manifest, Hash, Manifest, CHUNK_BYTES, HASH_LEN};
+use dory_sync::{
+    plan, walk_tree, DirectoryEntry, Hash, Manifest, TreeSnapshot, CHUNK_BYTES, HASH_LEN,
+};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
 use crate::agent_client::AgentClient;
@@ -56,6 +59,15 @@ pub trait SyncTarget {
         root: &str,
         paths: &[String],
     ) -> impl std::future::Future<Output = Result<u32, RemoteError>> + Send;
+    /// Reconcile complete directory topology. `Ok(false)` means the peer only implements the v1
+    /// file protocol; callers may retain v1 behavior only when no empty directory would be lost.
+    fn reconcile_tree(
+        &self,
+        root: &str,
+        files: &[String],
+        directories: &[DirectoryEntry],
+        finalize: bool,
+    ) -> impl std::future::Future<Output = Result<bool, RemoteError>> + Send;
 }
 
 pub async fn push<T: SyncTarget>(
@@ -64,15 +76,28 @@ pub async fn push<T: SyncTarget>(
     target: &T,
 ) -> Result<PushStats, RemoteError> {
     let root = local_root.to_path_buf();
-    let local = tokio::task::spawn_blocking(move || walk_manifest(&root))
+    let local = tokio::task::spawn_blocking(move || walk_tree(&root))
         .await
         .map_err(|e| RemoteError::Io(std::io::Error::other(e)))??;
     let remote = target.remote_manifest(remote_root).await?;
-    let plan = plan(&local, &remote);
+    let plan = plan(&local.manifest, &remote);
+    let file_paths = local
+        .manifest
+        .entries
+        .iter()
+        .map(|entry| entry.path.clone())
+        .collect::<Vec<_>>();
+    let directory_protocol = target
+        .reconcile_tree(remote_root, &file_paths, &local.directories, false)
+        .await?;
+    if !directory_protocol && has_empty_directory(&local) {
+        return Err(RemoteError::CapabilityUnavailable("sync-push@2"));
+    }
 
     let mut stats = PushStats::default();
     for rel in &plan.transfer {
         let entry = local
+            .manifest
             .get(rel)
             .expect("transfer paths are drawn from the local manifest");
         let mut file = tokio::fs::File::open(local_root.join(rel)).await?;
@@ -137,7 +162,15 @@ pub async fn push<T: SyncTarget>(
         stats.files_sent += 1;
     }
 
-    if !plan.delete.is_empty() {
+    if directory_protocol {
+        stats.files_deleted = plan.delete.len() as u64;
+        let finalized = target
+            .reconcile_tree(remote_root, &file_paths, &local.directories, true)
+            .await?;
+        if !finalized {
+            return Err(RemoteError::CapabilityUnavailable("sync-push@2"));
+        }
+    } else if !plan.delete.is_empty() {
         stats.files_deleted += target.delete(remote_root, &plan.delete).await? as u64;
     }
 
@@ -145,13 +178,24 @@ pub async fn push<T: SyncTarget>(
     // concurrently changed, truncated, or appended source cannot be reported as an exact replica.
     // Retrying is safe: the protocol is content-addressed and resumable.
     let root = local_root.to_path_buf();
-    let final_local = tokio::task::spawn_blocking(move || walk_manifest(&root))
+    let final_local = tokio::task::spawn_blocking(move || walk_tree(&root))
         .await
         .map_err(|e| RemoteError::Io(std::io::Error::other(e)))??;
     if final_local != local {
         return Err(RemoteError::SourceChanged);
     }
     Ok(stats)
+}
+
+fn has_empty_directory(snapshot: &TreeSnapshot) -> bool {
+    snapshot.directories.iter().any(|directory| {
+        let prefix = format!("{}/", directory.path);
+        !snapshot
+            .manifest
+            .entries
+            .iter()
+            .any(|file| file.path.starts_with(&prefix))
+    })
 }
 
 impl SyncTarget for AgentClient {
@@ -204,6 +248,40 @@ impl SyncTarget for AgentClient {
             .await?;
         Ok(resp.deleted)
     }
+
+    async fn reconcile_tree(
+        &self,
+        root: &str,
+        files: &[String],
+        directories: &[DirectoryEntry],
+        finalize: bool,
+    ) -> Result<bool, RemoteError> {
+        let info = self.info().await?;
+        let supported = info
+            .capabilities
+            .iter()
+            .any(|capability| capability.id == "sync-push" && capability.version >= 2);
+        if !supported {
+            return Ok(false);
+        }
+        AgentClient::sync_tree(
+            self,
+            SyncTreeRequest {
+                root: root.to_string(),
+                files: files.to_vec(),
+                directories: directories
+                    .iter()
+                    .map(|directory| SyncDirectoryEntry {
+                        path: directory.path.clone(),
+                        mode: directory.mode,
+                    })
+                    .collect(),
+                finalize,
+            },
+        )
+        .await?;
+        Ok(true)
+    }
 }
 
 const _: () = assert!(HASH_LEN == 32);
@@ -231,6 +309,9 @@ mod tests {
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
             std::fs::write(p, contents).unwrap();
         }
+        fn mkdir(&self, rel: &str) {
+            std::fs::create_dir_all(self.root.join(rel)).unwrap();
+        }
     }
     impl Drop for TempTree {
         fn drop(&mut self) {
@@ -242,6 +323,7 @@ mod tests {
     struct Recorded {
         chunks: Vec<SyncPutChunkRequest>,
         deleted: Vec<String>,
+        tree_calls: Vec<(Vec<String>, Vec<DirectoryEntry>, bool)>,
     }
 
     /// A fake remote that records everything, returns a preset manifest, and can pretend a file is
@@ -258,6 +340,7 @@ mod tests {
         conflict_fired: Mutex<bool>,
         mutate_source_after_first_chunk: Option<(std::path::PathBuf, Vec<u8>)>,
         source_mutation_fired: Mutex<bool>,
+        directory_protocol: bool,
         rec: Mutex<Recorded>,
     }
     impl FakeTarget {
@@ -273,6 +356,7 @@ mod tests {
                 conflict_fired: Mutex::new(false),
                 mutate_source_after_first_chunk: None,
                 source_mutation_fired: Mutex::new(false),
+                directory_protocol: true,
                 rec: Mutex::new(Recorded::default()),
             }
         }
@@ -337,6 +421,74 @@ mod tests {
             self.rec.lock().unwrap().deleted.extend_from_slice(paths);
             Ok(paths.len() as u32)
         }
+        async fn reconcile_tree(
+            &self,
+            _root: &str,
+            files: &[String],
+            directories: &[DirectoryEntry],
+            finalize: bool,
+        ) -> Result<bool, RemoteError> {
+            if self.directory_protocol {
+                self.rec.lock().unwrap().tree_calls.push((
+                    files.to_vec(),
+                    directories.to_vec(),
+                    finalize,
+                ));
+            }
+            Ok(self.directory_protocol)
+        }
+    }
+
+    #[tokio::test]
+    async fn push_binds_empty_directories_in_prepare_and_finalize_passes() {
+        let t = TempTree::new("empty-directories");
+        t.mkdir("project/empty/deep");
+        t.write("project/src/main.rs", b"fn main() {}");
+
+        let target = FakeTarget::new(Manifest::default());
+        let stats = push(&t.root, "/remote", &target).await.unwrap();
+        assert_eq!(stats.files_sent, 1);
+        let calls = &target.rec.lock().unwrap().tree_calls;
+        assert_eq!(calls.len(), 2);
+        assert!(!calls[0].2);
+        assert!(calls[1].2);
+        assert_eq!(calls[0].0, vec!["project/src/main.rs"]);
+        assert_eq!(
+            calls[0]
+                .1
+                .iter()
+                .map(|entry| entry.path.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "project",
+                "project/empty",
+                "project/empty/deep",
+                "project/src"
+            ]
+        );
+        assert_eq!(calls[0].0, calls[1].0);
+        assert_eq!(calls[0].1, calls[1].1);
+    }
+
+    #[tokio::test]
+    async fn v1_peer_rejects_empty_directories_but_keeps_file_only_compatibility() {
+        let with_empty = TempTree::new("v1-empty");
+        with_empty.mkdir("empty");
+        let mut target = FakeTarget::new(Manifest::default());
+        target.directory_protocol = false;
+        let error = push(&with_empty.root, "/remote", &target)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            RemoteError::CapabilityUnavailable("sync-push@2")
+        ));
+
+        let files_only = TempTree::new("v1-files");
+        files_only.write("nested/file.txt", b"compatible");
+        let stats = push(&files_only.root, "/remote", &target).await.unwrap();
+        assert_eq!(stats.files_sent, 1);
+        assert_eq!(target.assembled("nested/file.txt"), b"compatible");
     }
 
     #[tokio::test]
@@ -433,7 +585,11 @@ mod tests {
             rec.chunks.iter().all(|c| c.path == "changed.txt"),
             "same.txt must not be re-sent"
         );
-        assert_eq!(rec.deleted, vec!["gone.txt".to_string()]);
+        assert!(rec.deleted.is_empty(), "v2 topology pass owns deletion");
+        assert_eq!(
+            &rec.tree_calls[0].0,
+            &["changed.txt".to_string(), "same.txt".to_string()]
+        );
     }
 
     #[tokio::test]
