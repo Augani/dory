@@ -175,6 +175,169 @@ struct DorydClientTests {
         service.setMachineTransferOperationResponse(nil)
     }
 
+    @MainActor
+    @Test func machineGuestExportUsesExactEvidenceAndRejectsHostPathSubstitution() async throws {
+        let listener = NSXPCListener.anonymous()
+        let service = FakeDorydService()
+        let delegate = FakeDorydListenerDelegate(service: service)
+        listener.delegate = delegate
+        listener.resume()
+        defer { listener.invalidate() }
+        let client = DorydClient(endpoint: listener.endpoint)
+
+        let guestSource = "/home/developer/Documents/project"
+        let started = try await client.machineGuestExportStart(
+            "dev",
+            guestSource: guestSource
+        )
+        #expect(started.machineID == "dev")
+        #expect(started.phase == .preparing)
+        #expect(started.result == nil)
+        #expect(
+            Set(service.latestMachineGuestExportRequest?.allKeys.compactMap {
+                $0 as? String
+            } ?? []) == ["schema", "guestSource"]
+        )
+        #expect(
+            service.latestMachineGuestExportRequest?["guestSource"] as? String
+                == guestSource
+        )
+        #expect(
+            (service.latestMachineGuestExportRequest?["schema"] as? NSNumber)?.uint16Value
+                == 1
+        )
+
+        service.setMachineGuestExportCurrentResponse([
+            "schema": UInt16(1),
+            "active": true,
+            "operation": service.machineGuestExportOperationResponse(
+                operationID: started.operationID,
+                phase: "transferring"
+            ),
+        ])
+        let current = try #require(try await client.machineGuestExportCurrent("dev"))
+        #expect(current.operationID == started.operationID)
+        #expect(current.phase == .transferring)
+
+        service.setMachineGuestExportCurrentResponse([
+            "schema": UInt16(1),
+            "active": false,
+        ])
+        #expect(try await client.machineGuestExportCurrent("dev") == nil)
+        service.setMachineGuestExportCurrentResponse([
+            "schema": UInt16(1),
+            "active": false,
+            "operation": service.machineGuestExportOperationResponse(
+                operationID: started.operationID,
+                phase: "transferring"
+            ),
+        ])
+        await #expect(throws: (any Error).self) {
+            _ = try await client.machineGuestExportCurrent("dev")
+        }
+        service.setMachineGuestExportCurrentResponse(nil)
+
+        let completed = try await client.machineGuestExportStatus(
+            "dev",
+            operationID: started.operationID
+        )
+        #expect(completed.phase == .completed)
+        #expect(completed.result?.exportID == started.operationID)
+        #expect(completed.result?.filesReceived == 1)
+        #expect(completed.result?.directoriesReceived == 1)
+        #expect(completed.result?.bytesReceived == 12)
+        #expect(
+            completed.result?.privateStagingRoot.hasSuffix("-" + started.operationID)
+                == true
+        )
+        #expect(completed.fractionCompleted == 1)
+
+        let cancelled = try await client.machineGuestExportCancel(
+            "dev",
+            operationID: started.operationID
+        )
+        #expect(cancelled.phase == .cancelled)
+        #expect(cancelled.result == nil)
+        #expect(service.machineGuestExportCancelCount == 1)
+        let discarded = try await client.machineGuestExportDiscard(
+            "dev",
+            operationID: started.operationID
+        )
+        #expect(discarded.ok)
+        #expect(service.machineGuestExportDiscardCount == 1)
+
+        let raceID = String(repeating: "e", count: 32)
+        let completedRace = service.machineGuestExportOperationResponse(
+            operationID: raceID,
+            phase: "completed"
+        )
+        service.setMachineGuestExportStartResponse(completedRace.removing("result"))
+        service.setMachineGuestExportOperationResponse(completedRace)
+        let raced = try await client.machineGuestExportStart(
+            "dev",
+            guestSource: guestSource
+        )
+        #expect(raced.phase == .completed)
+        #expect(raced.result?.exportID == raceID)
+        service.setMachineGuestExportStartResponse(nil)
+
+        let completedRow = service.machineGuestExportOperationResponse(
+            operationID: started.operationID,
+            phase: "completed"
+        )
+        let resultRow = try #require(completedRow["result"] as? NSDictionary)
+        let otherID = String(repeating: "f", count: 32)
+        let malformed: [NSDictionary] = [
+            completedRow.adding("unexpected", true),
+            completedRow.removing("result"),
+            completedRow.replacing(
+                "result",
+                with: resultRow.replacing(
+                    "privateStagingRoot",
+                    with: "/tmp/host-secret"
+                )
+            ),
+            completedRow.replacing(
+                "result",
+                with: resultRow.adding("unexpected", true)
+            ),
+            completedRow.replacing(
+                "result",
+                with: resultRow.replacing("filesReceived", with: true)
+            ),
+            completedRow.replacing(
+                "result",
+                with: resultRow
+                    .replacing("exportID", with: otherID)
+                    .replacing(
+                        "privateStagingRoot",
+                        with: DoryMachineFileTransferStager.defaultStagingDirectory
+                            .appendingPathComponent(
+                                "export-\(getpid())-\(otherID)",
+                                isDirectory: true
+                            ).path
+                    )
+            ),
+            completedRow.replacing(
+                "result",
+                with: resultRow.replacing(
+                    "directoriesReceived",
+                    with: UInt64(DoryMachineFileTransferStager.maximumEntryCount)
+                )
+            ),
+        ]
+        for row in malformed {
+            service.setMachineGuestExportOperationResponse(row)
+            await #expect(throws: (any Error).self) {
+                _ = try await client.machineGuestExportStatus(
+                    "dev",
+                    operationID: started.operationID
+                )
+            }
+        }
+        service.setMachineGuestExportOperationResponse(nil)
+    }
+
     @Test func legacyDesktopDefaultsAndTogglesRemainFieldLocalInTypedEdits() throws {
         let defaults = DorydMachineTypedSettings(
             legacyEnvironment: [:],
@@ -2961,6 +3124,12 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     private var _machineTransferOperationResponseOverride: NSDictionary?
     private var _machineTransferCurrentResponseOverride: NSDictionary?
     private var _machineTransferCancelCount = 0
+    private var _latestMachineGuestExportRequest: NSDictionary?
+    private var _machineGuestExportStartResponseOverride: NSDictionary?
+    private var _machineGuestExportOperationResponseOverride: NSDictionary?
+    private var _machineGuestExportCurrentResponseOverride: NSDictionary?
+    private var _machineGuestExportCancelCount = 0
+    private var _machineGuestExportDiscardCount = 0
     private var runtimeIdentityOverride: NSDictionary?
     private var artifactEvidenceOverride: NSDictionary?
     private var installedDesktopPayloadReceiptOverride: NSDictionary?
@@ -3008,6 +3177,43 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         phase: String
     ) -> NSDictionary {
         Self.transferOperationRow(operationID: operationID, phase: phase)
+    }
+
+    var latestMachineGuestExportRequest: NSDictionary? {
+        lock.lock(); defer { lock.unlock() }
+        return _latestMachineGuestExportRequest
+    }
+
+    var machineGuestExportCancelCount: Int {
+        lock.lock(); defer { lock.unlock() }
+        return _machineGuestExportCancelCount
+    }
+
+    var machineGuestExportDiscardCount: Int {
+        lock.lock(); defer { lock.unlock() }
+        return _machineGuestExportDiscardCount
+    }
+
+    func setMachineGuestExportStartResponse(_ response: NSDictionary?) {
+        lock.lock(); defer { lock.unlock() }
+        _machineGuestExportStartResponseOverride = response
+    }
+
+    func setMachineGuestExportOperationResponse(_ response: NSDictionary?) {
+        lock.lock(); defer { lock.unlock() }
+        _machineGuestExportOperationResponseOverride = response
+    }
+
+    func setMachineGuestExportCurrentResponse(_ response: NSDictionary?) {
+        lock.lock(); defer { lock.unlock() }
+        _machineGuestExportCurrentResponseOverride = response
+    }
+
+    func machineGuestExportOperationResponse(
+        operationID: String,
+        phase: String
+    ) -> NSDictionary {
+        Self.guestExportOperationRow(operationID: operationID, phase: phase)
     }
     var engineStopCount: Int {
         lock.lock(); defer { lock.unlock() }
@@ -3626,9 +3832,19 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         request: NSDictionary,
         reply: @escaping (Bool, NSDictionary, String) -> Void
     ) {
-        _ = machineID
-        _ = request
-        reply(false, [:], "guest file export is not configured")
+        lock.lock()
+        _latestMachineGuestExportRequest = request
+        let override = _machineGuestExportStartResponseOverride
+        lock.unlock()
+        reply(
+            true,
+            override ?? Self.guestExportOperationRow(
+                operationID: String(repeating: "d", count: 32),
+                machineID: machineID,
+                phase: "preparing"
+            ),
+            ""
+        )
     }
 
     func machineGuestExportCurrent(
@@ -3636,7 +3852,10 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         reply: @escaping (Bool, NSDictionary, String) -> Void
     ) {
         _ = machineID
-        reply(true, ["schema": UInt16(1), "active": false], "")
+        lock.lock()
+        let override = _machineGuestExportCurrentResponseOverride
+        lock.unlock()
+        reply(true, override ?? ["schema": UInt16(1), "active": false], "")
     }
 
     func machineGuestExportStatus(
@@ -3644,9 +3863,18 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         operationID: String,
         reply: @escaping (Bool, NSDictionary, String) -> Void
     ) {
-        _ = machineID
-        _ = operationID
-        reply(false, [:], "guest file export is not configured")
+        lock.lock()
+        let override = _machineGuestExportOperationResponseOverride
+        lock.unlock()
+        reply(
+            true,
+            override ?? Self.guestExportOperationRow(
+                operationID: operationID,
+                machineID: machineID,
+                phase: "completed"
+            ),
+            ""
+        )
     }
 
     func machineGuestExportCancel(
@@ -3654,9 +3882,16 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         operationID: String,
         reply: @escaping (Bool, NSDictionary, String) -> Void
     ) {
-        _ = machineID
-        _ = operationID
-        reply(false, [:], "guest file export is not configured")
+        let cancelled = Self.guestExportOperationRow(
+            operationID: operationID,
+            machineID: machineID,
+            phase: "cancelled"
+        )
+        lock.lock()
+        _machineGuestExportCancelCount += 1
+        _machineGuestExportOperationResponseOverride = cancelled
+        lock.unlock()
+        reply(true, cancelled, "")
     }
 
     func machineGuestExportDiscard(
@@ -3666,7 +3901,10 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     ) {
         _ = machineID
         _ = operationID
-        reply(false, "guest file export is not configured")
+        lock.lock()
+        _machineGuestExportDiscardCount += 1
+        lock.unlock()
+        reply(true, "")
     }
 
     func machineProvision(_ machineID: String, request: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void) {
@@ -4336,6 +4574,39 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         return row as NSDictionary
     }
 
+    private static func guestExportOperationRow(
+        operationID: String,
+        machineID: String = "dev",
+        phase: String
+    ) -> NSDictionary {
+        var row: [String: Any] = [
+            "schema": UInt16(1),
+            "operationID": operationID,
+            "machineID": machineID,
+            "phase": phase,
+            "filesTotal": UInt64(phase == "completed" ? 1 : 0),
+            "filesCompleted": UInt64(phase == "completed" ? 1 : 0),
+            "bytesTotal": UInt64(phase == "completed" ? 12 : 0),
+            "bytesCompleted": UInt64(phase == "completed" ? 12 : 0),
+        ]
+        if phase == "completed" {
+            let root = DoryMachineFileTransferStager.defaultStagingDirectory
+                .appendingPathComponent(
+                    "export-\(getpid())-\(operationID)",
+                    isDirectory: true
+                ).path
+            row["result"] = [
+                "schema": UInt16(1),
+                "exportID": operationID,
+                "privateStagingRoot": root,
+                "filesReceived": UInt64(1),
+                "directoriesReceived": UInt64(1),
+                "bytesReceived": UInt64(12),
+            ] as NSDictionary
+        }
+        return row as NSDictionary
+    }
+
     private static func execRow(stdout: String = "", stderr: String = "", exitCode: Int32 = 0) -> NSDictionary {
         [
             "exitCode": exitCode,
@@ -4434,6 +4705,12 @@ private extension NSDictionary {
 
     func replacing(_ key: String, with value: Any) -> NSDictionary {
         adding(key, value)
+    }
+
+    func removing(_ key: String) -> NSDictionary {
+        var copy = stringKeyedCopy
+        copy.removeValue(forKey: key)
+        return copy as NSDictionary
     }
 
     var stringKeyedCopy: [String: Any] {
