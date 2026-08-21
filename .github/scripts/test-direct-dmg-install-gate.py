@@ -39,6 +39,8 @@ class DirectDMGInstallGateTests(unittest.TestCase):
         self.assertIn("verify-release-sbom.py", source)
         self.assertIn("hdiutil attach -readonly -nobrowse -plist", source)
         self.assertIn("release-candidate-live-smoke.sh", source)
+        self.assertIn("DORY_RELEASE_LIVE_CONFIRMED=ISOLATED-DORY-RELEASE-USER", source)
+        self.assertIn('DORY_RELEASE_SOURCE_COMMIT="$SOURCE_COMMIT"', source)
 
     def test_help_documents_the_destructive_confirmation(self) -> None:
         result = self.invoke("--help")

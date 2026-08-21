@@ -259,7 +259,9 @@ if [ "$INSTALL_ONLY" -eq 1 ]; then
   exit 0
 fi
 
-"$ROOT/scripts/release-candidate-live-smoke.sh" "$APP"
+DORY_RELEASE_LIVE_CONFIRMED=ISOLATED-DORY-RELEASE-USER \
+DORY_RELEASE_SOURCE_COMMIT="$SOURCE_COMMIT" \
+  "$ROOT/scripts/release-candidate-live-smoke.sh" "$APP"
 [ ! -e "$HOME/.dory" ] || die "physical smoke did not restore the clean runtime state"
 [ ! -e "$HOME/Library/Application Support/Dory" ] \
   || die "physical smoke did not restore the clean durable-data state"
