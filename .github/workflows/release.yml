@@ -347,6 +347,7 @@ jobs:
           python3 .github/scripts/test-release-orchestrator.py
           bash scripts/test-dmg-distribution-signing.sh
           python3 .github/scripts/test-ci-umbrella.py
+          python3 .github/scripts/test-interrupted-upgrade-rollback-gate.py
           python3 .github/scripts/test-generate-appcast.py
           python3 .github/scripts/test-release-sbom.py
           python3 .github/scripts/test-direct-dmg-install-gate.py
@@ -1356,7 +1357,8 @@ jobs:
           payload = json.load(open(sys.argv[1], encoding="utf-8"))
           rows = payload["metadata"]["component"]["properties"]
           values = [row["value"] for row in rows if row["name"] == "dev.dory.app.tree.sha256"]
-          assert len(values) == 1
+          if len(values) != 1:
+              raise SystemExit("release SBOM must contain exactly one app-tree digest")
           print(values[0])
           PY
           )"
@@ -1366,21 +1368,30 @@ jobs:
           values = {}
           for line in open(path, encoding="utf-8"):
               key, separator, value = line.rstrip("\n").partition("=")
-              assert separator and key not in values, line
+              if not separator or not key or key in values:
+                  raise SystemExit(f"invalid or duplicate evidence row: {line.rstrip()}")
               values[key] = value
-          assert values["status"] == "PASS"
-          assert values["release_qualifying"] == "true"
-          assert values["source_commit"] == commit
-          assert values["candidate_version"] == version
-          assert values["candidate_build"] == build
-          assert values["candidate_tree_sha256"] == tree
+          expected = {
+              "status": "PASS",
+              "release_qualifying": "true",
+              "source_commit": commit,
+              "candidate_version": version,
+              "candidate_build": build,
+              "candidate_tree_sha256": tree,
+              "component_catalog_schema": "2",
+          }
+          for key, expected_value in expected.items():
+              if values.get(key) != expected_value:
+                  raise SystemExit(f"interruption evidence mismatch for {key}")
           for key in (
-              "exact_last_good_app_restored", "signed_component_generation_restored",
+              "exact_last_good_app_restored", "component_catalog_signatures_verified",
+              "component_qualification_authority", "signed_component_generation_restored",
               "durable_data_not_downgraded", "durable_volume_sentinel_preserved",
               "preexisting_container_preserved", "published_port_preserved",
               "exact_smoke_failure_retained", "initial_clean_user_state_restored",
           ):
-              assert values[key] == "PASS", key
+              if values.get(key) != "PASS":
+                  raise SystemExit(f"interruption proof did not pass: {key}")
           PY
           scripts/transactional-upgrade-gate.sh \
             --record "$evidence/transaction.json" \

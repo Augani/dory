@@ -48,6 +48,7 @@ jobs:
           python3 .github/scripts/test-release-orchestrator.py
           bash scripts/test-dmg-distribution-signing.sh
           python3 .github/scripts/test-ci-umbrella.py
+          python3 .github/scripts/test-interrupted-upgrade-rollback-gate.py
           python3 .github/scripts/test-generate-appcast.py
           python3 .github/scripts/test-release-sbom.py
           python3 .github/scripts/test-direct-dmg-install-gate.py
