@@ -63,6 +63,12 @@ class DesktopLinuxLiveGateTests(unittest.TestCase):
             "guest display mode did not follow the host window resize",
             "dynamic-display-restored",
             "dynamic_retina_display=PASS",
+            "clipboard-host-to-guest-pass",
+            "/usr/lib/dory/clipboard get 'text/plain;charset=utf-8'",
+            "clipboard-guest-source-ready",
+            "/usr/lib/dory/clipboard set 'text/plain;charset=utf-8'",
+            "guest clipboard did not reach the host",
+            "clipboard_bidirectional=PASS",
             "workroot must be a strict child of RUNNER_TEMP",
         )
         for proof in required:

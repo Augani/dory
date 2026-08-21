@@ -555,6 +555,58 @@ APPLESCRIPT
     exit 1
   " > "$WORKROOT/evidence/$distro-display-restored.json"
 
+  host_to_guest_clipboard="dory-host-to-guest-$distro-$(uuidgen | tr '[:upper:]' '[:lower:]')"
+  osascript <<'APPLESCRIPT'
+tell application "Finder" to activate
+delay 0.25
+APPLESCRIPT
+  printf '%s' "$host_to_guest_clipboard" | pbcopy
+  osascript - "$machine_pid" <<'APPLESCRIPT'
+on run argv
+  set targetPID to (item 1 of argv) as integer
+  tell application "System Events"
+    set targetProcess to first process whose unix id is targetPID
+    set frontmost of targetProcess to true
+  end tell
+end run
+APPLESCRIPT
+  assert_exec_token "$machine" clipboard-host-to-guest-pass sh -lc "
+    set -eu
+    for _ in \$(seq 1 30); do
+      actual=\$(/usr/lib/dory/clipboard get 'text/plain;charset=utf-8' 2>/dev/null || true)
+      if test \"\$actual\" = '$host_to_guest_clipboard'; then
+        echo clipboard-host-to-guest-pass
+        exit 0
+      fi
+      sleep 1
+    done
+    echo 'host clipboard did not reach the guest' >&2
+    exit 1
+  " > "$WORKROOT/evidence/$distro-clipboard-host-to-guest.json"
+
+  guest_to_host_clipboard="dory-guest-to-host-$distro-$(uuidgen | tr '[:upper:]' '[:lower:]')"
+  assert_exec_token "$machine" clipboard-guest-source-ready sh -lc "
+    set -eu
+    printf '%s' '$guest_to_host_clipboard' \
+      | /usr/lib/dory/clipboard set 'text/plain;charset=utf-8'
+    echo clipboard-guest-source-ready
+  " > "$WORKROOT/evidence/$distro-clipboard-guest-source.json"
+  osascript <<'APPLESCRIPT'
+tell application "Finder" to activate
+APPLESCRIPT
+  clipboard_guest_to_host_ok=0
+  for _ in $(seq 1 30); do
+    if [ "$(pbpaste)" = "$guest_to_host_clipboard" ]; then
+      clipboard_guest_to_host_ok=1
+      break
+    fi
+    sleep 1
+  done
+  [ "$clipboard_guest_to_host_ok" = 1 ] \
+    || { echo "desktop live gate: guest clipboard did not reach the host" >&2; exit 1; }
+  printf '%s\n' "$guest_to_host_clipboard" \
+    > "$WORKROOT/evidence/$distro-clipboard-guest-to-host.txt"
+
   assert_exec_token "$machine" browser-window-mapped sh -lc "
     set -eu
     uid=\$(id -u dorygate)
@@ -932,6 +984,7 @@ fi
   printf 'snapshot_restore_exact_bytes=PASS\n'
   printf 'graceful_shutdown=PASS\n'
   printf 'dynamic_retina_display=PASS\n'
+  printf 'clipboard_bidirectional=PASS\n'
   if [ "$SELECTED_DISTRO" = all ] || [ "$SELECTED_DISTRO" = debian ]; then
     printf 'debian_rootfs_sha256=%s\n' "$(shasum -a 256 "$DEBIAN_ROOTFS" | awk '{print $1}')"
     printf 'debian_update_sha256=%s\n' "$(shasum -a 256 "$DEBIAN_UPDATE" | awk '{print $1}')"
