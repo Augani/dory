@@ -837,6 +837,8 @@ struct VirtualMachineCapabilitiesTests {
             dynamicDisplay: true,
             gracefulShutdown: true
         )
+        var qualifiedRawDisconnectedDevices = qualifiedRawDesktopDevices
+        qualifiedRawDisconnectedDevices.networkAttachment = .disconnected
         let qualifiedRawDesktop = evaluate(
             family: .linux,
             media: .installedLinuxBootBundle,
@@ -845,6 +847,15 @@ struct VirtualMachineCapabilitiesTests {
             graphics: .hostAcceleratedDisplay,
             mediaArtifactSHA256: Self.guestArtifactSHA256,
             devices: qualifiedRawDesktopDevices
+        )
+        let qualifiedRawDisconnected = evaluate(
+            family: .linux,
+            media: .installedLinuxBootBundle,
+            source: .userProvided,
+            backend: .doryHypervisor,
+            graphics: .hostAcceleratedDisplay,
+            mediaArtifactSHA256: Self.guestArtifactSHA256,
+            devices: qualifiedRawDisconnectedDevices
         )
         let unsupportedAudioShape = evaluate(
             family: .linux,
@@ -863,6 +874,8 @@ struct VirtualMachineCapabilitiesTests {
         #expect(qualifiedVZSharing.resolvedDevices?.directorySharing == true)
         #expect(qualifiedRawDesktop.availability.isUsable)
         #expect(qualifiedRawDesktop.resolvedDevices == qualifiedRawDesktopDevices)
+        #expect(qualifiedRawDisconnected.availability.isUsable)
+        #expect(qualifiedRawDisconnected.resolvedDevices == qualifiedRawDisconnectedDevices)
         #expect(unsupportedAudioShape.availability.reason?.code == .audioOutputUnsupported)
     }
 

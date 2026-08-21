@@ -29,6 +29,27 @@ enum DesktopMode {
         var resolvedDevices: DoryVirtualMachineDeviceCapabilityRequest?
     }
 
+    enum NetworkPlan: Equatable {
+        case sharedNAT
+        case disconnected
+
+        init(resolvedDevices: DoryVirtualMachineDeviceCapabilityRequest?) throws {
+            switch resolvedDevices?.networkAttachment ?? .sharedNAT {
+            case .sharedNAT:
+                self = .sharedNAT
+            case .disconnected:
+                self = .disconnected
+            case .bridged, .isolated:
+                throw VMError.bootFailure(
+                    "resolved device contract contains a network mode not implemented by raw-HV"
+                )
+            }
+        }
+
+        var startsGVProxy: Bool { self == .sharedNAT }
+        var attachesNetworkDevice: Bool { self == .sharedNAT }
+    }
+
     private struct ResolvedGraphics {
         var backend: DoryDesktopGraphicsBackend
         var renderer: VirglRenderer?
@@ -54,7 +75,7 @@ enum DesktopMode {
         private let window: NSWindow
         private let vsock: VirtioVsock
         private let audio: DoryMacAudioBackend
-        private let gvproxy: Process
+        private let gvproxy: Process?
         private let networkSocketPaths: [String]
         private let agentBridge: GuestVsockSocketBridge
         private let shellBridge: GuestVsockSocketBridge
@@ -79,12 +100,8 @@ enum DesktopMode {
                 exactLevel: configuration.resolvedGraphics
             )
             self.graphicsBackend = resolvedGraphics.backend
+            let networkPlan = try NetworkPlan(resolvedDevices: configuration.resolvedDevices)
             if let devices = configuration.resolvedDevices {
-                guard devices.networkAttachment == .sharedNAT else {
-                    throw VMError.bootFailure(
-                        "resolved device contract contains a device not implemented by raw-HV"
-                    )
-                }
                 guard devices.keyboard == devices.pointer else {
                     throw VMError.bootFailure(
                         "raw-HV input is a combined keyboard/pointer device"
@@ -155,26 +172,15 @@ enum DesktopMode {
             let runtimeDirectory = (configuration.agentSocketPath as NSString).deletingLastPathComponent
             try FileManager.default.createDirectory(atPath: runtimeDirectory, withIntermediateDirectories: true)
             let token = String(configuration.machineID.prefix(12))
-            let gvproxySocket = "\(runtimeDirectory)/\(token)-gv.sock"
-            let vmNetworkSocket = "\(runtimeDirectory)/\(token)-vm.sock"
-            let apiSocket = "\(runtimeDirectory)/\(token)-api.sock"
-            self.networkSocketPaths = [gvproxySocket, vmNetworkSocket, apiSocket]
-            for path in networkSocketPaths { unlink(path) }
-
-            let gvproxy = Process()
-            gvproxy.executableURL = URL(fileURLWithPath: configuration.gvproxyPath)
-            gvproxy.arguments = GVProxyDesktopLaunchPlan.arguments(
-                mtu: DoryNetworkMTU.resolved(),
-                datapathSocket: gvproxySocket,
-                apiSocket: apiSocket
+            let networkRuntime = try Self.prepareNetwork(
+                plan: networkPlan,
+                gvproxyPath: configuration.gvproxyPath,
+                runtimeDirectory: runtimeDirectory,
+                token: token
             )
-            gvproxy.standardOutput = FileHandle.standardError
-            gvproxy.standardError = FileHandle.standardError
-            try gvproxy.run()
-            self.gvproxy = gvproxy
+            self.gvproxy = networkRuntime.process
+            self.networkSocketPaths = networkRuntime.socketPaths
             do {
-                try Self.waitForSocket(path: gvproxySocket, process: gvproxy)
-                let network = try VirtioNet(socketPath: vmNetworkSocket, remotePath: gvproxySocket)
                 var backends: [VirtioDeviceBackend] = [
                     try VirtioBlk(path: configuration.rootfsPath, identity: "dory-rootfs"),
                     gpu,
@@ -201,7 +207,9 @@ enum DesktopMode {
                         requestQueueCount: min(8, max(1, configuration.cpuCount))
                     ))
                 }
-                backends.append(network)
+                if let network = networkRuntime.backend {
+                    backends.append(network)
+                }
                 for (slot, backend) in backends.enumerated() {
                     let transport = Self.attachBackend(backend, to: machine, slot: slot)
                     if backend === gpu, configuration.resolvedDevices?.dynamicDisplay != false {
@@ -213,7 +221,9 @@ enum DesktopMode {
                 }
                 try machine.loadBootPayload()
             } catch {
-                ChildProcessTerminator.terminateAndReap(gvproxy)
+                if let gvproxy = networkRuntime.process {
+                    ChildProcessTerminator.terminateAndReap(gvproxy)
+                }
                 for path in networkSocketPaths { unlink(path) }
                 throw error
             }
@@ -438,7 +448,9 @@ enum DesktopMode {
             clipboard?.stop()
             signalSources.forEach { $0.cancel() }
             signalSources.removeAll()
-            ChildProcessTerminator.terminateAndReap(gvproxy)
+            if let gvproxy {
+                ChildProcessTerminator.terminateAndReap(gvproxy)
+            }
             unlink(configuration.agentSocketPath)
             unlink(configuration.shellSocketPath)
             for path in networkSocketPaths { unlink(path) }
@@ -537,6 +549,54 @@ enum DesktopMode {
                 usleep(50_000)
             }
             throw VMError.bootFailure("gvproxy did not publish its network socket")
+        }
+
+        private struct NetworkRuntime {
+            let process: Process?
+            let socketPaths: [String]
+            let backend: VirtioNet?
+        }
+
+        private static func prepareNetwork(
+            plan: NetworkPlan,
+            gvproxyPath: String,
+            runtimeDirectory: String,
+            token: String
+        ) throws -> NetworkRuntime {
+            guard plan.startsGVProxy, plan.attachesNetworkDevice else {
+                return NetworkRuntime(process: nil, socketPaths: [], backend: nil)
+            }
+            let gvproxySocket = "\(runtimeDirectory)/\(token)-gv.sock"
+            let vmNetworkSocket = "\(runtimeDirectory)/\(token)-vm.sock"
+            let apiSocket = "\(runtimeDirectory)/\(token)-api.sock"
+            let socketPaths = [gvproxySocket, vmNetworkSocket, apiSocket]
+            for path in socketPaths { unlink(path) }
+
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: gvproxyPath)
+            process.arguments = GVProxyDesktopLaunchPlan.arguments(
+                mtu: DoryNetworkMTU.resolved(),
+                datapathSocket: gvproxySocket,
+                apiSocket: apiSocket
+            )
+            process.standardOutput = FileHandle.standardError
+            process.standardError = FileHandle.standardError
+            do {
+                try process.run()
+                try waitForSocket(path: gvproxySocket, process: process)
+                return NetworkRuntime(
+                    process: process,
+                    socketPaths: socketPaths,
+                    backend: try VirtioNet(
+                        socketPath: vmNetworkSocket,
+                        remotePath: gvproxySocket
+                    )
+                )
+            } catch {
+                ChildProcessTerminator.terminateAndReap(process)
+                for path in socketPaths { unlink(path) }
+                throw error
+            }
         }
 
         @discardableResult

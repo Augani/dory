@@ -1329,7 +1329,8 @@ public enum DoryAppleSiliconCapabilityEvaluator {
             break
         case .disconnected:
             guard request.guest.family == .linux,
-                  request.backend == .appleVirtualizationFramework else {
+                  request.backend == .appleVirtualizationFramework
+                    || request.backend == .doryHypervisor else {
                 return unavailable(
                     tier: tier,
                     code: .networkAttachmentUnsupported,

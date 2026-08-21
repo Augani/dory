@@ -61,6 +61,7 @@ let package = Package(
                 "DoryHV",
                 "dory-hv",
                 .product(name: "DoryCore", package: "dory-core-swift"),
+                .product(name: "DoryOperations", package: "dory-core-swift"),
             ]
         ),
     ]
