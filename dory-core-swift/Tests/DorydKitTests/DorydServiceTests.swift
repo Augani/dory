@@ -2186,16 +2186,21 @@ final class DorydServiceTests: XCTestCase {
         ))
 
         let currentGuestExport = expectation(
-            description: "machineGuestExportCurrent inactive reply"
+            description: "machineGuestExportCurrent completed reply"
         )
         proxy.machineGuestExportCurrent("dev") { ok, body, message in
             XCTAssertTrue(ok, message)
             XCTAssertEqual(
                 Set(body.allKeys.compactMap { $0 as? String }),
-                ["schema", "active"]
+                ["schema", "active", "operation"]
             )
-            XCTAssertEqual(body["active"] as? Bool, false)
-            XCTAssertFalse(body.description.contains(privateExportRoot))
+            XCTAssertEqual(body["active"] as? Bool, true)
+            let operation = body["operation"] as? NSDictionary
+            XCTAssertEqual(operation?["phase"] as? String, "completed")
+            XCTAssertEqual(
+                (operation?["result"] as? NSDictionary)?["privateStagingRoot"] as? String,
+                privateExportRoot
+            )
             currentGuestExport.fulfill()
         }
         wait(for: [currentGuestExport], timeout: 5)
@@ -2207,6 +2212,21 @@ final class DorydServiceTests: XCTestCase {
         }
         wait(for: [discardGuestExport], timeout: 5)
         XCTAssertFalse(FileManager.default.fileExists(atPath: privateExportRoot))
+
+        let currentDiscardedGuestExport = expectation(
+            description: "machineGuestExportCurrent inactive after discard"
+        )
+        proxy.machineGuestExportCurrent("dev") { ok, body, message in
+            XCTAssertTrue(ok, message)
+            XCTAssertEqual(
+                Set(body.allKeys.compactMap { $0 as? String }),
+                ["schema", "active"]
+            )
+            XCTAssertEqual(body["active"] as? Bool, false)
+            XCTAssertFalse(body.description.contains(privateExportRoot))
+            currentDiscardedGuestExport.fulfill()
+        }
+        wait(for: [currentDiscardedGuestExport], timeout: 5)
 
         let discardedStatus = expectation(description: "discarded guest export is unknown")
         proxy.machineGuestExportStatus(

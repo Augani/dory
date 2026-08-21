@@ -298,12 +298,19 @@ final class MachineManagerFileTransferTests: XCTestCase {
         XCTAssertEqual(fixture.agent.pulls.map(\.remoteRoot), [
             "/home/alice/Documents/project",
         ])
+        let recovered = try XCTUnwrap(
+            fixture.manager.currentGuestFileExportStatus(id: "desktop")
+        )
+        XCTAssertEqual(recovered.operationID, started.operationID)
+        XCTAssertEqual(recovered.phase, .completed)
+        XCTAssertEqual(recovered.result, completed.result)
 
         try fixture.manager.discardGuestFileExport(
             id: "desktop",
             operationID: started.operationID
         )
         XCTAssertFalse(FileManager.default.fileExists(atPath: root))
+        XCTAssertNil(fixture.manager.currentGuestFileExportStatus(id: "desktop"))
         XCTAssertThrowsError(try fixture.manager.guestFileExportStatus(
             id: "desktop",
             operationID: started.operationID

@@ -252,6 +252,22 @@ struct DorydClientTests {
         )
         #expect(completed.fractionCompleted == 1)
 
+        let completedRow = service.machineGuestExportOperationResponse(
+            operationID: started.operationID,
+            phase: "completed"
+        )
+        service.setMachineGuestExportCurrentResponse([
+            "schema": UInt16(1),
+            "active": true,
+            "operation": completedRow,
+        ])
+        let recoveredCompleted = try #require(
+            try await client.machineGuestExportCurrent("dev")
+        )
+        #expect(recoveredCompleted.phase == .completed)
+        #expect(recoveredCompleted.result?.exportID == started.operationID)
+        service.setMachineGuestExportCurrentResponse(nil)
+
         let cancelled = try await client.machineGuestExportCancel(
             "dev",
             operationID: started.operationID
@@ -281,10 +297,6 @@ struct DorydClientTests {
         #expect(raced.result?.exportID == raceID)
         service.setMachineGuestExportStartResponse(nil)
 
-        let completedRow = service.machineGuestExportOperationResponse(
-            operationID: started.operationID,
-            phase: "completed"
-        )
         let resultRow = try #require(completedRow["result"] as? NSDictionary)
         let otherID = String(repeating: "f", count: 32)
         let malformed: [NSDictionary] = [

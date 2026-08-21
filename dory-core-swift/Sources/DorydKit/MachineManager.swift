@@ -5481,14 +5481,20 @@ public final class MachineManager: @unchecked Sendable {
     ) -> DoryMachineGuestFileExportOperationStatus? {
         fileTransferLock.lock()
         pruneFileTransferOperationsLocked(now: Date())
-        guard let operationID = activeGuestFileExportByMachine[id],
-              let operation = guestFileExportOperations[operationID] else {
-            activeGuestFileExportByMachine.removeValue(forKey: id)
+        if let operationID = activeGuestFileExportByMachine[id],
+           let operation = guestFileExportOperations[operationID] {
             fileTransferLock.unlock()
-            return nil
+            return operation.status()
         }
+        activeGuestFileExportByMachine.removeValue(forKey: id)
+        // A completed export remains an app-recoverable handoff until explicit discard. This
+        // closes the reconnect window between the daemon finishing its verified pull and the app
+        // materializing those bytes into a user-selected destination.
+        let recoverable = guestFileExportOperations.values
+            .filter { $0.machineID == id && $0.completedResult() != nil }
+            .max { ($0.terminalDate ?? .distantPast) < ($1.terminalDate ?? .distantPast) }
         fileTransferLock.unlock()
-        return operation.status()
+        return recoverable?.status()
     }
 
     public func cancelGuestFileExport(

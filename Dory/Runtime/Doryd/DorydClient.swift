@@ -3294,7 +3294,7 @@ nonisolated final class DorydClient: @unchecked Sendable {
                   let row = dictionary["operation"] as? NSDictionary,
                   let operation = machineGuestFileExportOperation(from: row),
                   operation.machineID == machineID,
-                  !operation.phase.isTerminal else {
+                  !operation.phase.isTerminal || operation.phase == .completed else {
                 return nil
             }
             return DorydMachineGuestFileExportCurrent(operation: operation)
