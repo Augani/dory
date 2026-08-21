@@ -431,6 +431,34 @@ PY
     echo system-pass
   " > "$WORKROOT/evidence/$distro-system.json"
 
+  # Arm a receipt that can only be written by systemd while the guest is performing an orderly
+  # shutdown. Merely terminating the VM helper cannot create this marker, so the subsequent boot
+  # distinguishes graceful guest shutdown from the host watchdog fallback.
+  assert_exec_token "$machine" graceful-shutdown-armed sh -lc "
+    set -eu
+    marker=/var/lib/dory/release-graceful-shutdown
+    unit=/etc/systemd/system/dory-release-graceful-shutdown.service
+    rm -f \"\$marker\"
+    printf '%s\n' \
+      '[Unit]' \
+      'Description=Dory release gate graceful shutdown receipt' \
+      'After=multi-user.target' \
+      '' \
+      '[Service]' \
+      'Type=oneshot' \
+      'ExecStart=/bin/true' \
+      \"ExecStop=/bin/sh -c 'printf graceful-shutdown-pass > \$marker; sync'\" \
+      'RemainAfterExit=yes' \
+      '' \
+      '[Install]' \
+      'WantedBy=multi-user.target' > \"\$unit\"
+    systemctl daemon-reload
+    systemctl enable --now dory-release-graceful-shutdown.service >/dev/null
+    systemctl is-active --quiet dory-release-graceful-shutdown.service
+    test ! -e \"\$marker\"
+    echo graceful-shutdown-armed
+  " > "$WORKROOT/evidence/$distro-graceful-shutdown-armed.json"
+
   assert_exec_token "$machine" browser-window-mapped sh -lc "
     set -eu
     uid=\$(id -u dorygate)
@@ -576,11 +604,26 @@ PY
   fi
 
   "$CTL" machine stop "$machine" > "$WORKROOT/evidence/$distro-stop.json"
+  python3 - "$WORKROOT/evidence/$distro-stop.json" "$machine" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    body = json.load(handle)
+if not isinstance(body, dict) or body.get("id") != sys.argv[2] \
+        or body.get("state") != "stopped":
+    raise SystemExit(f"machine stop did not complete cleanly: {body!r}")
+PY
   "$CTL" machine start "$machine" > "$WORKROOT/evidence/$distro-restart.json"
   wait_for_desktop "$machine" "$manager" "$session"
   wait_for_running "$machine"
-  assert_exec_token "$machine" persistence-pass sh -lc \
-    "cat /home/dorygate/.dory-release-marker; mountpoint -q /home/dorygate/Mac" \
+  assert_exec_token "$machine" graceful-shutdown-pass sh -lc "
+    set -eu
+    grep -Fqx graceful-shutdown-pass /var/lib/dory/release-graceful-shutdown
+    cat /home/dorygate/.dory-release-marker
+    mountpoint -q /home/dorygate/Mac
+    echo graceful-shutdown-pass
+  " \
     > "$WORKROOT/evidence/$distro-persistence.json"
 
   recovery_snapshot="recovery-$distro"
@@ -791,6 +834,7 @@ fi
     printf 'zed_native_venus=NOT-RUN\n'
   fi
   printf 'snapshot_restore_exact_bytes=PASS\n'
+  printf 'graceful_shutdown=PASS\n'
   if [ "$SELECTED_DISTRO" = all ] || [ "$SELECTED_DISTRO" = debian ]; then
     printf 'debian_rootfs_sha256=%s\n' "$(shasum -a 256 "$DEBIAN_ROOTFS" | awk '{print $1}')"
     printf 'debian_update_sha256=%s\n' "$(shasum -a 256 "$DEBIAN_UPDATE" | awk '{print $1}')"

@@ -51,6 +51,11 @@ class DesktopLinuxLiveGateTests(unittest.TestCase):
             'identity.get("mode") != "resolved-plan"',
             "restore reused the snapshot's stale launch plan",
             "snapshot_restore_exact_bytes=PASS",
+            "graceful-shutdown-armed",
+            "dory-release-graceful-shutdown.service",
+            "ExecStop=/bin/sh -c 'printf graceful-shutdown-pass",
+            "machine stop did not complete cleanly",
+            "graceful_shutdown=PASS",
             "workroot must be a strict child of RUNNER_TEMP",
         )
         for proof in required:
