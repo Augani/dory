@@ -1,4 +1,4 @@
-use crate::hash::{hash_bytes, Hash};
+use crate::hash::{hash_file, Hash};
 use std::path::Path;
 
 /// One file in a sync tree. `path` is relative to the sync root, forward-slash separated, so a host
@@ -100,8 +100,8 @@ fn walk_into(
             walk_into(root, &path, excluded_root_children, tolerate_not_found, out)?;
         } else if file_type.is_file() {
             let rel = relative_slash(root, &path);
-            let contents = match std::fs::read(&path) {
-                Ok(contents) => contents,
+            let hash = match hash_file(&path) {
+                Ok(hash) => hash,
                 Err(e) if tolerate_not_found && e.kind() == std::io::ErrorKind::NotFound => {
                     continue
                 }
@@ -112,7 +112,7 @@ fn walk_into(
                 size: meta.len(),
                 mtime_ns: mtime_ns(&meta),
                 mode: mode_of(&meta),
-                hash: hash_bytes(&contents),
+                hash,
             });
         }
         // Anything else (symlink, socket, fifo, device) is skipped.

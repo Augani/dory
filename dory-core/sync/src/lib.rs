@@ -7,7 +7,7 @@ mod hash;
 mod manifest;
 mod plan;
 
-pub use hash::{hash_bytes, Hash, HASH_LEN};
+pub use hash::{hash_bytes, hash_file, Hash, HASH_LEN};
 pub use manifest::{walk_manifest, walk_manifest_excluding, FileEntry, Manifest};
 pub use plan::{plan, SyncPlan};
 

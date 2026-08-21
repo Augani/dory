@@ -6,12 +6,14 @@
 //! The driver is generic over [`SyncTarget`] so its chunking/resume logic is unit-tested against a
 //! fake, while [`crate::AgentClient`] is the production target over the real transport.
 
+use std::io::SeekFrom;
 use std::path::Path;
 
 use dory_pb::agent::{
     SyncDeleteRequest, SyncFileStatusRequest, SyncManifestRequest, SyncPutChunkRequest,
 };
 use dory_sync::{plan, walk_manifest, Hash, Manifest, CHUNK_BYTES, HASH_LEN};
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
 use crate::agent_client::AgentClient;
 use crate::error::RemoteError;
@@ -73,21 +75,21 @@ pub async fn push<T: SyncTarget>(
         let entry = local
             .get(rel)
             .expect("transfer paths are drawn from the local manifest");
-        let bytes = tokio::fs::read(local_root.join(rel)).await?;
+        let mut file = tokio::fs::File::open(local_root.join(rel)).await?;
 
         // Resume: pick up where the remote left off, unless its staged size is past our file (stale).
         let staged = target.staged_bytes(remote_root, rel, &entry.hash).await?;
-        let mut offset: usize = if staged <= bytes.len() as u64 {
-            staged as usize
-        } else {
-            0
-        };
+        let mut offset = if staged <= entry.size { staged } else { 0 };
         let mut conflict_recoveries = 0usize;
 
         loop {
-            let end = (offset + CHUNK_BYTES).min(bytes.len());
-            let chunk = bytes[offset..end].to_vec();
-            let last = end == bytes.len();
+            file.seek(SeekFrom::Start(offset)).await?;
+            let remaining = entry.size.checked_sub(offset).ok_or(RemoteError::Decode)?;
+            let chunk_len = remaining.min(CHUNK_BYTES as u64) as usize;
+            let mut chunk = vec![0u8; chunk_len];
+            file.read_exact(&mut chunk).await?;
+            let end = offset + chunk_len as u64;
+            let last = end == entry.size;
             let sent = chunk.len() as u64;
             // The peer's returned next_offset is NOT trusted for indexing: a buggy/hostile agent
             // could return an out-of-bounds value and panic the slice below (panic=abort => doryd
@@ -97,7 +99,7 @@ pub async fn push<T: SyncTarget>(
                     root: remote_root.to_string(),
                     path: rel.clone(),
                     hash: entry.hash.to_vec(),
-                    offset: offset as u64,
+                    offset,
                     data: chunk,
                     last,
                     mode: entry.mode,
@@ -111,11 +113,7 @@ pub async fn push<T: SyncTarget>(
                 {
                     conflict_recoveries += 1;
                     let staged = target.staged_bytes(remote_root, rel, &entry.hash).await?;
-                    offset = if staged <= bytes.len() as u64 {
-                        staged as usize
-                    } else {
-                        0
-                    };
+                    offset = if staged <= entry.size { staged } else { 0 };
                     continue;
                 }
                 Err(error) => return Err(error),
@@ -126,7 +124,7 @@ pub async fn push<T: SyncTarget>(
             // one exception where it affects control flow, so require proof that the peer claims
             // the complete local length. The final request must likewise be acknowledged as a
             // complete commit; inconsistent responses are protocol decode failures, not success.
-            if committed && next_offset != bytes.len() as u64 {
+            if committed && next_offset != entry.size {
                 return Err(RemoteError::Decode);
             }
             if last && !committed {
@@ -141,6 +139,17 @@ pub async fn push<T: SyncTarget>(
 
     if !plan.delete.is_empty() {
         stats.files_deleted += target.delete(remote_root, &plan.delete).await? as u64;
+    }
+
+    // The manifest is a point-in-time source authority. Re-read it after all remote mutations so a
+    // concurrently changed, truncated, or appended source cannot be reported as an exact replica.
+    // Retrying is safe: the protocol is content-addressed and resumable.
+    let root = local_root.to_path_buf();
+    let final_local = tokio::task::spawn_blocking(move || walk_manifest(&root))
+        .await
+        .map_err(|e| RemoteError::Io(std::io::Error::other(e)))??;
+    if final_local != local {
+        return Err(RemoteError::SourceChanged);
     }
     Ok(stats)
 }
@@ -247,6 +256,8 @@ mod tests {
         suppress_final_commit: bool,
         conflict_once_at_offset: Option<u64>,
         conflict_fired: Mutex<bool>,
+        mutate_source_after_first_chunk: Option<(std::path::PathBuf, Vec<u8>)>,
+        source_mutation_fired: Mutex<bool>,
         rec: Mutex<Recorded>,
     }
     impl FakeTarget {
@@ -260,6 +271,8 @@ mod tests {
                 suppress_final_commit: false,
                 conflict_once_at_offset: None,
                 conflict_fired: Mutex::new(false),
+                mutate_source_after_first_chunk: None,
+                source_mutation_fired: Mutex::new(false),
                 rec: Mutex::new(Recorded::default()),
             }
         }
@@ -290,6 +303,13 @@ mod tests {
             Ok(self.preset_staged.get(path).copied().unwrap_or(0))
         }
         async fn put_chunk(&self, req: SyncPutChunkRequest) -> Result<(u64, bool), RemoteError> {
+            if let Some((path, replacement)) = &self.mutate_source_after_first_chunk {
+                let mut fired = self.source_mutation_fired.lock().unwrap();
+                if !*fired {
+                    std::fs::write(path, replacement).unwrap();
+                    *fired = true;
+                }
+            }
             if self.conflict_once_at_offset == Some(req.offset) {
                 let mut fired = self.conflict_fired.lock().unwrap();
                 if !*fired {
@@ -336,6 +356,12 @@ mod tests {
         assert_eq!(target.assembled("dir/b.bin"), big);
         // The final chunk of each file is flagged `last`.
         let rec = target.rec.lock().unwrap();
+        assert!(
+            rec.chunks
+                .iter()
+                .all(|chunk| chunk.data.len() <= CHUNK_BYTES),
+            "the push driver must never allocate a whole-file transport buffer"
+        );
         assert!(
             rec.chunks
                 .iter()
@@ -488,5 +514,20 @@ mod tests {
         let chunks: Vec<_> = rec.chunks.iter().filter(|c| c.path == "empty").collect();
         assert_eq!(chunks.len(), 1, "empty file is one last chunk");
         assert!(chunks[0].last && chunks[0].data.is_empty());
+    }
+
+    #[tokio::test]
+    async fn push_fails_closed_when_the_local_source_changes_mid_transfer() {
+        let t = TempTree::new("source-drift");
+        let original = vec![0x11; CHUNK_BYTES + 50];
+        let replacement = vec![0x22; CHUNK_BYTES + 50];
+        t.write("f", &original);
+
+        let mut target = FakeTarget::new(Manifest::default());
+        target.mutate_source_after_first_chunk = Some((t.root.join("f"), replacement));
+
+        let error = push(&t.root, "/remote", &target).await.unwrap_err();
+        assert!(matches!(error, RemoteError::SourceChanged));
+        assert!(*target.source_mutation_fired.lock().unwrap());
     }
 }
