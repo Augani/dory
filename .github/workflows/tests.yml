@@ -33,6 +33,8 @@ jobs:
           echo "DEVELOPER_DIR=$newest/Contents/Developer" >> "$GITHUB_ENV"
       - name: Dory CLI machine create
         run: .github/scripts/test-dory-machine-create.sh
+      - name: Signed release metadata contract
+        run: python3 .github/scripts/test-release-metadata.py
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
       - name: Install Protocol Buffers compiler

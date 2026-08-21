@@ -332,6 +332,8 @@ jobs:
         run: xcodebuild -downloadComponent MetalToolchain || true
       - name: Build shared Rust guest-control client
         run: scripts/build-dory-ffi-xcframework.sh --if-needed
+      - name: Signed release metadata contract
+        run: python3 .github/scripts/test-release-metadata.py
       - name: P0 smoke harness regression tests
         run: bash scripts/test-p0-smoke.sh
       - name: Dory app and offline quality suite
