@@ -25,6 +25,8 @@ struct DoryVirtualMachineDefinitionTests {
         #expect(json.contains("\"namespace\":\"boot\""))
         #expect(json.contains("\"clipboardPolicy\""))
         #expect(json.contains("\"guestIdentityIntent\""))
+        #expect(json.contains("\"backingScaleFactor\":2"))
+        #expect(json.contains("\"guestUIScaleFactor\":2"))
         #expect(!json.contains("\"bootMedia\""))
         #expect(!json.contains("artifactID"))
         #expect(!json.contains("hostLocationID"))
@@ -53,6 +55,8 @@ struct DoryVirtualMachineDefinitionTests {
         #expect(decoded.clipboardPolicy == .legacyDesktop(.bidirectional))
         #expect(decoded.schemaVersion == 3)
         #expect(decoded.storage.allSatisfy { $0.source == .userProvided })
+        #expect(decoded.display.backingScaleFactor == 2)
+        #expect(decoded.display.guestUIScaleFactor == 2)
         #expect(decoded.isValid)
     }
 
@@ -251,6 +255,8 @@ struct DoryVirtualMachineDefinitionTests {
         #expect(migrated.graphics.acceptableLevels == [.hostAcceleratedDisplay, .software])
         #expect(migrated.storage[0].source == .userProvided)
         #expect(migrated.lifecycle.createdAtUnixMilliseconds == 1_700_000_000_000)
+        #expect(migrated.display.backingScaleFactor == 2)
+        #expect(migrated.display.guestUIScaleFactor == 2)
         #expect(migrated.isValid)
 
         let upgraded = try JSONEncoder().encode(migrated)
@@ -581,6 +587,20 @@ struct DoryVirtualMachineDefinitionTests {
 
         definition.integrations.removeAll { $0 == .dynamicDisplay }
         #expect(definition.isValid)
+    }
+
+    @Test("display backing and guest UI scales are distinct bounded intent")
+    func displayScaleValidation() {
+        var definition = linuxDefinition()
+        definition.display.backingScaleFactor = 1
+        definition.display.guestUIScaleFactor = 2
+        #expect(definition.isValid)
+
+        definition.display.backingScaleFactor = 0
+        #expect(has(.invalidDisplayConfiguration, "display", in: definition.validate()))
+        definition.display.backingScaleFactor = 2
+        definition.display.guestUIScaleFactor = 3
+        #expect(has(.invalidDisplayConfiguration, "display", in: definition.validate()))
     }
 
     private func linuxDefinition(

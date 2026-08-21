@@ -53,6 +53,8 @@ enum DesktopMode {
     struct DisplayPlan: Equatable {
         var widthPixels: UInt32
         var heightPixels: UInt32
+        var backingScaleFactor: UInt8
+        var guestUIScaleFactor: UInt8
 
         init(resolvedDevices: DoryVirtualMachineDeviceCapabilityRequest?) throws {
             let display = resolvedDevices?.display ?? DoryVMMDisplayDefaults.capability
@@ -63,12 +65,14 @@ enum DesktopMode {
             }
             widthPixels = display.widthPixels
             heightPixels = display.heightPixels
+            backingScaleFactor = display.backingScaleFactor
+            guestUIScaleFactor = display.guestUIScaleFactor
         }
 
         var windowSize: NSSize {
             NSSize(
-                width: max(1, CGFloat(widthPixels) / 2),
-                height: max(1, CGFloat(heightPixels) / 2)
+                width: max(1, CGFloat(widthPixels) / CGFloat(backingScaleFactor)),
+                height: max(1, CGFloat(heightPixels) / CGFloat(backingScaleFactor))
             )
         }
     }
@@ -163,7 +167,8 @@ enum DesktopMode {
             self.firstFrame = firstFrame
             self.display = try DesktopMetalView(
                 frame: NSRect(origin: .zero, size: displayPlan.windowSize),
-                input: input
+                input: input,
+                guestBackingScaleFactor: CGFloat(displayPlan.backingScaleFactor)
             )
             mailbox.view = display
             cursorMailbox.view = display

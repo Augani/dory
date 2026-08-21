@@ -185,25 +185,68 @@ public struct DoryVMDisplayConfiguration: Codable, Sendable, Equatable {
     public var widthPixels: UInt32
     public var heightPixels: UInt32
     public var pixelsPerInch: UInt16
+    /// Guest framebuffer pixels per host window point. This is independent of desktop UI scale.
+    public var backingScaleFactor: UInt8
+    /// Guest toolkit/UI scale. This does not change framebuffer pixel dimensions.
+    public var guestUIScaleFactor: UInt8
 
     public init(
         enabled: Bool = true,
         widthPixels: UInt32 = 1_920,
         heightPixels: UInt32 = 1_080,
-        pixelsPerInch: UInt16 = 110
+        pixelsPerInch: UInt16 = 110,
+        backingScaleFactor: UInt8 = 2,
+        guestUIScaleFactor: UInt8 = 2
     ) {
         self.enabled = enabled
         self.widthPixels = widthPixels
         self.heightPixels = heightPixels
         self.pixelsPerInch = pixelsPerInch
+        self.backingScaleFactor = backingScaleFactor
+        self.guestUIScaleFactor = guestUIScaleFactor
     }
 
     public static let disabled = DoryVMDisplayConfiguration(
         enabled: false,
         widthPixels: 0,
         heightPixels: 0,
-        pixelsPerInch: 0
+        pixelsPerInch: 0,
+        backingScaleFactor: 0,
+        guestUIScaleFactor: 0
     )
+
+    private enum CodingKeys: String, CodingKey {
+        case enabled
+        case widthPixels
+        case heightPixels
+        case pixelsPerInch
+        case backingScaleFactor
+        case guestUIScaleFactor
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        enabled = try container.decode(Bool.self, forKey: .enabled)
+        widthPixels = try container.decode(UInt32.self, forKey: .widthPixels)
+        heightPixels = try container.decode(UInt32.self, forKey: .heightPixels)
+        pixelsPerInch = try container.decode(UInt16.self, forKey: .pixelsPerInch)
+        // Historical definitions implemented the same 2x/2x behavior but did not name the two
+        // independent scales. Preserve those exact bytes as the established compatibility default.
+        backingScaleFactor = try container.decodeIfPresent(UInt8.self, forKey: .backingScaleFactor)
+            ?? (enabled ? 2 : 0)
+        guestUIScaleFactor = try container.decodeIfPresent(UInt8.self, forKey: .guestUIScaleFactor)
+            ?? (enabled ? 2 : 0)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(enabled, forKey: .enabled)
+        try container.encode(widthPixels, forKey: .widthPixels)
+        try container.encode(heightPixels, forKey: .heightPixels)
+        try container.encode(pixelsPerInch, forKey: .pixelsPerInch)
+        try container.encode(backingScaleFactor, forKey: .backingScaleFactor)
+        try container.encode(guestUIScaleFactor, forKey: .guestUIScaleFactor)
+    }
 }
 
 public struct DoryVMAudioConfiguration: Codable, Sendable, Equatable {
@@ -852,9 +895,13 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
         let dimensionsArePositive = display.widthPixels > 0
             && display.heightPixels > 0
             && display.pixelsPerInch > 0
+            && (1...4).contains(display.backingScaleFactor)
+            && (1...2).contains(display.guestUIScaleFactor)
         let dimensionsAreZero = display.widthPixels == 0
             && display.heightPixels == 0
             && display.pixelsPerInch == 0
+            && display.backingScaleFactor == 0
+            && display.guestUIScaleFactor == 0
         if (display.enabled && !dimensionsArePositive) || (!display.enabled && !dimensionsAreZero) {
             issues.append(issue(.invalidDisplayConfiguration, "display"))
         }

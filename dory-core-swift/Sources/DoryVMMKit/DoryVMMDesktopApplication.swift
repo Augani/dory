@@ -11,6 +11,7 @@ final class DoryVMMDesktopApplication: NSObject, NSApplicationDelegate, NSWindow
     private let window: NSWindow
     private let clipboard: DoryDesktopClipboardCoordinator?
     private let dynamicDisplayEnabled: Bool
+    private let backingScaleFactor: CGFloat
     private var pendingDisplayResize: DispatchWorkItem?
     private var requestedPixelSize: CGSize?
     private var stopError: String?
@@ -26,9 +27,10 @@ final class DoryVMMDesktopApplication: NSObject, NSApplicationDelegate, NSWindow
         dynamicDisplayEnabled = resolvedDevices?.dynamicDisplay ?? true
 
         let display = resolvedDevices?.display ?? DoryVMMDisplayDefaults.capability
+        backingScaleFactor = CGFloat(display.backingScaleFactor)
         let windowSize = NSSize(
-            width: max(1, CGFloat(display.widthPixels) / 2),
-            height: max(1, CGFloat(display.heightPixels) / 2)
+            width: max(1, CGFloat(display.widthPixels) / backingScaleFactor),
+            height: max(1, CGFloat(display.heightPixels) / backingScaleFactor)
         )
         let machineView = DoryVirtualMachineView(frame: NSRect(origin: .zero, size: windowSize))
         machineView.virtualMachine = runtime.machine.virtualMachineForDisplay
@@ -179,10 +181,7 @@ final class DoryVMMDesktopApplication: NSObject, NSApplicationDelegate, NSWindow
         viewSize: CGSize,
         backingScaleFactor: CGFloat
     ) -> CGSize {
-        // Keep the Linux desktop at a 2x render scale even on a 1x host display. Retina screens
-        // map those pixels directly; lower-density screens get a supersampled image instead of a
-        // visibly coarse guest framebuffer.
-        let scale = max(2, backingScaleFactor)
+        let scale = max(1, backingScaleFactor)
         return CGSize(
             width: max(1, (viewSize.width * scale).rounded()),
             height: max(1, (viewSize.height * scale).rounded())
@@ -205,7 +204,7 @@ final class DoryVMMDesktopApplication: NSObject, NSApplicationDelegate, NSWindow
         pendingDisplayResize = nil
         let size = Self.targetPixelSize(
             viewSize: machineView.bounds.size,
-            backingScaleFactor: window.backingScaleFactor
+            backingScaleFactor: backingScaleFactor
         )
         guard size != requestedPixelSize else { return }
         do {

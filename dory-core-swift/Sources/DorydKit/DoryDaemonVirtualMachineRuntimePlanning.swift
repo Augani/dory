@@ -525,7 +525,9 @@ public final class DoryDaemonVirtualMachinePlanningCoordinator: @unchecked Senda
             display: definition.display.enabled
                 ? DoryVirtualMachineDisplayCapabilityRequest(
                     widthPixels: definition.display.widthPixels,
-                    heightPixels: definition.display.heightPixels
+                    heightPixels: definition.display.heightPixels,
+                    backingScaleFactor: definition.display.backingScaleFactor,
+                    guestUIScaleFactor: definition.display.guestUIScaleFactor
                 )
                 : nil,
             audioInput: definition.audio.inputEnabled,

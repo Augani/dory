@@ -114,7 +114,7 @@ final class DoryVMMKitTests: XCTestCase {
         )
     }
 
-    func testDesktopWindowUsesRetinaBackingPixels() {
+    func testDesktopWindowUsesTheResolvedBackingScale() {
         XCTAssertEqual(
             DoryVMMDesktopApplication.targetPixelSize(
                 viewSize: CGSize(width: 1_280, height: 800),
@@ -127,7 +127,7 @@ final class DoryVMMKitTests: XCTestCase {
                 viewSize: CGSize(width: 1_024, height: 768),
                 backingScaleFactor: 1
             ),
-            CGSize(width: 2_048, height: 1_536)
+            CGSize(width: 1_024, height: 768)
         )
     }
 

@@ -90,6 +90,7 @@ final class DesktopMetalView: MTKView, MTKViewDelegate {
     private let commandQueue: MTLCommandQueue
     private let pipeline: MTLRenderPipelineState
     private let input: VirtioInput
+    private let guestBackingScaleFactor: CGFloat
     private var resourceTextures: [UInt32: MTLTexture] = [:]
     private var scanoutTexture: MTLTexture?
     private var scanoutSize = CGSize.zero
@@ -102,12 +103,17 @@ final class DesktopMetalView: MTKView, MTKViewDelegate {
     var onDrawableSizeChange: ((UInt32, UInt32) -> Void)?
     var onMacShortcut: ((NSEvent) -> Bool)?
 
-    init(frame: NSRect, input: VirtioInput) throws {
+    init(
+        frame: NSRect,
+        input: VirtioInput,
+        guestBackingScaleFactor: CGFloat = 2
+    ) throws {
         guard let device = MTLCreateSystemDefaultDevice(),
               let commandQueue = device.makeCommandQueue() else {
             throw DesktopMetalDisplayError.metalUnavailable
         }
         self.input = input
+        self.guestBackingScaleFactor = guestBackingScaleFactor
         self.commandQueue = commandQueue
         do {
             let library = try device.makeLibrary(source: Self.shaderSource, options: nil)
@@ -260,10 +266,14 @@ final class DesktopMetalView: MTKView, MTKViewDelegate {
         commandBuffer.commit()
     }
 
-    func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
-        if guestCursorUpdate != nil { rebuildGuestCursor(pixelSize: size) }
-        let width = UInt32(clamping: max(1, Int(size.width.rounded())))
-        let height = UInt32(clamping: max(1, Int(size.height.rounded())))
+    func mtkView(_ view: MTKView, drawableSizeWillChange _: CGSize) {
+        let guestPixelSize = CGSize(
+            width: max(1, bounds.width * guestBackingScaleFactor),
+            height: max(1, bounds.height * guestBackingScaleFactor)
+        )
+        if guestCursorUpdate != nil { rebuildGuestCursor(pixelSize: guestPixelSize) }
+        let width = UInt32(clamping: max(1, Int(guestPixelSize.width.rounded())))
+        let height = UInt32(clamping: max(1, Int(guestPixelSize.height.rounded())))
         resizeGeneration &+= 1
         let generation = resizeGeneration
         // AppKit reports every intermediate drag size. Debounce the guest modeset so Mutter/Xfce

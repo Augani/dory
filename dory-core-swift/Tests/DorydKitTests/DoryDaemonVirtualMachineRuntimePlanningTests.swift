@@ -16,7 +16,9 @@ struct DoryDaemonVirtualMachineRuntimePlanningTests {
         #expect(devices.networkAttachment == .disconnected)
         #expect(devices.display == DoryVirtualMachineDisplayCapabilityRequest(
             widthPixels: definition.display.widthPixels,
-            heightPixels: definition.display.heightPixels
+            heightPixels: definition.display.heightPixels,
+            backingScaleFactor: definition.display.backingScaleFactor,
+            guestUIScaleFactor: definition.display.guestUIScaleFactor
         ))
         #expect(devices.audioInput == definition.audio.inputEnabled)
         #expect(devices.audioOutput == definition.audio.outputEnabled)

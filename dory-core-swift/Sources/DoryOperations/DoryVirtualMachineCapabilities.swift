@@ -112,15 +112,55 @@ public struct DoryVirtualMachineDisplayCapabilityRequest: Codable, Sendable, Equ
 
     public var widthPixels: UInt32
     public var heightPixels: UInt32
+    public var backingScaleFactor: UInt8
+    public var guestUIScaleFactor: UInt8
 
-    public init(widthPixels: UInt32, heightPixels: UInt32) {
+    public init(
+        widthPixels: UInt32,
+        heightPixels: UInt32,
+        backingScaleFactor: UInt8 = 2,
+        guestUIScaleFactor: UInt8 = 2
+    ) {
         self.widthPixels = widthPixels
         self.heightPixels = heightPixels
+        self.backingScaleFactor = backingScaleFactor
+        self.guestUIScaleFactor = guestUIScaleFactor
     }
 
     public var isValid: Bool {
         (1...Self.maximumDimensionPixels).contains(widthPixels)
             && (1...Self.maximumDimensionPixels).contains(heightPixels)
+            && (1...4).contains(backingScaleFactor)
+            && (1...2).contains(guestUIScaleFactor)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case widthPixels
+        case heightPixels
+        case backingScaleFactor
+        case guestUIScaleFactor
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        widthPixels = try container.decode(UInt32.self, forKey: .widthPixels)
+        heightPixels = try container.decode(UInt32.self, forKey: .heightPixels)
+        backingScaleFactor = try container.decodeIfPresent(
+            UInt8.self,
+            forKey: .backingScaleFactor
+        ) ?? 2
+        guestUIScaleFactor = try container.decodeIfPresent(
+            UInt8.self,
+            forKey: .guestUIScaleFactor
+        ) ?? 2
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(widthPixels, forKey: .widthPixels)
+        try container.encode(heightPixels, forKey: .heightPixels)
+        try container.encode(backingScaleFactor, forKey: .backingScaleFactor)
+        try container.encode(guestUIScaleFactor, forKey: .guestUIScaleFactor)
     }
 }
 
