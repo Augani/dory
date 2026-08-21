@@ -901,6 +901,8 @@ public final class MachineManager: @unchecked Sendable {
     private var machines: [String: MachineEntry] = [:]
     private var fileTransferOperations: [String: MachineFileTransferOperation] = [:]
     private var activeFileTransferByMachine: [String: String] = [:]
+    private var guestFileExportOperations: [String: MachineGuestFileExportOperation] = [:]
+    private var activeGuestFileExportByMachine: [String: String] = [:]
     private var deletingMachineIDs: Set<String> = []
     private var workspaceProjectionDiagnostics: [String: DoryWorkspaceProjectionDiagnostic] = [:]
     private var resolvedLaunchRegistry: BackendRegistry?
@@ -5198,7 +5200,8 @@ public final class MachineManager: @unchecked Sendable {
         let transferID = Self.makeMachineFileTransferID()
         fileTransferLock.lock()
         pruneFileTransferOperationsLocked(now: Date())
-        if activeFileTransferByMachine[id] != nil {
+        if activeFileTransferByMachine[id] != nil
+            || activeGuestFileExportByMachine[id] != nil {
             fileTransferLock.unlock()
             throw DoryMachineFileTransferError.transferAlreadyInProgress(id)
         }
@@ -5244,7 +5247,8 @@ public final class MachineManager: @unchecked Sendable {
         let transferID = Self.makeMachineFileTransferID()
         fileTransferLock.lock()
         pruneFileTransferOperationsLocked(now: Date())
-        if activeFileTransferByMachine[id] != nil {
+        if activeFileTransferByMachine[id] != nil
+            || activeGuestFileExportByMachine[id] != nil {
             fileTransferLock.unlock()
             throw DoryMachineFileTransferError.transferAlreadyInProgress(id)
         }
@@ -5358,6 +5362,218 @@ public final class MachineManager: @unchecked Sendable {
         }
         operation.requestCancellation()
         return operation.status()
+    }
+
+    /// Starts a bounded guest-to-host export into Dory's private staging namespace. The caller
+    /// supplies no host path: the output root is derived from the operation ID and created with
+    /// create-new semantics by the Rust pull engine. Guest reads are restricted to the configured
+    /// non-root account's home tree.
+    public func beginGuestFileExport(
+        id: String,
+        guestSource: String
+    ) throws -> DoryMachineGuestFileExportOperationStatus {
+        guard let machineStatus = status(id: id) else {
+            throw MachineManagerError.unknownMachine(id)
+        }
+        guard machineStatus.state == .running,
+              machineStatus.agentSocketPath != nil else {
+            throw MachineManagerError.agentUnavailable(id)
+        }
+        guard machineStatus.supportsAgentCapability("sync-pull") else {
+            throw MachineManagerError.agentCapabilityUnavailable(id, "sync-pull")
+        }
+        let validatedGuestSource = try Self.validatedGuestExportSource(
+            guestSource,
+            machineStatus: machineStatus,
+            machineID: id
+        )
+
+        let exportID = Self.makeMachineFileTransferID()
+        fileTransferLock.lock()
+        pruneFileTransferOperationsLocked(now: Date())
+        if activeFileTransferByMachine[id] != nil
+            || activeGuestFileExportByMachine[id] != nil {
+            fileTransferLock.unlock()
+            throw DoryMachineFileTransferError.transferAlreadyInProgress(id)
+        }
+        let privateStagingRoot: String
+        do {
+            privateStagingRoot = try DoryMachineFileTransferStager.reserveDaemonExportRoot(
+                operationID: exportID
+            )
+        } catch {
+            fileTransferLock.unlock()
+            throw DoryMachineFileTransferError.invalidPrivateStagingRoot
+        }
+        let operation = MachineGuestFileExportOperation(
+            operationID: exportID,
+            machineID: id,
+            privateStagingRoot: privateStagingRoot
+        )
+        guestFileExportOperations[exportID] = operation
+        activeGuestFileExportByMachine[id] = exportID
+        fileTransferLock.unlock()
+
+        fileTransferQueue.async { [self, operation] in
+            var outcome: MachineGuestFileExportTerminalOutcome
+            do {
+                let result = try performGuestFileExport(
+                    id: id,
+                    guestSource: validatedGuestSource,
+                    privateStagingRoot: privateStagingRoot,
+                    exportID: exportID,
+                    operation: operation
+                )
+                outcome = operation.isCancellationRequested ? .cancelled : .completed(result)
+            } catch {
+                outcome = operation.isCancellationRequested
+                    ? .cancelled
+                    : .failed(Self.fileTransferFailure(error, machineID: id))
+            }
+            if case .completed = outcome {
+                // Ownership remains with the exact terminal operation until the client consumes
+                // or discards it. Failed and cancelled roots never escape the daemon.
+            } else {
+                do {
+                    try DoryMachineFileTransferStager.removeManagedStagingRoot(
+                        privateStagingRoot
+                    )
+                } catch {
+                    outcome = .failed(.init(
+                        code: .transferFailed,
+                        message: "Guest file export cleanup failed for \(id)."
+                    ))
+                }
+            }
+            fileTransferLock.lock()
+            switch outcome {
+            case let .completed(result):
+                operation.complete(result)
+            case .cancelled:
+                operation.cancel()
+            case let .failed(failure):
+                operation.fail(failure)
+            }
+            if activeGuestFileExportByMachine[id] == exportID {
+                activeGuestFileExportByMachine.removeValue(forKey: id)
+            }
+            fileTransferLock.unlock()
+        }
+        return operation.status()
+    }
+
+    public func guestFileExportStatus(
+        id: String,
+        operationID: String
+    ) throws -> DoryMachineGuestFileExportOperationStatus {
+        fileTransferLock.lock()
+        pruneFileTransferOperationsLocked(now: Date())
+        let operation = guestFileExportOperations[operationID]
+        fileTransferLock.unlock()
+        guard let operation, operation.machineID == id else {
+            throw DoryMachineFileTransferError.unknownTransfer(id, operationID)
+        }
+        return operation.status()
+    }
+
+    public func currentGuestFileExportStatus(
+        id: String
+    ) -> DoryMachineGuestFileExportOperationStatus? {
+        fileTransferLock.lock()
+        pruneFileTransferOperationsLocked(now: Date())
+        guard let operationID = activeGuestFileExportByMachine[id],
+              let operation = guestFileExportOperations[operationID] else {
+            activeGuestFileExportByMachine.removeValue(forKey: id)
+            fileTransferLock.unlock()
+            return nil
+        }
+        fileTransferLock.unlock()
+        return operation.status()
+    }
+
+    public func cancelGuestFileExport(
+        id: String,
+        operationID: String
+    ) throws -> DoryMachineGuestFileExportOperationStatus {
+        fileTransferLock.lock()
+        let operation = guestFileExportOperations[operationID]
+        fileTransferLock.unlock()
+        guard let operation, operation.machineID == id else {
+            throw DoryMachineFileTransferError.unknownTransfer(id, operationID)
+        }
+        operation.requestCancellation()
+        return operation.status()
+    }
+
+    /// Deletes the private result after the client has copied it to its user-selected destination.
+    /// Only a completed exact operation can authorize this cleanup.
+    public func discardGuestFileExport(
+        id: String,
+        operationID: String
+    ) throws {
+        fileTransferLock.lock()
+        let operation = guestFileExportOperations[operationID]
+        fileTransferLock.unlock()
+        guard let operation, operation.machineID == id else {
+            throw DoryMachineFileTransferError.unknownTransfer(id, operationID)
+        }
+        guard let result = operation.completedResult() else {
+            throw DoryMachineFileTransferError.exportNotComplete(id, operationID)
+        }
+        do {
+            try DoryMachineFileTransferStager.removeManagedStagingRoot(
+                result.privateStagingRoot
+            )
+        } catch {
+            throw DoryMachineFileTransferError.invalidPrivateStagingRoot
+        }
+        fileTransferLock.lock()
+        if guestFileExportOperations[operationID] === operation {
+            guestFileExportOperations.removeValue(forKey: operationID)
+        }
+        fileTransferLock.unlock()
+    }
+
+    private func performGuestFileExport(
+        id: String,
+        guestSource: String,
+        privateStagingRoot: String,
+        exportID: String,
+        operation: MachineGuestFileExportOperation
+    ) throws -> DoryMachineGuestFileExportResult {
+        try Self.requireTransferNotCancelled(operation)
+        operation.setTransferring()
+        let limits = DoryPullLimits(
+            maxFiles: UInt64(DoryMachineFileTransferStager.maximumFileCount),
+            maxDirectories: UInt64(
+                DoryMachineFileTransferStager.maximumEntryCount
+                    - DoryMachineFileTransferStager.maximumFileCount
+            ),
+            maxBytes: DoryMachineFileTransferStager.maximumTransferBytes
+        )
+        let stats: DoryPullStats
+        do {
+            stats = try withAgentClient(id: id, requiredCapability: "sync-pull") { client in
+                try client.pull(
+                    remoteRoot: guestSource,
+                    localRoot: privateStagingRoot,
+                    limits: limits,
+                    control: operation.control
+                )
+            }
+        } catch {
+            throw DoryMachineFileTransferError.transferFailed(id)
+        }
+        try Self.requireTransferNotCancelled(operation)
+        operation.setFinalizing()
+        guard DoryMachineFileTransferStager.isDaemonExportRoot(privateStagingRoot) else {
+            throw DoryMachineFileTransferError.invalidPrivateStagingRoot
+        }
+        return DoryMachineGuestFileExportResult(
+            exportID: exportID,
+            privateStagingRoot: privateStagingRoot,
+            stats: stats
+        )
     }
 
     private func performStagedFileTransfer(
@@ -5511,6 +5727,37 @@ public final class MachineManager: @unchecked Sendable {
         }
     }
 
+    private static func requireTransferNotCancelled(
+        _ operation: MachineGuestFileExportOperation
+    ) throws {
+        if operation.isCancellationRequested {
+            throw DoryMachineFileTransferCancellation.cancelled
+        }
+    }
+
+    private static func validatedGuestExportSource(
+        _ requestedPath: String,
+        machineStatus: DoryMachineStatus,
+        machineID: String
+    ) throws -> String {
+        guard requestedPath.utf8.count > 1,
+              requestedPath.utf8.count <= 4_096,
+              !requestedPath.contains("\0"),
+              let account = machineStatus.typedSettings?.guestIdentityIntent.account,
+              let username = account.username,
+              DoryVMGuestAccountIntent.isValidUsername(username),
+              username != "root" else {
+            throw DoryMachineFileTransferError.invalidGuestSource(machineID)
+        }
+        let standardized = URL(fileURLWithPath: requestedPath).standardizedFileURL.path
+        let guestHome = "/home/\(username)"
+        guard requestedPath == standardized,
+              standardized == guestHome || standardized.hasPrefix(guestHome + "/") else {
+            throw DoryMachineFileTransferError.invalidGuestSource(machineID)
+        }
+        return standardized
+    }
+
     private static func fileTransferFailure(
         _ error: Error,
         machineID: String
@@ -5523,8 +5770,8 @@ public final class MachineManager: @unchecked Sendable {
             return .init(code: .guestPreparationFailed, message: "Could not prepare the guest destination.")
         case .guestFinalizationFailed:
             return .init(code: .guestFinalizationFailed, message: "Could not finalize guest file ownership.")
-        case .invalidPrivateStagingRoot, .transferAlreadyInProgress, .unknownTransfer,
-             .transferFailed, nil:
+        case .invalidPrivateStagingRoot, .invalidGuestSource, .transferAlreadyInProgress,
+             .unknownTransfer, .exportNotComplete, .transferFailed, nil:
             return .init(code: .transferFailed, message: "File transfer failed for \(machineID).")
         }
     }
@@ -5535,12 +5782,37 @@ public final class MachineManager: @unchecked Sendable {
             guard let finishedAt = operation.terminalDate else { return true }
             return finishedAt >= expiration
         }
+        pruneGuestFileExportOperationsLocked(now: now)
         if fileTransferOperations.count <= 128 { return }
         let removable = fileTransferOperations
             .filter { $0.value.isTerminal }
             .sorted { ($0.value.terminalDate ?? .distantFuture) < ($1.value.terminalDate ?? .distantFuture) }
         for (operationID, _) in removable.prefix(fileTransferOperations.count - 128) {
             fileTransferOperations.removeValue(forKey: operationID)
+        }
+    }
+
+    private func pruneGuestFileExportOperationsLocked(now: Date) {
+        let expiration = now.addingTimeInterval(-60 * 60)
+        let expired = guestFileExportOperations.filter { _, operation in
+            guard let finishedAt = operation.terminalDate else { return false }
+            return finishedAt < expiration
+        }
+        for (operationID, operation) in expired {
+            try? DoryMachineFileTransferStager.removeManagedStagingRoot(
+                operation.privateStagingRoot
+            )
+            guestFileExportOperations.removeValue(forKey: operationID)
+        }
+        if guestFileExportOperations.count <= 128 { return }
+        let removable = guestFileExportOperations
+            .filter { $0.value.isTerminal }
+            .sorted { ($0.value.terminalDate ?? .distantFuture) < ($1.value.terminalDate ?? .distantFuture) }
+        for (operationID, operation) in removable.prefix(guestFileExportOperations.count - 128) {
+            try? DoryMachineFileTransferStager.removeManagedStagingRoot(
+                operation.privateStagingRoot
+            )
+            guestFileExportOperations.removeValue(forKey: operationID)
         }
     }
 

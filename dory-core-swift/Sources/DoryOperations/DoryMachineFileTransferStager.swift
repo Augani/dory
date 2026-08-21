@@ -85,6 +85,7 @@ public enum DoryMachineFileTransferStager {
     private static let stagingDirectoryName = "dory-machine-transfer-imports"
     private static let clientStagePrefix = "transfer-"
     private static let daemonStagePrefix = "owned-"
+    private static let daemonExportPrefix = "export-"
 
     public static var defaultStagingDirectory: URL {
         URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
@@ -304,6 +305,33 @@ public enum DoryMachineFileTransferStager {
         return claimedPath
     }
 
+    /// Reserves a syntactically exact, currently absent output path for one daemon-owned guest
+    /// export. The Rust pull engine creates the leaf with create-new semantics; this method owns
+    /// only the private parent namespace and never follows a caller-selected path.
+    package static func reserveDaemonExportRoot(
+        operationID: String,
+        ownerProcessID: pid_t = getpid()
+    ) throws -> String {
+        guard isValidOperationID(operationID), ownerProcessID > 0 else {
+            throw DoryMachineFileTransferStagingError.unsafeStagingDirectory
+        }
+        try ensurePrivateStagingDirectory()
+        let baseDescriptor = try openPrivateStagingDirectory()
+        defer { close(baseDescriptor) }
+        let name = daemonExportPrefix + String(ownerProcessID) + "-" + operationID
+        var info = stat()
+        guard fstatat(baseDescriptor, name, &info, AT_SYMLINK_NOFOLLOW) != 0,
+              errno == ENOENT else {
+            throw DoryMachineFileTransferStagingError.unsafeStagingDirectory
+        }
+        return defaultStagingDirectory.appendingPathComponent(name, isDirectory: true).path
+    }
+
+    package static func isDaemonExportRoot(_ path: String) -> Bool {
+        guard let root = managedRoot(path), root.kind == .export else { return false }
+        return isPrivateManagedRoot(root)
+    }
+
     /// Removes a syntactically exact managed handoff. Missing roots are already clean and succeed.
     package static func removeManagedStagingRoot(_ path: String) throws {
         guard managedRoot(path) != nil else {
@@ -319,6 +347,7 @@ public enum DoryMachineFileTransferStager {
               (status.st_mode & 0o077) == 0 else {
             throw DoryMachineFileTransferStagingError.unsafeStagingDirectory
         }
+        try makeManagedTreeRemovable(path)
         try FileManager.default.removeItem(atPath: path)
         let baseDescriptor = try openPrivateStagingDirectory()
         defer { close(baseDescriptor) }
@@ -345,6 +374,7 @@ public enum DoryMachineFileTransferStager {
     private enum ManagedStageKind {
         case client
         case daemon
+        case export
     }
 
     private struct ManagedStageRoot {
@@ -366,13 +396,21 @@ public enum DoryMachineFileTransferStager {
                   uuid.uuidString.lowercased() == suffix else { return nil }
             return ManagedStageRoot(name: name, kind: .client)
         }
-        guard daemonOwnerProcessID(name) != nil else { return nil }
-        return ManagedStageRoot(name: name, kind: .daemon)
+        if daemonOwnerProcessID(name, prefix: daemonStagePrefix) != nil {
+            return ManagedStageRoot(name: name, kind: .daemon)
+        }
+        guard daemonOwnerProcessID(name, prefix: daemonExportPrefix) != nil else { return nil }
+        return ManagedStageRoot(name: name, kind: .export)
     }
 
     private static func daemonOwnerProcessID(_ name: String) -> pid_t? {
-        guard name.hasPrefix(daemonStagePrefix) else { return nil }
-        let fields = name.dropFirst(daemonStagePrefix.count).split(separator: "-", maxSplits: 1)
+        daemonOwnerProcessID(name, prefix: daemonStagePrefix)
+            ?? daemonOwnerProcessID(name, prefix: daemonExportPrefix)
+    }
+
+    private static func daemonOwnerProcessID(_ name: String, prefix: String) -> pid_t? {
+        guard name.hasPrefix(prefix) else { return nil }
+        let fields = name.dropFirst(prefix.count).split(separator: "-", maxSplits: 1)
         guard fields.count == 2,
               let owner = pid_t(fields[0]), owner > 0,
               isValidOperationID(String(fields[1])) else { return nil }
@@ -411,6 +449,47 @@ public enum DoryMachineFileTransferStager {
             throw DoryMachineFileTransferStagingError.unsafeStagingDirectory
         }
         return descriptor
+    }
+
+    private static func ensurePrivateStagingDirectory() throws {
+        if mkdir(defaultStagingDirectory.path, mode_t(0o700)) != 0, errno != EEXIST {
+            throw DoryMachineFileTransferStagingError.io("directory creation", errno)
+        }
+        let descriptor = try openPrivateStagingDirectory()
+        defer { close(descriptor) }
+        guard fsync(descriptor) == 0 else {
+            throw DoryMachineFileTransferStagingError.io("directory sync", errno)
+        }
+    }
+
+    /// A completed pull preserves guest directory modes, including mode 000. Restore owner-only
+    /// traversal before recursive cleanup without ever following a symlink. The managed root is
+    /// already confined to Dory's private namespace and every child comes from a no-symlink pull.
+    private static func makeManagedTreeRemovable(_ path: String) throws {
+        var info = stat()
+        guard lstat(path, &info) == 0 else {
+            if errno == ENOENT { return }
+            throw DoryMachineFileTransferStagingError.io("cleanup stat", errno)
+        }
+        guard (info.st_mode & S_IFMT) == S_IFDIR else { return }
+        guard fchmodat(AT_FDCWD, path, mode_t(0o700), AT_SYMLINK_NOFOLLOW) == 0 else {
+            throw DoryMachineFileTransferStagingError.io("cleanup permissions", errno)
+        }
+        let children: [String]
+        do {
+            children = try FileManager.default.contentsOfDirectory(atPath: path)
+        } catch let error as CocoaError {
+            throw DoryMachineFileTransferStagingError.io(
+                "cleanup directory read",
+                Int32(error.errorCode)
+            )
+        }
+        for child in children {
+            try makeManagedTreeRemovable(
+                URL(fileURLWithPath: path, isDirectory: true)
+                    .appendingPathComponent(child, isDirectory: false).path
+            )
+        }
     }
 
     private static func processExists(_ processID: pid_t) -> Bool {

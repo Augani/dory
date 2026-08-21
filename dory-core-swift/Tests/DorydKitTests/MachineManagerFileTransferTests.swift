@@ -266,6 +266,122 @@ final class MachineManagerFileTransferTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: claimed))
     }
 
+    func testGuestExportStagesOnlyAHomeTreeAndRequiresExplicitDiscard() throws {
+        let fixture = try makeRunningFixture(tag: "guest-export")
+        defer { fixture.cleanup() }
+
+        let started = try fixture.manager.beginGuestFileExport(
+            id: "desktop",
+            guestSource: "/home/alice/Documents/project"
+        )
+        let completed = try waitForGuestExport(
+            manager: fixture.manager,
+            machineID: "desktop",
+            operationID: started.operationID
+        )
+
+        XCTAssertEqual(completed.phase, .completed)
+        XCTAssertEqual(completed.result?.exportID, started.operationID)
+        XCTAssertEqual(completed.result?.filesReceived, 1)
+        XCTAssertEqual(completed.result?.directoriesReceived, 0)
+        XCTAssertEqual(completed.result?.bytesReceived, 12)
+        XCTAssertEqual(completed.filesCompleted, 1)
+        XCTAssertEqual(completed.bytesCompleted, 12)
+        XCTAssertEqual(completed.fractionCompleted, 1)
+        XCTAssertNil(completed.currentPath)
+        let root = try XCTUnwrap(completed.result?.privateStagingRoot)
+        XCTAssertTrue(root.contains("/export-\(getpid())-"))
+        XCTAssertEqual(
+            try Data(contentsOf: URL(fileURLWithPath: root + "/guest-file.txt")),
+            Data("guest-export".utf8)
+        )
+        XCTAssertEqual(fixture.agent.pulls.map(\.remoteRoot), [
+            "/home/alice/Documents/project",
+        ])
+
+        try fixture.manager.discardGuestFileExport(
+            id: "desktop",
+            operationID: started.operationID
+        )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root))
+        XCTAssertThrowsError(try fixture.manager.guestFileExportStatus(
+            id: "desktop",
+            operationID: started.operationID
+        )) { error in
+            XCTAssertEqual(
+                error as? DoryMachineFileTransferError,
+                .unknownTransfer("desktop", started.operationID)
+            )
+        }
+    }
+
+    func testGuestExportRejectsTraversalAndPathsOutsideManagedHome() throws {
+        let fixture = try makeRunningFixture(tag: "guest-export-paths")
+        defer { fixture.cleanup() }
+
+        for path in [
+            "/etc",
+            "/home/alice/../bob/private",
+            "/home/alice-other/private",
+            "/home/alice/Documents/",
+        ] {
+            XCTAssertThrowsError(try fixture.manager.beginGuestFileExport(
+                id: "desktop",
+                guestSource: path
+            )) { error in
+                XCTAssertEqual(
+                    error as? DoryMachineFileTransferError,
+                    .invalidGuestSource("desktop")
+                )
+            }
+        }
+        XCTAssertTrue(fixture.agent.pulls.isEmpty)
+    }
+
+    func testGuestExportCancellationRemovesPrivateOutputAndFencesPush() throws {
+        let fixture = try makeRunningFixture(
+            tag: "guest-export-cancel",
+            blockControlledPull: true
+        )
+        defer {
+            fixture.agent.releaseControlledPull()
+            fixture.cleanup()
+        }
+
+        let started = try fixture.manager.beginGuestFileExport(
+            id: "desktop",
+            guestSource: "/home/alice/Documents"
+        )
+        XCTAssertTrue(fixture.agent.waitForControlledPull())
+        XCTAssertThrowsError(try fixture.manager.beginStagedFileTransfer(
+            id: "desktop",
+            privateStagingRoot: fixture.stagingRoot
+        )) { error in
+            XCTAssertEqual(
+                error as? DoryMachineFileTransferError,
+                .transferAlreadyInProgress("desktop")
+            )
+        }
+        let cancelling = try fixture.manager.cancelGuestFileExport(
+            id: "desktop",
+            operationID: started.operationID
+        )
+        XCTAssertEqual(cancelling.phase, .cancelling)
+        fixture.agent.releaseControlledPull()
+
+        let cancelled = try waitForGuestExport(
+            manager: fixture.manager,
+            machineID: "desktop",
+            operationID: started.operationID
+        )
+        XCTAssertEqual(cancelled.phase, .cancelled)
+        XCTAssertNil(cancelled.result)
+        XCTAssertNil(cancelled.failure)
+        let localRoot = try XCTUnwrap(fixture.agent.pulls.first?.localRoot)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: localRoot))
+        XCTAssertNil(fixture.manager.currentGuestFileExportStatus(id: "desktop"))
+    }
+
     private func waitForTransfer(
         manager: MachineManager,
         machineID: String,
@@ -288,10 +404,34 @@ final class MachineManagerFileTransferTests: XCTestCase {
         )
     }
 
+    private func waitForGuestExport(
+        manager: MachineManager,
+        machineID: String,
+        operationID: String
+    ) throws -> DoryMachineGuestFileExportOperationStatus {
+        let deadline = Date().addingTimeInterval(2)
+        while Date() < deadline {
+            let status = try manager.guestFileExportStatus(
+                id: machineID,
+                operationID: operationID
+            )
+            if status.phase.isTerminal {
+                return status
+            }
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        return try manager.guestFileExportStatus(
+            id: machineID,
+            operationID: operationID
+        )
+    }
+
     private func makeRunningFixture(
         tag: String,
         failPush: Bool = false,
-        blockControlledPush: Bool = false
+        blockControlledPush: Bool = false,
+        failPull: Bool = false,
+        blockControlledPull: Bool = false
     ) throws -> TransferFixture {
         let suffix = "\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let stateRoot = "/tmp/dory-machine-transfer-\(tag)-\(suffix)"
@@ -322,7 +462,9 @@ final class MachineManagerFileTransferTests: XCTestCase {
 
         let agent = TransferAgentRecorder(
             failPush: failPush,
-            blockControlledPush: blockControlledPush
+            blockControlledPush: blockControlledPush,
+            failPull: failPull,
+            blockControlledPull: blockControlledPull
         )
         let manager = MachineManager(
             configuration: MachineManagerConfiguration(
@@ -351,7 +493,7 @@ final class MachineManagerFileTransferTests: XCTestCase {
                 machineID: "desktop",
                 agentBuild: "dory-agent/transfer-test",
                 agentProtocolVersion: DoryCore.protocolVersion(),
-                agentCapabilities: ["exec", "sync-push"].map {
+                agentCapabilities: ["exec", "sync-pull", "sync-push"].map {
                     DoryAgentCapability(id: $0, version: 1)
                 },
                 agentSocketPath: "/run/dory-agent.sock"
@@ -397,18 +539,36 @@ private final class TransferAgentRecorder: @unchecked Sendable {
         var remoteRoot: String
     }
 
+    struct Pull: Sendable, Equatable {
+        var remoteRoot: String
+        var localRoot: String
+        var limits: DoryPullLimits
+    }
+
     private let lock = NSLock()
     private let failPush: Bool
     private let blockControlledPush: Bool
+    private let failPull: Bool
+    private let blockControlledPull: Bool
     private let controlledPushStarted = DispatchSemaphore(value: 0)
     private let controlledPushRelease = DispatchSemaphore(value: 0)
+    private let controlledPullStarted = DispatchSemaphore(value: 0)
+    private let controlledPullRelease = DispatchSemaphore(value: 0)
     private var recordedExecs: [Exec] = []
     private var recordedPushes: [Push] = []
     private var recordedControlledPushCount = 0
+    private var recordedPulls: [Pull] = []
 
-    init(failPush: Bool, blockControlledPush: Bool) {
+    init(
+        failPush: Bool,
+        blockControlledPush: Bool,
+        failPull: Bool,
+        blockControlledPull: Bool
+    ) {
         self.failPush = failPush
         self.blockControlledPush = blockControlledPush
+        self.failPull = failPull
+        self.blockControlledPull = blockControlledPull
     }
 
     var execs: [Exec] {
@@ -429,12 +589,26 @@ private final class TransferAgentRecorder: @unchecked Sendable {
         return recordedControlledPushCount
     }
 
+    var pulls: [Pull] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recordedPulls
+    }
+
     func waitForControlledPush() -> Bool {
         controlledPushStarted.wait(timeout: .now() + 2) == .success
     }
 
     func releaseControlledPush() {
         controlledPushRelease.signal()
+    }
+
+    func waitForControlledPull() -> Bool {
+        controlledPullStarted.wait(timeout: .now() + 2) == .success
+    }
+
+    func releaseControlledPull() {
+        controlledPullRelease.signal()
     }
 
     func connect(socketPath: String) throws -> any AgentControlClient {
@@ -483,6 +657,39 @@ private final class TransferAgentRecorder: @unchecked Sendable {
         }
         return try push(localRoot: localRoot, remoteRoot: remoteRoot)
     }
+
+    func pull(
+        remoteRoot: String,
+        localRoot: String,
+        limits: DoryPullLimits,
+        controlled: Bool
+    ) throws -> DoryPullStats {
+        lock.lock()
+        recordedPulls.append(Pull(
+            remoteRoot: remoteRoot,
+            localRoot: localRoot,
+            limits: limits
+        ))
+        lock.unlock()
+        if controlled {
+            controlledPullStarted.signal()
+        }
+        try FileManager.default.createDirectory(
+            atPath: localRoot,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        try Data("guest-export".utf8).write(
+            to: URL(fileURLWithPath: localRoot + "/guest-file.txt")
+        )
+        if controlled, blockControlledPull {
+            _ = controlledPullRelease.wait(timeout: .now() + 2)
+        }
+        if failPull {
+            throw AgentControlError.capabilityUnavailable("injected-pull-failure")
+        }
+        return DoryPullStats(filesReceived: 1, directoriesReceived: 0, bytesReceived: 12)
+    }
 }
 
 private final class TransferAgentClient: AgentControlClient, @unchecked Sendable {
@@ -518,6 +725,32 @@ private final class TransferAgentClient: AgentControlClient, @unchecked Sendable
             localRoot: localRoot,
             remoteRoot: remoteRoot,
             control: control
+        )
+    }
+    func pull(
+        remoteRoot: String,
+        localRoot: String,
+        limits: DoryPullLimits
+    ) throws -> DoryPullStats {
+        try owner.pull(
+            remoteRoot: remoteRoot,
+            localRoot: localRoot,
+            limits: limits,
+            controlled: false
+        )
+    }
+    func pull(
+        remoteRoot: String,
+        localRoot: String,
+        limits: DoryPullLimits,
+        control: DoryPullControl
+    ) throws -> DoryPullStats {
+        _ = control
+        return try owner.pull(
+            remoteRoot: remoteRoot,
+            localRoot: localRoot,
+            limits: limits,
+            controlled: true
         )
     }
     func exec(

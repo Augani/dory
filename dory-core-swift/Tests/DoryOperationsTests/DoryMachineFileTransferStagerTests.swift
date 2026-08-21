@@ -145,12 +145,46 @@ final class DoryMachineFileTransferStagerTests: XCTestCase {
         }
     }
 
+    func testDaemonExportReservationUsesOnlyThePrivateManagedNamespace() throws {
+        let operationID = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+        let root = try DoryMachineFileTransferStager.reserveDaemonExportRoot(
+            operationID: operationID
+        )
+        defer { try? DoryMachineFileTransferStager.removeManagedStagingRoot(root) }
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root))
+        XCTAssertTrue(root.hasSuffix("/export-\(getpid())-\(operationID)"))
+        try FileManager.default.createDirectory(
+            atPath: root,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        try FileManager.default.createDirectory(
+            atPath: root + "/mode-zero",
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        try Data("private".utf8).write(
+            to: URL(fileURLWithPath: root + "/mode-zero/file")
+        )
+        XCTAssertEqual(chmod(root + "/mode-zero", 0o000), 0)
+        XCTAssertTrue(DoryMachineFileTransferStager.isDaemonExportRoot(root))
+        XCTAssertFalse(DoryMachineFileTransferStager.isDaemonExportRoot(fixtureLikePath(operationID)))
+
+        try DoryMachineFileTransferStager.removeManagedStagingRoot(root)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root))
+    }
+
     private func permissions(_ path: String) throws -> mode_t {
         var info = stat()
         guard lstat(path, &info) == 0 else {
             throw DoryMachineFileTransferStagingError.io("test stat", errno)
         }
         return info.st_mode
+    }
+
+    private func fixtureLikePath(_ operationID: String) -> String {
+        "/tmp/export-\(getpid())-\(operationID)"
     }
 }
 

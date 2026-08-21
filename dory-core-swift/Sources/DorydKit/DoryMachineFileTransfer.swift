@@ -115,8 +115,10 @@ public struct DoryMachineFileTransferOperationStatus: Sendable, Equatable {
 
 public enum DoryMachineFileTransferError: Error, Sendable, Equatable, CustomStringConvertible {
     case invalidPrivateStagingRoot
+    case invalidGuestSource(String)
     case transferAlreadyInProgress(String)
     case unknownTransfer(String, String)
+    case exportNotComplete(String, String)
     case guestAccountUnavailable(String)
     case guestPreparationFailed(String)
     case transferFailed(String)
@@ -126,10 +128,14 @@ public enum DoryMachineFileTransferError: Error, Sendable, Equatable, CustomStri
         switch self {
         case .invalidPrivateStagingRoot:
             "file transfer staging root is invalid or not private"
+        case let .invalidGuestSource(machineID):
+            "guest file source is invalid for machine: \(machineID)"
         case let .transferAlreadyInProgress(machineID):
             "a file transfer is already in progress for machine: \(machineID)"
         case let .unknownTransfer(machineID, operationID):
             "unknown file transfer \(operationID) for machine: \(machineID)"
+        case let .exportNotComplete(machineID, operationID):
+            "guest file export \(operationID) is not complete for machine: \(machineID)"
         case let .guestAccountUnavailable(machineID):
             "managed guest account is unavailable for machine: \(machineID)"
         case let .guestPreparationFailed(machineID):
@@ -139,6 +145,90 @@ public enum DoryMachineFileTransferError: Error, Sendable, Equatable, CustomStri
         case let .guestFinalizationFailed(machineID):
             "could not finalize guest file ownership for machine: \(machineID)"
         }
+    }
+}
+
+/// A verified guest tree staged under a daemon-owned private root. The staging path is an opaque,
+/// short-lived handoff capability and is returned only for the exact completed operation.
+public struct DoryMachineGuestFileExportResult: Sendable, Equatable {
+    public var exportID: String
+    public var privateStagingRoot: String
+    public var filesReceived: UInt64
+    public var directoriesReceived: UInt64
+    public var bytesReceived: UInt64
+
+    public init(
+        exportID: String,
+        privateStagingRoot: String,
+        filesReceived: UInt64,
+        directoriesReceived: UInt64,
+        bytesReceived: UInt64
+    ) {
+        self.exportID = exportID
+        self.privateStagingRoot = privateStagingRoot
+        self.filesReceived = filesReceived
+        self.directoriesReceived = directoriesReceived
+        self.bytesReceived = bytesReceived
+    }
+}
+
+public struct DoryMachineGuestFileExportOperationStatus: Sendable, Equatable {
+    public var operationID: String
+    public var machineID: String
+    public var phase: DoryMachineFileTransferPhase
+    public var filesTotal: UInt64
+    public var filesCompleted: UInt64
+    public var bytesTotal: UInt64
+    public var bytesCompleted: UInt64
+    public var currentPath: String?
+    public var result: DoryMachineGuestFileExportResult?
+    public var failure: DoryMachineFileTransferFailure?
+
+    public init(
+        operationID: String,
+        machineID: String,
+        phase: DoryMachineFileTransferPhase,
+        filesTotal: UInt64,
+        filesCompleted: UInt64,
+        bytesTotal: UInt64,
+        bytesCompleted: UInt64,
+        currentPath: String?,
+        result: DoryMachineGuestFileExportResult?,
+        failure: DoryMachineFileTransferFailure?
+    ) {
+        self.operationID = operationID
+        self.machineID = machineID
+        self.phase = phase
+        self.filesTotal = filesTotal
+        self.filesCompleted = filesCompleted
+        self.bytesTotal = bytesTotal
+        self.bytesCompleted = bytesCompleted
+        self.currentPath = currentPath
+        self.result = result
+        self.failure = failure
+    }
+
+    public var fractionCompleted: Double {
+        if phase == .completed { return 1 }
+        if bytesTotal > 0 {
+            return min(1, Double(bytesCompleted) / Double(bytesTotal))
+        }
+        if filesTotal > 0 {
+            return min(1, Double(filesCompleted) / Double(filesTotal))
+        }
+        return 0
+    }
+}
+
+extension DoryMachineGuestFileExportResult {
+    init(exportID: String, privateStagingRoot: String, stats: DoryPullStats) {
+        self.init(
+            exportID: exportID,
+            privateStagingRoot: privateStagingRoot,
+            filesReceived: stats.filesReceived,
+            directoriesReceived: stats.directoriesReceived,
+            bytesReceived: stats.bytesReceived
+        )
     }
 }
 
@@ -270,12 +360,150 @@ final class MachineFileTransferOperation: @unchecked Sendable {
     }
 }
 
+final class MachineGuestFileExportOperation: @unchecked Sendable {
+    let operationID: String
+    let machineID: String
+    let privateStagingRoot: String
+    let control = DoryPullControl()
+
+    private let lock = NSLock()
+    private var phase: DoryMachineFileTransferPhase = .preparing
+    private var cancellationRequested = false
+    private var result: DoryMachineGuestFileExportResult?
+    private var failure: DoryMachineFileTransferFailure?
+    private var finishedAt: Date?
+
+    init(operationID: String, machineID: String, privateStagingRoot: String) {
+        self.operationID = operationID
+        self.machineID = machineID
+        self.privateStagingRoot = privateStagingRoot
+    }
+
+    var isCancellationRequested: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancellationRequested
+    }
+
+    var isTerminal: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return phase.isTerminal
+    }
+
+    var terminalDate: Date? {
+        lock.lock()
+        defer { lock.unlock() }
+        return finishedAt
+    }
+
+    func requestCancellation() {
+        lock.lock()
+        if !phase.isTerminal {
+            cancellationRequested = true
+            phase = .cancelling
+        }
+        lock.unlock()
+        control.cancel()
+    }
+
+    func setTransferring() {
+        lock.lock()
+        if !phase.isTerminal {
+            phase = cancellationRequested ? .cancelling : .transferring
+        }
+        lock.unlock()
+    }
+
+    func setFinalizing() {
+        lock.lock()
+        if !phase.isTerminal {
+            phase = cancellationRequested ? .cancelling : .finalizing
+        }
+        lock.unlock()
+    }
+
+    func complete(_ result: DoryMachineGuestFileExportResult) {
+        lock.lock()
+        self.result = result
+        phase = .completed
+        finishedAt = Date()
+        lock.unlock()
+    }
+
+    func cancel() {
+        lock.lock()
+        cancellationRequested = true
+        phase = .cancelled
+        finishedAt = Date()
+        lock.unlock()
+    }
+
+    func fail(_ failure: DoryMachineFileTransferFailure) {
+        lock.lock()
+        self.failure = failure
+        phase = .failed
+        finishedAt = Date()
+        lock.unlock()
+    }
+
+    func completedResult() -> DoryMachineGuestFileExportResult? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard phase == .completed else { return nil }
+        return result
+    }
+
+    func status() -> DoryMachineGuestFileExportOperationStatus {
+        let pullProgress = control.progress()
+        lock.lock()
+        defer { lock.unlock() }
+        let filesCompleted = result?.filesReceived ?? pullProgress.filesCompleted
+        let bytesCompleted = result?.bytesReceived ?? pullProgress.bytesCompleted
+        let visiblePhase: DoryMachineFileTransferPhase
+        if phase == .preparing || phase == .transferring || phase == .finalizing {
+            switch pullProgress.phase {
+            case .preparing:
+                visiblePhase = phase
+            case .transferring:
+                visiblePhase = .transferring
+            case .finalizing, .completed:
+                visiblePhase = .finalizing
+            case .cancelled:
+                visiblePhase = .cancelling
+            case .failed:
+                visiblePhase = phase
+            }
+        } else {
+            visiblePhase = phase
+        }
+        return DoryMachineGuestFileExportOperationStatus(
+            operationID: operationID,
+            machineID: machineID,
+            phase: visiblePhase,
+            filesTotal: max(pullProgress.filesTotal, result?.filesReceived ?? 0),
+            filesCompleted: filesCompleted,
+            bytesTotal: max(pullProgress.bytesTotal, result?.bytesReceived ?? 0),
+            bytesCompleted: bytesCompleted,
+            currentPath: visiblePhase.isTerminal ? nil : pullProgress.currentPath,
+            result: result,
+            failure: failure
+        )
+    }
+}
+
 enum DoryMachineFileTransferCancellation: Error {
     case cancelled
 }
 
 enum MachineFileTransferTerminalOutcome {
     case completed(DoryMachineFileTransferResult)
+    case cancelled
+    case failed(DoryMachineFileTransferFailure)
+}
+
+enum MachineGuestFileExportTerminalOutcome {
+    case completed(DoryMachineGuestFileExportResult)
     case cancelled
     case failed(DoryMachineFileTransferFailure)
 }
