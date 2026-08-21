@@ -284,6 +284,112 @@ public struct DoryPushStats: Sendable, Equatable {
     }
 }
 
+public enum DoryPushPhase: String, Sendable, Equatable, Hashable {
+    case preparing
+    case transferring
+    case finalizing
+    case completed
+    case cancelled
+    case failed
+
+    public var isTerminal: Bool {
+        switch self {
+        case .completed, .cancelled, .failed:
+            true
+        case .preparing, .transferring, .finalizing:
+            false
+        }
+    }
+}
+
+public struct DoryPushProgress: Sendable, Equatable, Hashable {
+    public var phase: DoryPushPhase
+    public var filesTotal: UInt64
+    public var filesCompleted: UInt64
+    public var bytesTotal: UInt64
+    public var bytesCompleted: UInt64
+    public var currentPath: String?
+
+    public init(
+        phase: DoryPushPhase,
+        filesTotal: UInt64,
+        filesCompleted: UInt64,
+        bytesTotal: UInt64,
+        bytesCompleted: UInt64,
+        currentPath: String?
+    ) {
+        self.phase = phase
+        self.filesTotal = filesTotal
+        self.filesCompleted = filesCompleted
+        self.bytesTotal = bytesTotal
+        self.bytesCompleted = bytesCompleted
+        self.currentPath = currentPath
+    }
+
+    /// A bounded best-effort fraction for display. Byte progress wins when content has a
+    /// measurable size; zero-byte transfers fall back to file progress.
+    public var fractionCompleted: Double {
+        if phase == .completed {
+            return 1
+        }
+        if bytesTotal > 0 {
+            return min(1, Double(bytesCompleted) / Double(bytesTotal))
+        }
+        if filesTotal > 0 {
+            return min(1, Double(filesCompleted) / Double(filesTotal))
+        }
+        return 0
+    }
+
+    fileprivate init(_ raw: PushProgressFfi) {
+        self.init(
+            phase: DoryPushPhase(raw.phase),
+            filesTotal: raw.filesTotal,
+            filesCompleted: raw.filesCompleted,
+            bytesTotal: raw.bytesTotal,
+            bytesCompleted: raw.bytesCompleted,
+            currentPath: raw.currentPath
+        )
+    }
+}
+
+/// Single-use control for one push. The same instance may be polled or cancelled from a thread
+/// other than the thread executing the push.
+public final class DoryPushControl: @unchecked Sendable {
+    fileprivate let raw: PushControl
+
+    public init() {
+        raw = newPushControl()
+    }
+
+    public func cancel() {
+        raw.cancel()
+    }
+
+    public func progress() -> DoryPushProgress {
+        DoryPushProgress(raw.progress())
+    }
+}
+
+private extension DoryPushPhase {
+    init(_ raw: PushPhaseFfi) {
+        switch raw {
+        case .preparing:
+            self = .preparing
+        case .transferring:
+            self = .transferring
+        case .finalizing:
+            self = .finalizing
+        case .completed:
+            self = .completed
+        case .cancelled:
+            self = .cancelled
+        case .failed:
+            self = .failed
+        }
+    }
+}
+
 public enum DoryRemoteHostKey: Sendable, Equatable, Hashable {
     case pinned(opensshPublicKey: String)
     case knownHosts(path: String, host: String, port: UInt16)
@@ -408,6 +514,25 @@ public final class DoryAgentControlHandle: @unchecked Sendable {
         )
     }
 
+    public func push(
+        localRoot: String,
+        remoteRoot: String,
+        control: DoryPushControl
+    ) throws -> DoryPushStats {
+        let raw = try withControl {
+            try $0.pushControlled(
+                localRoot: localRoot,
+                remoteRoot: remoteRoot,
+                control: control.raw
+            )
+        }
+        return DoryPushStats(
+            filesSent: raw.filesSent,
+            bytesSent: raw.bytesSent,
+            filesDeleted: raw.filesDeleted
+        )
+    }
+
     public func snapshotFreeze(receiptID: String) throws -> String {
         try withControl { try $0.snapshotFreeze(receiptId: receiptID) }
     }
@@ -515,6 +640,25 @@ public final class DoryRemoteAgentHandle: @unchecked Sendable {
 
     public func push(localRoot: String, remoteRoot: String) throws -> DoryPushStats {
         let raw = try withRemote { try $0.push(localRoot: localRoot, remoteRoot: remoteRoot) }
+        return DoryPushStats(
+            filesSent: raw.filesSent,
+            bytesSent: raw.bytesSent,
+            filesDeleted: raw.filesDeleted
+        )
+    }
+
+    public func push(
+        localRoot: String,
+        remoteRoot: String,
+        control: DoryPushControl
+    ) throws -> DoryPushStats {
+        let raw = try withRemote {
+            try $0.pushControlled(
+                localRoot: localRoot,
+                remoteRoot: remoteRoot,
+                control: control.raw
+            )
+        }
         return DoryPushStats(
             filesSent: raw.filesSent,
             bytesSent: raw.bytesSent,
