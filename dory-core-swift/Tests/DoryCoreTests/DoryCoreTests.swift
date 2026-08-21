@@ -64,4 +64,58 @@ final class DoryCoreTests: XCTestCase {
             1
         )
     }
+
+    func testPullControlStartsWithBoundedPreparingProgress() {
+        let control = DoryPullControl()
+
+        XCTAssertEqual(
+            control.progress(),
+            DoryPullProgress(
+                phase: .preparing,
+                filesTotal: 0,
+                filesCompleted: 0,
+                bytesTotal: 0,
+                bytesCompleted: 0,
+                currentPath: nil
+            )
+        )
+        XCTAssertFalse(control.progress().phase.isTerminal)
+        XCTAssertEqual(control.progress().fractionCompleted, 0)
+    }
+
+    func testPullProgressFractionPrefersBytesAndIsBounded() {
+        XCTAssertEqual(
+            DoryPullProgress(
+                phase: .transferring,
+                filesTotal: 4,
+                filesCompleted: 3,
+                bytesTotal: 100,
+                bytesCompleted: 25,
+                currentPath: "src/main.swift"
+            ).fractionCompleted,
+            0.25
+        )
+        XCTAssertEqual(
+            DoryPullProgress(
+                phase: .transferring,
+                filesTotal: 4,
+                filesCompleted: 5,
+                bytesTotal: 0,
+                bytesCompleted: 0,
+                currentPath: nil
+            ).fractionCompleted,
+            1
+        )
+        XCTAssertEqual(
+            DoryPullProgress(
+                phase: .completed,
+                filesTotal: 0,
+                filesCompleted: 0,
+                bytesTotal: 0,
+                bytesCompleted: 0,
+                currentPath: nil
+            ).fractionCompleted,
+            1
+        )
+    }
 }

@@ -10,12 +10,15 @@ use std::sync::Arc;
 
 use dory_proto::channels::PORT_CONTROL;
 use dory_proto::preamble::{write_preamble, Direction, Preamble};
-use dory_remote::{push, push_observed, AgentClient};
+use dory_remote::{
+    pull as pull_tree, pull_observed as pull_tree_observed, push, push_observed, AgentClient,
+    PullLimits,
+};
 use tokio::net::UnixStream;
 
 use crate::remote::{
-    exec_result, AgentCapabilityFfi, AgentInfoFfi, ExecEnvFfi, ExecResultFfi, PushControl,
-    PushStatsFfi, RemoteFfiError, TelemetryFfi,
+    exec_result, AgentCapabilityFfi, AgentInfoFfi, ExecEnvFfi, ExecResultFfi, PullControl,
+    PullStatsFfi, PushControl, PushStatsFfi, RemoteFfiError, TelemetryFfi,
 };
 
 #[derive(uniffi::Record)]
@@ -207,6 +210,65 @@ impl AgentControl {
         })
     }
 
+    /// Pull a guest tree into a new daemon-private host staging root. File bytes remain in Rust;
+    /// Swift supplies only roots and explicit resource bounds.
+    pub fn pull(
+        &self,
+        remote_root: String,
+        local_root: String,
+        max_files: u64,
+        max_directories: u64,
+        max_bytes: u64,
+    ) -> Result<PullStatsFfi, RemoteFfiError> {
+        let guard = self.runtime.lock().unwrap();
+        let runtime = guard.as_ref().ok_or_else(shutdown_error)?;
+        let stats = runtime.block_on(pull_tree(
+            &remote_root,
+            std::path::Path::new(&local_root),
+            &self.client,
+            PullLimits {
+                max_files,
+                max_directories,
+                max_bytes,
+            },
+        ))?;
+        Ok(PullStatsFfi {
+            files_received: stats.files_received,
+            directories_received: stats.directories_received,
+            bytes_received: stats.bytes_received,
+        })
+    }
+
+    pub fn pull_controlled(
+        &self,
+        remote_root: String,
+        local_root: String,
+        max_files: u64,
+        max_directories: u64,
+        max_bytes: u64,
+        control: Arc<PullControl>,
+    ) -> Result<PullStatsFfi, RemoteFfiError> {
+        control.claim()?;
+        let guard = self.runtime.lock().unwrap();
+        let runtime = guard.as_ref().ok_or_else(shutdown_error)?;
+        let stats = runtime.block_on(pull_tree_observed(
+            &remote_root,
+            std::path::Path::new(&local_root),
+            &self.client,
+            PullLimits {
+                max_files,
+                max_directories,
+                max_bytes,
+            },
+            control.as_ref(),
+        ))?;
+        Ok(PullStatsFfi {
+            files_received: stats.files_received,
+            directories_received: stats.directories_received,
+            bytes_received: stats.bytes_received,
+        })
+    }
+
     pub fn snapshot_freeze(&self, receipt_id: String) -> Result<String, RemoteFfiError> {
         snapshot_quiesce(
             self,
@@ -319,6 +381,7 @@ mod tests {
     use super::*;
     use dory_proto::preamble::read_preamble;
     use std::os::fd::IntoRawFd;
+    use std::os::unix::fs::PermissionsExt;
     use std::sync::mpsc;
     use tokio::net::UnixListener;
 
@@ -403,6 +466,7 @@ mod tests {
         let remote_root = transfer_root.join("remote");
         std::fs::create_dir_all(&local_root).unwrap();
         std::fs::create_dir_all(&remote_root).unwrap();
+        std::fs::set_permissions(&transfer_root, std::fs::Permissions::from_mode(0o700)).unwrap();
         std::fs::write(local_root.join("payload.txt"), b"agent-push").unwrap();
         let transfer_control = crate::remote::new_push_control();
         let stats = control
@@ -437,6 +501,51 @@ mod tests {
             .err()
             .expect("single-use control must reject reuse");
         assert!(reuse_error.to_string().contains("already used"));
+
+        let pulled_root = transfer_root.join("pulled");
+        let pull_control = crate::remote::new_pull_control();
+        let pulled = control
+            .pull_controlled(
+                remote_root.to_string_lossy().into_owned(),
+                pulled_root.to_string_lossy().into_owned(),
+                100,
+                100,
+                1024 * 1024,
+                pull_control.clone(),
+            )
+            .expect("pull");
+        assert_eq!(pulled.files_received, 1);
+        assert_eq!(pulled.directories_received, 0);
+        assert_eq!(pulled.bytes_received, 10);
+        assert_eq!(
+            std::fs::read(pulled_root.join("payload.txt")).unwrap(),
+            b"agent-push"
+        );
+        let pull_progress = pull_control.progress();
+        assert!(matches!(
+            pull_progress.phase,
+            crate::remote::PullPhaseFfi::Completed
+        ));
+        assert_eq!(pull_progress.files_total, 1);
+        assert_eq!(pull_progress.files_completed, 1);
+        assert_eq!(pull_progress.bytes_total, 10);
+        assert_eq!(pull_progress.bytes_completed, 10);
+        assert!(pull_progress.current_path.is_none());
+        let pull_reuse_error = control
+            .pull_controlled(
+                remote_root.to_string_lossy().into_owned(),
+                transfer_root
+                    .join("pulled-again")
+                    .to_string_lossy()
+                    .into_owned(),
+                100,
+                100,
+                1024 * 1024,
+                pull_control,
+            )
+            .err()
+            .expect("single-use pull control must reject reuse");
+        assert!(pull_reuse_error.to_string().contains("already used"));
         let _ = std::fs::remove_dir_all(&transfer_root);
         let _ = std::fs::remove_file(&path);
     }

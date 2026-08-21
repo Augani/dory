@@ -14,7 +14,8 @@ use std::sync::{Arc, Mutex};
 
 use dory_remote::{
     private_key_from_openssh, public_key_from_openssh, push, push_observed, AgentEndpoint,
-    HostKeyPolicy, PushObserver, PushPhase, PushProgress, SshAgent, SshConfig,
+    HostKeyPolicy, PullObserver, PullPhase, PullProgress, PushObserver, PushPhase, PushProgress,
+    SshAgent, SshConfig,
 };
 
 #[derive(Debug, uniffi::Error, thiserror::Error)]
@@ -83,6 +84,13 @@ pub struct PushStatsFfi {
     pub files_sent: u64,
     pub bytes_sent: u64,
     pub files_deleted: u64,
+}
+
+#[derive(uniffi::Record)]
+pub struct PullStatsFfi {
+    pub files_received: u64,
+    pub directories_received: u64,
+    pub bytes_received: u64,
 }
 
 #[derive(Debug, Clone, Copy, uniffi::Enum)]
@@ -175,6 +183,102 @@ impl From<PushProgress> for PushProgressFfi {
                 PushPhase::Completed => PushPhaseFfi::Completed,
                 PushPhase::Cancelled => PushPhaseFfi::Cancelled,
                 PushPhase::Failed => PushPhaseFfi::Failed,
+            },
+            files_total: progress.files_total,
+            files_completed: progress.files_completed,
+            bytes_total: progress.bytes_total,
+            bytes_completed: progress.bytes_completed,
+            current_path: progress.current_path,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, uniffi::Enum)]
+pub enum PullPhaseFfi {
+    Preparing,
+    Transferring,
+    Finalizing,
+    Completed,
+    Cancelled,
+    Failed,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct PullProgressFfi {
+    pub phase: PullPhaseFfi,
+    pub files_total: u64,
+    pub files_completed: u64,
+    pub bytes_total: u64,
+    pub bytes_completed: u64,
+    pub current_path: Option<String>,
+}
+
+/// Single-use cancellation/progress authority for one guest-to-host transfer.
+#[derive(uniffi::Object)]
+pub struct PullControl {
+    claimed: AtomicBool,
+    cancelled: AtomicBool,
+    progress: Mutex<PullProgress>,
+}
+
+#[uniffi::export]
+pub fn new_pull_control() -> Arc<PullControl> {
+    Arc::new(PullControl {
+        claimed: AtomicBool::new(false),
+        cancelled: AtomicBool::new(false),
+        progress: Mutex::new(PullProgress::default()),
+    })
+}
+
+#[uniffi::export]
+impl PullControl {
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Release);
+    }
+
+    pub fn progress(&self) -> PullProgressFfi {
+        self.progress
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+            .into()
+    }
+}
+
+impl PullControl {
+    pub(crate) fn claim(&self) -> Result<(), RemoteFfiError> {
+        self.claimed
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map(|_| ())
+            .map_err(|_| RemoteFfiError::Failed {
+                message: "file transfer control was already used".into(),
+            })
+    }
+}
+
+impl PullObserver for PullControl {
+    fn update(&self, progress: &PullProgress) {
+        *self
+            .progress
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = progress.clone();
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+}
+
+impl From<PullProgress> for PullProgressFfi {
+    fn from(progress: PullProgress) -> Self {
+        Self {
+            phase: match progress.phase {
+                PullPhase::Preparing => PullPhaseFfi::Preparing,
+                PullPhase::Transferring => PullPhaseFfi::Transferring,
+                PullPhase::Finalizing => PullPhaseFfi::Finalizing,
+                PullPhase::Completed => PullPhaseFfi::Completed,
+                PullPhase::Cancelled => PullPhaseFfi::Cancelled,
+                PullPhase::Failed => PullPhaseFfi::Failed,
             },
             files_total: progress.files_total,
             files_completed: progress.files_completed,

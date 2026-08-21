@@ -390,6 +390,137 @@ private extension DoryPushPhase {
     }
 }
 
+public struct DoryPullLimits: Sendable, Equatable, Hashable {
+    public var maxFiles: UInt64
+    public var maxDirectories: UInt64
+    public var maxBytes: UInt64
+
+    public init(
+        maxFiles: UInt64 = 100_000,
+        maxDirectories: UInt64 = 100_000,
+        maxBytes: UInt64 = 32 * 1024 * 1024 * 1024
+    ) {
+        self.maxFiles = maxFiles
+        self.maxDirectories = maxDirectories
+        self.maxBytes = maxBytes
+    }
+}
+
+public struct DoryPullStats: Sendable, Equatable {
+    public var filesReceived: UInt64
+    public var directoriesReceived: UInt64
+    public var bytesReceived: UInt64
+
+    public init(filesReceived: UInt64, directoriesReceived: UInt64, bytesReceived: UInt64) {
+        self.filesReceived = filesReceived
+        self.directoriesReceived = directoriesReceived
+        self.bytesReceived = bytesReceived
+    }
+
+    fileprivate init(_ raw: PullStatsFfi) {
+        self.init(
+            filesReceived: raw.filesReceived,
+            directoriesReceived: raw.directoriesReceived,
+            bytesReceived: raw.bytesReceived
+        )
+    }
+}
+
+public enum DoryPullPhase: String, Sendable, Equatable, Hashable {
+    case preparing
+    case transferring
+    case finalizing
+    case completed
+    case cancelled
+    case failed
+
+    public var isTerminal: Bool {
+        switch self {
+        case .completed, .cancelled, .failed:
+            true
+        case .preparing, .transferring, .finalizing:
+            false
+        }
+    }
+}
+
+public struct DoryPullProgress: Sendable, Equatable, Hashable {
+    public var phase: DoryPullPhase
+    public var filesTotal: UInt64
+    public var filesCompleted: UInt64
+    public var bytesTotal: UInt64
+    public var bytesCompleted: UInt64
+    public var currentPath: String?
+
+    public init(
+        phase: DoryPullPhase,
+        filesTotal: UInt64,
+        filesCompleted: UInt64,
+        bytesTotal: UInt64,
+        bytesCompleted: UInt64,
+        currentPath: String?
+    ) {
+        self.phase = phase
+        self.filesTotal = filesTotal
+        self.filesCompleted = filesCompleted
+        self.bytesTotal = bytesTotal
+        self.bytesCompleted = bytesCompleted
+        self.currentPath = currentPath
+    }
+
+    public var fractionCompleted: Double {
+        if phase == .completed { return 1 }
+        if bytesTotal > 0 {
+            return min(1, Double(bytesCompleted) / Double(bytesTotal))
+        }
+        if filesTotal > 0 {
+            return min(1, Double(filesCompleted) / Double(filesTotal))
+        }
+        return 0
+    }
+
+    fileprivate init(_ raw: PullProgressFfi) {
+        self.init(
+            phase: DoryPullPhase(raw.phase),
+            filesTotal: raw.filesTotal,
+            filesCompleted: raw.filesCompleted,
+            bytesTotal: raw.bytesTotal,
+            bytesCompleted: raw.bytesCompleted,
+            currentPath: raw.currentPath
+        )
+    }
+}
+
+/// Single-use cancellation/progress authority for one guest-to-host transfer.
+public final class DoryPullControl: @unchecked Sendable {
+    fileprivate let raw: PullControl
+
+    public init() {
+        raw = newPullControl()
+    }
+
+    public func cancel() {
+        raw.cancel()
+    }
+
+    public func progress() -> DoryPullProgress {
+        DoryPullProgress(raw.progress())
+    }
+}
+
+private extension DoryPullPhase {
+    init(_ raw: PullPhaseFfi) {
+        switch raw {
+        case .preparing: self = .preparing
+        case .transferring: self = .transferring
+        case .finalizing: self = .finalizing
+        case .completed: self = .completed
+        case .cancelled: self = .cancelled
+        case .failed: self = .failed
+        }
+    }
+}
+
 public enum DoryRemoteHostKey: Sendable, Equatable, Hashable {
     case pinned(opensshPublicKey: String)
     case knownHosts(path: String, host: String, port: UInt16)
@@ -531,6 +662,42 @@ public final class DoryAgentControlHandle: @unchecked Sendable {
             bytesSent: raw.bytesSent,
             filesDeleted: raw.filesDeleted
         )
+    }
+
+    public func pull(
+        remoteRoot: String,
+        localRoot: String,
+        limits: DoryPullLimits = DoryPullLimits()
+    ) throws -> DoryPullStats {
+        let raw = try withControl {
+            try $0.pull(
+                remoteRoot: remoteRoot,
+                localRoot: localRoot,
+                maxFiles: limits.maxFiles,
+                maxDirectories: limits.maxDirectories,
+                maxBytes: limits.maxBytes
+            )
+        }
+        return DoryPullStats(raw)
+    }
+
+    public func pull(
+        remoteRoot: String,
+        localRoot: String,
+        limits: DoryPullLimits = DoryPullLimits(),
+        control: DoryPullControl
+    ) throws -> DoryPullStats {
+        let raw = try withControl {
+            try $0.pullControlled(
+                remoteRoot: remoteRoot,
+                localRoot: localRoot,
+                maxFiles: limits.maxFiles,
+                maxDirectories: limits.maxDirectories,
+                maxBytes: limits.maxBytes,
+                control: control.raw
+            )
+        }
+        return DoryPullStats(raw)
     }
 
     public func snapshotFreeze(receiptID: String) throws -> String {
