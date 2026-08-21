@@ -244,6 +244,77 @@ struct DoryMachineConfigurationMigrationTests {
         #expect(try migrated.legacyConfiguration() == legacy)
     }
 
+    @Test("sandbox lifecycle and credential grants migrate without leaking compatibility keys")
+    func sandboxPolicyMigration() throws {
+        let legacy = DoryMachineConfiguration(
+            id: "sandbox",
+            kernelPath: "/managed/sandbox/kernel",
+            rootfsPath: "/managed/sandbox/rootfs.ext4",
+            environment: [
+                DoryVMSandboxPolicy.legacyMarkerEnvironmentKey: "1",
+                DoryVMSandboxPolicy.legacyExpirationEnvironmentKey: "1900000000",
+                DoryVMSandboxPolicy.legacySSHAgentEnvironmentKey: "1",
+                "PRESERVE": "yes",
+            ]
+        )
+        var migrated = try migrate(legacy, capacity: 32 * gibibyte)
+        #expect(migrated.definition.sandboxPolicy == DoryVMSandboxPolicy(
+            expiresAtUnixSeconds: 1_900_000_000,
+            sshAgentAccess: .granted
+        ))
+        #expect(try migrated.legacyConfiguration() == legacy)
+
+        let data = try JSONEncoder().encode(migrated.definition)
+        let json = try #require(String(data: data, encoding: .utf8))
+        #expect(!json.contains("DORY_SANDBOX"))
+        #expect(!json.contains("PRESERVE"))
+
+        migrated.definition.sandboxPolicy = DoryVMSandboxPolicy(
+            expiresAtUnixSeconds: 1_900_000_001,
+            sshAgentAccess: .denied,
+            profile: .agentReady,
+            tools: [.agentCore, .node],
+            baselineSnapshotID: "dory-agent-ready-baseline-v1"
+        )
+        let projected = try migrated.legacyConfiguration()
+        #expect(projected.environment[DoryVMSandboxPolicy.legacyMarkerEnvironmentKey] == "1")
+        #expect(projected.environment[DoryVMSandboxPolicy.legacyExpirationEnvironmentKey]
+            == "1900000001")
+        #expect(projected.environment[DoryVMSandboxPolicy.legacySSHAgentEnvironmentKey] == "0")
+        #expect(projected.environment[DoryVMSandboxPolicy.legacyProfileEnvironmentKey]
+            == "agent-ready")
+        #expect(projected.environment[DoryVMSandboxPolicy.legacyToolsEnvironmentKey]
+            == "agent-core,node")
+        #expect(projected.environment[DoryVMSandboxPolicy.legacyBaselineEnvironmentKey]
+            == "dory-agent-ready-baseline-v1")
+        #expect(projected.environment["PRESERVE"] == "yes")
+    }
+
+    @Test("malformed legacy sandbox metadata remains compatibility-only and byte-lossless")
+    func malformedSandboxPolicyDoesNotLeakOrErase() throws {
+        let legacy = DoryMachineConfiguration(
+            id: "malformed-sandbox",
+            kernelPath: "/managed/malformed-sandbox/kernel",
+            rootfsPath: "/managed/malformed-sandbox/rootfs.ext4",
+            environment: [
+                DoryVMSandboxPolicy.legacyMarkerEnvironmentKey: "1",
+                DoryVMSandboxPolicy.legacyExpirationEnvironmentKey: "tomorrow",
+                DoryVMSandboxPolicy.legacyToolsEnvironmentKey: "secret-tool",
+            ]
+        )
+        var migrated = try migrate(legacy, capacity: 32 * gibibyte)
+        #expect(migrated.definition.sandboxPolicy == nil)
+        #expect(try migrated.legacyConfiguration() == legacy)
+
+        migrated.definition.resources = DoryVMResourceRequest(
+            virtualCPUCount: 3,
+            memoryBytes: migrated.definition.resources.memoryBytes,
+            diskBytes: migrated.definition.resources.diskBytes
+        )
+        let projected = try migrated.legacyConfiguration()
+        #expect(projected.environment == legacy.environment)
+    }
+
     @Test("custom EFI ISO maps installer media and preserves blank-disk intent")
     func customEFIInstallerRoundTrip() throws {
         let legacy = DoryMachineConfiguration(

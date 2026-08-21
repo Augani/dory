@@ -237,6 +237,7 @@ public struct DoryMachineConfigurationMigrationResult: Sendable, Equatable {
         try applyGraphicsPolicy(to: &environment)
         try applyGuestIdentityIntent(to: &environment)
         try applyClipboardPolicy(to: &environment)
+        try applySandboxPolicy(to: &environment)
 
         let shares = try definition.shares.map { share -> DoryMachineShareConfiguration in
             guard let hostPath = hostPath(for: share.hostLocation) else {
@@ -382,6 +383,50 @@ public struct DoryMachineConfigurationMigrationResult: Sendable, Equatable {
         }
         environment[DoryDesktopClipboardPolicy.environmentKey]
             = definition.clipboardPolicy.text.rawValue
+    }
+
+    private func applySandboxPolicy(to environment: inout [String: String]) throws {
+        guard definition.sandboxPolicy != baselineDefinition.sandboxPolicy else { return }
+        guard definition.guest.family == .linux, !definition.display.enabled else {
+            throw DoryMachineConfigurationMigrationError.unsupportedDefinitionChange(
+                "sandboxPolicy"
+            )
+        }
+        let keys = [
+            DoryVMSandboxPolicy.legacyMarkerEnvironmentKey,
+            DoryVMSandboxPolicy.legacyExpirationEnvironmentKey,
+            DoryVMSandboxPolicy.legacySSHAgentEnvironmentKey,
+            DoryVMSandboxPolicy.legacyProfileEnvironmentKey,
+            DoryVMSandboxPolicy.legacyToolsEnvironmentKey,
+            DoryVMSandboxPolicy.legacyBaselineEnvironmentKey,
+        ]
+        guard let policy = definition.sandboxPolicy else {
+            for key in keys { environment.removeValue(forKey: key) }
+            return
+        }
+        guard policy.isValidForPersistence else {
+            throw DoryMachineConfigurationMigrationError.unsupportedDefinitionChange(
+                "sandboxPolicy"
+            )
+        }
+        environment[DoryVMSandboxPolicy.legacyMarkerEnvironmentKey] = "1"
+        environment[DoryVMSandboxPolicy.legacyExpirationEnvironmentKey]
+            = policy.expiresAtUnixSeconds.map(String.init) ?? "0"
+        environment[DoryVMSandboxPolicy.legacySSHAgentEnvironmentKey]
+            = policy.sshAgentAccess == .granted ? "1" : "0"
+        switch policy.profile {
+        case .standard:
+            environment.removeValue(forKey: DoryVMSandboxPolicy.legacyProfileEnvironmentKey)
+            environment.removeValue(forKey: DoryVMSandboxPolicy.legacyToolsEnvironmentKey)
+            environment.removeValue(forKey: DoryVMSandboxPolicy.legacyBaselineEnvironmentKey)
+        case .agentReady:
+            environment[DoryVMSandboxPolicy.legacyProfileEnvironmentKey]
+                = DoryVMSandboxProfile.agentReady.rawValue
+            environment[DoryVMSandboxPolicy.legacyToolsEnvironmentKey]
+                = policy.tools.map(\.rawValue).joined(separator: ",")
+            environment[DoryVMSandboxPolicy.legacyBaselineEnvironmentKey]
+                = policy.baselineSnapshotID
+        }
     }
 
     private static func assignIfChanged(
@@ -596,6 +641,9 @@ public enum DoryMachineConfigurationMigrationBridge {
         } else {
             clipboardPolicy = .disabled
         }
+        let sandboxPolicy = DoryVMSandboxPolicy.legacyEnvironment(
+            configuration.environment
+        )
         let acceleratedBoot = bootContract == .managedDirectKernel
             || bootContract == .efiInstalledDirectBoot
         let backendPreference: DoryVMBackendPreference
@@ -650,6 +698,7 @@ public enum DoryMachineConfigurationMigrationBridge {
                 : [.clockSynchronization, .gracefulShutdown],
             guestIdentityIntent: guestIdentityIntent,
             clipboardPolicy: clipboardPolicy,
+            sandboxPolicy: sandboxPolicy,
             lifecycle: facts.lifecycle
         )
         let issues = definition.validate()

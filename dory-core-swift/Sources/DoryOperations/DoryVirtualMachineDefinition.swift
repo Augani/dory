@@ -328,6 +328,8 @@ public enum DoryVMDefinitionValidationCode: String, Codable, Sendable, CaseItera
     case invalidGuestIdentityIntent = "invalid-guest-identity-intent"
     case guestIdentityIncompatibleWithGuest = "guest-identity-incompatible-with-guest"
     case clipboardPolicyRequiresIntegration = "clipboard-policy-requires-integration"
+    case invalidSandboxPolicy = "invalid-sandbox-policy"
+    case sandboxPolicyIncompatibleWithGuest = "sandbox-policy-incompatible-with-guest"
     case legacyInstallerWorkload = "legacy-installer-workload"
     case invalidLifecycleMetadata = "invalid-lifecycle-metadata"
 }
@@ -371,6 +373,7 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
     public var integrations: [DoryVMGuestIntegration]
     public var guestIdentityIntent: DoryVMGuestIdentityIntent
     public var clipboardPolicy: DoryVMClipboardPolicy
+    public var sandboxPolicy: DoryVMSandboxPolicy?
     public var lifecycle: DoryVMLifecycleMetadata
 
     public init(
@@ -392,6 +395,7 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
         integrations: [DoryVMGuestIntegration] = [],
         guestIdentityIntent: DoryVMGuestIdentityIntent = .unspecified,
         clipboardPolicy: DoryVMClipboardPolicy? = nil,
+        sandboxPolicy: DoryVMSandboxPolicy? = nil,
         lifecycle: DoryVMLifecycleMetadata
     ) {
         self.schemaVersion = schemaVersion
@@ -414,6 +418,7 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
         self.clipboardPolicy = clipboardPolicy
             ?? (integrations.contains(.clipboard)
                 ? .legacyDesktop(.bidirectional) : .disabled)
+        self.sandboxPolicy = sandboxPolicy
         self.lifecycle = lifecycle
     }
 
@@ -437,6 +442,7 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
         case integrations
         case guestIdentityIntent
         case clipboardPolicy
+        case sandboxPolicy
         case lifecycle
     }
 
@@ -554,6 +560,7 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
             guestIdentityIntent = .unspecified
             clipboardPolicy = integrations.contains(.clipboard)
                 ? .legacyDesktop(.bidirectional) : .disabled
+            sandboxPolicy = nil
             lifecycle = DoryVMLifecycleMetadata(
                 revision: legacyLifecycle.revision,
                 createdAt: legacyLifecycle.createdAt,
@@ -562,7 +569,7 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
             return
         }
 
-        guard persistedSchema == 2 || persistedSchema == Self.currentSchemaVersion else {
+        guard (2...Self.currentSchemaVersion).contains(persistedSchema) else {
             throw DecodingError.dataCorruptedError(
                 forKey: .schemaVersion,
                 in: container,
@@ -570,7 +577,7 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
             )
         }
         // Schema 2 is structurally migrated by the attachment decoder above. Its missing storage
-        // source becomes `.userProvided`; encoding always publishes current schema 3.
+        // source becomes `.userProvided`. Sandbox policy is an optional schema-3 extension.
         schemaVersion = Self.currentSchemaVersion
         virtualHardwareABIVersion = try container.decode(
             UInt16.self,
@@ -599,6 +606,10 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
             forKey: .clipboardPolicy
         ) ?? (integrations.contains(.clipboard)
             ? .legacyDesktop(.bidirectional) : .disabled)
+        sandboxPolicy = try container.decodeIfPresent(
+            DoryVMSandboxPolicy.self,
+            forKey: .sandboxPolicy
+        )
         lifecycle = try container.decode(DoryVMLifecycleMetadata.self, forKey: .lifecycle)
     }
 
@@ -622,6 +633,7 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
         try container.encode(integrations, forKey: .integrations)
         try container.encode(guestIdentityIntent, forKey: .guestIdentityIntent)
         try container.encode(clipboardPolicy, forKey: .clipboardPolicy)
+        try container.encodeIfPresent(sandboxPolicy, forKey: .sandboxPolicy)
         try container.encode(lifecycle, forKey: .lifecycle)
     }
 
@@ -675,6 +687,7 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
         validateIntegrations(into: &issues)
         validateGuestIdentityIntent(into: &issues)
         validateClipboardPolicy(into: &issues)
+        validateSandboxPolicy(into: &issues)
         validateLifecycle(into: &issues)
         return issues
     }
@@ -948,6 +961,21 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
             issues.append(issue(
                 .clipboardPolicyRequiresIntegration,
                 "clipboardPolicy"
+            ))
+        }
+    }
+
+    private func validateSandboxPolicy(
+        into issues: inout [DoryVMDefinitionValidationIssue]
+    ) {
+        guard let sandboxPolicy else { return }
+        if !sandboxPolicy.isValidForPersistence {
+            issues.append(issue(.invalidSandboxPolicy, "sandboxPolicy"))
+        }
+        if guest.family != .linux || display.enabled {
+            issues.append(issue(
+                .sandboxPolicyIncompatibleWithGuest,
+                "sandboxPolicy"
             ))
         }
     }

@@ -69,6 +69,53 @@ struct DoryVirtualMachineDefinitionTests {
         #expect(decoded.isValid)
     }
 
+    @Test("sandbox lifecycle and credential grants are closed bounded intent")
+    func sandboxPolicyValidation() throws {
+        var definition = linuxDefinition()
+        definition.workload = .server
+        definition.graphics = DoryVMGraphicsPolicy(acceptableLevels: [.none])
+        definition.display = .disabled
+        definition.audio = DoryVMAudioConfiguration(
+            inputEnabled: false,
+            outputEnabled: false
+        )
+        definition.input = DoryVMInputConfiguration(
+            keyboardEnabled: false,
+            pointerEnabled: false
+        )
+        definition.integrations = [.clockSynchronization, .gracefulShutdown]
+        definition.clipboardPolicy = .disabled
+        definition.sandboxPolicy = DoryVMSandboxPolicy(
+            expiresAtUnixSeconds: 1_900_000_000,
+            sshAgentAccess: .granted,
+            profile: .agentReady,
+            tools: [.agentCore, .node],
+            baselineSnapshotID: "dory-agent-ready-baseline-v1"
+        )
+        #expect(definition.isValid)
+
+        let encoded = try JSONEncoder().encode(definition)
+        let decoded = try JSONDecoder().decode(
+            DoryVirtualMachineDefinition.self,
+            from: encoded
+        )
+        #expect(decoded == definition)
+        #expect(decoded.sandboxPolicy?.sshAgentAccess == .granted)
+
+        definition.sandboxPolicy?.tools = [.node, .agentCore]
+        #expect(has(.invalidSandboxPolicy, "sandboxPolicy", in: definition.validate()))
+        definition.sandboxPolicy?.tools = [.agentCore, .node]
+        definition.sandboxPolicy?.baselineSnapshotID = "../host"
+        #expect(has(.invalidSandboxPolicy, "sandboxPolicy", in: definition.validate()))
+        definition.sandboxPolicy?.baselineSnapshotID = "dory-agent-ready-baseline-v1"
+        definition.display = DoryVMDisplayConfiguration()
+        #expect(has(
+            .sandboxPolicyIncompatibleWithGuest,
+            "sandboxPolicy",
+            in: definition.validate()
+        ))
+    }
+
     @Test("guest identity and clipboard policies are bounded typed intent")
     func guestIdentityAndClipboardValidation() {
         var definition = linuxDefinition()
