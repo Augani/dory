@@ -73,6 +73,59 @@ struct DorydClientTests {
         await #expect(throws: (any Error).self) {
             _ = try await client.machineTransfer("dev", staged: staged)
         }
+
+        service.setMachineTransferResponse(nil)
+        let started = try await client.machineTransferStart("dev", staged: staged)
+        #expect(started.machineID == "dev")
+        #expect(started.phase == .preparing)
+        #expect(started.fractionCompleted == 0)
+        #expect(service.latestMachineTransferStartRequest?["privateStagingRoot"] as? String == staged.rootPath)
+        #expect(service.latestMachineTransferStartRequest?["schema"] as? UInt16 == 2)
+
+        let completed = try await client.machineTransferStatus(
+            "dev",
+            operationID: started.operationID
+        )
+        #expect(completed.phase == .completed)
+        #expect(completed.phase.isTerminal)
+        #expect(completed.result?.transferID == started.operationID)
+        #expect(completed.result?.filesSent == 1)
+        #expect(completed.result?.bytesSent == 5)
+        #expect(completed.fractionCompleted == 1)
+
+        let cancelled = try await client.machineTransferCancel(
+            "dev",
+            operationID: started.operationID
+        )
+        #expect(cancelled.phase == .cancelled)
+        #expect(cancelled.result == nil)
+        #expect(cancelled.failure == nil)
+
+        let baseOperation = service.machineTransferOperationResponse(
+            operationID: started.operationID,
+            phase: "transferring"
+        )
+        for malformed in [
+            baseOperation.adding("unexpected", true),
+            baseOperation.adding("currentPath", "../host-secret"),
+            baseOperation.replacing("filesCompleted", with: UInt64(2)),
+            baseOperation
+                .replacing("phase", with: "failed")
+                .adding("failure", [
+                    "schema": UInt16(1),
+                    "code": "unknown-code",
+                    "message": "failed",
+                ] as NSDictionary),
+        ] {
+            service.setMachineTransferOperationResponse(malformed)
+            await #expect(throws: (any Error).self) {
+                _ = try await client.machineTransferStatus(
+                    "dev",
+                    operationID: started.operationID
+                )
+            }
+        }
+        service.setMachineTransferOperationResponse(nil)
     }
 
     @Test func legacyDesktopDefaultsAndTogglesRemainFieldLocalInTypedEdits() throws {
@@ -2698,7 +2751,9 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     private var _latestMachineUpdateConfig: NSDictionary?
     private var _latestMachineProvisionRecipe: String?
     private var _latestMachineTransferRequest: NSDictionary?
+    private var _latestMachineTransferStartRequest: NSDictionary?
     private var _machineTransferResponseOverride: NSDictionary?
+    private var _machineTransferOperationResponseOverride: NSDictionary?
     private var runtimeIdentityOverride: NSDictionary?
     private var artifactEvidenceOverride: NSDictionary?
     private var installedDesktopPayloadReceiptOverride: NSDictionary?
@@ -2716,9 +2771,26 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         return _latestMachineTransferRequest
     }
 
+    var latestMachineTransferStartRequest: NSDictionary? {
+        lock.lock(); defer { lock.unlock() }
+        return _latestMachineTransferStartRequest
+    }
+
     func setMachineTransferResponse(_ response: NSDictionary?) {
         lock.lock(); defer { lock.unlock() }
         _machineTransferResponseOverride = response
+    }
+
+    func setMachineTransferOperationResponse(_ response: NSDictionary?) {
+        lock.lock(); defer { lock.unlock() }
+        _machineTransferOperationResponseOverride = response
+    }
+
+    func machineTransferOperationResponse(
+        operationID: String,
+        phase: String
+    ) -> NSDictionary {
+        Self.transferOperationRow(operationID: operationID, phase: phase)
     }
     var engineStopCount: Int {
         lock.lock(); defer { lock.unlock() }
@@ -3241,6 +3313,61 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
             "filesSent": UInt64(1),
             "bytesSent": UInt64(5),
         ], "")
+    }
+
+    func machineTransferStart(
+        _ machineID: String,
+        request: NSDictionary,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        lock.lock()
+        _latestMachineTransferStartRequest = request
+        let override = _machineTransferOperationResponseOverride
+        lock.unlock()
+        reply(
+            true,
+            override ?? Self.transferOperationRow(
+                operationID: String(repeating: "b", count: 32),
+                machineID: machineID,
+                phase: "preparing"
+            ),
+            ""
+        )
+    }
+
+    func machineTransferStatus(
+        _ machineID: String,
+        operationID: String,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        lock.lock()
+        let override = _machineTransferOperationResponseOverride
+        lock.unlock()
+        reply(
+            true,
+            override ?? Self.transferOperationRow(
+                operationID: operationID,
+                machineID: machineID,
+                phase: "completed"
+            ),
+            ""
+        )
+    }
+
+    func machineTransferCancel(
+        _ machineID: String,
+        operationID: String,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        reply(
+            true,
+            Self.transferOperationRow(
+                operationID: operationID,
+                machineID: machineID,
+                phase: "cancelled"
+            ),
+            ""
+        )
     }
 
     func machineProvision(_ machineID: String, request: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void) {
@@ -3881,6 +4008,35 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         return value as? Int
     }
 
+    private static func transferOperationRow(
+        operationID: String,
+        machineID: String = "dev",
+        phase: String
+    ) -> NSDictionary {
+        var row: [String: Any] = [
+            "schema": UInt16(1),
+            "operationID": operationID,
+            "machineID": machineID,
+            "phase": phase,
+            "filesTotal": UInt64(phase == "completed" ? 1 : 0),
+            "filesCompleted": UInt64(phase == "completed" ? 1 : 0),
+            "bytesTotal": UInt64(phase == "completed" ? 5 : 0),
+            "bytesCompleted": UInt64(phase == "completed" ? 5 : 0),
+        ]
+        if phase == "completed" {
+            let destination = "/home/developer/Downloads/Dory Transfer " + operationID
+            row["guestDestination"] = destination
+            row["result"] = [
+                "schema": UInt16(1),
+                "transferID": operationID,
+                "guestDestination": destination,
+                "filesSent": UInt64(1),
+                "bytesSent": UInt64(5),
+            ] as NSDictionary
+        }
+        return row as NSDictionary
+    }
+
     private static func execRow(stdout: String = "", stderr: String = "", exitCode: Int32 = 0) -> NSDictionary {
         [
             "exitCode": exitCode,
@@ -3967,6 +4123,28 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
             dictionary["pathPrefix"] = route.pathPrefix
         }
         return dictionary as NSDictionary
+    }
+}
+
+private extension NSDictionary {
+    func adding(_ key: String, _ value: Any) -> NSDictionary {
+        var copy = stringKeyedCopy
+        copy[key] = value
+        return copy as NSDictionary
+    }
+
+    func replacing(_ key: String, with value: Any) -> NSDictionary {
+        adding(key, value)
+    }
+
+    var stringKeyedCopy: [String: Any] {
+        var copy: [String: Any] = [:]
+        for (key, value) in self {
+            if let key = key as? String {
+                copy[key] = value
+            }
+        }
+        return copy
     }
 }
 

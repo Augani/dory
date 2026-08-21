@@ -26,6 +26,9 @@ nonisolated protocol DorydControlXPC {
     func machineStats(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineExec(_ machineID: String, request: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineTransfer(_ machineID: String, request: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void)
+    func machineTransferStart(_ machineID: String, request: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void)
+    func machineTransferStatus(_ machineID: String, operationID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
+    func machineTransferCancel(_ machineID: String, operationID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineProvision(_ machineID: String, request: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineDesktopUpdate(_ machineID: String, request: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineSnapshot(_ machineID: String, request: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void)
@@ -991,6 +994,64 @@ nonisolated struct DorydMachineFileTransferResult: Sendable, Equatable {
     var bytesSent: UInt64
 }
 
+nonisolated enum DorydMachineFileTransferPhase: String, Sendable, Equatable {
+    case preparing
+    case transferring
+    case finalizing
+    case cancelling
+    case completed
+    case cancelled
+    case failed
+
+    var isTerminal: Bool {
+        switch self {
+        case .completed, .cancelled, .failed:
+            true
+        case .preparing, .transferring, .finalizing, .cancelling:
+            false
+        }
+    }
+}
+
+nonisolated enum DorydMachineFileTransferFailureCode: String, Sendable, Equatable {
+    case guestUnavailable = "guest-unavailable"
+    case guestPreparationFailed = "guest-preparation-failed"
+    case transferFailed = "transfer-failed"
+    case guestFinalizationFailed = "guest-finalization-failed"
+}
+
+nonisolated struct DorydMachineFileTransferFailure: Sendable, Equatable {
+    var code: DorydMachineFileTransferFailureCode
+    var message: String
+}
+
+nonisolated struct DorydMachineFileTransferOperation: Sendable, Equatable {
+    var operationID: String
+    var machineID: String
+    var phase: DorydMachineFileTransferPhase
+    var filesTotal: UInt64
+    var filesCompleted: UInt64
+    var bytesTotal: UInt64
+    var bytesCompleted: UInt64
+    var currentPath: String?
+    var guestDestination: String?
+    var result: DorydMachineFileTransferResult?
+    var failure: DorydMachineFileTransferFailure?
+
+    var fractionCompleted: Double {
+        if phase == .completed {
+            return 1
+        }
+        if bytesTotal > 0 {
+            return min(1, Double(bytesCompleted) / Double(bytesTotal))
+        }
+        if filesTotal > 0 {
+            return min(1, Double(filesCompleted) / Double(filesTotal))
+        }
+        return 0
+    }
+}
+
 nonisolated struct DorydRemoteMachineStatus: Sendable, Equatable {
     var id: String
     var state: String
@@ -1440,6 +1501,57 @@ nonisolated final class DorydClient: @unchecked Sendable {
                 return nil
             }
             return result
+        }
+    }
+
+    func machineTransferStart(
+        _ machineID: String,
+        staged: DoryStagedMachineFileTransfer
+    ) async throws -> DorydMachineFileTransferOperation {
+        let request: NSDictionary = [
+            "schema": UInt16(2),
+            "privateStagingRoot": staged.rootPath,
+        ]
+        return try await withTimeout(atLeast: 10).statusCommand { proxy, reply in
+            proxy.machineTransferStart(machineID, request: request, reply: reply)
+        } decode: { dictionary in
+            guard let operation = Self.machineFileTransferOperation(from: dictionary),
+                  operation.machineID == machineID else {
+                return nil
+            }
+            return operation
+        }
+    }
+
+    func machineTransferStatus(
+        _ machineID: String,
+        operationID: String
+    ) async throws -> DorydMachineFileTransferOperation {
+        try await withTimeout(atLeast: 10).statusCommand { proxy, reply in
+            proxy.machineTransferStatus(machineID, operationID: operationID, reply: reply)
+        } decode: { dictionary in
+            guard let operation = Self.machineFileTransferOperation(from: dictionary),
+                  operation.machineID == machineID,
+                  operation.operationID == operationID else {
+                return nil
+            }
+            return operation
+        }
+    }
+
+    func machineTransferCancel(
+        _ machineID: String,
+        operationID: String
+    ) async throws -> DorydMachineFileTransferOperation {
+        try await withTimeout(atLeast: 10).statusCommand { proxy, reply in
+            proxy.machineTransferCancel(machineID, operationID: operationID, reply: reply)
+        } decode: { dictionary in
+            guard let operation = Self.machineFileTransferOperation(from: dictionary),
+                  operation.machineID == machineID,
+                  operation.operationID == operationID else {
+                return nil
+            }
+            return operation
         }
     }
 
@@ -2660,6 +2772,153 @@ nonisolated final class DorydClient: @unchecked Sendable {
             filesSent: filesSent,
             bytesSent: bytesSent
         )
+    }
+
+    nonisolated private static func machineFileTransferOperation(
+        from dictionary: NSDictionary
+    ) -> DorydMachineFileTransferOperation? {
+        let requiredKeys: Set<String> = [
+            "schema", "operationID", "machineID", "phase", "filesTotal",
+            "filesCompleted", "bytesTotal", "bytesCompleted",
+        ]
+        let optionalKeys: Set<String> = [
+            "currentPath", "guestDestination", "result", "failure",
+        ]
+        guard let rawKeys = dictionary.allKeys as? [String],
+              rawKeys.count == dictionary.allKeys.count,
+              Set(rawKeys).isSuperset(of: requiredKeys),
+              Set(rawKeys).isSubset(of: requiredKeys.union(optionalKeys)),
+              strictUInt64(dictionary["schema"]) == 1,
+              let operationID = dictionary["operationID"] as? String,
+              isValidMachineTransferOperationID(operationID),
+              let machineID = dictionary["machineID"] as? String,
+              machineID.wholeMatch(of: /[A-Za-z0-9][A-Za-z0-9_.-]{0,62}/) != nil,
+              let rawPhase = dictionary["phase"] as? String,
+              let phase = DorydMachineFileTransferPhase(rawValue: rawPhase),
+              let filesTotal = strictUInt64(dictionary["filesTotal"]),
+              let filesCompleted = strictUInt64(dictionary["filesCompleted"]),
+              filesCompleted <= filesTotal,
+              let bytesTotal = strictUInt64(dictionary["bytesTotal"]),
+              let bytesCompleted = strictUInt64(dictionary["bytesCompleted"]),
+              bytesCompleted <= bytesTotal else {
+            return nil
+        }
+        let currentPath: String?
+        if let rawCurrentPath = dictionary["currentPath"] {
+            guard let value = rawCurrentPath as? String,
+                  isSafeMachineTransferRelativePath(value),
+                  !phase.isTerminal else {
+                return nil
+            }
+            currentPath = value
+        } else {
+            currentPath = nil
+        }
+        let guestDestination: String?
+        if let rawGuestDestination = dictionary["guestDestination"] {
+            guard let value = rawGuestDestination as? String,
+                  isValidMachineTransferDestination(value, transferID: operationID) else {
+                return nil
+            }
+            guestDestination = value
+        } else {
+            guestDestination = nil
+        }
+        let result: DorydMachineFileTransferResult?
+        if let rawResult = dictionary["result"] {
+            guard let row = rawResult as? NSDictionary,
+                  let decoded = machineFileTransferResult(from: row),
+                  decoded.transferID == operationID else {
+                return nil
+            }
+            result = decoded
+        } else {
+            result = nil
+        }
+        let failure: DorydMachineFileTransferFailure?
+        if let rawFailure = dictionary["failure"] {
+            guard let row = rawFailure as? NSDictionary,
+                  Set(row.allKeys.compactMap { $0 as? String })
+                    == ["schema", "code", "message"],
+                  row.allKeys.count == 3,
+                  strictUInt64(row["schema"]) == 1,
+                  let rawCode = row["code"] as? String,
+                  let code = DorydMachineFileTransferFailureCode(rawValue: rawCode),
+                  let message = row["message"] as? String,
+                  !message.isEmpty,
+                  message.utf8.count <= 1_024,
+                  !message.contains("\0") else {
+                return nil
+            }
+            failure = DorydMachineFileTransferFailure(code: code, message: message)
+        } else {
+            failure = nil
+        }
+
+        switch phase {
+        case .completed:
+            guard let result,
+                  failure == nil,
+                  guestDestination == result.guestDestination,
+                  filesTotal == result.filesSent,
+                  filesCompleted == result.filesSent,
+                  bytesTotal == result.bytesSent,
+                  bytesCompleted == result.bytesSent else {
+                return nil
+            }
+        case .failed:
+            guard failure != nil, result == nil else { return nil }
+        case .cancelled:
+            guard result == nil, failure == nil else { return nil }
+        case .preparing, .transferring, .finalizing, .cancelling:
+            guard result == nil, failure == nil else { return nil }
+        }
+        return DorydMachineFileTransferOperation(
+            operationID: operationID,
+            machineID: machineID,
+            phase: phase,
+            filesTotal: filesTotal,
+            filesCompleted: filesCompleted,
+            bytesTotal: bytesTotal,
+            bytesCompleted: bytesCompleted,
+            currentPath: currentPath,
+            guestDestination: guestDestination,
+            result: result,
+            failure: failure
+        )
+    }
+
+    nonisolated private static func isValidMachineTransferOperationID(_ value: String) -> Bool {
+        value.utf8.count == 32 && value.utf8.allSatisfy { byte in
+            (byte >= 48 && byte <= 57) || (byte >= 97 && byte <= 102)
+        }
+    }
+
+    nonisolated private static func isSafeMachineTransferRelativePath(_ value: String) -> Bool {
+        guard !value.isEmpty,
+              value.utf8.count <= 4_096,
+              !value.hasPrefix("/"),
+              !value.contains("\0") else {
+            return false
+        }
+        return value.split(separator: "/", omittingEmptySubsequences: false).allSatisfy {
+            !$0.isEmpty && $0 != "." && $0 != ".."
+        }
+    }
+
+    nonisolated private static func isValidMachineTransferDestination(
+        _ value: String,
+        transferID: String
+    ) -> Bool {
+        guard value.utf8.count <= 4_096, !value.contains("\0") else { return false }
+        let suffix = "/Downloads/Dory Transfer " + transferID
+        guard value.hasPrefix("/home/"), value.hasSuffix(suffix) else { return false }
+        let usernameStart = value.index(value.startIndex, offsetBy: "/home/".count)
+        let usernameEnd = value.index(value.endIndex, offsetBy: -suffix.count)
+        return usernameStart < usernameEnd
+            && DoryVMGuestAccountIntent.isValidUsername(
+                String(value[usernameStart..<usernameEnd])
+            )
     }
 
     nonisolated private static func remoteStatus(from dictionary: NSDictionary) -> DorydRemoteMachineStatus? {
