@@ -24,6 +24,7 @@ nonisolated protocol DorydControlXPC {
     func machineUpdate(_ machineID: String, config: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineDelete(_ machineID: String, reply: @escaping (Bool, String) -> Void)
     func machineList(reply: @escaping (NSArray, String) -> Void)
+    func machineEvents(_ afterSequence: UInt64, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineStats(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineExec(_ machineID: String, request: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineTransfer(_ machineID: String, request: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void)
@@ -903,6 +904,46 @@ nonisolated struct DorydDesktopUpdateResult: Sendable, Equatable {
     var snapshotID: String
     var status: DorydMachineStatus
     var restoredRunningState: Bool
+}
+
+nonisolated enum DorydMachineEventKind: String, Sendable, Equatable {
+    case updated
+    case removed
+}
+
+nonisolated struct DorydMachineEventStatus: Sendable, Equatable {
+    var machineID: String
+    var configurationRevision: String
+    var observedRevision: String
+    var state: String
+    var hasFailure: Bool
+    var memoryMB: UInt64
+    var cpuCount: Int
+    var displayMode: String
+    var bootMode: String
+    var installerMediaAttached: Bool
+    var shareCount: Int
+    var integrationHealth: String
+    var runtimeMode: String
+    var virtualHardwareABIVersion: UInt16
+    var planRevision: UInt64?
+    var planSHA256: String?
+    var backend: DoryVirtualizationBackendIdentity?
+    var savedStateSHA256: String?
+}
+
+nonisolated struct DorydMachineEvent: Sendable, Equatable {
+    var sequence: UInt64
+    var observedAtUnixMilliseconds: Int64
+    var machineID: String
+    var kind: DorydMachineEventKind
+    var status: DorydMachineEventStatus?
+}
+
+nonisolated struct DorydMachineEventBatch: Sendable, Equatable {
+    var headSequence: UInt64
+    var snapshotRequired: Bool
+    var events: [DorydMachineEvent]
 }
 
 nonisolated enum DorydMachineImportDisposition: String, Sendable, Equatable {
@@ -1969,6 +2010,14 @@ nonisolated final class DorydClient: @unchecked Sendable {
         }
     }
 
+    func machineEvents(afterSequence: UInt64) async throws -> DorydMachineEventBatch {
+        try await statusCommand { proxy, reply in
+            proxy.machineEvents(afterSequence, reply: reply)
+        } decode: {
+            Self.machineEventBatch(from: $0, afterSequence: afterSequence)
+        }
+    }
+
     func machineList() async throws -> [DorydMachineStatus] {
         try await call { proxy, finish in
             proxy.machineList { rows, error in
@@ -2990,6 +3039,188 @@ nonisolated final class DorydClient: @unchecked Sendable {
             restoredRunningState: restoredRunningState
         )
     }
+
+    nonisolated private static func machineEventBatch(
+        from dictionary: NSDictionary,
+        afterSequence: UInt64
+    ) -> DorydMachineEventBatch? {
+        guard let keys = dictionary.allKeys as? [String],
+              keys.count == 4,
+              Set(keys) == [
+                  "schemaVersion", "headSequence", "snapshotRequired", "events",
+              ],
+              uint16(dictionary["schemaVersion"]) == 1,
+              let headSequence = uint64(dictionary["headSequence"]),
+              let snapshotNumber = dictionary["snapshotRequired"] as? NSNumber,
+              CFGetTypeID(snapshotNumber) == CFBooleanGetTypeID(),
+              let rows = dictionary["events"] as? NSArray else {
+            return nil
+        }
+        var events: [DorydMachineEvent] = []
+        for rawRow in rows {
+            guard let row = rawRow as? NSDictionary,
+                  let event = machineEvent(from: row) else { return nil }
+            events.append(event)
+        }
+        let snapshotRequired = snapshotNumber.boolValue
+        guard events == events.sorted(by: { $0.sequence < $1.sequence }),
+              Set(events.map(\.sequence)).count == events.count else {
+            return nil
+        }
+        if snapshotRequired {
+            guard events.isEmpty else { return nil }
+        } else if events.isEmpty {
+            guard headSequence == afterSequence else { return nil }
+        } else {
+            guard afterSequence < UInt64.max,
+                  events.first?.sequence == afterSequence + 1,
+                  events.last?.sequence == headSequence,
+                  zip(events, events.dropFirst()).allSatisfy({ lhs, rhs in
+                      lhs.sequence < UInt64.max && lhs.sequence + 1 == rhs.sequence
+                  }) else {
+                return nil
+            }
+        }
+        return DorydMachineEventBatch(
+            headSequence: headSequence,
+            snapshotRequired: snapshotRequired,
+            events: events
+        )
+    }
+
+    nonisolated private static func machineEvent(
+        from dictionary: NSDictionary
+    ) -> DorydMachineEvent? {
+        let requiredKeys: Set<String> = [
+            "schemaVersion", "sequence", "observedAtUnixMilliseconds", "machineID",
+            "kind",
+        ]
+        guard let rawKeys = dictionary.allKeys as? [String] else { return nil }
+        let keys = Set(rawKeys)
+        guard rawKeys.count == keys.count,
+              requiredKeys.isSubset(of: keys),
+              keys.subtracting(requiredKeys).isSubset(of: ["status"]),
+              uint16(dictionary["schemaVersion"]) == 1,
+              let sequence = uint64(dictionary["sequence"]), sequence > 0,
+              let observedAt = int64(dictionary["observedAtUnixMilliseconds"]),
+              observedAt > 0,
+              let machineID = dictionary["machineID"] as? String,
+              machineID.isSafeMachineIdentifier,
+              let kindValue = dictionary["kind"] as? String,
+              let kind = DorydMachineEventKind(rawValue: kindValue) else {
+            return nil
+        }
+        let status = (dictionary["status"] as? NSDictionary).flatMap(
+            machineEventStatus(from:)
+        )
+        guard (kind == .updated && status?.machineID == machineID)
+                || (kind == .removed && dictionary["status"] == nil) else {
+            return nil
+        }
+        return DorydMachineEvent(
+            sequence: sequence,
+            observedAtUnixMilliseconds: observedAt,
+            machineID: machineID,
+            kind: kind,
+            status: status
+        )
+    }
+
+    nonisolated private static func machineEventStatus(
+        from dictionary: NSDictionary
+    ) -> DorydMachineEventStatus? {
+        let requiredKeys: Set<String> = [
+            "schemaVersion", "machineID", "configurationRevision", "observedRevision",
+            "state", "hasFailure", "memoryMB", "cpuCount", "displayMode", "bootMode",
+            "installerMediaAttached", "shareCount", "integrationHealth", "runtimeMode",
+            "virtualHardwareABIVersion",
+        ]
+        guard let rawKeys = dictionary.allKeys as? [String] else { return nil }
+        let keys = Set(rawKeys)
+        guard rawKeys.count == keys.count,
+              requiredKeys.isSubset(of: keys),
+              keys.subtracting(requiredKeys).isSubset(of: [
+                  "planRevision", "planSHA256", "backend", "savedStateSHA256",
+              ]),
+              uint16(dictionary["schemaVersion"]) == 1,
+              let machineID = dictionary["machineID"] as? String,
+              machineID.isSafeMachineIdentifier,
+              let configurationRevision = dictionary["configurationRevision"] as? String,
+              configurationRevision.isLowercaseSHA256,
+              let observedRevision = dictionary["observedRevision"] as? String,
+              observedRevision.isLowercaseSHA256,
+              let state = dictionary["state"] as? String,
+              Self.machineEventStates.contains(state),
+              let failureNumber = dictionary["hasFailure"] as? NSNumber,
+              CFGetTypeID(failureNumber) == CFBooleanGetTypeID(),
+              let memoryMB = uint64(dictionary["memoryMB"]), memoryMB > 0,
+              let cpuCount = int(dictionary["cpuCount"]), cpuCount > 0,
+              let displayMode = dictionary["displayMode"] as? String,
+              ["headless", "desktop"].contains(displayMode),
+              let bootMode = dictionary["bootMode"] as? String,
+              ["linux-kernel", "efi"].contains(bootMode),
+              let installerNumber = dictionary["installerMediaAttached"] as? NSNumber,
+              CFGetTypeID(installerNumber) == CFBooleanGetTypeID(),
+              let shareCount = int(dictionary["shareCount"]), shareCount >= 0,
+              let integrationHealth = dictionary["integrationHealth"] as? String,
+              Self.machineIntegrationHealthStates.contains(integrationHealth),
+              let runtimeMode = dictionary["runtimeMode"] as? String,
+              Self.machineRuntimeModes.contains(runtimeMode),
+              let abi = uint16(dictionary["virtualHardwareABIVersion"]), abi > 0 else {
+            return nil
+        }
+        let planRevision = dictionary["planRevision"].flatMap { uint64($0) }
+        let planSHA256 = dictionary["planSHA256"] as? String
+        let backend = (dictionary["backend"] as? String).flatMap(
+            DoryVirtualizationBackendIdentity.init(rawValue:)
+        )
+        let savedStateSHA256 = dictionary["savedStateSHA256"] as? String
+        guard (dictionary["planRevision"] == nil) == (planRevision == nil),
+              (dictionary["planSHA256"] == nil)
+                || planSHA256?.isLowercaseSHA256 == true,
+              (dictionary["backend"] == nil) == (backend == nil),
+              (dictionary["savedStateSHA256"] == nil)
+                || savedStateSHA256?.isLowercaseSHA256 == true else {
+            return nil
+        }
+        if runtimeMode == "resolved-plan" {
+            guard planRevision.map({ $0 > 0 }) == true,
+                  planSHA256 != nil,
+                  backend != nil else { return nil }
+        } else {
+            guard planRevision == nil, planSHA256 == nil, backend == nil else { return nil }
+        }
+        return DorydMachineEventStatus(
+            machineID: machineID,
+            configurationRevision: configurationRevision,
+            observedRevision: observedRevision,
+            state: state,
+            hasFailure: failureNumber.boolValue,
+            memoryMB: memoryMB,
+            cpuCount: cpuCount,
+            displayMode: displayMode,
+            bootMode: bootMode,
+            installerMediaAttached: installerNumber.boolValue,
+            shareCount: shareCount,
+            integrationHealth: integrationHealth,
+            runtimeMode: runtimeMode,
+            virtualHardwareABIVersion: abi,
+            planRevision: planRevision,
+            planSHA256: planSHA256,
+            backend: backend,
+            savedStateSHA256: savedStateSHA256
+        )
+    }
+
+    nonisolated private static let machineEventStates: Set<String> = [
+        "created", "starting", "running", "paused", "suspended", "stopped", "failed",
+    ]
+    nonisolated private static let machineIntegrationHealthStates: Set<String> = [
+        "inactive", "missing-tools", "incompatible", "degraded", "compatibility", "healthy",
+    ]
+    nonisolated private static let machineRuntimeModes: Set<String> = [
+        "legacy-compatibility", "resolved-plan", "requires-replanning",
+    ]
 
     nonisolated private static func machineImportAssessment(
         from dictionary: NSDictionary

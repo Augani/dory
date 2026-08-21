@@ -11,6 +11,7 @@ public final class DorydService: NSObject, DorydControl {
     private let productionPlanningController:
         (any DoryDaemonVirtualMachineProductionPlanningControlling)?
     private let machineImportEnvironment: DoryMachineImportEnvironment
+    private let machineEventStore: DoryMachineEventStore?
     private let machineBackupScheduler: MachineBackupScheduler?
     private let remoteManager: RemoteMachineManager?
     private let networkingController: NetworkingController?
@@ -23,6 +24,7 @@ public final class DorydService: NSObject, DorydControl {
     private let healthReporter: HealthReporter
     private let incidentWriter: IncidentWriter?
     private let runtimeModeLock = NSLock()
+    private let machineEventQueryLock = NSLock()
 
     public init(
         socketPath: String,
@@ -50,6 +52,9 @@ public final class DorydService: NSObject, DorydControl {
         self.machineManager = machineManager
         self.productionPlanningController = productionPlanningController
         self.machineImportEnvironment = machineImportEnvironment
+        self.machineEventStore = machineManager.map {
+            DoryMachineEventStore(root: $0.managedStateDirectory)
+        }
         self.machineBackupScheduler = machineBackupScheduler
         self.remoteManager = remoteManager
         self.networkingController = networkingController
@@ -388,6 +393,27 @@ public final class DorydService: NSObject, DorydControl {
             return
         }
         reply(machineManager.list().map(\.xpcDictionary) as NSArray, "")
+    }
+
+    public func machineEvents(
+        _ afterSequence: UInt64,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        guard let machineManager, let machineEventStore else {
+            reply(false, [:], "machine event stream is not configured")
+            return
+        }
+        machineEventQueryLock.lock()
+        defer { machineEventQueryLock.unlock() }
+        do {
+            let batch = try machineEventStore.reconcile(
+                statuses: machineManager.list(),
+                afterSequence: afterSequence
+            )
+            reply(true, batch.xpcDictionary, "")
+        } catch {
+            reply(false, [:], "machine event stream is unavailable: \(error)")
+        }
     }
 
     public func machineStats(
@@ -2270,6 +2296,58 @@ private extension DoryMachineImportAssessment {
             },
         ]
         if let sourceBackend { dictionary["sourceBackend"] = sourceBackend.rawValue }
+        return dictionary as NSDictionary
+    }
+}
+
+private extension DoryMachineEventBatch {
+    var xpcDictionary: NSDictionary {
+        [
+            "schemaVersion": schemaVersion,
+            "headSequence": headSequence,
+            "snapshotRequired": snapshotRequired,
+            "events": events.map(\.xpcDictionary),
+        ]
+    }
+}
+
+private extension DoryMachineEvent {
+    var xpcDictionary: NSDictionary {
+        var dictionary: [String: Any] = [
+            "schemaVersion": schemaVersion,
+            "sequence": sequence,
+            "observedAtUnixMilliseconds": observedAtUnixMilliseconds,
+            "machineID": machineID,
+            "kind": kind.rawValue,
+        ]
+        if let status { dictionary["status"] = status.xpcDictionary }
+        return dictionary as NSDictionary
+    }
+}
+
+private extension DoryMachineEventStatus {
+    var xpcDictionary: NSDictionary {
+        var dictionary: [String: Any] = [
+            "schemaVersion": schemaVersion,
+            "machineID": machineID,
+            "configurationRevision": configurationRevision,
+            "observedRevision": observedRevision,
+            "state": state,
+            "hasFailure": hasFailure,
+            "memoryMB": memoryMB,
+            "cpuCount": cpuCount,
+            "displayMode": displayMode,
+            "bootMode": bootMode,
+            "installerMediaAttached": installerMediaAttached,
+            "shareCount": shareCount,
+            "integrationHealth": integrationHealth,
+            "runtimeMode": runtimeMode,
+            "virtualHardwareABIVersion": virtualHardwareABIVersion,
+        ]
+        if let planRevision { dictionary["planRevision"] = planRevision }
+        if let planSHA256 { dictionary["planSHA256"] = planSHA256 }
+        if let backend { dictionary["backend"] = backend }
+        if let savedStateSHA256 { dictionary["savedStateSHA256"] = savedStateSHA256 }
         return dictionary as NSDictionary
     }
 }

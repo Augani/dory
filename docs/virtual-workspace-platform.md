@@ -202,6 +202,16 @@ Control-plane responsibilities:
 - authorize access to files selected through the app and materialize security-scoped bookmarks;
 - refuse unsupported or unqualified combinations rather than applying hidden workarounds.
 
+The current Linux bridge publishes this status boundary through
+[`DoryMachineEventStore`](../dory-core-swift/Sources/DorydKit/DoryMachineEventStream.swift). The
+daemon reconciles immutable, secret-free machine projections into an owner-only, fsync-durable,
+bounded journal with a cross-process monotonic sequence. A zero, future, or expired cursor requests
+an exact machine-list snapshot instead of returning a partial history. Configuration changes are
+tracked by a digest of file identity rather than configuration contents; observed agent, address,
+socket-availability, and balloon changes use a separate non-secret revision digest. The app advances
+its cursor only after a required snapshot succeeds and falls back to the existing list call when
+talking to an older daemon or when event evidence is malformed.
+
 [`MachineManager`](../dory-core-swift/Sources/DorydKit/MachineManager.swift) becomes the migration
 host for a `WorkspaceCoordinator`, `WorkspaceRepository`, `OperationJournal`, and
 `BackendRegistry`. Its existing persistence, helper supervision, readiness handoff, snapshot logic,

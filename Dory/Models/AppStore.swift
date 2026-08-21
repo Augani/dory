@@ -5112,6 +5112,7 @@ final class AppStore {
     }
 
     private(set) var busyMachines: Set<String> = []
+    @ObservationIgnored private var machineEventSequence: UInt64 = 0
     private(set) var machineFileTransfers: [String: DorydMachineFileTransferOperation] = [:]
     private(set) var machineGuestFileExports: [String: DorydMachineGuestFileExportOperation] = [:]
     private var recoveringMachineFileTransfers: Set<String> = []
@@ -5135,20 +5136,51 @@ final class AppStore {
     var machineCreated: Machine?
 
     func loadMachines() {
-        guard runtimeOwnedByDoryd else { machines = []; return }
-        Task { await refreshMachines() }
+        guard runtimeOwnedByDoryd else {
+            machineEventSequence = 0
+            machines = []
+            return
+        }
+        Task { await refreshMachines(useEventCursor: true) }
     }
 
     @discardableResult
-    private func refreshMachines() async -> [Machine] {
+    private func refreshMachines(useEventCursor: Bool = false) async -> [Machine] {
         guard runtimeOwnedByDoryd else {
+            machineEventSequence = 0
             machines = []
             dns.replaceHostIPs([:])
             return []
         }
+        var eventBatch: DorydMachineEventBatch?
+        var requiresMachineSnapshot = true
+        let requestedEventSequence = machineEventSequence
+        if useEventCursor {
+            eventBatch = try? await dorydClient.machineEvents(
+                afterSequence: requestedEventSequence
+            )
+            if let eventBatch {
+                requiresMachineSnapshot = eventBatch.snapshotRequired
+                    || !eventBatch.events.isEmpty
+                if !requiresMachineSnapshot {
+                    advanceMachineEventSequence(
+                        eventBatch.headSequence,
+                        requestedSequence: requestedEventSequence
+                    )
+                }
+            }
+        }
         do {
-            machines = try await dorydClient.machineList().map {
-                Self.machine(fromDoryd: $0, domainSuffix: domainSuffix)
+            if requiresMachineSnapshot {
+                machines = try await dorydClient.machineList().map {
+                    Self.machine(fromDoryd: $0, domainSuffix: domainSuffix)
+                }
+                if let eventBatch {
+                    advanceMachineEventSequence(
+                        eventBatch.headSequence,
+                        requestedSequence: requestedEventSequence
+                    )
+                }
             }
             for machine in machines where machine.status == .running {
                 Task { [weak self] in
@@ -5167,6 +5199,19 @@ final class AppStore {
             actionError = "doryd machine list failed: \(error)"
             machines = []
             return []
+        }
+    }
+
+    private func advanceMachineEventSequence(
+        _ headSequence: UInt64,
+        requestedSequence: UInt64
+    ) {
+        // Async refreshes can overlap at suspension points. Never let an older response move a
+        // newer cursor backwards; allow a daemon-reset snapshot to lower only the cursor that made
+        // that exact request.
+        if machineEventSequence == requestedSequence
+            || headSequence > machineEventSequence {
+            machineEventSequence = headSequence
         }
     }
 

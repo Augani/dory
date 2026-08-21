@@ -1089,6 +1089,85 @@ final class DorydServiceTests: XCTestCase {
         wait(for: [statusReply], timeout: 5)
     }
 
+    func testMachineEventsOverXPCAreOrderedDurableAndSecretFree() throws {
+        let base = "/tmp/doryd-service-events-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: base,
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: false
+        ))
+        defer {
+            try? manager.delete(id: "dev")
+            try? FileManager.default.removeItem(atPath: base)
+        }
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "dev",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath,
+            environment: ["TOKEN": "opaque-secret"]
+        ))
+        let service = DorydService(
+            socketPath: "/tmp/doryd-test.sock",
+            machineManager: manager
+        )
+        let listener = makeAnonymousListener(service: service)
+        listener.resume()
+        defer { listener.invalidate() }
+        let connection = NSXPCConnection(listenerEndpoint: listener.endpoint)
+        connection.remoteObjectInterface = NSXPCInterface(with: DorydControl.self)
+        connection.resume()
+        defer { connection.invalidate() }
+        let proxy = try XCTUnwrap(connection.remoteObjectProxy as? DorydControl)
+
+        var head: UInt64 = 0
+        let initial = expectation(description: "initial machineEvents reply")
+        proxy.machineEvents(0) { ok, body, message in
+            XCTAssertTrue(ok, message)
+            XCTAssertEqual(body["schemaVersion"] as? Int, 1)
+            XCTAssertEqual(body["snapshotRequired"] as? Bool, true)
+            XCTAssertEqual((body["events"] as? NSArray)?.count, 0)
+            head = (body["headSequence"] as? NSNumber)?.uint64Value ?? 0
+            XCTAssertEqual(head, 1)
+            initial.fulfill()
+        }
+        wait(for: [initial], timeout: 5)
+
+        _ = try manager.start(id: "dev")
+        let running = expectation(description: "running machineEvents reply")
+        proxy.machineEvents(head) { ok, body, message in
+            XCTAssertTrue(ok, message)
+            XCTAssertEqual(body["snapshotRequired"] as? Bool, false)
+            let rows = body["events"] as? [NSDictionary]
+            XCTAssertEqual(rows?.count, 1)
+            XCTAssertEqual(rows?.first?["sequence"] as? Int, 2)
+            XCTAssertEqual(rows?.first?["kind"] as? String, "updated")
+            XCTAssertEqual(rows?.first?["machineID"] as? String, "dev")
+            let status = rows?.first?["status"] as? NSDictionary
+            XCTAssertEqual(status?["state"] as? String, "running")
+            XCTAssertNil(status?["environment"])
+            XCTAssertNil(status?["pid"])
+            XCTAssertFalse(body.description.contains("opaque-secret"))
+            head = (body["headSequence"] as? NSNumber)?.uint64Value ?? 0
+            running.fulfill()
+        }
+        wait(for: [running], timeout: 5)
+
+        _ = try manager.stop(id: "dev")
+        try manager.delete(id: "dev")
+        let removed = expectation(description: "removed machineEvents reply")
+        proxy.machineEvents(head) { ok, body, message in
+            XCTAssertTrue(ok, message)
+            let rows = body["events"] as? [NSDictionary]
+            XCTAssertEqual(rows?.count, 1)
+            XCTAssertEqual(rows?.first?["kind"] as? String, "removed")
+            XCTAssertNil(rows?.first?["status"])
+            removed.fulfill()
+        }
+        wait(for: [removed], timeout: 5)
+    }
+
     func testMachineLifecycleOverXPC() throws {
         let base = "/tmp/doryd-service-machine-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let share = "\(base)-share"

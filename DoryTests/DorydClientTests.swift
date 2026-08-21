@@ -620,6 +620,118 @@ struct DorydClientTests {
     }
 
     @MainActor
+    @Test func machineEventCursorRequiresExactOrderedSafeEvidence() async throws {
+        let listener = NSXPCListener.anonymous()
+        let service = FakeDorydService()
+        let delegate = FakeDorydListenerDelegate(service: service)
+        listener.delegate = delegate
+        listener.resume()
+        defer { listener.invalidate() }
+        let client = DorydClient(endpoint: listener.endpoint)
+
+        let valid = FakeDorydService.machineEventBatchRow()
+        service.setMachineEventBatch(valid)
+        let batch = try await client.machineEvents(afterSequence: 4)
+        #expect(batch.headSequence == 5)
+        #expect(!batch.snapshotRequired)
+        #expect(batch.events.map(\.sequence) == [5])
+        #expect(batch.events.first?.status?.state == "running")
+
+        let eventRows = valid["events"] as! [NSDictionary]
+        let invalidStatusEvent = eventRows[0].mutableCopy() as! NSMutableDictionary
+        let invalidStatus = (invalidStatusEvent["status"] as! NSDictionary)
+            .mutableCopy() as! NSMutableDictionary
+        invalidStatus["hostPath"] = "/private/source"
+        invalidStatusEvent["status"] = invalidStatus
+        let invalidStatusBatch = valid.mutableCopy() as! NSMutableDictionary
+        invalidStatusBatch["events"] = [invalidStatusEvent]
+        service.setMachineEventBatch(invalidStatusBatch)
+        await #expect(throws: (any Error).self) {
+            _ = try await client.machineEvents(afterSequence: 4)
+        }
+
+        let gap = valid.mutableCopy() as! NSMutableDictionary
+        let gapEvent = eventRows[0].mutableCopy() as! NSMutableDictionary
+        gapEvent["sequence"] = UInt64(6)
+        gap["headSequence"] = UInt64(6)
+        gap["events"] = [gapEvent]
+        service.setMachineEventBatch(gap)
+        await #expect(throws: (any Error).self) {
+            _ = try await client.machineEvents(afterSequence: 4)
+        }
+
+        let contradictory = valid.mutableCopy() as! NSMutableDictionary
+        contradictory["snapshotRequired"] = true
+        service.setMachineEventBatch(contradictory)
+        await #expect(throws: (any Error).self) {
+            _ = try await client.machineEvents(afterSequence: 4)
+        }
+    }
+
+    @MainActor
+    @Test func appStoreUsesMachineEventCursorWithSnapshotFallback() async throws {
+        let base = "/tmp/dory-events-app-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let socketPath = base + "/doryd.sock"
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let shim = DockerShim(runtime: MockRuntime())
+        let dockerServer = ShimHTTPServer(socketPath: socketPath) { request in
+            await shim.handle(request)
+        }
+        try dockerServer.start()
+        defer { dockerServer.stop() }
+
+        let listener = NSXPCListener.anonymous()
+        let service = FakeDorydService(socketPath: socketPath)
+        service.setMachineEventBatch([
+            "schemaVersion": UInt16(1),
+            "headSequence": UInt64(1),
+            "snapshotRequired": true,
+            "events": [] as [NSDictionary],
+        ])
+        let delegate = FakeDorydListenerDelegate(service: service)
+        listener.delegate = delegate
+        listener.resume()
+        defer { listener.invalidate() }
+
+        let store = AppStore(
+            dorydClient: DorydClient(endpoint: listener.endpoint),
+            useDorydEngine: true
+        )
+        store.routeDockerCLI = false
+        await store.connectBackend()
+        try await waitUntil {
+            service.machineEventQueryCount >= 1
+                && service.machineListCount >= 1
+                && store.machines.contains(where: { $0.name == "dev" })
+        }
+
+        let initialLists = service.machineListCount
+        let initialQueries = service.machineEventQueryCount
+        service.setMachineEventBatch([
+            "schemaVersion": UInt16(1),
+            "headSequence": UInt64(1),
+            "snapshotRequired": false,
+            "events": [] as [NSDictionary],
+        ])
+        store.loadMachines()
+        try await waitUntil { service.machineEventQueryCount > initialQueries }
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(service.machineListCount == initialLists)
+
+        let beforeChangedList = service.machineListCount
+        service.setMachineEventBatch(
+            FakeDorydService.machineEventBatchRow(sequence: 2)
+        )
+        store.loadMachines()
+        try await waitUntil { service.machineListCount > beforeChangedList }
+
+        let beforeFallbackList = service.machineListCount
+        service.setMachineEventBatch([:])
+        store.loadMachines()
+        try await waitUntil { service.machineListCount > beforeFallbackList }
+    }
+
+    @MainActor
     @Test func machineImportAssessmentRequiresExactClosedEvidence() async throws {
         let listener = NSXPCListener.anonymous()
         let service = FakeDorydService()
@@ -3498,6 +3610,9 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     private var _machineGuestExportOperationResponseOverride: NSDictionary?
     private var _machineGuestExportCurrentResponseOverride: NSDictionary?
     private var _machineImportAssessmentOverride: NSDictionary?
+    private var _machineEventBatchOverride: NSDictionary?
+    private var _machineEventQueryCount = 0
+    private var _machineListCount = 0
     private var _machineGuestExportCancelCount = 0
     private var _machineGuestExportDiscardCount = 0
     private var runtimeIdentityOverride: NSDictionary?
@@ -3582,6 +3697,21 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     func setMachineImportAssessment(_ response: NSDictionary?) {
         lock.lock(); defer { lock.unlock() }
         _machineImportAssessmentOverride = response
+    }
+
+    func setMachineEventBatch(_ response: NSDictionary?) {
+        lock.lock(); defer { lock.unlock() }
+        _machineEventBatchOverride = response
+    }
+
+    var machineEventQueryCount: Int {
+        lock.lock(); defer { lock.unlock() }
+        return _machineEventQueryCount
+    }
+
+    var machineListCount: Int {
+        lock.lock(); defer { lock.unlock() }
+        return _machineListCount
     }
 
     func machineGuestExportOperationResponse(
@@ -4139,9 +4269,26 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
 
     func machineList(reply: @escaping (NSArray, String) -> Void) {
         lock.lock()
+        _machineListCount += 1
         let rows = machines.keys.sorted().compactMap { machines[$0] }
         lock.unlock()
         reply(rows as NSArray, "")
+    }
+
+    func machineEvents(
+        _ afterSequence: UInt64,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        lock.lock()
+        _machineEventQueryCount += 1
+        let row = _machineEventBatchOverride ?? [
+            "schemaVersion": UInt16(1),
+            "headSequence": afterSequence,
+            "snapshotRequired": afterSequence == 0,
+            "events": [] as [NSDictionary],
+        ]
+        lock.unlock()
+        reply(true, row, "")
     }
 
     func machineStats(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void) {
@@ -5091,6 +5238,38 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
             "stdoutTruncated": false,
             "stderrTruncated": false,
         ] as NSDictionary
+    }
+
+    static func machineEventBatchRow(sequence: UInt64 = 5) -> NSDictionary {
+        [
+            "schemaVersion": UInt16(1),
+            "headSequence": sequence,
+            "snapshotRequired": false,
+            "events": [[
+                "schemaVersion": UInt16(1),
+                "sequence": sequence,
+                "observedAtUnixMilliseconds": Int64(1_000),
+                "machineID": "dev",
+                "kind": "updated",
+                "status": [
+                    "schemaVersion": UInt16(1),
+                    "machineID": "dev",
+                    "configurationRevision": String(repeating: "a", count: 64),
+                    "observedRevision": String(repeating: "b", count: 64),
+                    "state": "running",
+                    "hasFailure": false,
+                    "memoryMB": UInt64(2_048),
+                    "cpuCount": 2,
+                    "displayMode": "headless",
+                    "bootMode": "linux-kernel",
+                    "installerMediaAttached": false,
+                    "shareCount": 0,
+                    "integrationHealth": "missing-tools",
+                    "runtimeMode": "legacy-compatibility",
+                    "virtualHardwareABIVersion": UInt16(1),
+                ] as NSDictionary,
+            ] as NSDictionary] as [NSDictionary],
+        ]
     }
 
     static func importAssessmentRow() -> NSDictionary {
