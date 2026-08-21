@@ -1233,6 +1233,15 @@ struct DorydClientTests {
         #expect(store.canUseMachineArtifacts(machine))
         #expect(store.canTransferFiles(to: machine))
         #expect(store.canTransferFolders(to: machine))
+        #expect(store.canRepairMachineTools(machine))
+
+        var customInstaller = machine
+        customInstaller.bootMode = .efi
+        #expect(!store.canRepairMachineTools(customInstaller))
+
+        var headlessMachine = machine
+        headlessMachine.displayMode = .headless
+        #expect(!store.canRepairMachineTools(headlessMachine))
 
         let transferRoot = URL(
             fileURLWithPath: "/tmp/dory-store-transfer-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))",

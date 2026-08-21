@@ -124,6 +124,7 @@ private struct MachineCard: View {
     @Environment(\.openWindow) private var openWindow
     let machine: Machine
     @State private var confirmingDelete = false
+    @State private var confirmingToolsRepair = false
     @State private var isTransferDropTargeted = false
 
     private var isRunning: Bool { machine.status == .running }
@@ -278,6 +279,16 @@ private struct MachineCard: View {
         } message: {
             Text("This permanently deletes the Linux machine and its disk. This cannot be undone.")
         }
+        .confirmationDialog(
+            "Repair Dory Tools in \(machine.name)?",
+            isPresented: $confirmingToolsRepair,
+            titleVisibility: .visible
+        ) {
+            Button("Repair Dory Tools") { store.repairMachineTools(machine) }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Dory will create a last-good snapshot, reinstall the active signed desktop and tools payload, restart the machine, and roll back automatically if verification fails.")
+        }
     }
 
     private var distroBadge: some View {
@@ -413,6 +424,11 @@ private struct MachineCard: View {
             }
             Button { store.openMachineEdit(machine) } label: {
                 Label("Edit…", systemImage: "slider.horizontal.3")
+            }
+            if store.canRepairMachineTools(machine) {
+                Button { confirmingToolsRepair = true } label: {
+                    Label("Repair Dory Tools…", systemImage: "wrench.and.screwdriver")
+                }
             }
             if machine.bootMode == .efi {
                 Divider()

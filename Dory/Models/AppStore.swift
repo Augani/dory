@@ -5300,6 +5300,40 @@ final class AppStore {
             }
     }
 
+    func canRepairMachineTools(_ machine: Machine) -> Bool {
+        runtimeOwnedByDoryd
+            && machine.displayMode == .desktop
+            && machine.bootMode == .linuxKernel
+    }
+
+    func repairMachineTools(_ machine: Machine) {
+        guard canRepairMachineTools(machine), !busyMachines.contains(machine.name) else { return }
+        Task {
+            do {
+                let updates = try await updateManagedDesktops(
+                    affectedBy: [
+                        .linuxDesktop,
+                        .desktopDebian,
+                        .desktopUbuntu,
+                        .desktopKali,
+                    ],
+                    force: true,
+                    machineID: machine.name
+                )
+                guard let update = updates.first, updates.count == 1 else {
+                    throw DesktopMachineAssetError.missingAsset(
+                        "a verified Dory Tools update for \(machine.name)"
+                    )
+                }
+                showSettingsSuccess(
+                    "Repaired Dory Tools in \(machine.name) and verified \(update.version)."
+                )
+            } catch {
+                actionError = "Could not repair Dory Tools in \(machine.name): \(Self.userFacingError(error))"
+            }
+        }
+    }
+
     func cancelFileTransfer(to machine: Machine) async {
         guard let operation = machineFileTransfers[machine.name],
               !operation.phase.isTerminal else {
@@ -5672,9 +5706,15 @@ final class AppStore {
     /// Brings persistent desktop machines forward after a signed desktop component activation.
     /// The daemon preserves each guest's disk, applications, accounts, and settings; it owns the
     /// last-good snapshot, reboot qualification, and automatic rollback transaction.
-    func updateManagedDesktops(affectedBy components: Set<DoryComponentID>) async throws -> [DorydDesktopUpdateResult] {
+    func updateManagedDesktops(
+        affectedBy components: Set<DoryComponentID>,
+        force: Bool = false,
+        machineID: String? = nil
+    ) async throws -> [DorydDesktopUpdateResult] {
         let statuses = try await dorydClient.machineList()
-        let desktopStatuses = statuses.filter { $0.displayMode == .desktop }
+        let desktopStatuses = statuses.filter {
+            $0.displayMode == .desktop && (machineID == nil || $0.id == machineID)
+        }
         guard !desktopStatuses.isEmpty else { return [] }
 
         let runtimeChanged = components.contains(.linuxDesktop)
@@ -5722,7 +5762,7 @@ final class AppStore {
             }) else {
                 throw DesktopMachineAssetError.missingAsset(distro.displayName + " in-place update")
             }
-            if Self.desktopReceiptMatchesActiveComponents(
+            if !force && Self.desktopReceiptMatchesActiveComponents(
                 status.installedDesktopPayloadReceipt,
                 distributionIdentifier: distro.rawValue,
                 releaseVersion: targetVersion,
@@ -5739,6 +5779,11 @@ final class AppStore {
                 continue
             }
 
+            guard !busyMachines.contains(status.id) else {
+                throw DesktopMachineAssetError.filesystem(
+                    "\(status.id) is busy with another machine operation"
+                )
+            }
             busyMachines.insert(status.id)
             defer { busyMachines.remove(status.id) }
             do {
