@@ -397,12 +397,12 @@ public final class DoryAgentControlHandle: @unchecked Sendable {
         )
     }
 
-    public func snapshotFreeze() throws {
-        try withControl { try $0.snapshotFreeze() }
+    public func snapshotFreeze(receiptID: String) throws -> String {
+        try withControl { try $0.snapshotFreeze(receiptId: receiptID) }
     }
 
-    public func snapshotThaw() throws {
-        try withControl { try $0.snapshotThaw() }
+    public func snapshotThaw(receiptID: String) throws {
+        try withControl { try $0.snapshotThaw(receiptId: receiptID) }
     }
 
     public func exec(

@@ -18,7 +18,7 @@ final class AgentControlTests: XCTestCase {
         let info = try control.info()
         XCTAssertEqual(info.agentBuild, "fake-agent")
         XCTAssertEqual(info.capabilities.map(\.id), [
-            "clock-sync", "exec", "exec-stdin", "ports-watch", "telemetry",
+            "clock-sync", "exec", "exec-stdin", "ports-watch", "snapshot-quiesce", "telemetry",
         ])
         XCTAssertEqual(counter.value, 1)
 
@@ -26,6 +26,11 @@ final class AgentControlTests: XCTestCase {
         XCTAssertEqual(fake.clockSyncInputs, [1_500_000_000])
         XCTAssertEqual(try control.portsWatch().ports.first?.port, 8080)
         XCTAssertEqual(try control.telemetry().memTotalKB, 1024)
+        let receiptID = String(repeating: "a", count: 32)
+        XCTAssertEqual(try control.snapshotFreeze(receiptID: receiptID), receiptID)
+        try control.snapshotThaw(receiptID: receiptID)
+        XCTAssertEqual(fake.snapshotFreezeReceipts, [receiptID])
+        XCTAssertEqual(fake.snapshotThawReceipts, [receiptID])
         let exec = try control.exec(argv: ["/bin/echo", "ok"], cwd: "/tmp")
         XCTAssertEqual(exec.exitCode, 0)
         XCTAssertEqual(String(data: exec.stdout, encoding: .utf8), "ok\n")
@@ -51,6 +56,23 @@ final class AgentControlTests: XCTestCase {
             XCTAssertEqual(error as? AgentControlError, .capabilityUnavailable("telemetry"))
         }
         XCTAssertEqual(missing.telemetryCalls, 0)
+
+        let oldSnapshotCapability = FakeAgentControlClient(capabilities: [
+            DoryAgentCapability(id: "snapshot-quiesce", version: 1),
+        ])
+        let oldSnapshotControl = AgentControl(
+            configuration: AgentControlConfiguration(directSocketPath: "/tmp/old-snapshot.sock"),
+            connector: { _ in oldSnapshotCapability }
+        )
+        XCTAssertThrowsError(try oldSnapshotControl.snapshotFreeze(
+            receiptID: String(repeating: "b", count: 32)
+        )) { error in
+            XCTAssertEqual(
+                error as? AgentControlError,
+                .capabilityUnavailable("snapshot-quiesce")
+            )
+        }
+        XCTAssertTrue(oldSnapshotCapability.snapshotFreezeReceipts.isEmpty)
 
         let invalid = FakeAgentControlClient(capabilities: [
             DoryAgentCapability(id: "exec", version: 1),
@@ -91,6 +113,8 @@ private final class FakeAgentControlClient: AgentControlClient, @unchecked Senda
     private var inputs: [Int64] = []
     private var closes = 0
     private var telemetryCallCount = 0
+    private var freezeReceipts: [String] = []
+    private var thawReceipts: [String] = []
 
     init(
         protocolVersion: UInt32 = DoryCore.protocolVersion(),
@@ -99,6 +123,7 @@ private final class FakeAgentControlClient: AgentControlClient, @unchecked Senda
             DoryAgentCapability(id: "exec", version: 1),
             DoryAgentCapability(id: "exec-stdin", version: 1),
             DoryAgentCapability(id: "ports-watch", version: 1),
+            DoryAgentCapability(id: "snapshot-quiesce", version: 2),
             DoryAgentCapability(id: "telemetry", version: 1),
         ]
     ) {
@@ -122,6 +147,18 @@ private final class FakeAgentControlClient: AgentControlClient, @unchecked Senda
         lock.lock()
         defer { lock.unlock() }
         return telemetryCallCount
+    }
+
+    var snapshotFreezeReceipts: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return freezeReceipts
+    }
+
+    var snapshotThawReceipts: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return thawReceipts
     }
 
     func info() throws -> DoryAgentInfo {
@@ -159,6 +196,19 @@ private final class FakeAgentControlClient: AgentControlClient, @unchecked Senda
             psiSomeAvg10: 0,
             psiFullAvg10: 0
         )
+    }
+
+    func snapshotFreeze(receiptID: String) throws -> String {
+        lock.lock()
+        freezeReceipts.append(receiptID)
+        lock.unlock()
+        return receiptID
+    }
+
+    func snapshotThaw(receiptID: String) throws {
+        lock.lock()
+        thawReceipts.append(receiptID)
+        lock.unlock()
     }
 
     func exec(

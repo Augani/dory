@@ -25,8 +25,8 @@ public protocol AgentControlClient: Sendable {
     func clockSync(hostEpochNs: Int64) throws -> Bool
     func portsWatch() throws -> DoryPortsSnapshot
     func telemetry() throws -> DoryTelemetry
-    func snapshotFreeze() throws
-    func snapshotThaw() throws
+    func snapshotFreeze(receiptID: String) throws -> String
+    func snapshotThaw(receiptID: String) throws
     func exec(
         argv: [String],
         cwd: String,
@@ -46,11 +46,13 @@ public protocol AgentControlClient: Sendable {
 }
 
 public extension AgentControlClient {
-    func snapshotFreeze() throws {
+    func snapshotFreeze(receiptID: String) throws -> String {
+        _ = receiptID
         throw AgentControlError.capabilityUnavailable("snapshot-quiesce")
     }
 
-    func snapshotThaw() throws {
+    func snapshotThaw(receiptID: String) throws {
+        _ = receiptID
         throw AgentControlError.capabilityUnavailable("snapshot-quiesce")
     }
 
@@ -129,12 +131,14 @@ public final class AgentControl: @unchecked Sendable {
         try client(requiring: "telemetry").telemetry()
     }
 
-    public func snapshotFreeze() throws {
-        try client(requiring: "snapshot-quiesce").snapshotFreeze()
+    public func snapshotFreeze(receiptID: String) throws -> String {
+        try client(requiring: "snapshot-quiesce", minimumVersion: 2)
+            .snapshotFreeze(receiptID: receiptID)
     }
 
-    public func snapshotThaw() throws {
-        try client(requiring: "snapshot-quiesce").snapshotThaw()
+    public func snapshotThaw(receiptID: String) throws {
+        try client(requiring: "snapshot-quiesce", minimumVersion: 2)
+            .snapshotThaw(receiptID: receiptID)
     }
 
     public func exec(
@@ -203,14 +207,18 @@ public final class AgentControl: @unchecked Sendable {
         return existing
     }
 
-    private func client(requiring capability: String) throws -> any AgentControlClient {
+    private func client(
+        requiring capability: String,
+        minimumVersion: UInt32 = 1
+    ) throws -> any AgentControlClient {
         let client = try connectedClient()
-        try requireCapability(capability, from: client)
+        try requireCapability(capability, minimumVersion: minimumVersion, from: client)
         return client
     }
 
     private func requireCapability(
         _ capability: String,
+        minimumVersion: UInt32 = 1,
         from client: any AgentControlClient
     ) throws {
         let info = try cachedInfo(from: client)
@@ -223,7 +231,7 @@ public final class AgentControl: @unchecked Sendable {
         guard info.capabilitiesAreCanonical else {
             throw AgentControlError.invalidCapabilities
         }
-        guard info.supports(capability) else {
+        guard info.supports(capability, minimumVersion: minimumVersion) else {
             throw AgentControlError.capabilityUnavailable(capability)
         }
     }

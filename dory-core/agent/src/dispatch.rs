@@ -29,7 +29,7 @@ pub fn agent_capabilities() -> Vec<agent::AgentCapability> {
         ("telemetry", 1),
     ];
     if crate::snapshot_quiesce::available() {
-        capabilities.push(("snapshot-quiesce", 1));
+        capabilities.push(("snapshot-quiesce", 2));
     }
     capabilities.sort_unstable_by_key(|(id, _)| *id);
     capabilities
@@ -204,7 +204,7 @@ mod tests {
                     ("telemetry", 1),
                 ];
                 if crate::snapshot_quiesce::available() {
-                    expected_capabilities.push(("snapshot-quiesce", 1));
+                    expected_capabilities.push(("snapshot-quiesce", 2));
                     expected_capabilities.sort_unstable();
                 }
                 assert_eq!(

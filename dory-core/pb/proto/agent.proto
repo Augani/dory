@@ -68,10 +68,15 @@ message SnapshotQuiesceRequest {
     THAW = 2;
   }
   Action action = 1;
+  // A host-generated 128-bit lowercase-hex operation receipt. FREEZE and THAW must carry the
+  // same value so the host can recover even when a successful freeze reply is lost in transit.
+  string receipt_id = 2;
 }
 message SnapshotQuiesceResponse {
   bool completed = 1;
   string detail = 2;
+  // A single-use 128-bit lowercase-hex receipt. Present only after a successful FREEZE.
+  string receipt_id = 3;
 }
 
 // Run a bounded non-interactive command in the guest. This is the primitive doryd uses for

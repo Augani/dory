@@ -129,10 +129,12 @@ impl AgentClient {
     pub async fn snapshot_quiesce(
         &self,
         action: agent::snapshot_quiesce_request::Action,
+        receipt_id: String,
     ) -> Result<SnapshotQuiesceResponse, RemoteError> {
         match self
             .call(Method::SnapshotQuiesce(SnapshotQuiesceRequest {
                 action: action as i32,
+                receipt_id,
             }))
             .await?
         {

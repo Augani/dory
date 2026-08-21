@@ -401,6 +401,41 @@ public enum DoryMachineSnapshotConsistency: String, Sendable, Equatable, Hashabl
     case guestQuiesced = "guest-quiesced"
 }
 
+public struct DoryMachineSnapshotQuiesceReceipt: Sendable, Equatable, Hashable, Codable {
+    public var schemaVersion: UInt16
+    public var receiptID: String
+    public var agentBuild: String
+    public var agentProtocolVersion: UInt32
+    public var capabilityVersion: UInt32
+
+    public init(
+        schemaVersion: UInt16 = 1,
+        receiptID: String,
+        agentBuild: String,
+        agentProtocolVersion: UInt32,
+        capabilityVersion: UInt32
+    ) {
+        self.schemaVersion = schemaVersion
+        self.receiptID = receiptID
+        self.agentBuild = agentBuild
+        self.agentProtocolVersion = agentProtocolVersion
+        self.capabilityVersion = capabilityVersion
+    }
+
+    public var isValid: Bool {
+        schemaVersion == 1
+            && receiptID.utf8.count == 32
+            && receiptID.utf8.allSatisfy {
+                ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x61 && $0 <= 0x66)
+            }
+            && !agentBuild.isEmpty
+            && agentBuild.utf8.count <= 128
+            && agentBuild.utf8.allSatisfy { $0 >= 0x20 && $0 <= 0x7e }
+            && agentProtocolVersion == DoryCore.protocolVersion()
+            && capabilityVersion >= 2
+    }
+}
+
 public struct DoryMachineSnapshot: Sendable, Equatable, Hashable, Codable {
     public var id: String
     public var machineID: String
@@ -424,6 +459,7 @@ public struct DoryMachineSnapshot: Sendable, Equatable, Hashable, Codable {
     public var artifactEvidence: DoryMachineSnapshotArtifactEvidence?
     public var installedDesktopPayloadReceipt: DoryInstalledDesktopPayloadReceipt?
     public var consistency: DoryMachineSnapshotConsistency
+    public var guestQuiesceReceipt: DoryMachineSnapshotQuiesceReceipt?
 
     public init(
         id: String,
@@ -450,7 +486,8 @@ public struct DoryMachineSnapshot: Sendable, Equatable, Hashable, Codable {
         ),
         artifactEvidence: DoryMachineSnapshotArtifactEvidence? = nil,
         installedDesktopPayloadReceipt: DoryInstalledDesktopPayloadReceipt? = nil,
-        consistency: DoryMachineSnapshotConsistency = .coldStopped
+        consistency: DoryMachineSnapshotConsistency = .coldStopped,
+        guestQuiesceReceipt: DoryMachineSnapshotQuiesceReceipt? = nil
     ) {
         self.id = id
         self.machineID = machineID
@@ -474,6 +511,7 @@ public struct DoryMachineSnapshot: Sendable, Equatable, Hashable, Codable {
         self.artifactEvidence = artifactEvidence
         self.installedDesktopPayloadReceipt = installedDesktopPayloadReceipt
         self.consistency = consistency
+        self.guestQuiesceReceipt = guestQuiesceReceipt
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -499,10 +537,27 @@ public struct DoryMachineSnapshot: Sendable, Equatable, Hashable, Codable {
         case artifactEvidence
         case installedDesktopPayloadReceipt
         case consistency
+        case guestQuiesceReceipt
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        let consistency = try container.decodeIfPresent(
+            DoryMachineSnapshotConsistency.self,
+            forKey: .consistency
+        ) ?? .coldStopped
+        let guestQuiesceReceipt = try container.decodeIfPresent(
+            DoryMachineSnapshotQuiesceReceipt.self,
+            forKey: .guestQuiesceReceipt
+        )
+        guard guestQuiesceReceipt?.isValid ?? true,
+              (consistency == .guestQuiesced) == (guestQuiesceReceipt != nil) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .guestQuiesceReceipt,
+                in: container,
+                debugDescription: "snapshot consistency and guest quiesce receipt disagree"
+            )
+        }
         self.init(
             id: try container.decode(String.self, forKey: .id),
             machineID: try container.decode(String.self, forKey: .machineID),
@@ -540,10 +595,8 @@ public struct DoryMachineSnapshot: Sendable, Equatable, Hashable, Codable {
                 DoryInstalledDesktopPayloadReceipt.self,
                 forKey: .installedDesktopPayloadReceipt
             ),
-            consistency: try container.decodeIfPresent(
-                DoryMachineSnapshotConsistency.self,
-                forKey: .consistency
-            ) ?? .coldStopped
+            consistency: consistency,
+            guestQuiesceReceipt: guestQuiesceReceipt
         )
     }
 }
@@ -3084,8 +3137,11 @@ public final class MachineManager: @unchecked Sendable {
         // Prefer a negotiated guest freeze before the durable cold-stop boundary. A missing tools
         // capability degrades to the existing cold snapshot; an advertised capability that fails
         // is not silently ignored because the guest may already be partially frozen.
-        let guestQuiesced = sourceMachineState == .running
-            ? try freezeGuestForSnapshotIfSupported(id: id) : false
+        let guestQuiesceReceipt = sourceMachineState == .running
+            ? try freezeGuestForSnapshotIfSupported(
+                id: id,
+                resolvedPlan: snapshotRuntimeIdentity.resolvedPlan
+            ) : nil
         if wasResident {
             do {
                 _ = try stopImplementation(
@@ -3094,8 +3150,13 @@ public final class MachineManager: @unchecked Sendable {
                     preserveResolvedAdmissionForRestart: true
                 )
             } catch {
-                if guestQuiesced {
-                    do { try thawGuestAfterFailedSnapshotStop(id: id) }
+                if let guestQuiesceReceipt {
+                    do {
+                        try thawGuestAfterFailedSnapshotStop(
+                            id: id,
+                            receiptID: guestQuiesceReceipt.receiptID
+                        )
+                    }
                     catch let thawError {
                         throw MachineManagerError.persistence(
                             "could not stop \(id) for snapshot: \(error); guest thaw failed: \(thawError)"
@@ -3160,7 +3221,8 @@ public final class MachineManager: @unchecked Sendable {
             artifactEvidence: artifactEvidence,
             installedDesktopPayloadReceipt:
                 machine.effectiveInstalledDesktopPayloadReceipt,
-            consistency: guestQuiesced ? .guestQuiesced : .coldStopped
+            consistency: guestQuiesceReceipt == nil ? .coldStopped : .guestQuiesced,
+            guestQuiesceReceipt: guestQuiesceReceipt
         )
         let snapshotAuthority = try Self.lifecycleSnapshotAuthority(snapshot)
         let lifecycle = try beginLifecycleSnapshot(
@@ -3258,32 +3320,83 @@ public final class MachineManager: @unchecked Sendable {
         return snapshot
     }
 
-    private func freezeGuestForSnapshotIfSupported(id: String) throws -> Bool {
-        guard status(id: id)?.supportsAgentCapability("snapshot-quiesce") == true else {
-            return false
+    private func freezeGuestForSnapshotIfSupported(
+        id: String,
+        resolvedPlan: DoryResolvedMachinePlan?
+    ) throws -> DoryMachineSnapshotQuiesceReceipt? {
+        guard let status = status(id: id),
+              status.supportsAgentCapability("snapshot-quiesce", minimumVersion: 2),
+              let agentBuild = status.agentBuild,
+              let protocolVersion = status.agentProtocolVersion,
+              let capabilityVersion = status.agentCapabilities.first(where: {
+                  $0.id == "snapshot-quiesce"
+              })?.version else {
+            return nil
         }
+        let requestedReceiptID = UUID().uuidString
+            .replacingOccurrences(of: "-", with: "")
+            .lowercased()
         do {
-            try withAgentClient(id: id, requiredCapability: "snapshot-quiesce") { client in
-                try client.snapshotFreeze()
+            let receiptID = try withAgentClient(
+                id: id,
+                requiredCapability: "snapshot-quiesce",
+                minimumCapabilityVersion: 2
+            ) { client in
+                try client.snapshotFreeze(receiptID: requestedReceiptID)
             }
+            let receipt = DoryMachineSnapshotQuiesceReceipt(
+                receiptID: receiptID,
+                agentBuild: agentBuild,
+                agentProtocolVersion: protocolVersion,
+                capabilityVersion: capabilityVersion
+            )
+            guard receipt.isValid, receiptID == requestedReceiptID else {
+                throw MachineManagerError.persistence(
+                    "guest snapshot freeze returned an invalid receipt for \(id)"
+                )
+            }
+            return receipt
         } catch {
             let freezeError = error
-            do { try thawGuestAfterFailedSnapshotStop(id: id) }
-            catch let thawError {
+            do {
+                try thawGuestAfterFailedSnapshotStop(
+                    id: id,
+                    receiptID: requestedReceiptID
+                )
+            } catch let thawError {
+                do {
+                    _ = try stopImplementation(
+                        id: id,
+                        journalLifecycle: true,
+                        preserveResolvedAdmissionForRestart: true
+                    )
+                    try restoreSnapshotSourcePowerState(
+                        id: id,
+                        wasPaused: false,
+                        resolvedPlan: resolvedPlan
+                    )
+                } catch let recoveryError {
+                    throw MachineManagerError.persistence(
+                        "guest snapshot freeze failed for \(id): \(freezeError); recovery thaw failed: \(thawError); forced restart failed: \(recoveryError)"
+                    )
+                }
                 throw MachineManagerError.persistence(
-                    "guest snapshot freeze failed for \(id): \(freezeError); thaw failed: \(thawError)"
+                    "guest snapshot freeze failed for \(id): \(freezeError); recovery thaw failed: \(thawError); the guest was restarted"
                 )
             }
             throw MachineManagerError.persistence(
                 "guest snapshot freeze failed for \(id): \(freezeError)"
             )
         }
-        return true
     }
 
-    private func thawGuestAfterFailedSnapshotStop(id: String) throws {
-        try withAgentClient(id: id, requiredCapability: "snapshot-quiesce") { client in
-            try client.snapshotThaw()
+    private func thawGuestAfterFailedSnapshotStop(id: String, receiptID: String) throws {
+        try withAgentClient(
+            id: id,
+            requiredCapability: "snapshot-quiesce",
+            minimumCapabilityVersion: 2
+        ) { client in
+            try client.snapshotThaw(receiptID: receiptID)
         }
     }
 
@@ -4896,6 +5009,7 @@ public final class MachineManager: @unchecked Sendable {
     private func withAgentClient<T>(
         id: String,
         requiredCapability: String? = nil,
+        minimumCapabilityVersion: UInt32 = 1,
         _ operation: (any AgentControlClient) throws -> T
     ) throws -> T {
         guard let status = status(id: id) else {
@@ -4905,7 +5019,10 @@ public final class MachineManager: @unchecked Sendable {
             throw MachineManagerError.agentUnavailable(id)
         }
         if let requiredCapability,
-           !status.supportsAgentCapability(requiredCapability) {
+           !status.supportsAgentCapability(
+               requiredCapability,
+               minimumVersion: minimumCapabilityVersion
+           ) {
             throw MachineManagerError.agentCapabilityUnavailable(id, requiredCapability)
         }
         let client = try agentConnector(socketPath)

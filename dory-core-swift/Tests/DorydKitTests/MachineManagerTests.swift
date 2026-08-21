@@ -3751,6 +3751,11 @@ final class MachineManagerTests: XCTestCase {
             snapshotID: "running"
         )
         XCTAssertEqual(runningSnapshot.consistency, .guestQuiesced)
+        let receipt = try XCTUnwrap(runningSnapshot.guestQuiesceReceipt)
+        XCTAssertTrue(receipt.isValid)
+        XCTAssertEqual(receipt.agentBuild, "dory-agent/snapshot-test")
+        XCTAssertEqual(receipt.agentProtocolVersion, DoryCore.protocolVersion())
+        XCTAssertEqual(receipt.capabilityVersion, 2)
         XCTAssertEqual(connector.snapshotFreezes, 1)
         XCTAssertEqual(connector.snapshotThaws, 0)
         XCTAssertEqual(manager.status(id: "dev")?.state, .running)
@@ -3762,8 +3767,33 @@ final class MachineManagerTests: XCTestCase {
             snapshotID: "paused"
         )
         XCTAssertEqual(pausedSnapshot.consistency, .coldStopped)
+        XCTAssertNil(pausedSnapshot.guestQuiesceReceipt)
         XCTAssertEqual(connector.snapshotFreezes, 1)
         XCTAssertEqual(manager.status(id: "dev")?.state, .paused)
+
+        var missingReceipt = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(runningSnapshot))
+                as? [String: Any]
+        )
+        missingReceipt.removeValue(forKey: "guestQuiesceReceipt")
+        XCTAssertThrowsError(try JSONDecoder().decode(
+            DoryMachineSnapshot.self,
+            from: JSONSerialization.data(withJSONObject: missingReceipt)
+        ))
+
+        var historicalColdSnapshot = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(pausedSnapshot))
+                as? [String: Any]
+        )
+        historicalColdSnapshot.removeValue(forKey: "consistency")
+        historicalColdSnapshot.removeValue(forKey: "guestQuiesceReceipt")
+        XCTAssertEqual(
+            try JSONDecoder().decode(
+                DoryMachineSnapshot.self,
+                from: JSONSerialization.data(withJSONObject: historicalColdSnapshot)
+            ).consistency,
+            .coldStopped
+        )
     }
 
     func testExecRunsThroughRunningMachineAgent() throws {
@@ -4109,7 +4139,7 @@ private func sendSnapshotQuiesceHandoff(path: String, machineID: String) throws 
             machineID: machineID,
             agentBuild: "dory-agent/snapshot-test",
             agentProtocolVersion: DoryCore.protocolVersion(),
-            agentCapabilities: [DoryAgentCapability(id: "snapshot-quiesce", version: 1)],
+            agentCapabilities: [DoryAgentCapability(id: "snapshot-quiesce", version: 2)],
             agentSocketPath: "/run/dory-snapshot-agent.sock"
         ),
         fileDescriptors: []
@@ -4444,11 +4474,13 @@ private final class RecordingMachineAgentClient: AgentControlClient, @unchecked 
         telemetryValue
     }
 
-    func snapshotFreeze() throws {
+    func snapshotFreeze(receiptID: String) throws -> String {
         recorder.recordSnapshotFreeze()
+        return receiptID
     }
 
-    func snapshotThaw() throws {
+    func snapshotThaw(receiptID: String) throws {
+        XCTAssertEqual(receiptID.utf8.count, 32)
         recorder.recordSnapshotThaw()
     }
 

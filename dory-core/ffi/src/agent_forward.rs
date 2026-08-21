@@ -164,15 +164,21 @@ impl AgentControl {
         })
     }
 
-    pub fn snapshot_freeze(&self) -> Result<(), RemoteFfiError> {
+    pub fn snapshot_freeze(&self, receipt_id: String) -> Result<String, RemoteFfiError> {
         snapshot_quiesce(
             self,
             dory_pb::agent::snapshot_quiesce_request::Action::Freeze,
+            receipt_id,
         )
     }
 
-    pub fn snapshot_thaw(&self) -> Result<(), RemoteFfiError> {
-        snapshot_quiesce(self, dory_pb::agent::snapshot_quiesce_request::Action::Thaw)
+    pub fn snapshot_thaw(&self, receipt_id: String) -> Result<(), RemoteFfiError> {
+        snapshot_quiesce(
+            self,
+            dory_pb::agent::snapshot_quiesce_request::Action::Thaw,
+            receipt_id,
+        )
+        .map(|_| ())
     }
 
     pub fn exec(
@@ -221,12 +227,13 @@ impl AgentControl {
 fn snapshot_quiesce(
     control: &AgentControl,
     action: dory_pb::agent::snapshot_quiesce_request::Action,
-) -> Result<(), RemoteFfiError> {
+    receipt_id: String,
+) -> Result<String, RemoteFfiError> {
     let guard = control.runtime.lock().unwrap();
     let runtime = guard.as_ref().ok_or_else(shutdown_error)?;
-    let result = runtime.block_on(control.client.snapshot_quiesce(action))?;
+    let result = runtime.block_on(control.client.snapshot_quiesce(action, receipt_id))?;
     if result.completed {
-        Ok(())
+        Ok(result.receipt_id)
     } else {
         Err(failed(if result.detail.is_empty() {
             "guest declined snapshot quiesce"
