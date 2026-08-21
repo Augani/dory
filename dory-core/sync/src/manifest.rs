@@ -53,6 +53,11 @@ struct TreeUsage {
     bytes: u64,
 }
 
+struct TreeBudget {
+    limits: Option<TreeLimits>,
+    usage: TreeUsage,
+}
+
 /// Walk `root` recursively and build a manifest of every regular file, with a content hash. Symlinks
 /// and special files are skipped (only regular files replicate). Entries are sorted by path so a
 /// host and remote produce byte-identical ordering and the reconciler diff is stable.
@@ -105,7 +110,10 @@ fn walk_tree_impl(
 ) -> std::io::Result<TreeSnapshot> {
     let mut files = Vec::new();
     let mut directories = Vec::new();
-    let mut usage = TreeUsage::default();
+    let mut budget = TreeBudget {
+        limits,
+        usage: TreeUsage::default(),
+    };
     walk_into(
         root,
         root,
@@ -113,8 +121,7 @@ fn walk_tree_impl(
         tolerate_not_found,
         &mut files,
         &mut directories,
-        limits,
-        &mut usage,
+        &mut budget,
     )?;
     files.sort_by(|a, b| a.path.cmp(&b.path));
     directories.sort_by(|a, b| a.path.cmp(&b.path));
@@ -131,8 +138,7 @@ fn walk_into(
     tolerate_not_found: bool,
     files: &mut Vec<FileEntry>,
     directories: &mut Vec<DirectoryEntry>,
-    limits: Option<TreeLimits>,
-    usage: &mut TreeUsage,
+    budget: &mut TreeBudget,
 ) -> std::io::Result<()> {
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
@@ -164,11 +170,15 @@ fn walk_into(
         };
         let file_type = meta.file_type();
         if file_type.is_dir() {
-            usage.directories = usage
+            budget.usage.directories = budget
+                .usage
                 .directories
                 .checked_add(1)
                 .ok_or_else(tree_limit_error)?;
-            if limits.is_some_and(|limits| usage.directories > limits.max_directories) {
+            if budget
+                .limits
+                .is_some_and(|limits| budget.usage.directories > limits.max_directories)
+            {
                 return Err(tree_limit_error());
             }
             directories.push(DirectoryEntry {
@@ -183,17 +193,21 @@ fn walk_into(
                 tolerate_not_found,
                 files,
                 directories,
-                limits,
-                usage,
+                budget,
             )?;
         } else if file_type.is_file() {
-            usage.files = usage.files.checked_add(1).ok_or_else(tree_limit_error)?;
-            usage.bytes = usage
+            budget.usage.files = budget
+                .usage
+                .files
+                .checked_add(1)
+                .ok_or_else(tree_limit_error)?;
+            budget.usage.bytes = budget
+                .usage
                 .bytes
                 .checked_add(meta.len())
                 .ok_or_else(tree_limit_error)?;
-            if limits.is_some_and(|limits| {
-                usage.files > limits.max_files || usage.bytes > limits.max_bytes
+            if budget.limits.is_some_and(|limits| {
+                budget.usage.files > limits.max_files || budget.usage.bytes > limits.max_bytes
             }) {
                 return Err(tree_limit_error());
             }
