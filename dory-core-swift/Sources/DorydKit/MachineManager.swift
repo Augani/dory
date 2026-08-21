@@ -898,6 +898,7 @@ public final class MachineManager: @unchecked Sendable {
     private var desktopUpdateArtifactResolver: (any DoryDesktopUpdateArtifactResolving)?
 #if DEBUG
     private var lifecycleFaultInjector: (@Sendable (MachineLifecycleFaultPoint) throws -> Void)?
+    private var shareAuthorityPreSpawnTestHook: (@Sendable () throws -> Void)?
 #endif
 
     public init(
@@ -1571,7 +1572,11 @@ public final class MachineManager: @unchecked Sendable {
             : nil
         do {
             if let lifecycle { try advanceLifecycleToPublishing(lifecycle) }
-            let status = try spawnPreparedMachine(prepared.machine, launchBinding: nil)
+            let status = try spawnPreparedMachine(
+                prepared.machine,
+                shareAuthorities: prepared.shareAuthorities,
+                launchBinding: nil
+            )
             if let lifecycle, status.state != .starting {
                 _ = completeCommittedLifecycle(
                     lifecycle,
@@ -1676,7 +1681,8 @@ public final class MachineManager: @unchecked Sendable {
                 devices: resolved.resolvedPlan.devices,
                 planRevision: resolved.resolvedPlan.planRevision,
                 planSHA256: resolved.resolvedPlanSHA256,
-                preSpawnAuthorization: preSpawnAuthorization
+                preSpawnAuthorization: preSpawnAuthorization,
+                shareAuthorities: prepared.shareAuthorities
             )
             defer { pendingResolvedStart = nil }
             let operation = registry.start(resolved.backendPlan)
@@ -1807,6 +1813,7 @@ public final class MachineManager: @unchecked Sendable {
         pendingResolvedStart = nil
         return MachineBackendRuntimeObservation(try spawnPreparedMachine(
             authorization.machine,
+            shareAuthorities: authorization.shareAuthorities,
             launchBinding: binding,
             preSpawnAuthorization: authorization.preSpawnAuthorization,
             resolvedPlan: authorization.plan
@@ -2184,6 +2191,9 @@ public final class MachineManager: @unchecked Sendable {
             )
         }
         try Self.validateLaunchConfiguration(runtimeMachine)
+        let shareAuthorities = try Self.captureShareRuntimeAuthorities(
+            runtimeMachine.shares
+        )
         try validateManagedMachineArtifacts(runtimeMachine)
         if !requiresAuthoritativeDefinition {
             try validateRuntimeAvailability(runtimeMachine)
@@ -2199,7 +2209,8 @@ public final class MachineManager: @unchecked Sendable {
             authoritativeMachine: authoritativeMachine,
             definition: authoritativeDefinition,
             canonicalDefinitionData: definitionData,
-            authoritativeLegacyData: authoritativeLegacyData
+            authoritativeLegacyData: authoritativeLegacyData,
+            shareAuthorities: shareAuthorities
         )
     }
 
@@ -2247,6 +2258,7 @@ public final class MachineManager: @unchecked Sendable {
 
     private func spawnPreparedMachine(
         _ preparedMachine: DoryMachineConfiguration,
+        shareAuthorities: [DoryMachineShareRuntimeAuthority],
         launchBinding: MachineBackendLaunchBinding?,
         preSpawnAuthorization: DoryDaemonVirtualMachinePreSpawnAuthorization? = nil,
         resolvedPlan: DoryResolvedMachinePlan? = nil
@@ -2299,8 +2311,16 @@ public final class MachineManager: @unchecked Sendable {
                     launchBinding: launchBinding
                 )
             }
+#if DEBUG
+            try shareAuthorityPreSpawnTestHook?()
+#endif
+            var launchMachine = entry.configuration
+            launchMachine.shares = try Self.revalidateShareRuntimeAuthorities(
+                shareAuthorities,
+                expectedShares: entry.configuration.shares
+            )
             processConfiguration = try self.processConfiguration(
-                for: entry.configuration,
+                for: launchMachine,
                 handoffPath: handoffPath,
                 resolvedLaunchBinding: launchBinding
             )
@@ -7114,12 +7134,98 @@ public final class MachineManager: @unchecked Sendable {
             guard tags.insert(share.tag).inserted else {
                 throw MachineManagerError.invalidShare(share.tag)
             }
-            var isDirectory: ObjCBool = false
-            guard FileManager.default.fileExists(atPath: share.hostPath, isDirectory: &isDirectory),
-                  isDirectory.boolValue else {
-                throw MachineManagerError.invalidShare(share.hostPath)
-            }
         }
+        _ = try captureShareRuntimeAuthorities(shares)
+    }
+
+    /// Captures the directory object behind each persisted share path. The canonical path is what
+    /// crosses the helper boundary; the original spelling is retained only so a symlink or mount
+    /// alias cannot be redirected between preparation and spawn.
+    private static func captureShareRuntimeAuthorities(
+        _ shares: [DoryMachineShareConfiguration]
+    ) throws -> [DoryMachineShareRuntimeAuthority] {
+        try shares.map { share in
+            let canonicalPath = try canonicalShareRoot(share.hostPath)
+            let identity = try openedShareRootIdentity(
+                canonicalPath: canonicalPath,
+                reportedPath: share.hostPath
+            )
+            return DoryMachineShareRuntimeAuthority(
+                share: share,
+                canonicalPath: canonicalPath,
+                device: identity.device,
+                inode: identity.inode
+            )
+        }
+    }
+
+    /// Reopens every root immediately before helper argument construction. This does not infer
+    /// authority from a path that happens to exist: both the original resolver spelling and the
+    /// canonical directory entry must still name the exact captured inode.
+    private static func revalidateShareRuntimeAuthorities(
+        _ authorities: [DoryMachineShareRuntimeAuthority],
+        expectedShares: [DoryMachineShareConfiguration]
+    ) throws -> [DoryMachineShareConfiguration] {
+        guard authorities.map(\.share) == expectedShares else {
+            throw MachineManagerError.persistence(
+                "machine share configuration changed after launch validation"
+            )
+        }
+        return try authorities.map { authority in
+            guard try canonicalShareRoot(authority.share.hostPath)
+                    == authority.canonicalPath else {
+                throw MachineManagerError.invalidShare(authority.share.hostPath)
+            }
+            let identity = try openedShareRootIdentity(
+                canonicalPath: authority.canonicalPath,
+                reportedPath: authority.share.hostPath
+            )
+            guard identity.device == authority.device,
+                  identity.inode == authority.inode else {
+                throw MachineManagerError.invalidShare(authority.share.hostPath)
+            }
+            var launchShare = authority.share
+            launchShare.hostPath = authority.canonicalPath
+            return launchShare
+        }
+    }
+
+    private static func canonicalShareRoot(_ path: String) throws -> String {
+        var resolved = [CChar](repeating: 0, count: Int(PATH_MAX))
+        guard realpath(path, &resolved) != nil else {
+            throw MachineManagerError.invalidShare(path)
+        }
+        let canonicalBytes = resolved.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
+        let canonical = String(decoding: canonicalBytes, as: UTF8.self)
+        guard canonical.hasPrefix("/"), canonical != "/" else {
+            throw MachineManagerError.invalidShare(path)
+        }
+        return canonical
+    }
+
+    private static func openedShareRootIdentity(
+        canonicalPath: String,
+        reportedPath: String
+    ) throws -> (device: UInt64, inode: UInt64) {
+        let descriptor = open(
+            canonicalPath,
+            O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW
+        )
+        guard descriptor >= 0 else {
+            throw MachineManagerError.invalidShare(reportedPath)
+        }
+        defer { close(descriptor) }
+        var opened = stat()
+        var named = stat()
+        guard fstat(descriptor, &opened) == 0,
+              (opened.st_mode & S_IFMT) == S_IFDIR,
+              lstat(canonicalPath, &named) == 0,
+              (named.st_mode & S_IFMT) == S_IFDIR,
+              opened.st_dev == named.st_dev,
+              opened.st_ino == named.st_ino else {
+            throw MachineManagerError.invalidShare(reportedPath)
+        }
+        return (UInt64(opened.st_dev), UInt64(opened.st_ino))
     }
 
     private static func validateEnvironment(_ environment: [String: String]) throws {
@@ -8716,6 +8822,14 @@ public final class MachineManager: @unchecked Sendable {
     private func injectLifecycleFault(_ point: MachineLifecycleFaultPoint) throws {
         try lifecycleFaultInjector?(point)
     }
+
+    func installShareAuthorityPreSpawnHookForTesting(
+        _ hook: @escaping @Sendable () throws -> Void
+    ) {
+        operationLock.lock()
+        shareAuthorityPreSpawnTestHook = hook
+        operationLock.unlock()
+    }
 #endif
 
     private static func recoverInterruptedLifecycleOperations(
@@ -9823,6 +9937,14 @@ private struct PreparedMachineStart {
     var definition: DoryVirtualMachineDefinition?
     var canonicalDefinitionData: Data?
     var authoritativeLegacyData: Data?
+    var shareAuthorities: [DoryMachineShareRuntimeAuthority]
+}
+
+private struct DoryMachineShareRuntimeAuthority {
+    var share: DoryMachineShareConfiguration
+    var canonicalPath: String
+    var device: UInt64
+    var inode: UInt64
 }
 
 private struct MachineWorkspaceAuthority {
@@ -9845,6 +9967,7 @@ private struct PendingResolvedMachineStart {
     var planRevision: UInt64
     var planSHA256: String
     var preSpawnAuthorization: DoryDaemonVirtualMachinePreSpawnAuthorization
+    var shareAuthorities: [DoryMachineShareRuntimeAuthority]
 }
 
 private struct MachineEntry {

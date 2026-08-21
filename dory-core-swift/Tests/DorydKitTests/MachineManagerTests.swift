@@ -2084,11 +2084,17 @@ final class MachineManagerTests: XCTestCase {
         let rows = args.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         let shareFlagIndex = try XCTUnwrap(rows.firstIndex(of: "--share"))
         let wireShare = rows[shareFlagIndex + 1]
+        var resolvedSharePath = [CChar](repeating: 0, count: Int(PATH_MAX))
+        XCTAssertNotNil(realpath(sharePath, &resolvedSharePath))
+        let canonicalSharePath = String(
+            decoding: resolvedSharePath.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) },
+            as: UTF8.self
+        )
         XCTAssertEqual(
             try DoryMachineShareConfiguration(argument: wireShare),
             DoryMachineShareConfiguration(
                 tag: "src",
-                hostPath: sharePath,
+                hostPath: canonicalSharePath,
                 guestPath: "/workspace/client: app 日本語"
             )
         )
