@@ -2112,7 +2112,7 @@ struct DockerShim: Sendable {
     private static func containerStateStatus(_ status: RunState) -> String {
         switch status {
         case .running: "running"
-        case .paused: "paused"
+        case .paused, .suspended: "paused"
         case .stopped: "exited"
         }
     }

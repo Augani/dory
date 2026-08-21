@@ -130,6 +130,7 @@ private struct MachineCard: View {
 
     private var isRunning: Bool { machine.status == .running }
     private var isPaused: Bool { machine.status == .paused }
+    private var isSuspended: Bool { machine.status == .suspended }
     private var isActive: Bool { isRunning || isPaused }
     private var hasAssignedAddress: Bool { DoryDNS.ipv4Bytes(machine.ip) != nil }
     private var fileTransfer: DorydMachineFileTransferOperation? {
@@ -213,7 +214,7 @@ private struct MachineCard: View {
             HStack(spacing: 8) {
                 actionButton(
                     isRunning ? "stop.fill" : "play.fill",
-                    isRunning ? "Stop" : (isPaused ? "Resume" : "Start"),
+                    isRunning ? "Stop" : ((isPaused || isSuspended) ? "Resume" : "Start"),
                     prominent: !isRunning
                 ) {
                     store.toggleMachine(machine)
@@ -497,6 +498,9 @@ private struct MachineCard: View {
     private var overflowMenu: some View {
         Menu {
             if isActive {
+                Button { store.suspendMachine(machine) } label: {
+                    Label("Suspend", systemImage: "moon.zzz")
+                }
                 Button { store.restartMachine(machine) } label: {
                     Label("Restart", systemImage: "arrow.clockwise")
                 }

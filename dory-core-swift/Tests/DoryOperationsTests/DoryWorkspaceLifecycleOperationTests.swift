@@ -213,6 +213,60 @@ struct DoryWorkspaceLifecycleOperationTests {
         #expect(deleteDefined.validate().isEmpty)
     }
 
+    @Test("durable suspend and same-plan saved-state restore bind exact content authority")
+    func durableSavedStateContract() {
+        let resolved = resolvedCondition()
+        let authority = snapshotAuthority()
+        var suspend = DoryWorkspaceLifecycleOperation(
+            kind: .suspending,
+            source: condition(.running, resolved: resolved),
+            target: condition(.suspended, resolved: resolved),
+            targetResourceID: DoryWorkspaceLifecycleOperation.savedStateResourceID,
+            targetSnapshotAuthority: authority,
+            createdAtUnixMilliseconds: 1_700_000_000_000,
+            deadlineUnixMilliseconds: 1_700_000_060_000,
+            steps: [step("save-machine-state", 50_000)],
+            cancellationPolicy: .rollbackRequired,
+            recovery: .init(disposition: .rollback, stepIDs: ["save-machine-state"])
+        )
+        #expect(suspend.validate().isEmpty)
+
+        suspend.targetSnapshotAuthority = nil
+        #expect(has(.invalidCondition, "targetSnapshotAuthority", suspend))
+
+        var restore = DoryWorkspaceLifecycleOperation(
+            kind: .restoring,
+            source: condition(.suspended, resolved: resolved),
+            target: condition(.running, resolved: resolved),
+            targetResourceID: DoryWorkspaceLifecycleOperation.savedStateResourceID,
+            targetSnapshotAuthority: authority,
+            createdAtUnixMilliseconds: 1_700_000_000_000,
+            deadlineUnixMilliseconds: 1_700_000_060_000,
+            steps: [step("restore-machine-state", 50_000)],
+            readinessGates: [
+                .init(kind: .backendRunning, deadlineOffsetMilliseconds: 55_000),
+            ],
+            cancellationPolicy: .rollbackRequired,
+            recovery: .init(disposition: .rollback, stepIDs: ["restore-machine-state"])
+        )
+        #expect(restore.validate().isEmpty)
+
+        restore.target.runtime?.runtimeIdentityDigest = String(repeating: "8", count: 64)
+        #expect(has(.invalidCondition, "target.runtime", restore))
+
+        let discard = DoryWorkspaceLifecycleOperation(
+            kind: .stopping,
+            source: condition(.suspended, resolved: resolved),
+            target: condition(.stopped, resolved: resolved),
+            createdAtUnixMilliseconds: 1_700_000_000_000,
+            deadlineUnixMilliseconds: 1_700_000_060_000,
+            steps: [step("discard-saved-state", 50_000)],
+            cancellationPolicy: .rollbackRequired,
+            recovery: .init(disposition: .rollback, stepIDs: ["discard-saved-state"])
+        )
+        #expect(discard.validate().isEmpty)
+    }
+
     @Test("operation identifiers reject path secret and control-like values")
     func identifierSafety() {
         var operation = makeOperation()

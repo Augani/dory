@@ -66,6 +66,7 @@ private extension MachineBackendRuntimeState {
         case .starting: self = .starting
         case .running: self = .running
         case .paused: self = .paused
+        case .suspended: self = .suspended
         case .stopped: self = .stopped
         case .failed: self = .failed
         }

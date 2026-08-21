@@ -116,7 +116,7 @@ extension MigrationOperationPlanBuilder {
         }
         switch container.status {
         case .running: return .running
-        case .paused: return .paused
+        case .paused, .suspended: return .paused
         case .stopped: return .exited
         }
     }

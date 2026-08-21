@@ -18,6 +18,7 @@ nonisolated protocol DorydControlXPC {
     func machineStart(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineStop(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machinePause(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
+    func machineSuspend(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineResume(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineRestart(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineUpdate(_ machineID: String, config: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void)
@@ -842,6 +843,15 @@ nonisolated struct DorydMachineStatus: Sendable, Equatable {
     var typedSettings: DorydMachineTypedSettings? = nil
     var runtimeIdentity: DorydMachineRuntimeIdentity = .legacyCompatibility
     var installedDesktopPayloadReceipt: DorydInstalledDesktopPayloadReceipt? = nil
+    var savedState: DorydMachineSavedStateSummary? = nil
+}
+
+nonisolated struct DorydMachineSavedStateSummary: Sendable, Equatable {
+    var stateFileSHA256: String
+    var stateFileByteCount: UInt64
+    var hostHardwareModel: String
+    var hostOperatingSystemBuild: String
+    var createdAtUnixMilliseconds: Int64
 }
 
 nonisolated struct DorydMachineExecResult: Sendable, Equatable {
@@ -1458,6 +1468,14 @@ nonisolated final class DorydClient: @unchecked Sendable {
     func machinePause(_ machineID: String) async throws -> DorydMachineStatus {
         try await withTimeout(atLeast: 30).statusCommand { proxy, reply in
             proxy.machinePause(machineID, reply: reply)
+        } decode: {
+            Self.machineStatus(from: $0)
+        }
+    }
+
+    func machineSuspend(_ machineID: String) async throws -> DorydMachineStatus {
+        try await withTimeout(atLeast: 15 * 60).statusCommand { proxy, reply in
+            proxy.machineSuspend(machineID, reply: reply)
         } decode: {
             Self.machineStatus(from: $0)
         }
@@ -2212,6 +2230,11 @@ nonisolated final class DorydClient: @unchecked Sendable {
         guard let shares = machineShares(from: dictionary["shares"]) else {
             return nil
         }
+        guard let savedState = machineSavedState(from: dictionary["savedState"]),
+              state != "suspended" || savedState.value != nil,
+              savedState.value == nil || ["suspended", "starting", "running"].contains(state) else {
+            return nil
+        }
         let displayMode = (dictionary["displayMode"] as? String)
             .flatMap(MachineDisplayMode.init(rawValue:)) ?? .headless
         let agentBuild = nonEmptyString(dictionary["agentBuild"])
@@ -2263,8 +2286,49 @@ nonisolated final class DorydClient: @unchecked Sendable {
             environment: environment,
             typedSettings: typedSettings.value,
             runtimeIdentity: runtimeIdentity,
-            installedDesktopPayloadReceipt: installedDesktopPayloadReceipt.value
+            installedDesktopPayloadReceipt: installedDesktopPayloadReceipt.value,
+            savedState: savedState.value
         )
+    }
+
+    private struct ParsedMachineSavedState {
+        var value: DorydMachineSavedStateSummary?
+    }
+
+    nonisolated private static func machineSavedState(
+        from raw: Any?
+    ) -> ParsedMachineSavedState? {
+        guard let raw else { return ParsedMachineSavedState(value: nil) }
+        let expectedKeys: Set<String> = Set([
+            "schemaVersion", "backend", "stateFileSHA256", "stateFileByteCount",
+            "hostHardwareModel", "hostOperatingSystemBuild",
+            "createdAtUnixMilliseconds", "portable",
+        ])
+        guard let dictionary = raw as? NSDictionary,
+              let rawKeys = dictionary.allKeys as? [String],
+              rawKeys.count == dictionary.allKeys.count,
+              Set(rawKeys) == expectedKeys,
+              strictUInt64(dictionary["schemaVersion"]) == 1,
+              dictionary["backend"] as? String == "apple-virtualization-framework",
+              let digest = dictionary["stateFileSHA256"] as? String,
+              digest.count == 64,
+              digest.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }),
+              let byteCount = strictUInt64(dictionary["stateFileByteCount"]), byteCount > 0,
+              let hostModel = nonEmptyString(dictionary["hostHardwareModel"]),
+              hostModel.utf8.count <= 256, !hostModel.contains("\0"),
+              let hostBuild = nonEmptyString(dictionary["hostOperatingSystemBuild"]),
+              hostBuild.utf8.count <= 256, !hostBuild.contains("\0"),
+              let created = strictInt64(dictionary["createdAtUnixMilliseconds"]), created > 0,
+              let portable = dictionary["portable"] as? Bool, portable == false else {
+            return nil
+        }
+        return ParsedMachineSavedState(value: DorydMachineSavedStateSummary(
+            stateFileSHA256: digest,
+            stateFileByteCount: byteCount,
+            hostHardwareModel: hostModel,
+            hostOperatingSystemBuild: hostBuild,
+            createdAtUnixMilliseconds: created
+        ))
     }
 
     private struct ParsedMachineAgentHandshake {
@@ -3727,6 +3791,16 @@ nonisolated final class DorydClient: @unchecked Sendable {
             return nil
         }
         let decoded = number.uint64Value
+        guard number.stringValue == String(decoded) else { return nil }
+        return decoded
+    }
+
+    nonisolated private static func strictInt64(_ value: Any?) -> Int64? {
+        guard let number = value as? NSNumber,
+              CFGetTypeID(number) != CFBooleanGetTypeID() else {
+            return nil
+        }
+        let decoded = number.int64Value
         guard number.stringValue == String(decoded) else { return nil }
         return decoded
     }

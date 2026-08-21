@@ -96,6 +96,7 @@ public final class HvProcess: @unchecked Sendable {
     private var restartCount = 0
     private var restartPending = false
     private var restartsEnabled = true
+    private var expectedExitPreviousRestartsEnabled: Bool?
     private var lastTerminationStatus: Int32?
     private var lastLaunchError: String?
 
@@ -160,6 +161,7 @@ public final class HvProcess: @unchecked Sendable {
         restartCount = 0
         restartPending = false
         restartsEnabled = true
+        expectedExitPreviousRestartsEnabled = nil
         lastTerminationStatus = nil
         lastLaunchError = nil
         try launchLocked()
@@ -235,6 +237,7 @@ public final class HvProcess: @unchecked Sendable {
             restartCount += 1
         }
         restartPending = shouldRestart
+        expectedExitPreviousRestartsEnabled = nil
         delay = configuration.restartPolicy.delay(forAttempt: restartCount)
         lock.unlock()
         try? oldLog?.close()
@@ -286,6 +289,39 @@ public final class HvProcess: @unchecked Sendable {
         restartsEnabled = false
         restartPending = false
         lock.unlock()
+    }
+
+    /// Marks the next helper exit as an expected lifecycle transition without sending a signal.
+    /// Used after a saved-state command has been accepted: dory-vmm exits itself only after the
+    /// VZ payload is complete. The caller must cancel this expectation if the command fails.
+    public func prepareForExpectedExit() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard process?.isRunning == true, !stopping else { return false }
+        stopping = true
+        expectedExitPreviousRestartsEnabled = nil
+        expectedExitPreviousRestartsEnabled = restartsEnabled
+        restartsEnabled = false
+        restartPending = false
+        return true
+    }
+
+    public func cancelExpectedExit() {
+        lock.lock()
+        if process?.isRunning == true {
+            stopping = false
+            restartsEnabled = expectedExitPreviousRestartsEnabled ?? restartsEnabled
+        }
+        expectedExitPreviousRestartsEnabled = nil
+        lock.unlock()
+    }
+
+    public func waitForExpectedExit(timeout: TimeInterval) -> Bool {
+        lock.lock()
+        let waiter = terminationWaiter
+        lock.unlock()
+        guard let waiter else { return true }
+        return waiter.wait(timeout: .now() + max(0, timeout)) == .success
     }
 
     public var isSuspended: Bool {

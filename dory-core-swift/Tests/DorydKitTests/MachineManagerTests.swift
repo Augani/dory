@@ -4014,6 +4014,7 @@ final class MachineManagerTests: XCTestCase {
                 passMachineArguments: false,
                 requiresReadyHandoff: true
             ),
+            vzLifecycleController: NoopMachineVZLifecycleController(),
             agentConnector: connector.connect(socketPath:)
         )
         defer {
@@ -4209,6 +4210,14 @@ final class MachineManagerTests: XCTestCase {
         }
         wait(for: [lockReleased], timeout: 1)
         XCTAssertEqual(manager.status(id: "dev")?.state, .created)
+    }
+}
+
+private struct NoopMachineVZLifecycleController: MachineVZLifecycleControlling {
+    func pause(socketPath: String) throws {}
+    func resume(socketPath: String) throws {}
+    func saveMachineState(socketPath: String, statePath: String) throws {
+        throw MachineManagerError.persistence("saved state is not available in this test")
     }
 }
 

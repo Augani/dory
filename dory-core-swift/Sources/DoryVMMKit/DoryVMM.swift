@@ -38,6 +38,7 @@ public struct DoryVMMArguments: Sendable, Equatable {
     public var agentSocketPath: String?
     public var shellSocketPath: String?
     public var controlSocketPath: String?
+    public var restoreStatePath: String?
     public var agentBuild = "dory-vmm/handoff-shim"
     public var detail = "helper handoff ready"
     public var memoryMB: UInt64 = 2048
@@ -168,6 +169,8 @@ public func parseDoryVMMArguments(_ raw: [String]) throws -> DoryVMMArguments {
             parsed.shellSocketPath = try value(after: argument, from: raw, index: &index)
         case "--control-sock":
             parsed.controlSocketPath = try value(after: argument, from: raw, index: &index)
+        case "--restore-state":
+            parsed.restoreStatePath = try value(after: argument, from: raw, index: &index)
         case "--agent-build":
             parsed.agentBuild = try value(after: argument, from: raw, index: &index)
         case "--detail":
@@ -969,6 +972,7 @@ public enum DoryVMMMain {
                 publishHost: arguments.publishHost,
                 bridgeSubnetCIDR: arguments.bridgeSubnetCIDR,
                 dataDriveRoot: arguments.dataDriveRoot,
+                restoreStatePath: arguments.restoreStatePath,
                 onRuntimeCreated: { coordinator.attach($0) }
             )
         }
@@ -1063,6 +1067,7 @@ public enum DoryVMMMain {
         publishHost: String,
         bridgeSubnetCIDR: String,
         dataDriveRoot: String?,
+        restoreStatePath: String?,
         onRuntimeCreated: (DoryVMMRuntime) -> Void
     ) throws -> DoryVMMRuntime {
         try FileManager.default.createDirectory(atPath: stateDirectory, withIntermediateDirectories: true)
@@ -1182,7 +1187,11 @@ public enum DoryVMMMain {
         )
         try validate(configuration: configuration)
         let machine = DoryVZMachine(configuration: configuration, label: machineID)
-        try machine.start()
+        if let restoreStatePath {
+            try machine.restoreMachineState(from: restoreStatePath)
+        } else {
+            try machine.start()
+        }
         let sshAgentBridge: DoryVZHostSSHAgentBridge?
         let sandboxSSHAgentDenied = environment["DORY_SANDBOX"] == "1"
             && environment["DORY_SANDBOX_SSH_AGENT"] != "1"
@@ -1198,7 +1207,11 @@ public enum DoryVMMMain {
             sshAgentBridge = nil
         }
 
-        let controlServer = try DoryVMMControlServer(machine: machine, localSocketPath: controlSocketPath)
+        let controlServer = try DoryVMMControlServer(
+            machine: machine,
+            localSocketPath: controlSocketPath,
+            stateDirectory: stateDirectory
+        )
         let dockerdProxy = try DoryVZPortUnixProxy(
             machine: machine,
             guestPort: DoryGuestPorts.docker,
@@ -1255,6 +1268,10 @@ public enum DoryVMMMain {
         runtime.portForwarder?.start()
         onRuntimeCreated(runtime)
 
+        if restoreStatePath != nil {
+            try machine.resume()
+        }
+
         if bootMode == .efi {
             try sendHandoff(
                 machineID: machineID,
@@ -1278,7 +1295,8 @@ public enum DoryVMMMain {
             displayMode: displayMode,
             environment: environment,
             shares: shares,
-            resolvedDevices: resolvedDevices
+            resolvedDevices: resolvedDevices,
+            restoringSavedState: restoreStatePath != nil
         )
         // For the Docker VM, this handoff means VM + guest-agent readiness. doryd owns the next
         // ordered stages (data mount, route/resolver, dockerd /version, and host socket), so a VMM
@@ -1305,7 +1323,8 @@ public enum DoryVMMMain {
         displayMode: DoryMachineDisplayMode,
         environment: [String: String],
         shares: [DoryMachineShareConfiguration],
-        resolvedDevices: DoryVirtualMachineDeviceCapabilityRequest?
+        resolvedDevices: DoryVirtualMachineDeviceCapabilityRequest?,
+        restoringSavedState: Bool
     ) throws -> DoryAgentInfo {
         let fd = dup(connection.fileDescriptor)
         guard fd >= 0 else {
@@ -1314,6 +1333,7 @@ public enum DoryVMMMain {
         let control = try DoryCore.connectAgentControlOverFD(fd)
         defer { control.close() }
         let info = try control.info()
+        if restoringSavedState { return info }
         guard displayMode == .desktop else { return info }
 
         if let display = resolvedDevices?.display {
@@ -1726,11 +1746,13 @@ private final class DoryVZMachineStopObserver: NSObject, VZVirtualMachineDelegat
 
 public final class DoryVZMachine: @unchecked Sendable {
     private let queue: DispatchQueue
+    private let configuration: VZVirtualMachineConfiguration
     private let virtualMachine: VZVirtualMachine
     private let stopObserver: DoryVZMachineStopObserver
 
     public init(configuration: VZVirtualMachineConfiguration, label: String) {
         self.queue = DispatchQueue(label: "dev.dory.dory-vmm.\(label)")
+        self.configuration = configuration
         self.stopObserver = DoryVZMachineStopObserver()
         self.virtualMachine = VZVirtualMachine(configuration: configuration, queue: queue)
         self.queue.sync {
@@ -1743,6 +1765,115 @@ public final class DoryVZMachine: @unchecked Sendable {
         queue.async { [self] in
             self.virtualMachine.start { result in
                 box.complete(result.map { _ in () })
+            }
+        }
+        try box.wait()
+    }
+
+    public func pause() throws {
+        let box = BlockingResultBox<Void>()
+        queue.async { [self] in
+            guard virtualMachine.state == .running else {
+                box.complete(.failure(DoryVZMachineError.validation(
+                    "virtual machine is not running"
+                )))
+                return
+            }
+            virtualMachine.pause { box.complete($0) }
+        }
+        try box.wait()
+    }
+
+    public func resume() throws {
+        let box = BlockingResultBox<Void>()
+        queue.async { [self] in
+            guard virtualMachine.state == .paused else {
+                box.complete(.failure(DoryVZMachineError.validation(
+                    "virtual machine is not paused"
+                )))
+                return
+            }
+            virtualMachine.resume { box.complete($0) }
+        }
+        try box.wait()
+    }
+
+    /// Saves the current VZ execution state and reports whether this call temporarily paused a
+    /// running machine. The control server uses that fact to restore the original power state if
+    /// it cannot deliver the successful response to doryd.
+    @discardableResult
+    public func saveMachineState(to path: String) throws -> Bool {
+        let url = URL(fileURLWithPath: path)
+        let box = BlockingResultBox<Bool>()
+        queue.async { [self] in
+            do {
+                try configuration.validateSaveRestoreSupport()
+            } catch {
+                box.complete(.failure(error))
+                return
+            }
+            let save = { (resumeOnFailure: Bool) in
+                self.virtualMachine.saveMachineStateTo(url: url) { error in
+                    guard let error else {
+                        box.complete(.success(resumeOnFailure))
+                        return
+                    }
+                    guard resumeOnFailure else {
+                        box.complete(.failure(error))
+                        return
+                    }
+                    // Saving a running machine requires an internal pause. If persistence fails,
+                    // undo that pause so the daemon's still-running lifecycle state remains true.
+                    self.virtualMachine.resume { resumeResult in
+                        switch resumeResult {
+                        case .success:
+                            box.complete(.failure(error))
+                        case .failure(let resumeError):
+                            box.complete(.failure(DoryVZMachineError.validation(
+                                "saved-state write failed (\(error)); virtual machine resume also failed (\(resumeError))"
+                            )))
+                        }
+                    }
+                }
+            }
+            switch virtualMachine.state {
+            case .paused:
+                save(false)
+            case .running:
+                virtualMachine.pause { result in
+                    switch result {
+                    case .success: save(true)
+                    case .failure(let error): box.complete(.failure(error))
+                    }
+                }
+            default:
+                box.complete(.failure(DoryVZMachineError.validation(
+                    "virtual machine must be running or paused before saving state"
+                )))
+            }
+        }
+        return try box.wait()
+    }
+
+    public func restoreMachineState(from path: String) throws {
+        let url = URL(fileURLWithPath: path)
+        let box = BlockingResultBox<Void>()
+        queue.async { [self] in
+            do {
+                try configuration.validateSaveRestoreSupport()
+            } catch {
+                box.complete(.failure(error))
+                return
+            }
+            guard virtualMachine.state == .stopped else {
+                box.complete(.failure(DoryVZMachineError.validation(
+                    "virtual machine must be stopped before restoring state"
+                )))
+                return
+            }
+            virtualMachine.restoreMachineStateFrom(url: url) { error in
+                if let error { box.complete(.failure(error)) }
+                else { box.complete(.success(())) }
             }
         }
         try box.wait()
@@ -1999,14 +2130,20 @@ final class DoryVZHostSSHAgentBridge: NSObject, VZVirtioSocketListenerDelegate, 
 private final class DoryVMMControlServer: @unchecked Sendable {
     private let machine: DoryVZMachine
     private let localSocketPath: String
+    private let stateDirectory: String
     private let queue: DispatchQueue
     private let lock = NSLock()
     private var listenerFD: Int32 = -1
     private var running = false
 
-    init(machine: DoryVZMachine, localSocketPath: String) throws {
+    init(
+        machine: DoryVZMachine,
+        localSocketPath: String,
+        stateDirectory: String
+    ) throws {
         self.machine = machine
         self.localSocketPath = localSocketPath
+        self.stateDirectory = URL(fileURLWithPath: stateDirectory).standardizedFileURL.path
         self.queue = DispatchQueue(label: "dev.dory.dory-vmm.control")
     }
 
@@ -2075,9 +2212,14 @@ private final class DoryVMMControlServer: @unchecked Sendable {
     private func handle(clientFD: Int32) {
         defer { close(clientFD) }
         let response: VmmControlResponse
+        var exitAfterResponse = false
+        var resumeAfterResponseFailure = false
         do {
             let request = try readRequest(from: clientFD)
-            response = try handle(request: request)
+            let handled = try handle(request: request)
+            response = handled.response
+            exitAfterResponse = handled.exitAfterResponse
+            resumeAfterResponseFailure = handled.resumeAfterResponseFailure
         } catch {
             response = VmmControlResponse(ok: false, message: "\(error)")
         }
@@ -2085,20 +2227,89 @@ private final class DoryVMMControlServer: @unchecked Sendable {
             try writeResponse(response, to: clientFD)
         } catch {
             FileHandle.standardError.write(Data("dory-vmm: control response failed: \(error)\n".utf8))
+            if resumeAfterResponseFailure {
+                do {
+                    try machine.resume()
+                } catch {
+                    FileHandle.standardError.write(Data(
+                        "dory-vmm: failed to resume after saved-state response failure: \(error)\n".utf8
+                    ))
+                    // The daemon cannot safely continue to advertise this helper as running when
+                    // the internally-paused VZ machine could not be resumed.
+                    exit(1)
+                }
+            }
+            return
+        }
+        if exitAfterResponse {
+            // The caller marks this helper exit as expected before issuing the command. Delay
+            // until the accepted response has reached the socket buffer, then tear down the VZ
+            // process; the daemon verifies, fsyncs, hashes, and publishes the completed file.
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.05) {
+                exit(0)
+            }
         }
     }
 
-    private func handle(request: VmmControlRequest) throws -> VmmControlResponse {
+    private struct HandledControlResponse {
+        var response: VmmControlResponse
+        var exitAfterResponse = false
+        var resumeAfterResponseFailure = false
+    }
+
+    private func handle(request: VmmControlRequest) throws -> HandledControlResponse {
         switch request.command {
         case "setBalloonTarget":
             guard let targetMB = request.targetMB, targetMB > 0 else {
-                return VmmControlResponse(ok: false, message: "missing positive targetMB")
+                return HandledControlResponse(
+                    response: VmmControlResponse(ok: false, message: "missing positive targetMB")
+                )
             }
             let appliedMB = try machine.setBalloonTarget(memoryMB: targetMB)
-            return VmmControlResponse(ok: true, targetMB: appliedMB)
+            return HandledControlResponse(
+                response: VmmControlResponse(ok: true, targetMB: appliedMB)
+            )
+        case "pauseMachine":
+            try machine.pause()
+            return HandledControlResponse(response: VmmControlResponse(ok: true))
+        case "resumeMachine":
+            try machine.resume()
+            return HandledControlResponse(response: VmmControlResponse(ok: true))
+        case "saveMachineState":
+            guard let path = request.statePath,
+                  let accepted = acceptedSavedStatePath(path) else {
+                return HandledControlResponse(
+                    response: VmmControlResponse(
+                        ok: false,
+                        message: "saved-state path is outside the private machine state directory"
+                    )
+                )
+            }
+            let pausedRunningMachine = try machine.saveMachineState(to: accepted)
+            return HandledControlResponse(
+                response: VmmControlResponse(ok: true),
+                exitAfterResponse: true,
+                resumeAfterResponseFailure: pausedRunningMachine
+            )
         default:
-            return VmmControlResponse(ok: false, message: "unknown VMM control command: \(request.command)")
+            return HandledControlResponse(
+                response: VmmControlResponse(
+                    ok: false,
+                    message: "unknown VMM control command: \(request.command)"
+                )
+            )
         }
+    }
+
+    private func acceptedSavedStatePath(_ path: String) -> String? {
+        guard path.hasPrefix("/"), !path.contains("\0") else { return nil }
+        let canonical = URL(fileURLWithPath: path).standardizedFileURL.path
+        let allowedDirectory = stateDirectory + "/saved-state-v1"
+        guard (canonical as NSString).deletingLastPathComponent == allowedDirectory,
+              (canonical as NSString).lastPathComponent.hasPrefix("state.tmp-") else {
+            return nil
+        }
+        return canonical
     }
 
     private func isRunning(listenerFD: Int32) -> Bool {

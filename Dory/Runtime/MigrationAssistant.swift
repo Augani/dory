@@ -1905,7 +1905,7 @@ enum MigrationAssistant {
                     } else {
                         try await target.start(containerID: created.id)
                     }
-                case .paused:
+                case .paused, .suspended:
                     if hasFixedHostPort(created.spec) {
                         summary.containersAwaitingSourcePorts.append(created.container.name)
                         summary.warnings.append(

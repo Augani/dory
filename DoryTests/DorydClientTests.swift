@@ -565,6 +565,60 @@ struct DorydClientTests {
         }
     }
 
+    @Test func machineListRequiresExactSavedStateEvidenceForSuspendedRows() async throws {
+        let listener = NSXPCListener.anonymous()
+        let service = FakeDorydService()
+        let delegate = FakeDorydListenerDelegate(service: service)
+        listener.delegate = delegate
+        listener.resume()
+        defer { listener.invalidate() }
+
+        let client = DorydClient(endpoint: listener.endpoint)
+        let valid: NSDictionary = [
+            "schemaVersion": 1,
+            "backend": "apple-virtualization-framework",
+            "stateFileSHA256": String(repeating: "b", count: 64),
+            "stateFileByteCount": UInt64(8192),
+            "hostHardwareModel": "Mac16,1",
+            "hostOperatingSystemBuild": "25G90",
+            "createdAtUnixMilliseconds": Int64(1_787_318_400_000),
+            "portable": false,
+        ]
+        service.setMachineState("dev", "suspended")
+        service.setMachineSavedState("dev", valid)
+
+        let suspended = try #require((try await client.machineList()).first { $0.id == "dev" })
+        #expect(suspended.state == "suspended")
+        #expect(suspended.savedState?.stateFileSHA256 == String(repeating: "b", count: 64))
+        #expect(suspended.savedState?.stateFileByteCount == 8192)
+
+        let malformed = valid.mutableCopy() as! NSMutableDictionary
+        malformed["unknown"] = "claim"
+        service.setMachineSavedState("dev", malformed)
+        await #expect(throws: (any Error).self) {
+            _ = try await client.machineList()
+        }
+
+        let wrongWireType = valid.mutableCopy() as! NSMutableDictionary
+        wrongWireType["schemaVersion"] = "1"
+        service.setMachineSavedState("dev", wrongWireType)
+        await #expect(throws: (any Error).self) {
+            _ = try await client.machineList()
+        }
+
+        let nonStringKey = valid.mutableCopy() as! NSMutableDictionary
+        nonStringKey[NSNumber(value: 9)] = "claim"
+        service.setMachineSavedState("dev", nonStringKey)
+        await #expect(throws: (any Error).self) {
+            _ = try await client.machineList()
+        }
+
+        service.setMachineSavedState("dev", nil)
+        await #expect(throws: (any Error).self) {
+            _ = try await client.machineList()
+        }
+    }
+
     @MainActor
     @Test func readsDoctorJSONAndIncidentsOverXPC() async throws {
         let listener = NSXPCListener.anonymous()
@@ -1941,6 +1995,20 @@ struct DorydClientTests {
             store.machines.first { $0.name == "dev" }?.status == .running
         }
         #expect(service.machineResumeCount == 1)
+
+        machine = try #require(store.machines.first { $0.name == "dev" })
+        store.suspendMachine(machine)
+        try await waitUntil {
+            store.machines.first { $0.name == "dev" }?.status == .suspended
+        }
+        #expect(service.machineSuspendCount == 1)
+
+        machine = try #require(store.machines.first { $0.name == "dev" })
+        store.toggleMachine(machine)
+        try await waitUntil {
+            store.machines.first { $0.name == "dev" }?.status == .running
+        }
+        #expect(service.machineResumeCount == 2)
 
         machine = try #require(store.machines.first { $0.name == "dev" })
         store.restartMachine(machine)
@@ -3357,6 +3425,7 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     private var _machineStartCount = 0
     private var _machineStopCount = 0
     private var _machinePauseCount = 0
+    private var _machineSuspendCount = 0
     private var _machineResumeCount = 0
     private var _machineRestartCount = 0
     private var _machineDeleteCount = 0
@@ -3583,6 +3652,20 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         machines[machineID] = current.copy() as? NSDictionary
     }
 
+    func setMachineSavedState(_ machineID: String, _ savedState: Any?) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let current = machines[machineID]?.mutableCopy() as? NSMutableDictionary else {
+            return
+        }
+        if let savedState {
+            current["savedState"] = savedState
+        } else {
+            current.removeObject(forKey: "savedState")
+        }
+        machines[machineID] = current.copy() as? NSDictionary
+    }
+
     var machineStopCount: Int {
         lock.lock(); defer { lock.unlock() }
         return _machineStopCount
@@ -3590,6 +3673,10 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     var machinePauseCount: Int {
         lock.lock(); defer { lock.unlock() }
         return _machinePauseCount
+    }
+    var machineSuspendCount: Int {
+        lock.lock(); defer { lock.unlock() }
+        return _machineSuspendCount
     }
     var machineResumeCount: Int {
         lock.lock(); defer { lock.unlock() }
@@ -3882,6 +3969,26 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
             environment: Self.environmentRows(current?["env"])
         )
         _machinePauseCount += 1
+        machines[machineID] = row
+        lock.unlock()
+        reply(true, row, "")
+    }
+
+    func machineSuspend(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void) {
+        lock.lock()
+        let current = machines[machineID]
+        let row = Self.machineRow(
+            id: machineID,
+            state: "suspended",
+            memoryMB: Self.uint64(current?["memoryMB"]) ?? 2048,
+            cpuCount: Self.int(current?["cpuCount"]) ?? 2,
+            address: current?["address"] as? String,
+            displayMode: current?["displayMode"] as? String ?? "headless",
+            shares: Self.shareRows(current?["shares"]),
+            environment: Self.environmentRows(current?["env"]),
+            savedState: Self.savedStateRow
+        )
+        _machineSuspendCount += 1
         machines[machineID] = row
         lock.unlock()
         reply(true, row, "")
@@ -4700,7 +4807,8 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         address: String? = nil,
         displayMode: String = "headless",
         shares: [NSDictionary] = [],
-        environment: [NSDictionary] = []
+        environment: [NSDictionary] = [],
+        savedState: NSDictionary? = nil
     ) -> NSDictionary {
         var row: [String: Any] = [
             "id": id,
@@ -4731,8 +4839,22 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         }
         row["shares"] = shares
         row["env"] = environment
+        if let savedState {
+            row["savedState"] = savedState
+        }
         return row as NSDictionary
     }
+
+    private static let savedStateRow: NSDictionary = [
+        "schemaVersion": 1,
+        "backend": "apple-virtualization-framework",
+        "stateFileSHA256": String(repeating: "a", count: 64),
+        "stateFileByteCount": UInt64(4096),
+        "hostHardwareModel": "Mac16,1",
+        "hostOperatingSystemBuild": "25G90",
+        "createdAtUnixMilliseconds": Int64(1_787_318_400_000),
+        "portable": false,
+    ]
 
     private static func shareRows(_ value: Any?) -> [NSDictionary] {
         if let rows = value as? [NSDictionary] {

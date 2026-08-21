@@ -41,12 +41,13 @@ enum AppSection: String, CaseIterable, Identifiable, Sendable {
 }
 
 enum RunState: String, Sendable {
-    case running, paused, stopped
+    case running, paused, suspended, stopped
 
     var label: String {
         switch self {
         case .running: "Running"
         case .paused: "Paused"
+        case .suspended: "Suspended"
         case .stopped: "Stopped"
         }
     }
@@ -55,6 +56,7 @@ enum RunState: String, Sendable {
         switch self {
         case .running: p.green
         case .paused: p.amber
+        case .suspended: p.accent
         case .stopped: p.text3
         }
     }
@@ -63,6 +65,7 @@ enum RunState: String, Sendable {
         switch self {
         case .running: p.greenWeak
         case .paused: p.amberWeak
+        case .suspended: p.accentSoft
         case .stopped: p.pill
         }
     }

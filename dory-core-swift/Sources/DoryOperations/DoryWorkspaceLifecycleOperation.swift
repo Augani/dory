@@ -464,6 +464,7 @@ public struct DoryWorkspaceLifecycleJournalBinding: Sendable, Equatable {
 public struct DoryWorkspaceLifecycleOperation: Codable, Sendable, Equatable {
     public static let oldestSupportedSchemaVersion: UInt16 = 1
     public static let schemaVersion: UInt16 = 2
+    public static let savedStateResourceID = "saved-state-v1"
 
     public var schemaVersion: UInt16
     public var sourceSchemaVersion: UInt16
@@ -472,9 +473,9 @@ public struct DoryWorkspaceLifecycleOperation: Codable, Sendable, Equatable {
     public var source: DoryWorkspaceLifecycleCondition
     public var target: DoryWorkspaceLifecycleCondition
     public var targetWorkspaceID: String?
-    /// Stable snapshot or clone identity needed for deterministic recovery; never a host path.
+    /// Stable snapshot, saved-state, or clone identity needed for deterministic recovery; never a host path.
     public var targetResourceID: String?
-    /// Exact content authority for snapshot/restore resources when supplied by the executor.
+    /// Exact content authority for snapshot, saved-state, and restore resources.
     public var targetSnapshotAuthority: DoryWorkspaceSnapshotAuthority?
     public var createdAtUnixMilliseconds: Int64
     public var deadlineUnixMilliseconds: Int64
@@ -564,6 +565,7 @@ public struct DoryWorkspaceLifecycleOperation: Codable, Sendable, Equatable {
         }
         if sourceSchemaVersion == Self.schemaVersion,
            kind == .restoring,
+           targetResourceID != Self.savedStateResourceID,
            source.runtime?.policy == .requireResolvedPlan,
            target.runtime?.authorizationState != .requiresReplanning {
             add(.invalidCondition, "target.runtime.authorizationState")
@@ -571,6 +573,10 @@ public struct DoryWorkspaceLifecycleOperation: Codable, Sendable, Equatable {
         if source.runtime?.policy != target.runtime?.policy,
            kind != .importing, kind != .provisioning, kind != .resolving {
             add(.invalidCondition, "target.runtime.policy")
+        }
+        if kind == .restoring, targetResourceID == Self.savedStateResourceID,
+           !Self.hasSameRuntimePlan(source.runtime, target.runtime) {
+            add(.invalidCondition, "target.runtime")
         }
         if sourceSchemaVersion == Self.schemaVersion {
             if source.state != .absent, source.configurationAuthority == nil {
@@ -591,7 +597,8 @@ public struct DoryWorkspaceLifecycleOperation: Codable, Sendable, Equatable {
         } else if targetWorkspaceID != nil {
             add(.invalidTargetWorkspace, "targetWorkspaceID")
         }
-        let requiresResourceID = kind == .snapshotting || kind == .restoring || kind == .cloning
+        let requiresResourceID = kind == .snapshotting || kind == .suspending
+            || kind == .restoring || kind == .cloning
         if requiresResourceID {
             if sourceSchemaVersion == Self.schemaVersion,
                targetResourceID.map(DoryOperationJournalStore.isToken) != true {
@@ -600,7 +607,8 @@ public struct DoryWorkspaceLifecycleOperation: Codable, Sendable, Equatable {
         } else if targetResourceID != nil {
             add(.invalidTargetWorkspace, "targetResourceID")
         }
-        let requiresSnapshotAuthority = kind == .snapshotting || kind == .restoring
+        let requiresSnapshotAuthority = kind == .snapshotting || kind == .suspending
+            || kind == .restoring
         if sourceSchemaVersion == Self.schemaVersion, requiresSnapshotAuthority {
             if targetSnapshotAuthority?.isValid != true || targetResourceID == nil {
                 add(.invalidCondition, "targetSnapshotAuthority")
@@ -868,7 +876,9 @@ public struct DoryWorkspaceLifecycleOperation: Codable, Sendable, Equatable {
         case .resolving:
             source != .absent && source != .deleting && target == source
         case .starting: source == .stopped && target == .running
-        case .stopping: (source == .running || source == .paused) && target == .stopped
+        case .stopping:
+            (source == .running || source == .paused || source == .suspended)
+                && target == .stopped
         case .pausing: source == .running && target == .paused
         case .resuming: source == .paused && target == .running
         case .suspending:

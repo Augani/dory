@@ -170,6 +170,7 @@ public enum MachineBackendRuntimeState: String, Codable, Sendable, Equatable, Ha
     case starting
     case running
     case paused
+    case suspended
     case stopped
     case failed
 }

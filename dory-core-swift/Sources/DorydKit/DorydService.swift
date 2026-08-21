@@ -296,6 +296,15 @@ public final class DorydService: NSObject, DorydControl {
         }
     }
 
+    public func machineSuspend(
+        _ machineID: String,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        machineControl(machineID, action: "suspend", reply: reply) { manager, id in
+            try manager.suspend(id: id)
+        }
+    }
+
     public func machineResume(
         _ machineID: String,
         reply: @escaping (Bool, NSDictionary, String) -> Void
@@ -2140,6 +2149,18 @@ private extension DoryMachineStatus {
         if let installedDesktopPayloadReceipt {
             dictionary["installedDesktopPayloadReceipt"] =
                 installedDesktopPayloadReceipt.xpcDictionary
+        }
+        if let savedState {
+            dictionary["savedState"] = [
+                "schemaVersion": savedState.schemaVersion,
+                "backend": savedState.backend.rawValue,
+                "stateFileSHA256": savedState.stateFileSHA256,
+                "stateFileByteCount": savedState.stateFileByteCount,
+                "hostHardwareModel": savedState.hostHardwareModel,
+                "hostOperatingSystemBuild": savedState.hostOperatingSystemBuild,
+                "createdAtUnixMilliseconds": savedState.createdAtUnixMilliseconds,
+                "portable": false,
+            ] as NSDictionary
         }
         return dictionary as NSDictionary
     }

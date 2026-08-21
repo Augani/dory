@@ -1192,6 +1192,15 @@ final class DorydServiceTests: XCTestCase {
         }
         wait(for: [resume], timeout: 5)
 
+        let suspend = expectation(description: "machineSuspend fail-closed reply")
+        proxy.machineSuspend("dev") { ok, body, message in
+            XCTAssertFalse(ok)
+            XCTAssertTrue(message.contains("durable suspend requires"), message)
+            XCTAssertEqual(body.count, 0)
+            suspend.fulfill()
+        }
+        wait(for: [suspend], timeout: 5)
+
         let restart = expectation(description: "machineRestart reply")
         proxy.machineRestart("dev") { ok, body, message in
             XCTAssertTrue(ok, message)

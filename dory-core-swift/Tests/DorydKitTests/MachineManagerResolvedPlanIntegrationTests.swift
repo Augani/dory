@@ -181,11 +181,14 @@ struct MachineManagerResolvedPlanIntegrationTests {
             _ = try manager.start(id: "dev")
             #expect(starter.count == 1)
             let deadline = Date().addingTimeInterval(2)
-            while !FileManager.default.fileExists(atPath: capture), Date() < deadline {
+            var arguments: [String] = []
+            while Date() < deadline {
+                if let contents = try? String(contentsOfFile: capture, encoding: .utf8) {
+                    arguments = contents.split(separator: "\n").map(String.init)
+                    if arguments.contains("--resolved-devices") { break }
+                }
                 Thread.sleep(forTimeInterval: 0.01)
             }
-            let arguments = try String(contentsOfFile: capture, encoding: .utf8)
-                .split(separator: "\n").map(String.init)
             func value(after flag: String) throws -> String {
                 let index = try #require(arguments.firstIndex(of: flag))
                 return arguments[index + 1]

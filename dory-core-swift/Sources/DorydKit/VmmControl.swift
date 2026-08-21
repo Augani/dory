@@ -4,14 +4,23 @@ import Foundation
 public struct VmmControlRequest: Sendable, Equatable, Codable {
     public var command: String
     public var targetMB: UInt64?
+    public var statePath: String?
 
-    public init(command: String, targetMB: UInt64? = nil) {
+    public init(command: String, targetMB: UInt64? = nil, statePath: String? = nil) {
         self.command = command
         self.targetMB = targetMB
+        self.statePath = statePath
     }
 
     public static func setBalloonTarget(_ targetMB: UInt64) -> VmmControlRequest {
         VmmControlRequest(command: "setBalloonTarget", targetMB: targetMB)
+    }
+
+    public static let pauseMachine = VmmControlRequest(command: "pauseMachine")
+    public static let resumeMachine = VmmControlRequest(command: "resumeMachine")
+
+    public static func saveMachineState(to statePath: String) -> VmmControlRequest {
+        VmmControlRequest(command: "saveMachineState", statePath: statePath)
     }
 }
 
@@ -54,6 +63,48 @@ public protocol MachineBalloonControlling: Sendable {
     func setBalloonTarget(socketPath: String, targetMB: UInt64) throws
 }
 
+/// Daemon-side client for lifecycle operations that must execute inside the VZ helper process.
+/// Raw-HV helpers intentionally do not expose this socket and therefore cannot claim saved-state
+/// support. Paths are daemon-owned private workspace paths, never client input.
+public protocol MachineVZLifecycleControlling: Sendable {
+    func pause(socketPath: String) throws
+    func resume(socketPath: String) throws
+    func saveMachineState(socketPath: String, statePath: String) throws
+}
+
+public struct UnixMachineVZLifecycleController: MachineVZLifecycleControlling {
+    public init() {}
+
+    public func pause(socketPath: String) throws {
+        try requireAccepted(.pauseMachine, socketPath: socketPath)
+    }
+
+    public func resume(socketPath: String) throws {
+        try requireAccepted(.resumeMachine, socketPath: socketPath)
+    }
+
+    public func saveMachineState(socketPath: String, statePath: String) throws {
+        try requireAccepted(
+            .saveMachineState(to: statePath),
+            socketPath: socketPath,
+            timeoutSeconds: 10 * 60
+        )
+    }
+
+    private func requireAccepted(
+        _ request: VmmControlRequest,
+        socketPath: String,
+        timeoutSeconds: TimeInterval = 5
+    ) throws {
+        let response = try VmmControlClient.send(
+            socketPath: socketPath,
+            request: request,
+            timeoutSeconds: timeoutSeconds
+        )
+        guard response.ok else { throw VmmControlError.rejected(response.message) }
+    }
+}
+
 public struct UnixMachineBalloonController: MachineBalloonControlling {
     public init() {}
 
@@ -69,15 +120,17 @@ public struct UnixMachineBalloonController: MachineBalloonControlling {
 }
 
 public enum VmmControlClient {
-    private static let socketTimeoutSeconds: TimeInterval = 5
-
-    public static func send(socketPath: String, request: VmmControlRequest) throws -> VmmControlResponse {
+    public static func send(
+        socketPath: String,
+        request: VmmControlRequest,
+        timeoutSeconds: TimeInterval = 5
+    ) throws -> VmmControlResponse {
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { throw VmmControlError.syscall("socket", errno) }
         defer { close(fd) }
 
         // Bound write/read so a wedged dory-vmm can't block the reconcile thread forever.
-        try setSocketTimeouts(fd: fd, seconds: socketTimeoutSeconds)
+        try setSocketTimeouts(fd: fd, seconds: timeoutSeconds)
 
         var address = try unixAddress(path: socketPath)
         let connected = withUnsafePointer(to: &address) { pointer in

@@ -210,6 +210,7 @@ final class DoryVMMKitTests: XCTestCase {
             "--agent-sock", "/tmp/agent.sock",
             "--shell-sock", "/tmp/shell.sock",
             "--control-sock", "/tmp/control.sock",
+            "--restore-state", "/tmp/dory-machine-dev/saved-state-v1/state.bin",
             "--share", "src=/tmp/src:/workspace/src:ro",
             "--env", "APP_ENV=dev",
         ])
@@ -236,6 +237,10 @@ final class DoryVMMKitTests: XCTestCase {
         XCTAssertEqual(arguments.agentSocketPath, "/tmp/agent.sock")
         XCTAssertEqual(arguments.shellSocketPath, "/tmp/shell.sock")
         XCTAssertEqual(arguments.controlSocketPath, "/tmp/control.sock")
+        XCTAssertEqual(
+            arguments.restoreStatePath,
+            "/tmp/dory-machine-dev/saved-state-v1/state.bin"
+        )
         XCTAssertEqual(arguments.shares, [
             DoryMachineShareConfiguration(tag: "src", hostPath: "/tmp/src", guestPath: "/workspace/src", readOnly: true),
         ])

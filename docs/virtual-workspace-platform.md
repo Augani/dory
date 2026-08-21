@@ -471,8 +471,11 @@ Rules:
 - resource/device changes declare whether they are live, require restart, or require an explicit
   device-ABI migration.
 
-The current `DoryMachineState` and `HvProcess` restart/readiness behavior are the compatibility
-implementation while this model is introduced.
+`DoryMachineState`, `HvProcess`, and the workspace operation journal implement this transition
+model. Durable suspend is currently qualified only for the Apple Virtualization backend: the
+daemon saves an exact VZ state file, terminates the helper, and restores only after the machine
+configuration, runtime identity, host model, OS build, and state digest all revalidate. Raw-HV
+machines reject durable suspend instead of presenting pause or cold stop as equivalent behavior.
 
 ## Device and subsystem decisions
 
@@ -613,6 +616,14 @@ Snapshot metadata contains:
 - firmware/NVRAM/machine identity/TPM/macOS auxiliary storage as applicable;
 - guest-tools build and quiesce receipt;
 - media identity, host qualification key, creation operation, and checksum tree.
+
+Backend saved state is a separate same-host execution artifact, not a portable snapshot. It is
+stored under the machine's private state namespace, bound to the exact runtime identity and
+authoritative configuration, rehashed immediately before helper spawn, and removed only after
+restore readiness succeeds. Stopping a suspended machine explicitly discards that execution state
+and returns to a cold-stopped condition. Snapshot export never includes the VZ state payload; a
+portable archive contains disk/firmware snapshot artifacts and reports that a fresh backend start
+is required on the destination.
 
 Restore is transactional: verify all content, snapshot current replaceable state or retain a
 rollback reference, materialize to temporary names, fsync, atomically publish, then boot-verify.

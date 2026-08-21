@@ -5187,6 +5187,8 @@ final class AppStore {
             runState = .running
         case "paused", "starting":
             runState = .paused
+        case "suspended":
+            runState = .suspended
         default:
             runState = .stopped
         }
@@ -6019,6 +6021,8 @@ final class AppStore {
                     _ = try await dorydClient.machineStop(name)
                 case .paused:
                     _ = try await dorydClient.machineResume(name)
+                case .suspended:
+                    _ = try await dorydClient.machineResume(name)
                 case .stopped:
                     _ = try await dorydClient.machineStart(name)
                 }
@@ -6026,6 +6030,7 @@ final class AppStore {
                 let action = switch previousState {
                 case .running: "stop"
                 case .paused: "resume"
+                case .suspended: "restore"
                 case .stopped: "start"
                 }
                 actionError = "Could not \(action) \(name): \(error)"
@@ -6049,8 +6054,27 @@ final class AppStore {
         }
     }
 
+    func suspendMachine(_ machine: Machine) {
+        guard requireDorydMachines(), machine.status == .running || machine.status == .paused else {
+            return
+        }
+        guard !busyMachines.contains(machine.name) else { return }
+        busyMachines.insert(machine.name)
+        Task {
+            defer { busyMachines.remove(machine.name) }
+            do {
+                _ = try await dorydClient.machineSuspend(machine.name)
+            } catch {
+                actionError = "Could not suspend \(machine.name): \(error)"
+            }
+            await refreshMachines()
+        }
+    }
+
     func restartMachine(_ machine: Machine) {
-        guard requireDorydMachines(), machine.status != .stopped else { return }
+        guard requireDorydMachines(), machine.status == .running || machine.status == .paused else {
+            return
+        }
         guard !busyMachines.contains(machine.name) else { return }
         busyMachines.insert(machine.name)
         Task {

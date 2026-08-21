@@ -322,6 +322,7 @@ public enum DoryMachineState: String, Sendable, Equatable {
     case starting
     case running
     case paused
+    case suspended
     case stopped
     case failed
 }
@@ -358,6 +359,7 @@ public struct DoryMachineStatus: Sendable, Equatable {
     public var diagnosticOverrides: [DoryMachineDiagnosticOverride]
     public var runtimeIdentity: DoryMachineRuntimeIdentity
     public var installedDesktopPayloadReceipt: DoryInstalledDesktopPayloadReceipt?
+    public var savedState: DoryMachineSavedStateStatus?
 
     public init(
         id: String,
@@ -391,7 +393,8 @@ public struct DoryMachineStatus: Sendable, Equatable {
             virtualHardwareABIVersion:
                 DoryVirtualMachineDefinition.currentVirtualHardwareABIVersion
         ),
-        installedDesktopPayloadReceipt: DoryInstalledDesktopPayloadReceipt? = nil
+        installedDesktopPayloadReceipt: DoryInstalledDesktopPayloadReceipt? = nil,
+        savedState: DoryMachineSavedStateStatus? = nil
     ) {
         self.id = id
         self.state = state
@@ -422,6 +425,7 @@ public struct DoryMachineStatus: Sendable, Equatable {
         self.diagnosticOverrides = diagnosticOverrides
         self.runtimeIdentity = runtimeIdentity
         self.installedDesktopPayloadReceipt = installedDesktopPayloadReceipt
+        self.savedState = savedState
     }
 
     public var integrationHealth: DoryGuestIntegrationHealth {
@@ -928,6 +932,8 @@ public final class MachineManager: @unchecked Sendable {
     private let configuration: MachineManagerConfiguration
     private let agentConnector: AgentConnector
     private let balloonController: any MachineBalloonControlling
+    private let vzLifecycleController: any MachineVZLifecycleControlling
+    private let savedStateStore: DoryMachineSavedStateStore
     private let processStarter: ProcessStarter
     private let workspaceRepository: DoryWorkspaceRepository
     private let runtimeIdentityStore: DoryMachineRuntimeIdentityStore
@@ -973,6 +979,7 @@ public final class MachineManager: @unchecked Sendable {
         configuration: MachineManagerConfiguration,
         launchPolicy: DoryMachineLaunchPolicy = .legacyCompatibility,
         balloonController: any MachineBalloonControlling = UnixMachineBalloonController(),
+        vzLifecycleController: any MachineVZLifecycleControlling = UnixMachineVZLifecycleController(),
         agentConnector: @escaping AgentConnector = { socketPath in
             try LocalAgentControl.connect(socketPath: socketPath)
         },
@@ -981,12 +988,14 @@ public final class MachineManager: @unchecked Sendable {
         self.configuration = configuration
         self.launchPolicy = launchPolicy
         self.balloonController = balloonController
+        self.vzLifecycleController = vzLifecycleController
         self.agentConnector = agentConnector
         self.processStarter = processStarter
         self.workspaceRepository = DoryWorkspaceRepository(root: configuration.stateDirectory)
         self.runtimeIdentityStore = DoryMachineRuntimeIdentityStore(
             root: configuration.stateDirectory
         )
+        self.savedStateStore = DoryMachineSavedStateStore(root: configuration.stateDirectory)
         do {
             let store = try DoryOperationJournalStore(
                 home: configuration.lifecycleJournalHome
@@ -1030,7 +1039,8 @@ public final class MachineManager: @unchecked Sendable {
         self.machines = Self.loadPersistedMachines(
             configuration: configuration,
             launchPolicy: launchPolicy,
-            runtimeIdentityStore: runtimeIdentityStore
+            runtimeIdentityStore: runtimeIdentityStore,
+            savedStateStore: savedStateStore
         )
         for (machineID, diagnostic) in lifecycleRecoveryDiagnostics {
             machines[machineID]?.lastError = diagnostic
@@ -1540,6 +1550,36 @@ public final class MachineManager: @unchecked Sendable {
         operationLock.lock()
         defer { operationLock.unlock() }
         try requireNoActivePlanningMutation(id: id)
+        lock.lock()
+        guard let startEntry = machines[id] else {
+            lock.unlock()
+            throw MachineManagerError.unknownMachine(id)
+        }
+        let isDurablySuspended = startEntry.state == .suspended
+        lock.unlock()
+        if let authoritativeData = Self.readPrivateMetadata(path: machineConfigPath(id: id)) {
+            switch savedStateStore.inspect(
+                machineID: id,
+                authoritativeConfigurationData: authoritativeData,
+                runtimeIdentity: startEntry.runtimeIdentity
+            ) {
+            case .absent:
+                break
+            case .valid where isDurablySuspended:
+                break
+            case .valid:
+                throw MachineManagerError.persistence(
+                    "saved-state authority exists outside the suspended lifecycle state"
+                )
+            case .invalid(let detail):
+                throw MachineManagerError.persistence(detail)
+            }
+        }
+        if isDurablySuspended {
+            let directMutation = try retainDirectWorkspaceMutationLock(id: id)
+            defer { releaseDirectWorkspaceMutationLock(id: id, retention: directMutation) }
+            return try restoreSavedStateImplementation(id: id)
+        }
         try refreshResolvedAdmissionForStartIfNeeded(id: id)
         let directMutation = try retainDirectWorkspaceMutationLock(id: id)
         defer { releaseDirectWorkspaceMutationLock(id: id, retention: directMutation) }
@@ -2363,7 +2403,8 @@ public final class MachineManager: @unchecked Sendable {
             lock.unlock()
             throw error
         }
-        let processConfiguration: HvProcessConfiguration
+        let processLaunch: (configuration: HvProcessConfiguration,
+                            backend: DoryVirtualizationBackendIdentity)
         do {
             // This single-use daemon-owned check deliberately sits after all persisted
             // machine/plan validation and immediately before any path-derived launch arguments
@@ -2383,15 +2424,46 @@ public final class MachineManager: @unchecked Sendable {
 #if DEBUG
             try shareAuthorityPreSpawnTestHook?()
 #endif
+            if let restoreStatePath = entry.pendingRestoreStatePath {
+                guard restoreStatePath == savedStateStore.statePath(machineID: id),
+                      let expectedStatus = entry.savedStateStatus,
+                      let authoritativeData = Self.readPrivateMetadata(
+                          path: machineConfigPath(id: id)
+                      ) else {
+                    throw MachineManagerError.persistence(
+                        "saved-state authority is unavailable immediately before spawn"
+                    )
+                }
+                switch savedStateStore.inspect(
+                    machineID: id,
+                    authoritativeConfigurationData: authoritativeData,
+                    runtimeIdentity: entry.runtimeIdentity
+                ) {
+                case .valid(let current)
+                    where DoryMachineSavedStateStatus(manifest: current) == expectedStatus:
+                    break
+                case .valid:
+                    throw MachineManagerError.persistence(
+                        "saved-state authority changed immediately before spawn"
+                    )
+                case .absent:
+                    throw MachineManagerError.persistence(
+                        "saved-state payload disappeared immediately before spawn"
+                    )
+                case .invalid(let detail):
+                    throw MachineManagerError.persistence(detail)
+                }
+            }
             var launchMachine = entry.configuration
             launchMachine.shares = try Self.revalidateShareRuntimeAuthorities(
                 shareAuthorities,
                 expectedShares: entry.configuration.shares
             )
-            processConfiguration = try self.processConfiguration(
+            processLaunch = try self.processConfiguration(
                 for: launchMachine,
                 handoffPath: handoffPath,
-                resolvedLaunchBinding: launchBinding
+                resolvedLaunchBinding: launchBinding,
+                restoreStatePath: entry.pendingRestoreStatePath
             )
         } catch {
             handoffServer?.stop()
@@ -2406,7 +2478,7 @@ public final class MachineManager: @unchecked Sendable {
             throw error
         }
         let process = HvProcess(
-            configuration: processConfiguration,
+            configuration: processLaunch.configuration,
             unexpectedTerminationHandler: { [weak self] termination in
                 self?.handleUnexpectedMachineProcessTermination(
                     machineID: id,
@@ -2423,6 +2495,7 @@ public final class MachineManager: @unchecked Sendable {
         entry.runtimeAddress = nil
         entry.currentBalloonTargetMB = nil
         entry.activeResolvedPlan = resolvedPlan
+        entry.activeBackend = processLaunch.backend
         let requiresAdmissionCommit = resolvedPlan != nil
             && productionResourceAdmissionLedger != nil
         entry.state = configuration.requiresReadyHandoff || requiresAdmissionCommit
@@ -2440,6 +2513,7 @@ public final class MachineManager: @unchecked Sendable {
             machines[id]?.launchID = nil
             machines[id]?.runtimeAddress = nil
             machines[id]?.activeResolvedPlan = nil
+            machines[id]?.activeBackend = nil
             machines[id]?.state = .failed
             machines[id]?.lastError = "\(error)"
             lock.unlock()
@@ -2554,6 +2628,7 @@ public final class MachineManager: @unchecked Sendable {
             entry.lastError = "vmm ready handoff timed out after \(Int(timeout))s"
             let admissionPlan = entry.activeResolvedPlan
             entry.activeResolvedPlan = nil
+            entry.activeBackend = nil
             self.machines[id] = entry
             self.lock.unlock()
             process.stop(timeout: DoryEngineShutdownTiming.hostTerminationSeconds)
@@ -2587,6 +2662,7 @@ public final class MachineManager: @unchecked Sendable {
         entry.runtimeAddress = nil
         entry.currentBalloonTargetMB = nil
         entry.activeResolvedPlan = nil
+        entry.activeBackend = nil
         entry.state = .failed
         entry.lastError = "dory-vmm \(termination.description)"
         machines[machineID] = entry
@@ -2648,6 +2724,12 @@ public final class MachineManager: @unchecked Sendable {
         try requireNoActivePlanningMutation(id: id)
         let directMutation = try retainDirectWorkspaceMutationLock(id: id)
         defer { releaseDirectWorkspaceMutationLock(id: id, retention: directMutation) }
+        lock.lock()
+        let isDurablySuspended = machines[id]?.state == .suspended
+        lock.unlock()
+        if isDurablySuspended {
+            return try restoreSavedStateImplementation(id: id)
+        }
         let identity = try currentRuntimeIdentity(id: id)
         switch identity.mode {
         case .legacyCompatibility:
@@ -2672,6 +2754,288 @@ public final class MachineManager: @unchecked Sendable {
                 )
             }
             return status(id: id) ?? DoryMachineStatus(id: id, state: .running)
+        }
+    }
+
+    public func suspend(id: String) throws -> DoryMachineStatus {
+        operationLock.lock()
+        defer { operationLock.unlock() }
+        try requireNoActivePlanningMutation(id: id)
+        let directMutation = try retainDirectWorkspaceMutationLock(id: id)
+        defer { releaseDirectWorkspaceMutationLock(id: id, retention: directMutation) }
+
+        lock.lock()
+        guard let entry = machines[id] else {
+            lock.unlock()
+            throw MachineManagerError.unknownMachine(id)
+        }
+        guard entry.state == .running || entry.state == .paused,
+              let process = entry.process,
+              entry.activeBackend == .appleVirtualizationFramework,
+              let controlSocketPath = entry.handoff?.ready.controlSocketPath else {
+            lock.unlock()
+            throw MachineManagerError.persistence(
+                "durable suspend requires a running Apple Virtualization backend with VZ control"
+            )
+        }
+        let machine = entry.configuration
+        let runtimeIdentity = entry.runtimeIdentity
+        let admissionPlan = entry.activeResolvedPlan ?? runtimeIdentity.resolvedPlan
+        let sourceState: DoryWorkspaceLifecycleState = entry.state == .paused ? .paused : .running
+        let authoritativeData = Self.readPrivateMetadata(path: machineConfigPath(id: id))
+        lock.unlock()
+        guard let authoritativeData,
+              (try? JSONDecoder().decode(DoryMachineConfiguration.self, from: authoritativeData))
+                == machine else {
+            throw MachineManagerError.persistence(
+                "machine metadata changed before saved-state suspension"
+            )
+        }
+        let authority = try Self.savedStateIntentAuthority(
+            machine: machine,
+            runtimeIdentity: runtimeIdentity,
+            authoritativeConfigurationData: authoritativeData
+        )
+        let lifecycle = try beginLifecycleSuspend(
+            machine: machine,
+            runtimeIdentity: runtimeIdentity,
+            sourceState: sourceState,
+            savedStateAuthority: authority
+        )
+        let temporaryPath = try savedStateStore.temporaryStatePath(machineID: id)
+        var committed = false
+        var helperExited = false
+        do {
+            try advanceLifecycleToPublishing(lifecycle)
+            guard process.prepareForExpectedExit() else {
+                throw MachineManagerError.persistence(
+                    "VMM helper cannot enter saved-state exit mode"
+                )
+            }
+            do {
+                try vzLifecycleController.saveMachineState(
+                    socketPath: controlSocketPath,
+                    statePath: temporaryPath
+                )
+            } catch {
+                if !process.isRunning
+                    || process.waitForExpectedExit(timeout: 0.25) {
+                    helperExited = true
+                }
+                process.cancelExpectedExit()
+                throw error
+            }
+            guard process.waitForExpectedExit(timeout: 30),
+                  process.terminationStatus == 0 else {
+                process.stop(timeout: DoryEngineShutdownTiming.hostTerminationSeconds)
+                helperExited = true
+                throw MachineManagerError.persistence(
+                    "VMM helper did not exit cleanly after saving state"
+                )
+            }
+            helperExited = true
+            let manifest = try savedStateStore.publish(
+                temporaryStatePath: temporaryPath,
+                machineID: id,
+                authoritativeConfigurationData: authoritativeData,
+                runtimeIdentity: runtimeIdentity
+            )
+            lock.lock()
+            guard var current = machines[id], current.process === process,
+                  current.configuration == machine,
+                  current.runtimeIdentity == runtimeIdentity else {
+                lock.unlock()
+                throw MachineManagerError.persistence(
+                    "machine authority changed while saved state was being published"
+                )
+            }
+            current.process = nil
+            current.handoffServer?.stop()
+            current.handoffServer = nil
+            current.handoff = nil
+            current.launchID = nil
+            current.runtimeAddress = nil
+            current.currentBalloonTargetMB = nil
+            current.activeResolvedPlan = nil
+            current.activeBackend = nil
+            current.pendingRestoreStatePath = nil
+            current.state = .suspended
+            current.savedStateStatus = DoryMachineSavedStateStatus(manifest: manifest)
+            current.lastError = nil
+            machines[id] = current
+            lock.unlock()
+            committed = true
+            do {
+                try markResolvedAdmissionStopped(plan: admissionPlan)
+            } catch {
+                // The VZ payload and suspended machine state are already durable. Retaining an
+                // over-counted running lease is fail-safe; the next restore or daemon restart
+                // reconciles it before reserving CPU/RAM again.
+                lock.lock()
+                machines[id]?.lastError =
+                    "saved state committed but resource admission requires reconciliation: \(error)"
+                lock.unlock()
+            }
+            _ = completeCommittedLifecycle(
+                lifecycle,
+                diagnostic: "saved state committed; suspension journal requires recovery"
+            )
+            return status(id: id) ?? DoryMachineStatus(id: id, state: .suspended)
+        } catch {
+            _ = unlink(temporaryPath)
+            if committed {
+                activeLifecycleOperations.removeValue(forKey: id)
+                lifecycle.releaseLease()
+            } else {
+                if helperExited {
+                    try? savedStateStore.remove(machineID: id)
+                    lock.lock()
+                    if var current = machines[id],
+                       current.configuration == machine,
+                       current.runtimeIdentity == runtimeIdentity {
+                        current.process = nil
+                        current.handoffServer?.stop()
+                        current.handoffServer = nil
+                        current.handoff = nil
+                        current.launchID = nil
+                        current.runtimeAddress = nil
+                        current.currentBalloonTargetMB = nil
+                        current.activeResolvedPlan = nil
+                        current.activeBackend = nil
+                        current.pendingRestoreStatePath = nil
+                        current.savedStateStatus = nil
+                        current.state = .failed
+                        current.lastError = "saved-state suspension failed after the VMM exited: \(error)"
+                        machines[id] = current
+                    }
+                    lock.unlock()
+                    try? markResolvedAdmissionStopped(plan: admissionPlan)
+                }
+                failLifecycle(lifecycle, stepID: "suspend.failed")
+            }
+            throw error
+        }
+    }
+
+    private func restoreSavedStateImplementation(id: String) throws -> DoryMachineStatus {
+        lock.lock()
+        guard var entry = machines[id] else {
+            lock.unlock()
+            throw MachineManagerError.unknownMachine(id)
+        }
+        guard entry.state == .suspended, entry.process == nil else {
+            lock.unlock()
+            throw MachineManagerError.persistence("machine \(id) is not durably suspended")
+        }
+        let machine = entry.configuration
+        let runtimeIdentity = entry.runtimeIdentity
+        lock.unlock()
+
+        let durableIdentity = try currentDurableRuntimeIdentity(id: id)
+        guard durableIdentity == runtimeIdentity,
+              let authoritativeData = Self.readPrivateMetadata(path: machineConfigPath(id: id)) else {
+            throw MachineManagerError.persistence(
+                "saved-state runtime or configuration authority changed"
+            )
+        }
+        let manifest: DoryMachineSavedStateManifest
+        switch savedStateStore.inspect(
+            machineID: id,
+            authoritativeConfigurationData: authoritativeData,
+            runtimeIdentity: runtimeIdentity
+        ) {
+        case .valid(let accepted): manifest = accepted
+        case .absent:
+            throw MachineManagerError.persistence("saved-state payload is missing")
+        case .invalid(let detail):
+            throw MachineManagerError.persistence(detail)
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let authority = DoryWorkspaceSnapshotAuthority(
+            descriptorSHA256: Self.sha256(data: try encoder.encode(manifest)),
+            artifactEvidenceSHA256: manifest.stateFileSHA256
+        )
+        let lifecycle = try beginLifecycleOperation(
+            kind: .restoring,
+            source: lifecycleCondition(
+                machine: machine,
+                state: .suspended,
+                runtimeIdentity: runtimeIdentity
+            ),
+            target: lifecycleCondition(
+                machine: machine,
+                state: .running,
+                runtimeIdentity: runtimeIdentity
+            ),
+            targetResourceID: DoryWorkspaceLifecycleOperation.savedStateResourceID,
+            targetSnapshotAuthority: authority,
+            readiness: true
+        )
+        do {
+            try advanceLifecycleToPublishing(lifecycle)
+            try refreshResolvedAdmissionForStartIfNeeded(id: id)
+            lock.lock()
+            guard entry.configuration == machine,
+                  entry.runtimeIdentity == runtimeIdentity,
+                  machines[id]?.state == .suspended else {
+                lock.unlock()
+                throw MachineManagerError.persistence(
+                    "machine changed before saved-state restoration"
+                )
+            }
+            entry.pendingRestoreStatePath = savedStateStore.statePath(machineID: id)
+            machines[id] = entry
+            lock.unlock()
+
+            let running = try startAndWaitUntilReady(id: id, journalLifecycle: false)
+            guard running.state == .running else {
+                throw MachineManagerError.persistence(
+                    "saved-state restore did not reach backend readiness"
+                )
+            }
+            try savedStateStore.remove(machineID: id)
+            lock.lock()
+            machines[id]?.pendingRestoreStatePath = nil
+            machines[id]?.savedStateStatus = nil
+            lock.unlock()
+            _ = completeCommittedLifecycle(
+                lifecycle,
+                diagnostic: "restored machine is running with an unfinished saved-state journal"
+            )
+            return status(id: id) ?? running
+        } catch {
+            lock.lock()
+            let active = machines[id]?.process?.isRunningOrRestarting == true
+            lock.unlock()
+            if active {
+                _ = try? stopImplementation(id: id, journalLifecycle: false)
+            }
+            let savedStateIsValid: Bool
+            if case .valid = savedStateStore.inspect(
+                machineID: id,
+                authoritativeConfigurationData: authoritativeData,
+                runtimeIdentity: runtimeIdentity
+            ) {
+                savedStateIsValid = true
+            } else {
+                savedStateIsValid = false
+            }
+            lock.lock()
+            if savedStateIsValid, var current = machines[id] {
+                current.state = .suspended
+                current.pendingRestoreStatePath = nil
+                machines[id] = current
+            } else if var current = machines[id] {
+                current.state = .failed
+                current.pendingRestoreStatePath = nil
+                current.savedStateStatus = nil
+                current.lastError = "saved-state restoration failed and its authority is invalid"
+                machines[id] = current
+            }
+            lock.unlock()
+            failLifecycle(lifecycle, stepID: "saved-state-restore.failed")
+            throw error
         }
     }
 
@@ -2749,14 +3113,22 @@ public final class MachineManager: @unchecked Sendable {
             : nil
         do {
             if let lifecycle { try advanceLifecycleToPublishing(lifecycle) }
-            guard process.suspend() else {
+            let usedVZPause = entry.activeBackend == .appleVirtualizationFramework
+                && entry.handoff?.ready.controlSocketPath != nil
+            if let socketPath = entry.handoff?.ready.controlSocketPath, usedVZPause {
+                try vzLifecycleController.pause(socketPath: socketPath)
+            } else if !process.suspend() {
                 throw MachineManagerError.persistence("could not pause machine \(id)")
             }
             lock.lock()
             guard var current = machines[id], current.process === process,
                   current.state == .running else {
                 lock.unlock()
-                _ = process.resume()
+                if let socketPath = entry.handoff?.ready.controlSocketPath, usedVZPause {
+                    try? vzLifecycleController.resume(socketPath: socketPath)
+                } else {
+                    _ = process.resume()
+                }
                 throw MachineManagerError.persistence(
                     "machine \(id) changed while pause was being committed"
                 )
@@ -2799,14 +3171,22 @@ public final class MachineManager: @unchecked Sendable {
             : nil
         do {
             if let lifecycle { try advanceLifecycleToPublishing(lifecycle) }
-            guard process.resume() else {
+            let usedVZResume = entry.activeBackend == .appleVirtualizationFramework
+                && entry.handoff?.ready.controlSocketPath != nil
+            if let socketPath = entry.handoff?.ready.controlSocketPath, usedVZResume {
+                try vzLifecycleController.resume(socketPath: socketPath)
+            } else if !process.resume() {
                 throw MachineManagerError.persistence("could not resume machine \(id)")
             }
             lock.lock()
             guard var current = machines[id], current.process === process,
                   current.state == .paused else {
                 lock.unlock()
-                _ = process.suspend()
+                if let socketPath = entry.handoff?.ready.controlSocketPath, usedVZResume {
+                    try? vzLifecycleController.pause(socketPath: socketPath)
+                } else {
+                    _ = process.suspend()
+                }
                 throw MachineManagerError.persistence(
                     "machine \(id) changed while resume was being committed"
                 )
@@ -2839,13 +3219,14 @@ public final class MachineManager: @unchecked Sendable {
             throw MachineManagerError.unknownMachine(id)
         }
         let sourceState = lifecycleState(for: entry.state)
+        let wasSuspended = entry.state == .suspended
         let wasActive = [.starting, .running, .paused].contains(entry.state)
             && entry.process != nil
         let machine = entry.configuration
         let runtimeIdentity = entry.runtimeIdentity
         let admissionPlan = entry.activeResolvedPlan ?? runtimeIdentity.resolvedPlan
         lock.unlock()
-        let lifecycle = try journalLifecycle && wasActive
+        let lifecycle = try journalLifecycle && (wasActive || wasSuspended)
             ? beginLifecycleStop(
                 machine: machine,
                 runtimeIdentity: runtimeIdentity,
@@ -2855,6 +3236,12 @@ public final class MachineManager: @unchecked Sendable {
         var stopCommitted = false
         do {
             if let lifecycle { try advanceLifecycleToPublishing(lifecycle) }
+            // Stopping a suspended VM means discarding its same-host execution state and
+            // returning to a cold-stopped machine. Retire that authority before publishing the
+            // stopped state so a failed removal leaves the machine truthfully suspended.
+            if wasSuspended {
+                try savedStateStore.remove(machineID: id)
+            }
             lock.lock()
             guard let current = machines[id] else {
                 lock.unlock()
@@ -2870,6 +3257,10 @@ public final class MachineManager: @unchecked Sendable {
             entry.runtimeAddress = nil
             entry.currentBalloonTargetMB = nil
             entry.activeResolvedPlan = nil
+            entry.activeBackend = nil
+            if wasSuspended {
+                entry.savedStateStatus = nil
+            }
             entry.state = .stopped
             machines[id] = entry
             lock.unlock()
@@ -2922,6 +3313,7 @@ public final class MachineManager: @unchecked Sendable {
             )
         }
         for id in machines.keys {
+            if machines[id]?.state == .suspended { continue }
             machines[id]?.process = nil
             machines[id]?.handoffServer = nil
             machines[id]?.handoff = nil
@@ -2929,6 +3321,7 @@ public final class MachineManager: @unchecked Sendable {
             machines[id]?.runtimeAddress = nil
             machines[id]?.currentBalloonTargetMB = nil
             machines[id]?.activeResolvedPlan = nil
+            machines[id]?.activeBackend = nil
             machines[id]?.state = .stopped
         }
         lock.unlock()
@@ -4365,7 +4758,8 @@ public final class MachineManager: @unchecked Sendable {
                 ),
                 runtimeIdentity: entry.runtimeIdentity,
                 installedDesktopPayloadReceipt:
-                    entry.configuration.effectiveInstalledDesktopPayloadReceipt
+                    entry.configuration.effectiveInstalledDesktopPayloadReceipt,
+                savedState: entry.savedStateStatus
             )
         }
         return DoryMachineStatus(
@@ -4403,7 +4797,8 @@ public final class MachineManager: @unchecked Sendable {
             ),
             runtimeIdentity: entry.runtimeIdentity,
             installedDesktopPayloadReceipt:
-                entry.configuration.effectiveInstalledDesktopPayloadReceipt
+                entry.configuration.effectiveInstalledDesktopPayloadReceipt,
+            savedState: entry.savedStateStatus
         )
     }
 
@@ -4446,25 +4841,34 @@ public final class MachineManager: @unchecked Sendable {
     private func processConfiguration(
         for machine: DoryMachineConfiguration,
         handoffPath: String?,
-        resolvedLaunchBinding: MachineBackendLaunchBinding?
-    ) throws -> HvProcessConfiguration {
+        resolvedLaunchBinding: MachineBackendLaunchBinding?,
+        restoreStatePath: String?
+    ) throws -> (configuration: HvProcessConfiguration,
+                 backend: DoryVirtualizationBackendIdentity) {
         let target = try processTarget(
             for: machine,
             resolvedLaunchBinding: resolvedLaunchBinding
         )
-        return HvProcessConfiguration(
+        let process = HvProcessConfiguration(
             executablePath: target.executablePath,
             arguments: try processArguments(
                 for: machine,
                 handoffPath: handoffPath,
                 baseArguments: target.baseArguments,
                 acceleratedDesktop: target.acceleratedDesktop,
-                resolvedLaunchBinding: resolvedLaunchBinding
+                resolvedLaunchBinding: resolvedLaunchBinding,
+                restoreStatePath: restoreStatePath
             ),
             logPath: "\(configuration.logDirectory)/\(machine.id).log",
             restartPolicy: configuration.requiresReadyHandoff
                 ? configuration.startupRestartPolicy
                 : .none
+        )
+        return (
+            process,
+            resolvedLaunchBinding?.backend.identity
+                ?? (target.acceleratedDesktop
+                    ? .doryHypervisor : .appleVirtualizationFramework)
         )
     }
 
@@ -4560,7 +4964,8 @@ public final class MachineManager: @unchecked Sendable {
         handoffPath: String?,
         baseArguments: [String],
         acceleratedDesktop: Bool,
-        resolvedLaunchBinding: MachineBackendLaunchBinding?
+        resolvedLaunchBinding: MachineBackendLaunchBinding?,
+        restoreStatePath: String?
     ) throws -> [String] {
         guard configuration.passMachineArguments else {
             return baseArguments
@@ -4599,6 +5004,15 @@ public final class MachineManager: @unchecked Sendable {
         }
         if let handoffPath {
             arguments.append(contentsOf: ["--handoff-sock", handoffPath])
+        }
+        if let restoreStatePath {
+            guard !acceleratedDesktop,
+                  restoreStatePath == savedStateStore.statePath(machineID: machine.id) else {
+                throw MachineManagerError.persistence(
+                    "saved state cannot be restored by the selected backend or path"
+                )
+            }
+            arguments.append(contentsOf: ["--restore-state", restoreStatePath])
         }
         if let resolvedLaunchBinding {
             let encoder = JSONEncoder()
@@ -6109,6 +6523,11 @@ public final class MachineManager: @unchecked Sendable {
                 "machine \(id) must be resumed or stopped before this mutation"
             )
         }
+        guard entry.state != .suspended else {
+            throw MachineManagerError.persistence(
+                "machine \(id) must be restored before this mutation"
+            )
+        }
         let active = [.starting, .running].contains(entry.state) && entry.process != nil
         return (entry.configuration, active)
     }
@@ -7300,6 +7719,7 @@ public final class MachineManager: @unchecked Sendable {
                 entry.launchID = nil
                 entry.runtimeAddress = nil
                 entry.activeResolvedPlan = nil
+                entry.activeBackend = nil
                 processToStop = entry.process
                 break
             }
@@ -7321,6 +7741,7 @@ public final class MachineManager: @unchecked Sendable {
             entry.launchID = nil
             entry.runtimeAddress = nil
             entry.activeResolvedPlan = nil
+            entry.activeBackend = nil
             processToStop = entry.process
         }
         machines[machineID] = entry
@@ -7363,6 +7784,7 @@ public final class MachineManager: @unchecked Sendable {
                     current.launchID = nil
                     current.runtimeAddress = nil
                     current.activeResolvedPlan = nil
+                    current.activeBackend = nil
                     machines[machineID] = current
                 }
                 lock.unlock()
@@ -8091,7 +8513,8 @@ public final class MachineManager: @unchecked Sendable {
     private static func loadPersistedMachines(
         configuration: MachineManagerConfiguration,
         launchPolicy: DoryMachineLaunchPolicy,
-        runtimeIdentityStore: DoryMachineRuntimeIdentityStore
+        runtimeIdentityStore: DoryMachineRuntimeIdentityStore,
+        savedStateStore: DoryMachineSavedStateStore
     ) -> [String: MachineEntry] {
         let root = configuration.stateDirectory
         guard let ids = try? FileManager.default.contentsOfDirectory(atPath: root) else {
@@ -8142,9 +8565,35 @@ public final class MachineManager: @unchecked Sendable {
                     store: runtimeIdentityStore
                 )
             }
+            let savedState = savedStateStore.inspect(
+                machineID: id,
+                authoritativeConfigurationData: data,
+                runtimeIdentity: identity
+            )
+            let recoveredState: DoryMachineState
+            let savedStateError: String?
+            switch savedState {
+            case .absent:
+                recoveredState = .stopped
+                savedStateError = nil
+            case .valid:
+                recoveredState = .suspended
+                savedStateError = nil
+            case .invalid(let detail):
+                recoveredState = .failed
+                savedStateError = detail
+            }
+            let recoveredStatus: DoryMachineSavedStateStatus?
+            if case .valid(let manifest) = savedState {
+                recoveredStatus = DoryMachineSavedStateStatus(manifest: manifest)
+            } else {
+                recoveredStatus = nil
+            }
             loaded[id] = MachineEntry(
                 configuration: machine,
-                state: .stopped,
+                state: recoveredState,
+                lastError: savedStateError,
+                savedStateStatus: recoveredStatus,
                 runtimeIdentity: identity
             )
         }
@@ -8740,6 +9189,7 @@ public final class MachineManager: @unchecked Sendable {
         switch state {
         case .starting, .running: .running
         case .paused: .paused
+        case .suspended: .suspended
         case .created, .stopped: .stopped
         case .failed: .failed
         }
@@ -8931,6 +9381,54 @@ public final class MachineManager: @unchecked Sendable {
         )
     }
 
+    private func beginLifecycleSuspend(
+        machine: DoryMachineConfiguration,
+        runtimeIdentity: DoryMachineRuntimeIdentity,
+        sourceState: DoryWorkspaceLifecycleState,
+        savedStateAuthority: DoryWorkspaceSnapshotAuthority
+    ) throws -> MachineLifecycleJournalContext {
+        try beginLifecycleOperation(
+            kind: .suspending,
+            source: lifecycleCondition(
+                machine: machine,
+                state: sourceState,
+                runtimeIdentity: runtimeIdentity
+            ),
+            target: lifecycleCondition(
+                machine: machine,
+                state: .suspended,
+                runtimeIdentity: runtimeIdentity
+            ),
+            targetResourceID: DoryMachineSavedStateStore.directoryName,
+            targetSnapshotAuthority: savedStateAuthority,
+            readiness: false
+        )
+    }
+
+    private static func savedStateIntentAuthority(
+        machine: DoryMachineConfiguration,
+        runtimeIdentity: DoryMachineRuntimeIdentity,
+        authoritativeConfigurationData: Data
+    ) throws -> DoryWorkspaceSnapshotAuthority {
+        let host = DoryInstallerHostRuntime.current
+        let intent = MachineSavedStateIntentAuthority(
+            machineID: machine.id,
+            configurationSHA256: Self.sha256(data: authoritativeConfigurationData),
+            runtimeIdentity: runtimeIdentity,
+            hostHardwareModel: host.hardwareModel,
+            hostOperatingSystemBuild: host.operatingSystemBuild,
+            backend: .appleVirtualizationFramework
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let descriptor = try encoder.encode(intent)
+        let runtime = try encoder.encode(runtimeIdentity)
+        return DoryWorkspaceSnapshotAuthority(
+            descriptorSHA256: Self.sha256(data: descriptor),
+            artifactEvidenceSHA256: Self.sha256(data: runtime)
+        )
+    }
+
     private func beginLifecycleSnapshot(
         machine: DoryMachineConfiguration,
         runtimeIdentity: DoryMachineRuntimeIdentity,
@@ -9012,7 +9510,7 @@ public final class MachineManager: @unchecked Sendable {
         readiness: Bool
     ) throws -> MachineLifecycleJournalContext {
         let machineID = source.workspaceID
-        if kind == .snapshotting || kind == .restoring {
+        if kind == .snapshotting || kind == .suspending || kind == .restoring {
             guard targetSnapshotAuthority != nil else {
                 throw MachineManagerError.persistence(
                     "snapshot lifecycle operation is missing immutable artifact authority"
@@ -9309,6 +9807,11 @@ public final class MachineManager: @unchecked Sendable {
                         machineID: id,
                         configuration: configuration
                     ) {
+                        if operation.source.state == .suspended {
+                            try DoryMachineSavedStateStore(
+                                root: configuration.stateDirectory
+                            ).remove(machineID: id)
+                        }
                         try completeRecoveredLifecycle(lease)
                         diagnostics[id] = "interrupted stop completed during daemon recovery"
                     } else {
@@ -9343,6 +9846,23 @@ public final class MachineManager: @unchecked Sendable {
                         diagnostics[id] = "interrupted snapshot was rolled back"
                     }
                 case .restoring:
+                    if operation.targetResourceID
+                        == DoryWorkspaceLifecycleOperation.savedStateResourceID {
+                        if recoveredSavedState(
+                            machineID: id,
+                            operation: operation,
+                            configuration: configuration
+                        ) {
+                            try failRecoveredLifecycle(lease, rolledBack: true)
+                            diagnostics[id] =
+                                "interrupted saved-state restore returned to suspended"
+                        } else {
+                            try failRecoveredLifecycle(lease, rolledBack: false)
+                            diagnostics[id] =
+                                "interrupted saved-state restore requires repair"
+                        }
+                        break
+                    }
                     if recoveryState.phase.indexForMachineLifecycle
                         >= DoryOperationPhase.validating.indexForMachineLifecycle {
                         if let snapshot = recoveredSnapshot(
@@ -9420,7 +9940,24 @@ public final class MachineManager: @unchecked Sendable {
                     try failRecoveredLifecycle(lease, rolledBack: false)
                     diagnostics[id] =
                         "interrupted resume was recovered as stopped after helper cleanup"
-                case .importing, .provisioning, .suspending, .cloning, .updating, .repairing:
+                case .suspending:
+                    if recoveredSavedState(
+                        machineID: id,
+                        operation: operation,
+                        configuration: configuration
+                    ) {
+                        try completeRecoveredLifecycle(lease)
+                        diagnostics[id] =
+                            "published saved state completed during daemon recovery"
+                    } else {
+                        try? DoryMachineSavedStateStore(
+                            root: configuration.stateDirectory
+                        ).remove(machineID: id)
+                        try failRecoveredLifecycle(lease, rolledBack: true)
+                        diagnostics[id] =
+                            "interrupted saved-state suspension was rolled back"
+                    }
+                case .importing, .provisioning, .cloning, .updating, .repairing:
                     try failRecoveredLifecycle(lease, rolledBack: false)
                     diagnostics[id] = "unsupported interrupted lifecycle mutation requires repair"
                 }
@@ -9432,6 +9969,66 @@ public final class MachineManager: @unchecked Sendable {
             lease = nil
         }
         return diagnostics
+    }
+
+    private static func recoveredSavedState(
+        machineID: String,
+        operation: DoryWorkspaceLifecycleOperation,
+        configuration: MachineManagerConfiguration
+    ) -> Bool {
+        guard operation.targetResourceID
+                == DoryWorkspaceLifecycleOperation.savedStateResourceID,
+              let expectedAuthority = operation.targetSnapshotAuthority,
+              let data = readPrivateMetadata(
+                path: "\(configuration.stateDirectory)/\(machineID)/machine.json"
+              ),
+              let machine = try? JSONDecoder().decode(
+                DoryMachineConfiguration.self,
+                from: data
+              ), machine.id == machineID,
+              let runtime = operation.target.runtime else {
+            return false
+        }
+        let identity: DoryMachineRuntimeIdentity?
+        switch runtime.authorizationState {
+        case .legacyCompatibility:
+            identity = .legacyCompatibility(
+                virtualHardwareABIVersion: runtime.virtualHardwareABIVersion
+            )
+        case .resolvedPlan:
+            identity = try? DoryMachineRuntimeIdentityStore(
+                root: configuration.stateDirectory
+            ).readIfPresent(machineID: machineID, authoritativeLegacyData: data)
+        case .requiresReplanning:
+            identity = nil
+        }
+        guard let identity else { return false }
+        let inspection = DoryMachineSavedStateStore(
+            root: configuration.stateDirectory
+        ).inspect(
+            machineID: machineID,
+            authoritativeConfigurationData: data,
+            runtimeIdentity: identity
+        )
+        guard case .valid(let manifest) = inspection else { return false }
+        switch operation.kind {
+        case .suspending:
+            return (try? savedStateIntentAuthority(
+                machine: machine,
+                runtimeIdentity: identity,
+                authoritativeConfigurationData: data
+            )) == expectedAuthority
+        case .restoring:
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            guard let manifestData = try? encoder.encode(manifest) else { return false }
+            return DoryWorkspaceSnapshotAuthority(
+                descriptorSHA256: sha256(data: manifestData),
+                artifactEvidenceSHA256: manifest.stateFileSHA256
+            ) == expectedAuthority
+        default:
+            return false
+        }
     }
 
     private static func lifecycleConfigurationMatches(
@@ -10401,6 +10998,15 @@ private struct PendingResolvedMachineStart {
     var shareAuthorities: [DoryMachineShareRuntimeAuthority]
 }
 
+private struct MachineSavedStateIntentAuthority: Codable {
+    var machineID: String
+    var configurationSHA256: String
+    var runtimeIdentity: DoryMachineRuntimeIdentity
+    var hostHardwareModel: String
+    var hostOperatingSystemBuild: String
+    var backend: DoryVirtualizationBackendIdentity
+}
+
 private struct MachineEntry {
     var configuration: DoryMachineConfiguration
     var state: DoryMachineState
@@ -10412,6 +11018,9 @@ private struct MachineEntry {
     var currentBalloonTargetMB: UInt64?
     var lastError: String?
     var activeResolvedPlan: DoryResolvedMachinePlan?
+    var activeBackend: DoryVirtualizationBackendIdentity?
+    var pendingRestoreStatePath: String?
+    var savedStateStatus: DoryMachineSavedStateStatus?
     var runtimeIdentity: DoryMachineRuntimeIdentity = .legacyCompatibility(
         virtualHardwareABIVersion:
             DoryVirtualMachineDefinition.currentVirtualHardwareABIVersion
