@@ -834,7 +834,15 @@ public final class MachineManager: @unchecked Sendable {
     private let lifecycleJournalInitializationError: String?
     private let operationLock = NSRecursiveLock()
     private let lock = NSLock()
+    private let fileTransferLock = NSLock()
+    private let fileTransferQueue = DispatchQueue(
+        label: "dev.dory.machine-file-transfer",
+        qos: .utility,
+        attributes: .concurrent
+    )
     private var machines: [String: MachineEntry] = [:]
+    private var fileTransferOperations: [String: MachineFileTransferOperation] = [:]
+    private var activeFileTransferByMachine: [String: String] = [:]
     private var deletingMachineIDs: Set<String> = []
     private var workspaceProjectionDiagnostics: [String: DoryWorkspaceProjectionDiagnostic] = [:]
     private var resolvedLaunchRegistry: BackendRegistry?
@@ -5017,6 +5025,142 @@ public final class MachineManager: @unchecked Sendable {
         guard Self.isPrivateTransferStagingRoot(privateStagingRoot) else {
             throw DoryMachineFileTransferError.invalidPrivateStagingRoot
         }
+        let transferID = Self.makeMachineFileTransferID()
+        fileTransferLock.lock()
+        pruneFileTransferOperationsLocked(now: Date())
+        if activeFileTransferByMachine[id] != nil {
+            fileTransferLock.unlock()
+            throw DoryMachineFileTransferError.transferAlreadyInProgress(id)
+        }
+        activeFileTransferByMachine[id] = transferID
+        fileTransferLock.unlock()
+        defer {
+            fileTransferLock.lock()
+            if activeFileTransferByMachine[id] == transferID {
+                activeFileTransferByMachine.removeValue(forKey: id)
+            }
+            fileTransferLock.unlock()
+        }
+        return try performStagedFileTransfer(
+            id: id,
+            privateStagingRoot: privateStagingRoot,
+            transferID: transferID,
+            operation: nil
+        )
+    }
+
+    /// Starts a cancellable transfer without retaining an XPC reply block for the duration of the
+    /// data-plane operation. Only one active transfer per machine is allowed; terminal records are
+    /// retained briefly for polling and bounded globally.
+    public func beginStagedFileTransfer(
+        id: String,
+        privateStagingRoot: String
+    ) throws -> DoryMachineFileTransferOperationStatus {
+        guard Self.isPrivateTransferStagingRoot(privateStagingRoot) else {
+            throw DoryMachineFileTransferError.invalidPrivateStagingRoot
+        }
+        guard let machineStatus = status(id: id) else {
+            throw MachineManagerError.unknownMachine(id)
+        }
+        guard machineStatus.state == .running,
+              machineStatus.agentSocketPath != nil else {
+            throw MachineManagerError.agentUnavailable(id)
+        }
+        for capability in ["exec", "sync-push"] where
+            !machineStatus.supportsAgentCapability(capability) {
+            throw MachineManagerError.agentCapabilityUnavailable(id, capability)
+        }
+
+        let transferID = Self.makeMachineFileTransferID()
+        let operation = MachineFileTransferOperation(
+            operationID: transferID,
+            machineID: id
+        )
+        fileTransferLock.lock()
+        pruneFileTransferOperationsLocked(now: Date())
+        if activeFileTransferByMachine[id] != nil {
+            fileTransferLock.unlock()
+            throw DoryMachineFileTransferError.transferAlreadyInProgress(id)
+        }
+        fileTransferOperations[transferID] = operation
+        activeFileTransferByMachine[id] = transferID
+        fileTransferLock.unlock()
+
+        fileTransferQueue.async { [self, operation] in
+            let outcome: MachineFileTransferTerminalOutcome
+            do {
+                let result = try performStagedFileTransfer(
+                    id: id,
+                    privateStagingRoot: privateStagingRoot,
+                    transferID: transferID,
+                    operation: operation
+                )
+                if operation.isCancellationRequested {
+                    outcome = .cancelled
+                } else {
+                    outcome = .completed(result)
+                }
+            } catch {
+                if operation.isCancellationRequested {
+                    outcome = .cancelled
+                } else {
+                    outcome = .failed(Self.fileTransferFailure(error, machineID: id))
+                }
+            }
+            fileTransferLock.lock()
+            switch outcome {
+            case let .completed(result):
+                operation.complete(result)
+            case .cancelled:
+                operation.cancel()
+            case let .failed(failure):
+                operation.fail(failure)
+            }
+            if activeFileTransferByMachine[id] == transferID {
+                activeFileTransferByMachine.removeValue(forKey: id)
+            }
+            fileTransferLock.unlock()
+        }
+        return operation.status()
+    }
+
+    public func stagedFileTransferStatus(
+        id: String,
+        operationID: String
+    ) throws -> DoryMachineFileTransferOperationStatus {
+        fileTransferLock.lock()
+        pruneFileTransferOperationsLocked(now: Date())
+        let operation = fileTransferOperations[operationID]
+        fileTransferLock.unlock()
+        guard let operation, operation.machineID == id else {
+            throw DoryMachineFileTransferError.unknownTransfer(id, operationID)
+        }
+        return operation.status()
+    }
+
+    public func cancelStagedFileTransfer(
+        id: String,
+        operationID: String
+    ) throws -> DoryMachineFileTransferOperationStatus {
+        fileTransferLock.lock()
+        let operation = fileTransferOperations[operationID]
+        fileTransferLock.unlock()
+        guard let operation, operation.machineID == id else {
+            throw DoryMachineFileTransferError.unknownTransfer(id, operationID)
+        }
+        operation.requestCancellation()
+        return operation.status()
+    }
+
+    private func performStagedFileTransfer(
+        id: String,
+        privateStagingRoot: String,
+        transferID: String,
+        operation: MachineFileTransferOperation?
+    ) throws -> DoryMachineFileTransferResult {
+        guard Self.isPrivateTransferStagingRoot(privateStagingRoot) else {
+            throw DoryMachineFileTransferError.invalidPrivateStagingRoot
+        }
         guard let machineStatus = status(id: id) else {
             throw MachineManagerError.unknownMachine(id)
         }
@@ -5036,14 +5180,14 @@ public final class MachineManager: @unchecked Sendable {
             throw DoryMachineFileTransferError.guestAccountUnavailable(id)
         }
 
-        let transferID = UUID().uuidString
-            .replacingOccurrences(of: "-", with: "")
-            .lowercased()
         let guestHome = "/home/\(username)"
         let downloads = guestHome + "/Downloads"
         let guestDestination = downloads + "/Dory Transfer " + transferID
+        operation?.setGuestDestination(guestDestination)
+        try Self.requireTransferNotCancelled(operation)
 
         return try withAgentClient(id: id) { client in
+            try Self.requireTransferNotCancelled(operation)
             let uid = try Self.guestNumericIdentity(
                 client: client,
                 program: "/usr/bin/id",
@@ -5065,6 +5209,7 @@ public final class MachineManager: @unchecked Sendable {
                 DoryExecEnvironment(key: "DORY_AGENT_RUN_UID", value: String(uid)),
                 DoryExecEnvironment(key: "DORY_AGENT_RUN_GID", value: String(gid)),
             ]
+            try Self.requireTransferNotCancelled(operation)
             try Self.requireSuccessfulTransferCommand(
                 client.exec(
                     argv: ["/bin/mkdir", "-p", "--", downloads],
@@ -5075,6 +5220,7 @@ public final class MachineManager: @unchecked Sendable {
                 ),
                 error: .guestPreparationFailed(id)
             )
+            try Self.requireTransferNotCancelled(operation)
             // No `-p`: a collision or pre-existing attacker-controlled directory must fail rather
             // than becoming the exact-replica target.
             try Self.requireSuccessfulTransferCommand(
@@ -5102,16 +5248,27 @@ public final class MachineManager: @unchecked Sendable {
             }
             let stats: DoryPushStats
             do {
-                stats = try client.push(
-                    localRoot: privateStagingRoot,
-                    remoteRoot: guestDestination
-                )
+                if let operation {
+                    operation.setTransferring()
+                    stats = try client.push(
+                        localRoot: privateStagingRoot,
+                        remoteRoot: guestDestination,
+                        control: operation.control
+                    )
+                } else {
+                    stats = try client.push(
+                        localRoot: privateStagingRoot,
+                        remoteRoot: guestDestination
+                    )
+                }
             } catch {
                 throw DoryMachineFileTransferError.transferFailed(id)
             }
+            try Self.requireTransferNotCancelled(operation)
             guard stats.filesDeleted == 0 else {
                 throw DoryMachineFileTransferError.transferFailed(id)
             }
+            operation?.setFinalizing()
             try Self.requireSuccessfulTransferCommand(
                 client.exec(
                     argv: [
@@ -5124,12 +5281,58 @@ public final class MachineManager: @unchecked Sendable {
                 ),
                 error: .guestFinalizationFailed(id)
             )
+            try Self.requireTransferNotCancelled(operation)
             completed = true
             return DoryMachineFileTransferResult(
                 transferID: transferID,
                 guestDestination: guestDestination,
                 stats: stats
             )
+        }
+    }
+
+    private static func makeMachineFileTransferID() -> String {
+        UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+    }
+
+    private static func requireTransferNotCancelled(
+        _ operation: MachineFileTransferOperation?
+    ) throws {
+        if operation?.isCancellationRequested == true {
+            throw DoryMachineFileTransferCancellation.cancelled
+        }
+    }
+
+    private static func fileTransferFailure(
+        _ error: Error,
+        machineID: String
+    ) -> DoryMachineFileTransferFailure {
+        let transferError = error as? DoryMachineFileTransferError
+        switch transferError {
+        case .guestAccountUnavailable:
+            return .init(code: .guestUnavailable, message: "Guest account is unavailable.")
+        case .guestPreparationFailed:
+            return .init(code: .guestPreparationFailed, message: "Could not prepare the guest destination.")
+        case .guestFinalizationFailed:
+            return .init(code: .guestFinalizationFailed, message: "Could not finalize guest file ownership.")
+        case .invalidPrivateStagingRoot, .transferAlreadyInProgress, .unknownTransfer,
+             .transferFailed, nil:
+            return .init(code: .transferFailed, message: "File transfer failed for \(machineID).")
+        }
+    }
+
+    private func pruneFileTransferOperationsLocked(now: Date) {
+        let expiration = now.addingTimeInterval(-60 * 60)
+        fileTransferOperations = fileTransferOperations.filter { _, operation in
+            guard let finishedAt = operation.terminalDate else { return true }
+            return finishedAt >= expiration
+        }
+        if fileTransferOperations.count <= 128 { return }
+        let removable = fileTransferOperations
+            .filter { $0.value.isTerminal }
+            .sorted { ($0.value.terminalDate ?? .distantFuture) < ($1.value.terminalDate ?? .distantFuture) }
+        for (operationID, _) in removable.prefix(fileTransferOperations.count - 128) {
+            fileTransferOperations.removeValue(forKey: operationID)
         }
     }
 

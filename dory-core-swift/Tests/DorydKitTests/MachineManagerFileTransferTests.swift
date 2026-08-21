@@ -89,9 +89,144 @@ final class MachineManagerFileTransferTests: XCTestCase {
         XCTAssertTrue(fixture.agent.pushes.isEmpty)
     }
 
+    func testAsynchronousTransferPublishesTerminalResult() throws {
+        let fixture = try makeRunningFixture(tag: "async-success")
+        defer { fixture.cleanup() }
+
+        let started = try fixture.manager.beginStagedFileTransfer(
+            id: "desktop",
+            privateStagingRoot: fixture.stagingRoot
+        )
+        XCTAssertEqual(started.machineID, "desktop")
+        XCTAssertEqual(started.operationID.utf8.count, 32)
+
+        let completed = try waitForTransfer(
+            manager: fixture.manager,
+            machineID: "desktop",
+            operationID: started.operationID
+        )
+        XCTAssertEqual(completed.phase, .completed)
+        XCTAssertEqual(completed.result?.transferID, started.operationID)
+        XCTAssertEqual(completed.result?.filesSent, 2)
+        XCTAssertEqual(completed.result?.bytesSent, 12)
+        XCTAssertEqual(completed.filesCompleted, 2)
+        XCTAssertEqual(completed.bytesCompleted, 12)
+        XCTAssertEqual(completed.fractionCompleted, 1)
+        XCTAssertNil(completed.currentPath)
+        XCTAssertEqual(fixture.agent.controlledPushCount, 1)
+        XCTAssertThrowsError(try fixture.manager.stagedFileTransferStatus(
+            id: "another-machine",
+            operationID: started.operationID
+        )) { error in
+            XCTAssertEqual(
+                error as? DoryMachineFileTransferError,
+                .unknownTransfer("another-machine", started.operationID)
+            )
+        }
+    }
+
+    func testAsynchronousTransferCancellationCleansDestinationAndFencesSecondTransfer() throws {
+        let fixture = try makeRunningFixture(
+            tag: "async-cancel",
+            blockControlledPush: true
+        )
+        defer {
+            fixture.agent.releaseControlledPush()
+            fixture.cleanup()
+        }
+
+        let started = try fixture.manager.beginStagedFileTransfer(
+            id: "desktop",
+            privateStagingRoot: fixture.stagingRoot
+        )
+        XCTAssertTrue(fixture.agent.waitForControlledPush())
+        XCTAssertThrowsError(try fixture.manager.beginStagedFileTransfer(
+            id: "desktop",
+            privateStagingRoot: fixture.stagingRoot
+        )) { error in
+            XCTAssertEqual(
+                error as? DoryMachineFileTransferError,
+                .transferAlreadyInProgress("desktop")
+            )
+        }
+        XCTAssertThrowsError(try fixture.manager.transferStagedFiles(
+            id: "desktop",
+            privateStagingRoot: fixture.stagingRoot
+        )) { error in
+            XCTAssertEqual(
+                error as? DoryMachineFileTransferError,
+                .transferAlreadyInProgress("desktop")
+            )
+        }
+
+        let cancelling = try fixture.manager.cancelStagedFileTransfer(
+            id: "desktop",
+            operationID: started.operationID
+        )
+        XCTAssertEqual(cancelling.phase, .cancelling)
+        fixture.agent.releaseControlledPush()
+
+        let cancelled = try waitForTransfer(
+            manager: fixture.manager,
+            machineID: "desktop",
+            operationID: started.operationID
+        )
+        XCTAssertEqual(cancelled.phase, .cancelled)
+        XCTAssertNil(cancelled.result)
+        XCTAssertNil(cancelled.failure)
+        let destination = try XCTUnwrap(cancelled.guestDestination)
+        XCTAssertTrue(fixture.agent.execs.contains {
+            $0.argv == ["/bin/rm", "-rf", "--", destination]
+        })
+        XCTAssertFalse(fixture.agent.execs.contains { $0.argv.first == "/bin/chown" })
+    }
+
+    func testAsynchronousTransferFailureUsesStableSafeEvidence() throws {
+        let fixture = try makeRunningFixture(tag: "async-failure", failPush: true)
+        defer { fixture.cleanup() }
+
+        let started = try fixture.manager.beginStagedFileTransfer(
+            id: "desktop",
+            privateStagingRoot: fixture.stagingRoot
+        )
+        let failed = try waitForTransfer(
+            manager: fixture.manager,
+            machineID: "desktop",
+            operationID: started.operationID
+        )
+        XCTAssertEqual(failed.phase, .failed)
+        XCTAssertEqual(failed.failure?.code, .transferFailed)
+        XCTAssertEqual(failed.failure?.message, "File transfer failed for desktop.")
+        XCTAssertNil(failed.result)
+        XCTAssertFalse(failed.failure?.message.contains(fixture.stagingRoot) == true)
+    }
+
+    private func waitForTransfer(
+        manager: MachineManager,
+        machineID: String,
+        operationID: String
+    ) throws -> DoryMachineFileTransferOperationStatus {
+        let deadline = Date().addingTimeInterval(2)
+        while Date() < deadline {
+            let status = try manager.stagedFileTransferStatus(
+                id: machineID,
+                operationID: operationID
+            )
+            if status.phase.isTerminal {
+                return status
+            }
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        return try manager.stagedFileTransferStatus(
+            id: machineID,
+            operationID: operationID
+        )
+    }
+
     private func makeRunningFixture(
         tag: String,
-        failPush: Bool = false
+        failPush: Bool = false,
+        blockControlledPush: Bool = false
     ) throws -> TransferFixture {
         let suffix = "\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let stateRoot = "/tmp/dory-machine-transfer-\(tag)-\(suffix)"
@@ -109,7 +244,10 @@ final class MachineManagerFileTransferTests: XCTestCase {
         )
         try Data("world!!".utf8).write(to: URL(fileURLWithPath: stagingRoot + "/nested/world.txt"))
 
-        let agent = TransferAgentRecorder(failPush: failPush)
+        let agent = TransferAgentRecorder(
+            failPush: failPush,
+            blockControlledPush: blockControlledPush
+        )
         let manager = MachineManager(
             configuration: MachineManagerConfiguration(
                 vmmExecutablePath: "/bin/sleep",
@@ -185,11 +323,16 @@ private final class TransferAgentRecorder: @unchecked Sendable {
 
     private let lock = NSLock()
     private let failPush: Bool
+    private let blockControlledPush: Bool
+    private let controlledPushStarted = DispatchSemaphore(value: 0)
+    private let controlledPushRelease = DispatchSemaphore(value: 0)
     private var recordedExecs: [Exec] = []
     private var recordedPushes: [Push] = []
+    private var recordedControlledPushCount = 0
 
-    init(failPush: Bool) {
+    init(failPush: Bool, blockControlledPush: Bool) {
         self.failPush = failPush
+        self.blockControlledPush = blockControlledPush
     }
 
     var execs: [Exec] {
@@ -202,6 +345,20 @@ private final class TransferAgentRecorder: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return recordedPushes
+    }
+
+    var controlledPushCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return recordedControlledPushCount
+    }
+
+    func waitForControlledPush() -> Bool {
+        controlledPushStarted.wait(timeout: .now() + 2) == .success
+    }
+
+    func releaseControlledPush() {
+        controlledPushRelease.signal()
     }
 
     func connect(socketPath: String) throws -> any AgentControlClient {
@@ -234,6 +391,22 @@ private final class TransferAgentRecorder: @unchecked Sendable {
         }
         return DoryPushStats(filesSent: 2, bytesSent: 12, filesDeleted: 0)
     }
+
+    func push(
+        localRoot: String,
+        remoteRoot: String,
+        control: DoryPushControl
+    ) throws -> DoryPushStats {
+        _ = control
+        lock.lock()
+        recordedControlledPushCount += 1
+        lock.unlock()
+        controlledPushStarted.signal()
+        if blockControlledPush {
+            _ = controlledPushRelease.wait(timeout: .now() + 2)
+        }
+        return try push(localRoot: localRoot, remoteRoot: remoteRoot)
+    }
 }
 
 private final class TransferAgentClient: AgentControlClient, @unchecked Sendable {
@@ -259,6 +432,17 @@ private final class TransferAgentClient: AgentControlClient, @unchecked Sendable
     }
     func push(localRoot: String, remoteRoot: String) throws -> DoryPushStats {
         try owner.push(localRoot: localRoot, remoteRoot: remoteRoot)
+    }
+    func push(
+        localRoot: String,
+        remoteRoot: String,
+        control: DoryPushControl
+    ) throws -> DoryPushStats {
+        try owner.push(
+            localRoot: localRoot,
+            remoteRoot: remoteRoot,
+            control: control
+        )
     }
     func exec(
         argv: [String],

@@ -26,6 +26,11 @@ public protocol AgentControlClient: Sendable {
     func portsWatch() throws -> DoryPortsSnapshot
     func telemetry() throws -> DoryTelemetry
     func push(localRoot: String, remoteRoot: String) throws -> DoryPushStats
+    func push(
+        localRoot: String,
+        remoteRoot: String,
+        control: DoryPushControl
+    ) throws -> DoryPushStats
     func snapshotFreeze(receiptID: String) throws -> String
     func snapshotThaw(receiptID: String) throws
     func exec(
@@ -56,6 +61,17 @@ public extension AgentControlClient {
         _ = localRoot
         _ = remoteRoot
         throw AgentControlError.capabilityUnavailable("sync-push")
+    }
+
+    func push(
+        localRoot: String,
+        remoteRoot: String,
+        control: DoryPushControl
+    ) throws -> DoryPushStats {
+        _ = localRoot
+        _ = remoteRoot
+        _ = control
+        throw AgentControlError.capabilityUnavailable("sync-push-control")
     }
 
     func snapshotThaw(receiptID: String) throws {
@@ -142,6 +158,18 @@ public final class AgentControl: @unchecked Sendable {
         try client(requiring: "sync-push").push(
             localRoot: localRoot,
             remoteRoot: remoteRoot
+        )
+    }
+
+    public func push(
+        localRoot: String,
+        remoteRoot: String,
+        control: DoryPushControl
+    ) throws -> DoryPushStats {
+        try client(requiring: "sync-push").push(
+            localRoot: localRoot,
+            remoteRoot: remoteRoot,
+            control: control
         )
     }
 

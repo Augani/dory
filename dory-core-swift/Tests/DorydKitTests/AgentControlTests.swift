@@ -31,6 +31,15 @@ final class AgentControlTests: XCTestCase {
             try control.push(localRoot: "/tmp/local", remoteRoot: "/tmp/remote"),
             DoryPushStats(filesSent: 1, bytesSent: 12, filesDeleted: 0)
         )
+        XCTAssertEqual(
+            try control.push(
+                localRoot: "/tmp/local",
+                remoteRoot: "/tmp/remote",
+                control: DoryPushControl()
+            ),
+            DoryPushStats(filesSent: 1, bytesSent: 12, filesDeleted: 0)
+        )
+        XCTAssertEqual(fake.controlledPushes, 1)
         let receiptID = String(repeating: "a", count: 32)
         XCTAssertEqual(try control.snapshotFreeze(receiptID: receiptID), receiptID)
         try control.snapshotThaw(receiptID: receiptID)
@@ -118,6 +127,7 @@ private final class FakeAgentControlClient: AgentControlClient, @unchecked Senda
     private var inputs: [Int64] = []
     private var closes = 0
     private var telemetryCallCount = 0
+    private var controlledPushCallCount = 0
     private var freezeReceipts: [String] = []
     private var thawReceipts: [String] = []
 
@@ -153,6 +163,12 @@ private final class FakeAgentControlClient: AgentControlClient, @unchecked Senda
         lock.lock()
         defer { lock.unlock() }
         return telemetryCallCount
+    }
+
+    var controlledPushes: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return controlledPushCallCount
     }
 
     var snapshotFreezeReceipts: [String] {
@@ -215,6 +231,18 @@ private final class FakeAgentControlClient: AgentControlClient, @unchecked Senda
         XCTAssertEqual(localRoot, "/tmp/local")
         XCTAssertEqual(remoteRoot, "/tmp/remote")
         return DoryPushStats(filesSent: 1, bytesSent: 12, filesDeleted: 0)
+    }
+
+    func push(
+        localRoot: String,
+        remoteRoot: String,
+        control: DoryPushControl
+    ) throws -> DoryPushStats {
+        _ = control
+        lock.lock()
+        controlledPushCallCount += 1
+        lock.unlock()
+        return try push(localRoot: localRoot, remoteRoot: remoteRoot)
     }
 
     func snapshotThaw(receiptID: String) throws {
