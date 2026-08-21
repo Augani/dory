@@ -130,6 +130,9 @@ private struct MachineCard: View {
     private var isPaused: Bool { machine.status == .paused }
     private var isActive: Bool { isRunning || isPaused }
     private var hasAssignedAddress: Bool { DoryDNS.ipv4Bytes(machine.ip) != nil }
+    private var fileTransfer: DorydMachineFileTransferOperation? {
+        store.machineFileTransfer(for: machine.name)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -171,6 +174,11 @@ private struct MachineCard: View {
 
             runtimeEvidence
                 .padding(.bottom, 12)
+
+            if let fileTransfer {
+                fileTransferProgress(fileTransfer)
+                    .padding(.bottom, 12)
+            }
 
             if let command = store.machineTerminalCommand(machine) {
                 HStack(spacing: 6) {
@@ -252,6 +260,7 @@ private struct MachineCard: View {
         }
         .dropDestination(for: URL.self) { urls, _ in
             guard store.canTransferFiles(to: machine),
+                  !store.isMachineBusy(machine.name),
                   !urls.isEmpty,
                   urls.allSatisfy(\.isFileURL) else {
                 return false
@@ -259,7 +268,9 @@ private struct MachineCard: View {
             Task { await store.transferFiles(urls, to: machine) }
             return true
         } isTargeted: { targeted in
-            isTransferDropTargeted = targeted && store.canTransferFiles(to: machine)
+            isTransferDropTargeted = targeted
+                && store.canTransferFiles(to: machine)
+                && !store.isMachineBusy(machine.name)
         }
         .confirmationDialog("Delete machine \(machine.name)?", isPresented: $confirmingDelete, titleVisibility: .visible) {
             Button("Delete", role: .destructive) { store.deleteMachine(machine) }
@@ -283,6 +294,85 @@ private struct MachineCard: View {
         .frame(width: 44, height: 44)
         .background(p.bgInput, in: RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(p.border))
+    }
+
+    private func fileTransferProgress(_ operation: DorydMachineFileTransferOperation) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 7) {
+                Image(systemName: operation.phase == .cancelling ? "xmark.circle" : "paperplane.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(p.accentText)
+                Text(fileTransferTitle(operation))
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(p.text)
+                    .lineLimit(1)
+                Spacer(minLength: 8)
+                Text(operation.fractionCompleted, format: .percent.precision(.fractionLength(0)))
+                    .font(.mono(10.5, weight: .semibold))
+                    .foregroundStyle(p.text2)
+            }
+
+            ProgressView(value: operation.fractionCompleted)
+                .progressViewStyle(.linear)
+                .tint(p.accent)
+
+            HStack(spacing: 8) {
+                Text(fileTransferDetail(operation))
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(p.text3)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 8)
+                if !operation.phase.isTerminal {
+                    Button(operation.phase == .cancelling ? "Cancelling…" : "Cancel") {
+                        Task { await store.cancelFileTransfer(to: machine) }
+                    }
+                    .buttonStyle(.borderless)
+                    .font(.system(size: 10.5, weight: .semibold))
+                    .disabled(operation.phase == .cancelling)
+                    .accessibilityIdentifier("machine-transfer-cancel-\(machine.name)")
+                }
+            }
+        }
+        .padding(10)
+        .background(p.accentSoft.opacity(0.55), in: RoundedRectangle(cornerRadius: 9))
+        .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(p.accent.opacity(0.24)))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("File transfer to \(machine.name)")
+        .accessibilityValue(fileTransferDetail(operation))
+    }
+
+    private func fileTransferTitle(_ operation: DorydMachineFileTransferOperation) -> String {
+        switch operation.phase {
+        case .preparing: "Preparing files"
+        case .transferring: "Sending files"
+        case .finalizing: "Finishing transfer"
+        case .cancelling: "Cancelling transfer"
+        case .completed: "Files sent"
+        case .cancelled: "Transfer cancelled"
+        case .failed: "Transfer failed"
+        }
+    }
+
+    private func fileTransferDetail(_ operation: DorydMachineFileTransferOperation) -> String {
+        if let currentPath = operation.currentPath {
+            return currentPath
+        }
+        if operation.bytesTotal > 0 {
+            let completed = ByteCountFormatter.string(
+                fromByteCount: Int64(clamping: operation.bytesCompleted),
+                countStyle: .file
+            )
+            let total = ByteCountFormatter.string(
+                fromByteCount: Int64(clamping: operation.bytesTotal),
+                countStyle: .file
+            )
+            return "\(completed) of \(total)"
+        }
+        if operation.filesTotal > 0 {
+            return "\(operation.filesCompleted) of \(operation.filesTotal) files"
+        }
+        return fileTransferTitle(operation)
     }
 
     private var overflowMenu: some View {
