@@ -339,6 +339,7 @@ jobs:
           python3 .github/scripts/test-direct-dmg-install-gate.py
           python3 .github/scripts/test-desktop-linux-live-gate.py
           python3 .github/scripts/test-machine-resource-reconfiguration-gate.py
+          python3 .github/scripts/test-sandbox-security-gate.py
       - name: P0 smoke harness regression tests
         run: bash scripts/test-p0-smoke.sh
       - name: Dory app and offline quality suite
