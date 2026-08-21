@@ -83,7 +83,17 @@ final class MachineManagerSavedStateIntegrationTests: XCTestCase {
         XCTAssertEqual(status.state, .failed)
         XCTAssertNil(status.savedState)
         XCTAssertTrue(status.lastError?.contains("saved-state") == true)
+        XCTAssertEqual(status.failure?.code, .savedStateInvalid)
+        XCTAssertEqual(
+            status.failure?.causalChain,
+            [.artifactAuthority, .runtimeAuthority]
+        )
+        XCTAssertEqual(status.failure?.recoveryDisposition, .repair)
         XCTAssertThrowsError(try recovered.start(id: fixture.machineID))
+
+        let restarted = fixture.manager(controller: controller)
+        let durable = try XCTUnwrap(restarted.status(id: fixture.machineID)?.failure)
+        XCTAssertEqual(durable, status.failure)
         try recovered.delete(id: fixture.machineID)
     }
 

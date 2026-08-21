@@ -302,6 +302,8 @@ struct Machine: Identifiable, Hashable, Sendable {
     var sshPort: Int? = nil
     var shellSocketPath: String = ""
     var processID: Int32? = nil
+    var failure: DorydMachineFailure? = nil
+    var activeOperation: DorydMachineOperationSummary? = nil
     var displayMode: MachineDisplayMode = .headless
     var bootMode: MachineBootMode = .linuxKernel
     var installerMediaAttached: Bool = false
@@ -319,6 +321,23 @@ struct Machine: Identifiable, Hashable, Sendable {
 
     var runtimeEvidence: [MachineRuntimeEvidence] {
         var evidence: [MachineRuntimeEvidence] = []
+        if let failure {
+            evidence.append(MachineRuntimeEvidence(
+                id: "failure",
+                label: Self.failureLabel(failure.code),
+                systemImage: "exclamationmark.octagon.fill",
+                tone: .warning,
+                detail: Self.failureDetail(failure)
+            ))
+        } else if let activeOperation {
+            evidence.append(MachineRuntimeEvidence(
+                id: "operation",
+                label: activeOperation.kind.rawValue.capitalized,
+                systemImage: "arrow.triangle.2.circlepath",
+                tone: .standard,
+                detail: "Operation \(activeOperation.operationID.prefix(8))…"
+            ))
+        }
         switch runtimeIdentity.mode {
         case "resolved-plan":
             evidence.append(MachineRuntimeEvidence(
@@ -378,6 +397,41 @@ struct Machine: Identifiable, Hashable, Sendable {
         }
         evidence.append(toolsRuntimeEvidence)
         return evidence
+    }
+
+    private static func failureLabel(_ code: DorydMachineFailureCode) -> String {
+        switch code {
+        case .lifecycleOperationFailed: "Operation failed"
+        case .lifecycleRecoveryRequired: "Recovery required"
+        case .workspaceAuthorityInvalid: "Planning required"
+        case .backendLaunchFailed: "Backend launch failed"
+        case .readinessHandoffFailed: "Readiness failed"
+        case .readinessTimedOut: "Readiness timed out"
+        case .helperExited: "VM helper exited"
+        case .savedStateInvalid: "Saved state invalid"
+        case .resourceAdmissionRejected: "Resources changed"
+        case .desktopUpdateRecoveryRequired: "Update recovery required"
+        case .desktopUpdateRolledBack: "Update rolled back"
+        case .deletionFailed: "Deletion failed"
+        case .diagnosticPersistenceFailed: "Diagnostics unavailable"
+        case .unclassified: "Machine failure"
+        }
+    }
+
+    private static func failureDetail(_ failure: DorydMachineFailure) -> String {
+        let recovery: String
+        switch failure.recoveryDisposition {
+        case .retry: recovery = "Retry the operation"
+        case .replan: recovery = "Replan this workspace"
+        case .repair: recovery = "Run repair and review diagnostics"
+        case .rollbackCompleted: recovery = "Rollback completed"
+        case .deleteWorkspace: recovery = "Delete and recreate the workspace"
+        case .inspectDiagnostics: recovery = "Review diagnostics"
+        }
+        if let operationID = failure.operationID {
+            return "\(recovery) · operation \(operationID.prefix(8))…"
+        }
+        return recovery
     }
 
     var integrationHealthProjection: DoryGuestIntegrationHealth {

@@ -619,6 +619,74 @@ struct DorydClientTests {
         }
     }
 
+    @Test func machineListRequiresExactStructuredFailureAndOperationEvidence() async throws {
+        let listener = NSXPCListener.anonymous()
+        let service = FakeDorydService()
+        let delegate = FakeDorydListenerDelegate(service: service)
+        listener.delegate = delegate
+        listener.resume()
+        defer { listener.invalidate() }
+        let client = DorydClient(endpoint: listener.endpoint)
+        let operationID = "01234567-89ab-4cde-8fab-0123456789ab"
+        let validFailure: NSDictionary = [
+            "schemaVersion": UInt16(1),
+            "code": "readiness-timed-out",
+            "occurredAtUnixMilliseconds": Int64(1_787_318_400_000),
+            "operationID": operationID,
+            "causalChain": ["readiness-gate"],
+            "recoveryDisposition": "retry",
+            "evidenceReferences": [[
+                "kind": "journal",
+                "identifier": operationID,
+            ] as NSDictionary],
+        ]
+        let activeOperation: NSDictionary = [
+            "operationID": operationID,
+            "kind": "starting",
+        ]
+        service.setMachineFailure(
+            "dev",
+            validFailure,
+            activeOperation: activeOperation
+        )
+
+        let valid = try #require((try await client.machineList()).first)
+        #expect(valid.failure?.code == .readinessTimedOut)
+        #expect(valid.failure?.causalChain == [.readinessGate])
+        #expect(valid.failure?.recoveryDisposition == .retry)
+        #expect(valid.failure?.operationID == operationID)
+        #expect(valid.activeOperation?.operationID == operationID)
+        #expect(valid.activeOperation?.kind == .starting)
+
+        let unknown = validFailure.mutableCopy() as! NSMutableDictionary
+        unknown["detail"] = "/private/opaque"
+        service.setMachineFailure("dev", unknown, activeOperation: activeOperation)
+        await #expect(throws: (any Error).self) {
+            _ = try await client.machineList()
+        }
+
+        let pathEvidence = validFailure.mutableCopy() as! NSMutableDictionary
+        pathEvidence["evidenceReferences"] = [[
+            "kind": "journal", "identifier": "/private/journal",
+        ] as NSDictionary]
+        service.setMachineFailure("dev", pathEvidence, activeOperation: activeOperation)
+        await #expect(throws: (any Error).self) {
+            _ = try await client.machineList()
+        }
+
+        service.setMachineFailure(
+            "dev",
+            validFailure,
+            activeOperation: [
+                "operationID": operationID,
+                "kind": "future-operation",
+            ] as NSDictionary
+        )
+        await #expect(throws: (any Error).self) {
+            _ = try await client.machineList()
+        }
+    }
+
     @MainActor
     @Test func machineEventCursorRequiresExactOrderedSafeEvidence() async throws {
         let listener = NSXPCListener.anonymous()
@@ -636,6 +704,35 @@ struct DorydClientTests {
         #expect(!batch.snapshotRequired)
         #expect(batch.events.map(\.sequence) == [5])
         #expect(batch.events.first?.status?.state == "running")
+
+        let failureBatch = valid.mutableCopy() as! NSMutableDictionary
+        let failureEvent = (valid["events"] as! [NSDictionary])[0]
+            .mutableCopy() as! NSMutableDictionary
+        let failureStatus = (failureEvent["status"] as! NSDictionary)
+            .mutableCopy() as! NSMutableDictionary
+        failureStatus["hasFailure"] = true
+        failureStatus["failureCode"] = "helper-exited"
+        failureStatus["recoveryDisposition"] = "retry"
+        failureStatus["operationID"] = "01234567-89ab-4cde-8fab-0123456789ab"
+        failureStatus["operationKind"] = "starting"
+        failureEvent["status"] = failureStatus
+        failureBatch["events"] = [failureEvent]
+        service.setMachineEventBatch(failureBatch)
+        let failed = try await client.machineEvents(afterSequence: 4)
+        #expect(failed.events.first?.status?.failureCode == .helperExited)
+        #expect(failed.events.first?.status?.recoveryDisposition == .retry)
+        #expect(failed.events.first?.status?.operationKind == .starting)
+
+        let truncatedFailureBatch = failureBatch.mutableCopy() as! NSMutableDictionary
+        let truncatedEvent = failureEvent.mutableCopy() as! NSMutableDictionary
+        let truncatedStatus = failureStatus.mutableCopy() as! NSMutableDictionary
+        truncatedStatus.removeObject(forKey: "recoveryDisposition")
+        truncatedEvent["status"] = truncatedStatus
+        truncatedFailureBatch["events"] = [truncatedEvent]
+        service.setMachineEventBatch(truncatedFailureBatch)
+        await #expect(throws: (any Error).self) {
+            _ = try await client.machineEvents(afterSequence: 4)
+        }
 
         let eventRows = valid["events"] as! [NSDictionary]
         let invalidStatusEvent = eventRows[0].mutableCopy() as! NSMutableDictionary
@@ -3839,6 +3936,29 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
             current["savedState"] = savedState
         } else {
             current.removeObject(forKey: "savedState")
+        }
+        machines[machineID] = current.copy() as? NSDictionary
+    }
+
+    func setMachineFailure(
+        _ machineID: String,
+        _ failure: Any?,
+        activeOperation: Any? = nil
+    ) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let current = machines[machineID]?.mutableCopy() as? NSMutableDictionary else {
+            return
+        }
+        if let failure {
+            current["failure"] = failure
+        } else {
+            current.removeObject(forKey: "failure")
+        }
+        if let activeOperation {
+            current["activeOperation"] = activeOperation
+        } else {
+            current.removeObject(forKey: "activeOperation")
         }
         machines[machineID] = current.copy() as? NSDictionary
     }

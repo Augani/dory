@@ -2194,6 +2194,15 @@ private extension DoryMachineStatus {
         if let pid {
             dictionary["pid"] = pid
         }
+        if let failure, failure.isValid {
+            dictionary["failure"] = failure.xpcDictionary
+        }
+        if let activeOperationID, let activeOperationKind {
+            dictionary["activeOperation"] = [
+                "operationID": activeOperationID,
+                "kind": activeOperationKind,
+            ] as NSDictionary
+        }
         if let handoffSocketPath {
             dictionary["handoffSocketPath"] = handoffSocketPath
         }
@@ -2271,6 +2280,26 @@ private extension DoryMachineStatus {
     }
 }
 
+private extension DoryMachineFailure {
+    var xpcDictionary: NSDictionary {
+        var dictionary: [String: Any] = [
+            "schemaVersion": schemaVersion,
+            "code": code.rawValue,
+            "occurredAtUnixMilliseconds": occurredAtUnixMilliseconds,
+            "causalChain": causalChain.map(\.rawValue),
+            "recoveryDisposition": recoveryDisposition.rawValue,
+            "evidenceReferences": evidenceReferences.map { reference in
+                [
+                    "kind": reference.kind.rawValue,
+                    "identifier": reference.identifier,
+                ] as NSDictionary
+            },
+        ]
+        if let operationID { dictionary["operationID"] = operationID }
+        return dictionary as NSDictionary
+    }
+}
+
 private extension DoryMachineImportAssessment {
     var xpcDictionary: NSDictionary {
         var dictionary: [String: Any] = [
@@ -2344,6 +2373,12 @@ private extension DoryMachineEventStatus {
             "runtimeMode": runtimeMode,
             "virtualHardwareABIVersion": virtualHardwareABIVersion,
         ]
+        if let failureCode { dictionary["failureCode"] = failureCode }
+        if let recoveryDisposition {
+            dictionary["recoveryDisposition"] = recoveryDisposition
+        }
+        if let operationID { dictionary["operationID"] = operationID }
+        if let operationKind { dictionary["operationKind"] = operationKind }
         if let planRevision { dictionary["planRevision"] = planRevision }
         if let planSHA256 { dictionary["planSHA256"] = planSHA256 }
         if let backend { dictionary["backend"] = backend }

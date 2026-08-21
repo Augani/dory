@@ -26,6 +26,10 @@ public struct DoryMachineEventStatus: Codable, Sendable, Equatable, Hashable {
     public var observedRevision: String
     public var state: String
     public var hasFailure: Bool
+    public var failureCode: String?
+    public var recoveryDisposition: String?
+    public var operationID: String?
+    public var operationKind: String?
     public var memoryMB: UInt64
     public var cpuCount: Int
     public var displayMode: String
@@ -40,6 +44,32 @@ public struct DoryMachineEventStatus: Codable, Sendable, Equatable, Hashable {
     public var backend: String?
     public var savedStateSHA256: String?
 
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case machineID
+        case configurationRevision
+        case observedRevision
+        case state
+        case hasFailure
+        case failureCode
+        case recoveryDisposition
+        case operationID
+        case operationKind
+        case memoryMB
+        case cpuCount
+        case displayMode
+        case bootMode
+        case installerMediaAttached
+        case shareCount
+        case integrationHealth
+        case runtimeMode
+        case virtualHardwareABIVersion
+        case planRevision
+        case planSHA256
+        case backend
+        case savedStateSHA256
+    }
+
     init(
         status: DoryMachineStatus,
         configurationRevision: String,
@@ -51,6 +81,12 @@ public struct DoryMachineEventStatus: Codable, Sendable, Equatable, Hashable {
         self.observedRevision = observedRevision
         state = status.state.rawValue
         hasFailure = status.state == .failed || status.lastError != nil
+        failureCode = status.failure?.code.rawValue
+            ?? (hasFailure ? DoryMachineFailureCode.unclassified.rawValue : nil)
+        recoveryDisposition = status.failure?.recoveryDisposition.rawValue
+            ?? (hasFailure ? DoryMachineRecoveryDisposition.inspectDiagnostics.rawValue : nil)
+        operationID = status.activeOperationID
+        operationKind = status.activeOperationKind
         memoryMB = status.memoryMB
         cpuCount = status.cpuCount
         displayMode = status.displayMode.rawValue
@@ -64,6 +100,60 @@ public struct DoryMachineEventStatus: Codable, Sendable, Equatable, Hashable {
         planSHA256 = status.runtimeIdentity.resolvedPlanSHA256
         backend = status.runtimeIdentity.backend?.rawValue
         savedStateSHA256 = status.savedState?.stateFileSHA256
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decode(UInt16.self, forKey: .schemaVersion)
+        machineID = try container.decode(String.self, forKey: .machineID)
+        configurationRevision = try container.decode(
+            String.self,
+            forKey: .configurationRevision
+        )
+        observedRevision = try container.decode(String.self, forKey: .observedRevision)
+        state = try container.decode(String.self, forKey: .state)
+        hasFailure = try container.decode(Bool.self, forKey: .hasFailure)
+        failureCode = try container.decodeIfPresent(String.self, forKey: .failureCode)
+        recoveryDisposition = try container.decodeIfPresent(
+            String.self,
+            forKey: .recoveryDisposition
+        )
+        operationID = try container.decodeIfPresent(String.self, forKey: .operationID)
+        operationKind = try container.decodeIfPresent(String.self, forKey: .operationKind)
+        memoryMB = try container.decode(UInt64.self, forKey: .memoryMB)
+        cpuCount = try container.decode(Int.self, forKey: .cpuCount)
+        displayMode = try container.decode(String.self, forKey: .displayMode)
+        bootMode = try container.decode(String.self, forKey: .bootMode)
+        installerMediaAttached = try container.decode(
+            Bool.self,
+            forKey: .installerMediaAttached
+        )
+        shareCount = try container.decode(Int.self, forKey: .shareCount)
+        integrationHealth = try container.decode(String.self, forKey: .integrationHealth)
+        runtimeMode = try container.decode(String.self, forKey: .runtimeMode)
+        virtualHardwareABIVersion = try container.decode(
+            UInt16.self,
+            forKey: .virtualHardwareABIVersion
+        )
+        planRevision = try container.decodeIfPresent(UInt64.self, forKey: .planRevision)
+        planSHA256 = try container.decodeIfPresent(String.self, forKey: .planSHA256)
+        backend = try container.decodeIfPresent(String.self, forKey: .backend)
+        savedStateSHA256 = try container.decodeIfPresent(
+            String.self,
+            forKey: .savedStateSHA256
+        )
+
+        // Schema-v1 records written before structured failures contained only hasFailure. Treat
+        // the exact absence of both later fields as bounded legacy evidence, then republish the
+        // normalized projection on the next change. A partial or explicit malformed shape still
+        // fails `isValid` and therefore fails the durable journal closed.
+        if hasFailure,
+           !container.contains(.failureCode),
+           !container.contains(.recoveryDisposition) {
+            failureCode = DoryMachineFailureCode.unclassified.rawValue
+            recoveryDisposition = DoryMachineRecoveryDisposition
+                .inspectDiagnostics.rawValue
+        }
     }
 
     public var isValid: Bool {
@@ -81,6 +171,27 @@ public struct DoryMachineEventStatus: Codable, Sendable, Equatable, Hashable {
               DoryMachineRuntimeIdentityMode(rawValue: runtimeMode) != nil,
               virtualHardwareABIVersion > 0,
               savedStateSHA256.map(Self.isSHA256) ?? true else {
+            return false
+        }
+        if hasFailure {
+            guard failureCode.flatMap(DoryMachineFailureCode.init(rawValue:)) != nil,
+                  recoveryDisposition.flatMap(
+                      DoryMachineRecoveryDisposition.init(rawValue:)
+                  ) != nil else {
+                return false
+            }
+        } else if failureCode != nil || recoveryDisposition != nil {
+            return false
+        }
+        if (operationID == nil) != (operationKind == nil) { return false }
+        if let operationID,
+           operationID.wholeMatch(
+               of: /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/
+           ) == nil {
+            return false
+        }
+        if let operationKind,
+           DoryWorkspaceMutationKind(rawValue: operationKind) == nil {
             return false
         }
         if runtimeMode == DoryMachineRuntimeIdentityMode.resolvedPlan.rawValue {

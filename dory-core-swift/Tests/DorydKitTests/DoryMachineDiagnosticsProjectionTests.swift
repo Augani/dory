@@ -90,4 +90,33 @@ struct DoryMachineDiagnosticsProjectionTests {
         #expect(share["readOnly"] as? Bool == true)
         #expect(!text.contains(privateRoot))
     }
+
+    @Test("support projection drops free-form errors and retains structured recovery evidence")
+    func omitsFreeFormErrors() throws {
+        let status: NSDictionary = [
+            "id": "dev",
+            "lastError": "helper failed at /Users/private-account with opaque-secret",
+            "failure": [
+                "schemaVersion": UInt16(1),
+                "code": "helper-exited",
+                "occurredAtUnixMilliseconds": Int64(1_787_318_400_000),
+                "causalChain": ["process-exit"],
+                "recoveryDisposition": "retry",
+                "evidenceReferences": [[
+                    "kind": "backend", "identifier": "dory.raw-hv-linux.v1",
+                ] as NSDictionary],
+            ] as NSDictionary,
+        ]
+
+        let projected = DoryMachineDiagnosticsProjection.supportSafeMachineStatus(status)
+        let data = try JSONSerialization.data(withJSONObject: projected)
+        let text = String(decoding: data, as: UTF8.self)
+        let failure = try #require(projected["failure"] as? NSDictionary)
+
+        #expect(projected["lastError"] == nil)
+        #expect(failure["code"] as? String == "helper-exited")
+        #expect(failure["recoveryDisposition"] as? String == "retry")
+        #expect(!text.contains("opaque-secret"))
+        #expect(!text.contains("/Users/private-account"))
+    }
 }

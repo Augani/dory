@@ -113,6 +113,53 @@ struct DoryMachineEventStreamTests {
         #expect(replay.events.map(\.sequence) == [3, 4])
     }
 
+    @Test("pre-structured schema-v1 failure events normalize across daemon restart")
+    func legacyFailureNormalization() throws {
+        let root = try privateTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = DoryMachineEventStore(root: root.path, now: { 1_500 })
+        try writeMachineConfiguration(root: root, bytes: Data("legacy-failure".utf8))
+        var status = machineStatus(state: .failed)
+        status.lastError = "historical free-form failure"
+        _ = try store.reconcile(statuses: [status], afterSequence: 0)
+
+        let recordURL = root.appendingPathComponent(DoryMachineEventStore.recordFileName)
+        let data = try Data(contentsOf: recordURL)
+        let record = try #require(
+            try JSONSerialization.jsonObject(
+                with: data,
+                options: .mutableContainers
+            ) as? NSMutableDictionary
+        )
+        let projections = try #require(record["projections"] as? NSMutableDictionary)
+        let projection = try #require(
+            (projections["dev"] as? NSDictionary)?.mutableCopy()
+                as? NSMutableDictionary
+        )
+        projection.removeObject(forKey: "failureCode")
+        projection.removeObject(forKey: "recoveryDisposition")
+        projections["dev"] = projection
+        let events = try #require(record["events"] as? [NSDictionary])
+        let event = try #require(events.first?.mutableCopy() as? NSMutableDictionary)
+        let eventStatus = try #require(
+            (event["status"] as? NSDictionary)?.mutableCopy()
+                as? NSMutableDictionary
+        )
+        eventStatus.removeObject(forKey: "failureCode")
+        eventStatus.removeObject(forKey: "recoveryDisposition")
+        event["status"] = eventStatus
+        record["events"] = [event]
+        try JSONSerialization.data(withJSONObject: record).write(to: recordURL)
+
+        let restarted = DoryMachineEventStore(root: root.path, now: { 1_501 })
+        let removed = try restarted.reconcile(statuses: [], afterSequence: 1)
+        #expect(removed.events.map(\.kind) == [.removed])
+        let normalized = try String(contentsOf: recordURL, encoding: .utf8)
+        #expect(normalized.contains("\"failureCode\" : \"unclassified\""))
+        #expect(normalized.contains("\"recoveryDisposition\" : \"inspect-diagnostics\""))
+        #expect(!normalized.contains("historical free-form failure"))
+    }
+
     @Test("corrupt symlinked and hard-linked event authority fails closed")
     func filesystemAuthorityFailsClosed() throws {
         for variant in ["corrupt", "symlink", "hardlink"] {

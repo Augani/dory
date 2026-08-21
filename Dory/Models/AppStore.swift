@@ -5268,6 +5268,8 @@ final class AppStore {
             loginShell: isCustomLinux ? "" : (isDesktop ? "/bin/bash" : "/bin/sh"),
             shellSocketPath: status.shellSocketPath ?? "",
             processID: status.pid,
+            failure: status.failure,
+            activeOperation: status.activeOperation,
             displayMode: status.displayMode,
             bootMode: status.bootMode,
             installerMediaAttached: status.installerMediaAttached,

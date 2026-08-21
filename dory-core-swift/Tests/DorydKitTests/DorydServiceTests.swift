@@ -1168,6 +1168,57 @@ final class DorydServiceTests: XCTestCase {
         wait(for: [removed], timeout: 5)
     }
 
+    func testMachineStatusPublishesStructuredFailureWithoutFreeFormEvidence() throws {
+        let base = "/tmp/dsf-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: base,
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: true,
+            handoffReadyTimeoutSeconds: 0.02
+        ))
+        defer {
+            manager.stopAll()
+            try? manager.delete(id: "dev")
+            try? FileManager.default.removeItem(atPath: base)
+        }
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "dev",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath
+        ))
+        _ = try manager.start(id: "dev")
+        _ = try waitForServiceMachineState(manager, id: "dev", state: .failed)
+
+        let service = DorydService(
+            socketPath: "/tmp/doryd-test.sock",
+            machineManager: manager
+        )
+        let reply = expectation(description: "structured machine failure")
+        service.machineList { rows, message in
+            XCTAssertEqual(message, "")
+            let status = (rows as? [NSDictionary])?.first
+            let failure = status?["failure"] as? NSDictionary
+            XCTAssertEqual(Set(failure?.allKeys as? [String] ?? []), [
+                "schemaVersion", "code", "occurredAtUnixMilliseconds", "operationID",
+                "causalChain", "recoveryDisposition", "evidenceReferences",
+            ])
+            XCTAssertEqual(failure?["code"] as? String, "readiness-timed-out")
+            XCTAssertEqual(failure?["recoveryDisposition"] as? String, "retry")
+            XCTAssertEqual(failure?["causalChain"] as? [String], ["readiness-gate"])
+            let operationID = failure?["operationID"] as? String
+            XCTAssertEqual(operationID?.count, 36)
+            let encoded = try? JSONSerialization.data(withJSONObject: failure ?? [:])
+            let text = encoded.map { String(decoding: $0, as: UTF8.self) } ?? ""
+            XCTAssertFalse(text.contains(base))
+            XCTAssertFalse(text.contains("timed out after"))
+            XCTAssertNil(status?["activeOperation"])
+            reply.fulfill()
+        }
+        wait(for: [reply], timeout: 5)
+    }
+
     func testMachineLifecycleOverXPC() throws {
         let base = "/tmp/doryd-service-machine-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let share = "\(base)-share"

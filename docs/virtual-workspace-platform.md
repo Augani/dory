@@ -703,6 +703,16 @@ Build on `HealthReporter`, `IncidentWriter`, raw-HV serial logs, `DorydMachineSt
 VMM handoff. Replace string-only `lastError` as the primary diagnostic with stable error codes,
 causal chains, recovery disposition, and relevant evidence references.
 
+The current daemon now persists a bounded, owner-only structured failure authority with stable
+failure/cause/recovery enums, operation IDs, and path-free evidence references. Machine status,
+the durable monotonic event cursor, XPC, `HealthReporter`, and Dory.app project that authority
+without relying on free-form error text. `lastError` remains a same-user compatibility field for
+older clients, but public CLI/support projections omit it along with environment values and host
+paths. Active lifecycle journals expose their operation ID and kind until completion, and terminal
+failures retain the originating operation ID across daemon restart. Full operation-ID propagation
+through backend/helper/guest/component boundaries, device-level telemetry, and a bounded
+per-workspace flight recorder remain required before this section is complete.
+
 ## Qualification and release gates
 
 Code existence is not support. A capability may be advertised only when the exact release

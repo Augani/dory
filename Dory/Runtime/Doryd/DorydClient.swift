@@ -828,11 +828,103 @@ nonisolated struct DorydAgentCapability: Sendable, Equatable, Hashable {
     }
 }
 
+nonisolated enum DorydMachineFailureCode: String, Sendable, Equatable, Hashable {
+    case lifecycleOperationFailed = "lifecycle-operation-failed"
+    case lifecycleRecoveryRequired = "lifecycle-recovery-required"
+    case workspaceAuthorityInvalid = "workspace-authority-invalid"
+    case backendLaunchFailed = "backend-launch-failed"
+    case readinessHandoffFailed = "readiness-handoff-failed"
+    case readinessTimedOut = "readiness-timed-out"
+    case helperExited = "helper-exited"
+    case savedStateInvalid = "saved-state-invalid"
+    case resourceAdmissionRejected = "resource-admission-rejected"
+    case desktopUpdateRecoveryRequired = "desktop-update-recovery-required"
+    case desktopUpdateRolledBack = "desktop-update-rolled-back"
+    case deletionFailed = "deletion-failed"
+    case diagnosticPersistenceFailed = "diagnostic-persistence-failed"
+    case unclassified
+}
+
+nonisolated enum DorydMachineFailureCauseCode: String, Sendable, Equatable, Hashable {
+    case configurationAuthority = "configuration-authority"
+    case runtimeAuthority = "runtime-authority"
+    case artifactAuthority = "artifact-authority"
+    case componentAuthority = "component-authority"
+    case hostQualification = "host-qualification"
+    case resourceAdmission = "resource-admission"
+    case processExit = "process-exit"
+    case readinessGate = "readiness-gate"
+    case journal
+    case filesystem
+    case guestAgent = "guest-agent"
+    case unknown
+}
+
+nonisolated enum DorydMachineRecoveryDisposition: String, Sendable, Equatable, Hashable {
+    case retry
+    case replan
+    case repair
+    case rollbackCompleted = "rollback-completed"
+    case deleteWorkspace = "delete-workspace"
+    case inspectDiagnostics = "inspect-diagnostics"
+}
+
+nonisolated enum DorydMachineFailureEvidenceKind: String, Sendable, Equatable, Hashable {
+    case operation
+    case plan
+    case backend
+    case component
+    case media
+    case snapshot
+    case savedState = "saved-state"
+    case journal
+    case hostQualification = "host-qualification"
+}
+
+nonisolated struct DorydMachineFailureEvidenceReference: Sendable, Equatable, Hashable {
+    var kind: DorydMachineFailureEvidenceKind
+    var identifier: String
+}
+
+nonisolated struct DorydMachineFailure: Sendable, Equatable, Hashable {
+    var schemaVersion: UInt16
+    var code: DorydMachineFailureCode
+    var occurredAtUnixMilliseconds: Int64
+    var operationID: String?
+    var causalChain: [DorydMachineFailureCauseCode]
+    var recoveryDisposition: DorydMachineRecoveryDisposition
+    var evidenceReferences: [DorydMachineFailureEvidenceReference]
+}
+
+nonisolated enum DorydMachineOperationKind: String, Sendable, Equatable, Hashable {
+    case importing
+    case provisioning
+    case resolving
+    case starting
+    case stopping
+    case pausing
+    case resuming
+    case suspending
+    case restoring
+    case snapshotting
+    case cloning
+    case updating
+    case repairing
+    case deleting
+}
+
+nonisolated struct DorydMachineOperationSummary: Sendable, Equatable, Hashable {
+    var operationID: String
+    var kind: DorydMachineOperationKind
+}
+
 nonisolated struct DorydMachineStatus: Sendable, Equatable {
     var id: String
     var state: String
     var pid: Int32?
     var lastError: String?
+    var failure: DorydMachineFailure? = nil
+    var activeOperation: DorydMachineOperationSummary? = nil
     var handoffSocketPath: String?
     var agentBuild: String?
     var agentProtocolVersion: UInt32? = nil
@@ -917,6 +1009,10 @@ nonisolated struct DorydMachineEventStatus: Sendable, Equatable {
     var observedRevision: String
     var state: String
     var hasFailure: Bool
+    var failureCode: DorydMachineFailureCode?
+    var recoveryDisposition: DorydMachineRecoveryDisposition?
+    var operationID: String?
+    var operationKind: DorydMachineOperationKind?
     var memoryMB: UInt64
     var cpuCount: Int
     var displayMode: String
@@ -2361,6 +2457,12 @@ nonisolated final class DorydClient: @unchecked Sendable {
               savedState.value == nil || ["suspended", "starting", "running"].contains(state) else {
             return nil
         }
+        guard let failure = machineFailure(from: dictionary["failure"]),
+              let activeOperation = machineActiveOperation(
+                  from: dictionary["activeOperation"]
+              ) else {
+            return nil
+        }
         let displayMode = (dictionary["displayMode"] as? String)
             .flatMap(MachineDisplayMode.init(rawValue:)) ?? .headless
         let agentBuild = nonEmptyString(dictionary["agentBuild"])
@@ -2387,6 +2489,8 @@ nonisolated final class DorydClient: @unchecked Sendable {
             state: state,
             pid: int32(dictionary["pid"]),
             lastError: nonEmptyString(dictionary["lastError"]),
+            failure: failure.value,
+            activeOperation: activeOperation.value,
             handoffSocketPath: nonEmptyString(dictionary["handoffSocketPath"]),
             agentBuild: agentBuild,
             agentProtocolVersion: agentHandshake.protocolVersion,
@@ -2415,6 +2519,106 @@ nonisolated final class DorydClient: @unchecked Sendable {
             installedDesktopPayloadReceipt: installedDesktopPayloadReceipt.value,
             savedState: savedState.value
         )
+    }
+
+    private struct ParsedMachineFailure {
+        var value: DorydMachineFailure?
+    }
+
+    nonisolated private static func machineFailure(
+        from raw: Any?
+    ) -> ParsedMachineFailure? {
+        guard let raw else { return ParsedMachineFailure(value: nil) }
+        guard let dictionary = raw as? NSDictionary,
+              let rawKeys = dictionary.allKeys as? [String],
+              rawKeys.count == dictionary.allKeys.count else {
+            return nil
+        }
+        let requiredKeys: Set<String> = [
+            "schemaVersion", "code", "occurredAtUnixMilliseconds", "causalChain",
+            "recoveryDisposition", "evidenceReferences",
+        ]
+        let keys = Set(rawKeys)
+        guard keys == requiredKeys || keys == requiredKeys.union(["operationID"]),
+              strictUInt64(dictionary["schemaVersion"]) == 1,
+              let rawCode = dictionary["code"] as? String,
+              let code = DorydMachineFailureCode(rawValue: rawCode),
+              let occurred = strictInt64(dictionary["occurredAtUnixMilliseconds"]),
+              occurred > 0,
+              let rawCauses = dictionary["causalChain"] as? [String],
+              !rawCauses.isEmpty, rawCauses.count <= 8,
+              rawCauses.count == (dictionary["causalChain"] as? NSArray)?.count,
+              let causes = Optional(rawCauses.compactMap(
+                  DorydMachineFailureCauseCode.init(rawValue:)
+              )), causes.count == rawCauses.count,
+              let rawRecovery = dictionary["recoveryDisposition"] as? String,
+              let recovery = DorydMachineRecoveryDisposition(rawValue: rawRecovery),
+              let rawEvidence = dictionary["evidenceReferences"] as? NSArray,
+              rawEvidence.count <= 16 else {
+            return nil
+        }
+        var evidence: [DorydMachineFailureEvidenceReference] = []
+        for row in rawEvidence {
+            guard let row = row as? NSDictionary,
+                  let evidenceKeys = row.allKeys as? [String],
+                  evidenceKeys.count == row.allKeys.count,
+                  Set(evidenceKeys) == ["kind", "identifier"],
+                  let rawKind = row["kind"] as? String,
+                  let kind = DorydMachineFailureEvidenceKind(rawValue: rawKind),
+                  let identifier = row["identifier"] as? String,
+                  identifier.utf8.count <= 256,
+                  identifier.wholeMatch(
+                      of: /[A-Za-z0-9][A-Za-z0-9._:@+-]{0,255}/
+                  ) != nil else {
+                return nil
+            }
+            evidence.append(.init(kind: kind, identifier: identifier))
+        }
+        guard Set(evidence).count == evidence.count else { return nil }
+        let operationID = dictionary["operationID"] as? String
+        guard dictionary["operationID"] == nil || operationID != nil,
+              operationID.map(isMachineOperationID) ?? true else {
+            return nil
+        }
+        return ParsedMachineFailure(value: DorydMachineFailure(
+            schemaVersion: 1,
+            code: code,
+            occurredAtUnixMilliseconds: occurred,
+            operationID: operationID,
+            causalChain: causes,
+            recoveryDisposition: recovery,
+            evidenceReferences: evidence
+        ))
+    }
+
+    private struct ParsedMachineActiveOperation {
+        var value: DorydMachineOperationSummary?
+    }
+
+    nonisolated private static func machineActiveOperation(
+        from raw: Any?
+    ) -> ParsedMachineActiveOperation? {
+        guard let raw else { return ParsedMachineActiveOperation(value: nil) }
+        guard let dictionary = raw as? NSDictionary,
+              let rawKeys = dictionary.allKeys as? [String],
+              rawKeys.count == dictionary.allKeys.count,
+              Set(rawKeys) == ["operationID", "kind"],
+              let operationID = dictionary["operationID"] as? String,
+              isMachineOperationID(operationID),
+              let rawKind = dictionary["kind"] as? String,
+              let kind = DorydMachineOperationKind(rawValue: rawKind) else {
+            return nil
+        }
+        return ParsedMachineActiveOperation(value: .init(
+            operationID: operationID,
+            kind: kind
+        ))
+    }
+
+    nonisolated private static func isMachineOperationID(_ value: String) -> Bool {
+        value.wholeMatch(
+            of: /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/
+        ) != nil
     }
 
     private struct ParsedMachineSavedState {
@@ -3140,6 +3344,7 @@ nonisolated final class DorydClient: @unchecked Sendable {
         guard rawKeys.count == keys.count,
               requiredKeys.isSubset(of: keys),
               keys.subtracting(requiredKeys).isSubset(of: [
+                  "failureCode", "recoveryDisposition", "operationID", "operationKind",
                   "planRevision", "planSHA256", "backend", "savedStateSHA256",
               ]),
               uint16(dictionary["schemaVersion"]) == 1,
@@ -3170,6 +3375,16 @@ nonisolated final class DorydClient: @unchecked Sendable {
             return nil
         }
         let planRevision = dictionary["planRevision"].flatMap { uint64($0) }
+        let failureCode = (dictionary["failureCode"] as? String).flatMap(
+            DorydMachineFailureCode.init(rawValue:)
+        )
+        let recoveryDisposition = (dictionary["recoveryDisposition"] as? String).flatMap(
+            DorydMachineRecoveryDisposition.init(rawValue:)
+        )
+        let operationID = dictionary["operationID"] as? String
+        let operationKind = (dictionary["operationKind"] as? String).flatMap(
+            DorydMachineOperationKind.init(rawValue:)
+        )
         let planSHA256 = dictionary["planSHA256"] as? String
         let backend = (dictionary["backend"] as? String).flatMap(
             DoryVirtualizationBackendIdentity.init(rawValue:)
@@ -3180,8 +3395,19 @@ nonisolated final class DorydClient: @unchecked Sendable {
                 || planSHA256?.isLowercaseSHA256 == true,
               (dictionary["backend"] == nil) == (backend == nil),
               (dictionary["savedStateSHA256"] == nil)
-                || savedStateSHA256?.isLowercaseSHA256 == true else {
+                || savedStateSHA256?.isLowercaseSHA256 == true,
+              (dictionary["failureCode"] == nil) == (failureCode == nil),
+              (dictionary["recoveryDisposition"] == nil) == (recoveryDisposition == nil),
+              (dictionary["operationID"] == nil) == (operationID == nil),
+              (dictionary["operationKind"] == nil) == (operationKind == nil),
+              operationID.map(isMachineOperationID) ?? true,
+              (operationID == nil) == (operationKind == nil) else {
             return nil
+        }
+        if failureNumber.boolValue {
+            guard failureCode != nil, recoveryDisposition != nil else { return nil }
+        } else {
+            guard failureCode == nil, recoveryDisposition == nil else { return nil }
         }
         if runtimeMode == "resolved-plan" {
             guard planRevision.map({ $0 > 0 }) == true,
@@ -3196,6 +3422,10 @@ nonisolated final class DorydClient: @unchecked Sendable {
             observedRevision: observedRevision,
             state: state,
             hasFailure: failureNumber.boolValue,
+            failureCode: failureCode,
+            recoveryDisposition: recoveryDisposition,
+            operationID: operationID,
+            operationKind: operationKind,
             memoryMB: memoryMB,
             cpuCount: cpuCount,
             displayMode: displayMode,

@@ -332,6 +332,9 @@ public struct DoryMachineStatus: Sendable, Equatable {
     public var state: DoryMachineState
     public var pid: Int32?
     public var lastError: String?
+    public var failure: DoryMachineFailure?
+    public var activeOperationID: String?
+    public var activeOperationKind: String?
     public var handoffSocketPath: String?
     public var agentBuild: String?
     public var agentProtocolVersion: UInt32?
@@ -366,6 +369,9 @@ public struct DoryMachineStatus: Sendable, Equatable {
         state: DoryMachineState,
         pid: Int32? = nil,
         lastError: String? = nil,
+        failure: DoryMachineFailure? = nil,
+        activeOperationID: String? = nil,
+        activeOperationKind: String? = nil,
         handoffSocketPath: String? = nil,
         agentBuild: String? = nil,
         agentProtocolVersion: UInt32? = nil,
@@ -400,6 +406,9 @@ public struct DoryMachineStatus: Sendable, Equatable {
         self.state = state
         self.pid = pid
         self.lastError = lastError
+        self.failure = failure
+        self.activeOperationID = activeOperationID
+        self.activeOperationKind = activeOperationKind
         self.handoffSocketPath = handoffSocketPath
         self.agentBuild = agentBuild
         self.agentProtocolVersion = agentProtocolVersion
@@ -937,6 +946,7 @@ public final class MachineManager: @unchecked Sendable {
     private let processStarter: ProcessStarter
     private let workspaceRepository: DoryWorkspaceRepository
     private let runtimeIdentityStore: DoryMachineRuntimeIdentityStore
+    private let failureStore: DoryMachineFailureStore
     private let launchPolicy: DoryMachineLaunchPolicy
     private let lifecycleJournalStore: DoryOperationJournalStore?
     private let lifecycleJournalInitializationError: String?
@@ -995,6 +1005,7 @@ public final class MachineManager: @unchecked Sendable {
         self.runtimeIdentityStore = DoryMachineRuntimeIdentityStore(
             root: configuration.stateDirectory
         )
+        self.failureStore = DoryMachineFailureStore(root: configuration.stateDirectory)
         self.savedStateStore = DoryMachineSavedStateStore(root: configuration.stateDirectory)
         do {
             let store = try DoryOperationJournalStore(
@@ -1042,8 +1053,52 @@ public final class MachineManager: @unchecked Sendable {
             runtimeIdentityStore: runtimeIdentityStore,
             savedStateStore: savedStateStore
         )
+        do {
+            let failures = try failureStore.failures()
+            for (machineID, failure) in failures where machines[machineID] != nil {
+                machines[machineID]?.failure = failure
+                machines[machineID]?.lastError = failure.compatibilitySummary
+            }
+        } catch {
+            for machineID in machines.keys {
+                let failure = DoryMachineFailure(
+                    code: .diagnosticPersistenceFailed,
+                    causalChain: [.filesystem],
+                    recoveryDisposition: .repair
+                )
+                machines[machineID]?.failure = failure
+                machines[machineID]?.lastError = failure.compatibilitySummary
+            }
+        }
+        // Saved-state inspection runs while reconstructing the machine table, before the
+        // instance can publish a durable structured diagnostic. Convert that bounded restart
+        // failure here after loading any previously persisted failure authority. Existing
+        // records win; an invalid store has already failed closed above.
+        for machineID in machines.keys {
+            guard var entry = machines[machineID],
+                  entry.state == .failed,
+                  entry.failure == nil,
+                  let diagnostic = entry.lastError else { continue }
+            setFailure(
+                on: &entry,
+                code: .savedStateInvalid,
+                message: diagnostic,
+                causes: [.artifactAuthority, .runtimeAuthority],
+                recoveryDisposition: .repair
+            )
+            machines[machineID] = entry
+        }
         for (machineID, diagnostic) in lifecycleRecoveryDiagnostics {
-            machines[machineID]?.lastError = diagnostic
+            if var entry = machines[machineID] {
+                setFailure(
+                    on: &entry,
+                    code: .lifecycleRecoveryRequired,
+                    message: diagnostic,
+                    causes: [.journal],
+                    recoveryDisposition: .repair
+                )
+                machines[machineID] = entry
+            }
         }
         reconcileLoadedWorkspaceProjections()
         recoverInterruptedDesktopUpdates()
@@ -1261,6 +1316,13 @@ public final class MachineManager: @unchecked Sendable {
             Self.restrictWorkspaceProjectionRootIfOwned(configuration.stateDirectory)
         } catch {
             throw MachineManagerError.persistence("could not create machine state root: \(error)")
+        }
+        do {
+            try failureStore.clear(machine.id)
+        } catch {
+            throw MachineManagerError.persistence(
+                "could not prepare machine diagnostic authority: \(error)"
+            )
         }
         let statePath = machineStateDirectory(id: machine.id)
         guard mkdir(statePath, 0o700) == 0 else {
@@ -2500,7 +2562,7 @@ public final class MachineManager: @unchecked Sendable {
             && productionResourceAdmissionLedger != nil
         entry.state = configuration.requiresReadyHandoff || requiresAdmissionCommit
             ? .starting : .running
-        entry.lastError = nil
+        clearFailure(on: &entry)
         machines[id] = entry
         lock.unlock()
 
@@ -2508,14 +2570,23 @@ public final class MachineManager: @unchecked Sendable {
             try processStarter(process)
         } catch {
             lock.lock()
-            machines[id]?.handoffServer?.stop()
-            machines[id]?.handoffServer = nil
-            machines[id]?.launchID = nil
-            machines[id]?.runtimeAddress = nil
-            machines[id]?.activeResolvedPlan = nil
-            machines[id]?.activeBackend = nil
-            machines[id]?.state = .failed
-            machines[id]?.lastError = "\(error)"
+            if var current = machines[id] {
+                current.handoffServer?.stop()
+                current.handoffServer = nil
+                current.launchID = nil
+                current.runtimeAddress = nil
+                current.activeResolvedPlan = nil
+                current.activeBackend = nil
+                current.state = .failed
+                setFailure(
+                    on: &current,
+                    code: .backendLaunchFailed,
+                    message: "\(error)",
+                    causes: [.processExit],
+                    recoveryDisposition: .retry
+                )
+                machines[id] = current
+            }
             lock.unlock()
             process.stop(timeout: DoryEngineShutdownTiming.hostTerminationSeconds)
             do { try markResolvedAdmissionStopped(plan: resolvedPlan) }
@@ -2540,10 +2611,17 @@ public final class MachineManager: @unchecked Sendable {
             } catch {
                 process.stop(timeout: DoryEngineShutdownTiming.hostTerminationSeconds)
                 lock.lock()
-                if machines[id]?.launchID == launchID {
-                    machines[id]?.state = .failed
-                    machines[id]?.lastError = "\(error)"
-                    machines[id]?.activeResolvedPlan = nil
+                if var current = machines[id], current.launchID == launchID {
+                    current.state = .failed
+                    current.activeResolvedPlan = nil
+                    setFailure(
+                        on: &current,
+                        code: .resourceAdmissionRejected,
+                        message: "\(error)",
+                        causes: [.resourceAdmission],
+                        recoveryDisposition: .repair
+                    )
+                    machines[id] = current
                 }
                 lock.unlock()
                 try? markResolvedAdmissionStopped(plan: resolvedPlan)
@@ -2625,7 +2703,18 @@ public final class MachineManager: @unchecked Sendable {
             entry.runtimeAddress = nil
             entry.currentBalloonTargetMB = nil
             entry.state = .failed
-            entry.lastError = "vmm ready handoff timed out after \(Int(timeout))s"
+            self.setFailure(
+                on: &entry,
+                code: .readinessTimedOut,
+                message: "vmm ready handoff timed out after \(Int(timeout))s",
+                causes: [.readinessGate],
+                recoveryDisposition: .retry
+            )
+            // A terminal machine state must never advertise the journal as still active. The
+            // durable failure retained the operation ID above; journal settlement follows under
+            // the workspace operation fence.
+            entry.activeOperationID = nil
+            entry.activeOperationKind = nil
             let admissionPlan = entry.activeResolvedPlan
             entry.activeResolvedPlan = nil
             entry.activeBackend = nil
@@ -2664,7 +2753,15 @@ public final class MachineManager: @unchecked Sendable {
         entry.activeResolvedPlan = nil
         entry.activeBackend = nil
         entry.state = .failed
-        entry.lastError = "dory-vmm \(termination.description)"
+        setFailure(
+            on: &entry,
+            code: .helperExited,
+            message: "dory-vmm \(termination.description)",
+            causes: [.processExit],
+            recoveryDisposition: .retry
+        )
+        entry.activeOperationID = nil
+        entry.activeOperationKind = nil
         machines[machineID] = entry
         lock.unlock()
 
@@ -2861,7 +2958,7 @@ public final class MachineManager: @unchecked Sendable {
             current.pendingRestoreStatePath = nil
             current.state = .suspended
             current.savedStateStatus = DoryMachineSavedStateStatus(manifest: manifest)
-            current.lastError = nil
+            clearFailure(on: &current)
             machines[id] = current
             lock.unlock()
             committed = true
@@ -2872,8 +2969,16 @@ public final class MachineManager: @unchecked Sendable {
                 // over-counted running lease is fail-safe; the next restore or daemon restart
                 // reconciles it before reserving CPU/RAM again.
                 lock.lock()
-                machines[id]?.lastError =
-                    "saved state committed but resource admission requires reconciliation: \(error)"
+                if var current = machines[id] {
+                    setFailure(
+                        on: &current,
+                        code: .resourceAdmissionRejected,
+                        message: "saved state committed but resource admission requires reconciliation: \(error)",
+                        causes: [.resourceAdmission],
+                        recoveryDisposition: .repair
+                    )
+                    machines[id] = current
+                }
                 lock.unlock()
             }
             _ = completeCommittedLifecycle(
@@ -2905,7 +3010,13 @@ public final class MachineManager: @unchecked Sendable {
                         current.pendingRestoreStatePath = nil
                         current.savedStateStatus = nil
                         current.state = .failed
-                        current.lastError = "saved-state suspension failed after the VMM exited: \(error)"
+                        setFailure(
+                            on: &current,
+                            code: .savedStateInvalid,
+                            message: "saved-state suspension failed after the VMM exited: \(error)",
+                            causes: [.artifactAuthority, .processExit],
+                            recoveryDisposition: .repair
+                        )
                         machines[id] = current
                     }
                     lock.unlock()
@@ -3030,7 +3141,13 @@ public final class MachineManager: @unchecked Sendable {
                 current.state = .failed
                 current.pendingRestoreStatePath = nil
                 current.savedStateStatus = nil
-                current.lastError = "saved-state restoration failed and its authority is invalid"
+                setFailure(
+                    on: &current,
+                    code: .savedStateInvalid,
+                    message: "saved-state restoration failed and its authority is invalid",
+                    causes: [.artifactAuthority, .runtimeAuthority],
+                    recoveryDisposition: .repair
+                )
                 machines[id] = current
             }
             lock.unlock()
@@ -3134,7 +3251,7 @@ public final class MachineManager: @unchecked Sendable {
                 )
             }
             current.state = .paused
-            current.lastError = nil
+            clearFailure(on: &current)
             machines[id] = current
             lock.unlock()
             if let lifecycle {
@@ -3192,7 +3309,7 @@ public final class MachineManager: @unchecked Sendable {
                 )
             }
             current.state = .running
-            current.lastError = nil
+            clearFailure(on: &current)
             machines[id] = current
             lock.unlock()
             if let lifecycle {
@@ -3262,6 +3379,7 @@ public final class MachineManager: @unchecked Sendable {
                 entry.savedStateStatus = nil
             }
             entry.state = .stopped
+            clearFailure(on: &entry)
             machines[id] = entry
             lock.unlock()
 
@@ -3291,7 +3409,16 @@ public final class MachineManager: @unchecked Sendable {
                     lifecycle.releaseLease()
                 }
                 lock.lock()
-                machines[id]?.lastError = "machine stopped but resource settlement requires recovery: \(error)"
+                if var current = machines[id] {
+                    setFailure(
+                        on: &current,
+                        code: .resourceAdmissionRejected,
+                        message: "machine stopped but resource settlement requires recovery: \(error)",
+                        causes: [.resourceAdmission],
+                        recoveryDisposition: .repair
+                    )
+                    machines[id] = current
+                }
                 lock.unlock()
                 throw error
             }
@@ -3323,6 +3450,10 @@ public final class MachineManager: @unchecked Sendable {
             machines[id]?.activeResolvedPlan = nil
             machines[id]?.activeBackend = nil
             machines[id]?.state = .stopped
+            if var entry = machines[id] {
+                clearFailure(on: &entry)
+                machines[id] = entry
+            }
         }
         lock.unlock()
 
@@ -3399,6 +3530,7 @@ public final class MachineManager: @unchecked Sendable {
             // in-memory entry whose storage no longer exists. Recovery can deterministically
             // finish the still-durable deleting operation on the next daemon start.
             deletionCommitted = true
+            try? failureStore.clear(id)
             try releaseResolvedAdmissionStorage(
                 machineID: id,
                 plan: sourceEntry.runtimeIdentity.resolvedPlan
@@ -3432,7 +3564,13 @@ public final class MachineManager: @unchecked Sendable {
             restored.handoff = nil
             restored.currentBalloonTargetMB = nil
             restored.state = .stopped
-            restored.lastError = "delete failed: \(error)"
+            setFailure(
+                on: &restored,
+                code: .deletionFailed,
+                message: "delete failed: \(error)",
+                causes: [.filesystem, .journal],
+                recoveryDisposition: .retry
+            )
             lock.lock()
             deletingMachineIDs.remove(id)
             if machines[id] == nil { machines[id] = restored }
@@ -4470,8 +4608,16 @@ public final class MachineManager: @unchecked Sendable {
                         // launch authority. Keep the conservative running reservation for daemon
                         // restart reconciliation instead of falsely rolling back the restore.
                         lock.lock()
-                        machines[machineID]?.lastError =
-                            "snapshot restored; resource settlement requires recovery: \(error)"
+                        if var current = machines[machineID] {
+                            setFailure(
+                                on: &current,
+                                code: .resourceAdmissionRejected,
+                                message: "snapshot restored; resource settlement requires recovery: \(error)",
+                                causes: [.resourceAdmission],
+                                recoveryDisposition: .repair
+                            )
+                            machines[machineID] = current
+                        }
                         lock.unlock()
                     }
                 }
@@ -4851,6 +4997,15 @@ public final class MachineManager: @unchecked Sendable {
                 id: id,
                 state: .failed,
                 lastError: entry.lastError ?? "dory-vmm process exited",
+                failure: entry.failure ?? DoryMachineFailure(
+                    code: .helperExited,
+                    operationID: entry.activeOperationID?.uuidString.lowercased(),
+                    causalChain: [.processExit],
+                    recoveryDisposition: .retry,
+                    evidenceReferences: failureEvidenceReferences(for: entry)
+                ),
+                activeOperationID: entry.activeOperationID?.uuidString.lowercased(),
+                activeOperationKind: entry.activeOperationKind?.rawValue,
                 address: entry.configuration.address,
                 configuredAddress: entry.configuration.address,
                 memoryMB: entry.configuration.memoryMB,
@@ -4879,6 +5034,9 @@ public final class MachineManager: @unchecked Sendable {
             state: entry.state,
             pid: entry.process?.pid,
             lastError: entry.lastError,
+            failure: entry.failure,
+            activeOperationID: entry.activeOperationID?.uuidString.lowercased(),
+            activeOperationKind: entry.activeOperationKind?.rawValue,
             handoffSocketPath: entry.handoffServer?.path,
             agentBuild: entry.handoff?.ready.agentBuild,
             agentProtocolVersion: entry.handoff?.ready.agentProtocolVersion,
@@ -4912,6 +5070,86 @@ public final class MachineManager: @unchecked Sendable {
                 entry.configuration.effectiveInstalledDesktopPayloadReceipt,
             savedState: entry.savedStateStatus
         )
+    }
+
+    private func failureEvidenceReferences(
+        for entry: MachineEntry
+    ) -> [DoryMachineFailureEvidenceReference] {
+        var references: [DoryMachineFailureEvidenceReference] = []
+        if let operationID = entry.activeOperationID?.uuidString.lowercased() {
+            references.append(.init(kind: .operation, identifier: operationID))
+        }
+        if let planSHA256 = entry.runtimeIdentity.resolvedPlanSHA256 {
+            references.append(.init(kind: .plan, identifier: planSHA256))
+        }
+        if let backend = entry.runtimeIdentity.backend?.rawValue {
+            references.append(.init(kind: .backend, identifier: backend))
+        }
+        if let savedStateSHA256 = entry.savedStateStatus?.stateFileSHA256 {
+            references.append(.init(kind: .savedState, identifier: savedStateSHA256))
+        }
+        return references
+    }
+
+    private func setFailure(
+        on entry: inout MachineEntry,
+        code: DoryMachineFailureCode,
+        message: String,
+        causes: [DoryMachineFailureCauseCode],
+        recoveryDisposition: DoryMachineRecoveryDisposition,
+        extraEvidence: [DoryMachineFailureEvidenceReference] = []
+    ) {
+        let failure = DoryMachineFailure(
+            code: code,
+            operationID: entry.activeOperationID?.uuidString.lowercased(),
+            causalChain: causes,
+            recoveryDisposition: recoveryDisposition,
+            evidenceReferences: failureEvidenceReferences(for: entry) + extraEvidence
+        )
+        do {
+            try failureStore.set(failure, for: entry.configuration.id)
+            entry.failure = failure
+            entry.lastError = message
+        } catch {
+            entry.failure = DoryMachineFailure(
+                code: .diagnosticPersistenceFailed,
+                operationID: entry.activeOperationID?.uuidString.lowercased(),
+                causalChain: [.filesystem],
+                recoveryDisposition: .repair,
+                evidenceReferences: failureEvidenceReferences(for: entry)
+            )
+            entry.lastError = "\(message); structured diagnostics could not be persisted"
+        }
+    }
+
+    private func clearFailure(on entry: inout MachineEntry) {
+        do {
+            try failureStore.clear(entry.configuration.id)
+            entry.failure = nil
+            entry.lastError = nil
+        } catch {
+            entry.failure = DoryMachineFailure(
+                code: .diagnosticPersistenceFailed,
+                operationID: entry.activeOperationID?.uuidString.lowercased(),
+                causalChain: [.filesystem],
+                recoveryDisposition: .repair,
+                evidenceReferences: failureEvidenceReferences(for: entry)
+            )
+            entry.lastError = "Structured machine diagnostics could not be cleared safely."
+        }
+    }
+
+    private func clearActiveOperation(
+        machineID: String,
+        operationID: UUID
+    ) {
+        lock.lock()
+        if var entry = machines[machineID], entry.activeOperationID == operationID {
+            entry.activeOperationID = nil
+            entry.activeOperationKind = nil
+            machines[machineID] = entry
+        }
+        lock.unlock()
     }
 
     private func nativeTypedSettingsSnapshot(
@@ -5415,7 +5653,13 @@ public final class MachineManager: @unchecked Sendable {
                 lock.lock()
                 if var entry = machines[machineID] {
                     entry.state = .failed
-                    entry.lastError = "Desktop update recovery is required: the durable update journal is invalid."
+                    setFailure(
+                        on: &entry,
+                        code: .desktopUpdateRecoveryRequired,
+                        message: "Desktop update recovery is required: the durable update journal is invalid.",
+                        causes: [.journal],
+                        recoveryDisposition: .repair
+                    )
                     machines[machineID] = entry
                 }
                 lock.unlock()
@@ -5431,7 +5675,16 @@ public final class MachineManager: @unchecked Sendable {
                         try removeDesktopUpdateJournal(machineID: machineID)
                     } catch {
                         lock.lock()
-                        machines[machineID]?.lastError = "Legacy desktop update committed, but journal cleanup requires retry: \(error)"
+                        if var entry = machines[machineID] {
+                            setFailure(
+                                on: &entry,
+                                code: .desktopUpdateRecoveryRequired,
+                                message: "Legacy desktop update committed, but journal cleanup requires retry: \(error)",
+                                causes: [.journal, .filesystem],
+                                recoveryDisposition: .retry
+                            )
+                            machines[machineID] = entry
+                        }
                         lock.unlock()
                     }
                     continue
@@ -5450,7 +5703,13 @@ public final class MachineManager: @unchecked Sendable {
                     lock.lock()
                     if var entry = machines[machineID] {
                         entry.state = .failed
-                        entry.lastError = "Desktop update recovery is required: committed component evidence does not match machine state."
+                        setFailure(
+                            on: &entry,
+                            code: .desktopUpdateRecoveryRequired,
+                            message: "Desktop update recovery is required: committed component evidence does not match machine state.",
+                            causes: [.componentAuthority, .journal],
+                            recoveryDisposition: .repair
+                        )
                         machines[machineID] = entry
                     }
                     lock.unlock()
@@ -5460,7 +5719,16 @@ public final class MachineManager: @unchecked Sendable {
                     try removeDesktopUpdateJournal(machineID: machineID)
                 } catch {
                     lock.lock()
-                    machines[machineID]?.lastError = "Desktop update committed, but journal cleanup requires retry: \(error)"
+                    if var entry = machines[machineID] {
+                        setFailure(
+                            on: &entry,
+                            code: .desktopUpdateRecoveryRequired,
+                            message: "Desktop update committed, but journal cleanup requires retry: \(error)",
+                            causes: [.journal, .filesystem],
+                            recoveryDisposition: .retry
+                        )
+                        machines[machineID] = entry
+                    }
                     lock.unlock()
                 }
                 continue
@@ -5507,7 +5775,16 @@ public final class MachineManager: @unchecked Sendable {
                 try removeDesktopUpdateJournal(machineID: machineID)
                 lock.lock()
                 if var entry = machines[machineID] {
-                    entry.lastError = "An interrupted desktop update was rolled back to \(journal.snapshotID). Start the machine when ready."
+                    setFailure(
+                        on: &entry,
+                        code: .desktopUpdateRolledBack,
+                        message: "An interrupted desktop update was rolled back to \(journal.snapshotID). Start the machine when ready.",
+                        causes: [.journal],
+                        recoveryDisposition: .rollbackCompleted,
+                        extraEvidence: [
+                            .init(kind: .snapshot, identifier: journal.snapshotID),
+                        ]
+                    )
                     machines[machineID] = entry
                 }
                 lock.unlock()
@@ -5515,7 +5792,13 @@ public final class MachineManager: @unchecked Sendable {
                 lock.lock()
                 if var entry = machines[machineID] {
                     entry.state = .failed
-                    entry.lastError = "Interrupted desktop update recovery failed: \(error)"
+                    setFailure(
+                        on: &entry,
+                        code: .desktopUpdateRecoveryRequired,
+                        message: "Interrupted desktop update recovery failed: \(error)",
+                        causes: [.journal, .artifactAuthority],
+                        recoveryDisposition: .repair
+                    )
                     machines[machineID] = entry
                 }
                 lock.unlock()
@@ -6675,7 +6958,15 @@ public final class MachineManager: @unchecked Sendable {
         entry.configuration = configuration
         entry.currentBalloonTargetMB = nil
         entry.runtimeIdentity = identity
-        if let identityPersistenceError { entry.lastError = identityPersistenceError }
+        if let identityPersistenceError {
+            setFailure(
+                on: &entry,
+                code: .workspaceAuthorityInvalid,
+                message: identityPersistenceError,
+                causes: [.runtimeAuthority, .filesystem],
+                recoveryDisposition: .replan
+            )
+        }
         machines[configuration.id] = entry
     }
 
@@ -6799,7 +7090,15 @@ public final class MachineManager: @unchecked Sendable {
             lock.lock()
             if var entry = machines[id] {
                 entry.runtimeIdentity = effectiveIdentity
-                if let persistenceError { entry.lastError = persistenceError }
+                if let persistenceError {
+                    setFailure(
+                        on: &entry,
+                        code: .workspaceAuthorityInvalid,
+                        message: persistenceError,
+                        causes: [.runtimeAuthority, .filesystem],
+                        recoveryDisposition: .replan
+                    )
+                }
                 machines[id] = entry
             }
             lock.unlock()
@@ -6864,7 +7163,7 @@ public final class MachineManager: @unchecked Sendable {
             )
         }
         entry.runtimeIdentity = identity
-        entry.lastError = nil
+        clearFailure(on: &entry)
         machines[machineID] = entry
         lock.unlock()
     }
@@ -7827,7 +8126,13 @@ public final class MachineManager: @unchecked Sendable {
         case let .success(handoff):
             guard handoff.ready.machineID == machineID else {
                 entry.state = .failed
-                entry.lastError = "handoff machine id mismatch: \(handoff.ready.machineID)"
+                setFailure(
+                    on: &entry,
+                    code: .readinessHandoffFailed,
+                    message: "handoff machine id mismatch: \(handoff.ready.machineID)",
+                    causes: [.readinessGate, .guestAgent],
+                    recoveryDisposition: .repair
+                )
                 entry.launchID = nil
                 entry.runtimeAddress = nil
                 entry.activeResolvedPlan = nil
@@ -7836,7 +8141,7 @@ public final class MachineManager: @unchecked Sendable {
                 break
             }
             entry.handoff = handoff
-            entry.lastError = nil
+            clearFailure(on: &entry)
             requiresAdmissionCommit = admissionPlan != nil
                 && productionResourceAdmissionLedger != nil
             if requiresAdmissionCommit {
@@ -7849,7 +8154,13 @@ public final class MachineManager: @unchecked Sendable {
             }
         case let .failure(error):
             entry.state = .failed
-            entry.lastError = "\(error)"
+            setFailure(
+                on: &entry,
+                code: .readinessHandoffFailed,
+                message: "\(error)",
+                causes: [.readinessGate],
+                recoveryDisposition: .retry
+            )
             entry.launchID = nil
             entry.runtimeAddress = nil
             entry.activeResolvedPlan = nil
@@ -7870,7 +8181,7 @@ public final class MachineManager: @unchecked Sendable {
                 if var current = machines[machineID], current.launchID == launchID,
                    current.state == .starting {
                     current.state = .running
-                    current.lastError = nil
+                    clearFailure(on: &current)
                     current.process?.disableRestarts()
                     agentSocketPath = current.handoff?.ready.agentSocketPath
                     machines[machineID] = current
@@ -7891,7 +8202,13 @@ public final class MachineManager: @unchecked Sendable {
                 if var current = machines[machineID], current.launchID == launchID {
                     processToStop = current.process
                     current.state = .failed
-                    current.lastError = "resource admission rejected readiness: \(error)"
+                    setFailure(
+                        on: &current,
+                        code: .resourceAdmissionRejected,
+                        message: "resource admission rejected readiness: \(error)",
+                        causes: [.resourceAdmission, .readinessGate],
+                        recoveryDisposition: .repair
+                    )
                     current.handoff = nil
                     current.launchID = nil
                     current.runtimeAddress = nil
@@ -9698,6 +10015,13 @@ public final class MachineManager: @unchecked Sendable {
         }
         let context = MachineLifecycleJournalContext(operation: operation, lease: lease)
         activeLifecycleOperations[machineID] = context
+        lock.lock()
+        if var entry = machines[machineID] {
+            entry.activeOperationID = operation.operationID
+            entry.activeOperationKind = kind
+            machines[machineID] = entry
+        }
+        lock.unlock()
         return context
     }
 
@@ -9747,6 +10071,10 @@ public final class MachineManager: @unchecked Sendable {
             )
         }
         activeLifecycleOperations.removeValue(forKey: context.operation.source.workspaceID)
+        clearActiveOperation(
+            machineID: context.operation.source.workspaceID,
+            operationID: context.operation.operationID
+        )
         context.releaseLease()
     }
 
@@ -9765,11 +10093,21 @@ public final class MachineManager: @unchecked Sendable {
             activeLifecycleOperations.removeValue(forKey: context.operation.source.workspaceID)
             context.releaseLease()
             lock.lock()
-            if machines[context.operation.source.workspaceID] != nil {
-                machines[context.operation.source.workspaceID]?.lastError =
-                    "\(diagnostic): \(error)"
+            if var entry = machines[context.operation.source.workspaceID] {
+                setFailure(
+                    on: &entry,
+                    code: .lifecycleRecoveryRequired,
+                    message: "\(diagnostic): \(error)",
+                    causes: [.journal],
+                    recoveryDisposition: .repair
+                )
+                machines[context.operation.source.workspaceID] = entry
             }
             lock.unlock()
+            clearActiveOperation(
+                machineID: context.operation.source.workspaceID,
+                operationID: context.operation.operationID
+            )
             return false
         }
     }
@@ -9781,6 +10119,10 @@ public final class MachineManager: @unchecked Sendable {
     ) {
         defer {
             activeLifecycleOperations.removeValue(forKey: context.operation.source.workspaceID)
+            clearActiveOperation(
+                machineID: context.operation.source.workspaceID,
+                operationID: context.operation.operationID
+            )
             context.releaseLease()
         }
         guard var current = try? context.lease.read().state,
@@ -9802,6 +10144,25 @@ public final class MachineManager: @unchecked Sendable {
             stepID: stepID,
             recoveryAction: rolledBack ? "rollback" : nil
         )
+        lock.lock()
+        let machineID = context.operation.source.workspaceID
+        if var entry = machines[machineID], entry.failure == nil {
+            setFailure(
+                on: &entry,
+                code: .lifecycleOperationFailed,
+                message: "Workspace \(context.operation.kind.rawValue) failed at \(stepID).",
+                causes: [.journal],
+                recoveryDisposition: rolledBack ? .rollbackCompleted : .retry,
+                extraEvidence: [
+                    .init(
+                        kind: .journal,
+                        identifier: context.operation.operationID.uuidString.lowercased()
+                    ),
+                ]
+            )
+            machines[machineID] = entry
+        }
+        lock.unlock()
     }
 
     private func completeActiveStartLifecycle(id: String) {
@@ -11201,6 +11562,9 @@ private struct MachineEntry {
     var runtimeAddress: String?
     var currentBalloonTargetMB: UInt64?
     var lastError: String?
+    var failure: DoryMachineFailure? = nil
+    var activeOperationID: UUID? = nil
+    var activeOperationKind: DoryWorkspaceMutationKind? = nil
     var activeResolvedPlan: DoryResolvedMachinePlan?
     var activeBackend: DoryVirtualizationBackendIdentity?
     var pendingRestoreStatePath: String?

@@ -526,6 +526,45 @@ final class HealthReporterTests: XCTestCase {
         XCTAssertFalse(check.data.values.contains { $0.contains("/Users/example") })
     }
 
+    func testStructuredMachineFailureProjectsStableRecoveryEvidenceWithoutRawDetail() {
+        let operationID = "01234567-89ab-4cde-8fab-0123456789ab"
+        let failure = DoryMachineFailure(
+            code: .helperExited,
+            occurredAtUnixMilliseconds: 1_787_318_400_000,
+            operationID: operationID,
+            causalChain: [.processExit, .journal],
+            recoveryDisposition: .retry,
+            evidenceReferences: [
+                .init(kind: .operation, identifier: operationID),
+                .init(kind: .backend, identifier: "dory.raw-hv-linux.v1"),
+            ]
+        )
+        let check = HealthReporter.machineEvidenceCheck(DoryMachineStatus(
+            id: "failed",
+            state: .failed,
+            lastError: "helper failed at /Users/example with opaque-secret",
+            failure: failure,
+            activeOperationID: operationID,
+            activeOperationKind: "starting"
+        ))
+
+        XCTAssertEqual(check.status, .fail)
+        XCTAssertEqual(check.code, "machine.failure.helper-exited")
+        XCTAssertEqual(check.data["failure_code"], "helper-exited")
+        XCTAssertEqual(check.data["failure_recovery"], "retry")
+        XCTAssertEqual(check.data["failure_causes"], "process-exit,journal")
+        XCTAssertEqual(check.data["failure_operation_id"], operationID)
+        XCTAssertEqual(check.data["active_operation_id"], operationID)
+        XCTAssertEqual(check.data["active_operation_kind"], "starting")
+        XCTAssertTrue(check.data["failure_evidence"]?.contains(
+            "backend:dory.raw-hv-linux.v1"
+        ) == true)
+        XCTAssertFalse(check.detail.contains("opaque-secret"))
+        XCTAssertFalse(check.data.values.contains { value in
+            value.contains("opaque-secret") || value.contains("/Users/example")
+        })
+    }
+
     func testDoctorReportMatchesLegacyDockerCLIContextCodes() throws {
         let base = "/tmp/dory-health-cli-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let bin = base + "/bin"

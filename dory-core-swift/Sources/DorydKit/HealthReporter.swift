@@ -2080,6 +2080,27 @@ public final class HealthReporter: @unchecked Sendable {
         if let reason = identity.invalidationReason {
             data["replanning_reason"] = reason.rawValue
         }
+        if let failure = status.failure, failure.isValid {
+            data["failure_code"] = failure.code.rawValue
+            data["failure_occurred_at_ms"] = String(
+                failure.occurredAtUnixMilliseconds
+            )
+            data["failure_recovery"] = failure.recoveryDisposition.rawValue
+            data["failure_causes"] = failure.causalChain
+                .map(\.rawValue)
+                .joined(separator: ",")
+            if let operationID = failure.operationID {
+                data["failure_operation_id"] = operationID
+            }
+            data["failure_evidence"] = failure.evidenceReferences.map {
+                "\($0.kind.rawValue):\($0.identifier)"
+            }.joined(separator: ",")
+        }
+        if let operationID = status.activeOperationID,
+           let operationKind = status.activeOperationKind {
+            data["active_operation_id"] = operationID
+            data["active_operation_kind"] = operationKind
+        }
         if issues.isEmpty, let plan = identity.resolvedPlan {
             data["plan_sha256"] = identity.resolvedPlanSHA256
             data["plan_revision"] = String(plan.planRevision)
@@ -2143,6 +2164,10 @@ public final class HealthReporter: @unchecked Sendable {
             healthStatus = .warn
             code = "machine.requires_replanning"
             action = "Resolve and approve a current launch plan before starting this workspace."
+        } else if let failure = status.failure {
+            healthStatus = status.state == .failed ? .fail : .warn
+            code = "machine.failure.\(failure.code.rawValue)"
+            action = "Follow the recorded recovery disposition before the next mutation."
         } else if status.state == .failed {
             healthStatus = .fail
             code = "machine.runtime_failed"

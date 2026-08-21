@@ -40,7 +40,13 @@ final class MachineManagerLifecycleJournalIntegrationTests: XCTestCase {
 
         let starting = try manager.start(id: fixture.machineID)
         XCTAssertEqual(starting.state, .starting)
+        XCTAssertEqual(starting.activeOperationKind, "starting")
+        XCTAssertNotNil(starting.activeOperationID)
         let pending = try XCTUnwrap(try fixture.records().last)
+        XCTAssertEqual(
+            starting.activeOperationID,
+            pending.plan.id.uuidString.lowercased()
+        )
         XCTAssertEqual(pending.plan.kind, .workspaceStart)
         XCTAssertEqual(pending.state.status, .running)
 
@@ -70,6 +76,7 @@ final class MachineManagerLifecycleJournalIntegrationTests: XCTestCase {
             fileDescriptors: []
         )
         XCTAssertEqual(try waitForState(manager, id: fixture.machineID, state: .running).state, .running)
+        XCTAssertNil(manager.status(id: fixture.machineID)?.activeOperationID)
         let completed = try waitForJournal(
             fixture,
             kind: .workspaceStart,
@@ -148,10 +155,21 @@ final class MachineManagerLifecycleJournalIntegrationTests: XCTestCase {
         XCTAssertEqual(try manager.start(id: fixture.machineID).state, .starting)
         let failed = try waitForState(manager, id: fixture.machineID, state: .failed)
         XCTAssertTrue(failed.lastError?.contains("ready handoff timed out") == true)
+        XCTAssertEqual(failed.failure?.code, .readinessTimedOut)
+        XCTAssertEqual(failed.failure?.recoveryDisposition, .retry)
+        XCTAssertNotNil(failed.failure?.operationID)
+        XCTAssertNil(failed.activeOperationID)
         _ = try waitForJournal(fixture, kind: .workspaceStart, status: .failed)
         XCTAssertFalse(try fixture.records().contains { record in
             record.plan.kind == .workspaceStart && record.state.status == .completed
         })
+
+        let restarted = fixture.makeManager()
+        let recovered = try XCTUnwrap(restarted.status(id: fixture.machineID))
+        XCTAssertEqual(recovered.failure?.code, .readinessTimedOut)
+        XCTAssertEqual(recovered.failure?.operationID, failed.failure?.operationID)
+        XCTAssertNil(recovered.activeOperationID)
+        XCTAssertFalse(recovered.lastError?.contains("timed out after") == true)
     }
 
     func testTerminalHelperExitFailsStartJournalWithoutWaitingForReadinessTimeout() throws {
@@ -169,6 +187,8 @@ final class MachineManagerLifecycleJournalIntegrationTests: XCTestCase {
         _ = try manager.start(id: fixture.machineID)
         let failed = try waitForState(manager, id: fixture.machineID, state: .failed, timeout: 1)
         XCTAssertTrue(failed.lastError?.contains("exited with status") == true)
+        XCTAssertEqual(failed.failure?.code, .helperExited)
+        XCTAssertEqual(failed.failure?.causalChain, [.processExit])
         _ = try waitForJournal(
             fixture,
             kind: .workspaceStart,

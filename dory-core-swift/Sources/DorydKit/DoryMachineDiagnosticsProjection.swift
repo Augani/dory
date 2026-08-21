@@ -21,6 +21,9 @@ public enum DoryMachineDiagnosticsProjection {
         "shellsocketpath",
         "controlsocketpath",
     ]
+    private static let freeFormDiagnosticKeys: Set<String> = [
+        "lasterror",
+    ]
 
     public static func supportSafeMachineStatus(_ status: NSDictionary) -> NSDictionary {
         sanitize(status) as? NSDictionary ?? [:]
@@ -37,7 +40,8 @@ public enum DoryMachineDiagnosticsProjection {
                 guard let key = rawKey as? String else { continue }
                 let normalizedKey = key.lowercased()
                 if environmentKeys.contains(normalizedKey)
-                    || hostPathKeys.contains(normalizedKey) { continue }
+                    || hostPathKeys.contains(normalizedKey)
+                    || freeFormDiagnosticKeys.contains(normalizedKey) { continue }
                 result[key] = sanitize(item)
             }
             return result.copy() as? NSDictionary ?? [:]
