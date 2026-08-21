@@ -3,6 +3,28 @@
 import DoryHV
 import Foundation
 
+enum DoryMacAudioConfigurationRecoveryAction: Equatable {
+    case none
+    case restartOutput
+    case rebuildInput
+}
+
+struct DoryMacAudioConfigurationRecoveryState: Equatable {
+    var outputConfigured: Bool
+    var outputRunning: Bool
+    var inputConfigured: Bool
+    var inputRunning: Bool
+
+    func action(for direction: VirtioSoundDirection) -> DoryMacAudioConfigurationRecoveryAction {
+        switch direction {
+        case .output:
+            outputConfigured && outputRunning ? .restartOutput : .none
+        case .input:
+            inputConfigured && inputRunning ? .rebuildInput : .none
+        }
+    }
+}
+
 /// Bridges the raw Hypervisor.framework virtio-snd device to Core Audio. Guest PCM remains the
 /// standard signed 16-bit interleaved format while AVAudioEngine performs host sample-rate and
 /// device conversion.
@@ -19,6 +41,11 @@ final class DoryMacAudioBackend: VirtioSoundHost, @unchecked Sendable {
         var completion: @Sendable (Data?, UInt32) -> Void
     }
 
+    private struct PlaybackRequest {
+        var byteCount: Int
+        var completion: @Sendable (Bool, UInt32) -> Void
+    }
+
     private final class ConverterInput: @unchecked Sendable {
         let buffer: AVAudioPCMBuffer
         var served = false
@@ -32,10 +59,12 @@ final class DoryMacAudioBackend: VirtioSoundHost, @unchecked Sendable {
     // Keep playback and capture on independent graphs. PipeWire may prepare and start them in
     // either order; mutating a shared running graph to add the other direction can leave an
     // AVAudioPlayerNode permanently scheduled but never rendered.
-    private let outputEngine = AVAudioEngine()
-    private let inputEngine = AVAudioEngine()
+    let outputEngine = AVAudioEngine()
+    let inputEngine = AVAudioEngine()
     private let player = AVAudioPlayerNode()
     private let log: @Sendable (String) -> Void
+    private let notificationCenter: NotificationCenter
+    private var configurationObservers = [NSObjectProtocol]()
 
     private var outputParameters: VirtioSoundPCMParameters?
     private var inputParameters: VirtioSoundPCMParameters?
@@ -50,11 +79,42 @@ final class DoryMacAudioBackend: VirtioSoundHost, @unchecked Sendable {
     private var captureFallbackLogged = false
     private var nextCaptureFallbackUptime: TimeInterval = 0
     private var queuedPlaybackBytes = 0
+    private var playbackRequests = [UInt64: PlaybackRequest]()
+    private var nextPlaybackRequestID: UInt64 = 1
+    private var observedConfigurationChanges = 0
 
-    init(log: @escaping @Sendable (String) -> Void) {
+    init(
+        log: @escaping @Sendable (String) -> Void,
+        notificationCenter: NotificationCenter = .default
+    ) {
         self.log = log
+        self.notificationCenter = notificationCenter
         outputEngine.attach(player)
+        configurationObservers = [
+            notificationCenter.addObserver(
+                forName: .AVAudioEngineConfigurationChange,
+                object: outputEngine,
+                queue: nil
+            ) { [weak self] _ in
+                self?.scheduleConfigurationRecovery(for: .output)
+            },
+            notificationCenter.addObserver(
+                forName: .AVAudioEngineConfigurationChange,
+                object: inputEngine,
+                queue: nil
+            ) { [weak self] _ in
+                self?.scheduleConfigurationRecovery(for: .input)
+            },
+        ]
     }
+
+    deinit {
+        for observer in configurationObservers {
+            notificationCenter.removeObserver(observer)
+        }
+    }
+
+    var configurationChangeCount: Int { queue.sync { observedConfigurationChanges } }
 
     func configure(
         streamID: Int,
@@ -66,7 +126,7 @@ final class DoryMacAudioBackend: VirtioSoundHost, @unchecked Sendable {
             switch direction {
             case .output:
                 player.stop()
-                queuedPlaybackBytes = 0
+                failPlaybackRequests()
                 outputEngine.disconnectNodeOutput(player)
                 guard let format = Self.floatFormat(parameters) else { return false }
                 outputEngine.connect(player, to: outputEngine.mainMixerNode, format: format)
@@ -150,7 +210,7 @@ final class DoryMacAudioBackend: VirtioSoundHost, @unchecked Sendable {
                 player.stop()
                 outputEngine.stop()
                 outputRunning = false
-                queuedPlaybackBytes = 0
+                failPlaybackRequests()
                 outputParameters = nil
             case .input:
                 inputRunning = false
@@ -174,6 +234,13 @@ final class DoryMacAudioBackend: VirtioSoundHost, @unchecked Sendable {
                   let buffer = Self.playbackBuffer(data: data, parameters: parameters) else {
                 return false
             }
+            if outputRunning, !startOutputEngine() { return false }
+            let requestID = nextPlaybackRequestID
+            nextPlaybackRequestID &+= 1
+            playbackRequests[requestID] = PlaybackRequest(
+                byteCount: data.count,
+                completion: completion
+            )
             queuedPlaybackBytes += data.count
             // The virtio descriptor protects the guest-owned period, not the audible speaker
             // timeline. We have already copied that period into an AVAudioPCMBuffer, so complete
@@ -184,9 +251,7 @@ final class DoryMacAudioBackend: VirtioSoundHost, @unchecked Sendable {
                 [weak self] _ in
                 guard let self else { return }
                 self.queue.async {
-                    self.queuedPlaybackBytes = max(0, self.queuedPlaybackBytes - data.count)
-                    let latency = UInt32(clamping: self.queuedPlaybackBytes)
-                    Self.deliver { completion(true, latency) }
+                    self.completePlayback(requestID: requestID, success: true)
                 }
             }
             // AVAudioPlayerNode stops after an empty queue. Linux commonly starts the PCM stream
@@ -231,7 +296,7 @@ final class DoryMacAudioBackend: VirtioSoundHost, @unchecked Sendable {
             inputParameters = nil
             outputRunning = false
             inputRunning = false
-            queuedPlaybackBytes = 0
+            failPlaybackRequests()
             captureBytes.removeAll(keepingCapacity: false)
             nextCaptureFallbackUptime = 0
             failCaptureRequests()
@@ -264,6 +329,46 @@ final class DoryMacAudioBackend: VirtioSoundHost, @unchecked Sendable {
         @unknown default:
             inputRunning = false
             return false
+        }
+    }
+
+    private func scheduleConfigurationRecovery(for direction: VirtioSoundDirection) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            observedConfigurationChanges += 1
+            let state = DoryMacAudioConfigurationRecoveryState(
+                outputConfigured: outputParameters != nil,
+                outputRunning: outputRunning,
+                inputConfigured: inputParameters != nil,
+                inputRunning: inputRunning
+            )
+            switch state.action(for: direction) {
+            case .none:
+                return
+            case .restartOutput:
+                player.stop()
+                outputEngine.stop()
+                failPlaybackRequests()
+                if startOutputEngine() {
+                    log("Mac audio output recovered after the host device configuration changed")
+                } else {
+                    log("Mac audio output is waiting for a usable host device after configuration changed")
+                }
+            case .rebuildInput:
+                removeInputTap()
+                inputEngine.stop()
+                captureBytes.removeAll(keepingCapacity: true)
+                captureTapCount = 0
+                captureFallbackLogged = false
+                nextCaptureFallbackUptime = 0
+                if startInputWhenAuthorized() {
+                    log("Mac audio input recovered after the host device configuration changed")
+                } else {
+                    log("Mac audio input is unavailable after the host device configuration changed")
+                }
+                satisfyCaptureRequests()
+                armCaptureFallbacks()
+            }
         }
     }
 
@@ -401,6 +506,21 @@ final class DoryMacAudioBackend: VirtioSoundHost, @unchecked Sendable {
         let requests = captureRequests
         captureRequests.removeAll(keepingCapacity: false)
         for request in requests { Self.deliver { request.completion(nil, 0) } }
+    }
+
+    private func completePlayback(requestID: UInt64, success: Bool) {
+        guard let request = playbackRequests.removeValue(forKey: requestID) else { return }
+        queuedPlaybackBytes = max(0, queuedPlaybackBytes - request.byteCount)
+        let latency = UInt32(clamping: queuedPlaybackBytes)
+        Self.deliver { request.completion(success, latency) }
+    }
+
+    private func failPlaybackRequests() {
+        let requestIDs = playbackRequests.keys.sorted()
+        for requestID in requestIDs {
+            completePlayback(requestID: requestID, success: false)
+        }
+        queuedPlaybackBytes = 0
     }
 
     private static func valid(_ parameters: VirtioSoundPCMParameters) -> Bool {
