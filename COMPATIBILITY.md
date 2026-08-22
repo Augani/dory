@@ -139,8 +139,9 @@ grants; `full` is an explicit unrestricted choice. See the
 
 ## Unavailable
 
-- USB attach, detach, and remembered replay are unavailable. Host discovery is supported, but the
-  engine fails closed until a complete guest USB/IP RPC and physical qualification exist.
+- USB attach, detach, and remembered replay are unavailable. Host discovery, the guest USB/IP RPC,
+  and a private raw-HV machine route exist, but the product fails closed until removable-device
+  plan authorization and physical qualification exist.
 - Audio passthrough is unavailable.
 - Intel-host public builds are unavailable before dedicated physical qualification.
 - Managed image update discovery/replacement, mDNS/multicast relay, and general L2 bridging are

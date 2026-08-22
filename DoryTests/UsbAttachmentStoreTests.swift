@@ -5,7 +5,7 @@ import Testing
 struct UsbAttachmentStoreTests {
     @Test func passthroughIsTruthfullyDisabledUntilGuestRPCShips() {
         #expect(!UsbPassthroughAvailability.attachSupported)
-        #expect(UsbPassthroughAvailability.unavailableReason.contains("guest USB/IP RPC"))
+        #expect(UsbPassthroughAvailability.unavailableReason.contains("removable-device"))
     }
 
     @Test func remembersAttachmentsSortedByMachineAndBusID() throws {

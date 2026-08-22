@@ -830,6 +830,8 @@ public enum MachineManagerError: Error, Sendable, Equatable, CustomStringConvert
     case balloonApplyFailed(String, String)
     case deviceTelemetryUnavailable(String)
     case deviceTelemetryRejected(String, String)
+    case usbUnavailable(String)
+    case usbControlFailed(String, String)
     case invalidAddress(String)
     case invalidShare(String)
     case invalidEnvironment(String)
@@ -861,6 +863,10 @@ public enum MachineManagerError: Error, Sendable, Equatable, CustomStringConvert
             return "machine device telemetry is unavailable: \(id)"
         case let .deviceTelemetryRejected(id, message):
             return "machine device telemetry was rejected for \(id): \(message)"
+        case let .usbUnavailable(id):
+            return "machine USB passthrough is unavailable for \(id)"
+        case let .usbControlFailed(id, message):
+            return "machine USB control failed for \(id): \(message)"
         case let .invalidAddress(address):
             return "invalid machine address: \(address)"
         case let .invalidShare(share):
@@ -974,6 +980,7 @@ public final class MachineManager: @unchecked Sendable {
     private let agentConnector: AgentConnector
     private let balloonController: any MachineBalloonControlling
     private let deviceTelemetryController: any MachineDeviceTelemetryControlling
+    private let usbController: any DoryMachineUSBControlling
     private let vzLifecycleController: any MachineVZLifecycleControlling
     private let savedStateStore: DoryMachineSavedStateStore
     private let processStarter: ProcessStarter
@@ -1025,6 +1032,7 @@ public final class MachineManager: @unchecked Sendable {
         balloonController: any MachineBalloonControlling = UnixMachineBalloonController(),
         deviceTelemetryController: any MachineDeviceTelemetryControlling =
             UnixMachineDeviceTelemetryController(),
+        usbController: any DoryMachineUSBControlling = UnixDoryMachineUSBController(),
         vzLifecycleController: any MachineVZLifecycleControlling = UnixMachineVZLifecycleController(),
         agentConnector: @escaping AgentConnector = { socketPath in
             try LocalAgentControl.connect(socketPath: socketPath)
@@ -1035,6 +1043,7 @@ public final class MachineManager: @unchecked Sendable {
         self.launchPolicy = launchPolicy
         self.balloonController = balloonController
         self.deviceTelemetryController = deviceTelemetryController
+        self.usbController = usbController
         self.vzLifecycleController = vzLifecycleController
         self.agentConnector = agentConnector
         self.processStarter = processStarter
@@ -6788,6 +6797,123 @@ public final class MachineManager: @unchecked Sendable {
             )
         }
         return snapshot
+    }
+
+    /// Routes a hotplug request only to the exact live raw-HV helper selected for this machine.
+    /// Resolved-plan workspaces remain fail-closed until removable USB is represented in the
+    /// durable device graph; this compatibility route cannot mutate an exact resolved launch.
+    public func attachUSBDevice(
+        id: String,
+        busID: String,
+        mode: DoryMachineUSBOpenMode = .userAuthorized
+    ) throws -> DoryMachineUSBAttachment {
+        operationLock.lock()
+        defer { operationLock.unlock() }
+
+        let launchID: UUID
+        let socketPath: String
+        lock.lock()
+        guard let entry = machines[id],
+              entry.state == .running,
+              entry.process?.isRunning == true,
+              entry.activeBackend == .doryHypervisor,
+              entry.runtimeIdentity.mode == .legacyCompatibility,
+              let currentLaunchID = entry.launchID,
+              entry.handoff?.ready.supportsAgentCapability(
+                  "usb-vhci",
+                  minimumVersion: 1
+              ) == true else {
+            lock.unlock()
+            throw MachineManagerError.usbUnavailable(id)
+        }
+        launchID = currentLaunchID
+        socketPath = "\(machineRuntimeDirectory(id: id))/u.sock"
+        lock.unlock()
+
+        let attachment: DoryMachineUSBAttachment
+        do {
+            attachment = try usbController.attach(
+                machineID: id,
+                socketPath: socketPath,
+                busID: busID,
+                mode: mode
+            )
+        } catch {
+            throw MachineManagerError.usbControlFailed(id, "\(error)")
+        }
+        guard attachment.machineID == id,
+              attachment.busID == busID else {
+            throw MachineManagerError.usbControlFailed(
+                id,
+                "helper response does not match the requested machine and device"
+            )
+        }
+
+        lock.lock()
+        defer { lock.unlock() }
+        guard let entry = machines[id],
+              entry.state == .running,
+              entry.process?.isRunning == true,
+              entry.activeBackend == .doryHypervisor,
+              entry.launchID == launchID,
+              entry.runtimeIdentity.mode == .legacyCompatibility,
+              entry.handoff?.ready.supportsAgentCapability(
+                  "usb-vhci",
+                  minimumVersion: 1
+              ) == true else {
+            throw MachineManagerError.usbControlFailed(
+                id,
+                "live launch changed while attaching the USB device"
+            )
+        }
+        return attachment
+    }
+
+    /// Detach uses the same launch fence as attach so a request cannot be redirected across a
+    /// stop/restart boundary or to the compatible Virtualization.framework backend.
+    public func detachUSBDevice(id: String, busID: String) throws {
+        operationLock.lock()
+        defer { operationLock.unlock() }
+
+        let launchID: UUID
+        let socketPath: String
+        lock.lock()
+        guard let entry = machines[id],
+              entry.state == .running,
+              entry.process?.isRunning == true,
+              entry.activeBackend == .doryHypervisor,
+              entry.runtimeIdentity.mode == .legacyCompatibility,
+              let currentLaunchID = entry.launchID,
+              entry.handoff?.ready.supportsAgentCapability(
+                  "usb-vhci",
+                  minimumVersion: 1
+              ) == true else {
+            lock.unlock()
+            throw MachineManagerError.usbUnavailable(id)
+        }
+        launchID = currentLaunchID
+        socketPath = "\(machineRuntimeDirectory(id: id))/u.sock"
+        lock.unlock()
+
+        do {
+            try usbController.detach(socketPath: socketPath, busID: busID)
+        } catch {
+            throw MachineManagerError.usbControlFailed(id, "\(error)")
+        }
+
+        lock.lock()
+        defer { lock.unlock() }
+        guard let entry = machines[id],
+              entry.state == .running,
+              entry.process?.isRunning == true,
+              entry.activeBackend == .doryHypervisor,
+              entry.launchID == launchID,
+              entry.runtimeIdentity.mode == .legacyCompatibility else {
+            throw MachineManagerError.usbControlFailed(
+                id,
+                "live launch changed while detaching the USB device"
+            )
+        }
     }
 
     public func memorySnapshots() -> [GuestMemorySnapshot] {

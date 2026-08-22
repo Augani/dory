@@ -86,7 +86,8 @@ cutover; the Rust path stayed healthy throughout.
 - **USB passthrough** — the Rust agent now exposes a capability-gated `usb-vhci@1` attach/detach RPC,
   validates the exact USB/IP import descriptor, and hands the dedicated host vsock stream to Linux
   `vhci_hcd`; the raw-HV engine consumes that path with pre-claim and pre-mutation capability checks.
-  Public app/CLI attachment and automatic replay remain disabled until the machine-scoped control
-  routing and physical-device qualification slice lands.
+  Raw-HV desktop machines now receive a private, launch-pinned control route. Public app/CLI
+  attachment and automatic replay remain disabled until removable-device plan authorization and
+  physical-device qualification land.
 - **GPU** — Venus/Vulkan remains an opt-in preview on the arm64 raw-HV tier. It is not a stable 0.4
   cross-host GPU API.

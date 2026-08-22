@@ -67,7 +67,9 @@ public final class UsbControlServer: @unchecked Sendable {
     private let path: String
     private let handler: UsbControlHandler
     private let queue = DispatchQueue(label: "dory.usb.control")
+    private let lock = NSLock()
     private var listenFD: Int32 = -1
+    private var boundIdentity: (device: dev_t, inode: ino_t)?
 
     public init(path: String, handler: UsbControlHandler) {
         self.path = path
@@ -75,27 +77,75 @@ public final class UsbControlServer: @unchecked Sendable {
     }
 
     public func start() throws {
-        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
-        guard fd >= 0 else { throw UsbControlServerError.socket("socket: errno \(errno)") }
-        unlink(path)
+        lock.lock()
+        defer { lock.unlock() }
+        guard listenFD < 0 else {
+            return
+        }
         var address = sockaddr_un()
         address.sun_family = sa_family_t(AF_UNIX)
+        let capacity = withUnsafeBytes(of: &address.sun_path) { $0.count }
+        guard path.first == "/", path.utf8.count < capacity else {
+            throw UsbControlServerError.socket("invalid unix socket path")
+        }
+        var stale = stat()
+        if lstat(path, &stale) == 0 {
+            guard stale.st_mode & S_IFMT == S_IFSOCK,
+                  stale.st_uid == geteuid(),
+                  unlink(path) == 0 else {
+                throw UsbControlServerError.socket("refusing to replace untrusted path \(path)")
+            }
+        } else if errno != ENOENT {
+            throw UsbControlServerError.socket("lstat \(path): errno \(errno)")
+        }
+        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard fd >= 0 else { throw UsbControlServerError.socket("socket: errno \(errno)") }
         Self.copyPath(path, into: &address)
-        let bound = withUnsafePointer(to: &address) { pointer in
+        let bindResult = withUnsafePointer(to: &address) { pointer in
             pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
         }
-        guard bound == 0 else { close(fd); throw UsbControlServerError.socket("bind \(path): errno \(errno)") }
-        guard listen(fd, 8) == 0 else { close(fd); throw UsbControlServerError.socket("listen: errno \(errno)") }
+        guard bindResult == 0 else { close(fd); throw UsbControlServerError.socket("bind \(path): errno \(errno)") }
+        guard chmod(path, 0o600) == 0 else {
+            close(fd)
+            unlink(path)
+            throw UsbControlServerError.socket("chmod \(path): errno \(errno)")
+        }
+        guard listen(fd, 8) == 0 else {
+            close(fd)
+            unlink(path)
+            throw UsbControlServerError.socket("listen: errno \(errno)")
+        }
+        var bound = stat()
+        guard lstat(path, &bound) == 0,
+              bound.st_mode & S_IFMT == S_IFSOCK,
+              bound.st_uid == geteuid() else {
+            close(fd)
+            unlink(path)
+            throw UsbControlServerError.socket("could not bind trusted socket \(path)")
+        }
         listenFD = fd
-        queue.async { [weak self] in self?.acceptLoop() }
+        boundIdentity = (bound.st_dev, bound.st_ino)
+        queue.async { [weak self] in self?.acceptLoop(listenFD: fd) }
     }
 
     public func stop() {
-        if listenFD >= 0 { close(listenFD); listenFD = -1 }
-        unlink(path)
+        lock.lock()
+        let descriptor = listenFD
+        listenFD = -1
+        let identity = boundIdentity
+        boundIdentity = nil
+        lock.unlock()
+        if descriptor >= 0 { close(descriptor) }
+        guard let identity else { return }
+        var current = stat()
+        if lstat(path, &current) == 0,
+           current.st_dev == identity.device,
+           current.st_ino == identity.inode {
+            unlink(path)
+        }
     }
 
-    private func acceptLoop() {
+    private func acceptLoop(listenFD: Int32) {
         while true {
             let client = accept(listenFD, nil, nil)
             guard client >= 0 else { return }

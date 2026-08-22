@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import Testing
 @testable import DoryHV
@@ -237,6 +238,50 @@ struct UsbControlHandlerTests {
         var opened: [(String, HostUsbOpenMode)] = []
         var attachCalls: [UsbAgentAttachRequest] = []
         var detachCalls: [UsbAgentDetachRequest] = []
+    }
+}
+
+@Suite(.serialized)
+struct UsbControlServerTests {
+    @Test func createsOwnerPrivateSocketAndRemovesOnlyItsOwnNode() throws {
+        let root = "/tmp/dory-usb-server-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let path = root + "/u.sock"
+        let server = UsbControlServer(path: path, handler: makeServerHandler())
+
+        try server.start()
+        var info = stat()
+        #expect(lstat(path, &info) == 0)
+        #expect(info.st_mode & S_IFMT == S_IFSOCK)
+        #expect(info.st_mode & 0o777 == 0o600)
+        #expect(info.st_uid == geteuid())
+        server.stop()
+        #expect(lstat(path, &info) != 0)
+    }
+
+    @Test func refusesToReplaceRegularFile() throws {
+        let root = "/tmp/dory-usb-server-file-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let path = root + "/u.sock"
+        let bytes = Data("keep-me".utf8)
+        try bytes.write(to: URL(fileURLWithPath: path))
+        let server = UsbControlServer(path: path, handler: makeServerHandler())
+
+        #expect(throws: UsbControlServerError.self) { try server.start() }
+        #expect(try Data(contentsOf: URL(fileURLWithPath: path)) == bytes)
+    }
+
+    private func makeServerHandler() -> UsbControlHandler {
+        UsbControlHandler(
+            manager: UsbipManager(),
+            openDevice: { busID, _ in
+                StubExportedDevice(descriptor: fixtureDescriptor(busID: busID))
+            },
+            notifyAttach: { _ in },
+            notifyDetach: { _ in }
+        )
     }
 }
 
