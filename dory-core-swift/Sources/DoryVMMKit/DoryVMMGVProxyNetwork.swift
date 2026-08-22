@@ -61,6 +61,7 @@ final class DoryVMMGVProxyNetwork: @unchecked Sendable {
     private let configurationPath: String
     private let lock = NSLock()
     private var stopped = false
+    private var resolvedPortForwardReconciler: ResolvedPortForwardReconciler?
 
     init(
         gvproxyPath: String,
@@ -163,6 +164,17 @@ final class DoryVMMGVProxyNetwork: @unchecked Sendable {
             for forward in resolvedPortForwards.sorted(by: Self.portForwardOrder) {
                 try Self.publishIPForward(forward, apiSocketPath: apiSocketPath)
             }
+            if !resolvedPortForwards.isEmpty {
+                let reconciler = ResolvedPortForwardReconciler(
+                    desired: resolvedPortForwards,
+                    apiSocketPath: apiSocketPath,
+                    log: { message in
+                        FileHandle.standardError.write(Data("dory-vmm: \(message)\n".utf8))
+                    }
+                )
+                resolvedPortForwardReconciler = reconciler
+                reconciler.start()
+            }
         } catch {
             if child.isRunning {
                 child.terminate()
@@ -186,6 +198,7 @@ final class DoryVMMGVProxyNetwork: @unchecked Sendable {
         stopped = true
         lock.unlock()
 
+        resolvedPortForwardReconciler?.stop()
         try? fileHandle.close()
         if process.isRunning {
             process.terminate()

@@ -557,6 +557,7 @@ enum DesktopMode {
         private let audio: DoryMacAudioBackend
         private let gvproxy: Process?
         private let networkSocketPaths: [String]
+        private let resolvedPortForwardReconciler: ResolvedPortForwardReconciler?
         private let agentBridge: GuestVsockSocketBridge
         private let shellBridge: GuestVsockSocketBridge
         private let sshAgentBridge: HostSSHAgentBridge?
@@ -726,6 +727,7 @@ enum DesktopMode {
             )
             self.gvproxy = networkRuntime.process
             self.networkSocketPaths = networkRuntime.socketPaths
+            self.resolvedPortForwardReconciler = networkRuntime.portForwardReconciler
             do {
                 var backends: [VirtioDeviceBackend] = [
                     try VirtioBlk(path: configuration.rootfsPath, identity: "dory-rootfs"),
@@ -1065,6 +1067,7 @@ enum DesktopMode {
             lifecycleReceiptServer.stop()
             usbControlServer?.stop()
             clipboard?.stop()
+            resolvedPortForwardReconciler?.stop()
             signalSources.forEach { $0.cancel() }
             signalSources.removeAll()
             if let gvproxy {
@@ -1205,6 +1208,7 @@ enum DesktopMode {
             let process: Process?
             let socketPaths: [String]
             let backend: (any VirtioDeviceBackend)?
+            let portForwardReconciler: ResolvedPortForwardReconciler?
         }
 
         private static func prepareNetwork(
@@ -1242,11 +1246,17 @@ enum DesktopMode {
                     backend: VirtioDisconnectedNet(
                         macAddress: mac,
                         maximumTransmissionUnit: networkInterface?.maximumTransmissionUnit
-                    )
+                    ),
+                    portForwardReconciler: nil
                 )
             }
             guard plan.startsGVProxy, plan.attachesNetworkDevice else {
-                return NetworkRuntime(process: nil, socketPaths: [], backend: nil)
+                return NetworkRuntime(
+                    process: nil,
+                    socketPaths: [],
+                    backend: nil,
+                    portForwardReconciler: nil
+                )
             }
             let gvproxySocket = "\(runtimeDirectory)/\(token)-gv.sock"
             let vmNetworkSocket = "\(runtimeDirectory)/\(token)-vm.sock"
@@ -1285,6 +1295,12 @@ enum DesktopMode {
                 try process.run()
                 try waitForSocket(path: gvproxySocket, process: process)
                 try publishResolvedPortForwards(portForwards, apiSocket: apiSocket)
+                let reconciler = portForwards.isEmpty ? nil : ResolvedPortForwardReconciler(
+                    desired: portForwards,
+                    apiSocketPath: apiSocket,
+                    log: Self.log
+                )
+                reconciler?.start()
                 return NetworkRuntime(
                     process: process,
                     socketPaths: socketPaths,
@@ -1293,7 +1309,8 @@ enum DesktopMode {
                         remotePath: gvproxySocket,
                         macAddress: networkInterface?.macAddressOctets ?? VirtioNet.guestMAC,
                         maximumTransmissionUnit: networkInterface?.maximumTransmissionUnit
-                    )
+                    ),
+                    portForwardReconciler: reconciler
                 )
             } catch {
                 ChildProcessTerminator.terminateAndReap(process)
