@@ -93,6 +93,7 @@ struct NewMachineSettingsTests {
             inputEnabled: true,
             outputEnabled: true
         ))
+        #expect(s.virtualMachineSettings?.intelApplicationTranslationEnabled == false)
         #expect(s.ports.isEmpty)
     }
 
@@ -165,6 +166,26 @@ struct NewMachineSettingsTests {
             inputEnabled: false,
             outputEnabled: true
         ))
+    }
+
+    @Test func desktopIntelApplicationTranslationIsExplicitTypedIntent() {
+        let enabled = NewMachineSheet.buildSettings(
+            cpus: 4,
+            memoryGB: 4,
+            mounts: [],
+            intelApplicationTranslationEnabled: true
+        )
+        #expect(enabled.env.isEmpty)
+        #expect(enabled.virtualMachineSettings?.intelApplicationTranslationEnabled == true)
+
+        let headless = NewMachineSheet.buildSettings(
+            cpus: 2,
+            memoryGB: 2,
+            mounts: [],
+            displayMode: .headless,
+            intelApplicationTranslationEnabled: true
+        )
+        #expect(headless.virtualMachineSettings?.intelApplicationTranslationEnabled == nil)
     }
 
     @Test func editingPreservesAnOlderDaemonsAbsentAudioClaimUntilTheUserChangesIt() {

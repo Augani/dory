@@ -1309,6 +1309,7 @@ private struct MachineEditSheet: View {
     @State private var audioInputEnabled = true
     @State private var audioOutputEnabled = true
     @State private var originalAudioConfiguration: DoryVMAudioConfiguration?
+    @State private var intelApplicationTranslationEnabled = false
     @State private var typedSettings = DorydMachineTypedSettings()
 
     private struct MountRow: Identifiable, Hashable {
@@ -1337,6 +1338,7 @@ private struct MachineEditSheet: View {
                     )
                     audioBlock
                     runtimeBlock
+                    intelApplicationTranslationBlock
                     clipboardBlock
                     resourceRow
                     addressBlock
@@ -1379,6 +1381,8 @@ private struct MachineEditSheet: View {
         originalAudioConfiguration = typedSettings.audioConfiguration
         audioInputEnabled = typedSettings.audioConfiguration?.inputEnabled ?? true
         audioOutputEnabled = typedSettings.audioConfiguration?.outputEnabled ?? true
+        intelApplicationTranslationEnabled = typedSettings
+            .intelApplicationTranslationEnabled ?? false
         mountRows = settings.mounts.map {
             MountRow(host: $0.host, guest: $0.guest, readOnly: $0.readOnly, shareTag: $0.shareTag)
         }
@@ -1569,6 +1573,17 @@ private struct MachineEditSheet: View {
         }
     }
 
+    @ViewBuilder private var intelApplicationTranslationBlock: some View {
+        if displayMode == .desktop, machine.bootMode != .efi {
+            MachineIntelApplicationTranslationControl(
+                isEnabled: $intelApplicationTranslationEnabled,
+                editable: intelApplicationTranslationPolicyEditable,
+                runtimeCompatible: runtimePreference != .accelerated,
+                accessibilityPrefix: "edit-machine"
+            )
+        }
+    }
+
     private var addressBlock: some View {
         VStack(alignment: .leading, spacing: 8) {
             sectionLabel("DNS TARGET OVERRIDE")
@@ -1637,6 +1652,7 @@ private struct MachineEditSheet: View {
                 store.isMachineBusy(machine.name)
                     || guestUsernameInvalid
                     || resolvedPortForwards == nil
+                    || intelApplicationTranslationRuntimeConflict
             )
         }
         .padding(.horizontal, 18).padding(.vertical, 13)
@@ -1755,6 +1771,11 @@ private struct MachineEditSheet: View {
             if typedSettings.graphicsPreference != nil || graphicsPreference != .automatic {
                 typedSettings.graphicsPreference = graphicsPreference
             }
+            if typedSettings.intelApplicationTranslationEnabled != nil
+                || intelApplicationTranslationEnabled {
+                typedSettings.intelApplicationTranslationEnabled =
+                    intelApplicationTranslationEnabled
+            }
         }
         let settings = MachineSettings(
             cpus: cpus,
@@ -1781,6 +1802,14 @@ private struct MachineEditSheet: View {
 
     private var audioPolicyEditable: Bool {
         machine.runtimeIdentity.mode != "legacy-compatibility"
+    }
+
+    private var intelApplicationTranslationPolicyEditable: Bool {
+        machine.runtimeIdentity.mode != "legacy-compatibility"
+    }
+
+    private var intelApplicationTranslationRuntimeConflict: Bool {
+        intelApplicationTranslationEnabled && runtimePreference == .accelerated
     }
 
     private var guestUsernameInvalid: Bool {

@@ -2,6 +2,7 @@ import Darwin
 import DoryOperations
 import SwiftUI
 import UniformTypeIdentifiers
+import Virtualization
 
 struct NewMachineSheet: View {
     @Environment(AppStore.self) private var store
@@ -21,6 +22,7 @@ struct NewMachineSheet: View {
     @State private var portForwardRows: [MachinePortForwardDraft] = []
     @State private var audioInputEnabled = true
     @State private var audioOutputEnabled = true
+    @State private var intelApplicationTranslationEnabled = false
 
     private enum InstallerISOCheck: Equatable {
         case none
@@ -99,6 +101,7 @@ struct NewMachineSheet: View {
                             accessibilityPrefix: "new-machine"
                         )
                         audioBlock
+                        intelApplicationTranslationBlock
                         optionsRow
                         advancedSection
                     }
@@ -575,6 +578,17 @@ struct NewMachineSheet: View {
         }
     }
 
+    @ViewBuilder private var intelApplicationTranslationBlock: some View {
+        if displayMode == .desktop, !customISOInstall {
+            MachineIntelApplicationTranslationControl(
+                isEnabled: $intelApplicationTranslationEnabled,
+                editable: true,
+                runtimeCompatible: true,
+                accessibilityPrefix: "new-machine"
+            )
+        }
+    }
+
     private var advancedSection: some View {
         VStack(alignment: .leading, spacing: 0) {
             Button {
@@ -936,7 +950,8 @@ struct NewMachineSheet: View {
         networkMode: DoryVMNetworkMode = .sharedNAT,
         portForwards: [DoryVMPortForward] = [],
         audioInputEnabled: Bool = true,
-        audioOutputEnabled: Bool = true
+        audioOutputEnabled: Bool = true,
+        intelApplicationTranslationEnabled: Bool = false
     ) -> MachineSettings {
         let typedSettings: DorydMachineTypedSettings
         if displayMode == .desktop {
@@ -961,7 +976,8 @@ struct NewMachineSheet: View {
                 audioConfiguration: DoryVMAudioConfiguration(
                     inputEnabled: audioInputEnabled,
                     outputEnabled: audioOutputEnabled
-                )
+                ),
+                intelApplicationTranslationEnabled: intelApplicationTranslationEnabled
             )
         } else {
             typedSettings = DorydMachineTypedSettings(
@@ -1015,7 +1031,8 @@ struct NewMachineSheet: View {
             networkMode: networkMode,
             portForwards: resolvedPortForwards ?? [],
             audioInputEnabled: audioInputEnabled,
-            audioOutputEnabled: audioOutputEnabled
+            audioOutputEnabled: audioOutputEnabled,
+            intelApplicationTranslationEnabled: intelApplicationTranslationEnabled
         )
         if customISOInstall {
             settings.bootMode = .efi
@@ -1082,5 +1099,125 @@ struct NewMachineSheet: View {
     private var trimmedAddress: String? {
         let trimmed = address.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
+    }
+}
+
+enum IntelApplicationTranslationHostAvailability: Sendable, Equatable {
+    case installed
+    case notInstalled
+    case unsupported
+}
+
+@MainActor
+enum IntelApplicationTranslationHost {
+    static var availability: IntelApplicationTranslationHostAvailability {
+        switch VZLinuxRosettaDirectoryShare.availability {
+        case .installed:
+            .installed
+        case .notInstalled:
+            .notInstalled
+        case .notSupported:
+            .unsupported
+        @unknown default:
+            .unsupported
+        }
+    }
+
+    static func install() async throws {
+        try await VZLinuxRosettaDirectoryShare.installRosetta()
+    }
+}
+
+struct MachineIntelApplicationTranslationControl: View {
+    @Environment(\.palette) private var p
+    @Binding var isEnabled: Bool
+    let editable: Bool
+    let runtimeCompatible: Bool
+    let accessibilityPrefix: String
+
+    @State private var availability = IntelApplicationTranslationHost.availability
+    @State private var installing = false
+    @State private var installationError: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("INTEL APPLICATIONS")
+                .font(.system(size: 10.5, weight: .semibold))
+                .foregroundStyle(p.text3)
+                .tracking(0.5)
+            HStack(spacing: 12) {
+                Toggle("Run Intel Linux applications", isOn: $isEnabled)
+                    .toggleStyle(.switch)
+                    .tint(p.accent)
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(p.text)
+                    .disabled(!editable || (availability != .installed && !isEnabled))
+                    .accessibilityIdentifier(
+                        "\(accessibilityPrefix)-intel-application-translation"
+                    )
+                Spacer(minLength: 0)
+                if availability == .notInstalled {
+                    Button {
+                        Task { await installRosetta() }
+                    } label: {
+                        HStack(spacing: 6) {
+                            if installing { ProgressView().controlSize(.mini) }
+                            Text(installing ? "Installing…" : "Install Rosetta")
+                                .font(.system(size: 11.5, weight: .semibold))
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(installing || !editable)
+                    .accessibilityIdentifier(
+                        "\(accessibilityPrefix)-install-intel-application-translation"
+                    )
+                }
+            }
+            Text(statusMessage)
+                .font(.system(size: 11))
+                .foregroundStyle(statusColor)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var statusMessage: String {
+        if let installationError {
+            return "Rosetta could not be installed: \(installationError)"
+        }
+        guard runtimeCompatible else {
+            return "Intel application translation requires Automatic or Compatibility runtime selection."
+        }
+        guard editable else {
+            return "Replan this compatibility machine into the resolved runtime before changing Intel application translation."
+        }
+        switch availability {
+        case .installed:
+            return "Uses Apple's Rosetta runtime inside this ARM64 Linux desktop. The runtime is attached only when the resolved plan qualifies it."
+        case .notInstalled:
+            return "Rosetta is not installed on this Mac. Installation is an explicit Apple system action."
+        case .unsupported:
+            return "This Mac does not support Rosetta for Linux virtual machines."
+        }
+    }
+
+    private var statusColor: Color {
+        installationError == nil && availability == .installed && runtimeCompatible
+            ? p.text3 : p.amber
+    }
+
+    private func installRosetta() async {
+        installationError = nil
+        installing = true
+        defer { installing = false }
+        do {
+            try await IntelApplicationTranslationHost.install()
+            availability = IntelApplicationTranslationHost.availability
+            if availability != .installed {
+                installationError = "macOS did not report the runtime as installed."
+            }
+        } catch {
+            installationError = error.localizedDescription
+            availability = IntelApplicationTranslationHost.availability
+        }
     }
 }
