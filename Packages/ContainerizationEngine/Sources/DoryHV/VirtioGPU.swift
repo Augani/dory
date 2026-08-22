@@ -124,18 +124,31 @@ public struct VirtioGPUStatistics: Equatable, Sendable {
     public var fenceRegistrationFailures: UInt64
     public var fenceTimeouts: UInt64
     public var hasTimedOutPendingFence: Bool
+    public var rendererDeviceLosses: UInt64
+    public var hasLostRendererDevice: Bool
 
     public init(
         fences: UInt64,
         fenceRegistrationFailures: UInt64,
         fenceTimeouts: UInt64,
-        hasTimedOutPendingFence: Bool
+        hasTimedOutPendingFence: Bool,
+        rendererDeviceLosses: UInt64 = 0,
+        hasLostRendererDevice: Bool = false
     ) {
         self.fences = fences
         self.fenceRegistrationFailures = fenceRegistrationFailures
         self.fenceTimeouts = fenceTimeouts
         self.hasTimedOutPendingFence = hasTimedOutPendingFence
+        self.rendererDeviceLosses = rendererDeviceLosses
+        self.hasLostRendererDevice = hasLostRendererDevice
     }
+}
+
+/// A renderer failure whose meaning is host-owned and therefore safe to publish as device-loss
+/// telemetry. Ordinary renderer command errors are deliberately excluded: malformed guest 3D
+/// commands must not be relabeled as a host GPU failure.
+public enum VirtioGPURendererRuntimeFailure: Error, Equatable, Sendable {
+    case deviceLost(String)
 }
 
 /// A copied guest cursor plane ready for the host window. Cursor bytes are never exposed through
@@ -177,6 +190,7 @@ public struct VirtioGPUCursorUpdate: Sendable, Equatable {
 
 public protocol VirtioGPURenderer: AnyObject {
     var capsets: [VirtioGPUCapset] { get }
+    var onRuntimeFailure: ((VirtioGPURendererRuntimeFailure) -> Void)? { get set }
     func createContext(id: UInt32, flags: UInt32, name: String) throws
     func destroyContext(id: UInt32) throws
     func attachResource(contextID: UInt32, resourceID: UInt32) throws
@@ -372,6 +386,8 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
     private var fenceCount: UInt64 = 0
     private var fenceRegistrationFailureCount: UInt64 = 0
     private var fenceTimeoutCount: UInt64 = 0
+    private var rendererDeviceLossCount: UInt64 = 0
+    private var rendererDeviceLossLatched = false
 
     private enum HeaderFlag {
         static let fence: UInt32 = 1 << 0
@@ -472,6 +488,9 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         self.onCursorUpdate = onCursorUpdate
         renderer?.onFenceSignaled = { [weak self] contextID, ringIndex, fenceID in
             self?.fenceSignaled(contextID: contextID, ringIndex: ringIndex, fenceID: fenceID)
+        }
+        renderer?.onRuntimeFailure = { [weak self] failure in
+            self?.recordRendererFailure(failure)
         }
     }
 
@@ -598,6 +617,7 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                 fenceRegistrationFailureCount,
                 1
             )
+            recordRendererFailureWhileLocked(error)
             fenceLock.unlock()
             return false
         }
@@ -633,7 +653,9 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                 fences: fenceCount,
                 fenceRegistrationFailures: fenceRegistrationFailureCount,
                 fenceTimeouts: fenceTimeoutCount,
-                hasTimedOutPendingFence: hasTimedOutPendingFence
+                hasTimedOutPendingFence: hasTimedOutPendingFence,
+                rendererDeviceLosses: rendererDeviceLossCount,
+                hasLostRendererDevice: rendererDeviceLossLatched
             )
         }
     }
@@ -1252,6 +1274,7 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         do {
             return try body(renderer)
         } catch {
+            recordRendererFailure(error)
             logCommandFailure(request: request, error: error)
             return responseHeader(type: Response.errorInvalidParameter, request: request)
         }
@@ -1273,9 +1296,22 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         do {
             return try body()
         } catch {
+            recordRendererFailure(error)
             logCommandFailure(request: request, error: error)
             return responseHeader(type: Response.errorInvalidParameter, request: request)
         }
+    }
+
+    private func recordRendererFailure(_ error: Error) {
+        fenceLock.withLock { recordRendererFailureWhileLocked(error) }
+    }
+
+    private func recordRendererFailureWhileLocked(_ error: Error) {
+        guard let failure = error as? VirtioGPURendererRuntimeFailure,
+              case .deviceLost = failure,
+              !rendererDeviceLossLatched else { return }
+        rendererDeviceLossLatched = true
+        rendererDeviceLossCount = Self.saturatingAdd(rendererDeviceLossCount, 1)
     }
 
     /// Linux may retry a failed renderer command many times per second. Preserve the status and

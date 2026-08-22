@@ -834,6 +834,18 @@ import Testing
     private let requestBuffer: UInt64 = 0x8000_4000
     private let responseBuffer: UInt64 = 0x8000_5000
 
+    @Test func virglLogClassifiesOnlyExplicitVulkanDeviceLoss() {
+        #expect(VirglRenderer.runtimeFailure(
+            logMessage: "queue submit failed: VK_ERROR_DEVICE_LOST"
+        ) == .deviceLost("renderer reported VK_ERROR_DEVICE_LOST"))
+        #expect(VirglRenderer.runtimeFailure(
+            logMessage: "guest command rejected with invalid resource"
+        ) == nil)
+        #expect(VirglRenderer.runtimeFailure(
+            logMessage: "generic renderer device lost text"
+        ) == nil)
+    }
+
     @Test func singleCapsetBecomesImplicitRendererDefault() {
         let venus = VirtioGPUCapset(id: 4, maxVersion: 0, data: [1])
         #expect(VirtioGPU.rendererContextFlags(requested: 0, capsets: [venus]) == 4)
@@ -1618,6 +1630,31 @@ import Testing
         #expect(renderer.unmapBlobCount == 1)
     }
 
+    @Test func explicitHostRendererLossIsLatchedWithoutCountingGuestCommandErrors() throws {
+        let renderer = FakeVirtioGPURenderer(capsets: [
+            VirtioGPUCapset(id: 4, maxVersion: 0, data: [1]),
+        ])
+        let gpu = VirtioGPU(hostMemoryBase: 0x1_0000_0000, renderer: renderer)
+        var request = gpuRequest(type: 0x0207, fenceID: 0, contextID: 7, ringIndex: 0)
+        request.appendLE(UInt32(0))
+        request.appendLE(UInt32(0))
+
+        renderer.failSubmit = true
+        #expect(leUInt32(try gpuResponse(gpu: gpu, request: request), at: 0) == 0x1202)
+        #expect(gpu.statistics.rendererDeviceLosses == 0)
+        #expect(!gpu.statistics.hasLostRendererDevice)
+
+        renderer.signalRuntimeFailure(.deviceLost("VK_ERROR_DEVICE_LOST"))
+        #expect(gpu.statistics.rendererDeviceLosses == 1)
+        #expect(gpu.statistics.hasLostRendererDevice)
+
+        // A lost renderer can reject many subsequent guest commands or repeat its diagnostic.
+        // The metric records the single loss transition rather than fabricating extra devices.
+        renderer.signalRuntimeFailure(.deviceLost("VK_ERROR_DEVICE_LOST"))
+        #expect(gpu.statistics.rendererDeviceLosses == 1)
+        #expect(gpu.statistics.hasLostRendererDevice)
+    }
+
     @Test func fencedCommandDefersCompletionUntilRendererSignals() throws {
         let renderer = FakeVirtioGPURenderer(capsets: [VirtioGPUCapset(id: 4, maxVersion: 0, data: [1])])
         let gpu = VirtioGPU(
@@ -1865,6 +1902,8 @@ private final class FakeVirtioGPURenderer: VirtioGPURenderer {
     private var transferReadbackHeight: UInt32 = 0
     private var transferReadbackPixels = [UInt8]()
     var transferFromHostCalls = [TransferFromHostCall]()
+    var failSubmit = false
+    var onRuntimeFailure: ((VirtioGPURendererRuntimeFailure) -> Void)?
 
     init(capsets: [VirtioGPUCapset], blobBytes: [UInt8]? = nil) {
         self.capsets = capsets
@@ -1889,7 +1928,15 @@ private final class FakeVirtioGPURenderer: VirtioGPURenderer {
     func destroyContext(id: UInt32) throws {}
     func attachResource(contextID: UInt32, resourceID: UInt32) throws {}
     func detachResource(contextID: UInt32, resourceID: UInt32) throws {}
-    func submit3D(contextID: UInt32, command: [UInt8]) throws {}
+    func submit3D(contextID: UInt32, command: [UInt8]) throws {
+        if failSubmit {
+            throw VMError.invalidConfiguration("guest command rejected")
+        }
+    }
+
+    func signalRuntimeFailure(_ failure: VirtioGPURendererRuntimeFailure) {
+        onRuntimeFailure?(failure)
+    }
     func createResource3D(_ resource: VirtioGPUResourceCreate3D, entries: [VirtioGPUMemoryEntry]) throws {
         createdResources.append(resource)
     }

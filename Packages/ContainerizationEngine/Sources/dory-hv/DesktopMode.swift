@@ -26,6 +26,7 @@ final class RawDeviceTelemetryRegistry: @unchecked Sendable {
         var previousDisplayDrops: UInt64?
         var previousGraphicsFenceRegistrationFailures: UInt64?
         var previousGraphicsFenceTimeouts: UInt64?
+        var previousGraphicsDeviceLosses: UInt64?
         var consecutiveUncompletedNotificationSamples: UInt8
         var queueStallReported: Bool
     }
@@ -70,9 +71,12 @@ final class RawDeviceTelemetryRegistry: @unchecked Sendable {
             unavailable = []
         case is VirtioGPU:
             kind = .graphics
-            unavailable = [(.graphicsDeviceLosses, .count)]
+            unavailable = []
             if effectiveGraphicsMetrics == nil {
-                unavailable.append((.graphicsFences, .count))
+                unavailable.append(contentsOf: [
+                    (.graphicsFences, .count),
+                    (.graphicsDeviceLosses, .count),
+                ])
             }
             if displayMetrics == nil {
                 unavailable.append(contentsOf: [
@@ -132,6 +136,7 @@ final class RawDeviceTelemetryRegistry: @unchecked Sendable {
             previousDisplayDrops: nil,
             previousGraphicsFenceRegistrationFailures: nil,
             previousGraphicsFenceTimeouts: nil,
+            previousGraphicsDeviceLosses: nil,
             consecutiveUncompletedNotificationSamples: 0,
             queueStallReported: false
         )
@@ -302,7 +307,13 @@ final class RawDeviceTelemetryRegistry: @unchecked Sendable {
                     entries[index].previousDisplayDrops = display.droppedFrames
                 }
                 if let graphics = entries[index].graphicsMetrics?() {
-                    metrics.append(.measured(.graphicsFences, value: graphics.fences))
+                    metrics.append(contentsOf: [
+                        .measured(.graphicsFences, value: graphics.fences),
+                        .measured(
+                            .graphicsDeviceLosses,
+                            value: graphics.rendererDeviceLosses
+                        ),
+                    ])
                     let previousRegistrationFailures =
                         entries[index].previousGraphicsFenceRegistrationFailures ?? 0
                     if Self.monotonicDelta(
@@ -327,9 +338,28 @@ final class RawDeviceTelemetryRegistry: @unchecked Sendable {
                     if graphics.hasTimedOutPendingFence {
                         health = .failed
                     }
+                    let previousDeviceLosses =
+                        entries[index].previousGraphicsDeviceLosses ?? 0
+                    let newDeviceLosses = Self.monotonicDelta(
+                        current: graphics.rendererDeviceLosses,
+                        previous: previousDeviceLosses
+                    )
+                    if newDeviceLosses > 0 {
+                        appendEvent(
+                            deviceID: entries[index].id,
+                            kind: .graphicsDeviceLoss,
+                            occurrences: newDeviceLosses,
+                            monotonicNanoseconds: monotonicNanoseconds
+                        )
+                    }
+                    if graphics.hasLostRendererDevice {
+                        health = .failed
+                    }
                     entries[index].previousGraphicsFenceRegistrationFailures =
                         graphics.fenceRegistrationFailures
                     entries[index].previousGraphicsFenceTimeouts = graphics.fenceTimeouts
+                    entries[index].previousGraphicsDeviceLosses =
+                        graphics.rendererDeviceLosses
                 }
                 metrics.append(contentsOf: entries[index].unavailableMetrics.map {
                     .unavailable($0.0, unit: $0.1, reason: unavailableReason)

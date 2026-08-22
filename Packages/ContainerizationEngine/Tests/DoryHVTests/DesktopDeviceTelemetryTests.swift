@@ -256,7 +256,9 @@ import Testing
             fences: 9,
             fenceRegistrationFailures: 1,
             fenceTimeouts: 2,
-            hasTimedOutPendingFence: true
+            hasTimedOutPendingFence: true,
+            rendererDeviceLosses: 1,
+            hasLostRendererDevice: true
         )
         registry.register(
             slot: 1,
@@ -271,12 +273,19 @@ import Testing
         #expect(device.metrics.first { $0.kind == .graphicsFences }?.value == 9)
         #expect(device.metrics.first {
             $0.kind == .graphicsDeviceLosses
-        }?.availability == .unavailable)
-        #expect(snapshot.events.map(\.kind) == [.graphicsFenceTimeout])
+        }?.value == 1)
+        #expect(snapshot.events.map(\.kind) == [
+            .graphicsFenceTimeout,
+            .graphicsDeviceLoss,
+        ])
         #expect(snapshot.events.first?.occurrences == 2)
+        #expect(snapshot.events.last?.occurrences == 1)
 
         let stable = registry.snapshot()
         #expect(stable.devices.first?.health == .failed)
-        #expect(stable.events.map(\.kind) == [.graphicsFenceTimeout])
+        #expect(stable.events.map(\.kind) == [
+            .graphicsFenceTimeout,
+            .graphicsDeviceLoss,
+        ])
     }
 }

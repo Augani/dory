@@ -752,9 +752,12 @@ surface are counted as drops, while a newer complete frame superseding older dam
 coalescing rather than loss. VirtioGPU counts successful renderer fence registrations, reports a
 registration failure as degraded health, and classifies a fence still pending after 10 seconds as a
 timeout; health remains failed until that exact pending fence is signaled.
+An explicit host renderer loss is counted once and latches raw-HV graphics health failed; the
+current VirGL bridge issues that authority only for Vulkan's explicit `VK_ERROR_DEVICE_LOST`.
+Ordinary guest command validation failures remain excluded from device-loss telemetry.
 Virtualization.framework counters that do not have a stable public authority remain explicitly
-unavailable rather than being reported as zero. Renderer device-loss classification and network
-reconnect support remain release gates for those individual capability claims.
+unavailable rather than being reported as zero. Network reconnect support remains a release gate
+for that individual capability claim.
 
 ## Qualification and release gates
 

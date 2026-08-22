@@ -44,6 +44,7 @@ public final class VirglRenderer: VirtioGPURenderer, @unchecked Sendable {
     private static let fenceLock = NSLock()
     nonisolated(unsafe) private static weak var activeRenderer: VirglRenderer?
     nonisolated(unsafe) private var fenceSink: ((UInt32, UInt32, UInt64) -> Void)?
+    nonisolated(unsafe) private var runtimeFailureSink: ((VirtioGPURendererRuntimeFailure) -> Void)?
     nonisolated(unsafe) private var pendingFenceSignals: [(contextID: UInt32, ringIndex: UInt32, fenceID: UInt64)] = []
 
     public var onFenceSignaled: ((UInt32, UInt32, UInt64) -> Void)? {
@@ -51,10 +52,27 @@ public final class VirglRenderer: VirtioGPURenderer, @unchecked Sendable {
         set { Self.fenceLock.lock(); fenceSink = newValue; Self.fenceLock.unlock() }
     }
 
+    public var onRuntimeFailure: ((VirtioGPURendererRuntimeFailure) -> Void)? {
+        get { Self.fenceLock.lock(); defer { Self.fenceLock.unlock() }; return runtimeFailureSink }
+        set { Self.fenceLock.lock(); runtimeFailureSink = newValue; Self.fenceLock.unlock() }
+    }
+
     fileprivate static func signalFence(contextID: UInt32, ringIndex: UInt32, fenceID: UInt64) {
         fenceLock.lock()
         activeRenderer?.pendingFenceSignals.append((contextID, ringIndex, fenceID))
         fenceLock.unlock()
+    }
+
+    fileprivate static func signalRuntimeFailure(_ failure: VirtioGPURendererRuntimeFailure) {
+        fenceLock.lock()
+        let sink = activeRenderer?.runtimeFailureSink
+        fenceLock.unlock()
+        sink?(failure)
+    }
+
+    static func runtimeFailure(logMessage: String) -> VirtioGPURendererRuntimeFailure? {
+        guard logMessage.contains("VK_ERROR_DEVICE_LOST") else { return nil }
+        return .deviceLost("renderer reported VK_ERROR_DEVICE_LOST")
     }
 
     public static func discover(
@@ -785,6 +803,12 @@ private typealias GetEGLDisplayCallback = @convention(c) (UnsafeMutableRawPointe
 private let doryVirglLog: @convention(c) (Int32, UnsafePointer<CChar>?, UnsafeMutableRawPointer?) -> Void = { level, message, _ in
     let text = message.map { String(cString: $0) } ?? ""
     FileHandle.standardError.write(Data("virgl[\(level)]: \(text)\n".utf8))
+    // VK_ERROR_DEVICE_LOST is the Vulkan API's explicit host logical-device-loss authority.
+    // Do not infer loss from generic renderer errors: those can be caused by malformed guest
+    // command streams and must remain ordinary command failures.
+    if let failure = VirglRenderer.runtimeFailure(logMessage: text) {
+        VirglRenderer.signalRuntimeFailure(failure)
+    }
 }
 
 // ctx0 fences ride the global timeline: write_fence has no context/ring, so they complete under
