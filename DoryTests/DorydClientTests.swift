@@ -485,6 +485,22 @@ struct DorydClientTests {
         #expect(networkWire.count == 1)
         #expect(networkWire["networkMode"] as? String == "disconnected")
 
+        #expect(defaults.audioConfiguration == DoryVMAudioConfiguration(
+            inputEnabled: true,
+            outputEnabled: true
+        ))
+        var microphoneDisabled = defaults
+        microphoneDisabled.audioConfiguration?.inputEnabled = false
+        let audioWire = DorydMachineTypedSettingsPatch(
+            baseline: defaults,
+            desired: microphoneDisabled
+        ).xpcDictionary
+        #expect(audioWire.count == 1)
+        let audio = try #require(audioWire["audio"] as? NSDictionary)
+        #expect(audio.count == 1)
+        #expect(audio["inputEnabled"] as? Bool == false)
+        #expect(audio["outputEnabled"] == nil)
+
         for (legacy, expected) in [("1", DoryDesktopGraphicsPreference.virgl),
                                    ("0", DoryDesktopGraphicsPreference.virglVenus)] {
             let settings = DorydMachineTypedSettings(
@@ -659,6 +675,10 @@ struct DorydClientTests {
             "desktopRuntimePreference": "accelerated",
             "desktopGraphicsPreference": "virgl-venus",
             "networkMode": "disconnected",
+            "audio": [
+                "inputEnabled": false,
+                "outputEnabled": true,
+            ] as NSDictionary,
         ])
         let delegate = FakeDorydListenerDelegate(service: service)
         listener.delegate = delegate
@@ -674,10 +694,31 @@ struct DorydClientTests {
         #expect(status.typedSettings?.runtimePreference == .accelerated)
         #expect(status.typedSettings?.graphicsPreference == .virglVenus)
         #expect(status.typedSettings?.networkMode == .disconnected)
+        #expect(status.typedSettings?.audioConfiguration == DoryVMAudioConfiguration(
+            inputEnabled: false,
+            outputEnabled: true
+        ))
 
         service.setMachineTypedSettings("dev", ["unknown": "claim"])
         await #expect(throws: (any Error).self) {
             _ = try await client.machineList()
+        }
+
+        for malformed: NSDictionary in [
+            ["audio": ["inputEnabled": 0, "outputEnabled": true]],
+            ["audio": ["inputEnabled": true]],
+            [
+                "audio": [
+                    "inputEnabled": true,
+                    "outputEnabled": true,
+                    "route": "private-host-device",
+                ],
+            ],
+        ] {
+            service.setMachineTypedSettings("dev", malformed)
+            await #expect(throws: (any Error).self) {
+                _ = try await client.machineList()
+            }
         }
     }
 

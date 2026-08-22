@@ -1,4 +1,5 @@
 import DoryOperations
+import CoreFoundation
 import Foundation
 
 public enum DoryMachineTypedWriteAuthorityError: Error, Sendable, Equatable, CustomStringConvertible {
@@ -38,6 +39,7 @@ public struct DoryMachineTypedSettingsSnapshot: Codable, Sendable, Equatable, Ha
     public var runtimePreference: DoryDesktopVMMPreference?
     public var graphicsPreference: DoryDesktopGraphicsPreference?
     public var networkMode: DoryVMNetworkMode
+    public var audioConfiguration: DoryVMAudioConfiguration?
 
     private enum CodingKeys: String, CodingKey {
         case guestIdentityIntent
@@ -45,6 +47,7 @@ public struct DoryMachineTypedSettingsSnapshot: Codable, Sendable, Equatable, Ha
         case runtimePreference
         case graphicsPreference
         case networkMode
+        case audioConfiguration
     }
 
     public init(from decoder: Decoder) throws {
@@ -69,6 +72,10 @@ public struct DoryMachineTypedSettingsSnapshot: Codable, Sendable, Equatable, Ha
             DoryVMNetworkMode.self,
             forKey: .networkMode
         ) ?? .sharedNAT
+        audioConfiguration = try container.decodeIfPresent(
+            DoryVMAudioConfiguration.self,
+            forKey: .audioConfiguration
+        )
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -78,6 +85,7 @@ public struct DoryMachineTypedSettingsSnapshot: Codable, Sendable, Equatable, Ha
         try container.encodeIfPresent(runtimePreference, forKey: .runtimePreference)
         try container.encodeIfPresent(graphicsPreference, forKey: .graphicsPreference)
         try container.encode(networkMode, forKey: .networkMode)
+        try container.encodeIfPresent(audioConfiguration, forKey: .audioConfiguration)
     }
 
     public init(definition: DoryVirtualMachineDefinition) throws {
@@ -87,8 +95,10 @@ public struct DoryMachineTypedSettingsSnapshot: Codable, Sendable, Equatable, Ha
             clipboardPolicy = nil
             runtimePreference = nil
             graphicsPreference = nil
+            audioConfiguration = nil
             return
         }
+        audioConfiguration = definition.audio
         clipboardPolicy = definition.clipboardPolicy
         switch (definition.backendPreference.mode, definition.backendPreference.backend) {
         case (.automatic, nil):
@@ -180,10 +190,18 @@ public struct DoryMachineTypedSettingsSnapshot: Codable, Sendable, Equatable, Ha
             graphicsPreference = (try? DoryDesktopGraphicsPreference(
                 environment: legacyEnvironment
             )) ?? .automatic
+            // The compatibility desktop runtime has always attached its combined input/output
+            // audio device. This is an observation of that fixed legacy behavior, not a new
+            // persisted environment setting.
+            audioConfiguration = DoryVMAudioConfiguration(
+                inputEnabled: true,
+                outputEnabled: true
+            )
         } else {
             clipboardPolicy = nil
             runtimePreference = nil
             graphicsPreference = nil
+            audioConfiguration = nil
         }
     }
 
@@ -202,7 +220,9 @@ public struct DoryMachineTypedSettingsSnapshot: Codable, Sendable, Equatable, Ha
             clipboardPolicy: update(clipboardPolicy),
             runtimePreference: update(runtimePreference),
             graphicsPreference: update(graphicsPreference),
-            networkMode: .set(networkMode)
+            networkMode: .set(networkMode),
+            audioInputEnabled: update(audioConfiguration?.inputEnabled),
+            audioOutputEnabled: update(audioConfiguration?.outputEnabled)
         ).xpcDictionary
     }
 
@@ -231,7 +251,9 @@ public struct DoryMachineTypedSettingsSnapshot: Codable, Sendable, Equatable, Ha
             clipboardPolicy: update(clipboardPolicy),
             runtimePreference: update(runtimePreference),
             graphicsPreference: update(graphicsPreference),
-            networkMode: .set(networkMode)
+            networkMode: .set(networkMode),
+            audioInputEnabled: update(audioConfiguration?.inputEnabled),
+            audioOutputEnabled: update(audioConfiguration?.outputEnabled)
         )
     }
 
@@ -248,6 +270,8 @@ public struct DoryMachineTypedSettingsSnapshot: Codable, Sendable, Equatable, Ha
         hasher.combine(runtimePreference?.rawValue)
         hasher.combine(graphicsPreference?.rawValue)
         hasher.combine(networkMode.rawValue)
+        hasher.combine(audioConfiguration?.inputEnabled)
+        hasher.combine(audioConfiguration?.outputEnabled)
     }
 
     private func update<Value: Sendable & Equatable>(
@@ -279,6 +303,8 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
     public var runtimePreference: DoryMachineTypedSettingUpdate<DoryDesktopVMMPreference>
     public var graphicsPreference: DoryMachineTypedSettingUpdate<DoryDesktopGraphicsPreference>
     public var networkMode: DoryMachineTypedSettingUpdate<DoryVMNetworkMode>
+    public var audioInputEnabled: DoryMachineTypedSettingUpdate<Bool>
+    public var audioOutputEnabled: DoryMachineTypedSettingUpdate<Bool>
 
     public init(
         guestUsername: DoryMachineTypedSettingUpdate<String> = .unchanged,
@@ -290,7 +316,9 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
         clipboardPolicy: DoryMachineTypedSettingUpdate<DoryVMClipboardPolicy> = .unchanged,
         runtimePreference: DoryMachineTypedSettingUpdate<DoryDesktopVMMPreference> = .unchanged,
         graphicsPreference: DoryMachineTypedSettingUpdate<DoryDesktopGraphicsPreference> = .unchanged,
-        networkMode: DoryMachineTypedSettingUpdate<DoryVMNetworkMode> = .unchanged
+        networkMode: DoryMachineTypedSettingUpdate<DoryVMNetworkMode> = .unchanged,
+        audioInputEnabled: DoryMachineTypedSettingUpdate<Bool> = .unchanged,
+        audioOutputEnabled: DoryMachineTypedSettingUpdate<Bool> = .unchanged
     ) {
         self.guestUsername = guestUsername
         self.guestNumericUserID = guestNumericUserID
@@ -302,6 +330,8 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
         self.runtimePreference = runtimePreference
         self.graphicsPreference = graphicsPreference
         self.networkMode = networkMode
+        self.audioInputEnabled = audioInputEnabled
+        self.audioOutputEnabled = audioOutputEnabled
     }
 
     public var isEmpty: Bool {
@@ -315,6 +345,8 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
             && !runtimePreference.isChanged
             && !graphicsPreference.isChanged
             && !networkMode.isChanged
+            && !audioInputEnabled.isChanged
+            && !audioOutputEnabled.isChanged
     }
 
     /// Consume the typed persistent-machine options shared by dorydctl create and update. Other
@@ -384,6 +416,12 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
             }
             patch.networkMode = .set(mode)
         }
+        if let raw = try takeOption("--audio-input", from: &arguments) {
+            patch.audioInputEnabled = .set(try cliBoolean(raw, option: "--audio-input"))
+        }
+        if let raw = try takeOption("--audio-output", from: &arguments) {
+            patch.audioOutputEnabled = .set(try cliBoolean(raw, option: "--audio-output"))
+        }
 
         let clearsAccount = takeFlag("--clear-guest-account", from: &arguments)
         let clearsDesktop = takeFlag("--clear-desktop-identity", from: &arguments)
@@ -391,8 +429,9 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
         let clearsRuntime = takeFlag("--clear-runtime", from: &arguments)
         let clearsGraphics = takeFlag("--clear-graphics", from: &arguments)
         let clearsNetwork = takeFlag("--clear-network", from: &arguments)
+        let clearsAudio = takeFlag("--clear-audio", from: &arguments)
         guard allowsClears || (!clearsAccount && !clearsDesktop && !clearsClipboard
-            && !clearsRuntime && !clearsGraphics && !clearsNetwork) else {
+            && !clearsRuntime && !clearsGraphics && !clearsNetwork && !clearsAudio) else {
             throw DoryMachineTypedWriteAuthorityError.invalidField("clear options")
         }
         if clearsAccount {
@@ -442,6 +481,14 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
             }
             patch.networkMode = .clear
         }
+        if clearsAudio {
+            guard !patch.audioInputEnabled.isChanged,
+                  !patch.audioOutputEnabled.isChanged else {
+                throw DoryMachineTypedWriteAuthorityError.invalidField("--clear-audio")
+            }
+            patch.audioInputEnabled = .clear
+            patch.audioOutputEnabled = .clear
+        }
         return patch
     }
 
@@ -479,6 +526,9 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
             allowsClears: allowsClears,
             type: DoryVMNetworkMode.self
         )
+        if let rawAudio = dictionary["audio"] {
+            try decodeAudio(rawAudio, allowsClears: allowsClears)
+        }
     }
 
     /// Canonical XPC representation used by dorydctl and future typed clients.
@@ -525,6 +575,17 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
             into: &result
         )
         Self.encodeEnum(networkMode, key: "networkMode", into: &result)
+        if audioInputEnabled.isChanged || audioOutputEnabled.isChanged {
+            if case .clear = audioInputEnabled,
+               case .clear = audioOutputEnabled {
+                result["audio"] = NSNull()
+            } else {
+                var audio: [String: Any] = [:]
+                Self.encode(audioInputEnabled, key: "inputEnabled", into: &audio)
+                Self.encode(audioOutputEnabled, key: "outputEnabled", into: &audio)
+                result["audio"] = audio as NSDictionary
+            }
+        }
         return result as NSDictionary
     }
 
@@ -594,6 +655,9 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
             throw DoryMachineTypedWriteAuthorityError.unsupportedByLegacyRuntime(
                 "networkMode"
             )
+        }
+        guard !audioInputEnabled.isChanged, !audioOutputEnabled.isChanged else {
+            throw DoryMachineTypedWriteAuthorityError.unsupportedByLegacyRuntime("audio")
         }
         return environment
     }
@@ -674,6 +738,23 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
             definition.networkMode = .sharedNAT
         case let .set(mode):
             definition.networkMode = mode
+        }
+        if audioInputEnabled.isChanged || audioOutputEnabled.isChanged {
+            var audio = definition.audio
+            let defaults = displayMode == .desktop
+                ? DoryVMAudioConfiguration(inputEnabled: true, outputEnabled: true)
+                : DoryVMAudioConfiguration(inputEnabled: false, outputEnabled: false)
+            Self.apply(
+                audioInputEnabled,
+                to: &audio.inputEnabled,
+                clearValue: defaults.inputEnabled
+            )
+            Self.apply(
+                audioOutputEnabled,
+                to: &audio.outputEnabled,
+                clearValue: defaults.outputEnabled
+            )
+            definition.audio = audio
         }
         let issues = definition.validate()
         guard issues.isEmpty else {
@@ -814,6 +895,34 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
         return .set(DoryVMClipboardPolicy(text: text, image: image, files: files))
     }
 
+    private mutating func decodeAudio(_ raw: Any, allowsClears: Bool) throws {
+        if raw is NSNull {
+            guard allowsClears else {
+                throw DoryMachineTypedWriteAuthorityError.invalidField("audio")
+            }
+            audioInputEnabled = .clear
+            audioOutputEnabled = .clear
+            return
+        }
+        guard let dictionary = Self.dictionary(raw),
+              Self.hasOnlyKeys(dictionary, allowed: ["inputEnabled", "outputEnabled"]),
+              dictionary.count > 0 else {
+            throw DoryMachineTypedWriteAuthorityError.invalidField("audio")
+        }
+        audioInputEnabled = try Self.decodeBool(
+            dictionary,
+            key: "inputEnabled",
+            field: "audio.inputEnabled",
+            allowsClears: allowsClears
+        )
+        audioOutputEnabled = try Self.decodeBool(
+            dictionary,
+            key: "outputEnabled",
+            field: "audio.outputEnabled",
+            allowsClears: allowsClears
+        )
+    }
+
     private func validate(displayMode: DoryMachineDisplayMode) throws {
         if case let .set(value) = guestUsername,
            !DoryVMGuestAccountIntent.isValidUsername(value) {
@@ -874,6 +983,10 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
                 "desktopRuntimePreference"
             )
         }
+        if (audioInputEnabled.isChanged || audioOutputEnabled.isChanged),
+           displayMode != .desktop {
+            throw DoryMachineTypedWriteAuthorityError.unsupportedForDisplay("audio")
+        }
     }
 
     private static func dictionary(_ raw: Any) -> NSDictionary? {
@@ -893,6 +1006,21 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
             value = replacement
         case .clear:
             value = nil
+        }
+    }
+
+    private static func apply<Value: Sendable & Equatable>(
+        _ update: DoryMachineTypedSettingUpdate<Value>,
+        to value: inout Value,
+        clearValue: Value
+    ) {
+        switch update {
+        case .unchanged:
+            break
+        case let .set(replacement):
+            value = replacement
+        case .clear:
+            value = clearValue
         }
     }
 
@@ -950,6 +1078,26 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
         return .set(value)
     }
 
+    private static func decodeBool(
+        _ dictionary: NSDictionary,
+        key: String,
+        field: String,
+        allowsClears: Bool
+    ) throws -> DoryMachineTypedSettingUpdate<Bool> {
+        guard let raw = dictionary[key] else { return .unchanged }
+        if raw is NSNull {
+            guard allowsClears else {
+                throw DoryMachineTypedWriteAuthorityError.invalidField(field)
+            }
+            return .clear
+        }
+        guard let number = raw as? NSNumber,
+              CFGetTypeID(number) == CFBooleanGetTypeID() else {
+            throw DoryMachineTypedWriteAuthorityError.invalidField(field)
+        }
+        return .set(number.boolValue)
+    }
+
     private static func direction(_ raw: Any?) -> DoryVMClipboardDirection? {
         guard let raw = raw as? String else { return nil }
         return DoryVMClipboardDirection(rawValue: raw)
@@ -997,6 +1145,14 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
         let value = arguments[index + 1]
         arguments.removeSubrange(index...(index + 1))
         return value
+    }
+
+    private static func cliBoolean(_ raw: String, option: String) throws -> Bool {
+        switch raw {
+        case "on": true
+        case "off": false
+        default: throw DoryMachineTypedWriteAuthorityError.invalidField(option)
+        }
     }
 
     private static func takeFlag(_ name: String, from arguments: inout [String]) -> Bool {

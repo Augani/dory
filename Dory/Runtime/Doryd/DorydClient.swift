@@ -123,19 +123,22 @@ nonisolated struct DorydMachineTypedSettings: Sendable, Equatable, Hashable {
     var runtimePreference: DoryDesktopVMMPreference? = nil
     var graphicsPreference: DoryDesktopGraphicsPreference? = nil
     var networkMode: DoryVMNetworkMode? = nil
+    var audioConfiguration: DoryVMAudioConfiguration? = nil
 
     init(
         guestIdentityIntent: DoryVMGuestIdentityIntent = .unspecified,
         clipboardPolicy: DoryVMClipboardPolicy? = nil,
         runtimePreference: DoryDesktopVMMPreference? = nil,
         graphicsPreference: DoryDesktopGraphicsPreference? = nil,
-        networkMode: DoryVMNetworkMode? = nil
+        networkMode: DoryVMNetworkMode? = nil,
+        audioConfiguration: DoryVMAudioConfiguration? = nil
     ) {
         self.guestIdentityIntent = guestIdentityIntent
         self.clipboardPolicy = clipboardPolicy
         self.runtimePreference = runtimePreference
         self.graphicsPreference = graphicsPreference
         self.networkMode = networkMode
+        self.audioConfiguration = audioConfiguration
     }
 
     init(legacyEnvironment: [String: String], displayMode: MachineDisplayMode) {
@@ -189,10 +192,15 @@ nonisolated struct DorydMachineTypedSettings: Sendable, Equatable, Hashable {
             graphicsPreference = (try? DoryDesktopGraphicsPreference(
                 environment: legacyEnvironment
             )) ?? .automatic
+            audioConfiguration = DoryVMAudioConfiguration(
+                inputEnabled: true,
+                outputEnabled: true
+            )
         } else {
             clipboardPolicy = nil
             runtimePreference = nil
             graphicsPreference = nil
+            audioConfiguration = nil
         }
     }
 
@@ -202,6 +210,7 @@ nonisolated struct DorydMachineTypedSettings: Sendable, Equatable, Hashable {
             && runtimePreference == nil
             && graphicsPreference == nil
             && networkMode == nil
+            && audioConfiguration == nil
     }
 
     var xpcDictionary: NSDictionary {
@@ -244,6 +253,12 @@ nonisolated struct DorydMachineTypedSettings: Sendable, Equatable, Hashable {
         if let networkMode {
             result["networkMode"] = networkMode.rawValue
         }
+        if let audioConfiguration {
+            result["audio"] = [
+                "inputEnabled": audioConfiguration.inputEnabled,
+                "outputEnabled": audioConfiguration.outputEnabled,
+            ] as NSDictionary
+        }
         return result as NSDictionary
     }
 
@@ -260,6 +275,8 @@ nonisolated struct DorydMachineTypedSettings: Sendable, Equatable, Hashable {
         hasher.combine(runtimePreference?.rawValue)
         hasher.combine(graphicsPreference?.rawValue)
         hasher.combine(networkMode?.rawValue)
+        hasher.combine(audioConfiguration?.inputEnabled)
+        hasher.combine(audioConfiguration?.outputEnabled)
     }
 }
 
@@ -341,6 +358,11 @@ nonisolated struct DorydMachineTypedSettingsPatch: Sendable, Equatable {
             key: "networkMode",
             into: &result
         )
+        Self.encodeAudio(
+            baseline.audioConfiguration,
+            desired.audioConfiguration,
+            into: &result
+        )
         return result as NSDictionary
     }
 
@@ -379,6 +401,26 @@ nonisolated struct DorydMachineTypedSettingsPatch: Sendable, Equatable {
     ) where Value.RawValue == String {
         guard baseline != desired else { return }
         dictionary[key] = desired?.rawValue ?? NSNull()
+    }
+
+    private static func encodeAudio(
+        _ baseline: DoryVMAudioConfiguration?,
+        _ desired: DoryVMAudioConfiguration?,
+        into dictionary: inout [String: Any]
+    ) {
+        guard baseline != desired else { return }
+        guard let desired else {
+            dictionary["audio"] = NSNull()
+            return
+        }
+        var audio: [String: Any] = [:]
+        if baseline?.inputEnabled != desired.inputEnabled {
+            audio["inputEnabled"] = desired.inputEnabled
+        }
+        if baseline?.outputEnabled != desired.outputEnabled {
+            audio["outputEnabled"] = desired.outputEnabled
+        }
+        dictionary["audio"] = audio as NSDictionary
     }
 }
 
@@ -3332,7 +3374,7 @@ nonisolated final class DorydClient: @unchecked Sendable {
               let keys = value.allKeys as? [String],
               Set(keys).isSubset(of: [
                 "guestIdentityIntent", "clipboardPolicy",
-                "desktopRuntimePreference", "desktopGraphicsPreference", "networkMode",
+                "desktopRuntimePreference", "desktopGraphicsPreference", "networkMode", "audio",
               ]), keys.count == Set(keys).count else {
             return nil
         }
@@ -3439,12 +3481,28 @@ nonisolated final class DorydClient: @unchecked Sendable {
                   let parsed = DoryVMNetworkMode(rawValue: raw) else { return nil }
             networkMode = parsed
         } else { networkMode = nil }
+        let audioConfiguration: DoryVMAudioConfiguration?
+        if let encoded = value["audio"] {
+            guard let raw = encoded as? NSDictionary,
+                  let rawKeys = raw.allKeys as? [String],
+                  Set(rawKeys) == ["inputEnabled", "outputEnabled"],
+                  rawKeys.count == 2,
+                  let input = raw["inputEnabled"] as? NSNumber,
+                  CFGetTypeID(input) == CFBooleanGetTypeID(),
+                  let output = raw["outputEnabled"] as? NSNumber,
+                  CFGetTypeID(output) == CFBooleanGetTypeID() else { return nil }
+            audioConfiguration = DoryVMAudioConfiguration(
+                inputEnabled: input.boolValue,
+                outputEnabled: output.boolValue
+            )
+        } else { audioConfiguration = nil }
         return ParsedMachineTypedSettings(value: DorydMachineTypedSettings(
             guestIdentityIntent: identity,
             clipboardPolicy: clipboard,
             runtimePreference: runtime,
             graphicsPreference: graphics,
-            networkMode: networkMode
+            networkMode: networkMode,
+            audioConfiguration: audioConfiguration
         ))
     }
 

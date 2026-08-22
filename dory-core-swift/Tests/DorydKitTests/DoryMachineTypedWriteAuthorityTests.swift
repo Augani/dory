@@ -17,7 +17,9 @@ struct DoryMachineTypedWriteAuthorityTests {
             clipboardPolicy: .set(.legacyDesktop(.hostToGuest)),
             runtimePreference: .set(.accelerated),
             graphicsPreference: .set(.virglVenus),
-            networkMode: .set(.disconnected)
+            networkMode: .set(.disconnected),
+            audioInputEnabled: .set(false),
+            audioOutputEnabled: .set(true)
         )
 
         let wire = source.xpcDictionary
@@ -95,6 +97,10 @@ struct DoryMachineTypedWriteAuthorityTests {
         #expect(snapshot.runtimePreference == .accelerated)
         #expect(snapshot.graphicsPreference == .virglVenus)
         #expect(snapshot.networkMode == .sharedNAT)
+        #expect(snapshot.audioConfiguration == DoryVMAudioConfiguration(
+            inputEnabled: true,
+            outputEnabled: true
+        ))
         #expect(snapshot.xpcDictionary.description.contains("must-never-cross-xpc") == false)
 
         let invalid = DoryMachineTypedSettingsSnapshot(
@@ -113,11 +119,13 @@ struct DoryMachineTypedWriteAuthorityTests {
                 as? [String: Any]
         )
         historical.removeValue(forKey: "networkMode")
+        historical.removeValue(forKey: "audioConfiguration")
         let decoded = try JSONDecoder().decode(
             DoryMachineTypedSettingsSnapshot.self,
             from: JSONSerialization.data(withJSONObject: historical)
         )
         #expect(decoded.networkMode == .sharedNAT)
+        #expect(decoded.audioConfiguration == nil)
     }
 
     @Test("update clear is explicit and field scoped")
@@ -187,6 +195,7 @@ struct DoryMachineTypedWriteAuthorityTests {
 
         #expect(snapshot.runtimePreference == nil)
         #expect(snapshot.graphicsPreference == nil)
+        #expect(snapshot.audioConfiguration == nil)
         #expect(restored.backendPreference == migration.definition.backendPreference)
         #expect(restored.graphics == migration.definition.graphics)
         #expect(restored.clipboardPolicy == migration.definition.clipboardPolicy)
@@ -292,6 +301,17 @@ struct DoryMachineTypedWriteAuthorityTests {
             to: migrated.definition,
             displayMode: .desktop
         ).networkMode == .disconnected)
+
+        let audio = DoryMachineTypedSettingsPatch(audioInputEnabled: .set(false))
+        #expect(throws: DoryMachineTypedWriteAuthorityError.unsupportedByLegacyRuntime(
+            "audio"
+        )) {
+            try audio.applying(to: [:], displayMode: .desktop)
+        }
+        #expect(try audio.applying(
+            to: migrated.definition,
+            displayMode: .desktop
+        ).audio == DoryVMAudioConfiguration(inputEnabled: false, outputEnabled: true))
     }
 
     @Test("clipboard wire shape is complete and exact")
@@ -326,6 +346,44 @@ struct DoryMachineTypedWriteAuthorityTests {
         }
     }
 
+    @Test("audio wire shape is strict, leaf-scoped, and resets explicitly")
+    func exactAudioWireShape() throws {
+        let patch = try DoryMachineTypedSettingsPatch(
+            xpcDictionary: ["audio": ["inputEnabled": false]],
+            allowsClears: true
+        )
+        #expect(patch.audioInputEnabled == .set(false))
+        #expect(patch.audioOutputEnabled == .unchanged)
+        #expect((patch.xpcDictionary["audio"] as? NSDictionary)?["inputEnabled"] as? Bool == false)
+
+        for raw: Any in [
+            ["inputEnabled": 0],
+            ["outputEnabled": "true"],
+            ["inputEnabled": true, "secret": "opaque"],
+            [:],
+        ] {
+            #expect(throws: (any Error).self) {
+                try DoryMachineTypedSettingsPatch(
+                    xpcDictionary: ["audio": raw],
+                    allowsClears: true
+                )
+            }
+        }
+        #expect(throws: DoryMachineTypedWriteAuthorityError.invalidField("audio")) {
+            try DoryMachineTypedSettingsPatch(
+                xpcDictionary: ["audio": NSNull()],
+                allowsClears: false
+            )
+        }
+
+        let reset = try DoryMachineTypedSettingsPatch(
+            xpcDictionary: ["audio": NSNull()],
+            allowsClears: true
+        )
+        #expect(reset.audioInputEnabled == .clear)
+        #expect(reset.audioOutputEnabled == .clear)
+    }
+
     @Test("CLI consumes typed persistence options and leaves raw env unconsumed")
     func cliTypedOptions() throws {
         var arguments = [
@@ -340,6 +398,8 @@ struct DoryMachineTypedWriteAuthorityTests {
             "--runtime", "compatible",
             "--graphics", "software",
             "--network", "disconnected",
+            "--audio-input", "off",
+            "--audio-output", "on",
             "--env", "TOKEN=secret",
         ]
 
@@ -355,6 +415,8 @@ struct DoryMachineTypedWriteAuthorityTests {
         #expect(patch.runtimePreference == .set(.compatible))
         #expect(patch.graphicsPreference == .set(.software))
         #expect(patch.networkMode == .set(.disconnected))
+        #expect(patch.audioInputEnabled == .set(false))
+        #expect(patch.audioOutputEnabled == .set(true))
         #expect(arguments == ["--memory-mb", "4096", "--env", "TOKEN=secret"])
         #expect(patch.xpcDictionary["env"] == nil)
     }
@@ -380,6 +442,7 @@ struct DoryMachineTypedWriteAuthorityTests {
             "--clear-runtime",
             "--clear-graphics",
             "--clear-network",
+            "--clear-audio",
         ]
         let patch = try DoryMachineTypedSettingsPatch.consumeCLIArguments(
             &clearing,
@@ -394,6 +457,8 @@ struct DoryMachineTypedWriteAuthorityTests {
         #expect(patch.runtimePreference == .clear)
         #expect(patch.graphicsPreference == .clear)
         #expect(patch.networkMode == .clear)
+        #expect(patch.audioInputEnabled == .clear)
+        #expect(patch.audioOutputEnabled == .clear)
 
         var createClear = ["--clear-clipboard"]
         #expect(throws: DoryMachineTypedWriteAuthorityError.invalidField("clear options")) {
