@@ -394,6 +394,7 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
 
     @Test("activated production graph publishes a headless create plan through XPC authority")
     func activatedGraphPlansHeadlessCreate() throws {
+        try withProductionIntegrationTestStack {
         let fixture = try ProductionTrustFixture()
         defer { fixture.cleanup() }
         guard case let .activated(context) = fixture.factory.activate(
@@ -481,6 +482,7 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
         #expect(try context.planning.resourceLedger.snapshot().leases.contains {
             $0.binding.machineID == "qualified-headless"
         } == false)
+        }
     }
 
     @Test("trust-floor failure exposes no manager and a fresh activation can retry")
@@ -668,6 +670,51 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
 
 private enum ProductionTrustFixtureError: Error {
     case runtimeRejected
+    case integrationTestDidNotComplete
+}
+
+private final class ProductionIntegrationTestCompletion: @unchecked Sendable {
+    private let lock = NSLock()
+    private let semaphore = DispatchSemaphore(value: 0)
+    private var result: Result<Void, Error>?
+
+    func finish(_ result: Result<Void, Error>) {
+        lock.lock()
+        self.result = result
+        lock.unlock()
+        semaphore.signal()
+    }
+
+    func wait() throws {
+        semaphore.wait()
+        lock.lock()
+        let result = self.result
+        lock.unlock()
+        guard let result else {
+            throw ProductionTrustFixtureError.integrationTestDidNotComplete
+        }
+        try result.get()
+    }
+}
+
+/// Swift Testing runs synchronous cases on a bounded cooperative stack. This end-to-end case
+/// deliberately nests the complete production planning and lifecycle transaction, whose Debug
+/// frames exceed that test-only stack even though normal daemon threads and release builds do not.
+private func withProductionIntegrationTestStack(
+    _ operation: @escaping @Sendable () throws -> Void
+) throws {
+    let completion = ProductionIntegrationTestCompletion()
+    let thread = Thread {
+        do {
+            try operation()
+            completion.finish(.success(()))
+        } catch {
+            completion.finish(.failure(error))
+        }
+    }
+    thread.stackSize = 8 * 1_024 * 1_024
+    thread.start()
+    try completion.wait()
 }
 
 private final class LockedPlanningCreateReply: @unchecked Sendable {

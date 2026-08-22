@@ -452,7 +452,12 @@ public final class DoryVirtualMachineArtifactAuthority: @unchecked Sendable {
                     throw DoryVirtualMachineArtifactAuthorityError.artifactChanged
                 }
                 if count == 0 { break }
-                hasher.update(data: Data(buffer.prefix(count)))
+                buffer.withUnsafeBytes { bytes in
+                    hasher.update(bufferPointer: UnsafeRawBufferPointer(
+                        start: bytes.baseAddress,
+                        count: count
+                    ))
+                }
                 if !reportedProgress {
                     reportedProgress = true
                     try progressInjector?(.firstChunkHashed(path: path))
