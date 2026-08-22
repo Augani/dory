@@ -476,6 +476,7 @@ struct DorydClientTests {
         #expect(defaults.graphicsPreference == .automatic)
         #expect(defaults.networkMode == .sharedNAT)
         #expect(defaults.portForwards.isEmpty)
+        #expect(defaults.intelApplicationTranslationEnabled == nil)
 
         var disconnected = defaults
         disconnected.networkMode = .disconnected
@@ -513,6 +514,15 @@ struct DorydClientTests {
         #expect(audio.count == 1)
         #expect(audio["inputEnabled"] as? Bool == false)
         #expect(audio["outputEnabled"] == nil)
+
+        var translationEnabled = defaults
+        translationEnabled.intelApplicationTranslationEnabled = true
+        let translationWire = DorydMachineTypedSettingsPatch(
+            baseline: defaults,
+            desired: translationEnabled
+        ).xpcDictionary
+        #expect(translationWire.count == 1)
+        #expect(translationWire["intelApplicationTranslationEnabled"] as? Bool == true)
 
         for (legacy, expected) in [("1", DoryDesktopGraphicsPreference.virgl),
                                    ("0", DoryDesktopGraphicsPreference.virglVenus)] {
@@ -699,6 +709,7 @@ struct DorydClientTests {
                 "inputEnabled": false,
                 "outputEnabled": true,
             ] as NSDictionary,
+            "intelApplicationTranslationEnabled": true,
         ])
         let delegate = FakeDorydListenerDelegate(service: service)
         listener.delegate = delegate
@@ -721,6 +732,7 @@ struct DorydClientTests {
             inputEnabled: false,
             outputEnabled: true
         ))
+        #expect(status.typedSettings?.intelApplicationTranslationEnabled == true)
 
         service.setMachineTypedSettings("dev", ["unknown": "claim"])
         await #expect(throws: (any Error).self) {
@@ -729,6 +741,7 @@ struct DorydClientTests {
 
         for malformed: NSDictionary in [
             ["audio": ["inputEnabled": 0, "outputEnabled": true]],
+            ["intelApplicationTranslationEnabled": 1],
             ["audio": ["inputEnabled": true]],
             ["portForwards": [[
                 "id": "web", "transport": "tcp", "hostPort": 443,

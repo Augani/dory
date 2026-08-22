@@ -125,6 +125,7 @@ nonisolated struct DorydMachineTypedSettings: Sendable, Equatable, Hashable {
     var networkMode: DoryVMNetworkMode? = nil
     var portForwards: [DoryVMPortForward] = []
     var audioConfiguration: DoryVMAudioConfiguration? = nil
+    var intelApplicationTranslationEnabled: Bool? = nil
 
     init(
         guestIdentityIntent: DoryVMGuestIdentityIntent = .unspecified,
@@ -133,7 +134,8 @@ nonisolated struct DorydMachineTypedSettings: Sendable, Equatable, Hashable {
         graphicsPreference: DoryDesktopGraphicsPreference? = nil,
         networkMode: DoryVMNetworkMode? = nil,
         portForwards: [DoryVMPortForward] = [],
-        audioConfiguration: DoryVMAudioConfiguration? = nil
+        audioConfiguration: DoryVMAudioConfiguration? = nil,
+        intelApplicationTranslationEnabled: Bool? = nil
     ) {
         self.guestIdentityIntent = guestIdentityIntent
         self.clipboardPolicy = clipboardPolicy
@@ -142,6 +144,7 @@ nonisolated struct DorydMachineTypedSettings: Sendable, Equatable, Hashable {
         self.networkMode = networkMode
         self.portForwards = portForwards
         self.audioConfiguration = audioConfiguration
+        self.intelApplicationTranslationEnabled = intelApplicationTranslationEnabled
     }
 
     init(legacyEnvironment: [String: String], displayMode: MachineDisplayMode) {
@@ -183,6 +186,7 @@ nonisolated struct DorydMachineTypedSettings: Sendable, Equatable, Hashable {
         )
         networkMode = .sharedNAT
         portForwards = []
+        intelApplicationTranslationEnabled = nil
         if displayMode == .desktop {
             let effectiveClipboard = DoryDesktopClipboardPolicy(
                 environment: legacyEnvironment
@@ -216,6 +220,7 @@ nonisolated struct DorydMachineTypedSettings: Sendable, Equatable, Hashable {
             && networkMode == nil
             && portForwards.isEmpty
             && audioConfiguration == nil
+            && intelApplicationTranslationEnabled == nil
     }
 
     var xpcDictionary: NSDictionary {
@@ -267,6 +272,9 @@ nonisolated struct DorydMachineTypedSettings: Sendable, Equatable, Hashable {
                 "outputEnabled": audioConfiguration.outputEnabled,
             ] as NSDictionary
         }
+        if let intelApplicationTranslationEnabled {
+            result["intelApplicationTranslationEnabled"] = intelApplicationTranslationEnabled
+        }
         return result as NSDictionary
     }
 
@@ -286,6 +294,7 @@ nonisolated struct DorydMachineTypedSettings: Sendable, Equatable, Hashable {
         hasher.combine(portForwards)
         hasher.combine(audioConfiguration?.inputEnabled)
         hasher.combine(audioConfiguration?.outputEnabled)
+        hasher.combine(intelApplicationTranslationEnabled)
     }
 
     fileprivate static func xpcPortForwards(_ forwards: [DoryVMPortForward]) -> NSArray {
@@ -387,6 +396,12 @@ nonisolated struct DorydMachineTypedSettingsPatch: Sendable, Equatable {
         Self.encodeAudio(
             baseline.audioConfiguration,
             desired.audioConfiguration,
+            into: &result
+        )
+        Self.encode(
+            baseline.intelApplicationTranslationEnabled,
+            desired.intelApplicationTranslationEnabled,
+            key: "intelApplicationTranslationEnabled",
             into: &result
         )
         return result as NSDictionary
@@ -3455,7 +3470,7 @@ nonisolated final class DorydClient: @unchecked Sendable {
               Set(keys).isSubset(of: [
                 "guestIdentityIntent", "clipboardPolicy",
                 "desktopRuntimePreference", "desktopGraphicsPreference", "networkMode",
-                "portForwards", "audio",
+                "portForwards", "audio", "intelApplicationTranslationEnabled",
               ]), keys.count == Set(keys).count else {
             return nil
         }
@@ -3617,6 +3632,12 @@ nonisolated final class DorydClient: @unchecked Sendable {
                 outputEnabled: output.boolValue
             )
         } else { audioConfiguration = nil }
+        let intelApplicationTranslationEnabled: Bool?
+        if let encoded = value["intelApplicationTranslationEnabled"] {
+            guard let number = encoded as? NSNumber,
+                  CFGetTypeID(number) == CFBooleanGetTypeID() else { return nil }
+            intelApplicationTranslationEnabled = number.boolValue
+        } else { intelApplicationTranslationEnabled = nil }
         return ParsedMachineTypedSettings(value: DorydMachineTypedSettings(
             guestIdentityIntent: identity,
             clipboardPolicy: clipboard,
@@ -3624,7 +3645,8 @@ nonisolated final class DorydClient: @unchecked Sendable {
             graphicsPreference: graphics,
             networkMode: networkMode,
             portForwards: portForwards,
-            audioConfiguration: audioConfiguration
+            audioConfiguration: audioConfiguration,
+            intelApplicationTranslationEnabled: intelApplicationTranslationEnabled
         ))
     }
 

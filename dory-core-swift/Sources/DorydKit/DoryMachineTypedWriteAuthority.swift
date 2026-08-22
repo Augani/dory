@@ -41,6 +41,7 @@ public struct DoryMachineTypedSettingsSnapshot: Codable, Sendable, Equatable, Ha
     public var networkMode: DoryVMNetworkMode
     public var portForwards: [DoryVMPortForward]
     public var audioConfiguration: DoryVMAudioConfiguration?
+    public var intelApplicationTranslationEnabled: Bool?
 
     private enum CodingKeys: String, CodingKey {
         case guestIdentityIntent
@@ -50,6 +51,7 @@ public struct DoryMachineTypedSettingsSnapshot: Codable, Sendable, Equatable, Ha
         case networkMode
         case portForwards
         case audioConfiguration
+        case intelApplicationTranslationEnabled
     }
 
     public init(from decoder: Decoder) throws {
@@ -82,6 +84,10 @@ public struct DoryMachineTypedSettingsSnapshot: Codable, Sendable, Equatable, Ha
             DoryVMAudioConfiguration.self,
             forKey: .audioConfiguration
         )
+        intelApplicationTranslationEnabled = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .intelApplicationTranslationEnabled
+        )
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -93,12 +99,19 @@ public struct DoryMachineTypedSettingsSnapshot: Codable, Sendable, Equatable, Ha
         try container.encode(networkMode, forKey: .networkMode)
         try container.encode(portForwards, forKey: .portForwards)
         try container.encodeIfPresent(audioConfiguration, forKey: .audioConfiguration)
+        try container.encodeIfPresent(
+            intelApplicationTranslationEnabled,
+            forKey: .intelApplicationTranslationEnabled
+        )
     }
 
     public init(definition: DoryVirtualMachineDefinition) throws {
         guestIdentityIntent = definition.guestIdentityIntent
         networkMode = definition.networkMode
         portForwards = definition.portForwards
+        intelApplicationTranslationEnabled = definition.integrations.contains(
+            .intelApplicationTranslation
+        )
         guard definition.display.enabled else {
             clipboardPolicy = nil
             runtimePreference = nil
@@ -189,6 +202,7 @@ public struct DoryMachineTypedSettingsSnapshot: Codable, Sendable, Equatable, Ha
         )
         networkMode = .sharedNAT
         portForwards = []
+        intelApplicationTranslationEnabled = nil
         if displayMode == .desktop {
             let clipboard = DoryDesktopClipboardPolicy(environment: legacyEnvironment)
             clipboardPolicy = DoryVMClipboardDirection(rawValue: clipboard.rawValue)
@@ -232,7 +246,10 @@ public struct DoryMachineTypedSettingsSnapshot: Codable, Sendable, Equatable, Ha
             networkMode: .set(networkMode),
             portForwards: .set(portForwards),
             audioInputEnabled: update(audioConfiguration?.inputEnabled),
-            audioOutputEnabled: update(audioConfiguration?.outputEnabled)
+            audioOutputEnabled: update(audioConfiguration?.outputEnabled),
+            intelApplicationTranslationEnabled: update(
+                intelApplicationTranslationEnabled
+            )
         ).xpcDictionary
     }
 
@@ -264,7 +281,10 @@ public struct DoryMachineTypedSettingsSnapshot: Codable, Sendable, Equatable, Ha
             networkMode: .set(networkMode),
             portForwards: .set(portForwards),
             audioInputEnabled: update(audioConfiguration?.inputEnabled),
-            audioOutputEnabled: update(audioConfiguration?.outputEnabled)
+            audioOutputEnabled: update(audioConfiguration?.outputEnabled),
+            intelApplicationTranslationEnabled: update(
+                intelApplicationTranslationEnabled
+            )
         )
     }
 
@@ -284,6 +304,7 @@ public struct DoryMachineTypedSettingsSnapshot: Codable, Sendable, Equatable, Ha
         hasher.combine(portForwards)
         hasher.combine(audioConfiguration?.inputEnabled)
         hasher.combine(audioConfiguration?.outputEnabled)
+        hasher.combine(intelApplicationTranslationEnabled)
     }
 
     private func update<Value: Sendable & Equatable>(
@@ -318,6 +339,7 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
     public var portForwards: DoryMachineTypedSettingUpdate<[DoryVMPortForward]>
     public var audioInputEnabled: DoryMachineTypedSettingUpdate<Bool>
     public var audioOutputEnabled: DoryMachineTypedSettingUpdate<Bool>
+    public var intelApplicationTranslationEnabled: DoryMachineTypedSettingUpdate<Bool>
 
     public init(
         guestUsername: DoryMachineTypedSettingUpdate<String> = .unchanged,
@@ -332,7 +354,8 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
         networkMode: DoryMachineTypedSettingUpdate<DoryVMNetworkMode> = .unchanged,
         portForwards: DoryMachineTypedSettingUpdate<[DoryVMPortForward]> = .unchanged,
         audioInputEnabled: DoryMachineTypedSettingUpdate<Bool> = .unchanged,
-        audioOutputEnabled: DoryMachineTypedSettingUpdate<Bool> = .unchanged
+        audioOutputEnabled: DoryMachineTypedSettingUpdate<Bool> = .unchanged,
+        intelApplicationTranslationEnabled: DoryMachineTypedSettingUpdate<Bool> = .unchanged
     ) {
         self.guestUsername = guestUsername
         self.guestNumericUserID = guestNumericUserID
@@ -347,6 +370,7 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
         self.portForwards = portForwards
         self.audioInputEnabled = audioInputEnabled
         self.audioOutputEnabled = audioOutputEnabled
+        self.intelApplicationTranslationEnabled = intelApplicationTranslationEnabled
     }
 
     public var isEmpty: Bool {
@@ -363,6 +387,7 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
             && !portForwards.isChanged
             && !audioInputEnabled.isChanged
             && !audioOutputEnabled.isChanged
+            && !intelApplicationTranslationEnabled.isChanged
     }
 
     /// Consume the typed persistent-machine options shared by dorydctl create and update. Other
@@ -442,6 +467,12 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
         if let raw = try takeOption("--audio-output", from: &arguments) {
             patch.audioOutputEnabled = .set(try cliBoolean(raw, option: "--audio-output"))
         }
+        if let raw = try takeOption("--intel-application-translation", from: &arguments) {
+            patch.intelApplicationTranslationEnabled = .set(try cliBoolean(
+                raw,
+                option: "--intel-application-translation"
+            ))
+        }
 
         let clearsAccount = takeFlag("--clear-guest-account", from: &arguments)
         let clearsDesktop = takeFlag("--clear-desktop-identity", from: &arguments)
@@ -451,9 +482,14 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
         let clearsNetwork = takeFlag("--clear-network", from: &arguments)
         let clearsPortForwards = takeFlag("--clear-forwards", from: &arguments)
         let clearsAudio = takeFlag("--clear-audio", from: &arguments)
+        let clearsIntelApplicationTranslation = takeFlag(
+            "--clear-intel-application-translation",
+            from: &arguments
+        )
         guard allowsClears || (!clearsAccount && !clearsDesktop && !clearsClipboard
             && !clearsRuntime && !clearsGraphics && !clearsNetwork
-            && !clearsPortForwards && !clearsAudio) else {
+            && !clearsPortForwards && !clearsAudio
+            && !clearsIntelApplicationTranslation) else {
             throw DoryMachineTypedWriteAuthorityError.invalidField("clear options")
         }
         if clearsAccount {
@@ -517,6 +553,14 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
             patch.audioInputEnabled = .clear
             patch.audioOutputEnabled = .clear
         }
+        if clearsIntelApplicationTranslation {
+            guard !patch.intelApplicationTranslationEnabled.isChanged else {
+                throw DoryMachineTypedWriteAuthorityError.invalidField(
+                    "--clear-intel-application-translation"
+                )
+            }
+            patch.intelApplicationTranslationEnabled = .clear
+        }
         return patch
     }
 
@@ -563,6 +607,12 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
         if let rawAudio = dictionary["audio"] {
             try decodeAudio(rawAudio, allowsClears: allowsClears)
         }
+        intelApplicationTranslationEnabled = try Self.decodeBool(
+            dictionary,
+            key: "intelApplicationTranslationEnabled",
+            field: "intelApplicationTranslationEnabled",
+            allowsClears: allowsClears
+        )
     }
 
     /// Canonical XPC representation used by dorydctl and future typed clients.
@@ -628,6 +678,11 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
                 result["audio"] = audio as NSDictionary
             }
         }
+        Self.encode(
+            intelApplicationTranslationEnabled,
+            key: "intelApplicationTranslationEnabled",
+            into: &result
+        )
         return result as NSDictionary
     }
 
@@ -708,6 +763,11 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
         }
         guard !audioInputEnabled.isChanged, !audioOutputEnabled.isChanged else {
             throw DoryMachineTypedWriteAuthorityError.unsupportedByLegacyRuntime("audio")
+        }
+        guard !intelApplicationTranslationEnabled.isChanged else {
+            throw DoryMachineTypedWriteAuthorityError.unsupportedByLegacyRuntime(
+                "intelApplicationTranslationEnabled"
+            )
         }
         return environment
     }
@@ -813,6 +873,16 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
                 clearValue: defaults.outputEnabled
             )
             definition.audio = audio
+        }
+        switch intelApplicationTranslationEnabled {
+        case .unchanged:
+            break
+        case .clear, .set(false):
+            definition.integrations.removeAll { $0 == .intelApplicationTranslation }
+        case .set(true):
+            if !definition.integrations.contains(.intelApplicationTranslation) {
+                definition.integrations.append(.intelApplicationTranslation)
+            }
         }
         let issues = definition.validate()
         guard issues.isEmpty else {
@@ -1108,6 +1178,12 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
         if (audioInputEnabled.isChanged || audioOutputEnabled.isChanged),
            displayMode != .desktop {
             throw DoryMachineTypedWriteAuthorityError.unsupportedForDisplay("audio")
+        }
+        if case .set(true) = intelApplicationTranslationEnabled,
+           displayMode != .desktop {
+            throw DoryMachineTypedWriteAuthorityError.unsupportedForDisplay(
+                "intelApplicationTranslationEnabled"
+            )
         }
         if case let .set(forwards) = portForwards {
             try Self.validatePortForwards(forwards)

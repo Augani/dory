@@ -29,7 +29,8 @@ struct DoryMachineTypedWriteAuthorityTests {
                 ),
             ]),
             audioInputEnabled: .set(false),
-            audioOutputEnabled: .set(true)
+            audioOutputEnabled: .set(true),
+            intelApplicationTranslationEnabled: .set(true)
         )
 
         let wire = source.xpcDictionary
@@ -112,6 +113,7 @@ struct DoryMachineTypedWriteAuthorityTests {
             inputEnabled: true,
             outputEnabled: true
         ))
+        #expect(snapshot.intelApplicationTranslationEnabled == nil)
         #expect(snapshot.xpcDictionary.description.contains("must-never-cross-xpc") == false)
 
         let invalid = DoryMachineTypedSettingsSnapshot(
@@ -132,6 +134,7 @@ struct DoryMachineTypedWriteAuthorityTests {
         historical.removeValue(forKey: "networkMode")
         historical.removeValue(forKey: "audioConfiguration")
         historical.removeValue(forKey: "portForwards")
+        historical.removeValue(forKey: "intelApplicationTranslationEnabled")
         let decoded = try JSONDecoder().decode(
             DoryMachineTypedSettingsSnapshot.self,
             from: JSONSerialization.data(withJSONObject: historical)
@@ -139,6 +142,7 @@ struct DoryMachineTypedWriteAuthorityTests {
         #expect(decoded.networkMode == .sharedNAT)
         #expect(decoded.audioConfiguration == nil)
         #expect(decoded.portForwards.isEmpty)
+        #expect(decoded.intelApplicationTranslationEnabled == nil)
     }
 
     @Test("update clear is explicit and field scoped")
@@ -326,6 +330,34 @@ struct DoryMachineTypedWriteAuthorityTests {
             displayMode: .desktop
         ).audio == DoryVMAudioConfiguration(inputEnabled: false, outputEnabled: true))
 
+        let translation = DoryMachineTypedSettingsPatch(
+            intelApplicationTranslationEnabled: .set(true)
+        )
+        #expect(throws: DoryMachineTypedWriteAuthorityError.unsupportedByLegacyRuntime(
+            "intelApplicationTranslationEnabled"
+        )) {
+            try translation.applying(to: [:], displayMode: .desktop)
+        }
+        let translated = try translation.applying(
+            to: migrated.definition,
+            displayMode: .desktop
+        )
+        #expect(translated.integrations.contains(.intelApplicationTranslation))
+        #expect(try DoryMachineTypedSettingsSnapshot(
+            definition: translated
+        ).intelApplicationTranslationEnabled == true)
+        #expect(try DoryMachineTypedSettingsPatch(
+            intelApplicationTranslationEnabled: .set(false)
+        ).applying(
+            to: translated,
+            displayMode: .desktop
+        ).integrations.contains(.intelApplicationTranslation) == false)
+        #expect(throws: DoryMachineTypedWriteAuthorityError.unsupportedForDisplay(
+            "intelApplicationTranslationEnabled"
+        )) {
+            try translation.applying(to: migrated.definition, displayMode: .headless)
+        }
+
         let forwards = DoryMachineTypedSettingsPatch(portForwards: .set([
             DoryVMPortForward(id: "web", hostPort: 8_080, guestPort: 80),
         ]))
@@ -480,6 +512,7 @@ struct DoryMachineTypedWriteAuthorityTests {
             "--forward", "dns:udp:5353:53:lan",
             "--audio-input", "off",
             "--audio-output", "on",
+            "--intel-application-translation", "on",
             "--env", "TOKEN=secret",
         ]
 
@@ -507,6 +540,7 @@ struct DoryMachineTypedWriteAuthorityTests {
         ]))
         #expect(patch.audioInputEnabled == .set(false))
         #expect(patch.audioOutputEnabled == .set(true))
+        #expect(patch.intelApplicationTranslationEnabled == .set(true))
         #expect(arguments == ["--memory-mb", "4096", "--env", "TOKEN=secret"])
         #expect(patch.xpcDictionary["env"] == nil)
     }
@@ -534,6 +568,7 @@ struct DoryMachineTypedWriteAuthorityTests {
             "--clear-network",
             "--clear-forwards",
             "--clear-audio",
+            "--clear-intel-application-translation",
         ]
         let patch = try DoryMachineTypedSettingsPatch.consumeCLIArguments(
             &clearing,
@@ -551,6 +586,7 @@ struct DoryMachineTypedWriteAuthorityTests {
         #expect(patch.portForwards == .clear)
         #expect(patch.audioInputEnabled == .clear)
         #expect(patch.audioOutputEnabled == .clear)
+        #expect(patch.intelApplicationTranslationEnabled == .clear)
 
         var createClear = ["--clear-clipboard"]
         #expect(throws: DoryMachineTypedWriteAuthorityError.invalidField("clear options")) {
