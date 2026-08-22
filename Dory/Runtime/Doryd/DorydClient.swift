@@ -34,6 +34,7 @@ nonisolated protocol DorydControlXPC {
     func machineSerialConsoleWrite(_ machineID: String, data: NSData, reply: @escaping (Bool, String) -> Void)
     func machineStats(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineDeviceTelemetry(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
+    func hostUSBDevices(reply: @escaping (Bool, NSArray, String) -> Void)
     func machineUSBAttach(_ machineID: String, busID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineUSBDetach(_ machineID: String, busID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineExec(_ machineID: String, request: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void)
@@ -619,6 +620,24 @@ nonisolated struct DorydMachineUSBAttachment: Sendable, Equatable {
     var vsockPort: UInt32
     var deviceID: UInt32
     var speed: UInt32
+}
+
+nonisolated struct DorydHostUSBDevice: Sendable, Equatable, Identifiable {
+    var busID: String
+    var vendorID: UInt16
+    var productID: UInt16
+    var vendorName: String
+    var productName: String
+    var deviceClass: UInt8
+    var speed: UInt32
+
+    var id: String { busID }
+
+    var displayName: String {
+        if !productName.isEmpty { return productName }
+        if !vendorName.isEmpty { return vendorName }
+        return String(format: "%04x:%04x", vendorID, productID)
+    }
 }
 
 nonisolated private extension String {
@@ -2144,6 +2163,24 @@ nonisolated final class DorydClient: @unchecked Sendable {
         }
     }
 
+    func hostUSBDevices() async throws -> [DorydHostUSBDevice] {
+        try await call { proxy, finish in
+            proxy.hostUSBDevices { ok, rows, message in
+                guard ok else {
+                    finish(.failure(DorydClientError.daemon(message)))
+                    return
+                }
+                guard let devices = Self.hostUSBDevices(from: rows) else {
+                    finish(.failure(DorydClientError.daemon(
+                        message.isEmpty ? "invalid host USB device list" : message
+                    )))
+                    return
+                }
+                finish(.success(devices))
+            }
+        }
+    }
+
     func machineUSBDetach(_ machineID: String, busID: String) async throws {
         _ = try await withTimeout(atLeast: 30).statusCommand { proxy, reply in
             proxy.machineUSBDetach(machineID, busID: busID, reply: reply)
@@ -2831,6 +2868,73 @@ nonisolated final class DorydClient: @unchecked Sendable {
             deviceID: UInt32(deviceID),
             speed: UInt32(speed)
         )
+    }
+
+    nonisolated private static func hostUSBDevices(
+        from rows: NSArray
+    ) -> [DorydHostUSBDevice]? {
+        guard rows.count <= 256 else { return nil }
+        var devices: [DorydHostUSBDevice] = []
+        var busIDs = Set<String>()
+        for raw in rows {
+            guard let dictionary = raw as? NSDictionary,
+                  let device = hostUSBDevice(from: dictionary),
+                  busIDs.insert(device.busID).inserted else {
+                return nil
+            }
+            devices.append(device)
+        }
+        guard devices == devices.sorted(by: { $0.busID < $1.busID }) else { return nil }
+        return devices
+    }
+
+    nonisolated private static func hostUSBDevice(
+        from dictionary: NSDictionary
+    ) -> DorydHostUSBDevice? {
+        let expectedKeys: Set<String> = [
+            "busID", "vendorID", "productID", "vendorName", "productName", "deviceClass", "speed",
+        ]
+        guard let keys = dictionary.allKeys as? [String],
+              Set(keys) == expectedKeys,
+              keys.count == expectedKeys.count,
+              let busID = dictionary["busID"] as? String,
+              isValidUSBBusID(busID),
+              let vendorID = exactUnsignedInteger(dictionary["vendorID"], maximum: UInt64(UInt16.max)),
+              let productID = exactUnsignedInteger(dictionary["productID"], maximum: UInt64(UInt16.max)),
+              let vendorName = dictionary["vendorName"] as? String,
+              isValidUSBDisplayName(vendorName),
+              let productName = dictionary["productName"] as? String,
+              isValidUSBDisplayName(productName),
+              let deviceClass = exactUnsignedInteger(dictionary["deviceClass"], maximum: UInt64(UInt8.max)),
+              let speed = exactUnsignedInteger(dictionary["speed"], maximum: UInt64(UInt32.max)) else {
+            return nil
+        }
+        return DorydHostUSBDevice(
+            busID: busID,
+            vendorID: UInt16(vendorID),
+            productID: UInt16(productID),
+            vendorName: vendorName,
+            productName: productName,
+            deviceClass: UInt8(deviceClass),
+            speed: UInt32(speed)
+        )
+    }
+
+    nonisolated private static func isValidUSBBusID(_ value: String) -> Bool {
+        let bytes = Array(value.utf8)
+        guard (1..<32).contains(bytes.count),
+              bytes.first.map({ (48...57).contains($0) }) == true,
+              bytes.last.map({ (48...57).contains($0) }) == true else {
+            return false
+        }
+        return bytes.allSatisfy { (48...57).contains($0) || $0 == 45 || $0 == 46 }
+    }
+
+    nonisolated private static func isValidUSBDisplayName(_ value: String) -> Bool {
+        value.utf8.count <= 128
+            && value.unicodeScalars.allSatisfy {
+                !CharacterSet.controlCharacters.contains($0)
+            }
     }
 
     nonisolated private static func exactUnsignedInteger(

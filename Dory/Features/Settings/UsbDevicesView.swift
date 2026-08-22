@@ -2,7 +2,7 @@ import SwiftUI
 
 struct UsbDevicesView: View {
     @Environment(\.palette) private var p
-    @State private var devicesOutput = ""
+    @State private var hostDevices: [DorydHostUSBDevice] = []
     @State private var machine = UserDefaults.standard.string(forKey: "dev.dory.usb.lastMachine") ?? "default"
     @State private var busid = ""
     @State private var machines: [DorydMachineStatus] = []
@@ -26,12 +26,20 @@ struct UsbDevicesView: View {
                 }
 
                 ScrollView {
-                    Text(devicesOutput.isEmpty ? "No USB scan has run yet." : devicesOutput)
-                        .font(.system(size: 11.5, design: .monospaced))
-                        .foregroundStyle(devicesOutput.isEmpty ? p.text3 : p.text2)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(12)
+                    if hostDevices.isEmpty {
+                        Text("No attachable host USB devices found.")
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(p.text3)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(12)
+                    } else {
+                        LazyVStack(alignment: .leading, spacing: 0) {
+                            ForEach(hostDevices) { device in
+                                hostDeviceButton(device)
+                                if device.id != hostDevices.last?.id { Divider() }
+                            }
+                        }
+                    }
                 }
                 .frame(minHeight: 180, maxHeight: 280)
                 .background(p.bgInput, in: RoundedRectangle(cornerRadius: 8))
@@ -137,7 +145,7 @@ struct UsbDevicesView: View {
             .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(p.border))
         }
         .task {
-            if devicesOutput.isEmpty { await refresh() }
+            if hostDevices.isEmpty { await refresh() }
         }
     }
 
@@ -146,13 +154,47 @@ struct UsbDevicesView: View {
             .padding(.bottom, -10)
     }
 
+    private func hostDeviceButton(_ device: DorydHostUSBDevice) -> some View {
+        let subtitle = String(
+            format: "%@  ·  %04x:%04x",
+            device.busID,
+            device.vendorID,
+            device.productID
+        )
+        return Button {
+            busid = device.busID
+        } label: {
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(device.displayName)
+                        .font(.system(size: 12.5, weight: .medium))
+                        .foregroundStyle(p.text)
+                    Text(subtitle)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(p.text3)
+                }
+                Spacer(minLength: 0)
+                if busid == device.busID {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(Color.accentColor)
+                }
+            }
+            .contentShape(Rectangle())
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("usb-device-\(device.busID)")
+    }
+
     @MainActor private func refresh() async {
         busy = true
         defer { busy = false }
-        async let scan = Self.runDory(["usb", "ls"])
-        var machineStatusError: String?
+        async let deviceScan = DorydClient().hostUSBDevices()
+        async let machineScan = DorydClient().machineList()
+        var errors: [String] = []
         do {
-            machines = try await DorydClient().machineList().sorted { $0.id < $1.id }
+            machines = try await machineScan.sorted { $0.id < $1.id }
             if !machines.contains(where: { $0.id == machine }) {
                 machine = machines.first(where: {
                     UsbPassthroughAvailability.attachSupported(for: $0)
@@ -160,12 +202,18 @@ struct UsbDevicesView: View {
             }
         } catch {
             machines = []
-            machineStatusError = "Machine status failed: \(error)"
+            errors.append("Machine status failed: \(error)")
         }
-        let result = await scan
-        devicesOutput = result.output
-        status = machineStatusError
-            ?? (result.succeeded ? "USB devices refreshed." : "USB scan failed: \(result.output)")
+        do {
+            hostDevices = try await deviceScan
+            if busid.isEmpty, let first = hostDevices.first {
+                busid = first.busID
+            }
+        } catch {
+            hostDevices = []
+            errors.append("USB scan failed: \(error)")
+        }
+        status = errors.isEmpty ? "USB devices refreshed." : errors.joined(separator: "  ")
     }
 
     @MainActor private func attach() async {
@@ -228,38 +276,4 @@ struct UsbDevicesView: View {
         UsbPassthroughAvailability.unavailableReason(for: selectedMachine)
     }
 
-    nonisolated static func runDory(_ arguments: [String]) async -> CommandResult {
-        await Task.detached(priority: .userInitiated) {
-            let process = Process()
-            process.executableURL = doryCLIURL()
-            process.arguments = arguments
-            let pipe = Pipe()
-            process.standardOutput = pipe
-            process.standardError = pipe
-            do {
-                try process.run()
-                process.waitUntilExit()
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                return CommandResult(succeeded: process.terminationStatus == 0, output: output)
-            } catch {
-                return CommandResult(succeeded: false, output: error.localizedDescription)
-            }
-        }.value
-    }
-
-    nonisolated private static func doryCLIURL() -> URL {
-        if let override = ProcessInfo.processInfo.environment["DORY_CLI"], !override.isEmpty {
-            return URL(fileURLWithPath: override)
-        }
-        if FileManager.default.isExecutableFile(atPath: "/usr/local/bin/dory") {
-            return URL(fileURLWithPath: "/usr/local/bin/dory")
-        }
-        return URL(fileURLWithPath: "/opt/homebrew/bin/dory")
-    }
-
-    struct CommandResult: Sendable, Equatable {
-        let succeeded: Bool
-        let output: String
-    }
 }

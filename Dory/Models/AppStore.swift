@@ -2204,8 +2204,6 @@ final class AppStore {
         enabled: openLoginsOnMac,
         open: { url in DispatchQueue.main.async { NSWorkspace.shared.open(url) } }
     )
-    @ObservationIgnored private let usbAttachments = UsbAttachmentStore()
-    @ObservationIgnored private var usbReplayedMachines: Set<String> = []
     private let domainTable = DomainTable()
     @ObservationIgnored private var dns = DoryDNS()
     @ObservationIgnored private let reverseProxy: DoryReverseProxy
@@ -2636,26 +2634,11 @@ final class AppStore {
     func registerMachineBridge(_ name: String) {
         try? FileManager.default.createDirectory(atPath: MachineService.bridgeHostDir(for: name), withIntermediateDirectories: true)
         hostBridge.startWatching(machine: name)
-        replayRememberedUSB(machine: name)
     }
 
     func unregisterMachineBridge(_ name: String) {
         hostBridge.stopWatching(machine: name)
         portForwarder.teardownLoopback(forMachine: name)
-        usbReplayedMachines.remove(name)
-    }
-
-    private func replayRememberedUSB(machine: String) {
-        guard UsbPassthroughAvailability.automaticReplaySupported else { return }
-        guard !usbReplayedMachines.contains(machine) else { return }
-        let commands = usbAttachments.reattachCommands(for: machine)
-        usbReplayedMachines.insert(machine)
-        guard !commands.isEmpty else { return }
-        Task.detached(priority: .utility) {
-            for arguments in commands {
-                _ = await UsbDevicesView.runDory(arguments)
-            }
-        }
     }
 
     /// `<name>.dory.local` → the published host port that reaches the container. Containers without a

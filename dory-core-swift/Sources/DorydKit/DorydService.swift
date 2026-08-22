@@ -13,6 +13,7 @@ public final class DorydService: NSObject, DorydControl {
     private let machineImportEnvironment: DoryMachineImportEnvironment
     private let machineEventStore: DoryMachineEventStore?
     private let machineBackupScheduler: MachineBackupScheduler?
+    private let hostUSBDiscovery: any DoryHostUSBDiscovering
     private let remoteManager: RemoteMachineManager?
     private let networkingController: NetworkingController?
     private let networkRouteRepair: (@Sendable () -> Int)?
@@ -35,6 +36,7 @@ public final class DorydService: NSObject, DorydControl {
             (any DoryDaemonVirtualMachineProductionPlanningControlling)? = nil,
         machineImportEnvironment: DoryMachineImportEnvironment = .unverified,
         machineBackupScheduler: MachineBackupScheduler? = nil,
+        hostUSBDiscovery: any DoryHostUSBDiscovering = IOKitDoryHostUSBDiscovery(),
         remoteManager: RemoteMachineManager? = nil,
         networkingController: NetworkingController? = nil,
         networkRouteRepair: (@Sendable () -> Int)? = nil,
@@ -56,6 +58,7 @@ public final class DorydService: NSObject, DorydControl {
             DoryMachineEventStore(root: $0.managedStateDirectory)
         }
         self.machineBackupScheduler = machineBackupScheduler
+        self.hostUSBDiscovery = hostUSBDiscovery
         self.remoteManager = remoteManager
         self.networkingController = networkingController
         self.networkRouteRepair = networkRouteRepair
@@ -579,6 +582,16 @@ public final class DorydService: NSObject, DorydControl {
             reply(true, snapshot.xpcDictionary, "")
         } catch {
             reply(false, [:], "\(error)")
+        }
+    }
+
+    public func hostUSBDevices(reply: @escaping (Bool, NSArray, String) -> Void) {
+        do {
+            let devices = try DoryHostUSBProjection.validated(hostUSBDiscovery.devices())
+            let rows = devices.map(\.xpcDictionary) as NSArray
+            reply(true, rows, "")
+        } catch {
+            reply(false, [], "\(error)")
         }
     }
 

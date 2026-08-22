@@ -5,6 +5,46 @@ import DoryOperations
 import XCTest
 
 final class DorydServiceTests: XCTestCase {
+    func testHostUSBDiscoveryPublishesOnlyTheBoundedTypedProjection() throws {
+        let service = DorydService(
+            socketPath: "/tmp/doryd-test.sock",
+            hostUSBDiscovery: StaticHostUSBDiscovery(devices: [
+                DoryHostUSBDevice(
+                    busID: "3-2",
+                    vendorID: 0x05ac,
+                    productID: 0x12a8,
+                    vendorName: "Example Vendor",
+                    productName: "Example Device",
+                    deviceClass: 3,
+                    speed: 4
+                ),
+            ])
+        )
+        let listener = makeAnonymousListener(service: service)
+        listener.resume()
+        defer { listener.invalidate() }
+        let connection = NSXPCConnection(listenerEndpoint: listener.endpoint)
+        connection.remoteObjectInterface = NSXPCInterface(with: DorydControl.self)
+        connection.resume()
+        defer { connection.invalidate() }
+        let proxy = try XCTUnwrap(connection.remoteObjectProxy as? DorydControl)
+
+        let discovered = expectation(description: "typed host USB projection")
+        proxy.hostUSBDevices { ok, rows, message in
+            XCTAssertTrue(ok)
+            XCTAssertEqual(message, "")
+            XCTAssertEqual(rows.count, 1)
+            let row = rows.firstObject as? NSDictionary
+            XCTAssertEqual(
+                Set(row?.allKeys.compactMap { $0 as? String } ?? []),
+                ["busID", "vendorID", "productID", "vendorName", "productName", "deviceClass", "speed"]
+            )
+            XCTAssertEqual(row?["busID"] as? String, "3-2")
+            discovered.fulfill()
+        }
+        wait(for: [discovered], timeout: 5)
+    }
+
     func testMachineUSBXPCIsResolvedOnly() throws {
         let base = FileManager.default.temporaryDirectory
             .appendingPathComponent("doryd-usb-xpc-\(UUID().uuidString)").path
@@ -3085,6 +3125,14 @@ final class DorydServiceTests: XCTestCase {
         }
         wait(for: [importReply], timeout: 5)
     }
+}
+
+private struct StaticHostUSBDiscovery: DoryHostUSBDiscovering {
+    var values: [DoryHostUSBDevice]
+
+    init(devices: [DoryHostUSBDevice]) { values = devices }
+
+    func devices() throws -> [DoryHostUSBDevice] { values }
 }
 
 private func waitForServiceMachineState(

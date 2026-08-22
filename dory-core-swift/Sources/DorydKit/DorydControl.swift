@@ -34,6 +34,7 @@ import Foundation
     func machineSerialConsoleWrite(_ machineID: String, data: NSData, reply: @escaping (Bool, String) -> Void)
     func machineStats(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineDeviceTelemetry(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
+    func hostUSBDevices(reply: @escaping (Bool, NSArray, String) -> Void)
     func machineUSBAttach(_ machineID: String, busID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineUSBDetach(_ machineID: String, busID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineExec(_ machineID: String, request: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void)

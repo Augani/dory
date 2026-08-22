@@ -15,6 +15,33 @@ struct DorydClientTests {
         defer { listener.invalidate() }
         let client = DorydClient(endpoint: listener.endpoint)
 
+        let hostDevices = try await client.hostUSBDevices()
+        #expect(hostDevices == [DorydHostUSBDevice(
+            busID: "3-2",
+            vendorID: 0x05ac,
+            productID: 0x12a8,
+            vendorName: "Example Vendor",
+            productName: "Example Device",
+            deviceClass: 3,
+            speed: 4
+        )])
+
+        service.setHostUSBDevicesResponse([
+            [
+                "busID": "3-2",
+                "vendorID": 0x05ac,
+                "productID": 0x12a8,
+                "vendorName": "Example Vendor",
+                "productName": "Example Device",
+                "deviceClass": 3,
+                "speed": 4,
+                "serialNumber": "must-not-cross-xpc",
+            ],
+        ])
+        await #expect(throws: (any Error).self) {
+            _ = try await client.hostUSBDevices()
+        }
+
         let attachment = try await client.machineUSBAttach("dev", busID: "3-2")
         #expect(attachment == DorydMachineUSBAttachment(
             machineID: "dev",
@@ -4144,6 +4171,7 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     private var _machineDeviceTelemetryResponseOverride: NSDictionary?
     private var _machineUSBAttachResponseOverride: NSDictionary?
     private var _machineUSBDetachResponseOverride: NSDictionary?
+    private var _hostUSBDevicesResponseOverride: NSArray?
     private var _machineSerialConsoleBatchOverride: NSDictionary?
     private var _latestMachineSerialConsoleCursor: NSDictionary?
     private var _latestMachineSerialConsoleInput: Data?
@@ -4191,6 +4219,11 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     func setMachineUSBDetachResponse(_ response: NSDictionary?) {
         lock.lock(); defer { lock.unlock() }
         _machineUSBDetachResponseOverride = response
+    }
+
+    func setHostUSBDevicesResponse(_ response: NSArray?) {
+        lock.lock(); defer { lock.unlock() }
+        _hostUSBDevicesResponseOverride = response
     }
 
     func setMachineTransferOperationResponse(_ response: NSDictionary?) {
@@ -5028,6 +5061,23 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         ]
         lock.unlock()
         reply(true, row, "")
+    }
+
+    func hostUSBDevices(reply: @escaping (Bool, NSArray, String) -> Void) {
+        lock.lock()
+        let rows = _hostUSBDevicesResponseOverride ?? [
+            [
+                "busID": "3-2",
+                "vendorID": 0x05ac,
+                "productID": 0x12a8,
+                "vendorName": "Example Vendor",
+                "productName": "Example Device",
+                "deviceClass": 3,
+                "speed": 4,
+            ],
+        ]
+        lock.unlock()
+        reply(true, rows, "")
     }
 
     func machineUSBDetach(
