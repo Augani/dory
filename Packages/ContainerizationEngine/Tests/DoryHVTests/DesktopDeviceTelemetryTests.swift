@@ -152,4 +152,47 @@ import Testing
         #expect(stable.devices.first?.health == .healthy)
         #expect(stable.events.map(\.kind) == [.audioDrop])
     }
+
+    @Test func publishesMeasuredShareInvalidationsAndPermanentFailureHealth() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dory-share-telemetry-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let backend = try VirtioFS(
+            tag: "telemetry",
+            hostFS: HostFS(rootPath: root.path),
+            requestQueueCount: 1
+        )
+        let memory = try GuestMemory(guestBase: GuestLayout.ramBase, size: 0x20_000)
+        let transport = VirtioMMIOTransport(
+            baseAddress: GuestLayout.virtioBase,
+            backend: backend,
+            memory: memory
+        ) {}
+        let registry = RawDeviceTelemetryRegistry(machineID: "raw-share", operationID: UUID())
+        registry.register(slot: 6, backend: backend, transport: transport)
+
+        do {
+            try await backend.invalidate([.inode(nodeID: HostFS.rootNodeID)])
+            Issue.record("unnegotiated share unexpectedly completed an invalidation")
+        } catch let error as VirtioFSNotificationError {
+            #expect(error == .featureNotNegotiated)
+        }
+
+        let snapshot = registry.snapshot()
+        let device = try #require(snapshot.devices.first)
+        #expect(device.id == "virtio-shared-directory-6")
+        #expect(device.health == .failed)
+        #expect(device.metrics.first { $0.kind == .shareInvalidations }?.value == 0)
+        #expect(device.metrics.first {
+            $0.kind == .shareInvalidationFailures
+        }?.value == 1)
+        #expect(snapshot.events.map(\.kind) == [.shareInvalidationFailure])
+        #expect(snapshot.events.first?.occurrences == 1)
+
+        let persistent = registry.snapshot()
+        #expect(persistent.devices.first?.health == .failed)
+        #expect(persistent.events.map(\.kind) == [.shareInvalidationFailure])
+    }
 }

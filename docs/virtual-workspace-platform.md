@@ -743,10 +743,12 @@ client, and `dorydctl`. Raw-HV derives reset and sustained queue-stall events fr
 transport counters and retains a bounded event history. Its block backend also counts serialized
 guest flushes, measures the maximum host `fsync` latency, and emits a classified slow-flush event
 for every flush taking at least 250 ms. Its Core Audio bridge reports exact playback and capture
-period drops and emits classified audio-drop events. Virtualization.framework counters that do not
-have a stable public authority remain explicitly unavailable rather than being reported as zero.
-Backend-specific producers for GPU loss/fences, display drops, network reconnects, and share
-invalidation remain release gates for those individual capability claims.
+period drops and emits classified audio-drop events. VirtioFS counts admitted reverse invalidations
+and failed submission or acknowledgement transactions; because an uncertain invalidation latches
+request publication closed for that backend, its telemetry remains failed until backend replacement.
+Virtualization.framework counters that do not have a stable public authority remain explicitly
+unavailable rather than being reported as zero. Backend-specific producers for GPU loss/fences,
+display drops, and network reconnects remain release gates for those individual capability claims.
 
 ## Qualification and release gates
 

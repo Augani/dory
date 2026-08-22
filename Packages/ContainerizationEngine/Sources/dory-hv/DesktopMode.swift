@@ -14,11 +14,13 @@ final class RawDeviceTelemetryRegistry: @unchecked Sendable {
         var transport: VirtioMMIOTransport
         var storage: VirtioBlk?
         var network: VirtioNet?
+        var sharedDirectory: VirtioFS?
         var audioMetrics: (@Sendable () -> DoryMacAudioRuntimeMetrics?)?
         var unavailableMetrics: [(DoryDeviceTelemetryMetricKind, DoryDeviceTelemetryMetricUnit)]
         var previousTransportStatistics: VirtioMMIOTransportStatistics?
         var previousStorageStatistics: VirtioBlkStatistics?
         var previousAudioDrops: UInt64?
+        var previousShareInvalidationFailures: UInt64?
         var consecutiveUncompletedNotificationSamples: UInt8
         var queueStallReported: Bool
     }
@@ -64,10 +66,7 @@ final class RawDeviceTelemetryRegistry: @unchecked Sendable {
             unavailable = audioMetrics == nil ? [(.audioDrops, .count)] : []
         case is VirtioFS:
             kind = .sharedDirectory
-            unavailable = [
-                (.shareInvalidations, .count),
-                (.shareInvalidationFailures, .count),
-            ]
+            unavailable = []
         case is VirtioNet, is VirtioDisconnectedNet:
             kind = .network
             unavailable = backend is VirtioNet ? [] : [
@@ -102,11 +101,13 @@ final class RawDeviceTelemetryRegistry: @unchecked Sendable {
             transport: transport,
             storage: backend as? VirtioBlk,
             network: backend as? VirtioNet,
+            sharedDirectory: backend as? VirtioFS,
             audioMetrics: audioMetrics,
             unavailableMetrics: unavailable,
             previousTransportStatistics: nil,
             previousStorageStatistics: nil,
             previousAudioDrops: nil,
+            previousShareInvalidationFailures: nil,
             consecutiveUncompletedNotificationSamples: 0,
             queueStallReported: false
         )
@@ -232,6 +233,35 @@ final class RawDeviceTelemetryRegistry: @unchecked Sendable {
                         health = .degraded
                     }
                     entries[index].previousAudioDrops = drops
+                }
+                if let share = entries[index].sharedDirectory?.statistics {
+                    metrics.append(contentsOf: [
+                        .measured(.shareInvalidations, value: share.invalidations),
+                        .measured(
+                            .shareInvalidationFailures,
+                            value: share.invalidationFailures
+                        ),
+                    ])
+                    let previousFailures =
+                        entries[index].previousShareInvalidationFailures ?? 0
+                    let newFailures = Self.monotonicDelta(
+                        current: share.invalidationFailures,
+                        previous: previousFailures
+                    )
+                    if newFailures > 0 {
+                        appendEvent(
+                            deviceID: entries[index].id,
+                            kind: .shareInvalidationFailure,
+                            occurrences: newFailures,
+                            monotonicNanoseconds: monotonicNanoseconds
+                        )
+                        health = .degraded
+                    }
+                    if share.invalidationFailureLatched {
+                        health = .failed
+                    }
+                    entries[index].previousShareInvalidationFailures =
+                        share.invalidationFailures
                 }
                 metrics.append(contentsOf: entries[index].unavailableMetrics.map {
                     .unavailable($0.0, unit: $0.1, reason: unavailableReason)

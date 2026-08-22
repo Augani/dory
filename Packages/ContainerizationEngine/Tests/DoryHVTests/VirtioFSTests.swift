@@ -101,6 +101,11 @@ struct VirtioFSTests {
         } catch let error as VirtioFSNotificationError {
             #expect(error == .featureNotNegotiated)
         }
+        #expect(harness.fs.statistics == VirtioFSStatistics(
+            invalidations: 0,
+            invalidationFailures: 1,
+            invalidationFailureLatched: false
+        ))
     }
 
     @Test func highLevelInvalidationFailureLatchesRequestPublicationUntilBackendReplacement() async throws {
@@ -114,6 +119,11 @@ struct VirtioFSTests {
         } catch let error as VirtioFSNotificationError {
             #expect(error == .featureNotNegotiated)
         }
+        #expect(harness.fs.statistics == VirtioFSStatistics(
+            invalidations: 0,
+            invalidationFailures: 1,
+            invalidationFailureLatched: true
+        ))
 
         #expect(harness.fs.requestPublicationGateClosed)
         let blocked = try harness.enqueueFuseRequest(
@@ -486,6 +496,11 @@ struct VirtioFSTests {
 
         #expect(barrier.isCompleted)
         try await barrier.wait()
+        #expect(harness.fs.statistics == VirtioFSStatistics(
+            invalidations: 1,
+            invalidationFailures: 0,
+            invalidationFailureLatched: false
+        ))
     }
 
     @Test func barriersPreserveSubmissionOrderAcrossOutOfOrderBufferReturns() async throws {

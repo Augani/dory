@@ -35,6 +35,22 @@ public enum VirtioFSCacheActivationResult: Equatable, Sendable {
     case ineligible(VirtioFSCacheActivationEligibility)
 }
 
+public struct VirtioFSStatistics: Equatable, Sendable {
+    public var invalidations: UInt64
+    public var invalidationFailures: UInt64
+    public var invalidationFailureLatched: Bool
+
+    public init(
+        invalidations: UInt64,
+        invalidationFailures: UInt64,
+        invalidationFailureLatched: Bool
+    ) {
+        self.invalidations = invalidations
+        self.invalidationFailures = invalidationFailures
+        self.invalidationFailureLatched = invalidationFailureLatched
+    }
+}
+
 public final class VirtioFS: VirtioDeviceBackend, VirtioSharedMemoryRegionProvider {
     public static let tagByteCount = 36
     public static let notificationFeature: UInt64 = 1 << 0
@@ -141,6 +157,10 @@ public final class VirtioFS: VirtioDeviceBackend, VirtioSharedMemoryRegionProvid
     private var _responseFenceTestHook: (@Sendable (FuseInHeader, FuseOpcode) -> Void)?
     private let requestGateDrainTestHookLock = NSLock()
     private var _requestGateDrainTestHook: (@Sendable (RequestGateDrainTestEvent) -> Void)?
+    private let telemetryLock = NSLock()
+    private var invalidationCount: UInt64 = 0
+    private var invalidationFailureCount: UInt64 = 0
+    private var hasLatchedInvalidationFailure = false
 
     public convenience init(
         tag: String,
@@ -359,7 +379,20 @@ public final class VirtioFS: VirtioDeviceBackend, VirtioSharedMemoryRegionProvid
     public func submitInvalidations(
         _ invalidations: [VirtioFSInvalidation]
     ) async throws -> VirtioFSNotificationBarrier {
-        try await submitInvalidations(invalidations, retainRequestGateForCaller: false)
+        guard !invalidations.isEmpty else {
+            return VirtioFSNotificationBarrier(notificationCount: 0)
+        }
+        do {
+            return try await submitInvalidations(
+                invalidations,
+                retainRequestGateForCaller: false
+            )
+        } catch {
+            recordInvalidationFailure(latched: requestGateLock.withLock {
+                requestGateFailureLatched
+            })
+            throw error
+        }
     }
 
     private func submitInvalidations(
@@ -453,7 +486,9 @@ public final class VirtioFS: VirtioDeviceBackend, VirtioSharedMemoryRegionProvid
             )
         }
         apply(effects, transport: transport)
-        return try submission.get()
+        let barrier = try submission.get()
+        recordInvalidations(frames.count)
+        return barrier
     }
 
     public func submitInvalidation(
@@ -521,8 +556,39 @@ public final class VirtioFS: VirtioDeviceBackend, VirtioSharedMemoryRegionProvid
                 releaseCallerRetainedRequestGate(barrier, succeeded: false)
             }
             latchRequestGateFailure(barrier: nil)
+            recordInvalidationFailure(latched: true)
             throw error
         }
+    }
+
+    public var statistics: VirtioFSStatistics {
+        telemetryLock.withLock {
+            VirtioFSStatistics(
+                invalidations: invalidationCount,
+                invalidationFailures: invalidationFailureCount,
+                invalidationFailureLatched: hasLatchedInvalidationFailure
+            )
+        }
+    }
+
+    private func recordInvalidations(_ count: Int) {
+        guard count > 0 else { return }
+        let increment = UInt64(count)
+        telemetryLock.withLock {
+            invalidationCount = Self.saturatingAdd(invalidationCount, increment)
+        }
+    }
+
+    private func recordInvalidationFailure(latched: Bool) {
+        telemetryLock.withLock {
+            invalidationFailureCount = Self.saturatingAdd(invalidationFailureCount, 1)
+            hasLatchedInvalidationFailure = hasLatchedInvalidationFailure || latched
+        }
+    }
+
+    private static func saturatingAdd(_ value: UInt64, _ increment: UInt64) -> UInt64 {
+        let (sum, overflow) = value.addingReportingOverflow(increment)
+        return overflow ? UInt64.max : sum
     }
 
     public func handleKick(queue: Int, transport: VirtioMMIOTransport) {
