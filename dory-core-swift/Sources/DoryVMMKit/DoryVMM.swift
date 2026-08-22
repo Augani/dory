@@ -532,7 +532,12 @@ public enum DoryVZConfigurationBuilder {
 
         if spec.displayMode == .desktop {
             let devices = spec.resolvedDevices
-            let display = devices?.display ?? DoryVMMDisplayDefaults.capability
+            if let devices, devices.displays.count != 1 {
+                throw DoryVZMachineError.validation(
+                    "Apple Virtualization.framework requires exactly one resolved display"
+                )
+            }
+            let display = devices?.displays[0] ?? DoryVMMDisplayDefaults.capability
             guard display.isValid else {
                 throw DoryVZMachineError.validation(
                     "resolved display geometry is outside the supported pixel bounds"

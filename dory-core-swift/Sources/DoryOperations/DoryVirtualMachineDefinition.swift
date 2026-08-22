@@ -222,6 +222,11 @@ public struct DoryVMPortForward: Codable, Sendable, Equatable, Hashable {
 }
 
 public struct DoryVMDisplayConfiguration: Codable, Sendable, Equatable {
+    public static let maximumCount = 16
+    public static let maximumDimensionPixels: UInt32 = 16_384
+
+    /// Stable virtual connector identity. It survives host monitor changes and window movement.
+    public var id: String
     public var enabled: Bool
     public var widthPixels: UInt32
     public var heightPixels: UInt32
@@ -232,6 +237,7 @@ public struct DoryVMDisplayConfiguration: Codable, Sendable, Equatable {
     public var guestUIScaleFactor: UInt8
 
     public init(
+        id: String = "display-0",
         enabled: Bool = true,
         widthPixels: UInt32 = 1_920,
         heightPixels: UInt32 = 1_080,
@@ -239,6 +245,7 @@ public struct DoryVMDisplayConfiguration: Codable, Sendable, Equatable {
         backingScaleFactor: UInt8 = 2,
         guestUIScaleFactor: UInt8 = 2
     ) {
+        self.id = id
         self.enabled = enabled
         self.widthPixels = widthPixels
         self.heightPixels = heightPixels
@@ -256,7 +263,23 @@ public struct DoryVMDisplayConfiguration: Codable, Sendable, Equatable {
         guestUIScaleFactor: 0
     )
 
+    public static func isValidIdentifier(_ value: String) -> Bool {
+        let bytes = Array(value.utf8)
+        guard (1...63).contains(bytes.count), let first = bytes.first,
+              isASCIIAlphaNumeric(first) else { return false }
+        return bytes.dropFirst().allSatisfy { byte in
+            isASCIIAlphaNumeric(byte) || byte == 45 || byte == 46 || byte == 95
+        }
+    }
+
+    private static func isASCIIAlphaNumeric(_ byte: UInt8) -> Bool {
+        (byte >= 48 && byte <= 57)
+            || (byte >= 65 && byte <= 90)
+            || (byte >= 97 && byte <= 122)
+    }
+
     private enum CodingKeys: String, CodingKey {
+        case id
         case enabled
         case widthPixels
         case heightPixels
@@ -267,6 +290,7 @@ public struct DoryVMDisplayConfiguration: Codable, Sendable, Equatable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(String.self, forKey: .id) ?? "display-0"
         enabled = try container.decode(Bool.self, forKey: .enabled)
         widthPixels = try container.decode(UInt32.self, forKey: .widthPixels)
         heightPixels = try container.decode(UInt32.self, forKey: .heightPixels)
@@ -281,6 +305,7 @@ public struct DoryVMDisplayConfiguration: Codable, Sendable, Equatable {
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
         try container.encode(enabled, forKey: .enabled)
         try container.encode(widthPixels, forKey: .widthPixels)
         try container.encode(heightPixels, forKey: .heightPixels)
@@ -409,6 +434,9 @@ public enum DoryVMDefinitionValidationCode: String, Codable, Sendable, CaseItera
     case systemDiskCapacityMismatch = "system-disk-capacity-mismatch"
     case bootDiskArtifactMismatch = "boot-disk-artifact-mismatch"
     case invalidDisplayConfiguration = "invalid-display-configuration"
+    case invalidDisplayIdentifier = "invalid-display-identifier"
+    case duplicateDisplayIdentifier = "duplicate-display-identifier"
+    case tooManyDisplays = "too-many-displays"
     case tooManyPortForwards = "too-many-port-forwards"
     case invalidPortForwardIdentifier = "invalid-port-forward-identifier"
     case duplicatePortForwardIdentifier = "duplicate-port-forward-identifier"
@@ -449,7 +477,7 @@ public struct DoryVMDefinitionValidationIssue: Codable, Sendable, Equatable {
 /// passwords, tokens, host filesystem paths, or volatile process state.
 public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
     public static let oldestSupportedSchemaVersion: UInt16 = 1
-    public static let currentSchemaVersion: UInt16 = 4
+    public static let currentSchemaVersion: UInt16 = 5
     public static let currentVirtualHardwareABIVersion: UInt16 = 1
 
     public var schemaVersion: UInt16
@@ -464,7 +492,23 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
     public var storage: [DoryVMStorageAttachment]
     public var networkMode: DoryVMNetworkMode
     public var portForwards: [DoryVMPortForward]
-    public var display: DoryVMDisplayConfiguration
+    /// Ordered stable display topology. An empty array is a headless workspace.
+    public var displays: [DoryVMDisplayConfiguration]
+    /// Source-compatible primary-display bridge for schema-v1...v4 callers.
+    public var display: DoryVMDisplayConfiguration {
+        get { displays.first ?? .disabled }
+        set {
+            if newValue.enabled {
+                if displays.isEmpty {
+                    displays = [newValue]
+                } else {
+                    displays[0] = newValue
+                }
+            } else {
+                displays.removeAll()
+            }
+        }
+    }
     public var audio: DoryVMAudioConfiguration
     public var input: DoryVMInputConfiguration
     public var shares: [DoryVMShare]
@@ -488,6 +532,7 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
         networkMode: DoryVMNetworkMode = .sharedNAT,
         portForwards: [DoryVMPortForward] = [],
         display: DoryVMDisplayConfiguration = DoryVMDisplayConfiguration(),
+        displays: [DoryVMDisplayConfiguration]? = nil,
         audio: DoryVMAudioConfiguration = DoryVMAudioConfiguration(),
         input: DoryVMInputConfiguration = DoryVMInputConfiguration(),
         shares: [DoryVMShare] = [],
@@ -509,7 +554,7 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
         self.storage = storage
         self.networkMode = networkMode
         self.portForwards = portForwards
-        self.display = display
+        self.displays = displays ?? (display.enabled ? [display] : [])
         self.audio = audio
         self.input = input
         self.shares = shares
@@ -537,6 +582,7 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
         case networkMode
         case portForwards
         case display
+        case displays
         case audio
         case input
         case shares
@@ -641,7 +687,11 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
             }
             networkMode = try container.decode(DoryVMNetworkMode.self, forKey: .networkMode)
             portForwards = []
-            display = try container.decode(DoryVMDisplayConfiguration.self, forKey: .display)
+            let legacyDisplay = try container.decode(
+                DoryVMDisplayConfiguration.self,
+                forKey: .display
+            )
+            displays = legacyDisplay.enabled ? [legacyDisplay] : []
             audio = try container.decode(DoryVMAudioConfiguration.self, forKey: .audio)
             input = try container.decode(DoryVMInputConfiguration.self, forKey: .input)
             shares = legacyShares.map { share in
@@ -680,7 +730,8 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
         }
         // Schema 2 is structurally migrated by the attachment decoder above. Its missing storage
         // source becomes `.userProvided`. Sandbox policy is an optional schema-3 extension and
-        // explicit port forwards are an additive schema-4 extension.
+        // explicit port forwards are an additive schema-4 extension. Schema 5 replaces the
+        // singular display field with an ordered, stable topology.
         schemaVersion = Self.currentSchemaVersion
         virtualHardwareABIVersion = try container.decode(
             UInt16.self,
@@ -699,7 +750,18 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
             [DoryVMPortForward].self,
             forKey: .portForwards
         ) ?? []
-        display = try container.decode(DoryVMDisplayConfiguration.self, forKey: .display)
+        if persistedSchema >= 5 {
+            displays = try container.decode(
+                [DoryVMDisplayConfiguration].self,
+                forKey: .displays
+            )
+        } else {
+            let legacyDisplay = try container.decode(
+                DoryVMDisplayConfiguration.self,
+                forKey: .display
+            )
+            displays = legacyDisplay.enabled ? [legacyDisplay] : []
+        }
         audio = try container.decode(DoryVMAudioConfiguration.self, forKey: .audio)
         input = try container.decode(DoryVMInputConfiguration.self, forKey: .input)
         shares = try container.decode([DoryVMShare].self, forKey: .shares)
@@ -734,7 +796,7 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
         try container.encode(storage, forKey: .storage)
         try container.encode(networkMode, forKey: .networkMode)
         try container.encode(portForwards, forKey: .portForwards)
-        try container.encode(display, forKey: .display)
+        try container.encode(displays, forKey: .displays)
         try container.encode(audio, forKey: .audio)
         try container.encode(input, forKey: .input)
         try container.encode(shares, forKey: .shares)
@@ -993,18 +1055,27 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
     }
 
     private func validateDisplay(into issues: inout [DoryVMDefinitionValidationIssue]) {
-        let dimensionsArePositive = display.widthPixels > 0
-            && display.heightPixels > 0
-            && display.pixelsPerInch > 0
-            && (1...4).contains(display.backingScaleFactor)
-            && (1...2).contains(display.guestUIScaleFactor)
-        let dimensionsAreZero = display.widthPixels == 0
-            && display.heightPixels == 0
-            && display.pixelsPerInch == 0
-            && display.backingScaleFactor == 0
-            && display.guestUIScaleFactor == 0
-        if (display.enabled && !dimensionsArePositive) || (!display.enabled && !dimensionsAreZero) {
-            issues.append(issue(.invalidDisplayConfiguration, "display"))
+        if displays.count > DoryVMDisplayConfiguration.maximumCount {
+            issues.append(issue(.tooManyDisplays, "displays"))
+        }
+        var identifiers = Set<String>()
+        for (index, display) in displays.enumerated() {
+            let field = "displays[\(index)]"
+            if !DoryVMDisplayConfiguration.isValidIdentifier(display.id) {
+                issues.append(issue(.invalidDisplayIdentifier, "\(field).id"))
+            } else if !identifiers.insert(display.id).inserted {
+                issues.append(issue(.duplicateDisplayIdentifier, "\(field).id"))
+            }
+            let dimensionsArePositive = display.widthPixels > 0
+                && display.widthPixels <= DoryVMDisplayConfiguration.maximumDimensionPixels
+                && display.heightPixels > 0
+                && display.heightPixels <= DoryVMDisplayConfiguration.maximumDimensionPixels
+                && display.pixelsPerInch > 0
+                && (1...4).contains(display.backingScaleFactor)
+                && (1...2).contains(display.guestUIScaleFactor)
+            if !display.enabled || !dimensionsArePositive {
+                issues.append(issue(.invalidDisplayConfiguration, field))
+            }
         }
     }
 

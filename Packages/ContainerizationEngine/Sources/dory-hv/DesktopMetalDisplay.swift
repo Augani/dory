@@ -17,6 +17,54 @@ enum DesktopMetalDisplayError: Error, CustomStringConvertible {
     }
 }
 
+/// Maps one window-local absolute pointer into the guest's deterministic horizontal scanout
+/// layout. Virtio-input exposes one tablet for the whole desktop rather than one per connector.
+final class DesktopPointerTopology: @unchecked Sendable {
+    private let lock = NSLock()
+    private var sizes: [VirtioGPUScanoutSize]
+
+    init(sizes: [VirtioGPUScanoutSize]) {
+        self.sizes = sizes
+    }
+
+    func update(scanoutID: UInt32, width: UInt32, height: UInt32) {
+        lock.withLock {
+            let index = Int(scanoutID)
+            guard sizes.indices.contains(index) else { return }
+            sizes[index] = VirtioGPUScanoutSize(width: width, height: height)
+        }
+    }
+
+    func normalizedPoint(
+        scanoutID: UInt32,
+        localX: CGFloat,
+        localY: CGFloat
+    ) -> CGPoint {
+        lock.withLock {
+            let index = Int(scanoutID)
+            guard sizes.indices.contains(index), !sizes.isEmpty else {
+                return CGPoint(
+                    x: min(1, max(0, localX)),
+                    y: min(1, max(0, localY))
+                )
+            }
+            let totalWidth = sizes.reduce(UInt64(0)) { $0 + UInt64($1.width) }
+            let totalHeight = sizes.map(\.height).max() ?? 1
+            let originX = sizes[..<index].reduce(UInt64(0)) {
+                $0 + UInt64($1.width)
+            }
+            let size = sizes[index]
+            let boundedX = min(1, max(0, localX))
+            let boundedY = min(1, max(0, localY))
+            return CGPoint(
+                x: (CGFloat(originX) + boundedX * CGFloat(size.width))
+                    / CGFloat(max(1, totalWidth)),
+                y: boundedY * CGFloat(size.height) / CGFloat(max(1, totalHeight))
+            )
+        }
+    }
+}
+
 /// Coalesces producer-thread flushes to the newest complete frame and performs one main-thread
 /// upload. This keeps a busy compositor from building an unbounded queue of stale 16 MiB frames.
 struct DesktopFrameMailboxMetrics: Equatable, Sendable {
@@ -135,6 +183,8 @@ final class DesktopMetalView: MTKView, MTKViewDelegate {
     private let pipeline: MTLRenderPipelineState
     private let input: VirtioInput
     private let guestBackingScaleFactor: CGFloat
+    private let scanoutID: UInt32
+    private let pointerTopology: DesktopPointerTopology?
     private var resourceTextures: [UInt32: MTLTexture] = [:]
     private var scanoutTexture: MTLTexture?
     private var scanoutSize = CGSize.zero
@@ -150,7 +200,9 @@ final class DesktopMetalView: MTKView, MTKViewDelegate {
     init(
         frame: NSRect,
         input: VirtioInput,
-        guestBackingScaleFactor: CGFloat = 2
+        guestBackingScaleFactor: CGFloat = 2,
+        scanoutID: UInt32 = 0,
+        pointerTopology: DesktopPointerTopology? = nil
     ) throws {
         guard let device = MTLCreateSystemDefaultDevice(),
               let commandQueue = device.makeCommandQueue() else {
@@ -158,6 +210,8 @@ final class DesktopMetalView: MTKView, MTKViewDelegate {
         }
         self.input = input
         self.guestBackingScaleFactor = guestBackingScaleFactor
+        self.scanoutID = scanoutID
+        self.pointerTopology = pointerTopology
         self.commandQueue = commandQueue
         do {
             let library = try device.makeLibrary(source: Self.shaderSource, options: nil)
@@ -409,9 +463,14 @@ final class DesktopMetalView: MTKView, MTKViewDelegate {
         let contentRect = scanoutContentRect(in: bounds.size)
         let normalizedX = min(1, max(0, (point.x - contentRect.minX) / max(1, contentRect.width)))
         let normalizedY = min(1, max(0, (point.y - contentRect.minY) / max(1, contentRect.height)))
+        let guestPoint = pointerTopology?.normalizedPoint(
+            scanoutID: scanoutID,
+            localX: normalizedX,
+            localY: normalizedY
+        ) ?? CGPoint(x: normalizedX, y: normalizedY)
         var events = [
-            VirtioInputEvent(type: 3, code: 0, value: Int32((normalizedX * 32_767).rounded())),
-            VirtioInputEvent(type: 3, code: 1, value: Int32((normalizedY * 32_767).rounded())),
+            VirtioInputEvent(type: 3, code: 0, value: Int32((guestPoint.x * 32_767).rounded())),
+            VirtioInputEvent(type: 3, code: 1, value: Int32((guestPoint.y * 32_767).rounded())),
         ]
         if let button {
             events.append(VirtioInputEvent(type: 1, code: button, value: pressed ? 1 : 0))

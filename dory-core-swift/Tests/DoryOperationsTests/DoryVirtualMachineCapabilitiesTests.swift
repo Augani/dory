@@ -218,8 +218,8 @@ struct VirtualMachineCapabilitiesTests {
             trustedGuestImageGraphicsQualification: Self.qualifiedLinuxGraphics
         )
 
-        #expect(descriptor.schemaVersion == 2)
-        #expect(descriptor.evaluatorVersion == 2)
+        #expect(descriptor.schemaVersion == 3)
+        #expect(descriptor.evaluatorVersion == 3)
         #expect(descriptor.availability.supportTier == .supported)
         #expect(descriptor.availability.state == .available)
         #expect(descriptor.availability.reason == nil)
@@ -648,7 +648,7 @@ struct VirtualMachineCapabilitiesTests {
         let json = try #require(String(data: encoded, encoding: .utf8))
 
         #expect(decoded == descriptor)
-        #expect(json.contains(#""schemaVersion":2"#))
+        #expect(json.contains(#""schemaVersion":3"#))
         #expect(json.contains(#""family":"macos""#))
         #expect(json.contains(#""kind":"macos-restore-image""#))
         #expect(json.contains(#""backend":"apple-virtualization-framework""#))
@@ -1125,6 +1125,71 @@ struct VirtualMachineCapabilitiesTests {
         #expect(descriptor.resolvedDevices == nil)
         #expect(descriptor.graphicsQualificationEvidence == nil)
         #expect(descriptor.bootMediaInspectionEvidence == nil)
+    }
+
+    @Test("raw-HV admits exact multi-display topology while VZ fails closed")
+    func multiDisplayTopologyIsBackendExact() {
+        let displays = [
+            DoryVirtualMachineDisplayCapabilityRequest(
+                id: "display-0",
+                widthPixels: 2_560,
+                heightPixels: 1_600
+            ),
+            DoryVirtualMachineDisplayCapabilityRequest(
+                id: "display-1",
+                widthPixels: 1_920,
+                heightPixels: 1_080
+            ),
+        ]
+        let devices = DoryVirtualMachineDeviceCapabilityRequest(displays: displays)
+        let rawHV = evaluate(
+            family: .linux,
+            media: .installedLinuxBootBundle,
+            source: .userProvided,
+            backend: .doryHypervisor,
+            graphics: .software,
+            mediaArtifactSHA256: Self.guestArtifactSHA256,
+            devices: devices
+        )
+        let vz = evaluate(
+            family: .linux,
+            media: .installedLinuxBootBundle,
+            source: .userProvided,
+            backend: .appleVirtualizationFramework,
+            graphics: .software,
+            mediaArtifactSHA256: Self.guestArtifactSHA256,
+            devices: devices
+        )
+
+        #expect(rawHV.availability.isUsable)
+        #expect(rawHV.resolvedDevices?.displays == displays)
+        #expect(vz.availability.reason?.code == .displayTopologyUnsupported)
+
+        var duplicate = devices
+        duplicate.displays[1].id = "display-0"
+        let invalid = evaluate(
+            family: .linux,
+            media: .installedLinuxBootBundle,
+            source: .userProvided,
+            backend: .doryHypervisor,
+            graphics: .software,
+            mediaArtifactSHA256: Self.guestArtifactSHA256,
+            devices: duplicate
+        )
+        #expect(invalid.availability.reason?.code == .displayTopologyUnsupported)
+
+        var divergentGuestScale = devices
+        divergentGuestScale.displays[1].guestUIScaleFactor = 1
+        let unsupportedScale = evaluate(
+            family: .linux,
+            media: .installedLinuxBootBundle,
+            source: .userProvided,
+            backend: .doryHypervisor,
+            graphics: .software,
+            mediaArtifactSHA256: Self.guestArtifactSHA256,
+            devices: divergentGuestScale
+        )
+        #expect(unsupportedScale.availability.reason?.code == .displayTopologyUnsupported)
     }
 
     private func evaluate(

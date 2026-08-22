@@ -510,22 +510,57 @@ enum DesktopMode {
     }
 
     struct DisplayPlan: Equatable {
+        var id: String
+        var scanoutID: UInt32
         var widthPixels: UInt32
         var heightPixels: UInt32
         var backingScaleFactor: UInt8
         var guestUIScaleFactor: UInt8
 
-        init(resolvedDevices: DoryVirtualMachineDeviceCapabilityRequest?) throws {
-            let display = resolvedDevices?.display ?? DoryVMMDisplayDefaults.capability
-            guard display.isValid else {
+        private init(
+            display: DoryVirtualMachineDisplayCapabilityRequest,
+            scanoutID: UInt32
+        ) throws {
+            guard display.isValid, scanoutID < 16 else {
                 throw VMError.bootFailure(
                     "resolved display geometry is outside the supported pixel bounds"
                 )
             }
+            id = display.id
+            self.scanoutID = scanoutID
             widthPixels = display.widthPixels
             heightPixels = display.heightPixels
             backingScaleFactor = display.backingScaleFactor
             guestUIScaleFactor = display.guestUIScaleFactor
+        }
+
+        /// Source-compatible primary-display bridge for existing callers and tests.
+        init(resolvedDevices: DoryVirtualMachineDeviceCapabilityRequest?) throws {
+            self = try Self.resolve(resolvedDevices: resolvedDevices)[0]
+        }
+
+        static func resolve(
+            resolvedDevices: DoryVirtualMachineDeviceCapabilityRequest?
+        ) throws -> [DisplayPlan] {
+            let displays = resolvedDevices?.displays ?? [DoryVMMDisplayDefaults.capability]
+            guard !displays.isEmpty, displays.count <= 16 else {
+                throw VMError.bootFailure(
+                    "raw-HV desktop launch requires between one and sixteen displays"
+                )
+            }
+            guard Set(displays.map(\.id)).count == displays.count else {
+                throw VMError.bootFailure(
+                    "resolved display identifiers must be unique"
+                )
+            }
+            guard Set(displays.map(\.guestUIScaleFactor)).count == 1 else {
+                throw VMError.bootFailure(
+                    "raw-HV guest tools require one UI scale across all displays"
+                )
+            }
+            return try displays.enumerated().map { index, display in
+                try DisplayPlan(display: display, scanoutID: UInt32(index))
+            }
         }
 
         var windowSize: NSSize {
@@ -603,9 +638,9 @@ enum DesktopMode {
         private let machine: Machine
         private let graphicsBackend: DoryDesktopGraphicsBackend
         private let input: VirtioInput
-        private let mailbox: DesktopFrameMailbox
-        private let display: DesktopMetalView
-        private let window: NSWindow
+        private let mailboxes: [DesktopFrameMailbox]
+        private let displays: [DesktopMetalView]
+        private let windows: [NSWindow]
         private let vsock: VirtioVsock
         private let audio: DoryMacAudioBackend
         private let gvproxy: Process?
@@ -659,7 +694,9 @@ enum DesktopMode {
                     "resolved network interface identity or MTU is invalid"
                 )
             }
-            let displayPlan = try DisplayPlan(resolvedDevices: configuration.resolvedDevices)
+            let displayPlans = try DisplayPlan.resolve(
+                resolvedDevices: configuration.resolvedDevices
+            )
             if let devices = configuration.resolvedDevices {
                 guard devices.keyboard == devices.pointer else {
                     throw VMError.bootFailure(
@@ -698,17 +735,32 @@ enum DesktopMode {
             Self.attachPlatformDevices(to: machine, serialLog: serialLog)
 
             self.input = VirtioInput()
-            self.mailbox = DesktopFrameMailbox()
-            let cursorMailbox = DesktopCursorMailbox()
-            let firstFrame = FirstFrameGate()
+            var mailboxes = [DesktopFrameMailbox]()
+            var cursorMailboxes = [DesktopCursorMailbox]()
+            var displays = [DesktopMetalView]()
+            let pointerTopology = DesktopPointerTopology(sizes: displayPlans.map {
+                VirtioGPUScanoutSize(width: $0.widthPixels, height: $0.heightPixels)
+            })
+            for plan in displayPlans {
+                let mailbox = DesktopFrameMailbox()
+                let cursorMailbox = DesktopCursorMailbox()
+                let display = try DesktopMetalView(
+                    frame: NSRect(origin: .zero, size: plan.windowSize),
+                    input: input,
+                    guestBackingScaleFactor: CGFloat(plan.backingScaleFactor),
+                    scanoutID: plan.scanoutID,
+                    pointerTopology: pointerTopology
+                )
+                mailbox.view = display
+                cursorMailbox.view = display
+                mailboxes.append(mailbox)
+                cursorMailboxes.append(cursorMailbox)
+                displays.append(display)
+            }
+            self.mailboxes = mailboxes
+            self.displays = displays
+            let firstFrame = FirstFrameGate(requiredScanoutCount: displayPlans.count)
             self.firstFrame = firstFrame
-            self.display = try DesktopMetalView(
-                frame: NSRect(origin: .zero, size: displayPlan.windowSize),
-                input: input,
-                guestBackingScaleFactor: CGFloat(displayPlan.backingScaleFactor)
-            )
-            mailbox.view = display
-            cursorMailbox.view = display
 
             let renderer = resolvedGraphics.renderer
             let hostVisibleMemory = try renderer.map { _ in
@@ -716,21 +768,29 @@ enum DesktopMode {
             }
             let gpu = VirtioGPU(
                 hostMemoryBase: GuestLayout.daxWindowBase,
-                scanoutCount: 1,
-                scanoutWidth: displayPlan.widthPixels,
-                scanoutHeight: displayPlan.heightPixels,
+                scanoutSizes: displayPlans.map {
+                    VirtioGPUScanoutSize(width: $0.widthPixels, height: $0.heightPixels)
+                },
                 renderer: renderer,
                 hostVisibleMemory: hostVisibleMemory,
                 traceResourceLifecycle: configuration.environment["DORY_GPU_TRACE_RESOURCES"] == "1",
-                onScanoutFrame: { [mailbox, firstFrame] frame in
-                    mailbox.submit(frame)
-                    firstFrame.signal()
+                onScanoutFrame: { [mailboxes, firstFrame] frame in
+                    guard mailboxes.indices.contains(Int(frame.scanoutID)) else { return }
+                    mailboxes[Int(frame.scanoutID)].submit(frame)
+                    firstFrame.signal(scanoutID: frame.scanoutID)
                 },
-                onScanoutResourceReleased: { [mailbox] resourceID in
-                    mailbox.release(resourceID: resourceID)
+                onScanoutResourceReleased: { [mailboxes] resourceID in
+                    for mailbox in mailboxes {
+                        mailbox.release(resourceID: resourceID)
+                    }
                 },
-                onCursorUpdate: { [cursorMailbox] update in
-                    cursorMailbox.submit(update)
+                onCursorUpdate: { [cursorMailboxes] update in
+                    guard let update else {
+                        for mailbox in cursorMailboxes { mailbox.submit(nil) }
+                        return
+                    }
+                    guard cursorMailboxes.indices.contains(Int(update.scanoutID)) else { return }
+                    cursorMailboxes[Int(update.scanoutID)].submit(update)
                 }
             )
             let vsock = VirtioVsock(guestCID: 3)
@@ -826,7 +886,23 @@ enum DesktopMode {
                     }
                     let displayMetrics: (@Sendable () -> DesktopFrameMailboxMetrics?)?
                     if backend === gpu {
-                        displayMetrics = { [weak mailbox] in mailbox?.metrics }
+                        displayMetrics = { [mailboxes] in
+                            mailboxes.map(\.metrics).reduce(
+                                DesktopFrameMailboxMetrics(
+                                    presentedFrames: 0,
+                                    droppedFrames: 0
+                                )
+                            ) { partial, next in
+                                DesktopFrameMailboxMetrics(
+                                    presentedFrames: partial.presentedFrames.addingClamped(
+                                        next.presentedFrames
+                                    ),
+                                    droppedFrames: partial.droppedFrames.addingClamped(
+                                        next.droppedFrames
+                                    )
+                                )
+                            }
+                        }
                     } else {
                         displayMetrics = nil
                     }
@@ -838,9 +914,23 @@ enum DesktopMode {
                         displayMetrics: displayMetrics
                     )
                     if backend === gpu, configuration.resolvedDevices?.dynamicDisplay != false {
-                        display.onDrawableSizeChange = { [weak gpu, weak transport] width, height in
-                            guard let gpu, let transport else { return }
-                            gpu.updateScanoutSize(width: width, height: height, transport: transport)
+                        for (index, display) in displays.enumerated() {
+                            let scanoutID = UInt32(index)
+                            display.onDrawableSizeChange = {
+                                [weak gpu, weak transport] width, height in
+                                guard let gpu, let transport else { return }
+                                pointerTopology.update(
+                                    scanoutID: scanoutID,
+                                    width: width,
+                                    height: height
+                                )
+                                gpu.updateScanoutSize(
+                                    scanoutID: scanoutID,
+                                    width: width,
+                                    height: height,
+                                    transport: transport
+                                )
+                            }
                         }
                     }
                 }
@@ -906,22 +996,37 @@ enum DesktopMode {
                 self.clipboard = nil
             }
 
-            self.window = NSWindow(
-                contentRect: NSRect(origin: .zero, size: displayPlan.windowSize),
-                styleMask: [.titled, .closable, .miniaturizable, .resizable],
-                backing: .buffered,
-                defer: false
-            )
-            window.title = "\(configuration.machineID) — Dory Linux"
-            window.contentView = display
-            window.minSize = NSSize(width: 640, height: 400)
-            window.collectionBehavior.insert(.fullScreenPrimary)
-            window.tabbingMode = .disallowed
-            window.center()
+            var windows = [NSWindow]()
+            for (index, plan) in displayPlans.enumerated() {
+                let window = NSWindow(
+                    contentRect: NSRect(origin: .zero, size: plan.windowSize),
+                    styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                    backing: .buffered,
+                    defer: false
+                )
+                window.title = displayPlans.count == 1
+                    ? "\(configuration.machineID) — Dory Linux"
+                    : "\(configuration.machineID) — Dory Linux — Display \(index + 1)"
+                window.contentView = displays[index]
+                window.minSize = NSSize(width: 640, height: 400)
+                window.collectionBehavior.insert(.fullScreenPrimary)
+                window.tabbingMode = .disallowed
+                window.center()
+                if index > 0, let first = windows.first {
+                    window.setFrameOrigin(NSPoint(
+                        x: first.frame.minX + CGFloat(index * 36),
+                        y: first.frame.minY - CGFloat(index * 36)
+                    ))
+                }
+                windows.append(window)
+            }
+            self.windows = windows
             super.init()
-            window.delegate = self
-            display.onMacShortcut = { [weak clipboard] event in
-                clipboard?.handleMacShortcut(event) ?? false
+            for window in windows { window.delegate = self }
+            for display in displays {
+                display.onMacShortcut = { [weak clipboard] event in
+                    clipboard?.handleMacShortcut(event) ?? false
+                }
             }
             clipboard?.start()
         }
@@ -938,7 +1043,7 @@ enum DesktopMode {
             application.delegate = self
             installApplicationMenu()
             installSignalHandlers()
-            window.makeKeyAndOrderFront(nil)
+            for window in windows { window.makeKeyAndOrderFront(nil) }
             application.activate()
             startMachine()
             application.run()
@@ -967,7 +1072,7 @@ enum DesktopMode {
                 keyEquivalent: "f"
             )
             fullScreenItem.keyEquivalentModifierMask = [.command, .control]
-            fullScreenItem.target = window
+            fullScreenItem.target = windows.first
             viewMenu.addItem(fullScreenItem)
             viewItem.submenu = viewMenu
             mainMenu.addItem(viewItem)
@@ -976,7 +1081,7 @@ enum DesktopMode {
         }
 
         func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-            window.makeKeyAndOrderFront(nil)
+            for window in windows { window.makeKeyAndOrderFront(nil) }
             return true
         }
 
@@ -991,11 +1096,13 @@ enum DesktopMode {
         }
 
         func windowDidResignKey(_ notification: Notification) {
-            display.releasePressedInput()
+            guard let window = notification.object as? NSWindow,
+                  let index = windows.firstIndex(of: window) else { return }
+            displays[index].releasePressedInput()
         }
 
         func applicationDidResignActive(_ notification: Notification) {
-            display.releasePressedInput()
+            for display in displays { display.releasePressedInput() }
         }
 
         private func startMachine() {
@@ -1072,7 +1179,7 @@ enum DesktopMode {
         private func requestGuestShutdown() {
             guard !stopping else { return }
             stopping = true
-            window.orderOut(nil)
+            for window in windows { window.orderOut(nil) }
             let machine = self.machine
             if ShutdownPlan(resolvedDevices: configuration.resolvedDevices) == .immediate {
                 machine.requestStop(.powerOff)
@@ -1160,7 +1267,8 @@ enum DesktopMode {
             raiseSource.setEventHandler { [weak self] in
                 MainActor.assumeIsolated {
                     guard let self else { return }
-                    self.window.makeKeyAndOrderFront(nil)
+                    for window in self.windows { window.makeKeyAndOrderFront(nil) }
+                    self.windows.first?.makeKey()
                     self.application.activate()
                 }
             }
@@ -1616,11 +1724,16 @@ enum DesktopMode {
 
 private final class FirstFrameGate: @unchecked Sendable {
     private let condition = NSCondition()
-    private var ready = false
+    private let requiredScanoutCount: Int
+    private var readyScanoutIDs = Set<UInt32>()
 
-    func signal() {
+    init(requiredScanoutCount: Int = 1) {
+        self.requiredScanoutCount = max(1, requiredScanoutCount)
+    }
+
+    func signal(scanoutID: UInt32 = 0) {
         condition.lock()
-        ready = true
+        readyScanoutIDs.insert(scanoutID)
         condition.broadcast()
         condition.unlock()
     }
@@ -1628,11 +1741,18 @@ private final class FirstFrameGate: @unchecked Sendable {
     func wait(timeout: TimeInterval) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         condition.lock()
-        while !ready {
+        while readyScanoutIDs.count < requiredScanoutCount {
             if !condition.wait(until: deadline) { break }
         }
-        let result = ready
+        let result = readyScanoutIDs.count >= requiredScanoutCount
         condition.unlock()
         return result
+    }
+}
+
+private extension UInt64 {
+    func addingClamped(_ other: UInt64) -> UInt64 {
+        let (result, overflow) = addingReportingOverflow(other)
+        return overflow ? .max : result
     }
 }

@@ -10,6 +10,22 @@ struct DoryDaemonVirtualMachineRuntimePlanningTests {
         let fixture = try Fixture()
         var definition = fixture.definition
         definition.networkMode = .disconnected
+        definition.displays = [
+            DoryVMDisplayConfiguration(
+                id: "display-0",
+                widthPixels: 1_920,
+                heightPixels: 1_080,
+                backingScaleFactor: 2,
+                guestUIScaleFactor: 1
+            ),
+            DoryVMDisplayConfiguration(
+                id: "display-1",
+                widthPixels: 1_280,
+                heightPixels: 1_024,
+                backingScaleFactor: 1,
+                guestUIScaleFactor: 2
+            ),
+        ]
 
         let devices = DoryDaemonVirtualMachinePlanningCoordinator.devices(for: definition)
 
@@ -17,12 +33,22 @@ struct DoryDaemonVirtualMachineRuntimePlanningTests {
         #expect(devices.networkInterface
             == .stable(machineID: definition.identity.id))
         #expect(devices.networkInterface?.maximumTransmissionUnit == 1_280)
-        #expect(devices.display == DoryVirtualMachineDisplayCapabilityRequest(
-            widthPixels: definition.display.widthPixels,
-            heightPixels: definition.display.heightPixels,
-            backingScaleFactor: definition.display.backingScaleFactor,
-            guestUIScaleFactor: definition.display.guestUIScaleFactor
-        ))
+        #expect(devices.displays == [
+            DoryVirtualMachineDisplayCapabilityRequest(
+                id: "display-0",
+                widthPixels: 1_920,
+                heightPixels: 1_080,
+                backingScaleFactor: 2,
+                guestUIScaleFactor: 1
+            ),
+            DoryVirtualMachineDisplayCapabilityRequest(
+                id: "display-1",
+                widthPixels: 1_280,
+                heightPixels: 1_024,
+                backingScaleFactor: 1,
+                guestUIScaleFactor: 2
+            ),
+        ])
         #expect(devices.audioInput == definition.audio.inputEnabled)
         #expect(devices.audioOutput == definition.audio.outputEnabled)
         #expect(devices.keyboard == definition.input.keyboardEnabled)
@@ -294,6 +320,7 @@ private final class Fixture {
                 hostPort: 2_222,
                 guestPort: 22
             )],
+            display: .disabled,
             audio: DoryVMAudioConfiguration(inputEnabled: false, outputEnabled: false),
             input: DoryVMInputConfiguration(keyboardEnabled: false, pointerEnabled: false),
             lifecycle: DoryVMLifecycleMetadata(

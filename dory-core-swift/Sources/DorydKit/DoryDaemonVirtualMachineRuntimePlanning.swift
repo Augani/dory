@@ -526,14 +526,15 @@ public final class DoryDaemonVirtualMachinePlanningCoordinator: @unchecked Senda
         return DoryVirtualMachineDeviceCapabilityRequest(
             networkAttachment: networkAttachment,
             networkInterface: .stable(machineID: definition.identity.id),
-            display: definition.display.enabled
-                ? DoryVirtualMachineDisplayCapabilityRequest(
-                    widthPixels: definition.display.widthPixels,
-                    heightPixels: definition.display.heightPixels,
-                    backingScaleFactor: definition.display.backingScaleFactor,
-                    guestUIScaleFactor: definition.display.guestUIScaleFactor
+            displays: definition.displays.map { display in
+                DoryVirtualMachineDisplayCapabilityRequest(
+                    id: display.id,
+                    widthPixels: display.widthPixels,
+                    heightPixels: display.heightPixels,
+                    backingScaleFactor: display.backingScaleFactor,
+                    guestUIScaleFactor: display.guestUIScaleFactor
                 )
-                : nil,
+            },
             audioInput: definition.audio.inputEnabled,
             audioOutput: definition.audio.outputEnabled,
             keyboard: definition.input.keyboardEnabled,

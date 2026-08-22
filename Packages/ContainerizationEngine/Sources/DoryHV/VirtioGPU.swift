@@ -84,6 +84,18 @@ public struct VirtioGPURect: Sendable, Equatable {
     }
 }
 
+/// The preferred mode for one stable virtio-gpu scanout. Array order is the guest-visible
+/// scanout identifier, so callers must preserve it for the lifetime of the device.
+public struct VirtioGPUScanoutSize: Sendable, Equatable {
+    public var width: UInt32
+    public var height: UInt32
+
+    public init(width: UInt32, height: UInt32) {
+        self.width = min(16_384, max(1, width))
+        self.height = min(16_384, max(1, height))
+    }
+}
+
 /// One copied scanout update ready for a host display surface. `width` and `height` describe the
 /// complete scanout, while `bytes` contains only `dirtyRect` rows at `stride` bytes per row. The
 /// device never exposes guest pointers to the UI layer, and small browser repaints therefore avoid
@@ -303,8 +315,7 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
 
     private let scanoutCount: UInt32
     private let displayLock = NSLock()
-    private var scanoutWidth: UInt32
-    private var scanoutHeight: UInt32
+    private var scanoutSizes: [VirtioGPUScanoutSize]
     private var pendingDisplayEvents: UInt32 = 0
     private let onScanoutFrame: (@Sendable (VirtioGPUScanoutFrame) -> Void)?
     private let onScanoutResourceReleased: (@Sendable (UInt32) -> Void)?
@@ -460,6 +471,7 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         scanoutCount: UInt32 = 0,
         scanoutWidth: UInt32 = 1_280,
         scanoutHeight: UInt32 = 800,
+        scanoutSizes: [VirtioGPUScanoutSize]? = nil,
         renderer: VirtioGPURenderer? = nil,
         hostVisibleMemory: VirtioGPUHostVisibleMemory? = nil,
         traceResourceLifecycle: Bool = ProcessInfo.processInfo.environment["DORY_GPU_TRACE_RESOURCES"] == "1",
@@ -468,7 +480,19 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         onScanoutResourceReleased: (@Sendable (UInt32) -> Void)? = nil,
         onCursorUpdate: (@Sendable (VirtioGPUCursorUpdate?) -> Void)? = nil
     ) {
-        let boundedScanoutCount = min(scanoutCount, 16)
+        let boundedScanoutSizes: [VirtioGPUScanoutSize]
+        if let scanoutSizes {
+            boundedScanoutSizes = Array(scanoutSizes.prefix(16))
+        } else {
+            boundedScanoutSizes = Array(
+                repeating: VirtioGPUScanoutSize(
+                    width: scanoutWidth,
+                    height: scanoutHeight
+                ),
+                count: Int(min(scanoutCount, 16))
+            )
+        }
+        let boundedScanoutCount = UInt32(boundedScanoutSizes.count)
         self.renderer = renderer
         self.capsets = renderer?.capsets ?? []
         self.traceResourceLifecycle = traceResourceLifecycle
@@ -480,8 +504,7 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
             VirtioSharedMemoryRegion(id: 1, guestBase: hostMemoryBase, length: hostVisibleMemory?.length ?? hostMemorySize)
         ]
         self.scanoutCount = boundedScanoutCount
-        self.scanoutWidth = max(1, scanoutWidth)
-        self.scanoutHeight = max(1, scanoutHeight)
+        self.scanoutSizes = boundedScanoutSizes
         self.hostVisibleMemory = hostVisibleMemory
         self.onScanoutFrame = onScanoutFrame
         self.onScanoutResourceReleased = onScanoutResourceReleased
@@ -512,21 +535,35 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
     /// compositor renders at the Retina window's pixel dimensions instead of scaling one fixed
     /// framebuffer on the host.
     public func updateScanoutSize(
+        scanoutID: UInt32,
         width: UInt32,
         height: UInt32,
         transport: VirtioMMIOTransport
     ) {
-        let boundedWidth = min(16_384, max(1, width))
-        let boundedHeight = min(16_384, max(1, height))
+        let updated = VirtioGPUScanoutSize(width: width, height: height)
         displayLock.lock()
-        let changed = scanoutWidth != boundedWidth || scanoutHeight != boundedHeight
+        let index = Int(scanoutID)
+        let changed = scanoutSizes.indices.contains(index) && scanoutSizes[index] != updated
         if changed {
-            scanoutWidth = boundedWidth
-            scanoutHeight = boundedHeight
+            scanoutSizes[index] = updated
             pendingDisplayEvents |= 1  // VIRTIO_GPU_EVENT_DISPLAY
         }
         displayLock.unlock()
         if changed { transport.notifyConfigChange() }
+    }
+
+    /// Source-compatible primary-scanout resize bridge.
+    public func updateScanoutSize(
+        width: UInt32,
+        height: UInt32,
+        transport: VirtioMMIOTransport
+    ) {
+        updateScanoutSize(
+            scanoutID: 0,
+            width: width,
+            height: height,
+            transport: transport
+        )
     }
 
     public func writeConfig(offset: UInt64, value: UInt64, width: Int) {
@@ -709,17 +746,16 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         switch command {
         case Command.getDisplayInfo:
             displayLock.lock()
-            let width = scanoutWidth
-            let height = scanoutHeight
-            let count = scanoutCount
+            let sizes = scanoutSizes
             displayLock.unlock()
             var response = responseHeader(type: Response.okDisplayInfo, request: request)
             for index in 0..<16 {
+                let size = sizes.indices.contains(index) ? sizes[index] : nil
                 response.appendLE(UInt32(0))
                 response.appendLE(UInt32(0))
-                response.appendLE(index < count ? width : 0)
-                response.appendLE(index < count ? height : 0)
-                response.appendLE(index < count ? UInt32(1) : 0)
+                response.appendLE(size?.width ?? 0)
+                response.appendLE(size?.height ?? 0)
+                response.appendLE(size == nil ? UInt32(0) : UInt32(1))
                 response.appendLE(UInt32(0))
             }
             return response

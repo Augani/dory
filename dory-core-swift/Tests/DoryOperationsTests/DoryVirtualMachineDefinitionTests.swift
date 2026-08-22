@@ -7,7 +7,7 @@ struct DoryVirtualMachineDefinitionTests {
     private let gibibyte: UInt64 = 1_073_741_824
     private let nowMilliseconds: Int64 = 1_787_200_000_000
 
-    @Test("schema 4 round trips with stable resolver and timestamp representations")
+    @Test("schema 5 round trips with stable resolver display and timestamp representations")
     func currentRoundTrip() throws {
         let original = linuxDefinition()
         #expect(original.isValid)
@@ -19,7 +19,7 @@ struct DoryVirtualMachineDefinitionTests {
         #expect(decoded == original)
 
         let json = try #require(String(data: data, encoding: .utf8))
-        #expect(json.contains("\"schemaVersion\":4"))
+        #expect(json.contains("\"schemaVersion\":5"))
         #expect(json.contains("\"virtualHardwareABIVersion\":1"))
         #expect(json.contains("\"createdAtUnixMilliseconds\":1787200000000"))
         #expect(json.contains("\"namespace\":\"boot\""))
@@ -27,6 +27,8 @@ struct DoryVirtualMachineDefinitionTests {
         #expect(json.contains("\"guestIdentityIntent\""))
         #expect(json.contains("\"backingScaleFactor\":2"))
         #expect(json.contains("\"guestUIScaleFactor\":2"))
+        #expect(json.contains("\"id\":\"display-0\""))
+        #expect(json.contains("\"displays\""))
         #expect(json.contains("\"portForwards\":[]"))
         #expect(!json.contains("\"bootMedia\""))
         #expect(!json.contains("artifactID"))
@@ -43,6 +45,11 @@ struct DoryVirtualMachineDefinitionTests {
         object.removeValue(forKey: "guestIdentityIntent")
         object.removeValue(forKey: "clipboardPolicy")
         object.removeValue(forKey: "portForwards")
+        var display = try #require(
+            (object.removeValue(forKey: "displays") as? [[String: Any]])?.first
+        )
+        display.removeValue(forKey: "id")
+        object["display"] = display
         object["schemaVersion"] = 2
         var storage = try #require(object["storage"] as? [[String: Any]])
         for index in storage.indices { storage[index].removeValue(forKey: "source") }
@@ -55,7 +62,7 @@ struct DoryVirtualMachineDefinitionTests {
         )
         #expect(decoded.guestIdentityIntent == .unspecified)
         #expect(decoded.clipboardPolicy == .legacyDesktop(.bidirectional))
-        #expect(decoded.schemaVersion == 4)
+        #expect(decoded.schemaVersion == DoryVirtualMachineDefinition.currentSchemaVersion)
         #expect(decoded.portForwards.isEmpty)
         #expect(decoded.storage.allSatisfy { $0.source == .userProvided })
         #expect(decoded.display.backingScaleFactor == 2)
@@ -352,7 +359,7 @@ struct DoryVirtualMachineDefinitionTests {
         """#.utf8)
 
         let migrated = try JSONDecoder().decode(DoryVirtualMachineDefinition.self, from: golden)
-        #expect(migrated.schemaVersion == 4)
+        #expect(migrated.schemaVersion == DoryVirtualMachineDefinition.currentSchemaVersion)
         #expect(migrated.portForwards.isEmpty)
         #expect(migrated.virtualHardwareABIVersion == 1)
         #expect(migrated.workload == .desktop)
@@ -368,7 +375,8 @@ struct DoryVirtualMachineDefinitionTests {
 
         let upgraded = try JSONEncoder().encode(migrated)
         let upgradedJSON = try #require(String(data: upgraded, encoding: .utf8))
-        #expect(upgradedJSON.contains("\"schemaVersion\":4"))
+        #expect(upgradedJSON.contains("\"schemaVersion\":5"))
+        #expect(upgradedJSON.contains("\"displays\""))
         #expect(upgradedJSON.contains("createdAtUnixMilliseconds"))
         #expect(!upgradedJSON.contains("\"bootMedia\""))
     }
@@ -704,10 +712,42 @@ struct DoryVirtualMachineDefinitionTests {
         #expect(definition.isValid)
 
         definition.display.backingScaleFactor = 0
-        #expect(has(.invalidDisplayConfiguration, "display", in: definition.validate()))
+        #expect(has(.invalidDisplayConfiguration, "displays[0]", in: definition.validate()))
         definition.display.backingScaleFactor = 2
         definition.display.guestUIScaleFactor = 3
-        #expect(has(.invalidDisplayConfiguration, "display", in: definition.validate()))
+        #expect(has(.invalidDisplayConfiguration, "displays[0]", in: definition.validate()))
+    }
+
+    @Test("display topology has stable unique connectors and a bounded count")
+    func displayTopologyValidation() throws {
+        var definition = linuxDefinition()
+        definition.displays = [
+            DoryVMDisplayConfiguration(id: "display-0", widthPixels: 2_560, heightPixels: 1_600),
+            DoryVMDisplayConfiguration(id: "display-1", widthPixels: 1_920, heightPixels: 1_080),
+        ]
+        #expect(definition.isValid)
+
+        let encoded = try JSONEncoder().encode(definition)
+        let decoded = try JSONDecoder().decode(DoryVirtualMachineDefinition.self, from: encoded)
+        #expect(decoded.displays == definition.displays)
+        #expect(decoded.display == definition.displays[0])
+
+        definition.displays[1].id = "display-0"
+        #expect(has(.duplicateDisplayIdentifier, "displays[1].id", in: definition.validate()))
+        definition.displays[1].id = "../../display"
+        #expect(has(.invalidDisplayIdentifier, "displays[1].id", in: definition.validate()))
+
+        definition.displays[1] = DoryVMDisplayConfiguration(
+            id: "display-1",
+            widthPixels: DoryVMDisplayConfiguration.maximumDimensionPixels + 1,
+            heightPixels: 1_080
+        )
+        #expect(has(.invalidDisplayConfiguration, "displays[1]", in: definition.validate()))
+
+        definition.displays = (0...DoryVMDisplayConfiguration.maximumCount).map {
+            DoryVMDisplayConfiguration(id: "display-\($0)")
+        }
+        #expect(has(.tooManyDisplays, "displays", in: definition.validate()))
     }
 
     private func linuxDefinition(

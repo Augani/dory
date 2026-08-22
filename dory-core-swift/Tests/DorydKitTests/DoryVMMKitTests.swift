@@ -942,6 +942,27 @@ final class DoryVMMKitTests: XCTestCase {
         XCTAssertFalse(resolvedClipboard.sharesClipboard)
         XCTAssertTrue(configuration.directorySharingDevices.isEmpty)
 
+        var multipleDisplays = devices
+        multipleDisplays.displays.append(DoryVirtualMachineDisplayCapabilityRequest(
+            id: "display-1",
+            widthPixels: 1_280,
+            heightPixels: 1_024
+        ))
+        XCTAssertThrowsError(try DoryVZConfigurationBuilder.makeConfiguration(
+            spec: DoryVZMachineSpec(
+                machineID: "resolved-desktop",
+                stateDirectory: base,
+                kernelPath: kernel,
+                rootfsPath: rootfs,
+                memoryMB: 4096,
+                cpuCount: 4,
+                displayMode: .desktop,
+                resolvedGraphics: .hostAcceleratedDisplay,
+                resolvedDevices: multipleDisplays
+            ),
+            serialOutput: nil
+        ))
+
         var invalidClipboardDevices = devices
         invalidClipboardDevices.clipboard = false
         XCTAssertThrowsError(try DoryVZConfigurationBuilder.makeConfiguration(

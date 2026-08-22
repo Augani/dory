@@ -172,19 +172,22 @@ public struct DoryVirtualMachineNetworkInterfaceCapabilityRequest:
 }
 
 public struct DoryVirtualMachineDisplayCapabilityRequest: Codable, Sendable, Equatable, Hashable {
-    public static let maximumDimensionPixels: UInt32 = 16_384
+    public static let maximumDimensionPixels = DoryVMDisplayConfiguration.maximumDimensionPixels
 
+    public var id: String
     public var widthPixels: UInt32
     public var heightPixels: UInt32
     public var backingScaleFactor: UInt8
     public var guestUIScaleFactor: UInt8
 
     public init(
+        id: String = "display-0",
         widthPixels: UInt32,
         heightPixels: UInt32,
         backingScaleFactor: UInt8 = 2,
         guestUIScaleFactor: UInt8 = 2
     ) {
+        self.id = id
         self.widthPixels = widthPixels
         self.heightPixels = heightPixels
         self.backingScaleFactor = backingScaleFactor
@@ -192,13 +195,15 @@ public struct DoryVirtualMachineDisplayCapabilityRequest: Codable, Sendable, Equ
     }
 
     public var isValid: Bool {
-        (1...Self.maximumDimensionPixels).contains(widthPixels)
+        DoryVMDisplayConfiguration.isValidIdentifier(id)
+            && (1...Self.maximumDimensionPixels).contains(widthPixels)
             && (1...Self.maximumDimensionPixels).contains(heightPixels)
             && (1...4).contains(backingScaleFactor)
             && (1...2).contains(guestUIScaleFactor)
     }
 
     private enum CodingKeys: String, CodingKey {
+        case id
         case widthPixels
         case heightPixels
         case backingScaleFactor
@@ -207,6 +212,7 @@ public struct DoryVirtualMachineDisplayCapabilityRequest: Codable, Sendable, Equ
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(String.self, forKey: .id) ?? "display-0"
         widthPixels = try container.decode(UInt32.self, forKey: .widthPixels)
         heightPixels = try container.decode(UInt32.self, forKey: .heightPixels)
         backingScaleFactor = try container.decodeIfPresent(
@@ -221,11 +227,15 @@ public struct DoryVirtualMachineDisplayCapabilityRequest: Codable, Sendable, Equ
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
+        if id != "display-0" {
+            try container.encode(id, forKey: .id)
+        }
         try container.encode(widthPixels, forKey: .widthPixels)
         try container.encode(heightPixels, forKey: .heightPixels)
         try container.encode(backingScaleFactor, forKey: .backingScaleFactor)
         try container.encode(guestUIScaleFactor, forKey: .guestUIScaleFactor)
     }
+
 }
 
 public struct DoryVirtualMachineDeviceCapabilityRequest: Codable, Sendable, Equatable, Hashable {
@@ -233,9 +243,19 @@ public struct DoryVirtualMachineDeviceCapabilityRequest: Codable, Sendable, Equa
     /// `nil` is compatibility-only for resolved plans authored before stable NIC identity was
     /// introduced. New production planning always supplies this exact contract.
     public var networkInterface: DoryVirtualMachineNetworkInterfaceCapabilityRequest?
-    /// Exact initial display geometry. `nil` is retained only for historical capability records
-    /// that predate display binding; newly planned desktop workspaces always carry this value.
-    public var display: DoryVirtualMachineDisplayCapabilityRequest?
+    /// Exact ordered display topology. Empty means headless.
+    public var displays: [DoryVirtualMachineDisplayCapabilityRequest]
+    /// Source-compatible primary-display bridge for historical capability callers.
+    public var display: DoryVirtualMachineDisplayCapabilityRequest? {
+        get { displays.first }
+        set {
+            if let newValue {
+                if displays.isEmpty { displays = [newValue] } else { displays[0] = newValue }
+            } else {
+                displays.removeAll()
+            }
+        }
+    }
     public var audioInput: Bool
     public var audioOutput: Bool
     public var keyboard: Bool
@@ -258,6 +278,7 @@ public struct DoryVirtualMachineDeviceCapabilityRequest: Codable, Sendable, Equa
         networkAttachment: DoryVirtualMachineNetworkAttachmentMode = .sharedNAT,
         networkInterface: DoryVirtualMachineNetworkInterfaceCapabilityRequest? = nil,
         display: DoryVirtualMachineDisplayCapabilityRequest? = nil,
+        displays: [DoryVirtualMachineDisplayCapabilityRequest]? = nil,
         audioInput: Bool = false,
         audioOutput: Bool = false,
         keyboard: Bool = false,
@@ -273,7 +294,7 @@ public struct DoryVirtualMachineDeviceCapabilityRequest: Codable, Sendable, Equa
     ) {
         self.networkAttachment = networkAttachment
         self.networkInterface = networkInterface
-        self.display = display
+        self.displays = displays ?? display.map { [$0] } ?? []
         self.audioInput = audioInput
         self.audioOutput = audioOutput
         self.keyboard = keyboard
@@ -292,6 +313,7 @@ public struct DoryVirtualMachineDeviceCapabilityRequest: Codable, Sendable, Equa
         case networkAttachment
         case networkInterface
         case display
+        case displays
         case audioInput
         case audioOutput
         case keyboard
@@ -316,10 +338,17 @@ public struct DoryVirtualMachineDeviceCapabilityRequest: Codable, Sendable, Equa
             DoryVirtualMachineNetworkInterfaceCapabilityRequest.self,
             forKey: .networkInterface
         )
-        display = try container.decodeIfPresent(
-            DoryVirtualMachineDisplayCapabilityRequest.self,
-            forKey: .display
-        )
+        if container.contains(.displays) {
+            displays = try container.decode(
+                [DoryVirtualMachineDisplayCapabilityRequest].self,
+                forKey: .displays
+            )
+        } else {
+            displays = try container.decodeIfPresent(
+                DoryVirtualMachineDisplayCapabilityRequest.self,
+                forKey: .display
+            ).map { [$0] } ?? []
+        }
         audioInput = try container.decode(Bool.self, forKey: .audioInput)
         audioOutput = try container.decode(Bool.self, forKey: .audioOutput)
         keyboard = try container.decode(Bool.self, forKey: .keyboard)
@@ -347,7 +376,11 @@ public struct DoryVirtualMachineDeviceCapabilityRequest: Codable, Sendable, Equa
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(networkAttachment, forKey: .networkAttachment)
         try container.encodeIfPresent(networkInterface, forKey: .networkInterface)
-        try container.encodeIfPresent(display, forKey: .display)
+        if displays.count <= 1 {
+            try container.encodeIfPresent(displays.first, forKey: .display)
+        } else {
+            try container.encode(displays, forKey: .displays)
+        }
         try container.encode(audioInput, forKey: .audioInput)
         try container.encode(audioOutput, forKey: .audioOutput)
         try container.encode(keyboard, forKey: .keyboard)
@@ -470,6 +503,7 @@ public enum DoryCapabilityReasonCode: String, Codable, Sendable, CaseIterable, H
     case clipboardFileTransferUnsupported = "clipboard-file-transfer-unsupported"
     case clockSynchronizationUnsupported = "clock-synchronization-unsupported"
     case dynamicDisplayUnsupported = "dynamic-display-unsupported"
+    case displayTopologyUnsupported = "display-topology-unsupported"
     case gracefulShutdownUnsupported = "graceful-shutdown-unsupported"
     case intelApplicationTranslationUnavailable = "intel-application-translation-unavailable"
     case removableUSBHotplugUnsupported = "removable-usb-hotplug-unsupported"
@@ -903,8 +937,8 @@ public struct DoryVirtualMachineCapabilityRequest: Codable, Sendable, Equatable,
 /// The daemon's immutable answer to a capability request. `schemaVersion` versions the wire shape,
 /// while the evaluator version identifies the support policy used to produce the answer.
 public struct DoryVirtualMachineCapabilityDescriptor: Codable, Sendable, Equatable, Hashable {
-    public static let currentSchemaVersion: UInt16 = 2
-    public static let appleSiliconEvaluatorVersion: UInt16 = 2
+    public static let currentSchemaVersion: UInt16 = 3
+    public static let appleSiliconEvaluatorVersion: UInt16 = 3
 
     public var schemaVersion: UInt16
     public var evaluatorVersion: UInt16
@@ -1753,6 +1787,24 @@ public enum DoryAppleSiliconCapabilityEvaluator {
         }
 
         let isGraphical = request.graphics != .none
+        let maximumDisplayCount = request.backend == .doryHypervisor
+            ? DoryVMDisplayConfiguration.maximumCount : 1
+        let displayIDs = Set(devices.displays.map(\.id))
+        let rawHVUsesOneGuestUIScale = request.backend != .doryHypervisor
+            || Set(devices.displays.map(\.guestUIScaleFactor)).count <= 1
+        guard devices.displays.allSatisfy(\.isValid),
+              displayIDs.count == devices.displays.count,
+              devices.displays.count <= maximumDisplayCount,
+              rawHVUsesOneGuestUIScale,
+              isGraphical || devices.displays.isEmpty else {
+            return unavailable(
+                tier: tier,
+                code: .displayTopologyUnsupported,
+                message: request.backend == .doryHypervisor
+                    ? "The resolved display topology is invalid or exceeds the raw-HV scanout limit."
+                    : "The selected backend supports exactly one display for graphical guests."
+            )
+        }
         let isLinuxVZ = request.guest.family == .linux
             && request.backend == .appleVirtualizationFramework
         let isLinuxRawHV = request.guest.family == .linux

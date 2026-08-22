@@ -975,6 +975,64 @@ import Testing
         #expect(leUInt32(gpu.configSpace, at: 8) == 1)
     }
 
+    @Test func publishesAndResizesEachScanoutIndependently() throws {
+        let memory = try GuestMemory(guestBase: base, size: 64 * HostPage.size)
+        let gpu = VirtioGPU(
+            hostMemoryBase: 0x1_0000_0000,
+            scanoutSizes: [
+                VirtioGPUScanoutSize(width: 1_920, height: 1_080),
+                VirtioGPUScanoutSize(width: 1_280, height: 1_024),
+            ]
+        )
+        var interruptCount = 0
+        let transport = VirtioMMIOTransport(
+            baseAddress: GuestLayout.virtioBase,
+            backend: gpu,
+            memory: memory
+        ) { interruptCount += 1 }
+
+        var display = try gpuResponse(gpu: gpu, request: gpuRequest(
+            type: 0x0100,
+            fenceID: 0,
+            contextID: 0,
+            ringIndex: 0
+        ))
+        #expect(leUInt32(gpu.configSpace, at: 8) == 2)
+        #expect(leUInt32(display, at: 32) == 1_920)
+        #expect(leUInt32(display, at: 36) == 1_080)
+        #expect(leUInt32(display, at: 40) == 1)
+        #expect(leUInt32(display, at: 56) == 1_280)
+        #expect(leUInt32(display, at: 60) == 1_024)
+        #expect(leUInt32(display, at: 64) == 1)
+
+        gpu.updateScanoutSize(
+            scanoutID: 1,
+            width: 2_560,
+            height: 1_440,
+            transport: transport
+        )
+        #expect(interruptCount == 1)
+
+        display = try gpuResponse(gpu: gpu, request: gpuRequest(
+            type: 0x0100,
+            fenceID: 0,
+            contextID: 0,
+            ringIndex: 0
+        ))
+        #expect(leUInt32(display, at: 32) == 1_920)
+        #expect(leUInt32(display, at: 36) == 1_080)
+        #expect(leUInt32(display, at: 56) == 2_560)
+        #expect(leUInt32(display, at: 60) == 1_440)
+
+        gpu.updateScanoutSize(
+            scanoutID: 7,
+            width: 800,
+            height: 600,
+            transport: transport
+        )
+        #expect(interruptCount == 1)
+    }
+
     @Test func hostResizeRaisesConfigInterruptAndUpdatesPreferredMode() throws {
         let memory = try GuestMemory(guestBase: base, size: 64 * HostPage.size)
         let gpu = VirtioGPU(
