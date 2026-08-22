@@ -320,6 +320,50 @@ impl AgentControl {
         Ok(receipt.operation_id)
     }
 
+    pub fn usb_vhci_attach(
+        &self,
+        bus_id: String,
+        port: u32,
+        vsock_port: u32,
+        device_id: u32,
+        speed: u32,
+    ) -> Result<(), RemoteFfiError> {
+        let guard = self.runtime.lock().unwrap();
+        let runtime = guard.as_ref().ok_or_else(shutdown_error)?;
+        let response = runtime.block_on(self.client.usb_vhci_attach(
+            dory_pb::agent::UsbVhciAttachRequest {
+                bus_id: bus_id.clone(),
+                port,
+                vsock_port,
+                device_id,
+                speed,
+            },
+        ))?;
+        if !response.attached
+            || response.bus_id != bus_id
+            || response.port != port
+            || response.device_id != device_id
+        {
+            return Err(failed("guest returned a mismatched USB attach receipt"));
+        }
+        Ok(())
+    }
+
+    pub fn usb_vhci_detach(&self, bus_id: String, port: u32) -> Result<(), RemoteFfiError> {
+        let guard = self.runtime.lock().unwrap();
+        let runtime = guard.as_ref().ok_or_else(shutdown_error)?;
+        let response = runtime.block_on(self.client.usb_vhci_detach(
+            dory_pb::agent::UsbVhciDetachRequest {
+                bus_id: bus_id.clone(),
+                port,
+            },
+        ))?;
+        if !response.detached || response.bus_id != bus_id || response.port != port {
+            return Err(failed("guest returned a mismatched USB detach receipt"));
+        }
+        Ok(())
+    }
+
     pub fn exec(
         &self,
         argv: Vec<String>,

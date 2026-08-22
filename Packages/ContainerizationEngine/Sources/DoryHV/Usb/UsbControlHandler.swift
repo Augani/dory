@@ -33,7 +33,7 @@ public enum UsbControlError: Error, Equatable, Sendable, CustomStringConvertible
         case .notAttached(let busID):
             return "USB device is not attached: \(busID)"
         case .guestAgentRPCUnavailable:
-            return "USB attach/detach is unavailable: dory-agent control protocol has no USB RPC"
+            return "USB attach/detach is unavailable: the guest does not expose usb-vhci@1"
         }
     }
 }
@@ -44,7 +44,7 @@ public enum UsbControlError: Error, Equatable, Sendable, CustomStringConvertible
 /// fails) is unit-testable without real hardware, a socket, or a running guest.
 public final class UsbControlHandler: @unchecked Sendable {
     private let manager: UsbipManager
-    private let ensureSupported: () throws -> Void
+    private let ensureSupported: () async throws -> Void
     private let openDevice: (String, HostUsbOpenMode) throws -> any UsbipExportedDevice
     private let notifyAttach: (UsbAgentAttachRequest) async throws -> Void
     private let notifyDetach: (UsbAgentDetachRequest) async throws -> Void
@@ -55,7 +55,7 @@ public final class UsbControlHandler: @unchecked Sendable {
 
     public init(
         manager: UsbipManager,
-        ensureSupported: @escaping () throws -> Void = {},
+        ensureSupported: @escaping () async throws -> Void = {},
         openDevice: @escaping (String, HostUsbOpenMode) throws -> any UsbipExportedDevice,
         notifyAttach: @escaping (UsbAgentAttachRequest) async throws -> Void,
         notifyDetach: @escaping (UsbAgentDetachRequest) async throws -> Void
@@ -70,13 +70,19 @@ public final class UsbControlHandler: @unchecked Sendable {
     public func attach(busID: String, mode: HostUsbOpenMode = .userAuthorized) async throws -> UsbAttachOutcome {
         // Capability is checked before opening or claiming the host device. A missing guest RPC must
         // fail closed; briefly seizing hardware and rolling back is still an observable disruption.
-        try ensureSupported()
-        try lock.withLock {
+        try await ensureSupported()
+        let port = try lock.withLock { () -> Int in
             guard portByBusID[busID] == nil else { throw UsbControlError.alreadyAttached(busID) }
+            return allocatePortLocked(for: busID)
         }
-        let device = try openDevice(busID, mode)
+        let device: any UsbipExportedDevice
+        do {
+            device = try openDevice(busID, mode)
+        } catch {
+            lock.withLock { releasePortLocked(busID) }
+            throw error
+        }
         manager.register(device)
-        let port = lock.withLock { allocatePortLocked(for: busID) }
         let descriptor = device.descriptor
         let request = UsbAgentAttachRequest(
             busid: busID,
@@ -97,7 +103,7 @@ public final class UsbControlHandler: @unchecked Sendable {
     }
 
     public func detach(busID: String) async throws {
-        try ensureSupported()
+        try await ensureSupported()
         let port = try lock.withLock { () -> Int in
             guard let port = portByBusID[busID] else { throw UsbControlError.notAttached(busID) }
             return port

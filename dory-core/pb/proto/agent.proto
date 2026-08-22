@@ -99,6 +99,33 @@ message LifecycleReceiptResponse {
   string operation_id = 3;
 }
 
+// Attach one host-exported USB/IP device to the guest's vhci controller. The host has already
+// claimed the device and exposed it on the fixed USB/IP vsock channel; the guest agent performs
+// the USB/IP import handshake and passes that exact connected socket to vhci_hcd.
+message UsbVhciAttachRequest {
+  string bus_id = 1;
+  uint32 port = 2;
+  uint32 vsock_port = 3;
+  uint32 device_id = 4;
+  uint32 speed = 5;
+}
+message UsbVhciAttachResponse {
+  bool attached = 1;
+  string bus_id = 2;
+  uint32 port = 3;
+  uint32 device_id = 4;
+}
+
+message UsbVhciDetachRequest {
+  string bus_id = 1;
+  uint32 port = 2;
+}
+message UsbVhciDetachResponse {
+  bool detached = 1;
+  string bus_id = 2;
+  uint32 port = 3;
+}
+
 // Run a bounded non-interactive command in the guest. This is the primitive doryd uses for
 // VM-machine provisioning and smoke checks; streaming terminals/debug shells can layer on a
 // separate channel later.
@@ -242,6 +269,8 @@ message AgentRequest {
     SyncReadTreeRequest sync_read_tree = 12;
     SyncGetChunkRequest sync_get_chunk = 13;
     LifecycleReceiptRequest lifecycle_receipt = 14;
+    UsbVhciAttachRequest usb_vhci_attach = 15;
+    UsbVhciDetachRequest usb_vhci_detach = 16;
   }
 }
 
@@ -262,5 +291,7 @@ message AgentResponse {
     SyncReadTreeResponse sync_read_tree = 13;
     SyncGetChunkResponse sync_get_chunk = 14;
     LifecycleReceiptResponse lifecycle_receipt = 15;
+    UsbVhciAttachResponse usb_vhci_attach = 16;
+    UsbVhciDetachResponse usb_vhci_detach = 17;
   }
 }

@@ -16,7 +16,8 @@ use dory_pb::agent::{
     SyncDeleteRequest, SyncDeleteResponse, SyncFileStatusRequest, SyncFileStatusResponse,
     SyncGetChunkRequest, SyncGetChunkResponse, SyncManifestRequest, SyncManifestResponse,
     SyncPutChunkRequest, SyncPutChunkResponse, SyncReadTreeRequest, SyncReadTreeResponse,
-    TelemetryRequest, TelemetryResponse,
+    TelemetryRequest, TelemetryResponse, UsbVhciAttachRequest, UsbVhciAttachResponse,
+    UsbVhciDetachRequest, UsbVhciDetachResponse,
 };
 use dory_proto::handshake::{handshake, Hello};
 use dory_proto::mux::Mux;
@@ -158,6 +159,26 @@ impl AgentClient {
             .await?
         {
             Res::LifecycleReceipt(receipt) => Ok(receipt),
+            _ => Err(RemoteError::UnexpectedVariant),
+        }
+    }
+
+    pub async fn usb_vhci_attach(
+        &self,
+        request: UsbVhciAttachRequest,
+    ) -> Result<UsbVhciAttachResponse, RemoteError> {
+        match self.call(Method::UsbVhciAttach(request)).await? {
+            Res::UsbVhciAttach(response) => Ok(response),
+            _ => Err(RemoteError::UnexpectedVariant),
+        }
+    }
+
+    pub async fn usb_vhci_detach(
+        &self,
+        request: UsbVhciDetachRequest,
+    ) -> Result<UsbVhciDetachResponse, RemoteError> {
+        match self.call(Method::UsbVhciDetach(request)).await? {
+            Res::UsbVhciDetach(response) => Ok(response),
             _ => Err(RemoteError::UnexpectedVariant),
         }
     }
@@ -363,6 +384,21 @@ mod tests {
                     operation_id: request.operation_id,
                 })
             }
+            Some(Method::UsbVhciAttach(request)) => {
+                Res::UsbVhciAttach(agent::UsbVhciAttachResponse {
+                    attached: true,
+                    bus_id: request.bus_id,
+                    port: request.port,
+                    device_id: request.device_id,
+                })
+            }
+            Some(Method::UsbVhciDetach(request)) => {
+                Res::UsbVhciDetach(agent::UsbVhciDetachResponse {
+                    detached: true,
+                    bus_id: request.bus_id,
+                    port: request.port,
+                })
+            }
             Some(Method::SyncReadTree(_)) => Res::SyncReadTree(agent::SyncReadTreeResponse {
                 files: vec![agent::SyncFileEntry {
                     path: "report.txt".into(),
@@ -443,6 +479,30 @@ mod tests {
             agent::lifecycle_receipt_request::Action::PrepareStop as i32
         );
         assert_eq!(receipt.operation_id, operation_id);
+
+        let attached = client
+            .usb_vhci_attach(UsbVhciAttachRequest {
+                bus_id: "3-2".into(),
+                port: 1,
+                vsock_port: dory_proto::channels::PORT_USBIP,
+                device_id: (3 << 16) | 2,
+                speed: 3,
+            })
+            .await
+            .unwrap();
+        assert!(attached.attached);
+        assert_eq!(attached.bus_id, "3-2");
+        assert_eq!(attached.device_id, (3 << 16) | 2);
+
+        let detached = client
+            .usb_vhci_detach(UsbVhciDetachRequest {
+                bus_id: "3-2".into(),
+                port: 1,
+            })
+            .await
+            .unwrap();
+        assert!(detached.detached);
+        assert_eq!(detached.bus_id, "3-2");
 
         let tree = client
             .sync_read_tree(SyncReadTreeRequest {

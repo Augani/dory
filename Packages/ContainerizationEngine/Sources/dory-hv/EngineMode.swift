@@ -768,17 +768,29 @@ enum EngineMode {
         defer { gvproxyDatapathTask.cancel() }
         note("engine starting: \(configuration.memoryMB)MiB ceiling, \(configuration.cpus) cpus, socket \(configuration.engineSocket)")
 
-        // The host usbip bridge exists, but attach/detach is deliberately unavailable until the
-        // authoritative protobuf agent protocol has a real guest vhci RPC. The capability gate runs
-        // before HostUsbDeviceFactory.open, so commands fail closed without claiming host hardware.
+        // USB/IP device data stays on its dedicated vsock connection. Attach/detach authority runs
+        // over a fresh shared agent-protocol channel for every operation, so an agent restart does
+        // not strand a long-lived control client and capability is revalidated before hardware is
+        // claimed and again immediately before the guest vhci mutation.
         let usbipManager = UsbipManager()
         usbipManager.attachListener(to: vsock)
         let usbControlHandler = UsbControlHandler(
             manager: usbipManager,
-            ensureSupported: { throw UsbControlError.guestAgentRPCUnavailable },
+            ensureSupported: {
+                let channel = AgentChannel(connection: vsock.connect(port: VsockPorts.agent))
+                try await channel.requireCapability("usb-vhci", version: 1)
+            },
             openDevice: { busID, mode in try HostUsbDeviceFactory.open(busID: busID, mode: mode) },
-            notifyAttach: { _ in throw UsbControlError.guestAgentRPCUnavailable },
-            notifyDetach: { _ in throw UsbControlError.guestAgentRPCUnavailable }
+            notifyAttach: { request in
+                let channel = AgentChannel(connection: vsock.connect(port: VsockPorts.agent))
+                try await channel.requireCapability("usb-vhci", version: 1)
+                try await channel.usbVhciAttach(request)
+            },
+            notifyDetach: { request in
+                let channel = AgentChannel(connection: vsock.connect(port: VsockPorts.agent))
+                try await channel.requireCapability("usb-vhci", version: 1)
+                try await channel.usbVhciDetach(request)
+            }
         )
         let usbControlServer = UsbControlServer(path: configuration.stateDirectory + "/usb-control.sock", handler: usbControlHandler)
         do { try usbControlServer.start() } catch { note("usb control server unavailable: \(error)") }

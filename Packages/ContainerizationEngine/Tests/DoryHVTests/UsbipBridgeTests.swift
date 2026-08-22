@@ -135,6 +135,31 @@ struct UsbControlHandlerTests {
         await #expect(throws: UsbControlError.self) { _ = try await handler.attach(busID: "3-2") }
     }
 
+    @Test func concurrentDuplicateAttachClaimsHostDeviceExactlyOnce() async {
+        let manager = UsbipManager()
+        let handler = UsbControlHandler(
+            manager: manager,
+            openDevice: { busID, _ in
+                StubExportedDevice(descriptor: fixtureDescriptor(busID: busID))
+            },
+            notifyAttach: { _ in await Task.yield() },
+            notifyDetach: { _ in }
+        )
+
+        let successes = await withTaskGroup(of: Bool.self, returning: Int.self) { group in
+            for _ in 0..<2 {
+                group.addTask { (try? await handler.attach(busID: "3-2")) != nil }
+            }
+            var count = 0
+            for await succeeded in group where succeeded { count += 1 }
+            return count
+        }
+
+        #expect(successes == 1)
+        #expect(handler.attachedBusIDs == ["3-2"])
+        #expect(manager.claimedBusIDs == ["3-2"])
+    }
+
     @Test func attachRollsBackWhenGuestNotifyFails() async throws {
         let manager = UsbipManager()
         let (handler, _) = makeHandler(manager: manager, attachFails: true)

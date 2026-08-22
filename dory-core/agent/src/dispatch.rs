@@ -33,6 +33,9 @@ pub fn agent_capabilities() -> Vec<agent::AgentCapability> {
     if crate::snapshot_quiesce::available() {
         capabilities.push(("snapshot-quiesce", 2));
     }
+    if crate::usb_vhci::available() {
+        capabilities.push(("usb-vhci", 1));
+    }
     capabilities.sort_unstable_by_key(|(id, _)| *id);
     capabilities
         .into_iter()

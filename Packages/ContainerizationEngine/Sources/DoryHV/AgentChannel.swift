@@ -12,15 +12,30 @@ protocol AgentControlRPC: AnyObject, Sendable {
     func info() throws -> DoryAgentInfo
     func clockSync(hostEpochNs: Int64) throws -> Bool
     func portsWatch() throws -> DoryPortsSnapshot
+    func usbVhciAttach(busID: String, port: UInt32, vsockPort: UInt32, deviceID: UInt32, speed: UInt32) throws
+    func usbVhciDetach(busID: String, port: UInt32) throws
     func close()
 }
 
 extension DoryAgentControlHandle: AgentControlRPC {}
 
+extension AgentControlRPC {
+    func usbVhciAttach(busID: String, port: UInt32, vsockPort: UInt32, deviceID: UInt32, speed: UInt32) throws {
+        throw AgentProtocolError.capabilityUnavailable("usb-vhci", 1)
+    }
+
+    func usbVhciDetach(busID: String, port: UInt32) throws {
+        throw AgentProtocolError.capabilityUnavailable("usb-vhci", 1)
+    }
+}
+
 public enum AgentProtocolError: Error, Equatable, Sendable {
     case connectionAlreadyConsumed
     case invalidGuestPort(UInt32)
+    case invalidVhciPort(Int)
     case socketPair(Int32)
+    case capabilityUnavailable(String, UInt32)
+    case invalidCapabilityInventory
 }
 
 /// A typed control channel over one connected guest vsock stream.
@@ -65,11 +80,17 @@ public final class AgentChannel: @unchecked Sendable {
 
     public func info() async throws -> AgentInfo {
         let raw = try await perform { try $0.info() }
+        guard raw.capabilitiesAreCanonical else {
+            throw AgentProtocolError.invalidCapabilityInventory
+        }
         return AgentInfo(
             protocolVersion: raw.protocolVersion,
             kernel: raw.kernel,
             agentBuild: raw.agentBuild,
-            uptimeSeconds: raw.uptimeSeconds
+            uptimeSeconds: raw.uptimeSeconds,
+            capabilities: raw.capabilities.map {
+                AgentCapability(id: $0.id, version: $0.version)
+            }
         )
     }
 
@@ -91,6 +112,35 @@ public final class AgentChannel: @unchecked Sendable {
                 AgentPortEvent(action: $0.action, protocol: $0.protocol, port: try checkedPort($0.port))
             }
         )
+    }
+
+    public func requireCapability(_ id: String, version: UInt32) async throws {
+        let info = try await info()
+        guard info.capabilities.contains(where: { $0.id == id && $0.version >= version }) else {
+            throw AgentProtocolError.capabilityUnavailable(id, version)
+        }
+    }
+
+    public func usbVhciAttach(_ request: UsbAgentAttachRequest) async throws {
+        guard let port = UInt32(exactly: request.port) else {
+            throw AgentProtocolError.invalidVhciPort(request.port)
+        }
+        try await perform {
+            try $0.usbVhciAttach(
+                busID: request.busid,
+                port: port,
+                vsockPort: request.vsock_port,
+                deviceID: request.device_id,
+                speed: request.speed
+            )
+        }
+    }
+
+    public func usbVhciDetach(_ request: UsbAgentDetachRequest) async throws {
+        guard let port = UInt32(exactly: request.port) else {
+            throw AgentProtocolError.invalidVhciPort(request.port)
+        }
+        try await perform { try $0.usbVhciDetach(busID: request.busid, port: port) }
     }
 
     private func perform<Result: Sendable>(
@@ -178,12 +228,20 @@ public struct AgentInfo: Codable, Equatable, Sendable {
     public var kernel: String
     public var agentBuild: String
     public var uptimeSeconds: UInt64
+    public var capabilities: [AgentCapability]
 
-    public init(protocolVersion: UInt32, kernel: String, agentBuild: String, uptimeSeconds: UInt64) {
+    public init(
+        protocolVersion: UInt32,
+        kernel: String,
+        agentBuild: String,
+        uptimeSeconds: UInt64,
+        capabilities: [AgentCapability] = []
+    ) {
         self.protocolVersion = protocolVersion
         self.kernel = kernel
         self.agentBuild = agentBuild
         self.uptimeSeconds = uptimeSeconds
+        self.capabilities = capabilities
     }
 
     enum CodingKeys: String, CodingKey {
@@ -191,6 +249,17 @@ public struct AgentInfo: Codable, Equatable, Sendable {
         case kernel
         case agentBuild = "agent_build"
         case uptimeSeconds = "uptime_seconds"
+        case capabilities
+    }
+}
+
+public struct AgentCapability: Codable, Equatable, Sendable {
+    public var id: String
+    public var version: UInt32
+
+    public init(id: String, version: UInt32) {
+        self.id = id
+        self.version = version
     }
 }
 

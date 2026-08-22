@@ -734,6 +734,28 @@ public final class DoryAgentControlHandle: @unchecked Sendable {
         }
     }
 
+    public func usbVhciAttach(
+        busID: String,
+        port: UInt32,
+        vsockPort: UInt32,
+        deviceID: UInt32,
+        speed: UInt32
+    ) throws {
+        try withControl {
+            try $0.usbVhciAttach(
+                busId: busID,
+                port: port,
+                vsockPort: vsockPort,
+                deviceId: deviceID,
+                speed: speed
+            )
+        }
+    }
+
+    public func usbVhciDetach(busID: String, port: UInt32) throws {
+        try withControl { try $0.usbVhciDetach(busId: busID, port: port) }
+    }
+
     public func exec(
         argv: [String],
         cwd: String = "",
