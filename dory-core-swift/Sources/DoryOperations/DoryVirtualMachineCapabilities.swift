@@ -248,6 +248,8 @@ public struct DoryVirtualMachineDeviceCapabilityRequest: Codable, Sendable, Equa
     public var clockSynchronization: Bool
     public var dynamicDisplay: Bool
     public var gracefulShutdown: Bool
+    /// Exact authorization to expose the host's installed Intel Linux translation runtime.
+    public var intelApplicationTranslation: Bool
     /// Exact permission for user-approved removable USB hotplug. Host bus identifiers are
     /// deliberately excluded because they are ephemeral runtime selections.
     public var removableUSBHotplug: Bool
@@ -266,6 +268,7 @@ public struct DoryVirtualMachineDeviceCapabilityRequest: Codable, Sendable, Equa
         clockSynchronization: Bool = false,
         dynamicDisplay: Bool = false,
         gracefulShutdown: Bool = false,
+        intelApplicationTranslation: Bool = false,
         removableUSBHotplug: Bool = false
     ) {
         self.networkAttachment = networkAttachment
@@ -281,6 +284,7 @@ public struct DoryVirtualMachineDeviceCapabilityRequest: Codable, Sendable, Equa
         self.clockSynchronization = clockSynchronization
         self.dynamicDisplay = dynamicDisplay
         self.gracefulShutdown = gracefulShutdown
+        self.intelApplicationTranslation = intelApplicationTranslation
         self.removableUSBHotplug = removableUSBHotplug
     }
 
@@ -298,6 +302,7 @@ public struct DoryVirtualMachineDeviceCapabilityRequest: Codable, Sendable, Equa
         case clockSynchronization
         case dynamicDisplay
         case gracefulShutdown
+        case intelApplicationTranslation
         case removableUSBHotplug
     }
 
@@ -328,6 +333,10 @@ public struct DoryVirtualMachineDeviceCapabilityRequest: Codable, Sendable, Equa
         clockSynchronization = try container.decode(Bool.self, forKey: .clockSynchronization)
         dynamicDisplay = try container.decode(Bool.self, forKey: .dynamicDisplay)
         gracefulShutdown = try container.decode(Bool.self, forKey: .gracefulShutdown)
+        intelApplicationTranslation = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .intelApplicationTranslation
+        ) ?? false
         removableUSBHotplug = try container.decodeIfPresent(
             Bool.self,
             forKey: .removableUSBHotplug
@@ -349,6 +358,9 @@ public struct DoryVirtualMachineDeviceCapabilityRequest: Codable, Sendable, Equa
         try container.encode(clockSynchronization, forKey: .clockSynchronization)
         try container.encode(dynamicDisplay, forKey: .dynamicDisplay)
         try container.encode(gracefulShutdown, forKey: .gracefulShutdown)
+        if intelApplicationTranslation {
+            try container.encode(true, forKey: .intelApplicationTranslation)
+        }
         if removableUSBHotplug {
             try container.encode(true, forKey: .removableUSBHotplug)
         }
@@ -459,6 +471,7 @@ public enum DoryCapabilityReasonCode: String, Codable, Sendable, CaseIterable, H
     case clockSynchronizationUnsupported = "clock-synchronization-unsupported"
     case dynamicDisplayUnsupported = "dynamic-display-unsupported"
     case gracefulShutdownUnsupported = "graceful-shutdown-unsupported"
+    case intelApplicationTranslationUnavailable = "intel-application-translation-unavailable"
     case removableUSBHotplugUnsupported = "removable-usb-hotplug-unsupported"
     case runtimeQualificationUnavailable = "runtime-qualification-unavailable"
     case runtimeQualificationEvidenceInvalid = "runtime-qualification-evidence-invalid"
@@ -1022,6 +1035,9 @@ public struct DoryAppleSiliconHostFacts: Codable, Sendable, Equatable, Hashable 
     public var doryMacOSBackendQualified: Bool
     public var metalAvailable: Bool
     public var doryAcceleratedRendererAvailable: Bool
+    /// `nil` means the host observation predates explicit Rosetta-for-Linux probing and is
+    /// therefore not sufficient to authorize application translation.
+    public var linuxIntelApplicationTranslationAvailable: Bool?
     public var runtimeQualificationContext: DoryVirtualMachineRuntimeQualificationHostContext?
 
     public init(
@@ -1041,6 +1057,7 @@ public struct DoryAppleSiliconHostFacts: Codable, Sendable, Equatable, Hashable 
         doryMacOSBackendQualified: Bool,
         metalAvailable: Bool,
         doryAcceleratedRendererAvailable: Bool,
+        linuxIntelApplicationTranslationAvailable: Bool? = nil,
         runtimeQualificationContext: DoryVirtualMachineRuntimeQualificationHostContext? = nil
     ) {
         self.macOSMajorVersion = macOSMajorVersion
@@ -1059,6 +1076,8 @@ public struct DoryAppleSiliconHostFacts: Codable, Sendable, Equatable, Hashable 
         self.doryMacOSBackendQualified = doryMacOSBackendQualified
         self.metalAvailable = metalAvailable
         self.doryAcceleratedRendererAvailable = doryAcceleratedRendererAvailable
+        self.linuxIntelApplicationTranslationAvailable =
+            linuxIntelApplicationTranslationAvailable
         self.runtimeQualificationContext = runtimeQualificationContext
     }
 }
@@ -1200,7 +1219,11 @@ public enum DoryAppleSiliconCapabilityEvaluator {
         ) {
             return unavailable
         }
-        if let unavailable = deviceCapabilityFailure(for: request, tier: supportTier) {
+        if let unavailable = deviceCapabilityFailure(
+            for: request,
+            host: host,
+            tier: supportTier
+        ) {
             return unavailable
         }
 
@@ -1687,6 +1710,7 @@ public enum DoryAppleSiliconCapabilityEvaluator {
 
     private static func deviceCapabilityFailure(
         for request: DoryVirtualMachineCapabilityRequest,
+        host: DoryAppleSiliconHostFacts,
         tier: DoryCapabilitySupportTier
     ) -> DoryCapabilityAvailability? {
         let devices = request.devices
@@ -1834,6 +1858,17 @@ public enum DoryAppleSiliconCapabilityEvaluator {
                     tier: tier,
                     code: .gracefulShutdownUnsupported,
                     message: "The selected guest/backend contract does not implement graceful shutdown."
+                )
+            }
+        }
+        if devices.intelApplicationTranslation {
+            guard request.guest.family == .linux,
+                  request.backend == .appleVirtualizationFramework,
+                  host.linuxIntelApplicationTranslationAvailable == true else {
+                return unavailable(
+                    tier: tier,
+                    code: .intelApplicationTranslationUnavailable,
+                    message: "Intel Linux application translation is not installed or is unavailable for the selected guest/backend contract."
                 )
             }
         }

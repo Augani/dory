@@ -544,6 +544,8 @@ public final class DoryDaemonVirtualMachinePlanningCoordinator: @unchecked Senda
             clockSynchronization: definition.integrations.contains(.clockSynchronization),
             dynamicDisplay: definition.integrations.contains(.dynamicDisplay),
             gracefulShutdown: definition.integrations.contains(.gracefulShutdown),
+            intelApplicationTranslation:
+                definition.integrations.contains(.intelApplicationTranslation),
             removableUSBHotplug: definition.integrations.contains(.removableUSBHotplug)
         )
     }

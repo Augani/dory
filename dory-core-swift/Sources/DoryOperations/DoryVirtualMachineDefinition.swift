@@ -336,6 +336,9 @@ public enum DoryVMGuestIntegration: String, Codable, Sendable, CaseIterable {
     case clockSynchronization = "clock-synchronization"
     case dynamicDisplay = "dynamic-display"
     case gracefulShutdown = "graceful-shutdown"
+    /// Exposes Apple's Rosetta runtime to an ARM64 Linux guest so it can execute Intel Linux
+    /// applications. Installation remains an explicit host-side user action.
+    case intelApplicationTranslation = "intel-application-translation"
     /// Authorizes user-approved USB hotplug through the guest's versioned USB/IP integration.
     /// Host device identities remain runtime-only and are never persisted in desired state.
     case removableUSBHotplug = "removable-usb-hotplug"

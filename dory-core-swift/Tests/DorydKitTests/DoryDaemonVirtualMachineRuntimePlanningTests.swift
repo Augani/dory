@@ -33,6 +33,9 @@ struct DoryDaemonVirtualMachineRuntimePlanningTests {
         definition.integrations.append(.removableUSBHotplug)
         #expect(DoryDaemonVirtualMachinePlanningCoordinator.devices(for: definition)
             .removableUSBHotplug)
+        definition.integrations.append(.intelApplicationTranslation)
+        #expect(DoryDaemonVirtualMachinePlanningCoordinator.devices(for: definition)
+            .intelApplicationTranslation)
 
         definition.display = .disabled
         #expect(DoryDaemonVirtualMachinePlanningCoordinator.devices(for: definition).display == nil)

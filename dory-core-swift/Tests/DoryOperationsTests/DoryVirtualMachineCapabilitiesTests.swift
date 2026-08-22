@@ -67,6 +67,7 @@ struct VirtualMachineCapabilitiesTests {
             JSONSerialization.jsonObject(with: data) as? [String: Any]
         )
         #expect(object["removableUSBHotplug"] == nil)
+        #expect(object["intelApplicationTranslation"] == nil)
         object.removeValue(forKey: "networkInterface")
         let historical = try JSONSerialization.data(withJSONObject: object)
 
@@ -77,6 +78,7 @@ struct VirtualMachineCapabilitiesTests {
         #expect(decoded.networkInterface == nil)
         #expect(decoded.clipboardPolicy == nil)
         #expect(!decoded.removableUSBHotplug)
+        #expect(!decoded.intelApplicationTranslation)
 
         object.removeValue(forKey: "keyboard")
         let truncated = try JSONSerialization.data(withJSONObject: object)
@@ -86,6 +88,52 @@ struct VirtualMachineCapabilitiesTests {
                 from: truncated
             )
         }
+    }
+
+    @Test("Intel application translation is exact, installed, Linux, and VZ-only")
+    func intelApplicationTranslationCapability() {
+        let devices = DoryVirtualMachineDeviceCapabilityRequest(
+            intelApplicationTranslation: true
+        )
+        var installedHost = Self.provisionedHost
+        installedHost.linuxIntelApplicationTranslationAvailable = true
+
+        let virtualizationFramework = evaluate(
+            family: .linux,
+            media: .installedLinuxBootBundle,
+            source: .userProvided,
+            backend: .appleVirtualizationFramework,
+            graphics: .hostAcceleratedDisplay,
+            host: installedHost,
+            mediaArtifactSHA256: Self.guestArtifactSHA256,
+            devices: devices
+        )
+        let missingHostRuntime = evaluate(
+            family: .linux,
+            media: .installedLinuxBootBundle,
+            source: .userProvided,
+            backend: .appleVirtualizationFramework,
+            graphics: .hostAcceleratedDisplay,
+            mediaArtifactSHA256: Self.guestArtifactSHA256,
+            devices: devices
+        )
+        let rawHV = evaluate(
+            family: .linux,
+            media: .installedLinuxBootBundle,
+            source: .userProvided,
+            backend: .doryHypervisor,
+            graphics: .hostAcceleratedDisplay,
+            host: installedHost,
+            mediaArtifactSHA256: Self.guestArtifactSHA256,
+            devices: devices
+        )
+
+        #expect(virtualizationFramework.availability.isUsable)
+        #expect(virtualizationFramework.resolvedDevices?.intelApplicationTranslation == true)
+        #expect(missingHostRuntime.availability.reason?.code
+            == .intelApplicationTranslationUnavailable)
+        #expect(rawHV.availability.reason?.code == .intelApplicationTranslationUnavailable)
+        #expect(!devices.matchesRuntimeQualificationContract(.minimumBootable))
     }
 
     @Test("removable USB hotplug is exact and raw-HV-only")

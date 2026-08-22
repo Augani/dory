@@ -163,6 +163,22 @@ struct DoryVirtualMachineDefinitionTests {
         #expect(decoded.isValid)
     }
 
+    @Test("Intel application translation integration round-trips")
+    func intelApplicationTranslationRoundTrip() throws {
+        var original = linuxDefinition()
+        original.integrations.append(.intelApplicationTranslation)
+
+        let data = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(
+            DoryVirtualMachineDefinition.self,
+            from: data
+        )
+
+        #expect(decoded.integrations.contains(.intelApplicationTranslation))
+        #expect(decoded == original)
+        #expect(decoded.isValid)
+    }
+
     @Test("sandbox lifecycle and credential grants are closed bounded intent")
     func sandboxPolicyValidation() throws {
         var definition = linuxDefinition()
