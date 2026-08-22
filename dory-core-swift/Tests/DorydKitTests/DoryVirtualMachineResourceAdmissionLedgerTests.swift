@@ -1,3 +1,4 @@
+import CryptoKit
 import Darwin
 import DoryOperations
 @testable import DorydKit
@@ -103,6 +104,266 @@ final class DoryVirtualMachineResourceAdmissionLedgerTests: XCTestCase {
             })
             XCTAssertEqual(states["machine-a"], .stopped)
             XCTAssertEqual(states["machine-b"], .starting)
+        }
+    }
+
+    func testPortBindingsAreAtomicAcrossProcessesAndReleasedOnlyWhenStopped() throws {
+        try withFixture("port-binding-lifecycle") { fixture in
+            let tcp = fixture.forward("ssh", transport: .tcp, hostPort: 22_220)
+            let udp = fixture.forward("dns", transport: .udp, hostPort: 22_220)
+            let resources = fixture.lightweightResources
+            let first = try fixture.ledger.reserveStarting(
+                binding: fixture.binding("machine-a"),
+                hostFacts: fixture.host,
+                workload: .server,
+                resources: resources,
+                portForwards: [tcp]
+            )
+            XCTAssertEqual(first.portForwards, [tcp])
+
+            let secondLedger = DoryVirtualMachineResourceAdmissionLedger(
+                root: fixture.ledger.root
+            )
+            XCTAssertThrowsError(try secondLedger.reserveStarting(
+                binding: fixture.binding("machine-b"),
+                hostFacts: fixture.host,
+                workload: .server,
+                resources: resources,
+                portForwards: [fixture.forward(
+                    "web",
+                    transport: .tcp,
+                    hostPort: 22_220,
+                    exposure: .lan
+                )]
+            )) { error in
+                XCTAssertEqual(
+                    error as? DoryVirtualMachineResourceAdmissionLedgerError,
+                    .portBindingUnavailable(
+                        transport: .tcp,
+                        hostPort: 22_220,
+                        machineID: "machine-a"
+                    )
+                )
+            }
+
+            let udpLease = try secondLedger.reserveStarting(
+                binding: fixture.binding("machine-b"),
+                hostFacts: fixture.host,
+                workload: .server,
+                resources: resources,
+                portForwards: [udp]
+            )
+            XCTAssertEqual(udpLease.portForwards, [udp])
+
+            let plan = fixture.plan(
+                binding: first.binding,
+                evidence: first.evidence,
+                portForwards: [tcp]
+            )
+            let bound = try fixture.ledger.bind(
+                leaseID: first.leaseID,
+                to: plan,
+                expectedLeaseRevision: first.leaseRevision
+            )
+            let running = try fixture.ledger.markRunning(
+                leaseID: bound.leaseID,
+                plan: plan,
+                hostFacts: fixture.host,
+                expectedLeaseRevision: bound.leaseRevision
+            )
+            _ = try fixture.ledger.markStopped(
+                leaseID: running.leaseID,
+                expectedLeaseRevision: running.leaseRevision
+            )
+
+            let replacement = try secondLedger.reserveStarting(
+                binding: fixture.binding("machine-c"),
+                hostFacts: fixture.host,
+                workload: .server,
+                resources: resources,
+                portForwards: [tcp]
+            )
+            XCTAssertEqual(replacement.portForwards, [tcp])
+
+            let beforeRestart = try fixture.ledger.snapshot()
+            XCTAssertThrowsError(try fixture.ledger.reserveStarting(
+                binding: fixture.binding("machine-a"),
+                hostFacts: fixture.host,
+                workload: .server,
+                resources: resources,
+                portForwards: [tcp]
+            )) { error in
+                XCTAssertEqual(
+                    error as? DoryVirtualMachineResourceAdmissionLedgerError,
+                    .portBindingUnavailable(
+                        transport: .tcp,
+                        hostPort: 22_220,
+                        machineID: "machine-c"
+                    )
+                )
+            }
+            XCTAssertEqual(try fixture.ledger.snapshot(), beforeRestart)
+        }
+    }
+
+    func testTwoLedgerInstancesAtomicallyReserveOnlyOnePortOwner() async throws {
+        let fixture = try ResourceLedgerFixture("port-binding-race")
+        defer { fixture.cleanup() }
+        let ledgers = [
+            fixture.ledger,
+            DoryVirtualMachineResourceAdmissionLedger(root: fixture.ledger.root),
+        ]
+        let bindings = [fixture.binding("machine-a"), fixture.binding("machine-b")]
+        let host = fixture.host
+        let resources = fixture.lightweightResources
+        let forward = fixture.forward("service", transport: .tcp, hostPort: 22_223)
+        let results = await withTaskGroup(
+            of: Result<DoryVirtualMachineResourceAdmissionLease,
+                DoryVirtualMachineResourceAdmissionLedgerError>.self,
+            returning: [Result<DoryVirtualMachineResourceAdmissionLease,
+                DoryVirtualMachineResourceAdmissionLedgerError>].self
+        ) { group in
+            for (ledger, binding) in zip(ledgers, bindings) {
+                group.addTask {
+                    do {
+                        return .success(try ledger.reserveStarting(
+                            binding: binding,
+                            hostFacts: host,
+                            workload: .server,
+                            resources: resources,
+                            portForwards: [forward]
+                        ))
+                    } catch let error as DoryVirtualMachineResourceAdmissionLedgerError {
+                        return .failure(error)
+                    } catch {
+                        return .failure(.filesystem("unexpected test error"))
+                    }
+                }
+            }
+            var values: [Result<DoryVirtualMachineResourceAdmissionLease,
+                DoryVirtualMachineResourceAdmissionLedgerError>] = []
+            for await value in group { values.append(value) }
+            return values
+        }
+
+        XCTAssertEqual(results.compactMap { try? $0.get() }.count, 1)
+        let failure = try XCTUnwrap(results.compactMap { result
+            -> DoryVirtualMachineResourceAdmissionLedgerError? in
+            guard case let .failure(error) = result else { return nil }
+            return error
+        }.first)
+        guard case let .portBindingUnavailable(transport, hostPort, machineID) = failure else {
+            return XCTFail("expected port-binding rejection, got \(failure)")
+        }
+        XCTAssertEqual(transport, .tcp)
+        XCTAssertEqual(hostPort, 22_223)
+        XCTAssertTrue(["machine-a", "machine-b"].contains(machineID))
+        XCTAssertEqual(try fixture.ledger.snapshot().leases.count, 1)
+    }
+
+    func testPlanMustMatchExactAdmittedPortForwards() throws {
+        try withFixture("port-binding-plan") { fixture in
+            let forward = fixture.forward("ssh", transport: .tcp, hostPort: 22_221)
+            let reserved = try fixture.ledger.reserveStarting(
+                binding: fixture.binding("machine-a"),
+                hostFacts: fixture.host,
+                workload: .server,
+                resources: fixture.lightweightResources,
+                portForwards: [forward]
+            )
+            var changed = forward
+            changed.guestPort += 1
+            let changedPlan = fixture.plan(
+                binding: reserved.binding,
+                evidence: reserved.evidence,
+                portForwards: [changed]
+            )
+            XCTAssertThrowsError(try fixture.ledger.bind(
+                leaseID: reserved.leaseID,
+                to: changedPlan,
+                expectedLeaseRevision: reserved.leaseRevision
+            )) { error in
+                XCTAssertEqual(
+                    error as? DoryVirtualMachineResourceAdmissionLedgerError,
+                    .planMismatch
+                )
+            }
+
+            let exactPlan = fixture.plan(
+                binding: reserved.binding,
+                evidence: reserved.evidence,
+                portForwards: [forward]
+            )
+            XCTAssertNoThrow(try fixture.ledger.bind(
+                leaseID: reserved.leaseID,
+                to: exactPlan,
+                expectedLeaseRevision: reserved.leaseRevision
+            ))
+        }
+    }
+
+    func testInvalidPortForwardContractNeverCreatesALease() throws {
+        try withFixture("invalid-port-binding") { fixture in
+            XCTAssertThrowsError(try fixture.ledger.reserveStarting(
+                binding: fixture.binding("machine-a"),
+                hostFacts: fixture.host,
+                workload: .server,
+                resources: fixture.lightweightResources,
+                portForwards: [fixture.forward(
+                    "ssh",
+                    transport: .tcp,
+                    hostPort: 22
+                )]
+            )) { error in
+                XCTAssertEqual(
+                    error as? DoryVirtualMachineResourceAdmissionLedgerError,
+                    .invalidPortForwardContract
+                )
+            }
+            XCTAssertTrue(try fixture.ledger.snapshot().leases.isEmpty)
+        }
+    }
+
+    func testSchemaOneLeaseRemainsReadableWithNoPortClaims() throws {
+        try withFixture("schema-one-port-migration") { fixture in
+            _ = try fixture.ledger.reserveStarting(
+                binding: fixture.binding("machine-a"),
+                hostFacts: fixture.host,
+                workload: .desktop,
+                resources: fixture.resources
+            )
+            let path = fixture.ledger.root + "/resource-admissions.json"
+            let original = try Data(contentsOf: URL(fileURLWithPath: path))
+            var envelope = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: original) as? [String: Any]
+            )
+            var record = try XCTUnwrap(envelope["record"] as? [String: Any])
+            var leases = try XCTUnwrap(record["leases"] as? [[String: Any]])
+            XCTAssertEqual(leases.count, 1)
+            leases[0]["schemaVersion"] = 1
+            leases[0].removeValue(forKey: "portForwards")
+            record["leases"] = leases
+            let recordData = try JSONSerialization.data(
+                withJSONObject: record,
+                options: [.sortedKeys, .withoutEscapingSlashes]
+            )
+            envelope["record"] = record
+            envelope["recordSHA256"] = SHA256.hash(data: recordData).map {
+                String(format: "%02x", $0)
+            }.joined()
+            let downgraded = try JSONSerialization.data(
+                withJSONObject: envelope,
+                options: [.sortedKeys, .withoutEscapingSlashes]
+            ) + Data("\n".utf8)
+            try downgraded.write(to: URL(fileURLWithPath: path))
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o600],
+                ofItemAtPath: path
+            )
+
+            let lease = try XCTUnwrap(fixture.ledger.snapshot().leases.first)
+            XCTAssertEqual(lease.schemaVersion, 1)
+            XCTAssertEqual(lease.portForwards, [])
         }
     }
 
@@ -759,6 +1020,11 @@ private final class ResourceLedgerFixture {
         memoryBytes: 4 * gibibyte,
         diskBytes: 32 * gibibyte
     )
+    let lightweightResources = DoryVMResourceRequest(
+        virtualCPUCount: 2,
+        memoryBytes: 2 * gibibyte,
+        diskBytes: 32 * gibibyte
+    )
 
     init(_ name: String, clock: ResourceLedgerClock? = nil) throws {
         root = FileManager.default.temporaryDirectory.appendingPathComponent(
@@ -788,7 +1054,8 @@ private final class ResourceLedgerFixture {
 
     func plan(
         binding: DoryVirtualMachineResourceAdmissionPlanBinding,
-        evidence: DoryResolvedMachineResourceAdmissionEvidence
+        evidence: DoryResolvedMachineResourceAdmissionEvidence,
+        portForwards: [DoryVMPortForward] = []
     ) -> DoryResolvedMachinePlan {
         let provenance = DoryMutableBootMediaProvenanceReference(
             repositoryIdentity: "machine-store",
@@ -800,7 +1067,8 @@ private final class ResourceLedgerFixture {
             source: .userProvided,
             mutableProvenance: provenance
         )
-        let devices = DoryVirtualMachineDeviceCapabilityRequest.minimumBootable
+        var devices = DoryVirtualMachineDeviceCapabilityRequest.minimumBootable
+        if !portForwards.isEmpty { devices.networkAttachment = .sharedNAT }
         let guest = DoryGuestPlatform(family: .linux, architecture: .arm64)
         return DoryResolvedMachinePlan(
             machineID: binding.machineID,
@@ -849,6 +1117,7 @@ private final class ResourceLedgerFixture {
             )],
             devices: devices,
             graphics: .software,
+            portForwards: portForwards,
             supportTier: .supported,
             selectionEvidence: DoryResolvedMachineBackendSelectionEvidence(
                 disposition: .primary,
@@ -892,6 +1161,22 @@ private final class ResourceLedgerFixture {
                 qualifierIdentifier: "dory-host-qualifier",
                 qualifierVersion: 1
             )
+        )
+    }
+
+    func forward(
+        _ id: String,
+        transport: DoryVMPortForwardTransport,
+        hostPort: UInt16,
+        guestPort: UInt16 = 22,
+        exposure: DoryVMPortForwardExposure = .loopback
+    ) -> DoryVMPortForward {
+        DoryVMPortForward(
+            id: id,
+            transport: transport,
+            hostPort: hostPort,
+            guestPort: guestPort,
+            exposure: exposure
         )
     }
 

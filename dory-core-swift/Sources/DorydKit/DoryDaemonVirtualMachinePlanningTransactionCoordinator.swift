@@ -846,6 +846,7 @@ public final class DoryDaemonVirtualMachinePlanningTransactionCoordinator:
                   lease.binding == binding,
                   Self.sameStableAdmissionHost(lease.hostFacts, hostResources),
                   lease.resources == request.planning.definition.resources,
+                  lease.portForwards == request.planning.definition.portForwards,
                   lease.workload == request.planning.definition.workload,
                   lease.requirements == request.resourceRequirements.sorted(by: Self.requirementOrder) else {
                 throw failure(.recoveryRequired, "The journaled resource lease cannot be adopted exactly.")
@@ -859,6 +860,7 @@ public final class DoryDaemonVirtualMachinePlanningTransactionCoordinator:
                         workload: request.planning.definition.workload,
                         requirements: request.resourceRequirements,
                         resources: request.planning.definition.resources,
+                        portForwards: request.planning.definition.portForwards,
                         startingLeaseDurationMilliseconds:
                             request.startingLeaseDurationMilliseconds
                     )
@@ -912,6 +914,7 @@ public final class DoryDaemonVirtualMachinePlanningTransactionCoordinator:
             $0.binding == binding && $0.state == .starting
                 && Self.sameStableAdmissionHost($0.hostFacts, hostResources)
                 && $0.resources == request.planning.definition.resources
+                && $0.portForwards == request.planning.definition.portForwards
                 && $0.workload == request.planning.definition.workload
                 && $0.requirements == request.resourceRequirements.sorted(by: Self.requirementOrder)
         }
@@ -926,6 +929,7 @@ public final class DoryDaemonVirtualMachinePlanningTransactionCoordinator:
                     workload: request.planning.definition.workload,
                     requirements: request.resourceRequirements,
                     resources: request.planning.definition.resources,
+                    portForwards: request.planning.definition.portForwards,
                     startingLeaseDurationMilliseconds:
                         request.startingLeaseDurationMilliseconds
                 )

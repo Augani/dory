@@ -40,7 +40,7 @@ public struct DoryVirtualMachineResourceAdmissionPlanBinding:
 }
 
 public struct DoryVirtualMachineResourceAdmissionLease: Codable, Sendable, Equatable {
-    public static let schemaVersion: UInt16 = 1
+    public static let schemaVersion: UInt16 = 2
 
     public var schemaVersion: UInt16
     public var leaseID: String
@@ -52,6 +52,7 @@ public struct DoryVirtualMachineResourceAdmissionLease: Codable, Sendable, Equat
     public var workload: DoryVMWorkloadProfile
     public var requirements: [DoryVMResourceRequirement]
     public var resources: DoryVMResourceRequest
+    public var portForwards: [DoryVMPortForward]
     public var state: DoryVirtualMachineResourceLeaseState
     public var startingExpiresAtUnixMilliseconds: Int64?
     public var createdAtUnixMilliseconds: Int64
@@ -65,6 +66,7 @@ public struct DoryVirtualMachineResourceAdmissionLease: Codable, Sendable, Equat
         workload: DoryVMWorkloadProfile,
         requirements: [DoryVMResourceRequirement],
         resources: DoryVMResourceRequest,
+        portForwards: [DoryVMPortForward],
         startingExpiresAtUnixMilliseconds: Int64,
         createdAtUnixMilliseconds: Int64,
         evidence: DoryResolvedMachineResourceAdmissionEvidence
@@ -79,11 +81,118 @@ public struct DoryVirtualMachineResourceAdmissionLease: Codable, Sendable, Equat
         self.workload = workload
         self.requirements = requirements
         self.resources = resources
+        self.portForwards = portForwards
         state = .starting
         self.startingExpiresAtUnixMilliseconds = startingExpiresAtUnixMilliseconds
         self.createdAtUnixMilliseconds = createdAtUnixMilliseconds
         updatedAtUnixMilliseconds = createdAtUnixMilliseconds
         self.evidence = evidence
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case leaseID
+        case leaseRevision
+        case binding
+        case boundPlanSHA256
+        case hostFacts
+        case hostFactsSHA256
+        case workload
+        case requirements
+        case resources
+        case portForwards
+        case state
+        case startingExpiresAtUnixMilliseconds
+        case createdAtUnixMilliseconds
+        case updatedAtUnixMilliseconds
+        case evidence
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decode(UInt16.self, forKey: .schemaVersion)
+        guard schemaVersion == 1 || schemaVersion == Self.schemaVersion else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .schemaVersion,
+                in: container,
+                debugDescription: "Unsupported resource admission lease schema."
+            )
+        }
+        leaseID = try container.decode(String.self, forKey: .leaseID)
+        leaseRevision = try container.decode(UInt64.self, forKey: .leaseRevision)
+        binding = try container.decode(
+            DoryVirtualMachineResourceAdmissionPlanBinding.self,
+            forKey: .binding
+        )
+        boundPlanSHA256 = try container.decodeIfPresent(String.self, forKey: .boundPlanSHA256)
+        hostFacts = try container.decode(DoryVMHostResources.self, forKey: .hostFacts)
+        hostFactsSHA256 = try container.decode(String.self, forKey: .hostFactsSHA256)
+        workload = try container.decode(DoryVMWorkloadProfile.self, forKey: .workload)
+        requirements = try container.decode(
+            [DoryVMResourceRequirement].self,
+            forKey: .requirements
+        )
+        resources = try container.decode(DoryVMResourceRequest.self, forKey: .resources)
+        if schemaVersion == 1 {
+            guard !container.contains(.portForwards) else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .portForwards,
+                    in: container,
+                    debugDescription: "Schema-1 leases cannot contain port-forward authority."
+                )
+            }
+            portForwards = []
+        } else {
+            portForwards = try container.decode(
+                [DoryVMPortForward].self,
+                forKey: .portForwards
+            )
+        }
+        state = try container.decode(
+            DoryVirtualMachineResourceLeaseState.self,
+            forKey: .state
+        )
+        startingExpiresAtUnixMilliseconds = try container.decodeIfPresent(
+            Int64.self,
+            forKey: .startingExpiresAtUnixMilliseconds
+        )
+        createdAtUnixMilliseconds = try container.decode(
+            Int64.self,
+            forKey: .createdAtUnixMilliseconds
+        )
+        updatedAtUnixMilliseconds = try container.decode(
+            Int64.self,
+            forKey: .updatedAtUnixMilliseconds
+        )
+        evidence = try container.decode(
+            DoryResolvedMachineResourceAdmissionEvidence.self,
+            forKey: .evidence
+        )
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(schemaVersion, forKey: .schemaVersion)
+        try container.encode(leaseID, forKey: .leaseID)
+        try container.encode(leaseRevision, forKey: .leaseRevision)
+        try container.encode(binding, forKey: .binding)
+        try container.encodeIfPresent(boundPlanSHA256, forKey: .boundPlanSHA256)
+        try container.encode(hostFacts, forKey: .hostFacts)
+        try container.encode(hostFactsSHA256, forKey: .hostFactsSHA256)
+        try container.encode(workload, forKey: .workload)
+        try container.encode(requirements, forKey: .requirements)
+        try container.encode(resources, forKey: .resources)
+        if schemaVersion >= 2 {
+            try container.encode(portForwards, forKey: .portForwards)
+        }
+        try container.encode(state, forKey: .state)
+        try container.encodeIfPresent(
+            startingExpiresAtUnixMilliseconds,
+            forKey: .startingExpiresAtUnixMilliseconds
+        )
+        try container.encode(createdAtUnixMilliseconds, forKey: .createdAtUnixMilliseconds)
+        try container.encode(updatedAtUnixMilliseconds, forKey: .updatedAtUnixMilliseconds)
+        try container.encode(evidence, forKey: .evidence)
     }
 
     fileprivate static func digest<T: Encodable>(_ value: T) -> String {
@@ -125,6 +234,7 @@ public enum DoryVirtualMachineResourceAdmissionLedgerError:
 {
     case invalidBinding
     case invalidHostFacts
+    case invalidPortForwardContract
     case invalidLeaseDuration
     case capacityUnavailable([DoryVMResourceValidationIssue])
     case machineAlreadyReserved(String)
@@ -133,6 +243,11 @@ public enum DoryVirtualMachineResourceAdmissionLedgerError:
     case staleLeaseRevision(expected: UInt64, actual: UInt64)
     case invalidLeaseState(DoryVirtualMachineResourceLeaseState)
     case storageReservationCannotShrink(existing: UInt64, requested: UInt64)
+    case portBindingUnavailable(
+        transport: DoryVMPortForwardTransport,
+        hostPort: UInt16,
+        machineID: String
+    )
     case planAlreadyBound
     case planMismatch
     case hostFactsMismatch
@@ -144,6 +259,7 @@ public enum DoryVirtualMachineResourceAdmissionLedgerError:
         switch self {
         case .invalidBinding: "resource admission plan binding is invalid"
         case .invalidHostFacts: "host resource facts are invalid"
+        case .invalidPortForwardContract: "port-forward admission contract is invalid"
         case .invalidLeaseDuration: "starting lease duration is invalid"
         case .capacityUnavailable: "host capacity cannot admit the requested virtual machine"
         case let .machineAlreadyReserved(machineID):
@@ -157,6 +273,8 @@ public enum DoryVirtualMachineResourceAdmissionLedgerError:
             "resource lease has invalid state: \(state.rawValue)"
         case let .storageReservationCannotShrink(existing, requested):
             "storage reservation cannot shrink from \(existing) to \(requested) bytes"
+        case let .portBindingUnavailable(transport, hostPort, machineID):
+            "host \(transport.rawValue) port \(hostPort) is reserved by machine \(machineID)"
         case .planAlreadyBound: "resource admission lease is already bound to a plan"
         case .planMismatch: "resolved plan does not match the admitted resource lease"
         case .hostFactsMismatch: "current host facts do not match the admitted snapshot"
@@ -202,6 +320,7 @@ public final class DoryVirtualMachineResourceAdmissionLedger: @unchecked Sendabl
         workload: DoryVMWorkloadProfile,
         requirements: [DoryVMResourceRequirement] = [],
         resources: DoryVMResourceRequest,
+        portForwards: [DoryVMPortForward] = [],
         startingLeaseDurationMilliseconds: Int64 = 120_000,
         expectedLedgerRevision: UInt64? = nil
     ) throws -> DoryVirtualMachineResourceAdmissionLease {
@@ -212,6 +331,7 @@ public final class DoryVirtualMachineResourceAdmissionLedger: @unchecked Sendabl
             try validateExpectedLedgerRevision(expectedLedgerRevision, actual: record.ledgerRevision)
             try Self.validate(binding)
             try Self.validate(hostFacts)
+            try Self.validate(portForwards)
             guard startingLeaseDurationMilliseconds > 0,
                   startingLeaseDurationMilliseconds
                     <= Self.maximumStartingLeaseDurationMilliseconds,
@@ -244,6 +364,16 @@ public final class DoryVirtualMachineResourceAdmissionLedger: @unchecked Sendabl
             // in which another admission could consume the released capacity.
             let leasesBeingRetained = record.leases.enumerated().compactMap { index, lease in
                 index == stoppedLeaseIndex ? nil : lease
+            }
+            do {
+                try Self.validatePortAvailability(
+                    portForwards,
+                    for: binding.machineID,
+                    among: leasesBeingRetained
+                )
+            } catch {
+                if recovered { try persistRecoveredRecord(&record) }
+                throw error
             }
             let commitments = try Self.commitments(in: leasesBeingRetained)
             let assessedHost = try Self.composing(
@@ -282,6 +412,7 @@ public final class DoryVirtualMachineResourceAdmissionLedger: @unchecked Sendabl
                 workload: workload,
                 requirements: sortedRequirements,
                 resources: resources,
+                portForwards: portForwards,
                 startingExpiresAtUnixMilliseconds: timestamp
                     + startingLeaseDurationMilliseconds,
                 createdAtUnixMilliseconds: timestamp,
@@ -833,6 +964,7 @@ public final class DoryVirtualMachineResourceAdmissionLedger: @unchecked Sendabl
               plan.definitionRevision == lease.binding.definitionRevision,
               plan.definitionSHA256?.lowercased() == lease.binding.definitionSHA256.lowercased(),
               plan.planRevision == lease.binding.plannedPlanRevision,
+              plan.portForwards == lease.portForwards,
               plan.resourceAdmission == lease.evidence else {
             throw DoryVirtualMachineResourceAdmissionLedgerError.planMismatch
         }
@@ -868,6 +1000,55 @@ public final class DoryVirtualMachineResourceAdmissionLedger: @unchecked Sendabl
         }
     }
 
+    private static func validate(_ portForwards: [DoryVMPortForward]) throws {
+        guard portForwards.count <= DoryVMPortForward.maximumCount else {
+            throw DoryVirtualMachineResourceAdmissionLedgerError.invalidPortForwardContract
+        }
+        var identifiers: Set<String> = []
+        var bindings: Set<String> = []
+        for forward in portForwards {
+            let identifier = Array(forward.id.utf8)
+            guard (1...63).contains(identifier.count),
+                  identifier.first.map(isAlphaNumeric) == true,
+                  identifier.dropFirst().allSatisfy({
+                      isAlphaNumeric($0) || $0 == 45 || $0 == 46 || $0 == 95
+                  }),
+                  identifiers.insert(forward.id).inserted,
+                  forward.hostPort >= 1_024,
+                  forward.guestPort > 0,
+                  bindings.insert(Self.portBindingKey(forward)).inserted else {
+                throw DoryVirtualMachineResourceAdmissionLedgerError.invalidPortForwardContract
+            }
+        }
+    }
+
+    private static func validatePortAvailability(
+        _ requested: [DoryVMPortForward],
+        for machineID: String,
+        among leases: [DoryVirtualMachineResourceAdmissionLease]
+    ) throws {
+        let active = leases.filter {
+            $0.state == .starting || $0.state == .running || $0.state == .recoveryRequired
+        }
+        for forward in requested {
+            let key = portBindingKey(forward)
+            if let owner = active.first(where: { lease in
+                lease.binding.machineID != machineID
+                    && lease.portForwards.contains(where: { portBindingKey($0) == key })
+            }) {
+                throw DoryVirtualMachineResourceAdmissionLedgerError.portBindingUnavailable(
+                    transport: forward.transport,
+                    hostPort: forward.hostPort,
+                    machineID: owner.binding.machineID
+                )
+            }
+        }
+    }
+
+    private static func portBindingKey(_ forward: DoryVMPortForward) -> String {
+        "\(forward.transport.rawValue):\(forward.hostPort)"
+    }
+
     private static func validate(_ record: LedgerRecord) throws {
         guard record.schemaVersion == LedgerRecord.schemaVersion,
               record.ledgerRevision > 0,
@@ -882,7 +1063,9 @@ public final class DoryVirtualMachineResourceAdmissionLedger: @unchecked Sendabl
             } catch {
                 throw DoryVirtualMachineResourceAdmissionLedgerError.invalidRecord
             }
-            guard lease.schemaVersion == DoryVirtualMachineResourceAdmissionLease.schemaVersion,
+            guard (lease.schemaVersion == 1
+                    || lease.schemaVersion
+                        == DoryVirtualMachineResourceAdmissionLease.schemaVersion),
                   isSafeIdentifier(lease.leaseID),
                   lease.leaseRevision > 0,
                   lease.createdAtUnixMilliseconds > 0,
@@ -910,6 +1093,14 @@ public final class DoryVirtualMachineResourceAdmissionLedger: @unchecked Sendabl
                   lease.evidence.admissionIdentity == lease.leaseID,
                   lease.evidence.admissionReportSHA256 == admissionReportSHA256(lease),
                   lease.boundPlanSHA256.map(DoryResolvedMachinePlan.isSHA256) ?? true else {
+                throw DoryVirtualMachineResourceAdmissionLedgerError.invalidRecord
+            }
+            do {
+                try validate(lease.portForwards)
+                guard lease.schemaVersion >= 2 || lease.portForwards.isEmpty else {
+                    throw DoryVirtualMachineResourceAdmissionLedgerError.invalidRecord
+                }
+            } catch {
                 throw DoryVirtualMachineResourceAdmissionLedgerError.invalidRecord
             }
             let reserve = DoryVMResourcePolicy.recommend(
@@ -940,6 +1131,14 @@ public final class DoryVirtualMachineResourceAdmissionLedger: @unchecked Sendabl
                 }
             case .stopped:
                 guard lease.startingExpiresAtUnixMilliseconds == nil else {
+                    throw DoryVirtualMachineResourceAdmissionLedgerError.invalidRecord
+                }
+            }
+        }
+        var activeBindings: Set<String> = []
+        for lease in record.leases where lease.state != .stopped {
+            for forward in lease.portForwards {
+                guard activeBindings.insert(portBindingKey(forward)).inserted else {
                     throw DoryVirtualMachineResourceAdmissionLedgerError.invalidRecord
                 }
             }

@@ -40,6 +40,27 @@ struct DoryDaemonVirtualMachinePlanningTransactionCoordinatorTests {
         #expect(lease.boundPlanSHA256 == first.planning.resolvedPlanSHA256)
     }
 
+    @Test("transaction admits the exact desired port bindings into the plan")
+    func exactPortForwardAdmission() throws {
+        let fixture = try TransactionFixture()
+        var definition = fixture.definition
+        definition.portForwards = [DoryVMPortForward(
+            id: "ssh",
+            transport: .tcp,
+            hostPort: 22_220,
+            guestPort: 22,
+            exposure: .loopback
+        )]
+        let result = try fixture.coordinator().resolveReserveAndPublish(
+            fixture.request(definition: definition)
+        )
+
+        #expect(result.lease.portForwards == definition.portForwards)
+        #expect(result.planning.resolvedPlan.portForwards == definition.portForwards)
+        #expect(try fixture.workspaces.read(id: definition.identity.id).portForwards
+            == definition.portForwards)
+    }
+
     @Test("crash after workspace publication resumes exact candidate bytes")
     func workspacePublicationRecovery() throws {
         let fixture = try TransactionFixture()
