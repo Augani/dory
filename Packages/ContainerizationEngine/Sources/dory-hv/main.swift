@@ -1,6 +1,7 @@
 import DoryHV
 import DoryCore
 import DorydKit
+import DoryOperations
 import Foundation
 
 signal(SIGPIPE, SIG_IGN)
@@ -442,6 +443,7 @@ case "desktop":
     var resolvedGraphics: DoryGraphicsAccelerationLevel?
     var resolvedDevices: DoryVirtualMachineDeviceCapabilityRequest?
     var resolvedPortForwards: [DoryVMPortForward]?
+    var displayPresentation: DoryMachineDisplayPresentation = .windowed
     var iterator = arguments.dropFirst().makeIterator()
     while let argument = iterator.next() {
         switch argument {
@@ -501,6 +503,16 @@ case "desktop":
                 fail("desktop --resolved-port-forwards requires a valid port-forward contract")
             }
             resolvedPortForwards = forwards
+        case "--display-presentation":
+            guard let value = iterator.next(),
+                  let data = value.data(using: .utf8),
+                  let presentation = try? JSONDecoder().decode(
+                      DoryMachineDisplayPresentation.self,
+                      from: data
+                  ), presentation.isValid else {
+                fail("desktop --display-presentation requires a valid host presentation contract")
+            }
+            displayPresentation = presentation.canonicalized
         case "--display-mode":
             guard iterator.next() == "desktop" else { fail("raw-HV desktop requires --display-mode desktop") }
         case "--boot-mode":
@@ -555,7 +567,8 @@ case "desktop":
             environment: environment,
             resolvedGraphics: resolvedGraphics,
             resolvedDevices: resolvedDevices,
-            resolvedPortForwards: resolvedPortForwards
+            resolvedPortForwards: resolvedPortForwards,
+            displayPresentation: displayPresentation
         ))
     } catch {
         fail("desktop failed: \(error)")

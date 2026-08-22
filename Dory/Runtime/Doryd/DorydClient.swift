@@ -26,6 +26,7 @@ nonisolated protocol DorydControlXPC {
     func machineResume(_ machineID: String, operationID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineRestart(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineUpdate(_ machineID: String, config: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void)
+    func machineDisplayPresentationSet(_ machineID: String, presentation: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineDelete(_ machineID: String, reply: @escaping (Bool, String) -> Void)
     func machineList(reply: @escaping (NSArray, String) -> Void)
     func machineEvents(_ afterSequence: UInt64, reply: @escaping (Bool, NSDictionary, String) -> Void)
@@ -1076,6 +1077,7 @@ nonisolated struct DorydMachineStatus: Sendable, Equatable {
     var shares: [DorydMachineShareConfiguration] = []
     var environment: [String: String] = [:]
     var typedSettings: DorydMachineTypedSettings? = nil
+    var displayPresentation: DoryMachineDisplayPresentation = .windowed
     var runtimeIdentity: DorydMachineRuntimeIdentity = .legacyCompatibility
     var installedDesktopPayloadReceipt: DorydInstalledDesktopPayloadReceipt? = nil
     var cloneReceipt: DorydMachineCloneReceipt? = nil
@@ -2023,6 +2025,24 @@ nonisolated final class DorydClient: @unchecked Sendable {
         }
     }
 
+    func machineDisplayPresentationSet(
+        _ machineID: String,
+        presentation: DoryMachineDisplayPresentation
+    ) async throws -> DorydMachineStatus {
+        guard presentation.isValid else {
+            throw DorydClientError.daemon("invalid display presentation preference")
+        }
+        return try await withTimeout(atLeast: 10).statusCommand { proxy, reply in
+            proxy.machineDisplayPresentationSet(
+                machineID,
+                presentation: Self.displayPresentationDictionary(presentation),
+                reply: reply
+            )
+        } decode: {
+            Self.machineStatus(from: $0)
+        }
+    }
+
     func machineDelete(_ machineID: String) async throws -> DorydCommandResult {
         try await command { proxy, reply in
             proxy.machineDelete(machineID, reply: reply)
@@ -2843,6 +2863,9 @@ nonisolated final class DorydClient: @unchecked Sendable {
         guard let typedSettings = machineTypedSettings(from: dictionary) else {
             return nil
         }
+        guard let displayPresentation = machineDisplayPresentation(
+            from: dictionary["displayPresentation"]
+        ) else { return nil }
         guard let installedDesktopPayloadReceipt = machineInstalledDesktopPayloadReceipt(
             from: dictionary,
             legacyEnvironment: environment
@@ -2926,11 +2949,71 @@ nonisolated final class DorydClient: @unchecked Sendable {
             shares: shares,
             environment: environment,
             typedSettings: typedSettings.value,
+            displayPresentation: displayPresentation,
             runtimeIdentity: runtimeIdentity,
             installedDesktopPayloadReceipt: installedDesktopPayloadReceipt.value,
             cloneReceipt: cloneReceipt.value,
             savedState: savedState.value
         )
+    }
+
+    nonisolated private static func machineDisplayPresentation(
+        from encoded: Any?
+    ) -> DoryMachineDisplayPresentation? {
+        guard let encoded else { return .windowed }
+        guard let dictionary = encoded as? NSDictionary,
+              dictionary.allKeys.count == 2,
+              Set(dictionary.allKeys.compactMap { $0 as? String })
+                == Set(["schemaVersion", "assignments"]),
+              let schema = dictionary["schemaVersion"] as? NSNumber,
+              String(cString: schema.objCType) != "c",
+              schema.intValue == DoryMachineDisplayPresentation.currentSchemaVersion,
+              let rows = dictionary["assignments"] as? NSArray else { return nil }
+        var assignments: [DoryGuestDisplayPresentationAssignment] = []
+        assignments.reserveCapacity(rows.count)
+        for encodedRow in rows {
+            guard let row = encodedRow as? NSDictionary,
+                  let guestDisplayID = row["guestDisplayID"] as? String,
+                  let rawMode = row["mode"] as? String,
+                  let mode = DoryGuestDisplayPresentationMode(rawValue: rawMode) else {
+                return nil
+            }
+            let expected: Set<String> = mode == .dedicatedFullscreen
+                ? ["guestDisplayID", "mode", "hostDisplayUUID"]
+                : ["guestDisplayID", "mode"]
+            guard row.allKeys.count == expected.count,
+                  Set(row.allKeys.compactMap { $0 as? String }) == expected else { return nil }
+            let assignment = DoryGuestDisplayPresentationAssignment(
+                guestDisplayID: guestDisplayID,
+                mode: mode,
+                hostDisplayUUID: row["hostDisplayUUID"] as? String
+            )
+            guard assignment.isValid else { return nil }
+            assignments.append(assignment)
+        }
+        let presentation = DoryMachineDisplayPresentation(
+            schemaVersion: schema.intValue,
+            assignments: assignments
+        )
+        return presentation.isValid ? presentation.canonicalized : nil
+    }
+
+    nonisolated private static func displayPresentationDictionary(
+        _ presentation: DoryMachineDisplayPresentation
+    ) -> NSDictionary {
+        [
+            "schemaVersion": presentation.schemaVersion,
+            "assignments": presentation.canonicalized.assignments.map { assignment in
+                var row: [String: Any] = [
+                    "guestDisplayID": assignment.guestDisplayID,
+                    "mode": assignment.mode.rawValue,
+                ]
+                if let hostDisplayUUID = assignment.hostDisplayUUID {
+                    row["hostDisplayUUID"] = hostDisplayUUID
+                }
+                return row as NSDictionary
+            } as NSArray,
+        ]
     }
 
     private struct ParsedMachineCloneReceipt {

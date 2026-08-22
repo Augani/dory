@@ -439,6 +439,29 @@ public final class DorydService: NSObject, DorydControl {
         }
     }
 
+    public func machineDisplayPresentationSet(
+        _ machineID: String,
+        presentation: NSDictionary,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        guard let machineManager else {
+            reply(false, [:], "machine manager is not configured")
+            return
+        }
+        do {
+            let decoded = try DoryMachineDisplayPresentation(
+                xpcDictionary: presentation
+            )
+            let status = try machineManager.setDisplayPresentation(
+                id: machineID,
+                presentation: decoded
+            )
+            reply(true, status.xpcDictionary, "")
+        } catch {
+            reply(false, [:], "\(error)")
+        }
+    }
+
     public func machineDelete(_ machineID: String, reply: @escaping (Bool, String) -> Void) {
         guard let machineManager else {
             reply(false, "machine manager is not configured")
@@ -2517,6 +2540,7 @@ private extension DoryMachineStatus {
         if !diagnosticOverrides.isEmpty {
             dictionary["diagnosticOverrides"] = diagnosticOverrides.map(\.rawValue)
         }
+        dictionary["displayPresentation"] = displayPresentation.xpcDictionary
         dictionary["runtimeIdentity"] = runtimeIdentity.xpcDictionary
         if let installedDesktopPayloadReceipt {
             dictionary["installedDesktopPayloadReceipt"] =

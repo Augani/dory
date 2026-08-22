@@ -5089,6 +5089,7 @@ final class AppStore {
                         legacyEnvironment: status.environment,
                         displayMode: status.displayMode
                     ),
+                displayPresentation: status.displayPresentation,
                 address: status.configuredAddress,
                 displayMode: status.displayMode,
                 bootMode: status.bootMode
@@ -6374,6 +6375,9 @@ final class AppStore {
         if copy.virtualMachineSettings == nil {
             copy.virtualMachineSettings = existing.virtualMachineSettings
         }
+        if copy.displayPresentation == nil {
+            copy.displayPresentation = existing.displayPresentation
+        }
         if copy.identity == nil { copy.identity = existing.identity }
         if copy.address == nil { copy.address = existing.address }
         return copy
@@ -6615,6 +6619,12 @@ final class AppStore {
             }
             _ = try await dorydClient.machineCreate(config)
             createdDefinition = true
+            if let displayPresentation = settings.displayPresentation {
+                _ = try await dorydClient.machineDisplayPresentationSet(
+                    name,
+                    presentation: displayPresentation
+                )
+            }
             appendMachineCreationLog("Definition written. Booting VM…")
             _ = try await dorydClient.machineStart(name)
             if let recipe, let provisioningRecipe {
@@ -6688,6 +6698,7 @@ final class AppStore {
                         displayMode: $0.displayMode
                     )
                 },
+                displayPresentation: current?.displayPresentation,
                 address: current?.configuredAddress,
                 displayMode: current?.displayMode ?? machine.displayMode,
                 bootMode: current?.bootMode ?? machine.bootMode
@@ -6700,18 +6711,39 @@ final class AppStore {
             let memory = effectiveSettings.memoryMB.flatMap { UInt64(exactly: $0) } ?? current?.memoryMB
             let cpus = effectiveSettings.cpus ?? current?.cpuCount
             let address = Self.trimmedNonEmpty(effectiveSettings.address)
-            _ = try await dorydClient.machineUpdate(
-                machine.name,
-                memoryMB: memory,
-                cpuCount: cpus,
-                address: address,
-                updatesAddress: true,
-                shares: Self.dorydShares(from: effectiveSettings.mounts),
-                typedSettingsPatch: DorydMachineTypedSettingsPatch(
-                    baseline: baselineTypedSettings,
-                    desired: desiredTypedSettings
+            let desiredPresentation = effectiveSettings.displayPresentation
+                ?? currentSettings.displayPresentation
+                ?? .windowed
+            let previousPresentation = currentSettings.displayPresentation ?? .windowed
+            let presentationChanged = desiredPresentation != previousPresentation
+            if presentationChanged {
+                _ = try await dorydClient.machineDisplayPresentationSet(
+                    machine.name,
+                    presentation: desiredPresentation
                 )
-            )
+            }
+            do {
+                _ = try await dorydClient.machineUpdate(
+                    machine.name,
+                    memoryMB: memory,
+                    cpuCount: cpus,
+                    address: address,
+                    updatesAddress: true,
+                    shares: Self.dorydShares(from: effectiveSettings.mounts),
+                    typedSettingsPatch: DorydMachineTypedSettingsPatch(
+                        baseline: baselineTypedSettings,
+                        desired: desiredTypedSettings
+                    )
+                )
+            } catch {
+                if presentationChanged {
+                    _ = try? await dorydClient.machineDisplayPresentationSet(
+                        machine.name,
+                        presentation: previousPresentation
+                    )
+                }
+                throw error
+            }
             appendMachineCreationLog("Settings applied to doryd VM definition.")
             activeSheet = nil
             await refreshMachines()

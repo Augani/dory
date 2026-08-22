@@ -1,4 +1,5 @@
 import Foundation
+import DoryOperations
 
 nonisolated struct MountPair: Sendable, Hashable {
     var host: String
@@ -27,6 +28,7 @@ nonisolated struct MachineSettings: Sendable, Hashable {
     /// Closed, non-secret VM intent used by new doryd writes. `env` remains only so older
     /// machine.json records and container recipes can be read without data loss.
     var virtualMachineSettings: DorydMachineTypedSettings? = nil
+    var displayPresentation: DoryMachineDisplayPresentation? = nil
     var address: String? = nil
     var displayMode: MachineDisplayMode = .headless
     var bootMode: MachineBootMode = .linuxKernel

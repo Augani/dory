@@ -1308,6 +1308,8 @@ private struct MachineEditSheet: View {
     @State private var originalClipboardPolicy: DoryVMClipboardPolicy?
     @State private var runtimePreference = DoryDesktopVMMPreference.automatic
     @State private var graphicsPreference = DoryDesktopGraphicsPreference.automatic
+    @State private var hostDisplays: [HostDisplayChoice] = []
+    @State private var dedicatedHostDisplayUUID: String?
     @State private var networkMode = DoryVMNetworkMode.sharedNAT
     @State private var portForwardRows: [MachinePortForwardDraft] = []
     @State private var audioInputEnabled = true
@@ -1342,6 +1344,7 @@ private struct MachineEditSheet: View {
                     )
                     audioBlock
                     runtimeBlock
+                    displayAssignmentBlock
                     intelApplicationTranslationBlock
                     clipboardBlock
                     resourceRow
@@ -1384,6 +1387,13 @@ private struct MachineEditSheet: View {
         initialFileTransferPolicy = fileTransferPolicy
         runtimePreference = typedSettings.runtimePreference ?? .automatic
         graphicsPreference = typedSettings.graphicsPreference ?? .automatic
+        hostDisplays = HostDisplayChoice.connectedDisplays()
+        let presentation = settings.displayPresentation ?? .windowed
+        dedicatedHostDisplayUUID = presentation.assignment(
+            forGuestDisplayID: "display-0"
+        ).flatMap {
+            $0.mode == .dedicatedFullscreen ? $0.hostDisplayUUID : nil
+        }
         networkMode = typedSettings.networkMode ?? .sharedNAT
         portForwardRows = typedSettings.portForwards.map(MachinePortForwardDraft.init)
         originalAudioConfiguration = typedSettings.audioConfiguration
@@ -1587,6 +1597,31 @@ private struct MachineEditSheet: View {
                      ? "Compatibility uses Apple's Virtualization framework; the raw graphics choice is kept for when you switch back."
                      : "Automatic uses VirGL for the desktop and Venus for Vulkan apps, then falls back safely when acceleration is unavailable.")
                     .font(.system(size: 11)).foregroundStyle(p.text3)
+            }
+        }
+    }
+
+    @ViewBuilder private var displayAssignmentBlock: some View {
+        if displayMode == .desktop {
+            VStack(alignment: .leading, spacing: 9) {
+                sectionLabel("MAC DISPLAY")
+                Picker("Guest presentation", selection: $dedicatedHostDisplayUUID) {
+                    Text("Windowed").tag(String?.none)
+                    ForEach(hostDisplays) { display in
+                        Text("Dedicated — \(display.name)").tag(Optional(display.id))
+                    }
+                    if let selected = dedicatedHostDisplayUUID,
+                       !hostDisplays.contains(where: { $0.id == selected }) {
+                        Text("Disconnected display — window fallback")
+                            .tag(Optional(selected))
+                    }
+                }
+                .accessibilityIdentifier("edit-machine-host-display")
+                Text(dedicatedHostDisplayUUID == nil
+                     ? "The Linux desktop opens as a normal Mac window."
+                     : "The guest owns a native full-screen Space on this monitor. Command-Control-F exits full screen; disconnecting it falls back to a normal window.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(p.text3)
             }
         }
     }
@@ -1811,6 +1846,15 @@ private struct MachineEditSheet: View {
             mounts: mounts,
             env: [:],
             virtualMachineSettings: typedSettings,
+            displayPresentation: DoryMachineDisplayPresentation(
+                assignments: dedicatedHostDisplayUUID.map {
+                    [DoryGuestDisplayPresentationAssignment(
+                        guestDisplayID: "display-0",
+                        mode: .dedicatedFullscreen,
+                        hostDisplayUUID: $0
+                    )]
+                } ?? []
+            ),
             address: address.trimmingCharacters(in: .whitespacesAndNewlines),
             displayMode: displayMode,
             bootMode: machine.bootMode

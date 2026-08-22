@@ -12,6 +12,7 @@ final class DoryVMMDesktopApplication: NSObject, NSApplicationDelegate, NSWindow
     private let clipboard: DoryDesktopClipboardCoordinator?
     private let dynamicDisplayEnabled: Bool
     private let backingScaleFactor: CGFloat
+    private let displayAssignment: DoryGuestDisplayPresentationAssignment?
     private var pendingDisplayResize: DispatchWorkItem?
     private var requestedPixelSize: CGSize?
     private var stopError: String?
@@ -20,13 +21,17 @@ final class DoryVMMDesktopApplication: NSObject, NSApplicationDelegate, NSWindow
         runtime: DoryVMMRuntime,
         machineID: String,
         environment: [String: String],
-        resolvedDevices: DoryVirtualMachineDeviceCapabilityRequest?
+        resolvedDevices: DoryVirtualMachineDeviceCapabilityRequest?,
+        displayPresentation: DoryMachineDisplayPresentation
     ) {
         self.application = NSApplication.shared
         self.runtime = runtime
         dynamicDisplayEnabled = resolvedDevices?.dynamicDisplay ?? true
 
         let display = resolvedDevices?.display ?? DoryVMMDisplayDefaults.capability
+        displayAssignment = displayPresentation.assignment(
+            forGuestDisplayID: display.id
+        )
         backingScaleFactor = CGFloat(display.backingScaleFactor)
         let windowSize = NSSize(
             width: max(1, CGFloat(display.widthPixels) / backingScaleFactor),
@@ -82,6 +87,7 @@ final class DoryVMMDesktopApplication: NSObject, NSApplicationDelegate, NSWindow
         self.window.center()
         super.init()
         self.window.delegate = self
+        installViewMenu()
         machineView.onMacShortcut = { [weak clipboard] event in
             clipboard?.handleMacShortcut(event) ?? false
         }
@@ -91,13 +97,15 @@ final class DoryVMMDesktopApplication: NSObject, NSApplicationDelegate, NSWindow
         runtime: DoryVMMRuntime,
         machineID: String,
         environment: [String: String],
-        resolvedDevices: DoryVirtualMachineDeviceCapabilityRequest? = nil
+        resolvedDevices: DoryVirtualMachineDeviceCapabilityRequest? = nil,
+        displayPresentation: DoryMachineDisplayPresentation = .windowed
     ) throws {
         let controller = DoryVMMDesktopApplication(
             runtime: runtime,
             machineID: machineID,
             environment: environment,
-            resolvedDevices: resolvedDevices
+            resolvedDevices: resolvedDevices,
+            displayPresentation: displayPresentation
         )
         try controller.runUntilStopped()
     }
@@ -109,6 +117,13 @@ final class DoryVMMDesktopApplication: NSObject, NSApplicationDelegate, NSWindow
         clipboard?.markGuestReady()
         window.makeKeyAndOrderFront(nil)
         application.activate()
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            _ = DoryHostDisplayPresentation.enterDedicatedFullscreen(
+                window: self.window,
+                assignment: self.displayAssignment
+            )
+        }
         if dynamicDisplayEnabled { reconfigureDisplayNow() }
 
         let runtime = self.runtime
@@ -153,6 +168,34 @@ final class DoryVMMDesktopApplication: NSObject, NSApplicationDelegate, NSWindow
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         window.makeKeyAndOrderFront(nil)
         return true
+    }
+
+    func applicationDidChangeScreenParameters(_ notification: Notification) {
+        _ = DoryHostDisplayPresentation.recoverDisconnectedDisplay(
+            window: window,
+            assignment: displayAssignment
+        )
+    }
+
+    @objc private func toggleFullScreen(_ sender: Any?) {
+        window.toggleFullScreen(sender)
+    }
+
+    private func installViewMenu() {
+        let mainMenu = NSMenu()
+        let viewRoot = NSMenuItem()
+        let viewMenu = NSMenu(title: "View")
+        let fullscreen = NSMenuItem(
+            title: "Toggle Full Screen",
+            action: #selector(toggleFullScreen(_:)),
+            keyEquivalent: "f"
+        )
+        fullscreen.keyEquivalentModifierMask = [.command, .control]
+        fullscreen.target = self
+        viewMenu.addItem(fullscreen)
+        viewRoot.submenu = viewMenu
+        mainMenu.addItem(viewRoot)
+        application.mainMenu = mainMenu
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {

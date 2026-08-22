@@ -26,6 +26,7 @@ import Foundation
     func machineResume(_ machineID: String, operationID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineRestart(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineUpdate(_ machineID: String, config: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void)
+    func machineDisplayPresentationSet(_ machineID: String, presentation: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineDelete(_ machineID: String, reply: @escaping (Bool, String) -> Void)
     func machineList(reply: @escaping (NSArray, String) -> Void)
     func machineEvents(_ afterSequence: UInt64, reply: @escaping (Bool, NSDictionary, String) -> Void)

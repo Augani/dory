@@ -6,6 +6,30 @@ import Testing
 @Suite(.serialized)
 struct DorydClientTests {
     @MainActor
+    @Test func machineDisplayPresentationRoundTripsExactXPCShape() async throws {
+        let listener = NSXPCListener.anonymous()
+        let service = FakeDorydService()
+        let delegate = FakeDorydListenerDelegate(service: service)
+        listener.delegate = delegate
+        listener.resume()
+        defer { listener.invalidate() }
+        let client = DorydClient(endpoint: listener.endpoint)
+        let presentation = DoryMachineDisplayPresentation(assignments: [
+            .init(
+                guestDisplayID: "display-0",
+                mode: .dedicatedFullscreen,
+                hostDisplayUUID: "00000000-0000-0000-0000-000000000001"
+            ),
+        ])
+        let status = try await client.machineDisplayPresentationSet(
+            "dev",
+            presentation: presentation
+        )
+        #expect(status.displayPresentation == presentation)
+        #expect(try await client.machineList().first?.displayPresentation == presentation)
+    }
+
+    @MainActor
     @Test func machineUSBControlRequiresExactResolvedResponse() async throws {
         let listener = NSXPCListener.anonymous()
         let service = FakeDorydService()
@@ -2903,6 +2927,13 @@ struct DorydClientTests {
                     guest: "/workspace/app",
                     shareTag: "src"
                 )],
+                displayPresentation: DoryMachineDisplayPresentation(assignments: [
+                    DoryGuestDisplayPresentationAssignment(
+                        guestDisplayID: "primary",
+                        mode: .dedicatedFullscreen,
+                        hostDisplayUUID: "4e9b6f86-2b92-4fea-8d35-dcb3ed7c19c9"
+                    ),
+                ]),
                 address: "192.168.215.41"
             )
         )
@@ -2920,6 +2951,8 @@ struct DorydClientTests {
         #expect(updateShares.first?["readOnly"] as? Bool == false)
         #expect(updateShares.first?["tag"] as? String == "src")
         #expect(service.latestMachineUpdateConfig?["env"] == nil)
+        #expect(await store.machineSettings("dev").displayPresentation?.assignments.first?.hostDisplayUUID
+            == "4e9b6f86-2b92-4fea-8d35-dcb3ed7c19c9")
 
         machine = try #require(store.machines.first { $0.name == "dev" })
         let clearAddressResult = await store.editMachine(
@@ -5163,8 +5196,23 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
             address: address,
             displayMode: current["displayMode"] as? String ?? "headless",
             shares: shares,
-            environment: environment
+            environment: environment,
+            displayPresentation: current["displayPresentation"] as? NSDictionary
         )
+        machines[machineID] = row
+        lock.unlock()
+        reply(true, row, "")
+    }
+
+    func machineDisplayPresentationSet(
+        _ machineID: String,
+        presentation: NSDictionary,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        lock.lock()
+        let current = machines[machineID] ?? Self.machineRow(id: machineID, state: "stopped")
+        let row = NSMutableDictionary(dictionary: current)
+        row["displayPresentation"] = presentation
         machines[machineID] = row
         lock.unlock()
         reply(true, row, "")
@@ -6055,7 +6103,8 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         displayMode: String = "headless",
         shares: [NSDictionary] = [],
         environment: [NSDictionary] = [],
-        savedState: NSDictionary? = nil
+        savedState: NSDictionary? = nil,
+        displayPresentation: NSDictionary? = nil
     ) -> NSDictionary {
         var row: [String: Any] = [
             "id": id,
@@ -6092,6 +6141,9 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         row["env"] = environment
         if let savedState {
             row["savedState"] = savedState
+        }
+        if let displayPresentation {
+            row["displayPresentation"] = displayPresentation
         }
         return row as NSDictionary
     }

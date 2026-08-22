@@ -2441,6 +2441,7 @@ final class MachineManagerTests: XCTestCase {
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath,
+            displayMode: .desktop,
             shares: [
                 DoryMachineShareConfiguration(
                     tag: "src",
@@ -2448,13 +2449,35 @@ final class MachineManagerTests: XCTestCase {
                     guestPath: "/workspace/client: app 日本語"
                 ),
             ],
-            environment: ["APP_ENV": "dev"]
+            environment: [
+                "APP_ENV": "dev",
+                DoryDesktopVMMPreference.environmentKey:
+                    DoryDesktopVMMPreference.compatible.rawValue,
+            ]
         ))
+        let presentation = DoryMachineDisplayPresentation(assignments: [
+            .init(
+                guestDisplayID: "display-0",
+                mode: .dedicatedFullscreen,
+                hostDisplayUUID: "00000000-0000-0000-0000-000000000001"
+            ),
+        ])
+        _ = try manager.setDisplayPresentation(id: "dev", presentation: presentation)
         _ = try manager.start(id: "dev")
 
         let args = try waitForFileContent(argsPath)
         XCTAssertTrue(args.contains("--env\nAPP_ENV=dev"))
         let rows = args.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let presentationFlagIndex = try XCTUnwrap(
+            rows.firstIndex(of: "--display-presentation")
+        )
+        XCTAssertEqual(
+            try JSONDecoder().decode(
+                DoryMachineDisplayPresentation.self,
+                from: Data(rows[presentationFlagIndex + 1].utf8)
+            ),
+            presentation
+        )
         let shareFlagIndex = try XCTUnwrap(rows.firstIndex(of: "--share"))
         let wireShare = rows[shareFlagIndex + 1]
         var resolvedSharePath = [CChar](repeating: 0, count: Int(PATH_MAX))

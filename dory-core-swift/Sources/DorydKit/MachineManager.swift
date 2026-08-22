@@ -370,6 +370,7 @@ public struct DoryMachineStatus: Sendable, Equatable {
     public var typedSettings: DoryMachineTypedSettingsSnapshot?
     public var sandboxPolicy: DoryVMSandboxPolicy?
     public var diagnosticOverrides: [DoryMachineDiagnosticOverride]
+    public var displayPresentation: DoryMachineDisplayPresentation
     public var runtimeIdentity: DoryMachineRuntimeIdentity
     public var installedDesktopPayloadReceipt: DoryInstalledDesktopPayloadReceipt?
     public var cloneReceipt: DoryMachineCloneReceipt?
@@ -408,6 +409,7 @@ public struct DoryMachineStatus: Sendable, Equatable {
         typedSettings: DoryMachineTypedSettingsSnapshot? = nil,
         sandboxPolicy: DoryVMSandboxPolicy? = nil,
         diagnosticOverrides: [DoryMachineDiagnosticOverride] = [],
+        displayPresentation: DoryMachineDisplayPresentation = .windowed,
         runtimeIdentity: DoryMachineRuntimeIdentity = .legacyCompatibility(
             virtualHardwareABIVersion:
                 DoryVirtualMachineDefinition.currentVirtualHardwareABIVersion
@@ -448,6 +450,7 @@ public struct DoryMachineStatus: Sendable, Equatable {
         self.typedSettings = typedSettings
         self.sandboxPolicy = sandboxPolicy
         self.diagnosticOverrides = diagnosticOverrides
+        self.displayPresentation = displayPresentation
         self.runtimeIdentity = runtimeIdentity
         self.installedDesktopPayloadReceipt = installedDesktopPayloadReceipt
         self.cloneReceipt = cloneReceipt
@@ -1005,6 +1008,7 @@ public final class MachineManager: @unchecked Sendable {
     private let processStarter: ProcessStarter
     private let workspaceRepository: DoryWorkspaceRepository
     private let runtimeIdentityStore: DoryMachineRuntimeIdentityStore
+    private let displayPresentationStore: DoryMachineDisplayPresentationStore
     private let failureStore: DoryMachineFailureStore
     private let flightRecorderStore: DoryMachineFlightRecorderStore
     private let launchPolicy: DoryMachineLaunchPolicy
@@ -1076,6 +1080,9 @@ public final class MachineManager: @unchecked Sendable {
         }
         self.workspaceRepository = DoryWorkspaceRepository(root: configuration.stateDirectory)
         self.runtimeIdentityStore = DoryMachineRuntimeIdentityStore(
+            root: configuration.stateDirectory
+        )
+        self.displayPresentationStore = DoryMachineDisplayPresentationStore(
             root: configuration.stateDirectory
         )
         self.failureStore = DoryMachineFailureStore(root: configuration.stateDirectory)
@@ -4079,6 +4086,7 @@ public final class MachineManager: @unchecked Sendable {
             // finish the still-durable deleting operation on the next daemon start.
             deletionCommitted = true
             try? failureStore.clear(id)
+            try? displayPresentationStore.remove(machineID: id)
             try releaseResolvedAdmissionStorage(
                 machineID: id,
                 plan: sourceEntry.runtimeIdentity.resolvedPlan
@@ -5703,6 +5711,49 @@ public final class MachineManager: @unchecked Sendable {
         return statusLocked(id: id, entry: entry)
     }
 
+    public func setDisplayPresentation(
+        id: String,
+        presentation: DoryMachineDisplayPresentation
+    ) throws -> DoryMachineStatus {
+        operationLock.lock()
+        defer { operationLock.unlock() }
+        guard presentation.isValid else {
+            throw MachineManagerError.persistence("invalid display presentation preference")
+        }
+        lock.lock()
+        guard let entry = machines[id] else {
+            lock.unlock()
+            throw MachineManagerError.unknownMachine(id)
+        }
+        let availableDisplayIDs: Set<String>
+        if let displays = entry.runtimeIdentity.resolvedPlan?.devices.displays {
+            availableDisplayIDs = Set(displays.map(\.id))
+        } else if entry.configuration.displayMode == .desktop {
+            availableDisplayIDs = ["display-0"]
+        } else {
+            availableDisplayIDs = []
+        }
+        lock.unlock()
+        guard presentation.assignments.allSatisfy({
+            availableDisplayIDs.contains($0.guestDisplayID)
+        }) else {
+            throw MachineManagerError.persistence(
+                "display presentation references a display outside the machine contract"
+            )
+        }
+        do {
+            try displayPresentationStore.publish(presentation, machineID: id)
+        } catch {
+            throw MachineManagerError.persistence(
+                "could not persist display presentation: \(error)"
+            )
+        }
+        guard let status = status(id: id) else {
+            throw MachineManagerError.unknownMachine(id)
+        }
+        return status
+    }
+
     public func runtimeIdentity(id: String) -> DoryMachineRuntimeIdentity? {
         lock.lock()
         defer { lock.unlock() }
@@ -5821,6 +5872,8 @@ public final class MachineManager: @unchecked Sendable {
                 legacyEnvironment: entry.configuration.environment,
                 displayMode: entry.configuration.displayMode
             )
+        let displayPresentation =
+            (try? displayPresentationStore.read(machineID: id)) ?? .windowed
         if [.starting, .running, .paused].contains(entry.state),
            entry.process?.isRunningOrRestarting != true {
             return DoryMachineStatus(
@@ -5855,6 +5908,7 @@ public final class MachineManager: @unchecked Sendable {
                 diagnosticOverrides: DoryMachineDiagnosticOverride.configured(
                     in: entry.configuration.environment
                 ),
+                displayPresentation: displayPresentation,
                 runtimeIdentity: entry.runtimeIdentity,
                 installedDesktopPayloadReceipt:
                     entry.configuration.effectiveInstalledDesktopPayloadReceipt,
@@ -5900,6 +5954,7 @@ public final class MachineManager: @unchecked Sendable {
             diagnosticOverrides: DoryMachineDiagnosticOverride.configured(
                 in: entry.configuration.environment
             ),
+            displayPresentation: displayPresentation,
             runtimeIdentity: entry.runtimeIdentity,
             installedDesktopPayloadReceipt:
                 entry.configuration.effectiveInstalledDesktopPayloadReceipt,
@@ -6358,6 +6413,25 @@ public final class MachineManager: @unchecked Sendable {
             )
             arguments.append(contentsOf: [
                 "--resolved-port-forwards", portForwardContract,
+            ])
+        }
+        if machine.displayMode == .desktop {
+            let presentation: DoryMachineDisplayPresentation
+            do {
+                presentation = try displayPresentationStore.read(machineID: machine.id)
+            } catch {
+                throw MachineManagerError.persistence(
+                    "display presentation authority is invalid: \(error)"
+                )
+            }
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            let presentationContract = String(
+                decoding: try encoder.encode(presentation),
+                as: UTF8.self
+            )
+            arguments.append(contentsOf: [
+                "--display-presentation", presentationContract,
             ])
         }
         for share in machine.shares {

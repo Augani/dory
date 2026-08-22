@@ -363,6 +363,28 @@ final class DoryVMMKitTests: XCTestCase {
         }
     }
 
+    func testParsesExactHostDisplayPresentation() throws {
+        let presentation = DoryMachineDisplayPresentation(assignments: [
+            .init(
+                guestDisplayID: "display-0",
+                mode: .dedicatedFullscreen,
+                hostDisplayUUID: "00000000-0000-0000-0000-000000000001"
+            ),
+        ])
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let encoded = String(decoding: try encoder.encode(presentation), as: UTF8.self)
+        XCTAssertEqual(
+            try parseDoryVMMArguments([
+                "--display-presentation", encoded,
+            ]).displayPresentation,
+            presentation
+        )
+        XCTAssertThrowsError(try parseDoryVMMArguments([
+            "--display-presentation", "{}",
+        ]))
+    }
+
     func testVMMResourcesAreNeverSilentlyClamped() throws {
         let arguments = try parseDoryVMMArguments([
             "--memory-mb", "0",

@@ -55,6 +55,7 @@ public struct DoryVMMArguments: Sendable, Equatable {
     public var resolvedGraphics: DoryGraphicsAccelerationLevel?
     public var resolvedDevices: DoryVirtualMachineDeviceCapabilityRequest?
     public var resolvedPortForwards: [DoryVMPortForward]?
+    public var displayPresentation: DoryMachineDisplayPresentation = .windowed
 
     public init() {}
 
@@ -83,6 +84,7 @@ public enum DoryVMMArgumentError: Error, Sendable, Equatable, CustomStringConver
     case invalidResolvedGraphics(String)
     case invalidResolvedDevices(String)
     case invalidResolvedPortForwards(String)
+    case invalidDisplayPresentation(String)
     case invalidOperationID(String)
 
     public var description: String {
@@ -119,6 +121,8 @@ public enum DoryVMMArgumentError: Error, Sendable, Equatable, CustomStringConver
             return "invalid --resolved-devices value: \(value)"
         case let .invalidResolvedPortForwards(value):
             return "invalid --resolved-port-forwards value: \(value)"
+        case let .invalidDisplayPresentation(value):
+            return "invalid --display-presentation value: \(value)"
         case let .invalidOperationID(value):
             return "invalid --operation-id value: \(value)"
         }
@@ -233,6 +237,22 @@ public func parseDoryVMMArguments(_ raw: [String]) throws -> DoryVMMArguments {
                 )
             } catch {
                 throw DoryVMMArgumentError.invalidResolvedPortForwards(rawValue)
+            }
+        case "--display-presentation":
+            let rawValue = try value(after: argument, from: raw, index: &index)
+            do {
+                let presentation = try JSONDecoder().decode(
+                    DoryMachineDisplayPresentation.self,
+                    from: Data(rawValue.utf8)
+                )
+                guard presentation.isValid else {
+                    throw DoryVMMArgumentError.invalidDisplayPresentation(rawValue)
+                }
+                parsed.displayPresentation = presentation.canonicalized
+            } catch let error as DoryVMMArgumentError {
+                throw error
+            } catch {
+                throw DoryVMMArgumentError.invalidDisplayPresentation(rawValue)
             }
         case "--exit-after-handoff":
             parsed.exitAfterHandoff = true
@@ -1133,7 +1153,8 @@ public enum DoryVMMMain {
                             runtime: runtime,
                             machineID: machineID,
                             environment: arguments.environment,
-                            resolvedDevices: arguments.resolvedDevices
+                            resolvedDevices: arguments.resolvedDevices,
+                            displayPresentation: arguments.displayPresentation
                         )
                     }
                 } else {

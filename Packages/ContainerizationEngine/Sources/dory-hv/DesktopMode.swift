@@ -480,6 +480,7 @@ enum DesktopMode {
         var resolvedGraphics: DoryGraphicsAccelerationLevel?
         var resolvedDevices: DoryVirtualMachineDeviceCapabilityRequest?
         var resolvedPortForwards: [DoryVMPortForward]?
+        var displayPresentation: DoryMachineDisplayPresentation = .windowed
     }
 
     enum NetworkPlan: Equatable {
@@ -641,6 +642,7 @@ enum DesktopMode {
         private let mailboxes: [DesktopFrameMailbox]
         private let displays: [DesktopMetalView]
         private let windows: [NSWindow]
+        private let displayAssignments: [DoryGuestDisplayPresentationAssignment?]
         private let vsock: VirtioVsock
         private let audio: DoryMacAudioBackend
         private let gvproxy: Process?
@@ -997,6 +999,9 @@ enum DesktopMode {
             }
 
             var windows = [NSWindow]()
+            let displayAssignments = displayPlans.map {
+                configuration.displayPresentation.assignment(forGuestDisplayID: $0.id)
+            }
             for (index, plan) in displayPlans.enumerated() {
                 let window = NSWindow(
                     contentRect: NSRect(origin: .zero, size: plan.windowSize),
@@ -1021,6 +1026,7 @@ enum DesktopMode {
                 windows.append(window)
             }
             self.windows = windows
+            self.displayAssignments = displayAssignments
             super.init()
             for window in windows { window.delegate = self }
             for display in displays {
@@ -1045,6 +1051,15 @@ enum DesktopMode {
             installSignalHandlers()
             for window in windows { window.makeKeyAndOrderFront(nil) }
             application.activate()
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                for (window, assignment) in zip(self.windows, self.displayAssignments) {
+                    _ = DoryHostDisplayPresentation.enterDedicatedFullscreen(
+                        window: window,
+                        assignment: assignment
+                    )
+                }
+            }
             startMachine()
             application.run()
             cleanup()
@@ -1068,11 +1083,11 @@ enum DesktopMode {
             let viewMenu = NSMenu(title: "View")
             let fullScreenItem = NSMenuItem(
                 title: "Enter Full Screen",
-                action: #selector(NSWindow.toggleFullScreen(_:)),
+                action: #selector(toggleFullScreen(_:)),
                 keyEquivalent: "f"
             )
             fullScreenItem.keyEquivalentModifierMask = [.command, .control]
-            fullScreenItem.target = windows.first
+            fullScreenItem.target = self
             viewMenu.addItem(fullScreenItem)
             viewItem.submenu = viewMenu
             mainMenu.addItem(viewItem)
@@ -1083,6 +1098,19 @@ enum DesktopMode {
         func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
             for window in windows { window.makeKeyAndOrderFront(nil) }
             return true
+        }
+
+        func applicationDidChangeScreenParameters(_ notification: Notification) {
+            for (window, assignment) in zip(windows, displayAssignments) {
+                _ = DoryHostDisplayPresentation.recoverDisconnectedDisplay(
+                    window: window,
+                    assignment: assignment
+                )
+            }
+        }
+
+        @objc private func toggleFullScreen(_ sender: Any?) {
+            (application.keyWindow ?? windows.first)?.toggleFullScreen(sender)
         }
 
         func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {

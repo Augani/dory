@@ -23,6 +23,8 @@ struct NewMachineSheet: View {
     @State private var audioInputEnabled = true
     @State private var audioOutputEnabled = true
     @State private var intelApplicationTranslationEnabled = false
+    @State private var hostDisplays: [HostDisplayChoice] = []
+    @State private var dedicatedHostDisplayUUID: String?
 
     private enum InstallerISOCheck: Equatable {
         case none
@@ -81,6 +83,7 @@ struct NewMachineSheet: View {
         }
         .frame(width: 600, height: 600)
         .background(p.bgWindow)
+        .onAppear { hostDisplays = HostDisplayChoice.connectedDisplays() }
     }
 
     private var formScreen: some View {
@@ -101,6 +104,7 @@ struct NewMachineSheet: View {
                             accessibilityPrefix: "new-machine"
                         )
                         audioBlock
+                        displayAssignmentBlock
                         intelApplicationTranslationBlock
                         optionsRow
                         advancedSection
@@ -572,6 +576,26 @@ struct NewMachineSheet: View {
                 .font(.system(size: 12.5))
                 .foregroundStyle(p.text)
                 Text("Only enabled audio directions are attached to the Linux desktop. The selected backend must qualify the exact combination before launch.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(p.text3)
+            }
+        }
+    }
+
+    @ViewBuilder private var displayAssignmentBlock: some View {
+        if displayMode == .desktop {
+            VStack(alignment: .leading, spacing: 8) {
+                sectionLabel("MAC DISPLAY")
+                Picker("Guest presentation", selection: $dedicatedHostDisplayUUID) {
+                    Text("Windowed").tag(String?.none)
+                    ForEach(hostDisplays) { display in
+                        Text("Dedicated — \(display.name)").tag(Optional(display.id))
+                    }
+                }
+                .accessibilityIdentifier("new-machine-host-display")
+                Text(dedicatedHostDisplayUUID == nil
+                     ? "Open the Linux desktop as a normal Mac window."
+                     : "Give the guest a native full-screen Space on this monitor. Command-Control-F returns to a window.")
                     .font(.system(size: 11))
                     .foregroundStyle(p.text3)
             }
@@ -1054,6 +1078,15 @@ struct NewMachineSheet: View {
                 )
             )
         }
+        settings.displayPresentation = DoryMachineDisplayPresentation(
+            assignments: dedicatedHostDisplayUUID.map {
+                [DoryGuestDisplayPresentationAssignment(
+                    guestDisplayID: "display-0",
+                    mode: .dedicatedFullscreen,
+                    hostDisplayUUID: $0
+                )]
+            } ?? []
+        )
         return settings
     }
 
