@@ -4564,7 +4564,8 @@ nonisolated final class DorydClient: @unchecked Sendable {
     ]
     nonisolated private static let deviceTelemetryEventKinds: Set<String> = [
         "queue-stall", "reset", "graphics-fence-timeout", "graphics-device-loss",
-        "network-reconnect", "audio-drop", "storage-flush-slow",
+        "network-reconnect", "port-forward-unavailable", "port-forward-recovered",
+        "audio-drop", "storage-flush-slow",
         "share-invalidation-failure",
     ]
 

@@ -1209,6 +1209,15 @@ struct DorydClientTests {
         #expect(snapshot.events.first?.kind == "queue-stall")
         #expect(snapshot.events.first?.occurrences == 2)
 
+        let recoveryEvent = event.mutableCopy() as! NSMutableDictionary
+        recoveryEvent["sequence"] = UInt64(2)
+        recoveryEvent["kind"] = "port-forward-recovered"
+        let validWithRecovery = valid.mutableCopy() as! NSMutableDictionary
+        validWithRecovery["events"] = [event, recoveryEvent]
+        service.setMachineDeviceTelemetryResponse(validWithRecovery)
+        let recovered = try await client.machineDeviceTelemetry("dev")
+        #expect(recovered.events.last?.kind == "port-forward-recovered")
+
         let unavailableWithValue: NSDictionary = [
             "kind": "receive-drops",
             "unit": "count",

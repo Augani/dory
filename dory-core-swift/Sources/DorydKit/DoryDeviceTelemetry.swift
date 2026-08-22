@@ -180,6 +180,8 @@ public enum DoryDeviceTelemetryEventKind: String, Codable, Sendable, CaseIterabl
     case graphicsFenceTimeout = "graphics-fence-timeout"
     case graphicsDeviceLoss = "graphics-device-loss"
     case networkReconnect = "network-reconnect"
+    case portForwardUnavailable = "port-forward-unavailable"
+    case portForwardRecovered = "port-forward-recovered"
     case audioDrop = "audio-drop"
     case storageFlushSlow = "storage-flush-slow"
     case shareInvalidationFailure = "share-invalidation-failure"

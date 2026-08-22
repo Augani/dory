@@ -33,6 +33,12 @@ final class DoryDeviceTelemetryTests: XCTestCase {
                     deviceID: device.id,
                     kind: .networkReconnect
                 ),
+                DoryDeviceTelemetryEvent(
+                    sequence: 2,
+                    monotonicNanoseconds: 2,
+                    deviceID: device.id,
+                    kind: .portForwardUnavailable
+                ),
             ]
         )
 

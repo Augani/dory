@@ -2272,6 +2272,11 @@ private final class DoryVMMControlServer: @unchecked Sendable {
     private var listenerFD: Int32 = -1
     private var running = false
     private var telemetrySampleSequence: UInt64 = 0
+    private var telemetryEventSequence: UInt64 = 0
+    private var telemetryEventHistory = [DoryDeviceTelemetryEvent]()
+    private var previousResolvedPortForwardHealth: Bool?
+
+    private static let maximumTelemetryEventHistory = 256
 
     init(
         machine: DoryVZMachine,
@@ -2478,9 +2483,39 @@ private final class DoryVMMControlServer: @unchecked Sendable {
     }
 
     private func deviceTelemetrySnapshot() -> DoryDeviceTelemetrySnapshot {
+        let monotonicNanoseconds = DispatchTime.now().uptimeNanoseconds
+        let portForwardHealth = resolvedPortForwardHealthProvider()
         lock.lock()
         telemetrySampleSequence &+= 1
         let sequence = telemetrySampleSequence
+        if let health = portForwardHealth, health.isValid {
+            let transition: DoryDeviceTelemetryEventKind?
+            if let previous = previousResolvedPortForwardHealth,
+               previous != health.healthy {
+                transition = health.healthy
+                    ? .portForwardRecovered : .portForwardUnavailable
+            } else if previousResolvedPortForwardHealth == nil, !health.healthy {
+                transition = .portForwardUnavailable
+            } else {
+                transition = nil
+            }
+            previousResolvedPortForwardHealth = health.healthy
+            if let transition, telemetryEventSequence < UInt64.max {
+                telemetryEventSequence += 1
+                telemetryEventHistory.append(DoryDeviceTelemetryEvent(
+                    sequence: telemetryEventSequence,
+                    monotonicNanoseconds: monotonicNanoseconds,
+                    deviceID: "resolved-port-forwards",
+                    kind: transition
+                ))
+                if telemetryEventHistory.count > Self.maximumTelemetryEventHistory {
+                    telemetryEventHistory.removeFirst(
+                        telemetryEventHistory.count - Self.maximumTelemetryEventHistory
+                    )
+                }
+            }
+        }
+        let events = telemetryEventHistory
         lock.unlock()
         let unavailableReason = "Virtualization.framework does not expose stable per-device counters"
         let metrics = DoryDeviceTelemetryMetricKind.allCases.map { kind in
@@ -2507,7 +2542,7 @@ private final class DoryVMMControlServer: @unchecked Sendable {
                 metrics: metrics
             ),
         ]
-        if let health = resolvedPortForwardHealthProvider(), health.isValid {
+        if let health = portForwardHealth, health.isValid {
             devices.append(DoryDeviceTelemetryDevice(
                 id: "resolved-port-forwards",
                 kind: .network,
@@ -2528,8 +2563,9 @@ private final class DoryVMMControlServer: @unchecked Sendable {
             backend: .appleVirtualizationFramework,
             sampleSequence: sequence,
             sampledAtUnixMilliseconds: UInt64(Date().timeIntervalSince1970 * 1_000),
-            monotonicNanoseconds: DispatchTime.now().uptimeNanoseconds,
-            devices: devices
+            monotonicNanoseconds: monotonicNanoseconds,
+            devices: devices,
+            events: events
         )
     }
 

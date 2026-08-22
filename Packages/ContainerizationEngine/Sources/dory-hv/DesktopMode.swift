@@ -40,6 +40,7 @@ final class RawDeviceTelemetryRegistry: @unchecked Sendable {
     private var entries = [Entry]()
     private var resolvedPortForwardHealthProvider:
         (@Sendable () -> ResolvedPortForwardHealthSnapshot?)?
+    private var previousResolvedPortForwardHealth: Bool?
 
     private static let queueStallSampleThreshold: UInt8 = 3
     private static let maximumEventHistory = 256
@@ -381,6 +382,24 @@ final class RawDeviceTelemetryRegistry: @unchecked Sendable {
             }
 
             if let health = resolvedPortForwardHealthProvider?(), health.isValid {
+                if let previous = previousResolvedPortForwardHealth,
+                   previous != health.healthy {
+                    appendEvent(
+                        deviceID: "resolved-port-forwards",
+                        kind: health.healthy
+                            ? .portForwardRecovered : .portForwardUnavailable,
+                        occurrences: 1,
+                        monotonicNanoseconds: monotonicNanoseconds
+                    )
+                } else if previousResolvedPortForwardHealth == nil, !health.healthy {
+                    appendEvent(
+                        deviceID: "resolved-port-forwards",
+                        kind: .portForwardUnavailable,
+                        occurrences: 1,
+                        monotonicNanoseconds: monotonicNanoseconds
+                    )
+                }
+                previousResolvedPortForwardHealth = health.healthy
                 devices.append(DoryDeviceTelemetryDevice(
                     id: "resolved-port-forwards",
                     kind: .network,
