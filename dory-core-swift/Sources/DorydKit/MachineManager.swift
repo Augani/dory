@@ -6085,6 +6085,11 @@ public final class MachineManager: @unchecked Sendable {
             "--cpus", String(machine.cpuCount),
             "--display-mode", machine.displayMode.rawValue,
         ]
+        if acceleratedDesktop {
+            arguments.append(contentsOf: [
+                "--usb-control-sock", "\(machineRuntimeDirectory(id: machine.id))/u.sock",
+            ])
+        }
         if let bootDescriptor {
             arguments.append(contentsOf: [
                 "--initrd", machineInstalledLinuxInitrdPath(id: machine.id),

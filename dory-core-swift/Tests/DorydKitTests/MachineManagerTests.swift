@@ -3984,6 +3984,7 @@ final class MachineManagerTests: XCTestCase {
             XCTAssertTrue(path.hasPrefix(runtime + "/"), "\(flag) should use transient runtime storage")
             XCTAssertLessThan(path.utf8.count, 104)
         }
+        XCTAssertFalse(arguments.contains("--usb-control-sock"))
         _ = try manager.stop(id: "dev")
     }
 
@@ -4036,6 +4037,13 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertEqual(Array(desktopArguments.prefix(3)), ["desktop", "--gvproxy", "/tmp/gvproxy"])
         let desktopDisplayIndex = try XCTUnwrap(desktopArguments.firstIndex(of: "--display-mode"))
         XCTAssertEqual(desktopArguments[desktopDisplayIndex + 1], "desktop")
+        let usbControlIndex = try XCTUnwrap(
+            desktopArguments.firstIndex(of: "--usb-control-sock")
+        )
+        let usbControlPath = desktopArguments[usbControlIndex + 1]
+        XCTAssertTrue(usbControlPath.hasPrefix(base + "/machines/"))
+        XCTAssertTrue(usbControlPath.hasSuffix("/u.sock"))
+        XCTAssertLessThan(usbControlPath.utf8.count, 104)
         _ = try manager.stop(id: "desktop")
 
         _ = try manager.create(DoryMachineConfiguration(
@@ -4052,6 +4060,7 @@ final class MachineManagerTests: XCTestCase {
         let compatibleArguments = try String(contentsOfFile: fallbackCapture, encoding: .utf8)
             .split(separator: "\n").map(String.init)
         XCTAssertEqual(compatibleArguments.first, "fallback")
+        XCTAssertFalse(compatibleArguments.contains("--usb-control-sock"))
         let compatibleDisplayIndex = try XCTUnwrap(compatibleArguments.firstIndex(of: "--display-mode"))
         XCTAssertEqual(compatibleArguments[compatibleDisplayIndex + 1], "desktop")
         _ = try manager.stop(id: "compatible")

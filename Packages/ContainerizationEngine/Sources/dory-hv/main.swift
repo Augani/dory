@@ -433,6 +433,7 @@ case "desktop":
     var agentSocket: String?
     var shellSocket: String?
     var controlSocket: String?
+    var usbControlSocket: String?
     var sshAgentSocket: String?
     var memoryMB: UInt64 = 6_144
     var cpus = 6
@@ -496,6 +497,7 @@ case "desktop":
                 fail("raw-HV desktop requires --boot-mode linux-kernel or efi-installed")
             }
         case "--control-sock": controlSocket = iterator.next()
+        case "--usb-control-sock": usbControlSocket = iterator.next()
         case "--dockerd-sock":
             _ = iterator.next()  // accepted for dory-vmm command-line compatibility
         default:
@@ -513,6 +515,7 @@ case "desktop":
     guard let agentSocket else { fail("desktop requires --agent-sock") }
     guard let shellSocket else { fail("desktop requires --shell-sock") }
     guard let controlSocket else { fail("desktop requires --control-sock") }
+    guard let usbControlSocket else { fail("desktop requires --usb-control-sock") }
     do {
         try DesktopMode.run(.init(
             machineID: machineID,
@@ -528,6 +531,7 @@ case "desktop":
             agentSocketPath: agentSocket,
             shellSocketPath: shellSocket,
             controlSocketPath: controlSocket,
+            usbControlSocketPath: usbControlSocket,
             sshAgentSocketPath: sshAgentSocket,
             memoryMB: memoryMB,
             cpuCount: cpus,

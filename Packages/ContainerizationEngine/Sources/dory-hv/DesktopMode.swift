@@ -425,6 +425,7 @@ enum DesktopMode {
         var agentSocketPath: String
         var shellSocketPath: String
         var controlSocketPath: String
+        var usbControlSocketPath: String
         var sshAgentSocketPath: String?
         var memoryMB: UInt64
         var cpuCount: Int
@@ -518,6 +519,8 @@ enum DesktopMode {
         private let agentBridge: GuestVsockSocketBridge
         private let shellBridge: GuestVsockSocketBridge
         private let sshAgentBridge: HostSSHAgentBridge?
+        private let usbipManager: UsbipManager
+        private let usbControlServer: UsbControlServer
         private let clipboard: DoryDesktopClipboardCoordinator?
         private let firstFrame: FirstFrameGate
         private let deviceTelemetry: RawDeviceTelemetryRegistry
@@ -630,7 +633,35 @@ enum DesktopMode {
                     cursorMailbox.submit(update)
                 }
             )
-            self.vsock = VirtioVsock(guestCID: 3)
+            let vsock = VirtioVsock(guestCID: 3)
+            self.vsock = vsock
+            let usbipManager = UsbipManager()
+            usbipManager.attachListener(to: vsock)
+            self.usbipManager = usbipManager
+            let usbControlHandler = UsbControlHandler(
+                manager: usbipManager,
+                ensureSupported: {
+                    let channel = AgentChannel(connection: vsock.connect(port: VsockPorts.agent))
+                    try await channel.requireCapability("usb-vhci", version: 1)
+                },
+                openDevice: { busID, mode in
+                    try HostUsbDeviceFactory.open(busID: busID, mode: mode)
+                },
+                notifyAttach: { request in
+                    let channel = AgentChannel(connection: vsock.connect(port: VsockPorts.agent))
+                    try await channel.requireCapability("usb-vhci", version: 1)
+                    try await channel.usbVhciAttach(request)
+                },
+                notifyDetach: { request in
+                    let channel = AgentChannel(connection: vsock.connect(port: VsockPorts.agent))
+                    try await channel.requireCapability("usb-vhci", version: 1)
+                    try await channel.usbVhciDetach(request)
+                }
+            )
+            self.usbControlServer = UsbControlServer(
+                path: configuration.usbControlSocketPath,
+                handler: usbControlHandler
+            )
             self.audio = DoryMacAudioBackend(log: Self.log)
             let sound = VirtioSound(host: audio, log: Self.log)
             let balloon = VirtioBalloon(memory: machine.memory) { message in
@@ -791,7 +822,13 @@ enum DesktopMode {
         }
 
         func run() throws {
-            try lifecycleReceiptServer.start()
+            try usbControlServer.start()
+            do {
+                try lifecycleReceiptServer.start()
+            } catch {
+                usbControlServer.stop()
+                throw error
+            }
             application.setActivationPolicy(.regular)
             application.delegate = self
             installApplicationMenu()
@@ -981,6 +1018,7 @@ enum DesktopMode {
 
         private func cleanup() {
             lifecycleReceiptServer.stop()
+            usbControlServer.stop()
             clipboard?.stop()
             signalSources.forEach { $0.cancel() }
             signalSources.removeAll()
