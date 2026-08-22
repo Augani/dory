@@ -1041,6 +1041,7 @@ public final class MachineManager: @unchecked Sendable {
     private var activeDirectWorkspaceMutationLocks:
         [String: MachineManagerDirectMutationRetention] = [:]
     private var desktopUpdateArtifactResolver: (any DoryDesktopUpdateArtifactResolving)?
+    private var forceSnapshotCopyFallback = false
 #if DEBUG
     private var lifecycleFaultInjector: (@Sendable (MachineLifecycleFaultPoint) throws -> Void)?
     private var shareAuthorityPreSpawnTestHook: (@Sendable () throws -> Void)?
@@ -4606,23 +4607,32 @@ public final class MachineManager: @unchecked Sendable {
         var publishedNVRAM = false
         do {
             try advanceLifecycleToPublishing(lifecycle)
-            try Self.cloneOrCopyFile(source: machine.rootfsPath, destination: rootfsPath)
+            try cloneOrCopySnapshotArtifact(
+                source: machine.rootfsPath,
+                destination: rootfsPath
+            )
             publishedRootfs = true
 #if DEBUG
             try injectLifecycleFault(.snapshotAfterRootfs)
 #endif
-            try Self.cloneOrCopyFile(source: machine.kernelPath, destination: kernelPath)
+            try cloneOrCopySnapshotArtifact(
+                source: machine.kernelPath,
+                destination: kernelPath
+            )
             publishedKernel = true
             if machine.bootMode == .efi {
                 guard let liveMachineIdentifierPath, let liveNVRAMPath else {
                     throw MachineManagerError.persistence("EFI firmware state is unavailable")
                 }
-                try Self.cloneOrCopyFile(
+                try cloneOrCopySnapshotArtifact(
                     source: liveMachineIdentifierPath,
                     destination: machineIdentifierPath
                 )
                 publishedMachineIdentifier = true
-                try Self.cloneOrCopyFile(source: liveNVRAMPath, destination: nvramPath)
+                try cloneOrCopySnapshotArtifact(
+                    source: liveNVRAMPath,
+                    destination: nvramPath
+                )
                 publishedNVRAM = true
             }
             // Validate the copies against the pre-publish authority before publishing metadata.
@@ -4684,6 +4694,16 @@ public final class MachineManager: @unchecked Sendable {
             }
         }
         return snapshot
+    }
+
+    private func cloneOrCopySnapshotArtifact(source: String, destination: String) throws {
+        try Self.cloneOrCopyFile(
+            source: source,
+            destination: destination,
+            copyCapacityProvider: storageCapacityProvider,
+            capacityOperation: "machine snapshot",
+            forceCopyFallback: forceSnapshotCopyFallback
+        )
     }
 
     private func freezeGuestForSnapshotIfSupported(
@@ -9960,9 +9980,13 @@ public final class MachineManager: @unchecked Sendable {
         replaceExisting: Bool = false,
         requiresCopyOnWrite: Bool = false,
         expectedSHA256: String? = nil,
-        expectedByteCount: UInt64? = nil
+        expectedByteCount: UInt64? = nil,
+        copyCapacityProvider: (@Sendable (String) throws -> UInt64)? = nil,
+        capacityOperation: String? = nil,
+        forceCopyFallback: Bool = false
     ) throws {
         guard (expectedSHA256 == nil) == (expectedByteCount == nil),
+              (copyCapacityProvider == nil) == (capacityOperation == nil),
               !requiresCopyOnWrite || expectedSHA256 != nil else {
             throw MachineManagerError.persistence("invalid clone artifact authority")
         }
@@ -9997,13 +10021,24 @@ public final class MachineManager: @unchecked Sendable {
             throw MachineManagerError.persistence("artifact source is not a nonempty regular file")
         }
         do {
-            if fclonefileat(sourceDescriptor, parentDescriptor, temporaryName, 0) != 0 {
-                let cloneError = errno
+            let cloneResult = forceCopyFallback
+                ? -1
+                : fclonefileat(sourceDescriptor, parentDescriptor, temporaryName, 0)
+            if cloneResult != 0 {
+                let cloneError = forceCopyFallback ? ENOTSUP : errno
                 _ = unlinkat(parentDescriptor, temporaryName, 0)
                 guard !requiresCopyOnWrite else {
                     throw MachineManagerError.persistence(
                         "APFS copy-on-write cloning is unavailable: "
                             + String(cString: strerror(cloneError))
+                    )
+                }
+                if let copyCapacityProvider, let capacityOperation {
+                    try MachineSnapshotBundle.requireArtifactCapacity(
+                        artifactByteCount: UInt64(sourceInfo.st_size),
+                        destinationPath: destination,
+                        operation: capacityOperation,
+                        availableCapacity: copyCapacityProvider
                     )
                 }
                 let destinationDescriptor = openat(
@@ -11714,6 +11749,12 @@ public final class MachineManager: @unchecked Sendable {
     ) {
         operationLock.lock()
         storageCapacityProvider = provider
+        operationLock.unlock()
+    }
+
+    func forceSnapshotCopyFallbackForTesting() {
+        operationLock.lock()
+        forceSnapshotCopyFallback = true
         operationLock.unlock()
     }
 #endif

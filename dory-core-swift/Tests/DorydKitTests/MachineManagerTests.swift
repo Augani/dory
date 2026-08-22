@@ -3642,6 +3642,47 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertEqual(reloaded.list().map(\.id), ["dev"])
     }
 
+    func testSnapshotStorageAdmissionOnlyChargesFallbackCopies() throws {
+        let base = "/tmp/dory-machine-snapshot-storage-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let sourceRootfs = "\(base)/source.ext4"
+        let sourceKernel = "\(base)/kernel"
+        try Data("copy-on-write-rootfs".utf8).write(to: URL(fileURLWithPath: sourceRootfs))
+        try Data("copy-on-write-kernel".utf8).write(to: URL(fileURLWithPath: sourceKernel))
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: "\(base)/machines",
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: false
+        ))
+        defer { try? manager.delete(id: "dev") }
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "dev",
+            kernelPath: sourceKernel,
+            rootfsPath: sourceRootfs
+        ))
+        manager.installStorageCapacityProviderForTesting { _ in 0 }
+
+        let copyOnWrite = try manager.snapshot(id: "dev", snapshotID: "cow")
+        XCTAssertEqual(copyOnWrite.id, "cow")
+
+        manager.forceSnapshotCopyFallbackForTesting()
+        XCTAssertThrowsError(try manager.snapshot(id: "dev", snapshotID: "fallback")) { error in
+            XCTAssertTrue(
+                String(describing: error).contains(
+                    "insufficient host storage for machine snapshot"
+                )
+            )
+        }
+        XCTAssertEqual(try manager.listSnapshots(machineID: "dev").map(\.id), ["cow"])
+        let snapshotEntries = try FileManager.default.contentsOfDirectory(
+            atPath: "\(base)/machines/dev/snapshots"
+        )
+        XCTAssertFalse(snapshotEntries.contains { $0.contains("fallback") })
+    }
+
     func testSnapshotCloneRequiresCopyOnWriteAndSurvivesSourceDeletion() throws {
         let base = "/tmp/dory-machine-cow-clone-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
