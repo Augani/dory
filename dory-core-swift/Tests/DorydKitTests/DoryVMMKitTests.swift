@@ -1348,6 +1348,26 @@ final class DoryVMMKitTests: XCTestCase {
 
         XCTAssertEqual(forcedExit.codes, [1])
     }
+
+    func testResolvedShutdownOptOutNeverRequestsGuestShutdown() {
+        let watchdog = ShutdownWatchdogRecorder()
+        let forcedExit = ForcedExitRecorder()
+        let coordinator = DoryVMMShutdownCoordinator(
+            watchdogSeconds: 25,
+            guestShutdownAuthorized: false,
+            scheduleWatchdog: { watchdog.schedule(delay: $0, action: $1) },
+            forceExit: { forcedExit.record($0) }
+        )
+        let target = FakeVMMShutdownTarget()
+
+        coordinator.attach(target)
+        coordinator.request(reason: "SIGTERM")
+
+        XCTAssertEqual(target.requestCount, 0)
+        XCTAssertEqual(target.cleanupCount, 1)
+        XCTAssertEqual(watchdog.delays, [])
+        XCTAssertEqual(forcedExit.codes, [0])
+    }
 }
 
 private final class ClipboardWriteRecorder: @unchecked Sendable {
@@ -1394,6 +1414,7 @@ private final class FakeVMMShutdownTarget: DoryVMMGuestShutdownHandling, @unchec
     private let requested = DispatchSemaphore(value: 0)
     private var stopped = false
     private var requests = 0
+    private var cleanups = 0
 
     var isStopped: Bool {
         lock.lock(); defer { lock.unlock() }
@@ -1403,6 +1424,11 @@ private final class FakeVMMShutdownTarget: DoryVMMGuestShutdownHandling, @unchec
     var requestCount: Int {
         lock.lock(); defer { lock.unlock() }
         return requests
+    }
+
+    var cleanupCount: Int {
+        lock.lock(); defer { lock.unlock() }
+        return cleanups
     }
 
     func requestGuestShutdown() throws {
@@ -1419,6 +1445,12 @@ private final class FakeVMMShutdownTarget: DoryVMMGuestShutdownHandling, @unchec
     func markStopped() {
         lock.lock()
         stopped = true
+        lock.unlock()
+    }
+
+    func forceCleanup() {
+        lock.lock()
+        cleanups += 1
         lock.unlock()
     }
 }

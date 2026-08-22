@@ -1070,7 +1070,11 @@ public enum DoryVMMMain {
             guard let rootfsPath = arguments.rootfsPath else {
                 throw DoryVMMArgumentError.missingRootfs
             }
-            let coordinator = DoryVMMShutdownCoordinator()
+            let gracefulShutdownAuthorized = arguments.resolvedDevices?
+                .gracefulShutdown ?? true
+            let coordinator = DoryVMMShutdownCoordinator(
+                guestShutdownAuthorized: gracefulShutdownAuthorized
+            )
             coordinator.installSignalHandlers()
             shutdownCoordinator = coordinator
             runtime = try runVirtualMachine(
@@ -1642,6 +1646,7 @@ final class DoryVMMShutdownCoordinator: @unchecked Sendable {
     private let lock = NSLock()
     private let worker = DispatchQueue(label: "dev.dory.dory-vmm.shutdown", qos: .userInitiated)
     private let watchdogSeconds: TimeInterval
+    private let guestShutdownAuthorized: Bool
     private let scheduleWatchdog: WatchdogScheduler
     private let forceExit: ForceExit
     private var target: (any DoryVMMGuestShutdownHandling)?
@@ -1652,12 +1657,14 @@ final class DoryVMMShutdownCoordinator: @unchecked Sendable {
 
     init(
         watchdogSeconds: TimeInterval = DoryEngineShutdownTiming.helperWatchdogSeconds,
+        guestShutdownAuthorized: Bool = true,
         scheduleWatchdog: @escaping WatchdogScheduler = { delay, action in
             DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + delay, execute: action)
         },
         forceExit: @escaping ForceExit = { code in exit(code) }
     ) {
         self.watchdogSeconds = watchdogSeconds
+        self.guestShutdownAuthorized = guestShutdownAuthorized
         self.scheduleWatchdog = scheduleWatchdog
         self.forceExit = forceExit
     }
@@ -1717,13 +1724,21 @@ final class DoryVMMShutdownCoordinator: @unchecked Sendable {
         if target != nil { begun = true }
         lock.unlock()
 
-        FileHandle.standardError.write(Data("dory-vmm: graceful shutdown requested (\(reason))\n".utf8))
+        let detail = guestShutdownAuthorized
+            ? "graceful shutdown requested"
+            : "immediate host shutdown requested"
+        FileHandle.standardError.write(Data("dory-vmm: \(detail) (\(reason))\n".utf8))
         if let target {
             beginShutdown(target)
         }
     }
 
     private func beginShutdown(_ target: any DoryVMMGuestShutdownHandling) {
+        guard guestShutdownAuthorized else {
+            target.forceCleanup()
+            forceExit(0)
+            return
+        }
         scheduleWatchdog(watchdogSeconds) { [weak self, weak target] in
             guard let self, let target, !target.isStopped else { return }
             FileHandle.standardError.write(Data(

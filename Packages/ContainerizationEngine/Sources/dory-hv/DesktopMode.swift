@@ -576,6 +576,16 @@ enum DesktopMode {
         }
     }
 
+    enum ShutdownPlan: Equatable {
+        case guestAssisted
+        case immediate
+
+        init(resolvedDevices: DoryVirtualMachineDeviceCapabilityRequest?) {
+            self = resolvedDevices?.gracefulShutdown == false
+                ? .immediate : .guestAssisted
+        }
+    }
+
     private struct ResolvedGraphics {
         var backend: DoryDesktopGraphicsBackend
         var renderer: VirglRenderer?
@@ -1067,6 +1077,10 @@ enum DesktopMode {
             stopping = true
             window.orderOut(nil)
             let machine = self.machine
+            if ShutdownPlan(resolvedDevices: configuration.resolvedDevices) == .immediate {
+                machine.requestStop(.powerOff)
+                return
+            }
             if configuration.genericGuest {
                 // Linux maps KEY_POWER to logind's normal power-button action. This provides a
                 // clean integration-free shutdown path until Dory guest tools are installed.
