@@ -1620,7 +1620,11 @@ import Testing
 
     @Test func fencedCommandDefersCompletionUntilRendererSignals() throws {
         let renderer = FakeVirtioGPURenderer(capsets: [VirtioGPUCapset(id: 4, maxVersion: 0, data: [1])])
-        let gpu = VirtioGPU(hostMemoryBase: 0x1_0000_0000, renderer: renderer)
+        let gpu = VirtioGPU(
+            hostMemoryBase: 0x1_0000_0000,
+            renderer: renderer,
+            fenceTimeoutNanoseconds: 0
+        )
         let memory = try GuestMemory(guestBase: base, size: 64 * HostPage.size)
         let transport = VirtioMMIOTransport(baseAddress: GuestLayout.virtioBase, backend: gpu, memory: memory) {}
         transport.queues[0].configure(size: 8, descriptorTable: descTable, availRing: availRing, usedRing: usedRing)
@@ -1649,6 +1653,12 @@ import Testing
         #expect(renderer.createdFences.first?.fenceID == 7)
         #expect(renderer.createdFences.first?.contextFence == false)
         #expect(try memory.read(UInt16.self, at: usedRing + 2) == 0)
+        #expect(gpu.statistics == VirtioGPUStatistics(
+            fences: 1,
+            fenceRegistrationFailures: 0,
+            fenceTimeouts: 1,
+            hasTimedOutPendingFence: true
+        ))
 
         // A ctx0 signal completes it: response carries OK + FLAG_FENCE + the fence id.
         renderer.signalFence(contextID: 0, ringIndex: 0, fenceID: 7)
@@ -1656,6 +1666,12 @@ import Testing
         #expect(try memory.read(UInt32.self, at: responseBuffer) == 0x1100)
         #expect(try memory.read(UInt32.self, at: responseBuffer + 4) == 1)
         #expect(try memory.read(UInt64.self, at: responseBuffer + 8) == 7)
+        #expect(gpu.statistics == VirtioGPUStatistics(
+            fences: 1,
+            fenceRegistrationFailures: 0,
+            fenceTimeouts: 1,
+            hasTimedOutPendingFence: false
+        ))
     }
 
     @Test func contextFenceCompletesOnlyItsRing() throws {
@@ -1726,6 +1742,12 @@ import Testing
         #expect(try memory.read(UInt16.self, at: usedRing + 2) == 1)
         #expect(try memory.read(UInt32.self, at: responseBuffer) == 0x1100)
         #expect(try memory.read(UInt64.self, at: responseBuffer + 8) == 13)
+        #expect(gpu.statistics == VirtioGPUStatistics(
+            fences: 0,
+            fenceRegistrationFailures: 1,
+            fenceTimeouts: 0,
+            hasTimedOutPendingFence: false
+        ))
     }
 
     private func writeDescriptor(_ memory: GuestMemory, index: UInt64, addr: UInt64, len: UInt32, flags: UInt16, next: UInt16) throws {

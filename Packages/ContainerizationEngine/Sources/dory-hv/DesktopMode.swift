@@ -17,12 +17,15 @@ final class RawDeviceTelemetryRegistry: @unchecked Sendable {
         var sharedDirectory: VirtioFS?
         var audioMetrics: (@Sendable () -> DoryMacAudioRuntimeMetrics?)?
         var displayMetrics: (@Sendable () -> DesktopFrameMailboxMetrics?)?
+        var graphicsMetrics: (@Sendable () -> VirtioGPUStatistics?)?
         var unavailableMetrics: [(DoryDeviceTelemetryMetricKind, DoryDeviceTelemetryMetricUnit)]
         var previousTransportStatistics: VirtioMMIOTransportStatistics?
         var previousStorageStatistics: VirtioBlkStatistics?
         var previousAudioDrops: UInt64?
         var previousShareInvalidationFailures: UInt64?
         var previousDisplayDrops: UInt64?
+        var previousGraphicsFenceRegistrationFailures: UInt64?
+        var previousGraphicsFenceTimeouts: UInt64?
         var consecutiveUncompletedNotificationSamples: UInt8
         var queueStallReported: Bool
     }
@@ -48,8 +51,17 @@ final class RawDeviceTelemetryRegistry: @unchecked Sendable {
         backend: any VirtioDeviceBackend,
         transport: VirtioMMIOTransport,
         audioMetrics: (@Sendable () -> DoryMacAudioRuntimeMetrics?)? = nil,
-        displayMetrics: (@Sendable () -> DesktopFrameMailboxMetrics?)? = nil
+        displayMetrics: (@Sendable () -> DesktopFrameMailboxMetrics?)? = nil,
+        graphicsMetrics: (@Sendable () -> VirtioGPUStatistics?)? = nil
     ) {
+        let effectiveGraphicsMetrics: (@Sendable () -> VirtioGPUStatistics?)?
+        if let graphicsMetrics {
+            effectiveGraphicsMetrics = graphicsMetrics
+        } else if let graphics = backend as? VirtioGPU {
+            effectiveGraphicsMetrics = { [weak graphics] in graphics?.statistics }
+        } else {
+            effectiveGraphicsMetrics = nil
+        }
         let kind: DoryDeviceTelemetryKind
         var unavailable: [(DoryDeviceTelemetryMetricKind, DoryDeviceTelemetryMetricUnit)]
         switch backend {
@@ -58,7 +70,10 @@ final class RawDeviceTelemetryRegistry: @unchecked Sendable {
             unavailable = []
         case is VirtioGPU:
             kind = .graphics
-            unavailable = [(.graphicsFences, .count), (.graphicsDeviceLosses, .count)]
+            unavailable = [(.graphicsDeviceLosses, .count)]
+            if effectiveGraphicsMetrics == nil {
+                unavailable.append((.graphicsFences, .count))
+            }
             if displayMetrics == nil {
                 unavailable.append(contentsOf: [
                     (.displayFrames, .count),
@@ -108,12 +123,15 @@ final class RawDeviceTelemetryRegistry: @unchecked Sendable {
             sharedDirectory: backend as? VirtioFS,
             audioMetrics: audioMetrics,
             displayMetrics: displayMetrics,
+            graphicsMetrics: effectiveGraphicsMetrics,
             unavailableMetrics: unavailable,
             previousTransportStatistics: nil,
             previousStorageStatistics: nil,
             previousAudioDrops: nil,
             previousShareInvalidationFailures: nil,
             previousDisplayDrops: nil,
+            previousGraphicsFenceRegistrationFailures: nil,
+            previousGraphicsFenceTimeouts: nil,
             consecutiveUncompletedNotificationSamples: 0,
             queueStallReported: false
         )
@@ -282,6 +300,36 @@ final class RawDeviceTelemetryRegistry: @unchecked Sendable {
                         health = .degraded
                     }
                     entries[index].previousDisplayDrops = display.droppedFrames
+                }
+                if let graphics = entries[index].graphicsMetrics?() {
+                    metrics.append(.measured(.graphicsFences, value: graphics.fences))
+                    let previousRegistrationFailures =
+                        entries[index].previousGraphicsFenceRegistrationFailures ?? 0
+                    if Self.monotonicDelta(
+                        current: graphics.fenceRegistrationFailures,
+                        previous: previousRegistrationFailures
+                    ) > 0 {
+                        health = .degraded
+                    }
+                    let previousTimeouts = entries[index].previousGraphicsFenceTimeouts ?? 0
+                    let newTimeouts = Self.monotonicDelta(
+                        current: graphics.fenceTimeouts,
+                        previous: previousTimeouts
+                    )
+                    if newTimeouts > 0 {
+                        appendEvent(
+                            deviceID: entries[index].id,
+                            kind: .graphicsFenceTimeout,
+                            occurrences: newTimeouts,
+                            monotonicNanoseconds: monotonicNanoseconds
+                        )
+                    }
+                    if graphics.hasTimedOutPendingFence {
+                        health = .failed
+                    }
+                    entries[index].previousGraphicsFenceRegistrationFailures =
+                        graphics.fenceRegistrationFailures
+                    entries[index].previousGraphicsFenceTimeouts = graphics.fenceTimeouts
                 }
                 metrics.append(contentsOf: entries[index].unavailableMetrics.map {
                     .unavailable($0.0, unit: $0.1, reason: unavailableReason)

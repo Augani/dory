@@ -119,6 +119,25 @@ public struct VirtioGPUScanoutFrame: Sendable, Equatable {
     }
 }
 
+public struct VirtioGPUStatistics: Equatable, Sendable {
+    public var fences: UInt64
+    public var fenceRegistrationFailures: UInt64
+    public var fenceTimeouts: UInt64
+    public var hasTimedOutPendingFence: Bool
+
+    public init(
+        fences: UInt64,
+        fenceRegistrationFailures: UInt64,
+        fenceTimeouts: UInt64,
+        hasTimedOutPendingFence: Bool
+    ) {
+        self.fences = fences
+        self.fenceRegistrationFailures = fenceRegistrationFailures
+        self.fenceTimeouts = fenceTimeouts
+        self.hasTimedOutPendingFence = hasTimedOutPendingFence
+    }
+}
+
 /// A copied guest cursor plane ready for the host window. Cursor bytes are never exposed through
 /// guest-owned pointers: the device snapshots the complete 32-bit BGRA resource at the
 /// UPDATE_CURSOR command boundary and carries the guest hotspot with it.
@@ -262,7 +281,7 @@ private extension UInt64 {
 /// Bootstrap mode keeps the Linux driver bring-up surface deliberately inert. Venus mode advertises
 /// the Linux UAPI feature bits only when a host renderer is supplied, then forwards blob/context
 /// commands to that renderer.
-public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvider {
+public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvider, @unchecked Sendable {
     public let deviceID: UInt32 = 16
     public let queueCount = 2
     public let deviceFeatures: UInt64
@@ -342,11 +361,17 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         var fenceID: UInt64
         var response: [UInt8]
         var chain: VirtqueueChain
+        var createdAtMonotonicNanoseconds: UInt64
+        var timeoutReported: Bool
     }
 
     private let fenceLock = NSLock()
     private var pendingFences: [FenceKey: [PendingFence]] = [:]
     private weak var lastTransport: VirtioMMIOTransport?
+    private let fenceTimeoutNanoseconds: UInt64
+    private var fenceCount: UInt64 = 0
+    private var fenceRegistrationFailureCount: UInt64 = 0
+    private var fenceTimeoutCount: UInt64 = 0
 
     private enum HeaderFlag {
         static let fence: UInt32 = 1 << 0
@@ -422,6 +447,7 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         renderer: VirtioGPURenderer? = nil,
         hostVisibleMemory: VirtioGPUHostVisibleMemory? = nil,
         traceResourceLifecycle: Bool = ProcessInfo.processInfo.environment["DORY_GPU_TRACE_RESOURCES"] == "1",
+        fenceTimeoutNanoseconds: UInt64 = 10_000_000_000,
         onScanoutFrame: (@Sendable (VirtioGPUScanoutFrame) -> Void)? = nil,
         onScanoutResourceReleased: (@Sendable (UInt32) -> Void)? = nil,
         onCursorUpdate: (@Sendable (VirtioGPUCursorUpdate?) -> Void)? = nil
@@ -430,6 +456,7 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         self.renderer = renderer
         self.capsets = renderer?.capsets ?? []
         self.traceResourceLifecycle = traceResourceLifecycle
+        self.fenceTimeoutNanoseconds = fenceTimeoutNanoseconds
         self.deviceFeatures = renderer == nil
             ? 0
             : Feature.virgl | Feature.resourceUUID | Feature.resourceBlob | Feature.contextInit
@@ -546,7 +573,13 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         // callback from createFence itself or immediately on another thread. Registering after
         // createFence loses that edge forever and stalls the guest compositor on its first frame.
         fenceLock.lock()
-        pendingFences[key, default: []].append(PendingFence(fenceID: fenceID, response: response, chain: chain))
+        pendingFences[key, default: []].append(PendingFence(
+            fenceID: fenceID,
+            response: response,
+            chain: chain,
+            createdAtMonotonicNanoseconds: DispatchTime.now().uptimeNanoseconds,
+            timeoutReported: false
+        ))
         fenceLock.unlock()
         do {
             try renderer.createFence(
@@ -561,10 +594,53 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                 waiting.removeAll { $0.fenceID == fenceID }
                 pendingFences[key] = waiting.isEmpty ? nil : waiting
             }
+            fenceRegistrationFailureCount = Self.saturatingAdd(
+                fenceRegistrationFailureCount,
+                1
+            )
             fenceLock.unlock()
             return false
         }
+        fenceLock.withLock {
+            fenceCount = Self.saturatingAdd(fenceCount, 1)
+        }
         return true
+    }
+
+    public var statistics: VirtioGPUStatistics {
+        fenceLock.withLock {
+            let now = DispatchTime.now().uptimeNanoseconds
+            var newlyTimedOut: UInt64 = 0
+            var hasTimedOutPendingFence = false
+            for key in Array(pendingFences.keys) {
+                guard var waiting = pendingFences[key] else { continue }
+                for index in waiting.indices {
+                    if !waiting[index].timeoutReported {
+                        let started = waiting[index].createdAtMonotonicNanoseconds
+                        let age = now >= started ? now - started : 0
+                        if age >= fenceTimeoutNanoseconds {
+                            waiting[index].timeoutReported = true
+                            newlyTimedOut = Self.saturatingAdd(newlyTimedOut, 1)
+                        }
+                    }
+                    hasTimedOutPendingFence =
+                        hasTimedOutPendingFence || waiting[index].timeoutReported
+                }
+                pendingFences[key] = waiting
+            }
+            fenceTimeoutCount = Self.saturatingAdd(fenceTimeoutCount, newlyTimedOut)
+            return VirtioGPUStatistics(
+                fences: fenceCount,
+                fenceRegistrationFailures: fenceRegistrationFailureCount,
+                fenceTimeouts: fenceTimeoutCount,
+                hasTimedOutPendingFence: hasTimedOutPendingFence
+            )
+        }
+    }
+
+    private static func saturatingAdd(_ value: UInt64, _ increment: UInt64) -> UInt64 {
+        let (sum, overflow) = value.addingReportingOverflow(increment)
+        return overflow ? UInt64.max : sum
     }
 
     /// Renderer-thread entry: completes every pending descriptor on the signaled timeline whose

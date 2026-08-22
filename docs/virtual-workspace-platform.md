@@ -749,10 +749,12 @@ request publication closed for that backend, its telemetry remains failed until 
 The raw-HV display mailbox reports only updates accepted by the Metal presentation layer as frames;
 invalid updates, bounded partial-update overflow, released pending resources, and a missing display
 surface are counted as drops, while a newer complete frame superseding older damage is intentional
-coalescing rather than loss.
+coalescing rather than loss. VirtioGPU counts successful renderer fence registrations, reports a
+registration failure as degraded health, and classifies a fence still pending after 10 seconds as a
+timeout; health remains failed until that exact pending fence is signaled.
 Virtualization.framework counters that do not have a stable public authority remain explicitly
-unavailable rather than being reported as zero. Backend-specific producers for GPU loss/fences,
-and network reconnects remain release gates for those individual capability claims.
+unavailable rather than being reported as zero. Renderer device-loss classification and network
+reconnect support remain release gates for those individual capability claims.
 
 ## Qualification and release gates
 

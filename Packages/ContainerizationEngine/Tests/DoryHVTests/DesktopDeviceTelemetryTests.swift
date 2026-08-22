@@ -242,4 +242,41 @@ import Testing
         let stable = registry.snapshot()
         #expect(stable.devices.first?.health == .healthy)
     }
+
+    @Test func publishesFenceCountsAndClassifiesPendingTimeouts() throws {
+        let backend = VirtioGPU(hostMemoryBase: GuestLayout.daxWindowBase, scanoutCount: 1)
+        let memory = try GuestMemory(guestBase: GuestLayout.ramBase, size: 0x20_000)
+        let transport = VirtioMMIOTransport(
+            baseAddress: GuestLayout.virtioBase,
+            backend: backend,
+            memory: memory
+        ) {}
+        let registry = RawDeviceTelemetryRegistry(machineID: "raw-gpu", operationID: UUID())
+        let statistics = VirtioGPUStatistics(
+            fences: 9,
+            fenceRegistrationFailures: 1,
+            fenceTimeouts: 2,
+            hasTimedOutPendingFence: true
+        )
+        registry.register(
+            slot: 1,
+            backend: backend,
+            transport: transport,
+            graphicsMetrics: { statistics }
+        )
+
+        let snapshot = registry.snapshot()
+        let device = try #require(snapshot.devices.first)
+        #expect(device.health == .failed)
+        #expect(device.metrics.first { $0.kind == .graphicsFences }?.value == 9)
+        #expect(device.metrics.first {
+            $0.kind == .graphicsDeviceLosses
+        }?.availability == .unavailable)
+        #expect(snapshot.events.map(\.kind) == [.graphicsFenceTimeout])
+        #expect(snapshot.events.first?.occurrences == 2)
+
+        let stable = registry.snapshot()
+        #expect(stable.devices.first?.health == .failed)
+        #expect(stable.events.map(\.kind) == [.graphicsFenceTimeout])
+    }
 }
