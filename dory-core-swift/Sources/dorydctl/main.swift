@@ -197,6 +197,8 @@ func usage(exitCode: Int32 = 2) -> Never {
           dorydctl [global] machine create NAME (--kernel PATH --rootfs PATH | --installer-iso PATH [--disk-size-gb N]) [--memory-mb N] [--cpus N] [--display-mode headless|desktop] [--dns-target IPv4] [--share TAG=HOST:GUEST[:ro|rw] | JSON] [--guest-user NAME] [--guest-uid N] [--desktop-distro ID] [--desktop-name NAME] [--desktop-version VERSION] [--desktop-environment NAME] [--clipboard off|host-to-guest|guest-to-host|bidirectional] [--runtime auto|accelerated|compatible] [--graphics auto|virgl|virgl-venus|software] [--network shared-nat|host-only|disconnected|bridged] [--sandbox [--sandbox-expires-at UNIX_SECONDS] [--sandbox-ssh-agent denied|granted] [--sandbox-profile standard|agent-ready] [--sandbox-tool TOOL ...] [--sandbox-baseline ID]]
           dorydctl [global] machine update NAME [--memory-mb N] [--cpus N] [--dns-target IPv4 | --clear-dns-target] [--share TAG=HOST:GUEST[:ro|rw] | JSON ... | --clear-shares] [typed create options | --clear-guest-account | --clear-desktop-identity | --clear-clipboard | --clear-runtime | --clear-graphics | --clear-network] [--attach-installer | --eject-installer]
           dorydctl [global] machine start|stop|pause|suspend|resume|restart|delete NAME
+          dorydctl [global] machine usb-attach NAME BUS_ID
+          dorydctl [global] machine usb-detach NAME BUS_ID
           dorydctl [global] machine exec NAME [--json] [--cwd PATH] [--env KEY=VALUE] [--env-json-stdin] [--timeout-ms N] [--output-limit-bytes N] -- COMMAND [ARG...]
           dorydctl [global] machine shell NAME
           dorydctl [global] machine provision NAME --recipe RECIPE
@@ -1149,7 +1151,7 @@ func runBalloon(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
 }
 
 func runMachine(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
-    let subcommand = try cursor.take("usage: dorydctl machine list|status|stats|device-telemetry|flight-recorder|console|create|update|desktop-update|start|stop|pause|suspend|resume|restart|delete|exec|shell|provision|snapshots|snapshot|backup")
+    let subcommand = try cursor.take("usage: dorydctl machine list|status|stats|device-telemetry|flight-recorder|console|create|update|desktop-update|start|stop|pause|suspend|resume|restart|delete|usb-attach|usb-detach|exec|shell|provision|snapshots|snapshot|backup")
     switch subcommand {
     case "list":
         let rows: NSArray = try client.call { proxy, finish in
@@ -1397,6 +1399,34 @@ func runMachine(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
         try emitCommandResult(try client.withTimeout(atLeast: machineFileMutationTimeout).command {
             $0.machineDelete(name, reply: $1)
         })
+    case "usb-attach":
+        let name = try cursor.take(
+            "usage: dorydctl machine usb-attach NAME BUS_ID"
+        )
+        let busID = try cursor.take(
+            "usage: dorydctl machine usb-attach NAME BUS_ID"
+        )
+        guard cursor.values.isEmpty else {
+            throw DorydCtlError.usage(
+                "unexpected machine usb-attach argument: \(cursor.values[0])"
+            )
+        }
+        let attachment = try client.statusCommand { proxy, reply in
+            proxy.machineUSBAttach(name, busID: busID, reply: reply)
+        }
+        try emitJSON(attachment)
+    case "usb-detach":
+        let name = try cursor.take("usage: dorydctl machine usb-detach NAME BUS_ID")
+        let busID = try cursor.take("usage: dorydctl machine usb-detach NAME BUS_ID")
+        guard cursor.values.isEmpty else {
+            throw DorydCtlError.usage(
+                "unexpected machine usb-detach argument: \(cursor.values[0])"
+            )
+        }
+        let detached = try client.statusCommand { proxy, reply in
+            proxy.machineUSBDetach(name, busID: busID, reply: reply)
+        }
+        try emitJSON(detached)
     case "exec":
         try runMachineExec(cursor: &cursor, client: client)
     case "shell":

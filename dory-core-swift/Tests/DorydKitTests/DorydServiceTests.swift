@@ -5,6 +5,42 @@ import DoryOperations
 import XCTest
 
 final class DorydServiceTests: XCTestCase {
+    func testMachineUSBXPCIsResolvedOnly() throws {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("doryd-usb-xpc-\(UUID().uuidString)").path
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: base,
+            passMachineArguments: false,
+            requiresReadyHandoff: false
+        ))
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let service = DorydService(
+            socketPath: "/tmp/doryd-test.sock",
+            machineManager: manager
+        )
+        let listener = makeAnonymousListener(service: service)
+        listener.resume()
+        defer { listener.invalidate() }
+        let connection = NSXPCConnection(listenerEndpoint: listener.endpoint)
+        connection.remoteObjectInterface = NSXPCInterface(with: DorydControl.self)
+        connection.resume()
+        defer { connection.invalidate() }
+        let proxy = try XCTUnwrap(connection.remoteObjectProxy as? DorydControl)
+
+        let unavailable = expectation(description: "resolved USB authority required")
+        proxy.machineUSBAttach(
+            "missing",
+            busID: "3-2"
+        ) { ok, body, message in
+            XCTAssertFalse(ok)
+            XCTAssertEqual(body.count, 0)
+            XCTAssertTrue(message.contains("machine USB passthrough is unavailable"))
+            unavailable.fulfill()
+        }
+        wait(for: [unavailable], timeout: 5)
+    }
+
     func testPublishedPortRepairDetailUsesValidatedGvproxyReceiptCounts() {
         let startedAt = Date()
         let receipt = PublishedPortReconcileReceipt(

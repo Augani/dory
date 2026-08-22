@@ -6809,6 +6809,35 @@ public final class MachineManager: @unchecked Sendable {
         busID: String,
         mode: DoryMachineUSBOpenMode = .userAuthorized
     ) throws -> DoryMachineUSBAttachment {
+        try attachUSBDevice(
+            id: id,
+            busID: busID,
+            mode: mode,
+            requiresResolvedPlan: false
+        )
+    }
+
+    /// Public control surfaces use this entry point so legacy compatibility cannot authorize a
+    /// newly exposed host-device operation.
+    public func attachResolvedUSBDevice(
+        id: String,
+        busID: String,
+        mode: DoryMachineUSBOpenMode = .userAuthorized
+    ) throws -> DoryMachineUSBAttachment {
+        try attachUSBDevice(
+            id: id,
+            busID: busID,
+            mode: mode,
+            requiresResolvedPlan: true
+        )
+    }
+
+    private func attachUSBDevice(
+        id: String,
+        busID: String,
+        mode: DoryMachineUSBOpenMode,
+        requiresResolvedPlan: Bool
+    ) throws -> DoryMachineUSBAttachment {
         operationLock.lock()
         defer { operationLock.unlock() }
 
@@ -6819,7 +6848,11 @@ public final class MachineManager: @unchecked Sendable {
               entry.state == .running,
               entry.process?.isRunning == true,
               entry.activeBackend == .doryHypervisor,
-              usbHotplugIsAuthorized(entry.runtimeIdentity, mode: mode),
+              usbHotplugIsAuthorized(
+                  entry.runtimeIdentity,
+                  mode: mode,
+                  requiresResolvedPlan: requiresResolvedPlan
+              ),
               let currentLaunchID = entry.launchID,
               entry.handoff?.ready.supportsAgentCapability(
                   "usb-vhci",
@@ -6858,7 +6891,11 @@ public final class MachineManager: @unchecked Sendable {
               entry.process?.isRunning == true,
               entry.activeBackend == .doryHypervisor,
               entry.launchID == launchID,
-              usbHotplugIsAuthorized(entry.runtimeIdentity, mode: mode),
+              usbHotplugIsAuthorized(
+                  entry.runtimeIdentity,
+                  mode: mode,
+                  requiresResolvedPlan: requiresResolvedPlan
+              ),
               entry.handoff?.ready.supportsAgentCapability(
                   "usb-vhci",
                   minimumVersion: 1
@@ -6874,6 +6911,19 @@ public final class MachineManager: @unchecked Sendable {
     /// Detach uses the same launch fence as attach so a request cannot be redirected across a
     /// stop/restart boundary or to the compatible Virtualization.framework backend.
     public func detachUSBDevice(id: String, busID: String) throws {
+        try detachUSBDevice(id: id, busID: busID, requiresResolvedPlan: false)
+    }
+
+    /// Resolved-only counterpart used by XPC and CLI control surfaces.
+    public func detachResolvedUSBDevice(id: String, busID: String) throws {
+        try detachUSBDevice(id: id, busID: busID, requiresResolvedPlan: true)
+    }
+
+    private func detachUSBDevice(
+        id: String,
+        busID: String,
+        requiresResolvedPlan: Bool
+    ) throws {
         operationLock.lock()
         defer { operationLock.unlock() }
 
@@ -6884,7 +6934,11 @@ public final class MachineManager: @unchecked Sendable {
               entry.state == .running,
               entry.process?.isRunning == true,
               entry.activeBackend == .doryHypervisor,
-              usbHotplugIsAuthorized(entry.runtimeIdentity, mode: nil),
+              usbHotplugIsAuthorized(
+                  entry.runtimeIdentity,
+                  mode: nil,
+                  requiresResolvedPlan: requiresResolvedPlan
+              ),
               let currentLaunchID = entry.launchID,
               entry.handoff?.ready.supportsAgentCapability(
                   "usb-vhci",
@@ -6910,7 +6964,11 @@ public final class MachineManager: @unchecked Sendable {
               entry.process?.isRunning == true,
               entry.activeBackend == .doryHypervisor,
               entry.launchID == launchID,
-              usbHotplugIsAuthorized(entry.runtimeIdentity, mode: nil),
+              usbHotplugIsAuthorized(
+                  entry.runtimeIdentity,
+                  mode: nil,
+                  requiresResolvedPlan: requiresResolvedPlan
+              ),
               entry.handoff?.ready.supportsAgentCapability(
                   "usb-vhci",
                   minimumVersion: 1
@@ -6924,11 +6982,12 @@ public final class MachineManager: @unchecked Sendable {
 
     private func usbHotplugIsAuthorized(
         _ identity: DoryMachineRuntimeIdentity,
-        mode: DoryMachineUSBOpenMode?
+        mode: DoryMachineUSBOpenMode?,
+        requiresResolvedPlan: Bool
     ) -> Bool {
         switch identity.mode {
         case .legacyCompatibility:
-            return true
+            return !requiresResolvedPlan
         case .resolvedPlan:
             guard identity.resolvedPlan?.devices.removableUSBHotplug == true else {
                 return false

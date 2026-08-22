@@ -139,10 +139,11 @@ grants; `full` is an explicit unrestricted choice. See the
 
 ## Unavailable
 
-- USB attach, detach, and remembered replay are unavailable in public app/CLI surfaces. Host
-  discovery, the guest USB/IP RPC, private raw-HV routing, and exact resolved-plan authorization
-  exist, but the product fails closed until signed physical-device qualification and public consent
-  transport exist.
+- USB attach, detach, and remembered replay are unavailable in the public app. The resolved-only
+  `dorydctl machine usb-attach|usb-detach` transport, host discovery, guest USB/IP RPC, private
+  raw-HV routing, and exact plan authorization exist, but current production catalogs carry no
+  signed physical-device qualification, so attachment still fails closed. App consent UI and
+  remembered replay remain future work.
 - Audio passthrough is unavailable.
 - Intel-host public builds are unavailable before dedicated physical qualification.
 - Managed image update discovery/replacement, mDNS/multicast relay, and general L2 bridging are

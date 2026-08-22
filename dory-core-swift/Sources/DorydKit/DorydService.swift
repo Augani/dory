@@ -582,6 +582,44 @@ public final class DorydService: NSObject, DorydControl {
         }
     }
 
+    public func machineUSBAttach(
+        _ machineID: String,
+        busID: String,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        guard let machineManager else {
+            reply(false, [:], "machine manager is not configured")
+            return
+        }
+        do {
+            let attachment = try machineManager.attachResolvedUSBDevice(
+                id: machineID,
+                busID: busID,
+                mode: .userAuthorized
+            )
+            reply(true, attachment.xpcDictionary, "")
+        } catch {
+            reply(false, [:], "\(error)")
+        }
+    }
+
+    public func machineUSBDetach(
+        _ machineID: String,
+        busID: String,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        guard let machineManager else {
+            reply(false, [:], "machine manager is not configured")
+            return
+        }
+        do {
+            try machineManager.detachResolvedUSBDevice(id: machineID, busID: busID)
+            reply(true, ["machineID": machineID, "busID": busID], "")
+        } catch {
+            reply(false, [:], "\(error)")
+        }
+    }
+
     public func machineExec(
         _ machineID: String,
         request: NSDictionary,

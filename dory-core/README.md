@@ -87,8 +87,8 @@ cutover; the Rust path stayed healthy throughout.
   validates the exact USB/IP import descriptor, and hands the dedicated host vsock stream to Linux
   `vhci_hcd`; the raw-HV engine consumes that path with pre-claim and pre-mutation capability checks.
   Raw-HV desktop machines now receive a private, launch-pinned control route, and signed resolved
-  plans carry an exact removable-USB authorization bit through helper construction. Public app/CLI
-  attachment and automatic replay remain disabled until physical-device qualification and public
-  consent transport land.
+  plans carry an exact removable-USB authorization bit through helper construction. A resolved-only
+  `dorydctl` attach/detach transport is wired, but current catalogs carry no signed physical-device
+  qualification; the public app consent UI and automatic replay remain disabled.
 - **GPU** — Venus/Vulkan remains an opt-in preview on the arm64 raw-HV tier. It is not a stable 0.4
   cross-host GPU API.

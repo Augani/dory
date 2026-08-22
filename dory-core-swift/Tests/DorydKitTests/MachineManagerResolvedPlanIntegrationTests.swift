@@ -1,4 +1,5 @@
 import CryptoKit
+import DoryCore
 import DoryOperations
 import Foundation
 import Testing
@@ -274,6 +275,77 @@ struct MachineManagerResolvedPlanIntegrationTests {
             #expect(arguments.contains("DORY_DESKTOP_GRAPHICS=virgl"))
             #expect(arguments.contains("DORY_DESKTOP_VMM=accelerated"))
             #expect(!arguments.contains("DORY_DESKTOP_GRAPHICS=auto"))
+        }
+    }
+
+    @Test("resolved USB control requires exact plan and guest capability authority")
+    func resolvedUSBControlUsesExactAuthorization() throws {
+        let usb = ResolvedPlanRecordingUSBController()
+        try withHarness(
+            "resolved-usb-control",
+            requiresReadyHandoff: true,
+            useShortStatePath: true,
+            usbController: usb
+        ) { manager, starter, _ in
+            let plans = MutablePlanStore()
+            let operations = manager.resolvedLaunchCompatibilityOperations(for: .doryHypervisor)
+            let registry = try rawRegistry(operations: operations)
+            let devices = DoryVirtualMachineDeviceCapabilityRequest(
+                removableUSBHotplug: true
+            )
+            let resolver = ClosureLaunchResolver { request in
+                let resolution = try exactResolution(request: request, devices: devices)
+                plans.set(resolution.resolvedPlan)
+                return resolution
+            }
+            try manager.installResolvedLaunchInfrastructure(
+                registry: registry,
+                resolver: resolver,
+                plans: plans,
+                expectedPlanRevision: { _ in 1 }
+            )
+
+            let starting = try manager.start(id: "dev")
+            try sendVmmHandoff(
+                path: try #require(starting.handoffSocketPath),
+                ready: VmmReadyMessage(
+                    machineID: "dev",
+                    operationID: starting.activeOperationID,
+                    agentBuild: "dory-agent/resolved-usb-test",
+                    agentProtocolVersion: DoryCore.protocolVersion(),
+                    agentCapabilities: [DoryAgentCapability(id: "usb-vhci", version: 1)],
+                    agentSocketPath: "/run/dory-agent.sock",
+                    controlSocketPath: "/run/dory-control.sock"
+                ),
+                fileDescriptors: []
+            )
+            for _ in 0..<200 {
+                if manager.status(id: "dev")?.state == .running { break }
+                Thread.sleep(forTimeInterval: 0.01)
+            }
+            let readyStatus = try #require(manager.status(id: "dev"))
+            #expect(
+                readyStatus.state == .running,
+                "resolved USB readiness failed: \(readyStatus.lastError ?? "unknown")"
+            )
+            #expect(starter.count == 1)
+
+            let attachment = try manager.attachResolvedUSBDevice(
+                id: "dev",
+                busID: "3-2"
+            )
+            #expect(attachment.busID == "3-2")
+            #expect(usb.callCount == 1)
+            #expect(throws: MachineManagerError.self) {
+                _ = try manager.attachResolvedUSBDevice(
+                    id: "dev",
+                    busID: "3-3",
+                    mode: .capture
+                )
+            }
+            #expect(usb.callCount == 1)
+            try manager.detachResolvedUSBDevice(id: "dev", busID: "3-2")
+            #expect(usb.callCount == 2)
         }
     }
 
@@ -1492,11 +1564,16 @@ struct MachineManagerResolvedPlanIntegrationTests {
         launchPolicy: DoryMachineLaunchPolicy = .requireResolvedPlan,
         acceleratedExecutablePath: String? = "/bin/sleep",
         passMachineArguments: Bool = false,
+        requiresReadyHandoff: Bool = false,
+        useShortStatePath: Bool = false,
+        usbController: any DoryMachineUSBControlling = UnixDoryMachineUSBController(),
         _ body: (MachineManager, CountingProcessStarter, String) throws -> Void
     ) throws {
-        let state = FileManager.default.temporaryDirectory
-            .appendingPathComponent("dory-resolved-start-\(label)-\(UUID().uuidString)")
-            .path
+        let state = useShortStatePath
+            ? "/tmp/dory-r-\(UUID().uuidString)"
+            : FileManager.default.temporaryDirectory
+                .appendingPathComponent("dory-resolved-start-\(label)-\(UUID().uuidString)")
+                .path
         let starter = CountingProcessStarter()
         let manager = MachineManager(
             configuration: MachineManagerConfiguration(
@@ -1506,9 +1583,10 @@ struct MachineManagerResolvedPlanIntegrationTests {
                 baseArguments: ["30"],
                 acceleratedDesktopBaseArguments: ["30"],
                 passMachineArguments: passMachineArguments,
-                requiresReadyHandoff: false
+                requiresReadyHandoff: requiresReadyHandoff
             ),
             launchPolicy: launchPolicy,
+            usbController: usbController,
             processStarter: { process in try starter.start(process) }
         )
         defer {
@@ -1792,6 +1870,37 @@ private final class CountingProcessStarter: @unchecked Sendable {
     func start(_ process: HvProcess) throws {
         lock.withLock { starts += 1 }
         try process.start()
+    }
+}
+
+private final class ResolvedPlanRecordingUSBController:
+    DoryMachineUSBControlling,
+    @unchecked Sendable
+{
+    private let lock = NSLock()
+    private var calls = 0
+
+    var callCount: Int { lock.withLock { calls } }
+
+    func attach(
+        machineID: String,
+        socketPath: String,
+        busID: String,
+        mode: DoryMachineUSBOpenMode
+    ) throws -> DoryMachineUSBAttachment {
+        lock.withLock { calls += 1 }
+        return DoryMachineUSBAttachment(
+            machineID: machineID,
+            busID: busID,
+            port: 4,
+            vsockPort: 1025,
+            deviceID: 0x0003_0002,
+            speed: 3
+        )
+    }
+
+    func detach(socketPath: String, busID: String) throws {
+        lock.withLock { calls += 1 }
     }
 }
 

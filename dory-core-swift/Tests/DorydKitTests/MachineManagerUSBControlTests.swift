@@ -53,6 +53,25 @@ final class MachineManagerUSBControlTests: XCTestCase {
         XCTAssertTrue(fixture.controller.calls.isEmpty)
     }
 
+    func testResolvedOnlyPublicRouteRejectsLegacyCompatibility() throws {
+        let fixture = try Fixture(capabilities: [
+            DoryAgentCapability(id: "usb-vhci", version: 1),
+        ])
+        defer { fixture.cleanup() }
+
+        XCTAssertThrowsError(
+            try fixture.manager.attachResolvedUSBDevice(id: "desktop", busID: "3-2")
+        ) { error in
+            XCTAssertEqual(error as? MachineManagerError, .usbUnavailable("desktop"))
+        }
+        XCTAssertThrowsError(
+            try fixture.manager.detachResolvedUSBDevice(id: "desktop", busID: "3-2")
+        ) { error in
+            XCTAssertEqual(error as? MachineManagerError, .usbUnavailable("desktop"))
+        }
+        XCTAssertTrue(fixture.controller.calls.isEmpty)
+    }
+
     private final class Fixture {
         let root: String
         let runtimeDirectory: String

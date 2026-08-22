@@ -3,9 +3,9 @@ import Foundation
 enum UsbPassthroughAvailability: Sendable {
     static let attachSupported = false
     static let unavailableReason =
-        "USB passthrough is not yet available in the public app. Host discovery, private routing, " +
-        "and resolved-plan authorization work, but attach, detach, and replay remain disabled " +
-        "until signed physical-device qualification and public consent transport ship."
+        "USB passthrough is not yet available in the public app. Host discovery, resolved-only " +
+        "daemon transport, private routing, and plan authorization work, but current production " +
+        "catalogs have no signed physical-device qualification. App consent and replay remain disabled."
 }
 
 struct UsbAttachment: Codable, Equatable, Identifiable, Sendable {

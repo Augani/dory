@@ -30,6 +30,17 @@ public struct DoryMachineUSBAttachment: Equatable, Sendable {
         self.deviceID = deviceID
         self.speed = speed
     }
+
+    var xpcDictionary: NSDictionary {
+        [
+            "machineID": machineID,
+            "busID": busID,
+            "port": port,
+            "vsockPort": vsockPort,
+            "deviceID": deviceID,
+            "speed": speed,
+        ]
+    }
 }
 
 public protocol DoryMachineUSBControlling: Sendable {
