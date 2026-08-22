@@ -16,11 +16,13 @@ final class RawDeviceTelemetryRegistry: @unchecked Sendable {
         var network: VirtioNet?
         var sharedDirectory: VirtioFS?
         var audioMetrics: (@Sendable () -> DoryMacAudioRuntimeMetrics?)?
+        var displayMetrics: (@Sendable () -> DesktopFrameMailboxMetrics?)?
         var unavailableMetrics: [(DoryDeviceTelemetryMetricKind, DoryDeviceTelemetryMetricUnit)]
         var previousTransportStatistics: VirtioMMIOTransportStatistics?
         var previousStorageStatistics: VirtioBlkStatistics?
         var previousAudioDrops: UInt64?
         var previousShareInvalidationFailures: UInt64?
+        var previousDisplayDrops: UInt64?
         var consecutiveUncompletedNotificationSamples: UInt8
         var queueStallReported: Bool
     }
@@ -45,22 +47,24 @@ final class RawDeviceTelemetryRegistry: @unchecked Sendable {
         slot: Int,
         backend: any VirtioDeviceBackend,
         transport: VirtioMMIOTransport,
-        audioMetrics: (@Sendable () -> DoryMacAudioRuntimeMetrics?)? = nil
+        audioMetrics: (@Sendable () -> DoryMacAudioRuntimeMetrics?)? = nil,
+        displayMetrics: (@Sendable () -> DesktopFrameMailboxMetrics?)? = nil
     ) {
         let kind: DoryDeviceTelemetryKind
-        let unavailable: [(DoryDeviceTelemetryMetricKind, DoryDeviceTelemetryMetricUnit)]
+        var unavailable: [(DoryDeviceTelemetryMetricKind, DoryDeviceTelemetryMetricUnit)]
         switch backend {
         case is VirtioBlk:
             kind = .storage
             unavailable = []
         case is VirtioGPU:
             kind = .graphics
-            unavailable = [
-                (.displayFrames, .count),
-                (.displayDrops, .count),
-                (.graphicsFences, .count),
-                (.graphicsDeviceLosses, .count),
-            ]
+            unavailable = [(.graphicsFences, .count), (.graphicsDeviceLosses, .count)]
+            if displayMetrics == nil {
+                unavailable.append(contentsOf: [
+                    (.displayFrames, .count),
+                    (.displayDrops, .count),
+                ])
+            }
         case is VirtioSound:
             kind = .audio
             unavailable = audioMetrics == nil ? [(.audioDrops, .count)] : []
@@ -103,11 +107,13 @@ final class RawDeviceTelemetryRegistry: @unchecked Sendable {
             network: backend as? VirtioNet,
             sharedDirectory: backend as? VirtioFS,
             audioMetrics: audioMetrics,
+            displayMetrics: displayMetrics,
             unavailableMetrics: unavailable,
             previousTransportStatistics: nil,
             previousStorageStatistics: nil,
             previousAudioDrops: nil,
             previousShareInvalidationFailures: nil,
+            previousDisplayDrops: nil,
             consecutiveUncompletedNotificationSamples: 0,
             queueStallReported: false
         )
@@ -262,6 +268,20 @@ final class RawDeviceTelemetryRegistry: @unchecked Sendable {
                     }
                     entries[index].previousShareInvalidationFailures =
                         share.invalidationFailures
+                }
+                if let display = entries[index].displayMetrics?() {
+                    metrics.append(contentsOf: [
+                        .measured(.displayFrames, value: display.presentedFrames),
+                        .measured(.displayDrops, value: display.droppedFrames),
+                    ])
+                    let previousDrops = entries[index].previousDisplayDrops ?? 0
+                    if Self.monotonicDelta(
+                        current: display.droppedFrames,
+                        previous: previousDrops
+                    ) > 0 {
+                        health = .degraded
+                    }
+                    entries[index].previousDisplayDrops = display.droppedFrames
                 }
                 metrics.append(contentsOf: entries[index].unavailableMetrics.map {
                     .unavailable($0.0, unit: $0.1, reason: unavailableReason)
@@ -589,11 +609,18 @@ enum DesktopMode {
                     } else {
                         audioMetrics = nil
                     }
+                    let displayMetrics: (@Sendable () -> DesktopFrameMailboxMetrics?)?
+                    if backend === gpu {
+                        displayMetrics = { [weak mailbox] in mailbox?.metrics }
+                    } else {
+                        displayMetrics = nil
+                    }
                     deviceTelemetry.register(
                         slot: slot,
                         backend: backend,
                         transport: transport,
-                        audioMetrics: audioMetrics
+                        audioMetrics: audioMetrics,
+                        displayMetrics: displayMetrics
                     )
                     if backend === gpu, configuration.resolvedDevices?.dynamicDisplay != false {
                         display.onDrawableSizeChange = { [weak gpu, weak transport] width, height in

@@ -746,9 +746,13 @@ for every flush taking at least 250 ms. Its Core Audio bridge reports exact play
 period drops and emits classified audio-drop events. VirtioFS counts admitted reverse invalidations
 and failed submission or acknowledgement transactions; because an uncertain invalidation latches
 request publication closed for that backend, its telemetry remains failed until backend replacement.
+The raw-HV display mailbox reports only updates accepted by the Metal presentation layer as frames;
+invalid updates, bounded partial-update overflow, released pending resources, and a missing display
+surface are counted as drops, while a newer complete frame superseding older damage is intentional
+coalescing rather than loss.
 Virtualization.framework counters that do not have a stable public authority remain explicitly
 unavailable rather than being reported as zero. Backend-specific producers for GPU loss/fences,
-display drops, and network reconnects remain release gates for those individual capability claims.
+and network reconnects remain release gates for those individual capability claims.
 
 ## Qualification and release gates
 

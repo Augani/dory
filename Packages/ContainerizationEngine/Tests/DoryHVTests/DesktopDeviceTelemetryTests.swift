@@ -195,4 +195,51 @@ import Testing
         #expect(persistent.devices.first?.health == .failed)
         #expect(persistent.events.map(\.kind) == [.shareInvalidationFailure])
     }
+
+    @MainActor
+    @Test func publishesMeasuredDisplayFramesAndRealPresentationDrops() throws {
+        let mailbox = DesktopFrameMailbox()
+        let frame = VirtioGPUScanoutFrame(
+            scanoutID: 0,
+            resourceID: 1,
+            format: 1,
+            width: 1,
+            height: 1,
+            stride: 4,
+            dirtyRect: VirtioGPURect(x: 0, y: 0, width: 1, height: 1),
+            bytes: Data(repeating: 0, count: 4)
+        )
+        mailbox.submit(frame)
+        mailbox.submit(frame)
+        mailbox.deliver()
+        #expect(mailbox.metrics == DesktopFrameMailboxMetrics(
+            presentedFrames: 0,
+            droppedFrames: 1
+        ))
+
+        let backend = VirtioGPU(hostMemoryBase: GuestLayout.daxWindowBase, scanoutCount: 1)
+        let memory = try GuestMemory(guestBase: GuestLayout.ramBase, size: 0x20_000)
+        let transport = VirtioMMIOTransport(
+            baseAddress: GuestLayout.virtioBase,
+            backend: backend,
+            memory: memory
+        ) {}
+        let registry = RawDeviceTelemetryRegistry(machineID: "raw-display", operationID: UUID())
+        registry.register(
+            slot: 1,
+            backend: backend,
+            transport: transport,
+            displayMetrics: { [weak mailbox] in mailbox?.metrics }
+        )
+
+        let snapshot = registry.snapshot()
+        let device = try #require(snapshot.devices.first)
+        #expect(device.id == "virtio-graphics-1")
+        #expect(device.health == .degraded)
+        #expect(device.metrics.first { $0.kind == .displayFrames }?.value == 0)
+        #expect(device.metrics.first { $0.kind == .displayDrops }?.value == 1)
+
+        let stable = registry.snapshot()
+        #expect(stable.devices.first?.health == .healthy)
+    }
 }

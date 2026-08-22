@@ -19,10 +19,17 @@ enum DesktopMetalDisplayError: Error, CustomStringConvertible {
 
 /// Coalesces producer-thread flushes to the newest complete frame and performs one main-thread
 /// upload. This keeps a busy compositor from building an unbounded queue of stale 16 MiB frames.
+struct DesktopFrameMailboxMetrics: Equatable, Sendable {
+    var presentedFrames: UInt64
+    var droppedFrames: UInt64
+}
+
 final class DesktopFrameMailbox: @unchecked Sendable {
     private let lock = NSLock()
     private var pending = [VirtioGPUScanoutFrame]()
     private var deliveryScheduled = false
+    private var presentedFrameCount: UInt64 = 0
+    private var droppedFrameCount: UInt64 = 0
     nonisolated(unsafe) weak var view: DesktopMetalView?
 
     func submit(_ frame: VirtioGPUScanoutFrame) {
@@ -32,7 +39,14 @@ final class DesktopFrameMailbox: @unchecked Sendable {
             pending = [frame]
         } else {
             pending.append(frame)
-            if pending.count > 256 { pending.removeFirst(pending.count - 256) }
+            if pending.count > 256 {
+                let overflow = pending.count - 256
+                pending.removeFirst(overflow)
+                droppedFrameCount = Self.saturatingAdd(
+                    droppedFrameCount,
+                    UInt64(overflow)
+                )
+            }
         }
         let shouldSchedule = !deliveryScheduled
         deliveryScheduled = true
@@ -51,7 +65,12 @@ final class DesktopFrameMailbox: @unchecked Sendable {
     /// next partial update appear as a black or torn frame.
     func release(resourceID: UInt32) {
         lock.lock()
+        let previousCount = pending.count
         pending.removeAll { $0.resourceID == resourceID }
+        droppedFrameCount = Self.saturatingAdd(
+            droppedFrameCount,
+            UInt64(previousCount - pending.count)
+        )
         lock.unlock()
         DispatchQueue.main.async { [weak self] in
             MainActor.assumeIsolated {
@@ -61,13 +80,38 @@ final class DesktopFrameMailbox: @unchecked Sendable {
     }
 
     @MainActor
-    private func deliver() {
+    func deliver() {
         lock.lock()
         let frames = pending
         pending.removeAll(keepingCapacity: true)
         deliveryScheduled = false
         lock.unlock()
-        view?.present(frames)
+        guard !frames.isEmpty else { return }
+        let presented = view?.present(frames) ?? 0
+        lock.withLock {
+            presentedFrameCount = Self.saturatingAdd(
+                presentedFrameCount,
+                UInt64(presented)
+            )
+            droppedFrameCount = Self.saturatingAdd(
+                droppedFrameCount,
+                UInt64(frames.count - presented)
+            )
+        }
+    }
+
+    var metrics: DesktopFrameMailboxMetrics {
+        lock.withLock {
+            DesktopFrameMailboxMetrics(
+                presentedFrames: presentedFrameCount,
+                droppedFrames: droppedFrameCount
+            )
+        }
+    }
+
+    private static func saturatingAdd(_ value: UInt64, _ increment: UInt64) -> UInt64 {
+        let (sum, overflow) = value.addingReportingOverflow(increment)
+        return overflow ? UInt64.max : sum
     }
 }
 
@@ -156,12 +200,14 @@ final class DesktopMetalView: MTKView, MTKViewDelegate {
         super.updateTrackingAreas()
     }
 
-    func present(_ frames: [VirtioGPUScanoutFrame]) {
-        var updated = false
+    @discardableResult
+    func present(_ frames: [VirtioGPUScanoutFrame]) -> Int {
+        var updated = 0
         for frame in frames {
-            updated = presentUpdate(frame) || updated
+            if presentUpdate(frame) { updated += 1 }
         }
-        if updated { needsDisplay = true }
+        if updated > 0 { needsDisplay = true }
+        return updated
     }
 
     func release(resourceID: UInt32) {
