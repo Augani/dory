@@ -37,6 +37,7 @@ let package = Package(
                 .linkedFramework("Network"),
                 .linkedFramework("Security"),
                 .linkedFramework("SystemConfiguration"),
+                .linkedFramework("Virtualization"),
             ]
         ),
         .target(

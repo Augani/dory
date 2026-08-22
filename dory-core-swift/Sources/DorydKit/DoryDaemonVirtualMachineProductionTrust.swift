@@ -3,6 +3,7 @@ import Darwin
 import DoryOperations
 import Foundation
 import Security
+@preconcurrency import Virtualization
 
 public enum DoryDaemonVirtualMachineProductionTrustReadinessCode:
     String, Sendable, Equatable
@@ -408,6 +409,7 @@ struct DoryDaemonProductionHostObservation: Sendable, Equatable {
     var virtualizationFrameworkAvailable: Bool
     var hypervisorFrameworkAvailable: Bool
     var metalAvailable: Bool
+    var linuxIntelApplicationTranslationAvailable: Bool = false
     var resources: DoryVMHostResources
 }
 
@@ -956,6 +958,8 @@ final class DoryProductionDaemonVirtualMachineTrustInventory:
             metalAvailable: host.metalAvailable,
             doryAcceleratedRendererAvailable:
                 host.metalAvailable && !rawBuild.isEmpty,
+            linuxIntelApplicationTranslationAvailable:
+                host.linuxIntelApplicationTranslationAvailable,
             runtimeQualificationContext:
                 DoryVirtualMachineRuntimeQualificationHostContext(
                     virtualHardwareABIVersion: 1,
@@ -1000,6 +1004,8 @@ final class DoryProductionDaemonVirtualMachineTrustInventory:
             metalAvailable: host.metalAvailable,
             doryAcceleratedRendererAvailable:
                 host.metalAvailable && !rawBuild.isEmpty,
+            linuxIntelApplicationTranslationAvailable:
+                host.linuxIntelApplicationTranslationAvailable,
             runtimeQualificationContext:
                 DoryVirtualMachineRuntimeQualificationHostContext(
                     virtualHardwareABIVersion: 1,
@@ -1545,6 +1551,8 @@ public struct DoryDaemonVirtualMachineProductionTrustFactory: Sendable {
             metalAvailable: frameworkAvailable(
                 "/System/Library/Frameworks/Metal.framework/Metal"
             ),
+            linuxIntelApplicationTranslationAvailable:
+                VZLinuxRosettaDirectoryShare.availability == .installed,
             resources: DoryVMHostResources(
                 logicalCPUCount: UInt64(process.activeProcessorCount),
                 physicalMemoryBytes: process.physicalMemory,

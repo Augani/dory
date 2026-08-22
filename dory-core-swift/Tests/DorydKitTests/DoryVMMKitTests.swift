@@ -971,6 +971,88 @@ final class DoryVMMKitTests: XCTestCase {
         ))
     }
 
+    func testResolvedVZContractAttachesIntelApplicationTranslationShare() throws {
+        let base = "/tmp/dory-vmm-rosetta-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let kernel = "\(base)/vmlinux"
+        let rootfs = "\(base)/rootfs.raw"
+        let translation = "\(base)/translation"
+        try FileManager.default.createDirectory(
+            atPath: translation,
+            withIntermediateDirectories: true
+        )
+        FileManager.default.createFile(
+            atPath: kernel,
+            contents: Data([0x7f, 0x45, 0x4c, 0x46])
+        )
+        FileManager.default.createFile(atPath: rootfs, contents: nil)
+        XCTAssertEqual(truncate(rootfs, 1024 * 1024), 0)
+        let devices = DoryVirtualMachineDeviceCapabilityRequest(
+            intelApplicationTranslation: true
+        )
+
+        let configuration = try DoryVZConfigurationBuilder.makeConfigurationForTesting(
+            spec: DoryVZMachineSpec(
+                machineID: "translation",
+                stateDirectory: base,
+                kernelPath: kernel,
+                rootfsPath: rootfs,
+                memoryMB: 2_048,
+                cpuCount: 2,
+                resolvedDevices: devices
+            ),
+            serialOutput: nil,
+            serialInput: nil,
+            networkAttachment: nil,
+            intelApplicationTranslationShareProvider: {
+                VZSingleDirectoryShare(
+                    directory: VZSharedDirectory(
+                        url: URL(fileURLWithPath: translation, isDirectory: true),
+                        readOnly: true
+                    )
+                )
+            }
+        )
+
+        let translationDevice = try XCTUnwrap(
+            configuration.directorySharingDevices
+                .compactMap { $0 as? VZVirtioFileSystemDeviceConfiguration }
+                .first { $0.tag == "rosetta" }
+        )
+        XCTAssertTrue(translationDevice.share is VZSingleDirectoryShare)
+
+        XCTAssertThrowsError(try DoryVZConfigurationBuilder.makeConfigurationForTesting(
+            spec: DoryVZMachineSpec(
+                machineID: "translation",
+                stateDirectory: base,
+                kernelPath: kernel,
+                rootfsPath: rootfs,
+                memoryMB: 2_048,
+                cpuCount: 2,
+                shares: [DoryMachineShareConfiguration(
+                    tag: "rosetta",
+                    hostPath: translation,
+                    guestPath: "/workspace/rosetta",
+                    readOnly: true
+                )],
+                resolvedDevices: devices
+            ),
+            serialOutput: nil,
+            serialInput: nil,
+            networkAttachment: nil,
+            intelApplicationTranslationShareProvider: {
+                XCTFail("reserved tag must reject before resolving translation share")
+                return VZSingleDirectoryShare(
+                    directory: VZSharedDirectory(
+                        url: URL(fileURLWithPath: translation),
+                        readOnly: true
+                    )
+                )
+            }
+        ))
+    }
+
     func testDockerVZConfigurationAttachesPersistentDataDisk() throws {
         let base = "/tmp/dory-vmm-docker-data-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)

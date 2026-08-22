@@ -372,12 +372,31 @@ public enum DoryVZMachineError: Error, Sendable, CustomStringConvertible {
 public enum DoryVZConfigurationBuilder {
     private static let bootConfigTag = "dorycfg"
     private static let bootConfigGuestPath = "/mnt/dory-config"
+    private static let intelApplicationTranslationTag = "rosetta"
 
     public static func makeConfiguration(
         spec: DoryVZMachineSpec,
         serialOutput: FileHandle?,
         serialInput: FileHandle? = nil,
         networkAttachment: VZNetworkDeviceAttachment? = nil
+    ) throws -> VZVirtualMachineConfiguration {
+        try makeConfigurationForTesting(
+            spec: spec,
+            serialOutput: serialOutput,
+            serialInput: serialInput,
+            networkAttachment: networkAttachment,
+            intelApplicationTranslationShareProvider: nil
+        )
+    }
+
+    /// Internal-only injection point for deterministic framework-independent tests. Production
+    /// callers cannot substitute the resolved Rosetta share.
+    static func makeConfigurationForTesting(
+        spec: DoryVZMachineSpec,
+        serialOutput: FileHandle?,
+        serialInput: FileHandle?,
+        networkAttachment: VZNetworkDeviceAttachment?,
+        intelApplicationTranslationShareProvider: (() throws -> VZDirectoryShare)?
     ) throws -> VZVirtualMachineConfiguration {
         let fileManager = FileManager.default
         let (memorySize, memoryOverflow) = spec.memoryMB.multipliedReportingOverflow(by: 1024 * 1024)
@@ -607,7 +626,7 @@ public enum DoryVZConfigurationBuilder {
         let attachedDirectoryShares = spec.resolvedDevices?.directorySharing == false
             ? directoryShares.filter { $0.tag == bootConfigTag }
             : directoryShares
-        configuration.directorySharingDevices = try attachedDirectoryShares.map { share in
+        var fileSystemDevices = try attachedDirectoryShares.map { share in
             try share.validate()
             var isDirectory: ObjCBool = false
             guard fileManager.fileExists(atPath: share.hostPath, isDirectory: &isDirectory),
@@ -628,6 +647,29 @@ public enum DoryVZConfigurationBuilder {
             device.share = shareConfig
             return device
         }
+        if spec.resolvedDevices?.intelApplicationTranslation == true {
+            guard !directoryShares.contains(where: {
+                $0.tag == intelApplicationTranslationTag
+            }) else {
+                throw DoryVZMachineError.validation(
+                    "machine share tag '\(intelApplicationTranslationTag)' is reserved"
+                )
+            }
+            let provider = intelApplicationTranslationShareProvider
+                ?? installedIntelApplicationTranslationShare
+            let device = VZVirtioFileSystemDeviceConfiguration(
+                tag: intelApplicationTranslationTag
+            )
+            do {
+                device.share = try provider()
+            } catch {
+                throw DoryVZMachineError.validation(
+                    "Intel Linux application translation is unavailable: \(error)"
+                )
+            }
+            fileSystemDevices.append(device)
+        }
+        configuration.directorySharingDevices = fileSystemDevices
 
         do {
             let rootURL = URL(fileURLWithPath: spec.rootfsPath)
@@ -699,6 +741,15 @@ public enum DoryVZConfigurationBuilder {
         }
 
         return configuration
+    }
+
+    private static func installedIntelApplicationTranslationShare() throws -> VZDirectoryShare {
+        guard VZLinuxRosettaDirectoryShare.availability == .installed else {
+            throw DoryVZMachineError.validation(
+                "Rosetta support for Linux is not installed on this host"
+            )
+        }
+        return try VZLinuxRosettaDirectoryShare()
     }
 
     static func stableNetworkMACAddress(machineID: String) -> String {
