@@ -997,6 +997,7 @@ nonisolated struct DorydMachineProvisionResult: Sendable, Equatable {
 }
 
 nonisolated struct DorydDesktopUpdateResult: Sendable, Equatable {
+    var operationID: String?
     var machineID: String
     var distro: String
     var version: String
@@ -2059,12 +2060,14 @@ nonisolated final class DorydClient: @unchecked Sendable {
 
     func machineDesktopUpdate(
         _ machineID: String,
+        operationID: UUID = UUID(),
         distro: String,
         version: String,
         distributionInstallationName: String,
         runtimeInstallationName: String
     ) async throws -> DorydDesktopUpdateResult {
         let request: NSDictionary = [
+            "operationID": operationID.uuidString.lowercased(),
             "distro": distro,
             "version": version,
             "distributionInstallationName": distributionInstallationName,
@@ -3417,6 +3420,20 @@ nonisolated final class DorydClient: @unchecked Sendable {
     }
 
     nonisolated private static func desktopUpdateResult(from dictionary: NSDictionary) -> DorydDesktopUpdateResult? {
+        let operationID: String?
+        if let rawOperationID = dictionary["operationID"] {
+            guard let value = rawOperationID as? String else { return nil }
+            operationID = value
+        } else {
+            operationID = nil
+        }
+        if let operationID {
+            guard let parsed = UUID(uuidString: operationID),
+                  parsed != UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)),
+                  operationID == parsed.uuidString.lowercased() else {
+                return nil
+            }
+        }
         guard let machineID = dictionary["machineID"] as? String,
               let distro = dictionary["distro"] as? String,
               let version = dictionary["version"] as? String,
@@ -3429,6 +3446,7 @@ nonisolated final class DorydClient: @unchecked Sendable {
             return nil
         }
         return DorydDesktopUpdateResult(
+            operationID: operationID,
             machineID: machineID,
             distro: distro,
             version: version,

@@ -307,6 +307,106 @@ final class DoryComponentsTests: XCTestCase {
         }
     }
 
+    func testInstallerPropagatesCallerOperationIdentityIntoProgressAndDurableStatus() async throws {
+        let fixture = try Fixture(name: "operation-identity")
+        defer { fixture.cleanup() }
+        let payload = Data("operation-bound payload".utf8)
+        let source = try fixture.write(payload, name: "operation-source")
+        let asset = DoryComponentAsset(
+            path: "kubectl",
+            url: source.absoluteString,
+            downloadBytes: UInt64(payload.count),
+            installedBytes: UInt64(payload.count),
+            sha256: digest(payload),
+            installedSHA256: digest(payload)
+        )
+        let component = DoryComponentRelease(
+            id: .kubernetes,
+            version: "1.0.0",
+            displayName: "Kubernetes",
+            summary: "Operation propagation fixture",
+            dependencies: [.dockerCore],
+            downloadBytes: asset.downloadBytes,
+            installedBytes: asset.installedBytes,
+            assets: [asset]
+        )
+        let catalog = catalog(components: [core(), component])
+        let catalogData = try encoded(catalog)
+        let operationID = try XCTUnwrap(UUID(
+            uuidString: "01234567-89ab-4cde-8f01-23456789abcd"
+        ))
+        let recorder = ProgressRecorder()
+
+        let installed = try await DoryComponentInstaller(store: fixture.store).install(
+            component,
+            catalogData: catalogData,
+            operationID: operationID
+        ) { recorder.append($0) }
+
+        XCTAssertEqual(installed.installationOperationID, operationID.uuidString.lowercased())
+        XCTAssertTrue(installed.installationName.hasSuffix(operationID.uuidString.lowercased()))
+        XCTAssertEqual(
+            recorder.values.map(\.phase),
+            [.downloading, .downloading, .verifying, .installing, .complete]
+        )
+        XCTAssertTrue(recorder.values.allSatisfy { $0.operationID == operationID })
+        XCTAssertEqual(
+            fixture.store.list(
+                catalog: catalog,
+                catalogDigest: DoryComponentCatalogVerifier.digest(catalogData)
+            ).first(where: { $0.id == .kubernetes })?.installationOperationID,
+            operationID.uuidString.lowercased()
+        )
+
+        let encodedRecord = try JSONEncoder().encode(installed)
+        var legacyObject = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: encodedRecord) as? [String: Any]
+        )
+        legacyObject.removeValue(forKey: "installationOperationID")
+        let legacyData = try JSONSerialization.data(withJSONObject: legacyObject)
+        let legacy = try JSONDecoder().decode(DoryInstalledComponent.self, from: legacyData)
+        XCTAssertNil(legacy.installationOperationID)
+        XCTAssertTrue(legacy.isStructurallyValid)
+    }
+
+    func testInstallerRejectsZeroOperationIdentityBeforeDownloading() async throws {
+        let fixture = try Fixture(name: "zero-operation")
+        defer { fixture.cleanup() }
+        let payload = Data("must not download".utf8)
+        let source = try fixture.write(payload, name: "zero-source")
+        let asset = DoryComponentAsset(
+            path: "kubectl",
+            url: source.absoluteString,
+            downloadBytes: UInt64(payload.count),
+            installedBytes: UInt64(payload.count),
+            sha256: digest(payload),
+            installedSHA256: digest(payload)
+        )
+        let component = DoryComponentRelease(
+            id: .kubernetes,
+            version: "1.0.0",
+            displayName: "Kubernetes",
+            summary: "Zero operation fixture",
+            dependencies: [.dockerCore],
+            downloadBytes: asset.downloadBytes,
+            installedBytes: asset.installedBytes,
+            assets: [asset]
+        )
+        let zero = UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+
+        do {
+            _ = try await DoryComponentInstaller(store: fixture.store).install(
+                component,
+                catalogData: try encoded(catalog(components: [core(), component])),
+                operationID: zero
+            )
+            XCTFail("zero operation identity should be rejected")
+        } catch {
+            XCTAssertEqual(error as? DoryComponentError, .invalidOperationID)
+        }
+        XCTAssertNil(try fixture.store.installedComponent(.kubernetes))
+    }
+
     func testSelectionSnapshotRestoresPriorVerifiedGeneration() throws {
         let fixture = try Fixture(name: "selection-rollback")
         defer { fixture.cleanup() }
@@ -717,6 +817,23 @@ final class DoryComponentsTests: XCTestCase {
 
         func cleanup() {
             try? FileManager.default.removeItem(at: root)
+        }
+    }
+
+    private final class ProgressRecorder: @unchecked Sendable {
+        private let lock = NSLock()
+        private var recorded: [DoryComponentProgress] = []
+
+        var values: [DoryComponentProgress] {
+            lock.lock()
+            defer { lock.unlock() }
+            return recorded
+        }
+
+        func append(_ progress: DoryComponentProgress) {
+            lock.lock()
+            recorded.append(progress)
+            lock.unlock()
         }
     }
 }

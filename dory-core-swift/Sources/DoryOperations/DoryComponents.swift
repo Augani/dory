@@ -288,6 +288,7 @@ public enum DoryComponentError: Error, Sendable, Equatable, CustomStringConverti
     case incompatibleAppVersion(required: String, actual: String)
     case unknownComponent(String)
     case coreCannotBeChanged
+    case invalidOperationID
     case missingDependency(DoryComponentID)
     case componentInUse(DoryComponentID)
     case invalidAsset(String)
@@ -307,6 +308,7 @@ public enum DoryComponentError: Error, Sendable, Equatable, CustomStringConverti
             "component catalog requires Dory \(required) or newer; this app is \(actual)"
         case .unknownComponent(let id): "unknown Dory component: \(id)"
         case .coreCannotBeChanged: "Docker Core is part of Dory.app and cannot be installed or removed separately"
+        case .invalidOperationID: "component operation identifier must be a nonzero UUID"
         case .missingDependency(let id): "install \(id.rawValue) first"
         case .componentInUse(let id): "remove dependent component \(id.rawValue) first"
         case .invalidAsset(let path): "invalid component asset: \(path)"
@@ -640,6 +642,9 @@ public struct DoryInstalledComponent: Codable, Sendable, Equatable {
     public let id: DoryComponentID
     public let version: String
     public let installationName: String
+    /// Canonical caller-owned operation identity that published this immutable generation.
+    /// Schema-v2 records written before operation propagation omit this field and remain readable.
+    public let installationOperationID: String?
     public let catalogDigest: String
     public let installedAt: String
     public let assets: [DoryComponentAsset]
@@ -648,6 +653,7 @@ public struct DoryInstalledComponent: Codable, Sendable, Equatable {
     init(
         release: DoryComponentRelease,
         installationName: String,
+        operationID: UUID,
         catalogDigest: String,
         installedAt: Date,
         assetFingerprints: [DoryComponentAssetFingerprint]
@@ -657,6 +663,7 @@ public struct DoryInstalledComponent: Codable, Sendable, Equatable {
         id = release.id
         version = release.version
         self.installationName = installationName
+        installationOperationID = operationID.uuidString.lowercased()
         self.catalogDigest = catalogDigest
         self.installedAt = DoryComponentStore.timestamp(installedAt)
         assets = release.assets
@@ -666,11 +673,21 @@ public struct DoryInstalledComponent: Codable, Sendable, Equatable {
     var isStructurallyValid: Bool {
         kind == Self.kind && schemaVersion == Self.schemaVersion && id.isRemovable
             && DoryComponentCatalogVerifier.safeRelativePath(installationName)
+            && (installationOperationID.map(Self.isCanonicalOperationID) ?? true)
             && catalogDigest.count == 64 && catalogDigest.allSatisfy(\.isHexDigit)
             && DoryComponentCatalogVerifier.validTimestamp(installedAt)
             && !assets.isEmpty
             && assetFingerprints.map(\.path) == assets.map(\.path)
     }
+
+    private static func isCanonicalOperationID(_ value: String) -> Bool {
+        guard let id = UUID(uuidString: value), id != UUID.zero else { return false }
+        return value == id.uuidString.lowercased()
+    }
+}
+
+private extension UUID {
+    static let zero = UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
 }
 
 public struct DoryComponentAssetFingerprint: Codable, Sendable, Equatable {
@@ -699,6 +716,7 @@ public struct DoryComponentStatus: Codable, Sendable, Equatable, Identifiable {
     public let summary: String
     public let availableVersion: String
     public let installedVersion: String?
+    public let installationOperationID: String?
     public let state: DoryComponentState
     public let downloadBytes: UInt64
     public let installedBytes: UInt64
@@ -768,6 +786,7 @@ public struct DoryComponentStore: Sendable {
                     summary: release.summary,
                     availableVersion: release.version,
                     installedVersion: release.version,
+                    installationOperationID: nil,
                     state: .bundled,
                     downloadBytes: release.downloadBytes,
                     installedBytes: release.installedBytes,
@@ -804,6 +823,7 @@ public struct DoryComponentStore: Sendable {
                 summary: release.summary,
                 availableVersion: release.version,
                 installedVersion: installed?.version,
+                installationOperationID: installed?.installationOperationID,
                 state: state,
                 downloadBytes: release.downloadBytes,
                 installedBytes: release.installedBytes,
@@ -875,7 +895,27 @@ public struct DoryComponentStore: Sendable {
         installedAt: Date = Date(),
         fileManager: FileManager = .default
     ) throws -> DoryInstalledComponent {
+        try install(
+            release,
+            catalogDigest: catalogDigest,
+            downloadedAssets: downloadedAssets,
+            operationID: UUID(),
+            installedAt: installedAt,
+            fileManager: fileManager
+        )
+    }
+
+    @discardableResult
+    public func install(
+        _ release: DoryComponentRelease,
+        catalogDigest: String,
+        downloadedAssets: [String: String],
+        operationID: UUID,
+        installedAt: Date = Date(),
+        fileManager: FileManager = .default
+    ) throws -> DoryInstalledComponent {
         guard release.id.isRemovable else { throw DoryComponentError.coreCannotBeChanged }
+        guard operationID != .zero else { throw DoryComponentError.invalidOperationID }
         guard catalogDigest.count == 64, catalogDigest.allSatisfy(\.isHexDigit) else {
             throw DoryComponentError.invalidCatalog("catalog digest is invalid")
         }
@@ -896,9 +936,9 @@ public struct DoryComponentStore: Sendable {
             return current
         }
 
-        let operationID = UUID().uuidString.lowercased()
-        let installationName = "\(release.version)-\(operationID)"
-        let staging = stagingRoot + "/\(release.id.rawValue)-\(operationID)"
+        let canonicalOperationID = operationID.uuidString.lowercased()
+        let installationName = "\(release.version)-\(canonicalOperationID)"
+        let staging = stagingRoot + "/\(release.id.rawValue)-\(canonicalOperationID)"
         let payload = staging + "/payload"
         let destination = installationRoot(id: release.id, name: installationName)
         var published = false
@@ -936,6 +976,7 @@ public struct DoryComponentStore: Sendable {
             let record = DoryInstalledComponent(
                 release: release,
                 installationName: installationName,
+                operationID: operationID,
                 catalogDigest: catalogDigest,
                 installedAt: installedAt,
                 assetFingerprints: try release.assets.map {
@@ -1430,6 +1471,7 @@ public struct DoryComponentProgress: Sendable, Equatable {
         case complete
     }
 
+    public let operationID: UUID
     public let component: DoryComponentID
     public let phase: Phase
     public let completedBytes: UInt64
@@ -1450,15 +1492,18 @@ public actor DoryComponentInstaller {
     public func install(
         _ release: DoryComponentRelease,
         catalogData: Data,
+        operationID: UUID = UUID(),
         progress: @escaping Progress = { _ in }
     ) async throws -> DoryInstalledComponent {
         guard release.id.isRemovable else { throw DoryComponentError.coreCannotBeChanged }
+        guard operationID != .zero else { throw DoryComponentError.invalidOperationID }
         try store.prepare()
         var downloaded: [String: String] = [:]
         var completed: UInt64 = 0
         for asset in release.assets {
             let completedBeforeAsset = completed
             progress(DoryComponentProgress(
+                operationID: operationID,
                 component: release.id,
                 phase: .downloading,
                 completedBytes: completed,
@@ -1466,6 +1511,7 @@ public actor DoryComponentInstaller {
             ))
             let path = try await download(asset) { assetBytes in
                 progress(DoryComponentProgress(
+                    operationID: operationID,
                     component: release.id,
                     phase: .downloading,
                     completedBytes: completedBeforeAsset + assetBytes,
@@ -1476,18 +1522,28 @@ public actor DoryComponentInstaller {
             downloaded[asset.path] = path
         }
         progress(DoryComponentProgress(
+            operationID: operationID,
             component: release.id,
             phase: .verifying,
+            completedBytes: release.downloadBytes,
+            totalBytes: release.downloadBytes
+        ))
+        progress(DoryComponentProgress(
+            operationID: operationID,
+            component: release.id,
+            phase: .installing,
             completedBytes: release.downloadBytes,
             totalBytes: release.downloadBytes
         ))
         let installed = try store.install(
             release,
             catalogDigest: DoryComponentCatalogVerifier.digest(catalogData),
-            downloadedAssets: downloaded
+            downloadedAssets: downloaded,
+            operationID: operationID
         )
         for path in downloaded.values { try? FileManager.default.removeItem(atPath: path) }
         progress(DoryComponentProgress(
+            operationID: operationID,
             component: release.id,
             phase: .complete,
             completedBytes: release.downloadBytes,

@@ -3,10 +3,16 @@ import Darwin
 import Foundation
 
 public struct DorySignedComponentCandidateImportResult: Sendable, Equatable {
+    public let operationID: UUID
     public let catalogDigest: String
     public let installed: [DoryInstalledComponent]
 
-    public init(catalogDigest: String, installed: [DoryInstalledComponent]) {
+    public init(
+        operationID: UUID,
+        catalogDigest: String,
+        installed: [DoryInstalledComponent]
+    ) {
+        self.operationID = operationID
         self.catalogDigest = catalogDigest
         self.installed = installed
     }
@@ -50,9 +56,13 @@ public struct DorySignedComponentCandidateImporter: Sendable {
 
     public func install(
         _ id: DoryComponentID,
-        from candidateDirectory: String
+        from candidateDirectory: String,
+        operationID: UUID = UUID()
     ) throws -> DorySignedComponentCandidateImportResult {
         guard id.isRemovable else { throw DoryComponentError.coreCannotBeChanged }
+        guard operationID != UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)) else {
+            throw DoryComponentError.invalidOperationID
+        }
         let root = try Self.candidateDirectory(candidateDirectory)
         let catalogPath = try Self.candidateFile("catalog.json", in: root)
         let digestPath = try Self.candidateFile("catalog.json.sha256", in: root)
@@ -136,12 +146,14 @@ public struct DorySignedComponentCandidateImporter: Sendable {
             let component = try store.install(
                 release,
                 catalogDigest: catalogDigest,
-                downloadedAssets: sourcesByComponent[release.id] ?? [:]
+                downloadedAssets: sourcesByComponent[release.id] ?? [:],
+                operationID: operationID
             )
             try store.verify(component)
             installed.append(component)
         }
         return DorySignedComponentCandidateImportResult(
+            operationID: operationID,
             catalogDigest: catalogDigest,
             installed: installed
         )

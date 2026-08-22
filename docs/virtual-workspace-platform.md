@@ -730,8 +730,13 @@ only around its actual pause/resume transition; raw-HV exposes an owner-only rec
 daemon-owned signals; and the guest echoes the same action and UUID through `lifecycle-receipt@1`.
 Mismatches reject the mutation, resolved-plan readiness requires the helper receipt channel, and
 older guests without the capability use an explicit flight-recorder compatibility event rather
-than claiming acknowledgement. Component-installer and device-event propagation, plus device-level
-telemetry, remain required before this section is complete.
+than claiming acknowledgement. Component install and update operations now also retain one
+caller-minted canonical UUID across Dory.app, `dorydctl`, signed candidate dependency imports,
+immutable installed-generation records, the desktop-update XPC request, the crash-recovery journal,
+incident evidence, and the per-workspace flight recorder. Malformed or zero identifiers fail before
+mutation, legacy clients receive an explicit daemon-minted compatibility identity, stale UI progress
+is ignored, and the live release gate verifies the returned identity. Device-event propagation and
+device-level telemetry remain required before this section is complete.
 
 ## Qualification and release gates
 

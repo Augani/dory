@@ -5,6 +5,28 @@ import Testing
 
 @Suite(.serialized)
 struct DorydClientTests {
+    @MainActor
+    @Test func desktopUpdateRejectsPresentMalformedOperationIdentity() async throws {
+        let listener = NSXPCListener.anonymous()
+        let service = FakeDorydService()
+        service.setMachineDesktopUpdateOperationIDResponse(NSNumber(value: 7))
+        let delegate = FakeDorydListenerDelegate(service: service)
+        listener.delegate = delegate
+        listener.resume()
+        defer { listener.invalidate() }
+        let client = DorydClient(endpoint: listener.endpoint)
+
+        await #expect(throws: (any Error).self) {
+            _ = try await client.machineDesktopUpdate(
+                "dev",
+                distro: "ubuntu",
+                version: "1.0.0",
+                distributionInstallationName: "ubuntu-1",
+                runtimeInstallationName: "runtime-1"
+            )
+        }
+    }
+
     @Test func dorydSharesPreserveStableTagsAndAllocateAroundExistingIdentity() {
         let mounts = [
             MountPair(host: "/tmp/first", guest: "/workspace/first", shareTag: "doryapp0"),
@@ -1127,6 +1149,17 @@ struct DorydClientTests {
         let machineStats = try await client.machineStats("dev")
         let execResult = try await client.machineExec("dev", argv: ["/bin/sh", "-lc", "cargo --version"])
         let provisionedMachine = try await client.machineProvision("dev", recipe: "rust")
+        let desktopUpdateOperationID = UUID(
+            uuidString: "456789ab-cdef-4012-8345-6789abcdef01"
+        )!
+        let desktopUpdate = try await client.machineDesktopUpdate(
+            "dev",
+            operationID: desktopUpdateOperationID,
+            distro: "ubuntu",
+            version: "24.04+runtime.1",
+            distributionInstallationName: "ubuntu-installation",
+            runtimeInstallationName: "runtime-installation"
+        )
         let snapshot = try await client.machineSnapshot(
             "dev",
             note: "before",
@@ -1232,6 +1265,11 @@ struct DorydClientTests {
         #expect(dockerAgentPorts.added == [DorydListenPort(protocol: "tcp", port: 8080)])
         #expect(dockerAgentTelemetry.memTotalKB == 2048)
         #expect(stopped == DorydCommandResult(ok: true, message: ""))
+        #expect(
+            service.latestMachineDesktopUpdateOperationID
+                == desktopUpdateOperationID.uuidString.lowercased()
+        )
+        #expect(desktopUpdate.operationID == desktopUpdateOperationID.uuidString.lowercased())
         let createShares = try #require(
             service.latestMachineCreateConfig?["shares"] as? [NSDictionary]
         )
@@ -3902,6 +3940,8 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     private var _latestMachineCreateConfig: NSDictionary?
     private var _latestMachineUpdateConfig: NSDictionary?
     private var _latestMachineProvisionRecipe: String?
+    private var _latestMachineDesktopUpdateOperationID: String?
+    private var _machineDesktopUpdateOperationIDResponseOverride: Any?
     private var _latestMachineTransferRequest: NSDictionary?
     private var _latestMachineTransferStartRequest: NSDictionary?
     private var _machineTransferResponseOverride: NSDictionary?
@@ -4062,6 +4102,17 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     var latestMachineResumeOperationID: String? {
         lock.lock(); defer { lock.unlock() }
         return _latestMachineResumeOperationID
+    }
+
+    var latestMachineDesktopUpdateOperationID: String? {
+        lock.lock(); defer { lock.unlock() }
+        return _latestMachineDesktopUpdateOperationID
+    }
+
+    func setMachineDesktopUpdateOperationIDResponse(_ value: Any) {
+        lock.lock()
+        _machineDesktopUpdateOperationIDResponseOverride = value
+        lock.unlock()
     }
 
     func setMachineEnvironment(_ machineID: String, _ environment: [String: String]) {
@@ -5006,8 +5057,11 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     ) {
         lock.lock()
         let current = machines[machineID] ?? Self.machineRow(id: machineID, state: "stopped")
+        _latestMachineDesktopUpdateOperationID = request["operationID"] as? String
+        let operationIDResponse = _machineDesktopUpdateOperationIDResponseOverride
+            ?? request["operationID"]
         lock.unlock()
-        reply(true, [
+        let response = NSMutableDictionary(dictionary: [
             "machineID": machineID,
             "distro": request["distro"] as? String ?? "ubuntu",
             "version": request["version"] as? String ?? "test",
@@ -5016,7 +5070,11 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
             "snapshotID": "du-test",
             "restoredRunningState": false,
             "status": current,
-        ] as NSDictionary, "")
+        ] as NSDictionary)
+        if let operationIDResponse {
+            response["operationID"] = operationIDResponse
+        }
+        reply(true, response, "")
     }
 
     func machineSnapshot(_ machineID: String, request: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void) {

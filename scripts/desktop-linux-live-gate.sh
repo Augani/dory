@@ -268,11 +268,17 @@ import sys
 result_path, catalog_path, component_id, expected_version = sys.argv[1:]
 result = json.loads(pathlib.Path(result_path).read_text(encoding="utf-8"))
 if not isinstance(result, dict) or set(result) != {
-    "catalogDigest", "installations", "schema", "schemaVersion"
+    "catalogDigest", "installations", "operationID", "schema", "schemaVersion"
 }:
     raise SystemExit("component import response has an unexpected shape")
-if result["schema"] != "dev.dory.component-candidate-import" or result["schemaVersion"] != 1:
+if result["schema"] != "dev.dory.component-candidate-import" or result["schemaVersion"] != 2:
     raise SystemExit("component import response has an unexpected contract")
+operation_id = result["operationID"]
+if not isinstance(operation_id, str) or re.fullmatch(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}",
+    operation_id,
+) is None:
+    raise SystemExit("component import response has an invalid operation identity")
 digest = result["catalogDigest"]
 if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
     raise SystemExit("component import response has an invalid catalog digest")
@@ -1140,11 +1146,17 @@ PY
     > "$WORKROOT/evidence/$distro-desktop-update.json"
   python3 - "$WORKROOT/evidence/$distro-desktop-update.json" "$update_version" \
     "$catalog_digest" "$distribution_installation" "$runtime_installation" <<'PY'
-import json, sys
+import json, re, sys
 with open(sys.argv[1], encoding="utf-8") as handle:
     body = json.load(handle)
 if not isinstance(body, dict) or body.get("version") != sys.argv[2]:
     raise SystemExit(f"desktop update returned the wrong version: {body!r}")
+operation_id = body.get("operationID")
+if not isinstance(operation_id, str) or re.fullmatch(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}",
+    operation_id,
+) is None:
+    raise SystemExit(f"desktop update omitted its operation identity: {body!r}")
 status = body.get("status")
 if not isinstance(status, dict) or status.get("state") != "running":
     raise SystemExit(f"desktop update did not restore running state: {body!r}")

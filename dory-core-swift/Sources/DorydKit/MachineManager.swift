@@ -723,6 +723,7 @@ public struct DoryMachineSnapshot: Sendable, Equatable, Hashable, Codable {
 }
 
 public struct DoryDesktopUpdateResult: Sendable, Equatable {
+    public var operationID: String
     public var machineID: String
     public var distro: String
     public var version: String
@@ -733,6 +734,7 @@ public struct DoryDesktopUpdateResult: Sendable, Equatable {
     public var restoredRunningState: Bool
 
     public init(
+        operationID: String,
         machineID: String,
         distro: String,
         version: String,
@@ -742,6 +744,7 @@ public struct DoryDesktopUpdateResult: Sendable, Equatable {
         status: DoryMachineStatus,
         restoredRunningState: Bool
     ) {
+        self.operationID = operationID
         self.machineID = machineID
         self.distro = distro
         self.version = version
@@ -762,6 +765,7 @@ private enum DesktopUpdateJournalStage: String, Codable, Sendable {
 
 private struct DesktopUpdateJournal: Codable, Sendable, Equatable {
     var schema: Int
+    var operationID: String?
     var machineID: String
     var distro: String
     var version: String
@@ -772,7 +776,7 @@ private struct DesktopUpdateJournal: Codable, Sendable, Equatable {
     var updateAuthority: DoryInstalledDesktopPayloadReceipt?
 
     var isValid: Bool {
-        guard [1, 2].contains(schema),
+        guard [1, 2, 3].contains(schema),
               Self.isValidIdentifier(machineID),
               Self.isValidIdentifier(snapshotID),
               ["debian", "kali", "ubuntu"].contains(distro),
@@ -780,19 +784,32 @@ private struct DesktopUpdateJournal: Codable, Sendable, Equatable {
             return false
         }
         if schema == 1 {
-            return sourceConfigurationSHA256 == nil && updateAuthority == nil
+            return operationID == nil
+                && sourceConfigurationSHA256 == nil && updateAuthority == nil
         }
-        return sourceConfigurationSHA256.map(Self.isLowercaseSHA256) == true
+        let authorityIsValid = sourceConfigurationSHA256.map(Self.isLowercaseSHA256) == true
             && updateAuthority?.isValid == true
             && updateAuthority?.provenance == .verifiedUpdateBundle
             && updateAuthority?.distributionIdentifier == distro
             && updateAuthority?.releaseVersion == version
+        if schema == 2 {
+            return operationID == nil && authorityIsValid
+        }
+        return operationID.map(Self.isCanonicalOperationID) == true && authorityIsValid
     }
 
     private static func isLowercaseSHA256(_ value: String) -> Bool {
         value.utf8.count == 64 && value.utf8.allSatisfy { byte in
             (byte >= 48 && byte <= 57) || (byte >= 97 && byte <= 102)
         }
+    }
+
+    private static func isCanonicalOperationID(_ value: String) -> Bool {
+        guard let id = UUID(uuidString: value),
+              id != UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)) else {
+            return false
+        }
+        return value == id.uuidString.lowercased()
     }
 
     private static func isValidIdentifier(_ value: String) -> Bool {
@@ -4586,6 +4603,13 @@ public final class MachineManager: @unchecked Sendable {
         try requireNoActivePlanningMutation(id: id)
         let directMutation = try retainDirectWorkspaceMutationLock(id: id)
         defer { releaseDirectWorkspaceMutationLock(id: id, retention: directMutation) }
+        let canonicalOperationID = request.operationID.uuidString.lowercased()
+        guard request.operationID
+            != UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)) else {
+            throw MachineManagerError.persistence(
+                "desktop update requires a nonzero operation identifier"
+            )
+        }
 
         let (original, originallyRunning) = try configurationAndRunningState(id: id)
         guard original.bootMode == .linuxKernel else {
@@ -4632,7 +4656,8 @@ public final class MachineManager: @unchecked Sendable {
             snapshotID: snapshotID
         )
         var journal = DesktopUpdateJournal(
-            schema: 2,
+            schema: 3,
+            operationID: canonicalOperationID,
             machineID: id,
             distro: request.distro,
             version: request.version,
@@ -4645,6 +4670,20 @@ public final class MachineManager: @unchecked Sendable {
             updateAuthority: authority.receipt
         )
         try persistDesktopUpdateJournal(journal)
+        appendFlightEvent(
+            machineID: id,
+            operationID: request.operationID,
+            operationKind: .updating,
+            kind: .operationStarted,
+            phase: .planned
+        )
+        appendFlightEvent(
+            machineID: id,
+            operationID: request.operationID,
+            operationKind: .updating,
+            kind: .operationPhase,
+            phase: .staging
+        )
 
         let token = String(bundleSHA256.prefix(12))
         let mountPath = "/mnt/dory-update-" + token
@@ -4666,6 +4705,13 @@ public final class MachineManager: @unchecked Sendable {
             }
             journal.stage = .installing
             try persistDesktopUpdateJournal(journal)
+            appendFlightEvent(
+                machineID: id,
+                operationID: request.operationID,
+                operationKind: .updating,
+                kind: .operationPhase,
+                phase: .publishing
+            )
 
             try requireSuccessfulDesktopUpdateExec(
                 id: id,
@@ -4741,6 +4787,13 @@ public final class MachineManager: @unchecked Sendable {
             }
             journal.stage = .qualifying
             try persistDesktopUpdateJournal(journal)
+            appendFlightEvent(
+                machineID: id,
+                operationID: request.operationID,
+                operationKind: .updating,
+                kind: .operationPhase,
+                phase: .validating
+            )
             _ = try startAndWaitUntilReady(id: id)
             try qualifyUpdatedDesktop(
                 id: id,
@@ -4758,7 +4811,15 @@ public final class MachineManager: @unchecked Sendable {
             journal.stage = .committed
             try persistDesktopUpdateJournal(journal)
             try removeDesktopUpdateJournal(machineID: id)
+            appendFlightEvent(
+                machineID: id,
+                operationID: request.operationID,
+                operationKind: .updating,
+                kind: .operationCompleted,
+                phase: .completed
+            )
             return DoryDesktopUpdateResult(
+                operationID: canonicalOperationID,
                 machineID: id,
                 distro: request.distro,
                 version: request.version,
@@ -4780,11 +4841,21 @@ public final class MachineManager: @unchecked Sendable {
                 }
                 try removeDesktopUpdateJournal(machineID: id)
             } catch {
+                appendDesktopUpdateFailureFlightEvent(
+                    machineID: id,
+                    operationID: request.operationID,
+                    recoveryDisposition: .repair
+                )
                 throw MachineManagerError.persistence(
                     "desktop update " + request.version + " failed: " + String(describing: updateError)
                         + "; automatic rollback failed: " + String(describing: error)
                 )
             }
+            appendDesktopUpdateFailureFlightEvent(
+                machineID: id,
+                operationID: request.operationID,
+                recoveryDisposition: .rollbackCompleted
+            )
             throw MachineManagerError.persistence(
                 "desktop update " + request.version + " failed: " + String(describing: updateError)
                     + "; last-good snapshot " + snapshot.id + " was restored"
@@ -5673,6 +5744,73 @@ public final class MachineManager: @unchecked Sendable {
             machines[machineID] = entry
         }
         lock.unlock()
+    }
+
+    /// Records a caller-owned root operation that is intentionally broader than the nested
+    /// lifecycle journals it invokes (for example component install -> snapshot -> guest update
+    /// -> restart qualification). This keeps one correlation identity without replacing the
+    /// independently durable IDs of those nested mutations.
+    private func appendFlightEvent(
+        machineID: String,
+        operationID: UUID,
+        operationKind: DoryWorkspaceMutationKind,
+        kind: DoryMachineFlightEventKind,
+        phase: DoryOperationPhase? = nil,
+        failure: DoryMachineFailure? = nil
+    ) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard var entry = machines[machineID] else { return }
+        do {
+            let event = try flightRecorderStore.append(
+                machineID: machineID,
+                operationID: operationID.uuidString.lowercased(),
+                operationKind: operationKind.rawValue,
+                kind: kind,
+                phase: phase?.rawValue,
+                machineState: entry.state.rawValue,
+                failureCode: failure?.code,
+                recoveryDisposition: failure?.recoveryDisposition,
+                backend: entry.activeBackend ?? entry.runtimeIdentity.backend,
+                virtualHardwareABIVersion:
+                    entry.runtimeIdentity.virtualHardwareABIVersion,
+                planSHA256: entry.runtimeIdentity.resolvedPlanSHA256,
+                evidenceReferences: failure?.evidenceReferences
+                    ?? failureEvidenceReferences(for: entry)
+            )
+            entry.flightRecorderHeadSequence = event.sequence
+            entry.flightRecorderAvailable = true
+        } catch {
+            entry.flightRecorderAvailable = false
+        }
+        machines[machineID] = entry
+    }
+
+    private func appendDesktopUpdateFailureFlightEvent(
+        machineID: String,
+        operationID: UUID,
+        recoveryDisposition: DoryMachineRecoveryDisposition
+    ) {
+        let failure = DoryMachineFailure(
+            code: recoveryDisposition == .rollbackCompleted
+                ? .desktopUpdateRolledBack : .desktopUpdateRecoveryRequired,
+            operationID: operationID.uuidString.lowercased(),
+            causalChain: [.unknown],
+            recoveryDisposition: recoveryDisposition,
+            evidenceReferences: [
+                .init(
+                    kind: .operation,
+                    identifier: operationID.uuidString.lowercased()
+                ),
+            ]
+        )
+        appendFlightEvent(
+            machineID: machineID,
+            operationID: operationID,
+            operationKind: .updating,
+            kind: .operationFailed,
+            failure: failure
+        )
     }
 
     private func setFailure(

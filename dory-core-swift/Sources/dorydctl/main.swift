@@ -360,6 +360,7 @@ private func componentStatusJSON(_ status: DoryComponentStatus) -> NSDictionary 
         "state": status.state.rawValue,
         "availableVersion": status.availableVersion,
         "installedVersion": status.installedVersion ?? NSNull(),
+        "installationOperationID": status.installationOperationID ?? NSNull(),
         "downloadBytes": NSNumber(value: status.downloadBytes),
         "installedBytes": NSNumber(value: status.installedBytes),
         "dependencies": status.dependencies.map(\.rawValue),
@@ -369,12 +370,14 @@ private func componentStatusJSON(_ status: DoryComponentStatus) -> NSDictionary 
 private func componentResultJSON(
     action: String,
     catalog: ComponentCatalogBundle,
-    statuses: [DoryComponentStatus]
+    statuses: [DoryComponentStatus],
+    operationID: UUID? = nil
 ) -> NSDictionary {
     [
         "schema": "dev.dory.components",
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "action": action,
+        "operationID": operationID?.uuidString.lowercased() ?? NSNull(),
         "catalogVersion": catalog.catalog.releaseVersion,
         "catalogDigest": DoryComponentCatalogVerifier.digest(catalog.data),
         "architecture": catalog.catalog.architecture,
@@ -438,17 +441,24 @@ private func runComponent(cursor: inout ArgumentCursor) throws {
             store: store,
             appVersion: componentAppVersion()
         )
-        let result = try importer.install(id, from: candidateDirectory)
+        let operationID = UUID()
+        let result = try importer.install(
+            id,
+            from: candidateDirectory,
+            operationID: operationID
+        )
         if json {
             try emitJSON([
                 "schema": "dev.dory.component-candidate-import",
-                "schemaVersion": 1,
+                "schemaVersion": 2,
+                "operationID": result.operationID.uuidString.lowercased(),
                 "catalogDigest": result.catalogDigest,
                 "installations": Dictionary(uniqueKeysWithValues: result.installed.map {
                     ($0.id.rawValue, $0.installationName)
                 }),
             ] as NSDictionary)
         } else {
+            print("operation\t\(result.operationID.uuidString.lowercased())")
             for component in result.installed {
                 print("\(component.id.rawValue)\t\(component.installationName)")
             }
@@ -480,6 +490,7 @@ private func runComponent(cursor: inout ArgumentCursor) throws {
         }
         guard id.isRemovable else { throw DoryComponentError.coreCannotBeChanged }
         let installer = DoryComponentInstaller(store: store)
+        let operationID = UUID()
         for release in try componentInstallationOrder(id, catalog: catalog.catalog) {
             let current = try store.installedComponent(release.id)
             if current?.version == release.version, current?.catalogDigest == digest,
@@ -488,7 +499,12 @@ private func runComponent(cursor: inout ArgumentCursor) throws {
             }
             let showProgress = !json
             _ = try awaitComponentOperation {
-                try await installer.install(release, catalogData: catalog.data) { update in
+                try await installer.install(
+                    release,
+                    catalogData: catalog.data,
+                    operationID: operationID
+                ) { update in
+                    guard update.operationID == operationID else { return }
                     guard showProgress else { return }
                     let message = "\r\(release.displayName): \(update.phase.rawValue) "
                         + "\(componentBytes(update.completedBytes)) / \(componentBytes(update.totalBytes))"
@@ -499,9 +515,14 @@ private func runComponent(cursor: inout ArgumentCursor) throws {
         }
         let statuses = store.list(catalog: catalog.catalog, catalogDigest: digest)
         if json {
-            try emitJSON(componentResultJSON(action: subcommand, catalog: catalog, statuses: statuses))
+            try emitJSON(componentResultJSON(
+                action: subcommand,
+                catalog: catalog,
+                statuses: statuses,
+                operationID: operationID
+            ))
         } else {
-            print("\(rawID) is installed and verified.")
+            print("\(rawID) is installed and verified (operation \(operationID.uuidString.lowercased())).")
         }
     case "verify":
         let rawID = cursor.values.isEmpty ? "all" : try cursor.take("usage: dorydctl component verify [ID|all] [--json] [--offline]")
@@ -1639,7 +1660,9 @@ func runMachineDesktopUpdate(cursor: inout ArgumentCursor, client: DorydCtlClien
     guard cursor.values.isEmpty else {
         throw DorydCtlError.usage("unexpected machine desktop-update argument: " + cursor.values[0])
     }
+    let operationID = UUID()
     let request: NSDictionary = [
+        "operationID": operationID.uuidString.lowercased(),
         "distro": distro,
         "version": version,
         "distributionInstallationName": distributionInstallationName,

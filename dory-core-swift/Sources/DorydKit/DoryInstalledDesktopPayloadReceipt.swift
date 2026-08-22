@@ -254,17 +254,20 @@ public struct DoryInstalledDesktopPayloadReceipt: Codable, Sendable, Equatable, 
 
 /// Stable, caller-visible selection identity. Host paths never cross XPC.
 public struct DoryDesktopUpdateRequest: Sendable, Equatable {
+    public var operationID: UUID
     public var distro: String
     public var version: String
     public var distributionInstallationName: String
     public var runtimeInstallationName: String
 
     public init(
+        operationID: UUID = UUID(),
         distro: String,
         version: String,
         distributionInstallationName: String,
         runtimeInstallationName: String
     ) {
+        self.operationID = operationID
         self.distro = distro
         self.version = version
         self.distributionInstallationName = distributionInstallationName

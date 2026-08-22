@@ -489,10 +489,14 @@ final class MachineManagerTests: XCTestCase {
             environment: ["DORY_DESKTOP_DISTRO": "ubuntu", "PRESERVE": "yes"]
         ))
 
+        let operationID = try XCTUnwrap(UUID(
+            uuidString: "01234567-89ab-4cde-8f01-23456789abcd"
+        ))
         let result = try runDesktopUpdate(
             manager: manager,
             id: "dev",
             request: DoryDesktopUpdateRequest(
+                operationID: operationID,
                 distro: "ubuntu",
                 version: "1.2.3+runtime.4.5.6",
                 distributionInstallationName: "ubuntu-installation",
@@ -501,6 +505,15 @@ final class MachineManagerTests: XCTestCase {
         ).get()
 
         XCTAssertEqual(result.status.state, .stopped)
+        XCTAssertEqual(result.operationID, operationID.uuidString.lowercased())
+        let updateEvents = try manager.flightRecorder(id: "dev", afterSequence: 0).events
+            .filter { $0.operationID == operationID.uuidString.lowercased() }
+        XCTAssertEqual(
+            updateEvents.map(\.kind),
+            [.operationStarted, .operationPhase, .operationPhase, .operationPhase,
+             .operationCompleted]
+        )
+        XCTAssertTrue(updateEvents.allSatisfy { $0.operationKind == "updating" })
         XCTAssertEqual(result.version, "1.2.3+runtime.4.5.6")
         XCTAssertEqual(result.inputSHA256, String(repeating: "a", count: 64))
         XCTAssertEqual(
@@ -590,10 +603,14 @@ final class MachineManagerTests: XCTestCase {
             environment: ["DORY_DESKTOP_DISTRO": "ubuntu", "PRESERVE": "yes"]
         ))
 
+        let operationID = try XCTUnwrap(UUID(
+            uuidString: "12345678-9abc-4def-8012-3456789abcde"
+        ))
         let result = try runDesktopUpdate(
             manager: manager,
             id: "dev",
             request: DoryDesktopUpdateRequest(
+                operationID: operationID,
                 distro: "ubuntu",
                 version: "1.2.3+runtime.4.5.6",
                 distributionInstallationName: "ubuntu-installation",
@@ -619,6 +636,14 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertTrue(status.shares.isEmpty)
         XCTAssertFalse(FileManager.default.fileExists(atPath: state + "/dev/desktop-update.json"))
         XCTAssertEqual(try manager.listSnapshots(machineID: "dev").count, 1)
+        let failedEvent = try XCTUnwrap(
+            manager.flightRecorder(id: "dev", afterSequence: 0).events.last {
+                $0.operationID == operationID.uuidString.lowercased()
+                    && $0.kind == .operationFailed
+            }
+        )
+        XCTAssertEqual(failedEvent.failureCode, .desktopUpdateRolledBack)
+        XCTAssertEqual(failedEvent.recoveryDisposition, .rollbackCompleted)
     }
 
     func testDesktopUpdateRejectsStagedBundleMutationBeforeGuestCommit() throws {

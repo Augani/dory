@@ -1805,6 +1805,33 @@ final class DorydServiceTests: XCTestCase {
             mixed.fulfill()
         }
         wait(for: [mixed], timeout: 2)
+
+        let malformedOperation = expectation(description: "malformed operation rejected")
+        service.machineDesktopUpdate("dev", request: [
+            "operationID": "01234567-89AB-4CDE-8F01-23456789ABCD",
+            "distro": "ubuntu",
+            "version": "24.04+runtime.7",
+            "distributionInstallationName": "ubuntu-installation",
+            "runtimeInstallationName": "runtime-installation",
+        ]) { ok, _, message in
+            XCTAssertFalse(ok)
+            XCTAssertTrue(message.contains("desktopUpdateAuthority.operationID"))
+            malformedOperation.fulfill()
+        }
+        wait(for: [malformedOperation], timeout: 2)
+
+        let legacyRequest = expectation(description: "legacy request mints at daemon boundary")
+        service.machineDesktopUpdate("dev", request: [
+            "distro": "ubuntu",
+            "version": "24.04+runtime.7",
+            "distributionInstallationName": "ubuntu-installation",
+            "runtimeInstallationName": "runtime-installation",
+        ]) { ok, _, message in
+            XCTAssertFalse(ok)
+            XCTAssertFalse(message.contains("desktopUpdateAuthority"), message)
+            legacyRequest.fulfill()
+        }
+        wait(for: [legacyRequest], timeout: 2)
     }
 
     func testMachineWritesRequireTypedIntentAndPreserveLegacyEnvironmentFieldLocally() throws {

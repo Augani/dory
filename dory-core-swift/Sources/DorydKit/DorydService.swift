@@ -912,13 +912,16 @@ public final class DorydService: NSObject, DorydControl {
                 let result = try machineManager.updateDesktop(id: machineID, request: parsedRequest)
                 incidentWriter?.record(
                     type: "machine.desktop_update",
-                    detail: machineID + " " + result.distro + " " + result.version + " snapshot=" + result.snapshotID
+                    detail: machineID + " " + result.distro + " " + result.version
+                        + " operation=" + result.operationID + " snapshot=" + result.snapshotID
                 )
                 reply.reply(true, result.xpcDictionary, "")
             } catch {
                 incidentWriter?.record(
                     type: "machine.desktop_update_failed",
-                    detail: machineID + ": " + String(describing: error)
+                    detail: machineID + " operation="
+                        + parsedRequest.operationID.uuidString.lowercased()
+                        + ": " + String(describing: error)
                 )
                 reply.reply(false, [:], String(describing: error))
             }
@@ -1877,13 +1880,25 @@ private struct MachineProvisionRequest {
 
 private extension DoryDesktopUpdateRequest {
     init(xpcDictionary dictionary: NSDictionary) throws {
-        let allowed: Set<String> = [
+        let legacyKeys: Set<String> = [
             "distro", "version", "distributionInstallationName", "runtimeInstallationName",
         ]
-        guard let keys = dictionary.allKeys as? [String], Set(keys) == allowed else {
+        let currentKeys = legacyKeys.union(["operationID"])
+        guard let keys = dictionary.allKeys as? [String],
+              Set(keys) == legacyKeys || Set(keys) == currentKeys else {
             throw XPCRemoteConfigError.invalid("desktopUpdateAuthority")
         }
+        let operationID: UUID
+        if let rawOperationID = dictionary["operationID"] as? String {
+            guard let parsed = DoryOperationIdentity.parseCanonical(rawOperationID) else {
+                throw XPCRemoteConfigError.invalid("desktopUpdateAuthority.operationID")
+            }
+            operationID = parsed
+        } else {
+            operationID = UUID()
+        }
         self.init(
+            operationID: operationID,
             distro: try dictionary.requiredString("distro"),
             version: try dictionary.requiredString("version"),
             distributionInstallationName: try dictionary.requiredString(
@@ -2929,6 +2944,7 @@ private extension DoryMachineSnapshot {
 private extension DoryDesktopUpdateResult {
     var xpcDictionary: NSDictionary {
         [
+            "operationID": operationID,
             "machineID": machineID,
             "distro": distro,
             "version": version,

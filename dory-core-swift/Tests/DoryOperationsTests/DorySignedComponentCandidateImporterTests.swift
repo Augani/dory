@@ -10,9 +10,18 @@ struct DorySignedComponentCandidateImporterTests {
         let fixture = try Fixture()
         defer { fixture.cleanup() }
         let candidate = try fixture.candidate()
-        let result = try candidate.importer.install(.desktopUbuntu, from: candidate.directory.path)
+        let operationID = UUID(uuidString: "01234567-89ab-4cde-8f01-23456789abcd")!
+        let result = try candidate.importer.install(
+            .desktopUbuntu,
+            from: candidate.directory.path,
+            operationID: operationID
+        )
 
+        #expect(result.operationID == operationID)
         #expect(result.installed.map(\.id) == [.linuxDesktop, .desktopUbuntu])
+        #expect(result.installed.allSatisfy {
+            $0.installationOperationID == operationID.uuidString.lowercased()
+        })
         #expect(try fixture.store.verify(.linuxDesktop).installationName
             == result.installed[0].installationName)
         #expect(try fixture.store.verify(.desktopUbuntu).installationName
@@ -22,6 +31,24 @@ struct DorySignedComponentCandidateImporterTests {
             expectedArchitecture: "arm64",
             appVersion: Fixture.version
         )?.catalog == candidate.catalog)
+    }
+
+    @Test("zero operation identity is rejected before candidate bytes become active")
+    func rejectsZeroOperationIdentity() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let candidate = try fixture.candidate()
+        let zero = UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+
+        #expect(throws: DoryComponentError.invalidOperationID) {
+            try candidate.importer.install(
+                .desktopUbuntu,
+                from: candidate.directory.path,
+                operationID: zero
+            )
+        }
+        #expect(try fixture.store.installedComponent(.linuxDesktop) == nil)
+        #expect(try fixture.store.installedComponent(.desktopUbuntu) == nil)
     }
 
     @Test("asset mutation is rejected without activating the component")

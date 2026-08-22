@@ -10,6 +10,7 @@ struct ComponentsView: View {
     @State private var catalogData = Data()
     @State private var statuses: [DoryComponentStatus] = []
     @State private var progress: [DoryComponentID: DoryComponentProgress] = [:]
+    @State private var activeOperationIDs: [DoryComponentID: UUID] = [:]
     @State private var busy: Set<DoryComponentID> = []
     @State private var pendingRemoval: DoryComponentID?
     @State private var errorMessage: String?
@@ -223,6 +224,8 @@ struct ComponentsView: View {
                     .tint(p.accent)
                     Text("\(currentProgress.phase.rawValue.capitalized) · \(formatted(currentProgress.completedBytes)) of \(formatted(currentProgress.totalBytes))")
                         .font(.system(size: 10.5)).foregroundStyle(p.text3)
+                    Text("Operation \(currentProgress.operationID.uuidString.lowercased().prefix(8))…")
+                        .font(.system(size: 9.5, design: .monospaced)).foregroundStyle(p.text3)
                 }
             }
 
@@ -263,6 +266,11 @@ struct ComponentsView: View {
             Spacer(minLength: 0)
             Text(status.installedVersion.map { "v\($0)" } ?? "v\(status.availableVersion)")
                 .font(.system(size: 10.5, weight: .medium)).foregroundStyle(p.text3)
+            if let operationID = status.installationOperationID {
+                Text("op \(operationID.prefix(8))…")
+                    .font(.system(size: 9.5, design: .monospaced)).foregroundStyle(p.text3)
+                    .help("Installed by component operation \(operationID)")
+            }
         }
     }
 
@@ -411,13 +419,18 @@ struct ComponentsView: View {
     @MainActor @discardableResult
     private func install(_ id: DoryComponentID, showSuccess: Bool = true) async -> Bool {
         guard let catalog, !catalogData.isEmpty else { return false }
-        var operationIDs: Set<DoryComponentID> = [id]
+        let operationID = UUID()
+        var affectedComponents: Set<DoryComponentID> = [id]
         busy.insert(id)
+        activeOperationIDs[id] = operationID
         errorMessage = nil
         defer {
-            for operationID in operationIDs {
-                busy.remove(operationID)
-                progress[operationID] = nil
+            for componentID in affectedComponents {
+                busy.remove(componentID)
+                if activeOperationIDs[componentID] == operationID {
+                    activeOperationIDs[componentID] = nil
+                    progress[componentID] = nil
+                }
             }
         }
         do {
@@ -432,15 +445,28 @@ struct ComponentsView: View {
                    (try? store.verify(release.id)) != nil {
                     continue
                 }
-                operationIDs.insert(release.id)
+                affectedComponents.insert(release.id)
                 busy.insert(release.id)
-                _ = try await installer.install(release, catalogData: catalogData) { update in
-                    Task { @MainActor in self.progress[release.id] = update }
+                activeOperationIDs[release.id] = operationID
+                _ = try await installer.install(
+                    release,
+                    catalogData: catalogData,
+                    operationID: operationID
+                ) { update in
+                    Task { @MainActor in
+                        guard self.activeOperationIDs[release.id] == update.operationID else {
+                            return
+                        }
+                        self.progress[release.id] = update
+                    }
                 }
                 activatedComponents.insert(release.id)
                 busy.remove(release.id)
             }
-            let desktopUpdates = try await appStore.updateManagedDesktops(affectedBy: activatedComponents)
+            let desktopUpdates = try await appStore.updateManagedDesktops(
+                affectedBy: activatedComponents,
+                operationID: operationID
+            )
             statuses = store.list(catalog: catalog, catalogDigest: digest)
             HostDockerCLI.reconcileOptionalTools(enabled: appStore.routeDockerCLI)
             if showSuccess {
@@ -448,7 +474,10 @@ struct ComponentsView: View {
                     ? ""
                     : " Updated " + String(desktopUpdates.count) + " existing desktop"
                         + (desktopUpdates.count == 1 ? "." : "s.")
-                appStore.showSettingsSuccess("\(displayName(id)) is installed and verified." + updated)
+                appStore.showSettingsSuccess(
+                    "\(displayName(id)) is installed and verified (operation "
+                        + "\(operationID.uuidString.lowercased().prefix(8))…)." + updated
+                )
             }
             return true
         } catch {

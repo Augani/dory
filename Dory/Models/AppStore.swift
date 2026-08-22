@@ -1630,7 +1630,9 @@ final class AppStore {
         var checks: [DoryUpgradeSmokeCheck] = []
         if Bundle.main.object(forInfoDictionaryKey: "DoryUpgradeGateForceSmokeFailure") as? Bool == true {
             do {
-                let component = try await applyReleaseGateComponentUpdate()
+                let component = try await applyReleaseGateComponentUpdate(
+                    operationID: record.id
+                )
                 checks.append(.init(
                     id: "release-gate.component-update",
                     passed: true,
@@ -1713,7 +1715,9 @@ final class AppStore {
         return checks
     }
 
-    private func applyReleaseGateComponentUpdate() async throws -> DoryInstalledComponent {
+    private func applyReleaseGateComponentUpdate(
+        operationID: UUID
+    ) async throws -> DoryInstalledComponent {
         guard let rawURL = Bundle.main.object(forInfoDictionaryKey: "DoryUpgradeGateComponentCatalogURL") as? String,
               let url = URL(string: rawURL), url.scheme?.lowercased() == "https",
               ["127.0.0.1", "::1"].contains(url.host ?? ""),
@@ -1742,7 +1746,8 @@ final class AppStore {
         }
         return try await DoryComponentInstaller(store: store).install(
             release,
-            catalogData: fetched.data
+            catalogData: fetched.data,
+            operationID: operationID
         ) { _ in }
     }
 
@@ -6232,6 +6237,7 @@ final class AppStore {
     /// last-good snapshot, reboot qualification, and automatic rollback transaction.
     func updateManagedDesktops(
         affectedBy components: Set<DoryComponentID>,
+        operationID: UUID = UUID(),
         force: Bool = false,
         machineID: String? = nil
     ) async throws -> [DorydDesktopUpdateResult] {
@@ -6313,6 +6319,7 @@ final class AppStore {
             do {
                 let result = try await dorydClient.machineDesktopUpdate(
                     status.id,
+                    operationID: operationID,
                     distro: distro.rawValue,
                     version: targetVersion,
                     distributionInstallationName: distroRelease.installationName,
