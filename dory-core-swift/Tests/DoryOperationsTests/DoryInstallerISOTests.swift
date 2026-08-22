@@ -232,4 +232,45 @@ final class DoryInstallerISOTests: XCTestCase {
         }
         XCTAssertFalse(FileManager.default.fileExists(atPath: stagingDirectory.path))
     }
+
+    func testRejectsOptInRealX86InstallerBeforeStaging() throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard let sourcePath = environment["DORY_TEST_X86_64_INSTALLER_ISO"],
+              !sourcePath.isEmpty else {
+            throw XCTSkip(
+                "set DORY_TEST_X86_64_INSTALLER_ISO for the real-media architecture gate"
+            )
+        }
+
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dory-real-iso-rejection-\(UUID().uuidString)")
+        let stagingDirectory = base.appendingPathComponent("staging", isDirectory: true)
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+
+        let identity = try DoryInstallerISOInspector.mediaIdentity(atPath: sourcePath)
+        XCTAssertEqual(identity.architecture, .x86_64)
+        if let expectedSHA256 = environment["DORY_TEST_INSTALLER_ISO_SHA256"],
+           !expectedSHA256.isEmpty {
+            XCTAssertEqual(identity.sha256, expectedSHA256.lowercased())
+        }
+
+        XCTAssertThrowsError(try DoryInstallerISOStager.stage(
+            atPath: sourcePath,
+            stagingDirectory: stagingDirectory,
+            hostArchitecture: "arm64"
+        )) { error in
+            guard case let .incompatible(message) = error as? DoryInstallerISOStagingError else {
+                return XCTFail("expected an incompatible-media rejection, got \(error)")
+            }
+            XCTAssertEqual(
+                message,
+                "This ISO is Intel x86_64-only. Apple Silicon requires an arm64 EFI ISO."
+            )
+        }
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: stagingDirectory.path),
+            "the rejected ISO must not be copied or cloned into managed staging"
+        )
+    }
 }
