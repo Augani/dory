@@ -200,6 +200,9 @@ public struct DoryMachineConfigurationMigrationResult: Sendable, Equatable {
         guard definition.networkMode == baselineDefinition.networkMode else {
             throw DoryMachineConfigurationMigrationError.unsupportedDefinitionChange("networkMode")
         }
+        guard definition.portForwards == baselineDefinition.portForwards else {
+            throw DoryMachineConfigurationMigrationError.unsupportedDefinitionChange("portForwards")
+        }
         guard definition.display == baselineDefinition.display else {
             throw DoryMachineConfigurationMigrationError.unsupportedDefinitionChange("display")
         }

@@ -7,7 +7,7 @@ struct DoryVirtualMachineDefinitionTests {
     private let gibibyte: UInt64 = 1_073_741_824
     private let nowMilliseconds: Int64 = 1_787_200_000_000
 
-    @Test("schema 3 round trips with stable resolver and timestamp representations")
+    @Test("schema 4 round trips with stable resolver and timestamp representations")
     func currentRoundTrip() throws {
         let original = linuxDefinition()
         #expect(original.isValid)
@@ -19,7 +19,7 @@ struct DoryVirtualMachineDefinitionTests {
         #expect(decoded == original)
 
         let json = try #require(String(data: data, encoding: .utf8))
-        #expect(json.contains("\"schemaVersion\":3"))
+        #expect(json.contains("\"schemaVersion\":4"))
         #expect(json.contains("\"virtualHardwareABIVersion\":1"))
         #expect(json.contains("\"createdAtUnixMilliseconds\":1787200000000"))
         #expect(json.contains("\"namespace\":\"boot\""))
@@ -27,6 +27,7 @@ struct DoryVirtualMachineDefinitionTests {
         #expect(json.contains("\"guestIdentityIntent\""))
         #expect(json.contains("\"backingScaleFactor\":2"))
         #expect(json.contains("\"guestUIScaleFactor\":2"))
+        #expect(json.contains("\"portForwards\":[]"))
         #expect(!json.contains("\"bootMedia\""))
         #expect(!json.contains("artifactID"))
         #expect(!json.contains("hostLocationID"))
@@ -41,6 +42,7 @@ struct DoryVirtualMachineDefinitionTests {
         )
         object.removeValue(forKey: "guestIdentityIntent")
         object.removeValue(forKey: "clipboardPolicy")
+        object.removeValue(forKey: "portForwards")
         object["schemaVersion"] = 2
         var storage = try #require(object["storage"] as? [[String: Any]])
         for index in storage.indices { storage[index].removeValue(forKey: "source") }
@@ -53,7 +55,8 @@ struct DoryVirtualMachineDefinitionTests {
         )
         #expect(decoded.guestIdentityIntent == .unspecified)
         #expect(decoded.clipboardPolicy == .legacyDesktop(.bidirectional))
-        #expect(decoded.schemaVersion == 3)
+        #expect(decoded.schemaVersion == 4)
+        #expect(decoded.portForwards.isEmpty)
         #expect(decoded.storage.allSatisfy { $0.source == .userProvided })
         #expect(decoded.display.backingScaleFactor == 2)
         #expect(decoded.display.guestUIScaleFactor == 2)
@@ -71,6 +74,73 @@ struct DoryVirtualMachineDefinitionTests {
         #expect(decoded.networkMode == .disconnected)
         #expect(decoded == original)
         #expect(decoded.isValid)
+    }
+
+    @Test("port forwards are bounded explicit network intent")
+    func portForwardValidation() throws {
+        var definition = linuxDefinition()
+        definition.portForwards = [
+            DoryVMPortForward(id: "web", hostPort: 8_080, guestPort: 80),
+            DoryVMPortForward(
+                id: "dns",
+                transport: .udp,
+                hostPort: 5_353,
+                guestPort: 53,
+                exposure: .lan
+            ),
+        ]
+        #expect(definition.isValid)
+
+        let data = try JSONEncoder().encode(definition)
+        let decoded = try JSONDecoder().decode(DoryVirtualMachineDefinition.self, from: data)
+        #expect(decoded == definition)
+        #expect(decoded.portForwards[0].exposure == .loopback)
+
+        definition.portForwards[1].id = "web"
+        #expect(has(
+            .duplicatePortForwardIdentifier,
+            "portForwards[1].id",
+            in: definition.validate()
+        ))
+        definition.portForwards[1].id = "dns"
+        definition.portForwards[1].transport = .tcp
+        definition.portForwards[1].hostPort = 8_080
+        #expect(has(
+            .duplicatePortForwardBinding,
+            "portForwards[1].hostPort",
+            in: definition.validate()
+        ))
+        definition.portForwards[1].hostPort = 5_353
+        definition.portForwards[0].guestPort = 0
+        #expect(has(
+            .invalidPortForwardPort,
+            "portForwards[0].guestPort",
+            in: definition.validate()
+        ))
+        definition.portForwards[0].guestPort = 80
+        definition.networkMode = .isolated
+        #expect(has(
+            .lanPortForwardRequiresSharedNAT,
+            "portForwards[1].exposure",
+            in: definition.validate()
+        ))
+        definition.portForwards[1].exposure = .loopback
+        #expect(definition.isValid)
+        definition.networkMode = .disconnected
+        #expect(has(
+            .portForwardNetworkModeUnsupported,
+            "portForwards",
+            in: definition.validate()
+        ))
+        definition.networkMode = .sharedNAT
+        definition.portForwards = (0...DoryVMPortForward.maximumCount).map {
+            DoryVMPortForward(
+                id: "port-\($0)",
+                hostPort: UInt16(10_000 + $0),
+                guestPort: UInt16(20_000 + $0)
+            )
+        }
+        #expect(has(.tooManyPortForwards, "portForwards", in: definition.validate()))
     }
 
     @Test("removable USB hotplug is explicit durable guest integration intent")
@@ -259,7 +329,8 @@ struct DoryVirtualMachineDefinitionTests {
         """#.utf8)
 
         let migrated = try JSONDecoder().decode(DoryVirtualMachineDefinition.self, from: golden)
-        #expect(migrated.schemaVersion == 3)
+        #expect(migrated.schemaVersion == 4)
+        #expect(migrated.portForwards.isEmpty)
         #expect(migrated.virtualHardwareABIVersion == 1)
         #expect(migrated.workload == .desktop)
         #expect(migrated.boot.phase == .install)
@@ -274,7 +345,7 @@ struct DoryVirtualMachineDefinitionTests {
 
         let upgraded = try JSONEncoder().encode(migrated)
         let upgradedJSON = try #require(String(data: upgraded, encoding: .utf8))
-        #expect(upgradedJSON.contains("\"schemaVersion\":3"))
+        #expect(upgradedJSON.contains("\"schemaVersion\":4"))
         #expect(upgradedJSON.contains("createdAtUnixMilliseconds"))
         #expect(!upgradedJSON.contains("\"bootMedia\""))
     }

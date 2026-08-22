@@ -80,6 +80,7 @@ struct DoryMachineConfigurationMigrationTests {
             desktopEnvironment: "GNOME"
         ))
         #expect(migrated.definition.clipboardPolicy == .legacyDesktop(.hostToGuest))
+        #expect(migrated.definition.portForwards.isEmpty)
         #expect(migrated.hostPath(for: migrated.definition.shares[0].hostLocation)
             == "/Users/developer/Source")
         #expect(migrated.artifactPath(for: migrated.definition.storage[0].artifact)
@@ -445,6 +446,18 @@ struct DoryMachineConfigurationMigrationTests {
         )
         #expect(throws: DoryMachineConfigurationMigrationError.unsupportedDefinitionChange(
             "backendPreference"
+        )) {
+            try migrated.legacyConfiguration()
+        }
+
+        migrated = try migrate(direct, capacity: 64 * gibibyte)
+        migrated.definition.portForwards = [DoryVMPortForward(
+            id: "ssh",
+            hostPort: 2_222,
+            guestPort: 22
+        )]
+        #expect(throws: DoryMachineConfigurationMigrationError.unsupportedDefinitionChange(
+            "portForwards"
         )) {
             try migrated.legacyConfiguration()
         }

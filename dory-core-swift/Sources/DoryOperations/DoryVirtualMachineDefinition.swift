@@ -182,6 +182,45 @@ public enum DoryVMNetworkMode: String, Codable, Sendable, CaseIterable {
     case isolated
 }
 
+public enum DoryVMPortForwardTransport: String, Codable, Sendable, CaseIterable, Hashable {
+    case tcp
+    case udp
+}
+
+/// Host visibility is closed intent rather than a caller-supplied bind address. Loopback is the
+/// safe default; LAN exposure remains an explicit choice that policy and runtime authorization can
+/// reject without rewriting it to a broader address.
+public enum DoryVMPortForwardExposure: String, Codable, Sendable, CaseIterable, Hashable {
+    case loopback
+    case lan
+}
+
+/// One stable inbound mapping for a userspace-networked guest. Runtime endpoints and gvproxy
+/// process details are deliberately absent from desired state.
+public struct DoryVMPortForward: Codable, Sendable, Equatable, Hashable {
+    public static let maximumCount = 64
+
+    public var id: String
+    public var transport: DoryVMPortForwardTransport
+    public var hostPort: UInt16
+    public var guestPort: UInt16
+    public var exposure: DoryVMPortForwardExposure
+
+    public init(
+        id: String,
+        transport: DoryVMPortForwardTransport = .tcp,
+        hostPort: UInt16,
+        guestPort: UInt16,
+        exposure: DoryVMPortForwardExposure = .loopback
+    ) {
+        self.id = id
+        self.transport = transport
+        self.hostPort = hostPort
+        self.guestPort = guestPort
+        self.exposure = exposure
+    }
+}
+
 public struct DoryVMDisplayConfiguration: Codable, Sendable, Equatable {
     public var enabled: Bool
     public var widthPixels: UInt32
@@ -367,6 +406,13 @@ public enum DoryVMDefinitionValidationCode: String, Codable, Sendable, CaseItera
     case systemDiskCapacityMismatch = "system-disk-capacity-mismatch"
     case bootDiskArtifactMismatch = "boot-disk-artifact-mismatch"
     case invalidDisplayConfiguration = "invalid-display-configuration"
+    case tooManyPortForwards = "too-many-port-forwards"
+    case invalidPortForwardIdentifier = "invalid-port-forward-identifier"
+    case duplicatePortForwardIdentifier = "duplicate-port-forward-identifier"
+    case invalidPortForwardPort = "invalid-port-forward-port"
+    case duplicatePortForwardBinding = "duplicate-port-forward-binding"
+    case portForwardNetworkModeUnsupported = "port-forward-network-mode-unsupported"
+    case lanPortForwardRequiresSharedNAT = "lan-port-forward-requires-shared-nat"
     case emptyShareIdentifier = "empty-share-identifier"
     case duplicateShareIdentifier = "duplicate-share-identifier"
     case duplicateGuestMountPath = "duplicate-guest-mount-path"
@@ -400,7 +446,7 @@ public struct DoryVMDefinitionValidationIssue: Codable, Sendable, Equatable {
 /// passwords, tokens, host filesystem paths, or volatile process state.
 public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
     public static let oldestSupportedSchemaVersion: UInt16 = 1
-    public static let currentSchemaVersion: UInt16 = 3
+    public static let currentSchemaVersion: UInt16 = 4
     public static let currentVirtualHardwareABIVersion: UInt16 = 1
 
     public var schemaVersion: UInt16
@@ -414,6 +460,7 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
     public var resources: DoryVMResourceRequest
     public var storage: [DoryVMStorageAttachment]
     public var networkMode: DoryVMNetworkMode
+    public var portForwards: [DoryVMPortForward]
     public var display: DoryVMDisplayConfiguration
     public var audio: DoryVMAudioConfiguration
     public var input: DoryVMInputConfiguration
@@ -436,6 +483,7 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
         resources: DoryVMResourceRequest,
         storage: [DoryVMStorageAttachment],
         networkMode: DoryVMNetworkMode = .sharedNAT,
+        portForwards: [DoryVMPortForward] = [],
         display: DoryVMDisplayConfiguration = DoryVMDisplayConfiguration(),
         audio: DoryVMAudioConfiguration = DoryVMAudioConfiguration(),
         input: DoryVMInputConfiguration = DoryVMInputConfiguration(),
@@ -457,6 +505,7 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
         self.resources = resources
         self.storage = storage
         self.networkMode = networkMode
+        self.portForwards = portForwards
         self.display = display
         self.audio = audio
         self.input = input
@@ -483,6 +532,7 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
         case resources
         case storage
         case networkMode
+        case portForwards
         case display
         case audio
         case input
@@ -587,6 +637,7 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
                 )
             }
             networkMode = try container.decode(DoryVMNetworkMode.self, forKey: .networkMode)
+            portForwards = []
             display = try container.decode(DoryVMDisplayConfiguration.self, forKey: .display)
             audio = try container.decode(DoryVMAudioConfiguration.self, forKey: .audio)
             input = try container.decode(DoryVMInputConfiguration.self, forKey: .input)
@@ -625,7 +676,8 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
             )
         }
         // Schema 2 is structurally migrated by the attachment decoder above. Its missing storage
-        // source becomes `.userProvided`. Sandbox policy is an optional schema-3 extension.
+        // source becomes `.userProvided`. Sandbox policy is an optional schema-3 extension and
+        // explicit port forwards are an additive schema-4 extension.
         schemaVersion = Self.currentSchemaVersion
         virtualHardwareABIVersion = try container.decode(
             UInt16.self,
@@ -640,6 +692,10 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
         resources = try container.decode(DoryVMResourceRequest.self, forKey: .resources)
         storage = try container.decode([DoryVMStorageAttachment].self, forKey: .storage)
         networkMode = try container.decode(DoryVMNetworkMode.self, forKey: .networkMode)
+        portForwards = try container.decodeIfPresent(
+            [DoryVMPortForward].self,
+            forKey: .portForwards
+        ) ?? []
         display = try container.decode(DoryVMDisplayConfiguration.self, forKey: .display)
         audio = try container.decode(DoryVMAudioConfiguration.self, forKey: .audio)
         input = try container.decode(DoryVMInputConfiguration.self, forKey: .input)
@@ -674,6 +730,7 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
         try container.encode(resources, forKey: .resources)
         try container.encode(storage, forKey: .storage)
         try container.encode(networkMode, forKey: .networkMode)
+        try container.encode(portForwards, forKey: .portForwards)
         try container.encode(display, forKey: .display)
         try container.encode(audio, forKey: .audio)
         try container.encode(input, forKey: .input)
@@ -730,6 +787,7 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
         validateGraphics(into: &issues)
         validateResources(into: &issues)
         validateStorage(into: &issues)
+        validatePortForwards(into: &issues)
         validateDisplay(into: &issues)
         validateShares(into: &issues)
         validateIntegrations(into: &issues)
@@ -892,6 +950,41 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
                 $0.role == .system && $0.kind == .virtualDisk
             }), bootDisk.artifact != systemDisk.artifact {
                 issues.append(issue(.bootDiskArtifactMismatch, "boot.devices"))
+            }
+        }
+    }
+
+    private func validatePortForwards(into issues: inout [DoryVMDefinitionValidationIssue]) {
+        if portForwards.count > DoryVMPortForward.maximumCount {
+            issues.append(issue(.tooManyPortForwards, "portForwards"))
+        }
+        if !portForwards.isEmpty,
+           networkMode != .sharedNAT,
+           networkMode != .isolated {
+            issues.append(issue(.portForwardNetworkModeUnsupported, "portForwards"))
+        }
+
+        var identifiers: Set<String> = []
+        var hostBindings: Set<String> = []
+        for (index, forward) in portForwards.enumerated() {
+            let field = "portForwards[\(index)]"
+            if !Self.isSafeMachineIdentifier(forward.id) {
+                issues.append(issue(.invalidPortForwardIdentifier, "\(field).id"))
+            } else if !identifiers.insert(forward.id).inserted {
+                issues.append(issue(.duplicatePortForwardIdentifier, "\(field).id"))
+            }
+            if forward.hostPort == 0 {
+                issues.append(issue(.invalidPortForwardPort, "\(field).hostPort"))
+            }
+            if forward.guestPort == 0 {
+                issues.append(issue(.invalidPortForwardPort, "\(field).guestPort"))
+            }
+            let binding = "\(forward.transport.rawValue):\(forward.hostPort)"
+            if !hostBindings.insert(binding).inserted {
+                issues.append(issue(.duplicatePortForwardBinding, "\(field).hostPort"))
+            }
+            if forward.exposure == .lan, networkMode != .sharedNAT {
+                issues.append(issue(.lanPortForwardRequiresSharedNAT, "\(field).exposure"))
             }
         }
     }
