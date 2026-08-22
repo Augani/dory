@@ -1,7 +1,77 @@
-import DoryOperations
+@testable import DoryOperations
+import DoryCore
 import XCTest
 
 final class DoryInstallerISOTests: XCTestCase {
+    func testMaterializesPEWrappedZstdZbootKernelWithExactBounds() throws {
+        let rawKernel = rawARM64Image(marker: 0xa7)
+        let compressedPayload = Data("synthetic-zstd-frame".utf8)
+        let zboot = makeZboot(payload: compressedPayload, compression: "zstd")
+        let wrapped = makePELinuxWrapper(sections: [(".linux", zboot)])
+
+        let materialized = try DoryLinuxInstallerBootAssetExtractor.materializeARM64Kernel(
+            wrapped,
+            source: "casper/vmlinuz",
+            zstdDecompressor: { payload, maximumOutputBytes in
+                XCTAssertEqual(payload, compressedPayload)
+                XCTAssertEqual(maximumOutputBytes, 256 * 1024 * 1024)
+                return rawKernel
+            }
+        )
+
+        XCTAssertEqual(materialized, rawKernel)
+    }
+
+    func testZbootParserRejectsUnavailableDecoderAndMalformedPEAuthority() throws {
+        let zboot = makeZboot(payload: Data([0x28, 0xb5, 0x2f, 0xfd]), compression: "zstd")
+        XCTAssertThrowsError(
+            try DoryLinuxInstallerBootAssetExtractor.materializeARM64Kernel(
+                zboot,
+                source: "vmlinuz",
+                zstdDecompressor: nil
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? DoryLinuxInstallerBootAssetError,
+                .zstdDecoderUnavailable("vmlinuz")
+            )
+        }
+
+        let duplicate = makePELinuxWrapper(sections: [
+            (".linux", zboot),
+            (".linux", zboot),
+        ])
+        let fallbackRawKernel = rawARM64Image(marker: 0)
+        XCTAssertThrowsError(
+            try DoryLinuxInstallerBootAssetExtractor.materializeARM64Kernel(
+                duplicate,
+                source: "vmlinuz",
+                zstdDecompressor: { _, _ in fallbackRawKernel }
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? DoryLinuxInstallerBootAssetError,
+                .invalidPE("vmlinuz")
+            )
+        }
+
+        var malformed = zboot
+        putUInt32(UInt32(malformed.count - 2), into: &malformed, at: 8)
+        putUInt32(8, into: &malformed, at: 12)
+        XCTAssertThrowsError(
+            try DoryLinuxInstallerBootAssetExtractor.materializeARM64Kernel(
+                malformed,
+                source: "vmlinuz",
+                zstdDecompressor: { _, _ in fallbackRawKernel }
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? DoryLinuxInstallerBootAssetError,
+                .invalidZboot("vmlinuz")
+            )
+        }
+    }
+
     func testDiscoversRootPartitionFromOptInInstalledDisk() throws {
         guard let path = ProcessInfo.processInfo.environment["DORY_TEST_INSTALLED_DISK"],
               !path.isEmpty else {
@@ -25,7 +95,15 @@ final class DoryInstallerISOTests: XCTestCase {
             maximumBytes: 128 * 1024 * 1024
         )
         XCTAssertGreaterThan(compressedKernel.count, 1024 * 1024)
-        let assets = try DoryLinuxInstallerBootAssetExtractor.extract(atPath: path)
+        let assets = try DoryLinuxInstallerBootAssetExtractor.extract(
+            atPath: path,
+            zstdDecompressor: { body, maximumOutputBytes in
+                try DoryCore.decompressZstd(
+                    body,
+                    maximumOutputBytes: maximumOutputBytes
+                )
+            }
+        )
 
         XCTAssertGreaterThan(assets.kernel.count, 1024 * 1024)
         XCTAssertGreaterThan(assets.initrd.count, 1024 * 1024)
@@ -272,5 +350,71 @@ final class DoryInstallerISOTests: XCTestCase {
             FileManager.default.fileExists(atPath: stagingDirectory.path),
             "the rejected ISO must not be copied or cloned into managed staging"
         )
+    }
+
+    private func rawARM64Image(marker: UInt8) -> Data {
+        var data = Data(repeating: marker, count: 4 * 1024)
+        putUInt32(0x644d_5241, into: &data, at: 0x38)
+        return data
+    }
+
+    private func makeZboot(payload: Data, compression: String) -> Data {
+        let payloadOffset = 0x100
+        var data = Data(repeating: 0, count: payloadOffset + payload.count)
+        data.replaceSubrange(0..<8, with: Data([0x4d, 0x5a, 0, 0, 0x7a, 0x69, 0x6d, 0x67]))
+        putUInt32(UInt32(payloadOffset), into: &data, at: 8)
+        putUInt32(UInt32(payload.count), into: &data, at: 12)
+        let compressionBytes = Data(compression.utf8) + Data([0])
+        data.replaceSubrange(24..<(24 + compressionBytes.count), with: compressionBytes)
+        putUInt32(0x40, into: &data, at: 0x3c)
+        data.replaceSubrange(0x40..<0x44, with: Data([0x50, 0x45, 0, 0]))
+        putUInt16(0xaa64, into: &data, at: 0x44)
+        data.replaceSubrange(payloadOffset..<(payloadOffset + payload.count), with: payload)
+        return data
+    }
+
+    private func makePELinuxWrapper(sections: [(String, Data)]) -> Data {
+        let peOffset = 0x80
+        let sectionTableOffset = peOffset + 24
+        let dataOffset = 0x400
+        let totalPayloadSize = sections.reduce(0) { $0 + $1.1.count }
+        var data = Data(repeating: 0, count: dataOffset + totalPayloadSize)
+        data[0] = 0x4d
+        data[1] = 0x5a
+        putUInt32(UInt32(peOffset), into: &data, at: 0x3c)
+        data.replaceSubrange(peOffset..<(peOffset + 4), with: Data([0x50, 0x45, 0, 0]))
+        putUInt16(0xaa64, into: &data, at: peOffset + 4)
+        putUInt16(UInt16(sections.count), into: &data, at: peOffset + 6)
+        putUInt16(0, into: &data, at: peOffset + 20)
+
+        var nextDataOffset = dataOffset
+        for (index, section) in sections.enumerated() {
+            let headerOffset = sectionTableOffset + index * 40
+            let name = Array(section.0.utf8.prefix(8))
+            data.replaceSubrange(
+                headerOffset..<(headerOffset + name.count),
+                with: Data(name)
+            )
+            putUInt32(UInt32(section.1.count), into: &data, at: headerOffset + 16)
+            putUInt32(UInt32(nextDataOffset), into: &data, at: headerOffset + 20)
+            data.replaceSubrange(
+                nextDataOffset..<(nextDataOffset + section.1.count),
+                with: section.1
+            )
+            nextDataOffset += section.1.count
+        }
+        return data
+    }
+
+    private func putUInt16(_ value: UInt16, into data: inout Data, at offset: Int) {
+        data[offset] = UInt8(truncatingIfNeeded: value)
+        data[offset + 1] = UInt8(truncatingIfNeeded: value >> 8)
+    }
+
+    private func putUInt32(_ value: UInt32, into data: inout Data, at offset: Int) {
+        data[offset] = UInt8(truncatingIfNeeded: value)
+        data[offset + 1] = UInt8(truncatingIfNeeded: value >> 8)
+        data[offset + 2] = UInt8(truncatingIfNeeded: value >> 16)
+        data[offset + 3] = UInt8(truncatingIfNeeded: value >> 24)
     }
 }

@@ -9,6 +9,29 @@ public enum DoryCore {
         protoVersion()
     }
 
+    /// Decode one immutable boot-time Zstandard artifact with an explicit output ceiling. This is
+    /// intentionally not a general streaming/data-plane API; Linux zboot extraction is its only
+    /// production consumer.
+    public static func decompressZstd(
+        _ body: Data,
+        maximumOutputBytes: Int
+    ) throws -> Data {
+        guard maximumOutputBytes > 0 else {
+            throw DoryCoreArtifactError.invalidOutputBound(maximumOutputBytes)
+        }
+        let result = decompressZstdBounded(
+            body: body,
+            maximumOutputBytes: UInt64(maximumOutputBytes)
+        )
+        guard result.ok else {
+            throw DoryCoreArtifactError.decompressionFailed(result.error)
+        }
+        guard !result.body.isEmpty, result.body.count <= maximumOutputBytes else {
+            throw DoryCoreArtifactError.invalidDecodedSize(result.body.count)
+        }
+        return result.body
+    }
+
     /// Start the Rust docker dataplane against a plain unix `dockerd` socket.
     public static func startDockerDataplane(
         listenFD: Int32,
@@ -97,6 +120,23 @@ public enum DoryCore {
         config: DoryRemoteConfig
     ) throws -> DoryRemoteAgentHandle {
         DoryRemoteAgentHandle(try remoteConnect(config: config.ffiConfig))
+    }
+}
+
+public enum DoryCoreArtifactError: Error, LocalizedError, Sendable, Equatable {
+    case invalidOutputBound(Int)
+    case decompressionFailed(String)
+    case invalidDecodedSize(Int)
+
+    public var errorDescription: String? {
+        switch self {
+        case let .invalidOutputBound(value):
+            "The requested artifact output bound is invalid (\(value) bytes)."
+        case let .decompressionFailed(message):
+            "The compressed artifact could not be decoded: \(message)"
+        case let .invalidDecodedSize(value):
+            "The decoded artifact has an invalid size (\(value) bytes)."
+        }
     }
 }
 

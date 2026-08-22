@@ -8081,7 +8081,15 @@ public final class MachineManager: @unchecked Sendable {
             )
         }
         do {
-            let assets = try DoryLinuxInstallerBootAssetExtractor.extract(atPath: installerPath)
+            let assets = try DoryLinuxInstallerBootAssetExtractor.extract(
+                atPath: installerPath,
+                zstdDecompressor: { body, maximumOutputBytes in
+                    try DoryCore.decompressZstd(
+                        body,
+                        maximumOutputBytes: maximumOutputBytes
+                    )
+                }
+            )
             let rootDevice = try DoryLinuxInstalledDiskInspector.rootDevice(atPath: machine.rootfsPath)
             try DoryInstalledLinuxBootBundle.write(
                 assets: assets,

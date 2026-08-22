@@ -83,7 +83,7 @@ let package = Package(
         ),
         .testTarget(
             name: "DoryOperationsTests",
-            dependencies: ["DoryOperations"]
+            dependencies: ["DoryOperations", "DoryCore"]
         ),
         .testTarget(
             name: "DorydKitTests",

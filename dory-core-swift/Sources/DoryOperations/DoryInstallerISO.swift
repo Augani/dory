@@ -750,6 +750,10 @@ public struct DoryLinuxInstallerBootAssets: Sendable, Equatable {
     }
 }
 
+/// Boot-time decompression seam supplied by the daemon's Rust artifact layer. Keeping the parser
+/// in DoryOperations avoids making desired-state contracts depend on the generated FFI module.
+public typealias DoryZstdBootArtifactDecompressor = @Sendable (Data, Int) throws -> Data
+
 /// Derives the direct-boot payload for an installed Linux disk from its installer media. The EFI
 /// VM remains the installation backend; these immutable files let the installed disk move to
 /// Dory's accelerated VirtIO GPU runtime without attempting to emulate EFI in raw Hypervisor.
@@ -767,7 +771,10 @@ public enum DoryLinuxInstallerBootAssetExtractor {
         ("arch/boot/aarch64/vmlinuz-linux", "arch/boot/aarch64/initramfs-linux.img"),
     ]
 
-    public static func extract(atPath isoPath: String) throws -> DoryLinuxInstallerBootAssets {
+    public static func extract(
+        atPath isoPath: String,
+        zstdDecompressor: DoryZstdBootArtifactDecompressor? = nil
+    ) throws -> DoryLinuxInstallerBootAssets {
         var attempted = [String]()
         for candidate in candidates {
             attempted.append("\(candidate.kernel) + \(candidate.initrd)")
@@ -782,7 +789,11 @@ public enum DoryLinuxInstallerBootAssetExtractor {
             ) else {
                 continue
             }
-            let kernel = try materializeARM64Kernel(compressedKernel, source: candidate.kernel)
+            let kernel = try materializeARM64Kernel(
+                compressedKernel,
+                source: candidate.kernel,
+                zstdDecompressor: zstdDecompressor
+            )
             return DoryLinuxInstallerBootAssets(
                 kernel: kernel,
                 initrd: initrd,
@@ -793,18 +804,206 @@ public enum DoryLinuxInstallerBootAssetExtractor {
         throw DoryLinuxInstallerBootAssetError.notFound(attempted)
     }
 
-    private static func materializeARM64Kernel(_ data: Data, source: String) throws -> Data {
-        let kernel: Data
-        if data.count >= 2, data[0] == 0x1f, data[1] == 0x8b {
-            kernel = try gunzip(data, source: source)
-        } else {
-            kernel = data
-        }
-        guard kernel.count >= 0x3c,
-              littleEndianUInt32(kernel, at: 0x38) == arm64ImageMagic else {
+    static func materializeARM64Kernel(
+        _ data: Data,
+        source: String,
+        zstdDecompressor: DoryZstdBootArtifactDecompressor?,
+        depth: Int = 0
+    ) throws -> Data {
+        guard depth <= 2 else {
             throw DoryLinuxInstallerBootAssetError.unsupportedKernel(source)
         }
+        if data.count >= 2, data[0] == 0x1f, data[1] == 0x8b {
+            return try materializeARM64Kernel(
+                gunzip(data, source: source),
+                source: source,
+                zstdDecompressor: zstdDecompressor,
+                depth: depth + 1
+            )
+        }
+        if isRawARM64Image(data) {
+            return data
+        }
+        if isLinuxZboot(data) {
+            return try materializeZbootKernel(
+                data,
+                source: source,
+                zstdDecompressor: zstdDecompressor
+            )
+        }
+        if let linuxSection = try linuxSection(in: data, source: source) {
+            return try materializeARM64Kernel(
+                linuxSection,
+                source: source,
+                zstdDecompressor: zstdDecompressor,
+                depth: depth + 1
+            )
+        }
+        throw DoryLinuxInstallerBootAssetError.unsupportedKernel(source)
+    }
+
+    private static func materializeZbootKernel(
+        _ data: Data,
+        source: String,
+        zstdDecompressor: DoryZstdBootArtifactDecompressor?
+    ) throws -> Data {
+        guard data.count >= 0x40,
+              data[0] == 0x4d, data[1] == 0x5a,
+              data[2] == 0, data[3] == 0,
+              data[4] == 0x7a, data[5] == 0x69,
+              data[6] == 0x6d, data[7] == 0x67,
+              data[16..<24].allSatisfy({ $0 == 0 }) else {
+            throw DoryLinuxInstallerBootAssetError.invalidZboot(source)
+        }
+        let peOffset = Int(littleEndianUInt32(data, at: 0x3c))
+        guard validPEHeader(in: data, at: peOffset, expectedMachine: 0xaa64) else {
+            throw DoryLinuxInstallerBootAssetError.invalidZboot(source)
+        }
+
+        let compressionBytes = data[24..<56]
+        guard let terminator = compressionBytes.firstIndex(of: 0),
+              terminator > compressionBytes.startIndex,
+              let compression = String(
+                  bytes: compressionBytes[..<terminator],
+                  encoding: .ascii
+              ) else {
+            throw DoryLinuxInstallerBootAssetError.invalidZboot(source)
+        }
+        guard compression == "zstd" else {
+            throw DoryLinuxInstallerBootAssetError.unsupportedZbootCompression(
+                source,
+                compression
+            )
+        }
+
+        let payloadOffset = Int(littleEndianUInt32(data, at: 8))
+        let payloadSize = Int(littleEndianUInt32(data, at: 12))
+        guard payloadOffset >= 0x40,
+              payloadSize > 0,
+              payloadSize <= maximumCompressedKernelBytes,
+              let payloadRange = checkedRange(
+                  offset: payloadOffset,
+                  length: payloadSize,
+                  total: data.count
+              ) else {
+            throw DoryLinuxInstallerBootAssetError.invalidZboot(source)
+        }
+        guard let zstdDecompressor else {
+            throw DoryLinuxInstallerBootAssetError.zstdDecoderUnavailable(source)
+        }
+        let kernel: Data
+        do {
+            kernel = try zstdDecompressor(Data(data[payloadRange]), maximumKernelBytes)
+        } catch {
+            throw DoryLinuxInstallerBootAssetError.invalidZstd(
+                source,
+                error.localizedDescription
+            )
+        }
+        guard kernel.count <= maximumKernelBytes, isRawARM64Image(kernel) else {
+            throw DoryLinuxInstallerBootAssetError.invalidZstd(
+                source,
+                "decoded bytes are not a raw arm64 Linux Image"
+            )
+        }
         return kernel
+    }
+
+    /// Extract the `.linux` payload from an ARM64 PE/COFF wrapper such as Ubuntu's unified EFI
+    /// kernel image. Section-table and file ranges are validated before any slice is materialized.
+    private static func linuxSection(in data: Data, source: String) throws -> Data? {
+        guard data.count >= 0x40, data[0] == 0x4d, data[1] == 0x5a else {
+            return nil
+        }
+        let peOffset = Int(littleEndianUInt32(data, at: 0x3c))
+        guard validPEHeader(in: data, at: peOffset, expectedMachine: 0xaa64),
+              let fileHeaderRange = checkedRange(
+                  offset: peOffset + 4,
+                  length: 20,
+                  total: data.count
+              ) else {
+            throw DoryLinuxInstallerBootAssetError.invalidPE(source)
+        }
+        let numberOfSections = Int(littleEndianUInt16(data, at: fileHeaderRange.lowerBound + 2))
+        let optionalHeaderSize = Int(littleEndianUInt16(data, at: fileHeaderRange.lowerBound + 16))
+        guard (1...96).contains(numberOfSections),
+              let sectionTableOffset = checkedAdd(peOffset + 24, optionalHeaderSize),
+              let sectionTableRange = checkedRange(
+                  offset: sectionTableOffset,
+                  length: numberOfSections * 40,
+                  total: data.count
+              ) else {
+            throw DoryLinuxInstallerBootAssetError.invalidPE(source)
+        }
+
+        var match: Range<Int>?
+        for sectionIndex in 0..<numberOfSections {
+            let offset = sectionTableRange.lowerBound + sectionIndex * 40
+            let nameBytes = data[offset..<(offset + 8)]
+            let nameEnd = nameBytes.firstIndex(of: 0) ?? nameBytes.endIndex
+            guard let name = String(bytes: nameBytes[..<nameEnd], encoding: .ascii) else {
+                throw DoryLinuxInstallerBootAssetError.invalidPE(source)
+            }
+            guard name == ".linux" else { continue }
+            guard match == nil else {
+                throw DoryLinuxInstallerBootAssetError.invalidPE(source)
+            }
+            let rawSize = Int(littleEndianUInt32(data, at: offset + 16))
+            let rawOffset = Int(littleEndianUInt32(data, at: offset + 20))
+            guard rawSize > 0,
+                  rawSize <= maximumCompressedKernelBytes,
+                  let range = checkedRange(
+                      offset: rawOffset,
+                      length: rawSize,
+                      total: data.count
+                  ) else {
+                throw DoryLinuxInstallerBootAssetError.invalidPE(source)
+            }
+            match = range
+        }
+        guard let match else {
+            throw DoryLinuxInstallerBootAssetError.invalidPE(source)
+        }
+        return Data(data[match])
+    }
+
+    private static func isRawARM64Image(_ data: Data) -> Bool {
+        data.count >= 0x3c && littleEndianUInt32(data, at: 0x38) == arm64ImageMagic
+    }
+
+    private static func isLinuxZboot(_ data: Data) -> Bool {
+        data.count >= 8
+            && data[0] == 0x4d && data[1] == 0x5a
+            && data[2] == 0 && data[3] == 0
+            && data[4] == 0x7a && data[5] == 0x69
+            && data[6] == 0x6d && data[7] == 0x67
+    }
+
+    private static func validPEHeader(
+        in data: Data,
+        at offset: Int,
+        expectedMachine: UInt16
+    ) -> Bool {
+        guard let range = checkedRange(offset: offset, length: 24, total: data.count) else {
+            return false
+        }
+        return data[range.lowerBound] == 0x50
+            && data[range.lowerBound + 1] == 0x45
+            && data[range.lowerBound + 2] == 0
+            && data[range.lowerBound + 3] == 0
+            && littleEndianUInt16(data, at: range.lowerBound + 4) == expectedMachine
+    }
+
+    private static func checkedAdd(_ left: Int, _ right: Int) -> Int? {
+        let (value, overflow) = left.addingReportingOverflow(right)
+        return overflow ? nil : value
+    }
+
+    private static func checkedRange(offset: Int, length: Int, total: Int) -> Range<Int>? {
+        guard offset >= 0, length >= 0, offset <= total, length <= total - offset else {
+            return nil
+        }
+        return offset..<(offset + length)
     }
 
     private static func gunzip(_ input: Data, source: String) throws -> Data {
@@ -853,11 +1052,20 @@ public enum DoryLinuxInstallerBootAssetExtractor {
             | UInt32(data[offset + 2]) << 16
             | UInt32(data[offset + 3]) << 24
     }
+
+    private static func littleEndianUInt16(_ data: Data, at offset: Int) -> UInt16 {
+        UInt16(data[offset]) | UInt16(data[offset + 1]) << 8
+    }
 }
 
 public enum DoryLinuxInstallerBootAssetError: Error, LocalizedError, Sendable, Equatable {
     case notFound([String])
     case unsupportedKernel(String)
+    case invalidPE(String)
+    case invalidZboot(String)
+    case unsupportedZbootCompression(String, String)
+    case zstdDecoderUnavailable(String)
+    case invalidZstd(String, String)
     case invalidGzip(String)
     case kernelTooLarge(String, Int)
 
@@ -867,6 +1075,16 @@ public enum DoryLinuxInstallerBootAssetError: Error, LocalizedError, Sendable, E
             "Installer ISO does not expose a supported arm64 Linux kernel/initrd pair (tried \(candidates.joined(separator: ", ")))."
         case let .unsupportedKernel(path):
             "Installer kernel \(path) is not a raw arm64 Linux Image that Dory can direct-boot."
+        case let .invalidPE(path):
+            "Installer kernel \(path) has an invalid ARM64 PE/COFF wrapper."
+        case let .invalidZboot(path):
+            "Installer kernel \(path) has an invalid Linux EFI zboot header."
+        case let .unsupportedZbootCompression(path, compression):
+            "Installer kernel \(path) uses unsupported zboot compression \(compression)."
+        case let .zstdDecoderUnavailable(path):
+            "Installer kernel \(path) requires the bounded Rust Zstandard decoder."
+        case let .invalidZstd(path, message):
+            "Installer kernel \(path) has an invalid Zstandard payload: \(message)"
         case let .invalidGzip(path):
             "Installer kernel \(path) has an invalid or unsupported gzip payload."
         case let .kernelTooLarge(path, size):
