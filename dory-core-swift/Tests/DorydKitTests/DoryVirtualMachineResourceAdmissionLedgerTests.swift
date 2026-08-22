@@ -14,6 +14,7 @@ final class DoryVirtualMachineResourceAdmissionLedgerTests: XCTestCase {
         let host = fixture.host
         let resources = fixture.resources
         let bindings = [fixture.binding("machine-a"), fixture.binding("machine-b")]
+        let startGate = ResourceLedgerConcurrentStartGate(participants: 2)
 
         let results = await withTaskGroup(
             of: Result<DoryVirtualMachineResourceAdmissionLease,
@@ -23,6 +24,7 @@ final class DoryVirtualMachineResourceAdmissionLedgerTests: XCTestCase {
         ) { group in
             for (ledger, binding) in zip([first, second], bindings) {
                 group.addTask {
+                    await startGate.wait()
                     do {
                         return .success(try ledger.reserveStarting(
                             binding: binding,
@@ -1002,6 +1004,27 @@ final class DoryVirtualMachineResourceAdmissionLedgerTests: XCTestCase {
         let fixture = try ResourceLedgerFixture(name)
         defer { fixture.cleanup() }
         try body(fixture)
+    }
+}
+
+private actor ResourceLedgerConcurrentStartGate {
+    private let participants: Int
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    init(participants: Int) {
+        self.participants = participants
+    }
+
+    func wait() async {
+        if waiters.count + 1 == participants {
+            let pending = waiters
+            waiters.removeAll()
+            for waiter in pending { waiter.resume() }
+            return
+        }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
     }
 }
 

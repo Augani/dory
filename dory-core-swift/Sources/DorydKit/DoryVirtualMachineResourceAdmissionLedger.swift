@@ -285,6 +285,22 @@ public enum DoryVirtualMachineResourceAdmissionLedgerError:
     }
 }
 
+private final class DoryVirtualMachineResourceAdmissionProcessLockRegistry:
+    @unchecked Sendable
+{
+    private let registryLock = NSLock()
+    private var locks: [String: NSLock] = [:]
+
+    func lock(for root: String) -> NSLock {
+        registryLock.lock()
+        defer { registryLock.unlock() }
+        if let existing = locks[root] { return existing }
+        let created = NSLock()
+        locks[root] = created
+        return created
+    }
+}
+
 /// Durable admission authority for VM starts. Callers provide host facts excluding leases owned by
 /// this ledger; the ledger composes those facts with all starting/running CPU and RAM commitments
 /// and every durable disk reservation under one cross-process lock.
@@ -297,18 +313,24 @@ public final class DoryVirtualMachineResourceAdmissionLedger: @unchecked Sendabl
     private static let temporaryPrefix = ".resource-admissions."
     private static let maximumRecordBytes = 4 * 1_024 * 1_024
     private static let maximumStartingLeaseDurationMilliseconds: Int64 = 86_400_000
+    private static let processLockRegistry =
+        DoryVirtualMachineResourceAdmissionProcessLockRegistry()
 
     public let root: String
-    private let instanceLock = NSLock()
+    private let processLock: NSLock
     private let now: @Sendable () -> Int64
 
     public init(root: String) {
-        self.root = URL(fileURLWithPath: root).standardizedFileURL.path
+        let standardizedRoot = URL(fileURLWithPath: root).standardizedFileURL.path
+        self.root = standardizedRoot
+        processLock = Self.processLockRegistry.lock(for: standardizedRoot)
         now = { Int64(Date().timeIntervalSince1970 * 1_000) }
     }
 
     init(root: String, now: @escaping @Sendable () -> Int64) {
-        self.root = URL(fileURLWithPath: root).standardizedFileURL.path
+        let standardizedRoot = URL(fileURLWithPath: root).standardizedFileURL.path
+        self.root = standardizedRoot
+        processLock = Self.processLockRegistry.lock(for: standardizedRoot)
         self.now = now
     }
 
@@ -754,7 +776,7 @@ public final class DoryVirtualMachineResourceAdmissionLedger: @unchecked Sendabl
     }
 
     private func withExclusiveAccess<T>(_ body: () throws -> T) throws -> T {
-        try instanceLock.withLock {
+        try processLock.withLock {
             try Self.ensurePrivateDirectory(root)
             let path = root + "/" + Self.lockFilename
             let descriptor = path.withCString {
