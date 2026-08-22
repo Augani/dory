@@ -173,6 +173,11 @@ final class DoryVMMGVProxyNetwork: @unchecked Sendable {
                     }
                 )
                 resolvedPortForwardReconciler = reconciler
+                guard reconciler.reconcileNow() else {
+                    throw DoryVZMachineError.validation(
+                        "could not verify the resolved gvproxy port-forward registry"
+                    )
+                }
                 reconciler.start()
             }
         } catch {
@@ -187,6 +192,10 @@ final class DoryVMMGVProxyNetwork: @unchecked Sendable {
 
     deinit {
         stop()
+    }
+
+    var resolvedPortForwardHealth: ResolvedPortForwardHealthSnapshot? {
+        resolvedPortForwardReconciler?.healthSnapshot()
     }
 
     func stop() {

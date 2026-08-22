@@ -3942,7 +3942,8 @@ nonisolated final class DorydClient: @unchecked Sendable {
               let rawHealth = dictionary["health"] as? String,
               let health = DorydDeviceTelemetryHealth(rawValue: rawHealth),
               let rawMetrics = dictionary["metrics"] as? NSArray,
-              rawMetrics.count > 0, rawMetrics.count <= 23 else {
+              rawMetrics.count > 0,
+              rawMetrics.count <= deviceTelemetryMetricKinds.count else {
             return nil
         }
         let metrics = rawMetrics.compactMap { raw -> DorydDeviceTelemetryMetric? in
@@ -4555,6 +4556,8 @@ nonisolated final class DorydClient: @unchecked Sendable {
         "configuration-interrupts", "device-resets", "transmitted-frames",
         "transmitted-bytes", "transmit-drops", "received-frames", "received-bytes",
         "receive-deferred", "receive-drops", "receive-truncations", "reconnects",
+        "configured-port-forwards", "active-port-forwards",
+        "port-forward-reconciliation-failures",
         "display-frames", "display-drops", "audio-drops", "storage-flushes",
         "maximum-storage-flush-latency-nanoseconds", "graphics-fences",
         "graphics-device-losses", "share-invalidations", "share-invalidation-failures",

@@ -38,6 +38,9 @@ public enum DoryDeviceTelemetryMetricKind: String, Codable, Sendable, CaseIterab
     case receiveDrops = "receive-drops"
     case receiveTruncations = "receive-truncations"
     case reconnects
+    case configuredPortForwards = "configured-port-forwards"
+    case activePortForwards = "active-port-forwards"
+    case portForwardReconciliationFailures = "port-forward-reconciliation-failures"
     case displayFrames = "display-frames"
     case displayDrops = "display-drops"
     case audioDrops = "audio-drops"

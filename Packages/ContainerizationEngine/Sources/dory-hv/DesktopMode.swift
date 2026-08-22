@@ -38,6 +38,8 @@ final class RawDeviceTelemetryRegistry: @unchecked Sendable {
     private var eventSequence: UInt64 = 0
     private var eventHistory = [DoryDeviceTelemetryEvent]()
     private var entries = [Entry]()
+    private var resolvedPortForwardHealthProvider:
+        (@Sendable () -> ResolvedPortForwardHealthSnapshot?)?
 
     private static let queueStallSampleThreshold: UInt8 = 3
     private static let maximumEventHistory = 256
@@ -45,6 +47,12 @@ final class RawDeviceTelemetryRegistry: @unchecked Sendable {
     init(machineID: String, operationID: UUID) {
         self.machineID = machineID
         self.operationID = DoryOperationIdentity.canonical(operationID)
+    }
+
+    func registerResolvedPortForwardHealth(
+        _ provider: @escaping @Sendable () -> ResolvedPortForwardHealthSnapshot?
+    ) {
+        lock.withLock { resolvedPortForwardHealthProvider = provider }
     }
 
     func register(
@@ -150,7 +158,7 @@ final class RawDeviceTelemetryRegistry: @unchecked Sendable {
             let monotonicNanoseconds = DispatchTime.now().uptimeNanoseconds
             let unavailableReason = "raw-HV backend does not expose this counter yet"
             var devices = [DoryDeviceTelemetryDevice]()
-            devices.reserveCapacity(entries.count)
+            devices.reserveCapacity(entries.count + 1)
 
             for index in entries.indices {
                 let transport = entries[index].transport.statistics
@@ -369,6 +377,25 @@ final class RawDeviceTelemetryRegistry: @unchecked Sendable {
                     kind: entries[index].kind,
                     health: health,
                     metrics: metrics
+                ))
+            }
+
+            if let health = resolvedPortForwardHealthProvider?(), health.isValid {
+                devices.append(DoryDeviceTelemetryDevice(
+                    id: "resolved-port-forwards",
+                    kind: .network,
+                    health: health.healthy ? .healthy : .degraded,
+                    metrics: [
+                        .measured(
+                            .configuredPortForwards,
+                            value: health.configuredForwards
+                        ),
+                        .measured(.activePortForwards, value: health.activeForwards),
+                        .measured(
+                            .portForwardReconciliationFailures,
+                            value: health.failedReconciliations
+                        ),
+                    ]
                 ))
             }
 
@@ -728,6 +755,11 @@ enum DesktopMode {
             self.gvproxy = networkRuntime.process
             self.networkSocketPaths = networkRuntime.socketPaths
             self.resolvedPortForwardReconciler = networkRuntime.portForwardReconciler
+            if let reconciler = networkRuntime.portForwardReconciler {
+                deviceTelemetry.registerResolvedPortForwardHealth { [weak reconciler] in
+                    reconciler?.healthSnapshot()
+                }
+            }
             do {
                 var backends: [VirtioDeviceBackend] = [
                     try VirtioBlk(path: configuration.rootfsPath, identity: "dory-rootfs"),
@@ -1300,6 +1332,11 @@ enum DesktopMode {
                     apiSocketPath: apiSocket,
                     log: Self.log
                 )
+                if let reconciler, !reconciler.reconcileNow() {
+                    throw VMError.bootFailure(
+                        "could not verify the resolved gvproxy port-forward registry"
+                    )
+                }
                 reconciler?.start()
                 return NetworkRuntime(
                     process: process,

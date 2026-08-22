@@ -61,6 +61,10 @@ final class DoryDeviceTelemetryTests: XCTestCase {
             ).unit,
             .nanoseconds
         )
+        XCTAssertEqual(
+            DoryDeviceTelemetryMetric.measured(.configuredPortForwards, value: 2).unit,
+            .count
+        )
 
         var unknownEventDevice = snapshot
         unknownEventDevice.events[0].deviceID = "not-present"

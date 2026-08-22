@@ -1322,7 +1322,10 @@ public enum DoryVMMMain {
             machineID: machineID,
             operationID: operationID,
             localSocketPath: controlSocketPath,
-            stateDirectory: stateDirectory
+            stateDirectory: stateDirectory,
+            resolvedPortForwardHealthProvider: {
+                gvproxyNetwork?.resolvedPortForwardHealth
+            }
         )
         let dockerdProxy = try DoryVZPortUnixProxy(
             machine: machine,
@@ -2262,6 +2265,8 @@ private final class DoryVMMControlServer: @unchecked Sendable {
     private let operationID: String
     private let localSocketPath: String
     private let stateDirectory: String
+    private let resolvedPortForwardHealthProvider:
+        @Sendable () -> ResolvedPortForwardHealthSnapshot?
     private let queue: DispatchQueue
     private let lock = NSLock()
     private var listenerFD: Int32 = -1
@@ -2273,13 +2278,16 @@ private final class DoryVMMControlServer: @unchecked Sendable {
         machineID: String,
         operationID: UUID,
         localSocketPath: String,
-        stateDirectory: String
+        stateDirectory: String,
+        resolvedPortForwardHealthProvider:
+            @escaping @Sendable () -> ResolvedPortForwardHealthSnapshot? = { nil }
     ) throws {
         self.machine = machine
         self.machineID = machineID
         self.operationID = DoryOperationIdentity.canonical(operationID)
         self.localSocketPath = localSocketPath
         self.stateDirectory = URL(fileURLWithPath: stateDirectory).standardizedFileURL.path
+        self.resolvedPortForwardHealthProvider = resolvedPortForwardHealthProvider
         self.queue = DispatchQueue(label: "dev.dory.dory-vmm.control")
     }
 
@@ -2491,6 +2499,29 @@ private final class DoryVMMControlServer: @unchecked Sendable {
                 reason: unavailableReason
             )
         }
+        var devices = [
+            DoryDeviceTelemetryDevice(
+                id: "virtualization-framework",
+                kind: .platform,
+                health: .unavailable,
+                metrics: metrics
+            ),
+        ]
+        if let health = resolvedPortForwardHealthProvider(), health.isValid {
+            devices.append(DoryDeviceTelemetryDevice(
+                id: "resolved-port-forwards",
+                kind: .network,
+                health: health.healthy ? .healthy : .degraded,
+                metrics: [
+                    .measured(.configuredPortForwards, value: health.configuredForwards),
+                    .measured(.activePortForwards, value: health.activeForwards),
+                    .measured(
+                        .portForwardReconciliationFailures,
+                        value: health.failedReconciliations
+                    ),
+                ]
+            ))
+        }
         return DoryDeviceTelemetrySnapshot(
             machineID: machineID,
             operationID: operationID,
@@ -2498,14 +2529,7 @@ private final class DoryVMMControlServer: @unchecked Sendable {
             sampleSequence: sequence,
             sampledAtUnixMilliseconds: UInt64(Date().timeIntervalSince1970 * 1_000),
             monotonicNanoseconds: DispatchTime.now().uptimeNanoseconds,
-            devices: [
-                DoryDeviceTelemetryDevice(
-                    id: "virtualization-framework",
-                    kind: .platform,
-                    health: .unavailable,
-                    metrics: metrics
-                ),
-            ]
+            devices: devices
         )
     }
 

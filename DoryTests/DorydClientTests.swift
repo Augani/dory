@@ -1159,7 +1159,27 @@ struct DorydClientTests {
             "id": "virtio-network-7",
             "kind": "network",
             "health": "degraded",
-            "metrics": [metric],
+            "metrics": [
+                metric,
+                [
+                    "kind": "configured-port-forwards",
+                    "unit": "count",
+                    "availability": "measured",
+                    "value": UInt64(2),
+                ] as NSDictionary,
+                [
+                    "kind": "active-port-forwards",
+                    "unit": "count",
+                    "availability": "measured",
+                    "value": UInt64(1),
+                ] as NSDictionary,
+                [
+                    "kind": "port-forward-reconciliation-failures",
+                    "unit": "count",
+                    "availability": "measured",
+                    "value": UInt64(3),
+                ] as NSDictionary,
+            ],
         ]
         let event: NSDictionary = [
             "sequence": UInt64(1),
@@ -1184,6 +1204,8 @@ struct DorydClientTests {
         #expect(snapshot.operationID == operationID)
         #expect(snapshot.backend == .appleVirtualizationFramework)
         #expect(snapshot.devices.first?.metrics.first?.value == 2)
+        #expect(snapshot.devices.first?.metrics.last?.kind == "port-forward-reconciliation-failures")
+        #expect(snapshot.devices.first?.metrics.last?.value == 3)
         #expect(snapshot.events.first?.kind == "queue-stall")
         #expect(snapshot.events.first?.occurrences == 2)
 

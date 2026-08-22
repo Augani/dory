@@ -51,6 +51,12 @@ final class ResolvedPortForwardReconcilerTests: XCTestCase {
         XCTAssertEqual(state.entries, [desired])
         XCTAssertEqual(state.unexposed, [desired])
         XCTAssertEqual(state.exposed, [desired])
+        XCTAssertEqual(reconciler.healthSnapshot(), ResolvedPortForwardHealthSnapshot(
+            configuredForwards: 1,
+            activeForwards: 1,
+            failedReconciliations: 0,
+            healthy: true
+        ))
     }
 
     func testUnavailableRegistryNeverMutatesHostListeners() {
@@ -65,6 +71,35 @@ final class ResolvedPortForwardReconcilerTests: XCTestCase {
         XCTAssertFalse(reconciler.reconcileNow())
         XCTAssertTrue(state.exposed.isEmpty)
         XCTAssertTrue(state.unexposed.isEmpty)
+        XCTAssertEqual(reconciler.healthSnapshot(), ResolvedPortForwardHealthSnapshot(
+            configuredForwards: 1,
+            activeForwards: 0,
+            failedReconciliations: 1,
+            healthy: false
+        ))
+    }
+
+    func testHealthSnapshotTracksFailureThenRecoveryWithoutFalseActiveListeners() {
+        let desired = forward(hostPort: 8_080, guestPort: 80)
+        let state = RegistryState(entries: [])
+        let availability = LockedAvailability(false)
+        let reconciler = ResolvedPortForwardReconciler(
+            desired: [desired],
+            registryProvider: { availability.value ? state.registry() : nil },
+            exposeProvider: { state.expose($0) },
+            unexposeProvider: { state.unexpose($0) }
+        )
+
+        XCTAssertFalse(reconciler.reconcileNow())
+        XCTAssertFalse(reconciler.healthSnapshot().healthy)
+        availability.value = true
+        XCTAssertTrue(reconciler.reconcileNow())
+        XCTAssertEqual(reconciler.healthSnapshot(), ResolvedPortForwardHealthSnapshot(
+            configuredForwards: 1,
+            activeForwards: 1,
+            failedReconciliations: 1,
+            healthy: true
+        ))
     }
 
     private func forward(hostPort: Int, guestPort: Int) -> PublishedPortForward {
@@ -76,6 +111,20 @@ final class ResolvedPortForwardReconcilerTests: XCTestCase {
             guestHost: "192.168.127.2",
             guestPort: guestPort
         )
+    }
+}
+
+private final class LockedAvailability: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedValue: Bool
+
+    init(_ value: Bool) {
+        storedValue = value
+    }
+
+    var value: Bool {
+        get { lock.withLock { storedValue } }
+        set { lock.withLock { storedValue = newValue } }
     }
 }
 

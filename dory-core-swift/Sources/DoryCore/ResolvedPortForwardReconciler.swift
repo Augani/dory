@@ -129,6 +129,33 @@ public struct ResolvedPortForwardReconciliation: Sendable, Equatable {
     }
 }
 
+/// A backend-neutral, point-in-time view of the exact host listeners owned by a resolved launch.
+/// Failure counts are monotonic for the lifetime of the helper so daemon telemetry can distinguish
+/// an initial repair from a repeatedly unhealthy listener after sleep or a network transition.
+public struct ResolvedPortForwardHealthSnapshot: Sendable, Equatable {
+    public var configuredForwards: UInt64
+    public var activeForwards: UInt64
+    public var failedReconciliations: UInt64
+    public var healthy: Bool
+
+    public init(
+        configuredForwards: UInt64,
+        activeForwards: UInt64,
+        failedReconciliations: UInt64,
+        healthy: Bool
+    ) {
+        self.configuredForwards = configuredForwards
+        self.activeForwards = activeForwards
+        self.failedReconciliations = failedReconciliations
+        self.healthy = healthy
+    }
+
+    public var isValid: Bool {
+        activeForwards <= configuredForwards
+            && (healthy == (activeForwards == configuredForwards))
+    }
+}
+
 /// Periodically proves and repairs only the exact forwards pinned by the resolved launch. It never
 /// adopts or removes unrelated registry entries. A conflicting local key is released only because
 /// the same resolved contract owns that protocol/address/port tuple.
@@ -147,7 +174,9 @@ public final class ResolvedPortForwardReconciler: @unchecked Sendable {
     private let lock = NSLock()
     private var activated = false
     private var cancelled = false
-    private var lastHealthy = true
+    private var lastHealthy: Bool
+    private var activeForwards: UInt64
+    private var failedReconciliations: UInt64 = 0
 
     public convenience init(
         desired: Set<PublishedPortForward>,
@@ -189,6 +218,8 @@ public final class ResolvedPortForwardReconciler: @unchecked Sendable {
         log: @escaping @Sendable (String) -> Void = { _ in }
     ) {
         self.desired = desired
+        self.lastHealthy = desired.isEmpty
+        self.activeForwards = 0
         self.registryProvider = registryProvider
         self.exposeProvider = exposeProvider
         self.unexposeProvider = unexposeProvider
@@ -232,31 +263,60 @@ public final class ResolvedPortForwardReconciler: @unchecked Sendable {
 
     @discardableResult
     public func reconcileNow() -> Bool {
-        queue.sync { reconcile() }
+        queue.sync { reconcileAndReport() }
     }
 
-    private func reconcileAndReport() {
-        let healthy = reconcile()
-        if healthy != lastHealthy {
-            lastHealthy = healthy
-            log(healthy
+    public func healthSnapshot() -> ResolvedPortForwardHealthSnapshot {
+        lock.lock()
+        defer { lock.unlock() }
+        return ResolvedPortForwardHealthSnapshot(
+            configuredForwards: UInt64(desired.count),
+            activeForwards: activeForwards,
+            failedReconciliations: failedReconciliations,
+            healthy: lastHealthy
+        )
+    }
+
+    @discardableResult
+    private func reconcileAndReport() -> Bool {
+        let result = reconcile()
+        lock.lock()
+        let healthChanged = result.healthy != lastHealthy
+        lastHealthy = result.healthy
+        activeForwards = UInt64(result.activeCount)
+        if !result.healthy, failedReconciliations < UInt64.max {
+            failedReconciliations += 1
+        }
+        lock.unlock()
+        if healthChanged {
+            log(result.healthy
                 ? "resolved port forwards recovered"
                 : "resolved port-forward reconciliation is waiting to recover")
         }
+        return result.healthy
     }
 
-    private func reconcile() -> Bool {
-        guard !desired.isEmpty else { return true }
-        guard let registry = registryProvider() else { return false }
+    private func reconcile() -> (healthy: Bool, activeCount: Int) {
+        guard !desired.isEmpty else { return (true, 0) }
+        guard let registry = registryProvider() else { return (false, 0) }
         let plan = ResolvedPortForwardReconciliation(desired: desired, registry: registry)
         for forward in plan.toUnexpose where !unexposeProvider(forward) {
-            return false
+            return (false, exactActiveCount(in: registry))
         }
         for forward in plan.toExpose where !exposeProvider(forward) {
-            return false
+            return (false, exactActiveCount(in: registry))
         }
-        guard let verified = registryProvider() else { return false }
-        return desired.allSatisfy { verified.contains($0) && !verified.conflicts(with: $0) }
+        guard let verified = registryProvider() else { return (false, 0) }
+        let activeCount = exactActiveCount(in: verified)
+        return (activeCount == desired.count, activeCount)
+    }
+
+    private func exactActiveCount(in registry: ResolvedPortForwardRegistry) -> Int {
+        desired.reduce(into: 0) { count, forward in
+            if registry.contains(forward), !registry.conflicts(with: forward) {
+                count += 1
+            }
+        }
     }
 
     private static func curlData(unixSocketPath: String, URL: String) -> Data? {
