@@ -297,6 +297,9 @@ public enum DoryVMGuestIntegration: String, Codable, Sendable, CaseIterable {
     case clockSynchronization = "clock-synchronization"
     case dynamicDisplay = "dynamic-display"
     case gracefulShutdown = "graceful-shutdown"
+    /// Authorizes user-approved USB hotplug through the guest's versioned USB/IP integration.
+    /// Host device identities remain runtime-only and are never persisted in desired state.
+    case removableUSBHotplug = "removable-usb-hotplug"
 }
 
 /// Minimal metadata needed for optimistic persistence and ordering.

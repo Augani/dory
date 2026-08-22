@@ -539,7 +539,8 @@ public final class DoryDaemonVirtualMachinePlanningCoordinator: @unchecked Senda
             clipboard: definition.integrations.contains(.clipboard),
             clockSynchronization: definition.integrations.contains(.clockSynchronization),
             dynamicDisplay: definition.integrations.contains(.dynamicDisplay),
-            gracefulShutdown: definition.integrations.contains(.gracefulShutdown)
+            gracefulShutdown: definition.integrations.contains(.gracefulShutdown),
+            removableUSBHotplug: definition.integrations.contains(.removableUSBHotplug)
         )
     }
 

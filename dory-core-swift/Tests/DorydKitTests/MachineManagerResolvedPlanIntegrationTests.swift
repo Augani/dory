@@ -229,7 +229,8 @@ struct MachineManagerResolvedPlanIntegrationTests {
                 display: DoryVirtualMachineDisplayCapabilityRequest(
                     widthPixels: 1_920,
                     heightPixels: 1_080
-                )
+                ),
+                removableUSBHotplug: true
             )
             let resolver = ClosureLaunchResolver { request in
                 let resolution = try exactResolution(
@@ -264,6 +265,7 @@ struct MachineManagerResolvedPlanIntegrationTests {
             }
             #expect(try value(after: "--resolved-graphics") == "host-accelerated-display")
             #expect(try value(after: "--operation-id") == started.activeOperationID)
+            #expect(arguments.contains("--usb-control-sock"))
             let deviceData = Data(try value(after: "--resolved-devices").utf8)
             #expect(try JSONDecoder().decode(
                 DoryVirtualMachineDeviceCapabilityRequest.self,

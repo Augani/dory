@@ -66,6 +66,7 @@ struct VirtualMachineCapabilitiesTests {
         var object = try #require(
             JSONSerialization.jsonObject(with: data) as? [String: Any]
         )
+        #expect(object["removableUSBHotplug"] == nil)
         object.removeValue(forKey: "networkInterface")
         let historical = try JSONSerialization.data(withJSONObject: object)
 
@@ -74,6 +75,45 @@ struct VirtualMachineCapabilitiesTests {
             from: historical
         )
         #expect(decoded.networkInterface == nil)
+        #expect(!decoded.removableUSBHotplug)
+
+        object.removeValue(forKey: "keyboard")
+        let truncated = try JSONSerialization.data(withJSONObject: object)
+        #expect(throws: DecodingError.self) {
+            _ = try JSONDecoder().decode(
+                DoryVirtualMachineDeviceCapabilityRequest.self,
+                from: truncated
+            )
+        }
+    }
+
+    @Test("removable USB hotplug is exact and raw-HV-only")
+    func removableUSBHotplugCapability() {
+        let devices = DoryVirtualMachineDeviceCapabilityRequest(removableUSBHotplug: true)
+        let rawHV = evaluate(
+            family: .linux,
+            media: .installedLinuxBootBundle,
+            source: .userProvided,
+            backend: .doryHypervisor,
+            graphics: .hostAcceleratedDisplay,
+            mediaArtifactSHA256: Self.guestArtifactSHA256,
+            devices: devices
+        )
+        let virtualizationFramework = evaluate(
+            family: .linux,
+            media: .installedLinuxBootBundle,
+            source: .userProvided,
+            backend: .appleVirtualizationFramework,
+            graphics: .hostAcceleratedDisplay,
+            mediaArtifactSHA256: Self.guestArtifactSHA256,
+            devices: devices
+        )
+
+        #expect(rawHV.availability.isUsable)
+        #expect(rawHV.resolvedDevices?.removableUSBHotplug == true)
+        #expect(virtualizationFramework.availability.reason?.code
+            == .removableUSBHotplugUnsupported)
+        #expect(!devices.matchesRuntimeQualificationContract(.minimumBootable))
     }
     private static let qualifiedLinuxGraphics = DoryTrustedGuestImageGraphicsQualification(
         auditEvidence: DorySignedArtifactQualificationEvidence(

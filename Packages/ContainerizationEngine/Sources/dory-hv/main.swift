@@ -515,7 +515,12 @@ case "desktop":
     guard let agentSocket else { fail("desktop requires --agent-sock") }
     guard let shellSocket else { fail("desktop requires --shell-sock") }
     guard let controlSocket else { fail("desktop requires --control-sock") }
-    guard let usbControlSocket else { fail("desktop requires --usb-control-sock") }
+    if resolvedDevices?.removableUSBHotplug == true, usbControlSocket == nil {
+        fail("desktop resolved removable USB hotplug requires --usb-control-sock")
+    }
+    if resolvedDevices?.removableUSBHotplug == false, usbControlSocket != nil {
+        fail("desktop --usb-control-sock is not authorized by the resolved device contract")
+    }
     do {
         try DesktopMode.run(.init(
             machineID: machineID,

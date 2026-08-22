@@ -6094,7 +6094,9 @@ public final class MachineManager: @unchecked Sendable {
             "--cpus", String(machine.cpuCount),
             "--display-mode", machine.displayMode.rawValue,
         ]
-        if acceleratedDesktop {
+        let removableUSBHotplugEnabled = resolvedLaunchBinding?
+            .devices.removableUSBHotplug ?? true
+        if acceleratedDesktop, removableUSBHotplugEnabled {
             arguments.append(contentsOf: [
                 "--usb-control-sock", "\(machineRuntimeDirectory(id: machine.id))/u.sock",
             ])
@@ -6800,8 +6802,8 @@ public final class MachineManager: @unchecked Sendable {
     }
 
     /// Routes a hotplug request only to the exact live raw-HV helper selected for this machine.
-    /// Resolved-plan workspaces remain fail-closed until removable USB is represented in the
-    /// durable device graph; this compatibility route cannot mutate an exact resolved launch.
+    /// Resolved-plan workspaces require the exact removable-USB device bit and initially permit
+    /// only the normal user-authorization mode; this route cannot widen an exact resolved launch.
     public func attachUSBDevice(
         id: String,
         busID: String,
@@ -6817,7 +6819,7 @@ public final class MachineManager: @unchecked Sendable {
               entry.state == .running,
               entry.process?.isRunning == true,
               entry.activeBackend == .doryHypervisor,
-              entry.runtimeIdentity.mode == .legacyCompatibility,
+              usbHotplugIsAuthorized(entry.runtimeIdentity, mode: mode),
               let currentLaunchID = entry.launchID,
               entry.handoff?.ready.supportsAgentCapability(
                   "usb-vhci",
@@ -6856,7 +6858,7 @@ public final class MachineManager: @unchecked Sendable {
               entry.process?.isRunning == true,
               entry.activeBackend == .doryHypervisor,
               entry.launchID == launchID,
-              entry.runtimeIdentity.mode == .legacyCompatibility,
+              usbHotplugIsAuthorized(entry.runtimeIdentity, mode: mode),
               entry.handoff?.ready.supportsAgentCapability(
                   "usb-vhci",
                   minimumVersion: 1
@@ -6882,7 +6884,7 @@ public final class MachineManager: @unchecked Sendable {
               entry.state == .running,
               entry.process?.isRunning == true,
               entry.activeBackend == .doryHypervisor,
-              entry.runtimeIdentity.mode == .legacyCompatibility,
+              usbHotplugIsAuthorized(entry.runtimeIdentity, mode: nil),
               let currentLaunchID = entry.launchID,
               entry.handoff?.ready.supportsAgentCapability(
                   "usb-vhci",
@@ -6908,11 +6910,34 @@ public final class MachineManager: @unchecked Sendable {
               entry.process?.isRunning == true,
               entry.activeBackend == .doryHypervisor,
               entry.launchID == launchID,
-              entry.runtimeIdentity.mode == .legacyCompatibility else {
+              usbHotplugIsAuthorized(entry.runtimeIdentity, mode: nil),
+              entry.handoff?.ready.supportsAgentCapability(
+                  "usb-vhci",
+                  minimumVersion: 1
+              ) == true else {
             throw MachineManagerError.usbControlFailed(
                 id,
                 "live launch changed while detaching the USB device"
             )
+        }
+    }
+
+    private func usbHotplugIsAuthorized(
+        _ identity: DoryMachineRuntimeIdentity,
+        mode: DoryMachineUSBOpenMode?
+    ) -> Bool {
+        switch identity.mode {
+        case .legacyCompatibility:
+            return true
+        case .resolvedPlan:
+            guard identity.resolvedPlan?.devices.removableUSBHotplug == true else {
+                return false
+            }
+            // The first signed contract authorizes only the normal user-consent flow. Host-device
+            // seizure and capture need their own durable policy before resolved launches may use it.
+            return mode == nil || mode == .userAuthorized
+        case .requiresReplanning:
+            return false
         }
     }
 

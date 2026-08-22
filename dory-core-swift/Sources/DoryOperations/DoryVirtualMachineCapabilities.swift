@@ -245,6 +245,9 @@ public struct DoryVirtualMachineDeviceCapabilityRequest: Codable, Sendable, Equa
     public var clockSynchronization: Bool
     public var dynamicDisplay: Bool
     public var gracefulShutdown: Bool
+    /// Exact permission for user-approved removable USB hotplug. Host bus identifiers are
+    /// deliberately excluded because they are ephemeral runtime selections.
+    public var removableUSBHotplug: Bool
 
     public init(
         networkAttachment: DoryVirtualMachineNetworkAttachmentMode = .sharedNAT,
@@ -258,7 +261,8 @@ public struct DoryVirtualMachineDeviceCapabilityRequest: Codable, Sendable, Equa
         clipboard: Bool = false,
         clockSynchronization: Bool = false,
         dynamicDisplay: Bool = false,
-        gracefulShutdown: Bool = false
+        gracefulShutdown: Bool = false,
+        removableUSBHotplug: Bool = false
     ) {
         self.networkAttachment = networkAttachment
         self.networkInterface = networkInterface
@@ -272,6 +276,71 @@ public struct DoryVirtualMachineDeviceCapabilityRequest: Codable, Sendable, Equa
         self.clockSynchronization = clockSynchronization
         self.dynamicDisplay = dynamicDisplay
         self.gracefulShutdown = gracefulShutdown
+        self.removableUSBHotplug = removableUSBHotplug
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case networkAttachment
+        case networkInterface
+        case display
+        case audioInput
+        case audioOutput
+        case keyboard
+        case pointer
+        case directorySharing
+        case clipboard
+        case clockSynchronization
+        case dynamicDisplay
+        case gracefulShutdown
+        case removableUSBHotplug
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        networkAttachment = try container.decode(
+            DoryVirtualMachineNetworkAttachmentMode.self,
+            forKey: .networkAttachment
+        )
+        networkInterface = try container.decodeIfPresent(
+            DoryVirtualMachineNetworkInterfaceCapabilityRequest.self,
+            forKey: .networkInterface
+        )
+        display = try container.decodeIfPresent(
+            DoryVirtualMachineDisplayCapabilityRequest.self,
+            forKey: .display
+        )
+        audioInput = try container.decode(Bool.self, forKey: .audioInput)
+        audioOutput = try container.decode(Bool.self, forKey: .audioOutput)
+        keyboard = try container.decode(Bool.self, forKey: .keyboard)
+        pointer = try container.decode(Bool.self, forKey: .pointer)
+        directorySharing = try container.decode(Bool.self, forKey: .directorySharing)
+        clipboard = try container.decode(Bool.self, forKey: .clipboard)
+        clockSynchronization = try container.decode(Bool.self, forKey: .clockSynchronization)
+        dynamicDisplay = try container.decode(Bool.self, forKey: .dynamicDisplay)
+        gracefulShutdown = try container.decode(Bool.self, forKey: .gracefulShutdown)
+        removableUSBHotplug = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .removableUSBHotplug
+        ) ?? false
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(networkAttachment, forKey: .networkAttachment)
+        try container.encodeIfPresent(networkInterface, forKey: .networkInterface)
+        try container.encodeIfPresent(display, forKey: .display)
+        try container.encode(audioInput, forKey: .audioInput)
+        try container.encode(audioOutput, forKey: .audioOutput)
+        try container.encode(keyboard, forKey: .keyboard)
+        try container.encode(pointer, forKey: .pointer)
+        try container.encode(directorySharing, forKey: .directorySharing)
+        try container.encode(clipboard, forKey: .clipboard)
+        try container.encode(clockSynchronization, forKey: .clockSynchronization)
+        try container.encode(dynamicDisplay, forKey: .dynamicDisplay)
+        try container.encode(gracefulShutdown, forKey: .gracefulShutdown)
+        if removableUSBHotplug {
+            try container.encode(true, forKey: .removableUSBHotplug)
+        }
     }
 
     /// Compares the device ABI covered by a signed runtime qualification.
@@ -377,6 +446,7 @@ public enum DoryCapabilityReasonCode: String, Codable, Sendable, CaseIterable, H
     case clockSynchronizationUnsupported = "clock-synchronization-unsupported"
     case dynamicDisplayUnsupported = "dynamic-display-unsupported"
     case gracefulShutdownUnsupported = "graceful-shutdown-unsupported"
+    case removableUSBHotplugUnsupported = "removable-usb-hotplug-unsupported"
     case runtimeQualificationUnavailable = "runtime-qualification-unavailable"
     case runtimeQualificationEvidenceInvalid = "runtime-qualification-evidence-invalid"
     case runtimeQualificationRequestMismatch = "runtime-qualification-request-mismatch"
@@ -1613,6 +1683,14 @@ public enum DoryAppleSiliconCapabilityEvaluator {
                     message: "The selected guest/backend contract does not implement graceful shutdown."
                 )
             }
+        }
+        if devices.removableUSBHotplug,
+           !(request.guest.family == .linux && request.backend == .doryHypervisor) {
+            return unavailable(
+                tier: tier,
+                code: .removableUSBHotplugUnsupported,
+                message: "The selected guest/backend contract does not implement removable USB hotplug."
+            )
         }
         return nil
     }

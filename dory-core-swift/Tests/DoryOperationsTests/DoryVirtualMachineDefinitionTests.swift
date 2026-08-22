@@ -73,6 +73,19 @@ struct DoryVirtualMachineDefinitionTests {
         #expect(decoded.isValid)
     }
 
+    @Test("removable USB hotplug is explicit durable guest integration intent")
+    func removableUSBHotplugRoundTrip() throws {
+        var original = linuxDefinition()
+        original.integrations.append(.removableUSBHotplug)
+
+        let data = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(DoryVirtualMachineDefinition.self, from: data)
+
+        #expect(decoded.integrations.contains(.removableUSBHotplug))
+        #expect(decoded == original)
+        #expect(decoded.isValid)
+    }
+
     @Test("sandbox lifecycle and credential grants are closed bounded intent")
     func sandboxPolicyValidation() throws {
         var definition = linuxDefinition()

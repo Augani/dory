@@ -425,7 +425,7 @@ enum DesktopMode {
         var agentSocketPath: String
         var shellSocketPath: String
         var controlSocketPath: String
-        var usbControlSocketPath: String
+        var usbControlSocketPath: String?
         var sshAgentSocketPath: String?
         var memoryMB: UInt64
         var cpuCount: Int
@@ -520,7 +520,7 @@ enum DesktopMode {
         private let shellBridge: GuestVsockSocketBridge
         private let sshAgentBridge: HostSSHAgentBridge?
         private let usbipManager: UsbipManager
-        private let usbControlServer: UsbControlServer
+        private let usbControlServer: UsbControlServer?
         private let clipboard: DoryDesktopClipboardCoordinator?
         private let firstFrame: FirstFrameGate
         private let deviceTelemetry: RawDeviceTelemetryRegistry
@@ -658,10 +658,9 @@ enum DesktopMode {
                     try await channel.usbVhciDetach(request)
                 }
             )
-            self.usbControlServer = UsbControlServer(
-                path: configuration.usbControlSocketPath,
-                handler: usbControlHandler
-            )
+            self.usbControlServer = configuration.usbControlSocketPath.map {
+                UsbControlServer(path: $0, handler: usbControlHandler)
+            }
             self.audio = DoryMacAudioBackend(log: Self.log)
             let sound = VirtioSound(host: audio, log: Self.log)
             let balloon = VirtioBalloon(memory: machine.memory) { message in
@@ -822,11 +821,11 @@ enum DesktopMode {
         }
 
         func run() throws {
-            try usbControlServer.start()
+            try usbControlServer?.start()
             do {
                 try lifecycleReceiptServer.start()
             } catch {
-                usbControlServer.stop()
+                usbControlServer?.stop()
                 throw error
             }
             application.setActivationPolicy(.regular)
@@ -1018,7 +1017,7 @@ enum DesktopMode {
 
         private func cleanup() {
             lifecycleReceiptServer.stop()
-            usbControlServer.stop()
+            usbControlServer?.stop()
             clipboard?.stop()
             signalSources.forEach { $0.cancel() }
             signalSources.removeAll()

@@ -28,6 +28,10 @@ struct DoryDaemonVirtualMachineRuntimePlanningTests {
         #expect(devices.keyboard == definition.input.keyboardEnabled)
         #expect(devices.pointer == definition.input.pointerEnabled)
 
+        definition.integrations.append(.removableUSBHotplug)
+        #expect(DoryDaemonVirtualMachinePlanningCoordinator.devices(for: definition)
+            .removableUSBHotplug)
+
         definition.display = .disabled
         #expect(DoryDaemonVirtualMachinePlanningCoordinator.devices(for: definition).display == nil)
     }
