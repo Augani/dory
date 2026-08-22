@@ -1,4 +1,5 @@
 import Darwin
+import DoryOperations
 import Foundation
 
 public enum PublishedPortForwardProtocol: String, Sendable, Hashable, Codable {
@@ -145,6 +146,43 @@ public enum PublishedPortForwardPlan {
         })
     }
 
+    /// Maps a daemon-validated workspace contract to exact gvproxy endpoints. This performs the
+    /// same closed structural checks again at the helper boundary because command-line input is
+    /// untrusted. Privileged host ports are intentionally unavailable until a dedicated
+    /// authorization path exists; Dory never remaps an explicitly requested host port.
+    public static func resolvedForwards(
+        _ intents: [DoryVMPortForward],
+        guestIP: String
+    ) -> Set<PublishedPortForward>? {
+        guard intents.count <= DoryVMPortForward.maximumCount else { return nil }
+        var identifiers: Set<String> = []
+        var bindings: Set<String> = []
+        var result: Set<PublishedPortForward> = []
+        for intent in intents {
+            let bytes = Array(intent.id.utf8)
+            guard (1...63).contains(bytes.count),
+                  bytes.first.map(isASCIIAlphaNumeric) == true,
+                  bytes.dropFirst().allSatisfy({
+                      isASCIIAlphaNumeric($0) || $0 == 95 || $0 == 46 || $0 == 45
+                  }),
+                  identifiers.insert(intent.id).inserted,
+                  intent.hostPort >= 1_024,
+                  intent.guestPort > 0,
+                  bindings.insert("\(intent.transport.rawValue):\(intent.hostPort)").inserted
+            else { return nil }
+            let transport: PublishedPortForwardProtocol = intent.transport == .tcp ? .tcp : .udp
+            result.insert(PublishedPortForward(
+                protocol: transport,
+                publishedPort: Int(intent.hostPort),
+                localHost: intent.exposure == .loopback ? "127.0.0.1" : "0.0.0.0",
+                localPort: Int(intent.hostPort),
+                guestHost: guestIP,
+                guestPort: Int(intent.guestPort)
+            ))
+        }
+        return result
+    }
+
     public static func forward(
         for binding: PublishedPortBinding,
         localHost: String,
@@ -204,5 +242,11 @@ public enum PublishedPortForwardPlan {
         }
         var address = in_addr()
         return unbracketed.withCString { inet_pton(AF_INET, $0, &address) } == 1
+    }
+
+    private static func isASCIIAlphaNumeric(_ byte: UInt8) -> Bool {
+        (byte >= 48 && byte <= 57)
+            || (byte >= 65 && byte <= 90)
+            || (byte >= 97 && byte <= 122)
     }
 }

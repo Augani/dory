@@ -441,6 +441,7 @@ case "desktop":
     var environment = [String: String]()
     var resolvedGraphics: DoryGraphicsAccelerationLevel?
     var resolvedDevices: DoryVirtualMachineDeviceCapabilityRequest?
+    var resolvedPortForwards: [DoryVMPortForward]?
     var iterator = arguments.dropFirst().makeIterator()
     while let argument = iterator.next() {
         switch argument {
@@ -490,6 +491,16 @@ case "desktop":
                 fail("desktop --resolved-devices requires a valid device contract")
             }
             resolvedDevices = devices
+        case "--resolved-port-forwards":
+            guard let value = iterator.next(),
+                  let data = value.data(using: .utf8),
+                  let forwards = try? JSONDecoder().decode(
+                      [DoryVMPortForward].self,
+                      from: data
+                  ) else {
+                fail("desktop --resolved-port-forwards requires a valid port-forward contract")
+            }
+            resolvedPortForwards = forwards
         case "--display-mode":
             guard iterator.next() == "desktop" else { fail("raw-HV desktop requires --display-mode desktop") }
         case "--boot-mode":
@@ -543,7 +554,8 @@ case "desktop":
             shares: shares,
             environment: environment,
             resolvedGraphics: resolvedGraphics,
-            resolvedDevices: resolvedDevices
+            resolvedDevices: resolvedDevices,
+            resolvedPortForwards: resolvedPortForwards
         ))
     } catch {
         fail("desktop failed: \(error)")

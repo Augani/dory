@@ -54,6 +54,7 @@ public struct DoryVMMArguments: Sendable, Equatable {
     public var environment: [String: String] = [:]
     public var resolvedGraphics: DoryGraphicsAccelerationLevel?
     public var resolvedDevices: DoryVirtualMachineDeviceCapabilityRequest?
+    public var resolvedPortForwards: [DoryVMPortForward]?
 
     public init() {}
 
@@ -81,6 +82,7 @@ public enum DoryVMMArgumentError: Error, Sendable, Equatable, CustomStringConver
     case invalidEnvironment(String)
     case invalidResolvedGraphics(String)
     case invalidResolvedDevices(String)
+    case invalidResolvedPortForwards(String)
     case invalidOperationID(String)
 
     public var description: String {
@@ -115,6 +117,8 @@ public enum DoryVMMArgumentError: Error, Sendable, Equatable, CustomStringConver
             return "invalid --resolved-graphics value: \(value)"
         case let .invalidResolvedDevices(value):
             return "invalid --resolved-devices value: \(value)"
+        case let .invalidResolvedPortForwards(value):
+            return "invalid --resolved-port-forwards value: \(value)"
         case let .invalidOperationID(value):
             return "invalid --operation-id value: \(value)"
         }
@@ -219,6 +223,16 @@ public func parseDoryVMMArguments(_ raw: [String]) throws -> DoryVMMArguments {
                 )
             } catch {
                 throw DoryVMMArgumentError.invalidResolvedDevices(rawValue)
+            }
+        case "--resolved-port-forwards":
+            let rawValue = try value(after: argument, from: raw, index: &index)
+            do {
+                parsed.resolvedPortForwards = try JSONDecoder().decode(
+                    [DoryVMPortForward].self,
+                    from: Data(rawValue.utf8)
+                )
+            } catch {
+                throw DoryVMMArgumentError.invalidResolvedPortForwards(rawValue)
             }
         case "--exit-after-handoff":
             parsed.exitAfterHandoff = true
@@ -1030,6 +1044,7 @@ public enum DoryVMMMain {
                 environment: arguments.environment,
                 resolvedGraphics: arguments.resolvedGraphics,
                 resolvedDevices: arguments.resolvedDevices,
+                resolvedPortForwards: arguments.resolvedPortForwards,
                 gvproxyPath: arguments.gvproxyPath,
                 sshAgentSocketPath: arguments.sshAgentSocketPath,
                 publishHost: arguments.publishHost,
@@ -1128,6 +1143,7 @@ public enum DoryVMMMain {
         environment: [String: String],
         resolvedGraphics: DoryGraphicsAccelerationLevel?,
         resolvedDevices: DoryVirtualMachineDeviceCapabilityRequest?,
+        resolvedPortForwards: [DoryVMPortForward]? = nil,
         gvproxyPath: String?,
         sshAgentSocketPath: String?,
         publishHost: String,
@@ -1168,6 +1184,31 @@ public enum DoryVMMMain {
             dataDrive = nil
         }
         let requestedNetwork = resolvedDevices?.networkAttachment ?? .sharedNAT
+        let portForwards = resolvedPortForwards ?? []
+        guard resolvedPortForwards == nil || resolvedDevices?.networkInterface != nil else {
+            throw DoryVZMachineError.validation(
+                "resolved port forwards require an exact resolved network device contract"
+            )
+        }
+        guard let exactPortForwards = PublishedPortForwardPlan.resolvedForwards(
+            portForwards,
+            guestIP: "192.168.127.2"
+        ) else {
+            throw DoryVZMachineError.validation("resolved port-forward contract is invalid")
+        }
+        if !portForwards.isEmpty,
+           requestedNetwork != .sharedNAT,
+           requestedNetwork != .isolated {
+            throw DoryVZMachineError.validation(
+                "resolved network attachment cannot publish host ports"
+            )
+        }
+        if requestedNetwork != .sharedNAT,
+           portForwards.contains(where: { $0.exposure == .lan }) {
+            throw DoryVZMachineError.validation(
+                "LAN port exposure requires shared NAT"
+            )
+        }
         // An exact NIC contract uses the same gvproxy datapath on every supported attachment so
         // the backend can enforce both its MAC lease and MTU rather than delegating them to VZ NAT.
         let usesGVProxy = machineID == "docker"
@@ -1189,7 +1230,8 @@ public enum DoryVMMMain {
                 stateDirectory: stateDirectory,
                 networkAttachment: requestedNetwork,
                 networkInterface: resolvedDevices?.networkInterface,
-                sourcePreservingLAN: requestedNetwork == .sharedNAT && publishHost == "0.0.0.0"
+                sourcePreservingLAN: requestedNetwork == .sharedNAT && publishHost == "0.0.0.0",
+                resolvedPortForwards: exactPortForwards
             )
         } else {
             gvproxyNetwork = nil

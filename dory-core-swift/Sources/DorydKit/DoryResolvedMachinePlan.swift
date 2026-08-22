@@ -931,7 +931,7 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
             if !identifierIsValid || !identifiers.insert(forward.id).inserted {
                 reject("portForwards[\(index)].id")
             }
-            if forward.hostPort == 0 || forward.guestPort == 0 {
+            if forward.hostPort < 1_024 || forward.guestPort == 0 {
                 reject("portForwards[\(index)].port")
             }
             let binding = "\(forward.transport.rawValue):\(forward.hostPort)"

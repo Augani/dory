@@ -329,18 +329,29 @@ final class DoryVMMKitTests: XCTestCase {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         let encodedDevices = String(decoding: try encoder.encode(devices), as: UTF8.self)
+        let forwards = [DoryVMPortForward(
+            id: "web",
+            hostPort: 8_080,
+            guestPort: 80
+        )]
+        let encodedForwards = String(decoding: try encoder.encode(forwards), as: UTF8.self)
         let arguments = try parseDoryVMMArguments([
             "--resolved-graphics", "host-accelerated-display",
             "--resolved-devices", encodedDevices,
+            "--resolved-port-forwards", encodedForwards,
         ])
 
         XCTAssertEqual(arguments.resolvedGraphics, .hostAcceleratedDisplay)
         XCTAssertEqual(arguments.resolvedDevices, devices)
+        XCTAssertEqual(arguments.resolvedPortForwards, forwards)
         XCTAssertThrowsError(try parseDoryVMMArguments([
             "--resolved-graphics", "auto",
         ]))
         XCTAssertThrowsError(try parseDoryVMMArguments([
             "--resolved-devices", "{}",
+        ]))
+        XCTAssertThrowsError(try parseDoryVMMArguments([
+            "--resolved-port-forwards", "{}",
         ]))
     }
 

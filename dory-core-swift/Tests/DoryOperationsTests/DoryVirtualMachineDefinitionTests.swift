@@ -118,6 +118,13 @@ struct DoryVirtualMachineDefinitionTests {
             in: definition.validate()
         ))
         definition.portForwards[0].guestPort = 80
+        definition.portForwards[0].hostPort = 443
+        #expect(has(
+            .invalidPortForwardPort,
+            "portForwards[0].hostPort",
+            in: definition.validate()
+        ))
+        definition.portForwards[0].hostPort = 8_080
         definition.networkMode = .isolated
         #expect(has(
             .lanPortForwardRequiresSharedNAT,

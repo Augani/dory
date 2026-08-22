@@ -973,7 +973,7 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
             } else if !identifiers.insert(forward.id).inserted {
                 issues.append(issue(.duplicatePortForwardIdentifier, "\(field).id"))
             }
-            if forward.hostPort == 0 {
+            if forward.hostPort < 1_024 {
                 issues.append(issue(.invalidPortForwardPort, "\(field).hostPort"))
             }
             if forward.guestPort == 0 {

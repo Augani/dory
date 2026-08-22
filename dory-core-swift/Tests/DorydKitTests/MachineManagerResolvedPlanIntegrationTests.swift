@@ -262,7 +262,10 @@ struct MachineManagerResolvedPlanIntegrationTests {
             while Date() < deadline {
                 if let contents = try? String(contentsOfFile: capture, encoding: .utf8) {
                     arguments = contents.split(separator: "\n").map(String.init)
-                    if arguments.contains("--resolved-devices") { break }
+                    if arguments.contains("--resolved-devices"),
+                       arguments.contains("--resolved-port-forwards") {
+                        break
+                    }
                 }
                 Thread.sleep(forTimeInterval: 0.01)
             }
@@ -278,6 +281,11 @@ struct MachineManagerResolvedPlanIntegrationTests {
                 DoryVirtualMachineDeviceCapabilityRequest.self,
                 from: deviceData
             ) == devices)
+            let portForwardData = Data(try value(after: "--resolved-port-forwards").utf8)
+            #expect(try JSONDecoder().decode(
+                [DoryVMPortForward].self,
+                from: portForwardData
+            ).isEmpty)
             #expect(arguments.contains("DORY_DESKTOP_GRAPHICS=virgl"))
             #expect(arguments.contains("DORY_DESKTOP_VMM=accelerated"))
             #expect(!arguments.contains("DORY_DESKTOP_GRAPHICS=auto"))

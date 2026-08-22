@@ -157,6 +157,10 @@ struct DoryResolvedMachinePlanTests {
             guestPort: 220
         ))
         #expect(invalid.validate().contains { $0.code == .invalidPortForwardContract })
+
+        invalid = plan
+        invalid.portForwards[0].hostPort = 443
+        #expect(invalid.validate().contains { $0.code == .invalidPortForwardContract })
     }
 
     @Test("immutable media and qualification evidence mismatches are exact")

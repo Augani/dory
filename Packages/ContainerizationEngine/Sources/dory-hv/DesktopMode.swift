@@ -433,6 +433,7 @@ enum DesktopMode {
         var environment: [String: String]
         var resolvedGraphics: DoryGraphicsAccelerationLevel?
         var resolvedDevices: DoryVirtualMachineDeviceCapabilityRequest?
+        var resolvedPortForwards: [DoryVMPortForward]?
     }
 
     enum NetworkPlan: Equatable {
@@ -720,7 +721,8 @@ enum DesktopMode {
                 networkInterface: networkInterface,
                 gvproxyPath: configuration.gvproxyPath,
                 runtimeDirectory: runtimeDirectory,
-                token: token
+                token: token,
+                resolvedPortForwards: configuration.resolvedPortForwards
             )
             self.gvproxy = networkRuntime.process
             self.networkSocketPaths = networkRuntime.socketPaths
@@ -1210,8 +1212,28 @@ enum DesktopMode {
             networkInterface: DoryVirtualMachineNetworkInterfaceCapabilityRequest?,
             gvproxyPath: String,
             runtimeDirectory: String,
-            token: String
+            token: String,
+            resolvedPortForwards: [DoryVMPortForward]?
         ) throws -> NetworkRuntime {
+            guard resolvedPortForwards == nil || networkInterface != nil else {
+                throw VMError.bootFailure(
+                    "resolved port forwards require an exact resolved network device contract"
+                )
+            }
+            let portIntents = resolvedPortForwards ?? []
+            guard let portForwards = PublishedPortForwardPlan.resolvedForwards(
+                portIntents,
+                guestIP: "192.168.127.2"
+            ) else {
+                throw VMError.bootFailure("resolved port-forward contract is invalid")
+            }
+            if !portIntents.isEmpty, plan == .disconnected {
+                throw VMError.bootFailure("disconnected networking cannot publish host ports")
+            }
+            if plan != .sharedNAT,
+               portIntents.contains(where: { $0.exposure == .lan }) {
+                throw VMError.bootFailure("LAN port exposure requires shared NAT")
+            }
             if plan == .disconnected {
                 let mac = networkInterface?.macAddressOctets ?? VirtioNet.guestMAC
                 return NetworkRuntime(
@@ -1262,6 +1284,7 @@ enum DesktopMode {
             do {
                 try process.run()
                 try waitForSocket(path: gvproxySocket, process: process)
+                try publishResolvedPortForwards(portForwards, apiSocket: apiSocket)
                 return NetworkRuntime(
                     process: process,
                     socketPaths: socketPaths,
@@ -1277,6 +1300,61 @@ enum DesktopMode {
                 for path in socketPaths { unlink(path) }
                 throw error
             }
+        }
+
+        private static func publishResolvedPortForwards(
+            _ forwards: Set<PublishedPortForward>,
+            apiSocket: String
+        ) throws {
+            for forward in forwards.sorted(by: portForwardOrder) {
+                let bodyData = try JSONSerialization.data(withJSONObject: [
+                    "local": forward.localEndpoint,
+                    "remote": forward.remoteEndpoint,
+                    "protocol": forward.protocol.rawValue,
+                ])
+                guard let body = String(data: bodyData, encoding: .utf8) else {
+                    throw VMError.bootFailure("could not encode resolved gvproxy forward")
+                }
+                var published = false
+                for _ in 0..<100 {
+                    let curl = Process()
+                    curl.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
+                    curl.arguments = [
+                        "--fail", "--silent", "--show-error",
+                        "--connect-timeout", "1", "--max-time", "1",
+                        "--unix-socket", apiSocket,
+                        "--request", "POST",
+                        "--data-binary", body,
+                        "http://gvproxy/services/forwarder/expose",
+                    ]
+                    curl.standardOutput = FileHandle.nullDevice
+                    curl.standardError = FileHandle.nullDevice
+                    if (try? curl.run()) != nil {
+                        curl.waitUntilExit()
+                        if curl.terminationStatus == 0 {
+                            published = true
+                            break
+                        }
+                    }
+                    usleep(20_000)
+                }
+                guard published else {
+                    throw VMError.bootFailure(
+                        "gvproxy could not publish \(forward.localEndpoint)/\(forward.protocol.rawValue)"
+                    )
+                }
+            }
+        }
+
+        private static func portForwardOrder(
+            _ lhs: PublishedPortForward,
+            _ rhs: PublishedPortForward
+        ) -> Bool {
+            if lhs.protocol != rhs.protocol {
+                return lhs.protocol.rawValue < rhs.protocol.rawValue
+            }
+            if lhs.localHost != rhs.localHost { return lhs.localHost < rhs.localHost }
+            return lhs.localPort < rhs.localPort
         }
 
         @discardableResult

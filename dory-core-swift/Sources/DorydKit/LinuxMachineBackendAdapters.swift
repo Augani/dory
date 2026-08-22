@@ -224,7 +224,7 @@ private final class LinuxMachineBackendAdapterCore: @unchecked Sendable {
             }
             guard (1...63).contains(bytes.count), firstIsValid, restIsValid,
                   identifiers.insert(forward.id).inserted,
-                  forward.hostPort > 0, forward.guestPort > 0,
+                  forward.hostPort >= 1_024, forward.guestPort > 0,
                   bindings.insert("\(forward.transport.rawValue):\(forward.hostPort)").inserted,
                   forward.exposure != .lan || networkAttachment == .sharedNAT else {
                 return "The resolved port-forward contract is invalid or conflicting."

@@ -67,7 +67,8 @@ final class DoryVMMGVProxyNetwork: @unchecked Sendable {
         stateDirectory: String,
         networkAttachment: DoryVirtualMachineNetworkAttachmentMode = .sharedNAT,
         networkInterface: DoryVirtualMachineNetworkInterfaceCapabilityRequest? = nil,
-        sourcePreservingLAN: Bool = false
+        sourcePreservingLAN: Bool = false,
+        resolvedPortForwards: Set<PublishedPortForward> = []
     ) throws {
         guard FileManager.default.isExecutableFile(atPath: gvproxyPath) else {
             throw DoryVZMachineError.missingFile(gvproxyPath)
@@ -159,6 +160,9 @@ final class DoryVMMGVProxyNetwork: @unchecked Sendable {
                 guestPort: 2377,
                 apiSocketPath: apiSocketPath
             )
+            for forward in resolvedPortForwards.sorted(by: Self.portForwardOrder) {
+                try Self.publishIPForward(forward, apiSocketPath: apiSocketPath)
+            }
         } catch {
             if child.isRunning {
                 child.terminate()
@@ -273,6 +277,7 @@ final class DoryVMMGVProxyNetwork: @unchecked Sendable {
             curl.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
             curl.arguments = [
                 "--fail", "--silent", "--show-error",
+                "--connect-timeout", "1", "--max-time", "1",
                 "--unix-socket", apiSocketPath,
                 "--request", "POST",
                 "--data-binary", body,
@@ -290,6 +295,53 @@ final class DoryVMMGVProxyNetwork: @unchecked Sendable {
             usleep(20_000)
         }
         throw DoryVZMachineError.validation("gvproxy did not publish the guest shutdown channel")
+    }
+
+    private static func publishIPForward(
+        _ forward: PublishedPortForward,
+        apiSocketPath: String
+    ) throws {
+        let bodyData = try JSONSerialization.data(withJSONObject: [
+            "local": forward.localEndpoint,
+            "remote": forward.remoteEndpoint,
+            "protocol": forward.protocol.rawValue,
+        ])
+        guard let body = String(data: bodyData, encoding: .utf8) else {
+            throw DoryVZMachineError.validation("could not encode resolved gvproxy forward")
+        }
+        for _ in 0..<100 {
+            let curl = Process()
+            curl.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
+            curl.arguments = [
+                "--fail", "--silent", "--show-error",
+                "--connect-timeout", "1", "--max-time", "1",
+                "--unix-socket", apiSocketPath,
+                "--request", "POST",
+                "--data-binary", body,
+                "http://gvproxy/services/forwarder/expose",
+            ]
+            curl.standardOutput = FileHandle.nullDevice
+            curl.standardError = FileHandle.nullDevice
+            if (try? curl.run()) != nil {
+                curl.waitUntilExit()
+                if curl.terminationStatus == 0 { return }
+            }
+            usleep(20_000)
+        }
+        throw DoryVZMachineError.validation(
+            "gvproxy could not publish \(forward.localEndpoint)/\(forward.protocol.rawValue)"
+        )
+    }
+
+    private static func portForwardOrder(
+        _ lhs: PublishedPortForward,
+        _ rhs: PublishedPortForward
+    ) -> Bool {
+        if lhs.protocol != rhs.protocol {
+            return lhs.protocol.rawValue < rhs.protocol.rawValue
+        }
+        if lhs.localHost != rhs.localHost { return lhs.localHost < rhs.localHost }
+        return lhs.localPort < rhs.localPort
     }
 
     private static func validateUnixPath(_ path: String) throws {
