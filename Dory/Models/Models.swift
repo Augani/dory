@@ -310,6 +310,7 @@ struct Machine: Identifiable, Hashable, Sendable {
     var bootMode: MachineBootMode = .linuxKernel
     var installerMediaAttached: Bool = false
     var runtimeIdentity: DorydMachineRuntimeIdentity = .legacyCompatibility
+    var cloneReceipt: DorydMachineCloneReceipt? = nil
     var agentBuild: String? = nil
     var agentProtocolVersion: UInt32? = nil
     var agentCapabilities: [DorydAgentCapability] = []
@@ -358,6 +359,15 @@ struct Machine: Identifiable, Hashable, Sendable {
                     detail: "Durable through event \(flightRecorderHeadSequence)"
                 ))
             }
+        }
+        if let cloneReceipt {
+            evidence.append(MachineRuntimeEvidence(
+                id: "clone-storage",
+                label: "Copy-on-write clone",
+                systemImage: "square.on.square",
+                tone: .standard,
+                detail: "APFS-managed from \(cloneReceipt.sourceMachineID)/\(cloneReceipt.sourceSnapshotID)"
+            ))
         }
         switch runtimeIdentity.mode {
         case "resolved-plan":

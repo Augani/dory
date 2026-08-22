@@ -1992,6 +1992,60 @@ final class DorydServiceTests: XCTestCase {
         wait(for: [snapshot], timeout: 5)
     }
 
+    func testMachineStatusExposesPathFreeCopyOnWriteCloneReceipt() throws {
+        let base = "/tmp/doryd-service-clone-receipt-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        let sourceRootfs = "\(base)/source.ext4"
+        try Data("clone-source".utf8).write(to: URL(fileURLWithPath: sourceRootfs))
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: "\(base)/machines",
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: false
+        ))
+        defer {
+            try? manager.delete(id: "source")
+            try? manager.delete(id: "clone")
+            try? FileManager.default.removeItem(atPath: base)
+        }
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "source",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: sourceRootfs
+        ))
+        _ = try manager.snapshot(id: "source", snapshotID: "base")
+        _ = try manager.cloneSnapshot(
+            machineID: "source",
+            snapshotID: "base",
+            newID: "clone"
+        )
+        let service = DorydService(socketPath: "/tmp/doryd-test.sock", machineManager: manager)
+        let listener = makeAnonymousListener(service: service)
+        listener.resume()
+        defer { listener.invalidate() }
+        let connection = NSXPCConnection(listenerEndpoint: listener.endpoint)
+        connection.remoteObjectInterface = NSXPCInterface(with: DorydControl.self)
+        connection.resume()
+        defer { connection.invalidate() }
+        let proxy = try XCTUnwrap(connection.remoteObjectProxy as? DorydControl)
+
+        let list = expectation(description: "clone receipt list")
+        proxy.machineList { rows, message in
+            XCTAssertEqual(message, "")
+            let body = (rows as? [NSDictionary])?.first { $0["id"] as? String == "clone" }
+            let receipt = body?["cloneReceipt"] as? NSDictionary
+            XCTAssertEqual((receipt?["schemaVersion"] as? NSNumber)?.uint16Value, 1)
+            XCTAssertEqual(receipt?["sourceMachineID"] as? String, "source")
+            XCTAssertEqual(receipt?["sourceSnapshotID"] as? String, "base")
+            XCTAssertEqual(receipt?["storageMode"] as? String, "apfs-copy-on-write")
+            XCTAssertNil(receipt?["sourcePath"])
+            XCTAssertNil(receipt?["destinationPath"])
+            list.fulfill()
+        }
+        wait(for: [list], timeout: 5)
+    }
+
     func testDesktopUpdateRejectsCallerPathsAndRequiresStableComponentGenerations() throws {
         let base = "/tmp/doryd-service-desktop-authority-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let manager = MachineManager(configuration: MachineManagerConfiguration(

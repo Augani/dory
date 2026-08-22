@@ -242,6 +242,7 @@ public struct DoryMachineConfiguration: Sendable, Equatable, Hashable, Codable {
     public var shares: [DoryMachineShareConfiguration]
     public var environment: [String: String]
     public var installedDesktopPayloadReceipt: DoryInstalledDesktopPayloadReceipt?
+    public var cloneReceipt: DoryMachineCloneReceipt?
 
     public init(
         id: String,
@@ -256,7 +257,8 @@ public struct DoryMachineConfiguration: Sendable, Equatable, Hashable, Codable {
         displayMode: DoryMachineDisplayMode = .headless,
         shares: [DoryMachineShareConfiguration] = [],
         environment: [String: String] = [:],
-        installedDesktopPayloadReceipt: DoryInstalledDesktopPayloadReceipt? = nil
+        installedDesktopPayloadReceipt: DoryInstalledDesktopPayloadReceipt? = nil,
+        cloneReceipt: DoryMachineCloneReceipt? = nil
     ) {
         self.id = id
         self.kernelPath = kernelPath
@@ -271,6 +273,7 @@ public struct DoryMachineConfiguration: Sendable, Equatable, Hashable, Codable {
         self.shares = shares
         self.environment = environment
         self.installedDesktopPayloadReceipt = installedDesktopPayloadReceipt
+        self.cloneReceipt = cloneReceipt
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -287,6 +290,7 @@ public struct DoryMachineConfiguration: Sendable, Equatable, Hashable, Codable {
         case shares
         case environment
         case installedDesktopPayloadReceipt
+        case cloneReceipt
     }
 
     public init(from decoder: Decoder) throws {
@@ -307,6 +311,10 @@ public struct DoryMachineConfiguration: Sendable, Equatable, Hashable, Codable {
             installedDesktopPayloadReceipt: try container.decodeIfPresent(
                 DoryInstalledDesktopPayloadReceipt.self,
                 forKey: .installedDesktopPayloadReceipt
+            ),
+            cloneReceipt: try container.decodeIfPresent(
+                DoryMachineCloneReceipt.self,
+                forKey: .cloneReceipt
             )
         )
     }
@@ -364,6 +372,7 @@ public struct DoryMachineStatus: Sendable, Equatable {
     public var diagnosticOverrides: [DoryMachineDiagnosticOverride]
     public var runtimeIdentity: DoryMachineRuntimeIdentity
     public var installedDesktopPayloadReceipt: DoryInstalledDesktopPayloadReceipt?
+    public var cloneReceipt: DoryMachineCloneReceipt?
     public var savedState: DoryMachineSavedStateStatus?
 
     public init(
@@ -404,6 +413,7 @@ public struct DoryMachineStatus: Sendable, Equatable {
                 DoryVirtualMachineDefinition.currentVirtualHardwareABIVersion
         ),
         installedDesktopPayloadReceipt: DoryInstalledDesktopPayloadReceipt? = nil,
+        cloneReceipt: DoryMachineCloneReceipt? = nil,
         savedState: DoryMachineSavedStateStatus? = nil
     ) {
         self.id = id
@@ -440,6 +450,7 @@ public struct DoryMachineStatus: Sendable, Equatable {
         self.diagnosticOverrides = diagnosticOverrides
         self.runtimeIdentity = runtimeIdentity
         self.installedDesktopPayloadReceipt = installedDesktopPayloadReceipt
+        self.cloneReceipt = cloneReceipt
         self.savedState = savedState
     }
 
@@ -936,6 +947,13 @@ public enum DoryMachineLaunchPolicy: String, Sendable, Equatable {
     case perWorkspaceAuthority
 }
 
+private struct DoryMachineCloneCreationAuthority {
+    var sourceMachineID: String
+    var sourceSnapshotID: String
+    var rootfsSHA256: String
+    var rootfsByteCount: UInt64
+}
+
 public final class MachineManager: @unchecked Sendable {
     public typealias AgentConnector = @Sendable (String) throws -> any AgentControlClient
     public typealias ProcessStarter = @Sendable (HvProcess) throws -> Void
@@ -1289,12 +1307,29 @@ public final class MachineManager: @unchecked Sendable {
         typedSettings: DoryMachineTypedSettingsPatch? = nil,
         sandboxPolicy: DoryVMSandboxPolicy? = nil
     ) throws -> DoryMachineStatus {
+        try createMachine(
+            machine,
+            typedSettings: typedSettings,
+            sandboxPolicy: sandboxPolicy,
+            cloneAuthority: nil
+        )
+    }
+
+    private func createMachine(
+        _ requestedMachine: DoryMachineConfiguration,
+        typedSettings: DoryMachineTypedSettingsPatch?,
+        sandboxPolicy: DoryVMSandboxPolicy?,
+        cloneAuthority: DoryMachineCloneCreationAuthority?
+    ) throws -> DoryMachineStatus {
         operationLock.lock()
         defer { operationLock.unlock() }
+        var machine = requestedMachine
+        // Public create callers cannot manufacture clone evidence. It is minted only by the
+        // snapshot-clone path after an exact APFS clone and destination digest verification.
+        machine.cloneReceipt = nil
         guard Self.isValidID(machine.id) else {
             throw MachineManagerError.invalidID(machine.id)
         }
-        var machine = machine
         machine.address = try Self.normalizedAddress(machine.address)
         if launchPolicy == .perWorkspaceAuthority {
             guard machine.environment.isEmpty else {
@@ -1419,7 +1454,23 @@ public final class MachineManager: @unchecked Sendable {
         )
         try Self.syncDirectory(path: statePath)
 
-        let preparedMachine = try prepareMachineArtifacts(machine)
+        var preparedMachine = try prepareMachineArtifacts(
+            machine,
+            cloneAuthority: cloneAuthority
+        )
+        if let cloneAuthority {
+            let receipt = DoryMachineCloneReceipt(
+                sourceMachineID: cloneAuthority.sourceMachineID,
+                sourceSnapshotID: cloneAuthority.sourceSnapshotID,
+                sourceRootfsSHA256: cloneAuthority.rootfsSHA256,
+                sourceRootfsByteCount: cloneAuthority.rootfsByteCount,
+                createdAtUnixMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000)
+            )
+            guard receipt.isValid else {
+                throw MachineManagerError.persistence("could not mint clone receipt")
+            }
+            preparedMachine.cloneReceipt = receipt
+        }
         try validateManagedMachineArtifacts(preparedMachine)
         let initialRuntimeIdentity = runtimeIdentityForUnplannedMachine()
         let authoritativeLegacyData = try DoryMachineConfigurationMigrationBridge
@@ -1504,7 +1555,10 @@ public final class MachineManager: @unchecked Sendable {
             diagnosticOverrides: DoryMachineDiagnosticOverride.configured(
                 in: preparedMachine.environment
             ),
-            runtimeIdentity: initialRuntimeIdentity
+            runtimeIdentity: initialRuntimeIdentity,
+            installedDesktopPayloadReceipt:
+                preparedMachine.effectiveInstalledDesktopPayloadReceipt,
+            cloneReceipt: preparedMachine.cloneReceipt
         )
     }
 
@@ -4925,6 +4979,19 @@ public final class MachineManager: @unchecked Sendable {
         defer { operationLock.unlock() }
         let snapshot = try loadSnapshot(machineID: machineID, snapshotID: snapshotID)
         try validateSnapshotRuntimeCompatibility(snapshot, machine: nil, cloning: true)
+        let rootfsEvidence = try snapshot.artifactEvidence?.rootfs
+            ?? Self.snapshotArtifact(path: snapshot.rootfsPath)
+        guard rootfsEvidence.byteCount > 0 else {
+            throw MachineManagerError.persistence(
+                "snapshot root disk has no immutable clone authority"
+            )
+        }
+        let cloneAuthority = DoryMachineCloneCreationAuthority(
+            sourceMachineID: machineID,
+            sourceSnapshotID: snapshotID,
+            rootfsSHA256: rootfsEvidence.sha256,
+            rootfsByteCount: rootfsEvidence.byteCount
+        )
         let machine = DoryMachineConfiguration(
             id: newID,
             kernelPath: snapshot.kernelPath,
@@ -4939,10 +5006,11 @@ public final class MachineManager: @unchecked Sendable {
             installedDesktopPayloadReceipt:
                 Self.configurationReceipt(restoring: snapshot)
         )
-        let created = try create(
+        let created = try createMachine(
             machine,
             typedSettings: snapshot.typedSettings?.replacementPatch,
-            sandboxPolicy: snapshot.sandboxPolicy
+            sandboxPolicy: snapshot.sandboxPolicy,
+            cloneAuthority: cloneAuthority
         )
         do {
             if snapshot.bootMode == .efi {
@@ -5642,6 +5710,7 @@ public final class MachineManager: @unchecked Sendable {
                 runtimeIdentity: entry.runtimeIdentity,
                 installedDesktopPayloadReceipt:
                     entry.configuration.effectiveInstalledDesktopPayloadReceipt,
+                cloneReceipt: entry.configuration.cloneReceipt,
                 savedState: entry.savedStateStatus
             )
         }
@@ -5686,6 +5755,7 @@ public final class MachineManager: @unchecked Sendable {
             runtimeIdentity: entry.runtimeIdentity,
             installedDesktopPayloadReceipt:
                 entry.configuration.effectiveInstalledDesktopPayloadReceipt,
+            cloneReceipt: entry.configuration.cloneReceipt,
             savedState: entry.savedStateStatus
         )
     }
@@ -6523,7 +6593,8 @@ public final class MachineManager: @unchecked Sendable {
                         shares: snapshot.shares,
                         environment: snapshot.environment,
                         installedDesktopPayloadReceipt:
-                            Self.configurationReceipt(restoring: snapshot)
+                            Self.configurationReceipt(restoring: snapshot),
+                        cloneReceipt: current.cloneReceipt
                     )
                     let actualSourceSHA256 = Self.sha256(
                         data: try DoryMachineConfigurationMigrationBridge.encodeLegacy(source)
@@ -8224,7 +8295,10 @@ public final class MachineManager: @unchecked Sendable {
         lock.unlock()
     }
 
-    private func prepareMachineArtifacts(_ machine: DoryMachineConfiguration) throws -> DoryMachineConfiguration {
+    private func prepareMachineArtifacts(
+        _ machine: DoryMachineConfiguration,
+        cloneAuthority: DoryMachineCloneCreationAuthority? = nil
+    ) throws -> DoryMachineConfiguration {
         let rootfsDestination = machineRootfsPath(id: machine.id)
         let kernelDestination = machineKernelPath(id: machine.id)
         let installerDestination = machineInstallerISOPath(id: machine.id)
@@ -8236,12 +8310,29 @@ public final class MachineManager: @unchecked Sendable {
             var copy = machine
             switch machine.bootMode {
             case .linuxKernel:
-                try Self.cloneOrCopyFile(source: machine.rootfsPath, destination: rootfsDestination)
+                try Self.cloneOrCopyFile(
+                    source: machine.rootfsPath,
+                    destination: rootfsDestination,
+                    requiresCopyOnWrite: cloneAuthority != nil,
+                    expectedSHA256: cloneAuthority?.rootfsSHA256,
+                    expectedByteCount: cloneAuthority?.rootfsByteCount
+                )
                 try Self.cloneOrCopyFile(source: machine.kernelPath, destination: kernelDestination)
             case .efi:
                 if Self.isRegularNonemptyFile(path: machine.rootfsPath) {
-                    try Self.cloneOrCopyFile(source: machine.rootfsPath, destination: rootfsDestination)
+                    try Self.cloneOrCopyFile(
+                        source: machine.rootfsPath,
+                        destination: rootfsDestination,
+                        requiresCopyOnWrite: cloneAuthority != nil,
+                        expectedSHA256: cloneAuthority?.rootfsSHA256,
+                        expectedByteCount: cloneAuthority?.rootfsByteCount
+                    )
                 } else if let diskSizeBytes = machine.diskSizeBytes {
+                    guard cloneAuthority == nil else {
+                        throw MachineManagerError.persistence(
+                            "a linked clone requires an existing snapshot root disk"
+                        )
+                    }
                     try Self.createPrivateSparseFile(path: rootfsDestination, sizeBytes: diskSizeBytes)
                 } else {
                     throw MachineManagerError.persistence("EFI machine is missing its disk source or size")
@@ -9686,6 +9777,9 @@ public final class MachineManager: @unchecked Sendable {
                 "installed desktop payload receipt is invalid"
             )
         }
+        guard machine.cloneReceipt?.isValid ?? true else {
+            throw MachineManagerError.persistence("machine clone receipt is invalid")
+        }
     }
 
     /// A local legacy snapshot retains the original raw receipt fields byte-for-byte. Imported
@@ -9727,8 +9821,15 @@ public final class MachineManager: @unchecked Sendable {
     private static func cloneOrCopyFile(
         source: String,
         destination: String,
-        replaceExisting: Bool = false
+        replaceExisting: Bool = false,
+        requiresCopyOnWrite: Bool = false,
+        expectedSHA256: String? = nil,
+        expectedByteCount: UInt64? = nil
     ) throws {
+        guard (expectedSHA256 == nil) == (expectedByteCount == nil),
+              !requiresCopyOnWrite || expectedSHA256 != nil else {
+            throw MachineManagerError.persistence("invalid clone artifact authority")
+        }
         let destinationURL = URL(fileURLWithPath: destination)
         let parent = destinationURL.deletingLastPathComponent()
         let parentDescriptor = open(parent.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
@@ -9761,7 +9862,14 @@ public final class MachineManager: @unchecked Sendable {
         }
         do {
             if fclonefileat(sourceDescriptor, parentDescriptor, temporaryName, 0) != 0 {
+                let cloneError = errno
                 _ = unlinkat(parentDescriptor, temporaryName, 0)
+                guard !requiresCopyOnWrite else {
+                    throw MachineManagerError.persistence(
+                        "APFS copy-on-write cloning is unavailable: "
+                            + String(cString: strerror(cloneError))
+                    )
+                }
                 let destinationDescriptor = openat(
                     parentDescriptor,
                     temporaryName,
@@ -9789,12 +9897,33 @@ public final class MachineManager: @unchecked Sendable {
                     throw MachineManagerError.persistence("could not reopen cloned artifact")
                 }
                 defer { close(clonedDescriptor) }
+                var clonedInfo = stat()
                 guard fchmod(clonedDescriptor, mode_t(0o600)) == 0,
                       isPrivateRegularFile(descriptor: clonedDescriptor),
+                      fstat(clonedDescriptor, &clonedInfo) == 0,
                       fsync(clonedDescriptor) == 0 else {
                     throw MachineManagerError.persistence(
                         "could not synchronize cloned artifact: \(String(cString: strerror(errno)))"
                     )
+                }
+                if let expectedSHA256, let expectedByteCount {
+                    let actualSHA256 = try sha256(descriptor: clonedDescriptor)
+                    var verifiedInfo = stat()
+                    guard clonedInfo.st_size >= 0,
+                          UInt64(clonedInfo.st_size) == expectedByteCount,
+                          fstat(clonedDescriptor, &verifiedInfo) == 0,
+                          clonedInfo.st_dev == verifiedInfo.st_dev,
+                          clonedInfo.st_ino == verifiedInfo.st_ino,
+                          clonedInfo.st_size == verifiedInfo.st_size,
+                          clonedInfo.st_mtimespec.tv_sec == verifiedInfo.st_mtimespec.tv_sec,
+                          clonedInfo.st_mtimespec.tv_nsec == verifiedInfo.st_mtimespec.tv_nsec,
+                          clonedInfo.st_ctimespec.tv_sec == verifiedInfo.st_ctimespec.tv_sec,
+                          clonedInfo.st_ctimespec.tv_nsec == verifiedInfo.st_ctimespec.tv_nsec,
+                          actualSHA256 == expectedSHA256 else {
+                        throw MachineManagerError.persistence(
+                            "copy-on-write clone does not match immutable snapshot evidence"
+                        )
+                    }
                 }
             }
             if replaceExisting {
@@ -9820,6 +9949,19 @@ public final class MachineManager: @unchecked Sendable {
             _ = unlinkat(parentDescriptor, temporaryName, 0)
             throw error
         }
+    }
+
+    private static func sha256(descriptor: Int32) throws -> String {
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
+        try handle.seek(toOffset: 0)
+        defer { try? handle.seek(toOffset: 0) }
+        var hasher = SHA256()
+        while true {
+            let chunk = try handle.read(upToCount: 4 * 1_024 * 1_024) ?? Data()
+            if chunk.isEmpty { break }
+            hasher.update(data: chunk)
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
     private static func createPrivateSparseFile(path: String, sizeBytes: UInt64) throws {

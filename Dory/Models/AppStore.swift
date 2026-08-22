@@ -5264,6 +5264,7 @@ final class AppStore {
             bootMode: status.bootMode,
             installerMediaAttached: status.installerMediaAttached,
             runtimeIdentity: status.runtimeIdentity,
+            cloneReceipt: status.cloneReceipt,
             agentBuild: status.agentBuild,
             agentProtocolVersion: status.agentProtocolVersion,
             agentCapabilities: status.agentCapabilities,

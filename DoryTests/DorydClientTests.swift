@@ -2169,6 +2169,44 @@ struct DorydClientTests {
         }
     }
 
+    @Test func machineCloneReceiptRequiresExactShape() async throws {
+        let valid: NSDictionary = [
+            "schemaVersion": UInt16(1),
+            "sourceMachineID": "source",
+            "sourceSnapshotID": "base",
+            "sourceRootfsSHA256": String(repeating: "a", count: 64),
+            "sourceRootfsByteCount": UInt64(4_096),
+            "storageMode": "apfs-copy-on-write",
+            "createdAtUnixMilliseconds": Int64(1_787_300_000_000),
+        ]
+        let listener = NSXPCListener.anonymous()
+        let service = FakeDorydService()
+        service.setMachineCloneReceipt("dev", valid)
+        let delegate = FakeDorydListenerDelegate(service: service)
+        listener.delegate = delegate
+        listener.resume()
+        defer { listener.invalidate() }
+        let client = DorydClient(endpoint: listener.endpoint)
+        let status = try #require(try await client.machineList().first)
+        #expect(status.cloneReceipt?.sourceMachineID == "source")
+        #expect(status.cloneReceipt?.sourceSnapshotID == "base")
+        #expect(status.cloneReceipt?.storageMode == "apfs-copy-on-write")
+
+        let malformed = NSMutableDictionary(dictionary: valid)
+        malformed["unknown"] = true
+        service.setMachineCloneReceipt("dev", malformed)
+        await #expect(throws: DorydClientError.self) {
+            _ = try await client.machineList()
+        }
+
+        let wrongType = NSMutableDictionary(dictionary: valid)
+        wrongType["sourceRootfsByteCount"] = true
+        service.setMachineCloneReceipt("dev", wrongType)
+        await #expect(throws: DorydClientError.self) {
+            _ = try await client.machineList()
+        }
+    }
+
     @Test func desktopUpdateSkipRequiresExactVerifiedActiveComponentProvenance() {
         let receipt = DorydInstalledDesktopPayloadReceipt(
             schemaVersion: 1,
@@ -4490,6 +4528,20 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
             current["savedState"] = savedState
         } else {
             current.removeObject(forKey: "savedState")
+        }
+        machines[machineID] = current.copy() as? NSDictionary
+    }
+
+    func setMachineCloneReceipt(_ machineID: String, _ receipt: Any?) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let current = machines[machineID]?.mutableCopy() as? NSMutableDictionary else {
+            return
+        }
+        if let receipt {
+            current["cloneReceipt"] = receipt
+        } else {
+            current.removeObject(forKey: "cloneReceipt")
         }
         machines[machineID] = current.copy() as? NSDictionary
     }

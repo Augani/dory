@@ -1037,7 +1037,17 @@ nonisolated struct DorydMachineStatus: Sendable, Equatable {
     var typedSettings: DorydMachineTypedSettings? = nil
     var runtimeIdentity: DorydMachineRuntimeIdentity = .legacyCompatibility
     var installedDesktopPayloadReceipt: DorydInstalledDesktopPayloadReceipt? = nil
+    var cloneReceipt: DorydMachineCloneReceipt? = nil
     var savedState: DorydMachineSavedStateSummary? = nil
+}
+
+nonisolated struct DorydMachineCloneReceipt: Sendable, Equatable, Hashable {
+    var sourceMachineID: String
+    var sourceSnapshotID: String
+    var sourceRootfsSHA256: String
+    var sourceRootfsByteCount: UInt64
+    var storageMode: String
+    var createdAtUnixMilliseconds: Int64
 }
 
 nonisolated struct DorydMachineSavedStateSummary: Sendable, Equatable {
@@ -2797,6 +2807,9 @@ nonisolated final class DorydClient: @unchecked Sendable {
         ) else {
             return nil
         }
+        guard let cloneReceipt = machineCloneReceipt(from: dictionary["cloneReceipt"]) else {
+            return nil
+        }
         guard let agentHandshake = machineAgentHandshake(from: dictionary) else {
             return nil
         }
@@ -2873,8 +2886,49 @@ nonisolated final class DorydClient: @unchecked Sendable {
             typedSettings: typedSettings.value,
             runtimeIdentity: runtimeIdentity,
             installedDesktopPayloadReceipt: installedDesktopPayloadReceipt.value,
+            cloneReceipt: cloneReceipt.value,
             savedState: savedState.value
         )
+    }
+
+    private struct ParsedMachineCloneReceipt {
+        var value: DorydMachineCloneReceipt?
+    }
+
+    nonisolated private static func machineCloneReceipt(
+        from encoded: Any?
+    ) -> ParsedMachineCloneReceipt? {
+        guard let encoded else { return ParsedMachineCloneReceipt(value: nil) }
+        guard let value = encoded as? NSDictionary,
+              let keys = value.allKeys as? [String],
+              keys.count == 7,
+              Set(keys) == [
+                  "schemaVersion", "sourceMachineID", "sourceSnapshotID",
+                  "sourceRootfsSHA256", "sourceRootfsByteCount", "storageMode",
+                  "createdAtUnixMilliseconds",
+              ],
+              strictUInt64(value["schemaVersion"]) == 1,
+              let sourceMachineID = value["sourceMachineID"] as? String,
+              sourceMachineID.isSafeMachineIdentifier,
+              let sourceSnapshotID = value["sourceSnapshotID"] as? String,
+              sourceSnapshotID.isSafeMachineIdentifier,
+              let sourceRootfsSHA256 = value["sourceRootfsSHA256"] as? String,
+              sourceRootfsSHA256.isLowercaseSHA256,
+              let sourceRootfsByteCount = strictUInt64(value["sourceRootfsByteCount"]),
+              sourceRootfsByteCount > 0,
+              value["storageMode"] as? String == "apfs-copy-on-write",
+              let createdAtUnixMilliseconds = int64(value["createdAtUnixMilliseconds"]),
+              createdAtUnixMilliseconds > 0 else {
+            return nil
+        }
+        return ParsedMachineCloneReceipt(value: DorydMachineCloneReceipt(
+            sourceMachineID: sourceMachineID,
+            sourceSnapshotID: sourceSnapshotID,
+            sourceRootfsSHA256: sourceRootfsSHA256,
+            sourceRootfsByteCount: sourceRootfsByteCount,
+            storageMode: "apfs-copy-on-write",
+            createdAtUnixMilliseconds: createdAtUnixMilliseconds
+        ))
     }
 
     nonisolated private static func machineUSBAttachment(

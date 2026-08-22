@@ -2522,6 +2522,17 @@ private extension DoryMachineStatus {
             dictionary["installedDesktopPayloadReceipt"] =
                 installedDesktopPayloadReceipt.xpcDictionary
         }
+        if let cloneReceipt, cloneReceipt.isValid {
+            dictionary["cloneReceipt"] = [
+                "schemaVersion": cloneReceipt.schemaVersion,
+                "sourceMachineID": cloneReceipt.sourceMachineID,
+                "sourceSnapshotID": cloneReceipt.sourceSnapshotID,
+                "sourceRootfsSHA256": cloneReceipt.sourceRootfsSHA256,
+                "sourceRootfsByteCount": cloneReceipt.sourceRootfsByteCount,
+                "storageMode": cloneReceipt.storageMode.rawValue,
+                "createdAtUnixMilliseconds": cloneReceipt.createdAtUnixMilliseconds,
+            ] as NSDictionary
+        }
         if let savedState {
             dictionary["savedState"] = [
                 "schemaVersion": savedState.schemaVersion,

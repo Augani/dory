@@ -3546,6 +3546,67 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertEqual(reloaded.list().map(\.id), ["dev"])
     }
 
+    func testSnapshotCloneRequiresCopyOnWriteAndSurvivesSourceDeletion() throws {
+        let base = "/tmp/dory-machine-cow-clone-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let sourceRootfs = "\(base)/source.ext4"
+        let sourceBytes = Data("copy-on-write-source-rootfs".utf8)
+        try sourceBytes.write(to: URL(fileURLWithPath: sourceRootfs))
+        let configuration = MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: "\(base)/machines",
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: false
+        )
+        var manager: MachineManager? = MachineManager(configuration: configuration)
+        _ = try manager?.create(DoryMachineConfiguration(
+            id: "source",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: sourceRootfs,
+            cloneReceipt: DoryMachineCloneReceipt(
+                sourceMachineID: "forged",
+                sourceSnapshotID: "forged",
+                sourceRootfsSHA256: String(repeating: "f", count: 64),
+                sourceRootfsByteCount: 1,
+                createdAtUnixMilliseconds: 1
+            )
+        ))
+        XCTAssertNil(manager?.status(id: "source")?.cloneReceipt)
+        let snapshot = try XCTUnwrap(manager?.snapshot(
+            id: "source",
+            snapshotID: "base"
+        ))
+        let clone = try XCTUnwrap(manager?.cloneSnapshot(
+            machineID: "source",
+            snapshotID: "base",
+            newID: "clone"
+        ))
+        let evidence = try XCTUnwrap(snapshot.artifactEvidence?.rootfs)
+        XCTAssertEqual(clone.cloneReceipt?.storageMode, .apfsCopyOnWrite)
+        XCTAssertEqual(clone.cloneReceipt?.sourceMachineID, "source")
+        XCTAssertEqual(clone.cloneReceipt?.sourceSnapshotID, "base")
+        XCTAssertEqual(clone.cloneReceipt?.sourceRootfsSHA256, evidence.sha256)
+        XCTAssertEqual(clone.cloneReceipt?.sourceRootfsByteCount, evidence.byteCount)
+
+        _ = try manager?.stop(id: "clone")
+        try manager?.delete(id: "source")
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: "\(base)/machines/source/snapshots/base.ext4"
+        ))
+        XCTAssertEqual(
+            try Data(contentsOf: URL(fileURLWithPath: "\(base)/machines/clone/rootfs.ext4")),
+            sourceBytes
+        )
+
+        manager = nil
+        let reloaded = MachineManager(configuration: configuration)
+        XCTAssertEqual(reloaded.status(id: "clone")?.cloneReceipt, clone.cloneReceipt)
+        XCTAssertEqual(try reloaded.start(id: "clone").state, .running)
+        try reloaded.delete(id: "clone")
+    }
+
     func testRequiredHandoffMovesMachineFromStartingToRunning() throws {
         let base = "/tmp/dory-machine-handoff-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let manager = MachineManager(configuration: MachineManagerConfiguration(
