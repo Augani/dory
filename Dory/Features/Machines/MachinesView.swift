@@ -1302,6 +1302,10 @@ private struct MachineEditSheet: View {
     @State private var displayMode: MachineDisplayMode = .headless
     @State private var guestUsername = "dory"
     @State private var clipboardPolicy = DoryDesktopClipboardPolicy.bidirectional
+    @State private var fileTransferPolicy = DoryVMClipboardDirection.bidirectional
+    @State private var initialClipboardPicker = DoryDesktopClipboardPolicy.bidirectional
+    @State private var initialFileTransferPolicy = DoryVMClipboardDirection.bidirectional
+    @State private var originalClipboardPolicy: DoryVMClipboardPolicy?
     @State private var runtimePreference = DoryDesktopVMMPreference.automatic
     @State private var graphicsPreference = DoryDesktopGraphicsPreference.automatic
     @State private var networkMode = DoryVMNetworkMode.sharedNAT
@@ -1370,10 +1374,14 @@ private struct MachineEditSheet: View {
         guestUsername = settings.env[DoryVMGuestAccountIntent.legacyUsernameEnvironmentKey]
             ?? typedSettings.guestIdentityIntent.account?.username
             ?? "dory"
+        originalClipboardPolicy = typedSettings.clipboardPolicy
         clipboardPolicy = typedSettings.clipboardPolicy.flatMap {
-            guard $0.text == $0.image, $0.files == .off else { return nil }
+            guard $0.text == $0.image else { return nil }
             return DoryDesktopClipboardPolicy(rawValue: $0.text.rawValue)
         } ?? .bidirectional
+        fileTransferPolicy = typedSettings.clipboardPolicy?.files ?? .bidirectional
+        initialClipboardPicker = clipboardPolicy
+        initialFileTransferPolicy = fileTransferPolicy
         runtimePreference = typedSettings.runtimePreference ?? .automatic
         graphicsPreference = typedSettings.graphicsPreference ?? .automatic
         networkMode = typedSettings.networkMode ?? .sharedNAT
@@ -1537,6 +1545,16 @@ private struct MachineEditSheet: View {
                 .pickerStyle(.segmented)
                 .accessibilityIdentifier("edit-machine-clipboard-policy")
                 Text("Control whether text and images can move between this Linux desktop and your Mac.")
+                    .font(.system(size: 11)).foregroundStyle(p.text3)
+                Picker("File transfer", selection: $fileTransferPolicy) {
+                    Text("Off").tag(DoryVMClipboardDirection.off)
+                    Text("To Linux").tag(DoryVMClipboardDirection.hostToGuest)
+                    Text("To Mac").tag(DoryVMClipboardDirection.guestToHost)
+                    Text("Both").tag(DoryVMClipboardDirection.bidirectional)
+                }
+                .pickerStyle(.segmented)
+                .accessibilityIdentifier("edit-machine-file-transfer-policy")
+                Text("File and folder drag/drop uses Dory Tools and follows this direction independently of text and images.")
                     .font(.system(size: 11)).foregroundStyle(p.text3)
             }
         }
@@ -1759,11 +1777,21 @@ private struct MachineEditSheet: View {
                 username: normalizedGuestUsername,
                 numericUserID: typedSettings.guestIdentityIntent.account?.numericUserID
             )
-            if typedSettings.clipboardPolicy != nil || clipboardPolicy != .bidirectional {
-                typedSettings.clipboardPolicy = .legacyDesktop(
-                    DoryVMClipboardDirection(rawValue: clipboardPolicy.rawValue)
-                        ?? .bidirectional
-                )
+            if originalClipboardPolicy != nil
+                || clipboardPolicy != initialClipboardPicker
+                || fileTransferPolicy != initialFileTransferPolicy {
+                var exactPolicy = originalClipboardPolicy ?? .disabled
+                if clipboardPolicy != initialClipboardPicker {
+                    let direction = DoryVMClipboardDirection(
+                        rawValue: clipboardPolicy.rawValue
+                    ) ?? .bidirectional
+                    exactPolicy.text = direction
+                    exactPolicy.image = direction
+                }
+                if fileTransferPolicy != initialFileTransferPolicy {
+                    exactPolicy.files = fileTransferPolicy
+                }
+                typedSettings.clipboardPolicy = exactPolicy
             }
             if typedSettings.runtimePreference != nil || runtimePreference != .automatic {
                 typedSettings.runtimePreference = runtimePreference

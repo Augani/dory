@@ -6,6 +6,41 @@ import Foundation
 import XCTest
 
 final class MachineManagerFileTransferTests: XCTestCase {
+    func testResolvedTransferAuthorizationIsDirectionalAndLegacyCompatible() {
+        XCTAssertTrue(DoryMachineFileTransferAuthorization.allows(
+            runtimeIdentity: .legacyCompatibility(),
+            flow: .hostToGuest
+        ))
+        XCTAssertFalse(DoryMachineFileTransferAuthorization.allows(
+            runtimeIdentity: .requiresReplanning(reason: .definitionChanged),
+            flow: .guestToHost
+        ))
+
+        let hostOnly = DoryVirtualMachineDeviceCapabilityRequest(
+            clipboard: true,
+            clipboardPolicy: DoryVMClipboardPolicy(
+                text: .bidirectional,
+                image: .bidirectional,
+                files: .hostToGuest
+            )
+        )
+        XCTAssertTrue(DoryMachineFileTransferAuthorization.allows(
+            resolvedDevices: hostOnly,
+            flow: .hostToGuest
+        ))
+        XCTAssertFalse(DoryMachineFileTransferAuthorization.allows(
+            resolvedDevices: hostOnly,
+            flow: .guestToHost
+        ))
+
+        var disabledDevice = hostOnly
+        disabledDevice.clipboard = false
+        XCTAssertFalse(DoryMachineFileTransferAuthorization.allows(
+            resolvedDevices: disabledDevice,
+            flow: .hostToGuest
+        ))
+    }
+
     func testTransferUsesUniqueDerivedDestinationAndGuestOwnership() throws {
         let fixture = try makeRunningFixture(tag: "success")
         defer { fixture.cleanup() }

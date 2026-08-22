@@ -315,6 +315,7 @@ struct Machine: Identifiable, Hashable, Sendable {
     var agentProtocolVersion: UInt32? = nil
     var agentCapabilities: [DorydAgentCapability] = []
     var integrationHealth: DoryGuestIntegrationHealth? = nil
+    var fileTransferPolicy: DoryVMClipboardDirection = .bidirectional
     var mounts: [MountPair] = []
     var id: String { name }
 

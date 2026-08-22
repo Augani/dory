@@ -82,7 +82,11 @@ struct NewMachineSettingsTests {
         #expect(s.virtualMachineSettings?.guestIdentityIntent.account?.numericUserID == UInt32(getuid()))
         #expect(s.virtualMachineSettings?.guestIdentityIntent.desktop?.distributionIdentifier == "debian")
         #expect(s.virtualMachineSettings?.guestIdentityIntent.desktop?.version == "13")
-        #expect(s.virtualMachineSettings?.clipboardPolicy == .legacyDesktop(.bidirectional))
+        #expect(s.virtualMachineSettings?.clipboardPolicy == DoryVMClipboardPolicy(
+            text: .bidirectional,
+            image: .bidirectional,
+            files: .bidirectional
+        ))
         #expect(s.virtualMachineSettings?.runtimePreference == .automatic)
         #expect(s.virtualMachineSettings?.graphicsPreference == .automatic)
         #expect(s.virtualMachineSettings?.networkMode == .sharedNAT)

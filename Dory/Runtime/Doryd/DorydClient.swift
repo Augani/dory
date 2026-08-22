@@ -1502,6 +1502,7 @@ nonisolated enum DorydMachineFileTransferPhase: String, Sendable, Equatable {
 
 nonisolated enum DorydMachineFileTransferFailureCode: String, Sendable, Equatable {
     case guestUnavailable = "guest-unavailable"
+    case directionNotAuthorized = "direction-not-authorized"
     case guestPreparationFailed = "guest-preparation-failed"
     case transferFailed = "transfer-failed"
     case guestFinalizationFailed = "guest-finalization-failed"

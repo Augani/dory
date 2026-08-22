@@ -968,7 +968,11 @@ struct NewMachineSheet: View {
                         desktopEnvironment: desktopDistro.desktopName
                     )
                 ),
-                clipboardPolicy: .legacyDesktop(.bidirectional),
+                clipboardPolicy: DoryVMClipboardPolicy(
+                    text: .bidirectional,
+                    image: .bidirectional,
+                    files: .bidirectional
+                ),
                 runtimePreference: .automatic,
                 graphicsPreference: .automatic,
                 networkMode: networkMode,

@@ -7332,6 +7332,7 @@ public final class MachineManager: @unchecked Sendable {
         id: String,
         privateStagingRoot: String
     ) throws -> DoryMachineFileTransferResult {
+        try requireFileTransferAuthorization(id: id, flow: .hostToGuest)
         let transferID = Self.makeMachineFileTransferID()
         fileTransferLock.lock()
         pruneFileTransferOperationsLocked(now: Date())
@@ -7367,6 +7368,7 @@ public final class MachineManager: @unchecked Sendable {
         id: String,
         privateStagingRoot: String
     ) throws -> DoryMachineFileTransferOperationStatus {
+        try requireFileTransferAuthorization(id: id, flow: .hostToGuest)
         guard let machineStatus = status(id: id) else {
             throw MachineManagerError.unknownMachine(id)
         }
@@ -7507,6 +7509,7 @@ public final class MachineManager: @unchecked Sendable {
         id: String,
         guestSource: String
     ) throws -> DoryMachineGuestFileExportOperationStatus {
+        try requireFileTransferAuthorization(id: id, flow: .guestToHost)
         guard let machineStatus = status(id: id) else {
             throw MachineManagerError.unknownMachine(id)
         }
@@ -7682,6 +7685,7 @@ public final class MachineManager: @unchecked Sendable {
         exportID: String,
         operation: MachineGuestFileExportOperation
     ) throws -> DoryMachineGuestFileExportResult {
+        try requireFileTransferAuthorization(id: id, flow: .guestToHost)
         try Self.requireTransferNotCancelled(operation)
         operation.setTransferring()
         let limits = DoryPullLimits(
@@ -7723,6 +7727,7 @@ public final class MachineManager: @unchecked Sendable {
         transferID: String,
         operation: MachineFileTransferOperation?
     ) throws -> DoryMachineFileTransferResult {
+        try requireFileTransferAuthorization(id: id, flow: .hostToGuest)
         guard DoryMachineFileTransferStager.isManagedStagingRoot(privateStagingRoot) else {
             throw DoryMachineFileTransferError.invalidPrivateStagingRoot
         }
@@ -7860,6 +7865,19 @@ public final class MachineManager: @unchecked Sendable {
         UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
     }
 
+    private func requireFileTransferAuthorization(
+        id: String,
+        flow: DoryMachineFileTransferFlow
+    ) throws {
+        let identity = try currentRuntimeIdentity(id: id)
+        guard DoryMachineFileTransferAuthorization.allows(
+            runtimeIdentity: identity,
+            flow: flow
+        ) else {
+            throw DoryMachineFileTransferError.directionNotAuthorized(id)
+        }
+    }
+
     private static func requireTransferNotCancelled(
         _ operation: MachineFileTransferOperation?
     ) throws {
@@ -7905,6 +7923,11 @@ public final class MachineManager: @unchecked Sendable {
     ) -> DoryMachineFileTransferFailure {
         let transferError = error as? DoryMachineFileTransferError
         switch transferError {
+        case .directionNotAuthorized:
+            return .init(
+                code: .directionNotAuthorized,
+                message: "The resolved file-transfer direction is not authorized."
+            )
         case .guestAccountUnavailable:
             return .init(code: .guestUnavailable, message: "Guest account is unavailable.")
         case .guestPreparationFailed:
@@ -9036,6 +9059,11 @@ public final class MachineManager: @unchecked Sendable {
     ) -> DoryVirtualMachineDefinition {
         var projected = definition
         projected.networkMode = compatibility.networkMode
+        // Legacy machine arguments can encode only one text/image clipboard direction and no
+        // file policy. Resolved helpers receive the exact policy separately through
+        // `--resolved-devices`, while this transient projection remains representable without
+        // persisting or widening the native workspace authority.
+        projected.clipboardPolicy = compatibility.clipboardPolicy
         return projected
     }
 

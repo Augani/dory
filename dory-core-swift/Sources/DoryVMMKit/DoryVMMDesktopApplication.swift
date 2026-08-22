@@ -48,7 +48,6 @@ final class DoryVMMDesktopApplication: NSObject, NSApplicationDelegate, NSWindow
         // agent-backed data path to enforce the selected boundary.
         let usesNativeBidirectionalClipboard = requestedPolicy.text == .bidirectional
             && requestedPolicy.image == .bidirectional
-            && requestedPolicy.files == .off
         let coordinatorPolicy: DoryVMClipboardPolicy = usesNativeBidirectionalClipboard
             ? .disabled
             : requestedPolicy

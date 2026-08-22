@@ -318,6 +318,11 @@ struct DoryMachineTypedWriteAuthorityTests {
             to: migrated.definition,
             displayMode: .desktop
         ).networkMode == .disconnected)
+        let exactClipboard = try files.applying(
+            to: migrated.definition,
+            displayMode: .desktop
+        )
+        #expect(exactClipboard.clipboardPolicy.files == .hostToGuest)
 
         let audio = DoryMachineTypedSettingsPatch(audioInputEnabled: .set(false))
         #expect(throws: DoryMachineTypedWriteAuthorityError.unsupportedByLegacyRuntime(

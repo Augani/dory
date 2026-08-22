@@ -466,11 +466,8 @@ public enum DoryVZConfigurationBuilder {
                         "resolved clipboard device and directional policy disagree"
                     )
                 }
-                guard clipboardPolicy.files == .off else {
-                    throw DoryVZMachineError.validation(
-                        "resolved clipboard file transfer is not implemented"
-                    )
-                }
+                // File directions are enforced by doryd's authenticated Dory Tools transfer
+                // boundary. This VZ-local clipboard device represents text and images only.
             }
             if spec.displayMode != .desktop,
                devices.display != nil || devices.audioInput || devices.audioOutput || devices.keyboard
@@ -584,7 +581,6 @@ public enum DoryVZConfigurationBuilder {
                 // bidirectional default; directional policies use Dory's agent-backed bridge instead.
                 spiceAttachment.sharesClipboard = clipboardPolicy.text == .bidirectional
                     && clipboardPolicy.image == .bidirectional
-                    && clipboardPolicy.files == .off
                 spiceAgent.attachment = spiceAttachment
                 console.ports[0] = spiceAgent
                 configuration.consoleDevices = [console]

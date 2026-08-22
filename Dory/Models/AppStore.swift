@@ -5239,6 +5239,9 @@ final class AppStore {
         )
         let guestUsername = typedSettings.guestIdentityIntent.account?.username
             ?? (isCustomLinux ? "installer" : (isDesktop ? "dory" : "root"))
+        let fileTransferPolicy = status.runtimeIdentity.mode == "legacy-compatibility"
+            ? DoryVMClipboardDirection.bidirectional
+            : typedSettings.clipboardPolicy?.files ?? .off
         return Machine(
             name: status.id,
             distro: isCustomLinux ? "Custom Linux" : (isDesktop ? desktopDistro.displayName : "Dory Linux"),
@@ -5269,6 +5272,7 @@ final class AppStore {
             agentProtocolVersion: status.agentProtocolVersion,
             agentCapabilities: status.agentCapabilities,
             integrationHealth: status.integrationHealth,
+            fileTransferPolicy: fileTransferPolicy,
             mounts: status.shares.map(Self.mountPair(fromDoryd:))
         )
     }
@@ -5390,6 +5394,7 @@ final class AppStore {
     func canTransferFiles(to machine: Machine) -> Bool {
         guard runtimeOwnedByDoryd,
               machine.status == .running,
+              machine.fileTransferPolicy.allowsHostToGuest,
               machine.agentProtocolVersion == 1 else {
             return false
         }
@@ -5409,6 +5414,7 @@ final class AppStore {
     func canExportGuestFiles(from machine: Machine) -> Bool {
         runtimeOwnedByDoryd
             && machine.status == .running
+            && machine.fileTransferPolicy.allowsGuestToHost
             && machine.agentProtocolVersion == 1
             && machine.username != "root"
             && machine.agentCapabilities.contains {

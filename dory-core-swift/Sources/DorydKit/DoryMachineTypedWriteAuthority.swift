@@ -776,7 +776,7 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
         to source: DoryVirtualMachineDefinition,
         displayMode: DoryMachineDisplayMode
     ) throws -> DoryVirtualMachineDefinition {
-        try validate(displayMode: displayMode)
+        try validate(displayMode: displayMode, requiresLegacyRepresentation: false)
         var definition = source
         var account = definition.guestIdentityIntent.account ?? DoryVMGuestAccountIntent()
         Self.apply(guestUsername, to: &account.username)
@@ -1115,7 +1115,10 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
         } as NSArray
     }
 
-    private func validate(displayMode: DoryMachineDisplayMode) throws {
+    private func validate(
+        displayMode: DoryMachineDisplayMode,
+        requiresLegacyRepresentation: Bool = true
+    ) throws {
         if case let .set(value) = guestUsername,
            !DoryVMGuestAccountIntent.isValidUsername(value) {
             throw DoryMachineTypedWriteAuthorityError.invalidField(
@@ -1159,7 +1162,8 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
             )
         }
         if case let .set(policy) = clipboardPolicy {
-            guard policy.text == policy.image, policy.files == .off else {
+            guard !requiresLegacyRepresentation
+                    || (policy.text == policy.image && policy.files == .off) else {
                 throw DoryMachineTypedWriteAuthorityError.unsupportedByLegacyRuntime(
                     "clipboardPolicy"
                 )

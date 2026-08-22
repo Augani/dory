@@ -1095,8 +1095,8 @@ struct VirtualMachineCapabilitiesTests {
         #expect(qualifiedDirectionalClipboard.availability.isUsable)
         #expect(qualifiedDirectionalClipboard.resolvedDevices == directionalClipboard)
         #expect(mismatchedClipboard.availability.reason?.code == .clipboardPolicyInvalid)
-        #expect(clipboardFileTransfer.availability.reason?.code
-            == .clipboardFileTransferUnsupported)
+        #expect(clipboardFileTransfer.availability.isUsable)
+        #expect(clipboardFileTransfer.resolvedDevices?.clipboardPolicy?.files == .hostToGuest)
     }
 
     @Test("version-one descriptor JSON remains readable with conservative device defaults")

@@ -567,11 +567,8 @@ enum DesktopMode {
                     "resolved clipboard device and directional policy disagree"
                 )
             }
-            guard selected.files == .off else {
-                throw VMError.bootFailure(
-                    "resolved clipboard file transfer is not implemented"
-                )
-            }
+            // Files use the daemon-owned Dory Tools sync channel. Keep their direction in the
+            // exact policy while this display-local coordinator handles only text and images.
             policy = selected
         }
     }

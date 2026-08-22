@@ -966,7 +966,11 @@ struct MachineManagerResolvedPlanIntegrationTests {
                 guestNumericUserID: .set(1_000),
                 desktopDistributionIdentifier: .set("ubuntu"),
                 desktopDisplayName: .set("Ubuntu"),
-                clipboardPolicy: .set(.legacyDesktop(.bidirectional)),
+                clipboardPolicy: .set(DoryVMClipboardPolicy(
+                    text: .bidirectional,
+                    image: .bidirectional,
+                    files: .bidirectional
+                )),
                 runtimePreference: .set(.accelerated),
                 graphicsPreference: .set(.virgl),
                 portForwards: .set([
@@ -977,6 +981,7 @@ struct MachineManagerResolvedPlanIntegrationTests {
         #expect(created.environment.isEmpty)
         #expect(created.typedSettings?.guestIdentityIntent.account?.username == "developer")
         #expect(created.typedSettings?.runtimePreference == .accelerated)
+        #expect(created.typedSettings?.clipboardPolicy?.files == .bidirectional)
         #expect(created.typedSettings?.portForwards == [
             DoryVMPortForward(id: "web", hostPort: 8_080, guestPort: 80),
         ])

@@ -32,21 +32,19 @@ import Testing
         }
     }
 
-    @Test func unsupportedFileTransferFailsClosed() {
-        #expect(throws: VMError.self) {
-            _ = try DesktopMode.ClipboardPlan(
-                resolvedDevices: .init(
-                    clipboard: true,
-                    clipboardPolicy: .init(
-                        text: .bidirectional,
-                        image: .bidirectional,
-                        files: .hostToGuest
-                    )
-                ),
-                environment: [:],
-                genericGuest: false
-            )
-        }
+    @Test func fileTransferDirectionRemainsBoundForDaemonEnforcement() throws {
+        let exact = DoryVMClipboardPolicy(
+            text: .bidirectional,
+            image: .bidirectional,
+            files: .hostToGuest
+        )
+        let plan = try DesktopMode.ClipboardPlan(
+            resolvedDevices: .init(clipboard: true, clipboardPolicy: exact),
+            environment: [:],
+            genericGuest: false
+        )
+
+        #expect(plan.policy == exact)
     }
 
     @Test func historicalLaunchRetainsLegacyPolicy() throws {

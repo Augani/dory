@@ -1,4 +1,5 @@
 import DoryCore
+import DoryOperations
 import Foundation
 
 /// Safe evidence returned after doryd has copied one private staging tree into a managed guest.
@@ -43,6 +44,7 @@ public enum DoryMachineFileTransferPhase: String, Sendable, Equatable, Hashable 
 
 public enum DoryMachineFileTransferFailureCode: String, Sendable, Equatable, Hashable {
     case guestUnavailable = "guest-unavailable"
+    case directionNotAuthorized = "direction-not-authorized"
     case guestPreparationFailed = "guest-preparation-failed"
     case transferFailed = "transfer-failed"
     case guestFinalizationFailed = "guest-finalization-failed"
@@ -119,6 +121,7 @@ public enum DoryMachineFileTransferError: Error, Sendable, Equatable, CustomStri
     case transferAlreadyInProgress(String)
     case unknownTransfer(String, String)
     case exportNotComplete(String, String)
+    case directionNotAuthorized(String)
     case guestAccountUnavailable(String)
     case guestPreparationFailed(String)
     case transferFailed(String)
@@ -136,6 +139,8 @@ public enum DoryMachineFileTransferError: Error, Sendable, Equatable, CustomStri
             "unknown file transfer \(operationID) for machine: \(machineID)"
         case let .exportNotComplete(machineID, operationID):
             "guest file export \(operationID) is not complete for machine: \(machineID)"
+        case let .directionNotAuthorized(machineID):
+            "resolved file transfer direction is not authorized for machine: \(machineID)"
         case let .guestAccountUnavailable(machineID):
             "managed guest account is unavailable for machine: \(machineID)"
         case let .guestPreparationFailed(machineID):
@@ -144,6 +149,49 @@ public enum DoryMachineFileTransferError: Error, Sendable, Equatable, CustomStri
             "file transfer failed for machine: \(machineID)"
         case let .guestFinalizationFailed(machineID):
             "could not finalize guest file ownership for machine: \(machineID)"
+        }
+    }
+}
+
+enum DoryMachineFileTransferFlow: Sendable {
+    case hostToGuest
+    case guestToHost
+}
+
+enum DoryMachineFileTransferAuthorization {
+    /// Compatibility launches retain their historical transfer behavior. A resolved workspace
+    /// must carry the exact file direction in its validated immutable plan; replanning state is
+    /// never allowed to borrow stale integration authority.
+    static func allows(
+        runtimeIdentity: DoryMachineRuntimeIdentity,
+        flow: DoryMachineFileTransferFlow
+    ) -> Bool {
+        switch runtimeIdentity.mode {
+        case .legacyCompatibility:
+            return runtimeIdentity.validate().isEmpty
+        case .requiresReplanning:
+            return false
+        case .resolvedPlan:
+            guard runtimeIdentity.validate().isEmpty,
+                  let devices = runtimeIdentity.resolvedPlan?.devices else {
+                return false
+            }
+            return allows(resolvedDevices: devices, flow: flow)
+        }
+    }
+
+    static func allows(
+        resolvedDevices devices: DoryVirtualMachineDeviceCapabilityRequest,
+        flow: DoryMachineFileTransferFlow
+    ) -> Bool {
+        guard devices.clipboard, let policy = devices.clipboardPolicy else {
+            return false
+        }
+        switch flow {
+        case .hostToGuest:
+            return policy.files.allowsHostToGuest
+        case .guestToHost:
+            return policy.files.allowsGuestToHost
         }
     }
 }

@@ -898,7 +898,11 @@ final class DoryVMMKitTests: XCTestCase {
             pointer: false,
             directorySharing: false,
             clipboard: true,
-            clipboardPolicy: .legacyDesktop(.hostToGuest),
+            clipboardPolicy: DoryVMClipboardPolicy(
+                text: .hostToGuest,
+                image: .hostToGuest,
+                files: .hostToGuest
+            ),
             clockSynchronization: false,
             dynamicDisplay: true,
             gracefulShutdown: false

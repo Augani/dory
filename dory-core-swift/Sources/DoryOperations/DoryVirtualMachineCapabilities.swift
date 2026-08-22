@@ -1824,13 +1824,10 @@ public enum DoryAppleSiliconCapabilityEvaluator {
                     message: "The resolved clipboard device and directional policy disagree."
                 )
             }
-            guard clipboardPolicy.files == .off else {
-                return unavailable(
-                    tier: tier,
-                    code: .clipboardFileTransferUnsupported,
-                    message: "The selected guest/backend contract does not implement clipboard file transfer."
-                )
-            }
+            // File transfer is implemented by the authenticated Dory Tools sync channel rather
+            // than the display helper's clipboard transport. The exact directional policy still
+            // belongs to this resolved device contract and is enforced by the daemon at each
+            // push/pull operation boundary.
         }
         if devices.clockSynchronization {
             guard request.guest.family == .linux,

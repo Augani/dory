@@ -2817,11 +2817,21 @@ struct DorydClientTests {
         }
         #expect(!store.canTransferFiles(to: transferUnavailable))
 
+        var receiveOnly = machine
+        receiveOnly.fileTransferPolicy = .guestToHost
+        #expect(!store.canTransferFiles(to: receiveOnly))
+        #expect(store.canExportGuestFiles(from: receiveOnly))
+
         var exportUnavailable = machine
         exportUnavailable.agentCapabilities = exportUnavailable.agentCapabilities.filter {
             $0.id != "sync-pull"
         }
         #expect(!store.canExportGuestFiles(from: exportUnavailable))
+
+        var sendOnly = machine
+        sendOnly.fileTransferPolicy = .hostToGuest
+        #expect(store.canTransferFiles(to: sendOnly))
+        #expect(!store.canExportGuestFiles(from: sendOnly))
 
         let currentSettings = await store.machineSettings(machine.name)
         #expect(currentSettings.cpus == 2)
