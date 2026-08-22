@@ -33,6 +33,7 @@ import Foundation
     func machineSerialConsoleRead(_ machineID: String, cursor: NSDictionary, limit: UInt32, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineSerialConsoleWrite(_ machineID: String, data: NSData, reply: @escaping (Bool, String) -> Void)
     func machineStats(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
+    func machineDeviceTelemetry(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineExec(_ machineID: String, request: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineTransfer(_ machineID: String, request: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineTransferStart(_ machineID: String, request: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void)

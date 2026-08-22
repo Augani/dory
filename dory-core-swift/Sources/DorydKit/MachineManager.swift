@@ -828,6 +828,8 @@ public enum MachineManagerError: Error, Sendable, Equatable, CustomStringConvert
     case agentCapabilityUnavailable(String, String)
     case balloonUnavailable(String)
     case balloonApplyFailed(String, String)
+    case deviceTelemetryUnavailable(String)
+    case deviceTelemetryRejected(String, String)
     case invalidAddress(String)
     case invalidShare(String)
     case invalidEnvironment(String)
@@ -855,6 +857,10 @@ public enum MachineManagerError: Error, Sendable, Equatable, CustomStringConvert
             return "machine balloon control is unavailable: \(id)"
         case let .balloonApplyFailed(id, message):
             return "machine balloon control failed for \(id): \(message)"
+        case let .deviceTelemetryUnavailable(id):
+            return "machine device telemetry is unavailable: \(id)"
+        case let .deviceTelemetryRejected(id, message):
+            return "machine device telemetry was rejected for \(id): \(message)"
         case let .invalidAddress(address):
             return "invalid machine address: \(address)"
         case let .invalidShare(share):
@@ -967,6 +973,7 @@ public final class MachineManager: @unchecked Sendable {
     private let configuration: MachineManagerConfiguration
     private let agentConnector: AgentConnector
     private let balloonController: any MachineBalloonControlling
+    private let deviceTelemetryController: any MachineDeviceTelemetryControlling
     private let vzLifecycleController: any MachineVZLifecycleControlling
     private let savedStateStore: DoryMachineSavedStateStore
     private let processStarter: ProcessStarter
@@ -1016,6 +1023,8 @@ public final class MachineManager: @unchecked Sendable {
         configuration: MachineManagerConfiguration,
         launchPolicy: DoryMachineLaunchPolicy = .legacyCompatibility,
         balloonController: any MachineBalloonControlling = UnixMachineBalloonController(),
+        deviceTelemetryController: any MachineDeviceTelemetryControlling =
+            UnixMachineDeviceTelemetryController(),
         vzLifecycleController: any MachineVZLifecycleControlling = UnixMachineVZLifecycleController(),
         agentConnector: @escaping AgentConnector = { socketPath in
             try LocalAgentControl.connect(socketPath: socketPath)
@@ -1025,6 +1034,7 @@ public final class MachineManager: @unchecked Sendable {
         self.configuration = configuration
         self.launchPolicy = launchPolicy
         self.balloonController = balloonController
+        self.deviceTelemetryController = deviceTelemetryController
         self.vzLifecycleController = vzLifecycleController
         self.agentConnector = agentConnector
         self.processStarter = processStarter
@@ -2701,6 +2711,8 @@ public final class MachineManager: @unchecked Sendable {
         entry.currentBalloonTargetMB = nil
         entry.activeResolvedPlan = resolvedPlan
         entry.activeBackend = processLaunch.backend
+        entry.lastDeviceTelemetrySampleSequence = 0
+        entry.lastDeviceTelemetryEventSequence = 0
         entry.readinessAcceptedPendingPublication = false
         let requiresAdmissionCommit = resolvedPlan != nil
             && productionResourceAdmissionLedger != nil
@@ -6677,6 +6689,92 @@ public final class MachineManager: @unchecked Sendable {
         try withAgentClient(id: id, requiredCapability: "telemetry") { client in
             try client.telemetry()
         }
+    }
+
+    public func deviceTelemetry(id: String) throws -> DoryDeviceTelemetrySnapshot {
+        let socketPath: String
+        let launchID: UUID
+        let operationID: String
+        let backend: DoryVirtualizationBackendIdentity
+        lock.lock()
+        guard let entry = machines[id],
+              [.running, .paused].contains(entry.state),
+              entry.process?.isRunning == true,
+              let currentLaunchID = entry.launchID,
+              let currentSocketPath = entry.handoff?.ready.controlSocketPath,
+              let currentOperationID = entry.handoff?.ready.operationID,
+              DoryOperationIdentity.parseCanonical(currentOperationID) != nil,
+              let currentBackend = entry.activeBackend else {
+            lock.unlock()
+            throw MachineManagerError.deviceTelemetryUnavailable(id)
+        }
+        socketPath = currentSocketPath
+        launchID = currentLaunchID
+        operationID = currentOperationID
+        backend = currentBackend
+        lock.unlock()
+
+        let snapshot: DoryDeviceTelemetrySnapshot
+        do {
+            snapshot = try deviceTelemetryController.snapshot(socketPath: socketPath)
+        } catch {
+            throw MachineManagerError.deviceTelemetryRejected(id, "\(error)")
+        }
+        guard snapshot.isValid,
+              snapshot.machineID == id,
+              snapshot.operationID == operationID,
+              snapshot.backend == backend else {
+            throw MachineManagerError.deviceTelemetryRejected(
+                id,
+                "helper snapshot does not match the live launch authority"
+            )
+        }
+
+        lock.lock()
+        defer { lock.unlock() }
+        guard var entry = machines[id],
+              [.running, .paused].contains(entry.state),
+              entry.process?.isRunning == true,
+              entry.launchID == launchID,
+              entry.handoff?.ready.controlSocketPath == socketPath,
+              entry.handoff?.ready.operationID == operationID,
+              entry.activeBackend == backend,
+              snapshot.sampleSequence > entry.lastDeviceTelemetrySampleSequence else {
+            throw MachineManagerError.deviceTelemetryRejected(
+                id,
+                "live launch changed or telemetry sequence did not advance"
+            )
+        }
+        entry.lastDeviceTelemetrySampleSequence = snapshot.sampleSequence
+        for event in snapshot.events
+            where event.sequence > entry.lastDeviceTelemetryEventSequence {
+            do {
+                let recorded = try flightRecorderStore.append(
+                    machineID: id,
+                    operationID: operationID,
+                    operationKind: DoryWorkspaceMutationKind.starting.rawValue,
+                    kind: .deviceHealthEvent,
+                    machineState: entry.state.rawValue,
+                    backend: backend,
+                    virtualHardwareABIVersion:
+                        entry.runtimeIdentity.virtualHardwareABIVersion,
+                    planSHA256: entry.runtimeIdentity.resolvedPlanSHA256,
+                    deviceID: event.deviceID,
+                    deviceEventKind: event.kind,
+                    deviceEventSequence: event.sequence,
+                    deviceEventOccurrences: event.occurrences,
+                    evidenceReferences: failureEvidenceReferences(for: entry)
+                )
+                entry.flightRecorderHeadSequence = recorded.sequence
+                entry.flightRecorderAvailable = true
+                entry.lastDeviceTelemetryEventSequence = event.sequence
+            } catch {
+                entry.flightRecorderAvailable = false
+                break
+            }
+        }
+        machines[id] = entry
+        return snapshot
     }
 
     public func memorySnapshots() -> [GuestMemorySnapshot] {
@@ -12445,6 +12543,8 @@ private struct MachineEntry {
     var activeOperationKind: DoryWorkspaceMutationKind? = nil
     var flightRecorderHeadSequence: UInt64 = 0
     var flightRecorderAvailable: Bool = true
+    var lastDeviceTelemetrySampleSequence: UInt64 = 0
+    var lastDeviceTelemetryEventSequence: UInt64 = 0
     var readinessAcceptedPendingPublication: Bool = false
     var activeResolvedPlan: DoryResolvedMachinePlan?
     var activeBackend: DoryVirtualizationBackendIdentity?

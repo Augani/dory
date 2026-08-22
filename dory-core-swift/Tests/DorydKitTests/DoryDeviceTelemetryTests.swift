@@ -46,6 +46,22 @@ final class DoryDeviceTelemetryTests: XCTestCase {
         falseZero.devices[0].metrics[1].value = 0
         XCTAssertFalse(falseZero.isValid)
 
+        var wrongUnit = snapshot
+        wrongUnit.devices[0].metrics[0].unit = .bytes
+        XCTAssertFalse(wrongUnit.isValid)
+
+        XCTAssertEqual(
+            DoryDeviceTelemetryMetric.measured(.receivedBytes, value: 7).unit,
+            .bytes
+        )
+        XCTAssertEqual(
+            DoryDeviceTelemetryMetric.unavailable(
+                .maximumStorageFlushLatencyNanoseconds,
+                reason: "not exposed"
+            ).unit,
+            .nanoseconds
+        )
+
         var unknownEventDevice = snapshot
         unknownEventDevice.events[0].deviceID = "not-present"
         XCTAssertFalse(unknownEventDevice.isValid)

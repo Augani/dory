@@ -1197,6 +1197,155 @@ final class DorydServiceTests: XCTestCase {
         wait(for: [deletedFlight], timeout: 5)
     }
 
+    func testMachineDeviceTelemetryOverXPCIsExactAndLaunchBound() throws {
+        let base = "/tmp/doryd-service-device-telemetry-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let telemetry = ServiceRecordingMachineDeviceTelemetryController()
+        let manager = MachineManager(
+            configuration: MachineManagerConfiguration(
+                vmmExecutablePath: "/bin/sleep",
+                stateDirectory: base,
+                baseArguments: ["30"],
+                passMachineArguments: false,
+                requiresReadyHandoff: true
+            ),
+            deviceTelemetryController: telemetry
+        )
+        defer {
+            _ = try? manager.stop(id: "dev")
+            try? manager.delete(id: "dev")
+            try? FileManager.default.removeItem(atPath: base)
+        }
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "dev",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath
+        ))
+        let starting = try manager.start(id: "dev")
+        let operationID = try XCTUnwrap(starting.activeOperationID)
+        try sendVmmHandoff(
+            path: try XCTUnwrap(starting.handoffSocketPath),
+            ready: VmmReadyMessage(
+                machineID: "dev",
+                operationID: operationID,
+                agentBuild: "dory-agent/test",
+                agentProtocolVersion: DoryCore.protocolVersion(),
+                agentSocketPath: "/run/agent.sock",
+                controlSocketPath: "/run/control.sock"
+            ),
+            fileDescriptors: []
+        )
+        _ = try waitForServiceMachineState(manager, id: "dev", state: .running)
+
+        telemetry.value = DoryDeviceTelemetrySnapshot(
+            machineID: "dev",
+            operationID: operationID,
+            backend: .appleVirtualizationFramework,
+            sampleSequence: 1,
+            sampledAtUnixMilliseconds: 10,
+            monotonicNanoseconds: 20,
+            devices: [
+                DoryDeviceTelemetryDevice(
+                    id: "virtio-network-7",
+                    kind: .network,
+                    health: .degraded,
+                    metrics: [
+                        .measured(.receivedFrames, value: 12),
+                        .unavailable(
+                            .receiveTruncations,
+                            reason: "backend does not expose truncation counters"
+                        ),
+                    ]
+                ),
+            ],
+            events: [
+                DoryDeviceTelemetryEvent(
+                    sequence: 1,
+                    monotonicNanoseconds: 20,
+                    deviceID: "virtio-network-7",
+                    kind: .queueStall,
+                    occurrences: 2
+                ),
+            ]
+        )
+
+        let service = DorydService(
+            socketPath: "/tmp/doryd-test.sock",
+            machineManager: manager
+        )
+        let listener = makeAnonymousListener(service: service)
+        listener.resume()
+        defer { listener.invalidate() }
+        let connection = NSXPCConnection(listenerEndpoint: listener.endpoint)
+        connection.remoteObjectInterface = NSXPCInterface(with: DorydControl.self)
+        connection.resume()
+        defer { connection.invalidate() }
+        let proxy = try XCTUnwrap(connection.remoteObjectProxy as? DorydControl)
+
+        let valid = expectation(description: "machine device telemetry reply")
+        proxy.machineDeviceTelemetry("dev") { ok, body, message in
+            XCTAssertTrue(ok, message)
+            XCTAssertEqual(
+                Set(body.allKeys.compactMap { $0 as? String }),
+                [
+                    "schemaVersion", "machineID", "operationID", "backend",
+                    "sampleSequence", "sampledAtUnixMilliseconds",
+                    "monotonicNanoseconds", "devices", "events",
+                ]
+            )
+            XCTAssertEqual(body["machineID"] as? String, "dev")
+            XCTAssertEqual(body["operationID"] as? String, operationID)
+            XCTAssertEqual(body["backend"] as? String, "apple-virtualization-framework")
+            XCTAssertEqual((body["sampleSequence"] as? NSNumber)?.uint64Value, 1)
+            let devices = body["devices"] as? [NSDictionary]
+            XCTAssertEqual(devices?.count, 1)
+            XCTAssertEqual(devices?.first?["id"] as? String, "virtio-network-7")
+            let metrics = devices?.first?["metrics"] as? [NSDictionary]
+            XCTAssertEqual(metrics?.count, 2)
+            XCTAssertEqual(metrics?.first?["availability"] as? String, "measured")
+            XCTAssertNil(metrics?.first?["unavailableReason"])
+            XCTAssertEqual(metrics?.last?["availability"] as? String, "unavailable")
+            XCTAssertNil(metrics?.last?["value"])
+            let events = body["events"] as? [NSDictionary]
+            XCTAssertEqual(events?.first?["kind"] as? String, "queue-stall")
+            XCTAssertEqual((events?.first?["occurrences"] as? NSNumber)?.uint64Value, 2)
+            valid.fulfill()
+        }
+        wait(for: [valid], timeout: 5)
+        XCTAssertEqual(telemetry.socketPaths, ["/run/control.sock"])
+
+        let recorded = expectation(description: "device event flight recorder projection")
+        proxy.machineFlightRecorder("dev", afterSequence: 0) { ok, body, message in
+            XCTAssertTrue(ok, message)
+            let events = body["events"] as? [NSDictionary]
+            let event = events?.last { $0["kind"] as? String == "device-health-event" }
+            XCTAssertEqual(event?["operationID"] as? String, operationID)
+            XCTAssertEqual(event?["operationKind"] as? String, "starting")
+            XCTAssertEqual(event?["deviceID"] as? String, "virtio-network-7")
+            XCTAssertEqual(event?["deviceEventKind"] as? String, "queue-stall")
+            XCTAssertEqual(
+                (event?["deviceEventSequence"] as? NSNumber)?.uint64Value,
+                1
+            )
+            XCTAssertEqual(
+                (event?["deviceEventOccurrences"] as? NSNumber)?.uint64Value,
+                2
+            )
+            recorded.fulfill()
+        }
+        wait(for: [recorded], timeout: 5)
+
+        telemetry.value?.sampleSequence = 2
+        telemetry.value?.operationID = "87654321-4321-4321-8321-cba987654321"
+        let rejected = expectation(description: "machine device telemetry rejects stale authority")
+        proxy.machineDeviceTelemetry("dev") { ok, body, message in
+            XCTAssertFalse(ok)
+            XCTAssertEqual(body.count, 0)
+            XCTAssertTrue(message.contains("does not match the live launch authority"))
+            rejected.fulfill()
+        }
+        wait(for: [rejected], timeout: 5)
+    }
+
     func testMachineSerialConsoleOverXPCIsBoundedCursorBasedAndExactShape() throws {
         let base = "/tmp/doryd-service-console-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let manager = MachineManager(configuration: MachineManagerConfiguration(
@@ -3235,6 +3384,31 @@ private final class ServiceRecordingMachineBalloonController: MachineBalloonCont
         lock.lock()
         applies.append(Apply(socketPath: socketPath, targetMB: targetMB))
         lock.unlock()
+    }
+}
+
+private final class ServiceRecordingMachineDeviceTelemetryController:
+    MachineDeviceTelemetryControlling, @unchecked Sendable
+{
+    private let lock = NSLock()
+    private var storedValue: DoryDeviceTelemetrySnapshot?
+    private var storedSocketPaths: [String] = []
+
+    var value: DoryDeviceTelemetrySnapshot? {
+        get { lock.withLock { storedValue } }
+        set { lock.withLock { storedValue = newValue } }
+    }
+
+    var socketPaths: [String] { lock.withLock { storedSocketPaths } }
+
+    func snapshot(socketPath: String) throws -> DoryDeviceTelemetrySnapshot {
+        try lock.withLock {
+            storedSocketPaths.append(socketPath)
+            guard let storedValue else {
+                throw VmmControlError.rejected("test telemetry is missing")
+            }
+            return storedValue
+        }
     }
 }
 

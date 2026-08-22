@@ -4613,6 +4613,111 @@ final class MachineManagerTests: XCTestCase {
         wait(for: [lockReleased], timeout: 1)
         XCTAssertEqual(manager.status(id: "dev")?.state, .created)
     }
+
+    func testDeviceTelemetryBindsLiveLaunchAndPersistsClassifiedEvents() throws {
+        let base = "/tmp/dory-machine-device-telemetry-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let telemetry = RecordingMachineDeviceTelemetryController()
+        let manager = MachineManager(
+            configuration: MachineManagerConfiguration(
+                vmmExecutablePath: "/bin/sleep",
+                stateDirectory: base,
+                baseArguments: ["30"],
+                passMachineArguments: false,
+                requiresReadyHandoff: true
+            ),
+            deviceTelemetryController: telemetry
+        )
+        defer {
+            try? manager.delete(id: "dev")
+            try? FileManager.default.removeItem(atPath: base)
+        }
+
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "dev",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath
+        ))
+        let starting = try manager.start(id: "dev")
+        let operationID = try XCTUnwrap(starting.activeOperationID)
+        try sendVmmHandoff(
+            path: try XCTUnwrap(starting.handoffSocketPath),
+            ready: VmmReadyMessage(
+                machineID: "dev",
+                operationID: operationID,
+                agentBuild: "dory-agent/test",
+                agentProtocolVersion: DoryCore.protocolVersion(),
+                agentSocketPath: "/run/agent.sock",
+                controlSocketPath: "/run/control.sock"
+            ),
+            fileDescriptors: []
+        )
+        _ = try waitForMachineState(manager, id: "dev", state: .running)
+        let device = DoryDeviceTelemetryDevice(
+            id: "virtio-network-7",
+            kind: .network,
+            health: .degraded,
+            metrics: [
+                .measured(.receivedFrames, value: 12),
+                .measured(.receiveDrops, value: 2),
+            ]
+        )
+        let snapshot = DoryDeviceTelemetrySnapshot(
+            machineID: "dev",
+            operationID: operationID,
+            backend: .appleVirtualizationFramework,
+            sampleSequence: 1,
+            sampledAtUnixMilliseconds: 10,
+            monotonicNanoseconds: 20,
+            devices: [device],
+            events: [
+                DoryDeviceTelemetryEvent(
+                    sequence: 1,
+                    monotonicNanoseconds: 20,
+                    deviceID: device.id,
+                    kind: .queueStall,
+                    occurrences: 2
+                ),
+            ]
+        )
+        telemetry.value = snapshot
+
+        XCTAssertEqual(try manager.deviceTelemetry(id: "dev"), snapshot)
+        XCTAssertEqual(telemetry.socketPaths, ["/run/control.sock"])
+        let deviceEvent = try XCTUnwrap(
+            try manager.flightRecorder(id: "dev", afterSequence: 0).events
+                .last(where: { $0.kind == .deviceHealthEvent })
+        )
+        XCTAssertEqual(deviceEvent.operationID, operationID)
+        XCTAssertEqual(deviceEvent.operationKind, DoryWorkspaceMutationKind.starting.rawValue)
+        XCTAssertEqual(deviceEvent.deviceID, device.id)
+        XCTAssertEqual(deviceEvent.deviceEventKind, .queueStall)
+        XCTAssertEqual(deviceEvent.deviceEventSequence, 1)
+        XCTAssertEqual(deviceEvent.deviceEventOccurrences, 2)
+
+        XCTAssertThrowsError(try manager.deviceTelemetry(id: "dev")) { error in
+            XCTAssertEqual(
+                error as? MachineManagerError,
+                .deviceTelemetryRejected(
+                    "dev",
+                    "live launch changed or telemetry sequence did not advance"
+                )
+            )
+        }
+
+        var wrongAuthority = snapshot
+        wrongAuthority.sampleSequence = 2
+        wrongAuthority.operationID = "87654321-4321-4321-8321-cba987654321"
+        telemetry.value = wrongAuthority
+        XCTAssertThrowsError(try manager.deviceTelemetry(id: "dev")) { error in
+            XCTAssertEqual(
+                error as? MachineManagerError,
+                .deviceTelemetryRejected(
+                    "dev",
+                    "helper snapshot does not match the live launch authority"
+                )
+            )
+        }
+    }
 }
 
 private struct NoopMachineVZLifecycleController: MachineVZLifecycleControlling {
@@ -4620,6 +4725,30 @@ private struct NoopMachineVZLifecycleController: MachineVZLifecycleControlling {
     func resume(socketPath: String) throws {}
     func saveMachineState(socketPath: String, statePath: String) throws {
         throw MachineManagerError.persistence("saved state is not available in this test")
+    }
+}
+
+private final class RecordingMachineDeviceTelemetryController:
+    MachineDeviceTelemetryControlling, @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedValue: DoryDeviceTelemetrySnapshot?
+    private var recordedSocketPaths: [String] = []
+
+    var value: DoryDeviceTelemetrySnapshot? {
+        get { lock.withLock { storedValue } }
+        set { lock.withLock { storedValue = newValue } }
+    }
+
+    var socketPaths: [String] { lock.withLock { recordedSocketPaths } }
+
+    func snapshot(socketPath: String) throws -> DoryDeviceTelemetrySnapshot {
+        try lock.withLock {
+            recordedSocketPaths.append(socketPath)
+            guard let storedValue else {
+                throw VmmControlError.rejected("test telemetry is missing")
+            }
+            return storedValue
+        }
     }
 }
 

@@ -33,6 +33,7 @@ nonisolated protocol DorydControlXPC {
     func machineSerialConsoleRead(_ machineID: String, cursor: NSDictionary, limit: UInt32, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineSerialConsoleWrite(_ machineID: String, data: NSData, reply: @escaping (Bool, String) -> Void)
     func machineStats(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
+    func machineDeviceTelemetry(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineExec(_ machineID: String, request: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineTransfer(_ machineID: String, request: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineTransferStart(_ machineID: String, request: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void)
@@ -990,6 +991,53 @@ nonisolated struct DorydMachineStats: Sendable, Equatable {
     var uptimeSeconds: Double
 }
 
+nonisolated enum DorydDeviceTelemetryKind: String, Sendable, Equatable, CaseIterable {
+    case platform, storage, network, graphics, display, audio, balloon, entropy, input, socket
+    case sharedDirectory = "shared-directory"
+}
+
+nonisolated enum DorydDeviceTelemetryHealth: String, Sendable, Equatable {
+    case healthy, degraded, failed, unavailable
+}
+
+nonisolated enum DorydDeviceTelemetryMetricAvailability: String, Sendable, Equatable {
+    case measured, unavailable
+}
+
+nonisolated struct DorydDeviceTelemetryMetric: Sendable, Equatable {
+    var kind: String
+    var unit: String
+    var availability: DorydDeviceTelemetryMetricAvailability
+    var value: UInt64?
+    var unavailableReason: String?
+}
+
+nonisolated struct DorydDeviceTelemetryDevice: Sendable, Equatable {
+    var id: String
+    var kind: DorydDeviceTelemetryKind
+    var health: DorydDeviceTelemetryHealth
+    var metrics: [DorydDeviceTelemetryMetric]
+}
+
+nonisolated struct DorydDeviceTelemetryEvent: Sendable, Equatable {
+    var sequence: UInt64
+    var monotonicNanoseconds: UInt64
+    var deviceID: String
+    var kind: String
+    var occurrences: UInt64
+}
+
+nonisolated struct DorydDeviceTelemetrySnapshot: Sendable, Equatable {
+    var machineID: String
+    var operationID: String
+    var backend: DoryVirtualizationBackendIdentity
+    var sampleSequence: UInt64
+    var sampledAtUnixMilliseconds: UInt64
+    var monotonicNanoseconds: UInt64
+    var devices: [DorydDeviceTelemetryDevice]
+    var events: [DorydDeviceTelemetryEvent]
+}
+
 nonisolated struct DorydMachineProvisionResult: Sendable, Equatable {
     var recipeID: String
     var install: DorydMachineExecResult
@@ -1060,6 +1108,7 @@ nonisolated enum DorydMachineFlightEventKind: String, Sendable, Equatable {
     case readinessAccepted = "readiness-accepted"
     case readinessRejected = "readiness-rejected"
     case resourceTransition = "resource-transition"
+    case deviceHealthEvent = "device-health-event"
     case processExited = "process-exited"
     case failureRecorded = "failure-recorded"
     case operationCompleted = "operation-completed"
@@ -1084,6 +1133,10 @@ nonisolated struct DorydMachineFlightEvent: Sendable, Equatable {
     var planSHA256: String?
     var durationMilliseconds: UInt64?
     var deadlineUnixMilliseconds: Int64?
+    var deviceID: String?
+    var deviceEventKind: String?
+    var deviceEventSequence: UInt64?
+    var deviceEventOccurrences: UInt64?
     var evidenceReferences: [DorydMachineFailureEvidenceReference]
 }
 
@@ -2047,6 +2100,15 @@ nonisolated final class DorydClient: @unchecked Sendable {
             proxy.machineStats(machineID, reply: reply)
         } decode: {
             Self.machineStats(from: $0)
+        }
+    }
+
+    func machineDeviceTelemetry(_ machineID: String) async throws
+        -> DorydDeviceTelemetrySnapshot {
+        try await withTimeout(atLeast: 10).statusCommand { proxy, reply in
+            proxy.machineDeviceTelemetry(machineID, reply: reply)
+        } decode: {
+            Self.machineDeviceTelemetry(from: $0, machineID: machineID)
         }
     }
 
@@ -3407,6 +3469,161 @@ nonisolated final class DorydClient: @unchecked Sendable {
         )
     }
 
+    nonisolated private static func machineDeviceTelemetry(
+        from dictionary: NSDictionary,
+        machineID: String
+    ) -> DorydDeviceTelemetrySnapshot? {
+        guard machineID.isSafeMachineIdentifier,
+              let rawKeys = dictionary.allKeys as? [String],
+              rawKeys.count == dictionary.allKeys.count,
+              Set(rawKeys) == [
+                  "schemaVersion", "machineID", "operationID", "backend", "sampleSequence",
+                  "sampledAtUnixMilliseconds", "monotonicNanoseconds", "devices", "events",
+              ],
+              strictUInt64(dictionary["schemaVersion"]) == 1,
+              dictionary["machineID"] as? String == machineID,
+              let operationID = dictionary["operationID"] as? String,
+              isMachineOperationID(operationID),
+              let rawBackend = dictionary["backend"] as? String,
+              let backend = DoryVirtualizationBackendIdentity(rawValue: rawBackend),
+              let sampleSequence = strictUInt64(dictionary["sampleSequence"]),
+              sampleSequence > 0,
+              let sampledAt = strictUInt64(dictionary["sampledAtUnixMilliseconds"]),
+              sampledAt > 0,
+              let monotonic = strictUInt64(dictionary["monotonicNanoseconds"]),
+              monotonic > 0,
+              let rawDevices = dictionary["devices"] as? NSArray,
+              rawDevices.count > 0, rawDevices.count <= 64,
+              let rawEvents = dictionary["events"] as? NSArray,
+              rawEvents.count <= 256 else {
+            return nil
+        }
+        let devices = rawDevices.compactMap { raw -> DorydDeviceTelemetryDevice? in
+            guard let row = raw as? NSDictionary else { return nil }
+            return machineDeviceTelemetryDevice(from: row)
+        }
+        let events = rawEvents.compactMap { raw -> DorydDeviceTelemetryEvent? in
+            guard let row = raw as? NSDictionary else { return nil }
+            return machineDeviceTelemetryEvent(from: row)
+        }
+        guard devices.count == rawDevices.count,
+              events.count == rawEvents.count,
+              Set(devices.map(\.id)).count == devices.count,
+              events == events.sorted(by: { $0.sequence < $1.sequence }),
+              Set(events.map(\.sequence)).count == events.count,
+              events.allSatisfy({ event in devices.contains { $0.id == event.deviceID } }) else {
+            return nil
+        }
+        return DorydDeviceTelemetrySnapshot(
+            machineID: machineID,
+            operationID: operationID,
+            backend: backend,
+            sampleSequence: sampleSequence,
+            sampledAtUnixMilliseconds: sampledAt,
+            monotonicNanoseconds: monotonic,
+            devices: devices,
+            events: events
+        )
+    }
+
+    nonisolated private static func machineDeviceTelemetryDevice(
+        from dictionary: NSDictionary
+    ) -> DorydDeviceTelemetryDevice? {
+        guard let rawKeys = dictionary.allKeys as? [String],
+              rawKeys.count == dictionary.allKeys.count,
+              Set(rawKeys) == ["id", "kind", "health", "metrics"],
+              let id = dictionary["id"] as? String,
+              !id.isEmpty, id.utf8.count <= 128,
+              !id.contains("\0"), !id.contains("\n"), !id.contains("\r"),
+              let rawKind = dictionary["kind"] as? String,
+              let kind = DorydDeviceTelemetryKind(rawValue: rawKind),
+              let rawHealth = dictionary["health"] as? String,
+              let health = DorydDeviceTelemetryHealth(rawValue: rawHealth),
+              let rawMetrics = dictionary["metrics"] as? NSArray,
+              rawMetrics.count > 0, rawMetrics.count <= 23 else {
+            return nil
+        }
+        let metrics = rawMetrics.compactMap { raw -> DorydDeviceTelemetryMetric? in
+            guard let row = raw as? NSDictionary else { return nil }
+            return machineDeviceTelemetryMetric(from: row)
+        }
+        guard metrics.count == rawMetrics.count,
+              Set(metrics.map(\.kind)).count == metrics.count,
+              health != .unavailable
+                ? metrics.contains(where: { $0.availability == .measured })
+                : metrics.allSatisfy({ $0.availability == .unavailable }) else {
+            return nil
+        }
+        return DorydDeviceTelemetryDevice(id: id, kind: kind, health: health, metrics: metrics)
+    }
+
+    nonisolated private static func machineDeviceTelemetryMetric(
+        from dictionary: NSDictionary
+    ) -> DorydDeviceTelemetryMetric? {
+        guard let rawKeys = dictionary.allKeys as? [String],
+              rawKeys.count == dictionary.allKeys.count,
+              let kind = dictionary["kind"] as? String,
+              deviceTelemetryMetricKinds.contains(kind),
+              let unit = dictionary["unit"] as? String,
+              unit == deviceTelemetryMetricUnit(for: kind),
+              let rawAvailability = dictionary["availability"] as? String,
+              let availability = DorydDeviceTelemetryMetricAvailability(
+                  rawValue: rawAvailability
+              ) else {
+            return nil
+        }
+        switch availability {
+        case .measured:
+            guard Set(rawKeys) == ["kind", "unit", "availability", "value"],
+                  let value = strictUInt64(dictionary["value"]) else { return nil }
+            return DorydDeviceTelemetryMetric(
+                kind: kind,
+                unit: unit,
+                availability: availability,
+                value: value
+            )
+        case .unavailable:
+            guard Set(rawKeys) == ["kind", "unit", "availability", "unavailableReason"],
+                  let reason = dictionary["unavailableReason"] as? String,
+                  !reason.isEmpty, reason.utf8.count <= 256,
+                  !reason.contains("\0"), !reason.contains("\n"), !reason.contains("\r") else {
+                return nil
+            }
+            return DorydDeviceTelemetryMetric(
+                kind: kind,
+                unit: unit,
+                availability: availability,
+                unavailableReason: reason
+            )
+        }
+    }
+
+    nonisolated private static func machineDeviceTelemetryEvent(
+        from dictionary: NSDictionary
+    ) -> DorydDeviceTelemetryEvent? {
+        guard let rawKeys = dictionary.allKeys as? [String],
+              rawKeys.count == dictionary.allKeys.count,
+              Set(rawKeys) == [
+                  "sequence", "monotonicNanoseconds", "deviceID", "kind", "occurrences",
+              ],
+              let sequence = strictUInt64(dictionary["sequence"]), sequence > 0,
+              let monotonic = strictUInt64(dictionary["monotonicNanoseconds"]), monotonic > 0,
+              let deviceID = dictionary["deviceID"] as? String,
+              !deviceID.isEmpty, deviceID.utf8.count <= 128,
+              let kind = dictionary["kind"] as? String,
+              deviceTelemetryEventKinds.contains(kind),
+              let occurrences = strictUInt64(dictionary["occurrences"]), occurrences > 0 else {
+            return nil
+        }
+        return DorydDeviceTelemetryEvent(
+            sequence: sequence,
+            monotonicNanoseconds: monotonic,
+            deviceID: deviceID,
+            kind: kind,
+            occurrences: occurrences
+        )
+    }
+
     nonisolated private static func machineProvisionResult(from dictionary: NSDictionary) -> DorydMachineProvisionResult? {
         let decodedRecipeID = (dictionary["recipeID"] as? String) ?? (dictionary["recipe"] as? String)
         guard let recipeID = decodedRecipeID,
@@ -3633,7 +3850,8 @@ nonisolated final class DorydClient: @unchecked Sendable {
         let optional: Set<String> = [
             "operationID", "operationKind", "phase", "machineState", "failureCode",
             "recoveryDisposition", "backend", "virtualHardwareABIVersion", "planSHA256",
-            "durationMilliseconds", "deadlineUnixMilliseconds",
+            "durationMilliseconds", "deadlineUnixMilliseconds", "deviceID",
+            "deviceEventKind", "deviceEventSequence", "deviceEventOccurrences",
         ]
         guard let rawKeys = dictionary.allKeys as? [String] else { return nil }
         let keys = Set(rawKeys)
@@ -3694,6 +3912,10 @@ nonisolated final class DorydClient: @unchecked Sendable {
         let planSHA256 = dictionary["planSHA256"] as? String
         let duration = dictionary["durationMilliseconds"].flatMap(strictUInt64)
         let deadline = dictionary["deadlineUnixMilliseconds"].flatMap(strictInt64)
+        let deviceID = dictionary["deviceID"] as? String
+        let deviceEventKind = dictionary["deviceEventKind"] as? String
+        let deviceEventSequence = dictionary["deviceEventSequence"].flatMap(strictUInt64)
+        let deviceEventOccurrences = dictionary["deviceEventOccurrences"].flatMap(strictUInt64)
         guard (dictionary["operationID"] == nil) == (operationID == nil),
               (dictionary["operationKind"] == nil) == (operationKind == nil),
               (operationID == nil) == (operationKind == nil),
@@ -3713,11 +3935,30 @@ nonisolated final class DorydClient: @unchecked Sendable {
               (dictionary["durationMilliseconds"] == nil) == (duration == nil),
               duration.map({ $0 <= 31 * 24 * 60 * 60 * 1_000 }) ?? true,
               (dictionary["deadlineUnixMilliseconds"] == nil) == (deadline == nil),
-              deadline.map({ $0 > 0 }) ?? true else {
+              deadline.map({ $0 > 0 }) ?? true,
+              (dictionary["deviceID"] == nil) == (deviceID == nil),
+              deviceID.map({ !$0.isEmpty && $0.utf8.count <= 128 }) ?? true,
+              (dictionary["deviceEventKind"] == nil) == (deviceEventKind == nil),
+              deviceEventKind.map(deviceTelemetryEventKinds.contains) ?? true,
+              (dictionary["deviceEventSequence"] == nil) == (deviceEventSequence == nil),
+              deviceEventSequence.map({ $0 > 0 }) ?? true,
+              (dictionary["deviceEventOccurrences"] == nil) == (deviceEventOccurrences == nil),
+              deviceEventOccurrences.map({ $0 > 0 }) ?? true else {
             return nil
         }
         if [.failureRecorded, .readinessRejected, .operationFailed, .recoveryRequired]
             .contains(kind), failureCode == nil {
+            return nil
+        }
+        let deviceFields = [
+            deviceID != nil,
+            deviceEventKind != nil,
+            deviceEventSequence != nil,
+            deviceEventOccurrences != nil,
+        ]
+        guard kind == .deviceHealthEvent
+            ? deviceFields.allSatisfy({ $0 })
+            : deviceFields.allSatisfy({ !$0 }) else {
             return nil
         }
         return DorydMachineFlightEvent(
@@ -3736,6 +3977,10 @@ nonisolated final class DorydClient: @unchecked Sendable {
             planSHA256: planSHA256,
             durationMilliseconds: duration,
             deadlineUnixMilliseconds: deadline,
+            deviceID: deviceID,
+            deviceEventKind: deviceEventKind,
+            deviceEventSequence: deviceEventSequence,
+            deviceEventOccurrences: deviceEventOccurrences,
             evidenceReferences: evidence
         )
     }
@@ -3903,6 +4148,31 @@ nonisolated final class DorydClient: @unchecked Sendable {
     nonisolated private static let machineRuntimeModes: Set<String> = [
         "legacy-compatibility", "resolved-plan", "requires-replanning",
     ]
+    nonisolated private static let deviceTelemetryMetricKinds: Set<String> = [
+        "queue-notifications", "queue-state-changes", "used-interrupts",
+        "configuration-interrupts", "device-resets", "transmitted-frames",
+        "transmitted-bytes", "transmit-drops", "received-frames", "received-bytes",
+        "receive-deferred", "receive-drops", "receive-truncations", "reconnects",
+        "display-frames", "display-drops", "audio-drops", "storage-flushes",
+        "maximum-storage-flush-latency-nanoseconds", "graphics-fences",
+        "graphics-device-losses", "share-invalidations", "share-invalidation-failures",
+    ]
+    nonisolated private static let deviceTelemetryEventKinds: Set<String> = [
+        "queue-stall", "reset", "graphics-fence-timeout", "graphics-device-loss",
+        "network-reconnect", "audio-drop", "storage-flush-slow",
+        "share-invalidation-failure",
+    ]
+
+    nonisolated private static func deviceTelemetryMetricUnit(for kind: String) -> String {
+        switch kind {
+        case "transmitted-bytes", "received-bytes":
+            "bytes"
+        case "maximum-storage-flush-latency-nanoseconds":
+            "nanoseconds"
+        default:
+            "count"
+        }
+    }
 
     nonisolated private static func machineImportAssessment(
         from dictionary: NSDictionary

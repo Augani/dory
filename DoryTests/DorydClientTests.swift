@@ -938,6 +938,122 @@ struct DorydClientTests {
                 afterSequence: 0
             )
         }
+
+        let deviceEvent = event.mutableCopy() as! NSMutableDictionary
+        deviceEvent["kind"] = "device-health-event"
+        deviceEvent["operationID"] = "12345678-1234-4234-8234-123456789abc"
+        deviceEvent["operationKind"] = "starting"
+        deviceEvent["deviceID"] = "virtio-network-7"
+        deviceEvent["deviceEventKind"] = "queue-stall"
+        deviceEvent["deviceEventSequence"] = UInt64(1)
+        deviceEvent["deviceEventOccurrences"] = UInt64(2)
+        let deviceBatch = valid.mutableCopy() as! NSMutableDictionary
+        deviceBatch["events"] = [deviceEvent]
+        service.setMachineFlightRecorderBatch(deviceBatch)
+        let deviceFlight = try await client.machineFlightRecorder(
+            machineID: "dev",
+            afterSequence: 0
+        )
+        #expect(deviceFlight.events.first?.kind == .deviceHealthEvent)
+        #expect(deviceFlight.events.first?.deviceID == "virtio-network-7")
+        #expect(deviceFlight.events.first?.deviceEventKind == "queue-stall")
+        #expect(deviceFlight.events.first?.deviceEventOccurrences == 2)
+
+        deviceEvent.removeObject(forKey: "deviceEventOccurrences")
+        service.setMachineFlightRecorderBatch(deviceBatch)
+        await #expect(throws: (any Error).self) {
+            _ = try await client.machineFlightRecorder(
+                machineID: "dev",
+                afterSequence: 0
+            )
+        }
+    }
+
+    @MainActor
+    @Test func machineDeviceTelemetryRequiresExactBoundedLaunchEvidence() async throws {
+        let listener = NSXPCListener.anonymous()
+        let service = FakeDorydService()
+        let delegate = FakeDorydListenerDelegate(service: service)
+        listener.delegate = delegate
+        listener.resume()
+        defer { listener.invalidate() }
+        let client = DorydClient(endpoint: listener.endpoint)
+
+        let operationID = "12345678-1234-4234-8234-123456789abc"
+        let metric: NSDictionary = [
+            "kind": "receive-drops",
+            "unit": "count",
+            "availability": "measured",
+            "value": UInt64(2),
+        ]
+        let device: NSDictionary = [
+            "id": "virtio-network-7",
+            "kind": "network",
+            "health": "degraded",
+            "metrics": [metric],
+        ]
+        let event: NSDictionary = [
+            "sequence": UInt64(1),
+            "monotonicNanoseconds": UInt64(20),
+            "deviceID": "virtio-network-7",
+            "kind": "queue-stall",
+            "occurrences": UInt64(2),
+        ]
+        let valid: NSDictionary = [
+            "schemaVersion": UInt16(1),
+            "machineID": "dev",
+            "operationID": operationID,
+            "backend": "apple-virtualization-framework",
+            "sampleSequence": UInt64(1),
+            "sampledAtUnixMilliseconds": UInt64(10),
+            "monotonicNanoseconds": UInt64(20),
+            "devices": [device],
+            "events": [event],
+        ]
+        service.setMachineDeviceTelemetryResponse(valid)
+        let snapshot = try await client.machineDeviceTelemetry("dev")
+        #expect(snapshot.operationID == operationID)
+        #expect(snapshot.backend == .appleVirtualizationFramework)
+        #expect(snapshot.devices.first?.metrics.first?.value == 2)
+        #expect(snapshot.events.first?.kind == "queue-stall")
+        #expect(snapshot.events.first?.occurrences == 2)
+
+        let unavailableWithValue: NSDictionary = [
+            "kind": "receive-drops",
+            "unit": "count",
+            "availability": "unavailable",
+            "unavailableReason": "framework API unavailable",
+            "value": UInt64(0),
+        ]
+        let invalidDevice = device.mutableCopy() as! NSMutableDictionary
+        invalidDevice["metrics"] = [unavailableWithValue]
+        let invalidMetricShape = valid.mutableCopy() as! NSMutableDictionary
+        invalidMetricShape["devices"] = [invalidDevice]
+
+        let wrongUnitMetric = metric.mutableCopy() as! NSMutableDictionary
+        wrongUnitMetric["unit"] = "bytes"
+        let wrongUnitDevice = device.mutableCopy() as! NSMutableDictionary
+        wrongUnitDevice["metrics"] = [wrongUnitMetric]
+        let invalidMetricUnit = valid.mutableCopy() as! NSMutableDictionary
+        invalidMetricUnit["devices"] = [wrongUnitDevice]
+
+        let orphanEvent = event.mutableCopy() as! NSMutableDictionary
+        orphanEvent["deviceID"] = "virtio-storage-9"
+        let invalidEventAuthority = valid.mutableCopy() as! NSMutableDictionary
+        invalidEventAuthority["events"] = [orphanEvent]
+
+        for malformed in [
+            valid.adding("hostPath", "/private/opaque"),
+            valid.replacing("sampleSequence", with: true),
+            invalidMetricShape,
+            invalidMetricUnit,
+            invalidEventAuthority,
+        ] {
+            service.setMachineDeviceTelemetryResponse(malformed)
+            await #expect(throws: (any Error).self) {
+                _ = try await client.machineDeviceTelemetry("dev")
+            }
+        }
     }
 
     @MainActor
@@ -3955,6 +4071,7 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     private var _machineImportAssessmentOverride: NSDictionary?
     private var _machineEventBatchOverride: NSDictionary?
     private var _machineFlightRecorderBatchOverride: NSDictionary?
+    private var _machineDeviceTelemetryResponseOverride: NSDictionary?
     private var _machineSerialConsoleBatchOverride: NSDictionary?
     private var _latestMachineSerialConsoleCursor: NSDictionary?
     private var _latestMachineSerialConsoleInput: Data?
@@ -4369,6 +4486,12 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     func setMachineFlightRecorderBatch(_ response: NSDictionary?) {
         lock.lock()
         _machineFlightRecorderBatchOverride = response
+        lock.unlock()
+    }
+
+    func setMachineDeviceTelemetryResponse(_ response: NSDictionary?) {
+        lock.lock()
+        _machineDeviceTelemetryResponseOverride = response
         lock.unlock()
     }
 
@@ -4793,6 +4916,16 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
             "snapshotRequired": afterSequence > 0,
             "events": [] as [NSDictionary],
         ]
+        lock.unlock()
+        reply(true, row, "")
+    }
+
+    func machineDeviceTelemetry(
+        _ machineID: String,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        lock.lock()
+        let row = _machineDeviceTelemetryResponseOverride ?? [:]
         lock.unlock()
         reply(true, row, "")
     }

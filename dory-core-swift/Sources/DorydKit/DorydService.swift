@@ -566,6 +566,22 @@ public final class DorydService: NSObject, DorydControl {
         }
     }
 
+    public func machineDeviceTelemetry(
+        _ machineID: String,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        guard let machineManager else {
+            reply(false, [:], "machine manager is not configured")
+            return
+        }
+        do {
+            let snapshot = try machineManager.deviceTelemetry(id: machineID)
+            reply(true, snapshot.xpcDictionary, "")
+        } catch {
+            reply(false, [:], "\(error)")
+        }
+    }
+
     public func machineExec(
         _ machineID: String,
         request: NSDictionary,
@@ -2591,7 +2607,65 @@ private extension DoryMachineFlightEvent {
         if let deadlineUnixMilliseconds {
             dictionary["deadlineUnixMilliseconds"] = deadlineUnixMilliseconds
         }
+        if let deviceID { dictionary["deviceID"] = deviceID }
+        if let deviceEventKind { dictionary["deviceEventKind"] = deviceEventKind.rawValue }
+        if let deviceEventSequence { dictionary["deviceEventSequence"] = deviceEventSequence }
+        if let deviceEventOccurrences {
+            dictionary["deviceEventOccurrences"] = deviceEventOccurrences
+        }
         return dictionary as NSDictionary
+    }
+}
+
+private extension DoryDeviceTelemetrySnapshot {
+    var xpcDictionary: NSDictionary {
+        [
+            "schemaVersion": schemaVersion,
+            "machineID": machineID,
+            "operationID": operationID,
+            "backend": backend.rawValue,
+            "sampleSequence": sampleSequence,
+            "sampledAtUnixMilliseconds": sampledAtUnixMilliseconds,
+            "monotonicNanoseconds": monotonicNanoseconds,
+            "devices": devices.map(\.xpcDictionary),
+            "events": events.map(\.xpcDictionary),
+        ]
+    }
+}
+
+private extension DoryDeviceTelemetryDevice {
+    var xpcDictionary: NSDictionary {
+        [
+            "id": id,
+            "kind": kind.rawValue,
+            "health": health.rawValue,
+            "metrics": metrics.map(\.xpcDictionary),
+        ]
+    }
+}
+
+private extension DoryDeviceTelemetryMetric {
+    var xpcDictionary: NSDictionary {
+        var dictionary: [String: Any] = [
+            "kind": kind.rawValue,
+            "unit": unit.rawValue,
+            "availability": availability.rawValue,
+        ]
+        if let value { dictionary["value"] = value }
+        if let unavailableReason { dictionary["unavailableReason"] = unavailableReason }
+        return dictionary as NSDictionary
+    }
+}
+
+private extension DoryDeviceTelemetryEvent {
+    var xpcDictionary: NSDictionary {
+        [
+            "sequence": sequence,
+            "monotonicNanoseconds": monotonicNanoseconds,
+            "deviceID": deviceID,
+            "kind": kind.rawValue,
+            "occurrences": occurrences,
+        ]
     }
 }
 

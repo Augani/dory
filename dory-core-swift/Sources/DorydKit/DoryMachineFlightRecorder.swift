@@ -14,6 +14,7 @@ public enum DoryMachineFlightEventKind: String, Codable, Sendable, CaseIterable 
     case helperLifecycleAcknowledged = "helper-lifecycle-acknowledged"
     case helperLifecycleUnavailable = "helper-lifecycle-unavailable"
     case resourceTransition = "resource-transition"
+    case deviceHealthEvent = "device-health-event"
     case processExited = "process-exited"
     case failureRecorded = "failure-recorded"
     case operationCompleted = "operation-completed"
@@ -44,6 +45,10 @@ public struct DoryMachineFlightEvent: Codable, Sendable, Equatable, Hashable {
     public var planSHA256: String?
     public var durationMilliseconds: UInt64?
     public var deadlineUnixMilliseconds: Int64?
+    public var deviceID: String?
+    public var deviceEventKind: DoryDeviceTelemetryEventKind?
+    public var deviceEventSequence: UInt64?
+    public var deviceEventOccurrences: UInt64?
     public var evidenceReferences: [DoryMachineFailureEvidenceReference]
 
     public init(
@@ -62,6 +67,10 @@ public struct DoryMachineFlightEvent: Codable, Sendable, Equatable, Hashable {
         planSHA256: String? = nil,
         durationMilliseconds: UInt64? = nil,
         deadlineUnixMilliseconds: Int64? = nil,
+        deviceID: String? = nil,
+        deviceEventKind: DoryDeviceTelemetryEventKind? = nil,
+        deviceEventSequence: UInt64? = nil,
+        deviceEventOccurrences: UInt64? = nil,
         evidenceReferences: [DoryMachineFailureEvidenceReference] = []
     ) {
         schemaVersion = Self.currentSchemaVersion
@@ -80,6 +89,10 @@ public struct DoryMachineFlightEvent: Codable, Sendable, Equatable, Hashable {
         self.planSHA256 = planSHA256
         self.durationMilliseconds = durationMilliseconds
         self.deadlineUnixMilliseconds = deadlineUnixMilliseconds
+        self.deviceID = deviceID
+        self.deviceEventKind = deviceEventKind
+        self.deviceEventSequence = deviceEventSequence
+        self.deviceEventOccurrences = deviceEventOccurrences
         self.evidenceReferences = evidenceReferences
     }
 
@@ -100,6 +113,9 @@ public struct DoryMachineFlightEvent: Codable, Sendable, Equatable, Hashable {
               planSHA256.map(Self.isSHA256) ?? true,
               durationMilliseconds.map({ $0 <= 31 * 24 * 60 * 60 * 1_000 }) ?? true,
               deadlineUnixMilliseconds.map({ $0 > 0 }) ?? true,
+              deviceID.map(Self.isDeviceID) ?? true,
+              deviceEventSequence.map({ $0 > 0 }) ?? true,
+              deviceEventOccurrences.map({ $0 > 0 }) ?? true,
               evidenceReferences.count <= 16,
               evidenceReferences.allSatisfy(\.isValid),
               Set(evidenceReferences).count == evidenceReferences.count else {
@@ -110,6 +126,13 @@ public struct DoryMachineFlightEvent: Codable, Sendable, Equatable, Hashable {
             || kind == .operationFailed || kind == .recoveryRequired {
             return failureCode != nil && recoveryDisposition != nil
         }
+        let hasDeviceEvent = deviceID != nil || deviceEventKind != nil
+            || deviceEventSequence != nil || deviceEventOccurrences != nil
+        if kind == .deviceHealthEvent {
+            return deviceID != nil && deviceEventKind != nil
+                && deviceEventSequence != nil && deviceEventOccurrences != nil
+        }
+        if hasDeviceEvent { return false }
         return true
     }
 
@@ -123,6 +146,11 @@ public struct DoryMachineFlightEvent: Codable, Sendable, Equatable, Hashable {
         value.utf8.count == 64 && value.utf8.allSatisfy {
             (48...57).contains($0) || (97...102).contains($0)
         }
+    }
+
+    private static func isDeviceID(_ value: String) -> Bool {
+        !value.isEmpty && value.utf8.count <= 128
+            && !value.contains("\0") && !value.contains("\n") && !value.contains("\r")
     }
 }
 
@@ -240,6 +268,10 @@ final class DoryMachineFlightRecorderStore: @unchecked Sendable {
         planSHA256: String? = nil,
         durationMilliseconds: UInt64? = nil,
         deadlineUnixMilliseconds: Int64? = nil,
+        deviceID: String? = nil,
+        deviceEventKind: DoryDeviceTelemetryEventKind? = nil,
+        deviceEventSequence: UInt64? = nil,
+        deviceEventOccurrences: UInt64? = nil,
         evidenceReferences: [DoryMachineFailureEvidenceReference] = []
     ) throws -> DoryMachineFlightEvent {
         guard Self.isMachineID(machineID) else {
@@ -283,6 +315,10 @@ final class DoryMachineFlightRecorderStore: @unchecked Sendable {
                 planSHA256: planSHA256,
                 durationMilliseconds: durationMilliseconds,
                 deadlineUnixMilliseconds: deadlineUnixMilliseconds,
+                deviceID: deviceID,
+                deviceEventKind: deviceEventKind,
+                deviceEventSequence: deviceEventSequence,
+                deviceEventOccurrences: deviceEventOccurrences,
                 evidenceReferences: evidenceReferences
             )
             guard event.isValid else {

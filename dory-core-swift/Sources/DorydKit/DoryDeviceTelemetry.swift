@@ -47,6 +47,17 @@ public enum DoryDeviceTelemetryMetricKind: String, Codable, Sendable, CaseIterab
     case graphicsDeviceLosses = "graphics-device-losses"
     case shareInvalidations = "share-invalidations"
     case shareInvalidationFailures = "share-invalidation-failures"
+
+    public var expectedUnit: DoryDeviceTelemetryMetricUnit {
+        switch self {
+        case .transmittedBytes, .receivedBytes:
+            .bytes
+        case .maximumStorageFlushLatencyNanoseconds:
+            .nanoseconds
+        default:
+            .count
+        }
+    }
 }
 
 public enum DoryDeviceTelemetryMetricUnit: String, Codable, Sendable, CaseIterable, Hashable {
@@ -83,26 +94,32 @@ public struct DoryDeviceTelemetryMetric: Codable, Sendable, Equatable, Hashable 
 
     public static func measured(
         _ kind: DoryDeviceTelemetryMetricKind,
-        unit: DoryDeviceTelemetryMetricUnit = .count,
+        unit: DoryDeviceTelemetryMetricUnit? = nil,
         value: UInt64
     ) -> Self {
-        Self(kind: kind, unit: unit, availability: .measured, value: value)
+        Self(
+            kind: kind,
+            unit: unit ?? kind.expectedUnit,
+            availability: .measured,
+            value: value
+        )
     }
 
     public static func unavailable(
         _ kind: DoryDeviceTelemetryMetricKind,
-        unit: DoryDeviceTelemetryMetricUnit = .count,
+        unit: DoryDeviceTelemetryMetricUnit? = nil,
         reason: String
     ) -> Self {
         Self(
             kind: kind,
-            unit: unit,
+            unit: unit ?? kind.expectedUnit,
             availability: .unavailable,
             unavailableReason: reason
         )
     }
 
     public var isValid: Bool {
+        guard unit == kind.expectedUnit else { return false }
         switch availability {
         case .measured:
             return value != nil && unavailableReason == nil
@@ -142,6 +159,7 @@ public struct DoryDeviceTelemetryDevice: Codable, Sendable, Equatable, Hashable 
               !id.contains("\n"),
               !id.contains("\r"),
               !metrics.isEmpty,
+              metrics.count <= DoryDeviceTelemetryMetricKind.allCases.count,
               metrics.allSatisfy(\.isValid),
               Set(metrics.map(\.kind)).count == metrics.count else {
             return false
@@ -245,8 +263,10 @@ public struct DoryDeviceTelemetrySnapshot: Codable, Sendable, Equatable, Hashabl
               DoryOperationIdentity.parseCanonical(operationID) != nil,
               operationID != "00000000-0000-0000-0000-000000000000",
               !devices.isEmpty,
+              devices.count <= 64,
               devices.allSatisfy(\.isValid),
               Set(devices.map(\.id)).count == devices.count,
+              events.count <= 256,
               events.allSatisfy(\.isValid) else {
             return false
         }
