@@ -1877,6 +1877,8 @@ private final class DoryVZMachineStopObserver: NSObject, VZVirtualMachineDelegat
 }
 
 public final class DoryVZMachine: @unchecked Sendable {
+    private static let reservedBootConfigurationShareTag = "dorycfg"
+
     private let queue: DispatchQueue
     private let configuration: VZVirtualMachineConfiguration
     private let virtualMachine: VZVirtualMachine
@@ -2115,6 +2117,81 @@ public final class DoryVZMachine: @unchecked Sendable {
             box.complete(.success(balloon.targetVirtualMachineMemorySize / 1024 / 1024))
         }
         return try box.wait()
+    }
+
+    /// Replaces the backing directories of the existing user-visible VirtioFS devices without
+    /// changing their guest-visible tag/device identity. Virtualization.framework exposes this
+    /// mutation directly on VZVirtioFileSystemDevice; add/remove/retag is intentionally rejected
+    /// because the live device graph itself is immutable.
+    public func replaceDirectoryShares(
+        _ replacements: [VmmDirectoryShareReplacement]
+    ) throws {
+        guard replacements.count <= VmmDirectoryShareReplacement.maximumCount,
+              replacements.allSatisfy(\.isValid),
+              Set(replacements.map(\.tag)).count == replacements.count,
+              !replacements.contains(where: {
+                  $0.tag == Self.reservedBootConfigurationShareTag
+              }) else {
+            throw DoryVZMachineError.validation(
+                "invalid runtime directory-share replacement"
+            )
+        }
+
+        try queue.sync { [self] in
+            guard virtualMachine.state == .running || virtualMachine.state == .paused else {
+                throw DoryVZMachineError.validation(
+                    "virtual machine is not running or paused"
+                )
+            }
+            let devices = virtualMachine.directorySharingDevices.compactMap {
+                $0 as? VZVirtioFileSystemDevice
+            }
+            guard devices.count == virtualMachine.directorySharingDevices.count else {
+                throw DoryVZMachineError.validation(
+                    "virtual machine has an unsupported directory-sharing device"
+                )
+            }
+            let userDevices = devices.filter {
+                $0.tag != Self.reservedBootConfigurationShareTag
+            }
+            let deviceTags = Set(userDevices.map(\.tag))
+            let replacementTags = Set(replacements.map(\.tag))
+            guard deviceTags == replacementTags,
+                  userDevices.count == replacements.count else {
+                throw DoryVZMachineError.validation(
+                    "runtime directory-share device set changed"
+                )
+            }
+
+            var prepared: [String: VZSingleDirectoryShare] = [:]
+            for replacement in replacements {
+                var info = stat()
+                guard lstat(replacement.hostPath, &info) == 0,
+                      (info.st_mode & S_IFMT) == S_IFDIR else {
+                    throw DoryVZMachineError.missingFile(replacement.hostPath)
+                }
+                do {
+                    try VZVirtioFileSystemDeviceConfiguration.validateTag(replacement.tag)
+                } catch {
+                    throw DoryVZMachineError.validation("\(error)")
+                }
+                let directory = VZSharedDirectory(
+                    url: URL(
+                        fileURLWithPath: replacement.hostPath,
+                        isDirectory: true
+                    ),
+                    readOnly: replacement.readOnly
+                )
+                prepared[replacement.tag] = VZSingleDirectoryShare(directory: directory)
+            }
+
+            // All validation and VZ share construction is complete before the first mutation.
+            // These property assignments are synchronous and non-throwing for VZ directory
+            // shares, so another operation on the VM queue cannot observe a partial set.
+            for device in userDevices {
+                device.share = prepared[device.tag]
+            }
+        }
     }
 
     private func firstSocketDeviceOnQueue() throws -> VZVirtioSocketDevice {
@@ -2412,7 +2489,8 @@ private final class DoryVMMControlServer: @unchecked Sendable {
             guard request.targetMB == nil,
                   request.statePath == nil,
                   request.lifecycleAction == nil,
-                  request.operationID == nil else {
+                  request.operationID == nil,
+                  request.directoryShares == nil else {
                 return HandledControlResponse(response: VmmControlResponse(
                     ok: false,
                     message: "invalid VMM device telemetry request"
@@ -2425,7 +2503,11 @@ private final class DoryVMMControlServer: @unchecked Sendable {
                 )
             )
         case "setBalloonTarget":
-            guard let targetMB = request.targetMB, targetMB > 0 else {
+            guard let targetMB = request.targetMB, targetMB > 0,
+                  request.statePath == nil,
+                  request.lifecycleAction == nil,
+                  request.operationID == nil,
+                  request.directoryShares == nil else {
                 return HandledControlResponse(
                     response: VmmControlResponse(ok: false, message: "missing positive targetMB")
                 )
@@ -2434,7 +2516,28 @@ private final class DoryVMMControlServer: @unchecked Sendable {
             return HandledControlResponse(
                 response: VmmControlResponse(ok: true, targetMB: appliedMB)
             )
+        case "replaceDirectoryShares":
+            guard request.targetMB == nil,
+                  request.statePath == nil,
+                  request.lifecycleAction == nil,
+                  request.operationID == nil,
+                  let replacements = request.directoryShares else {
+                return HandledControlResponse(response: VmmControlResponse(
+                    ok: false,
+                    message: "invalid runtime directory-share request"
+                ))
+            }
+            try machine.replaceDirectoryShares(replacements)
+            return HandledControlResponse(response: VmmControlResponse(ok: true))
         case "pauseMachine":
+            guard request.targetMB == nil,
+                  request.statePath == nil,
+                  request.directoryShares == nil else {
+                return HandledControlResponse(response: VmmControlResponse(
+                    ok: false,
+                    message: "invalid pause request"
+                ))
+            }
             let receipt = try lifecycleReceipt(
                 request,
                 expectedAction: .preparePause
@@ -2442,11 +2545,22 @@ private final class DoryVMMControlServer: @unchecked Sendable {
             try machine.pause()
             return HandledControlResponse(response: receipt)
         case "resumeMachine":
+            guard request.targetMB == nil,
+                  request.statePath == nil,
+                  request.directoryShares == nil else {
+                return HandledControlResponse(response: VmmControlResponse(
+                    ok: false,
+                    message: "invalid resume request"
+                ))
+            }
             let receipt = try lifecycleReceipt(request, expectedAction: .resumed)
             try machine.resume()
             return HandledControlResponse(response: receipt)
         case "acknowledgeLifecycle":
-            guard let action = request.lifecycleAction else {
+            guard request.targetMB == nil,
+                  request.statePath == nil,
+                  request.directoryShares == nil,
+                  let action = request.lifecycleAction else {
                 return HandledControlResponse(response: VmmControlResponse(
                     ok: false,
                     message: "missing lifecycle action"
@@ -2457,7 +2571,11 @@ private final class DoryVMMControlServer: @unchecked Sendable {
                 expectedAction: action
             ))
         case "saveMachineState":
-            guard let path = request.statePath,
+            guard request.targetMB == nil,
+                  request.lifecycleAction == nil,
+                  request.operationID == nil,
+                  request.directoryShares == nil,
+                  let path = request.statePath,
                   let accepted = acceptedSavedStatePath(path) else {
                 return HandledControlResponse(
                     response: VmmControlResponse(

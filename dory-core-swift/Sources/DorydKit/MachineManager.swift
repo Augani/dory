@@ -998,6 +998,7 @@ public final class MachineManager: @unchecked Sendable {
     private let agentConnector: AgentConnector
     private let balloonController: any MachineBalloonControlling
     private let deviceTelemetryController: any MachineDeviceTelemetryControlling
+    private let directoryShareController: any MachineDirectoryShareControlling
     private let usbController: any DoryMachineUSBControlling
     private let vzLifecycleController: any MachineVZLifecycleControlling
     private let savedStateStore: DoryMachineSavedStateStore
@@ -1050,6 +1051,8 @@ public final class MachineManager: @unchecked Sendable {
         balloonController: any MachineBalloonControlling = UnixMachineBalloonController(),
         deviceTelemetryController: any MachineDeviceTelemetryControlling =
             UnixMachineDeviceTelemetryController(),
+        directoryShareController: any MachineDirectoryShareControlling =
+            UnixMachineDirectoryShareController(),
         usbController: any DoryMachineUSBControlling = UnixDoryMachineUSBController(),
         vzLifecycleController: any MachineVZLifecycleControlling = UnixMachineVZLifecycleController(),
         agentConnector: @escaping AgentConnector = { socketPath in
@@ -1061,6 +1064,7 @@ public final class MachineManager: @unchecked Sendable {
         self.launchPolicy = launchPolicy
         self.balloonController = balloonController
         self.deviceTelemetryController = deviceTelemetryController
+        self.directoryShareController = directoryShareController
         self.usbController = usbController
         self.vzLifecycleController = vzLifecycleController
         self.agentConnector = agentConnector
@@ -4292,6 +4296,54 @@ public final class MachineManager: @unchecked Sendable {
             }
             return status(id: id) ?? DoryMachineStatus(id: id, state: .stopped)
         }
+        let hasOnlyLiveShareRestartChanges = updated.shares != current.shares
+            && updated.memoryMB == current.memoryMB
+            && updated.cpuCount == current.cpuCount
+            && updated.environment == current.environment
+            && updated.installerISOPath == current.installerISOPath
+        if wasRunning,
+           hasOnlyLiveShareRestartChanges,
+           let liveContext = liveVZDirectoryShareReplacementContext(
+               id: id,
+               current: current,
+               updated: updated
+           ) {
+            let authorities = try Self.captureShareRuntimeAuthorities(updated.shares)
+            // Desired state is committed first. If the helper rejects the mutation or its live
+            // launch changes, the normal stop/start transaction below applies that same durable
+            // state and preserves the existing rollback semantics.
+            try persist(updated)
+            try publishConfiguration(updated)
+            do {
+                let liveShares = try Self.revalidateShareRuntimeAuthorities(
+                    authorities,
+                    expectedShares: updated.shares
+                ).map {
+                    VmmDirectoryShareReplacement(
+                        tag: $0.tag,
+                        hostPath: $0.hostPath,
+                        readOnly: $0.readOnly
+                    )
+                }
+                try directoryShareController.replaceDirectoryShares(
+                    socketPath: liveContext.socketPath,
+                    shares: liveShares
+                )
+                guard liveVZDirectoryShareReplacementStillApplies(
+                    id: id,
+                    context: liveContext,
+                    configuration: updated
+                ) else {
+                    throw MachineManagerError.persistence(
+                        "live VZ launch changed during directory-share replacement"
+                    )
+                }
+                return status(id: id) ?? DoryMachineStatus(id: id, state: .running)
+            } catch {
+                // A lost response is ambiguous: the helper may have applied the replacement.
+                // Fall through to a full stop/start instead of attempting a path-based rollback.
+            }
+        }
         if wasRunning {
             _ = try stopImplementation(id: id, journalLifecycle: true)
         }
@@ -4347,6 +4399,64 @@ public final class MachineManager: @unchecked Sendable {
                 "could not start updated \(id): \(updateError); original configuration was restored"
             )
         }
+    }
+
+    private struct LiveVZDirectoryShareReplacementContext {
+        var launchID: UUID
+        var socketPath: String
+    }
+
+    private func liveVZDirectoryShareReplacementContext(
+        id: String,
+        current: DoryMachineConfiguration,
+        updated: DoryMachineConfiguration
+    ) -> LiveVZDirectoryShareReplacementContext? {
+        // Resolved workspaces must first publish a replacement exact plan. The current planning
+        // transaction is intentionally stopped-only, so this fast path is compatibility-only
+        // until running-plan replacement has its own durable admission transaction.
+        guard launchPolicy == .legacyCompatibility,
+              current.shares.count == updated.shares.count else {
+            return nil
+        }
+        let currentMounts = Dictionary(
+            uniqueKeysWithValues: current.shares.map { ($0.tag, $0.guestPath) }
+        )
+        let updatedMounts = Dictionary(
+            uniqueKeysWithValues: updated.shares.map { ($0.tag, $0.guestPath) }
+        )
+        guard currentMounts == updatedMounts else { return nil }
+
+        lock.lock()
+        defer { lock.unlock() }
+        guard let entry = machines[id],
+              entry.configuration == current,
+              entry.state == .running,
+              entry.process?.isRunning == true,
+              entry.activeBackend == .appleVirtualizationFramework,
+              let launchID = entry.launchID,
+              let socketPath = entry.handoff?.ready.controlSocketPath else {
+            return nil
+        }
+        return LiveVZDirectoryShareReplacementContext(
+            launchID: launchID,
+            socketPath: socketPath
+        )
+    }
+
+    private func liveVZDirectoryShareReplacementStillApplies(
+        id: String,
+        context: LiveVZDirectoryShareReplacementContext,
+        configuration: DoryMachineConfiguration
+    ) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let entry = machines[id] else { return false }
+        return entry.configuration == configuration
+            && entry.state == .running
+            && entry.process?.isRunning == true
+            && entry.activeBackend == .appleVirtualizationFramework
+            && entry.launchID == context.launchID
+            && entry.handoff?.ready.controlSocketPath == context.socketPath
     }
 
     public func snapshot(

@@ -2,25 +2,56 @@ import Darwin
 import DoryCore
 import Foundation
 
+/// The minimal daemon-to-helper authority needed to replace the backing directory of an
+/// existing VirtioFS device. Persistent bookmarks and guest paths never cross this runtime
+/// control boundary: the device tag is already the guest-visible mount identity.
+public struct VmmDirectoryShareReplacement: Sendable, Equatable, Codable {
+    public static let maximumCount = 64
+
+    public var tag: String
+    public var hostPath: String
+    public var readOnly: Bool
+
+    public init(tag: String, hostPath: String, readOnly: Bool) {
+        self.tag = tag
+        self.hostPath = hostPath
+        self.readOnly = readOnly
+    }
+
+    public var isValid: Bool {
+        !tag.isEmpty
+            && tag.utf8.count < 36
+            && tag.allSatisfy {
+                $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" || $0 == "."
+            }
+            && hostPath.hasPrefix("/")
+            && !hostPath.contains("\0")
+            && hostPath.utf8.count < Int(PATH_MAX)
+    }
+}
+
 public struct VmmControlRequest: Sendable, Equatable, Codable {
     public var command: String
     public var targetMB: UInt64?
     public var statePath: String?
     public var lifecycleAction: DoryLifecycleReceiptAction?
     public var operationID: String?
+    public var directoryShares: [VmmDirectoryShareReplacement]?
 
     public init(
         command: String,
         targetMB: UInt64? = nil,
         statePath: String? = nil,
         lifecycleAction: DoryLifecycleReceiptAction? = nil,
-        operationID: String? = nil
+        operationID: String? = nil,
+        directoryShares: [VmmDirectoryShareReplacement]? = nil
     ) {
         self.command = command
         self.targetMB = targetMB
         self.statePath = statePath
         self.lifecycleAction = lifecycleAction
         self.operationID = operationID
+        self.directoryShares = directoryShares
     }
 
     public static func setBalloonTarget(_ targetMB: UInt64) -> VmmControlRequest {
@@ -56,6 +87,12 @@ public struct VmmControlRequest: Sendable, Equatable, Codable {
 
     public static func saveMachineState(to statePath: String) -> VmmControlRequest {
         VmmControlRequest(command: "saveMachineState", statePath: statePath)
+    }
+
+    public static func replaceDirectoryShares(
+        _ shares: [VmmDirectoryShareReplacement]
+    ) -> VmmControlRequest {
+        VmmControlRequest(command: "replaceDirectoryShares", directoryShares: shares)
     }
 }
 
@@ -134,6 +171,35 @@ public enum VmmControlError: Error, Sendable, CustomStringConvertible {
 
 public protocol MachineBalloonControlling: Sendable {
     func setBalloonTarget(socketPath: String, targetMB: UInt64) throws
+}
+
+public protocol MachineDirectoryShareControlling: Sendable {
+    func replaceDirectoryShares(
+        socketPath: String,
+        shares: [VmmDirectoryShareReplacement]
+    ) throws
+}
+
+public struct UnixMachineDirectoryShareController: MachineDirectoryShareControlling {
+    public init() {}
+
+    public func replaceDirectoryShares(
+        socketPath: String,
+        shares: [VmmDirectoryShareReplacement]
+    ) throws {
+        guard shares.count <= VmmDirectoryShareReplacement.maximumCount,
+              shares.allSatisfy(\.isValid),
+              Set(shares.map(\.tag)).count == shares.count else {
+            throw VmmControlError.rejected("invalid runtime directory-share replacement")
+        }
+        let response = try VmmControlClient.send(
+            socketPath: socketPath,
+            request: .replaceDirectoryShares(shares)
+        )
+        guard response.ok else {
+            throw VmmControlError.rejected(response.message)
+        }
+    }
 }
 
 /// Daemon-side client for lifecycle operations that must execute inside the VZ helper process.
@@ -472,7 +538,8 @@ public final class VmmLifecycleReceiptServer: @unchecked Sendable {
                 guard request.targetMB == nil,
                       request.statePath == nil,
                       request.lifecycleAction == nil,
-                      request.operationID == nil else {
+                      request.operationID == nil,
+                      request.directoryShares == nil else {
                     throw VmmControlError.rejected("invalid helper device telemetry request")
                 }
                 guard let deviceTelemetryProvider else {
@@ -491,6 +558,9 @@ public final class VmmLifecycleReceiptServer: @unchecked Sendable {
             guard request.command == "acknowledgeLifecycle",
                   let action = request.lifecycleAction,
                   let operationID = request.operationID,
+                  request.targetMB == nil,
+                  request.statePath == nil,
+                  request.directoryShares == nil,
                   DoryOperationIdentity.parseCanonical(operationID) != nil,
                   operationID != "00000000-0000-0000-0000-000000000000" else {
                 throw VmmControlError.rejected("invalid helper lifecycle receipt request")
