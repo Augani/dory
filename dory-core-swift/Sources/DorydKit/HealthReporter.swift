@@ -1962,13 +1962,123 @@ public final class HealthReporter: @unchecked Sendable {
                 data: data
             )
         }
-        return [summary] + statuses.flatMap {
-            [
-                Self.machineEvidenceCheck($0),
-                Self.machineFlightRecorderCheck($0),
-                Self.machineToolsCheck($0),
+        return [summary] + statuses.flatMap { status in
+            var checks = [
+                Self.machineEvidenceCheck(status),
+                Self.machineFlightRecorderCheck(status),
+                Self.machineToolsCheck(status),
             ]
+            if let portForwardCheck = Self.machinePortForwardCheck(
+                machineID: status.id,
+                state: status.state,
+                configuredForwards: status.typedSettings?.portForwards.count ?? 0,
+                telemetry: { try machineManager.deviceTelemetry(id: status.id) }
+            ) {
+                checks.append(portForwardCheck)
+            }
+            return checks
         }
+    }
+
+    static func machinePortForwardCheck(
+        machineID: String,
+        state: DoryMachineState,
+        configuredForwards: Int,
+        telemetry: () throws -> DoryDeviceTelemetrySnapshot
+    ) -> HealthCheck? {
+        guard configuredForwards > 0 else { return nil }
+        let id = "machine.local.\(machineID).port-forwards"
+        guard state == .running || state == .paused else {
+            return HealthCheck(
+                id: id,
+                status: .skip,
+                code: "machine.port_forwards.inactive",
+                title: "Workspace port forwards inactive",
+                detail: "\(machineID) has \(configuredForwards) configured host listener(s)",
+                data: ["configured": String(configuredForwards)]
+            )
+        }
+        let snapshot: DoryDeviceTelemetrySnapshot
+        do {
+            snapshot = try telemetry()
+        } catch {
+            return HealthCheck(
+                id: id,
+                status: .warn,
+                code: "machine.port_forwards.telemetry_unavailable",
+                title: "Port-forward health unavailable",
+                detail: "\(machineID) did not return its resolved listener health",
+                action: "Retry after the workspace is ready; restart it if telemetry remains unavailable.",
+                data: ["configured": String(configuredForwards)]
+            )
+        }
+        guard snapshot.isValid,
+              let device = snapshot.devices.first(where: {
+                  $0.id == "resolved-port-forwards" && $0.kind == .network
+              }),
+              let helperConfigured = Self.measuredValue(
+                  .configuredPortForwards,
+                  in: device
+              ),
+              let active = Self.measuredValue(.activePortForwards, in: device),
+              let failures = Self.measuredValue(
+                  .portForwardReconciliationFailures,
+                  in: device
+              ) else {
+            return HealthCheck(
+                id: id,
+                status: .warn,
+                code: "machine.port_forwards.telemetry_unavailable",
+                title: "Port-forward health unavailable",
+                detail: "\(machineID) returned no exact listener-health device",
+                action: "Restart the workspace with the current qualified helper components.",
+                data: ["configured": String(configuredForwards)]
+            )
+        }
+        let data = [
+            "configured": String(helperConfigured),
+            "active": String(active),
+            "failed_reconciliations": String(failures),
+        ]
+        guard helperConfigured == UInt64(configuredForwards) else {
+            return HealthCheck(
+                id: id,
+                status: .fail,
+                code: "machine.port_forwards.contract_mismatch",
+                title: "Port-forward launch contract mismatch",
+                detail: "\(machineID) helper owns \(helperConfigured) of \(configuredForwards) configured listener contracts",
+                action: "Stop and replan the workspace before exposing host ports.",
+                data: data
+            )
+        }
+        guard device.health == .healthy, active == helperConfigured else {
+            return HealthCheck(
+                id: id,
+                status: .warn,
+                code: "machine.port_forwards.recovering",
+                title: "Workspace port forwards are recovering",
+                detail: "\(machineID) has \(active)/\(helperConfigured) resolved host listener(s) active",
+                action: "Check for a host-port conflict if automatic recovery does not complete.",
+                data: data
+            )
+        }
+        return HealthCheck(
+            id: id,
+            status: .pass,
+            code: "machine.port_forwards.ready",
+            title: "Workspace port forwards ready",
+            detail: "\(machineID) has \(active)/\(helperConfigured) resolved host listener(s) active",
+            data: data
+        )
+    }
+
+    private static func measuredValue(
+        _ kind: DoryDeviceTelemetryMetricKind,
+        in device: DoryDeviceTelemetryDevice
+    ) -> UInt64? {
+        device.metrics.first {
+            $0.kind == kind && $0.availability == .measured
+        }?.value
     }
 
     static func machineFlightRecorderCheck(_ status: DoryMachineStatus) -> HealthCheck {

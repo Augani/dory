@@ -6,6 +6,67 @@ import Foundation
 import XCTest
 
 final class HealthReporterTests: XCTestCase {
+    func testMachinePortForwardHealthReportsReadyRecoveringAndContractMismatch() throws {
+        let ready = HealthReporter.machinePortForwardCheck(
+            machineID: "dev",
+            state: .running,
+            configuredForwards: 2,
+            telemetry: { portForwardTelemetry(configured: 2, active: 2, failures: 1) }
+        )
+        XCTAssertEqual(ready?.status, .pass)
+        XCTAssertEqual(ready?.code, "machine.port_forwards.ready")
+        XCTAssertEqual(ready?.data["active"], "2")
+        XCTAssertEqual(ready?.data["failed_reconciliations"], "1")
+
+        let recovering = HealthReporter.machinePortForwardCheck(
+            machineID: "dev",
+            state: .paused,
+            configuredForwards: 2,
+            telemetry: {
+                portForwardTelemetry(configured: 2, active: 1, failures: 3)
+            }
+        )
+        XCTAssertEqual(recovering?.status, .warn)
+        XCTAssertEqual(recovering?.code, "machine.port_forwards.recovering")
+        XCTAssertEqual(recovering?.data["active"], "1")
+
+        let mismatch = HealthReporter.machinePortForwardCheck(
+            machineID: "dev",
+            state: .running,
+            configuredForwards: 2,
+            telemetry: { portForwardTelemetry(configured: 1, active: 1, failures: 0) }
+        )
+        XCTAssertEqual(mismatch?.status, .fail)
+        XCTAssertEqual(mismatch?.code, "machine.port_forwards.contract_mismatch")
+    }
+
+    func testMachinePortForwardHealthSkipsStoppedAndFailsClosedOnMissingTelemetry() {
+        let stopped = HealthReporter.machinePortForwardCheck(
+            machineID: "dev",
+            state: .stopped,
+            configuredForwards: 1,
+            telemetry: { throw HealthTestError.unavailable }
+        )
+        XCTAssertEqual(stopped?.status, .skip)
+        XCTAssertEqual(stopped?.code, "machine.port_forwards.inactive")
+
+        let missing = HealthReporter.machinePortForwardCheck(
+            machineID: "dev",
+            state: .running,
+            configuredForwards: 1,
+            telemetry: { throw HealthTestError.unavailable }
+        )
+        XCTAssertEqual(missing?.status, .warn)
+        XCTAssertEqual(missing?.code, "machine.port_forwards.telemetry_unavailable")
+
+        XCTAssertNil(HealthReporter.machinePortForwardCheck(
+            machineID: "dev",
+            state: .running,
+            configuredForwards: 0,
+            telemetry: { throw HealthTestError.unavailable }
+        ))
+    }
+
     func testMachineFlightRecorderHealthPublishesOnlyAvailabilityAndCursor() {
         let ready = HealthReporter.machineFlightRecorderCheck(DoryMachineStatus(
             id: "dev",
@@ -837,6 +898,37 @@ final class HealthReporterTests: XCTestCase {
         XCTAssertEqual(assessment.windowSeconds, 20)
         XCTAssertEqual(assessment.warnings, ["open file descriptors rose 100→140"])
     }
+}
+
+private enum HealthTestError: Error {
+    case unavailable
+}
+
+private func portForwardTelemetry(
+    configured: UInt64,
+    active: UInt64,
+    failures: UInt64
+) -> DoryDeviceTelemetrySnapshot {
+    DoryDeviceTelemetrySnapshot(
+        machineID: "dev",
+        operationID: "12345678-1234-4234-8234-123456789abc",
+        backend: .doryHypervisor,
+        sampleSequence: 1,
+        sampledAtUnixMilliseconds: 1,
+        monotonicNanoseconds: 1,
+        devices: [
+            DoryDeviceTelemetryDevice(
+                id: "resolved-port-forwards",
+                kind: .network,
+                health: active == configured ? .healthy : .degraded,
+                metrics: [
+                    .measured(.configuredPortForwards, value: configured),
+                    .measured(.activePortForwards, value: active),
+                    .measured(.portForwardReconciliationFailures, value: failures),
+                ]
+            ),
+        ]
+    )
 }
 
 private func healthResolvedPlan() -> DoryResolvedMachinePlan {
