@@ -12,9 +12,11 @@ final class RawDeviceTelemetryRegistry: @unchecked Sendable {
         var id: String
         var kind: DoryDeviceTelemetryKind
         var transport: VirtioMMIOTransport
+        var storage: VirtioBlk?
         var network: VirtioNet?
         var unavailableMetrics: [(DoryDeviceTelemetryMetricKind, DoryDeviceTelemetryMetricUnit)]
         var previousTransportStatistics: VirtioMMIOTransportStatistics?
+        var previousStorageStatistics: VirtioBlkStatistics?
         var consecutiveUncompletedNotificationSamples: UInt8
         var queueStallReported: Bool
     }
@@ -41,10 +43,7 @@ final class RawDeviceTelemetryRegistry: @unchecked Sendable {
         switch backend {
         case is VirtioBlk:
             kind = .storage
-            unavailable = [
-                (.storageFlushes, .count),
-                (.maximumStorageFlushLatencyNanoseconds, .nanoseconds),
-            ]
+            unavailable = []
         case is VirtioGPU:
             kind = .graphics
             unavailable = [
@@ -94,9 +93,11 @@ final class RawDeviceTelemetryRegistry: @unchecked Sendable {
             id: "virtio-\(kind.rawValue)-\(slot)",
             kind: kind,
             transport: transport,
+            storage: backend as? VirtioBlk,
             network: backend as? VirtioNet,
             unavailableMetrics: unavailable,
             previousTransportStatistics: nil,
+            previousStorageStatistics: nil,
             consecutiveUncompletedNotificationSamples: 0,
             queueStallReported: false
         )
@@ -179,6 +180,30 @@ final class RawDeviceTelemetryRegistry: @unchecked Sendable {
                         .measured(.receiveDrops, value: network.receiveDrops),
                         .measured(.receiveTruncations, value: network.receiveTruncations),
                     ])
+                }
+                if let storage = entries[index].storage?.statistics {
+                    metrics.append(contentsOf: [
+                        .measured(.storageFlushes, value: storage.flushes),
+                        .measured(
+                            .maximumStorageFlushLatencyNanoseconds,
+                            value: storage.maximumFlushLatencyNanoseconds
+                        ),
+                    ])
+                    let previousSlowFlushes = entries[index].previousStorageStatistics?.slowFlushes ?? 0
+                    let newSlowFlushes = Self.monotonicDelta(
+                        current: storage.slowFlushes,
+                        previous: previousSlowFlushes
+                    )
+                    if newSlowFlushes > 0 {
+                        appendEvent(
+                            deviceID: entries[index].id,
+                            kind: .storageFlushSlow,
+                            occurrences: newSlowFlushes,
+                            monotonicNanoseconds: monotonicNanoseconds
+                        )
+                        health = .degraded
+                    }
+                    entries[index].previousStorageStatistics = storage
                 }
                 metrics.append(contentsOf: entries[index].unavailableMetrics.map {
                     .unavailable($0.0, unit: $0.1, reason: unavailableReason)

@@ -148,6 +148,37 @@ import Testing
         #expect(rw.deviceFeatures & (1 << 5) == 0)   // writable image: no RO bit
     }
 
+    @Test func recordsFlushCountMaximumLatencyAndSlowThreshold() throws {
+        let path = try makeDisk()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        final class Clock: @unchecked Sendable {
+            private let lock = NSLock()
+            private var values: [UInt64] = [10, 310]
+
+            func next() -> UInt64 {
+                lock.withLock { values.removeFirst() }
+            }
+        }
+        let clock = Clock()
+        let block = try VirtioBlk(
+            path: path,
+            identity: "test",
+            queueCount: 1,
+            flushTelemetry: VirtioBlkFlushTelemetryConfiguration(
+                slowThresholdNanoseconds: 300,
+                synchronize: { _ in 0 },
+                monotonicNanoseconds: { clock.next() }
+            )
+        )
+
+        #expect(block.flush() == .ok)
+        #expect(block.statistics == VirtioBlkStatistics(
+            flushes: 1,
+            maximumFlushLatencyNanoseconds: 300,
+            slowFlushes: 1
+        ))
+    }
+
     @Test func discardCanBeDisabled() throws {
         let path = try makeDisk()
         defer { try? FileManager.default.removeItem(atPath: path) }

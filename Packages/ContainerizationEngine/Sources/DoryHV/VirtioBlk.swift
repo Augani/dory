@@ -1,6 +1,36 @@
 import Darwin
 import Foundation
 
+public struct VirtioBlkStatistics: Equatable, Sendable {
+    public var flushes: UInt64
+    public var maximumFlushLatencyNanoseconds: UInt64
+    public var slowFlushes: UInt64
+
+    public init(
+        flushes: UInt64,
+        maximumFlushLatencyNanoseconds: UInt64,
+        slowFlushes: UInt64
+    ) {
+        self.flushes = flushes
+        self.maximumFlushLatencyNanoseconds = maximumFlushLatencyNanoseconds
+        self.slowFlushes = slowFlushes
+    }
+}
+
+struct VirtioBlkFlushTelemetryConfiguration {
+    var slowThresholdNanoseconds: UInt64
+    var synchronize: (Int32) -> Int32
+    var monotonicNanoseconds: () -> UInt64
+
+    static var production: Self {
+        Self(
+            slowThresholdNanoseconds: 250_000_000,
+            synchronize: { descriptor in Darwin.fsync(descriptor) },
+            monotonicNanoseconds: { DispatchTime.now().uptimeNanoseconds }
+        )
+    }
+}
+
 /// virtio-blk backed by a raw disk image. Requests use zero-copy pread/pwrite straight into guest
 /// RAM; disk I/O is drained on dedicated ordered workers so the kicking vCPU is not parked inside
 /// host file syscalls during metadata-heavy workloads. The device exposes a small multiqueue setup
@@ -36,6 +66,11 @@ public final class VirtioBlk: VirtioDeviceBackend {
     private let requestCondition = NSCondition()
     private var inFlightTransfers = 0
     private var flushActive = false
+    private let flushTelemetry: VirtioBlkFlushTelemetryConfiguration
+    private let statisticsLock = NSLock()
+    private var flushCount: UInt64 = 0
+    private var maximumFlushLatencyNanoseconds: UInt64 = 0
+    private var slowFlushCount: UInt64 = 0
 
     private enum Feature {
         static let readOnly: UInt64 = 1 << 5     // VIRTIO_BLK_F_RO
@@ -70,13 +105,33 @@ public final class VirtioBlk: VirtioDeviceBackend {
         case unsupported = 2
     }
 
-    public init(
+    public convenience init(
         path: String,
         identity: String,
         readOnly: Bool = false,
         asyncIO: Bool? = nil,
         queueCount requestedQueueCount: Int? = nil,
         discard: Bool? = nil
+    ) throws {
+        try self.init(
+            path: path,
+            identity: identity,
+            readOnly: readOnly,
+            asyncIO: asyncIO,
+            queueCount: requestedQueueCount,
+            discard: discard,
+            flushTelemetry: .production
+        )
+    }
+
+    init(
+        path: String,
+        identity: String,
+        readOnly: Bool = false,
+        asyncIO: Bool? = nil,
+        queueCount requestedQueueCount: Int? = nil,
+        discard: Bool? = nil,
+        flushTelemetry: VirtioBlkFlushTelemetryConfiguration
     ) throws {
         let descriptor = open(path, readOnly ? O_RDONLY : O_RDWR)
         guard descriptor >= 0 else {
@@ -92,6 +147,7 @@ public final class VirtioBlk: VirtioDeviceBackend {
         self.identity = identity
         self.readOnly = readOnly
         self.asyncIO = asyncIO ?? Self.asyncIOEnabledFromEnvironment()
+        self.flushTelemetry = flushTelemetry
         // Discard/write-zeroes only make sense on a writable image; keep them off for read-only shares.
         self.discardEnabled = !readOnly && (discard ?? Self.discardEnabledFromEnvironment())
         // F_PUNCHHOLE requires fs-block alignment; capture the backing filesystem's block size so
@@ -246,7 +302,7 @@ public final class VirtioBlk: VirtioDeviceBackend {
         return status
     }
 
-    private func flush() -> RequestStatus {
+    func flush() -> RequestStatus {
         requestCondition.lock()
         while flushActive {
             requestCondition.wait()
@@ -257,13 +313,35 @@ public final class VirtioBlk: VirtioDeviceBackend {
         }
         requestCondition.unlock()
 
-        let status: RequestStatus = fsync(fileDescriptor) == 0 ? .ok : .ioError
+        let startedAt = flushTelemetry.monotonicNanoseconds()
+        let status: RequestStatus = flushTelemetry.synchronize(fileDescriptor) == 0 ? .ok : .ioError
+        let finishedAt = flushTelemetry.monotonicNanoseconds()
+        let duration = finishedAt >= startedAt ? finishedAt - startedAt : 0
+        statisticsLock.withLock {
+            if flushCount < UInt64.max {
+                flushCount += 1
+            }
+            maximumFlushLatencyNanoseconds = max(maximumFlushLatencyNanoseconds, duration)
+            if duration >= flushTelemetry.slowThresholdNanoseconds, slowFlushCount < UInt64.max {
+                slowFlushCount += 1
+            }
+        }
 
         requestCondition.lock()
         flushActive = false
         requestCondition.broadcast()
         requestCondition.unlock()
         return status
+    }
+
+    public var statistics: VirtioBlkStatistics {
+        statisticsLock.withLock {
+            VirtioBlkStatistics(
+                flushes: flushCount,
+                maximumFlushLatencyNanoseconds: maximumFlushLatencyNanoseconds,
+                slowFlushes: slowFlushCount
+            )
+        }
     }
 
     private func transfer(

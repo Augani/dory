@@ -740,10 +740,12 @@ versioned, path-free helper snapshot bound to the exact workspace, start operati
 live launch. The daemon autonomously samples running and paused machines, persists new classified
 events in the workspace flight recorder, and exposes the same bounded evidence through XPC, the app
 client, and `dorydctl`. Raw-HV derives reset and sustained queue-stall events from monotonic VirtIO
-transport counters and retains a bounded event history; Virtualization.framework counters that do
-not have a stable public authority remain explicitly unavailable rather than being reported as zero.
-Backend-specific producers for GPU loss/fences, display/audio drops, storage latency, network
-reconnects, and share invalidation remain release gates for those individual capability claims.
+transport counters and retains a bounded event history. Its block backend also counts serialized
+guest flushes, measures the maximum host `fsync` latency, and emits a classified slow-flush event
+for every flush taking at least 250 ms. Virtualization.framework counters that do not have a stable
+public authority remain explicitly unavailable rather than being reported as zero. Backend-specific
+producers for GPU loss/fences, display/audio drops, network reconnects, and share invalidation remain
+release gates for those individual capability claims.
 
 ## Qualification and release gates
 

@@ -1,6 +1,6 @@
-import DoryHV
 import Foundation
 import Testing
+@testable import DoryHV
 @testable import dory_hv
 
 @Suite struct DesktopDeviceTelemetryTests {
@@ -60,5 +60,55 @@ import Testing
         #expect(bounded.events.count == 256)
         #expect(bounded.events.first?.sequence == 47)
         #expect(bounded.events.last?.sequence == 302)
+    }
+
+    @Test func publishesMeasuredStorageFlushesAndSlowFlushEvents() throws {
+        let path = NSTemporaryDirectory() + "/dory-storage-telemetry-\(UUID().uuidString).img"
+        try Data(repeating: 0, count: 4096).write(to: URL(fileURLWithPath: path))
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        final class Clock: @unchecked Sendable {
+            private let lock = NSLock()
+            private var values: [UInt64] = [100, 500]
+
+            func next() -> UInt64 {
+                lock.withLock { values.removeFirst() }
+            }
+        }
+        let clock = Clock()
+        let backend = try VirtioBlk(
+            path: path,
+            identity: "storage",
+            queueCount: 1,
+            flushTelemetry: VirtioBlkFlushTelemetryConfiguration(
+                slowThresholdNanoseconds: 400,
+                synchronize: { _ in 0 },
+                monotonicNanoseconds: { clock.next() }
+            )
+        )
+        let memory = try GuestMemory(guestBase: GuestLayout.ramBase, size: 0x20_000)
+        let transport = VirtioMMIOTransport(
+            baseAddress: GuestLayout.virtioBase,
+            backend: backend,
+            memory: memory
+        ) {}
+        let registry = RawDeviceTelemetryRegistry(machineID: "raw-storage", operationID: UUID())
+        registry.register(slot: 2, backend: backend, transport: transport)
+
+        #expect(backend.flush() == .ok)
+        let snapshot = registry.snapshot()
+        let storage = try #require(snapshot.devices.first)
+        #expect(storage.id == "virtio-storage-2")
+        #expect(storage.health == .degraded)
+        #expect(storage.metrics.first { $0.kind == .storageFlushes }?.value == 1)
+        #expect(storage.metrics.first {
+            $0.kind == .maximumStorageFlushLatencyNanoseconds
+        }?.value == 400)
+        #expect(snapshot.events.map(\.kind) == [.storageFlushSlow])
+        #expect(snapshot.events.first?.occurrences == 1)
+
+        let stable = registry.snapshot()
+        #expect(stable.devices.first?.health == .healthy)
+        #expect(stable.events.map(\.kind) == [.storageFlushSlow])
     }
 }
