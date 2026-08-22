@@ -363,6 +363,72 @@ struct MachineManagerResolvedPlanIntegrationTests {
         }
     }
 
+    @Test("resolved wake clock synchronization follows the exact device contract")
+    func resolvedClockSyncUsesExactAuthorization() throws {
+        for authorized in [false, true] {
+            let clock = ResolvedClockSyncRecorder()
+            try withHarness(
+                "resolved-clock-sync-\(authorized)",
+                requiresReadyHandoff: true,
+                useShortStatePath: true,
+                agentConnector: clock.connect(socketPath:)
+            ) { manager, starter, _ in
+                let plans = MutablePlanStore()
+                let operations = manager.resolvedLaunchCompatibilityOperations(
+                    for: .doryHypervisor
+                )
+                let registry = try rawRegistry(operations: operations)
+                let devices = DoryVirtualMachineDeviceCapabilityRequest(
+                    clockSynchronization: authorized
+                )
+                let resolver = ClosureLaunchResolver { request in
+                    let resolution = try exactResolution(
+                        request: request,
+                        devices: devices
+                    )
+                    plans.set(resolution.resolvedPlan)
+                    return resolution
+                }
+                try manager.installResolvedLaunchInfrastructure(
+                    registry: registry,
+                    resolver: resolver,
+                    plans: plans,
+                    expectedPlanRevision: { _ in 1 }
+                )
+
+                let starting = try manager.start(id: "dev")
+                try sendVmmHandoff(
+                    path: try #require(starting.handoffSocketPath),
+                    ready: VmmReadyMessage(
+                        machineID: "dev",
+                        operationID: starting.activeOperationID,
+                        agentBuild: "dory-agent/resolved-clock-test",
+                        agentProtocolVersion: DoryCore.protocolVersion(),
+                        agentCapabilities: [
+                            DoryAgentCapability(id: "clock-sync", version: 1),
+                        ],
+                        agentSocketPath: "/run/dory-agent.sock",
+                        controlSocketPath: "/run/dory-control.sock"
+                    ),
+                    fileDescriptors: []
+                )
+                for _ in 0..<200 {
+                    if manager.status(id: "dev")?.state == .running { break }
+                    Thread.sleep(forTimeInterval: 0.01)
+                }
+                #expect(manager.status(id: "dev")?.state == .running)
+                #expect(starter.count == 1)
+
+                let result = manager.syncAgentClock(
+                    now: Date(timeIntervalSince1970: 1_234.5)
+                )
+                #expect(result.attempted == authorized)
+                #expect(result.synced == authorized)
+                #expect(clock.syncs == (authorized ? [1_234_500_000_000] : []))
+            }
+        }
+    }
+
     @Test("resolved installed-Linux launch rematerializes verified boot outputs after authorization")
     func resolvedInstalledLinuxRevalidatesMaterializedOutputs() throws {
         let root = try makeState("resolved-installed-linux")
@@ -1590,6 +1656,9 @@ struct MachineManagerResolvedPlanIntegrationTests {
         requiresReadyHandoff: Bool = false,
         useShortStatePath: Bool = false,
         usbController: any DoryMachineUSBControlling = UnixDoryMachineUSBController(),
+        agentConnector: @escaping MachineManager.AgentConnector = { socketPath in
+            try LocalAgentControl.connect(socketPath: socketPath)
+        },
         _ body: (MachineManager, CountingProcessStarter, String) throws -> Void
     ) throws {
         let state = useShortStatePath
@@ -1610,6 +1679,7 @@ struct MachineManagerResolvedPlanIntegrationTests {
             ),
             launchPolicy: launchPolicy,
             usbController: usbController,
+            agentConnector: agentConnector,
             processStarter: { process in try starter.start(process) }
         )
         defer {
@@ -1896,6 +1966,64 @@ private final class CountingProcessStarter: @unchecked Sendable {
         lock.withLock { starts += 1 }
         try process.start()
     }
+}
+
+private final class ResolvedClockSyncRecorder: AgentControlClient, @unchecked Sendable {
+    private let lock = NSLock()
+    private var recordedSyncs: [Int64] = []
+
+    var syncs: [Int64] { lock.withLock { recordedSyncs } }
+
+    func connect(socketPath: String) throws -> any AgentControlClient {
+        #expect(socketPath == "/run/dory-agent.sock")
+        return self
+    }
+
+    func info() throws -> DoryAgentInfo {
+        DoryAgentInfo(
+            protocolVersion: DoryCore.protocolVersion(),
+            kernel: "Linux test",
+            agentBuild: "dory-agent/resolved-clock-test",
+            uptimeSeconds: 1
+        )
+    }
+
+    func clockSync(hostEpochNs: Int64) throws -> Bool {
+        lock.withLock { recordedSyncs.append(hostEpochNs) }
+        return true
+    }
+
+    func portsWatch() throws -> DoryPortsSnapshot {
+        DoryPortsSnapshot(ports: [], added: [], removed: [])
+    }
+
+    func telemetry() throws -> DoryTelemetry {
+        DoryTelemetry(
+            memTotalKB: 1,
+            memAvailableKB: 1,
+            psiSomeAvg10: 0,
+            psiFullAvg10: 0
+        )
+    }
+
+    func exec(
+        argv: [String],
+        cwd: String,
+        env: [DoryExecEnvironment],
+        timeoutMs: UInt64,
+        outputLimitBytes: UInt64
+    ) throws -> DoryExecResult {
+        DoryExecResult(
+            exitCode: 0,
+            stdout: Data(),
+            stderr: Data(),
+            timedOut: false,
+            stdoutTruncated: false,
+            stderrTruncated: false
+        )
+    }
+
+    func close() {}
 }
 
 private final class ResolvedPlanRecordingUSBController:

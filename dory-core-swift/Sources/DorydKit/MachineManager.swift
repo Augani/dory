@@ -13245,7 +13245,9 @@ private struct MachineEntry {
 extension MachineManager: WakeClockSyncing {
     public func syncAgentClock(now: Date) -> AgentClockSyncResult {
         let runningAgents = list().compactMap { status -> (id: String, socketPath: String, supported: Bool)? in
-            guard status.state == .running, let socketPath = status.agentSocketPath else {
+            guard status.state == .running,
+                  status.authorizesAgentClockSynchronization,
+                  let socketPath = status.agentSocketPath else {
                 return nil
             }
             return (status.id, socketPath, status.supportsAgentCapability("clock-sync"))
@@ -13285,6 +13287,18 @@ extension MachineManager: WakeClockSyncing {
 }
 
 private extension DoryMachineStatus {
+    var authorizesAgentClockSynchronization: Bool {
+        switch runtimeIdentity.mode {
+        case .legacyCompatibility:
+            // Compatibility machines retain the pre-contract wake behavior.
+            return true
+        case .requiresReplanning:
+            return false
+        case .resolvedPlan:
+            return runtimeIdentity.resolvedPlan?.devices.clockSynchronization == true
+        }
+    }
+
     func supportsAgentCapability(_ id: String, minimumVersion: UInt32 = 1) -> Bool {
         guard agentBuild?.isEmpty == false,
               agentProtocolVersion == DoryCore.protocolVersion(),
