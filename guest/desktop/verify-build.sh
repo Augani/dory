@@ -366,12 +366,26 @@ grep -q $'^x11-utils\t' "$PACKAGES" || fail "X11 window qualification tools are 
 grep -q $'^wl-clipboard\t' "$PACKAGES" || fail "Wayland clipboard package provenance is missing"
 grep -q $'^xclip\t' "$PACKAGES" || fail "X11 clipboard package provenance is missing"
 grep -q $'^pipewire-audio\t' "$PACKAGES" || fail "PipeWire package provenance is missing"
+grep -q $'^binfmt-support\t' "$PACKAGES" \
+  || fail "Intel application translation registration support is missing"
 for package in mesa-vulkan-drivers vulkan-tools; do
   # dpkg's ${binary:Package} field appends an architecture qualifier for
   # Multi-Arch packages (for example, mesa-vulkan-drivers:arm64).
   grep -Eq "^${package}(:arm64)?[[:space:]]" "$PACKAGES" \
     || fail "$package provenance is missing"
 done
+
+INTEL_TRANSLATION_CONFIGURATION="$($DEBUGFS -R \
+  'cat /usr/lib/dory/configure-intel-translation' "$IMAGE" 2>/dev/null)"
+grep -Fq 'mount -t virtiofs -o ro rosetta "$mountpoint"' \
+  <<<"$INTEL_TRANSLATION_CONFIGURATION" \
+  || fail "Intel application translation does not mount the resolved Rosetta share"
+grep -Fq '\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x3e\x00' \
+  <<<"$INTEL_TRANSLATION_CONFIGURATION" \
+  || fail "Intel application translation has the wrong x86_64 ELF signature"
+grep -Fq -- '--credentials yes --preserve yes --fix-binary yes' \
+  <<<"$INTEL_TRANSLATION_CONFIGURATION" \
+  || fail "Intel application translation registration is incomplete"
 
 GRAPHICS_CONFIGURATION="$($DEBUGFS -R 'cat /usr/lib/dory/configure-graphics-backend' "$IMAGE" 2>/dev/null)"
 grep -Fq "dory.graphics=virgl-venus" <<<"$GRAPHICS_CONFIGURATION" \

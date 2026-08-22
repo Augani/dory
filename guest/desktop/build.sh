@@ -92,7 +92,7 @@ rustup target add "$TARGET" >/dev/null
 AGENT="$ROOT/dory-core/target/$TARGET/release/dory-agent"
 [ -x "$AGENT" ] || { echo "dory-agent was not produced for $TARGET" >&2; exit 1; }
 
-COMMON_PACKAGES="systemd-sysv,dbus,dbus-user-session,dconf-cli,udev,kmod,network-manager,openssh-server,sudo,ca-certificates,curl,git,vim-tiny,less,man-db,bash-completion,xserver-xorg-core,xserver-xorg-input-libinput,x11-xserver-utils,x11-utils,xterm,libgl1-mesa-dri,mesa-vulkan-drivers,mesa-utils,vulkan-tools,spice-vdagent,wl-clipboard,xclip,pipewire-audio,wireplumber,polkitd,pkexec,fonts-dejavu-core,fonts-noto-core,locales,util-linux,e2fsprogs,iproute2,iputils-ping,dnsutils,netcat-openbsd,procps,rsync,tar,gzip,xz-utils,zstd,fuse3,gvfs,gvfs-backends"
+COMMON_PACKAGES="systemd-sysv,dbus,dbus-user-session,dconf-cli,udev,kmod,network-manager,openssh-server,sudo,ca-certificates,curl,git,vim-tiny,less,man-db,bash-completion,xserver-xorg-core,xserver-xorg-input-libinput,x11-xserver-utils,x11-utils,xterm,libgl1-mesa-dri,mesa-vulkan-drivers,mesa-utils,vulkan-tools,spice-vdagent,wl-clipboard,xclip,pipewire-audio,wireplumber,polkitd,pkexec,fonts-dejavu-core,fonts-noto-core,locales,util-linux,e2fsprogs,iproute2,iputils-ping,dnsutils,netcat-openbsd,procps,rsync,tar,gzip,xz-utils,zstd,fuse3,gvfs,gvfs-backends,binfmt-support"
 XFCE_PACKAGES="xfce4,xfce4-terminal,xfce4-notifyd,xfce4-power-manager,lightdm,lightdm-gtk-greeter,mate-polkit,mousepad,ristretto,file-roller"
 case "$DISTRO" in
   debian) PACKAGES="$COMMON_PACKAGES,$XFCE_PACKAGES,network-manager-gnome,desktop-base,firefox-esr,evince,galculator" ;;
@@ -155,6 +155,7 @@ CID="$(docker_cmd create --privileged --platform linux/arm64 \
       /rootfs/usr/lib/dory/start-agent /rootfs/usr/lib/dory/wait-host-configuration \
       /rootfs/usr/lib/dory/configure-display /rootfs/usr/lib/dory/configure-zram \
       /rootfs/usr/lib/dory/configure-graphics-backend \
+      /rootfs/usr/lib/dory/configure-intel-translation \
       /rootfs/usr/lib/dory/dory-vulkan-probe
 
     if [ "$DORY_DESKTOP_DISTRO" = ubuntu ]; then
@@ -258,7 +259,7 @@ EOF
     esac
     chroot /rootfs systemctl enable ssh.service dory-first-boot.service \
       dory-boot.service dory-desktop-ready.service dory-zram.service \
-      dory-graphics-backend.service
+      dory-graphics-backend.service dory-intel-translation.service
     chroot /rootfs systemctl set-default graphical.target
 
     rm -f /rootfs/etc/machine-id /rootfs/var/lib/dbus/machine-id /rootfs/etc/ssh/ssh_host_*

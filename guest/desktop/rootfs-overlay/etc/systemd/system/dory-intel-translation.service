@@ -1,0 +1,13 @@
+[Unit]
+Description=Configure Dory Intel Linux application translation
+After=local-fs.target systemd-binfmt.service binfmt-support.service
+Before=display-manager.service dory-boot.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/dory/configure-intel-translation
+RemainAfterExit=yes
+TimeoutStartSec=15
+
+[Install]
+WantedBy=graphical.target
