@@ -1868,6 +1868,53 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: "\(base)/machines/dev"))
     }
 
+    func testImportSnapshotRejectsLowStorageBeforeCreatingManagedNamespace() throws {
+        let base = "/tmp/dory-machine-import-low-storage-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: "\(base)/machines",
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: false
+        ))
+        let bundlePath = "\(base)/low-storage.dorymachine"
+        let bundleBytes = Data("portable-rootfs".utf8)
+        try writeMachineBundle(
+            toPath: bundlePath,
+            snapshot: DoryMachineSnapshot(
+                id: "s1",
+                machineID: "dev",
+                note: "low storage",
+                createdISO: "2026-08-22T00:00:00Z",
+                rootfsPath: "/ignored",
+                sizeBytes: 0,
+                kernelPath: "/ignored",
+                architecture: doryTestGuestArchitecture,
+                memoryMB: 2048,
+                cpuCount: 2
+            ),
+            rootfs: bundleBytes,
+            kernel: Data("portable-kernel".utf8)
+        )
+        let originalBundle = try Data(contentsOf: URL(fileURLWithPath: bundlePath))
+        manager.installStorageCapacityProviderForTesting { _ in 0 }
+
+        XCTAssertThrowsError(try manager.importSnapshot(fromPath: bundlePath)) { error in
+            XCTAssertTrue(
+                String(describing: error).contains(
+                    "insufficient host storage for machine import"
+                )
+            )
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: "\(base)/machines/dev"))
+        XCTAssertEqual(
+            try Data(contentsOf: URL(fileURLWithPath: bundlePath)),
+            originalBundle
+        )
+    }
+
     func testImportSnapshotRejectsCorruptTruncatedTrailingAndLegacyBundles() throws {
         let base = "/tmp/dory-machine-import-integrity-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)

@@ -5600,6 +5600,12 @@ public final class MachineManager: @unchecked Sendable {
             snapshot.address = nil
             snapshot.shares = []
             snapshot.environment = [:]
+            try MachineSnapshotBundle.requireArtifactCapacity(
+                artifactByteCount: bundle.artifactByteCount,
+                destinationPath: snapshotDirectory(machineID: snapshot.machineID),
+                operation: "machine import",
+                availableCapacity: storageCapacityProvider
+            )
             importedMachineID = snapshot.machineID
             try ensurePrivateSnapshotDirectory(machineID: snapshot.machineID)
             snapshot.id = try availableImportedSnapshotID(
@@ -12363,20 +12369,12 @@ private enum MachineSnapshotBundle {
             machineIdentifierLength: machineIdentifierLength,
             nvramLength: nvramLength
         )
-        let safetyBytes = max(capacitySafetyBytes, bundleByteCount / 10)
-        let requiredCapacity = try checkedAdd(
-            bundleByteCount,
-            safetyBytes,
-            failure: "machine export capacity exceeds supported accounting"
+        try requireArtifactCapacity(
+            artifactByteCount: bundleByteCount,
+            destinationPath: path,
+            operation: "machine export",
+            availableCapacity: availableCapacity
         )
-        let available = try availableCapacity(path)
-        guard available >= requiredCapacity else {
-            throw MachineManagerError.persistence(
-                "insufficient host storage for machine export "
-                    + "(need \(requiredCapacity) bytes including safety reserve, "
-                    + "have \(available))"
-            )
-        }
 
         let outputURL = URL(fileURLWithPath: path)
         let parent = outputURL.deletingLastPathComponent()
@@ -12529,9 +12527,31 @@ private enum MachineSnapshotBundle {
         return value
     }
 
+    static func requireArtifactCapacity(
+        artifactByteCount: UInt64,
+        destinationPath: String,
+        operation: String,
+        availableCapacity: @Sendable (String) throws -> UInt64
+    ) throws {
+        let safetyBytes = max(capacitySafetyBytes, artifactByteCount / 10)
+        let requiredCapacity = try checkedAdd(
+            artifactByteCount,
+            safetyBytes,
+            failure: "\(operation) capacity exceeds supported accounting"
+        )
+        let available = try availableCapacity(destinationPath)
+        guard available >= requiredCapacity else {
+            throw MachineManagerError.persistence(
+                "insufficient host storage for \(operation) "
+                    + "(need \(requiredCapacity) bytes including safety reserve, "
+                    + "have \(available))"
+            )
+        }
+    }
+
     static func verifyDescriptor(
         fromPath path: String
-    ) throws -> (snapshot: DoryMachineSnapshot, contentID: Data) {
+    ) throws -> (snapshot: DoryMachineSnapshot, contentID: Data, artifactByteCount: UInt64) {
         let input = try openRegularFileForReading(path: path)
         defer { try? input.close() }
         let before = try fileSnapshot(input)
@@ -12562,7 +12582,25 @@ private enum MachineSnapshotBundle {
                 "machine bundle changed during import assessment"
             )
         }
-        return (header.snapshot, header.contentID)
+        var artifactByteCount = try checkedAdd(
+            header.rootfsLength,
+            header.kernelLength,
+            failure: "machine import capacity exceeds supported accounting"
+        )
+        if let machineIdentifierLength = header.machineIdentifierLength,
+           let nvramLength = header.nvramLength {
+            artifactByteCount = try checkedAdd(
+                artifactByteCount,
+                machineIdentifierLength,
+                failure: "machine import capacity exceeds supported accounting"
+            )
+            artifactByteCount = try checkedAdd(
+                artifactByteCount,
+                nvramLength,
+                failure: "machine import capacity exceeds supported accounting"
+            )
+        }
+        return (header.snapshot, header.contentID, artifactByteCount)
     }
 
     static func extractArtifacts(
