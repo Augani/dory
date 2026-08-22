@@ -428,12 +428,14 @@ public final class DoryDaemonVirtualMachinePlanningCoordinator: @unchecked Senda
         }
         let backendResult = registry.plan(MachineBackendPlanRequest(
             machine: input.machine,
-            capabilityPlan: plannerResult
+            capabilityPlan: plannerResult,
+            portForwards: definition.portForwards
         ))
         guard let backendPlan = backendResult.plan, backendResult.failure == nil,
               backendPlan.backend == backend.descriptor,
               backendPlan.machine == input.machine,
-              backendPlan.capability == selected else {
+              backendPlan.capability == selected,
+              backendPlan.portForwards == definition.portForwards else {
             let detail = backendResult.failure.map {
                 " (\($0.code.rawValue): \($0.message))"
             } ?? ""
@@ -472,6 +474,7 @@ public final class DoryDaemonVirtualMachinePlanningCoordinator: @unchecked Senda
                 backendRuntimeBuildIdentifier: runtime.runtimeBuildIdentifier,
                 resolverReference: snapshot.media.reference,
                 launchArtifacts: snapshot.launchArtifacts,
+                portForwards: definition.portForwards,
                 components: runtime.components.sorted {
                     $0.componentIdentifier < $1.componentIdentifier
                 },

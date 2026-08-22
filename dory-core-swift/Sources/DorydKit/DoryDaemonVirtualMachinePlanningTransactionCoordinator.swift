@@ -1000,12 +1000,14 @@ public final class DoryDaemonVirtualMachinePlanningTransactionCoordinator:
         }
         let backendResult = registry.plan(MachineBackendPlanRequest(
             machine: request.planning.machine,
-            capabilityPlan: plannerResult
+            capabilityPlan: plannerResult,
+            portForwards: plan.portForwards
         ))
         guard let backendPlan = backendResult.plan,
               backendResult.failure == nil,
               backendPlan.machine == request.planning.machine,
               backendPlan.capability == selected,
+              backendPlan.portForwards == plan.portForwards,
               backendPlan.backend.identity == plan.backend,
               backendPlan.backend.implementationIdentifier
                 == plan.backendImplementationIdentifier else {

@@ -117,13 +117,16 @@ public struct MachineBackendProbeResult: Codable, Sendable, Equatable, Hashable 
 public struct MachineBackendPlanRequest: Codable, Sendable, Equatable, Hashable {
     public var machine: DoryMachineConfiguration
     public var capabilityPlan: DoryVirtualMachineBackendPlanResult
+    public var portForwards: [DoryVMPortForward]
 
     public init(
         machine: DoryMachineConfiguration,
-        capabilityPlan: DoryVirtualMachineBackendPlanResult
+        capabilityPlan: DoryVirtualMachineBackendPlanResult,
+        portForwards: [DoryVMPortForward] = []
     ) {
         self.machine = machine
         self.capabilityPlan = capabilityPlan
+        self.portForwards = portForwards
     }
 }
 
@@ -134,17 +137,20 @@ public struct MachineBackendPlan: Codable, Sendable, Equatable, Hashable {
     public var backend: MachineBackendDescriptor
     public var machine: DoryMachineConfiguration
     public var capability: DoryVirtualMachineCapabilityDescriptor
+    public var portForwards: [DoryVMPortForward]
 
     public init(
         schemaVersion: UInt16 = Self.currentSchemaVersion,
         backend: MachineBackendDescriptor,
         machine: DoryMachineConfiguration,
-        capability: DoryVirtualMachineCapabilityDescriptor
+        capability: DoryVirtualMachineCapabilityDescriptor,
+        portForwards: [DoryVMPortForward] = []
     ) {
         self.schemaVersion = schemaVersion
         self.backend = backend
         self.machine = machine
         self.capability = capability
+        self.portForwards = portForwards
     }
 }
 
@@ -231,6 +237,7 @@ public struct MachineBackendLaunchBinding: Sendable, Equatable {
     /// carried into process construction; a launcher may not reinterpret them as "automatic".
     public var graphics: DoryGraphicsAccelerationLevel
     public var devices: DoryVirtualMachineDeviceCapabilityRequest
+    public var portForwards: [DoryVMPortForward]
 
     public init(
         machineID: String,
@@ -239,7 +246,8 @@ public struct MachineBackendLaunchBinding: Sendable, Equatable {
         componentIdentifier: String,
         executablePath: String,
         graphics: DoryGraphicsAccelerationLevel,
-        devices: DoryVirtualMachineDeviceCapabilityRequest
+        devices: DoryVirtualMachineDeviceCapabilityRequest,
+        portForwards: [DoryVMPortForward] = []
     ) {
         self.machineID = machineID
         self.operationID = operationID
@@ -248,6 +256,7 @@ public struct MachineBackendLaunchBinding: Sendable, Equatable {
         self.executablePath = executablePath
         self.graphics = graphics
         self.devices = devices
+        self.portForwards = portForwards
     }
 }
 

@@ -457,6 +457,7 @@ public enum DoryResolvedMachinePlanValidationCode: String, Codable, Sendable, Ha
     case invalidMediaBinding = "invalid-media-binding"
     case invalidMediaEvidence = "invalid-media-evidence"
     case invalidLaunchArtifactEvidence = "invalid-launch-artifact-evidence"
+    case invalidPortForwardContract = "invalid-port-forward-contract"
     case unsupportedRuntimeCombination = "unsupported-runtime-combination"
     case duplicateComponent = "duplicate-component"
     case unorderedComponents = "unordered-components"
@@ -491,7 +492,7 @@ public struct DoryResolvedMachinePlanValidationIssue: Codable, Sendable, Equatab
 /// decision or non-secret audit reference and is replaced whenever any bound evidence changes.
 public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
     public static let oldestSupportedSchemaVersion: UInt16 = 1
-    public static let currentSchemaVersion: UInt16 = 3
+    public static let currentSchemaVersion: UInt16 = 4
 
     public var schemaVersion: UInt16
     public var sourceSchemaVersion: UInt16
@@ -512,6 +513,7 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
     public var components: [DoryResolvedBackendComponentEvidence]
     public var devices: DoryVirtualMachineDeviceCapabilityRequest
     public var graphics: DoryGraphicsAccelerationLevel
+    public var portForwards: [DoryVMPortForward]
     public var supportTier: DoryCapabilitySupportTier
     public var selectionEvidence: DoryResolvedMachineBackendSelectionEvidence?
     public var qualificationEvidence: DoryResolvedMachineQualificationEvidence
@@ -536,6 +538,7 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
         components: [DoryResolvedBackendComponentEvidence],
         devices: DoryVirtualMachineDeviceCapabilityRequest,
         graphics: DoryGraphicsAccelerationLevel,
+        portForwards: [DoryVMPortForward] = [],
         supportTier: DoryCapabilitySupportTier,
         selectionEvidence: DoryResolvedMachineBackendSelectionEvidence,
         qualificationEvidence: DoryResolvedMachineQualificationEvidence,
@@ -562,6 +565,7 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
         self.components = components
         self.devices = devices
         self.graphics = graphics
+        self.portForwards = portForwards
         self.supportTier = supportTier
         self.selectionEvidence = selectionEvidence
         self.qualificationEvidence = qualificationEvidence
@@ -583,6 +587,7 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
         backendRuntimeBuildIdentifier: String,
         resolverReference: DoryVMResolverReference?,
         launchArtifacts: [DoryResolvedMachineLaunchArtifact],
+        portForwards: [DoryVMPortForward] = [],
         components: [DoryResolvedBackendComponentEvidence],
         resourceAdmission: DoryResolvedMachineResourceAdmissionEvidence,
         hostQualification: DoryResolvedHostQualificationEvidence,
@@ -634,6 +639,7 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
             components: components,
             devices: selectedCapability.request.devices,
             graphics: selectedCapability.request.graphics,
+            portForwards: portForwards,
             supportTier: selectedCapability.availability.supportTier,
             selectionEvidence: selectionEvidence,
             qualificationEvidence: DoryResolvedMachineQualificationEvidence(
@@ -671,6 +677,7 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
         case componentDigests
         case devices
         case graphics
+        case portForwards
         case supportTier
         case selectionEvidence
         case qualificationEvidence
@@ -731,13 +738,14 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
                 forKey: .devices
             ) ?? .minimumBootable
             graphics = try container.decode(DoryGraphicsAccelerationLevel.self, forKey: .graphics)
+            portForwards = []
             supportTier = .experimental
             selectionEvidence = nil
             qualificationEvidence = DoryResolvedMachineQualificationEvidence()
             resourceAdmission = nil
             hostQualification = nil
             experimentalAuthorization = nil
-        case 2, Self.currentSchemaVersion:
+        case 2, 3, Self.currentSchemaVersion:
             schemaVersion = Self.currentSchemaVersion
             sourceSchemaVersion = persistedSchema
             migrationDisposition = persistedSchema == Self.currentSchemaVersion
@@ -786,6 +794,9 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
                 forKey: .devices
             )
             graphics = try container.decode(DoryGraphicsAccelerationLevel.self, forKey: .graphics)
+            portForwards = persistedSchema == Self.currentSchemaVersion
+                ? try container.decode([DoryVMPortForward].self, forKey: .portForwards)
+                : []
             supportTier = try container.decode(DoryCapabilitySupportTier.self, forKey: .supportTier)
             selectionEvidence = try container.decodeIfPresent(
                 DoryResolvedMachineBackendSelectionEvidence.self,
@@ -837,6 +848,7 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
         try container.encode(components, forKey: .components)
         try container.encode(devices, forKey: .devices)
         try container.encode(graphics, forKey: .graphics)
+        try container.encode(portForwards, forKey: .portForwards)
         try container.encode(supportTier, forKey: .supportTier)
         try container.encodeIfPresent(selectionEvidence, forKey: .selectionEvidence)
         try container.encode(qualificationEvidence, forKey: .qualificationEvidence)
@@ -880,6 +892,7 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
 
         validateBootMedia(into: &issues)
         validateLaunchArtifacts(into: &issues)
+        validatePortForwards(into: &issues)
         validateComponents(into: &issues)
         validateQualifications(into: &issues)
         validateResourceAdmission(into: &issues)
@@ -887,6 +900,48 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
         validateSupportAuthorization(into: &issues)
         validateSelectionEvidence(into: &issues)
         return issues
+    }
+
+    private func validatePortForwards(
+        into issues: inout [DoryResolvedMachinePlanValidationIssue]
+    ) {
+        func reject(_ field: String) {
+            issues.append(DoryResolvedMachinePlanValidationIssue(
+                code: .invalidPortForwardContract,
+                field: field
+            ))
+        }
+        if portForwards.count > DoryVMPortForward.maximumCount {
+            reject("portForwards")
+        }
+        if !portForwards.isEmpty,
+           devices.networkAttachment != .sharedNAT,
+           devices.networkAttachment != .isolated {
+            reject("portForwards")
+        }
+        var identifiers: Set<String> = []
+        var bindings: Set<String> = []
+        for (index, forward) in portForwards.enumerated() {
+            let bytes = Array(forward.id.utf8)
+            let identifierIsValid = (1...63).contains(bytes.count)
+                && bytes.first.map(Self.isAlphaNumeric) == true
+                && bytes.dropFirst().allSatisfy {
+                    Self.isAlphaNumeric($0) || $0 == 95 || $0 == 46 || $0 == 45
+                }
+            if !identifierIsValid || !identifiers.insert(forward.id).inserted {
+                reject("portForwards[\(index)].id")
+            }
+            if forward.hostPort == 0 || forward.guestPort == 0 {
+                reject("portForwards[\(index)].port")
+            }
+            let binding = "\(forward.transport.rawValue):\(forward.hostPort)"
+            if !bindings.insert(binding).inserted {
+                reject("portForwards[\(index)].hostPort")
+            }
+            if forward.exposure == .lan, devices.networkAttachment != .sharedNAT {
+                reject("portForwards[\(index)].exposure")
+            }
+        }
     }
 
     private func validateBootMedia(
@@ -1433,6 +1488,7 @@ public struct DoryResolvedMachineRuntimeEvidence: Codable, Sendable, Equatable, 
     public var components: [DoryResolvedBackendComponentEvidence]
     public var devices: DoryVirtualMachineDeviceCapabilityRequest
     public var graphics: DoryGraphicsAccelerationLevel
+    public var portForwards: [DoryVMPortForward]
     public var supportTier: DoryCapabilitySupportTier
     public var selectionEvidence: DoryResolvedMachineBackendSelectionEvidence?
     public var qualificationEvidence: DoryResolvedMachineQualificationEvidence
@@ -1451,6 +1507,7 @@ public struct DoryResolvedMachineRuntimeEvidence: Codable, Sendable, Equatable, 
         components: [DoryResolvedBackendComponentEvidence],
         devices: DoryVirtualMachineDeviceCapabilityRequest,
         graphics: DoryGraphicsAccelerationLevel,
+        portForwards: [DoryVMPortForward] = [],
         supportTier: DoryCapabilitySupportTier,
         selectionEvidence: DoryResolvedMachineBackendSelectionEvidence?,
         qualificationEvidence: DoryResolvedMachineQualificationEvidence,
@@ -1468,6 +1525,7 @@ public struct DoryResolvedMachineRuntimeEvidence: Codable, Sendable, Equatable, 
         self.components = components
         self.devices = devices
         self.graphics = graphics
+        self.portForwards = portForwards
         self.supportTier = supportTier
         self.selectionEvidence = selectionEvidence
         self.qualificationEvidence = qualificationEvidence
@@ -1487,6 +1545,7 @@ public struct DoryResolvedMachineRuntimeEvidence: Codable, Sendable, Equatable, 
         components = plan.components
         devices = plan.devices
         graphics = plan.graphics
+        portForwards = plan.portForwards
         supportTier = plan.supportTier
         selectionEvidence = plan.selectionEvidence
         qualificationEvidence = plan.qualificationEvidence
@@ -1535,6 +1594,7 @@ public enum DoryResolvedMachinePlanRevalidationCode: String, Codable, Sendable, 
     case componentEvidenceMismatch = "component-evidence-mismatch"
     case deviceContractMismatch = "device-contract-mismatch"
     case graphicsMismatch = "graphics-mismatch"
+    case portForwardContractMismatch = "port-forward-contract-mismatch"
     case supportTierMismatch = "support-tier-mismatch"
     case selectionEvidenceMismatch = "selection-evidence-mismatch"
     case qualificationEvidenceMismatch = "qualification-evidence-mismatch"
@@ -1646,6 +1706,12 @@ public enum DoryResolvedMachinePlanStartValidator {
         compare(runtime.components, plan.components, code: .componentEvidenceMismatch, field: "components")
         compare(runtime.devices, plan.devices, code: .deviceContractMismatch, field: "devices")
         compare(runtime.graphics, plan.graphics, code: .graphicsMismatch, field: "graphics")
+        compare(
+            runtime.portForwards,
+            plan.portForwards,
+            code: .portForwardContractMismatch,
+            field: "portForwards"
+        )
         compare(
             runtime.supportTier,
             plan.supportTier,

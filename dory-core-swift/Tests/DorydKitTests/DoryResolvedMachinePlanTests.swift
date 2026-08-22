@@ -61,6 +61,26 @@ struct DoryResolvedMachinePlanTests {
         #expect(migrated.validate().contains { $0.code == .invalidLaunchArtifactEvidence })
     }
 
+    @Test("schema v3 without port-forward authority requires replanning")
+    func schemaV3PortForwardMigration() throws {
+        let encoded = try JSONEncoder().encode(supportedPlan())
+        var object = try #require(
+            JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+        )
+        object["schemaVersion"] = 3
+        object["sourceSchemaVersion"] = 3
+        object.removeValue(forKey: "portForwards")
+
+        let migrated = try JSONDecoder().decode(
+            DoryResolvedMachinePlan.self,
+            from: JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        )
+        #expect(migrated.sourceSchemaVersion == 3)
+        #expect(migrated.migrationDisposition == .requiresReplanning)
+        #expect(migrated.portForwards.isEmpty)
+        #expect(migrated.validate().contains { $0.code == .legacyPlanRequiresReplanning })
+    }
+
     @Test("exact fresh evidence authorizes start")
     func exactStartEvidence() {
         let plan = supportedPlan()
@@ -118,6 +138,25 @@ struct DoryResolvedMachinePlanTests {
         let result = DoryResolvedMachinePlanStartValidator.revalidate(plan, against: input)
         #expect(!result.mayStart)
         #expect(result.issues.contains { $0.code == .deviceContractMismatch })
+    }
+
+    @Test("port forwards are exact start evidence and fail closed structurally")
+    func portForwardEvidenceMismatch() {
+        let plan = supportedPlan()
+        #expect(plan.validate().isEmpty)
+        var input = exactInput(for: plan)
+        input.runtimeEvidence.portForwards[0].guestPort = 2_222
+        let mismatch = DoryResolvedMachinePlanStartValidator.revalidate(plan, against: input)
+        #expect(!mismatch.mayStart)
+        #expect(mismatch.issues.contains { $0.code == .portForwardContractMismatch })
+
+        var invalid = plan
+        invalid.portForwards.append(DoryVMPortForward(
+            id: "duplicate-binding",
+            hostPort: 2_222,
+            guestPort: 220
+        ))
+        #expect(invalid.validate().contains { $0.code == .invalidPortForwardContract })
     }
 
     @Test("immutable media and qualification evidence mismatches are exact")
@@ -764,6 +803,11 @@ private func supportedPlan() -> DoryResolvedMachinePlan {
         ],
         devices: devices,
         graphics: .hostAcceleratedDisplay,
+        portForwards: [DoryVMPortForward(
+            id: "ssh",
+            hostPort: 2_222,
+            guestPort: 22
+        )],
         supportTier: .supported,
         selectionEvidence: primarySelectionEvidence(
             guest: DoryGuestPlatform(family: .linux, architecture: .arm64),

@@ -157,9 +157,9 @@ struct MachineManagerResolvedPlanIntegrationTests {
         }
     }
 
-    @Test("adapter cannot substitute resolved graphics or devices")
+    @Test("adapter cannot substitute resolved graphics devices or port forwards")
     func adapterCannotSubstituteLaunchContract() throws {
-        enum Mutation: CaseIterable, Sendable { case graphics, devices }
+        enum Mutation: CaseIterable, Sendable { case graphics, devices, portForwards }
 
         for mutation in Mutation.allCases {
             try withHarness("binding-substitution-\(mutation)") { manager, starter, _ in
@@ -175,6 +175,12 @@ struct MachineManagerResolvedPlanIntegrationTests {
                             changed.graphics = .software
                         case .devices:
                             changed.devices.keyboard.toggle()
+                        case .portForwards:
+                            changed.portForwards = [DoryVMPortForward(
+                                id: "substituted",
+                                hostPort: 8_080,
+                                guestPort: 80
+                            )]
                         }
                         return try managerOperations.authorizedStart(changed)
                     },
@@ -1669,6 +1675,7 @@ struct MachineManagerResolvedPlanIntegrationTests {
             )],
             devices: devices,
             graphics: .hostAcceleratedDisplay,
+            portForwards: request.definition.portForwards,
             supportTier: .supported,
             selectionEvidence: DoryResolvedMachineBackendSelectionEvidence(
                 disposition: .primary,
@@ -1755,7 +1762,8 @@ struct MachineManagerResolvedPlanIntegrationTests {
             backendPlan: MachineBackendPlan(
                 backend: RawHVLinuxMachineBackend.backendDescriptor,
                 machine: request.machine,
-                capability: capability
+                capability: capability,
+                portForwards: request.definition.portForwards
             ),
             preSpawnAuthorization: DoryDaemonVirtualMachinePreSpawnAuthorization(
                 revalidate: preSpawnRevalidation

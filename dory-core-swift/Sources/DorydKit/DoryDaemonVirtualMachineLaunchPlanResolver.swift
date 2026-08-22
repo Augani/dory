@@ -421,7 +421,8 @@ public final class DoryDaemonVirtualMachineLaunchPlanResolver:
         )
         let mapped = registry.plan(MachineBackendPlanRequest(
             machine: request.machine,
-            capabilityPlan: capabilityPlan
+            capabilityPlan: capabilityPlan,
+            portForwards: plan.portForwards
         ))
         guard let backendPlan = mapped.plan, mapped.failure == nil else {
             throw failure(.backendPlanRejected, "The exact backend adapter rejected the launch plan.")
@@ -430,7 +431,8 @@ public final class DoryDaemonVirtualMachineLaunchPlanResolver:
               backendPlan.backend.implementationIdentifier
                 == plan.backendImplementationIdentifier,
               backendPlan.capability == fresh.capability,
-              backendPlan.machine.id == plan.machineID else {
+              backendPlan.machine.id == plan.machineID,
+              backendPlan.portForwards == plan.portForwards else {
             throw failure(.backendPlanIdentityMismatch, "The adapter plan differs from the durable selection.")
         }
         return DoryDaemonVirtualMachineLaunchPlanResolution(

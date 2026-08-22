@@ -2024,6 +2024,7 @@ public final class MachineManager: @unchecked Sendable {
                 runtimeComponents: resolved.resolvedPlan.components,
                 graphics: resolved.resolvedPlan.graphics,
                 devices: resolved.resolvedPlan.devices,
+                portForwards: resolved.resolvedPlan.portForwards,
                 operationID: operationID,
                 planRevision: resolved.resolvedPlan.planRevision,
                 planSHA256: resolved.resolvedPlanSHA256,
@@ -2138,6 +2139,7 @@ public final class MachineManager: @unchecked Sendable {
               binding.backend.identity == expectedBackend,
               authorization.graphics == binding.graphics,
               authorization.devices == binding.devices,
+              authorization.portForwards == binding.portForwards,
               !binding.executablePath.isEmpty else {
             pendingResolvedStart = nil
             throw MachineManagerError.persistence(
@@ -2225,6 +2227,8 @@ public final class MachineManager: @unchecked Sendable {
               capability.request.bootMedia == plan.bootMedia.media,
               capability.request.devices == plan.devices,
               capability.request.graphics == plan.graphics,
+              plan.portForwards == definition.portForwards,
+              resolved.backendPlan.portForwards == plan.portForwards,
               capability.request.virtualHardwareABIVersion == plan.virtualHardwareABIVersion,
               capability.availability.supportTier == plan.supportTier,
               capability.availability.isUsable,
@@ -6203,6 +6207,13 @@ public final class MachineManager: @unchecked Sendable {
             arguments.append(contentsOf: [
                 "--resolved-graphics", resolvedLaunchBinding.graphics.rawValue,
                 "--resolved-devices", deviceContract,
+            ])
+            let portForwardContract = String(
+                decoding: try encoder.encode(resolvedLaunchBinding.portForwards),
+                as: UTF8.self
+            )
+            arguments.append(contentsOf: [
+                "--resolved-port-forwards", portForwardContract,
             ])
         }
         for share in machine.shares {
@@ -12877,6 +12888,7 @@ private struct PendingResolvedMachineStart {
     var runtimeComponents: [DoryResolvedBackendComponentEvidence]
     var graphics: DoryGraphicsAccelerationLevel
     var devices: DoryVirtualMachineDeviceCapabilityRequest
+    var portForwards: [DoryVMPortForward]
     var operationID: UUID
     var planRevision: UInt64
     var planSHA256: String

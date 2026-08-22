@@ -50,6 +50,8 @@ struct DoryDaemonVirtualMachineRuntimePlanningTests {
         #expect(result.resolvedPlan.launchArtifacts.count == 2)
         #expect(result.resolvedPlan.launchArtifacts.flatMap(\.usages).map(\.kind)
             == [.storage, .boot])
+        #expect(result.resolvedPlan.portForwards == fixture.definition.portForwards)
+        #expect(result.backendPlan.portForwards == fixture.definition.portForwards)
         #expect(result.backendPlan.backend.identity == .doryHypervisor)
         #expect(try fixture.store.read(id: fixture.definition.identity.id) == result.resolvedPlan)
     }
@@ -283,6 +285,11 @@ private final class Fixture {
                 role: .system,
                 artifact: diskArtifact,
                 capacityBytes: resources.diskBytes
+            )],
+            portForwards: [DoryVMPortForward(
+                id: "ssh",
+                hostPort: 2_222,
+                guestPort: 22
             )],
             audio: DoryVMAudioConfiguration(inputEnabled: false, outputEnabled: false),
             input: DoryVMInputConfiguration(keyboardEnabled: false, pointerEnabled: false),

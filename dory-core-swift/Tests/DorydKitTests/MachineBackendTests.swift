@@ -87,7 +87,12 @@ final class MachineBackendTests: XCTestCase {
             capabilityPlan: capabilityPlan(
                 backend: .doryHypervisor,
                 media: .linuxKernel
-            )
+            ),
+            portForwards: [DoryVMPortForward(
+                id: "ssh",
+                hostPort: 2_222,
+                guestPort: 22
+            )]
         )
 
         let result = registry.plan(request)
@@ -106,6 +111,7 @@ final class MachineBackendTests: XCTestCase {
         XCTAssertEqual(recorder.launchBindings.first?.operationID, operationID)
         XCTAssertEqual(recorder.launchBindings.first?.graphics, .hostAcceleratedDisplay)
         XCTAssertEqual(recorder.launchBindings.first?.devices, .minimumBootable)
+        XCTAssertEqual(recorder.launchBindings.first?.portForwards, request.portForwards)
 
         let stopOperationID = UUID(uuidString: "12345678-9abc-4def-8012-3456789abcde")!
         let stopped = registry.stop(MachineBackendRuntimeRequest(

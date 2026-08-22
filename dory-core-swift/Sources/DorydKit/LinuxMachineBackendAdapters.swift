@@ -180,15 +180,63 @@ private final class LinuxMachineBackendAdapterCore: @unchecked Sendable {
                 message: validationFailure
             )
         }
+        if let validationFailure = validatePortForwards(
+            request.portForwards,
+            networkAttachment: capability.request.devices.networkAttachment
+        ) {
+            return failedPlan(
+                probe: currentProbe,
+                code: .machineConfigurationIncompatible,
+                message: validationFailure
+            )
+        }
         return MachineBackendPlanResult(
             plan: MachineBackendPlan(
                 backend: descriptor,
                 machine: request.machine,
-                capability: capability
+                capability: capability,
+                portForwards: request.portForwards
             ),
             probe: currentProbe,
             failure: nil
         )
+    }
+
+    private func validatePortForwards(
+        _ forwards: [DoryVMPortForward],
+        networkAttachment: DoryVirtualMachineNetworkAttachmentMode
+    ) -> String? {
+        guard forwards.count <= DoryVMPortForward.maximumCount else {
+            return "The resolved port-forward count exceeds the backend limit."
+        }
+        if !forwards.isEmpty,
+           networkAttachment != .sharedNAT,
+           networkAttachment != .isolated {
+            return "The resolved network attachment cannot publish host ports."
+        }
+        var identifiers: Set<String> = []
+        var bindings: Set<String> = []
+        for forward in forwards {
+            let bytes = Array(forward.id.utf8)
+            let firstIsValid = bytes.first.map(Self.isASCIIAlphaNumeric) == true
+            let restIsValid = bytes.dropFirst().allSatisfy {
+                Self.isASCIIAlphaNumeric($0) || $0 == 95 || $0 == 46 || $0 == 45
+            }
+            guard (1...63).contains(bytes.count), firstIsValid, restIsValid,
+                  identifiers.insert(forward.id).inserted,
+                  forward.hostPort > 0, forward.guestPort > 0,
+                  bindings.insert("\(forward.transport.rawValue):\(forward.hostPort)").inserted,
+                  forward.exposure != .lan || networkAttachment == .sharedNAT else {
+                return "The resolved port-forward contract is invalid or conflicting."
+            }
+        }
+        return nil
+    }
+
+    private static func isASCIIAlphaNumeric(_ byte: UInt8) -> Bool {
+        (byte >= 48 && byte <= 57)
+            || (byte >= 65 && byte <= 90)
+            || (byte >= 97 && byte <= 122)
     }
 
     func start(_ request: MachineBackendStartRequest) -> MachineBackendOperationResult {
@@ -214,7 +262,8 @@ private final class LinuxMachineBackendAdapterCore: @unchecked Sendable {
                 selectedDescriptor: plan.capability,
                 evaluatedDescriptors: [plan.capability],
                 failure: nil
-            )
+            ),
+            portForwards: plan.portForwards
         ))
         guard revalidated.plan == plan else {
             return failedOperation(
@@ -241,7 +290,8 @@ private final class LinuxMachineBackendAdapterCore: @unchecked Sendable {
             componentIdentifier: componentIdentifier,
             executablePath: executablePath,
             graphics: plan.capability.request.graphics,
-            devices: plan.capability.request.devices
+            devices: plan.capability.request.devices,
+            portForwards: plan.portForwards
         ))
     }
 
