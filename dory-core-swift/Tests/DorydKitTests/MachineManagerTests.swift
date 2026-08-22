@@ -3513,6 +3513,55 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: exportDirectory), ["dev.dorymachine"])
     }
 
+    func testSnapshotExportRejectsLowStorageBeforeCreatingTemporaryBundle() throws {
+        let base = "/tmp/dory-machine-export-low-storage-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let sourceRootfs = "\(base)/base-rootfs.ext4"
+        try Data("base-rootfs".utf8).write(to: URL(fileURLWithPath: sourceRootfs))
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: "\(base)/machines",
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: false
+        ))
+        defer { try? manager.delete(id: "dev") }
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "dev",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: sourceRootfs
+        ))
+        _ = try manager.snapshot(id: "dev", snapshotID: "s1")
+
+        let exportDirectory = "\(base)/exports"
+        let bundlePath = "\(exportDirectory)/dev.dorymachine"
+        try FileManager.default.createDirectory(
+            atPath: exportDirectory,
+            withIntermediateDirectories: true
+        )
+        let existing = Data("existing-export-must-survive-low-storage".utf8)
+        try existing.write(to: URL(fileURLWithPath: bundlePath))
+        manager.installStorageCapacityProviderForTesting { _ in 0 }
+
+        XCTAssertThrowsError(try manager.exportSnapshot(
+            machineID: "dev",
+            snapshotID: "s1",
+            toPath: bundlePath
+        )) { error in
+            XCTAssertTrue(
+                String(describing: error).contains(
+                    "insufficient host storage for machine export"
+                )
+            )
+        }
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: bundlePath)), existing)
+        XCTAssertEqual(
+            try FileManager.default.contentsOfDirectory(atPath: exportDirectory),
+            ["dev.dorymachine"]
+        )
+    }
+
     func testCloneStartFailureDeletesTheNewMachineDefinition() throws {
         let base = "/tmp/dory-machine-clone-rollback-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)

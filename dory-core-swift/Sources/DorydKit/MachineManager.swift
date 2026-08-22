@@ -1008,6 +1008,7 @@ public final class MachineManager: @unchecked Sendable {
     private let failureStore: DoryMachineFailureStore
     private let flightRecorderStore: DoryMachineFlightRecorderStore
     private let launchPolicy: DoryMachineLaunchPolicy
+    private var storageCapacityProvider: @Sendable (String) throws -> UInt64
     private let lifecycleJournalStore: DoryOperationJournalStore?
     private let lifecycleJournalInitializationError: String?
     private let operationLock = NSRecursiveLock()
@@ -1069,6 +1070,9 @@ public final class MachineManager: @unchecked Sendable {
         self.vzLifecycleController = vzLifecycleController
         self.agentConnector = agentConnector
         self.processStarter = processStarter
+        self.storageCapacityProvider = { path in
+            try MachineManager.availableStorageCapacity(forDestinationPath: path)
+        }
         self.workspaceRepository = DoryWorkspaceRepository(root: configuration.stateDirectory)
         self.runtimeIdentityStore = DoryMachineRuntimeIdentityStore(
             root: configuration.stateDirectory
@@ -5439,7 +5443,11 @@ public final class MachineManager: @unchecked Sendable {
             )
         }
         do {
-            try MachineSnapshotBundle.write(snapshot: snapshot, toPath: path)
+            try MachineSnapshotBundle.write(
+                snapshot: snapshot,
+                toPath: path,
+                availableCapacity: storageCapacityProvider
+            )
         } catch let error as MachineManagerError {
             throw error
         } catch {
@@ -11694,7 +11702,46 @@ public final class MachineManager: @unchecked Sendable {
         shareAuthorityPreSpawnTestHook = hook
         operationLock.unlock()
     }
+
+    func installStorageCapacityProviderForTesting(
+        _ provider: @escaping @Sendable (String) throws -> UInt64
+    ) {
+        operationLock.lock()
+        storageCapacityProvider = provider
+        operationLock.unlock()
+    }
 #endif
+
+    private static func availableStorageCapacity(forDestinationPath path: String) throws -> UInt64 {
+        var candidate = URL(fileURLWithPath: path)
+            .standardizedFileURL
+            .deletingLastPathComponent()
+        let fileManager = FileManager.default
+        while !fileManager.fileExists(atPath: candidate.path) {
+            let parent = candidate.deletingLastPathComponent()
+            guard parent.path != candidate.path else {
+                throw MachineManagerError.persistence(
+                    "could not locate the machine export destination filesystem"
+                )
+            }
+            candidate = parent
+        }
+        var filesystem = statfs()
+        guard statfs(candidate.path, &filesystem) == 0 else {
+            throw MachineManagerError.persistence(
+                "could not inspect machine export storage: \(String(cString: strerror(errno)))"
+            )
+        }
+        let (available, overflow) = UInt64(filesystem.f_bavail).multipliedReportingOverflow(
+            by: UInt64(filesystem.f_bsize)
+        )
+        guard !overflow else {
+            throw MachineManagerError.persistence(
+                "machine export storage capacity exceeds supported accounting"
+            )
+        }
+        return available
+    }
 
     private static func recoverInterruptedLifecycleOperations(
         store: DoryOperationJournalStore?,
@@ -12241,8 +12288,13 @@ private enum MachineSnapshotBundle {
     private static let digestByteCount = 32
     private static let maximumMetadataLength: UInt64 = 16 * 1024 * 1024
     private static let copyChunkSize = 4 * 1024 * 1024
+    private static let capacitySafetyBytes: UInt64 = 256 * 1024 * 1024
 
-    static func write(snapshot: DoryMachineSnapshot, toPath path: String) throws {
+    static func write(
+        snapshot: DoryMachineSnapshot,
+        toPath path: String,
+        availableCapacity: @Sendable (String) throws -> UInt64
+    ) throws {
         try MachineManager.validateSnapshotRuntimeIdentity(snapshot)
         try MachineManager.validateSnapshotArtifactEvidence(snapshot)
         let rootfs = try openRegularFileForReading(path: snapshot.rootfsPath, requirePrivateOwnership: true)
@@ -12304,6 +12356,27 @@ private enum MachineSnapshotBundle {
             throw MachineManagerError.persistence("invalid dory machine bundle metadata")
         }
         let metadataDigest = Data(SHA256.hash(data: metadata))
+        let bundleByteCount = try requiredBundleByteCount(
+            metadataLength: UInt64(metadata.count),
+            rootfsLength: rootfsLength,
+            kernelLength: kernelLength,
+            machineIdentifierLength: machineIdentifierLength,
+            nvramLength: nvramLength
+        )
+        let safetyBytes = max(capacitySafetyBytes, bundleByteCount / 10)
+        let requiredCapacity = try checkedAdd(
+            bundleByteCount,
+            safetyBytes,
+            failure: "machine export capacity exceeds supported accounting"
+        )
+        let available = try availableCapacity(path)
+        guard available >= requiredCapacity else {
+            throw MachineManagerError.persistence(
+                "insufficient host storage for machine export "
+                    + "(need \(requiredCapacity) bytes including safety reserve, "
+                    + "have \(available))"
+            )
+        }
 
         let outputURL = URL(fileURLWithPath: path)
         let parent = outputURL.deletingLastPathComponent()
@@ -12408,6 +12481,52 @@ private enum MachineSnapshotBundle {
             try? FileManager.default.removeItem(at: temporaryURL)
             throw error
         }
+    }
+
+    private static func requiredBundleByteCount(
+        metadataLength: UInt64,
+        rootfsLength: UInt64,
+        kernelLength: UInt64,
+        machineIdentifierLength: UInt64?,
+        nvramLength: UInt64?
+    ) throws -> UInt64 {
+        let includesFirmware = machineIdentifierLength != nil || nvramLength != nil
+        guard (machineIdentifierLength == nil) == (nvramLength == nil) else {
+            throw MachineManagerError.persistence(
+                "machine export firmware capacity evidence is incomplete"
+            )
+        }
+        let artifactCount: UInt64 = includesFirmware ? 5 : 3
+        var total = UInt64(includesFirmware ? v4Magic.count : v3Magic.count)
+        total = try checkedAdd(
+            total,
+            artifactCount * UInt64(lengthByteCount + digestByteCount),
+            failure: "machine export capacity exceeds supported accounting"
+        )
+        for length in [
+            metadataLength,
+            rootfsLength,
+            kernelLength,
+            machineIdentifierLength ?? 0,
+            nvramLength ?? 0,
+        ] {
+            total = try checkedAdd(
+                total,
+                length,
+                failure: "machine export capacity exceeds supported accounting"
+            )
+        }
+        return total
+    }
+
+    private static func checkedAdd(
+        _ lhs: UInt64,
+        _ rhs: UInt64,
+        failure: String
+    ) throws -> UInt64 {
+        let (value, overflow) = lhs.addingReportingOverflow(rhs)
+        guard !overflow else { throw MachineManagerError.persistence(failure) }
+        return value
     }
 
     static func verifyDescriptor(
