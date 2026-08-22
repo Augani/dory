@@ -742,10 +742,11 @@ events in the workspace flight recorder, and exposes the same bounded evidence t
 client, and `dorydctl`. Raw-HV derives reset and sustained queue-stall events from monotonic VirtIO
 transport counters and retains a bounded event history. Its block backend also counts serialized
 guest flushes, measures the maximum host `fsync` latency, and emits a classified slow-flush event
-for every flush taking at least 250 ms. Virtualization.framework counters that do not have a stable
-public authority remain explicitly unavailable rather than being reported as zero. Backend-specific
-producers for GPU loss/fences, display/audio drops, network reconnects, and share invalidation remain
-release gates for those individual capability claims.
+for every flush taking at least 250 ms. Its Core Audio bridge reports exact playback and capture
+period drops and emits classified audio-drop events. Virtualization.framework counters that do not
+have a stable public authority remain explicitly unavailable rather than being reported as zero.
+Backend-specific producers for GPU loss/fences, display drops, network reconnects, and share
+invalidation remain release gates for those individual capability claims.
 
 ## Qualification and release gates
 

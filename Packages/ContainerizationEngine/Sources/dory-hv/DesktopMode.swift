@@ -14,9 +14,11 @@ final class RawDeviceTelemetryRegistry: @unchecked Sendable {
         var transport: VirtioMMIOTransport
         var storage: VirtioBlk?
         var network: VirtioNet?
+        var audioMetrics: (@Sendable () -> DoryMacAudioRuntimeMetrics?)?
         var unavailableMetrics: [(DoryDeviceTelemetryMetricKind, DoryDeviceTelemetryMetricUnit)]
         var previousTransportStatistics: VirtioMMIOTransportStatistics?
         var previousStorageStatistics: VirtioBlkStatistics?
+        var previousAudioDrops: UInt64?
         var consecutiveUncompletedNotificationSamples: UInt8
         var queueStallReported: Bool
     }
@@ -37,7 +39,12 @@ final class RawDeviceTelemetryRegistry: @unchecked Sendable {
         self.operationID = DoryOperationIdentity.canonical(operationID)
     }
 
-    func register(slot: Int, backend: any VirtioDeviceBackend, transport: VirtioMMIOTransport) {
+    func register(
+        slot: Int,
+        backend: any VirtioDeviceBackend,
+        transport: VirtioMMIOTransport,
+        audioMetrics: (@Sendable () -> DoryMacAudioRuntimeMetrics?)? = nil
+    ) {
         let kind: DoryDeviceTelemetryKind
         let unavailable: [(DoryDeviceTelemetryMetricKind, DoryDeviceTelemetryMetricUnit)]
         switch backend {
@@ -54,7 +61,7 @@ final class RawDeviceTelemetryRegistry: @unchecked Sendable {
             ]
         case is VirtioSound:
             kind = .audio
-            unavailable = [(.audioDrops, .count)]
+            unavailable = audioMetrics == nil ? [(.audioDrops, .count)] : []
         case is VirtioFS:
             kind = .sharedDirectory
             unavailable = [
@@ -95,9 +102,11 @@ final class RawDeviceTelemetryRegistry: @unchecked Sendable {
             transport: transport,
             storage: backend as? VirtioBlk,
             network: backend as? VirtioNet,
+            audioMetrics: audioMetrics,
             unavailableMetrics: unavailable,
             previousTransportStatistics: nil,
             previousStorageStatistics: nil,
+            previousAudioDrops: nil,
             consecutiveUncompletedNotificationSamples: 0,
             queueStallReported: false
         )
@@ -204,6 +213,25 @@ final class RawDeviceTelemetryRegistry: @unchecked Sendable {
                         health = .degraded
                     }
                     entries[index].previousStorageStatistics = storage
+                }
+                if let audio = entries[index].audioMetrics?() {
+                    let (sum, overflow) = audio.droppedPlaybackPeriods.addingReportingOverflow(
+                        audio.droppedCapturePeriods
+                    )
+                    let drops = overflow ? UInt64.max : sum
+                    metrics.append(.measured(.audioDrops, value: drops))
+                    let previousDrops = entries[index].previousAudioDrops ?? 0
+                    let newDrops = Self.monotonicDelta(current: drops, previous: previousDrops)
+                    if newDrops > 0 {
+                        appendEvent(
+                            deviceID: entries[index].id,
+                            kind: .audioDrop,
+                            occurrences: newDrops,
+                            monotonicNanoseconds: monotonicNanoseconds
+                        )
+                        health = .degraded
+                    }
+                    entries[index].previousAudioDrops = drops
                 }
                 metrics.append(contentsOf: entries[index].unavailableMetrics.map {
                     .unavailable($0.0, unit: $0.1, reason: unavailableReason)
@@ -525,7 +553,18 @@ enum DesktopMode {
                 }
                 for (slot, backend) in backends.enumerated() {
                     let transport = Self.attachBackend(backend, to: machine, slot: slot)
-                    deviceTelemetry.register(slot: slot, backend: backend, transport: transport)
+                    let audioMetrics: (@Sendable () -> DoryMacAudioRuntimeMetrics?)?
+                    if backend === sound {
+                        audioMetrics = { [weak audio] in audio?.runtimeMetrics }
+                    } else {
+                        audioMetrics = nil
+                    }
+                    deviceTelemetry.register(
+                        slot: slot,
+                        backend: backend,
+                        transport: transport,
+                        audioMetrics: audioMetrics
+                    )
                     if backend === gpu, configuration.resolvedDevices?.dynamicDisplay != false {
                         display.onDrawableSizeChange = { [weak gpu, weak transport] width, height in
                             guard let gpu, let transport else { return }

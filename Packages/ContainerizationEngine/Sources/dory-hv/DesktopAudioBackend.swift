@@ -47,7 +47,7 @@ struct DoryMacAudioQueueCapacity {
     }
 }
 
-struct DoryMacAudioRuntimeMetrics: Equatable {
+struct DoryMacAudioRuntimeMetrics: Equatable, Sendable {
     var queuedPlaybackBytes: Int
     var pendingCaptureBytes: Int
     var bufferedCaptureBytes: Int

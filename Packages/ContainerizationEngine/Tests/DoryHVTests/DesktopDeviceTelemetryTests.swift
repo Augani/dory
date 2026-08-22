@@ -111,4 +111,45 @@ import Testing
         #expect(stable.devices.first?.health == .healthy)
         #expect(stable.events.map(\.kind) == [.storageFlushSlow])
     }
+
+    @Test func publishesMeasuredAudioDropsAndClassifiedEvents() throws {
+        let audio = DoryMacAudioBackend(log: { _ in })
+        let parameters = VirtioSoundPCMParameters(
+            bufferBytes: 8,
+            periodBytes: 4,
+            sampleRate: 48_000,
+            channels: 2
+        )
+        #expect(audio.configure(streamID: 0, direction: .output, parameters: parameters))
+        #expect(audio.enqueuePlayback(Data(count: 4), parameters: parameters) { _, _ in })
+        #expect(audio.enqueuePlayback(Data(count: 4), parameters: parameters) { _, _ in })
+        #expect(!audio.enqueuePlayback(Data(count: 4), parameters: parameters) { _, _ in })
+
+        let backend = VirtioSound(host: audio)
+        let memory = try GuestMemory(guestBase: GuestLayout.ramBase, size: 0x20_000)
+        let transport = VirtioMMIOTransport(
+            baseAddress: GuestLayout.virtioBase,
+            backend: backend,
+            memory: memory
+        ) {}
+        let registry = RawDeviceTelemetryRegistry(machineID: "raw-audio", operationID: UUID())
+        registry.register(
+            slot: 4,
+            backend: backend,
+            transport: transport,
+            audioMetrics: { [weak audio] in audio?.runtimeMetrics }
+        )
+
+        let snapshot = registry.snapshot()
+        let device = try #require(snapshot.devices.first)
+        #expect(device.id == "virtio-audio-4")
+        #expect(device.health == .degraded)
+        #expect(device.metrics.first { $0.kind == .audioDrops }?.value == 1)
+        #expect(snapshot.events.map(\.kind) == [.audioDrop])
+        #expect(snapshot.events.first?.occurrences == 1)
+
+        let stable = registry.snapshot()
+        #expect(stable.devices.first?.health == .healthy)
+        #expect(stable.events.map(\.kind) == [.audioDrop])
+    }
 }
