@@ -4717,6 +4717,29 @@ final class MachineManagerTests: XCTestCase {
                 )
             )
         }
+
+        let recorderPath = base + "/" + DoryMachineFlightRecorderStore.recordFileName
+        try Data("{".utf8).write(to: URL(fileURLWithPath: recorderPath))
+        var unpersistable = snapshot
+        unpersistable.sampleSequence = 2
+        unpersistable.events = [
+            DoryDeviceTelemetryEvent(
+                sequence: 2,
+                monotonicNanoseconds: 30,
+                deviceID: device.id,
+                kind: .reset
+            ),
+        ]
+        telemetry.value = unpersistable
+        XCTAssertThrowsError(try manager.deviceTelemetry(id: "dev")) { error in
+            XCTAssertEqual(
+                error as? MachineManagerError,
+                .deviceTelemetryRejected(
+                    "dev",
+                    "flight recorder could not persist device event evidence"
+                )
+            )
+        }
     }
 }
 

@@ -7,20 +7,28 @@ import DorydKit
 import DoryVMMKit
 import Foundation
 
-private final class RawDeviceTelemetryRegistry: @unchecked Sendable {
+final class RawDeviceTelemetryRegistry: @unchecked Sendable {
     private struct Entry {
         var id: String
         var kind: DoryDeviceTelemetryKind
         var transport: VirtioMMIOTransport
         var network: VirtioNet?
         var unavailableMetrics: [(DoryDeviceTelemetryMetricKind, DoryDeviceTelemetryMetricUnit)]
+        var previousTransportStatistics: VirtioMMIOTransportStatistics?
+        var consecutiveUncompletedNotificationSamples: UInt8
+        var queueStallReported: Bool
     }
 
     private let machineID: String
     private let operationID: String
     private let lock = NSLock()
     private var sampleSequence: UInt64 = 0
+    private var eventSequence: UInt64 = 0
+    private var eventHistory = [DoryDeviceTelemetryEvent]()
     private var entries = [Entry]()
+
+    private static let queueStallSampleThreshold: UInt8 = 3
+    private static let maximumEventHistory = 256
 
     init(machineID: String, operationID: UUID) {
         self.machineID = machineID
@@ -87,57 +95,137 @@ private final class RawDeviceTelemetryRegistry: @unchecked Sendable {
             kind: kind,
             transport: transport,
             network: backend as? VirtioNet,
-            unavailableMetrics: unavailable
+            unavailableMetrics: unavailable,
+            previousTransportStatistics: nil,
+            consecutiveUncompletedNotificationSamples: 0,
+            queueStallReported: false
         )
         lock.withLock { entries.append(entry) }
     }
 
     func snapshot() -> DoryDeviceTelemetrySnapshot {
-        let captured: (UInt64, [Entry]) = lock.withLock {
+        lock.withLock {
             sampleSequence &+= 1
-            return (sampleSequence, entries)
-        }
-        let unavailableReason = "raw-HV backend does not expose this counter yet"
-        let devices = captured.1.map { entry in
-            let transport = entry.transport.statistics
-            var metrics: [DoryDeviceTelemetryMetric] = [
-                .measured(.queueNotifications, value: transport.queueNotifications),
-                .measured(.queueStateChanges, value: transport.queueStateChanges),
-                .measured(.usedInterrupts, value: transport.usedInterrupts),
-                .measured(.configurationInterrupts, value: transport.configurationInterrupts),
-                .measured(.deviceResets, value: transport.deviceResets),
-            ]
-            if let network = entry.network?.statistics {
-                metrics.append(contentsOf: [
-                    .measured(.transmittedFrames, value: network.transmitPackets),
-                    .measured(.transmittedBytes, unit: .bytes, value: network.transmitBytes),
-                    .measured(.transmitDrops, value: network.transmitDrops),
-                    .measured(.receivedFrames, value: network.receivePackets),
-                    .measured(.receivedBytes, unit: .bytes, value: network.receiveBytes),
-                    .measured(.receiveDeferred, value: network.receiveDeferred),
-                    .measured(.receiveDrops, value: network.receiveDrops),
-                    .measured(.receiveTruncations, value: network.receiveTruncations),
-                ])
+            let sampledAtUnixMilliseconds = UInt64(Date().timeIntervalSince1970 * 1_000)
+            let monotonicNanoseconds = DispatchTime.now().uptimeNanoseconds
+            let unavailableReason = "raw-HV backend does not expose this counter yet"
+            var devices = [DoryDeviceTelemetryDevice]()
+            devices.reserveCapacity(entries.count)
+
+            for index in entries.indices {
+                let transport = entries[index].transport.statistics
+                var health = DoryDeviceTelemetryHealth.healthy
+                if let previous = entries[index].previousTransportStatistics {
+                    let resetCount = Self.monotonicDelta(
+                        current: transport.deviceResets,
+                        previous: previous.deviceResets
+                    )
+                    if resetCount > 0 {
+                        appendEvent(
+                            deviceID: entries[index].id,
+                            kind: .reset,
+                            occurrences: resetCount,
+                            monotonicNanoseconds: monotonicNanoseconds
+                        )
+                        health = .degraded
+                    }
+
+                    let notificationsAdvanced =
+                        transport.queueNotifications > previous.queueNotifications
+                    let completionOrLifecycleAdvanced =
+                        transport.usedInterrupts > previous.usedInterrupts
+                        || transport.queueStateChanges > previous.queueStateChanges
+                        || transport.deviceResets > previous.deviceResets
+                    if completionOrLifecycleAdvanced {
+                        entries[index].consecutiveUncompletedNotificationSamples = 0
+                        entries[index].queueStallReported = false
+                    } else if notificationsAdvanced
+                        || entries[index].consecutiveUncompletedNotificationSamples > 0 {
+                        if entries[index].consecutiveUncompletedNotificationSamples < UInt8.max {
+                            entries[index].consecutiveUncompletedNotificationSamples += 1
+                        }
+                    }
+                    if entries[index].consecutiveUncompletedNotificationSamples
+                        >= Self.queueStallSampleThreshold {
+                        health = .degraded
+                        if !entries[index].queueStallReported {
+                            appendEvent(
+                                deviceID: entries[index].id,
+                                kind: .queueStall,
+                                occurrences: 1,
+                                monotonicNanoseconds: monotonicNanoseconds
+                            )
+                            entries[index].queueStallReported = true
+                        }
+                    }
+                }
+                entries[index].previousTransportStatistics = transport
+
+                var metrics: [DoryDeviceTelemetryMetric] = [
+                    .measured(.queueNotifications, value: transport.queueNotifications),
+                    .measured(.queueStateChanges, value: transport.queueStateChanges),
+                    .measured(.usedInterrupts, value: transport.usedInterrupts),
+                    .measured(.configurationInterrupts, value: transport.configurationInterrupts),
+                    .measured(.deviceResets, value: transport.deviceResets),
+                ]
+                if let network = entries[index].network?.statistics {
+                    metrics.append(contentsOf: [
+                        .measured(.transmittedFrames, value: network.transmitPackets),
+                        .measured(.transmittedBytes, value: network.transmitBytes),
+                        .measured(.transmitDrops, value: network.transmitDrops),
+                        .measured(.receivedFrames, value: network.receivePackets),
+                        .measured(.receivedBytes, value: network.receiveBytes),
+                        .measured(.receiveDeferred, value: network.receiveDeferred),
+                        .measured(.receiveDrops, value: network.receiveDrops),
+                        .measured(.receiveTruncations, value: network.receiveTruncations),
+                    ])
+                }
+                metrics.append(contentsOf: entries[index].unavailableMetrics.map {
+                    .unavailable($0.0, unit: $0.1, reason: unavailableReason)
+                })
+                devices.append(DoryDeviceTelemetryDevice(
+                    id: entries[index].id,
+                    kind: entries[index].kind,
+                    health: health,
+                    metrics: metrics
+                ))
             }
-            metrics.append(contentsOf: entry.unavailableMetrics.map {
-                .unavailable($0.0, unit: $0.1, reason: unavailableReason)
-            })
-            return DoryDeviceTelemetryDevice(
-                id: entry.id,
-                kind: entry.kind,
-                health: .healthy,
-                metrics: metrics
+
+            return DoryDeviceTelemetrySnapshot(
+                machineID: machineID,
+                operationID: operationID,
+                backend: .doryHypervisor,
+                sampleSequence: sampleSequence,
+                sampledAtUnixMilliseconds: sampledAtUnixMilliseconds,
+                monotonicNanoseconds: monotonicNanoseconds,
+                devices: devices,
+                events: eventHistory
             )
         }
-        return DoryDeviceTelemetrySnapshot(
-            machineID: machineID,
-            operationID: operationID,
-            backend: .doryHypervisor,
-            sampleSequence: captured.0,
-            sampledAtUnixMilliseconds: UInt64(Date().timeIntervalSince1970 * 1_000),
-            monotonicNanoseconds: DispatchTime.now().uptimeNanoseconds,
-            devices: devices
-        )
+    }
+
+    private func appendEvent(
+        deviceID: String,
+        kind: DoryDeviceTelemetryEventKind,
+        occurrences: UInt64,
+        monotonicNanoseconds: UInt64
+    ) {
+        guard eventSequence < UInt64.max else { return }
+        eventSequence += 1
+        eventHistory.append(DoryDeviceTelemetryEvent(
+            sequence: eventSequence,
+            monotonicNanoseconds: monotonicNanoseconds,
+            deviceID: deviceID,
+            kind: kind,
+            occurrences: occurrences
+        ))
+        if eventHistory.count > Self.maximumEventHistory {
+            eventHistory.removeFirst(eventHistory.count - Self.maximumEventHistory)
+        }
+    }
+
+    private static func monotonicDelta(current: UInt64, previous: UInt64) -> UInt64 {
+        current >= previous ? current - previous : 0
     }
 }
 

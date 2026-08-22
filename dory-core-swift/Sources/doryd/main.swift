@@ -129,6 +129,22 @@ let kubernetesRouteProvider = networkingController.map { _ in
 }
 let incidentPath = env["DORY_INCIDENTS"] ?? "\(dorydEnvironment.home)/.dory/incidents.jsonl"
 let incidentWriter = IncidentWriter(path: incidentPath)
+let machineDeviceTelemetryMonitor = machineManager.map { manager in
+    DoryMachineDeviceTelemetryMonitor(machines: manager) { event in
+        switch event {
+        case let .samplingFailed(machineID):
+            incidentWriter.record(
+                type: "machine.device_telemetry_unavailable",
+                detail: machineID
+            )
+        case let .samplingRecovered(machineID):
+            incidentWriter.record(
+                type: "machine.device_telemetry_recovered",
+                detail: machineID
+            )
+        }
+    }
+}
 let machineBackupScheduler: MachineBackupScheduler?
 if let machineManager {
     do {
@@ -286,6 +302,7 @@ private let shutdownCoordinator = DorydShutdownCoordinator(
     networkingController: networkingController,
     dockerTier: dockerTier,
     machineManager: machineManager,
+    machineDeviceTelemetryMonitor: machineDeviceTelemetryMonitor,
     machineBackupScheduler: machineBackupScheduler,
     sandboxTTLReconciler: sandboxTTLReconciler,
     remoteManager: remoteManager,
@@ -337,6 +354,7 @@ shutdownCoordinator.exitIfRequested()
 listener.resume()
 FileHandle.standardError.write(Data("doryd: serving XPC \(machServiceName)\n".utf8))
 sandboxTTLReconciler?.start()
+machineDeviceTelemetryMonitor?.start()
 machineBackupScheduler?.start()
 corporateConnectivity.start()
 
@@ -386,6 +404,7 @@ private final class DorydShutdownCoordinator {
     private let networkingController: NetworkingController?
     private let dockerTier: DockerTier?
     private let machineManager: MachineManager?
+    private let machineDeviceTelemetryMonitor: DoryMachineDeviceTelemetryMonitor?
     private let machineBackupScheduler: MachineBackupScheduler?
     private let sandboxTTLReconciler: SandboxTTLReconciler?
     private let remoteManager: RemoteMachineManager
@@ -411,6 +430,7 @@ private final class DorydShutdownCoordinator {
         networkingController: NetworkingController?,
         dockerTier: DockerTier?,
         machineManager: MachineManager?,
+        machineDeviceTelemetryMonitor: DoryMachineDeviceTelemetryMonitor?,
         machineBackupScheduler: MachineBackupScheduler?,
         sandboxTTLReconciler: SandboxTTLReconciler?,
         remoteManager: RemoteMachineManager,
@@ -427,6 +447,7 @@ private final class DorydShutdownCoordinator {
         self.networkingController = networkingController
         self.dockerTier = dockerTier
         self.machineManager = machineManager
+        self.machineDeviceTelemetryMonitor = machineDeviceTelemetryMonitor
         self.machineBackupScheduler = machineBackupScheduler
         self.sandboxTTLReconciler = sandboxTTLReconciler
         self.remoteManager = remoteManager
@@ -463,6 +484,7 @@ private final class DorydShutdownCoordinator {
         networkingController?.stop()
         remoteManager.disconnectAll()
         sandboxTTLReconciler?.stop()
+        machineDeviceTelemetryMonitor?.stop()
         machineBackupScheduler?.stop()
         machineManager?.stopAll()
         FileHandle.standardError.write(Data("doryd: shutdown complete\n".utf8))

@@ -6746,6 +6746,7 @@ public final class MachineManager: @unchecked Sendable {
             )
         }
         entry.lastDeviceTelemetrySampleSequence = snapshot.sampleSequence
+        var flightRecorderPersistenceFailed = false
         for event in snapshot.events
             where event.sequence > entry.lastDeviceTelemetryEventSequence {
             do {
@@ -6770,10 +6771,17 @@ public final class MachineManager: @unchecked Sendable {
                 entry.lastDeviceTelemetryEventSequence = event.sequence
             } catch {
                 entry.flightRecorderAvailable = false
+                flightRecorderPersistenceFailed = true
                 break
             }
         }
         machines[id] = entry
+        if flightRecorderPersistenceFailed {
+            throw MachineManagerError.deviceTelemetryRejected(
+                id,
+                "flight recorder could not persist device event evidence"
+            )
+        }
         return snapshot
     }
 

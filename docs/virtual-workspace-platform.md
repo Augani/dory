@@ -735,8 +735,15 @@ caller-minted canonical UUID across Dory.app, `dorydctl`, signed candidate depen
 immutable installed-generation records, the desktop-update XPC request, the crash-recovery journal,
 incident evidence, and the per-workspace flight recorder. Malformed or zero identifiers fail before
 mutation, legacy clients receive an explicit daemon-minted compatibility identity, stale UI progress
-is ignored, and the live release gate verifies the returned identity. Device-event propagation and
-device-level telemetry remain required before this section is complete.
+is ignored, and the live release gate verifies the returned identity. Device telemetry now uses a
+versioned, path-free helper snapshot bound to the exact workspace, start operation, backend, and
+live launch. The daemon autonomously samples running and paused machines, persists new classified
+events in the workspace flight recorder, and exposes the same bounded evidence through XPC, the app
+client, and `dorydctl`. Raw-HV derives reset and sustained queue-stall events from monotonic VirtIO
+transport counters and retains a bounded event history; Virtualization.framework counters that do
+not have a stable public authority remain explicitly unavailable rather than being reported as zero.
+Backend-specific producers for GPU loss/fences, display/audio drops, storage latency, network
+reconnects, and share invalidation remain release gates for those individual capability claims.
 
 ## Qualification and release gates
 
