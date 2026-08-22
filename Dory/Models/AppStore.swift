@@ -2646,7 +2646,7 @@ final class AppStore {
     }
 
     private func replayRememberedUSB(machine: String) {
-        guard UsbPassthroughAvailability.attachSupported else { return }
+        guard UsbPassthroughAvailability.automaticReplaySupported else { return }
         guard !usbReplayedMachines.contains(machine) else { return }
         let commands = usbAttachments.reattachCommands(for: machine)
         usbReplayedMachines.insert(machine)

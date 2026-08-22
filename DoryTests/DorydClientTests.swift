@@ -6,6 +6,73 @@ import Testing
 @Suite(.serialized)
 struct DorydClientTests {
     @MainActor
+    @Test func machineUSBControlRequiresExactResolvedResponse() async throws {
+        let listener = NSXPCListener.anonymous()
+        let service = FakeDorydService()
+        let delegate = FakeDorydListenerDelegate(service: service)
+        listener.delegate = delegate
+        listener.resume()
+        defer { listener.invalidate() }
+        let client = DorydClient(endpoint: listener.endpoint)
+
+        let attachment = try await client.machineUSBAttach("dev", busID: "3-2")
+        #expect(attachment == DorydMachineUSBAttachment(
+            machineID: "dev",
+            busID: "3-2",
+            port: 4,
+            vsockPort: 1_025,
+            deviceID: 0x0003_0002,
+            speed: 3
+        ))
+        try await client.machineUSBDetach("dev", busID: "3-2")
+
+        service.setMachineUSBAttachResponse([
+            "machineID": "dev",
+            "busID": "3-2",
+            "port": 4,
+            "vsockPort": 1_025,
+            "deviceID": 0x0003_0002,
+            "speed": 3,
+            "unexpected": true,
+        ])
+        await #expect(throws: (any Error).self) {
+            _ = try await client.machineUSBAttach("dev", busID: "3-2")
+        }
+
+        service.setMachineUSBAttachResponse([
+            "machineID": "dev",
+            "busID": "3-2",
+            "port": true,
+            "vsockPort": 1_025,
+            "deviceID": 0x0003_0002,
+            "speed": 3,
+        ])
+        await #expect(throws: (any Error).self) {
+            _ = try await client.machineUSBAttach("dev", busID: "3-2")
+        }
+
+        service.setMachineUSBAttachResponse([
+            "machineID": "dev",
+            "busID": "3-2",
+            "port": 4,
+            "vsockPort": 1_026,
+            "deviceID": 0x0003_0002,
+            "speed": 3,
+        ])
+        await #expect(throws: (any Error).self) {
+            _ = try await client.machineUSBAttach("dev", busID: "3-2")
+        }
+
+        service.setMachineUSBDetachResponse([
+            "machineID": "dev",
+            "busID": "different",
+        ])
+        await #expect(throws: (any Error).self) {
+            try await client.machineUSBDetach("dev", busID: "3-2")
+        }
+    }
+
+    @MainActor
     @Test func desktopUpdateRejectsPresentMalformedOperationIdentity() async throws {
         let listener = NSXPCListener.anonymous()
         let service = FakeDorydService()
@@ -1579,6 +1646,8 @@ struct DorydClientTests {
         let status = try #require(
             (try await DorydClient(endpoint: listener.endpoint).machineList()).first
         )
+        #expect(status.runtimeIdentity.authorizesRemovableUSBHotplug)
+        #expect(UsbPassthroughAvailability.attachSupported(for: status))
         let machine = AppStore.machine(fromDoryd: status)
         #expect(machine.runtimeIdentity.graphics == "hardware-accelerated-3d")
         #expect(machine.agentProtocolVersion == 1)
@@ -2104,6 +2173,7 @@ struct DorydClientTests {
             "backendRuntimeBuildIdentifier": "runtime-1",
             "supportTier": "supported",
             "graphics": "hardware-accelerated-3d",
+            "removableUSBHotplug": true,
             "selectionDisposition": "primary",
             "runtimeQualification": [
                 "qualificationIdentity": "runtime-qualification-1",
@@ -4072,6 +4142,8 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     private var _machineEventBatchOverride: NSDictionary?
     private var _machineFlightRecorderBatchOverride: NSDictionary?
     private var _machineDeviceTelemetryResponseOverride: NSDictionary?
+    private var _machineUSBAttachResponseOverride: NSDictionary?
+    private var _machineUSBDetachResponseOverride: NSDictionary?
     private var _machineSerialConsoleBatchOverride: NSDictionary?
     private var _latestMachineSerialConsoleCursor: NSDictionary?
     private var _latestMachineSerialConsoleInput: Data?
@@ -4109,6 +4181,16 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     func setMachineTransferResponse(_ response: NSDictionary?) {
         lock.lock(); defer { lock.unlock() }
         _machineTransferResponseOverride = response
+    }
+
+    func setMachineUSBAttachResponse(_ response: NSDictionary?) {
+        lock.lock(); defer { lock.unlock() }
+        _machineUSBAttachResponseOverride = response
+    }
+
+    func setMachineUSBDetachResponse(_ response: NSDictionary?) {
+        lock.lock(); defer { lock.unlock() }
+        _machineUSBDetachResponseOverride = response
     }
 
     func setMachineTransferOperationResponse(_ response: NSDictionary?) {
@@ -4926,6 +5008,38 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     ) {
         lock.lock()
         let row = _machineDeviceTelemetryResponseOverride ?? [:]
+        lock.unlock()
+        reply(true, row, "")
+    }
+
+    func machineUSBAttach(
+        _ machineID: String,
+        busID: String,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        lock.lock()
+        let row = _machineUSBAttachResponseOverride ?? [
+            "machineID": machineID,
+            "busID": busID,
+            "port": 4,
+            "vsockPort": UInt32(1_025),
+            "deviceID": UInt32(0x0003_0002),
+            "speed": UInt32(3),
+        ]
+        lock.unlock()
+        reply(true, row, "")
+    }
+
+    func machineUSBDetach(
+        _ machineID: String,
+        busID: String,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        lock.lock()
+        let row = _machineUSBDetachResponseOverride ?? [
+            "machineID": machineID,
+            "busID": busID,
+        ]
         lock.unlock()
         reply(true, row, "")
     }

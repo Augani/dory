@@ -498,6 +498,7 @@ nonisolated struct DorydMachineRuntimeIdentity: Codable, Sendable, Equatable, Ha
     var backendRuntimeBuildIdentifier: String? = nil
     var supportTier: String? = nil
     var graphics: String? = nil
+    var removableUSBHotplug: Bool? = nil
     var selectionDisposition: String? = nil
     var fallbackAuthorizationIdentity: String? = nil
     var experimentalAuthorizationIdentity: String? = nil
@@ -541,6 +542,7 @@ nonisolated struct DorydMachineRuntimeIdentity: Codable, Sendable, Equatable, Ha
             && backendRuntimeBuildIdentifier == nil
             && supportTier == nil
             && graphics == nil
+            && removableUSBHotplug == nil
             && selectionDisposition == nil
             && fallbackAuthorizationIdentity == nil
             && experimentalAuthorizationIdentity == nil
@@ -604,6 +606,19 @@ nonisolated struct DorydMachineRuntimeIdentity: Codable, Sendable, Equatable, Ha
             return false
         }
     }
+
+    var authorizesRemovableUSBHotplug: Bool {
+        mode == "resolved-plan" && removableUSBHotplug == true && isValid
+    }
+}
+
+nonisolated struct DorydMachineUSBAttachment: Sendable, Equatable {
+    var machineID: String
+    var busID: String
+    var port: Int
+    var vsockPort: UInt32
+    var deviceID: UInt32
+    var speed: UInt32
 }
 
 nonisolated private extension String {
@@ -2114,6 +2129,35 @@ nonisolated final class DorydClient: @unchecked Sendable {
         }
     }
 
+    func machineUSBAttach(
+        _ machineID: String,
+        busID: String
+    ) async throws -> DorydMachineUSBAttachment {
+        try await withTimeout(atLeast: 30).statusCommand { proxy, reply in
+            proxy.machineUSBAttach(machineID, busID: busID, reply: reply)
+        } decode: {
+            Self.machineUSBAttachment(
+                from: $0,
+                expectedMachineID: machineID,
+                expectedBusID: busID
+            )
+        }
+    }
+
+    func machineUSBDetach(_ machineID: String, busID: String) async throws {
+        _ = try await withTimeout(atLeast: 30).statusCommand { proxy, reply in
+            proxy.machineUSBDetach(machineID, busID: busID, reply: reply)
+        } decode: { response -> Bool? in
+            guard let keys = response.allKeys as? [String],
+                  Set(keys) == ["machineID", "busID"],
+                  response["machineID"] as? String == machineID,
+                  response["busID"] as? String == busID else {
+                return nil
+            }
+            return true
+        }
+    }
+
     func machineProvision(_ machineID: String, recipe: String) async throws -> DorydMachineProvisionResult {
         try await withTimeout(atLeast: Self.machineProvisionControlTimeout).statusCommand { proxy, reply in
             proxy.machineProvision(machineID, request: ["recipe": recipe] as NSDictionary, reply: reply)
@@ -2752,6 +2796,57 @@ nonisolated final class DorydClient: @unchecked Sendable {
             installedDesktopPayloadReceipt: installedDesktopPayloadReceipt.value,
             savedState: savedState.value
         )
+    }
+
+    nonisolated private static func machineUSBAttachment(
+        from dictionary: NSDictionary,
+        expectedMachineID: String,
+        expectedBusID: String
+    ) -> DorydMachineUSBAttachment? {
+        let expectedKeys: Set<String> = [
+            "machineID", "busID", "port", "vsockPort", "deviceID", "speed",
+        ]
+        guard let keys = dictionary.allKeys as? [String],
+              Set(keys) == expectedKeys,
+              keys.count == expectedKeys.count,
+              dictionary["machineID"] as? String == expectedMachineID,
+              dictionary["busID"] as? String == expectedBusID,
+              let port = exactUnsignedInteger(dictionary["port"], maximum: 65_535),
+              let vsockPort = exactUnsignedInteger(
+                  dictionary["vsockPort"], maximum: UInt64(UInt32.max)
+              ), vsockPort == 1_025,
+              let deviceID = exactUnsignedInteger(
+                  dictionary["deviceID"], maximum: UInt64(UInt32.max)
+              ), deviceID > 0,
+              let speed = exactUnsignedInteger(
+                  dictionary["speed"], maximum: UInt64(UInt32.max)
+              ), speed > 0 else {
+            return nil
+        }
+        return DorydMachineUSBAttachment(
+            machineID: expectedMachineID,
+            busID: expectedBusID,
+            port: Int(port),
+            vsockPort: UInt32(vsockPort),
+            deviceID: UInt32(deviceID),
+            speed: UInt32(speed)
+        )
+    }
+
+    nonisolated private static func exactUnsignedInteger(
+        _ raw: Any?,
+        maximum: UInt64
+    ) -> UInt64? {
+        guard let number = raw as? NSNumber,
+              CFGetTypeID(number) != CFBooleanGetTypeID(),
+              number.doubleValue.isFinite,
+              number.doubleValue >= 0,
+              number.doubleValue.rounded(.towardZero) == number.doubleValue,
+              number.doubleValue <= Double(maximum) else {
+            return nil
+        }
+        let value = number.uint64Value
+        return value <= maximum && Double(value) == number.doubleValue ? value : nil
     }
 
     private struct ParsedMachineFailure {

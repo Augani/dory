@@ -3,9 +3,13 @@ import Testing
 @testable import Dory
 
 struct UsbAttachmentStoreTests {
-    @Test func passthroughIsTruthfullyDisabledUntilGuestRPCShips() {
-        #expect(!UsbPassthroughAvailability.attachSupported)
-        #expect(UsbPassthroughAvailability.unavailableReason.contains("physical-device"))
+    @Test func automaticReplayRemainsDisabledWithoutASelectedAuthorizedMachine() {
+        #expect(!UsbPassthroughAvailability.automaticReplaySupported)
+        #expect(!UsbPassthroughAvailability.attachSupported(for: nil))
+        #expect(
+            UsbPassthroughAvailability.unavailableReason(for: nil)
+                .contains("signed removable-USB authorization")
+        )
     }
 
     @Test func remembersAttachmentsSortedByMachineAndBusID() throws {

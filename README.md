@@ -711,8 +711,10 @@ docker run --rm \
 - **Supported — Headless Linux:** Alpine-based arm64 guests with an initial root `/bin/sh` login.
 - **Supported — Desktop Venus/Vulkan:** managed arm64 desktops automatically use the isolated,
   capability-probed Venus path for Vulkan apps, with ordered fallback to classic VirGL and software.
-- **Supported discovery / unavailable passthrough — USB:** host discovery is available. Attach, detach, and remembered replay are disabled
-  until the engine has a complete guest USB/IP RPC and verified guest-kernel support.
+- **Qualified-only USB passthrough:** host discovery and explicit app/CLI attach/detach controls are
+  wired. They enable only for a running raw-HV machine whose exact signed resolved plan authorizes
+  removable USB; current production catalogs do not yet carry that qualification. Remembered replay
+  remains disabled.
 - **Unavailable — audio passthrough:** not part of the current release.
 - **Supported — agent sandboxes:** grants and residual risks are documented in the [agent guide](https://augani.github.io/dory/docs/agents.md).
 - Specialized Docker extensions may depend on another product's private paths. Use `dory compat`

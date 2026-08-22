@@ -2821,6 +2821,7 @@ private extension DoryMachineRuntimeIdentity {
         dictionary["backendRuntimeBuildIdentifier"] = plan.backendRuntimeBuildIdentifier
         dictionary["supportTier"] = plan.supportTier.rawValue
         dictionary["graphics"] = plan.graphics.rawValue
+        dictionary["removableUSBHotplug"] = plan.devices.removableUSBHotplug
         if let selectionDisposition = plan.selectionEvidence?.disposition {
             dictionary["selectionDisposition"] = selectionDisposition.rawValue
         }
