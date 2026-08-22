@@ -638,7 +638,8 @@ enum DesktopMode {
         private let serialLog: FileHandle
         private let machine: Machine
         private let graphicsBackend: DoryDesktopGraphicsBackend
-        private let input: VirtioInput
+        private let keyboardInput: VirtioInput
+        private let pointerInput: VirtioInput
         private let mailboxes: [DesktopFrameMailbox]
         private let displays: [DesktopMetalView]
         private let windows: [NSWindow]
@@ -685,7 +686,6 @@ enum DesktopMode {
             )
             let resolvedGraphics = try Self.resolveGraphics(
                 environment: configuration.environment,
-                requireVulkan: configuration.genericGuest,
                 exactLevel: configuration.resolvedGraphics
             )
             self.graphicsBackend = resolvedGraphics.backend
@@ -700,11 +700,6 @@ enum DesktopMode {
                 resolvedDevices: configuration.resolvedDevices
             )
             if let devices = configuration.resolvedDevices {
-                guard devices.keyboard == devices.pointer else {
-                    throw VMError.bootFailure(
-                        "raw-HV input is a combined keyboard/pointer device"
-                    )
-                }
                 guard devices.audioInput == devices.audioOutput else {
                     throw VMError.bootFailure(
                         "raw-HV audio is a combined input/output device"
@@ -736,7 +731,8 @@ enum DesktopMode {
             ))
             Self.attachPlatformDevices(to: machine, serialLog: serialLog)
 
-            self.input = VirtioInput()
+            self.keyboardInput = VirtioInput(profile: .keyboard)
+            self.pointerInput = VirtioInput(profile: .absolutePointer)
             var mailboxes = [DesktopFrameMailbox]()
             var cursorMailboxes = [DesktopCursorMailbox]()
             var displays = [DesktopMetalView]()
@@ -748,7 +744,8 @@ enum DesktopMode {
                 let cursorMailbox = DesktopCursorMailbox()
                 let display = try DesktopMetalView(
                     frame: NSRect(origin: .zero, size: plan.windowSize),
-                    input: input,
+                    keyboardInput: keyboardInput,
+                    pointerInput: pointerInput,
                     guestBackingScaleFactor: CGFloat(plan.backingScaleFactor),
                     scanoutID: plan.scanoutID,
                     pointerTopology: pointerTopology
@@ -857,7 +854,10 @@ enum DesktopMode {
                     vsock,
                 ]
                 if configuration.resolvedDevices?.keyboard != false {
-                    backends.append(input)
+                    backends.append(keyboardInput)
+                }
+                if configuration.resolvedDevices?.pointer != false {
+                    backends.append(pointerInput)
                 }
                 if configuration.resolvedDevices?.audioInput != false {
                     backends.append(sound)
@@ -971,7 +971,7 @@ enum DesktopMode {
                 let clipboardControl = DorydKit.AgentControl(configuration: .init(
                     directSocketPath: configuration.agentSocketPath
                 ))
-                let clipboardInput = self.input
+                let clipboardInput = self.keyboardInput
                 self.clipboard = DoryDesktopClipboardCoordinator(
                     policy: clipboardPolicy,
                     execute: { argv, stdin, timeoutMs, outputLimitBytes in
@@ -1012,7 +1012,27 @@ enum DesktopMode {
                 window.title = displayPlans.count == 1
                     ? "\(configuration.machineID) — Dory Linux"
                     : "\(configuration.machineID) — Dory Linux — Display \(index + 1)"
-                window.contentView = displays[index]
+                // Keep the Metal surface bound to the window's *actual* content layout. A
+                // dedicated display can transiently remain a normal titled window while AppKit
+                // enters its fullscreen Space. Installing the fixed-size MTKView directly as the
+                // content view left its original 1920x1080 bounds clipped inside a 1920x1020
+                // visible content area, so the framebuffer and absolute tablet normalized
+                // different coordinate spaces. The AppKit-managed container always follows the
+                // titlebar/fullscreen transition; constraints then make display pixels and input
+                // use the same rectangle.
+                let contentView = NSView(
+                    frame: NSRect(origin: .zero, size: window.contentLayoutRect.size)
+                )
+                let display = displays[index]
+                display.translatesAutoresizingMaskIntoConstraints = false
+                contentView.addSubview(display)
+                window.contentView = contentView
+                NSLayoutConstraint.activate([
+                    display.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+                    display.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+                    display.topAnchor.constraint(equalTo: contentView.topAnchor),
+                    display.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
+                ])
                 window.minSize = NSSize(width: 640, height: 400)
                 window.collectionBehavior.insert(.fullScreenPrimary)
                 window.tabbingMode = .disallowed
@@ -1216,7 +1236,7 @@ enum DesktopMode {
             if configuration.genericGuest {
                 // Linux maps KEY_POWER to logind's normal power-button action. This provides a
                 // clean integration-free shutdown path until Dory guest tools are installed.
-                input.send(frame: [
+                keyboardInput.send(frame: [
                     VirtioInputEvent(type: 1, code: 116, value: 1),
                     VirtioInputEvent(type: 1, code: 116, value: 0),
                 ])
@@ -1607,7 +1627,6 @@ enum DesktopMode {
 
         private static func resolveGraphics(
             environment: [String: String],
-            requireVulkan: Bool,
             exactLevel: DoryGraphicsAccelerationLevel?
         ) throws -> ResolvedGraphics {
             let preference = try DoryDesktopGraphicsPreference(environment: environment)
@@ -1648,34 +1667,20 @@ enum DesktopMode {
                 }
             }
 
-            switch preference {
-            case .automatic:
-                if requireVulkan {
-                    do {
-                        return try accelerated(classicOnly: false)
-                    } catch {
-                        throw VMError.bootFailure(
-                            "generic Linux desktop requires Dory's Vulkan-capable Venus renderer; \(error)"
-                        )
-                    }
-                }
-                do {
-                    return try accelerated(classicOnly: false)
-                } catch let venusError {
-                    log("VirGL2 + Venus unavailable; trying classic VirGL2: \(venusError)")
-                    do {
-                        return try accelerated(classicOnly: true)
-                    } catch let virglError {
-                        log("accelerated graphics unavailable; using software scanout: \(virglError)")
-                        return ResolvedGraphics(backend: .software, renderer: nil)
-                    }
-                }
+            switch preference.requiredBackend {
             case .virgl:
                 return try accelerated(classicOnly: true)
-            case .virglVenus:
-                return try accelerated(classicOnly: false)
             case .software:
                 return ResolvedGraphics(backend: .software, renderer: nil)
+            case .virglVenus:
+                do {
+                    return try accelerated(classicOnly: false)
+                } catch {
+                    throw VMError.bootFailure(
+                        "Linux desktop requires Dory's VirGL2 + Venus GPU runtime; "
+                            + "select software graphics explicitly for compatibility mode: \(error)"
+                    )
+                }
             }
         }
 

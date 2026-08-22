@@ -45,4 +45,14 @@ final class DoryDesktopRuntimeContractTests: XCTestCase {
         XCTAssertNotNil(DoryDesktopGraphicsBackend.virgl.legacyKernelArgument)
         XCTAssertNil(DoryDesktopGraphicsBackend.software.legacyKernelArgument)
     }
+
+    func testAutomaticGraphicsRequiresVulkanAccelerationWithoutSilentFallback() {
+        XCTAssertEqual(
+            DoryDesktopGraphicsPreference.automatic.requiredBackend,
+            .virglVenus
+        )
+        XCTAssertEqual(DoryDesktopGraphicsPreference.virglVenus.requiredBackend, .virglVenus)
+        XCTAssertEqual(DoryDesktopGraphicsPreference.virgl.requiredBackend, .virgl)
+        XCTAssertEqual(DoryDesktopGraphicsPreference.software.requiredBackend, .software)
+    }
 }

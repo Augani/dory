@@ -22,6 +22,34 @@ CONFIG_USB_HID=y
 CONFIG_ZSMALLOC=y
 CONFIG_ZRAM=y
 
+# Ubuntu and other mainstream desktop distributions ship core applications as SquashFS images.
+# Their current packages use both XZ and LZO; without these decompressors Firefox, the app store,
+# and other snaps are present but cannot mount or launch under Dory's managed kernel. Preserve
+# package capabilities and security metadata instead of silently discarding their xattrs.
+CONFIG_SQUASHFS_XATTR=y
+CONFIG_SQUASHFS_XZ=y
+CONFIG_SQUASHFS_LZO=y
+
+# Ubuntu confines desktop snaps with AppArmor and builds each application's content-provider
+# namespace under that security model.  Falling back to snapd's unconfined devmode is not a
+# desktop compatibility mode: GPU-provider command chains can remain disconnected and apps then
+# spin forever without reaching their own entry point.  Match the security stack expected by a
+# stock Ubuntu desktop kernel so snapped and native applications share the same launch semantics.
+CONFIG_SECURITY_NETWORK=y
+CONFIG_SECURITY_PATH=y
+CONFIG_SECURITY_YAMA=y
+CONFIG_SECURITY_SAFESETID=y
+CONFIG_SECURITY_LOCKDOWN_LSM=y
+CONFIG_SECURITY_LOCKDOWN_LSM_EARLY=y
+CONFIG_SECURITY_LANDLOCK=y
+CONFIG_SECURITY_APPARMOR=y
+CONFIG_SECURITY_APPARMOR_INTROSPECT_POLICY=y
+CONFIG_SECURITY_APPARMOR_HASH=y
+CONFIG_SECURITY_APPARMOR_HASH_DEFAULT=y
+CONFIG_SECURITY_APPARMOR_EXPORT_BINARY=y
+CONFIG_DEFAULT_SECURITY_APPARMOR=y
+CONFIG_LSM="landlock,lockdown,yama,integrity,apparmor"
+
 # VZVirtioSoundDeviceConfiguration output stream.
 CONFIG_SOUND=y
 CONFIG_SND=y

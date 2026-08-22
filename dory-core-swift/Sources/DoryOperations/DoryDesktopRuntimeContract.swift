@@ -28,10 +28,10 @@ public enum DoryDesktopVMMPreference: String, CaseIterable, Sendable, Codable {
 
 /// Requested graphics behavior for Dory's raw-Hypervisor desktop runtime.
 ///
-/// The default first attempts the combined VirGL2 + Venus backend: VirGL accelerates the desktop
-/// compositor while Venus gives Vulkan applications a real Apple-GPU path. Hosts without a
-/// qualified Venus renderer fall back to classic VirGL, then to virtio-gpu 2D, so graphics
-/// acceleration cannot make the Linux desktop unbootable.
+/// The default requires the combined VirGL2 + Venus backend: VirGL accelerates the desktop
+/// compositor while Venus gives Vulkan applications a real Apple-GPU path. Dory never silently
+/// turns `automatic` into software rendering. Classic VirGL and software scanout remain explicit
+/// compatibility choices for guests or hosts that cannot satisfy the default GPU contract.
 public enum DoryDesktopGraphicsPreference: String, CaseIterable, Sendable, Codable {
     public static let environmentKey = "DORY_DESKTOP_GRAPHICS"
     public static let legacyClassicOnlyEnvironmentKey = "DORY_VIRGL_CLASSIC_ONLY"
@@ -40,6 +40,17 @@ public enum DoryDesktopGraphicsPreference: String, CaseIterable, Sendable, Codab
     case virgl
     case virglVenus = "virgl-venus"
     case software
+
+    /// The exact backend promised by this preference. Keeping this mapping in the shared runtime
+    /// contract prevents a launcher from weakening `automatic` into an unreported compatibility
+    /// fallback.
+    public var requiredBackend: DoryDesktopGraphicsBackend {
+        switch self {
+        case .automatic, .virglVenus: .virglVenus
+        case .virgl: .virgl
+        case .software: .software
+        }
+    }
 
     public init(environment: [String: String]) throws {
         if let raw = environment[Self.environmentKey] {

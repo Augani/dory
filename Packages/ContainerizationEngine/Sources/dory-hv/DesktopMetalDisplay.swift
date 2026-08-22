@@ -181,7 +181,8 @@ final class DesktopCursorMailbox: @unchecked Sendable {
 final class DesktopMetalView: MTKView, MTKViewDelegate {
     private let commandQueue: MTLCommandQueue
     private let pipeline: MTLRenderPipelineState
-    private let input: VirtioInput
+    private let keyboardInput: VirtioInput
+    private let pointerInput: VirtioInput
     private let guestBackingScaleFactor: CGFloat
     private let scanoutID: UInt32
     private let pointerTopology: DesktopPointerTopology?
@@ -192,14 +193,16 @@ final class DesktopMetalView: MTKView, MTKViewDelegate {
     private var guestCursorUpdate: VirtioGPUCursorUpdate?
     private var tracking: NSTrackingArea?
     private var scrollAccumulator = VirtioInputScrollAccumulator()
-    private var pressedInput = VirtioInputPressedState()
+    private var pressedKeyboardInput = VirtioInputPressedState()
+    private var pressedPointerInput = VirtioInputPressedState()
     private var resizeGeneration: UInt64 = 0
     var onDrawableSizeChange: ((UInt32, UInt32) -> Void)?
     var onMacShortcut: ((NSEvent) -> Bool)?
 
     init(
         frame: NSRect,
-        input: VirtioInput,
+        keyboardInput: VirtioInput,
+        pointerInput: VirtioInput,
         guestBackingScaleFactor: CGFloat = 2,
         scanoutID: UInt32 = 0,
         pointerTopology: DesktopPointerTopology? = nil
@@ -208,7 +211,8 @@ final class DesktopMetalView: MTKView, MTKViewDelegate {
               let commandQueue = device.makeCommandQueue() else {
             throw DesktopMetalDisplayError.metalUnavailable
         }
-        self.input = input
+        self.keyboardInput = keyboardInput
+        self.pointerInput = pointerInput
         self.guestBackingScaleFactor = guestBackingScaleFactor
         self.scanoutID = scanoutID
         self.pointerTopology = pointerTopology
@@ -240,6 +244,12 @@ final class DesktopMetalView: MTKView, MTKViewDelegate {
 
     override var acceptsFirstResponder: Bool { true }
     override var isFlipped: Bool { true }
+
+    /// A dedicated guest display is often not the key macOS window yet (notably immediately after
+    /// entering fullscreen). AppKit normally consumes that first click solely to activate the
+    /// window, which makes GDM's user tile appear unclickable. The guest owns the entire display
+    /// surface, so activation and input delivery must happen on the same click.
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
     override func updateTrackingAreas() {
         if let tracking { removeTrackingArea(tracking) }
@@ -279,7 +289,15 @@ final class DesktopMetalView: MTKView, MTKViewDelegate {
             window?.invalidateCursorRects(for: self)
             return
         }
-        let effectivePixelSize = pixelSize ?? drawableSize
+        // Cursor resources use guest scanout pixels, not the host Metal drawable's backing
+        // pixels. Those differ on a non-Retina host display when Dory intentionally exposes a
+        // 2x guest framebuffer. Scaling against drawableSize would make the cursor image and its
+        // hotspot twice as large as the desktop beneath it.
+        let effectivePixelSize = pixelSize
+            ?? (scanoutSize.width > 0 ? scanoutSize : CGSize(
+                width: bounds.width * guestBackingScaleFactor,
+                height: bounds.height * guestBackingScaleFactor
+            ))
         let cursorScale = bounds.width > 0
             ? max(1, effectivePixelSize.width / bounds.width)
             : CGFloat(1)
@@ -399,7 +417,9 @@ final class DesktopMetalView: MTKView, MTKViewDelegate {
             super.keyDown(with: event)
             return
         }
-        sendTracked([VirtioInputEvent(type: 1, code: code, value: event.isARepeat ? 2 : 1)])
+        sendKeyboardTracked([
+            VirtioInputEvent(type: 1, code: code, value: event.isARepeat ? 2 : 1)
+        ])
     }
 
     override func keyUp(with event: NSEvent) {
@@ -407,7 +427,7 @@ final class DesktopMetalView: MTKView, MTKViewDelegate {
             super.keyUp(with: event)
             return
         }
-        sendTracked([VirtioInputEvent(type: 1, code: code, value: 0)])
+        sendKeyboardTracked([VirtioInputEvent(type: 1, code: code, value: 0)])
     }
 
     override func flagsChanged(with event: NSEvent) {
@@ -416,7 +436,7 @@ final class DesktopMetalView: MTKView, MTKViewDelegate {
             super.flagsChanged(with: event)
             return
         }
-        sendTracked([
+        sendKeyboardTracked([
             VirtioInputEvent(type: 1, code: code, value: event.modifierFlags.contains(flag) ? 1 : 0)
         ])
     }
@@ -425,15 +445,19 @@ final class DesktopMetalView: MTKView, MTKViewDelegate {
     override func mouseDragged(with event: NSEvent) { sendPointer(event: event) }
     override func rightMouseDragged(with event: NSEvent) { sendPointer(event: event) }
     override func otherMouseDragged(with event: NSEvent) { sendPointer(event: event) }
-    override func mouseDown(with event: NSEvent) { sendPointer(event: event, button: 272, pressed: true) }
-    override func mouseUp(with event: NSEvent) { sendPointer(event: event, button: 272, pressed: false) }
-    override func rightMouseDown(with event: NSEvent) { sendPointer(event: event, button: 273, pressed: true) }
-    override func rightMouseUp(with event: NSEvent) { sendPointer(event: event, button: 273, pressed: false) }
+    override func mouseDown(with event: NSEvent) { sendMouseButton(event, code: 272, pressed: true) }
+    override func mouseUp(with event: NSEvent) { sendMouseButton(event, code: 272, pressed: false) }
+    override func rightMouseDown(with event: NSEvent) { sendMouseButton(event, code: 273, pressed: true) }
+    override func rightMouseUp(with event: NSEvent) { sendMouseButton(event, code: 273, pressed: false) }
     override func otherMouseDown(with event: NSEvent) {
-        sendPointer(event: event, button: linuxOtherMouseButton(for: event.buttonNumber), pressed: true)
+        sendMouseButton(event, code: linuxOtherMouseButton(for: event.buttonNumber), pressed: true)
     }
     override func otherMouseUp(with event: NSEvent) {
-        sendPointer(event: event, button: linuxOtherMouseButton(for: event.buttonNumber), pressed: false)
+        sendMouseButton(event, code: linuxOtherMouseButton(for: event.buttonNumber), pressed: false)
+    }
+
+    private func sendMouseButton(_ event: NSEvent, code: UInt16, pressed: Bool) {
+        sendPointer(event: event, button: code, pressed: pressed)
     }
 
     private func linuxOtherMouseButton(for buttonNumber: Int) -> UInt16 {
@@ -449,8 +473,8 @@ final class DesktopMetalView: MTKView, MTKViewDelegate {
             horizontalDelta: event.scrollingDeltaX,
             verticalDelta: event.scrollingDeltaY,
             hasPreciseDeltas: event.hasPreciseScrollingDeltas
-        )
-        if !events.isEmpty { sendTracked(events) }
+        ).filter { $0.type != 2 || $0.code == 8 }
+        if !events.isEmpty { sendPointerTracked(events) }
     }
 
     private func sendPointer(
@@ -468,25 +492,45 @@ final class DesktopMetalView: MTKView, MTKViewDelegate {
             localX: normalizedX,
             localY: normalizedY
         ) ?? CGPoint(x: normalizedX, y: normalizedY)
-        var events = [
+        if button != nil,
+           ProcessInfo.processInfo.environment["DORY_INPUT_TRACE"] == "1" {
+            let trace =
+                "dory-input: map point=\(point.x),\(point.y) bounds=\(bounds.width)x\(bounds.height) "
+                    + "content=\(contentRect.minX),\(contentRect.minY),\(contentRect.width)x\(contentRect.height) "
+                    + "scanout=\(scanoutSize.width)x\(scanoutSize.height) drawable=\(drawableSize.width)x\(drawableSize.height) "
+                    + "local=\(normalizedX),\(normalizedY) guest=\(guestPoint.x),\(guestPoint.y) "
+                    + "button=\(button!) value=\(pressed ? 1 : 0) key=\(window?.isKeyWindow == true)\n"
+            FileHandle.standardError.write(Data(trace.utf8))
+        }
+        var frame = [
             VirtioInputEvent(type: 3, code: 0, value: Int32((guestPoint.x * 32_767).rounded())),
             VirtioInputEvent(type: 3, code: 1, value: Int32((guestPoint.y * 32_767).rounded())),
         ]
         if let button {
-            events.append(VirtioInputEvent(type: 1, code: button, value: pressed ? 1 : 0))
+            // A click is one evdev report: exact position and button state become
+            // visible together at SYN_REPORT. Splitting them lets a compositor
+            // associate a button transition with an older tablet position.
+            frame.append(VirtioInputEvent(type: 1, code: button, value: pressed ? 1 : 0))
         }
-        sendTracked(events)
+        sendPointerTracked(frame)
     }
 
     func releasePressedInput() {
-        let releases = pressedInput.releaseFrame()
+        let keyboardReleases = pressedKeyboardInput.releaseFrame()
+        let pointerReleases = pressedPointerInput.releaseFrame()
         scrollAccumulator = VirtioInputScrollAccumulator()
-        if !releases.isEmpty { input.send(frame: releases) }
+        if !keyboardReleases.isEmpty { keyboardInput.send(frame: keyboardReleases) }
+        if !pointerReleases.isEmpty { pointerInput.send(frame: pointerReleases) }
     }
 
-    private func sendTracked(_ events: [VirtioInputEvent]) {
-        for event in events { pressedInput.record(event) }
-        input.send(frame: events)
+    private func sendKeyboardTracked(_ events: [VirtioInputEvent]) {
+        for event in events { pressedKeyboardInput.record(event) }
+        keyboardInput.send(frame: events)
+    }
+
+    private func sendPointerTracked(_ events: [VirtioInputEvent]) {
+        for event in events { pressedPointerInput.record(event) }
+        pointerInput.send(frame: events)
     }
 
     private func scanoutContentRect(in targetSize: CGSize) -> CGRect {
@@ -564,13 +608,12 @@ final class DesktopMetalView: MTKView, MTKViewDelegate {
                 height: CGFloat(update.height) / scale
             )
         )
-        // VirtIO cursor hotspots are top-left based; NSCursor image coordinates are bottom-left.
-        let appKitHotY = update.height - 1 - update.hotY
+        // VirtIO and NSCursor both express cursor hotspots from the image's top-left.
         return NSCursor(
             image: cursorImage,
             hotSpot: NSPoint(
                 x: CGFloat(update.hotX) / scale,
-                y: CGFloat(appKitHotY) / scale
+                y: CGFloat(update.hotY) / scale
             )
         )
     }
@@ -591,7 +634,7 @@ final class DesktopMetalView: MTKView, MTKViewDelegate {
     }
 
     private func sendControlShortcut(keyCode: UInt16) {
-        input.send(frame: [
+        keyboardInput.send(frame: [
             VirtioInputEvent(type: 1, code: 125, value: 0),
             VirtioInputEvent(type: 1, code: 126, value: 0),
             VirtioInputEvent(type: 1, code: 29, value: 1),

@@ -344,6 +344,12 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
         var height: UInt32
     }
 
+    private struct CursorResourceSnapshot {
+        var width: UInt32
+        var height: UInt32
+        var bytes: Data
+    }
+
     private struct ScanoutBinding {
         enum Source {
             case resource2D
@@ -1084,13 +1090,18 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                 try requireLength(request, 56)
                 let resourceID = request.leUInt32(at: 24)
                 let size = request.leUInt64(at: 48)
+                let resourceAvailable = resources2D[resourceID] == nil
+                    && resources3D[resourceID] == nil
+                    && blobResources[resourceID] == nil
                 guard resourceID != 0,
                       size > 0,
                       size <= UInt64(Int.max),
-                      resources2D[resourceID] == nil,
-                      resources3D[resourceID] == nil,
-                      blobResources[resourceID] == nil else {
-                    throw VMError.invalidConfiguration("invalid virtio-gpu blob resource")
+                      resourceAvailable else {
+                    throw VMError.invalidConfiguration(
+                        "invalid virtio-gpu blob resource "
+                            + "(id=\(resourceID) size=\(size) "
+                            + "available=\(resourceAvailable))"
+                    )
                 }
                 let entries = try memoryEntries(from: request, count: request.leUInt32(at: 36), offset: 56, transport: transport)
                 try renderer.createBlob(
@@ -1462,6 +1473,11 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                 throw VMError.invalidConfiguration("invalid virtio-gpu cursor scanout")
             }
             if command == Command.moveCursor {
+                if ProcessInfo.processInfo.environment["DORY_INPUT_TRACE"] == "1" {
+                    FileHandle.standardError.write(Data(
+                        "dory-input: guest cursor move scanout=\(scanoutID) x=\(request.leUInt32(at: 28)) y=\(request.leUInt32(at: 32))\n".utf8
+                    ))
+                }
                 return responseHeader(type: Response.okNoData, request: request)
             }
 
@@ -1471,20 +1487,17 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                 onCursorUpdate?(nil)
                 return responseHeader(type: Response.okNoData, request: request)
             }
-            guard let resource = resources2D[resourceID],
-                  resource.format == 1,
-                  resource.width > 0, resource.height > 0,
-                  resource.width <= 256, resource.height <= 256 else {
-                throw VMError.invalidConfiguration(
-                    "virtio-gpu cursor requires a bounded B8G8R8A8 2D resource"
-                )
-            }
+            let resource = try copiedCursorResource(resourceID: resourceID)
             let hotX = request.leUInt32(at: 44)
             let hotY = request.leUInt32(at: 48)
             guard hotX < resource.width, hotY < resource.height else {
                 throw VMError.invalidConfiguration("virtio-gpu cursor hotspot is outside the image")
             }
-            let pixels = try copiedBytes(for: resource)
+            if ProcessInfo.processInfo.environment["DORY_INPUT_TRACE"] == "1" {
+                FileHandle.standardError.write(Data(
+                    "dory-input: guest cursor update scanout=\(scanoutID) x=\(request.leUInt32(at: 28)) y=\(request.leUInt32(at: 32)) size=\(resource.width)x\(resource.height) hotspot=\(hotX),\(hotY)\n".utf8
+                ))
+            }
             cursorResourceID = resourceID
             onCursorUpdate?(VirtioGPUCursorUpdate(
                 scanoutID: scanoutID,
@@ -1495,9 +1508,77 @@ public final class VirtioGPU: VirtioDeviceBackend, VirtioSharedMemoryRegionProvi
                 height: resource.height,
                 hotX: hotX,
                 hotY: hotY,
-                bytes: pixels
+                bytes: resource.bytes
             ))
             return responseHeader(type: Response.okNoData, request: request)
+        }
+    }
+
+    private func copiedCursorResource(resourceID: UInt32) throws -> CursorResourceSnapshot {
+        if let resource = resources2D[resourceID] {
+            try validateCursorResource(
+                format: resource.format,
+                width: resource.width,
+                height: resource.height
+            )
+            return CursorResourceSnapshot(
+                width: resource.width,
+                height: resource.height,
+                bytes: try copiedBytes(for: resource)
+            )
+        }
+
+        guard let resource = resources3D[resourceID], let renderer else {
+            throw VMError.invalidConfiguration(
+                "virtio-gpu cursor references an unknown resource"
+            )
+        }
+        try validateCursorResource(
+            format: resource.format,
+            width: resource.width,
+            height: resource.height
+        )
+        let stride = UInt64(resource.width) * 4
+        let byteCount = stride * UInt64(resource.height)
+        guard stride <= UInt64(UInt32.max), byteCount <= UInt64(Int.max) else {
+            throw VMError.invalidConfiguration("virtio-gpu cursor resource is too large")
+        }
+        var pixels = Data(count: Int(byteCount))
+        try pixels.withUnsafeMutableBytes { bytes in
+            guard let baseAddress = bytes.baseAddress else {
+                throw VMError.invalidConfiguration("virtio-gpu 3D cursor has no storage")
+            }
+            try renderer.transferFromHost3D(
+                VirtioGPUTransfer3D(
+                    resourceID: resourceID,
+                    contextID: 0,
+                    level: 0,
+                    stride: UInt32(stride),
+                    layerStride: 0,
+                    offset: 0,
+                    box: [0, 0, 0, resource.width, resource.height, 1]
+                ),
+                entries: [VirtioGPUMemoryEntry(pointer: baseAddress, length: bytes.count)]
+            )
+        }
+        return CursorResourceSnapshot(
+            width: resource.width,
+            height: resource.height,
+            bytes: pixels
+        )
+    }
+
+    private func validateCursorResource(format: UInt32, width: UInt32, height: UInt32) throws {
+        // Linux normally advertises ARGB8888 for the cursor plane, but accelerated Mutter creates
+        // the 64x64 VirGL cursor resource as B8G8R8X8 and still writes ARGB cursor payload bytes.
+        // QEMU's VirGL cursor path intentionally copies that payload without format conversion.
+        guard format == 1 || format == 2,
+              width > 0, height > 0,
+              width <= 256, height <= 256 else {
+            throw VMError.invalidConfiguration(
+                "virtio-gpu cursor requires a bounded BGRA/BGRX resource "
+                    + "(format=\(format) size=\(width)x\(height))"
+            )
         }
     }
 

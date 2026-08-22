@@ -91,10 +91,25 @@ public struct VirtioInputPressedState: Sendable {
     }
 }
 
-/// A combined virtio keyboard, absolute pointer, buttons, and high-resolution wheel device.
+/// A virtio keyboard or absolute tablet endpoint.
+///
+/// Linux classifies an input node from its complete capability bitmap. A single node advertising
+/// both a full keyboard and absolute pointer axes is not equivalent to two HID devices and can be
+/// classified as a keyboard by desktop input stacks, leaving its absolute position disconnected
+/// from pointer hit-testing. Production desktop VMs therefore attach one `.keyboard` endpoint and
+/// one `.absolutePointer` endpoint, matching the device boundary used by QEMU's virtio keyboard and
+/// tablet implementations. `.combinedCompatibility` remains available only for existing callers
+/// that need the historical wire shape.
+///
 /// Host input is submitted as whole evdev frames ending in SYN_REPORT; a frame waits until the
 /// guest has posted enough receive buffers, so Dory never delivers half of a pointer update.
 public final class VirtioInput: VirtioDeviceBackend, @unchecked Sendable {
+    public enum Profile: Sendable, Equatable {
+        case keyboard
+        case absolutePointer
+        case combinedCompatibility
+    }
+
     public let deviceID: UInt32 = 18
     public let deviceFeatures: UInt64 = 0
     public let queueCount = 2
@@ -117,15 +132,22 @@ public final class VirtioInput: VirtioDeviceBackend, @unchecked Sendable {
     }
 
     private let lock = NSLock()
+    private let profile: Profile
     private weak var transport: VirtioMMIOTransport?
     private var selectedConfig: UInt8 = 0
     private var selectedSubconfig: UInt8 = 0
     private var availableEventBuffers = [VirtqueueChain]()
     private var pendingFrames = [[VirtioInputEvent]]()
     private let maximumPendingFrames = 256
+    private static let tracesPointerButtons =
+        ProcessInfo.processInfo.environment["DORY_INPUT_TRACE"] == "1"
     private let statusHandler: (@Sendable (VirtioInputEvent) -> Void)?
 
-    public init(statusHandler: (@Sendable (VirtioInputEvent) -> Void)? = nil) {
+    public init(
+        profile: Profile = .combinedCompatibility,
+        statusHandler: (@Sendable (VirtioInputEvent) -> Void)? = nil
+    ) {
+        self.profile = profile
         self.statusHandler = statusHandler
     }
 
@@ -138,24 +160,31 @@ public final class VirtioInput: VirtioDeviceBackend, @unchecked Sendable {
         var payload = [UInt8]()
         switch select {
         case ConfigSelect.name where subselect == 0:
-            payload = Array("Dory keyboard and pointer".utf8)
+            payload = Array(deviceName.utf8)
         case ConfigSelect.serial where subselect == 0:
-            payload = Array("dory-input-0".utf8)
+            payload = Array(deviceSerial.utf8)
         case ConfigSelect.deviceIDs where subselect == 0:
             payload.appendLE(UInt16(0x06))  // BUS_VIRTUAL
             payload.appendLE(UInt16(0xD072))
-            payload.appendLE(UInt16(0x0001))
-            payload.appendLE(UInt16(0x0001))
+            payload.appendLE(deviceProductID)
+            payload.appendLE(profile == .combinedCompatibility ? UInt16(0x0001) : UInt16(0x0002))
         case ConfigSelect.propertyBits where subselect == 0:
-            payload = [0]
+            // QEMU's proven virtio-tablet contract omits PROP_BITS entirely. An
+            // explicit one-byte zero bitmap is not the same wire shape and can
+            // change how Linux input classifiers interpret an absolute device.
+            payload = profile == .combinedCompatibility ? [0] : []
         case ConfigSelect.eventBits:
-            payload = Self.eventBitmap(type: subselect)
-        case ConfigSelect.absoluteInfo where subselect == 0 || subselect == 1:
+            payload = eventBitmap(type: subselect)
+        case ConfigSelect.absoluteInfo
+            where profile != .keyboard && (subselect == 0 || subselect == 1):
             payload.appendLE(UInt32(0))
             payload.appendLE(UInt32(32_767))
             payload.appendLE(UInt32(0))
             payload.appendLE(UInt32(0))
-            payload.appendLE(UInt32(100))
+            // Match virtio-tablet's unspecified resolution. Advertising an
+            // arbitrary physical resolution makes libinput apply dimensions
+            // that do not describe this normalized virtual desktop.
+            payload.appendLE(profile == .combinedCompatibility ? UInt32(100) : UInt32(0))
         default:
             break
         }
@@ -220,9 +249,19 @@ public final class VirtioInput: VirtioDeviceBackend, @unchecked Sendable {
         if complete.last != .synchronize { complete.append(.synchronize) }
 
         lock.lock()
-        pendingFrames.append(complete)
+        if Self.isAbsolutePointerPositionFrame(complete),
+           let last = pendingFrames.last,
+           Self.isAbsolutePointerPositionFrame(last) {
+            // AppKit may deliver motion faster than a guest replenishes virtio-input
+            // buffers. Only the newest absolute position matters, and retaining every
+            // intermediate position can otherwise leave button frames behind stale
+            // motion for a visibly long time.
+            pendingFrames[pendingFrames.count - 1] = complete
+        } else {
+            pendingFrames.append(complete)
+        }
         if pendingFrames.count > maximumPendingFrames {
-            pendingFrames.removeFirst(pendingFrames.count - maximumPendingFrames)
+            trimPendingFramesToLimit()
         }
         let transport = self.transport
         lock.unlock()
@@ -230,6 +269,27 @@ public final class VirtioInput: VirtioDeviceBackend, @unchecked Sendable {
         if let transport {
             transport.withQueueLock {
                 drainEventQueue(transport: transport)
+            }
+        }
+    }
+
+    private static func isAbsolutePointerPositionFrame(_ events: [VirtioInputEvent]) -> Bool {
+        events.count == 3
+            && events[0].type == EventType.absolute
+            && events[0].code == 0
+            && events[1].type == EventType.absolute
+            && events[1].code == 1
+            && events[2] == .synchronize
+    }
+
+    /// Prefer discarding superseded pointer motion over input with semantic state,
+    /// such as a key or button transition.
+    private func trimPendingFramesToLimit() {
+        while pendingFrames.count > maximumPendingFrames {
+            if let index = pendingFrames.firstIndex(where: Self.isAbsolutePointerPositionFrame) {
+                pendingFrames.remove(at: index)
+            } else {
+                pendingFrames.removeFirst()
             }
         }
     }
@@ -262,6 +322,13 @@ public final class VirtioInput: VirtioDeviceBackend, @unchecked Sendable {
         }
         for (chain, event) in publications {
             let written = chain.writeBytes(event.bytes)
+            if Self.tracesPointerButtons,
+               event.type == UInt16(EventType.key),
+               (272...276).contains(event.code) {
+                FileHandle.standardError.write(Data(
+                    "dory-input: published button code=\(event.code) value=\(event.value) bytes=\(written)\n".utf8
+                ))
+            }
             interrupt = ((try? queue.push(chain, written: written)) ?? false) || interrupt
         }
         if interrupt { transport.notifyUsed() }
@@ -284,22 +351,64 @@ public final class VirtioInput: VirtioDeviceBackend, @unchecked Sendable {
         if interrupt { transport.notifyUsed() }
     }
 
-    private static func eventBitmap(type: UInt8) -> [UInt8] {
+    private func eventBitmap(type: UInt8) -> [UInt8] {
+        Self.bitmap(type: type, profile: profile)
+    }
+
+    private static func bitmap(type: UInt8, profile: Profile) -> [UInt8] {
         switch type {
         case EventType.synchronize:
             return bitmap(codes: [0])
         case EventType.key:
-            // Standard keyboard range plus primary mouse buttons.
-            return bitmap(codes: Array(1...255) + Array(272...276))
+            switch profile {
+            case .keyboard:
+                return bitmap(codes: Array(1...255))
+            case .absolutePointer:
+                return bitmap(codes: Array(272...276))
+            case .combinedCompatibility:
+                return bitmap(codes: Array(1...255) + Array(272...276))
+            }
         case EventType.relative:
-            // Horizontal/vertical wheels and their high-resolution companions.
-            return bitmap(codes: [6, 8, 11, 12])
+            switch profile {
+            case .keyboard:
+                return []
+            case .absolutePointer:
+                // QEMU's virtio-tablet exposes only REL_WHEEL. Keep the
+                // production tablet byte-for-byte compatible with that shape.
+                return bitmap(codes: [8])
+            case .combinedCompatibility:
+                return bitmap(codes: [6, 8, 11, 12])
+            }
         case EventType.absolute:
-            return bitmap(codes: [0, 1])
+            return profile == .keyboard ? [] : bitmap(codes: [0, 1])
         case EventType.led:
-            return bitmap(codes: [0, 1, 2])
+            return profile == .absolutePointer ? [] : bitmap(codes: [0, 1, 2])
         default:
             return []
+        }
+    }
+
+    private var deviceName: String {
+        switch profile {
+        case .keyboard: "Dory Virtio Keyboard"
+        case .absolutePointer: "Dory Virtio Tablet"
+        case .combinedCompatibility: "Dory keyboard and pointer"
+        }
+    }
+
+    private var deviceSerial: String {
+        switch profile {
+        case .keyboard: "dory-keyboard-0"
+        case .absolutePointer: "dory-tablet-0"
+        case .combinedCompatibility: "dory-input-0"
+        }
+    }
+
+    private var deviceProductID: UInt16 {
+        switch profile {
+        case .keyboard: 0x0001
+        case .absolutePointer: 0x0003
+        case .combinedCompatibility: 0x0001
         }
     }
 

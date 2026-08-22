@@ -904,6 +904,52 @@ import Testing
         #expect(Array(data[24..<29]) == [0x56, 0x45, 0x4e, 0x55, 0x53])
     }
 
+    @Test func acceptsGuestLogicalBlobSizesAndRejectsUnalignedMapOffsets() throws {
+        let renderer = FakeVirtioGPURenderer(capsets: [
+            VirtioGPUCapset(id: 4, maxVersion: 0, data: [1])
+        ])
+        let hostVisibleMemory = try VirtioGPUHostVisibleMemory(
+            guestBase: GuestLayout.daxWindowBase
+        )
+        let gpu = VirtioGPU(
+            hostMemoryBase: GuestLayout.daxWindowBase,
+            renderer: renderer,
+            hostVisibleMemory: hostVisibleMemory
+        )
+
+        // Host-page alignment is an implementation detail handled by Dory's
+        // guest-kernel aperture allocation and host mapping. Do not invent an
+        // unstandardized virtio feature bit or extend the device config ABI.
+        #expect(gpu.deviceFeatures & (1 << 5) == 0)
+        #expect(gpu.configSpace.count == 16)
+
+        func blobRequest(resourceID: UInt32, size: UInt64) -> [UInt8] {
+            var request = gpuRequest(type: 0x010C, fenceID: 0, contextID: 3, ringIndex: 0)
+            request.appendLE(resourceID)
+            request.appendLE(UInt32(2))  // VIRTIO_GPU_BLOB_MEM_HOST3D
+            request.appendLE(UInt32(1))  // mappable
+            request.appendLE(UInt32(0))
+            request.appendLE(UInt64(44))
+            request.appendLE(size)
+            return request
+        }
+
+        #expect(leUInt32(try gpuResponse(
+            gpu: gpu,
+            request: blobRequest(resourceID: 7, size: 4_096)
+        ), at: 0) == 0x1100)
+        #expect(leUInt32(try gpuResponse(
+            gpu: gpu,
+            request: blobRequest(resourceID: 8, size: 135_168)
+        ), at: 0) == 0x1100)
+
+        var unalignedMap = gpuRequest(type: 0x0208, fenceID: 0, contextID: 3, ringIndex: 0)
+        unalignedMap.appendLE(UInt32(7))
+        unalignedMap.appendLE(UInt32(0))
+        unalignedMap.appendLE(UInt64(4_096))
+        #expect(leUInt32(try gpuResponse(gpu: gpu, request: unalignedMap), at: 0) == 0x1202)
+    }
+
     @Test func assignsStableUUIDToRendererResource() throws {
         let renderer = FakeVirtioGPURenderer(capsets: [
             VirtioGPUCapset(id: 4, maxVersion: 2, data: [0x56, 0x45, 0x4e, 0x55, 0x53])
@@ -1075,11 +1121,13 @@ import Testing
     @Test func cursorQueuePublishesCopiedShapeAndHotspotAndRejectsInvalidUpdates() throws {
         let memory = try GuestMemory(guestBase: base, size: 64 * HostPage.size)
         let cursorBox = CursorUpdateBox()
+        let renderer = FakeVirtioGPURenderer(capsets: [])
         let gpu = VirtioGPU(
             hostMemoryBase: 0x1_0000_0000,
             scanoutCount: 1,
             scanoutWidth: 2_560,
             scanoutHeight: 1_600,
+            renderer: renderer,
             onCursorUpdate: { cursorBox.store($0) }
         )
         let transport = VirtioMMIOTransport(
@@ -1236,6 +1284,48 @@ import Testing
         #expect(leUInt32(try submitCursor(cursorRequest(resourceID: 0, hotX: 0, hotY: 0)), at: 0) == 0x1100)
         #expect(cursorBox.values.count == countBeforeInvalid + 1)
         #expect(cursorBox.values.last! == nil)
+
+        let acceleratedPixels: [UInt8] = [
+            21, 22, 23, 24, 25, 26, 27, 28,
+            29, 30, 31, 32, 33, 34, 35, 36,
+        ]
+        renderer.setTransferReadback(width: 2, height: 2, pixels: acceleratedPixels)
+        var create3D = gpuRequest(type: 0x0204, fenceID: 0, contextID: 0, ringIndex: 0)
+        create3D.appendLE(UInt32(8))       // resource_id
+        create3D.appendLE(UInt32(2))       // PIPE_TEXTURE_2D
+        create3D.appendLE(UInt32(2))       // B8G8R8X8_UNORM (accelerated Mutter cursor)
+        create3D.appendLE(UInt32(1 << 1))  // PIPE_BIND_RENDER_TARGET
+        create3D.appendLE(UInt32(2))
+        create3D.appendLE(UInt32(2))
+        create3D.appendLE(UInt32(1))
+        create3D.appendLE(UInt32(1))
+        create3D.appendLE(UInt32(0))
+        create3D.appendLE(UInt32(0))
+        create3D.appendLE(UInt32(1))
+        create3D.appendLE(UInt32(0))
+        #expect(leUInt32(try submitControl(create3D), at: 0) == 0x1100)
+
+        #expect(leUInt32(try submitCursor(cursorRequest(resourceID: 8, hotX: 0, hotY: 1)), at: 0) == 0x1100)
+        let acceleratedUpdate = try #require(cursorBox.values.last ?? nil)
+        #expect(acceleratedUpdate.resourceID == 8)
+        #expect(acceleratedUpdate.width == 2)
+        #expect(acceleratedUpdate.height == 2)
+        #expect(acceleratedUpdate.hotX == 0)
+        #expect(acceleratedUpdate.hotY == 1)
+        #expect(Array(acceleratedUpdate.bytes) == acceleratedPixels)
+        #expect(renderer.transferFromHostCalls.last?.box == [0, 0, 0, 2, 2, 1])
+        #expect(renderer.transferFromHostCalls.last?.entryLengths == [acceleratedPixels.count])
+
+        renderer.setTransferReadback(
+            width: 2,
+            height: 2,
+            pixels: [UInt8](repeating: 0xEE, count: acceleratedPixels.count)
+        )
+        #expect(Array(acceleratedUpdate.bytes) == acceleratedPixels)
+
+        let countBeforeInvalidAccelerated = cursorBox.values.count
+        #expect(leUInt32(try submitCursor(cursorRequest(resourceID: 8, hotX: 0, hotY: 2)), at: 0) == 0x1202)
+        #expect(cursorBox.values.count == countBeforeInvalidAccelerated)
     }
 
     @Test func scanoutDisableAcceptsTheEmptyRectangleUsedDuringModesets() throws {
@@ -2427,6 +2517,72 @@ private final class FakeVirtioGPURenderer: VirtioGPURenderer {
         #expect(config.leUInt32(at: 12) == 32_767)
     }
 
+    @Test func combinedCompatibilityPreservesHistoricalWireIdentity() {
+        let input = VirtioInput(profile: .combinedCompatibility)
+
+        input.writeConfig(offset: 0, value: 0x03, width: 1) // device IDs
+        input.writeConfig(offset: 1, value: 0, width: 1)
+        var config = input.configSpace
+        #expect(config[2] == 8)
+        #expect(config.leUInt16(at: 8) == 0x06)
+        #expect(config.leUInt16(at: 10) == 0xD072)
+        #expect(config.leUInt16(at: 12) == 0x0001)
+        #expect(config.leUInt16(at: 14) == 0x0001)
+
+        input.writeConfig(offset: 0, value: 0x10, width: 1) // property bits
+        config = input.configSpace
+        #expect(config[2] == 1)
+        #expect(config[8] == 0)
+
+        input.writeConfig(offset: 0, value: 0x12, width: 1)
+        input.writeConfig(offset: 1, value: 0, width: 1) // ABS_X info
+        config = input.configSpace
+        #expect(config.leUInt32(at: 24) == 100)
+    }
+
+    @Test func productionKeyboardAndTabletAdvertiseDisjointCapabilities() {
+        let keyboard = VirtioInput(profile: .keyboard)
+        keyboard.writeConfig(offset: 0, value: 0x11, width: 1)
+        keyboard.writeConfig(offset: 1, value: 1, width: 1)  // EV_KEY
+        var config = keyboard.configSpace
+        #expect(config[8 + 3] & (1 << 6) != 0)   // KEY_A 30
+        #expect(config.count > 8 + 34)
+        #expect(config[8 + 34] & 1 == 0)         // no BTN_LEFT 272
+
+        keyboard.writeConfig(offset: 1, value: 3, width: 1)  // EV_ABS
+        config = keyboard.configSpace
+        #expect(config[2] == 0)
+
+        let pointer = VirtioInput(profile: .absolutePointer)
+        pointer.writeConfig(offset: 0, value: 0x11, width: 1)
+        pointer.writeConfig(offset: 1, value: 1, width: 1)  // EV_KEY
+        config = pointer.configSpace
+        #expect(config[8 + 3] & (1 << 6) == 0)   // no KEY_A 30
+        #expect(config[8 + 34] & 1 != 0)         // BTN_LEFT 272
+
+        pointer.writeConfig(offset: 1, value: 3, width: 1)  // EV_ABS
+        config = pointer.configSpace
+        #expect(config[8] & 0b11 == 0b11)        // ABS_X and ABS_Y
+
+        pointer.writeConfig(offset: 1, value: 2, width: 1)  // EV_REL
+        config = pointer.configSpace
+        #expect(config[2] == 2)
+        #expect(config[8] == 0)
+        #expect(config[9] == 1)                  // REL_WHEEL 8 only
+
+        pointer.writeConfig(offset: 0, value: 0x10, width: 1) // PROP_BITS
+        pointer.writeConfig(offset: 1, value: 0, width: 1)
+        config = pointer.configSpace
+        #expect(config[2] == 0)                  // omitted, as in QEMU virtio-tablet
+
+        pointer.writeConfig(offset: 0, value: 0x12, width: 1)
+        pointer.writeConfig(offset: 1, value: 1, width: 1)  // ABS_Y info
+        config = pointer.configSpace
+        #expect(config[2] == 20)
+        #expect(config.leUInt32(at: 12) == 32_767)
+        #expect(config.leUInt32(at: 24) == 0)    // unspecified physical resolution
+    }
+
     @Test func convertsAppKitScrollDirectionToLinuxWheelDirection() {
         var scroll = VirtioInputScrollAccumulator()
         let events = scroll.events(
@@ -2523,6 +2679,113 @@ private final class FakeVirtioGPURenderer: VirtioGPURenderer {
         #expect(try memory.read(UInt16.self, at: eventBuffers + 8) == 3)
         #expect(try memory.read(UInt32.self, at: eventBuffers + 12) == 16_000)
         #expect(try memory.read(UInt16.self, at: eventBuffers + 16) == 0)
+    }
+
+    @Test func absolutePointerClickPublishesPositionAndButtonInOneAtomicFrame() throws {
+        let memory = try GuestMemory(guestBase: base, size: 8 * HostPage.size)
+        let input = VirtioInput(profile: .absolutePointer)
+        let transport = VirtioMMIOTransport(
+            baseAddress: GuestLayout.virtioBase,
+            backend: input,
+            memory: memory
+        ) {}
+        transport.queues[0].configure(
+            size: 8,
+            descriptorTable: descriptorTable,
+            availRing: availableRing,
+            usedRing: usedRing
+        )
+        transport.queues[0].setReady(true)
+        input.deviceReady(transport: transport)
+
+        for index in 0..<4 {
+            let descriptor = descriptorTable + UInt64(index) * 16
+            try memory.write(eventBuffers + UInt64(index) * 8, at: descriptor)
+            try memory.write(UInt32(8), at: descriptor + 8)
+            try memory.write(UInt16(2), at: descriptor + 12)
+            try memory.write(UInt16(0), at: descriptor + 14)
+            try memory.write(UInt16(index), at: availableRing + 4 + UInt64(index) * 2)
+        }
+        try memory.write(UInt16(0), at: availableRing)
+        try memory.write(UInt16(3), at: availableRing + 2)
+
+        input.send(frame: [
+            VirtioInputEvent(type: 3, code: 0, value: 9_000),
+            VirtioInputEvent(type: 3, code: 1, value: 10_000),
+            VirtioInputEvent(type: 1, code: 272, value: 1),
+        ])
+        #expect(try memory.read(UInt16.self, at: usedRing + 2) == 0)
+
+        try memory.write(UInt16(4), at: availableRing + 2)
+        input.handleKick(queue: 0, transport: transport)
+        #expect(try memory.read(UInt16.self, at: usedRing + 2) == 4)
+        #expect(try memory.read(UInt16.self, at: eventBuffers) == 3)
+        #expect(try memory.read(UInt32.self, at: eventBuffers + 4) == 9_000)
+        #expect(try memory.read(UInt16.self, at: eventBuffers + 8) == 3)
+        #expect(try memory.read(UInt32.self, at: eventBuffers + 12) == 10_000)
+        #expect(try memory.read(UInt16.self, at: eventBuffers + 16) == 1)
+        #expect(try memory.read(UInt16.self, at: eventBuffers + 18) == 272)
+        #expect(try memory.read(UInt32.self, at: eventBuffers + 20) == 1)
+        #expect(try memory.read(UInt16.self, at: eventBuffers + 24) == 0)
+    }
+
+    @Test func pointerMotionDoesNotBlockAButtonFrameBehindStalePositions() throws {
+        let memory = try GuestMemory(guestBase: base, size: 8 * HostPage.size)
+        let input = VirtioInput()
+        let transport = VirtioMMIOTransport(
+            baseAddress: GuestLayout.virtioBase,
+            backend: input,
+            memory: memory
+        ) {}
+        transport.queues[0].configure(
+            size: 8,
+            descriptorTable: descriptorTable,
+            availRing: availableRing,
+            usedRing: usedRing
+        )
+        transport.queues[0].setReady(true)
+        input.deviceReady(transport: transport)
+
+        for index in 0..<5 {
+            let descriptor = descriptorTable + UInt64(index) * 16
+            try memory.write(eventBuffers + UInt64(index) * 8, at: descriptor)
+            try memory.write(UInt32(8), at: descriptor + 8)
+            try memory.write(UInt16(2), at: descriptor + 12)  // device-writable
+            try memory.write(UInt16(0), at: descriptor + 14)
+            try memory.write(UInt16(index), at: availableRing + 4 + UInt64(index) * 2)
+        }
+        try memory.write(UInt16(0), at: availableRing)
+        try memory.write(UInt16(0), at: availableRing + 2)
+
+        input.send(frame: [
+            VirtioInputEvent(type: 3, code: 0, value: 1_000),
+            VirtioInputEvent(type: 3, code: 1, value: 2_000),
+        ])
+        input.send(frame: [
+            VirtioInputEvent(type: 3, code: 0, value: 16_000),
+            VirtioInputEvent(type: 3, code: 1, value: 17_000),
+        ])
+        input.send(frame: [VirtioInputEvent(type: 1, code: 272, value: 1)])
+
+        try memory.write(UInt16(3), at: availableRing + 2)
+        input.handleKick(queue: 0, transport: transport)
+
+        #expect(try memory.read(UInt16.self, at: usedRing + 2) == 3)
+        #expect(try memory.read(UInt16.self, at: eventBuffers) == 3)
+        #expect(try memory.read(UInt16.self, at: eventBuffers + 2) == 0)
+        #expect(try memory.read(UInt32.self, at: eventBuffers + 4) == 16_000)
+        #expect(try memory.read(UInt16.self, at: eventBuffers + 8) == 3)
+        #expect(try memory.read(UInt16.self, at: eventBuffers + 10) == 1)
+        #expect(try memory.read(UInt32.self, at: eventBuffers + 12) == 17_000)
+
+        try memory.write(UInt16(5), at: availableRing + 2)
+        input.handleKick(queue: 0, transport: transport)
+
+        #expect(try memory.read(UInt16.self, at: usedRing + 2) == 5)
+        #expect(try memory.read(UInt16.self, at: eventBuffers + 24) == 1)
+        #expect(try memory.read(UInt16.self, at: eventBuffers + 26) == 272)
+        #expect(try memory.read(UInt32.self, at: eventBuffers + 28) == 1)
+        #expect(try memory.read(UInt16.self, at: eventBuffers + 32) == 0)
     }
 }
 
