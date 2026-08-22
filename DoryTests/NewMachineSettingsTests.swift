@@ -50,6 +50,10 @@ struct NewMachineSettingsTests {
         #expect(s.virtualMachineSettings?.runtimePreference == .automatic)
         #expect(s.virtualMachineSettings?.graphicsPreference == .automatic)
         #expect(s.virtualMachineSettings?.networkMode == .sharedNAT)
+        #expect(s.virtualMachineSettings?.audioConfiguration == DoryVMAudioConfiguration(
+            inputEnabled: true,
+            outputEnabled: true
+        ))
         #expect(s.ports.isEmpty)
     }
 
@@ -106,5 +110,39 @@ struct NewMachineSettingsTests {
         #expect(settings.virtualMachineSettings?.runtimePreference == nil)
         #expect(settings.virtualMachineSettings?.graphicsPreference == nil)
         #expect(settings.virtualMachineSettings?.networkMode == .disconnected)
+        #expect(settings.virtualMachineSettings?.audioConfiguration == nil)
+    }
+
+    @Test func desktopAudioDirectionsAreCollectedIndependently() {
+        let settings = NewMachineSheet.buildSettings(
+            cpus: 4,
+            memoryGB: 4,
+            mounts: [],
+            audioInputEnabled: false,
+            audioOutputEnabled: true
+        )
+
+        #expect(settings.virtualMachineSettings?.audioConfiguration == DoryVMAudioConfiguration(
+            inputEnabled: false,
+            outputEnabled: true
+        ))
+    }
+
+    @Test func editingPreservesAnOlderDaemonsAbsentAudioClaimUntilTheUserChangesIt() {
+        #expect(MachineAudioSettingsPolicy.editedConfiguration(
+            existing: nil,
+            inputEnabled: true,
+            outputEnabled: true
+        ) == nil)
+        #expect(MachineAudioSettingsPolicy.editedConfiguration(
+            existing: nil,
+            inputEnabled: false,
+            outputEnabled: true
+        ) == DoryVMAudioConfiguration(inputEnabled: false, outputEnabled: true))
+        #expect(MachineAudioSettingsPolicy.editedConfiguration(
+            existing: DoryVMAudioConfiguration(inputEnabled: false, outputEnabled: true),
+            inputEnabled: true,
+            outputEnabled: true
+        ) == DoryVMAudioConfiguration(inputEnabled: true, outputEnabled: true))
     }
 }

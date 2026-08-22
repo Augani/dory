@@ -18,6 +18,8 @@ struct NewMachineSheet: View {
     @State private var installerISOCheck: InstallerISOCheck = .none
     @State private var diskSizeGB = 64
     @State private var networkMode = DoryVMNetworkMode.sharedNAT
+    @State private var audioInputEnabled = true
+    @State private var audioOutputEnabled = true
 
     private enum InstallerISOCheck: Equatable {
         case none
@@ -90,6 +92,7 @@ struct NewMachineSheet: View {
                         devEnvironmentSection
                         identitySection
                         networkBlock
+                        audioBlock
                         optionsRow
                         advancedSection
                     }
@@ -535,6 +538,30 @@ struct NewMachineSheet: View {
         }
     }
 
+    @ViewBuilder private var audioBlock: some View {
+        if displayMode == .desktop {
+            VStack(alignment: .leading, spacing: 8) {
+                sectionLabel("AUDIO")
+                HStack(spacing: 24) {
+                    Toggle("Microphone", isOn: $audioInputEnabled)
+                        .toggleStyle(.switch)
+                        .tint(p.accent)
+                        .accessibilityIdentifier("new-machine-audio-input")
+                    Toggle("Speakers", isOn: $audioOutputEnabled)
+                        .toggleStyle(.switch)
+                        .tint(p.accent)
+                        .accessibilityIdentifier("new-machine-audio-output")
+                    Spacer(minLength: 0)
+                }
+                .font(.system(size: 12.5))
+                .foregroundStyle(p.text)
+                Text("Only enabled audio directions are attached to the Linux desktop. The selected backend must qualify the exact combination before launch.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(p.text3)
+            }
+        }
+    }
+
     private var advancedSection: some View {
         VStack(alignment: .leading, spacing: 0) {
             Button {
@@ -892,7 +919,9 @@ struct NewMachineSheet: View {
         desktopDistro: DesktopMachineDistro = .debian,
         guestUsername: String = "dory",
         guestUID: uid_t = getuid(),
-        networkMode: DoryVMNetworkMode = .sharedNAT
+        networkMode: DoryVMNetworkMode = .sharedNAT,
+        audioInputEnabled: Bool = true,
+        audioOutputEnabled: Bool = true
     ) -> MachineSettings {
         let typedSettings: DorydMachineTypedSettings
         if displayMode == .desktop {
@@ -912,7 +941,11 @@ struct NewMachineSheet: View {
                 clipboardPolicy: .legacyDesktop(.bidirectional),
                 runtimePreference: .automatic,
                 graphicsPreference: .automatic,
-                networkMode: networkMode
+                networkMode: networkMode,
+                audioConfiguration: DoryVMAudioConfiguration(
+                    inputEnabled: audioInputEnabled,
+                    outputEnabled: audioOutputEnabled
+                )
             )
         } else {
             typedSettings = DorydMachineTypedSettings(networkMode: networkMode)
@@ -960,7 +993,9 @@ struct NewMachineSheet: View {
             displayMode: displayMode,
             desktopDistro: desktopDistro,
             guestUsername: normalizedGuestUsername,
-            networkMode: networkMode
+            networkMode: networkMode,
+            audioInputEnabled: audioInputEnabled,
+            audioOutputEnabled: audioOutputEnabled
         )
         if customISOInstall {
             settings.bootMode = .efi
@@ -970,7 +1005,11 @@ struct NewMachineSheet: View {
             // environment marker or carry managed-desktop provisioning intent.
             settings.env = [:]
             settings.virtualMachineSettings = DorydMachineTypedSettings(
-                networkMode: networkMode
+                networkMode: networkMode,
+                audioConfiguration: DoryVMAudioConfiguration(
+                    inputEnabled: audioInputEnabled,
+                    outputEnabled: audioOutputEnabled
+                )
             )
         }
         return settings

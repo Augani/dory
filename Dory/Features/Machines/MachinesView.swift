@@ -1275,6 +1275,22 @@ private struct MachineIntegrationHealthSheet: View {
     }
 }
 
+nonisolated enum MachineAudioSettingsPolicy {
+    static func editedConfiguration(
+        existing: DoryVMAudioConfiguration?,
+        inputEnabled: Bool,
+        outputEnabled: Bool
+    ) -> DoryVMAudioConfiguration? {
+        // An older daemon may omit the audio claim entirely. Preserve that absence for an
+        // unrelated edit, but let an explicit toggle opt into the typed policy.
+        guard existing != nil || !inputEnabled || !outputEnabled else { return nil }
+        return DoryVMAudioConfiguration(
+            inputEnabled: inputEnabled,
+            outputEnabled: outputEnabled
+        )
+    }
+}
+
 private struct MachineEditSheet: View {
     @Environment(AppStore.self) private var store
     @Environment(\.palette) private var p
@@ -1289,6 +1305,9 @@ private struct MachineEditSheet: View {
     @State private var runtimePreference = DoryDesktopVMMPreference.automatic
     @State private var graphicsPreference = DoryDesktopGraphicsPreference.automatic
     @State private var networkMode = DoryVMNetworkMode.sharedNAT
+    @State private var audioInputEnabled = true
+    @State private var audioOutputEnabled = true
+    @State private var originalAudioConfiguration: DoryVMAudioConfiguration?
     @State private var typedSettings = DorydMachineTypedSettings()
 
     private struct MountRow: Identifiable, Hashable {
@@ -1310,6 +1329,7 @@ private struct MachineEditSheet: View {
                     warning
                     machineTypeBlock
                     networkBlock
+                    audioBlock
                     runtimeBlock
                     clipboardBlock
                     resourceRow
@@ -1349,6 +1369,9 @@ private struct MachineEditSheet: View {
         runtimePreference = typedSettings.runtimePreference ?? .automatic
         graphicsPreference = typedSettings.graphicsPreference ?? .automatic
         networkMode = typedSettings.networkMode ?? .sharedNAT
+        originalAudioConfiguration = typedSettings.audioConfiguration
+        audioInputEnabled = typedSettings.audioConfiguration?.inputEnabled ?? true
+        audioOutputEnabled = typedSettings.audioConfiguration?.outputEnabled ?? true
         mountRows = settings.mounts.map {
             MountRow(host: $0.host, guest: $0.guest, readOnly: $0.readOnly, shareTag: $0.shareTag)
         }
@@ -1460,6 +1483,33 @@ private struct MachineEditSheet: View {
                     ? "Host-only allows private Mac-to-machine connectivity with no external route."
                     : "Shared NAT provides outbound access through your Mac without exposing the machine directly.")
                 .font(.system(size: 11)).foregroundStyle(p.text3)
+        }
+    }
+
+    @ViewBuilder private var audioBlock: some View {
+        if displayMode == .desktop {
+            VStack(alignment: .leading, spacing: 8) {
+                sectionLabel("AUDIO")
+                HStack(spacing: 24) {
+                    Toggle("Microphone", isOn: $audioInputEnabled)
+                        .toggleStyle(.switch)
+                        .tint(p.accent)
+                        .accessibilityIdentifier("edit-machine-audio-input")
+                    Toggle("Speakers", isOn: $audioOutputEnabled)
+                        .toggleStyle(.switch)
+                        .tint(p.accent)
+                        .accessibilityIdentifier("edit-machine-audio-output")
+                    Spacer(minLength: 0)
+                }
+                .font(.system(size: 12.5))
+                .foregroundStyle(p.text)
+                .disabled(!audioPolicyEditable)
+                Text(audioPolicyEditable
+                     ? "Only enabled audio directions are attached. Changing this policy requires a backend qualified for the exact device combination."
+                     : "This compatibility machine keeps its historical combined audio device. Replan it into the resolved runtime before changing audio policy.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(p.text3)
+            }
         }
     }
 
@@ -1653,6 +1703,13 @@ private struct MachineEditSheet: View {
             )
         }
         typedSettings.networkMode = networkMode
+        if displayMode == .desktop {
+            typedSettings.audioConfiguration = MachineAudioSettingsPolicy.editedConfiguration(
+                existing: originalAudioConfiguration,
+                inputEnabled: audioInputEnabled,
+                outputEnabled: audioOutputEnabled
+            )
+        }
         if displayMode == .desktop, machine.bootMode != .efi {
             let previousUsername = typedSettings.guestIdentityIntent.account?.username ?? "dory"
             if previousUsername != normalizedGuestUsername {
@@ -1704,6 +1761,10 @@ private struct MachineEditSheet: View {
 
     private var normalizedGuestUsername: String {
         guestUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var audioPolicyEditable: Bool {
+        machine.runtimeIdentity.mode != "legacy-compatibility"
     }
 
     private var guestUsernameInvalid: Bool {
