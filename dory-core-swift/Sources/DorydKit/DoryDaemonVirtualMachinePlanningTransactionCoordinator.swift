@@ -276,6 +276,7 @@ public enum DoryDaemonVirtualMachinePlanningTransactionFailureCode:
     case recoveryRequired = "recovery-required"
     case trustUnavailable = "trust-unavailable"
     case resourceReservationRejected = "resource-reservation-rejected"
+    case portBindingUnavailable = "port-binding-unavailable"
     case planConstructionRejected = "plan-construction-rejected"
     case planBindingRejected = "plan-binding-rejected"
     case publicationAuthorizationRejected = "publication-authorization-rejected"
@@ -286,7 +287,7 @@ public enum DoryDaemonVirtualMachinePlanningTransactionFailureCode:
 }
 
 public struct DoryDaemonVirtualMachinePlanningTransactionFailure:
-    Error, Sendable, Equatable
+    Error, Sendable, Equatable, CustomStringConvertible
 {
     public var code: DoryDaemonVirtualMachinePlanningTransactionFailureCode
     public var message: String
@@ -298,6 +299,8 @@ public struct DoryDaemonVirtualMachinePlanningTransactionFailure:
         self.code = code
         self.message = message
     }
+
+    public var description: String { "\(code.rawValue): \(message)" }
 }
 
 public struct DoryDaemonVirtualMachinePlanningTransactionResult: Sendable {
@@ -865,7 +868,10 @@ public final class DoryDaemonVirtualMachinePlanningTransactionCoordinator:
                             request.startingLeaseDurationMilliseconds
                     )
                 } catch {
-                    throw failure(.resourceReservationRejected, "Stopped planning lease cannot be reactivated.")
+                    throw resourceReservationFailure(
+                        error,
+                        fallback: "Stopped planning lease cannot be reactivated."
+                    )
                 }
                 guard reactivated.leaseID == leaseID,
                       reactivated.boundPlanSHA256 == nil else {
@@ -934,7 +940,10 @@ public final class DoryDaemonVirtualMachinePlanningTransactionCoordinator:
                         request.startingLeaseDurationMilliseconds
                 )
             } catch {
-                throw failure(.resourceReservationRejected, "Resources could not be reserved atomically.")
+                throw resourceReservationFailure(
+                    error,
+                    fallback: "Resources could not be reserved atomically."
+                )
             }
             try faultInjector?(.resourceReservationCommitted)
         } else {
@@ -1672,5 +1681,20 @@ public final class DoryDaemonVirtualMachinePlanningTransactionCoordinator:
         _ message: String
     ) -> DoryDaemonVirtualMachinePlanningTransactionFailure {
         DoryDaemonVirtualMachinePlanningTransactionFailure(code: code, message: message)
+    }
+
+    private func resourceReservationFailure(
+        _ error: Error,
+        fallback: String
+    ) -> DoryDaemonVirtualMachinePlanningTransactionFailure {
+        guard case let DoryVirtualMachineResourceAdmissionLedgerError
+            .portBindingUnavailable(transport, hostPort, machineID) = error else {
+            return failure(.resourceReservationRejected, fallback)
+        }
+        return failure(
+            .portBindingUnavailable,
+            "Host \(transport.rawValue.uppercased()) port \(hostPort) is already reserved by "
+                + "machine \(machineID). Stop that machine or choose another host port."
+        )
     }
 }

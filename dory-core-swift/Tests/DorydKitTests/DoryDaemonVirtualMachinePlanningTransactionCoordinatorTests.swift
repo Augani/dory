@@ -61,6 +61,44 @@ struct DoryDaemonVirtualMachinePlanningTransactionCoordinatorTests {
             == definition.portForwards)
     }
 
+    @Test("port collision returns a stable actionable transaction failure")
+    func portCollisionFailureIsActionable() throws {
+        let fixture = try TransactionFixture()
+        let forward = DoryVMPortForward(
+            id: "ssh",
+            transport: .tcp,
+            hostPort: 22_220,
+            guestPort: 22,
+            exposure: .loopback
+        )
+        _ = try fixture.ledger.reserveStarting(
+            binding: DoryVirtualMachineResourceAdmissionPlanBinding(
+                machineID: "port-owner",
+                definitionRevision: 1,
+                definitionSHA256: transactionDigest("7"),
+                plannedPlanRevision: 1
+            ),
+            hostFacts: fixture.resources,
+            workload: .server,
+            resources: fixture.definition.resources,
+            portForwards: [forward]
+        )
+        var definition = fixture.definition
+        definition.portForwards = [forward]
+
+        do {
+            _ = try fixture.coordinator().resolveReserveAndPublish(
+                fixture.request(definition: definition)
+            )
+            Issue.record("Expected port collision")
+        } catch let failure as DoryDaemonVirtualMachinePlanningTransactionFailure {
+            #expect(failure.code == .portBindingUnavailable)
+            #expect(failure.message.contains("TCP port 22220"))
+            #expect(failure.message.contains("port-owner"))
+            #expect(failure.description.hasPrefix("port-binding-unavailable:"))
+        }
+    }
+
     @Test("crash after workspace publication resumes exact candidate bytes")
     func workspacePublicationRecovery() throws {
         let fixture = try TransactionFixture()
