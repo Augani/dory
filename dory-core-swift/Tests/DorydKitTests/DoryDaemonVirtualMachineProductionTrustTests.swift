@@ -367,6 +367,31 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
         #expect(trustFloor.activationCount == 1)
     }
 
+    @Test("activation rejects helpers that omit the resolved launch contract")
+    func activationRequiresExactMachineArguments() throws {
+        let trustFloor = ProductionTrustFloorActivationState()
+        let fixture = try ProductionTrustFixture(
+            trustFloorActivationState: trustFloor
+        )
+        defer { fixture.cleanup() }
+        var configuration = fixture.machineConfiguration
+        configuration.passMachineArguments = false
+
+        guard case let .unavailable(failure) = fixture.factory.activate(
+            store: fixture.store,
+            machineConfiguration: configuration,
+            appVersion: fixture.appVersion,
+            publicKey: fixture.publicKey,
+            expectedArchitecture: "arm64"
+        ) else {
+            Issue.record("Expected exact launch-argument binding to be mandatory")
+            return
+        }
+        #expect(failure.code == .installationRejected)
+        #expect(failure.trustFailure == nil)
+        #expect(trustFloor.activationCount == 0)
+    }
+
     @Test("activated production graph publishes a headless create plan through XPC authority")
     func activatedGraphPlansHeadlessCreate() throws {
         let fixture = try ProductionTrustFixture()

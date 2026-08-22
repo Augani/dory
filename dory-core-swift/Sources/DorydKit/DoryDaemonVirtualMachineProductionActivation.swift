@@ -115,6 +115,12 @@ extension DoryDaemonVirtualMachineProductionTrustFactory {
                 "Production planning requires one canonical state authority."
             )
         }
+        guard machineConfiguration.passMachineArguments else {
+            return unavailableActivation(
+                .installationRejected,
+                "Production resolved launches require exact machine argument binding."
+            )
+        }
 
         let material: DoryDaemonVirtualMachineVerifiedTrustMaterial
         switch verifiedTrustMaterial(
