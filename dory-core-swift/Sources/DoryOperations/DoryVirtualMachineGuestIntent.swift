@@ -1,7 +1,7 @@
 import Foundation
 
 /// Direction in which one clipboard content class may cross the host/guest boundary.
-public enum DoryVMClipboardDirection: String, Codable, Sendable, Equatable, CaseIterable {
+public enum DoryVMClipboardDirection: String, Codable, Sendable, Equatable, Hashable, CaseIterable {
     case off
     case hostToGuest = "host-to-guest"
     case guestToHost = "guest-to-host"
@@ -18,7 +18,7 @@ public enum DoryVMClipboardDirection: String, Codable, Sendable, Equatable, Case
 
 /// Clipboard intent is persisted per content class. Runtime negotiation may select only a
 /// capability that preserves these directions; it must not silently widen them.
-public struct DoryVMClipboardPolicy: Codable, Sendable, Equatable {
+public struct DoryVMClipboardPolicy: Codable, Sendable, Equatable, Hashable {
     public var text: DoryVMClipboardDirection
     public var image: DoryVMClipboardDirection
     public var files: DoryVMClipboardDirection

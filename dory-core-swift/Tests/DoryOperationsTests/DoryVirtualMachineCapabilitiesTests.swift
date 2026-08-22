@@ -75,6 +75,7 @@ struct VirtualMachineCapabilitiesTests {
             from: historical
         )
         #expect(decoded.networkInterface == nil)
+        #expect(decoded.clipboardPolicy == nil)
         #expect(!decoded.removableUSBHotplug)
 
         object.removeValue(forKey: "keyboard")
@@ -988,6 +989,44 @@ struct VirtualMachineCapabilitiesTests {
             mediaArtifactSHA256: Self.guestArtifactSHA256,
             devices: DoryVirtualMachineDeviceCapabilityRequest(audioOutput: true)
         )
+        let directionalClipboard = DoryVirtualMachineDeviceCapabilityRequest(
+            clipboard: true,
+            clipboardPolicy: .legacyDesktop(.hostToGuest)
+        )
+        let qualifiedDirectionalClipboard = evaluate(
+            family: .linux,
+            media: .virtualDisk,
+            source: .userProvided,
+            backend: .appleVirtualizationFramework,
+            graphics: .software,
+            devices: directionalClipboard
+        )
+        let mismatchedClipboard = evaluate(
+            family: .linux,
+            media: .virtualDisk,
+            source: .userProvided,
+            backend: .appleVirtualizationFramework,
+            graphics: .software,
+            devices: DoryVirtualMachineDeviceCapabilityRequest(
+                clipboard: false,
+                clipboardPolicy: .legacyDesktop(.hostToGuest)
+            )
+        )
+        let clipboardFileTransfer = evaluate(
+            family: .linux,
+            media: .virtualDisk,
+            source: .userProvided,
+            backend: .appleVirtualizationFramework,
+            graphics: .software,
+            devices: DoryVirtualMachineDeviceCapabilityRequest(
+                clipboard: true,
+                clipboardPolicy: DoryVMClipboardPolicy(
+                    text: .bidirectional,
+                    image: .bidirectional,
+                    files: .hostToGuest
+                )
+            )
+        )
 
         #expect(resolved.resolvedDevices == .minimumBootable)
         #expect(disconnected.availability.isUsable)
@@ -1003,6 +1042,11 @@ struct VirtualMachineCapabilitiesTests {
         #expect(qualifiedRawHostOnly.availability.isUsable)
         #expect(qualifiedRawHostOnly.resolvedDevices == qualifiedRawHostOnlyDevices)
         #expect(unsupportedAudioShape.availability.reason?.code == .audioOutputUnsupported)
+        #expect(qualifiedDirectionalClipboard.availability.isUsable)
+        #expect(qualifiedDirectionalClipboard.resolvedDevices == directionalClipboard)
+        #expect(mismatchedClipboard.availability.reason?.code == .clipboardPolicyInvalid)
+        #expect(clipboardFileTransfer.availability.reason?.code
+            == .clipboardFileTransferUnsupported)
     }
 
     @Test("version-one descriptor JSON remains readable with conservative device defaults")

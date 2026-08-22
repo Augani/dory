@@ -1150,6 +1150,7 @@ private final class ProductionTrustFixture: @unchecked Sendable {
         let devices = DoryVirtualMachineDeviceCapabilityRequest.minimumBootable
         let headlessDevices = DoryVirtualMachineDeviceCapabilityRequest(
             networkInterface: .init(macAddress: "02:00:00:00:00:01"),
+            clipboardPolicy: .disabled,
             clockSynchronization: true,
             gracefulShutdown: true
         )

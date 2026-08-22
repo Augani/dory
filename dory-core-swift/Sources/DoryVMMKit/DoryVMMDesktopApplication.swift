@@ -41,14 +41,19 @@ final class DoryVMMDesktopApplication: NSObject, NSApplicationDelegate, NSWindow
         machineView.capturesSystemKeys = true
         self.machineView = machineView
 
-        let requestedPolicy = DoryDesktopClipboardPolicy(environment: environment)
+        let requestedPolicy = resolvedDevices?.clipboardPolicy
+            ?? DoryDesktopClipboardPolicy(environment: environment).virtualMachinePolicy
         // Bidirectional sharing is already handled by Apple's efficient SPICE transport. The
         // shared coordinator still translates Mac shortcuts, while directional modes use its
         // agent-backed data path to enforce the selected boundary.
-        let coordinatorPolicy: DoryDesktopClipboardPolicy = requestedPolicy == .bidirectional
-            ? .off
+        let usesNativeBidirectionalClipboard = requestedPolicy.text == .bidirectional
+            && requestedPolicy.image == .bidirectional
+            && requestedPolicy.files == .off
+        let coordinatorPolicy: DoryVMClipboardPolicy = usesNativeBidirectionalClipboard
+            ? .disabled
             : requestedPolicy
-        clipboard = resolvedDevices?.clipboard == false ? nil : DoryDesktopClipboardCoordinator(
+        clipboard = resolvedDevices?.clipboard == false || !requestedPolicy.isEnabled
+            ? nil : DoryDesktopClipboardCoordinator(
                 policy: coordinatorPolicy,
                 execute: { argv, stdin, timeoutMs, outputLimitBytes in
                     try runtime.executeDesktopIntegration(

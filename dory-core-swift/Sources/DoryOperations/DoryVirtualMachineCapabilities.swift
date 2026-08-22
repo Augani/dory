@@ -242,6 +242,9 @@ public struct DoryVirtualMachineDeviceCapabilityRequest: Codable, Sendable, Equa
     public var pointer: Bool
     public var directorySharing: Bool
     public var clipboard: Bool
+    /// Exact per-content clipboard boundary selected by native planning. `nil` is retained only
+    /// for historical capability records that predate directional clipboard binding.
+    public var clipboardPolicy: DoryVMClipboardPolicy?
     public var clockSynchronization: Bool
     public var dynamicDisplay: Bool
     public var gracefulShutdown: Bool
@@ -259,6 +262,7 @@ public struct DoryVirtualMachineDeviceCapabilityRequest: Codable, Sendable, Equa
         pointer: Bool = false,
         directorySharing: Bool = false,
         clipboard: Bool = false,
+        clipboardPolicy: DoryVMClipboardPolicy? = nil,
         clockSynchronization: Bool = false,
         dynamicDisplay: Bool = false,
         gracefulShutdown: Bool = false,
@@ -273,6 +277,7 @@ public struct DoryVirtualMachineDeviceCapabilityRequest: Codable, Sendable, Equa
         self.pointer = pointer
         self.directorySharing = directorySharing
         self.clipboard = clipboard
+        self.clipboardPolicy = clipboardPolicy
         self.clockSynchronization = clockSynchronization
         self.dynamicDisplay = dynamicDisplay
         self.gracefulShutdown = gracefulShutdown
@@ -289,6 +294,7 @@ public struct DoryVirtualMachineDeviceCapabilityRequest: Codable, Sendable, Equa
         case pointer
         case directorySharing
         case clipboard
+        case clipboardPolicy
         case clockSynchronization
         case dynamicDisplay
         case gracefulShutdown
@@ -315,6 +321,10 @@ public struct DoryVirtualMachineDeviceCapabilityRequest: Codable, Sendable, Equa
         pointer = try container.decode(Bool.self, forKey: .pointer)
         directorySharing = try container.decode(Bool.self, forKey: .directorySharing)
         clipboard = try container.decode(Bool.self, forKey: .clipboard)
+        clipboardPolicy = try container.decodeIfPresent(
+            DoryVMClipboardPolicy.self,
+            forKey: .clipboardPolicy
+        )
         clockSynchronization = try container.decode(Bool.self, forKey: .clockSynchronization)
         dynamicDisplay = try container.decode(Bool.self, forKey: .dynamicDisplay)
         gracefulShutdown = try container.decode(Bool.self, forKey: .gracefulShutdown)
@@ -335,6 +345,7 @@ public struct DoryVirtualMachineDeviceCapabilityRequest: Codable, Sendable, Equa
         try container.encode(pointer, forKey: .pointer)
         try container.encode(directorySharing, forKey: .directorySharing)
         try container.encode(clipboard, forKey: .clipboard)
+        try container.encodeIfPresent(clipboardPolicy, forKey: .clipboardPolicy)
         try container.encode(clockSynchronization, forKey: .clockSynchronization)
         try container.encode(dynamicDisplay, forKey: .dynamicDisplay)
         try container.encode(gracefulShutdown, forKey: .gracefulShutdown)
@@ -443,6 +454,8 @@ public enum DoryCapabilityReasonCode: String, Codable, Sendable, CaseIterable, H
     case pointerInputUnsupported = "pointer-input-unsupported"
     case directorySharingUnsupported = "directory-sharing-unsupported"
     case clipboardIntegrationUnsupported = "clipboard-integration-unsupported"
+    case clipboardPolicyInvalid = "clipboard-policy-invalid"
+    case clipboardFileTransferUnsupported = "clipboard-file-transfer-unsupported"
     case clockSynchronizationUnsupported = "clock-synchronization-unsupported"
     case dynamicDisplayUnsupported = "dynamic-display-unsupported"
     case gracefulShutdownUnsupported = "graceful-shutdown-unsupported"
@@ -1654,6 +1667,22 @@ public enum DoryAppleSiliconCapabilityEvaluator {
                 code: .clipboardIntegrationUnsupported,
                 message: "The selected guest/backend contract does not implement clipboard integration."
             )
+        }
+        if let clipboardPolicy = devices.clipboardPolicy {
+            guard devices.clipboard == clipboardPolicy.isEnabled else {
+                return unavailable(
+                    tier: tier,
+                    code: .clipboardPolicyInvalid,
+                    message: "The resolved clipboard device and directional policy disagree."
+                )
+            }
+            guard clipboardPolicy.files == .off else {
+                return unavailable(
+                    tier: tier,
+                    code: .clipboardFileTransferUnsupported,
+                    message: "The selected guest/backend contract does not implement clipboard file transfer."
+                )
+            }
         }
         if devices.clockSynchronization {
             guard request.guest.family == .linux,

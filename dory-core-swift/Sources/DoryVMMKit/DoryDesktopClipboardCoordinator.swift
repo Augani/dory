@@ -29,7 +29,7 @@ public final class DoryDesktopClipboardCoordinator: @unchecked Sendable {
     ) throws -> DoryExecResult
     public typealias ShortcutSender = @MainActor @Sendable (_ linuxKeyCode: UInt16) -> Void
 
-    private let policy: DoryDesktopClipboardPolicy
+    private let policy: DoryVMClipboardPolicy
     private let execute: Executor
     private let sendShortcut: ShortcutSender
     private let pasteboard: NSPasteboard
@@ -48,6 +48,23 @@ public final class DoryDesktopClipboardCoordinator: @unchecked Sendable {
         log: @escaping @Sendable (String) -> Void
     ) {
         self.init(
+            policy: policy.virtualMachinePolicy,
+            execute: execute,
+            sendShortcut: sendShortcut,
+            pasteboard: .general,
+            startupRetryDelay: 1,
+            startupRetryLimit: 60,
+            log: log
+        )
+    }
+
+    public convenience init(
+        policy: DoryVMClipboardPolicy,
+        execute: @escaping Executor,
+        sendShortcut: @escaping ShortcutSender,
+        log: @escaping @Sendable (String) -> Void
+    ) {
+        self.init(
             policy: policy,
             execute: execute,
             sendShortcut: sendShortcut,
@@ -58,8 +75,28 @@ public final class DoryDesktopClipboardCoordinator: @unchecked Sendable {
         )
     }
 
-    init(
+    convenience init(
         policy: DoryDesktopClipboardPolicy,
+        execute: @escaping Executor,
+        sendShortcut: @escaping ShortcutSender,
+        pasteboard: NSPasteboard,
+        startupRetryDelay: TimeInterval,
+        startupRetryLimit: Int,
+        log: @escaping @Sendable (String) -> Void
+    ) {
+        self.init(
+            policy: policy.virtualMachinePolicy,
+            execute: execute,
+            sendShortcut: sendShortcut,
+            pasteboard: pasteboard,
+            startupRetryDelay: startupRetryDelay,
+            startupRetryLimit: startupRetryLimit,
+            log: log
+        )
+    }
+
+    init(
+        policy: DoryVMClipboardPolicy,
         execute: @escaping Executor,
         sendShortcut: @escaping ShortcutSender,
         pasteboard: NSPasteboard,
@@ -158,8 +195,9 @@ public final class DoryDesktopClipboardCoordinator: @unchecked Sendable {
             scheduleGuestReadIfAllowed()
             return true
         case "v":
-            guard policy.allowsHostToGuest, guestReady,
-                  let payload = Self.readHostClipboard(from: pasteboard) else {
+            guard guestReady,
+                  let payload = Self.readHostClipboard(from: pasteboard),
+                  allowsHostToGuest(payload) else {
                 sendShortcut(47)
                 return true
             }
@@ -184,7 +222,9 @@ public final class DoryDesktopClipboardCoordinator: @unchecked Sendable {
 
     @MainActor
     private func scheduleGuestReadIfAllowed() {
-        guard guestReady, policy.allowsGuestToHost else { return }
+        guard guestReady, policy.text.allowsGuestToHost || policy.image.allowsGuestToHost else {
+            return
+        }
         queue.asyncAfter(deadline: .now() + 0.15) { [weak self] in
             self?.readGuestClipboardAndPublishToHost()
         }
@@ -195,10 +235,11 @@ public final class DoryDesktopClipboardCoordinator: @unchecked Sendable {
         force: Bool,
         startupRetriesRemaining: Int = 0
     ) {
-        guard guestReady, policy.allowsHostToGuest else { return }
+        guard guestReady else { return }
         let changeCount = pasteboard.changeCount
         guard force || changeCount != lastPushedHostChangeCount,
-              let payload = Self.readHostClipboard(from: pasteboard) else { return }
+              let payload = Self.readHostClipboard(from: pasteboard),
+              allowsHostToGuest(payload) else { return }
         queue.async { [weak self] in
             guard let self else { return }
             let didWrite = self.writeGuestClipboard(payload)
@@ -228,7 +269,9 @@ public final class DoryDesktopClipboardCoordinator: @unchecked Sendable {
 
     @MainActor
     private func pullGuestClipboard() {
-        guard guestReady, policy.allowsGuestToHost else { return }
+        guard guestReady, policy.text.allowsGuestToHost || policy.image.allowsGuestToHost else {
+            return
+        }
         queue.async { [weak self] in self?.readGuestClipboardAndPublishToHost() }
     }
 
@@ -264,6 +307,7 @@ public final class DoryDesktopClipboardCoordinator: @unchecked Sendable {
 
     private func readGuestClipboard() -> DoryDesktopClipboardPayload? {
         for mimeType in ["image/png", "text/plain;charset=utf-8", "text/plain"] {
+            guard direction(for: mimeType).allowsGuestToHost else { continue }
             do {
                 let result = try execute(
                     ["/usr/lib/dory/clipboard", "get", mimeType],
@@ -282,6 +326,14 @@ public final class DoryDesktopClipboardCoordinator: @unchecked Sendable {
             }
         }
         return nil
+    }
+
+    private func allowsHostToGuest(_ payload: DoryDesktopClipboardPayload) -> Bool {
+        direction(for: payload.mimeType).allowsHostToGuest
+    }
+
+    private func direction(for mimeType: String) -> DoryVMClipboardDirection {
+        mimeType == "image/png" ? policy.image : policy.text
     }
 
     @MainActor

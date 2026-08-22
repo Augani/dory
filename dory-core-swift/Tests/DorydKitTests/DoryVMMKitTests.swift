@@ -103,6 +103,63 @@ final class DoryVMMKitTests: XCTestCase {
         XCTAssertEqual(pasteboard.string(forType: .string), "guest clipboard after copy")
     }
 
+    @MainActor
+    func testClipboardEnforcesPerContentDirectionsWithoutImageFallback() async throws {
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        pasteboard.clearContents()
+        pasteboard.setString("original host value", forType: .string)
+        let recorder = ClipboardWriteRecorder()
+        let coordinator = DoryDesktopClipboardCoordinator(
+            policy: DoryVMClipboardPolicy(
+                text: .guestToHost,
+                image: .off,
+                files: .off
+            ),
+            execute: { argv, _, _, _ in
+                if argv == ["/usr/bin/test", "-x", "/usr/lib/dory/clipboard"] {
+                    recorder.recordCapabilityProbe()
+                    return Self.execResult(exitCode: 0)
+                }
+                XCTAssertEqual(argv, [
+                    "/usr/lib/dory/clipboard", "get", "text/plain;charset=utf-8",
+                ])
+                return DoryExecResult(
+                    exitCode: 0,
+                    stdout: Data("text-only guest clipboard".utf8),
+                    stderr: Data(),
+                    timedOut: false,
+                    stdoutTruncated: false,
+                    stderrTruncated: false
+                )
+            },
+            sendShortcut: { _ in },
+            pasteboard: pasteboard,
+            startupRetryDelay: 0.01,
+            startupRetryLimit: 1,
+            log: { _ in }
+        )
+
+        coordinator.start()
+        coordinator.markGuestReady()
+        defer { coordinator.stop() }
+
+        let readyDeadline = ContinuousClock.now + .seconds(2)
+        while recorder.capabilityProbeCount == 0, ContinuousClock.now < readyDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        NotificationCenter.default.post(
+            name: NSApplication.didResignActiveNotification,
+            object: NSApplication.shared
+        )
+        let pullDeadline = ContinuousClock.now + .seconds(2)
+        while pasteboard.string(forType: .string) != "text-only guest clipboard",
+              ContinuousClock.now < pullDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(pasteboard.string(forType: .string), "text-only guest clipboard")
+    }
+
     private static func execResult(exitCode: Int32) -> DoryExecResult {
         DoryExecResult(
             exitCode: exitCode,
@@ -829,7 +886,8 @@ final class DoryVMMKitTests: XCTestCase {
             keyboard: true,
             pointer: false,
             directorySharing: false,
-            clipboard: false,
+            clipboard: true,
+            clipboardPolicy: .legacyDesktop(.hostToGuest),
             clockSynchronization: false,
             dynamicDisplay: true,
             gracefulShutdown: false
@@ -859,8 +917,32 @@ final class DoryVMMKitTests: XCTestCase {
         XCTAssertEqual(configuration.keyboards.count, 1)
         XCTAssertTrue(configuration.pointingDevices.isEmpty)
         XCTAssertEqual(configuration.audioDevices.count, 1)
-        XCTAssertTrue(configuration.consoleDevices.isEmpty)
+        let resolvedConsole = try XCTUnwrap(
+            configuration.consoleDevices.first as? VZVirtioConsoleDeviceConfiguration
+        )
+        let resolvedPort = try XCTUnwrap(resolvedConsole.ports[0])
+        let resolvedClipboard = try XCTUnwrap(
+            resolvedPort.attachment as? VZSpiceAgentPortAttachment
+        )
+        XCTAssertFalse(resolvedClipboard.sharesClipboard)
         XCTAssertTrue(configuration.directorySharingDevices.isEmpty)
+
+        var invalidClipboardDevices = devices
+        invalidClipboardDevices.clipboard = false
+        XCTAssertThrowsError(try DoryVZConfigurationBuilder.makeConfiguration(
+            spec: DoryVZMachineSpec(
+                machineID: "resolved-desktop",
+                stateDirectory: base,
+                kernelPath: kernel,
+                rootfsPath: rootfs,
+                memoryMB: 4096,
+                cpuCount: 4,
+                displayMode: .desktop,
+                resolvedGraphics: .hostAcceleratedDisplay,
+                resolvedDevices: invalidClipboardDevices
+            ),
+            serialOutput: nil
+        ))
 
         XCTAssertThrowsError(try DoryVZConfigurationBuilder.makeConfiguration(
             spec: DoryVZMachineSpec(

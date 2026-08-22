@@ -427,6 +427,18 @@ public enum DoryVZConfigurationBuilder {
                     "resolved directory-sharing contract does not match the launch shares"
                 )
             }
+            if let clipboardPolicy = devices.clipboardPolicy {
+                guard devices.clipboard == clipboardPolicy.isEnabled else {
+                    throw DoryVZMachineError.validation(
+                        "resolved clipboard device and directional policy disagree"
+                    )
+                }
+                guard clipboardPolicy.files == .off else {
+                    throw DoryVZMachineError.validation(
+                        "resolved clipboard file transfer is not implemented"
+                    )
+                }
+            }
             if spec.displayMode != .desktop,
                devices.display != nil || devices.audioInput || devices.audioOutput || devices.keyboard
                     || devices.pointer || devices.clipboard {
@@ -527,15 +539,19 @@ public enum DoryVZConfigurationBuilder {
             configuration.audioDevices = audioDevices
 
             if devices?.clipboard != false {
+                let clipboardPolicy = devices?.clipboardPolicy
+                    ?? DoryDesktopClipboardPolicy(
+                        environment: spec.environment
+                    ).virtualMachinePolicy
                 let console = VZVirtioConsoleDeviceConfiguration()
                 let spiceAgent = VZVirtioConsolePortConfiguration()
                 spiceAgent.name = VZSpiceAgentPortAttachment.spiceAgentPortName
                 let spiceAttachment = VZSpiceAgentPortAttachment()
                 // The native SPICE bridge has only an all-or-nothing switch. Keep it for the efficient
                 // bidirectional default; directional policies use Dory's agent-backed bridge instead.
-                spiceAttachment.sharesClipboard = DoryDesktopClipboardPolicy(
-                    environment: spec.environment
-                ) == .bidirectional
+                spiceAttachment.sharesClipboard = clipboardPolicy.text == .bidirectional
+                    && clipboardPolicy.image == .bidirectional
+                    && clipboardPolicy.files == .off
                 spiceAgent.attachment = spiceAttachment
                 console.ports[0] = spiceAgent
                 configuration.consoleDevices = [console]

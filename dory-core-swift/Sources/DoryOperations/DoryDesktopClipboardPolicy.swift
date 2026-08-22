@@ -30,4 +30,9 @@ public enum DoryDesktopClipboardPolicy: String, CaseIterable, Sendable {
         case .bidirectional: "Bidirectional"
         }
     }
+
+    public var virtualMachinePolicy: DoryVMClipboardPolicy {
+        let direction = DoryVMClipboardDirection(rawValue: rawValue) ?? .off
+        return .legacyDesktop(direction)
+    }
 }

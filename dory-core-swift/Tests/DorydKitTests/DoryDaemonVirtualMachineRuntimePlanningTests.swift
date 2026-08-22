@@ -27,6 +27,8 @@ struct DoryDaemonVirtualMachineRuntimePlanningTests {
         #expect(devices.audioOutput == definition.audio.outputEnabled)
         #expect(devices.keyboard == definition.input.keyboardEnabled)
         #expect(devices.pointer == definition.input.pointerEnabled)
+        #expect(devices.clipboard == definition.clipboardPolicy.isEnabled)
+        #expect(devices.clipboardPolicy == definition.clipboardPolicy)
 
         definition.integrations.append(.removableUSBHotplug)
         #expect(DoryDaemonVirtualMachinePlanningCoordinator.devices(for: definition)

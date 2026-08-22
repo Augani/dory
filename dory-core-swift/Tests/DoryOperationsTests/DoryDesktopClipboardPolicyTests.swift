@@ -22,5 +22,7 @@ struct DoryDesktopClipboardPolicyTests {
         #expect(DoryDesktopClipboardPolicy(environment: [
             DoryDesktopClipboardPolicy.environmentKey: "invalid"
         ]) == .off)
+        #expect(DoryDesktopClipboardPolicy.hostToGuest.virtualMachinePolicy
+            == .legacyDesktop(.hostToGuest))
     }
 }

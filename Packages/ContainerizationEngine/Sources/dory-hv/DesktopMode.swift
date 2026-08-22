@@ -489,6 +489,46 @@ enum DesktopMode {
         }
     }
 
+    struct ClipboardPlan: Equatable {
+        var policy: DoryVMClipboardPolicy?
+
+        init(
+            resolvedDevices: DoryVirtualMachineDeviceCapabilityRequest?,
+            environment: [String: String],
+            genericGuest: Bool
+        ) throws {
+            guard let resolvedDevices else {
+                policy = genericGuest ? nil
+                    : DoryDesktopClipboardPolicy(
+                        environment: environment
+                    ).virtualMachinePolicy
+                return
+            }
+            guard resolvedDevices.clipboard else {
+                guard resolvedDevices.clipboardPolicy?.isEnabled != true else {
+                    throw VMError.bootFailure(
+                        "resolved clipboard device and directional policy disagree"
+                    )
+                }
+                policy = nil
+                return
+            }
+            let selected = resolvedDevices.clipboardPolicy
+                ?? DoryDesktopClipboardPolicy(environment: environment).virtualMachinePolicy
+            guard selected.isEnabled else {
+                throw VMError.bootFailure(
+                    "resolved clipboard device and directional policy disagree"
+                )
+            }
+            guard selected.files == .off else {
+                throw VMError.bootFailure(
+                    "resolved clipboard file transfer is not implemented"
+                )
+            }
+            policy = selected
+        }
+    }
+
     private struct ResolvedGraphics {
         var backend: DoryDesktopGraphicsBackend
         var renderer: VirglRenderer?
@@ -582,6 +622,11 @@ enum DesktopMode {
                     )
                 }
             }
+            let clipboardPlan = try ClipboardPlan(
+                resolvedDevices: configuration.resolvedDevices,
+                environment: configuration.environment,
+                genericGuest: configuration.genericGuest
+            )
             self.machine = try Machine(configuration: MachineConfiguration(
                 kernelPath: configuration.kernelPath,
                 initrdPath: configuration.initrdPath,
@@ -768,16 +813,13 @@ enum DesktopMode {
             } else {
                 self.sshAgentBridge = nil
             }
-            if configuration.resolvedDevices?.clipboard == false
-                || (configuration.resolvedDevices == nil && configuration.genericGuest) {
-                self.clipboard = nil
-            } else {
+            if let clipboardPolicy = clipboardPlan.policy {
                 let clipboardControl = DorydKit.AgentControl(configuration: .init(
                     directSocketPath: configuration.agentSocketPath
                 ))
                 let clipboardInput = self.input
                 self.clipboard = DoryDesktopClipboardCoordinator(
-                    policy: DoryDesktopClipboardPolicy(environment: configuration.environment),
+                    policy: clipboardPolicy,
                     execute: { argv, stdin, timeoutMs, outputLimitBytes in
                         try clipboardControl.execWithInput(
                             argv: argv,
@@ -798,6 +840,8 @@ enum DesktopMode {
                     },
                     log: Self.log
                 )
+            } else {
+                self.clipboard = nil
             }
 
             self.window = NSWindow(
