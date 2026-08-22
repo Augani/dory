@@ -620,6 +620,8 @@ struct VirtualMachineCapabilitiesTests {
             from: encoded
         )
 
+        #expect(decoded == descriptor)
+        #expect(Set([decoded]).contains(descriptor))
         #expect(decoded.graphicsQualificationEvidence
             == Self.qualifiedLinuxGraphics.auditEvidence)
         #expect(decoded.graphicsQualificationEvidence?.artifactSHA256

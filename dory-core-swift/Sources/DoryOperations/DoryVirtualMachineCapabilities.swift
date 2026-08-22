@@ -803,6 +803,54 @@ public struct DoryVirtualMachineCapabilityRequest: Codable, Sendable, Equatable,
         self.virtualHardwareABIVersion = virtualHardwareABIVersion
     }
 
+    public static func == (
+        lhs: DoryVirtualMachineCapabilityRequest,
+        rhs: DoryVirtualMachineCapabilityRequest
+    ) -> Bool {
+        guard equalGuest(lhs, rhs) else { return false }
+        guard equalBootMedia(lhs, rhs) else { return false }
+        guard equalBackend(lhs, rhs) else { return false }
+        guard equalGraphics(lhs, rhs) else { return false }
+        guard equalDevices(lhs, rhs) else { return false }
+        return equalVirtualHardwareABI(lhs, rhs)
+    }
+
+    // Keep each comparison in a separate frame. In unoptimized builds Swift otherwise retains
+    // temporaries for every nested enum/collection in this value at once; the resulting frame can
+    // exhaust the bounded stack used by Swift Testing's cooperative tasks.
+    @inline(never)
+    private static func equalGuest(_ lhs: borrowing Self, _ rhs: borrowing Self) -> Bool {
+        lhs.guest == rhs.guest
+    }
+
+    @inline(never)
+    private static func equalBootMedia(_ lhs: borrowing Self, _ rhs: borrowing Self) -> Bool {
+        lhs.bootMedia == rhs.bootMedia
+    }
+
+    @inline(never)
+    private static func equalBackend(_ lhs: borrowing Self, _ rhs: borrowing Self) -> Bool {
+        lhs.backend == rhs.backend
+    }
+
+    @inline(never)
+    private static func equalGraphics(_ lhs: borrowing Self, _ rhs: borrowing Self) -> Bool {
+        lhs.graphics == rhs.graphics
+    }
+
+    @inline(never)
+    private static func equalDevices(_ lhs: borrowing Self, _ rhs: borrowing Self) -> Bool {
+        lhs.devices == rhs.devices
+    }
+
+    @inline(never)
+    private static func equalVirtualHardwareABI(
+        _ lhs: borrowing Self,
+        _ rhs: borrowing Self
+    ) -> Bool {
+        lhs.virtualHardwareABIVersion == rhs.virtualHardwareABIVersion
+    }
+
     private enum CodingKeys: String, CodingKey {
         case guest
         case bootMedia
@@ -877,6 +925,82 @@ public struct DoryVirtualMachineCapabilityDescriptor: Codable, Sendable, Equatab
         self.mutableBootMediaProvenanceEvidence = mutableBootMediaProvenanceEvidence
         self.runtimeQualificationEvidence = runtimeQualificationEvidence
     }
+
+    public static func == (
+        lhs: DoryVirtualMachineCapabilityDescriptor,
+        rhs: DoryVirtualMachineCapabilityDescriptor
+    ) -> Bool {
+        guard equalSchemaVersion(lhs, rhs) else { return false }
+        guard equalEvaluatorVersion(lhs, rhs) else { return false }
+        guard equalRequest(lhs, rhs) else { return false }
+        guard equalAvailability(lhs, rhs) else { return false }
+        guard equalResolvedDevices(lhs, rhs) else { return false }
+        guard equalGraphicsQualificationEvidence(lhs, rhs) else { return false }
+        guard equalBootMediaInspectionEvidence(lhs, rhs) else { return false }
+        guard equalMutableBootMediaProvenanceEvidence(lhs, rhs) else { return false }
+        return equalRuntimeQualificationEvidence(lhs, rhs)
+    }
+
+    @inline(never)
+    private static func equalSchemaVersion(_ lhs: borrowing Self, _ rhs: borrowing Self) -> Bool {
+        lhs.schemaVersion == rhs.schemaVersion
+    }
+
+    @inline(never)
+    private static func equalEvaluatorVersion(
+        _ lhs: borrowing Self,
+        _ rhs: borrowing Self
+    ) -> Bool {
+        lhs.evaluatorVersion == rhs.evaluatorVersion
+    }
+
+    @inline(never)
+    private static func equalRequest(_ lhs: borrowing Self, _ rhs: borrowing Self) -> Bool {
+        lhs.request == rhs.request
+    }
+
+    @inline(never)
+    private static func equalAvailability(_ lhs: borrowing Self, _ rhs: borrowing Self) -> Bool {
+        lhs.availability == rhs.availability
+    }
+
+    @inline(never)
+    private static func equalResolvedDevices(_ lhs: borrowing Self, _ rhs: borrowing Self) -> Bool {
+        lhs.resolvedDevices == rhs.resolvedDevices
+    }
+
+    @inline(never)
+    private static func equalGraphicsQualificationEvidence(
+        _ lhs: borrowing Self,
+        _ rhs: borrowing Self
+    ) -> Bool {
+        lhs.graphicsQualificationEvidence == rhs.graphicsQualificationEvidence
+    }
+
+    @inline(never)
+    private static func equalBootMediaInspectionEvidence(
+        _ lhs: borrowing Self,
+        _ rhs: borrowing Self
+    ) -> Bool {
+        lhs.bootMediaInspectionEvidence == rhs.bootMediaInspectionEvidence
+    }
+
+    @inline(never)
+    private static func equalMutableBootMediaProvenanceEvidence(
+        _ lhs: borrowing Self,
+        _ rhs: borrowing Self
+    ) -> Bool {
+        lhs.mutableBootMediaProvenanceEvidence == rhs.mutableBootMediaProvenanceEvidence
+    }
+
+    @inline(never)
+    private static func equalRuntimeQualificationEvidence(
+        _ lhs: borrowing Self,
+        _ rhs: borrowing Self
+    ) -> Bool {
+        lhs.runtimeQualificationEvidence == rhs.runtimeQualificationEvidence
+    }
+
 }
 
 /// Host observations used by the Apple Silicon policy. No global process or framework probing is
