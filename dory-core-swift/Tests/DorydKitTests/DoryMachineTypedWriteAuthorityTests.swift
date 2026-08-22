@@ -18,6 +18,16 @@ struct DoryMachineTypedWriteAuthorityTests {
             runtimePreference: .set(.accelerated),
             graphicsPreference: .set(.virglVenus),
             networkMode: .set(.disconnected),
+            portForwards: .set([
+                DoryVMPortForward(id: "web", hostPort: 8_080, guestPort: 80),
+                DoryVMPortForward(
+                    id: "dns",
+                    transport: .udp,
+                    hostPort: 5_353,
+                    guestPort: 53,
+                    exposure: .lan
+                ),
+            ]),
             audioInputEnabled: .set(false),
             audioOutputEnabled: .set(true)
         )
@@ -97,6 +107,7 @@ struct DoryMachineTypedWriteAuthorityTests {
         #expect(snapshot.runtimePreference == .accelerated)
         #expect(snapshot.graphicsPreference == .virglVenus)
         #expect(snapshot.networkMode == .sharedNAT)
+        #expect(snapshot.portForwards.isEmpty)
         #expect(snapshot.audioConfiguration == DoryVMAudioConfiguration(
             inputEnabled: true,
             outputEnabled: true
@@ -120,12 +131,14 @@ struct DoryMachineTypedWriteAuthorityTests {
         )
         historical.removeValue(forKey: "networkMode")
         historical.removeValue(forKey: "audioConfiguration")
+        historical.removeValue(forKey: "portForwards")
         let decoded = try JSONDecoder().decode(
             DoryMachineTypedSettingsSnapshot.self,
             from: JSONSerialization.data(withJSONObject: historical)
         )
         #expect(decoded.networkMode == .sharedNAT)
         #expect(decoded.audioConfiguration == nil)
+        #expect(decoded.portForwards.isEmpty)
     }
 
     @Test("update clear is explicit and field scoped")
@@ -312,6 +325,71 @@ struct DoryMachineTypedWriteAuthorityTests {
             to: migrated.definition,
             displayMode: .desktop
         ).audio == DoryVMAudioConfiguration(inputEnabled: false, outputEnabled: true))
+
+        let forwards = DoryMachineTypedSettingsPatch(portForwards: .set([
+            DoryVMPortForward(id: "web", hostPort: 8_080, guestPort: 80),
+        ]))
+        #expect(throws: DoryMachineTypedWriteAuthorityError.unsupportedByLegacyRuntime(
+            "portForwards"
+        )) {
+            try forwards.applying(to: [:], displayMode: .desktop)
+        }
+        #expect(try forwards.applying(
+            to: migrated.definition,
+            displayMode: .desktop
+        ).portForwards == [
+            DoryVMPortForward(id: "web", hostPort: 8_080, guestPort: 80),
+        ])
+    }
+
+    @Test("port-forward wire shape is exact, bounded, and conflict free")
+    func exactPortForwardWireShape() throws {
+        let source = DoryMachineTypedSettingsPatch(portForwards: .set([
+            DoryVMPortForward(id: "web", hostPort: 8_080, guestPort: 80),
+            DoryVMPortForward(
+                id: "dns",
+                transport: .udp,
+                hostPort: 5_353,
+                guestPort: 53,
+                exposure: .lan
+            ),
+        ]))
+        let wire = source.xpcDictionary
+        #expect(try DoryMachineTypedSettingsPatch(
+            xpcDictionary: wire,
+            allowsClears: false
+        ) == source)
+
+        let malformed: [Any] = [
+            [["id": "web", "transport": "tcp", "hostPort": 8080, "guestPort": 80]],
+            [["id": "web", "transport": "sctp", "hostPort": 8080, "guestPort": 80,
+              "exposure": "loopback"]],
+            [["id": "web", "transport": "tcp", "hostPort": true, "guestPort": 80,
+              "exposure": "loopback"]],
+            [["id": "web", "transport": "tcp", "hostPort": 443, "guestPort": 80,
+              "exposure": "loopback"]],
+            [["id": "../web", "transport": "tcp", "hostPort": 8080, "guestPort": 80,
+              "exposure": "loopback"]],
+        ]
+        for value in malformed {
+            #expect(throws: (any Error).self) {
+                try DoryMachineTypedSettingsPatch(
+                    xpcDictionary: ["portForwards": value],
+                    allowsClears: false
+                )
+            }
+        }
+        #expect(throws: (any Error).self) {
+            try DoryMachineTypedSettingsPatch(
+                xpcDictionary: ["portForwards": [
+                    ["id": "one", "transport": "tcp", "hostPort": 8080,
+                     "guestPort": 80, "exposure": "loopback"],
+                    ["id": "two", "transport": "tcp", "hostPort": 8080,
+                     "guestPort": 81, "exposure": "loopback"],
+                ]],
+                allowsClears: false
+            )
+        }
     }
 
     @Test("clipboard wire shape is complete and exact")
@@ -398,6 +476,8 @@ struct DoryMachineTypedWriteAuthorityTests {
             "--runtime", "compatible",
             "--graphics", "software",
             "--network", "disconnected",
+            "--forward", "web:tcp:8080:80:loopback",
+            "--forward", "dns:udp:5353:53:lan",
             "--audio-input", "off",
             "--audio-output", "on",
             "--env", "TOKEN=secret",
@@ -415,6 +495,16 @@ struct DoryMachineTypedWriteAuthorityTests {
         #expect(patch.runtimePreference == .set(.compatible))
         #expect(patch.graphicsPreference == .set(.software))
         #expect(patch.networkMode == .set(.disconnected))
+        #expect(patch.portForwards == .set([
+            DoryVMPortForward(id: "web", hostPort: 8_080, guestPort: 80),
+            DoryVMPortForward(
+                id: "dns",
+                transport: .udp,
+                hostPort: 5_353,
+                guestPort: 53,
+                exposure: .lan
+            ),
+        ]))
         #expect(patch.audioInputEnabled == .set(false))
         #expect(patch.audioOutputEnabled == .set(true))
         #expect(arguments == ["--memory-mb", "4096", "--env", "TOKEN=secret"])
@@ -442,6 +532,7 @@ struct DoryMachineTypedWriteAuthorityTests {
             "--clear-runtime",
             "--clear-graphics",
             "--clear-network",
+            "--clear-forwards",
             "--clear-audio",
         ]
         let patch = try DoryMachineTypedSettingsPatch.consumeCLIArguments(
@@ -457,6 +548,7 @@ struct DoryMachineTypedWriteAuthorityTests {
         #expect(patch.runtimePreference == .clear)
         #expect(patch.graphicsPreference == .clear)
         #expect(patch.networkMode == .clear)
+        #expect(patch.portForwards == .clear)
         #expect(patch.audioInputEnabled == .clear)
         #expect(patch.audioOutputEnabled == .clear)
 

@@ -18,6 +18,7 @@ struct NewMachineSheet: View {
     @State private var installerISOCheck: InstallerISOCheck = .none
     @State private var diskSizeGB = 64
     @State private var networkMode = DoryVMNetworkMode.sharedNAT
+    @State private var portForwardRows: [MachinePortForwardDraft] = []
     @State private var audioInputEnabled = true
     @State private var audioOutputEnabled = true
 
@@ -92,6 +93,11 @@ struct NewMachineSheet: View {
                         devEnvironmentSection
                         identitySection
                         networkBlock
+                        MachinePortForwardEditor(
+                            rows: $portForwardRows,
+                            networkMode: networkMode,
+                            accessibilityPrefix: "new-machine"
+                        )
                         audioBlock
                         optionsRow
                         advancedSection
@@ -201,6 +207,13 @@ struct NewMachineSheet: View {
         cpus = useCase.cpus
         memoryGB = useCase.memoryGB
         activeUseCaseID = useCase.id
+        portForwardRows = useCase.recipe?.ports.map {
+            MachinePortForwardDraft(
+                name: "port-\($0)",
+                hostPort: String($0),
+                guestPort: String($0)
+            )
+        } ?? []
         stage = .form
     }
 
@@ -808,6 +821,7 @@ struct NewMachineSheet: View {
             || store.machineBusy
             || !engineReady
             || mountsOutsideHome
+            || resolvedPortForwards == nil
     }
 
     private var mountsOutsideHome: Bool {
@@ -920,6 +934,7 @@ struct NewMachineSheet: View {
         guestUsername: String = "dory",
         guestUID: uid_t = getuid(),
         networkMode: DoryVMNetworkMode = .sharedNAT,
+        portForwards: [DoryVMPortForward] = [],
         audioInputEnabled: Bool = true,
         audioOutputEnabled: Bool = true
     ) -> MachineSettings {
@@ -942,13 +957,17 @@ struct NewMachineSheet: View {
                 runtimePreference: .automatic,
                 graphicsPreference: .automatic,
                 networkMode: networkMode,
+                portForwards: portForwards,
                 audioConfiguration: DoryVMAudioConfiguration(
                     inputEnabled: audioInputEnabled,
                     outputEnabled: audioOutputEnabled
                 )
             )
         } else {
-            typedSettings = DorydMachineTypedSettings(networkMode: networkMode)
+            typedSettings = DorydMachineTypedSettings(
+                networkMode: networkMode,
+                portForwards: portForwards
+            )
         }
         return MachineSettings(
             cpus: cpus,
@@ -994,6 +1013,7 @@ struct NewMachineSheet: View {
             desktopDistro: desktopDistro,
             guestUsername: normalizedGuestUsername,
             networkMode: networkMode,
+            portForwards: resolvedPortForwards ?? [],
             audioInputEnabled: audioInputEnabled,
             audioOutputEnabled: audioOutputEnabled
         )
@@ -1006,6 +1026,7 @@ struct NewMachineSheet: View {
             settings.env = [:]
             settings.virtualMachineSettings = DorydMachineTypedSettings(
                 networkMode: networkMode,
+                portForwards: resolvedPortForwards ?? [],
                 audioConfiguration: DoryVMAudioConfiguration(
                     inputEnabled: audioInputEnabled,
                     outputEnabled: audioOutputEnabled
@@ -1013,6 +1034,10 @@ struct NewMachineSheet: View {
             )
         }
         return settings
+    }
+
+    private var resolvedPortForwards: [DoryVMPortForward]? {
+        MachinePortForwardDraft.resolved(portForwardRows, networkMode: networkMode)
     }
 
     static func defaultName() -> String {

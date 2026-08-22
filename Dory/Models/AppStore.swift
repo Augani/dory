@@ -6677,7 +6677,7 @@ final class AppStore {
                 mounts: current?.shares.map(Self.mountPair(fromDoryd:)) ?? [],
                 env: current?.environment ?? [:],
                 virtualMachineSettings: current.map {
-                    DorydMachineTypedSettings(
+                    $0.typedSettings ?? DorydMachineTypedSettings(
                         legacyEnvironment: $0.environment,
                         displayMode: $0.displayMode
                     )

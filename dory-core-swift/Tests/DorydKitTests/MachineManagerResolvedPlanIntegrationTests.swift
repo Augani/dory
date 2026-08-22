@@ -902,12 +902,18 @@ struct MachineManagerResolvedPlanIntegrationTests {
                 desktopDisplayName: .set("Ubuntu"),
                 clipboardPolicy: .set(.legacyDesktop(.bidirectional)),
                 runtimePreference: .set(.accelerated),
-                graphicsPreference: .set(.virgl)
+                graphicsPreference: .set(.virgl),
+                portForwards: .set([
+                    DoryVMPortForward(id: "web", hostPort: 8_080, guestPort: 80),
+                ])
             )
         )
         #expect(created.environment.isEmpty)
         #expect(created.typedSettings?.guestIdentityIntent.account?.username == "developer")
         #expect(created.typedSettings?.runtimePreference == .accelerated)
+        #expect(created.typedSettings?.portForwards == [
+            DoryVMPortForward(id: "web", hostPort: 8_080, guestPort: 80),
+        ])
 
         let machineData = try Data(contentsOf: URL(
             fileURLWithPath: state + "/typed/machine.json"
@@ -926,6 +932,9 @@ struct MachineManagerResolvedPlanIntegrationTests {
         #expect(createdRecord.definition.boot.devices.first?.kind == .linuxKernel)
         #expect(created.typedSettings?.graphicsPreference == .virgl)
         #expect(createdRecord.definition.graphics.acceptableLevels == [.hostAcceleratedDisplay])
+        #expect(createdRecord.definition.portForwards == [
+            DoryVMPortForward(id: "web", hostPort: 8_080, guestPort: 80),
+        ])
         let snapshot = try manager.snapshot(id: "typed", snapshotID: "typed-baseline")
         #expect(snapshot.typedSettings == created.typedSettings)
 

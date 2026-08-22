@@ -1305,6 +1305,7 @@ private struct MachineEditSheet: View {
     @State private var runtimePreference = DoryDesktopVMMPreference.automatic
     @State private var graphicsPreference = DoryDesktopGraphicsPreference.automatic
     @State private var networkMode = DoryVMNetworkMode.sharedNAT
+    @State private var portForwardRows: [MachinePortForwardDraft] = []
     @State private var audioInputEnabled = true
     @State private var audioOutputEnabled = true
     @State private var originalAudioConfiguration: DoryVMAudioConfiguration?
@@ -1329,6 +1330,11 @@ private struct MachineEditSheet: View {
                     warning
                     machineTypeBlock
                     networkBlock
+                    MachinePortForwardEditor(
+                        rows: $portForwardRows,
+                        networkMode: networkMode,
+                        accessibilityPrefix: "edit-machine"
+                    )
                     audioBlock
                     runtimeBlock
                     clipboardBlock
@@ -1369,6 +1375,7 @@ private struct MachineEditSheet: View {
         runtimePreference = typedSettings.runtimePreference ?? .automatic
         graphicsPreference = typedSettings.graphicsPreference ?? .automatic
         networkMode = typedSettings.networkMode ?? .sharedNAT
+        portForwardRows = typedSettings.portForwards.map(MachinePortForwardDraft.init)
         originalAudioConfiguration = typedSettings.audioConfiguration
         audioInputEnabled = typedSettings.audioConfiguration?.inputEnabled ?? true
         audioOutputEnabled = typedSettings.audioConfiguration?.outputEnabled ?? true
@@ -1626,7 +1633,11 @@ private struct MachineEditSheet: View {
                 .background(p.accent.opacity(store.isMachineBusy(machine.name) ? 0.5 : 1), in: RoundedRectangle(cornerRadius: 8))
             }
             .buttonStyle(.plain)
-            .disabled(store.isMachineBusy(machine.name) || guestUsernameInvalid)
+            .disabled(
+                store.isMachineBusy(machine.name)
+                    || guestUsernameInvalid
+                    || resolvedPortForwards == nil
+            )
         }
         .padding(.horizontal, 18).padding(.vertical, 13)
     }
@@ -1703,6 +1714,7 @@ private struct MachineEditSheet: View {
             )
         }
         typedSettings.networkMode = networkMode
+        typedSettings.portForwards = resolvedPortForwards ?? []
         if displayMode == .desktop {
             typedSettings.audioConfiguration = MachineAudioSettingsPolicy.editedConfiguration(
                 existing: originalAudioConfiguration,
@@ -1761,6 +1773,10 @@ private struct MachineEditSheet: View {
 
     private var normalizedGuestUsername: String {
         guestUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var resolvedPortForwards: [DoryVMPortForward]? {
+        MachinePortForwardDraft.resolved(portForwardRows, networkMode: networkMode)
     }
 
     private var audioPolicyEditable: Bool {

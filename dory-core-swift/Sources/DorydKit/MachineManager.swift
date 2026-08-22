@@ -8879,6 +8879,7 @@ public final class MachineManager: @unchecked Sendable {
         expected.clipboardPolicy = definition.clipboardPolicy
         expected.sandboxPolicy = definition.sandboxPolicy
         expected.networkMode = definition.networkMode
+        expected.portForwards = definition.portForwards
         return expected == definition && definition.validate().isEmpty
     }
 

@@ -475,6 +475,7 @@ struct DorydClientTests {
         #expect(defaults.runtimePreference == .automatic)
         #expect(defaults.graphicsPreference == .automatic)
         #expect(defaults.networkMode == .sharedNAT)
+        #expect(defaults.portForwards.isEmpty)
 
         var disconnected = defaults
         disconnected.networkMode = .disconnected
@@ -484,6 +485,18 @@ struct DorydClientTests {
         ).xpcDictionary
         #expect(networkWire.count == 1)
         #expect(networkWire["networkMode"] as? String == "disconnected")
+
+        var forwarded = defaults
+        forwarded.portForwards = [
+            DoryVMPortForward(id: "web", hostPort: 8_080, guestPort: 80),
+        ]
+        let forwardWire = DorydMachineTypedSettingsPatch(
+            baseline: defaults,
+            desired: forwarded
+        ).xpcDictionary
+        let forwards = try #require(forwardWire["portForwards"] as? NSArray)
+        #expect(forwards.count == 1)
+        #expect((forwards[0] as? NSDictionary)?["id"] as? String == "web")
 
         #expect(defaults.audioConfiguration == DoryVMAudioConfiguration(
             inputEnabled: true,
@@ -674,7 +687,14 @@ struct DorydClientTests {
             ] as NSDictionary,
             "desktopRuntimePreference": "accelerated",
             "desktopGraphicsPreference": "virgl-venus",
-            "networkMode": "disconnected",
+            "networkMode": "shared-nat",
+            "portForwards": [[
+                "id": "web",
+                "transport": "tcp",
+                "hostPort": 8_080,
+                "guestPort": 80,
+                "exposure": "loopback",
+            ] as NSDictionary] as NSArray,
             "audio": [
                 "inputEnabled": false,
                 "outputEnabled": true,
@@ -693,7 +713,10 @@ struct DorydClientTests {
             == "ubuntu")
         #expect(status.typedSettings?.runtimePreference == .accelerated)
         #expect(status.typedSettings?.graphicsPreference == .virglVenus)
-        #expect(status.typedSettings?.networkMode == .disconnected)
+        #expect(status.typedSettings?.networkMode == .sharedNAT)
+        #expect(status.typedSettings?.portForwards == [
+            DoryVMPortForward(id: "web", hostPort: 8_080, guestPort: 80),
+        ])
         #expect(status.typedSettings?.audioConfiguration == DoryVMAudioConfiguration(
             inputEnabled: false,
             outputEnabled: true
@@ -707,6 +730,17 @@ struct DorydClientTests {
         for malformed: NSDictionary in [
             ["audio": ["inputEnabled": 0, "outputEnabled": true]],
             ["audio": ["inputEnabled": true]],
+            ["portForwards": [[
+                "id": "web", "transport": "tcp", "hostPort": 443,
+                "guestPort": 80, "exposure": "loopback",
+            ]]],
+            [
+                "networkMode": "disconnected",
+                "portForwards": [[
+                    "id": "web", "transport": "tcp", "hostPort": 8080,
+                    "guestPort": 80, "exposure": "loopback",
+                ]],
+            ],
             [
                 "audio": [
                     "inputEnabled": true,
@@ -1366,7 +1400,10 @@ struct DorydClientTests {
                 clipboardPolicy: .legacyDesktop(.bidirectional),
                 runtimePreference: .accelerated,
                 graphicsPreference: .virglVenus,
-                networkMode: .disconnected
+                networkMode: .sharedNAT,
+                portForwards: [
+                    DoryVMPortForward(id: "web", hostPort: 8_080, guestPort: 80),
+                ]
             )
         ))
         let startOperationID = UUID(uuidString: "01234567-89ab-4cde-8f01-23456789abcd")!
@@ -1525,6 +1562,10 @@ struct DorydClientTests {
             service.latestMachineCreateConfig?["shares"] as? [NSDictionary]
         )
         #expect(createShares.first?["authorizationBookmark"] as? Data == shareBookmark)
+        let createForwards = try #require(
+            service.latestMachineCreateConfig?["portForwards"] as? NSArray
+        )
+        #expect((createForwards.firstObject as? NSDictionary)?["hostPort"] as? Int == 8_080)
         #expect(createdMachine.state == "created")
         #expect(createdMachine.displayMode == .desktop)
         #expect(startedMachine.pid == 1234)

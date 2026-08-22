@@ -123,6 +123,7 @@ nonisolated struct DorydMachineTypedSettings: Sendable, Equatable, Hashable {
     var runtimePreference: DoryDesktopVMMPreference? = nil
     var graphicsPreference: DoryDesktopGraphicsPreference? = nil
     var networkMode: DoryVMNetworkMode? = nil
+    var portForwards: [DoryVMPortForward] = []
     var audioConfiguration: DoryVMAudioConfiguration? = nil
 
     init(
@@ -131,6 +132,7 @@ nonisolated struct DorydMachineTypedSettings: Sendable, Equatable, Hashable {
         runtimePreference: DoryDesktopVMMPreference? = nil,
         graphicsPreference: DoryDesktopGraphicsPreference? = nil,
         networkMode: DoryVMNetworkMode? = nil,
+        portForwards: [DoryVMPortForward] = [],
         audioConfiguration: DoryVMAudioConfiguration? = nil
     ) {
         self.guestIdentityIntent = guestIdentityIntent
@@ -138,6 +140,7 @@ nonisolated struct DorydMachineTypedSettings: Sendable, Equatable, Hashable {
         self.runtimePreference = runtimePreference
         self.graphicsPreference = graphicsPreference
         self.networkMode = networkMode
+        self.portForwards = portForwards
         self.audioConfiguration = audioConfiguration
     }
 
@@ -179,6 +182,7 @@ nonisolated struct DorydMachineTypedSettings: Sendable, Equatable, Hashable {
             desktop: desktop
         )
         networkMode = .sharedNAT
+        portForwards = []
         if displayMode == .desktop {
             let effectiveClipboard = DoryDesktopClipboardPolicy(
                 environment: legacyEnvironment
@@ -210,6 +214,7 @@ nonisolated struct DorydMachineTypedSettings: Sendable, Equatable, Hashable {
             && runtimePreference == nil
             && graphicsPreference == nil
             && networkMode == nil
+            && portForwards.isEmpty
             && audioConfiguration == nil
     }
 
@@ -253,6 +258,9 @@ nonisolated struct DorydMachineTypedSettings: Sendable, Equatable, Hashable {
         if let networkMode {
             result["networkMode"] = networkMode.rawValue
         }
+        if !portForwards.isEmpty {
+            result["portForwards"] = Self.xpcPortForwards(portForwards)
+        }
         if let audioConfiguration {
             result["audio"] = [
                 "inputEnabled": audioConfiguration.inputEnabled,
@@ -275,8 +283,21 @@ nonisolated struct DorydMachineTypedSettings: Sendable, Equatable, Hashable {
         hasher.combine(runtimePreference?.rawValue)
         hasher.combine(graphicsPreference?.rawValue)
         hasher.combine(networkMode?.rawValue)
+        hasher.combine(portForwards)
         hasher.combine(audioConfiguration?.inputEnabled)
         hasher.combine(audioConfiguration?.outputEnabled)
+    }
+
+    fileprivate static func xpcPortForwards(_ forwards: [DoryVMPortForward]) -> NSArray {
+        forwards.map { forward in
+            [
+                "id": forward.id,
+                "transport": forward.transport.rawValue,
+                "hostPort": NSNumber(value: forward.hostPort),
+                "guestPort": NSNumber(value: forward.guestPort),
+                "exposure": forward.exposure.rawValue,
+            ] as NSDictionary
+        } as NSArray
     }
 }
 
@@ -358,6 +379,11 @@ nonisolated struct DorydMachineTypedSettingsPatch: Sendable, Equatable {
             key: "networkMode",
             into: &result
         )
+        if baseline.portForwards != desired.portForwards {
+            result["portForwards"] = DorydMachineTypedSettings.xpcPortForwards(
+                desired.portForwards
+            )
+        }
         Self.encodeAudio(
             baseline.audioConfiguration,
             desired.audioConfiguration,
@@ -3428,7 +3454,8 @@ nonisolated final class DorydClient: @unchecked Sendable {
               let keys = value.allKeys as? [String],
               Set(keys).isSubset(of: [
                 "guestIdentityIntent", "clipboardPolicy",
-                "desktopRuntimePreference", "desktopGraphicsPreference", "networkMode", "audio",
+                "desktopRuntimePreference", "desktopGraphicsPreference", "networkMode",
+                "portForwards", "audio",
               ]), keys.count == Set(keys).count else {
             return nil
         }
@@ -3535,6 +3562,46 @@ nonisolated final class DorydClient: @unchecked Sendable {
                   let parsed = DoryVMNetworkMode(rawValue: raw) else { return nil }
             networkMode = parsed
         } else { networkMode = nil }
+        let portForwards: [DoryVMPortForward]
+        if let encoded = value["portForwards"] {
+            guard let rows = encoded as? NSArray,
+                  rows.count <= DoryVMPortForward.maximumCount else { return nil }
+            var parsed: [DoryVMPortForward] = []
+            var identifiers: Set<String> = []
+            var bindings: Set<String> = []
+            for rawRow in rows {
+                guard let row = rawRow as? NSDictionary,
+                      let rowKeys = row.allKeys as? [String],
+                      Set(rowKeys) == ["id", "transport", "hostPort", "guestPort", "exposure"],
+                      rowKeys.count == 5,
+                      let id = row["id"] as? String,
+                      isSafePortForwardIdentifier(id),
+                      identifiers.insert(id).inserted,
+                      let transportRaw = row["transport"] as? String,
+                      let transport = DoryVMPortForwardTransport(rawValue: transportRaw),
+                      let hostPort = machinePort(row["hostPort"]), hostPort >= 1_024,
+                      let guestPort = machinePort(row["guestPort"]), guestPort > 0,
+                      let exposureRaw = row["exposure"] as? String,
+                      let exposure = DoryVMPortForwardExposure(rawValue: exposureRaw),
+                      bindings.insert("\(transport.rawValue):\(hostPort)").inserted else {
+                    return nil
+                }
+                parsed.append(DoryVMPortForward(
+                    id: id,
+                    transport: transport,
+                    hostPort: hostPort,
+                    guestPort: guestPort,
+                    exposure: exposure
+                ))
+            }
+            portForwards = parsed
+        } else { portForwards = [] }
+        if !portForwards.isEmpty {
+            guard networkMode == .sharedNAT || networkMode == .isolated,
+                  !portForwards.contains(where: {
+                      $0.exposure == .lan && networkMode != .sharedNAT
+                  }) else { return nil }
+        }
         let audioConfiguration: DoryVMAudioConfiguration?
         if let encoded = value["audio"] {
             guard let raw = encoded as? NSDictionary,
@@ -3556,8 +3623,30 @@ nonisolated final class DorydClient: @unchecked Sendable {
             runtimePreference: runtime,
             graphicsPreference: graphics,
             networkMode: networkMode,
+            portForwards: portForwards,
             audioConfiguration: audioConfiguration
         ))
+    }
+
+    nonisolated private static func machinePort(_ raw: Any?) -> UInt16? {
+        guard let number = raw as? NSNumber,
+              CFGetTypeID(number) != CFBooleanGetTypeID(),
+              number.doubleValue.rounded(.towardZero) == number.doubleValue,
+              (1...Double(UInt16.max)).contains(number.doubleValue) else {
+            return nil
+        }
+        return UInt16(number.uint64Value)
+    }
+
+    nonisolated private static func isSafePortForwardIdentifier(_ value: String) -> Bool {
+        let bytes = Array(value.utf8)
+        func alphaNumeric(_ byte: UInt8) -> Bool {
+            (48...57).contains(byte) || (65...90).contains(byte) || (97...122).contains(byte)
+        }
+        guard (1...63).contains(bytes.count), alphaNumeric(bytes[0]) else { return false }
+        return bytes.dropFirst().allSatisfy {
+            alphaNumeric($0) || $0 == 95 || $0 == 46 || $0 == 45
+        }
     }
 
     private struct ParsedInstalledDesktopPayloadReceipt {

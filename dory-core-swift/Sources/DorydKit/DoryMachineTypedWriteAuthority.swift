@@ -39,6 +39,7 @@ public struct DoryMachineTypedSettingsSnapshot: Codable, Sendable, Equatable, Ha
     public var runtimePreference: DoryDesktopVMMPreference?
     public var graphicsPreference: DoryDesktopGraphicsPreference?
     public var networkMode: DoryVMNetworkMode
+    public var portForwards: [DoryVMPortForward]
     public var audioConfiguration: DoryVMAudioConfiguration?
 
     private enum CodingKeys: String, CodingKey {
@@ -47,6 +48,7 @@ public struct DoryMachineTypedSettingsSnapshot: Codable, Sendable, Equatable, Ha
         case runtimePreference
         case graphicsPreference
         case networkMode
+        case portForwards
         case audioConfiguration
     }
 
@@ -72,6 +74,10 @@ public struct DoryMachineTypedSettingsSnapshot: Codable, Sendable, Equatable, Ha
             DoryVMNetworkMode.self,
             forKey: .networkMode
         ) ?? .sharedNAT
+        portForwards = try container.decodeIfPresent(
+            [DoryVMPortForward].self,
+            forKey: .portForwards
+        ) ?? []
         audioConfiguration = try container.decodeIfPresent(
             DoryVMAudioConfiguration.self,
             forKey: .audioConfiguration
@@ -85,12 +91,14 @@ public struct DoryMachineTypedSettingsSnapshot: Codable, Sendable, Equatable, Ha
         try container.encodeIfPresent(runtimePreference, forKey: .runtimePreference)
         try container.encodeIfPresent(graphicsPreference, forKey: .graphicsPreference)
         try container.encode(networkMode, forKey: .networkMode)
+        try container.encode(portForwards, forKey: .portForwards)
         try container.encodeIfPresent(audioConfiguration, forKey: .audioConfiguration)
     }
 
     public init(definition: DoryVirtualMachineDefinition) throws {
         guestIdentityIntent = definition.guestIdentityIntent
         networkMode = definition.networkMode
+        portForwards = definition.portForwards
         guard definition.display.enabled else {
             clipboardPolicy = nil
             runtimePreference = nil
@@ -180,6 +188,7 @@ public struct DoryMachineTypedSettingsSnapshot: Codable, Sendable, Equatable, Ha
             desktop: desktop
         )
         networkMode = .sharedNAT
+        portForwards = []
         if displayMode == .desktop {
             let clipboard = DoryDesktopClipboardPolicy(environment: legacyEnvironment)
             clipboardPolicy = DoryVMClipboardDirection(rawValue: clipboard.rawValue)
@@ -221,6 +230,7 @@ public struct DoryMachineTypedSettingsSnapshot: Codable, Sendable, Equatable, Ha
             runtimePreference: update(runtimePreference),
             graphicsPreference: update(graphicsPreference),
             networkMode: .set(networkMode),
+            portForwards: .set(portForwards),
             audioInputEnabled: update(audioConfiguration?.inputEnabled),
             audioOutputEnabled: update(audioConfiguration?.outputEnabled)
         ).xpcDictionary
@@ -252,6 +262,7 @@ public struct DoryMachineTypedSettingsSnapshot: Codable, Sendable, Equatable, Ha
             runtimePreference: update(runtimePreference),
             graphicsPreference: update(graphicsPreference),
             networkMode: .set(networkMode),
+            portForwards: .set(portForwards),
             audioInputEnabled: update(audioConfiguration?.inputEnabled),
             audioOutputEnabled: update(audioConfiguration?.outputEnabled)
         )
@@ -270,6 +281,7 @@ public struct DoryMachineTypedSettingsSnapshot: Codable, Sendable, Equatable, Ha
         hasher.combine(runtimePreference?.rawValue)
         hasher.combine(graphicsPreference?.rawValue)
         hasher.combine(networkMode.rawValue)
+        hasher.combine(portForwards)
         hasher.combine(audioConfiguration?.inputEnabled)
         hasher.combine(audioConfiguration?.outputEnabled)
     }
@@ -303,6 +315,7 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
     public var runtimePreference: DoryMachineTypedSettingUpdate<DoryDesktopVMMPreference>
     public var graphicsPreference: DoryMachineTypedSettingUpdate<DoryDesktopGraphicsPreference>
     public var networkMode: DoryMachineTypedSettingUpdate<DoryVMNetworkMode>
+    public var portForwards: DoryMachineTypedSettingUpdate<[DoryVMPortForward]>
     public var audioInputEnabled: DoryMachineTypedSettingUpdate<Bool>
     public var audioOutputEnabled: DoryMachineTypedSettingUpdate<Bool>
 
@@ -317,6 +330,7 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
         runtimePreference: DoryMachineTypedSettingUpdate<DoryDesktopVMMPreference> = .unchanged,
         graphicsPreference: DoryMachineTypedSettingUpdate<DoryDesktopGraphicsPreference> = .unchanged,
         networkMode: DoryMachineTypedSettingUpdate<DoryVMNetworkMode> = .unchanged,
+        portForwards: DoryMachineTypedSettingUpdate<[DoryVMPortForward]> = .unchanged,
         audioInputEnabled: DoryMachineTypedSettingUpdate<Bool> = .unchanged,
         audioOutputEnabled: DoryMachineTypedSettingUpdate<Bool> = .unchanged
     ) {
@@ -330,6 +344,7 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
         self.runtimePreference = runtimePreference
         self.graphicsPreference = graphicsPreference
         self.networkMode = networkMode
+        self.portForwards = portForwards
         self.audioInputEnabled = audioInputEnabled
         self.audioOutputEnabled = audioOutputEnabled
     }
@@ -345,6 +360,7 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
             && !runtimePreference.isChanged
             && !graphicsPreference.isChanged
             && !networkMode.isChanged
+            && !portForwards.isChanged
             && !audioInputEnabled.isChanged
             && !audioOutputEnabled.isChanged
     }
@@ -416,6 +432,10 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
             }
             patch.networkMode = .set(mode)
         }
+        let rawForwards = try takeOptions("--forward", from: &arguments)
+        if !rawForwards.isEmpty {
+            patch.portForwards = .set(try rawForwards.map(parseCLIForward))
+        }
         if let raw = try takeOption("--audio-input", from: &arguments) {
             patch.audioInputEnabled = .set(try cliBoolean(raw, option: "--audio-input"))
         }
@@ -429,9 +449,11 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
         let clearsRuntime = takeFlag("--clear-runtime", from: &arguments)
         let clearsGraphics = takeFlag("--clear-graphics", from: &arguments)
         let clearsNetwork = takeFlag("--clear-network", from: &arguments)
+        let clearsPortForwards = takeFlag("--clear-forwards", from: &arguments)
         let clearsAudio = takeFlag("--clear-audio", from: &arguments)
         guard allowsClears || (!clearsAccount && !clearsDesktop && !clearsClipboard
-            && !clearsRuntime && !clearsGraphics && !clearsNetwork && !clearsAudio) else {
+            && !clearsRuntime && !clearsGraphics && !clearsNetwork
+            && !clearsPortForwards && !clearsAudio) else {
             throw DoryMachineTypedWriteAuthorityError.invalidField("clear options")
         }
         if clearsAccount {
@@ -481,6 +503,12 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
             }
             patch.networkMode = .clear
         }
+        if clearsPortForwards {
+            guard !patch.portForwards.isChanged else {
+                throw DoryMachineTypedWriteAuthorityError.invalidField("--clear-forwards")
+            }
+            patch.portForwards = .clear
+        }
         if clearsAudio {
             guard !patch.audioInputEnabled.isChanged,
                   !patch.audioOutputEnabled.isChanged else {
@@ -526,6 +554,12 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
             allowsClears: allowsClears,
             type: DoryVMNetworkMode.self
         )
+        if let rawPortForwards = dictionary["portForwards"] {
+            portForwards = try Self.decodePortForwards(
+                rawPortForwards,
+                allowsClears: allowsClears
+            )
+        }
         if let rawAudio = dictionary["audio"] {
             try decodeAudio(rawAudio, allowsClears: allowsClears)
         }
@@ -575,6 +609,14 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
             into: &result
         )
         Self.encodeEnum(networkMode, key: "networkMode", into: &result)
+        switch portForwards {
+        case .unchanged:
+            break
+        case .clear:
+            result["portForwards"] = NSNull()
+        case let .set(forwards):
+            result["portForwards"] = Self.xpcPortForwards(forwards)
+        }
         if audioInputEnabled.isChanged || audioOutputEnabled.isChanged {
             if case .clear = audioInputEnabled,
                case .clear = audioOutputEnabled {
@@ -654,6 +696,14 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
         case .set:
             throw DoryMachineTypedWriteAuthorityError.unsupportedByLegacyRuntime(
                 "networkMode"
+            )
+        }
+        switch portForwards {
+        case .unchanged, .clear, .set([]):
+            break
+        case .set:
+            throw DoryMachineTypedWriteAuthorityError.unsupportedByLegacyRuntime(
+                "portForwards"
             )
         }
         guard !audioInputEnabled.isChanged, !audioOutputEnabled.isChanged else {
@@ -738,6 +788,14 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
             definition.networkMode = .sharedNAT
         case let .set(mode):
             definition.networkMode = mode
+        }
+        switch portForwards {
+        case .unchanged:
+            break
+        case .clear:
+            definition.portForwards = []
+        case let .set(forwards):
+            definition.portForwards = forwards
         }
         if audioInputEnabled.isChanged || audioOutputEnabled.isChanged {
             var audio = definition.audio
@@ -923,6 +981,70 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
         )
     }
 
+    private static func decodePortForwards(
+        _ raw: Any,
+        allowsClears: Bool
+    ) throws -> DoryMachineTypedSettingUpdate<[DoryVMPortForward]> {
+        if raw is NSNull {
+            guard allowsClears else {
+                throw DoryMachineTypedWriteAuthorityError.invalidField("portForwards")
+            }
+            return .clear
+        }
+        let values: [Any]
+        if let array = raw as? [Any] {
+            values = array
+        } else if let array = raw as? NSArray {
+            values = array.map { $0 }
+        } else {
+            throw DoryMachineTypedWriteAuthorityError.invalidField("portForwards")
+        }
+        guard values.count <= DoryVMPortForward.maximumCount else {
+            throw DoryMachineTypedWriteAuthorityError.invalidField("portForwards")
+        }
+        var forwards: [DoryVMPortForward] = []
+        for (index, rawValue) in values.enumerated() {
+            let field = "portForwards[\(index)]"
+            guard let value = dictionary(rawValue),
+                  hasOnlyKeys(
+                    value,
+                    allowed: ["id", "transport", "hostPort", "guestPort", "exposure"]
+                  ),
+                  value.count == 5,
+                  let id = value["id"] as? String,
+                  isSafeForwardIdentifier(id),
+                  let transportRaw = value["transport"] as? String,
+                  let transport = DoryVMPortForwardTransport(rawValue: transportRaw),
+                  let hostPort = port(value["hostPort"]), hostPort >= 1_024,
+                  let guestPort = port(value["guestPort"]), guestPort > 0,
+                  let exposureRaw = value["exposure"] as? String,
+                  let exposure = DoryVMPortForwardExposure(rawValue: exposureRaw) else {
+                throw DoryMachineTypedWriteAuthorityError.invalidField(field)
+            }
+            forwards.append(DoryVMPortForward(
+                id: id,
+                transport: transport,
+                hostPort: hostPort,
+                guestPort: guestPort,
+                exposure: exposure
+            ))
+        }
+        try validatePortForwards(forwards)
+        return .set(forwards)
+    }
+
+    private static func xpcPortForwards(_ forwards: [DoryVMPortForward]) -> NSArray {
+        forwards.map { forward in
+            [
+                "id": forward.id,
+                "transport": forward.transport.rawValue,
+                "hostPort": NSNumber(value: forward.hostPort),
+                "guestPort": NSNumber(value: forward.guestPort),
+                "exposure": forward.exposure.rawValue,
+            ] as NSDictionary
+        } as NSArray
+    }
+
     private func validate(displayMode: DoryMachineDisplayMode) throws {
         if case let .set(value) = guestUsername,
            !DoryVMGuestAccountIntent.isValidUsername(value) {
@@ -987,6 +1109,54 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
            displayMode != .desktop {
             throw DoryMachineTypedWriteAuthorityError.unsupportedForDisplay("audio")
         }
+        if case let .set(forwards) = portForwards {
+            try Self.validatePortForwards(forwards)
+        }
+    }
+
+    private static func validatePortForwards(_ forwards: [DoryVMPortForward]) throws {
+        guard forwards.count <= DoryVMPortForward.maximumCount else {
+            throw DoryMachineTypedWriteAuthorityError.invalidField("portForwards")
+        }
+        var identifiers: Set<String> = []
+        var bindings: Set<String> = []
+        for (index, forward) in forwards.enumerated() {
+            let field = "portForwards[\(index)]"
+            guard isSafeForwardIdentifier(forward.id), forward.hostPort >= 1_024,
+                  forward.guestPort > 0 else {
+                throw DoryMachineTypedWriteAuthorityError.invalidField(field)
+            }
+            guard identifiers.insert(forward.id).inserted else {
+                throw DoryMachineTypedWriteAuthorityError.invalidField("\(field).id")
+            }
+            let binding = "\(forward.transport.rawValue):\(forward.hostPort)"
+            guard bindings.insert(binding).inserted else {
+                throw DoryMachineTypedWriteAuthorityError.invalidField("\(field).hostPort")
+            }
+        }
+    }
+
+    private static func isSafeForwardIdentifier(_ value: String) -> Bool {
+        let bytes = Array(value.utf8)
+        guard (1...63).contains(bytes.count), isASCIIAlphaNumeric(bytes[0]) else {
+            return false
+        }
+        return bytes.dropFirst().allSatisfy {
+            isASCIIAlphaNumeric($0) || $0 == 95 || $0 == 46 || $0 == 45
+        }
+    }
+
+    private static func isASCIIAlphaNumeric(_ byte: UInt8) -> Bool {
+        (48...57).contains(byte) || (65...90).contains(byte) || (97...122).contains(byte)
+    }
+
+    private static func port(_ raw: Any?) -> UInt16? {
+        guard !(raw is Bool), let number = raw as? NSNumber,
+              number.doubleValue.rounded(.towardZero) == number.doubleValue,
+              (1...Double(UInt16.max)).contains(number.doubleValue) else {
+            return nil
+        }
+        return UInt16(number.uint64Value)
     }
 
     private static func dictionary(_ raw: Any) -> NSDictionary? {
@@ -1145,6 +1315,36 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
         let value = arguments[index + 1]
         arguments.removeSubrange(index...(index + 1))
         return value
+    }
+
+    private static func takeOptions(
+        _ name: String,
+        from arguments: inout [String]
+    ) throws -> [String] {
+        var values: [String] = []
+        while let value = try takeOption(name, from: &arguments) {
+            values.append(value)
+        }
+        return values
+    }
+
+    private static func parseCLIForward(_ raw: String) throws -> DoryVMPortForward {
+        let components = raw.split(separator: ":", omittingEmptySubsequences: false).map(String.init)
+        guard components.count == 5,
+              isSafeForwardIdentifier(components[0]),
+              let transport = DoryVMPortForwardTransport(rawValue: components[1]),
+              let hostPort = UInt16(components[2]), hostPort >= 1_024,
+              let guestPort = UInt16(components[3]), guestPort > 0,
+              let exposure = DoryVMPortForwardExposure(rawValue: components[4]) else {
+            throw DoryMachineTypedWriteAuthorityError.invalidField("--forward")
+        }
+        return DoryVMPortForward(
+            id: components[0],
+            transport: transport,
+            hostPort: hostPort,
+            guestPort: guestPort,
+            exposure: exposure
+        )
     }
 
     private static func cliBoolean(_ raw: String, option: String) throws -> Bool {

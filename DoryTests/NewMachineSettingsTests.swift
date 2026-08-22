@@ -4,6 +4,39 @@ import Testing
 @testable import Dory
 
 struct NewMachineSettingsTests {
+    @Test func portForwardDraftsRequireExactConflictFreeBindings() throws {
+        let rows = [
+            MachinePortForwardDraft(
+                name: "web",
+                hostPort: "8080",
+                guestPort: "80"
+            ),
+            MachinePortForwardDraft(
+                name: "dns",
+                transport: .udp,
+                hostPort: "5353",
+                guestPort: "53",
+                exposure: .lan
+            ),
+        ]
+        let resolved = try #require(
+            MachinePortForwardDraft.resolved(rows, networkMode: .sharedNAT)
+        )
+        #expect(resolved.map(\.id) == ["web", "dns"])
+        #expect(resolved[1].transport == .udp)
+        #expect(MachinePortForwardDraft.resolved(rows, networkMode: .isolated) == nil)
+
+        var duplicate = rows
+        duplicate[1].transport = .tcp
+        duplicate[1].hostPort = "8080"
+        duplicate[1].exposure = .loopback
+        #expect(MachinePortForwardDraft.resolved(duplicate, networkMode: .sharedNAT) == nil)
+
+        var privileged = rows
+        privileged[0].hostPort = "443"
+        #expect(MachinePortForwardDraft.resolved(privileged, networkMode: .sharedNAT) == nil)
+    }
+
     @Test func desktopDefaultsScaleForBrowserWorkloadsWithoutConsumingTheHost() {
         let eightGB = NewMachineSheet.recommendedDesktopResources(
             activeProcessorCount: 8,
@@ -35,7 +68,10 @@ struct NewMachineSettingsTests {
     @Test func collectsResourcesRegardlessOfDisclosure() {
         let s = NewMachineSheet.buildSettings(cpus: 4, memoryGB: 8,
             mounts: [MountPair(host: "/Users/u/p", guest: "/Users/u/p")],
-            address: "192.168.215.40")
+            address: "192.168.215.40",
+            portForwards: [
+                DoryVMPortForward(id: "web", hostPort: 8_080, guestPort: 80),
+            ])
         #expect(s.cpus == 4)
         #expect(s.memoryMB == 8 * 1024)
         #expect(s.mounts.count == 1)
@@ -50,6 +86,9 @@ struct NewMachineSettingsTests {
         #expect(s.virtualMachineSettings?.runtimePreference == .automatic)
         #expect(s.virtualMachineSettings?.graphicsPreference == .automatic)
         #expect(s.virtualMachineSettings?.networkMode == .sharedNAT)
+        #expect(s.virtualMachineSettings?.portForwards == [
+            DoryVMPortForward(id: "web", hostPort: 8_080, guestPort: 80),
+        ])
         #expect(s.virtualMachineSettings?.audioConfiguration == DoryVMAudioConfiguration(
             inputEnabled: true,
             outputEnabled: true
