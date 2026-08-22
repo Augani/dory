@@ -1,4 +1,27 @@
 import Foundation
+import Synchronization
+
+public struct VirtioMMIOTransportStatistics: Equatable, Sendable {
+    public var queueNotifications: UInt64
+    public var queueStateChanges: UInt64
+    public var usedInterrupts: UInt64
+    public var configurationInterrupts: UInt64
+    public var deviceResets: UInt64
+
+    public init(
+        queueNotifications: UInt64,
+        queueStateChanges: UInt64,
+        usedInterrupts: UInt64,
+        configurationInterrupts: UInt64,
+        deviceResets: UInt64
+    ) {
+        self.queueNotifications = queueNotifications
+        self.queueStateChanges = queueStateChanges
+        self.usedInterrupts = usedInterrupts
+        self.configurationInterrupts = configurationInterrupts
+        self.deviceResets = deviceResets
+    }
+}
 
 /// Defines which layer serializes queue notifications with device lifecycle changes.
 public enum VirtioKickSynchronization: Equatable, Sendable {
@@ -76,6 +99,11 @@ public final class VirtioMMIOTransport: MMIODevice {
     private let interruptLock = NSLock()  // device backends may complete buffers off the vCPU thread
     private let registerLock = NSRecursiveLock()  // SMP: register access and kicks arrive from any vCPU thread
     private var pendingQueueLayout: [(descriptor: UInt64, avail: UInt64, used: UInt64, count: UInt16)]
+    private let queueNotificationCount = Atomic<UInt64>(0)
+    private let queueStateChangeCount = Atomic<UInt64>(0)
+    private let usedInterruptCount = Atomic<UInt64>(0)
+    private let configurationInterruptCount = Atomic<UInt64>(0)
+    private let deviceResetCount = Atomic<UInt64>(0)
 
     private static let magic: UInt64 = 0x7472_6976  // "virt"
     private static let vendor: UInt64 = 0x792D_726F_64  // "dor-y"
@@ -97,6 +125,7 @@ public final class VirtioMMIOTransport: MMIODevice {
 
     /// Signals a used-buffer interrupt to the guest.
     public func notifyUsed() {
+        usedInterruptCount.wrappingAdd(1, ordering: .relaxed)
         interruptLock.lock()
         interruptStatus |= 1
         interruptLock.unlock()
@@ -107,6 +136,7 @@ public final class VirtioMMIOTransport: MMIODevice {
     /// this from a used-ring interrupt through ISR bit 1 and use ConfigGeneration to take a
     /// coherent snapshot when the host changes multiple fields during one resize.
     public func notifyConfigChange() {
+        configurationInterruptCount.wrappingAdd(1, ordering: .relaxed)
         registerLock.lock()
         configGeneration &+= 1
         interruptLock.lock()
@@ -172,6 +202,7 @@ public final class VirtioMMIOTransport: MMIODevice {
             let shouldKick = queue >= 0 && queue < queues.count
             registerLock.unlock()
             if shouldKick {
+                queueNotificationCount.wrappingAdd(1, ordering: .relaxed)
                 backend.handleKick(queue: queue, transport: self)
             }
             return
@@ -195,6 +226,7 @@ public final class VirtioMMIOTransport: MMIODevice {
             }
         case 0x044:
             withSelectedQueue { index in
+                queueStateChangeCount.wrappingAdd(1, ordering: .relaxed)
                 let ready = value & 1 == 1
                 if ready {
                     let layout = pendingQueueLayout[index]
@@ -216,6 +248,7 @@ public final class VirtioMMIOTransport: MMIODevice {
         case 0x050:
             let queue = Int(value)
             if queue < queues.count {
+                queueNotificationCount.wrappingAdd(1, ordering: .relaxed)
                 backend.handleKick(queue: queue, transport: self)
             }
         case 0x064:
@@ -245,12 +278,23 @@ public final class VirtioMMIOTransport: MMIODevice {
     }
 
     private func resetDevice() {
+        deviceResetCount.wrappingAdd(1, ordering: .relaxed)
         backend.deviceReset(transport: self)
         for queue in queues { queue.reset() }
         pendingQueueLayout = Array(repeating: (0, 0, 0, 0), count: backend.queueCount)
         interruptStatus = 0
         negotiatedFeatures = 0
         driverFeatures = 0
+    }
+
+    public var statistics: VirtioMMIOTransportStatistics {
+        VirtioMMIOTransportStatistics(
+            queueNotifications: queueNotificationCount.load(ordering: .relaxed),
+            queueStateChanges: queueStateChangeCount.load(ordering: .relaxed),
+            usedInterrupts: usedInterruptCount.load(ordering: .relaxed),
+            configurationInterrupts: configurationInterruptCount.load(ordering: .relaxed),
+            deviceResets: deviceResetCount.load(ordering: .relaxed)
+        )
     }
 
     private func withSelectedQueue(_ body: (Int) -> Void) {

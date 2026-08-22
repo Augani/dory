@@ -529,6 +529,31 @@ import Testing
         func handleKick(queue: Int, transport: VirtioMMIOTransport) {}
     }
 
+    @Test func publishesMonotonicTransportTelemetryCounters() throws {
+        let memory = try GuestMemory(guestBase: GuestLayout.ramBase, size: 0x20_000)
+        let backend = Backend(sharedMemoryRegions: [])
+        let transport = VirtioMMIOTransport(
+            baseAddress: GuestLayout.virtioBase,
+            backend: backend,
+            memory: memory
+        ) {}
+
+        transport.write(offset: 0x030, value: 0, width: 4)
+        transport.write(offset: 0x044, value: 1, width: 4)
+        transport.write(offset: 0x050, value: 0, width: 4)
+        transport.notifyUsed()
+        transport.notifyConfigChange()
+        transport.write(offset: 0x070, value: 0, width: 4)
+
+        #expect(transport.statistics == VirtioMMIOTransportStatistics(
+            queueNotifications: 1,
+            queueStateChanges: 1,
+            usedInterrupts: 1,
+            configurationInterrupts: 1,
+            deviceResets: 1
+        ))
+    }
+
     private final class KickOverlapProbe: @unchecked Sendable {
         let entered = DispatchSemaphore(value: 0)
         let release = DispatchSemaphore(value: 0)

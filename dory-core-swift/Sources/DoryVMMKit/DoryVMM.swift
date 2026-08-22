@@ -1261,6 +1261,8 @@ public enum DoryVMMMain {
 
         let controlServer = try DoryVMMControlServer(
             machine: machine,
+            machineID: machineID,
+            operationID: operationID,
             localSocketPath: controlSocketPath,
             stateDirectory: stateDirectory
         )
@@ -2198,19 +2200,26 @@ final class DoryVZHostSSHAgentBridge: NSObject, VZVirtioSocketListenerDelegate, 
 
 private final class DoryVMMControlServer: @unchecked Sendable {
     private let machine: DoryVZMachine
+    private let machineID: String
+    private let operationID: String
     private let localSocketPath: String
     private let stateDirectory: String
     private let queue: DispatchQueue
     private let lock = NSLock()
     private var listenerFD: Int32 = -1
     private var running = false
+    private var telemetrySampleSequence: UInt64 = 0
 
     init(
         machine: DoryVZMachine,
+        machineID: String,
+        operationID: UUID,
         localSocketPath: String,
         stateDirectory: String
     ) throws {
         self.machine = machine
+        self.machineID = machineID
+        self.operationID = DoryOperationIdentity.canonical(operationID)
         self.localSocketPath = localSocketPath
         self.stateDirectory = URL(fileURLWithPath: stateDirectory).standardizedFileURL.path
         self.queue = DispatchQueue(label: "dev.dory.dory-vmm.control")
@@ -2328,6 +2337,22 @@ private final class DoryVMMControlServer: @unchecked Sendable {
 
     private func handle(request: VmmControlRequest) throws -> HandledControlResponse {
         switch request.command {
+        case "deviceTelemetry":
+            guard request.targetMB == nil,
+                  request.statePath == nil,
+                  request.lifecycleAction == nil,
+                  request.operationID == nil else {
+                return HandledControlResponse(response: VmmControlResponse(
+                    ok: false,
+                    message: "invalid VMM device telemetry request"
+                ))
+            }
+            return HandledControlResponse(
+                response: VmmControlResponse(
+                    ok: true,
+                    deviceTelemetry: deviceTelemetrySnapshot()
+                )
+            )
         case "setBalloonTarget":
             guard let targetMB = request.targetMB, targetMB > 0 else {
                 return HandledControlResponse(
@@ -2384,6 +2409,46 @@ private final class DoryVMMControlServer: @unchecked Sendable {
                 )
             )
         }
+    }
+
+    private func deviceTelemetrySnapshot() -> DoryDeviceTelemetrySnapshot {
+        lock.lock()
+        telemetrySampleSequence &+= 1
+        let sequence = telemetrySampleSequence
+        lock.unlock()
+        let unavailableReason = "Virtualization.framework does not expose stable per-device counters"
+        let metrics = DoryDeviceTelemetryMetricKind.allCases.map { kind in
+            let unit: DoryDeviceTelemetryMetricUnit
+            switch kind {
+            case .transmittedBytes, .receivedBytes:
+                unit = .bytes
+            case .maximumStorageFlushLatencyNanoseconds:
+                unit = .nanoseconds
+            default:
+                unit = .count
+            }
+            return DoryDeviceTelemetryMetric.unavailable(
+                kind,
+                unit: unit,
+                reason: unavailableReason
+            )
+        }
+        return DoryDeviceTelemetrySnapshot(
+            machineID: machineID,
+            operationID: operationID,
+            backend: .appleVirtualizationFramework,
+            sampleSequence: sequence,
+            sampledAtUnixMilliseconds: UInt64(Date().timeIntervalSince1970 * 1_000),
+            monotonicNanoseconds: DispatchTime.now().uptimeNanoseconds,
+            devices: [
+                DoryDeviceTelemetryDevice(
+                    id: "virtualization-framework",
+                    kind: .platform,
+                    health: .unavailable,
+                    metrics: metrics
+                ),
+            ]
+        )
     }
 
     private func lifecycleReceipt(

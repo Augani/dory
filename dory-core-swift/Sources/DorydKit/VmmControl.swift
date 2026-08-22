@@ -65,19 +65,47 @@ public struct VmmControlResponse: Sendable, Equatable, Codable {
     public var targetMB: UInt64?
     public var lifecycleAction: DoryLifecycleReceiptAction?
     public var operationID: String?
+    public var deviceTelemetry: DoryDeviceTelemetrySnapshot?
 
     public init(
         ok: Bool,
         message: String = "",
         targetMB: UInt64? = nil,
         lifecycleAction: DoryLifecycleReceiptAction? = nil,
-        operationID: String? = nil
+        operationID: String? = nil,
+        deviceTelemetry: DoryDeviceTelemetrySnapshot? = nil
     ) {
         self.ok = ok
         self.message = message
         self.targetMB = targetMB
         self.lifecycleAction = lifecycleAction
         self.operationID = operationID
+        self.deviceTelemetry = deviceTelemetry
+    }
+}
+
+public protocol MachineDeviceTelemetryControlling: Sendable {
+    func snapshot(socketPath: String) throws -> DoryDeviceTelemetrySnapshot
+}
+
+public struct UnixMachineDeviceTelemetryController: MachineDeviceTelemetryControlling {
+    public init() {}
+
+    public func snapshot(socketPath: String) throws -> DoryDeviceTelemetrySnapshot {
+        let response = try VmmControlClient.send(
+            socketPath: socketPath,
+            request: VmmControlRequest(command: "deviceTelemetry")
+        )
+        guard response.ok,
+              let snapshot = response.deviceTelemetry,
+              snapshot.isValid else {
+            throw VmmControlError.rejected(
+                response.message.isEmpty
+                    ? "VMM helper returned invalid device telemetry"
+                    : response.message
+            )
+        }
+        return snapshot
     }
 }
 
@@ -339,9 +367,9 @@ private func readAll(from fd: Int32) throws -> Data {
     }
 }
 
-/// Raw-HV helper-side receipt endpoint. Unlike the VZ control server it never mutates VM state;
-/// it proves that the exact operation identity reached the live helper immediately around the
-/// daemon-owned signal transition.
+/// Raw-HV helper-side control endpoint. Lifecycle requests never mutate VM state here; they prove
+/// that the exact operation identity reached the live helper around the daemon-owned signal
+/// transition. Telemetry requests return a bounded snapshot supplied by the live device graph.
 public final class VmmLifecycleReceiptServer: @unchecked Sendable {
     private let socketPath: String
     private let queue = DispatchQueue(label: "dev.dory.helper-lifecycle-receipt")
@@ -349,9 +377,14 @@ public final class VmmLifecycleReceiptServer: @unchecked Sendable {
     private var listenerFD: Int32 = -1
     private var running = false
     private var boundIdentity: (device: dev_t, inode: ino_t)?
+    private let deviceTelemetryProvider: (@Sendable () throws -> DoryDeviceTelemetrySnapshot)?
 
-    public init(socketPath: String) {
+    public init(
+        socketPath: String,
+        deviceTelemetryProvider: (@Sendable () throws -> DoryDeviceTelemetrySnapshot)? = nil
+    ) {
         self.socketPath = socketPath
+        self.deviceTelemetryProvider = deviceTelemetryProvider
     }
 
     public func start() throws {
@@ -435,6 +468,26 @@ public final class VmmLifecycleReceiptServer: @unchecked Sendable {
             try setSocketTimeouts(fd: clientFD, seconds: 5)
             let data = try readAll(from: clientFD)
             let request = try JSONDecoder().decode(VmmControlRequest.self, from: data)
+            if request.command == "deviceTelemetry" {
+                guard request.targetMB == nil,
+                      request.statePath == nil,
+                      request.lifecycleAction == nil,
+                      request.operationID == nil else {
+                    throw VmmControlError.rejected("invalid helper device telemetry request")
+                }
+                guard let deviceTelemetryProvider else {
+                    throw VmmControlError.rejected("helper device telemetry is unavailable")
+                }
+                let snapshot = try deviceTelemetryProvider()
+                guard snapshot.isValid else {
+                    throw VmmControlError.rejected("helper produced invalid device telemetry")
+                }
+                response = VmmControlResponse(ok: true, deviceTelemetry: snapshot)
+                if let encoded = try? JSONEncoder().encode(response) {
+                    try? writeAll(encoded, to: clientFD)
+                }
+                return
+            }
             guard request.command == "acknowledgeLifecycle",
                   let action = request.lifecycleAction,
                   let operationID = request.operationID,

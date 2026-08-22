@@ -7,6 +7,140 @@ import DorydKit
 import DoryVMMKit
 import Foundation
 
+private final class RawDeviceTelemetryRegistry: @unchecked Sendable {
+    private struct Entry {
+        var id: String
+        var kind: DoryDeviceTelemetryKind
+        var transport: VirtioMMIOTransport
+        var network: VirtioNet?
+        var unavailableMetrics: [(DoryDeviceTelemetryMetricKind, DoryDeviceTelemetryMetricUnit)]
+    }
+
+    private let machineID: String
+    private let operationID: String
+    private let lock = NSLock()
+    private var sampleSequence: UInt64 = 0
+    private var entries = [Entry]()
+
+    init(machineID: String, operationID: UUID) {
+        self.machineID = machineID
+        self.operationID = DoryOperationIdentity.canonical(operationID)
+    }
+
+    func register(slot: Int, backend: any VirtioDeviceBackend, transport: VirtioMMIOTransport) {
+        let kind: DoryDeviceTelemetryKind
+        let unavailable: [(DoryDeviceTelemetryMetricKind, DoryDeviceTelemetryMetricUnit)]
+        switch backend {
+        case is VirtioBlk:
+            kind = .storage
+            unavailable = [
+                (.storageFlushes, .count),
+                (.maximumStorageFlushLatencyNanoseconds, .nanoseconds),
+            ]
+        case is VirtioGPU:
+            kind = .graphics
+            unavailable = [
+                (.displayFrames, .count),
+                (.displayDrops, .count),
+                (.graphicsFences, .count),
+                (.graphicsDeviceLosses, .count),
+            ]
+        case is VirtioSound:
+            kind = .audio
+            unavailable = [(.audioDrops, .count)]
+        case is VirtioFS:
+            kind = .sharedDirectory
+            unavailable = [
+                (.shareInvalidations, .count),
+                (.shareInvalidationFailures, .count),
+            ]
+        case is VirtioNet, is VirtioDisconnectedNet:
+            kind = .network
+            unavailable = backend is VirtioNet ? [] : [
+                (.transmittedFrames, .count),
+                (.transmittedBytes, .bytes),
+                (.transmitDrops, .count),
+                (.receivedFrames, .count),
+                (.receivedBytes, .bytes),
+                (.receiveDeferred, .count),
+                (.receiveDrops, .count),
+                (.receiveTruncations, .count),
+            ]
+        case is VirtioBalloon:
+            kind = .balloon
+            unavailable = []
+        case is VirtioRng:
+            kind = .entropy
+            unavailable = []
+        case is VirtioInput:
+            kind = .input
+            unavailable = []
+        case is VirtioVsock:
+            kind = .socket
+            unavailable = []
+        default:
+            kind = .platform
+            unavailable = []
+        }
+        let entry = Entry(
+            id: "virtio-\(kind.rawValue)-\(slot)",
+            kind: kind,
+            transport: transport,
+            network: backend as? VirtioNet,
+            unavailableMetrics: unavailable
+        )
+        lock.withLock { entries.append(entry) }
+    }
+
+    func snapshot() -> DoryDeviceTelemetrySnapshot {
+        let captured: (UInt64, [Entry]) = lock.withLock {
+            sampleSequence &+= 1
+            return (sampleSequence, entries)
+        }
+        let unavailableReason = "raw-HV backend does not expose this counter yet"
+        let devices = captured.1.map { entry in
+            let transport = entry.transport.statistics
+            var metrics: [DoryDeviceTelemetryMetric] = [
+                .measured(.queueNotifications, value: transport.queueNotifications),
+                .measured(.queueStateChanges, value: transport.queueStateChanges),
+                .measured(.usedInterrupts, value: transport.usedInterrupts),
+                .measured(.configurationInterrupts, value: transport.configurationInterrupts),
+                .measured(.deviceResets, value: transport.deviceResets),
+            ]
+            if let network = entry.network?.statistics {
+                metrics.append(contentsOf: [
+                    .measured(.transmittedFrames, value: network.transmitPackets),
+                    .measured(.transmittedBytes, unit: .bytes, value: network.transmitBytes),
+                    .measured(.transmitDrops, value: network.transmitDrops),
+                    .measured(.receivedFrames, value: network.receivePackets),
+                    .measured(.receivedBytes, unit: .bytes, value: network.receiveBytes),
+                    .measured(.receiveDeferred, value: network.receiveDeferred),
+                    .measured(.receiveDrops, value: network.receiveDrops),
+                    .measured(.receiveTruncations, value: network.receiveTruncations),
+                ])
+            }
+            metrics.append(contentsOf: entry.unavailableMetrics.map {
+                .unavailable($0.0, unit: $0.1, reason: unavailableReason)
+            })
+            return DoryDeviceTelemetryDevice(
+                id: entry.id,
+                kind: entry.kind,
+                health: .healthy,
+                metrics: metrics
+            )
+        }
+        return DoryDeviceTelemetrySnapshot(
+            machineID: machineID,
+            operationID: operationID,
+            backend: .doryHypervisor,
+            sampleSequence: captured.0,
+            sampledAtUnixMilliseconds: UInt64(Date().timeIntervalSince1970 * 1_000),
+            monotonicNanoseconds: DispatchTime.now().uptimeNanoseconds,
+            devices: devices
+        )
+    }
+}
+
 enum DesktopMode {
     struct Configuration {
         var machineID: String
@@ -117,6 +251,7 @@ enum DesktopMode {
         private let sshAgentBridge: HostSSHAgentBridge?
         private let clipboard: DoryDesktopClipboardCoordinator?
         private let firstFrame: FirstFrameGate
+        private let deviceTelemetry: RawDeviceTelemetryRegistry
         private let lifecycleReceiptServer: VmmLifecycleReceiptServer
         private var signalSources = [DispatchSourceSignal]()
         private var stopError: Error?
@@ -124,8 +259,14 @@ enum DesktopMode {
 
         init(configuration: Configuration) throws {
             self.configuration = configuration
+            let deviceTelemetry = RawDeviceTelemetryRegistry(
+                machineID: configuration.machineID,
+                operationID: configuration.operationID
+            )
+            self.deviceTelemetry = deviceTelemetry
             self.lifecycleReceiptServer = VmmLifecycleReceiptServer(
-                socketPath: configuration.controlSocketPath
+                socketPath: configuration.controlSocketPath,
+                deviceTelemetryProvider: { deviceTelemetry.snapshot() }
             )
             try FileManager.default.createDirectory(
                 atPath: configuration.stateDirectory,
@@ -271,6 +412,7 @@ enum DesktopMode {
                 }
                 for (slot, backend) in backends.enumerated() {
                     let transport = Self.attachBackend(backend, to: machine, slot: slot)
+                    deviceTelemetry.register(slot: slot, backend: backend, transport: transport)
                     if backend === gpu, configuration.resolvedDevices?.dynamicDisplay != false {
                         display.onDrawableSizeChange = { [weak gpu, weak transport] width, height in
                             guard let gpu, let transport else { return }
