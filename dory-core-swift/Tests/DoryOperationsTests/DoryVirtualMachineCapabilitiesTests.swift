@@ -29,7 +29,10 @@ struct VirtualMachineCapabilitiesTests {
         #expect(first != other)
         #expect(first.isValid)
         #expect(first.id == "nic0")
-        #expect(first.maximumTransmissionUnit == 1_280)
+        #expect(DoryVirtualMachineNetworkInterfaceCapabilityRequest.minimumMTU == 1_280)
+        #expect(DoryVirtualMachineNetworkInterfaceCapabilityRequest
+            .vzFileHandleMinimumMTU == 1_500)
+        #expect(first.maximumTransmissionUnit == 1_500)
         #expect(first.macAddressOctets?.first.map { $0 & 0x03 } == 0x02)
         #expect(!DoryVirtualMachineNetworkInterfaceCapabilityRequest(
             macAddress: "01:00:00:00:00:00"
@@ -51,7 +54,7 @@ struct VirtualMachineCapabilitiesTests {
         let changedMTU = DoryVirtualMachineDeviceCapabilityRequest(
             networkInterface: .init(
                 macAddress: "02:00:00:00:00:02",
-                maximumTransmissionUnit: 1_500
+                maximumTransmissionUnit: 1_280
             )
         )
 
@@ -122,7 +125,7 @@ struct VirtualMachineCapabilitiesTests {
             media: .installedLinuxBootBundle,
             source: .userProvided,
             backend: .doryHypervisor,
-            graphics: .hostAcceleratedDisplay,
+            graphics: .software,
             host: installedHost,
             mediaArtifactSHA256: Self.guestArtifactSHA256,
             devices: devices
@@ -144,7 +147,7 @@ struct VirtualMachineCapabilitiesTests {
             media: .installedLinuxBootBundle,
             source: .userProvided,
             backend: .doryHypervisor,
-            graphics: .hostAcceleratedDisplay,
+            graphics: .software,
             mediaArtifactSHA256: Self.guestArtifactSHA256,
             devices: devices
         )
@@ -173,6 +176,7 @@ struct VirtualMachineCapabilitiesTests {
             manifestFormatVersion: 1
         ),
         virtioGPUKernelAndDeviceSupportQualified: true,
+        producerFenceBeforeFlushQualified: true,
         venusVulkanGuestRuntimeQualified: true
     )
 
@@ -249,6 +253,7 @@ struct VirtualMachineCapabilitiesTests {
         )
         let noVirtioGPU = trustedQualification(virtioGPUQualified: false)
         let noVenus = trustedQualification(venusVulkanQualified: false)
+        let noProducerFence = trustedQualification(producerFenceQualified: false)
 
         #expect(missing.availability.reason?.code == .guestImageArtifactDigestUnavailable)
         #expect(invalidArtifactIdentity.availability.reason?.code
@@ -263,6 +268,9 @@ struct VirtualMachineCapabilitiesTests {
             == .linuxVirtioGPUKernelDeviceUnqualified)
         #expect(evaluateLinux3D(trustedQualification: noVenus).availability.reason?.code
             == .linuxVenusVulkanRuntimeUnqualified)
+        #expect(evaluateLinux3D(
+            trustedQualification: noProducerFence
+        ).availability.reason?.code == .linuxVirtioGPUProducerFenceUnqualified)
         #expect(evaluateLinux3D(
             trustedQualification: Self.qualifiedLinuxGraphics
         ).availability.isUsable)
@@ -338,6 +346,22 @@ struct VirtualMachineCapabilitiesTests {
         #expect(descriptor.availability.supportTier == .unsupported)
         #expect(descriptor.availability.state == .unavailable)
         #expect(descriptor.availability.reason?.code == .guestArchitectureRequiresEmulation)
+        #expect(!descriptor.availability.isUsable)
+    }
+
+    @Test("QEMU/HVF is not a Linux backend even for an ARM64 guest")
+    func linuxQEMUBackendIsNotImplemented() {
+        let descriptor = evaluate(
+            family: .linux,
+            media: .installerISO,
+            source: .userProvided,
+            backend: .qemuHypervisorFramework,
+            graphics: .software
+        )
+
+        #expect(descriptor.availability.supportTier == .unsupported)
+        #expect(descriptor.availability.state == .unavailable)
+        #expect(descriptor.availability.reason?.code == .backendDoesNotSupportGuest)
         #expect(!descriptor.availability.isUsable)
     }
 
@@ -683,11 +707,10 @@ struct VirtualMachineCapabilitiesTests {
         #expect(decoded.runtimeQualificationEvidence?.virtualHardwareABIVersion == 1)
     }
 
-    @Test("raw-HV graphical modes require digest-bound virtio-gpu qualification")
+    @Test("implemented raw-HV graphical modes require digest-bound virtio-gpu qualification")
     func everyRawGraphicalModeRequiresGuestDriverQualification() {
         for graphics in [
             DoryGraphicsAccelerationLevel.software,
-            .hostAcceleratedDisplay,
             .hardwareAccelerated3D,
         ] {
             let descriptor = evaluate(
@@ -727,7 +750,7 @@ struct VirtualMachineCapabilitiesTests {
         )
 
         #expect(software.availability.reason?.code == .linuxVirtioGPUKernelDeviceUnqualified)
-        #expect(hostDisplay.availability.isUsable)
+        #expect(hostDisplay.availability.reason?.code == .graphicsModeUnsupported)
     }
 
     @Test("all supplied media digests are validated before backend availability")
@@ -745,8 +768,8 @@ struct VirtualMachineCapabilitiesTests {
         #expect(!descriptor.availability.isUsable)
     }
 
-    @Test("structural ISO inspection never implies supported runtime compatibility")
-    func structuralISOWithoutRuntimeQualificationIsExperimental() {
+    @Test("structural ARM64 EFI ISO inspection admits the portable VZ baseline")
+    func structuralISOWithoutRuntimeQualificationUsesPortableBaseline() {
         let descriptor = evaluate(
             family: .linux,
             media: .installerISO,
@@ -756,12 +779,98 @@ struct VirtualMachineCapabilitiesTests {
             automaticallyQualifyRuntime: false
         )
 
-        #expect(descriptor.availability.supportTier == .experimental)
+        #expect(descriptor.availability.supportTier == .supported)
         #expect(descriptor.availability.state == .available)
         #expect(descriptor.availability.reason?.code == .runtimeQualificationUnavailable)
         #expect(descriptor.bootMediaInspectionEvidence?.artifactSHA256
             == Self.linuxISOArtifactSHA256)
         #expect(descriptor.runtimeQualificationEvidence == nil)
+    }
+
+    @Test("portable VZ baseline continues from the installed EFI disk")
+    func installedEFIDiskWithoutRuntimeQualificationUsesPortableBaseline() {
+        let descriptor = evaluate(
+            family: .linux,
+            media: .virtualDisk,
+            source: .userProvided,
+            backend: .appleVirtualizationFramework,
+            graphics: .software,
+            automaticallyQualifyRuntime: false
+        )
+
+        #expect(descriptor.availability.supportTier == .supported)
+        #expect(descriptor.availability.state == .available)
+        #expect(descriptor.availability.reason?.code == .runtimeQualificationUnavailable)
+        #expect(descriptor.mutableBootMediaProvenanceEvidence != nil)
+        #expect(descriptor.runtimeQualificationEvidence == nil)
+    }
+
+    @Test("portable admission cannot claim accelerated display without exact qualification")
+    func acceleratedPortableCandidateRequiresExactQualification() {
+        let descriptor = evaluate(
+            family: .linux,
+            media: .installerISO,
+            source: .userProvided,
+            backend: .appleVirtualizationFramework,
+            graphics: .hostAcceleratedDisplay,
+            automaticallyQualifyRuntime: false
+        )
+
+        #expect(!descriptor.availability.isUsable)
+        #expect(descriptor.availability.reason?.code == .runtimeQualificationUnavailable)
+    }
+
+    @Test("portable admission cannot claim managed media without exact qualification")
+    func managedPortableCandidateRequiresExactQualification() {
+        let descriptor = evaluate(
+            family: .linux,
+            media: .installerISO,
+            source: .vendorDownload,
+            backend: .appleVirtualizationFramework,
+            graphics: .software,
+            automaticallyQualifyRuntime: false
+        )
+
+        #expect(!descriptor.availability.isUsable)
+        #expect(descriptor.availability.reason?.code == .runtimeQualificationUnavailable)
+    }
+
+    @Test("an explicitly failed runtime qualification still blocks the portable baseline")
+    func failedRuntimeQualificationDoesNotBecomePortableBaseline() throws {
+        let request = DoryVirtualMachineCapabilityRequest(
+            guest: DoryGuestPlatform(family: .linux, architecture: .arm64),
+            bootMedia: DoryBootMedia(
+                kind: .installerISO,
+                source: .userProvided,
+                artifactSHA256: Self.linuxISOArtifactSHA256
+            ),
+            backend: .appleVirtualizationFramework,
+            graphics: .software,
+            devices: .minimumBootable,
+            virtualHardwareABIVersion: 1
+        )
+        let qualification = try #require(makeRuntimeQualification(
+            request: request,
+            host: Self.provisionedHost
+        ))
+        let descriptor = DoryAppleSiliconCapabilityEvaluator.evaluate(
+            request,
+            host: Self.provisionedHost,
+            trustedBootMediaInspection: makeBootMediaInspection(
+                family: .linux,
+                architecture: .arm64,
+                media: .installerISO,
+                artifactSHA256: Self.linuxISOArtifactSHA256
+            ),
+            trustedRuntimeQualification: DoryTrustedVirtualMachineRuntimeQualification(
+                auditEvidence: qualification.auditEvidence,
+                runtimeQualified: false
+            )
+        )
+
+        #expect(descriptor.availability.state == .unavailable)
+        #expect(descriptor.availability.reason?.code == .runtimeQualificationUnavailable)
+        #expect(!descriptor.availability.isUsable)
     }
 
     @Test("runtime qualification is exact to backend build and virtual-device ABI")
@@ -842,7 +951,7 @@ struct VirtualMachineCapabilitiesTests {
         #expect(digestOnly.availability.reason?.code
             == .mutableBootMediaProvenanceUnavailable)
         #expect(!digestOnly.availability.isUsable)
-        #expect(provenanceButUnqualified.availability.supportTier == .experimental)
+        #expect(provenanceButUnqualified.availability.supportTier == .supported)
         #expect(provenanceButUnqualified.availability.reason?.code
             == .runtimeQualificationUnavailable)
         #expect(provenanceButUnqualified.mutableBootMediaProvenanceEvidence?.provenance.revision
@@ -1008,7 +1117,7 @@ struct VirtualMachineCapabilitiesTests {
             media: .installedLinuxBootBundle,
             source: .userProvided,
             backend: .doryHypervisor,
-            graphics: .hostAcceleratedDisplay,
+            graphics: .software,
             mediaArtifactSHA256: Self.guestArtifactSHA256,
             devices: qualifiedRawDesktopDevices
         )
@@ -1017,7 +1126,7 @@ struct VirtualMachineCapabilitiesTests {
             media: .installedLinuxBootBundle,
             source: .userProvided,
             backend: .doryHypervisor,
-            graphics: .hostAcceleratedDisplay,
+            graphics: .software,
             mediaArtifactSHA256: Self.guestArtifactSHA256,
             devices: qualifiedRawDisconnectedDevices
         )
@@ -1026,7 +1135,7 @@ struct VirtualMachineCapabilitiesTests {
             media: .installedLinuxBootBundle,
             source: .userProvided,
             backend: .doryHypervisor,
-            graphics: .hostAcceleratedDisplay,
+            graphics: .software,
             mediaArtifactSHA256: Self.guestArtifactSHA256,
             devices: qualifiedRawHostOnlyDevices
         )
@@ -1035,7 +1144,7 @@ struct VirtualMachineCapabilitiesTests {
             media: .installedLinuxBootBundle,
             source: .userProvided,
             backend: .doryHypervisor,
-            graphics: .hostAcceleratedDisplay,
+            graphics: .software,
             mediaArtifactSHA256: Self.guestArtifactSHA256,
             devices: DoryVirtualMachineDeviceCapabilityRequest(audioOutput: true)
         )
@@ -1305,7 +1414,8 @@ struct VirtualMachineCapabilitiesTests {
         signingKeyID: String = "dory-release-2026",
         manifestFormatVersion: UInt16 = 1,
         virtioGPUQualified: Bool = true,
-        venusVulkanQualified: Bool = true
+        venusVulkanQualified: Bool = true,
+        producerFenceQualified: Bool = true
     ) -> DoryTrustedGuestImageGraphicsQualification {
         DoryTrustedGuestImageGraphicsQualification(
             auditEvidence: DorySignedArtifactQualificationEvidence(
@@ -1316,6 +1426,7 @@ struct VirtualMachineCapabilitiesTests {
                 manifestFormatVersion: manifestFormatVersion
             ),
             virtioGPUKernelAndDeviceSupportQualified: virtioGPUQualified,
+            producerFenceBeforeFlushQualified: producerFenceQualified,
             venusVulkanGuestRuntimeQualified: venusVulkanQualified
         )
     }

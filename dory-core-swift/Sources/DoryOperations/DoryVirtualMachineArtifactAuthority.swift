@@ -31,6 +31,9 @@ public enum DoryVirtualMachineArtifactAuthorityError:
 
 public enum DoryVirtualMachineArtifactIdentity: Codable, Sendable, Equatable, Hashable {
     case immutable(sha256: String, byteCount: UInt64)
+    /// Schema 1 stored a content digest in `sha256`. Schema 2 stores a digest of the exact
+    /// provenance and filesystem snapshot fields below; mutable guest disks are never treated as
+    /// immutable content-addressed artifacts.
     case mutable(
         provenance: DoryMutableBootMediaProvenanceReference,
         sha256: String,
@@ -47,7 +50,8 @@ public enum DoryVirtualMachineArtifactIdentity: Codable, Sendable, Equatable, Ha
 /// Daemon-private durable mapping. Host paths intentionally remain outside WorkspaceSpec and the
 /// public API, while the exact non-secret identity is copied into resolved launch evidence.
 public struct DoryVirtualMachineArtifactAuthorityRecord: Codable, Sendable, Equatable {
-    public static let schemaVersion: UInt16 = 1
+    public static let schemaVersion: UInt16 = 2
+    fileprivate static let oldestSupportedSchemaVersion: UInt16 = 1
 
     public var schemaVersion: UInt16
     public var reference: DoryVMResolverReference
@@ -125,15 +129,16 @@ public struct DoryVerifiedVirtualMachineArtifact: Sendable {
     }
 }
 
-/// Crash-safe daemon authority for path-hostile workspace references. Every artifact, including a
-/// mutable disk revision, is rehashed on resolution. Mutable disks require an explicit publication
-/// after any write; changed bytes are rejected instead of silently advancing provenance at start.
+/// Crash-safe daemon authority for path-hostile workspace references. Immutable artifacts are
+/// content-addressed and rehashed on resolution. Mutable disks are bound to an explicit provenance
+/// revision plus their private file identity and filesystem change snapshot; they require a new
+/// publication after any write instead of re-reading the entire guest disk at replan/start.
 ///
 /// A successful resolution is a point-in-time verification snapshot. A launcher must still close
 /// the path/exec TOCTOU window with descriptor-bound or immediate pre-spawn verification.
 public final class DoryVirtualMachineArtifactAuthority: @unchecked Sendable {
     public static let resolverID = "dory.artifact-authority"
-    public static let resolverVersion: UInt16 = 1
+    public static let resolverVersion: UInt16 = 2
 
     private static let maximumRecordBytes = 1 * 1_024 * 1_024
     private static let temporaryPrefix = ".artifact-authority."
@@ -225,7 +230,7 @@ public final class DoryVirtualMachineArtifactAuthority: @unchecked Sendable {
             let path = try Self.validatedPath(path)
             let file = try Self.inspect(
                 path,
-                hashContents: true,
+                hashContents: false,
                 progressInjector: inspectionProgressInjector
             )
             let current = try readIfPresent(reference)
@@ -243,7 +248,10 @@ public final class DoryVirtualMachineArtifactAuthority: @unchecked Sendable {
                 source: source,
                 identity: .mutable(
                     provenance: provenance,
-                    sha256: try Self.requiredDigest(file),
+                    sha256: Self.mutableAuthorityDigest(
+                        provenance: provenance,
+                        file: file
+                    ),
                     byteCount: file.byteCount,
                     device: file.device,
                     inode: file.inode,
@@ -282,11 +290,15 @@ public final class DoryVirtualMachineArtifactAuthority: @unchecked Sendable {
             case .mutable:
                 file = try Self.inspect(
                     record.path,
-                    hashContents: true,
+                    hashContents: false,
                     progressInjector: inspectionProgressInjector
                 )
             }
-            guard Self.file(file, matches: record.identity) else {
+            guard Self.file(
+                file,
+                matches: record.identity,
+                recordSchemaVersion: record.schemaVersion
+            ) else {
                 throw DoryVirtualMachineArtifactAuthorityError.artifactChanged
             }
             return DoryVerifiedVirtualMachineArtifact(record: record)
@@ -503,24 +515,54 @@ public final class DoryVirtualMachineArtifactAuthority: @unchecked Sendable {
 
     private static func file(
         _ file: InspectedFile,
-        matches identity: DoryVirtualMachineArtifactIdentity
+        matches identity: DoryVirtualMachineArtifactIdentity,
+        recordSchemaVersion: UInt16
     ) -> Bool {
         switch identity {
         case let .immutable(sha256, byteCount):
             return file.byteCount == byteCount && file.sha256 == sha256
         case let .mutable(
-            _, sha256, byteCount, device, inode, modifiedSeconds, modifiedNanoseconds,
+            provenance, sha256, byteCount, device, inode, modifiedSeconds, modifiedNanoseconds,
             changedSeconds, changedNanoseconds
         ):
-            return file.byteCount == byteCount
-                && file.sha256 == sha256
+            let metadataMatches = file.byteCount == byteCount
                 && file.device == device
                 && file.inode == inode
                 && file.modifiedSeconds == modifiedSeconds
                 && file.modifiedNanoseconds == modifiedNanoseconds
                 && file.changedSeconds == changedSeconds
                 && file.changedNanoseconds == changedNanoseconds
+            guard metadataMatches else { return false }
+            if recordSchemaVersion == DoryVirtualMachineArtifactAuthorityRecord
+                .oldestSupportedSchemaVersion {
+                // Schema 1's value is a legacy content digest. The same private inode/change-time
+                // binding is sufficient under the schema-2 mutable authority contract, and avoids
+                // one final whole-disk read before the next explicit publication upgrades it.
+                return true
+            }
+            return recordSchemaVersion
+                    == DoryVirtualMachineArtifactAuthorityRecord.schemaVersion
+                && sha256 == mutableAuthorityDigest(provenance: provenance, file: file)
         }
+    }
+
+    private static func mutableAuthorityDigest(
+        provenance: DoryMutableBootMediaProvenanceReference,
+        file: InspectedFile
+    ) -> String {
+        let fields = [
+            provenance.repositoryIdentity,
+            provenance.mediaIdentity,
+            String(provenance.revision),
+            String(file.byteCount),
+            String(file.device),
+            String(file.inode),
+            String(file.modifiedSeconds),
+            String(file.modifiedNanoseconds),
+            String(file.changedSeconds),
+            String(file.changedNanoseconds),
+        ]
+        return digest(Data(fields.joined(separator: "\0").utf8))
     }
 
     private static func requiredDigest(_ file: InspectedFile) throws -> String {
@@ -549,7 +591,10 @@ public final class DoryVirtualMachineArtifactAuthority: @unchecked Sendable {
 
     private func validate(_ record: DoryVirtualMachineArtifactAuthorityRecord) throws {
         try Self.validate(record.reference)
-        guard record.schemaVersion == DoryVirtualMachineArtifactAuthorityRecord.schemaVersion,
+        guard record.schemaVersion
+                >= DoryVirtualMachineArtifactAuthorityRecord.oldestSupportedSchemaVersion,
+              record.schemaVersion
+                <= DoryVirtualMachineArtifactAuthorityRecord.schemaVersion,
               record.authorityRevision > 0,
               (try? Self.validatedPath(record.path)) == record.path else {
             throw DoryVirtualMachineArtifactAuthorityError.invalidRecord

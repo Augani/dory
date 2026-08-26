@@ -310,6 +310,29 @@ final class DoryVMMKitTests: XCTestCase {
         XCTAssertEqual(arguments.bootMode, .virtualMachine)
     }
 
+    func testVZHostServicesMatchTheAdvertisedBootContract() {
+        let efiWorkspace = DoryVZHostServicePlan(
+            machineID: "workspace",
+            bootMode: .efi
+        )
+        XCTAssertEqual(efiWorkspace.proxies, [])
+        XCTAssertFalse(efiWorkspace.discoversDynamicDockerPorts)
+
+        let directKernelWorkspace = DoryVZHostServicePlan(
+            machineID: "workspace",
+            bootMode: .linuxKernel
+        )
+        XCTAssertEqual(directKernelWorkspace.proxies, [.agent, .shell])
+        XCTAssertFalse(directKernelWorkspace.discoversDynamicDockerPorts)
+
+        let dockerEngine = DoryVZHostServicePlan(
+            machineID: "docker",
+            bootMode: .linuxKernel
+        )
+        XCTAssertEqual(dockerEngine.proxies, [.docker, .agent, .shell])
+        XCTAssertTrue(dockerEngine.discoversDynamicDockerPorts)
+    }
+
     func testRejectsInvalidEnvironmentArgument() throws {
         XCTAssertThrowsError(try parseDoryVMMArguments([
             "--machine-id", "dev",
@@ -699,6 +722,108 @@ final class DoryVMMKitTests: XCTestCase {
         XCTAssertNil(network.attachment)
     }
 
+    func testGVProxyEffectiveMTUUsesVZFloorAndRejectsLowerExactAuthority() throws {
+        XCTAssertEqual(
+            try DoryVMMGVProxyNetwork.resolveEffectiveMTU(nil),
+            Int(DoryVirtualMachineNetworkInterfaceCapabilityRequest.vzFileHandleMinimumMTU)
+        )
+        let low = DoryVirtualMachineNetworkInterfaceCapabilityRequest(
+            macAddress: "02:11:22:33:44:55",
+            maximumTransmissionUnit: 1_280
+        )
+        XCTAssertThrowsError(try DoryVMMGVProxyNetwork.resolveEffectiveMTU(low)) { error in
+            XCTAssertTrue("\(error)".contains("at least 1500"))
+        }
+        let exact = DoryVirtualMachineNetworkInterfaceCapabilityRequest(
+            macAddress: "02:11:22:33:44:55",
+            maximumTransmissionUnit: 1_500
+        )
+        XCTAssertEqual(try DoryVMMGVProxyNetwork.resolveEffectiveMTU(exact), 1_500)
+    }
+
+    func testConnectedExactVZNetworkRequiresMatchingSupportedFileHandleMTU() throws {
+        let base = "/tmp/dory-vmm-connected-mtu-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let kernel = "\(base)/vmlinux"
+        let rootfs = "\(base)/rootfs.raw"
+        XCTAssertTrue(FileManager.default.createFile(
+            atPath: kernel,
+            contents: Data([0x7f, 0x45, 0x4c, 0x46])
+        ))
+        XCTAssertTrue(FileManager.default.createFile(atPath: rootfs, contents: nil))
+        XCTAssertEqual(truncate(rootfs, 1_024 * 1_024), 0)
+
+        var descriptors = [Int32](repeating: -1, count: 2)
+        XCTAssertEqual(socketpair(AF_UNIX, SOCK_DGRAM, 0, &descriptors), 0)
+        let guestNetworkHandle = FileHandle(
+            fileDescriptor: descriptors[0],
+            closeOnDealloc: true
+        )
+        let peerHandle = FileHandle(fileDescriptor: descriptors[1], closeOnDealloc: true)
+        defer {
+            try? guestNetworkHandle.close()
+            try? peerHandle.close()
+        }
+        func attachment(mtu: Int) -> VZFileHandleNetworkDeviceAttachment {
+            let attachment = VZFileHandleNetworkDeviceAttachment(
+                fileHandle: guestNetworkHandle
+            )
+            attachment.maximumTransmissionUnit = mtu
+            return attachment
+        }
+        func spec(mtu: UInt16) -> DoryVZMachineSpec {
+            DoryVZMachineSpec(
+                machineID: "resolved-connected-nic",
+                stateDirectory: base,
+                kernelPath: kernel,
+                rootfsPath: rootfs,
+                memoryMB: 2_048,
+                cpuCount: 2,
+                resolvedDevices: .init(
+                    networkAttachment: .sharedNAT,
+                    networkInterface: .init(
+                        macAddress: "02:11:22:33:44:55",
+                        maximumTransmissionUnit: mtu
+                    )
+                )
+            )
+        }
+
+        XCTAssertThrowsError(try DoryVZConfigurationBuilder.makeConfiguration(
+            spec: spec(mtu: 1_280),
+            serialOutput: nil,
+            networkAttachment: attachment(mtu: 1_280)
+        )) { error in
+            XCTAssertTrue("\(error)".contains("at least 1500"))
+        }
+        XCTAssertThrowsError(try DoryVZConfigurationBuilder.makeConfiguration(
+            spec: spec(mtu: 1_500),
+            serialOutput: nil,
+            networkAttachment: VZNATNetworkDeviceAttachment()
+        )) { error in
+            XCTAssertTrue("\(error)".contains("requires the gvproxy file-handle attachment"))
+        }
+        XCTAssertThrowsError(try DoryVZConfigurationBuilder.makeConfiguration(
+            spec: spec(mtu: 1_500),
+            serialOutput: nil,
+            networkAttachment: attachment(mtu: 1_600)
+        )) { error in
+            XCTAssertTrue("\(error)".contains("does not match"))
+        }
+
+        let exactAttachment = attachment(mtu: 1_500)
+        let configuration = try DoryVZConfigurationBuilder.makeConfiguration(
+            spec: spec(mtu: 1_500),
+            serialOutput: nil,
+            networkAttachment: exactAttachment
+        )
+        let network = try XCTUnwrap(
+            configuration.networkDevices.first as? VZVirtioNetworkDeviceConfiguration
+        )
+        XCTAssertTrue(network.attachment === exactAttachment)
+    }
+
     func testHostOnlyVZConfigurationRequiresFileHandleDatapath() throws {
         let base = "/tmp/dory-vmm-host-only-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
@@ -963,6 +1088,26 @@ final class DoryVMMKitTests: XCTestCase {
         )
         XCTAssertFalse(resolvedClipboard.sharesClipboard)
         XCTAssertTrue(configuration.directorySharingDevices.isEmpty)
+
+        let softwareConfiguration = try DoryVZConfigurationBuilder.makeConfiguration(
+            spec: DoryVZMachineSpec(
+                machineID: "resolved-software-desktop",
+                stateDirectory: base,
+                kernelPath: kernel,
+                rootfsPath: rootfs,
+                memoryMB: 4096,
+                cpuCount: 4,
+                displayMode: .desktop,
+                resolvedGraphics: .software,
+                resolvedDevices: devices
+            ),
+            serialOutput: nil
+        )
+        XCTAssertEqual(
+            softwareConfiguration.graphicsDevices.count,
+            1,
+            "software guest rendering still requires VZ's VirtIO display controller"
+        )
 
         var multipleDisplays = devices
         multipleDisplays.displays.append(DoryVirtualMachineDisplayCapabilityRequest(

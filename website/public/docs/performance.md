@@ -1,9 +1,11 @@
-# Dory performance evidence
+# Dory container-engine performance evidence
 
-Dory does not publish “faster than” screenshots. A comparative claim is qualified only when the
-matching GitHub Release contains `Dory-<version>-performance-evidence.zip` and that asset identifies
-the same source commit, notarized app, release manifest, SBOM tree, helpers, kernel, rootfs, guest
-agent, components, host, engine settings, immutable images, and raw samples.
+Dory does not publish “faster than” screenshots. A comparative container-engine claim is qualified
+only when the matching GitHub Release contains
+`Dory-<version>-container-engine-performance-evidence.zip` and that asset identifies the same
+source commit, notarized app, release manifest, SBOM tree, helpers, kernel, rootfs, guest agent,
+components, host, engine settings, immutable images, and raw samples. This evidence does not
+qualify a full Linux desktop VM; that requires the separate exact-media whole-VM contract.
 
 The current v0.4 result remains **unqualified until that physical campaign runs**. Missing evidence
 is visible; it is never converted into a marketing win.

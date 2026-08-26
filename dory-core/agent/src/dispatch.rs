@@ -36,6 +36,12 @@ pub fn agent_capabilities() -> Vec<agent::AgentCapability> {
     if crate::usb_vhci::available() {
         capabilities.push(("usb-vhci", 1));
     }
+    if crate::virtiofs_mount::available() {
+        capabilities.push((
+            crate::virtiofs_mount::CAPABILITY_ID,
+            crate::virtiofs_mount::CAPABILITY_VERSION,
+        ));
+    }
     capabilities.sort_unstable_by_key(|(id, _)| *id);
     capabilities
         .into_iter()
@@ -253,8 +259,14 @@ mod tests {
                 ];
                 if crate::snapshot_quiesce::available() {
                     expected_capabilities.push(("snapshot-quiesce", 2));
-                    expected_capabilities.sort_unstable();
                 }
+                if crate::usb_vhci::available() {
+                    expected_capabilities.push(("usb-vhci", 1));
+                }
+                if crate::virtiofs_mount::available() {
+                    expected_capabilities.push(("virtiofs-mount", 1));
+                }
+                expected_capabilities.sort_unstable();
                 assert_eq!(
                     i.capabilities
                         .iter()

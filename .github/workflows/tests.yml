@@ -31,6 +31,10 @@ jobs:
         run: |
           newest="$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)"
           echo "DEVELOPER_DIR=$newest/Contents/Developer" >> "$GITHUB_ENV"
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - name: Build shared Rust guest-control client
+        run: scripts/build-dory-ffi-xcframework.sh --if-needed
       - name: Dory CLI machine create
         run: .github/scripts/test-dory-machine-create.sh
       - name: Signed release metadata contract
@@ -38,7 +42,12 @@ jobs:
           python3 .github/scripts/test-release-metadata.py
           python3 .github/scripts/test-release-output-validator.py
           python3 .github/scripts/test-homebrew-install-gate.py
-          python3 .github/scripts/test-release-performance-gate.py
+          python3 .github/scripts/test-container-engine-performance-gate.py
+          python3 .github/scripts/test-linux-vm-performance-evidence.py
+          python3 -B scripts/test-linux-vm-performance-bundle.py -v
+          python3 .github/scripts/test-renderer-production-tuple.py
+          python3 -B .github/scripts/test-renderer-release-identity.py -v
+          scripts/test-build-renderer-components.sh
           python3 .github/scripts/test-source-preserving-lan-gate.py
           python3 .github/scripts/test-sparkle-install-relaunch-gate.py
           python3 .github/scripts/test-vz-native-ipv6-gate.py
@@ -53,6 +62,8 @@ jobs:
           python3 .github/scripts/test-release-sbom.py
           python3 .github/scripts/test-direct-dmg-install-gate.py
           python3 .github/scripts/test-desktop-linux-live-gate.py
+          python3 .github/scripts/test-graphics-pack-installer.py
+          python3 .github/scripts/test-graphics-backend-resolver.py
           python3 .github/scripts/test-machine-resource-reconfiguration-gate.py
           python3 .github/scripts/test-sandbox-security-gate.py
           python3 .github/scripts/test-ssh-agent-forwarding-gate.py
@@ -90,8 +101,6 @@ jobs:
           python3 .github/scripts/test-endurance-reliability-soak.py
           python3 .github/scripts/test-release-candidate-qualifier.py
           python3 .github/scripts/test-release-qualification-verifier.py
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
       - name: Install Protocol Buffers compiler
         run: brew install protobuf
       - name: Install Go toolchain

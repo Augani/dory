@@ -1,0 +1,236 @@
+diff --git a/src/venus/vkr_context.c b/src/venus/vkr_context.c
+index 2ea5898..5c79451 100644
+--- a/src/venus/vkr_context.c
++++ b/src/venus/vkr_context.c
+@@ -5,6 +5,8 @@
+ 
+ #include "vkr_context.h"
+ 
++#include "vkr_metal_helpers.h"
++
+ #include <sys/mman.h>
+ #include <sys/types.h>
+ #include <unistd.h>
+@@ -189,10 +191,15 @@ static inline void
+ vkr_context_free_resource(struct hash_entry *entry)
+ {
+    struct vkr_resource *res = entry->data;
+-   if (res->fd_type == VIRGL_RESOURCE_FD_SHM)
++   if (res->mtl_buffer) {
++      vkr_metal_buffer_release(res->mtl_buffer);
++      if (res->u.fd >= 0)
++         close(res->u.fd);
++   } else if (res->fd_type == VIRGL_RESOURCE_FD_SHM) {
+       munmap(res->u.data, res->size);
+-   else if (res->u.fd >= 0)
++   } else if (res->u.fd >= 0) {
+       close(res->u.fd);
++   }
+    free(res);
+ }
+ 
+@@ -236,6 +243,8 @@ vkr_context_import_resource_internal(struct vkr_context *ctx,
+ 
+    res->res_id = res_id;
+    res->fd_type = fd_type;
++   res->mtl_buffer = NULL;
++   res->memory_type_bits = 0;
+    res->size = blob_size;
+ 
+    /* fd and mmap_ptr cannot be valid at the same time, but allowed to be -1 and NULL */
+@@ -353,6 +362,12 @@ vkr_context_create_resource_from_device_memory(struct vkr_context *ctx,
+       return false;
+    }
+ 
++   struct vkr_resource *res = vkr_context_get_resource(ctx, res_id);
++   if (mem->mtl_shm && res) {
++      res->mtl_buffer = vkr_metal_buffer_retain(mem->mtl_shm->mtl_buffer);
++      res->memory_type_bits = 1u << mem->memory_type_index;
++   }
++
+    *out_blob = blob;
+ 
+    return true;
+diff --git a/src/venus/vkr_context.h b/src/venus/vkr_context.h
+index 12541a7..e765a17 100644
+--- a/src/venus/vkr_context.h
++++ b/src/venus/vkr_context.h
+@@ -24,6 +24,11 @@ struct vkr_resource {
+ 
+    enum virgl_resource_fd_type fd_type;
+ 
++   /* Metal-backed SHM resources retain the exact MTLBuffer so a second
++    * VkDeviceMemory import preserves resource identity and synchronization. */
++   void *mtl_buffer;
++   uint32_t memory_type_bits;
++
+    union {
+       /* valid when fd_type is dma_buf or opaque */
+       int fd;
+diff --git a/src/venus/vkr_device_memory.c b/src/venus/vkr_device_memory.c
+index b2e606f..d65e979 100644
+--- a/src/venus/vkr_device_memory.c
++++ b/src/venus/vkr_device_memory.c
+@@ -14,9 +14,12 @@
+ #include "vkr_physical_device.h"
+ 
+ static bool
+-vkr_get_fd_info_from_resource_info(struct vkr_context *ctx,
+-                                   const VkImportMemoryResourceInfoMESA *res_info,
+-                                   VkImportMemoryFdInfoKHR *out)
++vkr_get_import_info_from_resource_info(
++   struct vkr_context *ctx,
++   const VkImportMemoryResourceInfoMESA *res_info,
++   VkImportMemoryFdInfoKHR *out_fd,
++   VkImportMemoryMetalHandleInfoEXT *out_metal,
++   const VkBaseInStructure **out)
+ {
+    struct vkr_resource *res = vkr_context_get_resource(ctx, res_info->resourceId);
+    if (!res) {
+@@ -25,6 +28,17 @@ vkr_get_fd_info_from_resource_info(struct vkr_context *ctx,
+       return false;
+    }
+ 
++   if (res->mtl_buffer) {
++      *out_metal = (VkImportMemoryMetalHandleInfoEXT){
++         .sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_METAL_HANDLE_INFO_EXT,
++         .pNext = res_info->pNext,
++         .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_MTLBUFFER_BIT_EXT,
++         .handle = res->mtl_buffer,
++      };
++      *out = (const VkBaseInStructure *)out_metal;
++      return true;
++   }
++
+    VkExternalMemoryHandleTypeFlagBits handle_type;
+    switch (res->fd_type) {
+    case VIRGL_RESOURCE_FD_DMABUF:
+@@ -41,12 +55,13 @@ vkr_get_fd_info_from_resource_info(struct vkr_context *ctx,
+    if (fd < 0)
+       return false;
+ 
+-   *out = (VkImportMemoryFdInfoKHR){
++   *out_fd = (VkImportMemoryFdInfoKHR){
+       .sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR,
+       .pNext = res_info->pNext,
+       .fd = fd,
+       .handleType = handle_type,
+    };
++   *out = (const VkBaseInStructure *)out_fd;
+    return true;
+ }
+ 
+@@ -262,17 +277,21 @@ vkr_dispatch_vkAllocateMemory(struct vn_dispatch_context *dispatch,
+ 
+    /* translate VkImportMemoryResourceInfoMESA into VkImportMemoryFdInfoKHR in place */
+    VkImportMemoryFdInfoKHR local_import_info = { .fd = -1 };
++   VkImportMemoryMetalHandleInfoEXT local_metal_import = {0};
++   const VkBaseInStructure *local_resource_import = NULL;
+    VkImportMemoryResourceInfoMESA *res_info = NULL;
+    VkBaseInStructure *prev_of_res_info = vkr_find_prev_struct(
+       alloc_info, VK_STRUCTURE_TYPE_IMPORT_MEMORY_RESOURCE_INFO_MESA);
+    if (prev_of_res_info) {
+       res_info = (VkImportMemoryResourceInfoMESA *)prev_of_res_info->pNext;
+-      if (!vkr_get_fd_info_from_resource_info(ctx, res_info, &local_import_info)) {
++      if (!vkr_get_import_info_from_resource_info(
++             ctx, res_info, &local_import_info, &local_metal_import,
++             &local_resource_import)) {
+          args->ret = VK_ERROR_INVALID_EXTERNAL_HANDLE;
+          return;
+       }
+ 
+-      prev_of_res_info->pNext = (const struct VkBaseInStructure *)&local_import_info;
++      prev_of_res_info->pNext = local_resource_import;
+    }
+ 
+    VkExportMemoryAllocateInfo *export_info =
+@@ -299,7 +318,6 @@ vkr_dispatch_vkAllocateMemory(struct vn_dispatch_context *dispatch,
+    void *gbm_bo = NULL;
+    struct vkr_mtl_shm *mtl_shm = NULL;
+    VkExportMemoryAllocateInfo local_export_info;
+-   VkImportMemoryMetalHandleInfoEXT local_metal_import;
+ 
+    /* The Metal path is the only way this host can hand memory out as an fd, so it
+     * has to cover everything the guest may want an fd for: host visible memory,
+@@ -501,6 +519,17 @@ vkr_dispatch_vkGetMemoryResourcePropertiesMESA(
+       return;
+    }
+ 
++   if (res->memory_type_bits) {
++      args->ret = VK_SUCCESS;
++      args->pMemoryResourceProperties->memoryTypeBits = res->memory_type_bits;
++      VkMemoryResourceAllocationSizePropertiesMESA *alloc_size_props =
++         vkr_find_struct(args->pMemoryResourceProperties->pNext,
++                         VK_STRUCTURE_TYPE_MEMORY_RESOURCE_ALLOCATION_SIZE_PROPERTIES_MESA);
++      if (alloc_size_props)
++         alloc_size_props->allocationSize = res->size;
++      return;
++   }
++
+    if (res->fd_type != VIRGL_RESOURCE_FD_DMABUF) {
+       args->ret = VK_ERROR_INVALID_EXTERNAL_HANDLE;
+       return;
+diff --git a/src/venus/vkr_metal_helpers.h b/src/venus/vkr_metal_helpers.h
+index 4f5208b..a92ff8a 100644
+--- a/src/venus/vkr_metal_helpers.h
++++ b/src/venus/vkr_metal_helpers.h
+@@ -39,6 +39,14 @@ vkr_metal_get_device(VkDevice vk_device, PFN_vkGetDeviceProcAddr GetDeviceProcAd
+ struct vkr_mtl_shm *
+ vkr_mtl_shm_alloc(void *mtl_device, uint64_t size);
+ 
++/* Keep a Metal buffer alive while an exported Venus resource can be imported
++ * into another VkDeviceMemory object. */
++void *
++vkr_metal_buffer_retain(void *mtl_buffer);
++
++void
++vkr_metal_buffer_release(void *mtl_buffer);
++
+ /* Release all resources held by a vkr_mtl_shm and free the struct. */
+ void
+ vkr_mtl_shm_free(struct vkr_mtl_shm *shm);
+@@ -61,6 +69,18 @@ vkr_mtl_shm_alloc(void *mtl_device, uint64_t size)
+    return NULL;
+ }
+ 
++static inline void *
++vkr_metal_buffer_retain(void *mtl_buffer)
++{
++   return mtl_buffer;
++}
++
++static inline void
++vkr_metal_buffer_release(void *mtl_buffer)
++{
++   (void)mtl_buffer;
++}
++
+ static inline void
+ vkr_mtl_shm_free(struct vkr_mtl_shm *shm)
+ {
+diff --git a/src/venus/vkr_metal_helpers.m b/src/venus/vkr_metal_helpers.m
+index f0373ed..7cab457 100644
+--- a/src/venus/vkr_metal_helpers.m
++++ b/src/venus/vkr_metal_helpers.m
+@@ -82,6 +82,21 @@ vkr_mtl_shm_alloc(void *mtl_device, uint64_t size)
+    return shm;
+ }
+ 
++void *
++vkr_metal_buffer_retain(void *mtl_buffer)
++{
++   if (mtl_buffer)
++      CFRetain((CFTypeRef)mtl_buffer);
++   return mtl_buffer;
++}
++
++void
++vkr_metal_buffer_release(void *mtl_buffer)
++{
++   if (mtl_buffer)
++      CFRelease((CFTypeRef)mtl_buffer);
++}
++
+ void
+ vkr_mtl_shm_free(struct vkr_mtl_shm *shm)
+ {

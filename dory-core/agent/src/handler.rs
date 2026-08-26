@@ -13,6 +13,7 @@ use crate::exec::{self, ExecError};
 use crate::snapshot_quiesce;
 use crate::sync_apply::{self, SyncError};
 use crate::usb_vhci::{self, UsbVhciError};
+use crate::virtiofs_mount::{self, VirtiofsMountError};
 
 pub async fn handle(req_bytes: &[u8]) -> Vec<u8> {
     let req = match AgentRequest::decode(req_bytes) {
@@ -36,9 +37,24 @@ pub async fn handle(req_bytes: &[u8]) -> Vec<u8> {
         },
         Some(Method::UsbVhciAttach(r)) => wrap_usb(usb_vhci::attach(r).await, Res::UsbVhciAttach),
         Some(Method::UsbVhciDetach(r)) => wrap_usb(usb_vhci::detach(r).await, Res::UsbVhciDetach),
+        Some(Method::VirtiofsMount(r)) => {
+            wrap_virtiofs_mount(virtiofs_mount::mount(r).await, Res::VirtiofsMount)
+        }
         other => handle_method(other),
     };
     response.encode_to_vec()
+}
+
+fn wrap_virtiofs_mount<T>(
+    result: Result<T, VirtiofsMountError>,
+    ok: impl FnOnce(T) -> Res,
+) -> AgentResponse {
+    match result {
+        Ok(value) => agent::AgentResponse {
+            result: Some(ok(value)),
+        },
+        Err(error) => err(error.code(), &error.to_string()),
+    }
 }
 
 fn wrap_usb<T>(result: Result<T, UsbVhciError>, ok: impl FnOnce(T) -> Res) -> AgentResponse {
@@ -95,6 +111,37 @@ mod tests {
             method: Some(Method::UsbVhciDetach(agent::UsbVhciDetachRequest {
                 bus_id: "3-2".into(),
                 port: 128,
+            })),
+        };
+        let response = AgentResponse::decode(handle(&request.encode_to_vec()).await.as_slice())
+            .expect("well-formed response");
+        match response.result {
+            Some(Res::Error(error)) => assert_eq!(error.code, 422),
+            other => panic!("expected validation error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn virtiofs_mount_requests_are_validated_before_platform_io() {
+        let request = AgentRequest {
+            method: Some(Method::VirtiofsMount(agent::VirtiofsMountRequest {
+                tag: "../workspace".into(),
+                mount_path: "/mnt/dory/workspace".into(),
+                read_only: false,
+            })),
+        };
+        let response = AgentResponse::decode(handle(&request.encode_to_vec()).await.as_slice())
+            .expect("well-formed response");
+        match response.result {
+            Some(Res::Error(error)) => assert_eq!(error.code, 422),
+            other => panic!("expected validation error, got {other:?}"),
+        }
+
+        let request = AgentRequest {
+            method: Some(Method::VirtiofsMount(agent::VirtiofsMountRequest {
+                tag: "workspace".into(),
+                mount_path: "/mnt/../workspace".into(),
+                read_only: true,
             })),
         };
         let response = AgentResponse::decode(handle(&request.encode_to_vec()).await.as_slice())

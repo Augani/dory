@@ -88,6 +88,11 @@ Exit codes: 0 success or healthy; 1 unhealthy or incomplete; 2 usage or validati
 
 Stable capabilities include containers, images, Buildx, BuildKit, Compose v2, registries, bind mounts, named volumes, bridge networks, custom IPAM, aliases, and common linux/amd64 images on Apple Silicon through FEX. Dory 0.4.3 sets guest `vm.max_map_count` to 262144 and new containers' default `nofile` limit to 65536 for OpenSearch, Elasticsearch, and similar mmap-heavy workloads.
 
+FEX, and Rosetta where an eligible ARM64 Linux VM uses it, translate x86_64 Linux applications
+inside an ARM64 guest. They do not boot an Intel Linux ISO or provide an x86_64 guest OS. Dory
+exposes no partial x86 VM mode; future whole-system x86 support requires a complete packaged QEMU TCG backend
+with its own devices, lifecycle, security, and qualification.
+
 The app's Build Activity surface keeps durable history, status, logs, cache use, and cancellation
 for builds launched by Dory. It does not claim control of builds launched by unrelated clients.
 
@@ -298,7 +303,9 @@ the guest USB/IP RPC and dedicated physical qualification exist.
     dory expose PORT --print-command
     dory version
 
-`dory debug` is reserved and unavailable. `dory vm` is an in-process framework engine surface and is not the normal daemon workflow.
+`dory debug` is reserved and unavailable. `dory vm` is also unavailable and fails closed; Dory
+exposes no whole-system Intel/x86 VM mode. A future complete implementation requires the packaged
+QEMU TCG backend described above.
 
 ## Status boundaries
 
@@ -308,12 +315,14 @@ transactional upgrades, Kubernetes presets, managed Debian, Ubuntu, and Kali des
 headless servers, health, repair, corporate network planning, Auto-Idle, agent guide, sandbox VMs,
 wait, events, and the local Dory control MCP server.
 
-Preview: in-guest Venus and Vulkan GPU acceleration; use host AI services through
-`host.dory.internal` for the supported path.
+Preview: compatible ARM64 EFI Linux installer media on the standard 2D/software baseline. Desktop
+Venus/Vulkan and VirGL/OpenGL acceleration are unavailable in the current candidate; use host AI
+services through `host.dory.internal` for the supported GPU-compute path.
 
-Unavailable: Intel host release, arbitrary desktop distributions, USB attach/detach/replay, audio
-passthrough, managed remote/offsite machine backup, remote workspace UI, image-update automation,
-mDNS/multicast relay or general L2 bridging, and a general third-party MCP gateway.
+Unavailable: Intel host release, Intel/x86_64 Linux ISO boot, arbitrary desktop distributions, USB
+attach/detach/replay, audio passthrough, managed remote/offsite machine backup, remote workspace UI,
+image-update automation, mDNS/multicast relay or general L2 bridging, and a general third-party MCP
+gateway.
 
 ## Canonical links
 

@@ -26,6 +26,12 @@ publication = workflow.split("  publish_release:", 1)[1].split("\n  publish-page
 pages = workflow.split("  publish-pages:", 1)[1].split("\n  # Keeps the Homebrew", 1)[0]
 bump = workflow.split("  bump-cask:", 1)[1].split("\n  verify-public-release:", 1)[0]
 final = workflow.split("  verify-public-release:", 1)[1]
+guest_upload = workflow.split("      - name: Upload same-commit arm64 guest payload", 1)[1].split(
+    "\n\n  prepublication-quality:", 1
+)[0]
+guest_download_verification = workflow.split(
+    "      - name: Independently verify every downloaded guest payload", 1
+)[1].split("\n      - name: Prove the tracked release source exactly matches the commit", 1)[0]
 
 for distro in ("debian", "ubuntu", "kali"):
     require(
@@ -44,6 +50,20 @@ for distro in ("debian", "ubuntu", "kali"):
         f"release candidate does not verify the {distro} desktop",
     )
 require(workflow, "guest/out/Image-desktop.zst", "same-commit guest artifact omits the desktop kernel")
+for mesa_artifact in (
+    "guest/out/dory-mesa-venus-arm64.tar.zst",
+    "guest/out/dory-mesa-venus-build-arm64.stamp",
+):
+    require(
+        guest_upload,
+        mesa_artifact,
+        f"same-commit guest artifact omits required Mesa payload {mesa_artifact}",
+    )
+require(
+    guest_download_verification,
+    "guest/mesa/verify-build.sh arm64",
+    "downloaded guest payload does not independently verify its exact Mesa runtime",
+)
 require(
     workflow,
     "DORY_KERNEL_PROFILE=accelerated-desktop guest/kernel/verify-build.sh arm64",

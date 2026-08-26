@@ -6,11 +6,21 @@ public struct DoryInstalledLinuxBootDescriptor: Sendable, Equatable {
     public let rootDevice: String
     public let kernelLength: UInt64
     public let initrdLength: UInt64
+    public let kernelSHA256: String
+    public let initrdSHA256: String
 
-    public init(rootDevice: String, kernelLength: UInt64, initrdLength: UInt64) {
+    public init(
+        rootDevice: String,
+        kernelLength: UInt64,
+        initrdLength: UInt64,
+        kernelSHA256: String,
+        initrdSHA256: String
+    ) {
         self.rootDevice = rootDevice
         self.kernelLength = kernelLength
         self.initrdLength = initrdLength
+        self.kernelSHA256 = kernelSHA256
+        self.initrdSHA256 = initrdSHA256
     }
 }
 
@@ -22,8 +32,8 @@ public enum DoryInstalledLinuxBootBundle {
     private static let magic = Data("DORYLINUXBOOT1\n".utf8)
     private static let fixedHeaderBytes = 4 + 8 + 8 + 32 + 32
     private static let maximumRootDeviceBytes = 128
-    private static let maximumKernelBytes: UInt64 = 256 * 1024 * 1024
-    private static let maximumInitrdBytes: UInt64 = 512 * 1024 * 1024
+    public static let maximumKernelBytes: UInt64 = 256 * 1024 * 1024
+    public static let maximumInitrdBytes: UInt64 = 512 * 1024 * 1024
     private static let copyChunkBytes = 4 * 1024 * 1024
 
     public static func isBundle(atPath path: String) -> Bool {
@@ -189,11 +199,79 @@ public enum DoryInstalledLinuxBootBundle {
         }
     }
 
+    /// Copies a verified installed-Linux bundle from one already-open object into caller-owned
+    /// staging files. The source and destination descriptors are borrowed and their file offsets
+    /// are never changed. The complete pinned source must match the immutable resolved-plan digest
+    /// before any staged bytes can be accepted.
+    @discardableResult
+    public static func materializeVerifiedContents(
+        fromFileDescriptor inputDescriptor: Int32,
+        expectedBundleSHA256: String,
+        kernelFileDescriptor: Int32,
+        initrdFileDescriptor: Int32
+    ) throws -> DoryInstalledLinuxBootDescriptor {
+        guard isLowercaseSHA256(expectedBundleSHA256),
+              inputDescriptor >= 0,
+              kernelFileDescriptor >= 0,
+              initrdFileDescriptor >= 0,
+              inputDescriptor != kernelFileDescriptor,
+              inputDescriptor != initrdFileDescriptor,
+              kernelFileDescriptor != initrdFileDescriptor else {
+            throw DoryInstalledLinuxBootBundleError.invalidDescriptor
+        }
+        let header = try readHeader(fileDescriptor: inputDescriptor)
+        let inputDigest = try hashStableFile(
+            fileDescriptor: inputDescriptor,
+            byteCount: header.expectedLength
+        )
+        guard hex(inputDigest) == expectedBundleSHA256 else {
+            throw DoryInstalledLinuxBootBundleError.artifactDigestMismatch
+        }
+        try prepareEmptyOutput(kernelFileDescriptor)
+        try prepareEmptyOutput(initrdFileDescriptor)
+
+        // Hash the exact header bytes that produced the descriptor together with the exact
+        // component bytes copied into staging. This second whole-artifact verification is bound
+        // to the materialized outputs themselves; an owner-writable source cannot race a
+        // different root-device/header between an earlier plan-digest pass and payload copy.
+        var materializedArtifactHasher = SHA256()
+        materializedArtifactHasher.update(data: header.encodedHeader)
+        let kernelDigest = try copyExactly(
+            fromFileDescriptor: inputDescriptor,
+            sourceOffset: header.kernelOffset,
+            toFileDescriptor: kernelFileDescriptor,
+            byteCount: header.descriptor.kernelLength,
+            wholeArtifactHasher: &materializedArtifactHasher
+        )
+        let initrdDigest = try copyExactly(
+            fromFileDescriptor: inputDescriptor,
+            sourceOffset: header.initrdOffset,
+            toFileDescriptor: initrdFileDescriptor,
+            byteCount: header.descriptor.initrdLength,
+            wholeArtifactHasher: &materializedArtifactHasher
+        )
+        guard kernelDigest == header.kernelDigest,
+              initrdDigest == header.initrdDigest else {
+            throw DoryInstalledLinuxBootBundleError.digestMismatch
+        }
+        guard hex(Data(materializedArtifactHasher.finalize())) == expectedBundleSHA256 else {
+            throw DoryInstalledLinuxBootBundleError.artifactChanged
+        }
+        guard fsync(kernelFileDescriptor) == 0,
+              fsync(initrdFileDescriptor) == 0 else {
+            throw DoryInstalledLinuxBootBundleError.write("inherited boot staging file", errno)
+        }
+        return header.descriptor
+    }
+
     private struct Header {
         var descriptor: DoryInstalledLinuxBootDescriptor
         var kernelOffset: UInt64
+        var initrdOffset: UInt64
+        var expectedLength: UInt64
         var kernelDigest: Data
         var initrdDigest: Data
+        var encodedHeader: Data
     }
 
     private static func readHeader(from input: FileHandle) throws -> Header {
@@ -227,11 +305,88 @@ public enum DoryInstalledLinuxBootBundle {
             descriptor: DoryInstalledLinuxBootDescriptor(
                 rootDevice: rootDevice,
                 kernelLength: kernelLength,
-                initrdLength: initrdLength
+                initrdLength: initrdLength,
+                kernelSHA256: hex(kernelDigest),
+                initrdSHA256: hex(initrdDigest)
             ),
             kernelOffset: kernelOffset,
+            initrdOffset: afterKernel,
+            expectedLength: expectedLength,
             kernelDigest: kernelDigest,
-            initrdDigest: initrdDigest
+            initrdDigest: initrdDigest,
+            encodedHeader: magic
+                + bigEndian(UInt32(rootLength))
+                + bigEndian(kernelLength)
+                + bigEndian(initrdLength)
+                + kernelDigest
+                + initrdDigest
+                + rootData
+        )
+    }
+
+    private static func readHeader(fileDescriptor: Int32) throws -> Header {
+        var info = stat()
+        guard fstat(fileDescriptor, &info) == 0,
+              info.st_mode & S_IFMT == S_IFREG,
+              info.st_size > 0 else {
+            throw DoryInstalledLinuxBootBundleError.invalidDescriptor
+        }
+        var offset: UInt64 = 0
+        func read(_ count: Int) throws -> Data {
+            let data = try preadExactly(
+                fileDescriptor: fileDescriptor,
+                offset: offset,
+                count: count
+            )
+            offset += UInt64(count)
+            return data
+        }
+        guard try read(magic.count) == magic else {
+            throw DoryInstalledLinuxBootBundleError.invalidMagic
+        }
+        let rootLength = Int(decodeUInt32(try read(4)))
+        let kernelLength = decodeUInt64(try read(8))
+        let initrdLength = decodeUInt64(try read(8))
+        let kernelDigest = try read(32)
+        let initrdDigest = try read(32)
+        guard rootLength > 0, rootLength <= maximumRootDeviceBytes,
+              kernelLength > 0, kernelLength <= maximumKernelBytes,
+              initrdLength > 0, initrdLength <= maximumInitrdBytes else {
+            throw DoryInstalledLinuxBootBundleError.invalidHeader
+        }
+        let rootData = try read(rootLength)
+        guard let rootDevice = String(data: rootData, encoding: .utf8),
+              isValidRootDevice(rootDevice) else {
+            throw DoryInstalledLinuxBootBundleError.invalidHeader
+        }
+        let kernelOffset = offset
+        let (initrdOffset, kernelOverflow) = kernelOffset.addingReportingOverflow(kernelLength)
+        let (expectedLength, initrdOverflow) = initrdOffset.addingReportingOverflow(initrdLength)
+        guard !kernelOverflow, !initrdOverflow,
+              info.st_size >= 0,
+              UInt64(info.st_size) == expectedLength else {
+            throw DoryInstalledLinuxBootBundleError.invalidHeader
+        }
+        return Header(
+            descriptor: DoryInstalledLinuxBootDescriptor(
+                rootDevice: rootDevice,
+                kernelLength: kernelLength,
+                initrdLength: initrdLength,
+                kernelSHA256: hex(kernelDigest),
+                initrdSHA256: hex(initrdDigest)
+            ),
+            kernelOffset: kernelOffset,
+            initrdOffset: initrdOffset,
+            expectedLength: expectedLength,
+            kernelDigest: kernelDigest,
+            initrdDigest: initrdDigest,
+            encodedHeader: magic
+                + bigEndian(UInt32(rootLength))
+                + bigEndian(kernelLength)
+                + bigEndian(initrdLength)
+                + kernelDigest
+                + initrdDigest
+                + rootData
         )
     }
 
@@ -298,6 +453,158 @@ public enum DoryInstalledLinuxBootBundle {
         return result
     }
 
+    private static func prepareEmptyOutput(_ fileDescriptor: Int32) throws {
+        var info = stat()
+        let flags = fcntl(fileDescriptor, F_GETFL)
+        guard fstat(fileDescriptor, &info) == 0,
+              info.st_mode & S_IFMT == S_IFREG,
+              info.st_size == 0,
+              flags >= 0,
+              flags & O_ACCMODE != O_RDONLY else {
+            throw DoryInstalledLinuxBootBundleError.invalidDescriptor
+        }
+    }
+
+    private static func hashStableFile(
+        fileDescriptor: Int32,
+        byteCount: UInt64
+    ) throws -> Data {
+        var before = stat()
+        guard fstat(fileDescriptor, &before) == 0,
+              before.st_mode & S_IFMT == S_IFREG,
+              before.st_size >= 0,
+              UInt64(before.st_size) == byteCount else {
+            throw DoryInstalledLinuxBootBundleError.invalidDescriptor
+        }
+        var hasher = SHA256()
+        var offset: UInt64 = 0
+        while offset < byteCount {
+            let count = Int(min(UInt64(copyChunkBytes), byteCount - offset))
+            let data = try preadExactly(
+                fileDescriptor: fileDescriptor,
+                offset: offset,
+                count: count
+            )
+            hasher.update(data: data)
+            offset += UInt64(data.count)
+        }
+        var after = stat()
+        guard fstat(fileDescriptor, &after) == 0,
+              sameSnapshot(before, after) else {
+            throw DoryInstalledLinuxBootBundleError.artifactChanged
+        }
+        return Data(hasher.finalize())
+    }
+
+    private static func copyExactly(
+        fromFileDescriptor inputDescriptor: Int32,
+        sourceOffset: UInt64,
+        toFileDescriptor outputDescriptor: Int32,
+        byteCount: UInt64,
+        wholeArtifactHasher: inout SHA256
+    ) throws -> Data {
+        var remaining = byteCount
+        var inputOffset = sourceOffset
+        var outputOffset: UInt64 = 0
+        var hasher = SHA256()
+        while remaining > 0 {
+            let count = Int(min(UInt64(copyChunkBytes), remaining))
+            let data = try preadExactly(
+                fileDescriptor: inputDescriptor,
+                offset: inputOffset,
+                count: count
+            )
+            try pwriteExactly(
+                data,
+                fileDescriptor: outputDescriptor,
+                offset: outputOffset
+            )
+            hasher.update(data: data)
+            wholeArtifactHasher.update(data: data)
+            inputOffset += UInt64(data.count)
+            outputOffset += UInt64(data.count)
+            remaining -= UInt64(data.count)
+        }
+        return Data(hasher.finalize())
+    }
+
+    private static func preadExactly(
+        fileDescriptor: Int32,
+        offset: UInt64,
+        count: Int
+    ) throws -> Data {
+        guard offset <= UInt64(Int64.max) else {
+            throw DoryInstalledLinuxBootBundleError.invalidHeader
+        }
+        var result = Data(count: count)
+        var completed = 0
+        try result.withUnsafeMutableBytes { bytes in
+            while completed < count {
+                let readCount = pread(
+                    fileDescriptor,
+                    bytes.baseAddress!.advanced(by: completed),
+                    count - completed,
+                    off_t(offset + UInt64(completed))
+                )
+                if readCount < 0, errno == EINTR { continue }
+                guard readCount > 0 else {
+                    throw DoryInstalledLinuxBootBundleError.invalidHeader
+                }
+                completed += readCount
+            }
+        }
+        return result
+    }
+
+    private static func pwriteExactly(
+        _ data: Data,
+        fileDescriptor: Int32,
+        offset: UInt64
+    ) throws {
+        guard offset <= UInt64(Int64.max) else {
+            throw DoryInstalledLinuxBootBundleError.invalidHeader
+        }
+        try data.withUnsafeBytes { bytes in
+            var completed = 0
+            while completed < bytes.count {
+                let written = pwrite(
+                    fileDescriptor,
+                    bytes.baseAddress!.advanced(by: completed),
+                    bytes.count - completed,
+                    off_t(offset + UInt64(completed))
+                )
+                if written < 0, errno == EINTR { continue }
+                guard written > 0 else {
+                    throw DoryInstalledLinuxBootBundleError.write(
+                        "inherited boot staging file",
+                        errno
+                    )
+                }
+                completed += written
+            }
+        }
+    }
+
+    private static func sameSnapshot(_ lhs: stat, _ rhs: stat) -> Bool {
+        lhs.st_dev == rhs.st_dev
+            && lhs.st_ino == rhs.st_ino
+            && lhs.st_size == rhs.st_size
+            && lhs.st_mtimespec.tv_sec == rhs.st_mtimespec.tv_sec
+            && lhs.st_mtimespec.tv_nsec == rhs.st_mtimespec.tv_nsec
+            && lhs.st_ctimespec.tv_sec == rhs.st_ctimespec.tv_sec
+            && lhs.st_ctimespec.tv_nsec == rhs.st_ctimespec.tv_nsec
+    }
+
+    private static func isLowercaseSHA256(_ value: String) -> Bool {
+        value.utf8.count == 64 && value.utf8.allSatisfy {
+            (48...57).contains($0) || (97...102).contains($0)
+        }
+    }
+
+    private static func hex(_ data: Data) -> String {
+        data.map { String(format: "%02x", $0) }.joined()
+    }
+
     private static func bigEndian(_ value: UInt32) -> Data {
         withUnsafeBytes(of: value.bigEndian) { Data($0) }
     }
@@ -321,6 +628,9 @@ public enum DoryInstalledLinuxBootBundleError: Error, LocalizedError, Sendable, 
     case invalidInitrdSize(UInt64)
     case invalidMagic
     case invalidHeader
+    case invalidDescriptor
+    case artifactChanged
+    case artifactDigestMismatch
     case digestMismatch
     case invalidDestination
     case open(String, Int32)
@@ -333,6 +643,9 @@ public enum DoryInstalledLinuxBootBundleError: Error, LocalizedError, Sendable, 
         case let .invalidInitrdSize(size): "Invalid installed Linux initrd size: \(size) bytes"
         case .invalidMagic: "Not a Dory installed-Linux boot bundle"
         case .invalidHeader: "Installed-Linux boot bundle has an invalid or truncated header"
+        case .invalidDescriptor: "Installed-Linux boot descriptors are invalid"
+        case .artifactChanged: "Installed-Linux boot bundle changed during verification"
+        case .artifactDigestMismatch: "Installed-Linux boot bundle does not match the resolved artifact digest"
         case .digestMismatch: "Installed-Linux boot bundle failed kernel/initrd verification"
         case .invalidDestination: "Installed-Linux boot destinations must share one directory"
         case let .open(path, code): "Could not open installed-Linux boot bundle \(path): \(String(cString: strerror(code)))"

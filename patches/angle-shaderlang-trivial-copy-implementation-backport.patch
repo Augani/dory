@@ -1,0 +1,32 @@
+diff --git a/Source/ThirdParty/ANGLE/src/compiler/translator/ShaderLang.cpp b/Source/ThirdParty/ANGLE/src/compiler/translator/ShaderLang.cpp
+index fd25182cb2..66ba7d1d32 100644
+--- a/Source/ThirdParty/ANGLE/src/compiler/translator/ShaderLang.cpp
++++ b/Source/ThirdParty/ANGLE/src/compiler/translator/ShaderLang.cpp
+@@ -953,27 +953,7 @@ ShCompileOptions::ShCompileOptions()
+     memset(this, 0, sizeof(*this));
+ }
+ 
+-ShCompileOptions::ShCompileOptions(const ShCompileOptions &other)
+-{
+-    memcpy(this, &other, sizeof(*this));
+-}
+-ShCompileOptions &ShCompileOptions::operator=(const ShCompileOptions &other)
+-{
+-    memcpy(this, &other, sizeof(*this));
+-    return *this;
+-}
+-
+ ShBuiltInResources::ShBuiltInResources()
+ {
+     memset(this, 0, sizeof(*this));
+ }
+-
+-ShBuiltInResources::ShBuiltInResources(const ShBuiltInResources &other)
+-{
+-    memcpy(this, &other, sizeof(*this));
+-}
+-ShBuiltInResources &ShBuiltInResources::operator=(const ShBuiltInResources &other)
+-{
+-    memcpy(this, &other, sizeof(*this));
+-    return *this;
+-}

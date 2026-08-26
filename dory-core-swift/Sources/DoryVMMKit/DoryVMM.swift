@@ -354,6 +354,36 @@ public struct DoryVZMachineSpec: Sendable, Equatable {
     }
 }
 
+enum DoryVZHostService: Sendable, Equatable {
+    case docker
+    case agent
+    case shell
+}
+
+/// Exact host-side service boundary for one VZ launch. EFI guests publish readiness before Dory
+/// Tools exists, so they expose only the control server. Direct-kernel guests expose their agent
+/// and shell proxies, while Docker discovery remains exclusive to the engine VM that advertises
+/// the Docker socket in its handoff receipt.
+struct DoryVZHostServicePlan: Sendable, Equatable {
+    let proxies: [DoryVZHostService]
+    let discoversDynamicDockerPorts: Bool
+
+    init(machineID: String, bootMode: DoryMachineBootMode) {
+        guard bootMode == .linuxKernel else {
+            proxies = []
+            discoversDynamicDockerPorts = false
+            return
+        }
+        if machineID == "docker" {
+            proxies = [.docker, .agent, .shell]
+            discoversDynamicDockerPorts = true
+        } else {
+            proxies = [.agent, .shell]
+            discoversDynamicDockerPorts = false
+        }
+    }
+}
+
 public enum DoryVZMachineError: Error, Sendable, CustomStringConvertible {
     case missingFile(String)
     case storageAttachment(String)
@@ -436,14 +466,28 @@ public enum DoryVZConfigurationBuilder {
                 "native IPv6 requires the gvproxy file-handle network attachment"
             )
         }
+        if let fileHandleAttachment = networkAttachment
+                as? VZFileHandleNetworkDeviceAttachment,
+           fileHandleAttachment.maximumTransmissionUnit
+                < Int(DoryVirtualMachineNetworkInterfaceCapabilityRequest
+                    .vzFileHandleMinimumMTU) {
+            throw DoryVZMachineError.validation(
+                "VZ file-handle network MTU must be at least "
+                    + "\(DoryVirtualMachineNetworkInterfaceCapabilityRequest.vzFileHandleMinimumMTU)"
+            )
+        }
         guard fileManager.fileExists(atPath: spec.rootfsPath) else {
             throw DoryVZMachineError.missingFile(spec.rootfsPath)
         }
 
         if let graphics = spec.resolvedGraphics {
-            let expected: DoryGraphicsAccelerationLevel = spec.displayMode == .desktop
-                ? .hostAcceleratedDisplay : .none
-            guard graphics == expected else {
+            let representable = spec.displayMode == .desktop
+                ? graphics == .hostAcceleratedDisplay || graphics == .software
+                : graphics == .none
+            // VZ's VirtIO graphics device is also the display controller for a guest that renders
+            // 3D in software. `software` therefore does not mean "no display"; it means that Dory
+            // must not publish a guest-3D acceleration claim for this otherwise normal 2D desktop.
+            guard representable else {
                 throw DoryVZMachineError.validation(
                     "resolved graphics \(graphics.rawValue) cannot be represented by this VZ launch"
                 )
@@ -462,6 +506,21 @@ public enum DoryVZConfigurationBuilder {
                 throw DoryVZMachineError.validation(
                     "resolved device contract contains a device not implemented by this VZ launch"
                 )
+            }
+            if devices.networkAttachment != .disconnected,
+               let networkInterface = devices.networkInterface {
+                guard let fileHandleAttachment = networkAttachment
+                        as? VZFileHandleNetworkDeviceAttachment else {
+                    throw DoryVZMachineError.validation(
+                        "a connected exact VZ network interface requires the gvproxy file-handle attachment"
+                    )
+                }
+                guard fileHandleAttachment.maximumTransmissionUnit
+                        == Int(networkInterface.maximumTransmissionUnit) else {
+                    throw DoryVZMachineError.validation(
+                        "VZ file-handle network MTU does not match the resolved interface contract"
+                    )
+                }
             }
             if devices.networkAttachment == .disconnected,
                networkAttachment != nil || spec.nativeIPv6 {
@@ -1325,9 +1384,7 @@ public enum DoryVMMMain {
                     operation: .activate,
                     sessionID: sessionID,
                     gvproxySocketPath: lanDatapathSocketPath,
-                    mtu: resolvedDevices?.networkInterface.map {
-                        Int($0.maximumTransmissionUnit)
-                    } ?? DoryNetworkMTU.resolved(),
+                    mtu: gvproxyNetwork.effectiveMTU,
                     bridgeSubnetCIDR: bridgeNetwork.cidr,
                     guestMACAddress: resolvedDevices?.networkInterface?.macAddress
                         ?? SourcePreservingLANPlan.defaultGuestMAC
@@ -1404,45 +1461,54 @@ public enum DoryVMMMain {
                 gvproxyNetwork?.resolvedPortForwardHealth
             }
         )
-        let dockerdProxy = try DoryVZPortUnixProxy(
-            machine: machine,
-            guestPort: DoryGuestPorts.docker,
-            localSocketPath: dockerdSocketPath
+        let hostServicePlan = DoryVZHostServicePlan(
+            machineID: machineID,
+            bootMode: bootMode
         )
-        let agentProxy = try DoryVZPortUnixProxy(
-            machine: machine,
-            guestPort: DoryGuestPorts.control,
-            localSocketPath: agentSocketPath
-        )
-        let shellProxy = try DoryVZPortUnixProxy(
-            machine: machine,
-            guestPort: DoryGuestPorts.shell,
-            localSocketPath: shellSocketPath
-        )
+        let proxies = try hostServicePlan.proxies.map { service in
+            switch service {
+            case .docker:
+                return try DoryVZPortUnixProxy(
+                    machine: machine,
+                    guestPort: DoryGuestPorts.docker,
+                    localSocketPath: dockerdSocketPath
+                )
+            case .agent:
+                return try DoryVZPortUnixProxy(
+                    machine: machine,
+                    guestPort: DoryGuestPorts.control,
+                    localSocketPath: agentSocketPath
+                )
+            case .shell:
+                return try DoryVZPortUnixProxy(
+                    machine: machine,
+                    guestPort: DoryGuestPorts.shell,
+                    localSocketPath: shellSocketPath
+                )
+            }
+        }
         do {
             try controlServer.start()
-            try dockerdProxy.start()
-            try agentProxy.start()
-            try shellProxy.start()
+            for proxy in proxies {
+                try proxy.start()
+            }
         } catch {
             controlServer.stop()
-            dockerdProxy.stop()
-            agentProxy.stop()
-            shellProxy.stop()
+            proxies.forEach { $0.stop() }
             throw error
         }
 
         let runtime = DoryVMMRuntime(
             machine: machine,
             controlServer: controlServer,
-            proxies: [dockerdProxy, agentProxy, shellProxy],
+            proxies: proxies,
             serialLog: serialLog,
             serialConsole: serialConsole,
             gvproxyNetwork: gvproxyNetwork,
             sourcePreservingLANClient: sourcePreservingLANClient,
             sourcePreservingLANSessionID: sourcePreservingLANSessionID,
             sshAgentBridge: sshAgentBridge,
-            portForwarder: gvproxyNetwork.map {
+            portForwarder: hostServicePlan.discoversDynamicDockerPorts ? gvproxyNetwork.map {
                 DoryVMMPortForwarder(
                     dockerSocketPath: dockerdSocketPath,
                     gvproxyAPISocketPath: $0.apiSocketPath,
@@ -1455,7 +1521,7 @@ public enum DoryVMMMain {
                     guestMACAddress: resolvedDevices?.networkInterface?.macAddress
                         ?? SourcePreservingLANPlan.defaultGuestMAC
                 )
-            }
+            } : nil
         )
         runtime.portForwarder?.start()
         onRuntimeCreated(runtime)
@@ -1850,10 +1916,11 @@ final class DoryVMMRuntime: DoryVMMGuestShutdownHandling, @unchecked Sendable {
                 "dory-vmm: agent shutdown request failed, trying transport fallback: \(error)\n".utf8
             ))
         }
-        if let gvproxyNetwork {
-            try gvproxyNetwork.requestGuestShutdown()
-            return
-        }
+        // An arbitrary EFI distro is not required to run Dory's agent or listen on Dory's
+        // shutdown port. VZ's virtual power button is the only integration-free request with OS
+        // semantics, so it must precede unacknowledged transport fallbacks. Treating a successful
+        // connect to gvproxy as a completed shutdown request can otherwise suppress ACPI and end
+        // in the helper watchdog forcibly cutting power to a writable installer disk.
         do {
             try machine.requestGuestStop()
             return
@@ -1861,6 +1928,16 @@ final class DoryVMMRuntime: DoryVMMGuestShutdownHandling, @unchecked Sendable {
             FileHandle.standardError.write(Data(
                 "dory-vmm: virtual power-button shutdown request failed, trying transport fallback: \(error)\n".utf8
             ))
+        }
+        if let gvproxyNetwork {
+            do {
+                try gvproxyNetwork.requestGuestShutdown()
+                return
+            } catch {
+                FileHandle.standardError.write(Data(
+                    "dory-vmm: gvproxy shutdown fallback failed, trying guest socket: \(error)\n".utf8
+                ))
+            }
         }
         let deadline = Date().addingTimeInterval(5)
         var lastError: Error?
@@ -2725,18 +2802,9 @@ private final class DoryVMMControlServer: @unchecked Sendable {
         lock.unlock()
         let unavailableReason = "Virtualization.framework does not expose stable per-device counters"
         let metrics = DoryDeviceTelemetryMetricKind.allCases.map { kind in
-            let unit: DoryDeviceTelemetryMetricUnit
-            switch kind {
-            case .transmittedBytes, .receivedBytes:
-                unit = .bytes
-            case .maximumStorageFlushLatencyNanoseconds:
-                unit = .nanoseconds
-            default:
-                unit = .count
-            }
             return DoryDeviceTelemetryMetric.unavailable(
                 kind,
-                unit: unit,
+                unit: kind.expectedUnit,
                 reason: unavailableReason
             )
         }

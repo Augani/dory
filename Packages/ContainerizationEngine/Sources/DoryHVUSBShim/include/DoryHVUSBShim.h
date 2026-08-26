@@ -11,6 +11,15 @@ BOOL DoryIOUSBHostSendDeviceRequest(IOUSBHostObject *object,
                                     NSTimeInterval timeout,
                                     NSError *_Nullable *_Nullable error);
 
+typedef void (^DoryIOUSBHostCompletionHandler)(IOReturn status, NSUInteger bytesTransferred);
+
+BOOL DoryIOUSBHostEnqueueDeviceRequest(IOUSBHostObject *object,
+                                       IOUSBDeviceRequest request,
+                                       NSMutableData *_Nullable data,
+                                       NSTimeInterval timeout,
+                                       NSError *_Nullable *_Nullable error,
+                                       DoryIOUSBHostCompletionHandler completionHandler);
+
 BOOL DoryIOUSBHostAbortDeviceRequests(IOUSBHostObject *object,
                                       IOUSBHostAbortOption option,
                                       NSError *_Nullable *_Nullable error);

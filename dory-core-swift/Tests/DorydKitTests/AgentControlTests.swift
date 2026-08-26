@@ -19,7 +19,7 @@ final class AgentControlTests: XCTestCase {
         XCTAssertEqual(info.agentBuild, "fake-agent")
         XCTAssertEqual(info.capabilities.map(\.id), [
             "clock-sync", "exec", "exec-stdin", "lifecycle-receipt", "ports-watch",
-            "snapshot-quiesce", "sync-pull", "sync-push", "telemetry",
+            "snapshot-quiesce", "sync-pull", "sync-push", "telemetry", "virtiofs-mount",
         ])
         XCTAssertEqual(counter.value, 1)
 
@@ -77,6 +77,23 @@ final class AgentControlTests: XCTestCase {
             fake.lifecycleReceipts,
             [.init(action: .preparePause, operationID: operationID)]
         )
+        XCTAssertEqual(
+            try control.virtioFSMount(
+                tag: "workspace",
+                mountPath: "/mnt/dory/workspace",
+                readOnly: true
+            ),
+            DoryVirtioFSMountReceipt(
+                tag: "workspace",
+                mountPath: "/mnt/dory/workspace",
+                readOnly: true,
+                alreadyMounted: false,
+                mountID: 73
+            )
+        )
+        XCTAssertEqual(fake.virtioFSMountCalls, [
+            .init(tag: "workspace", mountPath: "/mnt/dory/workspace", readOnly: true),
+        ])
         let exec = try control.exec(argv: ["/bin/echo", "ok"], cwd: "/tmp")
         XCTAssertEqual(exec.exitCode, 0)
         XCTAssertEqual(String(data: exec.stdout, encoding: .utf8), "ok\n")
@@ -102,6 +119,17 @@ final class AgentControlTests: XCTestCase {
             XCTAssertEqual(error as? AgentControlError, .capabilityUnavailable("telemetry"))
         }
         XCTAssertEqual(missing.telemetryCalls, 0)
+        XCTAssertThrowsError(try missingControl.virtioFSMount(
+            tag: "workspace",
+            mountPath: "/mnt/dory/workspace",
+            readOnly: false
+        )) { error in
+            XCTAssertEqual(
+                error as? AgentControlError,
+                .capabilityUnavailable("virtiofs-mount")
+            )
+        }
+        XCTAssertTrue(missing.virtioFSMountCalls.isEmpty)
 
         let oldSnapshotCapability = FakeAgentControlClient(capabilities: [
             DoryAgentCapability(id: "snapshot-quiesce", version: 1),
@@ -169,6 +197,12 @@ private final class FakeAgentControlClient: AgentControlClient, @unchecked Senda
         var operationID: String
     }
     private var receivedLifecycleReceipts: [LifecycleReceipt] = []
+    struct VirtioFSMountCall: Equatable {
+        var tag: String
+        var mountPath: String
+        var readOnly: Bool
+    }
+    private var receivedVirtioFSMountCalls: [VirtioFSMountCall] = []
 
     init(
         protocolVersion: UInt32 = DoryCore.protocolVersion(),
@@ -182,6 +216,7 @@ private final class FakeAgentControlClient: AgentControlClient, @unchecked Senda
             DoryAgentCapability(id: "sync-pull", version: 1),
             DoryAgentCapability(id: "sync-push", version: 1),
             DoryAgentCapability(id: "telemetry", version: 1),
+            DoryAgentCapability(id: "virtiofs-mount", version: 1),
         ]
     ) {
         self.protocolVersion = protocolVersion
@@ -240,6 +275,12 @@ private final class FakeAgentControlClient: AgentControlClient, @unchecked Senda
         lock.lock()
         defer { lock.unlock() }
         return receivedLifecycleReceipts
+    }
+
+    var virtioFSMountCalls: [VirtioFSMountCall] {
+        lock.lock()
+        defer { lock.unlock() }
+        return receivedVirtioFSMountCalls
     }
 
     func info() throws -> DoryAgentInfo {
@@ -347,6 +388,27 @@ private final class FakeAgentControlClient: AgentControlClient, @unchecked Senda
         ))
         lock.unlock()
         return operationID
+    }
+
+    func virtioFSMount(
+        tag: String,
+        mountPath: String,
+        readOnly: Bool
+    ) throws -> DoryVirtioFSMountReceipt {
+        lock.lock()
+        receivedVirtioFSMountCalls.append(.init(
+            tag: tag,
+            mountPath: mountPath,
+            readOnly: readOnly
+        ))
+        lock.unlock()
+        return DoryVirtioFSMountReceipt(
+            tag: tag,
+            mountPath: mountPath,
+            readOnly: readOnly,
+            alreadyMounted: false,
+            mountID: 73
+        )
     }
 
     func exec(

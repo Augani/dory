@@ -1,4 +1,5 @@
 import DoryOperations
+import DoryVMContracts
 @testable import DorydKit
 import Foundation
 import Testing
@@ -32,7 +33,7 @@ struct DoryDaemonVirtualMachineRuntimePlanningTests {
         #expect(devices.networkAttachment == .disconnected)
         #expect(devices.networkInterface
             == .stable(machineID: definition.identity.id))
-        #expect(devices.networkInterface?.maximumTransmissionUnit == 1_280)
+        #expect(devices.networkInterface?.maximumTransmissionUnit == 1_500)
         #expect(devices.displays == [
             DoryVirtualMachineDisplayCapabilityRequest(
                 id: "display-0",
@@ -82,7 +83,98 @@ struct DoryDaemonVirtualMachineRuntimePlanningTests {
         #expect(result.resolvedPlan.portForwards == fixture.definition.portForwards)
         #expect(result.backendPlan.portForwards == fixture.definition.portForwards)
         #expect(result.backendPlan.backend.identity == .doryHypervisor)
+        let topology = try #require(result.resolvedPlan.rawHVVirtualHardwareTopology)
+        #expect(topology.occupiedSlots.map(\.role) == [
+            .systemDisk, .graphics, .entropy, .balloon, .vsock, .network,
+        ])
+        #expect(topology.occupiedSlots.map(\.mmioSlot) == [0, 1, 2, 3, 4, 8])
+        #expect(topology.canonicalSHA256Fingerprint().count == 64)
         #expect(try fixture.store.read(id: fixture.definition.identity.id) == result.resolvedPlan)
+    }
+
+    @Test("RawHV topology reconciliation is order-independent and preserves survivor slots")
+    func rawHVTopologyReconciliation() throws {
+        let fixture = try Fixture()
+        var definition = fixture.definition
+        definition.shares = [
+            DoryVMShare(
+                id: "workspace-zeta",
+                hostLocation: .init(namespace: "share", identifier: "zeta"),
+                guestMountPath: "/workspace/zeta"
+            ),
+            DoryVMShare(
+                id: "workspace-alpha",
+                hostLocation: .init(namespace: "share", identifier: "alpha"),
+                guestMountPath: "/workspace/alpha"
+            ),
+        ]
+        let devices = DoryDaemonVirtualMachinePlanningCoordinator.devices(for: definition)
+        let first = try DoryRawHVVirtualHardwareTopologyPlanner.resolve(
+            definition: definition,
+            resolvedDevices: devices
+        )
+        var reordered = definition
+        reordered.shares.reverse()
+        #expect(try DoryRawHVVirtualHardwareTopologyPlanner.resolve(
+            definition: reordered,
+            resolvedDevices: devices
+        ) == first)
+
+        let survivorID = try DoryVirtualDeviceID.derived(
+            namespace: .directoryShare,
+            stableID: "workspace-zeta"
+        )
+        let survivorSlot = try #require(first.occupiedSlots.first {
+            $0.logicalID == survivorID
+        }).mmioSlot
+        definition.shares = [
+            definition.shares[0],
+            DoryVMShare(
+                id: "workspace-new",
+                hostLocation: .init(namespace: "share", identifier: "new"),
+                guestMountPath: "/workspace/new"
+            ),
+        ]
+        let reconciled = try DoryRawHVVirtualHardwareTopologyPlanner.resolve(
+            definition: definition,
+            resolvedDevices: DoryDaemonVirtualMachinePlanningCoordinator.devices(for: definition),
+            previousTopology: first
+        )
+        #expect(reconciled.occupiedSlots.first {
+            $0.logicalID == survivorID
+        }?.mmioSlot == survivorSlot)
+        try DoryRawHVVirtualHardwareTopologyPlanner.validate(
+            reconciled,
+            definition: definition,
+            resolvedDevices: DoryDaemonVirtualMachinePlanningCoordinator.devices(for: definition)
+        )
+    }
+
+    @Test("RawHV refuses unmaterialized storage and does not mislabel USB/IP as xHCI")
+    func rawHVMaterializationBoundary() throws {
+        let fixture = try Fixture()
+        var definition = fixture.definition
+        definition.networkMode = .disconnected
+        definition.integrations.append(.removableUSBHotplug)
+        let topology = try DoryRawHVVirtualHardwareTopologyPlanner.resolve(
+            definition: definition,
+            resolvedDevices: DoryDaemonVirtualMachinePlanningCoordinator.devices(for: definition)
+        )
+        #expect(topology.occupiedSlots.filter { $0.role == .network }.count == 1)
+        #expect(topology.occupiedSlots.contains { $0.role == .usbController } == false)
+
+        definition.storage.append(DoryVMStorageAttachment(
+            id: "data-disk",
+            role: .data,
+            artifact: .init(namespace: "artifact", identifier: "data-disk"),
+            capacityBytes: 4 * 1_024 * 1_024
+        ))
+        #expect(throws: DoryRawHVVirtualHardwareTopologyPlanningError.self) {
+            _ = try DoryRawHVVirtualHardwareTopologyPlanner.resolve(
+                definition: definition,
+                resolvedDevices: DoryDaemonVirtualMachinePlanningCoordinator.devices(for: definition)
+            )
+        }
     }
 
     @Test("canonical definition bytes cannot be substituted")
@@ -122,7 +214,8 @@ struct DoryDaemonVirtualMachineRuntimePlanningTests {
     @Test("default planner does not promote missing runtime qualification")
     func defaultPlannerFailsClosed() throws {
         let fixture = try Fixture()
-        let request = fixture.plannerRequest
+        var request = fixture.plannerRequest
+        request.devices.displays = []
         let result = DoryAppleSiliconDaemonVirtualMachineCapabilityPlanner().plan(
             request,
             inventory: fixture.inventory.snapshot
@@ -320,7 +413,7 @@ private final class Fixture {
                 hostPort: 2_222,
                 guestPort: 22
             )],
-            display: .disabled,
+            display: DoryVMDisplayConfiguration(),
             audio: DoryVMAudioConfiguration(inputEnabled: false, outputEnabled: false),
             input: DoryVMInputConfiguration(keyboardEnabled: false, pointerEnabled: false),
             lifecycle: DoryVMLifecycleMetadata(

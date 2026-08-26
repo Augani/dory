@@ -1,7 +1,9 @@
 import Foundation
 import Darwin
+import DoryRendererWorkerContracts
 import Testing
 @testable import DoryHV
+@testable import dory_hv
 
 @Suite struct FDTBuilderTests {
     @Test func emitsValidFlattenedDeviceTreeHeader() {
@@ -88,11 +90,11 @@ import Testing
         return path
     }
 
-    @Test func defaultsToSingleQueueWithoutMQFeature() throws {
+    @Test func nilQueuePolicyDeterministicallyDefaultsToSingleQueueWithoutMQFeature() throws {
         let path = try makeDisk()
         defer { try? FileManager.default.removeItem(atPath: path) }
 
-        let block = try VirtioBlk(path: path, identity: "test", queueCount: 1)
+        let block = try VirtioBlk(path: path, identity: "test")
 
         #expect(block.queueCount == 1)
         #expect(block.deviceFeatures & (1 << 9) != 0)
@@ -111,15 +113,19 @@ import Testing
         #expect(block.configSpace.leUInt16(at: 34) == 4)
     }
 
-    @Test func queueCountIsClampedToVirtioMMIOLimits() throws {
+    @Test func explicitQueueCountOutsideVirtioMMIOLimitsIsRejected() throws {
         let path = try makeDisk()
         defer { try? FileManager.default.removeItem(atPath: path) }
 
-        let tooLow = try VirtioBlk(path: path, identity: "test", queueCount: 0)
-        let tooHigh = try VirtioBlk(path: path, identity: "test", queueCount: 99)
+        let maximum = try VirtioBlk(path: path, identity: "test", queueCount: 16)
+        #expect(maximum.queueCount == 16)
 
-        #expect(tooLow.queueCount == 1)
-        #expect(tooHigh.queueCount == 16)
+        #expect(throws: VMError.self) {
+            _ = try VirtioBlk(path: path, identity: "test", queueCount: 0)
+        }
+        #expect(throws: VMError.self) {
+            _ = try VirtioBlk(path: path, identity: "test", queueCount: 17)
+        }
     }
 
     @Test func advertisesDiscardAndWriteZeroesByDefault() throws {
@@ -131,9 +137,11 @@ import Testing
         #expect(block.deviceFeatures & (1 << 13) != 0)  // VIRTIO_BLK_F_DISCARD
         #expect(block.deviceFeatures & (1 << 14) != 0)  // VIRTIO_BLK_F_WRITE_ZEROES
         #expect(block.configSpace.count >= 60)
-        #expect(block.configSpace.leUInt32(at: 36) > 0)  // max_discard_sectors
-        #expect(block.configSpace.leUInt32(at: 48) > 0)  // max_write_zeroes_sectors
-        #expect(block.configSpace[56] == 1)              // write_zeroes_may_unmap
+        #expect(block.configSpace.leUInt32(at: 36) == 1 << 22)  // 2 GiB/range
+        #expect(block.configSpace.leUInt32(at: 40) == 64)       // bounded punch calls
+        #expect(block.configSpace.leUInt32(at: 48) == 8_192)    // 4 MiB/range
+        #expect(block.configSpace.leUInt32(at: 52) == 4)        // 16 MiB aggregate
+        #expect(block.configSpace[56] == 1)                     // write_zeroes_may_unmap
     }
 
     @Test func readOnlyImageAdvertisesReadOnlyFeatureAndNoDiscard() throws {
@@ -215,7 +223,7 @@ import Testing
         try Data(repeating: 0x5A, count: 4096).write(to: URL(fileURLWithPath: path))
         let block = try VirtioBlk(path: path, identity: "test", queueCount: 1)
         var ranges = [UInt8]()
-        for _ in 0...256 {
+        for _ in 0...64 {
             ranges.appendLE(UInt64(0))
             ranges.appendLE(UInt32(1))
             ranges.appendLE(UInt32(0))
@@ -260,7 +268,7 @@ import Testing
         let block = try VirtioBlk(path: path, identity: "test", queueCount: 1)
         var range = [UInt8]()
         range.appendLE(UInt64(0))
-        range.appendLE(UInt32((1 << 22) + 1))
+        range.appendLE(UInt32(8_193))
         range.appendLE(UInt32(0))
 
         let status = range.withUnsafeMutableBytes { buffer -> VirtioBlk.RequestStatus in
@@ -347,6 +355,10 @@ import Testing
 
         #expect(status == .ok)
         #expect(try Data(contentsOf: URL(fileURLWithPath: path)).allSatisfy { $0 == 0xCC })
+        #expect(block.statistics.discardRequests == 1)
+        #expect(block.statistics.discardRequestedBytes == 2_048)
+        #expect(block.statistics.discardHostOperations == 0)
+        #expect(block.statistics.discardIgnoredRanges == 1)
     }
 
     @Test func writeZeroesWithoutUnmapZerosRange() throws {
@@ -368,6 +380,11 @@ import Testing
         let data = try Data(contentsOf: URL(fileURLWithPath: path))
         #expect(Array(data[0..<1024]).allSatisfy { $0 == 0 })
         #expect(data[1024] == 0xAB)
+        #expect(block.statistics.writeZeroesRequests == 1)
+        #expect(block.statistics.writeZeroesRequestedBytes == 1_024)
+        #expect(block.statistics.writeZeroesHostWrittenBytes == 1_024)
+        #expect(block.statistics.writeZeroesHostOperations == 1)
+        #expect(block.statistics.rangeSegments == 1)
     }
 
     @Test func unalignedWriteZeroesWithUnmapStillUsesZeroFallback() throws {
@@ -482,6 +499,53 @@ import Testing
         #expect(bus.device(for: 0x0900_0000) == nil)     // below any device
         #expect(bus.device(for: 0x0C00_1000) == nil)     // exactly past the UART window
     }
+
+    @Test func attachmentOrderDoesNotAffectRoutingAndBoundariesAreExact() {
+        let bus = MMIOBus()
+        let high = StubDevice(base: 0x3000, size: 0x100)
+        let low = StubDevice(base: 0x1000, size: 0x80)
+        let middle = StubDevice(base: 0x2000, size: 0x20)
+
+        bus.attach(high)
+        bus.attach(low)
+        bus.attach(middle)
+
+        #expect(bus.device(for: 0x1000)?.0 === low)
+        #expect(bus.device(for: 0x107F)?.1 == 0x7F)
+        #expect(bus.device(for: 0x1080) == nil)
+        #expect(bus.device(for: 0x2000)?.0 === middle)
+        #expect(bus.device(for: 0x201F)?.1 == 0x1F)
+        #expect(bus.device(for: 0x2020) == nil)
+        #expect(bus.device(for: 0x3000)?.0 === high)
+        #expect(bus.device(for: 0x30FF)?.1 == 0xFF)
+        #expect(bus.device(for: 0x3100) == nil)
+    }
+
+    @Test func sealedBusUsesAVCPULocalRepeatedDeviceCache() {
+        let bus = MMIOBus()
+        let first = StubDevice(base: 0x1000, size: 0x100)
+        let second = StubDevice(base: 0x4000, size: 0x200)
+        bus.attach(first)
+        bus.attach(second)
+        bus.seal()
+        var cache = MMIORouteCache()
+
+        #expect(bus.device(for: 0x4010, cache: &cache)?.0 === second)
+        #expect(bus.device(for: 0x41FF, cache: &cache)?.1 == 0x1FF)
+        #expect(bus.device(for: 0x1004, cache: &cache)?.0 === first)
+        #expect(bus.device(for: 0x2000, cache: &cache) == nil)
+        #expect(bus.device(for: 0x1008, cache: &cache)?.1 == 8)
+    }
+
+    @Test func supportsAOneByteWindowAtTheTopOfTheAddressSpace() {
+        let bus = MMIOBus()
+        let top = StubDevice(base: UInt64.max, size: 1)
+        bus.attach(top)
+
+        #expect(bus.device(for: UInt64.max)?.0 === top)
+        #expect(bus.device(for: UInt64.max)?.1 == 0)
+        #expect(bus.device(for: UInt64.max - 1) == nil)
+    }
 }
 
 @Suite struct PIOBusTests {
@@ -581,6 +645,7 @@ import Testing
             queueStateChanges: 1,
             usedInterrupts: 1,
             configurationInterrupts: 1,
+            emittedInterruptSignals: 2,
             deviceResets: 1
         ))
     }
@@ -834,18 +899,6 @@ import Testing
     private let requestBuffer: UInt64 = 0x8000_4000
     private let responseBuffer: UInt64 = 0x8000_5000
 
-    @Test func virglLogClassifiesOnlyExplicitVulkanDeviceLoss() {
-        #expect(VirglRenderer.runtimeFailure(
-            logMessage: "queue submit failed: VK_ERROR_DEVICE_LOST"
-        ) == .deviceLost("renderer reported VK_ERROR_DEVICE_LOST"))
-        #expect(VirglRenderer.runtimeFailure(
-            logMessage: "guest command rejected with invalid resource"
-        ) == nil)
-        #expect(VirglRenderer.runtimeFailure(
-            logMessage: "generic renderer device lost text"
-        ) == nil)
-    }
-
     @Test func singleCapsetBecomesImplicitRendererDefault() {
         let venus = VirtioGPUCapset(id: 4, maxVersion: 0, data: [1])
         #expect(VirtioGPU.rendererContextFlags(requested: 0, capsets: [venus]) == 4)
@@ -861,6 +914,295 @@ import Testing
 
         #expect(VirtioGPU.rendererContextFlags(requested: 0, capsets: [virgl, virgl2, venus]) == 2)
         #expect(VirtioGPU.rendererContextFlags(requested: 4, capsets: [virgl, virgl2, venus]) == 4)
+    }
+
+    @Test func compositorBackingCoalescesOnlyWhenGuestAndHostRangesAreAdjacent() throws {
+        let pageSize = 4_096
+        let contiguousPageCount = 8_192
+        let storage = UnsafeMutableRawPointer.allocate(
+            byteCount: contiguousPageCount * pageSize,
+            alignment: pageSize
+        )
+        defer { storage.deallocate() }
+        let guestBase: UInt64 = 0x1_0000_0000
+        let fragmented = (0..<contiguousPageCount).map { page in
+            VirtioGPUMemoryEntry(
+                pointer: storage.advanced(by: page * pageSize),
+                length: pageSize,
+                guestAddress: guestBase + UInt64(page * pageSize)
+            )
+        }
+
+        let normalized = try VirtioGPU.coalescedMemoryEntries(
+            fragmented,
+            maximumEntries: 4_096
+        )
+
+        #expect(normalized.count == 1)
+        #expect(normalized[0].pointer == storage)
+        #expect(normalized[0].guestAddress == guestBase)
+        #expect(normalized[0].length == contiguousPageCount * pageSize)
+
+        let stillDiscontiguous = fragmented.enumerated().map { index, entry in
+            VirtioGPUMemoryEntry(
+                pointer: entry.pointer,
+                length: entry.length,
+                guestAddress: guestBase + UInt64(index * pageSize * 2)
+            )
+        }
+        let admitted = try VirtioGPU.coalescedMemoryEntries(
+            stillDiscontiguous,
+            maximumEntries: DoryRendererWorkerLimits.production.maximumSharedRegions
+        )
+        #expect(admitted.count == contiguousPageCount)
+
+        let priorArtificialLimit = 4_096
+        #expect(throws: VMError.self) {
+            try VirtioGPU.coalescedMemoryEntries(
+                stillDiscontiguous,
+                maximumEntries: priorArtificialLimit
+            )
+        }
+    }
+
+    @Test func rendererExecutorCopiesAndBoundsCommandsBeforeExactlyOnceInvocation() {
+        let renderer = FakeVirtioGPURenderer(capsets: [])
+        let executor = VirtioGPURendererCommandExecutor(
+            renderer: renderer,
+            maximumCommandBytes: 4,
+            maximumMemoryEntries: 2,
+            maximumReferencedBytes: 4_096
+        )
+        var bytes: [UInt8] = [1, 2, 3, 4]
+        let command = VirtioGPURendererCommand.submit3D(contextID: 7, command: bytes)
+        bytes[0] = 99
+
+        guard case .success(.none) = executor.execute(command, generation: 1) else {
+            Issue.record("bounded renderer command was not admitted")
+            return
+        }
+        #expect(renderer.submitAttemptCount == 1)
+        #expect(renderer.submittedCommands == [[1, 2, 3, 4]])
+
+        let oversized = executor.execute(
+            .submit3D(contextID: 7, command: [0, 1, 2, 3, 4]),
+            generation: 1
+        )
+        guard case .rejected(.invalidInput(operation: "submit-3d", detail: _)) = oversized else {
+            Issue.record("oversized executor input was not rejected before mutation")
+            return
+        }
+        #expect(renderer.submitAttemptCount == 1)
+    }
+
+    @Test func rendererExecutorDistinguishesRejectionFromMutationUncertainty() {
+        let renderer = FakeVirtioGPURenderer(capsets: [])
+        let executor = VirtioGPURendererCommandExecutor(
+            renderer: renderer,
+            maximumCommandBytes: 64,
+            maximumMemoryEntries: 2,
+            maximumReferencedBytes: 4_096
+        )
+
+        renderer.failSubmit = true
+        guard case .rejected(.renderer(operation: "submit-3d", detail: _)) = executor.execute(
+            .submit3D(contextID: 3, command: []),
+            generation: 1
+        ) else {
+            Issue.record("typed adapter rejection lost its semantic classification")
+            return
+        }
+        renderer.failSubmit = false
+        guard case .success(.none) = executor.execute(
+            .submit3D(contextID: 3, command: [1]),
+            generation: 1
+        ) else {
+            Issue.record("typed rejection incorrectly revoked the generation")
+            return
+        }
+
+        renderer.failSubmitOutcomeUnknown = true
+        guard case .outcomeUnknown(let uncertainty) = executor.execute(
+            .submit3D(contextID: 3, command: [2]),
+            generation: 1
+        ) else {
+            Issue.record("untyped adapter failure was not classified as uncertain")
+            return
+        }
+        #expect(uncertainty.operation == "submit-3d")
+        #expect(renderer.submitAttemptCount == 3)
+
+        renderer.failSubmitOutcomeUnknown = false
+        guard case .rejected(.admissionClosed(generation: 1)) = executor.execute(
+            .submit3D(contextID: 3, command: [2]),
+            generation: 1
+        ) else {
+            Issue.record("uncertain generation admitted a duplicate mutation")
+            return
+        }
+        #expect(renderer.submitAttemptCount == 3)
+    }
+
+    @Test func rendererExecutorResetCannotBeOvertakenByOldOrFutureGenerationCommands() {
+        let renderer = FakeVirtioGPURenderer(capsets: [])
+        let executor = VirtioGPURendererCommandExecutor(
+            renderer: renderer,
+            maximumCommandBytes: 64,
+            maximumMemoryEntries: 2,
+            maximumReferencedBytes: 4_096
+        )
+        #expect(executor.beginQuiescence(successorGeneration: 2) == .admitted(
+            sourceGeneration: 1
+        ))
+
+        guard case .rejected(.admissionClosed(generation: 1)) = executor.execute(
+            .submit3D(contextID: 1, command: [1]),
+            generation: 1
+        ) else {
+            Issue.record("quiescing source generation admitted guest mutation")
+            return
+        }
+        guard case .rejected(.staleGeneration(expected: 1, actual: 2)) = executor.execute(
+            .submit3D(contextID: 1, command: [2]),
+            generation: 2
+        ) else {
+            Issue.record("future generation overtook renderer reset")
+            return
+        }
+        guard case .success(.reset(.ready)) = executor.execute(
+            .resetAfterDeviceQuiesce(successorGeneration: 2),
+            generation: 1,
+            purpose: .retirement
+        ) else {
+            Issue.record("renderer reset did not publish the successor generation")
+            return
+        }
+        guard case .rejected(.staleGeneration(expected: 2, actual: 1)) = executor.execute(
+            .submit3D(contextID: 1, command: [3]),
+            generation: 1
+        ) else {
+            Issue.record("old generation remained admissible after reset")
+            return
+        }
+        guard case .success(.none) = executor.execute(
+            .submit3D(contextID: 1, command: [4]),
+            generation: 2
+        ) else {
+            Issue.record("reset successor generation was not admitted")
+            return
+        }
+        #expect(renderer.submitAttemptCount == 1)
+    }
+
+    @Test func rendererExecutorFenceTokensProvideExactlyOnceGenerationSafeCallbacks() throws {
+        let renderer = FakeVirtioGPURenderer(capsets: [])
+        let executor = VirtioGPURendererCommandExecutor(
+            renderer: renderer,
+            maximumCommandBytes: 64,
+            maximumMemoryEntries: 2,
+            maximumReferencedBytes: 4_096
+        )
+        let events = LockedStringList()
+        executor.installCallbacks(
+            fence: { generation, contextID, ringIndex, fenceID in
+                events.append("\(generation):\(contextID):\(ringIndex):\(fenceID)")
+            },
+            runtimeFailure: { _, _ in }
+        )
+
+        guard case .success(.none) = executor.execute(
+            .createFence(
+                contextID: 9,
+                ringIndex: 2,
+                guestFenceID: 91,
+                contextFence: true
+            ),
+            generation: 1
+        ) else {
+            Issue.record("first executor fence was not registered")
+            return
+        }
+        let firstHostFenceID = try #require(renderer.createdFences.first?.fenceID)
+        renderer.signalFence()
+        renderer.signalFenceUnchecked(contextID: 9, ringIndex: 2, fenceID: firstHostFenceID)
+        #expect(events.values == ["1:9:2:91"])
+
+        guard case .success(.none) = executor.execute(
+            .createFence(
+                contextID: 9,
+                ringIndex: 2,
+                guestFenceID: 92,
+                contextFence: true
+            ),
+            generation: 1
+        ) else {
+            Issue.record("pre-reset executor fence was not registered")
+            return
+        }
+        let oldHostFenceID = try #require(renderer.createdFences.first?.fenceID)
+        #expect(executor.beginQuiescence(successorGeneration: 2) == .admitted(
+            sourceGeneration: 1
+        ))
+        guard case .success(.reset(.ready)) = executor.execute(
+            .resetAfterDeviceQuiesce(successorGeneration: 2),
+            generation: 1,
+            purpose: .retirement
+        ) else {
+            Issue.record("executor reset did not complete")
+            return
+        }
+        guard case .success(.none) = executor.execute(
+            .createFence(
+                contextID: 9,
+                ringIndex: 2,
+                guestFenceID: 92,
+                contextFence: true
+            ),
+            generation: 2
+        ) else {
+            Issue.record("post-reset executor fence was not registered")
+            return
+        }
+        let newHostFenceID = try #require(renderer.createdFences.first?.fenceID)
+        #expect(newHostFenceID != oldHostFenceID)
+        renderer.signalFenceUnchecked(contextID: 9, ringIndex: 2, fenceID: oldHostFenceID)
+        #expect(events.values == ["1:9:2:91"])
+        renderer.signalFence()
+        #expect(events.values == ["1:9:2:91", "2:9:2:92"])
+    }
+
+    @Test func rendererExecutorNeverPublishesCallbackWhenFenceRegistrationIsUncertain() {
+        let renderer = FakeVirtioGPURenderer(capsets: [])
+        renderer.signalFenceThenFail = true
+        let executor = VirtioGPURendererCommandExecutor(
+            renderer: renderer,
+            maximumCommandBytes: 64,
+            maximumMemoryEntries: 2,
+            maximumReferencedBytes: 4_096
+        )
+        let events = LockedStringList()
+        executor.installCallbacks(
+            fence: { generation, _, _, fenceID in
+                events.append("\(generation):\(fenceID)")
+            },
+            runtimeFailure: { _, _ in }
+        )
+
+        guard case .outcomeUnknown = executor.execute(
+            .createFence(
+                contextID: 0,
+                ringIndex: 0,
+                guestFenceID: 55,
+                contextFence: false
+            ),
+            generation: 1
+        ) else {
+            Issue.record("callback-then-throw fence was not classified as uncertain")
+            return
+        }
+        #expect(events.values.isEmpty)
+        renderer.signalFenceUnchecked(contextID: 0, ringIndex: 0, fenceID: 1)
+        #expect(events.values.isEmpty)
     }
 
     @Test func exposesBootstrapIdentityConfigAndHostMemoryWindow() {
@@ -947,7 +1289,7 @@ import Testing
         unalignedMap.appendLE(UInt32(7))
         unalignedMap.appendLE(UInt32(0))
         unalignedMap.appendLE(UInt64(4_096))
-        #expect(leUInt32(try gpuResponse(gpu: gpu, request: unalignedMap), at: 0) == 0x1202)
+        #expect(leUInt32(try gpuResponse(gpu: gpu, request: unalignedMap), at: 0) == 0x1205)
     }
 
     @Test func assignsStableUUIDToRendererResource() throws {
@@ -986,7 +1328,7 @@ import Testing
         var unknown = gpuRequest(type: 0x010B, fenceID: 42, contextID: 0, ringIndex: 0)
         unknown.appendLE(UInt32(99))
         unknown.appendLE(UInt32(0))
-        #expect(leUInt32(try gpuResponse(gpu: gpu, request: unknown), at: 0) == 0x1202)
+        #expect(leUInt32(try gpuResponse(gpu: gpu, request: unknown), at: 0) == 0x1205)
     }
 
     @Test func respondsToDisplayInfoOnControlQueue() throws {
@@ -1278,7 +1620,7 @@ import Testing
         #expect(Array(update.bytes) == pixels)  // callback owns a stable copy, never guest memory
 
         let countBeforeInvalid = cursorBox.values.count
-        #expect(leUInt32(try submitCursor(cursorRequest(resourceID: 7, hotX: 2, hotY: 0)), at: 0) == 0x1202)
+        #expect(leUInt32(try submitCursor(cursorRequest(resourceID: 7, hotX: 2, hotY: 0)), at: 0) == 0x1205)
         #expect(cursorBox.values.count == countBeforeInvalid)
 
         #expect(leUInt32(try submitCursor(cursorRequest(resourceID: 0, hotX: 0, hotY: 0)), at: 0) == 0x1100)
@@ -1324,22 +1666,25 @@ import Testing
         #expect(Array(acceleratedUpdate.bytes) == acceleratedPixels)
 
         let countBeforeInvalidAccelerated = cursorBox.values.count
-        #expect(leUInt32(try submitCursor(cursorRequest(resourceID: 8, hotX: 0, hotY: 2)), at: 0) == 0x1202)
+        #expect(leUInt32(try submitCursor(cursorRequest(resourceID: 8, hotX: 0, hotY: 2)), at: 0) == 0x1205)
         #expect(cursorBox.values.count == countBeforeInvalidAccelerated)
     }
 
     @Test func scanoutDisableAcceptsTheEmptyRectangleUsedDuringModesets() throws {
+        let disabledScanout = ScanoutResourceBox()
         let gpu = VirtioGPU(
             hostMemoryBase: 0x1_0000_0000,
             scanoutCount: 1,
             scanoutWidth: 2_560,
-            scanoutHeight: 1_600
+            scanoutHeight: 1_600,
+            onScanoutDisabled: { disabledScanout.store($0) }
         )
         var disable2D = gpuRequest(type: 0x0103, fenceID: 0, contextID: 0, ringIndex: 0)
         disable2D.append(contentsOf: [UInt8](repeating: 0, count: 16))  // ignored empty rect
         disable2D.appendLE(UInt32(0))  // scanout_id
         disable2D.appendLE(UInt32(0))  // resource_id disables the scanout
         #expect(leUInt32(try gpuResponse(gpu: gpu, request: disable2D), at: 0) == 0x1100)
+        #expect(disabledScanout.value == 0)
 
         var disableBlob = gpuRequest(type: 0x010D, fenceID: 0, contextID: 0, ringIndex: 0)
         disableBlob.append(contentsOf: [UInt8](repeating: 0, count: 72))
@@ -1350,7 +1695,7 @@ import Testing
     @Test func twoDimensionalBindingFlushAndReleaseFollowScanoutLifetime() throws {
         let memory = try GuestMemory(guestBase: base, size: 64 * HostPage.size)
         let frameBox = ScanoutFrameBox()
-        let releasedResources = ScanoutResourceBox()
+        let releasedResources = ScanoutReleaseBox()
         let renderer = FakeVirtioGPURenderer(capsets: [])
         let gpu = VirtioGPU(
             hostMemoryBase: 0x1_0000_0000,
@@ -1469,26 +1814,36 @@ import Testing
         unref.appendLE(UInt32(7))
         unref.appendLE(UInt32(0))
         #expect(leUInt32(try submit(unref), at: 0) == 0x1100)
-        #expect(releasedResources.value == 7)
+        let release = try #require(releasedResources.value)
+        #expect(release.resourceID == 7)
+        #expect(release.resourceGeneration == boundFrame.resourceGeneration)
+        #expect(renderer.unreferencedResourceIDs.isEmpty)
+        // Guest-visible unref is immediate, but the renderer name stays reserved until the display
+        // acknowledges detach. Reuse during that interval must fail rather than alias the old GL
+        // texture generation.
+        #expect(leUInt32(try submit(create), at: 0) != 0x1100)
+        release.acknowledge(scanoutID: 0)
+        #expect(renderer.unrefCompleted.wait(timeout: .now() + 1) == .success)
         #expect(renderer.unreferencedResourceIDs == [7])
+        var recreated = false
+        for _ in 0..<1_000 where !recreated {
+            recreated = leUInt32(try submit(create), at: 0) == 0x1100
+            if !recreated { usleep(1_000) }
+        }
+        #expect(recreated)
     }
 
-    @Test func threeDimensionalPartialFlushUsesFullResourceReadbackStride() throws {
+    @Test func threeDimensionalScanoutPublishesSharedTextureWithoutReadback() throws {
         let memory = try GuestMemory(guestBase: base, size: 64 * HostPage.size)
-        let frameBox = ScanoutFrameBox()
+        let textureBox = ScanoutTextureBox()
         let renderer = FakeVirtioGPURenderer(capsets: [])
-        renderer.setTransferReadback(
-            width: 4,
-            height: 3,
-            pixels: Array(0..<48).map(UInt8.init)
-        )
         let gpu = VirtioGPU(
             hostMemoryBase: 0x1_0000_0000,
             scanoutCount: 1,
             scanoutWidth: 4,
             scanoutHeight: 3,
             renderer: renderer,
-            onScanoutFrame: { frameBox.store($0) }
+            onScanoutTexture: { textureBox.store($0) }
         )
         let transport = VirtioMMIOTransport(
             baseAddress: GuestLayout.virtioBase,
@@ -1548,14 +1903,17 @@ import Testing
         setScanout.appendLE(UInt32(0))
         setScanout.appendLE(UInt32(7))
         #expect(leUInt32(try submit(setScanout), at: 0) == 0x1100)
-        #expect(Array(try #require(frameBox.value).bytes) == Array(0..<48).map(UInt8.init))
+        let binding = try #require(textureBox.values.last)
+        #expect(binding.resourceID == 7)
+        #expect(binding.texture.textureID == 1_007)
+        #expect(binding.texture.width == 4)
+        #expect(binding.texture.height == 3)
+        #expect(binding.texture.yOriginTop)
+        #expect(binding.sourceRect == VirtioGPURect(x: 0, y: 0, width: 4, height: 3))
+        #expect(binding.dirtyRect == VirtioGPURect(x: 0, y: 0, width: 4, height: 3))
+        #expect(renderer.scanoutTextureResourceIDs == [7])
+        #expect(renderer.transferFromHostCalls.isEmpty)
 
-        renderer.setTransferReadback(
-            width: 4,
-            height: 3,
-            pixels: Array(100..<148).map(UInt8.init)
-        )
-        renderer.transferFromHostCalls.removeAll()
         var flush = gpuRequest(type: 0x0104, fenceID: 0, contextID: 0, ringIndex: 0)
         flush.appendLE(UInt32(1))
         flush.appendLE(UInt32(1))
@@ -1565,15 +1923,584 @@ import Testing
         flush.appendLE(UInt32(0))
         #expect(leUInt32(try submit(flush), at: 0) == 0x1100)
 
-        let transfer = try #require(renderer.transferFromHostCalls.last)
-        #expect(transfer.stride == 16)
-        #expect(transfer.entryLengths == [48])
-        #expect(transfer.offset == 20)
-        #expect(transfer.box == [1, 1, 0, 2, 1, 1])
-        let frame = try #require(frameBox.value)
-        #expect(frame.stride == 8)
-        #expect(frame.dirtyRect == VirtioGPURect(x: 1, y: 1, width: 2, height: 1))
-        #expect(Array(frame.bytes) == Array(120..<128).map(UInt8.init))
+        let damage = try #require(textureBox.values.last)
+        #expect(textureBox.values.count == 2)
+        #expect(damage.texture == binding.texture)
+        #expect(damage.resourceGeneration == binding.resourceGeneration)
+        #expect(damage.dirtyRect == VirtioGPURect(x: 1, y: 1, width: 2, height: 1))
+        #expect(renderer.scanoutTextureResourceIDs == [7, 7])
+        #expect(renderer.transferFromHostCalls.isEmpty)
+
+        renderer.scanoutTextureYOriginTop = false
+        #expect(leUInt32(try submit(setScanout), at: 0) == 0x1100)
+        #expect(textureBox.values.last?.texture.yOriginTop == false)
+
+        renderer.scanoutTextureOverride = VirtioGPUTextureResource(
+            textureID: 1_007,
+            format: 1,
+            width: 5,
+            height: 3,
+            yOriginTop: false
+        )
+        #expect(leUInt32(try submit(setScanout), at: 0) != 0x1100)
+        #expect(textureBox.values.last?.texture.width == 4)
+    }
+
+    @Test func multiScanoutFlushRetiresPartialPresentationAcquisitionWithoutPublishing() throws {
+        let textureBox = ScanoutTextureBox()
+        let renderer = FakeVirtioGPURenderer(capsets: [])
+        let gpu = VirtioGPU(
+            hostMemoryBase: 0x1_0000_0000,
+            scanoutCount: 2,
+            scanoutWidth: 4,
+            scanoutHeight: 3,
+            renderer: renderer,
+            onScanoutTexture: { textureBox.store($0) }
+        )
+
+        var create = gpuRequest(type: 0x0204, fenceID: 0, contextID: 0, ringIndex: 0)
+        create.appendLE(UInt32(7))
+        create.appendLE(UInt32(2))
+        create.appendLE(UInt32(1))
+        create.appendLE(UInt32(1 << 1))
+        create.appendLE(UInt32(4))
+        create.appendLE(UInt32(3))
+        create.appendLE(UInt32(1))
+        create.appendLE(UInt32(1))
+        create.appendLE(UInt32(0))
+        create.appendLE(UInt32(0))
+        create.appendLE(UInt32(1))
+        create.appendLE(UInt32(0))
+        #expect(leUInt32(try gpuResponse(gpu: gpu, request: create), at: 0) == 0x1100)
+
+        func setScanout(_ scanoutID: UInt32) throws -> [UInt8] {
+            var request = gpuRequest(type: 0x0103, fenceID: 0, contextID: 0, ringIndex: 0)
+            request.appendLE(UInt32(0))
+            request.appendLE(UInt32(0))
+            request.appendLE(UInt32(4))
+            request.appendLE(UInt32(3))
+            request.appendLE(scanoutID)
+            request.appendLE(UInt32(7))
+            return try gpuResponse(gpu: gpu, request: request)
+        }
+        #expect(leUInt32(try setScanout(0), at: 0) == 0x1100)
+        #expect(leUInt32(try setScanout(1), at: 0) == 0x1100)
+        #expect(textureBox.values.count == 2)
+
+        // Acquisition is sorted by scanout ID. Permit scanout 0's new authority, then fail the
+        // second request before any update can be published.
+        renderer.failScanoutPresentationRequest = renderer.presentationRequestCount + 2
+        let synchronizationCountBeforeFlush = renderer.presentationSynchronizations.count
+        var flush = gpuRequest(type: 0x0104, fenceID: 0, contextID: 0, ringIndex: 0)
+        flush.appendLE(UInt32(0))
+        flush.appendLE(UInt32(0))
+        flush.appendLE(UInt32(4))
+        flush.appendLE(UInt32(3))
+        flush.appendLE(UInt32(7))
+        flush.appendLE(UInt32(0))
+
+        #expect(leUInt32(try gpuResponse(gpu: gpu, request: flush), at: 0) != 0x1100)
+        #expect(textureBox.values.count == 2)
+        #expect(renderer.presentationSynchronizations.count == synchronizationCountBeforeFlush + 1)
+        #expect(renderer.presentationSynchronizations.last?.discardCount == 1)
+    }
+
+    @Test func mmioResetEpochRejectsLateFenceCompletionWithoutStaleQueueWrite() throws {
+        let renderer = FakeVirtioGPURenderer(capsets: [
+            VirtioGPUCapset(id: 4, maxVersion: 0, data: [1]),
+        ])
+        let gpu = VirtioGPU(
+            hostMemoryBase: 0x1_0000_0000,
+            renderer: renderer,
+            quiescenceTimeout: 1
+        )
+        let memory = try GuestMemory(guestBase: base, size: 64 * HostPage.size)
+        let transport = VirtioMMIOTransport(
+            baseAddress: GuestLayout.virtioBase,
+            backend: gpu,
+            memory: memory
+        ) {}
+        transport.queues[0].configure(
+            size: 8,
+            descriptorTable: descTable,
+            availRing: availRing,
+            usedRing: usedRing
+        )
+        transport.queues[0].setReady(true)
+
+        var request = gpuRequest(type: 0x0207, fenceID: 77, contextID: 5, ringIndex: 0)
+        request[4] = 1 // VIRTIO_GPU_FLAG_FENCE
+        request.appendLE(UInt32(0))
+        request.appendLE(UInt32(0))
+        try writeDescriptor(
+            memory,
+            index: 0,
+            addr: requestBuffer,
+            len: UInt32(request.count),
+            flags: 0x1,
+            next: 1
+        )
+        try writeDescriptor(
+            memory,
+            index: 1,
+            addr: responseBuffer,
+            len: 512,
+            flags: 0x2,
+            next: 0
+        )
+        try memory.write(request, at: requestBuffer)
+        try memory.write(UInt16(0), at: availRing)
+        try memory.write(UInt16(0), at: availRing + 4)
+        try memory.write(UInt16(1), at: availRing + 2)
+        gpu.handleKick(queue: 0, transport: transport)
+        #expect(try memory.read(UInt16.self, at: usedRing + 2) == 0)
+        let oldHostFenceID = try #require(renderer.createdFences.first?.fenceID)
+
+        transport.write(offset: 0x070, value: 0, width: 4)
+        #expect(renderer.resetCount == 1)
+        #expect(gpu.rendererLifecycleHealth == .ready(epoch: 2))
+
+        // Simulate a callback that escaped renderer cancellation and was already in flight. The
+        // device epoch must independently prevent it from touching the reset queue or response.
+        renderer.signalFenceUnchecked(contextID: 0, ringIndex: 0, fenceID: oldHostFenceID)
+        #expect(try memory.read(UInt16.self, at: usedRing + 2) == 0)
+        #expect(transport.statistics.usedInterrupts == 0)
+    }
+
+    @Test func resetQuiescenceOrdersDisableReleaseTeardownResetAndResourceReuse() throws {
+        let renderer = FakeVirtioGPURenderer(capsets: [])
+        let releases = ScanoutReleaseList()
+        let events = LockedStringList()
+        let gpu = VirtioGPU(
+            hostMemoryBase: 0x1_0000_0000,
+            scanoutCount: 2,
+            renderer: renderer,
+            onScanoutResourceReleased: { release in
+                releases.append(release)
+                events.append("release-\(release.resourceID)")
+            },
+            onScanoutDisabled: { events.append("disable-\($0)") }
+        )
+
+        #expect(leUInt32(try gpuResponse(
+            gpu: gpu,
+            request: create3DRequest(resourceID: 9)
+        ), at: 0) == 0x1100)
+        #expect(leUInt32(try gpuResponse(
+            gpu: gpu,
+            request: create3DRequest(resourceID: 7)
+        ), at: 0) == 0x1100)
+        #expect(leUInt32(try gpuResponse(
+            gpu: gpu,
+            request: createContextRequest(contextID: 31)
+        ), at: 0) == 0x1100)
+
+        let first = gpu.quiesce(reason: .deviceReset)
+        let repeated = gpu.quiesce(reason: .deviceReset)
+        #expect(first === repeated)
+        #expect(first.outcome == nil)
+        #expect(renderer.unreferencedResourceIDs.isEmpty)
+        #expect(renderer.resetCount == 0)
+        #expect(releases.values.map(\.resourceID) == [7, 9])
+        #expect(Array(events.values.prefix(2)) == ["disable-0", "disable-1"])
+
+        for release in releases.values {
+            release.acknowledge(scanoutID: 0)
+            release.acknowledge(scanoutID: 1)
+        }
+        #expect(first.wait(timeout: 1) == .completed)
+        #expect(renderer.unreferencedResourceIDs == [7, 9])
+        #expect(renderer.resetCount == 1)
+        #expect(renderer.resetContextSnapshots == [Set([31])])
+        #expect(gpu.rendererLifecycleHealth == .ready(epoch: first.epoch))
+
+        // Reset completion is a real recreation boundary for this renderer, so the same guest ID
+        // can be admitted only after all display acknowledgements and renderer teardown finish.
+        #expect(leUInt32(try gpuResponse(
+            gpu: gpu,
+            request: create3DRequest(resourceID: 7)
+        ), at: 0) == 0x1100)
+    }
+
+    @Test func shutdownQuiescenceIsTerminalAfterDeterministicRelease() throws {
+        let renderer = FakeVirtioGPURenderer(capsets: [
+            VirtioGPUCapset(id: 4, maxVersion: 0, data: [1]),
+        ])
+        let releases = ScanoutReleaseList()
+        let gpu = VirtioGPU(
+            hostMemoryBase: 0x1_0000_0000,
+            scanoutCount: 1,
+            renderer: renderer,
+            onScanoutResourceReleased: { releases.append($0) }
+        )
+        let create = create3DRequest(resourceID: 6)
+        #expect(leUInt32(try gpuResponse(gpu: gpu, request: create), at: 0) == 0x1100)
+
+        let receipt = gpu.quiesce(reason: .shutdown)
+        try #require(releases.values.first).acknowledge(scanoutID: 0)
+        #expect(receipt.wait(timeout: 1) == .completed)
+        #expect(renderer.unreferencedResourceIDs == [6])
+        #expect(renderer.resetCount == 1)
+        #expect(gpu.deviceFeatures == 0)
+        #expect(gpu.configSpace.leUInt32(at: 12) == 0)
+        #expect(leUInt32(try gpuResponse(gpu: gpu, request: create), at: 0) != 0x1100)
+    }
+
+    @Test func completedEmptyResetIsIdempotentWhileConcurrentResetSharesOneReceipt() {
+        let renderer = FakeVirtioGPURenderer(capsets: [])
+        let gpu = VirtioGPU(hostMemoryBase: 0x1_0000_0000, renderer: renderer)
+
+        let first = gpu.quiesce(reason: .deviceReset)
+        let repeated = gpu.quiesce(reason: .deviceReset)
+        #expect(first === repeated)
+        #expect(first.wait(timeout: 1) == .completed)
+        #expect(renderer.resetCount == 1)
+
+        let next = gpu.quiesce(reason: .deviceReset)
+        #expect(next !== first)
+        #expect(next.wait(timeout: 1) == .completed)
+        #expect(renderer.resetCount == 2)
+        #expect(next.epoch > first.epoch)
+    }
+
+    @Test func rendererThatRequiresRecreationLatchesTypedFailClosedHealth() throws {
+        let renderer = FakeVirtioGPURenderer(capsets: [
+            VirtioGPUCapset(id: 4, maxVersion: 0, data: [1]),
+        ])
+        renderer.resetResult = .requiresRecreation("replace renderer instance")
+        let releases = ScanoutReleaseList()
+        let gpu = VirtioGPU(
+            hostMemoryBase: 0x1_0000_0000,
+            scanoutCount: 1,
+            renderer: renderer,
+            onScanoutResourceReleased: { releases.append($0) }
+        )
+        #expect(gpu.deviceFeatures != 0)
+        #expect(gpu.configSpace.leUInt32(at: 12) == 1)
+        #expect(leUInt32(try gpuResponse(
+            gpu: gpu,
+            request: create3DRequest(resourceID: 4)
+        ), at: 0) == 0x1100)
+
+        let receipt = gpu.quiesce(reason: .deviceReset)
+        let release = try #require(releases.values.first)
+        release.acknowledge(scanoutID: 0)
+        #expect(receipt.wait(timeout: 1) == .failed(
+            .resetRequiresRecreation("replace renderer instance")
+        ))
+        #expect(gpu.rendererLifecycleHealth == .failed(
+            epoch: receipt.epoch,
+            fault: .resetRequiresRecreation("replace renderer instance")
+        ))
+        #expect(gpu.deviceFeatures == 0)
+        #expect(gpu.configSpace.leUInt32(at: 12) == 0)
+        var capsetInfo = gpuRequest(type: 0x0108, fenceID: 0, contextID: 0, ringIndex: 0)
+        capsetInfo.appendLE(UInt32(0))
+        capsetInfo.appendLE(UInt32(0))
+        #expect(leUInt32(try gpuResponse(
+            gpu: gpu,
+            request: capsetInfo
+        ), at: 0) != 0x1102)
+        #expect(leUInt32(try gpuResponse(
+            gpu: gpu,
+            request: create3DRequest(resourceID: 4)
+        ), at: 0) != 0x1100)
+    }
+
+    @Test func trackedResourceLimitBackpressuresPendingDisplayReleases() throws {
+        let releases = ScanoutReleaseList()
+        let gpu = VirtioGPU(
+            hostMemoryBase: 0x1_0000_0000,
+            scanoutCount: 1,
+            maximumTrackedResources: 2,
+            onScanoutResourceReleased: { releases.append($0) }
+        )
+        func create2D(_ resourceID: UInt32) throws -> [UInt8] {
+            var request = gpuRequest(type: 0x0101, fenceID: 0, contextID: 0, ringIndex: 0)
+            request.appendLE(resourceID)
+            request.appendLE(UInt32(1))
+            request.appendLE(UInt32(1))
+            request.appendLE(UInt32(1))
+            return try gpuResponse(gpu: gpu, request: request)
+        }
+        func unref(_ resourceID: UInt32) throws -> [UInt8] {
+            var request = gpuRequest(type: 0x0102, fenceID: 0, contextID: 0, ringIndex: 0)
+            request.appendLE(resourceID)
+            request.appendLE(UInt32(0))
+            return try gpuResponse(gpu: gpu, request: request)
+        }
+
+        #expect(leUInt32(try create2D(1), at: 0) == 0x1100)
+        #expect(leUInt32(try create2D(2), at: 0) == 0x1100)
+        #expect(leUInt32(try unref(1), at: 0) == 0x1100)
+        #expect(leUInt32(try create2D(3), at: 0) != 0x1100)
+
+        try #require(releases.values.first).acknowledge(scanoutID: 0)
+        var admitted = false
+        for _ in 0..<1_000 where !admitted {
+            admitted = leUInt32(try create2D(3), at: 0) == 0x1100
+            if !admitted { usleep(1_000) }
+        }
+        #expect(admitted)
+    }
+
+    @Test func copiedScanoutGeometryIsRejectedBeforeResourceAllocation() throws {
+        let gpu = VirtioGPU(
+            hostMemoryBase: 0x1_0000_0000,
+            maximumCopiedScanoutSurfaceBytes: 64
+        )
+        func create2D(resourceID: UInt32, width: UInt32, height: UInt32) throws -> [UInt8] {
+            var request = gpuRequest(type: 0x0101, fenceID: 0, contextID: 0, ringIndex: 0)
+            request.appendLE(resourceID)
+            request.appendLE(UInt32(1))
+            request.appendLE(width)
+            request.appendLE(height)
+            return try gpuResponse(gpu: gpu, request: request)
+        }
+
+        #expect(leUInt32(try create2D(
+            resourceID: 1,
+            width: 16_384,
+            height: 16_384
+        ), at: 0) != 0x1100)
+        #expect(leUInt32(try create2D(
+            resourceID: 1,
+            width: 4,
+            height: 4
+        ), at: 0) == 0x1100)
+    }
+
+    @MainActor
+    @Test func multiScanoutFullDamageUsesOneSharedResidentBudgetAndReportsBackpressure() throws {
+        let budget = DesktopCPUPresentationBudget(maximumResidentBytes: 16)
+        let mailboxes = (0..<3).map { scanoutID in
+            DesktopFrameMailbox(
+                scanoutID: UInt32(scanoutID),
+                maximumCPUSurfaceBytes: 16,
+                maximumAggregateCPUSurfaceBytes: 16,
+                maximumInFlightCPUFrameBytes: 16,
+                sharedCPUPresentationBudget: budget
+            )
+        }
+        let memory = try GuestMemory(guestBase: base, size: 64 * HostPage.size)
+        let gpu = VirtioGPU(
+            hostMemoryBase: 0x1_0000_0000,
+            scanoutCount: 3,
+            scanoutWidth: 2,
+            scanoutHeight: 2,
+            maximumCopiedScanoutSurfaceBytes: 16,
+            onScanoutFrame: { frame in
+                mailboxes[Int(frame.scanoutID)].submit(frame)
+            }
+        )
+        let transport = VirtioMMIOTransport(
+            baseAddress: GuestLayout.virtioBase,
+            backend: gpu,
+            memory: memory
+        ) {}
+        transport.queues[0].configure(
+            size: 8,
+            descriptorTable: descTable,
+            availRing: availRing,
+            usedRing: usedRing
+        )
+        transport.queues[0].setReady(true)
+
+        var availableIndex = UInt16(0)
+        func submit(_ request: [UInt8]) throws -> [UInt8] {
+            try writeDescriptor(
+                memory,
+                index: 0,
+                addr: requestBuffer,
+                len: UInt32(request.count),
+                flags: 0x1,
+                next: 1
+            )
+            try writeDescriptor(
+                memory,
+                index: 1,
+                addr: responseBuffer,
+                len: 512,
+                flags: 0x2,
+                next: 0
+            )
+            try memory.write(request, at: requestBuffer)
+            try memory.write(
+                UInt16(0),
+                at: availRing + 4 + UInt64(availableIndex % 8) * 2
+            )
+            availableIndex &+= 1
+            try memory.write(availableIndex, at: availRing + 2)
+            gpu.handleKick(queue: 0, transport: transport)
+            let usedSlot = UInt64((availableIndex - 1) % 8)
+            let responseLength = try memory.read(
+                UInt32.self,
+                at: usedRing + 8 + usedSlot * 8
+            )
+            return try memory.readBytes(at: responseBuffer, count: Int(responseLength))
+        }
+
+        var create = gpuRequest(type: 0x0101, fenceID: 0, contextID: 0, ringIndex: 0)
+        create.appendLE(UInt32(7))
+        create.appendLE(UInt32(1))
+        create.appendLE(UInt32(2))
+        create.appendLE(UInt32(2))
+        #expect(leUInt32(try submit(create), at: 0) == 0x1100)
+
+        let pixelBuffer = base + 0x6000
+        try memory.write([UInt8](repeating: 0x5A, count: 16), at: pixelBuffer)
+        var attach = gpuRequest(type: 0x0106, fenceID: 0, contextID: 0, ringIndex: 0)
+        attach.appendLE(UInt32(7))
+        attach.appendLE(UInt32(1))
+        attach.appendLE(pixelBuffer)
+        attach.appendLE(UInt32(16))
+        attach.appendLE(UInt32(0))
+        #expect(leUInt32(try submit(attach), at: 0) == 0x1100)
+
+        for scanoutID in UInt32(0)..<3 {
+            var setScanout = gpuRequest(type: 0x0103, fenceID: 0, contextID: 0, ringIndex: 0)
+            setScanout.appendLE(UInt32(0))
+            setScanout.appendLE(UInt32(0))
+            setScanout.appendLE(UInt32(2))
+            setScanout.appendLE(UInt32(2))
+            setScanout.appendLE(scanoutID)
+            setScanout.appendLE(UInt32(7))
+            #expect(leUInt32(try submit(setScanout), at: 0) == 0x1100)
+        }
+
+        let beforeBudget = budget.metrics
+        let beforeMailboxRejections = mailboxes.reduce(UInt64(0)) {
+            $0 + $1.metrics.budgetRejectedFrames
+        }
+        var flush = gpuRequest(type: 0x0104, fenceID: 0, contextID: 0, ringIndex: 0)
+        flush.appendLE(UInt32(0))
+        flush.appendLE(UInt32(0))
+        flush.appendLE(UInt32(2))
+        flush.appendLE(UInt32(2))
+        flush.appendLE(UInt32(7))
+        flush.appendLE(UInt32(0))
+        #expect(leUInt32(try submit(flush), at: 0) == 0x1100)
+
+        let afterBudget = budget.metrics
+        let afterMailboxRejections = mailboxes.reduce(UInt64(0)) {
+            $0 + $1.metrics.budgetRejectedFrames
+        }
+        #expect(afterBudget.residentBytes == 16)
+        #expect(afterBudget.peakResidentBytes == 16)
+        #expect(afterBudget.rejectedReservations - beforeBudget.rejectedReservations == 2)
+        #expect(afterMailboxRejections - beforeMailboxRejections == 2)
+    }
+
+    @Test func fencedThreeDimensionalFlushRedrawsSharedTextureWithoutReadback() throws {
+        let memory = try GuestMemory(guestBase: base, size: 64 * HostPage.size)
+        let textureBox = ScanoutTextureBox()
+        let renderer = FakeVirtioGPURenderer(capsets: [])
+        let gpu = VirtioGPU(
+            hostMemoryBase: 0x1_0000_0000,
+            scanoutCount: 1,
+            scanoutWidth: 2,
+            scanoutHeight: 2,
+            renderer: renderer,
+            onScanoutTexture: { textureBox.store($0) }
+        )
+        let transport = VirtioMMIOTransport(
+            baseAddress: GuestLayout.virtioBase,
+            backend: gpu,
+            memory: memory
+        ) {}
+        transport.queues[0].configure(
+            size: 8,
+            descriptorTable: descTable,
+            availRing: availRing,
+            usedRing: usedRing
+        )
+        transport.queues[0].setReady(true)
+
+        var availableIndex = UInt16(0)
+        func submitUnfenced(_ request: [UInt8]) throws -> [UInt8] {
+            try writeDescriptor(
+                memory,
+                index: 0,
+                addr: requestBuffer,
+                len: UInt32(request.count),
+                flags: 0x1,
+                next: 1
+            )
+            try writeDescriptor(memory, index: 1, addr: responseBuffer, len: 512, flags: 0x2, next: 0)
+            try memory.write(request, at: requestBuffer)
+            try memory.write(UInt16(0), at: availRing + 4 + UInt64(availableIndex % 8) * 2)
+            availableIndex &+= 1
+            try memory.write(availableIndex, at: availRing + 2)
+            gpu.handleKick(queue: 0, transport: transport)
+            let usedSlot = UInt64((availableIndex - 1) % 8)
+            let responseLength = try memory.read(UInt32.self, at: usedRing + 8 + usedSlot * 8)
+            return try memory.readBytes(at: responseBuffer, count: Int(responseLength))
+        }
+
+        var create = gpuRequest(type: 0x0204, fenceID: 0, contextID: 0, ringIndex: 0)
+        create.appendLE(UInt32(7))
+        create.appendLE(UInt32(2))
+        create.appendLE(UInt32(1))
+        create.appendLE(UInt32(1 << 1))
+        create.appendLE(UInt32(2))
+        create.appendLE(UInt32(2))
+        create.appendLE(UInt32(1))
+        create.appendLE(UInt32(1))
+        create.appendLE(UInt32(0))
+        create.appendLE(UInt32(0))
+        create.appendLE(UInt32(1))
+        create.appendLE(UInt32(0))
+        #expect(leUInt32(try submitUnfenced(create), at: 0) == 0x1100)
+
+        var setScanout = gpuRequest(type: 0x0103, fenceID: 0, contextID: 0, ringIndex: 0)
+        setScanout.appendLE(UInt32(0))
+        setScanout.appendLE(UInt32(0))
+        setScanout.appendLE(UInt32(2))
+        setScanout.appendLE(UInt32(2))
+        setScanout.appendLE(UInt32(0))
+        setScanout.appendLE(UInt32(7))
+        #expect(leUInt32(try submitUnfenced(setScanout), at: 0) == 0x1100)
+        #expect(textureBox.values.count == 1)
+
+        renderer.transferFromHostCalls.removeAll()
+        var flush = gpuRequest(type: 0x0104, fenceID: 91, contextID: 0, ringIndex: 0)
+        flush[4] = 1  // VIRTIO_GPU_FLAG_FENCE
+        flush.appendLE(UInt32(0))
+        flush.appendLE(UInt32(0))
+        flush.appendLE(UInt32(2))
+        flush.appendLE(UInt32(2))
+        flush.appendLE(UInt32(7))
+        flush.appendLE(UInt32(0))
+        try writeDescriptor(
+            memory,
+            index: 0,
+            addr: requestBuffer,
+            len: UInt32(flush.count),
+            flags: 0x1,
+            next: 1
+        )
+        try writeDescriptor(memory, index: 1, addr: responseBuffer, len: 512, flags: 0x2, next: 0)
+        try memory.write(flush, at: requestBuffer)
+        try memory.write(UInt16(0), at: availRing + 4 + UInt64(availableIndex % 8) * 2)
+        availableIndex &+= 1
+        try memory.write(availableIndex, at: availRing + 2)
+
+        gpu.handleKick(queue: 0, transport: transport)
+
+        #expect(renderer.createdFences.count == 1)
+        #expect(renderer.createdFences.first?.fenceID != 91)
+        #expect(renderer.transferFromHostCalls.isEmpty)
+        #expect(textureBox.values.count == 2)
+        #expect(textureBox.values.last?.dirtyRect == VirtioGPURect(x: 0, y: 0, width: 2, height: 2))
+        #expect(try memory.read(UInt16.self, at: usedRing + 2) == 2)
+
+        renderer.signalFence()
+
+        #expect(renderer.transferFromHostCalls.isEmpty)
+        #expect(textureBox.values.count == 2)
+        #expect(try memory.read(UInt16.self, at: usedRing + 2) == 3)
+        #expect(try memory.read(UInt32.self, at: responseBuffer) == 0x1100)
+        #expect(try memory.read(UInt64.self, at: responseBuffer + 8) == 91)
     }
 
     @Test func guestBlobFlushPublishesStrideAwareScanoutFrame() throws {
@@ -1788,7 +2715,7 @@ import Testing
         request.appendLE(UInt32(0))
 
         renderer.failSubmit = true
-        #expect(leUInt32(try gpuResponse(gpu: gpu, request: request), at: 0) == 0x1202)
+        #expect(leUInt32(try gpuResponse(gpu: gpu, request: request), at: 0) == 0x1205)
         #expect(gpu.statistics.rendererDeviceLosses == 0)
         #expect(!gpu.statistics.hasLostRendererDevice)
 
@@ -1801,6 +2728,446 @@ import Testing
         renderer.signalRuntimeFailure(.deviceLost("VK_ERROR_DEVICE_LOST"))
         #expect(gpu.statistics.rendererDeviceLosses == 1)
         #expect(gpu.statistics.hasLostRendererDevice)
+    }
+
+    @Test func controlQueueRejectsTooSmallResponseBeforeMutatingResourceState() throws {
+        let memory = try GuestMemory(guestBase: base, size: 64 * HostPage.size)
+        let gpu = VirtioGPU(hostMemoryBase: 0x1_0000_0000)
+        let transport = VirtioMMIOTransport(
+            baseAddress: GuestLayout.virtioBase,
+            backend: gpu,
+            memory: memory
+        ) {}
+        transport.queues[0].configure(
+            size: 8,
+            descriptorTable: descTable,
+            availRing: availRing,
+            usedRing: usedRing
+        )
+        transport.queues[0].setReady(true)
+
+        var create = gpuRequest(type: 0x0101, fenceID: 0, contextID: 0, ringIndex: 0)
+        create.appendLE(UInt32(91))
+        create.appendLE(UInt32(1))
+        create.appendLE(UInt32(2))
+        create.appendLE(UInt32(2))
+        try writeDescriptor(
+            memory,
+            index: 0,
+            addr: requestBuffer,
+            len: UInt32(create.count),
+            flags: 0x1,
+            next: 1
+        )
+        try writeDescriptor(
+            memory,
+            index: 1,
+            addr: responseBuffer,
+            len: 8,
+            flags: 0x2,
+            next: 0
+        )
+        try memory.write(create, at: requestBuffer)
+        try memory.write([UInt8](repeating: 0xA5, count: 8), at: responseBuffer)
+        try memory.write(UInt16(0), at: availRing + 4)
+        try memory.write(UInt16(1), at: availRing + 2)
+
+        gpu.handleKick(queue: 0, transport: transport)
+
+        #expect(try memory.read(UInt16.self, at: usedRing + 2) == 1)
+        #expect(try memory.read(UInt32.self, at: usedRing + 8) == 0)
+        #expect(try memory.readBytes(at: responseBuffer, count: 8) == [UInt8](
+            repeating: 0xA5,
+            count: 8
+        ))
+        #expect(gpu.statistics.insufficientResponseCapacity == 1)
+        // The rejected descriptor never crossed the mutation boundary.
+        #expect(leUInt32(try gpuResponse(gpu: gpu, request: create), at: 0) == 0x1100)
+    }
+
+    @Test func controlQueueRejectsReadableDataAfterWritableSuffix() throws {
+        let memory = try GuestMemory(guestBase: base, size: 64 * HostPage.size)
+        let gpu = VirtioGPU(hostMemoryBase: 0x1_0000_0000)
+        let transport = VirtioMMIOTransport(
+            baseAddress: GuestLayout.virtioBase,
+            backend: gpu,
+            memory: memory
+        ) {}
+        transport.queues[0].configure(
+            size: 8,
+            descriptorTable: descTable,
+            availRing: availRing,
+            usedRing: usedRing
+        )
+        transport.queues[0].setReady(true)
+
+        var create = gpuRequest(type: 0x0101, fenceID: 0, contextID: 0, ringIndex: 0)
+        create.appendLE(UInt32(92))
+        create.appendLE(UInt32(1))
+        create.appendLE(UInt32(2))
+        create.appendLE(UInt32(2))
+        let trailingReadable = base + 0x6_000
+        try writeDescriptor(
+            memory,
+            index: 0,
+            addr: requestBuffer,
+            len: UInt32(create.count),
+            flags: 0x1,
+            next: 1
+        )
+        try writeDescriptor(
+            memory,
+            index: 1,
+            addr: responseBuffer,
+            len: 24,
+            flags: 0x3,
+            next: 2
+        )
+        try writeDescriptor(
+            memory,
+            index: 2,
+            addr: trailingReadable,
+            len: 4,
+            flags: 0,
+            next: 0
+        )
+        try memory.write(create, at: requestBuffer)
+        try memory.write(UInt32(0xDEAD_BEEF), at: trailingReadable)
+        try memory.write(UInt16(0), at: availRing + 4)
+        try memory.write(UInt16(1), at: availRing + 2)
+
+        gpu.handleKick(queue: 0, transport: transport)
+
+        #expect(try memory.read(UInt32.self, at: usedRing + 8) == 0)
+        #expect(gpu.statistics.invalidDescriptorChains == 1)
+        #expect(leUInt32(try gpuResponse(gpu: gpu, request: create), at: 0) == 0x1100)
+    }
+
+    @Test func oversizedControlRequestIsDroppedBeforeRendererSubmission() throws {
+        let renderer = FakeVirtioGPURenderer(capsets: [
+            VirtioGPUCapset(id: 4, maxVersion: 0, data: [1]),
+        ])
+        let gpu = VirtioGPU(
+            hostMemoryBase: 0x1_0000_0000,
+            renderer: renderer,
+            maximumControlRequestBytes: 96
+        )
+        let memory = try GuestMemory(guestBase: base, size: 64 * HostPage.size)
+        let transport = VirtioMMIOTransport(
+            baseAddress: GuestLayout.virtioBase,
+            backend: gpu,
+            memory: memory
+        ) {}
+        transport.queues[0].configure(
+            size: 8,
+            descriptorTable: descTable,
+            availRing: availRing,
+            usedRing: usedRing
+        )
+        transport.queues[0].setReady(true)
+
+        var submit = gpuRequest(type: 0x0207, fenceID: 0, contextID: 5, ringIndex: 0)
+        submit.appendLE(UInt32(65))
+        submit.appendLE(UInt32(0))
+        submit.append(contentsOf: [UInt8](repeating: 0xCC, count: 65))
+        #expect(submit.count == 97)
+        try writeDescriptor(
+            memory,
+            index: 0,
+            addr: requestBuffer,
+            len: UInt32(submit.count),
+            flags: 0x1,
+            next: 1
+        )
+        try writeDescriptor(
+            memory,
+            index: 1,
+            addr: responseBuffer,
+            len: 512,
+            flags: 0x2,
+            next: 0
+        )
+        try memory.write(submit, at: requestBuffer)
+        try memory.write(UInt16(0), at: availRing + 4)
+        try memory.write(UInt16(1), at: availRing + 2)
+
+        gpu.handleKick(queue: 0, transport: transport)
+
+        #expect(renderer.submittedCommands.isEmpty)
+        #expect(try memory.read(UInt32.self, at: usedRing + 8) == 0)
+        #expect(gpu.statistics.oversizedRequests == 1)
+    }
+
+    @Test func cursorQueueAcceptsLinuxReadableOnlyCommand() throws {
+        let gpu = VirtioGPU(
+            hostMemoryBase: 0x1_0000_0000,
+            scanoutCount: 1
+        )
+        let memory = try GuestMemory(guestBase: base, size: 64 * HostPage.size)
+        let transport = VirtioMMIOTransport(
+            baseAddress: GuestLayout.virtioBase,
+            backend: gpu,
+            memory: memory
+        ) {}
+        transport.queues[1].configure(
+            size: 8,
+            descriptorTable: descTable,
+            availRing: availRing,
+            usedRing: usedRing
+        )
+        transport.queues[1].setReady(true)
+
+        var move = gpuRequest(type: 0x0301, fenceID: 0, contextID: 0, ringIndex: 0)
+        move.appendLE(UInt32(0))
+        move.appendLE(UInt32(100))
+        move.appendLE(UInt32(200))
+        move.appendLE(UInt32(0))
+        move.append(contentsOf: [UInt8](repeating: 0, count: 16))
+        #expect(move.count == 56)
+        try writeDescriptor(
+            memory,
+            index: 0,
+            addr: requestBuffer,
+            len: UInt32(move.count),
+            flags: 0,
+            next: 0
+        )
+        try memory.write(move, at: requestBuffer)
+        try memory.write(UInt16(0), at: availRing + 4)
+        try memory.write(UInt16(1), at: availRing + 2)
+
+        gpu.handleKick(queue: 1, transport: transport)
+
+        #expect(try memory.read(UInt16.self, at: usedRing + 2) == 1)
+        #expect(try memory.read(UInt32.self, at: usedRing + 8) == 0)
+        #expect(gpu.statistics.invalidDescriptorChains == 0)
+    }
+
+    @Test func malformedHeadStopsBoundedDrainAndNextKickMakesProgress() throws {
+        let gpu = VirtioGPU(hostMemoryBase: 0x1_0000_0000, scanoutCount: 1)
+        let memory = try GuestMemory(guestBase: base, size: 64 * HostPage.size)
+        let transport = VirtioMMIOTransport(
+            baseAddress: GuestLayout.virtioBase,
+            backend: gpu,
+            memory: memory
+        ) {}
+        transport.queues[0].configure(
+            size: 8,
+            descriptorTable: descTable,
+            availRing: availRing,
+            usedRing: usedRing
+        )
+        transport.queues[0].setReady(true)
+
+        let display = gpuRequest(type: 0x0100, fenceID: 0, contextID: 0, ringIndex: 0)
+        try writeDescriptor(
+            memory,
+            index: 0,
+            addr: requestBuffer,
+            len: UInt32(display.count),
+            flags: 0x1,
+            next: 1
+        )
+        try writeDescriptor(
+            memory,
+            index: 1,
+            addr: responseBuffer,
+            len: 512,
+            flags: 0x2,
+            next: 0
+        )
+        try memory.write(display, at: requestBuffer)
+        try memory.write(UInt16(9), at: availRing + 4) // outside queue size
+        try memory.write(UInt16(0), at: availRing + 6)
+        try memory.write(UInt16(2), at: availRing + 2)
+
+        gpu.handleKick(queue: 0, transport: transport)
+        #expect(try memory.read(UInt16.self, at: usedRing + 2) == 0)
+        #expect(gpu.statistics.queuePopFailures == 1)
+
+        gpu.handleKick(queue: 0, transport: transport)
+        #expect(try memory.read(UInt16.self, at: usedRing + 2) == 1)
+        #expect(try memory.read(UInt32.self, at: responseBuffer) == 0x1101)
+    }
+
+    @Test func pendingFenceLimitRejectsBeforeSecondRendererMutation() throws {
+        let renderer = FakeVirtioGPURenderer(capsets: [
+            VirtioGPUCapset(id: 4, maxVersion: 0, data: [1]),
+        ])
+        let gpu = VirtioGPU(
+            hostMemoryBase: 0x1_0000_0000,
+            renderer: renderer,
+            maximumPendingFences: 1
+        )
+        let memory = try GuestMemory(guestBase: base, size: 64 * HostPage.size)
+        let transport = VirtioMMIOTransport(
+            baseAddress: GuestLayout.virtioBase,
+            backend: gpu,
+            memory: memory
+        ) {}
+        transport.queues[0].configure(
+            size: 8,
+            descriptorTable: descTable,
+            availRing: availRing,
+            usedRing: usedRing
+        )
+        transport.queues[0].setReady(true)
+
+        func fencedSubmit(_ id: UInt64) -> [UInt8] {
+            var request = gpuRequest(type: 0x0207, fenceID: id, contextID: 5, ringIndex: 0)
+            request[4] = 1
+            request.appendLE(UInt32(0))
+            request.appendLE(UInt32(0))
+            return request
+        }
+        let firstRequest = fencedSubmit(1)
+        let secondRequest = fencedSubmit(2)
+        let secondRequestBuffer = base + 0x6_000
+        let secondResponseBuffer = base + 0x7_000
+        try writeDescriptor(
+            memory,
+            index: 0,
+            addr: requestBuffer,
+            len: UInt32(firstRequest.count),
+            flags: 0x1,
+            next: 1
+        )
+        try writeDescriptor(
+            memory,
+            index: 1,
+            addr: responseBuffer,
+            len: 24,
+            flags: 0x2,
+            next: 0
+        )
+        try writeDescriptor(
+            memory,
+            index: 2,
+            addr: secondRequestBuffer,
+            len: UInt32(secondRequest.count),
+            flags: 0x1,
+            next: 3
+        )
+        try writeDescriptor(
+            memory,
+            index: 3,
+            addr: secondResponseBuffer,
+            len: 24,
+            flags: 0x2,
+            next: 0
+        )
+        try memory.write(firstRequest, at: requestBuffer)
+        try memory.write(secondRequest, at: secondRequestBuffer)
+        try memory.write(UInt16(0), at: availRing + 4)
+        try memory.write(UInt16(2), at: availRing + 6)
+        try memory.write(UInt16(2), at: availRing + 2)
+
+        gpu.handleKick(queue: 0, transport: transport)
+
+        #expect(renderer.submittedCommands.count == 1)
+        #expect(renderer.createdFences.count == 1)
+        #expect(try memory.read(UInt16.self, at: usedRing + 2) == 1)
+        #expect(try memory.read(UInt32.self, at: usedRing + 4) == 2)
+        #expect(try memory.read(UInt32.self, at: secondResponseBuffer) == 0x1205)
+        #expect(gpu.statistics.fenceAdmissionRejections == 1)
+
+        renderer.signalFence()
+        #expect(try memory.read(UInt16.self, at: usedRing + 2) == 2)
+        #expect(try memory.read(UInt32.self, at: responseBuffer) == 0x1100)
+    }
+
+    @Test func queueReconfigurationRevokesFenceAndBlocksCallbacksUntilRendererReset() throws {
+        let renderer = FakeVirtioGPURenderer(capsets: [
+            VirtioGPUCapset(id: 4, maxVersion: 0, data: [1]),
+        ])
+        let gpu = VirtioGPU(
+            hostMemoryBase: 0x1_0000_0000,
+            renderer: renderer,
+            quiescenceTimeout: 1
+        )
+        let memory = try GuestMemory(guestBase: base, size: 64 * HostPage.size)
+        let transport = VirtioMMIOTransport(
+            baseAddress: GuestLayout.virtioBase,
+            backend: gpu,
+            memory: memory
+        ) {}
+
+        func configureQueue() throws {
+            transport.queues[0].configure(
+                size: 8,
+                descriptorTable: descTable,
+                availRing: availRing,
+                usedRing: usedRing
+            )
+            transport.queues[0].setReady(true)
+            try memory.write(UInt16(0), at: availRing + 2)
+            try memory.write(UInt16(0), at: usedRing + 2)
+        }
+        func submit(_ id: UInt64) throws {
+            var request = gpuRequest(type: 0x0207, fenceID: id, contextID: 5, ringIndex: 0)
+            request[4] = 1
+            request.appendLE(UInt32(0))
+            request.appendLE(UInt32(0))
+            try writeDescriptor(
+                memory,
+                index: 0,
+                addr: requestBuffer,
+                len: UInt32(request.count),
+                flags: 0x1,
+                next: 1
+            )
+            try writeDescriptor(
+                memory,
+                index: 1,
+                addr: responseBuffer,
+                len: 24,
+                flags: 0x2,
+                next: 0
+            )
+            try memory.write(request, at: requestBuffer)
+            try memory.write([UInt8](repeating: 0, count: 24), at: responseBuffer)
+            try memory.write(UInt16(0), at: availRing + 4)
+            try memory.write(UInt16(1), at: availRing + 2)
+            gpu.handleKick(queue: 0, transport: transport)
+        }
+
+        try configureQueue()
+        try submit(41)
+        #expect(renderer.submittedCommands.count == 1)
+        #expect(try memory.read(UInt16.self, at: usedRing + 2) == 0)
+        let revokedHostFenceID = try #require(renderer.createdFences.first?.fenceID)
+
+        transport.queues[0].setReady(false)
+        gpu.queueStateChanged(queue: 0, ready: false, transport: transport)
+        #expect(gpu.statistics.queueRevokedFences == 1)
+
+        renderer.signalFenceUnchecked(
+            contextID: 0,
+            ringIndex: 0,
+            fenceID: revokedHostFenceID
+        )
+        #expect(try memory.read(UInt16.self, at: usedRing + 2) == 0)
+        #expect(try memory.read(UInt32.self, at: responseBuffer) == 0)
+
+        try configureQueue()
+        gpu.queueStateChanged(queue: 0, ready: true, transport: transport)
+        try submit(42)
+        #expect(renderer.submittedCommands.count == 1)
+        #expect(renderer.createdFences.count == 1)
+        #expect(try memory.read(UInt16.self, at: usedRing + 2) == 1)
+        #expect(try memory.read(UInt32.self, at: responseBuffer) == 0x1205)
+        #expect(gpu.statistics.fenceAdmissionRejections == 1)
+
+        transport.write(offset: 0x070, value: 0, width: 4)
+        #expect(renderer.resetCount == 1)
+        try configureQueue()
+        try submit(43)
+        #expect(renderer.submittedCommands.count == 2)
+        #expect(renderer.createdFences.count == 1)
+        #expect(try memory.read(UInt16.self, at: usedRing + 2) == 0)
+        renderer.signalFence()
+        #expect(try memory.read(UInt16.self, at: usedRing + 2) == 1)
+        #expect(try memory.read(UInt32.self, at: responseBuffer) == 0x1100)
     }
 
     @Test func fencedCommandDefersCompletionUntilRendererSignals() throws {
@@ -1835,7 +3202,7 @@ import Testing
 
         // The command executed and registered a fence, but the descriptor must stay unused.
         #expect(renderer.createdFences.count == 1)
-        #expect(renderer.createdFences.first?.fenceID == 7)
+        #expect(renderer.createdFences.first?.fenceID != 7)
         #expect(renderer.createdFences.first?.contextFence == false)
         #expect(try memory.read(UInt16.self, at: usedRing + 2) == 0)
         #expect(gpu.statistics == VirtioGPUStatistics(
@@ -1846,7 +3213,7 @@ import Testing
         ))
 
         // A ctx0 signal completes it: response carries OK + FLAG_FENCE + the fence id.
-        renderer.signalFence(contextID: 0, ringIndex: 0, fenceID: 7)
+        renderer.signalFence()
         #expect(try memory.read(UInt16.self, at: usedRing + 2) == 1)
         #expect(try memory.read(UInt32.self, at: responseBuffer) == 0x1100)
         #expect(try memory.read(UInt32.self, at: responseBuffer + 4) == 1)
@@ -1885,19 +3252,87 @@ import Testing
         gpu.handleKick(queue: 0, transport: transport)
         #expect(renderer.createdFences.first?.contextFence == true)
         #expect(try memory.read(UInt16.self, at: usedRing + 2) == 0)
+        let hostFenceID = try #require(renderer.createdFences.first?.fenceID)
 
         // Signals for another ring or context leave it pending; its own ring completes it.
-        renderer.signalFence(contextID: 9, ringIndex: 1, fenceID: 11)
+        renderer.signalFenceUnchecked(contextID: 9, ringIndex: 1, fenceID: hostFenceID)
         #expect(try memory.read(UInt16.self, at: usedRing + 2) == 0)
-        renderer.signalFence(contextID: 8, ringIndex: 2, fenceID: 11)
+        renderer.signalFenceUnchecked(contextID: 8, ringIndex: 2, fenceID: hostFenceID)
         #expect(try memory.read(UInt16.self, at: usedRing + 2) == 0)
-        renderer.signalFence(contextID: 9, ringIndex: 2, fenceID: 11)
+        renderer.signalFence()
         #expect(try memory.read(UInt16.self, at: usedRing + 2) == 1)
         #expect(try memory.read(UInt32.self, at: responseBuffer + 4) == 3)
         #expect(try memory.read(UInt64.self, at: responseBuffer + 8) == 11)
     }
 
-    @Test func fenceRegistrationFailureRespondsImmediately() throws {
+    @Test func uncertainRendererMutationRetainsDescriptorUntilQueueRevocation() throws {
+        let renderer = FakeVirtioGPURenderer(capsets: [
+            VirtioGPUCapset(id: 4, maxVersion: 0, data: [1]),
+        ])
+        renderer.failSubmitOutcomeUnknown = true
+        let gpu = VirtioGPU(hostMemoryBase: 0x1_0000_0000, renderer: renderer)
+        let memory = try GuestMemory(guestBase: base, size: 64 * HostPage.size)
+        let transport = VirtioMMIOTransport(
+            baseAddress: GuestLayout.virtioBase,
+            backend: gpu,
+            memory: memory
+        ) {}
+        transport.queues[0].configure(
+            size: 8,
+            descriptorTable: descTable,
+            availRing: availRing,
+            usedRing: usedRing
+        )
+        transport.queues[0].setReady(true)
+
+        var request = gpuRequest(type: 0x0207, fenceID: 0, contextID: 5, ringIndex: 0)
+        request.appendLE(UInt32(0))
+        request.appendLE(UInt32(0))
+        try writeDescriptor(
+            memory,
+            index: 0,
+            addr: requestBuffer,
+            len: UInt32(request.count),
+            flags: 0x1,
+            next: 1
+        )
+        try writeDescriptor(
+            memory,
+            index: 1,
+            addr: responseBuffer,
+            len: 24,
+            flags: 0x2,
+            next: 0
+        )
+        try memory.write(request, at: requestBuffer)
+        try memory.write([UInt8](repeating: 0, count: 24), at: responseBuffer)
+        try memory.write(UInt16(0), at: availRing + 4)
+        try memory.write(UInt16(1), at: availRing + 2)
+
+        gpu.handleKick(queue: 0, transport: transport)
+
+        #expect(renderer.submitAttemptCount == 1)
+        #expect(try memory.read(UInt16.self, at: usedRing + 2) == 0)
+        #expect(try memory.read(UInt32.self, at: responseBuffer) == 0)
+        #expect(gpu.statistics.rendererCommandUncertainties == 1)
+        #expect(gpu.statistics.revokedUncertainRendererCommands == 0)
+        if case .failed(let epoch, let fault) = gpu.rendererLifecycleHealth {
+            #expect(epoch == 1)
+            guard case .commandOutcomeUnknown(operation: "submit-3d", detail: _) = fault else {
+                Issue.record("unexpected uncertain-command lifecycle fault: \(fault)")
+                return
+            }
+        } else {
+            Issue.record("uncertain renderer mutation did not quarantine the generation")
+        }
+
+        transport.queues[0].setReady(false)
+        gpu.queueStateChanged(queue: 0, ready: false, transport: transport)
+        #expect(gpu.statistics.revokedUncertainRendererCommands == 1)
+        #expect(try memory.read(UInt16.self, at: usedRing + 2) == 0)
+    }
+
+    @Test func fenceRegistrationFailureRetainsDescriptorAndQuarantinesRenderer() throws {
         let renderer = FakeVirtioGPURenderer(capsets: [VirtioGPUCapset(id: 4, maxVersion: 0, data: [1])])
         renderer.failFenceCreation = true
         let gpu = VirtioGPU(hostMemoryBase: 0x1_0000_0000, renderer: renderer)
@@ -1923,15 +3358,29 @@ import Testing
 
         gpu.handleKick(queue: 0, transport: transport)
 
-        // Degraded but never hung: the eager response still carries the fence id as the signal.
-        #expect(try memory.read(UInt16.self, at: usedRing + 2) == 1)
-        #expect(try memory.read(UInt32.self, at: responseBuffer) == 0x1100)
-        #expect(try memory.read(UInt64.self, at: responseBuffer + 8) == 13)
+        // The renderer accepted the command before fence registration failed. Publishing either a
+        // success or an error would falsely claim completion, so ownership remains with the device
+        // until reset and the renderer is quarantined.
+        #expect(try memory.read(UInt16.self, at: usedRing + 2) == 0)
+        #expect(try memory.read(UInt32.self, at: responseBuffer) == 0)
+        if case .failed(let epoch, let fault) = gpu.rendererLifecycleHealth {
+            #expect(epoch == 1)
+            if case .fenceRegistrationFailed = fault {
+                // Expected typed lifecycle fault.
+            } else {
+                Issue.record("unexpected renderer fault: \(fault)")
+            }
+        } else {
+            Issue.record("fence registration uncertainty did not quarantine renderer")
+        }
+        renderer.signalFenceUnchecked(contextID: 0, ringIndex: 0, fenceID: 1)
+        #expect(try memory.read(UInt16.self, at: usedRing + 2) == 0)
         #expect(gpu.statistics == VirtioGPUStatistics(
             fences: 0,
             fenceRegistrationFailures: 1,
             fenceTimeouts: 0,
-            hasTimedOutPendingFence: false
+            hasTimedOutPendingFence: false,
+            rendererCommandUncertainties: 1
         ))
     }
 
@@ -1952,6 +3401,31 @@ import Testing
         data.append(ringIndex)
         data.append(contentsOf: [0, 0, 0])
         return data
+    }
+
+    private func create3DRequest(resourceID: UInt32) -> [UInt8] {
+        var request = gpuRequest(type: 0x0204, fenceID: 0, contextID: 0, ringIndex: 0)
+        request.appendLE(resourceID)
+        request.appendLE(UInt32(2))
+        request.appendLE(UInt32(1))
+        request.appendLE(UInt32(1 << 1))
+        request.appendLE(UInt32(4))
+        request.appendLE(UInt32(3))
+        request.appendLE(UInt32(1))
+        request.appendLE(UInt32(1))
+        request.appendLE(UInt32(0))
+        request.appendLE(UInt32(0))
+        request.appendLE(UInt32(1))
+        request.appendLE(UInt32(0))
+        return request
+    }
+
+    private func createContextRequest(contextID: UInt32) -> [UInt8] {
+        var request = gpuRequest(type: 0x0200, fenceID: 0, contextID: contextID, ringIndex: 0)
+        request.appendLE(UInt32(0))
+        request.appendLE(UInt32(0))
+        request.append(contentsOf: repeatElement(UInt8(0), count: 64))
+        return request
     }
 
     private func gpuResponse(gpu: VirtioGPU, request: [UInt8]) throws -> [UInt8] {
@@ -1995,6 +3469,19 @@ private final class ScanoutFrameBox: @unchecked Sendable {
     }
 }
 
+private final class ScanoutTextureBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var updates = [VirtioGPUScanoutTextureUpdate]()
+
+    func store(_ update: VirtioGPUScanoutTextureUpdate) {
+        lock.withLock { updates.append(update) }
+    }
+
+    var values: [VirtioGPUScanoutTextureUpdate] {
+        lock.withLock { updates }
+    }
+}
+
 private final class CursorUpdateBox: @unchecked Sendable {
     private let lock = NSLock()
     private var updates = [VirtioGPUCursorUpdate?]()
@@ -2029,7 +3516,53 @@ private final class ScanoutResourceBox: @unchecked Sendable {
     }
 }
 
-private final class FakeVirtioGPURenderer: VirtioGPURenderer {
+private final class ScanoutReleaseBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var release: VirtioGPUScanoutResourceRelease?
+
+    func store(_ release: VirtioGPUScanoutResourceRelease) {
+        lock.withLock { self.release = release }
+    }
+
+    var value: VirtioGPUScanoutResourceRelease? {
+        lock.withLock { release }
+    }
+}
+
+private final class ScanoutReleaseList: @unchecked Sendable {
+    private let lock = NSLock()
+    private var releases = [VirtioGPUScanoutResourceRelease]()
+
+    func append(_ release: VirtioGPUScanoutResourceRelease) {
+        lock.withLock { releases.append(release) }
+    }
+
+    var values: [VirtioGPUScanoutResourceRelease] {
+        lock.withLock { releases }
+    }
+}
+
+private final class LockedStringList: @unchecked Sendable {
+    private let lock = NSLock()
+    private var strings = [String]()
+
+    func append(_ value: String) { lock.withLock { strings.append(value) } }
+    var values: [String] { lock.withLock { strings } }
+}
+
+private final class FakeTexturePresentationSynchronization:
+    VirtioGPUTexturePresentationSynchronization,
+    @unchecked Sendable
+{
+    private let lock = NSLock()
+    private var discards = 0
+
+    func prepareConsumerForPresentation() throws {}
+    func discardWithoutPresentation() { lock.withLock { discards += 1 } }
+    var discardCount: Int { lock.withLock { discards } }
+}
+
+private final class FakeVirtioGPURenderer: VirtioGPURenderer, @unchecked Sendable {
     struct TransferFromHostCall {
         var stride: UInt32
         var offset: UInt64
@@ -2046,11 +3579,25 @@ private final class FakeVirtioGPURenderer: VirtioGPURenderer {
     private(set) var attachedBackingResourceIDs: [UInt32] = []
     private(set) var detachedBackingResourceIDs: [UInt32] = []
     private(set) var unreferencedResourceIDs: [UInt32] = []
+    private(set) var scanoutTextureResourceIDs: [UInt32] = []
+    private(set) var presentationRequestCount = 0
+    private(set) var presentationSynchronizations = [FakeTexturePresentationSynchronization]()
+    let unrefCompleted = DispatchSemaphore(value: 0)
+    var scanoutTextureYOriginTop = true
+    var scanoutTextureOverride: VirtioGPUTextureResource?
+    var failScanoutPresentationRequest: Int?
     private var transferReadbackWidth: UInt32 = 0
     private var transferReadbackHeight: UInt32 = 0
     private var transferReadbackPixels = [UInt8]()
     var transferFromHostCalls = [TransferFromHostCall]()
+    private(set) var submittedCommands = [[UInt8]]()
     var failSubmit = false
+    var failSubmitOutcomeUnknown = false
+    private(set) var submitAttemptCount = 0
+    var resetResult: VirtioGPURendererResetResult = .ready
+    private(set) var resetCount = 0
+    private(set) var resetContextSnapshots = [Set<UInt32>]()
+    private(set) var createdContextIDs = Set<UInt32>()
     var onRuntimeFailure: ((VirtioGPURendererRuntimeFailure) -> Void)?
 
     init(capsets: [VirtioGPUCapset], blobBytes: [UInt8]? = nil) {
@@ -2072,14 +3619,21 @@ private final class FakeVirtioGPURenderer: VirtioGPURenderer {
         blobStorage?.deallocate()
     }
 
-    func createContext(id: UInt32, flags: UInt32, name: String) throws {}
-    func destroyContext(id: UInt32) throws {}
+    func createContext(id: UInt32, flags: UInt32, name: String) throws {
+        createdContextIDs.insert(id)
+    }
+    func destroyContext(id: UInt32) throws { createdContextIDs.remove(id) }
     func attachResource(contextID: UInt32, resourceID: UInt32) throws {}
     func detachResource(contextID: UInt32, resourceID: UInt32) throws {}
     func submit3D(contextID: UInt32, command: [UInt8]) throws {
-        if failSubmit {
-            throw VMError.invalidConfiguration("guest command rejected")
+        submitAttemptCount += 1
+        if failSubmitOutcomeUnknown {
+            throw VMError.invalidConfiguration("fake renderer outcome is unknown")
         }
+        if failSubmit {
+            throw VirtioGPURendererCommandRejected("guest command rejected")
+        }
+        submittedCommands.append(command)
     }
 
     func signalRuntimeFailure(_ failure: VirtioGPURendererRuntimeFailure) {
@@ -2105,6 +3659,7 @@ private final class FakeVirtioGPURenderer: VirtioGPURenderer {
     }
     func unrefResource(resourceID: UInt32) throws {
         unreferencedResourceIDs.append(resourceID)
+        unrefCompleted.signal()
     }
     func mapBlob(resourceID: UInt32) throws -> VirtioGPUBlobMapping {
         mapBlobCount += 1
@@ -2159,14 +3714,74 @@ private final class FakeVirtioGPURenderer: VirtioGPURenderer {
         }
     }
 
+    func scanoutTexture(resourceID: UInt32) throws -> VirtioGPUTextureResource {
+        scanoutTextureResourceIDs.append(resourceID)
+        if let scanoutTextureOverride { return scanoutTextureOverride }
+        guard let resource = createdResources.last(where: { $0.resourceID == resourceID }) else {
+            throw VMError.invalidConfiguration("fake renderer has no scanout resource")
+        }
+        return VirtioGPUTextureResource(
+            textureID: resourceID + 1_000,
+            format: resource.format,
+            width: resource.width,
+            height: resource.height,
+            yOriginTop: scanoutTextureYOriginTop
+        )
+    }
+
+    var supportsSynchronizedScanoutPresentation: Bool { true }
+
+    func makeScanoutPresentation(
+        resourceID: UInt32,
+        resourceGeneration: UInt64
+    ) throws -> VirtioGPUTexturePresentation {
+        presentationRequestCount += 1
+        if presentationRequestCount == failScanoutPresentationRequest {
+            throw VirtioGPURendererCommandRejected("fake presentation acquisition failed")
+        }
+        let synchronization = FakeTexturePresentationSynchronization()
+        presentationSynchronizations.append(synchronization)
+        return VirtioGPUTexturePresentation(
+            resourceID: resourceID,
+            resourceGeneration: resourceGeneration,
+            texture: try scanoutTexture(resourceID: resourceID),
+            synchronization: synchronization
+        )
+    }
+
+    func resetAfterDeviceQuiesce() throws -> VirtioGPURendererResetResult {
+        resetCount += 1
+        resetContextSnapshots.append(createdContextIDs)
+        guard resetResult == .ready else { return resetResult }
+        createdContextIDs.removeAll()
+        createdResources.removeAll()
+        attachedBackingResourceIDs.removeAll()
+        detachedBackingResourceIDs.removeAll()
+        resourceFenceReset()
+        return .ready
+    }
+
+    private func resourceFenceReset() {
+        createdFences.removeAll()
+    }
+
     var onFenceSignaled: ((UInt32, UInt32, UInt64) -> Void)?
     /// Registered fences accumulate; tests fire them via `signalFence` to model asynchronous
     /// completion, or set `autoSignalFences` for the old eager behavior.
     private(set) var createdFences: [(contextID: UInt32, ringIndex: UInt32, fenceID: UInt64, contextFence: Bool)] = []
     var autoSignalFences = false
     var failFenceCreation = false
+    var signalFenceThenFail = false
 
     func createFence(contextID: UInt32, ringIndex: UInt32, fenceID: UInt64, contextFence: Bool) throws {
+        if signalFenceThenFail {
+            signalFenceUnchecked(
+                contextID: contextFence ? contextID : 0,
+                ringIndex: contextFence ? ringIndex : 0,
+                fenceID: fenceID
+            )
+            throw VMError.invalidConfiguration("fence outcome is unknown")
+        }
         if failFenceCreation {
             throw VMError.invalidConfiguration("fence creation disabled")
         }
@@ -2177,6 +3792,26 @@ private final class FakeVirtioGPURenderer: VirtioGPURenderer {
     }
 
     func signalFence(contextID: UInt32, ringIndex: UInt32, fenceID: UInt64) {
+        guard let index = createdFences.firstIndex(where: { fence in
+            fence.fenceID == fenceID && (fence.contextFence
+                ? fence.contextID == contextID && fence.ringIndex == ringIndex
+                : contextID == 0 && ringIndex == 0)
+        }) else { return }
+        createdFences.remove(at: index)
+        signalFenceUnchecked(contextID: contextID, ringIndex: ringIndex, fenceID: fenceID)
+    }
+
+    func signalFence(at index: Int = 0) {
+        guard createdFences.indices.contains(index) else { return }
+        let fence = createdFences.remove(at: index)
+        signalFenceUnchecked(
+            contextID: fence.contextFence ? fence.contextID : 0,
+            ringIndex: fence.contextFence ? fence.ringIndex : 0,
+            fenceID: fence.fenceID
+        )
+    }
+
+    func signalFenceUnchecked(contextID: UInt32, ringIndex: UInt32, fenceID: UInt64) {
         onFenceSignaled?(contextID, ringIndex, fenceID)
     }
 }
@@ -2567,8 +4202,8 @@ private final class FakeVirtioGPURenderer: VirtioGPURenderer {
         pointer.writeConfig(offset: 1, value: 2, width: 1)  // EV_REL
         config = pointer.configSpace
         #expect(config[2] == 2)
-        #expect(config[8] == 0)
-        #expect(config[9] == 1)                  // REL_WHEEL 8 only
+        #expect(config[8] & (1 << 6) != 0)       // REL_HWHEEL 6
+        #expect(config[9] & 0b1_1001 == 0b1_1001) // wheel + high-resolution axes
 
         pointer.writeConfig(offset: 0, value: 0x10, width: 1) // PROP_BITS
         pointer.writeConfig(offset: 1, value: 0, width: 1)
@@ -2583,7 +4218,7 @@ private final class FakeVirtioGPURenderer: VirtioGPURenderer {
         #expect(config.leUInt32(at: 24) == 0)    // unspecified physical resolution
     }
 
-    @Test func convertsAppKitScrollDirectionToLinuxWheelDirection() {
+    @Test func preservesHostScrollDirectionAtTheLinuxEvdevBoundary() {
         var scroll = VirtioInputScrollAccumulator()
         let events = scroll.events(
             horizontalDelta: -1,
@@ -2592,10 +4227,10 @@ private final class FakeVirtioGPURenderer: VirtioGPURenderer {
         )
 
         #expect(events == [
-            VirtioInputEvent(type: 2, code: 11, value: -120),
-            VirtioInputEvent(type: 2, code: 8, value: -1),
-            VirtioInputEvent(type: 2, code: 12, value: 120),
-            VirtioInputEvent(type: 2, code: 6, value: 1),
+            VirtioInputEvent(type: 2, code: 11, value: 120),
+            VirtioInputEvent(type: 2, code: 8, value: 1),
+            VirtioInputEvent(type: 2, code: 12, value: -120),
+            VirtioInputEvent(type: 2, code: 6, value: -1),
         ])
     }
 
@@ -2607,7 +4242,7 @@ private final class FakeVirtioGPURenderer: VirtioGPURenderer {
                 verticalDelta: 1,
                 hasPreciseDeltas: true
             )
-            #expect(events == [VirtioInputEvent(type: 2, code: 11, value: -12)])
+            #expect(events == [VirtioInputEvent(type: 2, code: 11, value: 12)])
         }
         let finalEvents = scroll.events(
             horizontalDelta: 0,
@@ -2615,8 +4250,8 @@ private final class FakeVirtioGPURenderer: VirtioGPURenderer {
             hasPreciseDeltas: true
         )
         #expect(finalEvents == [
-            VirtioInputEvent(type: 2, code: 11, value: -12),
-            VirtioInputEvent(type: 2, code: 8, value: -1),
+            VirtioInputEvent(type: 2, code: 11, value: 12),
+            VirtioInputEvent(type: 2, code: 8, value: 1),
         ])
     }
 
@@ -2672,7 +4307,7 @@ private final class FakeVirtioGPURenderer: VirtioGPURenderer {
 
         try memory.write(UInt16(3), at: availableRing + 2)
         input.handleKick(queue: 0, transport: transport)
-        #expect(try memory.read(UInt16.self, at: usedRing + 2) == 3)
+        #expect(waitUntil { (try? memory.read(UInt16.self, at: usedRing + 2)) == 3 })
         #expect(try memory.read(UInt16.self, at: eventBuffers) == 1)
         #expect(try memory.read(UInt16.self, at: eventBuffers + 2) == 30)
         #expect(try memory.read(UInt32.self, at: eventBuffers + 4) == 1)
@@ -2718,7 +4353,7 @@ private final class FakeVirtioGPURenderer: VirtioGPURenderer {
 
         try memory.write(UInt16(4), at: availableRing + 2)
         input.handleKick(queue: 0, transport: transport)
-        #expect(try memory.read(UInt16.self, at: usedRing + 2) == 4)
+        #expect(waitUntil { (try? memory.read(UInt16.self, at: usedRing + 2)) == 4 })
         #expect(try memory.read(UInt16.self, at: eventBuffers) == 3)
         #expect(try memory.read(UInt32.self, at: eventBuffers + 4) == 9_000)
         #expect(try memory.read(UInt16.self, at: eventBuffers + 8) == 3)
@@ -2770,7 +4405,7 @@ private final class FakeVirtioGPURenderer: VirtioGPURenderer {
         try memory.write(UInt16(3), at: availableRing + 2)
         input.handleKick(queue: 0, transport: transport)
 
-        #expect(try memory.read(UInt16.self, at: usedRing + 2) == 3)
+        #expect(waitUntil { (try? memory.read(UInt16.self, at: usedRing + 2)) == 3 })
         #expect(try memory.read(UInt16.self, at: eventBuffers) == 3)
         #expect(try memory.read(UInt16.self, at: eventBuffers + 2) == 0)
         #expect(try memory.read(UInt32.self, at: eventBuffers + 4) == 16_000)
@@ -2781,11 +4416,20 @@ private final class FakeVirtioGPURenderer: VirtioGPURenderer {
         try memory.write(UInt16(5), at: availableRing + 2)
         input.handleKick(queue: 0, transport: transport)
 
-        #expect(try memory.read(UInt16.self, at: usedRing + 2) == 5)
+        #expect(waitUntil { (try? memory.read(UInt16.self, at: usedRing + 2)) == 5 })
         #expect(try memory.read(UInt16.self, at: eventBuffers + 24) == 1)
         #expect(try memory.read(UInt16.self, at: eventBuffers + 26) == 272)
         #expect(try memory.read(UInt32.self, at: eventBuffers + 28) == 1)
         #expect(try memory.read(UInt16.self, at: eventBuffers + 32) == 0)
+    }
+
+    private func waitUntil(_ predicate: () -> Bool) -> Bool {
+        let deadline = Date().addingTimeInterval(1)
+        while Date() < deadline {
+            if predicate() { return true }
+            Thread.sleep(forTimeInterval: 0.001)
+        }
+        return predicate()
     }
 }
 
@@ -2799,6 +4443,28 @@ private final class FakeVirtioGPURenderer: VirtioGPURenderer {
         #expect(uart.read(offset: 0x18, width: 2) == 0x90)   // FR: TX empty | RX empty
         #expect(uart.read(offset: 0xFE0, width: 4) == 0x11)  // PeriphID0
         #expect(uart.read(offset: 0xFF0, width: 4) == 0x0D)  // PCellID0
+    }
+
+    @Test func receivesHostInputAndDrivesLevelInterruptUntilDrained() {
+        var interruptLevels = [Bool]()
+        let uart = PL011(
+            baseAddress: 0x0C00_0000,
+            sink: { _ in },
+            setInterrupt: { interruptLevels.append($0) }
+        )
+
+        uart.write(offset: 0x38, value: 1 << 4, width: 4) // RXIM
+        #expect(uart.receive(Array("ok".utf8)))
+        #expect(interruptLevels == [true])
+        #expect(uart.read(offset: 0x18, width: 4) == 0x80) // TXFE, RX not empty
+        #expect(uart.read(offset: 0x3C, width: 4) & (1 << 4) != 0)
+        #expect(uart.read(offset: 0x40, width: 4) & (1 << 4) != 0)
+        #expect(uart.read(offset: 0x00, width: 1) == UInt64(UInt8(ascii: "o")))
+        #expect(interruptLevels == [true])
+        #expect(uart.read(offset: 0x00, width: 1) == UInt64(UInt8(ascii: "k")))
+        #expect(interruptLevels == [true, false])
+        #expect(uart.read(offset: 0x18, width: 4) == 0x90)
+        #expect(uart.read(offset: 0x40, width: 4) == 0)
     }
 }
 

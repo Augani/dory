@@ -1,11 +1,164 @@
 import CryptoKit
 @testable import DorydKit
 import DoryOperations
+import DoryRendererWorkerWireContracts
+import DoryVMContracts
 import Foundation
 import Testing
 
 @Suite("Production VM trust composition")
 struct DoryDaemonVirtualMachineProductionTrustTests {
+    @Test("RawHV hardware3D requires candidate-bound bootstrap qualification")
+    func rendererBootstrapQualificationIsRequired() throws {
+        let runtimeBuild = "sha256:" + String(repeating: "a", count: 64)
+        let descriptor = RawHVLinuxMachineBackend.backendDescriptor
+        let component = DoryVirtualMachineQualifiedComponent(
+            componentIdentifier: "dory-hv",
+            buildIdentifier: runtimeBuild,
+            artifactSHA256: String(repeating: "a", count: 64)
+        )
+        let unqualified = DoryDaemonVerifiedBackendRuntime(
+            descriptor: descriptor,
+            executablePath: "/Applications/Dory.app/Contents/Helpers/dory-hv",
+            runtimeBuildIdentifier: runtimeBuild,
+            components: [component]
+        )
+        #expect(!unqualified.productionAccelerationIsAdmissible)
+
+        let admitted = DoryDaemonRendererAccelerationAdmission(
+            runtimeBuildIdentifier: runtimeBuild,
+            candidateInventory: try digest("b"),
+            guestMesa: try DoryRendererArtifactDigest(
+                lowercaseSHA256: DoryRendererSourceTuple.guestMesaRuntimeSHA256,
+                field: "guestMesa"
+            ),
+            rendererWorkerExecutable: try digest("3")
+        )
+        let missingEvidenceRuntime = DoryDaemonVerifiedBackendRuntime(
+            descriptor: descriptor,
+            executablePath: "/Applications/Dory.app/Contents/Helpers/dory-hv",
+            runtimeBuildIdentifier: runtimeBuild,
+            components: [component],
+            rendererAccelerationAdmission: admitted
+        )
+        #expect(DoryDaemonRendererAccelerationAdmission.productionTupleProvidesRequiredCapsets)
+        #expect(!admitted.authorizes(runtimeBuildIdentifier: runtimeBuild))
+        #expect(!missingEvidenceRuntime.productionAccelerationIsAdmissible)
+        #expect(Set(admitted.qualifiedComponents.map(\.componentIdentifier)) == [
+            DoryRendererProductionInventory.ComponentIdentity.candidateInventory,
+            DoryRendererProductionInventory.ComponentIdentity.guestMesa,
+            DoryRendererProductionInventory.ComponentIdentity.worker,
+        ])
+
+        let qualifiedAdmission = DoryDaemonRendererAccelerationAdmission(
+            runtimeBuildIdentifier: runtimeBuild,
+            candidateInventory: try digest("b"),
+            guestMesa: try DoryRendererArtifactDigest(
+                lowercaseSHA256: DoryRendererSourceTuple.guestMesaRuntimeSHA256,
+                field: "guestMesa"
+            ),
+            rendererWorkerExecutable: try digest("3"),
+            bootstrapQualification: try digest("4")
+        )
+        let qualified = DoryDaemonVerifiedBackendRuntime(
+            descriptor: descriptor,
+            executablePath: "/Applications/Dory.app/Contents/Helpers/dory-hv",
+            runtimeBuildIdentifier: runtimeBuild,
+            components: [component] + qualifiedAdmission.qualifiedComponents,
+            rendererAccelerationAdmission: qualifiedAdmission
+        )
+        #expect(qualifiedAdmission.authorizes(runtimeBuildIdentifier: runtimeBuild))
+        #expect(qualified.productionAccelerationIsAdmissible)
+        #expect(!qualifiedAdmission.releaseQualificationIsAuthenticated)
+        #expect(Set(qualifiedAdmission.qualifiedComponents.map(\.componentIdentifier)) == [
+            DoryRendererProductionInventory.ComponentIdentity.candidateInventory,
+            DoryRendererProductionInventory.ComponentIdentity.guestMesa,
+            DoryRendererProductionInventory.ComponentIdentity.worker,
+            DoryDaemonRendererAccelerationAdmission
+                .bootstrapQualificationComponentIdentity,
+        ])
+
+        let releaseAdmission = DoryDaemonRendererAccelerationAdmission(
+            runtimeBuildIdentifier: runtimeBuild,
+            candidateInventory: try digest("b"),
+            guestMesa: try DoryRendererArtifactDigest(
+                lowercaseSHA256: DoryRendererSourceTuple.guestMesaRuntimeSHA256,
+                field: "guestMesa"
+            ),
+            rendererWorkerExecutable: try digest("3"),
+            bootstrapQualification: try digest("4"),
+            bootstrapQualificationSignature: try digest("5")
+        )
+        #expect(releaseAdmission.releaseQualificationIsAuthenticated)
+        #expect(Set(releaseAdmission.qualifiedComponents.map(\.componentIdentifier)).contains(
+            DoryDaemonRendererAccelerationAdmission
+                .bootstrapQualificationSignatureComponentIdentity
+        ))
+
+        #expect(!admitted.authorizes(
+            runtimeBuildIdentifier: "sha256:" + String(repeating: "f", count: 64)
+        ))
+        let obsoleteSchema = DoryDaemonRendererAccelerationAdmission(
+            schemaVersion: 1,
+            runtimeBuildIdentifier: runtimeBuild,
+            candidateInventory: try digest("b"),
+            guestMesa: try DoryRendererArtifactDigest(
+                lowercaseSHA256: DoryRendererSourceTuple.guestMesaRuntimeSHA256,
+                field: "guestMesa"
+            ),
+            rendererWorkerExecutable: try digest("3")
+        )
+        #expect(!obsoleteSchema.authorizes(runtimeBuildIdentifier: runtimeBuild))
+    }
+
+    @Test("resolved renderer evidence without bootstrap qualification cannot recover authority")
+    func incompleteEvidenceCannotRecoverAccelerationAuthority() throws {
+        let runtimeDigest = String(repeating: "a", count: 64)
+        let runtimeBuild = "sha256:\(runtimeDigest)"
+        let admitted = DoryDaemonRendererAccelerationAdmission(
+            runtimeBuildIdentifier: runtimeBuild,
+            candidateInventory: try digest("b"),
+            guestMesa: try DoryRendererArtifactDigest(
+                lowercaseSHA256: DoryRendererSourceTuple.guestMesaRuntimeSHA256,
+                field: "guestMesa"
+            ),
+            rendererWorkerExecutable: try digest("2")
+        )
+        var components = admitted.qualifiedComponents.map {
+            DoryResolvedBackendComponentEvidence(
+                componentIdentifier: $0.componentIdentifier,
+                buildIdentifier: $0.buildIdentifier,
+                artifactSHA256: $0.artifactSHA256
+            )
+        }
+        components.append(DoryResolvedBackendComponentEvidence(
+            componentIdentifier: "dory-hv",
+            buildIdentifier: runtimeBuild,
+            artifactSHA256: runtimeDigest
+        ))
+        #expect(throws: DoryDaemonRendererProductionAuthorityError.inventoryInvalid) {
+            try DoryDaemonRendererAccelerationAdmission.recovering(
+                runtimeBuildIdentifier: runtimeBuild,
+                components: components
+            )
+        }
+
+        components[0].buildIdentifier = "sha256:" + String(repeating: "f", count: 64)
+        #expect(throws: DoryDaemonRendererProductionAuthorityError.inventoryInvalid) {
+            try DoryDaemonRendererAccelerationAdmission.recovering(
+                runtimeBuildIdentifier: runtimeBuild,
+                components: components
+            )
+        }
+    }
+
+    private func digest(_ nibble: Character) throws -> DoryRendererArtifactDigest {
+        try DoryRendererArtifactDigest(
+            lowercaseSHA256: String(repeating: nibble, count: 64),
+            field: "test"
+        )
+    }
+
     @Test("missing catalog remains explicitly unavailable")
     func missingCatalog() throws {
         let fixture = try ProductionTrustFixture(installCatalog: false)
@@ -338,7 +491,6 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
             trustFloorActivationState: trustFloor
         )
         defer { fixture.cleanup() }
-
         let result = fixture.factory.activate(
             store: fixture.store,
             machineConfiguration: fixture.machineConfiguration,
@@ -347,7 +499,11 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
             expectedArchitecture: "arm64"
         )
         guard case let .activated(context) = result else {
-            Issue.record("Expected production activation")
+            if case let .unavailable(failure) = result {
+                Issue.record("Expected production activation; got \(failure.code.rawValue): \(failure.message)")
+            } else {
+                Issue.record("Expected production activation")
+            }
             return
         }
         #expect(context.machineManager.configuredLaunchPolicy == .perWorkspaceAuthority)
@@ -388,6 +544,64 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
             return
         }
         #expect(failure.code == .installationRejected)
+        #expect(failure.trustFailure == nil)
+        #expect(trustFloor.activationCount == 0)
+    }
+
+    @Test("production activation rejects any machine-state root outside the selected drive")
+    func activationRequiresSelectedDriveMachineStateRoot() throws {
+        let trustFloor = ProductionTrustFloorActivationState()
+        let fixture = try ProductionTrustFixture(
+            trustFloorActivationState: trustFloor
+        )
+        defer { fixture.cleanup() }
+        let override = fixture.root.appendingPathComponent("override-machine-state")
+        try FileManager.default.createDirectory(at: override, withIntermediateDirectories: false)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: override.path
+        )
+        var configuration = fixture.machineConfiguration
+        configuration.stateDirectory = override.path
+
+        guard case let .unavailable(failure) = fixture.factory.activate(
+            store: fixture.store,
+            machineConfiguration: configuration,
+            appVersion: fixture.appVersion,
+            publicKey: fixture.publicKey,
+            expectedArchitecture: "arm64"
+        ) else {
+            Issue.record("Expected non-drive machine-state authority to be rejected")
+            return
+        }
+        #expect(failure.code == .stateAuthorityUnavailable)
+        #expect(failure.trustFailure == nil)
+        #expect(trustFloor.activationCount == 0)
+    }
+
+    @Test("production activation fails closed when the selected machine-state root is not private")
+    func activationRequiresHealthySelectedDriveMachineStateRoot() throws {
+        let trustFloor = ProductionTrustFloorActivationState()
+        let fixture = try ProductionTrustFixture(
+            trustFloorActivationState: trustFloor
+        )
+        defer { fixture.cleanup() }
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: fixture.drive.machinesDirectory
+        )
+
+        guard case let .unavailable(failure) = fixture.factory.activate(
+            store: fixture.store,
+            machineConfiguration: fixture.machineConfiguration,
+            appVersion: fixture.appVersion,
+            publicKey: fixture.publicKey,
+            expectedArchitecture: "arm64"
+        ) else {
+            Issue.record("Expected an unsafe selected-drive state root to be rejected")
+            return
+        }
+        #expect(failure.code == .stateAuthorityUnavailable)
         #expect(failure.trustFailure == nil)
         #expect(trustFloor.activationCount == 0)
     }
@@ -482,6 +696,97 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
         #expect(try context.planning.resourceLedger.snapshot().leases.contains {
             $0.binding.machineID == "qualified-headless"
         } == false)
+        }
+    }
+
+    @Test("activated production graph runs the portable EFI install and cold-boot path")
+    func activatedGraphRunsPortableEFILifecycle() throws {
+        try withProductionIntegrationTestStack {
+            let fixture = try ProductionTrustFixture(helperLifetimeSeconds: 2)
+            defer { fixture.cleanup() }
+            guard case let .activated(context) = fixture.factory.activate(
+                store: fixture.store,
+                machineConfiguration: fixture.machineConfiguration,
+                appVersion: fixture.appVersion,
+                publicKey: fixture.publicKey,
+                expectedArchitecture: "arm64"
+            ) else {
+                Issue.record("Expected production activation")
+                return
+            }
+            let service = DorydService(
+                socketPath: fixture.root.appendingPathComponent("doryd.sock").path,
+                machineManager: context.machineManager,
+                productionPlanningController: context.planningController
+            )
+            let installer = fixture.root.appendingPathComponent("portable-lifecycle.iso").path
+            try portableARM64ISO9660().write(to: URL(fileURLWithPath: installer))
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o600],
+                ofItemAtPath: installer
+            )
+
+            let create = LockedPlanningCreateReply()
+            service.machineCreate([
+                "id": "portable-efi",
+                "kernelPath": "",
+                "rootfsPath": "",
+                "bootMode": "efi",
+                "installerISOPath": installer,
+                "diskSizeBytes": UInt64(32 * 1_024 * 1_024 * 1_024),
+                "displayMode": "desktop",
+                "memoryMB": UInt64(4_096),
+                "cpuCount": 4,
+            ]) { ok, body, message in
+                create.set(ok: ok, body: body, message: message)
+            }
+            #expect(create.value.ok, Comment(rawValue: create.value.message))
+            var plan = try context.planning.plans.read(id: "portable-efi")
+            #expect(plan.backend == .appleVirtualizationFramework)
+            #expect(plan.graphics == .software)
+            #expect(plan.bootMedia.media.kind == .installerISO)
+            #expect(plan.bootMedia.media.source == .userProvided)
+
+            let started = try context.machineManager.start(id: "portable-efi")
+            #expect(started.state == .running)
+            #expect(started.installerMediaAttached)
+            let installerPID = try #require(started.pid)
+            let machineDirectory = fixture.machineConfiguration.stateDirectory
+                + "/portable-efi"
+            for (name, bytes) in [
+                ("MachineIdentifier", Data("stable-machine-identifier".utf8)),
+                ("NVRAM.installer", Data("installer-recorded-efi-boot-state".utf8)),
+            ] {
+                let path = machineDirectory + "/" + name
+                try bytes.write(to: URL(fileURLWithPath: path))
+                try FileManager.default.setAttributes(
+                    [.posixPermissions: 0o600],
+                    ofItemAtPath: path
+                )
+            }
+
+            let eject = LockedPlanningCreateReply()
+            service.machineUpdate(
+                "portable-efi",
+                config: ["installerMediaAttached": false]
+            ) { ok, body, message in
+                eject.set(ok: ok, body: body, message: message)
+            }
+            #expect(eject.value.ok, Comment(rawValue: eject.value.message))
+            let ejected = try #require(context.machineManager.status(id: "portable-efi"))
+            #expect(ejected.state == .running)
+            #expect(ejected.pid != nil && ejected.pid != installerPID)
+            #expect(!ejected.installerMediaAttached)
+            plan = try context.planning.plans.read(id: "portable-efi")
+            #expect(plan.backend == .appleVirtualizationFramework)
+            #expect(plan.graphics == .software)
+            #expect(plan.bootMedia.media.kind == .virtualDisk)
+            #expect(plan.bootMedia.media.source == .userProvided)
+
+            try context.machineManager.delete(id: "portable-efi")
+            #expect(try context.planning.resourceLedger.snapshot().leases.contains {
+                $0.binding.machineID == "portable-efi"
+            } == false)
         }
     }
 
@@ -586,6 +891,168 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
         #expect(snapshot.backendRuntimes.count == 2)
         #expect(snapshot.runtimeQualifications.count == 2)
         #expect(snapshot.backendRuntime(for: .doryHypervisor) != nil)
+    }
+
+    @Test("production trust admits only the structural ARM64 VZ software baseline")
+    func planningPreparationAdmitsPortableARM64ISO() throws {
+        let fixture = try ProductionTrustFixture()
+        defer { fixture.cleanup() }
+        guard case let .ready(context) = fixture.resolve(),
+              let preparer = context.inventory
+                as? any DoryDaemonVirtualMachinePlanningTrustPreparing else {
+            Issue.record("Expected production planning trust preparer")
+            return
+        }
+
+        let isoPath = fixture.root.appendingPathComponent("portable-arm64.iso").path
+        try portableARM64ISO9660().write(
+            to: URL(fileURLWithPath: isoPath)
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: isoPath
+        )
+        let reference = DoryVMResolverReference(
+            namespace: "artifact",
+            identifier: "portable-arm64-iso"
+        )
+        _ = try DoryVirtualMachineArtifactAuthority(
+            root: fixture.machineConfiguration.stateDirectory + "/.artifact-authority"
+        ).publishImmutable(
+            reference: reference,
+            path: isoPath,
+            kind: .installerISO,
+            source: .userProvided
+        )
+        let requirement = DoryDaemonVirtualMachineLaunchArtifactRequirement(
+            reference: reference,
+            kind: .installerISO,
+            source: .userProvided,
+            mutable: false,
+            usages: [DoryResolvedMachineLaunchArtifactUsage(
+                kind: .boot,
+                identifier: "installer",
+                readOnly: true
+            )]
+        )
+        func request(
+            graphics: [DoryGraphicsAccelerationLevel]
+        ) -> DoryDaemonVirtualMachineInventoryRequest {
+            DoryDaemonVirtualMachineInventoryRequest(
+                machineID: "portable-linux",
+                definitionRevision: 1,
+                guest: fixture.guest,
+                bootMedia: DoryVMBootMediaReference(
+                    id: "installer",
+                    role: .installer,
+                    kind: .installerISO,
+                    source: .userProvided,
+                    artifact: reference,
+                    removable: true
+                ),
+                launchArtifacts: [requirement],
+                resources: DoryVMResourceRequest(
+                    virtualCPUCount: 2,
+                    memoryBytes: 4 * 1_024 * 1_024 * 1_024,
+                    diskBytes: 32 * 1_024 * 1_024 * 1_024
+                ),
+                devices: .minimumBootable,
+                acceptableGraphics: graphics,
+                virtualHardwareABIVersion: 1
+            )
+        }
+
+        let resources = DoryVMResourceRequest(
+            virtualCPUCount: 2,
+            memoryBytes: 4 * 1_024 * 1_024 * 1_024,
+            diskBytes: 32 * 1_024 * 1_024 * 1_024
+        )
+        let definitionSHA256 = SHA256.hash(data: Data("portable-definition".utf8))
+            .map { String(format: "%02x", $0) }.joined()
+        let ledger = DoryVirtualMachineResourceAdmissionLedger(
+            root: fixture.machineConfiguration.stateDirectory + "/.resource-admissions"
+        )
+        let lease = try ledger.reserveStarting(
+            binding: DoryVirtualMachineResourceAdmissionPlanBinding(
+                machineID: "portable-linux",
+                definitionRevision: 1,
+                definitionSHA256: definitionSHA256,
+                plannedPlanRevision: 1
+            ),
+            hostFacts: fixture.host.resources,
+            workload: .desktop,
+            resources: resources
+        )
+        let preparation = try preparer.preparePlanningTrust(
+            for: request(graphics: [.software])
+        )
+        let snapshot = preparation.snapshot(lease.evidence)
+        let plannerRequest = DoryVirtualMachineBackendPlanRequest(
+            guest: fixture.guest,
+            bootMedia: snapshot.media.media,
+            acceptableGraphics: [.software],
+            devices: .minimumBootable,
+            backendPreferences: [.appleVirtualizationFramework],
+            backendPreferencePolicy: .required
+        )
+        let plannerResult = DoryAppleSiliconDaemonVirtualMachineCapabilityPlanner().plan(
+            plannerRequest,
+            inventory: snapshot
+        )
+        let selected = try #require(plannerResult.selectedDescriptor)
+        let runtime = try #require(snapshot.backendRuntime(for: selected))
+
+        #expect(selected.availability.supportTier == .supported)
+        #expect(selected.runtimeQualificationEvidence == nil)
+        #expect(selected.bootMediaInspectionEvidence?.catalogManifestEvidence == nil)
+        #expect(runtime.backend == .appleVirtualizationFramework)
+        #expect(runtime.hostQualification == nil)
+        #expect(snapshot.runtimeQualifications.isEmpty)
+
+        let plan = try DoryResolvedMachinePlan(
+            machineID: "portable-linux",
+            definitionRevision: 1,
+            definitionSHA256: definitionSHA256,
+            planRevision: 1,
+            createdAtUnixMilliseconds: 1_700_000_000_000,
+            updatedAtUnixMilliseconds: 1_700_000_000_000,
+            backendDescriptor: VirtualizationFrameworkLinuxMachineBackend.backendDescriptor,
+            backendRuntimeBuildIdentifier: runtime.runtimeBuildIdentifier,
+            resolverReference: reference,
+            launchArtifacts: snapshot.launchArtifacts,
+            components: runtime.components,
+            resourceAdmission: lease.evidence,
+            hostQualification: nil,
+            plannerRequest: plannerRequest,
+            plannerResult: plannerResult
+        )
+        #expect(plan.validate().isEmpty)
+        _ = try ledger.bind(
+            leaseID: lease.leaseID,
+            to: plan,
+            expectedLeaseRevision: lease.leaseRevision
+        )
+        let startRequest = DoryDaemonVirtualMachineStartInventoryRequest(
+            machineID: plan.machineID,
+            definitionRevision: plan.definitionRevision,
+            planRevision: plan.planRevision,
+            bootMediaReference: reference,
+            exactCapabilityRequest: selected.request,
+            resolvedPlan: plan
+        )
+        let startSnapshot = try context.inventory.startInventory(for: startRequest)
+        #expect(startSnapshot.exactStartRuntimeQualification == nil)
+        #expect(startSnapshot.backendRuntime(for: .appleVirtualizationFramework)?
+            .hostQualification == nil)
+        let authorizationProvider = try #require(context.inventory
+            as? any DoryDaemonVirtualMachinePreSpawnAuthorizationProviding)
+        try authorizationProvider.preSpawnAuthorization(for: startRequest).authorize()
+
+        #expect(throws: DoryDaemonProductionTrustInventoryError.self) {
+            _ = try preparer.preparePlanningTrust(
+                for: request(graphics: [.hostAcceleratedDisplay])
+            )
+        }
     }
 
     @Test("publication authorization refreshes immutable host identity but not volatile free bytes")
@@ -840,6 +1307,211 @@ private func productionPlanningRequest(
     )
 }
 
+private func portableARM64ISO9660() -> Data {
+    let blockSize = 2_048
+    let partitionStartSector = 512
+    let partitionSectors = 2_880
+    var image = Data(
+        repeating: 0,
+        count: (partitionStartSector + partitionSectors) * 512
+    )
+
+    func put16(_ value: UInt16, into data: inout Data, at offset: Int) {
+        data[offset] = UInt8(truncatingIfNeeded: value)
+        data[offset + 1] = UInt8(truncatingIfNeeded: value >> 8)
+    }
+    func put32(_ value: UInt32, into data: inout Data, at offset: Int) {
+        data[offset] = UInt8(truncatingIfNeeded: value)
+        data[offset + 1] = UInt8(truncatingIfNeeded: value >> 8)
+        data[offset + 2] = UInt8(truncatingIfNeeded: value >> 16)
+        data[offset + 3] = UInt8(truncatingIfNeeded: value >> 24)
+    }
+    func record(_ name: Data, extent: UInt32, bytes: UInt32, directory: Bool) -> Data {
+        var value = Data(
+            repeating: 0,
+            count: 33 + name.count + (name.count.isMultiple(of: 2) ? 1 : 0)
+        )
+        value[0] = UInt8(value.count)
+        put32(extent, into: &value, at: 2)
+        put32(bytes, into: &value, at: 10)
+        value[25] = directory ? 0x02 : 0
+        put16(1, into: &value, at: 28)
+        value[32] = UInt8(name.count)
+        value.replaceSubrange(33..<(33 + name.count), with: name)
+        return value
+    }
+    func writeDirectory(_ records: [Data], lba: Int) {
+        var block = Data(repeating: 0, count: blockSize)
+        var offset = 0
+        for record in records {
+            block.replaceSubrange(offset..<(offset + record.count), with: record)
+            offset += record.count
+        }
+        image.replaceSubrange((lba * blockSize)..<((lba + 1) * blockSize), with: block)
+    }
+    var loader = Data(repeating: 0, count: 512)
+    loader[0] = 0x4D
+    loader[1] = 0x5A
+    put32(0x80, into: &loader, at: 0x3C)
+    loader.replaceSubrange(0x80..<0x84, with: Data([0x50, 0x45, 0, 0]))
+    put16(0xAA64, into: &loader, at: 0x84)
+    put16(1, into: &loader, at: 0x86)
+    put16(0xF0, into: &loader, at: 0x94)
+    put16(0x0002, into: &loader, at: 0x96)
+    put16(0x020B, into: &loader, at: 0x98)
+    put32(64, into: &loader, at: 0x98 + 4)
+    put32(0x1C0, into: &loader, at: 0x98 + 16)
+    put32(0x1C0, into: &loader, at: 0x98 + 20)
+    put32(0x20, into: &loader, at: 0x98 + 32)
+    put32(0x20, into: &loader, at: 0x98 + 36)
+    put32(0x200, into: &loader, at: 0x98 + 56)
+    put32(0x1C0, into: &loader, at: 0x98 + 60)
+    put16(10, into: &loader, at: 0x98 + 68)
+    put32(16, into: &loader, at: 0x98 + 108)
+    let section = 0x80 + 24 + 0xF0
+    loader.replaceSubrange(section..<(section + 5), with: Data(".text".utf8))
+    put32(64, into: &loader, at: section + 8)
+    put32(0x1C0, into: &loader, at: section + 12)
+    put32(64, into: &loader, at: section + 16)
+    put32(0x1C0, into: &loader, at: section + 20)
+    put32(0x6000_0020, into: &loader, at: section + 36)
+    loader[0x1C0] = 0xC3
+
+    var primary = Data(repeating: 0, count: blockSize)
+    primary[0] = 1
+    primary.replaceSubrange(1..<6, with: Data("CD001".utf8))
+    primary[6] = 1
+    let root = record(Data([0]), extent: 20, bytes: UInt32(blockSize), directory: true)
+    primary.replaceSubrange(156..<(156 + root.count), with: root)
+    image.replaceSubrange((16 * blockSize)..<(17 * blockSize), with: primary)
+    var terminator = Data(repeating: 0, count: blockSize)
+    terminator[0] = 255
+    terminator.replaceSubrange(1..<6, with: Data("CD001".utf8))
+    terminator[6] = 1
+    image.replaceSubrange((17 * blockSize)..<(18 * blockSize), with: terminator)
+
+    writeDirectory([
+        record(Data([0]), extent: 20, bytes: UInt32(blockSize), directory: true),
+        record(Data([1]), extent: 20, bytes: UInt32(blockSize), directory: true),
+        record(Data("EFI".utf8), extent: 21, bytes: UInt32(blockSize), directory: true),
+    ], lba: 20)
+    writeDirectory([
+        record(Data([0]), extent: 21, bytes: UInt32(blockSize), directory: true),
+        record(Data([1]), extent: 20, bytes: UInt32(blockSize), directory: true),
+        record(Data("BOOT".utf8), extent: 22, bytes: UInt32(blockSize), directory: true),
+    ], lba: 21)
+    writeDirectory([
+        record(Data([0]), extent: 22, bytes: UInt32(blockSize), directory: true),
+        record(Data([1]), extent: 21, bytes: UInt32(blockSize), directory: true),
+        record(
+            Data("BOOTAA64.EFI".utf8),
+            extent: 23,
+            bytes: UInt32(loader.count),
+            directory: false
+        ),
+    ], lba: 22)
+    image.replaceSubrange(
+        (23 * blockSize)..<(23 * blockSize + loader.count),
+        with: loader
+    )
+
+    func putFAT12(_ value: UInt16, cluster: UInt16, into fat: inout Data) {
+        let offset = Int(cluster) + Int(cluster / 2)
+        if cluster & 1 == 0 {
+            fat[offset] = UInt8(truncatingIfNeeded: value)
+            fat[offset + 1] = (fat[offset + 1] & 0xF0)
+                | UInt8(truncatingIfNeeded: value >> 8) & 0x0F
+        } else {
+            fat[offset] = (fat[offset] & 0x0F)
+                | UInt8(truncatingIfNeeded: value << 4) & 0xF0
+            fat[offset + 1] = UInt8(truncatingIfNeeded: value >> 4)
+        }
+    }
+    func shortEntry(
+        base: String,
+        ext: String = "",
+        attributes: UInt8,
+        cluster: UInt16,
+        bytes: UInt32
+    ) -> Data {
+        var entry = Data(repeating: 0, count: 32)
+        let baseBytes = Array(base.utf8.prefix(8))
+        let extBytes = Array(ext.utf8.prefix(3))
+        entry.replaceSubrange(0..<8, with: Data(
+            baseBytes + Array(repeating: 0x20, count: 8 - baseBytes.count)
+        ))
+        entry.replaceSubrange(8..<11, with: Data(
+            extBytes + Array(repeating: 0x20, count: 3 - extBytes.count)
+        ))
+        entry[11] = attributes
+        put16(cluster, into: &entry, at: 26)
+        put32(bytes, into: &entry, at: 28)
+        return entry
+    }
+
+    image[446 + 4] = 0xEF
+    put32(UInt32(partitionStartSector), into: &image, at: 446 + 8)
+    put32(UInt32(partitionSectors), into: &image, at: 446 + 12)
+    image[510] = 0x55
+    image[511] = 0xAA
+    let partitionOffset = partitionStartSector * 512
+    var fatBoot = Data(repeating: 0, count: 512)
+    fatBoot.replaceSubrange(0..<3, with: Data([0xEB, 0x3C, 0x90]))
+    put16(512, into: &fatBoot, at: 11)
+    fatBoot[13] = 1
+    put16(1, into: &fatBoot, at: 14)
+    fatBoot[16] = 2
+    put16(224, into: &fatBoot, at: 17)
+    put16(UInt16(partitionSectors), into: &fatBoot, at: 19)
+    fatBoot[21] = 0xF0
+    put16(9, into: &fatBoot, at: 22)
+    fatBoot[510] = 0x55
+    fatBoot[511] = 0xAA
+    image.replaceSubrange(partitionOffset..<(partitionOffset + 512), with: fatBoot)
+    var fat = Data(repeating: 0, count: 9 * 512)
+    fat[0] = 0xF0
+    fat[1] = 0xFF
+    fat[2] = 0xFF
+    for cluster: UInt16 in [2, 3, 4] {
+        putFAT12(0x0FFF, cluster: cluster, into: &fat)
+    }
+    let firstFAT = partitionOffset + 512
+    image.replaceSubrange(firstFAT..<(firstFAT + fat.count), with: fat)
+    image.replaceSubrange((firstFAT + fat.count)..<(firstFAT + fat.count * 2), with: fat)
+    let rootOffset = partitionOffset + 19 * 512
+    let rootEntry = shortEntry(
+        base: "EFI",
+        attributes: 0x10,
+        cluster: 2,
+        bytes: 0
+    )
+    image.replaceSubrange(rootOffset..<(rootOffset + rootEntry.count), with: rootEntry)
+    let dataOffset = partitionOffset + 33 * 512
+    let efiEntry = shortEntry(
+        base: "BOOT",
+        attributes: 0x10,
+        cluster: 3,
+        bytes: 0
+    )
+    image.replaceSubrange(dataOffset..<(dataOffset + efiEntry.count), with: efiEntry)
+    let loaderEntry = shortEntry(
+        base: "BOOTAA64",
+        ext: "EFI",
+        attributes: 0x20,
+        cluster: 4,
+        bytes: UInt32(loader.count)
+    )
+    image.replaceSubrange(
+        (dataOffset + 512)..<(dataOffset + 512 + loaderEntry.count),
+        with: loaderEntry
+    )
+    image.replaceSubrange(
+        (dataOffset + 1_024)..<(dataOffset + 1_024 + loader.count),
+        with: loader
+    )
+    return image
+}
+
 private final class ProductionTrustFixture: @unchecked Sendable {
     let root: URL
     let drive: DoryDataDrive
@@ -890,12 +1562,16 @@ private final class ProductionTrustFixture: @unchecked Sendable {
         runtimeVerificationFails: Bool = false,
         planningTransactionAvailable: Bool = true,
         trustFloorDirectorySyncFails: Bool = false,
-        trustFloorActivationState: ProductionTrustFloorActivationState? = nil
+        trustFloorActivationState: ProductionTrustFloorActivationState? = nil,
+        helperLifetimeSeconds: UInt = 30
     ) throws {
-        let helperData = Data("#!/bin/sh\nexec /bin/sleep 30\n".utf8)
+        let helperData = Data("#!/bin/sh\nexec /bin/sleep \(helperLifetimeSeconds)\n".utf8)
         helperDigest = Self.digest(helperData)
         hostState = ProductionHostState(host)
-        root = FileManager.default.temporaryDirectory.appendingPathComponent(
+        // The production broker deliberately rejects symlinked ancestors and group/world-
+        // writable user-owned ancestors. `/Users/Shared` is a root-owned sticky directory, which
+        // is the primitive's explicit safe temporary-fixture exception.
+        root = URL(fileURLWithPath: "/Users/Shared", isDirectory: true).appendingPathComponent(
             "dory-production-trust-\(UUID().uuidString)",
             isDirectory: true
         )
@@ -904,8 +1580,7 @@ private final class ProductionTrustFixture: @unchecked Sendable {
         try drive.prepare()
         store = DoryComponentStore(drive: drive)
         try store.prepare()
-        let state = root.appendingPathComponent("machine-state", isDirectory: true)
-        try FileManager.default.createDirectory(at: state, withIntermediateDirectories: true)
+        let state = URL(fileURLWithPath: drive.machinesDirectory, isDirectory: true)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: state.path)
         let vz = root.appendingPathComponent("dory-vmm").path
         let raw = root.appendingPathComponent("dory-hv").path
@@ -1052,7 +1727,7 @@ private final class ProductionTrustFixture: @unchecked Sendable {
             workload: .desktop,
             resources: resources
         )
-        let devices = DoryVirtualMachineDeviceCapabilityRequest.minimumBootable
+        let devices = productionTrustDesktopDevices()
         let media = DoryBootMedia(
             kind: .installedLinuxBootBundle,
             source: .bundledByDory,
@@ -1062,7 +1737,7 @@ private final class ProductionTrustFixture: @unchecked Sendable {
             guest: guest,
             bootMedia: media,
             backend: .doryHypervisor,
-            graphics: .none,
+            graphics: .software,
             devices: devices
         )
         let authority = try DoryVirtualMachineQualificationAuthorityResolver.resolve(
@@ -1141,6 +1816,7 @@ private final class ProductionTrustFixture: @unchecked Sendable {
                 RawHVLinuxMachineBackend.backendDescriptor.implementationIdentifier,
             backendRuntimeBuildIdentifier: runtimeBuildIdentifier,
             virtualHardwareABIVersion: 1,
+            rawHVVirtualHardwareTopology: productionTrustRawHVTopology(),
             bootMedia: DoryResolvedMachineBootMedia(
                 resolverReference: mediaReference,
                 media: media
@@ -1163,14 +1839,14 @@ private final class ProductionTrustFixture: @unchecked Sendable {
                 artifactSHA256: helperDigest
             )],
             devices: devices,
-            graphics: .none,
+            graphics: .software,
             supportTier: .supported,
             selectionEvidence: DoryResolvedMachineBackendSelectionEvidence(
                 disposition: .primary,
                 plannerRequest: DoryVirtualMachineBackendPlanRequest(
                     guest: guest,
                     bootMedia: media,
-                    acceptableGraphics: [.none],
+                    acceptableGraphics: [.software],
                     devices: devices,
                     backendPreferences: [.doryHypervisor],
                     backendPreferencePolicy: .required
@@ -1220,6 +1896,7 @@ private final class ProductionTrustFixture: @unchecked Sendable {
     ) throws {
         let signingKeyID = Self.digest(privateKey.publicKey.rawRepresentation)
         let devices = DoryVirtualMachineDeviceCapabilityRequest.minimumBootable
+        let desktopDevices = productionTrustDesktopDevices()
         let headlessDevices = DoryVirtualMachineDeviceCapabilityRequest(
             networkInterface: .init(macAddress: "02:00:00:00:00:01"),
             clipboardPolicy: .disabled,
@@ -1247,7 +1924,11 @@ private final class ProductionTrustFixture: @unchecked Sendable {
         ]
         let records = backends.flatMap { backend, implementation, component in
             media.flatMap { mediaKind, mediaDigest, mediaSuffix in
-                [("minimum", devices), ("headless", headlessDevices)].map { suffix, devices in
+                [
+                    ("minimum", devices, DoryGraphicsAccelerationLevel.none),
+                    ("headless", headlessDevices, DoryGraphicsAccelerationLevel.none),
+                    ("desktop", desktopDevices, .software),
+                ].map { suffix, devices, graphics in
                     DoryVirtualMachineQualificationRecord(
                         qualificationIdentity: "\(component)-\(mediaSuffix)-\(suffix)-qualification",
                         guest: guest,
@@ -1258,11 +1939,14 @@ private final class ProductionTrustFixture: @unchecked Sendable {
                         backendImplementationIdentifier: implementation,
                         backendRuntimeBuildIdentifier: runtimeBuildIdentifier,
                         virtualHardwareABIVersion: 1,
-                        graphics: .none,
+                        graphics: graphics,
                         devices: devices,
                         hostHardwareModelIdentifier: host.hardwareModelIdentifier,
                         hostOperatingSystemBuild: host.operatingSystemBuild,
-                        components: [components.first { $0.componentIdentifier == component }!]
+                        components: [components.first { $0.componentIdentifier == component }!],
+                        virtioGPUKernelAndDeviceSupportQualified: graphics != .none,
+                        producerFenceBeforeFlushQualified: graphics != .none,
+                        venusVulkanGuestRuntimeQualified: false
                     )
                 }
             }
@@ -1377,4 +2061,56 @@ private final class ProductionTrustFixture: @unchecked Sendable {
     private static func digest(_ data: Data) -> String {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
+}
+
+private func productionTrustDesktopDevices()
+    -> DoryVirtualMachineDeviceCapabilityRequest {
+    DoryVirtualMachineDeviceCapabilityRequest(
+        networkInterface: .stable(machineID: "qualified-linux"),
+        display: DoryVirtualMachineDisplayCapabilityRequest(
+            widthPixels: 1_920,
+            heightPixels: 1_080
+        )
+    )
+}
+
+private func productionTrustRawHVTopology() -> DoryRawHVVirtualHardwareTopology {
+    try! DoryRawHVVirtualHardwareTopology(occupiedSlots: [
+        DoryRawHVVirtualDeviceSlot(
+            logicalID: DoryVirtualDeviceID.derived(
+                namespace: .systemDisk,
+                stableID: "qualified-linux-system-disk"
+            ),
+            role: .systemDisk,
+            mmioSlot: 0
+        ),
+        DoryRawHVVirtualDeviceSlot(
+            logicalID: "rawhv-graphics",
+            role: .graphics,
+            mmioSlot: 1
+        ),
+        DoryRawHVVirtualDeviceSlot(
+            logicalID: "rawhv-entropy",
+            role: .entropy,
+            mmioSlot: 2
+        ),
+        DoryRawHVVirtualDeviceSlot(
+            logicalID: "rawhv-balloon",
+            role: .balloon,
+            mmioSlot: 3
+        ),
+        DoryRawHVVirtualDeviceSlot(
+            logicalID: "rawhv-vsock",
+            role: .vsock,
+            mmioSlot: 4
+        ),
+        DoryRawHVVirtualDeviceSlot(
+            logicalID: DoryVirtualDeviceID.derived(
+                namespace: .network,
+                stableID: "nic0"
+            ),
+            role: .network,
+            mmioSlot: 8
+        ),
+    ])
 }

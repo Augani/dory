@@ -117,7 +117,11 @@ public struct DoryVirtualMachineNetworkInterfaceCapabilityRequest:
 {
     public static let minimumMTU: UInt16 = 1_280
     public static let maximumMTU: UInt16 = 9_000
-    public static let defaultMTU: UInt16 = 1_280
+    /// Virtualization.framework's file-handle attachment rejects values below this floor.
+    /// The generic device contract still admits 1280 for backends and disconnected NICs that can
+    /// represent it; connected VZ plans enforce this implementation-specific minimum separately.
+    public static let vzFileHandleMinimumMTU: UInt16 = 1_500
+    public static let defaultMTU: UInt16 = vzFileHandleMinimumMTU
 
     public var id: String
     public var macAddress: String
@@ -477,6 +481,7 @@ public enum DoryCapabilityReasonCode: String, Codable, Sendable, CaseIterable, H
     case guestImageQualificationAuditEvidenceInvalid = "guest-image-qualification-audit-evidence-invalid"
     case guestImageArtifactQualificationMismatch = "guest-image-artifact-qualification-mismatch"
     case linuxVirtioGPUKernelDeviceUnqualified = "linux-virtio-gpu-kernel-device-unqualified"
+    case linuxVirtioGPUProducerFenceUnqualified = "linux-virtio-gpu-producer-fence-unqualified"
     case linuxVenusVulkanRuntimeUnqualified = "linux-venus-vulkan-runtime-unqualified"
     case virtualizationFrameworkUnavailable = "virtualization-framework-unavailable"
     case hypervisorFrameworkUnavailable = "hypervisor-framework-unavailable"
@@ -624,15 +629,18 @@ public struct DoryBootMediaInspectionAuditEvidence: Codable, Sendable, Equatable
 public struct DoryTrustedGuestImageGraphicsQualification: Sendable, Equatable, Hashable {
     let auditEvidence: DorySignedArtifactQualificationEvidence
     let virtioGPUKernelAndDeviceSupportQualified: Bool
+    let producerFenceBeforeFlushQualified: Bool
     let venusVulkanGuestRuntimeQualified: Bool
 
     init(
         auditEvidence: DorySignedArtifactQualificationEvidence,
         virtioGPUKernelAndDeviceSupportQualified: Bool,
+        producerFenceBeforeFlushQualified: Bool = false,
         venusVulkanGuestRuntimeQualified: Bool
     ) {
         self.auditEvidence = auditEvidence
         self.virtioGPUKernelAndDeviceSupportQualified = virtioGPUKernelAndDeviceSupportQualified
+        self.producerFenceBeforeFlushQualified = producerFenceBeforeFlushQualified
         self.venusVulkanGuestRuntimeQualified = venusVulkanGuestRuntimeQualified
     }
 }
@@ -643,7 +651,9 @@ public struct DoryTrustedGuestImageGraphicsQualification: Sendable, Equatable, H
 public struct DoryTrustedBootMediaInspection: Sendable, Equatable, Hashable {
     let auditEvidence: DoryBootMediaInspectionAuditEvidence
     let detectedKind: DoryBootMediaKind
-    let detectedGuestFamily: DoryGuestFamily
+    /// `nil` means the media format proves bootability/architecture but not an OS family. Generic
+    /// EFI media is user-declared until a running guest attests its operating system.
+    let detectedGuestFamily: DoryGuestFamily?
     let detectedArchitecture: DoryGuestArchitecture
     let isEFIBootable: Bool
     let macOSBuildIdentifier: String?
@@ -653,7 +663,7 @@ public struct DoryTrustedBootMediaInspection: Sendable, Equatable, Hashable {
     init(
         auditEvidence: DoryBootMediaInspectionAuditEvidence,
         detectedKind: DoryBootMediaKind,
-        detectedGuestFamily: DoryGuestFamily,
+        detectedGuestFamily: DoryGuestFamily?,
         detectedArchitecture: DoryGuestArchitecture,
         isEFIBootable: Bool,
         macOSBuildIdentifier: String? = nil,
@@ -1325,8 +1335,7 @@ public enum DoryAppleSiliconCapabilityEvaluator {
         case (.linux, .doryHypervisor),
              (.linux, .appleVirtualizationFramework):
             return .supported
-        case (.linux, .qemuHypervisorFramework),
-             (.macOS, .appleVirtualizationFramework),
+        case (.macOS, .appleVirtualizationFramework),
              (.windows, .qemuHypervisorFramework):
             return .experimental
         default:
@@ -1361,8 +1370,7 @@ public enum DoryAppleSiliconCapabilityEvaluator {
                 || request.bootMedia.kind == .installerISO
                 || request.bootMedia.kind == .virtualDisk
                 || request.bootMedia.kind == .installedLinuxBootBundle
-        case (.linux, .qemuHypervisorFramework),
-             (.windows, .qemuHypervisorFramework):
+        case (.windows, .qemuHypervisorFramework):
             return request.bootMedia.kind == .installerISO || request.bootMedia.kind == .virtualDisk
         case (.macOS, .appleVirtualizationFramework):
             return request.bootMedia.kind == .macOSRestoreImage || request.bootMedia.kind == .virtualDisk
@@ -1378,7 +1386,10 @@ public enum DoryAppleSiliconCapabilityEvaluator {
         case .none, .software:
             return true
         case .hostAcceleratedDisplay:
-            return true
+            // RawHV currently exposes only software scanout or the authenticated renderer-worker
+            // 3D contract; advertising this intermediate level made the planner select a mode
+            // DesktopMode always rejects. Keep the existing VZ and experimental QEMU contracts.
+            return request.backend != .doryHypervisor
         case .hardwareAccelerated3D:
             return (request.guest.family == .linux && request.backend == .doryHypervisor)
                 || (request.guest.family == .macOS && request.backend == .appleVirtualizationFramework)
@@ -1577,6 +1588,30 @@ public enum DoryAppleSiliconCapabilityEvaluator {
         trustedQualification: DoryTrustedVirtualMachineRuntimeQualification?
     ) -> DoryCapabilityAvailability? {
         guard let trustedQualification else {
+            // A structurally inspected ARM64 EFI Linux image on Virtualization.framework is a
+            // portable boot baseline, not an experimental backend. Exact qualification still
+            // controls support claims for a particular distro/runtime tuple, but its absence must
+            // not prevent a user-provided ISO from reaching the standard VirtIO 2D desktop. Known
+            // failed qualification remains unavailable below.
+            if portableLinuxEFIBaseline(request) {
+                return DoryCapabilityAvailability(
+                    supportTier: .supported,
+                    state: .available,
+                    reason: DoryCapabilityReason(
+                        code: .runtimeQualificationUnavailable,
+                        message: "This ARM64 EFI Linux media can use Dory's portable 2D baseline; "
+                            + "this exact distribution and runtime have not completed qualification."
+                    )
+                )
+            }
+            if managedOrAcceleratedPortableLinuxCandidate(request) {
+                return unavailable(
+                    tier: .supported,
+                    code: .runtimeQualificationUnavailable,
+                    message: "Managed Linux media and accelerated display modes require an exact "
+                        + "signed runtime qualification."
+                )
+            }
             return DoryCapabilityAvailability(
                 supportTier: .experimental,
                 state: .available,
@@ -1649,6 +1684,30 @@ public enum DoryAppleSiliconCapabilityEvaluator {
         return nil
     }
 
+    private static func portableLinuxEFIBaseline(
+        _ request: DoryVirtualMachineCapabilityRequest
+    ) -> Bool {
+        guard request.guest == DoryGuestPlatform(family: .linux, architecture: .arm64),
+              request.backend == .appleVirtualizationFramework,
+              (request.bootMedia.kind == .installerISO
+                || request.bootMedia.kind == .virtualDisk),
+              request.bootMedia.source == .userProvided else {
+            return false
+        }
+        return request.graphics == .software
+    }
+
+    private static func managedOrAcceleratedPortableLinuxCandidate(
+        _ request: DoryVirtualMachineCapabilityRequest
+    ) -> Bool {
+        request.guest == DoryGuestPlatform(family: .linux, architecture: .arm64)
+            && request.backend == .appleVirtualizationFramework
+            && (request.bootMedia.kind == .installerISO
+                || request.bootMedia.kind == .virtualDisk)
+            && (request.bootMedia.source != .userProvided
+                || request.graphics != .software)
+    }
+
     private static func bootMediaInspectionFailure(
         for request: DoryVirtualMachineCapabilityRequest,
         trustedInspection: DoryTrustedBootMediaInspection?,
@@ -1694,7 +1753,8 @@ public enum DoryAppleSiliconCapabilityEvaluator {
                 message: "The inspected media format does not match the requested boot-media format."
             )
         }
-        guard inspection.detectedGuestFamily == request.guest.family else {
+        guard inspection.detectedGuestFamily == nil
+                || inspection.detectedGuestFamily == request.guest.family else {
             return unavailable(
                 tier: tier,
                 code: .bootMediaGuestInspectionMismatch,
@@ -1976,6 +2036,16 @@ public enum DoryAppleSiliconCapabilityEvaluator {
                 code: .linuxVirtioGPUKernelDeviceUnqualified,
                 message: "The Linux kernel and image are not qualified for Dory's virtio-gpu device contract."
             )
+        }
+        if request.graphics == .hostAcceleratedDisplay
+            || request.graphics == .hardwareAccelerated3D {
+            guard qualification.producerFenceBeforeFlushQualified else {
+                return unavailable(
+                    tier: .supported,
+                    code: .linuxVirtioGPUProducerFenceUnqualified,
+                    message: "The Linux image has no signed proof that scanout producers complete before RESOURCE_FLUSH."
+                )
+            }
         }
         guard request.graphics != .hardwareAccelerated3D
                 || qualification.venusVulkanGuestRuntimeQualified else {

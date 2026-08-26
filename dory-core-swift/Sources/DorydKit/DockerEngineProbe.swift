@@ -69,6 +69,41 @@ public struct DockerContainerSummary: Decodable, Equatable, Sendable {
 }
 
 public enum DockerEngineProbe {
+    public static let dashboardPaths: [String: String] = [
+        "containers": "/containers/json?all=1",
+        "images": "/images/json",
+        "volumes": "/volumes",
+        "networks": "/networks",
+        "version": "/version",
+    ]
+
+    /// Reads dashboard inventory over doryd's private host-to-guest forward. This deliberately
+    /// bypasses the public Docker dataplane: observing an already-running engine must not be
+    /// indistinguishable from user Docker activity and keep resetting the auto-idle deadline.
+    public static func dashboardSnapshot(
+        forwardSocketPath: String,
+        cid: UInt32,
+        dockerPort: UInt32,
+        timeout: TimeInterval = 2
+    ) throws -> [String: Data] {
+        var result: [String: Data] = [:]
+        for (key, path) in dashboardPaths.sorted(by: { $0.key < $1.key }) {
+            let response = try request(
+                path: path,
+                forwardSocketPath: forwardSocketPath,
+                cid: cid,
+                port: dockerPort,
+                timeout: timeout,
+                maxBytes: 2 * 1024 * 1024
+            )
+            guard (200..<300).contains(response.status) else {
+                throw ProbeError.httpStatus(response.status, path)
+            }
+            result[key] = response.body
+        }
+        return result
+    }
+
     public static func containerSummaries(
         socketPath: String,
         timeout: TimeInterval = 2
@@ -305,6 +340,7 @@ private enum ProbeError: Error, CustomStringConvertible {
     case syscall(String, Int32)
     case malformedHTTP
     case tooLarge
+    case httpStatus(Int, String)
 
     var description: String {
         switch self {
@@ -316,6 +352,8 @@ private enum ProbeError: Error, CustomStringConvertible {
             return "malformed HTTP response"
         case .tooLarge:
             return "HTTP response exceeded probe limit"
+        case let .httpStatus(status, path):
+            return "docker returned HTTP \(status) for \(path)"
         }
     }
 }

@@ -28,10 +28,11 @@ public enum DoryDesktopVMMPreference: String, CaseIterable, Sendable, Codable {
 
 /// Requested graphics behavior for Dory's raw-Hypervisor desktop runtime.
 ///
-/// The default requires the combined VirGL2 + Venus backend: VirGL accelerates the desktop
-/// compositor while Venus gives Vulkan applications a real Apple-GPU path. Dory never silently
-/// turns `automatic` into software rendering. Classic VirGL and software scanout remain explicit
-/// compatibility choices for guests or hosts that cannot satisfy the default GPU contract.
+/// `automatic` prefers the combined VirGL2 + Venus backend, then resolves through the explicitly
+/// declared host-display and software recovery levels. The selected level is persisted and exposed
+/// to the UI; it is never presented as accelerated when it resolved to software. `virglVenus`
+/// remains the strict hardware-3D request, while `virgl` and `software` select exact compatibility
+/// levels for qualification and recovery.
 public enum DoryDesktopGraphicsPreference: String, CaseIterable, Sendable, Codable {
     public static let environmentKey = "DORY_DESKTOP_GRAPHICS"
     public static let legacyClassicOnlyEnvironmentKey = "DORY_VIRGL_CLASSIC_ONLY"
@@ -41,9 +42,9 @@ public enum DoryDesktopGraphicsPreference: String, CaseIterable, Sendable, Codab
     case virglVenus = "virgl-venus"
     case software
 
-    /// The exact backend promised by this preference. Keeping this mapping in the shared runtime
-    /// contract prevents a launcher from weakening `automatic` into an unreported compatibility
-    /// fallback.
+    /// Exact kernel contract for the legacy, pre-resolved launch path. Production planning expands
+    /// `automatic` into its ordered acceptable levels and persists the actual selected result;
+    /// this value must not be used to describe that resolved capability.
     public var requiredBackend: DoryDesktopGraphicsBackend {
         switch self {
         case .automatic, .virglVenus: .virglVenus
@@ -84,11 +85,6 @@ public enum DoryDesktopGraphicsBackend: String, Sendable, Codable {
 
     /// Kernel token read by the versioned guest integration scripts.
     public var kernelArgument: String { "dory.graphics=\(rawValue)" }
-
-    /// Compatibility token for desktop images predating `dory.graphics`.
-    public var legacyKernelArgument: String? {
-        isAccelerated ? "dory.gpu=venus" : nil
-    }
 
     public var displayName: String {
         switch self {

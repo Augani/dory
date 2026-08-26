@@ -53,6 +53,8 @@ final class DoryVMMGVProxyNetwork: @unchecked Sendable {
     let apiSocketPath: String
     let shutdownSocketPath: String
     let lanDatapathSocketPath: String?
+    /// Exact MTU shared by gvproxy, VZ, and the optional source-preserving LAN bridge.
+    let effectiveMTU: Int
 
     private let process: Process
     private let fileHandle: FileHandle
@@ -79,6 +81,7 @@ final class DoryVMMGVProxyNetwork: @unchecked Sendable {
                 "gvproxy implements only shared-NAT and host-only network attachments"
             )
         }
+        effectiveMTU = try Self.resolveEffectiveMTU(networkInterface)
         try FileManager.default.createDirectory(atPath: stateDirectory, withIntermediateDirectories: true)
 
         localSocketPath = stateDirectory + "/vmm-net.sock"
@@ -91,12 +94,8 @@ final class DoryVMMGVProxyNetwork: @unchecked Sendable {
             try Self.validateUnixPath(path)
             unlink(path)
         }
-        if let networkInterface, !networkInterface.isValid {
-            throw DoryVZMachineError.validation("resolved network interface identity is invalid")
-        }
         let guestMAC = networkInterface?.macAddress ?? DoryVMMNativeIPv6Plan.guestMAC
-        let mtu = networkInterface.map { Int($0.maximumTransmissionUnit) }
-            ?? DoryNetworkMTU.resolved()
+        let mtu = effectiveMTU
         try DoryVMMNativeIPv6Plan(
             hostOnly: networkAttachment == .isolated,
             guestMAC: guestMAC
@@ -364,6 +363,29 @@ final class DoryVMMGVProxyNetwork: @unchecked Sendable {
         }
         if lhs.localHost != rhs.localHost { return lhs.localHost < rhs.localHost }
         return lhs.localPort < rhs.localPort
+    }
+
+    static func resolveEffectiveMTU(
+        _ networkInterface: DoryVirtualMachineNetworkInterfaceCapabilityRequest?
+    ) throws -> Int {
+        guard let networkInterface else {
+            return Int(DoryVirtualMachineNetworkInterfaceCapabilityRequest
+                .vzFileHandleMinimumMTU)
+        }
+        guard networkInterface.isValid else {
+            throw DoryVZMachineError.validation(
+                "resolved network interface identity or MTU is invalid"
+            )
+        }
+        guard networkInterface.maximumTransmissionUnit
+                >= DoryVirtualMachineNetworkInterfaceCapabilityRequest
+                    .vzFileHandleMinimumMTU else {
+            throw DoryVZMachineError.validation(
+                "resolved VZ file-handle network MTU must be at least "
+                    + "\(DoryVirtualMachineNetworkInterfaceCapabilityRequest.vzFileHandleMinimumMTU)"
+            )
+        }
+        return Int(networkInterface.maximumTransmissionUnit)
     }
 
     private static func validateUnixPath(_ path: String) throws {

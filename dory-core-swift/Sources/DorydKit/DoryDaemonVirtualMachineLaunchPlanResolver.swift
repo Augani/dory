@@ -1,4 +1,5 @@
 import DoryOperations
+import DoryVMContracts
 import Foundation
 
 public enum DoryDaemonVirtualMachinePreSpawnAuthorizationError:
@@ -8,19 +9,53 @@ public enum DoryDaemonVirtualMachinePreSpawnAuthorizationError:
     case revalidationFailed
 }
 
+/// Non-persisted output of the final production revalidation. Most launches require no renderer
+/// identity. A resolved RawHV hardware-3D launch carries the exact release identity read from the
+/// live daemon so MachineManager can bind it to the one suspended runner process.
+enum DoryDaemonVirtualMachinePreSpawnLaunchAuthority: Sendable, Equatable {
+    case noRendererReleaseIdentityRequired
+    case rendererReleaseIdentity(DoryRendererReleaseIdentityV1)
+}
+
 /// Single-use daemon authorization for the last possible trust check before MachineManager reads
 /// path-derived boot arguments or starts the helper. It is non-Codable and cannot be supplied as
 /// API intent.
 public final class DoryDaemonVirtualMachinePreSpawnAuthorization: @unchecked Sendable {
     private let lock = NSLock()
     private var consumed = false
-    private let revalidate: @Sendable () throws -> Void
+    private let resolveLaunchAuthority:
+        @Sendable () throws -> DoryDaemonVirtualMachinePreSpawnLaunchAuthority
 
     init(revalidate: @escaping @Sendable () throws -> Void) {
-        self.revalidate = revalidate
+        resolveLaunchAuthority = {
+            try revalidate()
+            return .noRendererReleaseIdentityRequired
+        }
+    }
+
+    private init(
+        resolveLaunchAuthority:
+            @escaping @Sendable () throws -> DoryDaemonVirtualMachinePreSpawnLaunchAuthority
+    ) {
+        self.resolveLaunchAuthority = resolveLaunchAuthority
+    }
+
+    static func resolvingLaunchAuthority(
+        _ resolve:
+            @escaping @Sendable () throws -> DoryDaemonVirtualMachinePreSpawnLaunchAuthority
+    ) -> DoryDaemonVirtualMachinePreSpawnAuthorization {
+        DoryDaemonVirtualMachinePreSpawnAuthorization(
+            resolveLaunchAuthority: resolve
+        )
     }
 
     public func authorize() throws {
+        _ = try authorizeResolvedLaunch()
+    }
+
+    func authorizeResolvedLaunch() throws
+        -> DoryDaemonVirtualMachinePreSpawnLaunchAuthority
+    {
         lock.lock()
         guard !consumed else {
             lock.unlock()
@@ -28,7 +63,7 @@ public final class DoryDaemonVirtualMachinePreSpawnAuthorization: @unchecked Sen
         }
         consumed = true
         lock.unlock()
-        do { try revalidate() }
+        do { return try resolveLaunchAuthority() }
         catch {
             throw DoryDaemonVirtualMachinePreSpawnAuthorizationError.revalidationFailed
         }
@@ -205,6 +240,7 @@ public final class DoryDaemonVirtualMachineStartEvidenceCollector:
             backendImplementationIdentifier: backend.descriptor.implementationIdentifier,
             backendRuntimeBuildIdentifier: runtime.runtimeBuildIdentifier,
             virtualHardwareABIVersion: exactRequest.virtualHardwareABIVersion,
+            rawHVVirtualHardwareTopology: plan.rawHVVirtualHardwareTopology,
             bootMedia: DoryResolvedMachineBootMedia(
                 resolverReference: snapshot.media.reference,
                 media: exactRequest.bootMedia,
@@ -311,6 +347,7 @@ public enum DoryDaemonVirtualMachineLaunchPlanFailureCode: String, Sendable, Equ
     case planNotFound = "plan-not-found"
     case planRepositoryRejected = "plan-repository-rejected"
     case freshEvidenceUnavailable = "fresh-evidence-unavailable"
+    case virtualHardwareTopologyMismatch = "virtual-hardware-topology-mismatch"
     case staleOrMismatchedPlan = "stale-or-mismatched-plan"
     case backendPlanRejected = "backend-plan-rejected"
     case backendPlanIdentityMismatch = "backend-plan-identity-mismatch"
@@ -389,6 +426,26 @@ public final class DoryDaemonVirtualMachineLaunchPlanResolver:
             throw failure(.planRepositoryRejected, "The durable plan record failed repository validation.")
         } catch {
             throw failure(.planRepositoryRejected, "The durable plan record could not be read.")
+        }
+        if plan.backend == .doryHypervisor {
+            guard let topology = plan.rawHVVirtualHardwareTopology else {
+                throw failure(
+                    .virtualHardwareTopologyMismatch,
+                    "The RawHV plan has no durable virtual-hardware topology."
+                )
+            }
+            do {
+                try DoryRawHVVirtualHardwareTopologyPlanner.validate(
+                    topology,
+                    definition: request.definition,
+                    resolvedDevices: plan.devices
+                )
+            } catch {
+                throw failure(
+                    .virtualHardwareTopologyMismatch,
+                    "The RawHV plan topology differs from current definition authority."
+                )
+            }
         }
         let fresh: DoryDaemonVirtualMachineStartEvidenceCollection
         do { fresh = try evidenceCollector.collectFreshEvidence(for: plan) }

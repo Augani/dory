@@ -1,3 +1,4 @@
+import DoryFSWorkerContracts
 import Foundation
 
 public struct MPTableImage: Equatable, Sendable {

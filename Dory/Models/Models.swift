@@ -310,6 +310,7 @@ struct Machine: Identifiable, Hashable, Sendable {
     var bootMode: MachineBootMode = .linuxKernel
     var installerMediaAttached: Bool = false
     var runtimeIdentity: DorydMachineRuntimeIdentity = .legacyCompatibility
+    var runtimeGraphicsSelection: DorydMachineRuntimeGraphicsSelection? = nil
     var cloneReceipt: DorydMachineCloneReceipt? = nil
     var agentBuild: String? = nil
     var agentProtocolVersion: UInt32? = nil
@@ -391,15 +392,45 @@ struct Machine: Identifiable, Hashable, Sendable {
                 ))
             }
             if displayMode == .desktop {
-                evidence.append(MachineRuntimeEvidence(
-                    id: "graphics",
-                    label: Self.graphicsLabel(runtimeIdentity.graphics),
-                    systemImage: "display",
-                    tone: runtimeIdentity.graphics == "hardware-accelerated-3d"
-                        ? .positive : .standard,
-                    detail: runtimeIdentity.graphicsQualification?.manifestIdentity
-                        ?? "No separate signed graphics qualification"
-                ))
+                if status == .running, let runtimeGraphicsSelection {
+                    evidence.append(MachineRuntimeEvidence(
+                        id: "graphics",
+                        label: Self.graphicsLabel(runtimeGraphicsSelection.accelerationLevel),
+                        systemImage: "display",
+                        tone: runtimeGraphicsSelection.isQualifiedAcceleration
+                            ? .positive : .standard,
+                        detail: runtimeGraphicsSelection.isQualifiedAcceleration
+                            ? "Live renderer generation \(runtimeGraphicsSelection.rendererGeneration ?? 0)"
+                            : "Live operation-bound software selection"
+                    ))
+                } else if status == .running,
+                          runtimeIdentity.backend == "apple-virtualization-framework",
+                          runtimeIdentity.graphics == "software" {
+                    evidence.append(MachineRuntimeEvidence(
+                        id: "graphics",
+                        label: "Software graphics",
+                        systemImage: "display",
+                        tone: .standard,
+                        detail: "Plan-bound Virtualization.framework display"
+                    ))
+                } else if status == .running {
+                    evidence.append(MachineRuntimeEvidence(
+                        id: "graphics",
+                        label: "Graphics unverified",
+                        systemImage: "exclamationmark.triangle.fill",
+                        tone: .warning,
+                        detail: "The running helper did not prove its live graphics selection"
+                    ))
+                } else {
+                    evidence.append(MachineRuntimeEvidence(
+                        id: "graphics",
+                        label: "Planned \(Self.graphicsLabel(runtimeIdentity.graphics))",
+                        systemImage: "display",
+                        tone: .standard,
+                        detail: runtimeIdentity.graphicsQualification?.manifestIdentity
+                            ?? "No live graphics selection while stopped"
+                    ))
+                }
             }
             if runtimeIdentity.selectionDisposition == "approved-fallback" {
                 evidence.append(MachineRuntimeEvidence(

@@ -65,6 +65,31 @@ struct NewMachineSettingsTests {
         #expect(DoryInstallerMachinePolicy.defaultMemoryMB == 4_096)
     }
 
+    @Test func customISOHomeShareUsesAnExplicitManualVirtioFSTag() {
+        let mount = NewMachineSheet.sharedHomeMount(
+            home: "/Users/tester",
+            displayMode: .desktop,
+            customISOInstall: true,
+            guestUsername: "installer-user"
+        )
+
+        #expect(mount.host == "/Users/tester")
+        #expect(mount.guest == "/mnt/dory-mac-home")
+        #expect(mount.shareTag == "mac-home")
+    }
+
+    @Test func managedDesktopHomeShareKeepsTheProvisionedUserPath() {
+        let mount = NewMachineSheet.sharedHomeMount(
+            home: "/Users/tester",
+            displayMode: .desktop,
+            customISOInstall: false,
+            guestUsername: "dory-user"
+        )
+
+        #expect(mount.guest == "/home/dory-user/Mac")
+        #expect(mount.shareTag == nil)
+    }
+
     @Test func collectsResourcesRegardlessOfDisclosure() {
         let s = NewMachineSheet.buildSettings(cpus: 4, memoryGB: 8,
             mounts: [MountPair(host: "/Users/u/p", guest: "/Users/u/p")],

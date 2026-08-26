@@ -10,7 +10,7 @@ struct DoryProcessMemoryTests {
             currentPID: 1
         ) == .app)
         #expect(DoryProcessMemorySampler.classify(pid: 11, name: "doryd", path: "/Applications/Dory.app/Contents/Helpers/doryd", currentPID: 1) == .daemon)
-        #expect(DoryProcessMemorySampler.classify(pid: 12, name: "dory-hv", path: "/Applications/Dory.app/Contents/Helpers/dory-hv", currentPID: 1) == .dockerVM)
+        #expect(DoryProcessMemorySampler.classify(pid: 12, name: "dory-hv", path: "/Applications/Dory.app/Contents/Helpers/DoryHVRunner.app/Contents/MacOS/dory-hv", currentPID: 1) == .dockerVM)
         #expect(DoryProcessMemorySampler.classify(pid: 13, name: "dory-vmm", path: "/Applications/Dory.app/Contents/Helpers/dory-vmm", currentPID: 1) == .machineVM)
         #expect(DoryProcessMemorySampler.classify(pid: 14, name: "gvproxy", path: "/Applications/Dory.app/Contents/Helpers/gvproxy", currentPID: 1) == .networking)
         #expect(DoryProcessMemorySampler.classify(pid: 15, name: "Safari", path: "/Applications/Safari.app/Contents/MacOS/Safari", currentPID: 1) == nil)

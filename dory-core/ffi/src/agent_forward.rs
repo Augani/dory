@@ -41,6 +41,15 @@ pub struct PortsWatchFfi {
     pub removed: Vec<PortEventFfi>,
 }
 
+#[derive(uniffi::Record)]
+pub struct VirtiofsMountReceiptFfi {
+    pub tag: String,
+    pub mount_path: String,
+    pub read_only: bool,
+    pub already_mounted: bool,
+    pub mount_id: u64,
+}
+
 #[derive(Debug, Clone, Copy, uniffi::Enum)]
 pub enum LifecycleReceiptActionFfi {
     PreparePause,
@@ -362,6 +371,38 @@ impl AgentControl {
             return Err(failed("guest returned a mismatched USB detach receipt"));
         }
         Ok(())
+    }
+
+    pub fn virtiofs_mount(
+        &self,
+        tag: String,
+        mount_path: String,
+        read_only: bool,
+    ) -> Result<VirtiofsMountReceiptFfi, RemoteFfiError> {
+        let guard = self.runtime.lock().unwrap();
+        let runtime = guard.as_ref().ok_or_else(shutdown_error)?;
+        let response = runtime.block_on(self.client.virtiofs_mount(
+            dory_pb::agent::VirtiofsMountRequest {
+                tag: tag.clone(),
+                mount_path: mount_path.clone(),
+                read_only,
+            },
+        ))?;
+        if !response.mounted
+            || response.tag != tag
+            || response.mount_path != mount_path
+            || response.read_only != read_only
+            || response.mount_id == 0
+        {
+            return Err(failed("guest returned a mismatched virtio-fs mount proof"));
+        }
+        Ok(VirtiofsMountReceiptFfi {
+            tag: response.tag,
+            mount_path: response.mount_path,
+            read_only: response.read_only,
+            already_mounted: response.already_mounted,
+            mount_id: response.mount_id,
+        })
     }
 
     pub fn exec(

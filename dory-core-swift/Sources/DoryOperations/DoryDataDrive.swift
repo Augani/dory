@@ -135,7 +135,9 @@ public struct DoryDataDrive: Sendable, Equatable {
         guard url.path.hasPrefix("/"), url.lastPathComponent.hasSuffix(".dorydrive"), url.path != "/" else {
             throw DoryDataDriveError.invalidRoot(selected)
         }
-        let runtimeRoot = URL(fileURLWithPath: standardizedHome + "/.dory").standardizedFileURL.path
+        // `standardizedHome` is already a physical spelling. Re-standardizing it through
+        // Foundation can reintroduce `/tmp` or `/var` aliases that a no-follow broker must reject.
+        let runtimeRoot = Self.lexicalAbsolutePath(standardizedHome + "/.dory")
         guard url.path != runtimeRoot, !url.path.hasPrefix(runtimeRoot + "/") else {
             throw DoryDataDriveError.unsafeRuntimeRoot(url.path)
         }
@@ -145,17 +147,15 @@ public struct DoryDataDrive: Sendable, Equatable {
             "Downloads",
             "Library/CloudStorage",
             "Library/Mobile Documents",
-        ].map {
-            URL(fileURLWithPath: standardizedHome).appendingPathComponent($0).standardizedFileURL.path
-        }
+        ].map { Self.lexicalAbsolutePath(standardizedHome + "/" + $0) }
         guard !protectedHomeRoots.contains(where: {
             url.path == $0 || url.path.hasPrefix($0 + "/")
         }) else {
             throw DoryDataDriveError.protectedLocation(url.path)
         }
-        let applicationSupportRoot = URL(fileURLWithPath: standardizedHome)
-            .appendingPathComponent("Library/Application Support/Dory", isDirectory: true)
-            .standardizedFileURL.path
+        let applicationSupportRoot = Self.lexicalAbsolutePath(
+            standardizedHome + "/Library/Application Support/Dory"
+        )
         let isApplicationSupport = url.path.hasPrefix(applicationSupportRoot + "/")
         let isMountedVolumePath = url.path.hasPrefix("/Volumes/")
         guard isApplicationSupport || isMountedVolumePath else {
@@ -186,12 +186,15 @@ public struct DoryDataDrive: Sendable, Equatable {
         return home
     }
 
-    /// Produces one stable path spelling even when the destination does not exist yet. Foundation
-    /// may remove `/private` while standardizing an existing home but retain it for a missing
-    /// descendant. Canonicalize the deepest existing ancestor once, then append the missing suffix
-    /// so both sides of every authorization/identity comparison use the same filesystem spelling.
+    /// Produces one stable physical path spelling even when the destination does not exist yet.
+    /// `URL.resolvingSymlinksInPath()` is not suitable for a no-follow authority: on macOS it may
+    /// rewrite the physical `/private/tmp` directory back to the `/tmp` symlink spelling. Resolve
+    /// the deepest existing ancestor with POSIX `realpath(3)`, then append the missing suffix so a
+    /// later descriptor walk can reject links without rejecting its own canonical output.
     public static func canonicalPath(_ path: String) throws -> String {
-        guard path.hasPrefix("/") else {
+        guard path.hasPrefix("/"),
+              path.utf8.count < Int(PATH_MAX),
+              !hasControlCharacter(path) else {
             throw DoryDataDriveError.invalidRoot(path)
         }
         let lexicalPath = lexicalAbsolutePath(path)
@@ -204,7 +207,24 @@ public struct DoryDataDrive: Sendable, Equatable {
         guard pathEntryExists(ancestor.path) else {
             throw DoryDataDriveError.filesystem("canonicalize Dory data-drive path: no existing ancestor for \(path)")
         }
-        var canonical = ancestor.resolvingSymlinksInPath()
+        var resolvedBytes = [CChar](repeating: 0, count: Int(PATH_MAX))
+        let didResolve = resolvedBytes.withUnsafeMutableBufferPointer { output in
+            ancestor.path.withCString { input in
+                realpath(input, output.baseAddress) != nil
+            }
+        }
+        guard didResolve else {
+            let code = errno
+            throw DoryDataDriveError.filesystem(
+                "canonicalize Dory data-drive path \(path): realpath errno \(code)"
+            )
+        }
+        let terminator = resolvedBytes.firstIndex(of: 0) ?? resolvedBytes.endIndex
+        let resolvedPath = String(
+            decoding: resolvedBytes[..<terminator].map { UInt8(bitPattern: $0) },
+            as: UTF8.self
+        )
+        var canonical = URL(fileURLWithPath: resolvedPath)
         for component in missingComponents.reversed() {
             canonical.appendPathComponent(component)
         }

@@ -9,6 +9,11 @@ let package = Package(
     name: "dory-core-swift",
     platforms: [.macOS(.v14)],
     products: [
+        .library(name: "DoryVMContracts", targets: ["DoryVMContracts"]),
+        .library(
+            name: "DoryRendererWorkerWireContracts",
+            targets: ["DoryRendererWorkerWireContracts"]
+        ),
         .library(name: "DoryOperations", targets: ["DoryOperations"]),
         .library(name: "DoryCore", targets: ["DoryCore"]),
         .library(name: "DorydKit", targets: ["DorydKit"]),
@@ -16,13 +21,31 @@ let package = Package(
         .executable(name: "doryd", targets: ["doryd"]),
         .executable(name: "dorydctl", targets: ["dorydctl"]),
         .executable(name: "dory-vmm", targets: ["dory-vmm"]),
+        .executable(
+            name: "dory-linux-calibration",
+            targets: ["dory-linux-calibration"]
+        ),
         .executable(name: "dory-network-helper", targets: ["dory-network-helper"]),
         .executable(name: "dory-dataplane-proxy", targets: ["dory-dataplane-proxy"]),
     ],
     targets: [
         .binaryTarget(name: "DoryFFI", path: "artifacts/DoryFFI.xcframework"),
         .target(
+            name: "DoryVMContracts",
+            dependencies: []
+        ),
+        // Foundation/CryptoKit-only binary renderer authority shared by doryd and the nested
+        // runner. It deliberately owns no Metal, Hypervisor.framework, or foreign renderer code.
+        .target(
+            name: "DoryRendererWorkerWireContracts",
+            dependencies: []
+        ),
+        .target(
             name: "DoryOperations",
+            dependencies: [
+                "DoryRendererWorkerWireContracts",
+                "DoryVMContracts",
+            ],
             linkerSettings: [.linkedLibrary("z")]
         ),
         .target(
@@ -31,7 +54,11 @@ let package = Package(
         ),
         .target(
             name: "DorydKit",
-            dependencies: ["DoryCore"],
+            dependencies: [
+                "DoryCore",
+                "DoryRendererWorkerWireContracts",
+                "DoryVMContracts",
+            ],
             linkerSettings: [
                 .linkedFramework("IOKit"),
                 .linkedFramework("Network"),
@@ -69,6 +96,12 @@ let package = Package(
                 ]),
             ]
         ),
+        // Isolated physical-qualification harness. It reuses DorydKit's exact RawHV launch
+        // authority but never starts doryd, consumes a production catalog, or advances trust.
+        .executableTarget(
+            name: "dory-linux-calibration",
+            dependencies: ["DorydKit"]
+        ),
         .executableTarget(
             name: "dory-network-helper",
             dependencies: ["DorydKit"]
@@ -82,12 +115,26 @@ let package = Package(
             dependencies: ["DoryCore"]
         ),
         .testTarget(
+            name: "DoryVMContractsTests",
+            dependencies: ["DoryVMContracts"]
+        ),
+        .testTarget(
+            name: "DoryRendererWorkerWireContractsTests",
+            dependencies: ["DoryRendererWorkerWireContracts"]
+        ),
+        .testTarget(
             name: "DoryOperationsTests",
-            dependencies: ["DoryOperations", "DoryCore"]
+            dependencies: ["DoryOperations", "DoryCore", "DoryVMContracts"]
         ),
         .testTarget(
             name: "DorydKitTests",
-            dependencies: ["DorydKit", "DoryCore", "DoryVMMKit"]
+            dependencies: [
+                "DorydKit",
+                "DoryCore",
+                "DoryRendererWorkerWireContracts",
+                "DoryVMMKit",
+                "DoryVMContracts",
+            ]
         ),
     ]
 )

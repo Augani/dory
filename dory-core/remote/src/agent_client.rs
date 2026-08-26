@@ -17,7 +17,7 @@ use dory_pb::agent::{
     SyncGetChunkRequest, SyncGetChunkResponse, SyncManifestRequest, SyncManifestResponse,
     SyncPutChunkRequest, SyncPutChunkResponse, SyncReadTreeRequest, SyncReadTreeResponse,
     TelemetryRequest, TelemetryResponse, UsbVhciAttachRequest, UsbVhciAttachResponse,
-    UsbVhciDetachRequest, UsbVhciDetachResponse,
+    UsbVhciDetachRequest, UsbVhciDetachResponse, VirtiofsMountRequest, VirtiofsMountResponse,
 };
 use dory_proto::handshake::{handshake, Hello};
 use dory_proto::mux::Mux;
@@ -179,6 +179,16 @@ impl AgentClient {
     ) -> Result<UsbVhciDetachResponse, RemoteError> {
         match self.call(Method::UsbVhciDetach(request)).await? {
             Res::UsbVhciDetach(response) => Ok(response),
+            _ => Err(RemoteError::UnexpectedVariant),
+        }
+    }
+
+    pub async fn virtiofs_mount(
+        &self,
+        request: VirtiofsMountRequest,
+    ) -> Result<VirtiofsMountResponse, RemoteError> {
+        match self.call(Method::VirtiofsMount(request)).await? {
+            Res::VirtiofsMount(response) => Ok(response),
             _ => Err(RemoteError::UnexpectedVariant),
         }
     }
@@ -399,6 +409,16 @@ mod tests {
                     port: request.port,
                 })
             }
+            Some(Method::VirtiofsMount(request)) => {
+                Res::VirtiofsMount(agent::VirtiofsMountResponse {
+                    mounted: true,
+                    already_mounted: false,
+                    tag: request.tag,
+                    mount_path: request.mount_path,
+                    read_only: request.read_only,
+                    mount_id: 77,
+                })
+            }
             Some(Method::SyncReadTree(_)) => Res::SyncReadTree(agent::SyncReadTreeResponse {
                 files: vec![agent::SyncFileEntry {
                     path: "report.txt".into(),
@@ -503,6 +523,21 @@ mod tests {
             .unwrap();
         assert!(detached.detached);
         assert_eq!(detached.bus_id, "3-2");
+
+        let mounted = client
+            .virtiofs_mount(VirtiofsMountRequest {
+                tag: "workspace".into(),
+                mount_path: "/mnt/dory/workspace".into(),
+                read_only: true,
+            })
+            .await
+            .unwrap();
+        assert!(mounted.mounted);
+        assert!(!mounted.already_mounted);
+        assert_eq!(mounted.tag, "workspace");
+        assert_eq!(mounted.mount_path, "/mnt/dory/workspace");
+        assert!(mounted.read_only);
+        assert_eq!(mounted.mount_id, 77);
 
         let tree = client
             .sync_read_tree(SyncReadTreeRequest {

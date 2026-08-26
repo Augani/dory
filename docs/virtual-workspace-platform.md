@@ -4,7 +4,29 @@
 - **Date:** 2026-08-20
 - **Owners:** Dory platform team
 - **Scope:** Apple-silicon Dory host first; Linux, Windows, and macOS guests
-- **First release target:** Production-qualified, accelerated ARM64 Linux desktops
+- **First release target:** Production-qualified ARM64 Linux desktops; 3D acceleration remains a
+  separate evidence-gated capability and is not presently available
+
+> **Linux-first execution overlay (2026-08-22):** The cross-guest direction in this ADR remains in
+> force, but current implementation and release work is Linux-only. The proposed controlling Linux
+> architecture is [`linux-virtual-workspace-architecture.md`](linux-virtual-workspace-architecture.md),
+> its sequenced work is [`linux-virtual-workspace-delivery-plan.md`](linux-virtual-workspace-delivery-plan.md),
+> its candidate-bound performance and budget semantics are
+> [`linux-vm-performance-contract.md`](linux-vm-performance-contract.md), and support truth lives in
+> [`linux-capability-and-qualification-matrix.md`](linux-capability-and-qualification-matrix.md).
+> Windows and macOS milestones are deferred. Where the older milestone text assumes RawHV is the
+> permanent accelerated backend, the Linux overlay's evidence-based backend decision takes
+> precedence. On the current branch, VZ on shipping macOS is the generic ARM64 ISO/UEFI and 2D
+> baseline. RawHV is a managed direct-boot development path: it does not execute an installed
+> disk's EFI path and has no firmware/NVRAM. Its current renderer mechanism is the schema-3 dual
+> VirGL2-plus-Venus signed XPC worker, but hardware 3D remains Unqualified until the exact signed
+> candidate passes producer-fence, lifecycle, physical guest-application, and whole-VM gates.
+> Arbitrary EFI guests do not inherit the managed kernel's producer-complete fence contract, and
+> the retired in-process renderer is not a fallback.
+> The Linux overlay also treats cleanup as architecture: when a typed contract replaces a launch
+> flag, environment value, inferred allocator, listener loop, or adapter, the superseded production
+> code and obsolete test are removed in the same slice. Historical readers may survive only as
+> explicit replan/migration inputs, never as a second launch authority.
 
 ## Decision
 
@@ -28,9 +50,10 @@ catalog presentation, image preparation, and guest-tools installation, but it is
 virtualization architecture.
 
 The existing Linux implementation is the foundation, not a prototype to discard. The immediate
-work is to extract stable contracts around it, productize the accelerated path, and qualify it.
-Windows and macOS are then added as new image families, guest-integration providers, and backend
-capability combinations without cloning the control plane.
+work is to extract stable contracts around it, qualify the VZ generic baseline, harden RawHV's
+managed direct-boot path, and evaluate acceleration without advertising experimental renderer
+mechanisms as support. Windows and macOS are then added as new image families, guest-integration
+providers, and backend capability combinations without cloning the control plane.
 
 ## Why this decision
 
@@ -42,19 +65,25 @@ Dory already has much of the difficult machinery:
   configuration, supervises helpers, waits for readiness, and owns snapshot/clone/export/import;
 - [`DoryVMM`](../dory-core-swift/Sources/DoryVMMKit/DoryVMM.swift) configures
   Virtualization.framework EFI/direct-kernel guests with storage, networking, display, input,
-  audio, VirtioFS, NVRAM, and a persistent machine identity;
+  audio, VirtioFS, NVRAM, and a persistent machine identity; this is the shipping-macOS mechanism
+  baseline for generic ARM64 Linux ISO/UEFI, while Dory support still requires exact qualification;
 - [`DesktopMode`](../Packages/ContainerizationEngine/Sources/dory-hv/DesktopMode.swift) and the
   [`DoryHV`](../Packages/ContainerizationEngine/Sources/DoryHV) device implementations provide a
-  custom Hypervisor.framework Linux runtime with VirtIO block, network, vsock, balloon, GPU,
-  input, sound, and filesystem sharing;
-- [`VirglRenderer`](../Packages/ContainerizationEngine/Sources/DoryHV/VirglRenderer.swift) provides
-  capability-checked VirGL2 and Venus acceleration over Metal/MoltenVK rather than pretending
-  `llvmpipe` is acceptable;
+  custom Hypervisor.framework Linux mechanism with VirtIO block, network, vsock, balloon, GPU,
+  input, sound, and filesystem sharing; device source does not by itself establish support;
+- the former in-process `VirglRenderer` dynamic-loader implementation and its OpenGL framework and
+  library-validation authority are deleted. The only renderer implementation is the separately
+  signed, sandboxed XPC worker with the schema-3 dual VirGL2-plus-Venus inventory, exact peer
+  identity, and candidate-bound bootstrap receipt. That mechanism is not an acceleration claim
+  until producer-fence handoff, reset/quiesce, device-loss recovery, physical guest applications,
+  and exact-candidate qualification all pass;
 - [`DoryInstallerISOInspector`](../dory-core-swift/Sources/DoryOperations/DoryInstallerISO.swift)
   performs bounded, non-executing ISO architecture inspection and exact-media hashing before
   import;
 - [`DoryInstalledLinuxBootBundle`](../dory-core-swift/Sources/DoryOperations/DoryInstalledLinuxBootBundle.swift)
-  preserves a verified kernel/initrd/root-device contract for an EFI-installed Linux disk;
+  preserves a verified host-side kernel/initrd/root-device direct-boot contract for a disk that was
+  installed through EFI; RawHV consumes that bundle instead of executing the disk's EFI path and
+  therefore does not support generic installed Linux;
 - [`DoryComponentCatalog`](../dory-core-swift/Sources/DoryOperations/DoryComponents.swift) already
   signs catalogs, verifies asset digests, resolves dependencies, installs immutably, and activates
   atomically on the selected Dory data drive;
@@ -64,7 +93,11 @@ Dory already has much of the difficult machinery:
   and diagnostics foundations;
 - [`guest/desktop`](../guest/desktop), [`guest/kernel`](../guest/kernel), and
   [`guest/mesa`](../guest/mesa) provide reproducible guest integration, kernels, and an isolated
-  accelerated Vulkan runtime.
+  experimental Vulkan runtime input. Their presence is mechanism and provenance evidence, not a
+  qualified acceleration claim.
+
+These foundations are inputs to the resolver and qualification system. They must not be projected
+as Supported or Preview merely because their source, symbols, or component assets exist.
 
 The present joining layer, however, still encodes product concepts in implementation switches.
 For example, `DoryMachineConfiguration` combines kernel paths, rootfs paths, EFI media, display
@@ -223,8 +256,8 @@ Backends implement host mechanisms; they do not own product policy.
 
 | Adapter | Initial scope | Existing foundation |
 |---|---|---|
-| `RawHVLinuxBackend` | Managed ARM64 Linux and supported installed ARM64 Linux with accelerated VirGL2/Venus | [`dory-hv`](../Packages/ContainerizationEngine/Sources/dory-hv), [`DoryHV`](../Packages/ContainerizationEngine/Sources/DoryHV) |
-| `VZLinuxBackend` | ARM64 Linux direct boot and EFI installation; compatibility fallback | [`DoryVMMKit`](../dory-core-swift/Sources/DoryVMMKit) |
+| `RawHVLinuxBackend` | Managed ARM64 Linux direct-boot development path. Installed-disk EFI, firmware/NVRAM, and generic installed Linux are absent. The schema-3 signed XPC renderer presents VirGL2 capset 2 and Venus capset 4 as one fail-closed candidate, but hardware 3D remains Unqualified pending exact-signature and physical guest evidence | [`dory-hv`](../Packages/ContainerizationEngine/Sources/dory-hv), [`DoryHV`](../Packages/ContainerizationEngine/Sources/DoryHV) |
+| `VZLinuxBackend` | Generic ARM64 Linux ISO/UEFI and 2D baseline on shipping macOS, plus direct boot where selected; exact Dory guest/host combinations remain qualification-bound | [`DoryVMMKit`](../dory-core-swift/Sources/DoryVMMKit) |
 | `VZMacBackend` | macOS restore-image installation and macOS VM lifecycle | New adapter using Apple macOS-specific Virtualization.framework configuration |
 | `QEMUHVFWindowsBackend` | Experimental Windows 11 ARM64 on an SBSA-style machine, accelerated by Hypervisor.framework through QEMU/HVF; unavailable in public builds until authorization, device, driver, and qualification gates pass | New, separately packaged adapter; not an extension of `DoryVMMKit` |
 | `EmulatedBackend` | Possible future non-native whole-guest emulation, explicitly labeled and separately qualified | Not a release dependency |
@@ -326,9 +359,7 @@ and qualification references while preserving v1 installation during migration:
   "architectures": ["arm64"],
   "hostRequirements": { "platform": "macos", "minimumVersion": "15.0" },
   "provides": [
-    "backend.rawhv-linux@2",
-    "device.virtio-gpu.virgl2@1",
-    "device.virtio-gpu.venus@1"
+    "backend.rawhv-linux@2"
   ],
   "requires": ["app.dory-core>=0.5.0"],
   "artifacts": [
@@ -348,9 +379,15 @@ and qualification references while preserving v1 installation during migration:
     "sbomDigest": "<sha256>",
     "attestationDigest": "<sha256>"
   },
-  "qualification": ["linux-desktop-arm64.apple-m2.macos-15"]
+  "qualification": []
 }
 ```
+
+The example intentionally publishes only the runtime mechanism. Schema-3 dual-worker inputs,
+XPC-local ANGLE Metal libraries, MoltenVK, and guest Mesa artifacts may be inventoried or required
+by an experimental plan, but this catalog schema-2 example must not publish a guest 3D capability
+or qualification reference until the immutable candidate passes the complete GPU, lifecycle,
+isolation, and physical-host matrix.
 
 Supply-chain rules:
 
@@ -403,9 +440,12 @@ not resolve again halfway through launch.
 
 Examples:
 
-- a requirement for `graphics.vulkan >= 1.3, quality >= accelerated` selects raw-HV
-  VirGL2/Venus only when renderer symbols, pinned MoltenVK, guest Mesa, and the relevant
-  qualification evidence are present;
+- a requirement for `graphics.vulkan >= 1.3, quality >= accelerated` is currently unsatisfied.
+  A future resolver may select RawHV only for an exact managed guest that proves Dory's
+  producer-complete fence contract, or a VZ custom-VirtIO candidate only after it defines and proves
+  an equivalent contract for the selected guest. An arbitrary ARM64 EFI ISO has no such authority
+  merely because its kernel binds `virtio_gpu`; renderer isolation, pinned renderer/guest inputs,
+  lifecycle behavior, and exact-candidate physical evidence must also be present;
 - a Linux ISO with ARM64 EFI can select VZ Linux installation even without Dory Tools, while clipboard
   remains `unavailable` until the guest reports it;
 - an x86_64-only ISO on Apple silicon fails architecture resolution before disk allocation;
@@ -542,6 +582,15 @@ resolved MTU, and the privileged source-preserving LAN bridge targets the same M
 plans with no NIC identity retain their prior adapter-specific behavior and cannot silently acquire
 the new contract without replanning.
 
+The generic and RawHV NIC contract retains a 1280 minimum, and a disconnected VZ NIC may use it.
+A connected exact VZ NIC is narrower because its file-handle attachment validates at 1500 but
+rejects 1280: its minimum and deterministic default are therefore 1500, and a smaller explicit
+value fails before gvproxy filesystem or process side effects. The isolated structural gate passes
+113/113 tests plus both `dory-vmm` and `doryd` builds; this is configuration correctness, not a
+throughput or latency claim. Signed qualification must distinguish native VZ NAT from
+file-handle/gvproxy and must also bind the exact VZ storage controller, media, cache, and
+synchronization mode.
+
 ### Display and graphics
 
 - A display is a stable device with point size, pixel size, scale, refresh policy, and color-space
@@ -558,9 +607,60 @@ the new contract without replanning.
 - Multi-display, full-screen, cursor shape/hotspot, capture/release, and sleep/wake are explicit
   qualification cases.
 
-Linux accelerated display continues through [`DesktopMetalDisplay`](../Packages/ContainerizationEngine/Sources/dory-hv/DesktopMetalDisplay.swift),
-`VirtioGPU`, and `VirglRenderer`. The VZ compatibility display remains
+RawHV's available development baseline uses
+[`DesktopMetalDisplay`](../Packages/ContainerizationEngine/Sources/dory-hv/DesktopMetalDisplay.swift)
+and `VirtioGPU` for CPU presentation. The in-process dynamic renderer has been deleted rather than
+retained as a diagnostic fallback. RawHV acceleration remains fail-closed, while VZ's documented 2D
+display remains a separate capability whose frontend is
 [`DoryVMMDesktopApplication`](../dory-core-swift/Sources/DoryVMMKit/DoryVMMDesktopApplication.swift).
+
+The Linux-first acceleration mechanism is the schema-3 `dory-dual-metal-20260826` renderer bundle.
+One separately signed, sandboxed XPC worker binds the dual virglrenderer core, its XPC-local ANGLE
+Metal pair, static MoltenVK inputs, and exact peer Code Directory identity. Candidate admission
+requires an authenticated real-bootstrap receipt and then a fresh live receipt with identical
+inventory, worker, feature bits, producer-fence contract, and exactly ordered capsets `[2, 4]`.
+Neither source presence nor a fixture receipt authorizes hardware 3D.
+
+VirGL2 capset 2 uses the bounded classic command lane, including the versioned
+`createResource3D` operation, and exports scanout only as a private shareable Metal-texture handle.
+Venus capset 4 uses bounded blob/descriptor-backed shared memory and Metal scanout. Both paths are
+generation-bound, asynchronously fence-completed, single-use leased, and device-loss fail-stop;
+there is no in-process renderer, software substitution, frame-copy fallback, or unauthenticated
+path/environment-selected renderer authority. The earlier Venus-only cut that reserved operation
+raw value 6 and requested `VIRGL_RENDERER_NO_VIRGL` is retired history, not the current production
+contract.
+
+The renderer bootstrap currently accepts only the managed
+`managedLinux61230PrepareFBV1` producer-fence contract. That kernel contract makes a qualifying
+`RESOURCE_FLUSH` producer-complete before the host consumes the scanout. A stock or arbitrary EFI
+guest cannot claim the same ordering merely because it negotiates the same VirtIO GPU features.
+Consequently RawHV acceleration remains a managed exact-kernel capability, and a future generic-ISO
+custom-VZ GPU remains blocked until it defines a producer-complete fence contract that an upstream
+guest can actually supply. RawHV launch-envelope schema 5 continues to reserve immutable read-only
+FD 6 for hardware 3D and omit it for software.
+
+Earlier managed-Ubuntu Venus diagnostics established a non-CPU Vulkan device, Wayland swapchain
+presentation, and a first Zed frame, but Zed did not remain alive and GNOME still used
+`kms_swrast`. Those observations predate the schema-3 dual bundle and cannot qualify its VirGL2
+desktop path, its Venus application path, or whole-desktop composition.
+
+The current dual worker and admission chain are implemented mechanism, but hardware 3D remains
+Unqualified pending an exact release-signed physical guest campaign: real VirGL renderer identity
+and sustained GL desktop applications, real Venus identity and sustained native Vulkan apps, a
+producer-fence-waited Metal-presented frame, resize/reset/device-loss recovery, visual integrity,
+and whole-VM budgets. Evidence from the managed guest must not be projected onto another distro,
+kernel, compositor, media digest, or the generic VZ EFI baseline.
+
+Application readiness is now a versioned mechanism contract rather than an ICD version string.
+Current Zed Linux support requires a Vulkan 1.3 driver, and its exact wgpu path configures a real
+64x64 FIFO surface before accepting an adapter. The guest boot gate therefore requires a non-CPU
+Venus 1.3 device, robust access, dynamic rendering, synchronization2, maintenance4, the exact
+instance/device extensions and atlas usages, plus a real SYNC_FD queue/fence round trip. The active
+desktop gate additionally creates an explicitly selected XCB or Wayland native surface and FIFO
+swapchain, acquires and clears an image with Vulkan 1.3 dynamic rendering, queues presentation, and
+waits for the presentation queue before launching Zed. The source audit, exact pins, physical Xorg
+and Wayland results, failure boundaries, and remaining evidence are recorded in
+[`vulkan-13-application-readiness.md`](architecture-gates/vulkan-13-application-readiness.md).
 
 ### Input
 
@@ -746,6 +846,13 @@ for every flush taking at least 250 ms. Its Core Audio bridge reports exact play
 period drops and emits classified audio-drop events. VirtioFS counts admitted reverse invalidations
 and failed submission or acknowledgement transactions; because an uncertain invalidation latches
 request publication closed for that backend, its telemetry remains failed until backend replacement.
+The request frontend mirrors the broker's immutable in-flight ceiling before popping a chain. When
+all 32 production permits are owned, later descriptors remain in their guest rings and request
+queues resume in FIFO order as permits return; resource saturation is backpressure, not worker loss.
+The same backend now reports protocol-boundary request, worker-response, and guest-published payload
+bytes; completed, failed, in-flight, and peak request counts; and total and maximum end-to-end
+request latency. Those payload counters do not pretend to measure physical copies inside Foundation
+or XPC, and timing remains unqualified until it is captured from an exact signed candidate.
 The raw-HV display mailbox reports only updates accepted by the Metal presentation layer as frames;
 invalid updates, bounded partial-update overflow, released pending resources, and a missing display
 surface are counted as drops, while a newer complete frame superseding older damage is intentional
@@ -753,7 +860,7 @@ coalescing rather than loss. VirtioGPU counts successful renderer fence registra
 registration failure as degraded health, and classifies a fence still pending after 10 seconds as a
 timeout; health remains failed until that exact pending fence is signaled.
 An explicit host renderer loss is counted once and latches raw-HV graphics health failed; the
-current VirGL bridge issues that authority only for Vulkan's explicit `VK_ERROR_DEVICE_LOST`.
+Venus bridge issues that authority only for Vulkan's explicit `VK_ERROR_DEVICE_LOST`.
 Ordinary guest command validation failures remain excluded from device-loss telemetry.
 Virtualization.framework counters that do not have a stable public authority remain explicitly
 unavailable rather than being reported as zero. Network reconnect support remains a release gate
@@ -781,6 +888,10 @@ candidate has evidence at all applicable levels:
    display scales, sleep/wake, network/VPN changes, microphone permissions, and external storage.
 8. **Signed-candidate binding:** app digest, helper code signatures, component catalog digest,
    artifact/media digests, guest package manifest, host model/build, and test result are inseparable.
+9. **Exact performance-cell bijection:** every proposed Linux support record carries one
+   authenticated performance bundle-inventory digest, and the proposed record set equals the set
+   of release-qualified verified cells; missing, duplicate, extra, or extrapolated cells fail
+   before the support catalog is constructed.
 
 The public compatibility UI has four levels:
 
@@ -792,6 +903,16 @@ The public compatibility UI has four levels:
 Software fallback never turns a failed acceleration gate into a supported accelerated result.
 [`LINUX_DESKTOP_PARITY.md`](../LINUX_DESKTOP_PARITY.md) remains the Linux product checklist until
 its gates are represented in executable qualification manifests.
+
+This ninth gate remains incomplete authority. The signed-bundle verifier now rebuilds the canonical
+exact-media cell descriptor, requires its SHA-256 to be `matrixCellID`, binds selection and
+acceleration receipts to inventoried bytes, and requires caller-supplied candidate plus cell/ISO/
+backend/graphics identities for release admission. Manifest schema 1 still has no per-record bundle
+reference, the physical campaign producer and canonical authenticated receipt do not yet exist,
+and component finalization accepts no performance-cell inputs. Those remaining pieces must land
+together with manifest/resolver schema 2; a standalone digest field would not satisfy the gate.
+The performance bundle remains bound to precatalog candidate identities so the final catalog can
+be constructed after the verified-set comparison without a circular dependency.
 
 ## Apple-silicon constraints and honest product scope
 
@@ -806,9 +927,13 @@ its gates are represented in executable qualification manifests.
   translation facility. Apple's Rosetta-for-Linux integration belongs to its
   Virtualization.framework path and has host/guest requirements; Dory's other backends need their
   own translated-app capability (the current Docker engine uses bundled FEX).
-- Virtualization.framework supplies a reliable generic Linux display/device path, but Dory's
-  current high-performance Linux 3D path is the custom raw-HV VirtIO GPU plus VirGL2/Venus. It is
-  translated graphics, not PCIe GPU passthrough.
+- Virtualization.framework on shipping macOS supplies the generic ARM64 Linux ISO/UEFI and
+  documented 2D display/device baseline. Dory's custom RawHV VirtIO GPU and in-progress static
+  dual VirGL2-plus-Venus signed XPC worker are a translated-renderer mechanism, not PCIe GPU
+  passthrough. The retired in-process renderer is not a fallback. Hardware 3D remains Unqualified
+  until exact identity, managed producer-fence, isolation, lifecycle, physical guest-application,
+  installed-launch, and qualification gates pass; arbitrary EFI guests have no producer-complete
+  acceleration contract today.
 - Arbitrary installer compatibility is never inferred from ARM64 EFI alone. Kernel/device behavior
   and sustained workload tests remain tied to media digest, host build/model, backend, and
   virtual-hardware ABI.
@@ -903,19 +1028,29 @@ patches into `MachineManager` is not progress.
 - Gate: existing managed desktops, headless machines, custom ISO, snapshots, and backups pass with
   byte-compatible durable artifacts and rollback tests.
 
-### Milestone 1 — Accelerated Linux as the first complete workspace
+### Milestone 1 — Linux as the first complete workspace; acceleration remains gated
 
 **Goal:** Ship a Linux desktop that users can trust for real application work.
 
-- Make raw-HV VirGL2/Venus the resolved backend for qualified managed ARM64 Linux desktops;
-  preserve VZ as an explicit compatibility/recovery backend.
+- Keep shipping VZ as the generic ARM64 ISO/UEFI and recovery baseline, with its Linux graphics
+  truthfully described as 2D.
+- Before making RawHV the permanent production acceleration architecture, time-box a macOS 27
+  VZ custom-VirtIO spike for a standards-compatible, isolated VirGL/Venus device and physical USB.
+- Treat that spike as blocked research under
+  [`architecture-gates/vz-custom-virtio-gpu.json`](architecture-gates/vz-custom-virtio-gpu.json):
+  the current SDK cannot compile the beta API, guest configuration writes and custom input have no
+  documented callback, VZ guest RAM has no cross-process descriptor authority, custom scanout/input
+  presentation is unproved, and accelerated saved state is deliberately rejected.
+- Promote either RawHV or the custom-VirtIO path only after the selected backend satisfies the
+  complete requested device/lifecycle conjunction with exact-candidate evidence.
 - Productize import/install/eject/direct-boot for qualified ARM64 Linux ISOs without converting an
   installed disk into a distro-specific image.
 - Finish reliable dynamic resolution, Retina scale, full screen, cursor, input, output/input audio,
   clipboard, shares, graceful shutdown, and host sleep/wake.
 - Surface backend, GPU, guest tools, software fallback, and exact qualification in the UI.
-- Run representative desktop/app stress, including Zed on native Venus, browsers, package updates,
-  compilers, media, file I/O, networking, snapshot/restore, and forced recovery.
+- Run representative desktop/app stress, including Zed on any selected qualified Vulkan path,
+  browsers, package updates, compilers, media, file I/O, networking, snapshot/restore, and forced
+  recovery.
 - Gate: no known login trap, invisible text/render corruption, `llvmpipe` substitution, installer
   freeze, or unexplained whole-guest stall in the signed-candidate matrix.
 
@@ -1004,11 +1139,16 @@ ABI changes because a “small” disk/controller/device reorder can invalidate 
 
 ## Performance engineering rules
 
+- Optimize the whole native-ARM64 VM, not a favored distribution. Every exact Linux media digest
+  admitted to the support catalog must satisfy the same applicable backend/resource/capability
+  budgets; distro-specific tuning cannot waive a failed CPU, memory, storage, network, input,
+  display, filesystem, GPU, durability, or endurance result.
 - Establish budgets before optimization: cold/warm start, first frame, input-to-present latency,
   sustained frame pacing, storage fsync latency, network throughput/latency, audio latency, idle CPU,
   and host memory overhead.
-- Never block a vCPU on host UI, audio, network control, filesystem watching, logging, or component
-  work. Use bounded queues and observable backpressure.
+- Never block a vCPU on host UI, audio, network control, filesystem watching, logging, entropy
+  generation, host-memory reclaim, or component work. Use bounded queues, generation fencing, and
+  observable backpressure.
 - Avoid whole-frame copies and synchronous GPU completion on presentation paths; preserve fence and
   resource lifetimes explicitly.
 - Treat host memory as a VM process-tree cost. Balloon targets may not hide renderer/helper memory.

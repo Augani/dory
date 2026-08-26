@@ -1823,10 +1823,12 @@ struct DorydClientTests {
         let status = try #require(
             (try await DorydClient(endpoint: listener.endpoint).machineList()).first
         )
+        #expect(status.runtimeGraphicsSelection?.isQualifiedAcceleration == true)
         #expect(status.runtimeIdentity.authorizesRemovableUSBHotplug)
         #expect(UsbPassthroughAvailability.attachSupported(for: status))
         let machine = AppStore.machine(fromDoryd: status)
         #expect(machine.runtimeIdentity.graphics == "hardware-accelerated-3d")
+        #expect(machine.runtimeGraphicsSelection?.backend == "virgl-venus")
         #expect(machine.agentProtocolVersion == 1)
         #expect(machine.agentCapabilities.map(\.id) == [
             "clock-sync", "exec", "exec-stdin", "ports-watch", "snapshot-quiesce", "sync-push",
@@ -1837,6 +1839,19 @@ struct DorydClientTests {
         ])
         #expect(machine.runtimeEvidence.first { $0.id == "authority" }?.detail
             == "runtime-qualification-1")
+
+        let missingFence = NSMutableDictionary(
+            dictionary: try #require(service.machineRuntimeGraphicsSelection("dev"))
+        )
+        missingFence.removeObject(forKey: "guestProducerFenceProofSHA256")
+        service.setMachineRuntimeGraphicsSelection("dev", missingFence)
+        await #expect(throws: DorydClientError.self) {
+            _ = try await DorydClient(endpoint: listener.endpoint).machineList()
+        }
+        service.setMachineRuntimeGraphicsSelection(
+            "dev",
+            try #require(service.defaultRuntimeGraphicsSelection("dev"))
+        )
 
         var replanning = machine
         replanning.runtimeIdentity = DorydMachineRuntimeIdentity(
@@ -1887,6 +1902,32 @@ struct DorydClientTests {
         #expect(incompatibleHandshake.runtimeEvidence.last?.label == "Tools incompatible")
     }
 
+    @Test func portableVZSoftwarePlanIsAcceptedWithoutAccelerationQualification() async throws {
+        let listener = NSXPCListener.anonymous()
+        let service = FakeDorydService(
+            runtimeIdentityOverride: validPortableVZRuntimeIdentity()
+        )
+        let delegate = FakeDorydListenerDelegate(service: service)
+        listener.delegate = delegate
+        listener.resume()
+        defer { listener.invalidate() }
+
+        let status = try #require(
+            (try await DorydClient(endpoint: listener.endpoint).machineList()).first
+        )
+        #expect(status.runtimeIdentity.backend == "apple-virtualization-framework")
+        #expect(status.runtimeIdentity.graphics == "software")
+        #expect(status.runtimeIdentity.runtimeQualification == nil)
+        #expect(status.runtimeIdentity.hostQualification == nil)
+        #expect(status.runtimeGraphicsSelection == nil)
+
+        let machine = AppStore.machine(fromDoryd: status)
+        let graphics = try #require(machine.runtimeEvidence.first { $0.id == "graphics" })
+        #expect(graphics.label == "Software graphics")
+        #expect(graphics.detail == "Plan-bound Virtualization.framework display")
+        #expect(graphics.tone == .standard)
+    }
+
     @Test func machineIntegrationHealthUsesExactPresentShapeAndRejectsContradictions() async throws {
         let listener = NSXPCListener.anonymous()
         let service = FakeDorydService(runtimeIdentityOverride: validResolvedRuntimeIdentity())
@@ -1913,6 +1954,7 @@ struct DorydClientTests {
                 .init(id: "clock-sync", version: 1),
                 .init(id: "exec", version: 1),
                 .init(id: "exec-stdin", version: 1),
+                .init(id: "lifecycle-receipt", version: 1),
                 .init(id: "ports-watch", version: 1),
                 .init(id: "snapshot-quiesce", version: 2),
                 .init(id: "sync-push", version: 2),
@@ -2014,7 +2056,7 @@ struct DorydClientTests {
                 _ = try await client.machineList()
                 Issue.record("present malformed capability handshake must fail closed")
             } catch let error as DorydClientError {
-                #expect(error.description.contains("invalid doryd response"))
+                #expect(error.description.contains("invalid machine list"))
             }
         }
     }
@@ -2129,7 +2171,6 @@ struct DorydClientTests {
         #expect(valid.guestQuiesceReceipt?.agentBuild == "dory-agent/test")
 
         for fixture in [
-            (consistency: "crash-consistent" as Any, receipt: nil as NSDictionary?),
             (consistency: 1 as Any, receipt: nil as NSDictionary?),
             (consistency: "guest-quiesced" as Any, receipt: nil as NSDictionary?),
             (consistency: "cold-stopped" as Any, receipt: receipt),
@@ -2413,6 +2454,39 @@ struct DorydClientTests {
         ] as NSDictionary
     }
 
+    private func validPortableVZRuntimeIdentity() -> NSDictionary {
+        [
+            "schemaVersion": 1,
+            "mode": "resolved-plan",
+            "virtualHardwareABIVersion": 1,
+            "definitionRevision": UInt64(1),
+            "definitionSHA256": String(repeating: "1", count: 64),
+            "planRevision": UInt64(1),
+            "planSHA256": String(repeating: "2", count: 64),
+            "backend": "apple-virtualization-framework",
+            "backendImplementationIdentifier": "dory.vz-linux.compatibility.v1",
+            "backendRuntimeBuildIdentifier": "sha256:" + String(repeating: "3", count: 64),
+            "supportTier": "supported",
+            "graphics": "software",
+            "removableUSBHotplug": false,
+            "selectionDisposition": "primary",
+            "components": [[
+                "componentIdentifier": "dory-vmm",
+                "buildIdentifier": "sha256:" + String(repeating: "3", count: 64),
+                "artifactSHA256": String(repeating: "3", count: 64),
+            ]],
+            "bootMedia": [
+                "kind": "installer-iso",
+                "source": "user-provided",
+                "artifactSHA256": String(repeating: "4", count: 64),
+                "resolverNamespace": "legacy-artifact",
+                "resolverIdentifier": "portable-installer",
+                "inspectionIdentity": "dory-iso-inspector:portable",
+                "inspectionReportSHA256": String(repeating: "5", count: 64),
+            ],
+        ] as NSDictionary
+    }
+
     private func integrationHealthDictionary(
         _ health: DoryGuestIntegrationHealth
     ) throws -> NSDictionary {
@@ -2534,7 +2608,7 @@ struct DorydClientTests {
 
         let listener = NSXPCListener.anonymous()
         let service = FakeDorydService(socketPath: socketPath)
-        let operationID = String(repeating: "r", count: 32)
+        let operationID = String(repeating: "e", count: 32)
         let active = service.machineTransferOperationResponse(
             operationID: operationID,
             phase: "transferring"
@@ -2699,6 +2773,9 @@ struct DorydClientTests {
 
         var customInstaller = machine
         customInstaller.bootMode = .efi
+        customInstaller.shellSocketPath = ""
+        #expect(store.machineTerminalCommand(customInstaller) == nil)
+        #expect(!store.canOpenMachineTerminal(customInstaller))
         #expect(!store.canRepairMachineTools(customInstaller))
 
         var headlessMachine = machine
@@ -3202,8 +3279,18 @@ struct DorydClientTests {
 
     @MainActor
     @Test func appStoreEditsTypedLeavesWithoutRewritingLegacyEnvironment() async throws {
+        let base = "/tmp/dory-typed-edit-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let socketPath = base + "/doryd.sock"
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let shim = DockerShim(runtime: MockRuntime())
+        let dockerServer = ShimHTTPServer(socketPath: socketPath) { request in
+            await shim.handle(request)
+        }
+        try dockerServer.start()
+        defer { dockerServer.stop() }
+
         let listener = NSXPCListener.anonymous()
-        let service = FakeDorydService()
+        let service = FakeDorydService(socketPath: socketPath)
         service.setMachineEnvironment("dev", [
             "DORY_GUEST_USER": "dory",
             "DORY_GUEST_UID": "not-a-uid",
@@ -3227,6 +3314,10 @@ struct DorydClientTests {
         )
         store.routeDockerCLI = false
         await store.connectBackend()
+        store.loadMachines()
+        try await waitUntil {
+            store.machines.contains { $0.name == "dev" }
+        }
         let machine = try #require(store.machines.first { $0.name == "dev" })
         let baseline = await store.machineSettings("dev")
         let desktop = try #require(
@@ -3431,7 +3522,7 @@ struct DorydClientTests {
             rootfsPath: "/vm/rootfs.raw",
             memoryMB: 3072,
             cpuCount: 3,
-            typedSettings: DorydMachineTypedSettings()
+            typedSettings: DorydMachineTypedSettings(networkMode: .sharedNAT)
         ))
 
         let invalidResources = AppStore.dorydMachineConfiguration(
@@ -3531,6 +3622,49 @@ struct DorydClientTests {
         #expect(!store.engineRunning)
         #expect(store.containers.isEmpty)
         #expect(service.engineWakeCount == 0)
+    }
+
+    @MainActor
+    @Test func appStoreAutoRefreshUsesDaemonObservationInsteadOfPublicDockerActivity() async throws {
+        let base = "/tmp/danwp-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let socketPath = base + "/doryd.sock"
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let shim = DockerShim(runtime: MockRuntime())
+        let dockerServer = ShimHTTPServer(socketPath: socketPath) { request in
+            await shim.handle(request)
+        }
+        try dockerServer.start()
+        defer { dockerServer.stop() }
+
+        let listener = NSXPCListener.anonymous()
+        let service = FakeDorydService(socketPath: socketPath)
+        service.setDashboardSnapshot([
+            "containers": Data("[{\"Id\":\"observed\",\"Image\":\"alpine:3.21\",\"Names\":[\"/observed\"],\"State\":\"exited\",\"Status\":\"Exited (0)\"}]".utf8),
+            "images": Data("[]".utf8),
+            "volumes": Data("{\"Volumes\":[]}".utf8),
+            "networks": Data("[]".utf8),
+            "version": Data("{\"Version\":\"observation-test\",\"ApiVersion\":\"1.47\"}".utf8),
+        ])
+        let delegate = FakeDorydListenerDelegate(service: service)
+        listener.delegate = delegate
+        listener.resume()
+        defer { listener.invalidate() }
+
+        let store = AppStore(
+            dorydClient: DorydClient(endpoint: listener.endpoint),
+            useDorydEngine: true
+        )
+        store.routeDockerCLI = false
+        await store.connectBackend()
+        dockerServer.stop()
+        service.setEngineStatus("running", detail: "idle candidate")
+
+        await store.refreshIfIdle()
+
+        #expect(service.engineDashboardSnapshotCount == 1)
+        #expect(store.containers.map(\.id) == ["observed"])
+        #expect(store.engineVersion == "observation-test")
     }
 
     @MainActor
@@ -3650,7 +3784,7 @@ struct DorydClientTests {
     }
 
     @MainActor
-    @Test func daemonOwnedAMD64SettingRestartsAndReconnectsWithExplicitLaunchAgentChoice() async throws {
+    @Test func daemonOwnedX86ApplicationCompatibilityRestartsAndReconnectsWithExplicitLaunchAgentChoice() async throws {
         guard MacHostPlatform.current().isAppleSilicon else { return }
         let key = SharedVMProvisioner.Config.rosettaX86Key
         let previousDefault = UserDefaults.standard.object(forKey: key)
@@ -3695,7 +3829,7 @@ struct DorydClientTests {
         #expect(store.loadState == .ready)
         #expect(store.dorydRuntimeActive)
         #expect(store.settingsNotice?.kind == .success)
-        #expect(store.settingsNotice?.message == "x86/amd64 emulation enabled.")
+        #expect(store.settingsNotice?.message == "x86_64 application compatibility enabled.")
         let restarted = await workloadRecorder.startedIDs
         #expect(Set(restarted) == Set(MockData.containers.filter(\.isRunning).map(\.id)))
         #expect(!restarted.contains("c5"))
@@ -4292,6 +4426,8 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     private var _engineStopCount = 0
     private var _engineWakeCount = 0
     private var _engineSleepCount = 0
+    private var _engineDashboardSnapshotCount = 0
+    private var _engineDashboardSnapshot: [String: Data]?
     private var _engineState = "running"
     private var _engineDetail = "ok"
     private var _engineStartOK = true
@@ -4517,6 +4653,10 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     var engineSleepCount: Int {
         lock.lock(); defer { lock.unlock() }
         return _engineSleepCount
+    }
+    var engineDashboardSnapshotCount: Int {
+        lock.lock(); defer { lock.unlock() }
+        return _engineDashboardSnapshotCount
     }
     var machineStartCount: Int {
         lock.lock(); defer { lock.unlock() }
@@ -4803,6 +4943,11 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         if let existing = machines["dev"]?.mutableCopy() as? NSMutableDictionary {
             if let runtimeIdentityOverride {
                 existing["runtimeIdentity"] = runtimeIdentityOverride
+                if let graphicsSelection = Self.runtimeGraphicsSelection(
+                    for: runtimeIdentityOverride
+                ) {
+                    existing["runtimeGraphicsSelection"] = graphicsSelection
+                }
             }
             if let installedDesktopPayloadReceiptOverride {
                 existing["installedDesktopPayloadReceipt"] =
@@ -4812,10 +4957,45 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         }
     }
 
+    func machineRuntimeGraphicsSelection(_ machineID: String) -> NSDictionary? {
+        lock.lock(); defer { lock.unlock() }
+        return machines[machineID]?["runtimeGraphicsSelection"] as? NSDictionary
+    }
+
+    func defaultRuntimeGraphicsSelection(_ machineID: String) -> NSDictionary? {
+        lock.lock(); defer { lock.unlock() }
+        guard let identity = machines[machineID]?["runtimeIdentity"] as? NSDictionary else {
+            return nil
+        }
+        return Self.runtimeGraphicsSelection(for: identity)
+    }
+
+    func setMachineRuntimeGraphicsSelection(
+        _ machineID: String,
+        _ selection: NSDictionary?
+    ) {
+        lock.lock(); defer { lock.unlock() }
+        guard let row = machines[machineID]?.mutableCopy() as? NSMutableDictionary else {
+            return
+        }
+        if let selection {
+            row["runtimeGraphicsSelection"] = selection
+        } else {
+            row.removeObject(forKey: "runtimeGraphicsSelection")
+        }
+        machines[machineID] = row.copy() as? NSDictionary
+    }
+
     func setEngineStatus(_ state: String, detail: String = "ok") {
         lock.lock()
         _engineState = state
         _engineDetail = detail
+        lock.unlock()
+    }
+
+    func setDashboardSnapshot(_ snapshot: [String: Data]) {
+        lock.lock()
+        _engineDashboardSnapshot = snapshot
         lock.unlock()
     }
 
@@ -4917,6 +5097,18 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         reply(state, detail)
     }
 
+    func engineDashboardSnapshot(reply: @escaping (NSDictionary, String) -> Void) {
+        lock.lock()
+        _engineDashboardSnapshotCount += 1
+        let snapshot = _engineDashboardSnapshot
+        lock.unlock()
+        guard let snapshot else {
+            reply([:], "dashboard snapshot unavailable in fake service")
+            return
+        }
+        reply(snapshot.mapValues { $0 as NSData } as NSDictionary, "")
+    }
+
     func engineStart(reply: @escaping (Bool, String) -> Void) {
         lock.lock()
         _engineStartCount += 1
@@ -4981,7 +5173,7 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
             cpuCount: Self.int(config["cpuCount"]) ?? 2,
             address: config["address"] as? String,
             displayMode: config["displayMode"] as? String ?? "headless",
-            shares: Self.shareRows(config["shares"]),
+            shares: Self.machineStatusShareRows(config["shares"]),
             environment: Self.typedEnvironment(config, baseline: [])
         )
         lock.lock()
@@ -6148,6 +6340,43 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         return row as NSDictionary
     }
 
+    private static func runtimeGraphicsSelection(
+        for runtimeIdentity: NSDictionary
+    ) -> NSDictionary? {
+        guard runtimeIdentity["mode"] as? String == "resolved-plan",
+              runtimeIdentity["backend"] as? String == "dory-hypervisor",
+              let planSHA256 = runtimeIdentity["planSHA256"] as? String,
+              let planRevision = runtimeIdentity["planRevision"],
+              let graphics = runtimeIdentity["graphics"] as? String else {
+            return nil
+        }
+        let backend: String
+        switch graphics {
+        case "software":
+            backend = "software"
+        case "host-accelerated-display":
+            backend = "virgl"
+        case "hardware-accelerated-3d":
+            backend = "virgl-venus"
+        default:
+            return nil
+        }
+        var selection: [String: Any] = [
+            "schemaVersion": UInt16(1),
+            "operationID": "01234567-89ab-4cde-8f01-23456789abcd",
+            "resolvedPlanSHA256": planSHA256,
+            "planRevision": planRevision,
+            "accelerationLevel": graphics,
+            "backend": backend,
+        ]
+        if graphics != "software" {
+            selection["rendererGeneration"] = UInt64(1)
+            selection["rendererWorkerReceiptSHA256"] = String(repeating: "7", count: 64)
+            selection["guestProducerFenceProofSHA256"] = String(repeating: "8", count: 64)
+        }
+        return selection as NSDictionary
+    }
+
     private static let savedStateRow: NSDictionary = [
         "schemaVersion": 1,
         "backend": "apple-virtualization-framework",
@@ -6167,6 +6396,26 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
             return rows.compactMap { $0 as? NSDictionary }
         }
         return []
+    }
+
+    /// Machine-create requests carry host authorization bookmarks. Daemon status deliberately
+    /// projects only non-secret share identity, so the fake must enforce the same XPC boundary.
+    private static func machineStatusShareRows(_ value: Any?) -> [NSDictionary] {
+        shareRows(value).compactMap { row in
+            guard let tag = row["tag"] as? String,
+                  let hostPath = row["hostPath"] as? String,
+                  let guestPath = row["guestPath"] as? String,
+                  let readOnly = row["readOnly"] as? NSNumber,
+                  CFGetTypeID(readOnly) == CFBooleanGetTypeID() else {
+                return nil
+            }
+            return [
+                "tag": tag,
+                "hostPath": hostPath,
+                "guestPath": guestPath,
+                "readOnly": readOnly,
+            ] as NSDictionary
+        }
     }
 
     private static func environmentRows(_ value: Any?) -> [NSDictionary] {

@@ -171,6 +171,10 @@ public final class DoryDaemonVirtualMachineProductionPlanningCompositionFactory:
         runtimes: [DoryDaemonVerifiedBackendRuntime],
         runtimeVerifier: @escaping DoryDaemonVirtualMachineProductionTrustFactory.RuntimeVerifier,
         hostProbe: @escaping DoryDaemonVirtualMachineProductionTrustFactory.HostProbe,
+        rendererReleaseIdentityProvider:
+            any DoryRendererReleaseIdentityProviding,
+        rendererCrashSuppressionStore:
+            DoryRendererCrashSuppressionStore? = nil,
         mutationAuthority: (any DoryDaemonVirtualMachinePlanningMutationAuthorizing)?,
         recoveryProvider: (any DoryDaemonVirtualMachinePlanningRecoveryProviding)?
     ) {
@@ -200,7 +204,11 @@ public final class DoryDaemonVirtualMachineProductionPlanningCompositionFactory:
                     stateDirectory: stateDirectory,
                     runtimeSpecifications: specifications,
                     runtimeVerifier: runtimeVerifier,
-                    hostProbe: hostProbe
+                    hostProbe: hostProbe,
+                    rendererReleaseIdentityProvider:
+                        rendererReleaseIdentityProvider,
+                    rendererCrashSuppressionStore:
+                        rendererCrashSuppressionStore
                 )
             }
         )

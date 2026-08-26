@@ -1,5 +1,13 @@
 # Linux desktop parity contract
 
+> **Status note (2026-08-22):** This document remains the product parity bar, but its narrative
+> “Current state” cells are a historical snapshot and must not be used as release support claims.
+> Implementation, product reachability, qualification, and support are now tracked separately in
+> [`docs/linux-capability-and-qualification-matrix.md`](docs/linux-capability-and-qualification-matrix.md).
+> The controlling design and sequencing are
+> [`docs/linux-virtual-workspace-architecture.md`](docs/linux-virtual-workspace-architecture.md) and
+> [`docs/linux-virtual-workspace-delivery-plan.md`](docs/linux-virtual-workspace-delivery-plan.md).
+
 This document defines Dory's release bar for a Parallels-class Linux experience on Apple Silicon.
 The comparison target is the Linux feature set in Parallels Desktop 26, not its Windows-only
 features. A capability is not considered shipped because code or a package exists: it must pass an
@@ -26,7 +34,7 @@ Primary references:
 | Custom Linux | Create an ARM64 Linux VM from a user-selected ISO through EFI, with persistent NVRAM and install media lifecycle | The signed app securely stages protected user-selected media, fingerprints the exact bytes, reports architecture compatibility separately from runtime qualification, imports accepted media into private daemon-managed storage, creates a thin disk, and boots through persistent EFI. Desktop ISO machines use balanced 4-vCPU/4-GB resource defaults rather than treating a CPU count as a compatibility workaround. A private bidirectional serial console gives every EFI boot durable diagnostics and recovery input. The EFI root disk is now native NVMe with fsync semantics; Dory-owned direct-kernel guests retain their VirtIO-block contract. Ubuntu 24.04.3 ARM64 completed installation and booted its persistent desktop after ISO ejection, but a later whole-guest stall during a Chromium snap installation keeps the exact runtime unqualified |
 | Native and Intel apps | Native ARM64 apps work normally; supported x86_64 Linux applications use Apple's Linux translation runtime with guided setup and clear compatibility reporting | Missing for desktop machines |
 | Display | Retina rendering, dynamic resolution during resize, full screen, correct scaling, cursor integration, and multi-display support | Single-display Retina, resize, native full-screen participation, and system-key capture exist; full qualification and multi-display are missing |
-| Graphics | Hardware-accelerated Linux graphics meeting Parallels' advertised OpenGL level, with a software fallback and an application compatibility suite | Raw-HV desktop VirGL2/Venus rendering and Metal scanout are implemented; GTK4 uses its qualified accelerated GL renderer to avoid newer-renderer texture corruption, Firefox uses its reliable XWayland presentation path, and Files/Settings/Calculator/Firefox are locally normal. The broader OpenGL suite and rebuilt exact-candidate gate remain |
+| Graphics | Hardware-accelerated Linux graphics meeting Parallels' advertised OpenGL level, with a software fallback and an application compatibility suite | The isolated dual VirGL2/Venus renderer, real packaged-worker bootstrap receipt, fresh exact live comparison, and candidate-bound crash circuit breaker are implemented. A renderer failure stops the uncertain GPU generation safely and makes the next automatic plan select its declared software recovery level; a hardware-only request stays an error. Hardware 3D remains unqualified until the release-signed candidate passes the physical Mesa VirGL desktop and Venus/Zed sustained-application gates |
 | Clipboard | Bidirectional text and image clipboard with an explicit off/host-to-guest/guest-to-host/bidirectional policy | Binary-safe host/guest transport, native shortcuts, focus synchronization, Wayland/X11 adapters, and policy UI are implemented; all-distro live and exact-candidate qualification remain |
 | Drag and drop | Bidirectional file drag and drop between Finder and the Linux desktop with conflict, cancellation, and progress handling | Missing |
 | Shared folders | Add/remove read-only or read-write Mac folders, stable guest paths, permissions, large-file tests, file watching, and safe runtime updates | Scoped VirtioFS shares exist; runtime mutation and complete compatibility qualification are missing |

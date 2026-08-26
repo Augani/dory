@@ -657,18 +657,25 @@ nonisolated enum SharedVMProvisioner {
     }
 
     private static func hvHelperBinary() -> String? {
+        if Bundle.main.bundleURL.pathExtension == "app" {
+            let runner = bundledHVRunnerExecutable(in: Bundle.main.bundleURL)
+            return FileManager.default.isExecutableFile(atPath: runner) ? runner : nil
+        }
         let environment = ProcessInfo.processInfo.environment
         if let override = environment["DORY_HV_HELPER"],
            !override.isEmpty,
            FileManager.default.isExecutableFile(atPath: override) {
             return override
         }
-        if let helper = bundledHelperPath(named: "dory-hv"),
-           FileManager.default.isExecutableFile(atPath: helper) {
-            return helper
-        }
         let cwd = FileManager.default.currentDirectoryPath
         return helperDevCandidates(named: "dory-hv", cwd: cwd).first { FileManager.default.isExecutableFile(atPath: $0) }
+    }
+
+    nonisolated static func bundledHVRunnerExecutable(in applicationURL: URL) -> String {
+        applicationURL
+            .appendingPathComponent("Contents/Helpers/DoryHVRunner.app/Contents/MacOS/dory-hv")
+            .standardizedFileURL
+            .path
     }
 
     nonisolated static func helperDevCandidates(

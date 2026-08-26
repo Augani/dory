@@ -218,6 +218,45 @@ struct DoryMachineTypedWriteAuthorityTests {
         #expect(restored.clipboardPolicy == migration.definition.clipboardPolicy)
     }
 
+    @Test("portable EFI snapshot preserves the implicit VZ graphics recovery policy")
+    func portableEFISnapshotPreservesGraphicsPolicy() throws {
+        let migration = try DoryMachineConfigurationMigrationBridge.migrate(
+            DoryMachineConfiguration(
+                id: "portable-efi-snapshot",
+                kernelPath: "/fixture/installer-kernel-placeholder",
+                rootfsPath: "/fixture/system.raw",
+                bootMode: .efi,
+                installerISOPath: "/fixture/linux-arm64.iso",
+                displayMode: .desktop
+            ),
+            facts: DoryMachineConfigurationMigrationFacts(
+                guestArchitecture: .arm64,
+                systemDiskCapacityBytes: 32 * 1_024 * 1_024 * 1_024,
+                lifecycle: DoryVMLifecycleMetadata(
+                    revision: 1,
+                    createdAtUnixMilliseconds: 1_700_000_000_000,
+                    updatedAtUnixMilliseconds: 1_700_000_000_000
+                )
+            )
+        )
+        var legacyDefinition = migration.definition
+        legacyDefinition.graphics = DoryVMGraphicsPolicy(acceptableLevels: [
+            .hostAcceleratedDisplay, .software,
+        ])
+        let snapshot = try DoryMachineTypedSettingsSnapshot(definition: legacyDefinition)
+        let restored = try snapshot.applyingAsReplacement(
+            to: legacyDefinition,
+            displayMode: .desktop
+        )
+
+        #expect(legacyDefinition.graphics.acceptableLevels == [
+            .hostAcceleratedDisplay, .software,
+        ])
+        #expect(snapshot.runtimePreference == .compatible)
+        #expect(snapshot.graphicsPreference == nil)
+        #expect(restored.graphics == legacyDefinition.graphics)
+    }
+
     @Test("hostile and out of range guest fields fail closed")
     func hostileGuestFields() {
         let cases: [NSDictionary] = [

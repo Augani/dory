@@ -303,6 +303,8 @@ jobs:
             guest/out/Image-desktop.zst
             guest/out/config-arm64-desktop
             guest/out/kernel-build-arm64-desktop.stamp
+            guest/out/dory-mesa-venus-arm64.tar.zst
+            guest/out/dory-mesa-venus-build-arm64.stamp
             guest/out/dory-desktop-debian-rootfs-arm64.ext4.zst
             guest/out/dory-desktop-debian-packages-arm64.txt
             guest/out/dory-desktop-debian-update-arm64.tar
@@ -338,7 +340,12 @@ jobs:
           python3 .github/scripts/test-release-metadata.py
           python3 .github/scripts/test-release-output-validator.py
           python3 .github/scripts/test-homebrew-install-gate.py
-          python3 .github/scripts/test-release-performance-gate.py
+          python3 .github/scripts/test-container-engine-performance-gate.py
+          python3 .github/scripts/test-linux-vm-performance-evidence.py
+          python3 -B scripts/test-linux-vm-performance-bundle.py -v
+          python3 .github/scripts/test-renderer-production-tuple.py
+          python3 -B .github/scripts/test-renderer-release-identity.py -v
+          scripts/test-build-renderer-components.sh
           python3 .github/scripts/test-source-preserving-lan-gate.py
           python3 .github/scripts/test-sparkle-install-relaunch-gate.py
           python3 .github/scripts/test-vz-native-ipv6-gate.py
@@ -353,6 +360,8 @@ jobs:
           python3 .github/scripts/test-release-sbom.py
           python3 .github/scripts/test-direct-dmg-install-gate.py
           python3 .github/scripts/test-desktop-linux-live-gate.py
+          python3 .github/scripts/test-graphics-pack-installer.py
+          python3 .github/scripts/test-graphics-backend-resolver.py
           python3 .github/scripts/test-machine-resource-reconfiguration-gate.py
           python3 .github/scripts/test-sandbox-security-gate.py
           python3 .github/scripts/test-ssh-agent-forwarding-gate.py
@@ -469,6 +478,7 @@ jobs:
           DORY_EXPERIMENTAL_GPU=1 guest/kernel/verify-build.sh arm64
           guest/initfs/verify-build.sh arm64
           DORY_KERNEL_PROFILE=accelerated-desktop guest/kernel/verify-build.sh arm64
+          guest/mesa/verify-build.sh arm64
           for distro in debian ubuntu kali; do
             guest/desktop/verify-build.sh arm64 "$distro"
           done
@@ -882,8 +892,8 @@ jobs:
             --source-commit "${{ github.sha }}" \
             --confirm QUALIFY-EXACT-DORY-RELEASE
 
-  performance_qualification:
-    name: Exact candidate isolated and interleaved performance evidence
+  container_engine_performance_qualification:
+    name: Exact candidate container-engine performance evidence
     needs: release_candidate
     runs-on: [self-hosted, macOS, arm64, dory, benchmark]
     timeout-minutes: 720
@@ -898,17 +908,17 @@ jobs:
         with:
           name: dory-release-candidate-${{ github.sha }}-${{ github.run_attempt }}
           path: release-build
-      - name: Run exact-candidate clean-account campaign
+      - name: Run exact-candidate clean-account container-engine campaign
         env:
           DORY_RELEASE_CLEAN_USER: '1'
           DORY_RELEASE_BENCHMARK_USER: '1'
         run: |
-          scripts/qualify-release-performance.sh \
+          scripts/qualify-container-engine-performance.sh \
             --candidate-dir release-build \
             --version "${{ needs.release_candidate.outputs.version }}" \
             --build "${{ github.run_number }}" \
             --source-commit "$GITHUB_SHA" \
-            --workroot "$RUNNER_TEMP/dory-release-performance" \
+            --workroot "$RUNNER_TEMP/dory-container-engine-performance" \
             --alpine-image "${{ vars.DORY_RELEASE_ALPINE_IMAGE }}" \
             --iperf-image "${{ vars.DORY_BENCH_IPERF_IMAGE }}" \
             --node-image "${{ vars.DORY_BENCH_NODE_IMAGE }}" \
@@ -921,14 +931,14 @@ jobs:
             --download-url "${{ vars.DORY_BENCH_DOWNLOAD_URL }}" \
             --download-bytes "${{ vars.DORY_BENCH_DOWNLOAD_BYTES }}" \
             --confirm CLEAN-BENCHMARK-USER-DELETE-ENGINE-DATA
-      - name: Retain exact performance evidence for publication
+      - name: Retain exact container-engine performance evidence for publication
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: dory-performance-evidence-${{ github.sha }}-${{ github.run_attempt }}
+          name: dory-container-engine-performance-evidence-${{ github.sha }}-${{ github.run_attempt }}
           retention-days: 90
           if-no-files-found: error
           compression-level: 0
-          path: ${{ runner.temp }}/dory-release-performance/Dory-${{ needs.release_candidate.outputs.version }}-performance-evidence.zip
+          path: ${{ runner.temp }}/dory-container-engine-performance/Dory-${{ needs.release_candidate.outputs.version }}-container-engine-performance-evidence.zip
 
   sonoma_vz_certification:
     name: Exact candidate macOS 14 VZ + IPv6 + LAN/Tailscale source certification
@@ -988,7 +998,7 @@ jobs:
           ssh-add -L >/dev/null
           scripts/vz-native-ipv6-gate.sh \
             --dory-vmm "$SONOMA_APP/Contents/Helpers/dory-vmm" \
-            --dory-hv "$SONOMA_APP/Contents/Helpers/dory-hv" \
+            --dory-hv "$SONOMA_APP/Contents/Helpers/DoryHVRunner.app/Contents/MacOS/dory-hv" \
             --gvproxy "$SONOMA_APP/Contents/Helpers/gvproxy" \
             --gvproxy-provenance "$SONOMA_APP/Contents/Resources/gvproxy-provenance.txt" \
             --payload-inventory "$SONOMA_APP/Contents/Resources/dory-payload-sha256.txt" \
@@ -1157,7 +1167,7 @@ jobs:
 
   publish_release:
     name: Publish only the exact qualified candidate
-    needs: [release_candidate, release_qualification, performance_qualification, sonoma_vz_certification, source_preserving_lan_certification, homebrew_cask_audit, homebrew_install_certification]
+    needs: [release_candidate, release_qualification, container_engine_performance_qualification, sonoma_vz_certification, source_preserving_lan_certification, homebrew_cask_audit, homebrew_install_certification]
     runs-on: [self-hosted, macOS, arm64, dory, release]
     timeout-minutes: 120
     permissions:
@@ -1197,24 +1207,24 @@ jobs:
         with:
           name: dory-homebrew-install-evidence-${{ github.sha }}-${{ github.run_attempt }}
           path: homebrew-install-evidence
-      - name: Download exact-candidate performance evidence
+      - name: Download exact-candidate container-engine performance evidence
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: dory-performance-evidence-${{ github.sha }}-${{ github.run_attempt }}
-          path: performance-evidence
-      - name: Verify performance evidence binding and internal digests
+          name: dory-container-engine-performance-evidence-${{ github.sha }}-${{ github.run_attempt }}
+          path: container-engine-performance-evidence
+      - name: Verify container-engine performance evidence binding and internal digests
         env:
           VERSION: ${{ needs.release_candidate.outputs.version }}
           BUILD: ${{ github.run_number }}
         run: |
           set -euo pipefail
-          archive="performance-evidence/Dory-$VERSION-performance-evidence.zip"
+          archive="container-engine-performance-evidence/Dory-$VERSION-container-engine-performance-evidence.zip"
           test -s "$archive"
           root="$RUNNER_TEMP/dory-performance-publication"
           rm -rf "$root"
           mkdir -p "$root"
           unzip -q "$archive" -d "$root"
-          evidence="$root/Dory-$VERSION-performance-evidence"
+          evidence="$root/Dory-$VERSION-container-engine-performance-evidence"
           test -s "$evidence/manifest.json"
           test -s "$evidence/sha256.txt"
           (cd "$evidence" && shasum -a 256 -c sha256.txt)
@@ -1229,7 +1239,8 @@ jobs:
                   raise SystemExit(message)
           require(isinstance(manifest, dict), "performance manifest must be an object")
           require(manifest.get("schemaVersion") == 1, "performance manifest schema mismatch")
-          require(manifest.get("kind") == "dev.dory.performance-qualification", "performance manifest kind mismatch")
+          require(manifest.get("kind") == "dev.dory.container-engine-performance-qualification",
+                  "container-engine performance manifest kind mismatch")
           require(manifest.get("status") == "PASS" and manifest.get("releaseQualifying") is True,
                   "performance qualification did not pass")
           candidate = manifest["candidate"]
@@ -1516,6 +1527,10 @@ jobs:
           codesign --verify --strict --deep "$extracted/Dory.app"
           codesign -dv --verbose=4 "$extracted/Dory.app" 2>&1 \
             | grep -q 'Authority=Developer ID Application'
+          python3 scripts/renderer-release-identity.py verify \
+            --runner-app "$extracted/Dory.app/Contents/Helpers/DoryHVRunner.app" \
+            --doryd "$extracted/Dory.app/Contents/Helpers/doryd" \
+            --expected-team 864H636QW4
           xcrun stapler validate "$extracted/Dory.app"
           spctl --assess --type execute --verbose=4 "$extracted/Dory.app" \
             > "$RUNNER_TEMP/dory-publication-gatekeeper.txt" 2>&1
@@ -1544,11 +1559,11 @@ jobs:
           done
           grep -qx 'architecture=arm64' "$vz_manifest"
           grep -qx 'release_qualifying=true' "$vz_manifest"
-          grep -qx 'gvproxy_version=v0.8.9-dory1' "$vz_manifest"
+          grep -qx 'gvproxy_version=v0.8.9-dory3' "$vz_manifest"
           gvproxy_sha="$(shasum -a 256 "$extracted/Dory.app/Contents/Helpers/gvproxy" | awk '{print $1}')"
           grep -qx "gvproxy_sha256=$gvproxy_sha" "$vz_manifest"
-          grep -qx 'gvproxy_build_sha256=bd9183f5dbe2bd27d7ea57f2f2dd4d5ce26487eeb1fa8c82cd81bad4df50e0c0' "$vz_manifest"
-          grep -qx 'verified_sha256=bd9183f5dbe2bd27d7ea57f2f2dd4d5ce26487eeb1fa8c82cd81bad4df50e0c0' \
+          grep -qx 'gvproxy_build_sha256=56e0cde99ff2b589e467294145d66796ab4d990ae89a3633b0ef037dfcba03cd' "$vz_manifest"
+          grep -qx 'verified_sha256=56e0cde99ff2b589e467294145d66796ab4d990ae89a3633b0ef037dfcba03cd' \
             "$extracted/Dory.app/Contents/Resources/gvproxy-provenance.txt"
           helper_sha="$(shasum -a 256 "$extracted/Dory.app/Contents/Helpers/dory-vmm" | awk '{print $1}')"
           grep -qx "dory_vmm_sha256=$helper_sha" "$vz_manifest"
@@ -1566,7 +1581,7 @@ jobs:
           test ! -s "$(dirname "$vz_manifest")/new-host-panic-reports.txt"
           lan_manifests="$(find source-lan-evidence -type f -name manifest.txt -print)"
           test "$(printf '%s\n' "$lan_manifests" | awk 'NF { count++ } END { print count + 0 }')" = 2
-          hv_sha="$(shasum -a 256 "$extracted/Dory.app/Contents/Helpers/dory-hv" | awk '{print $1}')"
+          hv_sha="$(shasum -a 256 "$extracted/Dory.app/Contents/Helpers/DoryHVRunner.app/Contents/MacOS/dory-hv" | awk '{print $1}')"
           for mode in lan tailscale; do
             manifest="$(printf '%s\n' "$lan_manifests" | while IFS= read -r candidate; do grep -qx "mode=$mode" "$candidate" && printf '%s\n' "$candidate"; done)"
             test "$(printf '%s\n' "$manifest" | awk 'NF { count++ } END { print count + 0 }')" = 1
@@ -1586,7 +1601,7 @@ jobs:
             grep -qx "app_executable_sha256=$app_sha" "$manifest"
             grep -qx "dory_hv_sha256=$hv_sha" "$manifest"
             grep -qx "gvproxy_sha256=$gvproxy_sha" "$manifest"
-            grep -qx 'gvproxy_build_sha256=bd9183f5dbe2bd27d7ea57f2f2dd4d5ce26487eeb1fa8c82cd81bad4df50e0c0' "$manifest"
+            grep -qx 'gvproxy_build_sha256=56e0cde99ff2b589e467294145d66796ab4d990ae89a3633b0ef037dfcba03cd' "$manifest"
             grep -Eq '^observed_source_ipv4=([0-9]{1,3}\.){3}[0-9]{1,3}$' "$manifest"
             grep -Eq '^server_image=.+@sha256:[0-9a-f]{64}$' "$manifest"
             grep -qx 'memory_pressure_mib=960' "$manifest"
@@ -1684,7 +1699,7 @@ jobs:
             release-build/release-manifest.json
             release-build/appcast.xml
             release-build/components/arm64/*
-            performance-evidence/Dory-${{ needs.release_candidate.outputs.version }}-performance-evidence.zip
+            container-engine-performance-evidence/Dory-${{ needs.release_candidate.outputs.version }}-container-engine-performance-evidence.zip
             ${{ runner.temp }}/Dory-${{ needs.release_candidate.outputs.version }}-reliability-evidence.zip
             ${{ runner.temp }}/Dory-${{ needs.release_candidate.outputs.version }}-reliability-evidence.zip.sha256
           fail_on_unmatched_files: true
@@ -1710,7 +1725,7 @@ jobs:
             - Explicit-scope confirmation or recoverable undo for destructive UI, keyboard, menu,
               CLI, migration, cleanup, component, and missing-drive paths.
             - Exact-candidate physical, duration, compatibility, migration, update, security, and
-              performance evidence bound to the shipped manifest and SBOM.
+              container-engine performance evidence bound to the shipped manifest and SBOM.
 
             **Apple Silicon downloads**
 
@@ -1720,7 +1735,7 @@ jobs:
             | `Dory-${{ needs.release_candidate.outputs.version }}.dmg` / `.zip` | Compatibility alias for the arm64 build |
             | `dory-engine-${{ needs.release_candidate.outputs.version }}-arm64.tar.gz` | Headless engine runtime, no GUI — `./dory-engine start`, then `docker context use dory-engine` |
             | `Dory-${{ needs.release_candidate.outputs.version }}.cdx.json` | CycloneDX 1.6 SBOM for the exact shipped app tree |
-            | `Dory-${{ needs.release_candidate.outputs.version }}-performance-evidence.zip` | Raw isolated/interleaved benchmark data, provenance, correctness evidence, and generated summaries |
+            | `Dory-${{ needs.release_candidate.outputs.version }}-container-engine-performance-evidence.zip` | Raw isolated/interleaved container-engine benchmark data, provenance, correctness evidence, and generated summaries; not Linux VM qualification |
             | `Dory-${{ needs.release_candidate.outputs.version }}-reliability-evidence.zip` | Candidate-bound eight-hour resource/file/API and 25-hour unchanged-connection qualification records |
 
             **Install**

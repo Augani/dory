@@ -16,7 +16,7 @@ enum KubernetesProvisioner {
     /// Increment whenever the container's mounts or nested containerd runtime contract changes.
     /// A mismatched container is never replaced automatically because its writable layer contains
     /// the user's cluster state.
-    static let runtimeContract = "2"
+    static let runtimeContract = "3"
     static let contractLabel = "dev.dory.kubernetes.contract"
     static let emulationLabel = "dev.dory.kubernetes.amd64"
     static let imageLabel = "dev.dory.kubernetes.image"
@@ -109,7 +109,6 @@ enum KubernetesProvisioner {
     private struct HostConfiguration: Encodable {
         let Privileged = true
         let PortBindings: [String: [PortBinding]]
-        let Binds: [String]?
     }
 
     private struct CreateRequest: Encodable {
@@ -128,17 +127,15 @@ enum KubernetesProvisioner {
         "--tls-san=host.docker.internal",
     ]
 
-    /// k3s embeds and pins its own runc. Preserve that exact binary as runc.real and configure only
-    /// containerd's BinaryName to enter Dory's OCI wrapper. Reusing dockerd's runc.real here caused
-    /// native k3s workloads to fail because the two runtime stacks are not interchangeable.
+    /// Dory's engine OCI admission layer interposes the exact nested runc as runc.real and mounts
+    /// dory-runc into this privileged container. Configure only containerd's BinaryName here; the
+    /// app must not copy or replace runtime binaries from inside the container after admission.
     static let fexStartupScript = #"""
     set -eu
     test -x /usr/lib/dory/fex/FEX
     test -x /usr/lib/dory/fex/FEXServer
     test -x /usr/local/bin/dory-runc
-    test -x /bin/runc
-    install -m 0755 /bin/runc /usr/local/bin/runc.real
-    cmp -s /bin/runc /usr/local/bin/runc.real
+    test -x /usr/local/bin/runc.real
     install -d -m 0755 /var/lib/rancher/k3s/agent/etc/containerd/config-v3.toml.d
     runtime_config=/var/lib/rancher/k3s/agent/etc/containerd/config-v3.toml.d/10-dory-fex.toml
     runtime_config_tmp="${runtime_config}.tmp"
@@ -359,8 +356,7 @@ enum KubernetesProvisioner {
             Labels: labels,
             ExposedPorts: [port: EmptyObject()],
             HostConfig: HostConfiguration(
-                PortBindings: [port: [PortBinding(HostPort: "\(apiPort)")]],
-                Binds: amd64Emulation ? ["\(fexWrapperPath):\(fexWrapperPath):ro"] : nil
+                PortBindings: [port: [PortBinding(HostPort: "\(apiPort)")]]
             )
         )
         // All fields above are JSON-encodable value types. Encoding rather than interpolation keeps

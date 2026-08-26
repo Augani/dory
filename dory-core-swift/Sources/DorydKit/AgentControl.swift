@@ -48,6 +48,11 @@ public protocol AgentControlClient: Sendable {
         action: DoryLifecycleReceiptAction,
         operationID: String
     ) throws -> String
+    func virtioFSMount(
+        tag: String,
+        mountPath: String,
+        readOnly: Bool
+    ) throws -> DoryVirtioFSMountReceipt
     func exec(
         argv: [String],
         cwd: String,
@@ -67,6 +72,17 @@ public protocol AgentControlClient: Sendable {
 }
 
 public extension AgentControlClient {
+    func virtioFSMount(
+        tag: String,
+        mountPath: String,
+        readOnly: Bool
+    ) throws -> DoryVirtioFSMountReceipt {
+        _ = tag
+        _ = mountPath
+        _ = readOnly
+        throw AgentControlError.capabilityUnavailable("virtiofs-mount")
+    }
+
     func lifecycleReceipt(
         action: DoryLifecycleReceiptAction,
         operationID: String
@@ -264,6 +280,21 @@ public final class AgentControl: @unchecked Sendable {
         try client(requiring: "lifecycle-receipt").lifecycleReceipt(
             action: action,
             operationID: operationID
+        )
+    }
+
+    /// Mount a host-published virtio-fs device only after the negotiated Dory Tools inventory
+    /// advertises `virtiofs-mount@1`. The returned receipt is based on the guest kernel's mountinfo
+    /// observation, so callers never treat RPC delivery alone as mount completion.
+    public func virtioFSMount(
+        tag: String,
+        mountPath: String,
+        readOnly: Bool
+    ) throws -> DoryVirtioFSMountReceipt {
+        try client(requiring: "virtiofs-mount").virtioFSMount(
+            tag: tag,
+            mountPath: mountPath,
+            readOnly: readOnly
         )
     }
 

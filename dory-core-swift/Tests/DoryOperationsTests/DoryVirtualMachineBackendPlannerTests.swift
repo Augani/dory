@@ -21,6 +21,7 @@ struct DoryVirtualMachineBackendPlannerTests {
             manifestFormatVersion: 1
         ),
         virtioGPUKernelAndDeviceSupportQualified: true,
+        producerFenceBeforeFlushQualified: true,
         venusVulkanGuestRuntimeQualified: true
     )
 
@@ -63,7 +64,7 @@ struct DoryVirtualMachineBackendPlannerTests {
         #expect(DoryAppleSiliconVirtualMachineBackendPlanner.defaultBackends(
             for: linux,
             bootMedia: .installerISO
-        ) == [.appleVirtualizationFramework, .qemuHypervisorFramework])
+        ) == [.appleVirtualizationFramework])
         #expect(DoryAppleSiliconVirtualMachineBackendPlanner.defaultBackends(
             for: linux,
             bootMedia: .installedLinuxBootBundle
@@ -82,7 +83,7 @@ struct DoryVirtualMachineBackendPlannerTests {
         ) == [.qemuHypervisorFramework])
     }
 
-    @Test("Linux ISO selects Virtualization.framework before experimental QEMU")
+    @Test("Linux ISO evaluates only the implemented Virtualization.framework backend")
     func linuxInstallerSelection() throws {
         let result = plan(
             family: .linux,
@@ -96,34 +97,25 @@ struct DoryVirtualMachineBackendPlannerTests {
         #expect(selected.availability.supportTier == .supported)
         #expect(selected.bootMediaInspectionEvidence?.artifactSHA256
             == Self.linuxISOArtifactSHA256)
-        #expect(result.evaluatedDescriptors.map(\.request.backend) == [
-            .appleVirtualizationFramework,
-            .qemuHypervisorFramework,
-        ])
+        #expect(result.evaluatedDescriptors.map(\.request.backend)
+            == [.appleVirtualizationFramework])
     }
 
-    @Test("structurally bootable ISO requires experimental opt-in without runtime qualification")
-    func unqualifiedISORuntimeRequiresOptIn() throws {
-        let denied = plan(
+    @Test("structurally bootable ARM64 EFI ISO selects the portable VZ baseline")
+    func unqualifiedISORuntimeUsesPortableBaseline() throws {
+        let result = plan(
             family: .linux,
             media: .installerISO,
             graphics: [.software],
             automaticallyQualifyRuntime: false
         )
-        let allowed = plan(
-            family: .linux,
-            media: .installerISO,
-            graphics: [.software],
-            allowsExperimental: true,
-            automaticallyQualifyRuntime: false
-        )
+        let selected = try #require(result.selectedDescriptor)
 
-        #expect(denied.failure?.code == .noCandidate)
-        #expect(denied.evaluatedDescriptors.first?.availability.supportTier == .experimental)
-        #expect(denied.evaluatedDescriptors.first?.availability.reason?.code
+        #expect(result.isSuccess)
+        #expect(selected.request.backend == .appleVirtualizationFramework)
+        #expect(selected.availability.supportTier == .supported)
+        #expect(selected.availability.reason?.code
             == .runtimeQualificationUnavailable)
-        #expect(try #require(allowed.selectedDescriptor).availability.supportTier
-            == .experimental)
     }
 
     @Test("mutable virtual disks cannot be planned from a digest without provenance")
@@ -162,6 +154,26 @@ struct DoryVirtualMachineBackendPlannerTests {
         #expect(result.evaluatedDescriptors.count == 2)
     }
 
+    @Test("a missing production renderer falls back to explicit RawHV software graphics")
+    func installedLinuxRendererFailureUsesSoftwareFallback() throws {
+        var host = Self.host
+        host.doryAcceleratedRendererAvailable = false
+        let result = plan(
+            family: .linux,
+            media: .installedLinuxBootBundle,
+            graphics: [.hardwareAccelerated3D, .software],
+            host: host,
+            mediaArtifactSHA256: Self.guestArtifactSHA256,
+            trustedGuestImageGraphicsQualification: Self.qualifiedLinuxGraphics
+        )
+        let selected = try #require(result.selectedDescriptor)
+
+        #expect(selected.request.backend == .doryHypervisor)
+        #expect(selected.request.graphics == .software)
+        #expect(result.evaluatedDescriptors.first?.availability.reason?.code
+            == .acceleratedRendererUnavailable)
+    }
+
     @Test("planner defaults cannot authorize Linux 3D without image qualification")
     func installedLinuxUnqualifiedGraphicsIsFailClosed() throws {
         let noFallback = plan(
@@ -185,8 +197,8 @@ struct DoryVirtualMachineBackendPlannerTests {
         #expect(selected.request.bootMedia.artifactSHA256 == Self.guestArtifactSHA256)
     }
 
-    @Test("preferred backend order is honored across explicitly allowed support tiers")
-    func backendPreferenceOrderIsHonored() throws {
+    @Test("an unimplemented Linux QEMU preference never becomes runnable")
+    func unimplementedLinuxQEMUPreferenceFallsBack() throws {
         let result = plan(
             family: .linux,
             media: .installerISO,
@@ -196,24 +208,24 @@ struct DoryVirtualMachineBackendPlannerTests {
         )
         let selected = try #require(result.selectedDescriptor)
 
-        #expect(selected.request.backend == .qemuHypervisorFramework)
+        #expect(selected.request.backend == .appleVirtualizationFramework)
         #expect(result.evaluatedDescriptors.map(\.request.backend) == [
             .qemuHypervisorFramework,
             .appleVirtualizationFramework,
         ])
+        #expect(result.evaluatedDescriptors.first?.availability.supportTier == .unsupported)
+        #expect(result.evaluatedDescriptors.first?.availability.reason?.code
+            == .backendDoesNotSupportGuest)
     }
 
     @Test("preferred backends permit automatic fallback while required backends do not")
     func backendPreferencePolicyControlsFallback() throws {
-        var unavailableQEMUHost = Self.host
-        unavailableQEMUHost.qemuHypervisorFrameworkAvailable = false
         let preferred = plan(
             family: .linux,
             media: .installerISO,
             graphics: [.software],
             backends: [.qemuHypervisorFramework],
             backendPolicy: .preferred,
-            host: unavailableQEMUHost,
             allowsExperimental: true
         )
         let required = plan(
@@ -222,7 +234,6 @@ struct DoryVirtualMachineBackendPlannerTests {
             graphics: [.software],
             backends: [.qemuHypervisorFramework],
             backendPolicy: .required,
-            host: unavailableQEMUHost,
             allowsExperimental: true
         )
 
@@ -235,6 +246,10 @@ struct DoryVirtualMachineBackendPlannerTests {
         #expect(required.failure?.code == .noCandidate)
         #expect(required.evaluatedDescriptors.map(\.request.backend)
             == [.qemuHypervisorFramework])
+        #expect(preferred.evaluatedDescriptors.first?.availability.reason?.code
+            == .backendDoesNotSupportGuest)
+        #expect(required.evaluatedDescriptors.first?.availability.reason?.code
+            == .backendDoesNotSupportGuest)
     }
 
     @Test("graphics is never downgraded unless the caller supplied the fallback")
@@ -253,9 +268,9 @@ struct DoryVirtualMachineBackendPlannerTests {
 
         #expect(!noFallback.isSuccess)
         #expect(noFallback.failure?.code == .noCandidate)
-        #expect(noFallback.evaluatedDescriptors.count == 2)
+        #expect(noFallback.evaluatedDescriptors.count == 1)
         #expect(selected.request.graphics == .software)
-        #expect(withFallback.evaluatedDescriptors.count == 4)
+        #expect(withFallback.evaluatedDescriptors.count == 2)
     }
 
     @Test("Windows remains unavailable unless experimental backends are explicitly allowed")
@@ -352,7 +367,7 @@ struct DoryVirtualMachineBackendPlannerTests {
 
         #expect(decoded == result)
         #expect(decoded.failure?.code == .noCandidate)
-        #expect(decoded.evaluatedDescriptors.count == 2)
+        #expect(decoded.evaluatedDescriptors.count == 1)
     }
 
     @Test("successful 3D plans retain revalidation evidence through Codable")

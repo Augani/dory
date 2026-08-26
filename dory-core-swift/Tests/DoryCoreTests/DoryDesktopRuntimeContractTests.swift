@@ -42,11 +42,9 @@ final class DoryDesktopRuntimeContractTests: XCTestCase {
             "dory.graphics=virgl-venus"
         )
         XCTAssertEqual(DoryDesktopGraphicsBackend.software.kernelArgument, "dory.graphics=software")
-        XCTAssertNotNil(DoryDesktopGraphicsBackend.virgl.legacyKernelArgument)
-        XCTAssertNil(DoryDesktopGraphicsBackend.software.legacyKernelArgument)
     }
 
-    func testAutomaticGraphicsRequiresVulkanAccelerationWithoutSilentFallback() {
+    func testLegacyAutomaticGraphicsTokenRemainsVirglVenus() {
         XCTAssertEqual(
             DoryDesktopGraphicsPreference.automatic.requiredBackend,
             .virglVenus

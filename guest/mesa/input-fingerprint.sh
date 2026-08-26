@@ -11,16 +11,15 @@ case "${1:-arm64}" in
 esac
 
 {
-  printf 'schema=1\narch=arm64\nmesa_version=%s\nmeson_version=%s\nbuilder=%s\n' \
+  printf 'schema=3\narch=arm64\nmesa_version=%s\nmeson_version=%s\nbuilder=%s\n' \
     "$MESA_VERSION" "$MESON_VERSION" "$MESA_BUILDER_IMAGE"
   for input in \
     guest/mesa/PINS \
-    guest/mesa/README.md \
     guest/mesa/build.sh \
+    guest/mesa/dory-vulkan-compositor-probe.c \
     guest/mesa/dory-vulkan-probe.c \
     guest/mesa/input-fingerprint.sh \
-    guest/mesa/verify-build.sh \
-    guest/mesa/patches/0001-venus-enable-dory-implicit-fencing-wsi.patch; do
+    guest/mesa/verify-build.sh; do
     printf 'input=%s\n' "$input"
     shasum -a 256 "$input"
   done

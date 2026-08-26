@@ -50,13 +50,7 @@ public struct DoryHostUSBDevice: Equatable, Sendable {
     }
 
     fileprivate static func isValidBusID(_ value: String) -> Bool {
-        let bytes = Array(value.utf8)
-        guard (1..<32).contains(bytes.count),
-              bytes.first.map({ (48...57).contains($0) }) == true,
-              bytes.last.map({ (48...57).contains($0) }) == true else {
-            return false
-        }
-        return bytes.allSatisfy { (48...57).contains($0) || $0 == 45 || $0 == 46 }
+        DoryMachineUSBWireContract.isValidBusID(value)
     }
 
     fileprivate static func isValidDisplayName(_ value: String) -> Bool {

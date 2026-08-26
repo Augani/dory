@@ -38,6 +38,14 @@ stamp_value() {
   sed -n "s/^$1=//p" "$STAMP"
 }
 
+require_arm64_package() {
+  local package="$1"
+  local failure="$2"
+  awk -v expected="$package" \
+    '$1 == expected || $1 == expected ":arm64" { found = 1 } END { exit !found }' \
+    "$PACKAGES" || fail "$failure"
+}
+
 [ "$(stamp_value schema)" = 2 ] || fail "$STAMP has an unsupported schema"
 [ "$(stamp_value arch)" = arm64 ] || fail "$STAMP was built for another architecture"
 [ "$(stamp_value distro)" = "$DISTRO" ] || fail "$STAMP was built for another distribution"
@@ -56,7 +64,7 @@ UPDATE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/dory-desktop-update-verify.XXXXXX")"
 trap 'rm -rf "$UPDATE_DIR"' EXIT
 tar -xf "$UPDATE" -C "$UPDATE_DIR"
 guest/mesa/verify-build.sh arm64 >/dev/null
-for path in apply.sh dory-agent dory-mesa-venus-arm64.tar.zst manifest.env packages.txt rootfs-overlay.tar SHA256SUMS; do
+for path in apply.sh dory-agent dory-mesa-venus-arm64.tar.zst install-graphics-pack.sh manifest.env packages.txt rootfs-overlay.tar SHA256SUMS; do
   [ -s "$UPDATE_DIR/$path" ] || fail "$UPDATE is missing $path"
 done
 (cd "$UPDATE_DIR" && shasum -a 256 -c SHA256SUMS) \
@@ -73,6 +81,10 @@ grep -Fq 'packages.txt is the signed package provenance' "$UPDATE_DIR/apply.sh" 
   || fail "$UPDATE does not keep package provenance separate from guest-tools installation"
 grep -Fq 'dory-mesa-venus-arm64.tar.zst' "$UPDATE_DIR/apply.sh" \
   || fail "$UPDATE does not install the Dory Venus runtime"
+grep -Fq 'install-graphics-pack.sh' "$UPDATE_DIR/apply.sh" \
+  || fail "$UPDATE does not replace the Dory graphics pack transactionally"
+cmp -s guest/desktop/install-graphics-pack.sh "$UPDATE_DIR/install-graphics-pack.sh" \
+  || fail "$UPDATE contains a stale graphics-pack installer"
 grep -Fq 'dconf update' "$UPDATE_DIR/apply.sh" \
   || fail "$UPDATE does not compile the managed desktop session policy"
 if grep -Eq 'apt-get|with-new-pkgs|xargs .*install' "$UPDATE_DIR/apply.sh"; then
@@ -93,11 +105,6 @@ if [ -z "$DEBUGFS" ]; then
 fi
 [ -n "$DEBUGFS" ] || fail "debugfs is required"
 
-case "$DISTRO" in
-  ubuntu) BROWSER_POLICY_PATH=/usr/lib/firefox/distribution/policies.json ;;
-  *) BROWSER_POLICY_PATH=/usr/share/firefox-esr/distribution/policies.json ;;
-esac
-
 for guest_path in \
   /sbin/init \
   /usr/bin/dory-agent \
@@ -105,7 +112,11 @@ for guest_path in \
   /usr/lib/dory/configure-machine \
   /usr/lib/dory/configure-display \
   /usr/lib/dory/configure-graphics-backend \
-  /usr/lib/dory/dory-vulkan-probe \
+  /usr/lib/dory/preflight-graphics-pack \
+  /usr/lib/dory/resolve-graphics-backend \
+  /usr/lib/aarch64-linux-gnu/dri/virtio_gpu_dri.so \
+  /opt/dory/mesa/libexec/dory-vulkan-compositor-probe \
+  /opt/dory/mesa/libexec/dory-vulkan-probe \
   /usr/lib/dory/configure-zram \
   /usr/lib/dory/first-boot \
   /usr/lib/dory/start-agent \
@@ -114,6 +125,7 @@ for guest_path in \
   /etc/systemd/system/dory-boot.service \
   /etc/systemd/system/dory-desktop-ready.service \
   /etc/systemd/system/dory-graphics-backend.service \
+  /etc/systemd/system/display-manager.service.d/10-dory-graphics.conf \
   /etc/systemd/system/dory-zram.service \
   /etc/NetworkManager/conf.d/10-dory.conf \
   /etc/NetworkManager/conf.d/10-globally-managed-devices.conf \
@@ -125,7 +137,6 @@ for guest_path in \
   /etc/polkit-1/rules.d/49-dory-passwordless-admin.rules \
   /etc/wireplumber/main.lua.d/60-dory-virtio-sound.lua \
   /etc/xdg/autostart/dory-display.desktop \
-  "$BROWSER_POLICY_PATH" \
   /home/dory/.profile \
   /usr/bin/spice-vdagent \
   /usr/bin/pipewire; do
@@ -135,23 +146,67 @@ done
 
 for guest_path in \
   /opt/dory/mesa/lib/libvulkan_virtio.so \
-  /opt/dory/mesa/lib/libxcb-keysyms.so.1.0.0 \
+  /opt/dory/mesa/libexec/dory-vulkan-compositor-probe \
+  /opt/dory/mesa/libexec/dory-vulkan-probe \
   /opt/dory/mesa/share/vulkan/icd.d/virtio_icd.aarch64.json \
-  /opt/dory/mesa/share/dory/runtime.env; do
+  /opt/dory/mesa/share/dory/runtime.env \
+  /opt/dory/mesa/share/dory/build-packages.txt; do
   "$DEBUGFS" -R "stat $guest_path" "$IMAGE" 2>&1 | grep -Fq 'Inode:' \
     || fail "$IMAGE is missing $guest_path"
 done
 
 VENUS_ICD="$($DEBUGFS -R \
   'cat /opt/dory/mesa/share/vulkan/icd.d/virtio_icd.aarch64.json' "$IMAGE" 2>/dev/null)"
-grep -Fq '"library_path": "/opt/dory/mesa/lib/libvulkan_virtio.so"' <<<"$VENUS_ICD" \
-  || fail "the desktop image Venus ICD does not select Dory's isolated library"
+grep -Fq '"library_path": "../../../lib/libvulkan_virtio.so"' <<<"$VENUS_ICD" \
+  || fail "the desktop image Venus ICD is not relocatable within its signed pack"
 VENUS_MANIFEST="$($DEBUGFS -R \
   'cat /opt/dory/mesa/share/dory/runtime.env' "$IMAGE" 2>/dev/null)"
 grep -Fqx "mesa_version=$MESA_VERSION" <<<"$VENUS_MANIFEST" \
   || fail "the desktop image contains the wrong Mesa Venus version"
-grep -Fqx "mesa_source_sha256=$MESA_SOURCE_SHA256" <<<"$VENUS_MANIFEST" \
-  || fail "the desktop image contains an unpinned Mesa Venus source"
+grep -Fqx 'schema=6' <<<"$VENUS_MANIFEST" \
+  || fail "the desktop image contains the wrong Venus ABI schema"
+grep -Fqx "architecture=$MESA_RUNTIME_ARCH" <<<"$VENUS_MANIFEST" \
+  || fail "the desktop image contains the wrong Venus architecture"
+grep -Fqx "libc_family=$MESA_RUNTIME_LIBC_FAMILY" <<<"$VENUS_MANIFEST" \
+  || fail "the desktop image contains the wrong Venus libc family"
+grep -Fqx "vulkan_api=$MESA_RUNTIME_VULKAN_API" <<<"$VENUS_MANIFEST" \
+  || fail "the desktop image contains the wrong Vulkan API contract"
+grep -Fqx "vulkan13_features=$MESA_RUNTIME_VULKAN13_FEATURES" <<<"$VENUS_MANIFEST" \
+  || fail "the desktop image contains the wrong Vulkan 1.3 feature contract"
+grep -Fqx "vulkan_device_extensions=$MESA_RUNTIME_VULKAN_DEVICE_EXTENSIONS" \
+  <<<"$VENUS_MANIFEST" \
+  || fail "the desktop image contains the wrong Vulkan device-extension contract"
+grep -Fqx "vulkan_instance_extensions=$MESA_RUNTIME_VULKAN_INSTANCE_EXTENSIONS" \
+  <<<"$VENUS_MANIFEST" \
+  || fail "the desktop image contains the wrong Vulkan instance-extension contract"
+grep -Fqx "wsi_surface_gate=$MESA_RUNTIME_WSI_SURFACE_GATE" <<<"$VENUS_MANIFEST" \
+  || fail "the desktop image contains the wrong Vulkan native-surface contract"
+grep -Fqx "compositor_profile=$MESA_RUNTIME_COMPOSITOR_PROFILE" <<<"$VENUS_MANIFEST" \
+  || fail "the desktop image contains the wrong Vulkan compositor profile"
+grep -Fqx "compositor_profile_source_commit=$WLROOTS_VULKAN_PROFILE_SOURCE_COMMIT" \
+  <<<"$VENUS_MANIFEST" \
+  || fail "the desktop image contains the wrong Vulkan compositor-profile commit"
+grep -Fqx "compositor_profile_source_tree=$WLROOTS_VULKAN_PROFILE_SOURCE_TREE" \
+  <<<"$VENUS_MANIFEST" \
+  || fail "the desktop image contains the wrong Vulkan compositor-profile tree"
+VENUS_MAX_GLIBC_SYMBOL="$(sed -n 's/^max_glibc_symbol=//p' <<<"$VENUS_MANIFEST")"
+grep -Eq '^GLIBC_[0-9]+(\.[0-9]+)+$' <<<"$VENUS_MAX_GLIBC_SYMBOL" \
+  || fail "the desktop image contains an invalid Venus GNU-libc floor"
+[ "$(printf '%s\n%s\n' "$VENUS_MAX_GLIBC_SYMBOL" "$MESA_RUNTIME_MAX_GLIBC_SYMBOL" \
+    | LC_ALL=C sort -Vu | tail -n 1)" = "$MESA_RUNTIME_MAX_GLIBC_SYMBOL" ] \
+  || fail "the desktop image Venus GNU-libc floor exceeds the admitted ceiling"
+grep -Fqx "mesa_source_commit=$MESA_SOURCE_COMMIT" <<<"$VENUS_MANIFEST" \
+  || fail "the desktop image contains an unpinned Mesa source commit"
+grep -Fqx "mesa_source_tree=$MESA_SOURCE_TREE" <<<"$VENUS_MANIFEST" \
+  || fail "the desktop image contains an unpinned Mesa source tree"
+grep -Fq 'icd_needed_sonames=' <<<"$VENUS_MANIFEST" \
+  || fail "the desktop image Venus ABI does not declare its ICD DSO closure"
+grep -Fq 'probe_needed_sonames=' <<<"$VENUS_MANIFEST" \
+  || fail "the desktop image Venus ABI does not declare its probe DSO closure"
+grep -Fq 'compositor_probe_needed_sonames=' <<<"$VENUS_MANIFEST" \
+  || fail "the desktop image Venus ABI does not declare its compositor-probe DSO closure"
+grep -Fqx 'libdrm_linkage=static-hidden' <<<"$VENUS_MANIFEST" \
+  || fail "the desktop image Venus ABI does not isolate libdrm"
 
 CLIPBOARD_HELPER="$($DEBUGFS -R 'cat /usr/lib/dory/clipboard' "$IMAGE" 2>/dev/null)"
 grep -Fq 'wl-copy --type "$mime"' <<<"$CLIPBOARD_HELPER" \
@@ -178,17 +233,16 @@ grep -Fq '["node.group"] = "dory-capture"' <<<"$WIREPLUMBER_SOUND_RULE" \
 [ "$(grep -Fc '["audio.position"] = "FL,FR"' <<<"$WIREPLUMBER_SOUND_RULE")" -eq 2 ] \
   || fail "WirePlumber does not expose conventional stereo channel positions"
 
-BROWSER_POLICY="$($DEBUGFS -R "cat $BROWSER_POLICY_PATH" "$IMAGE" 2>/dev/null)"
-  grep -Fq '"gfx.webrender.software"' <<<"$BROWSER_POLICY" \
-    || fail "$BROWSER_POLICY_PATH does not select Firefox SWGL"
-  grep -Fq '"widget.dmabuf.enabled"' <<<"$BROWSER_POLICY" \
-    || fail "$BROWSER_POLICY_PATH does not disable Firefox DMA-BUF presentation"
-  [ "$(grep -Fc '"Value": true' <<<"$BROWSER_POLICY")" -eq 1 ] \
-    || fail "$BROWSER_POLICY_PATH must enable exactly the SWGL preference"
-  [ "$(grep -Fc '"Value": false' <<<"$BROWSER_POLICY")" -eq 1 ] \
-    || fail "$BROWSER_POLICY_PATH must disable exactly the DMA-BUF preference"
-  [ "$(grep -Fc '"Status": "locked"' <<<"$BROWSER_POLICY")" -eq 2 ] \
-    || fail "$BROWSER_POLICY_PATH preferences are not locked"
+DESKTOP_COMPATIBILITY_ENV="$($DEBUGFS -R \
+  'cat /etc/environment.d/60-dory-desktop.conf' "$IMAGE" 2>/dev/null)"
+grep -Fqx 'MOZ_ENABLE_WAYLAND=0' <<<"$DESKTOP_COMPATIBILITY_ENV" \
+  || fail "Firefox is not pinned to the qualified XWayland presentation path"
+BROWSER_POLICY="$($DEBUGFS -R \
+  'cat /usr/lib/firefox/distribution/policies.json' "$IMAGE" 2>/dev/null)"
+grep -Fq '"gfx.webrender.software"' <<<"$BROWSER_POLICY" \
+  || fail "Firefox does not select its qualified software WebRender path"
+grep -Fq '"widget.dmabuf.enabled"' <<<"$BROWSER_POLICY" \
+  || fail "Firefox does not disable the unqualified DMA-BUF presentation path"
 
 for user_owned_path in /home/dory /home/dory/.profile; do
   "$DEBUGFS" -R "stat $user_owned_path" "$IMAGE" 2>/dev/null \
@@ -200,6 +254,8 @@ for root_owned_path in \
   /usr/lib/dory/configure-machine \
   /usr/lib/dory/configure-display \
   /usr/lib/dory/configure-graphics-backend \
+  /usr/lib/dory/preflight-graphics-pack \
+  /usr/lib/dory/resolve-graphics-backend \
   /usr/lib/dory/configure-zram \
   /usr/lib/dory/first-boot \
   /usr/lib/dory/start-agent \
@@ -207,11 +263,20 @@ for root_owned_path in \
   /etc/systemd/system/dory-boot.service \
   /etc/systemd/system/dory-desktop-ready.service \
   /etc/systemd/system/dory-graphics-backend.service \
+  /etc/systemd/system/display-manager.service.d/10-dory-graphics.conf \
   /etc/systemd/system/dory-zram.service; do
   "$DEBUGFS" -R "stat $root_owned_path" "$IMAGE" 2>/dev/null \
     | grep -Eq 'User:[[:space:]]+0[[:space:]]+Group:[[:space:]]+0' \
     || fail "$root_owned_path is not owned by root in $IMAGE"
 done
+
+DISPLAY_GRAPHICS_ORDER="$($DEBUGFS -R \
+  'cat /etc/systemd/system/display-manager.service.d/10-dory-graphics.conf' "$IMAGE" 2>/dev/null)"
+grep -Fq 'Wants=dory-graphics-backend.service' <<<"$DISPLAY_GRAPHICS_ORDER" \
+  || fail "the display manager does not order the optional graphics activation"
+if grep -Fq 'Requires=dory-graphics-backend.service' <<<"$DISPLAY_GRAPHICS_ORDER"; then
+  fail "optional graphics activation can still prevent the display manager from starting"
+fi
 
 # /etc/os-release is normally a relative symlink. debugfs does not follow it,
 # so read the canonical file directly when verifying the offline image.
@@ -267,10 +332,11 @@ case "$DISTRO" in
     "$DEBUGFS" -R 'cat /etc/gdm3/custom.conf' "$IMAGE" 2>/dev/null \
       | grep -Fqx 'AutomaticLogin=dory' || fail "Ubuntu GNOME autologin is not configured"
     "$DEBUGFS" -R 'cat /etc/gdm3/custom.conf' "$IMAGE" 2>/dev/null \
-      | grep -Fqx 'WaylandEnable=false' || fail "Ubuntu GNOME does not select accelerated Xorg"
+      | grep -Fqx 'WaylandEnable=false' \
+      || fail "Ubuntu GNOME does not select the qualified Xorg compatibility cell"
     "$DEBUGFS" -R 'cat /etc/gdm3/custom.conf' "$IMAGE" 2>/dev/null \
       | grep -Fqx 'DefaultSession=ubuntu-xorg.desktop' \
-      || fail "Ubuntu GNOME does not default to Ubuntu on Xorg"
+      || fail "Ubuntu GNOME does not default to the qualified Xorg session"
     DCONF_SESSION="$($DEBUGFS -R \
       'cat /etc/dconf/db/dory.d/00-managed-session' "$IMAGE" 2>/dev/null)"
     grep -Fqx 'lock-enabled=false' <<<"$DCONF_SESSION" \
@@ -333,14 +399,11 @@ case "$DISTRO" in
       fail "Ubuntu's dock default still points at the absent Firefox Snap launcher"
     fi
     for package in ubuntu-desktop-minimal ubuntu-session gdm3 firefox yaru-theme-gtk; do
-      grep -q "^${package}[[:space:]]" "$PACKAGES" || fail "$package provenance is missing"
+      require_arm64_package "$package" "$package provenance is missing"
     done
     "$DEBUGFS" -R 'cat /etc/apt/keyrings/packages.mozilla.org.asc' "$IMAGE" 2>/dev/null \
       | shasum -a 256 | grep -Fq "$MOZILLA_APT_KEY_SHA256" \
       || fail "the Mozilla APT key is not the pinned key"
-    "$DEBUGFS" -R 'cat /etc/environment.d/60-dory-desktop.conf' "$IMAGE" 2>/dev/null \
-      | grep -Fqx 'MOZ_ENABLE_WAYLAND=0' \
-      || fail "Firefox is not configured for reliable XWayland presentation"
     if grep -Eq '^(xfce4|lightdm)[[:space:]]' "$PACKAGES"; then
       fail "the Ubuntu image still contains the retired Xfce/LightDM session"
     fi
@@ -348,11 +411,11 @@ case "$DISTRO" in
   *)
     grep -Fq 'apply_xfce_scale "$(guest_ui_scale)"' <<<"$DISPLAY_CONFIGURATION" \
       || fail "Xfce Retina scaling is not configured"
-    grep -q $'^xfce4\t' "$PACKAGES" || fail "Xfce package provenance is missing"
-    grep -q $'^lightdm\t' "$PACKAGES" || fail "LightDM package provenance is missing"
+    require_arm64_package xfce4 "Xfce package provenance is missing"
+    require_arm64_package lightdm "LightDM package provenance is missing"
     if [ "$DISTRO" = debian ]; then
       for package in firefox-esr evince galculator; do
-        grep -q "^${package}[[:space:]]" "$PACKAGES" || fail "$package provenance is missing"
+        require_arm64_package "$package" "$package provenance is missing"
       done
     fi
     ;;
@@ -361,18 +424,18 @@ grep -Fq '/var/lib/dory/guest-ui-scale' <<<"$DISPLAY_CONFIGURATION" \
   || fail "the resolved guest UI scale is not consumed"
 grep -Fq 'apply_xfce_scale "$scale"' <<<"$DISPLAY_CONFIGURATION" \
   || fail "Xfce does not refresh the resolved guest UI scale"
-grep -q $'^spice-vdagent\t' "$PACKAGES" || fail "SPICE package provenance is missing"
-grep -q $'^x11-utils\t' "$PACKAGES" || fail "X11 window qualification tools are missing"
-grep -q $'^wl-clipboard\t' "$PACKAGES" || fail "Wayland clipboard package provenance is missing"
-grep -q $'^xclip\t' "$PACKAGES" || fail "X11 clipboard package provenance is missing"
-grep -q $'^pipewire-audio\t' "$PACKAGES" || fail "PipeWire package provenance is missing"
-grep -q $'^binfmt-support\t' "$PACKAGES" \
-  || fail "Intel application translation registration support is missing"
+require_arm64_package spice-vdagent "SPICE package provenance is missing"
+require_arm64_package libgl1-mesa-dri \
+  "the distro Mesa VirGL DRI package provenance is missing"
+require_arm64_package libxcb-keysyms1 "the isolated Venus ICD runtime dependency is missing"
+require_arm64_package x11-utils "X11 window qualification tools are missing"
+require_arm64_package wl-clipboard "Wayland clipboard package provenance is missing"
+require_arm64_package xclip "X11 clipboard package provenance is missing"
+require_arm64_package pipewire-audio "PipeWire package provenance is missing"
+require_arm64_package binfmt-support \
+  "Intel application translation registration support is missing"
 for package in mesa-vulkan-drivers vulkan-tools; do
-  # dpkg's ${binary:Package} field appends an architecture qualifier for
-  # Multi-Arch packages (for example, mesa-vulkan-drivers:arm64).
-  grep -Eq "^${package}(:arm64)?[[:space:]]" "$PACKAGES" \
-    || fail "$package provenance is missing"
+  require_arm64_package "$package" "$package provenance is missing"
 done
 
 INTEL_TRANSLATION_CONFIGURATION="$($DEBUGFS -R \
@@ -388,41 +451,98 @@ grep -Fq -- '--credentials yes --preserve yes --fix-binary yes' \
   || fail "Intel application translation registration is incomplete"
 
 GRAPHICS_CONFIGURATION="$($DEBUGFS -R 'cat /usr/lib/dory/configure-graphics-backend' "$IMAGE" 2>/dev/null)"
-grep -Fq "dory.graphics=virgl-venus" <<<"$GRAPHICS_CONFIGURATION" \
+GRAPHICS_PREFLIGHT="$($DEBUGFS -R 'cat /usr/lib/dory/preflight-graphics-pack' "$IMAGE" 2>/dev/null)"
+GRAPHICS_RESOLVER="$($DEBUGFS -R 'cat /usr/lib/dory/resolve-graphics-backend' "$IMAGE" 2>/dev/null)"
+PREFLIGHT_EXPECTED_MANIFEST_KEYS="$(
+  sed -n "/^expected_manifest_keys='/,/^actual_manifest_keys=/p" \
+    <<<"$GRAPHICS_PREFLIGHT" \
+    | sed '/^actual_manifest_keys=/d' \
+    | sed "1s/^expected_manifest_keys='//; \$s/'\$//"
+)"
+VENUS_MANIFEST_KEYS="$(
+  sed -n 's/^\([^=]*\)=.*$/\1/p' <<<"$VENUS_MANIFEST" | LC_ALL=C sort
+)"
+[ "$PREFLIGHT_EXPECTED_MANIFEST_KEYS" = "$VENUS_MANIFEST_KEYS" ] \
+  || fail "Venus preflight manifest whitelist differs from the shipped graphics pack"
+grep -Fq "dory.graphics=virgl-venus" <<<"$GRAPHICS_RESOLVER" \
   || fail "graphics backend configuration does not recognize VirGL plus Venus"
-grep -Fq "dory.graphics=virgl" <<<"$GRAPHICS_CONFIGURATION" \
+grep -Fq "dory.graphics=virgl" <<<"$GRAPHICS_RESOLVER" \
   || fail "graphics backend configuration does not recognize stable VirGL"
-grep -Fq "dory.graphics=software" <<<"$GRAPHICS_CONFIGURATION" \
+grep -Fq "dory.graphics=software" <<<"$GRAPHICS_RESOLVER" \
   || fail "graphics backend configuration does not recognize software fallback"
-if grep -Fq "printf '%s\\n' 'virgl2+venus'" <<<"$GRAPHICS_CONFIGURATION"; then
-  fail "graphics backend writes a hard-coded backend instead of the resolved runtime"
-fi
-grep -Fq "printf '%s\\n' \"\$backend\" > /run/dory/graphics-backend" \
+grep -Fq 'backend_resolver=/usr/lib/dory/resolve-graphics-backend' \
   <<<"$GRAPHICS_CONFIGURATION" \
-  || fail "graphics backend does not record the resolved runtime"
-grep -Fq "virgl2|virgl2+venus" <<<"$GRAPHICS_CONFIGURATION" \
-  || fail "accelerated graphics backends do not share a GTK renderer policy"
-grep -Fq "'GSK_RENDERER=gl' > \"\$environment_file\"" <<<"$GRAPHICS_CONFIGURATION" \
-  || fail "accelerated graphics does not select the qualified GTK4 GL renderer"
-grep -Fq 'VK_DRIVER_FILES="$venus_icd"' <<<"$GRAPHICS_CONFIGURATION" \
+  || fail "graphics activation bypasses the authoritative backend resolver"
+grep -Fq 'requested_file=/run/dory/graphics-requested-backend' \
+  <<<"$GRAPHICS_CONFIGURATION" \
+  || fail "graphics activation does not preserve the requested backend"
+grep -Fq 'effective_file=/run/dory/graphics-backend' <<<"$GRAPHICS_CONFIGURATION" \
+  || fail "graphics activation does not keep requested and effective state separate"
+grep -Fq 'mv -f "$effective_temp" "$effective_file"' <<<"$GRAPHICS_CONFIGURATION" \
+  || fail "graphics activation does not publish its effective backend transactionally"
+grep -Fq 'VK_DRIVER_FILES=$venus_icd' <<<"$GRAPHICS_CONFIGURATION" \
   || fail "Venus applications do not select Dory's isolated Vulkan ICD"
-grep -Fq 'LD_LIBRARY_PATH="$venus_root/lib"' <<<"$GRAPHICS_CONFIGURATION" \
-  || fail "Venus applications do not select Dory's isolated Vulkan library"
-grep -Fq 'timeout 10 "$venus_probe"' <<<"$GRAPHICS_CONFIGURATION" \
+grep -Fq 'VK_ICD_FILENAMES=$venus_icd' <<<"$GRAPHICS_CONFIGURATION" \
+  || fail "older compatible Vulkan loaders do not select Dory's isolated ICD"
+grep -Fq '"$venus_preflight" 2>&1' <<<"$GRAPHICS_CONFIGURATION" \
+  || fail "Venus is enabled without the ABI/DSO/render-node preflight"
+grep -Fq 'timeout 10 "$probe"' <<<"$GRAPHICS_PREFLIGHT" \
   || fail "Venus is enabled without a bounded hardware capability probe"
+grep -Fq 'graphics pack file inventory differs from schema 6' <<<"$GRAPHICS_PREFLIGHT" \
+  || fail "Venus preflight does not enforce the exact graphics-pack inventory"
+grep -Fq 'getconf GNU_LIBC_VERSION' <<<"$GRAPHICS_PREFLIGHT" \
+  || fail "Venus preflight does not enforce the GNU-libc ABI floor"
+grep -Fq 'readelf --dynamic --wide' <<<"$GRAPHICS_PREFLIGHT" \
+  || fail "Venus preflight does not validate exact ELF dynamic tags"
+grep -Fq 'LD_BIND_NOW=1 ldd -r "$elf_object"' <<<"$GRAPHICS_PREFLIGHT" \
+  || fail "Venus preflight does not eagerly resolve the declared DSO closure"
+grep -Fq '[ "$(manifest_value schema)" = 6 ]' <<<"$GRAPHICS_PREFLIGHT" \
+  || fail "Venus preflight does not require the current graphics-pack schema"
+grep -Fq '[ "$(manifest_value libdrm_linkage)" = static-hidden ]' \
+  <<<"$GRAPHICS_PREFLIGHT" \
+  || fail "Venus preflight does not enforce isolated static libdrm linkage"
+grep -Fq 'virtio_gpu' <<<"$GRAPHICS_PREFLIGHT" \
+  || fail "Venus preflight does not bind the virtio-gpu render node"
+grep -Fq '"$render_device"/virtio*/driver' <<<"$GRAPHICS_PREFLIGHT" \
+  || fail "Venus preflight does not resolve virtio-gpu through raw-HV virtio-mmio"
+grep -Fq 'VK_ICD_FILENAMES="$icd_manifest"' <<<"$GRAPHICS_PREFLIGHT" \
+  || fail "Venus preflight cannot qualify older admitted Vulkan loaders"
+for proof in contract=vulkan-1.3-application hardware-device=yes robust-buffer-access=yes \
+  dynamic-rendering=yes synchronization2=yes maintenance4=yes \
+  color-atlas-texture-binding=yes color-atlas-copy-dst=yes \
+  external-sync-fd=yes import-signaled-fd=yes export-sync-fd=yes \
+  queue-submit2=yes fence-signal=yes \
+  wsi-instance=xcb,wayland wsi-surface=not-requested; do
+  grep -Fq "$proof" <<<"$GRAPHICS_PREFLIGHT" \
+    || fail "Venus preflight does not require probe evidence $proof"
+done
+grep -Fq 'color-atlas-format=(bgra8|rgba8)-unorm' <<<"$GRAPHICS_PREFLIGHT" \
+  || fail "Venus preflight does not require an exact color-atlas format"
 grep -Fq 'venus-ready:' <<<"$GRAPHICS_CONFIGURATION" \
   || fail "Venus readiness is not recorded for support diagnostics"
 grep -Fq '/etc/X11/Xsession.d/70dory-graphics' <<<"$GRAPHICS_CONFIGURATION" \
   || fail "desktop sessions do not receive the qualified graphics environment"
 grep -Fq 'export VK_DRIVER_FILES=$venus_icd' <<<"$GRAPHICS_CONFIGURATION" \
   || fail "GDM and LightDM sessions do not select Dory's Venus ICD"
-grep -Fq 'export LD_LIBRARY_PATH=$venus_root/lib' <<<"$GRAPHICS_CONFIGURATION" \
-  || fail "GDM and LightDM sessions do not select Dory's Venus library"
+grep -Fq 'export VK_ICD_FILENAMES=$venus_icd' <<<"$GRAPHICS_CONFIGURATION" \
+  || fail "desktop sessions do not select Venus on older admitted Vulkan loaders"
+grep -Fq "'GSK_RENDERER=gl'" <<<"$GRAPHICS_CONFIGURATION" \
+  || fail "managed GTK4 applications do not select the qualified GL renderer"
+grep -Fq 'fallback=virgl2' <<<"$GRAPHICS_CONFIGURATION" \
+  || fail "a failed Venus preflight cannot retain the VirGL desktop backend"
+if grep -Fq 'venus_implicit_fencing' \
+    <<<"$GRAPHICS_CONFIGURATION$GRAPHICS_PREFLIGHT$GRAPHICS_RESOLVER"; then
+  fail "graphics activation still enables the retired racy implicit-fencing path"
+fi
 if grep -Fq 'ZED_ALLOW_EMULATED_GPU' <<<"$GRAPHICS_CONFIGURATION"; then
   fail "graphics configuration masks Zed's hardware-GPU requirement"
 fi
-if grep -Fq 'GSK_RENDERER=cairo' <<<"$GRAPHICS_CONFIGURATION"; then
-  fail "accelerated graphics falls back to CPU-rendered GTK instead of qualified GL"
+if grep -Eq 'MOZ_ENABLE_WAYLAND|LD_LIBRARY_PATH|gfx\.webrender|widget\.dmabuf' \
+  <<<"$GRAPHICS_CONFIGURATION"; then
+  fail "graphics backend contains an unrelated browser or shared-library override"
+fi
+if grep -Fq 'LD_LIBRARY_PATH=' <<<"$GRAPHICS_PREFLIGHT"; then
+  fail "graphics preflight injects an ambient shared-library search path"
 fi
 if grep -Eq 'MESA_LOADER_DRIVER_OVERRIDE|GALLIUM_DRIVER|LIBGL_KOPPER_DRI2' <<<"$GRAPHICS_CONFIGURATION"; then
   fail "graphics backend globally overrides Mesa instead of allowing API-native driver selection"

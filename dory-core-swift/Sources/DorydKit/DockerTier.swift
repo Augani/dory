@@ -131,6 +131,7 @@ public final class DockerTier: @unchecked Sendable {
         case promotionTimeout
         case startCancelled
         case daemonShuttingDown
+        case notRunning
         case wakeFailed(String)
         case repairUnavailable(String)
         case readinessStageFailed(stage: DoryReadinessStageID, detail: String)
@@ -155,6 +156,8 @@ public final class DockerTier: @unchecked Sendable {
                 return "docker tier start was cancelled"
             case .daemonShuttingDown:
                 return "docker tier cannot start while doryd is shutting down"
+            case .notRunning:
+                return "docker tier is not running"
             case .wakeFailed(let message):
                 return message.isEmpty ? "docker tier did not wake" : message
             case .repairUnavailable(let message):
@@ -839,6 +842,22 @@ public final class DockerTier: @unchecked Sendable {
             return sleptQueuedRecovery
         }
         return sleepForIdle(idleAfter: seconds, now: now, activity: containerActivityProbe(configuration))
+    }
+
+    /// Returns a read-only inventory through the daemon-owned private forward. It never traverses
+    /// the activity-reporting public dataplane and therefore cannot extend the idle deadline.
+    public func dashboardSnapshot() throws -> [String: Data] {
+        lock.lock()
+        let currentState = state
+        lock.unlock()
+        guard currentState == .running else {
+            throw TierError.notRunning
+        }
+        return try DockerEngineProbe.dashboardSnapshot(
+            forwardSocketPath: configuration.forwardSocketPath,
+            cid: configuration.cid,
+            dockerPort: configuration.dockerPort
+        )
     }
 
     /// An explicit sleep can race an unexpected-exit backoff. Convert the queued recovery into the

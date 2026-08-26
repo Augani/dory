@@ -130,7 +130,7 @@ def main() -> None:
         f"Dory-{version}-app-update.zip",
         f"dory-engine-{version}-arm64.tar.gz",
         f"Dory-{version}.cdx.json",
-        f"Dory-{version}-performance-evidence.zip",
+        f"Dory-{version}-container-engine-performance-evidence.zip",
         f"Dory-{version}-reliability-evidence.zip",
         f"Dory-{version}-reliability-evidence.zip.sha256",
         "release-manifest.json",

@@ -48,12 +48,19 @@ def main() -> None:
     parser.add_argument("--overlay", type=pathlib.Path, required=True)
     parser.add_argument("--agent", type=pathlib.Path, required=True)
     parser.add_argument("--venus-runtime", type=pathlib.Path, required=True)
+    parser.add_argument("--graphics-installer", type=pathlib.Path, required=True)
     parser.add_argument("--apply", type=pathlib.Path, required=True)
     parser.add_argument("--output", type=pathlib.Path, required=True)
     args = parser.parse_args()
     if len(args.fingerprint) != 64 or any(c not in "0123456789abcdef" for c in args.fingerprint):
         raise SystemExit("desktop update fingerprint must be a lowercase SHA-256 digest")
-    for path in (args.packages, args.agent, args.venus_runtime, args.apply):
+    for path in (
+        args.packages,
+        args.agent,
+        args.venus_runtime,
+        args.graphics_installer,
+        args.apply,
+    ):
         if not path.is_file() or path.is_symlink() or path.stat().st_size == 0:
             raise SystemExit(f"desktop update input is invalid: {path}")
     if not args.overlay.is_dir() or args.overlay.is_symlink():
@@ -65,6 +72,7 @@ def main() -> None:
         shutil.copy2(args.apply, staging / "apply.sh")
         shutil.copy2(args.agent, staging / "dory-agent")
         shutil.copy2(args.venus_runtime, staging / "dory-mesa-venus-arm64.tar.zst")
+        shutil.copy2(args.graphics_installer, staging / "install-graphics-pack.sh")
         shutil.copy2(args.packages, staging / "packages.txt")
         (staging / "manifest.env").write_text(
             f"schema=2\narch=arm64\ndistro={args.distro}\ninput_sha256={args.fingerprint}\n",
@@ -72,6 +80,7 @@ def main() -> None:
         )
         os.chmod(staging / "apply.sh", 0o755)
         os.chmod(staging / "dory-agent", 0o755)
+        os.chmod(staging / "install-graphics-pack.sh", 0o755)
 
         overlay_tar = staging / "rootfs-overlay.tar"
         with tarfile.open(overlay_tar, "w", format=tarfile.PAX_FORMAT) as archive:
@@ -84,6 +93,7 @@ def main() -> None:
             "dory-agent",
             "dory-mesa-venus-arm64.tar.zst",
             "manifest.env",
+            "install-graphics-pack.sh",
             "packages.txt",
             "rootfs-overlay.tar",
         ]

@@ -2,6 +2,7 @@ import DoryHV
 import DoryCore
 import DorydKit
 import DoryOperations
+import DoryVMContracts
 import Foundation
 
 signal(SIGPIPE, SIG_IGN)
@@ -14,9 +15,12 @@ let defaultBootCommandLine = "console=ttyS0 earlyprintk=serial,ttyS0,115200 pani
 let defaultAgentPingCommandLine = "root=/dev/vda rw panic=0"
 #endif
 
-func fail(_ message: String) -> Never {
+func fail(
+    _ message: String,
+    status: DoryDesktopHelperExitStatus = .generalFailure
+) -> Never {
     FileHandle.standardError.write(Data("dory-hv: \(message)\n".utf8))
-    exit(1)
+    exit(status.rawValue)
 }
 
 do {
@@ -31,10 +35,7 @@ struct Options {
     var memoryMB: UInt64 = 2048
     var cpus: Int = 1
     var commandLine = defaultBootCommandLine
-    var disks: [String] = []
-    var gvproxy: String?
     var timeoutSeconds: UInt64 = 30
-    var shares: [VirtioFSShareConfiguration] = []
 }
 
 func parseOptions(_ arguments: ArraySlice<String>) -> Options {
@@ -47,16 +48,7 @@ func parseOptions(_ arguments: ArraySlice<String>) -> Options {
         case "--mem-mb": options.memoryMB = iterator.next().flatMap(UInt64.init) ?? options.memoryMB
         case "--cpus": options.cpus = iterator.next().flatMap(Int.init) ?? options.cpus
         case "--cmdline": options.commandLine = iterator.next() ?? options.commandLine
-        case "--disk": if let disk = iterator.next() { options.disks.append(disk) }
-        case "--gvproxy": options.gvproxy = iterator.next()
         case "--timeout-sec": options.timeoutSeconds = iterator.next().flatMap(UInt64.init) ?? options.timeoutSeconds
-        case "--share":
-            guard let value = iterator.next() else { fail("--share requires tag=/host/path[:ro|:rw][:safe][:at=/guest/path]; DAX host shares are disabled") }
-            do {
-                options.shares.append(try VirtioFSShareConfiguration(argument: value))
-            } catch {
-                fail("\(error)")
-            }
         default: fail("unknown option \(argument)")
         }
     }
@@ -67,10 +59,13 @@ private final class AgentPingResultBox: @unchecked Sendable {
     private let lock = NSLock()
     private var stored: Result<AgentInfo, Error>?
 
-    func set(_ result: Result<AgentInfo, Error>) {
+    @discardableResult
+    func setIfEmpty(_ result: Result<AgentInfo, Error>) -> Bool {
         lock.lock()
+        defer { lock.unlock() }
+        guard stored == nil else { return false }
         stored = result
-        lock.unlock()
+        return true
     }
 
     func get() -> Result<AgentInfo, Error>? {
@@ -80,7 +75,7 @@ private final class AgentPingResultBox: @unchecked Sendable {
     }
 }
 
-func attachBackend(_ backend: VirtioDeviceBackend, to machine: Machine, slot: Int) {
+func attachBackend(_ backend: VirtioDeviceBackend, to machine: Machine, slot: Int) throws {
     let spi = GuestLayout.virtioFirstIRQ + UInt32(slot)
     let transport = VirtioMMIOTransport(
         baseAddress: GuestLayout.virtioBase + UInt64(slot) * GuestLayout.virtioSlotSize,
@@ -89,7 +84,7 @@ func attachBackend(_ backend: VirtioDeviceBackend, to machine: Machine, slot: In
     ) { [weak machine] in
         machine?.raiseGSI(spi)
     }
-    machine.attachVirtioSlot(transport)
+    try machine.attachVirtioSlot(transport, at: slot)
 }
 
 func attachPlatformDevices(to machine: Machine, console: FileHandle) {
@@ -137,51 +132,82 @@ func runAgentPing(_ options: Options) {
             vsock,
         ]
         for (slot, backend) in backends.enumerated() {
-            attachBackend(backend, to: machine, slot: slot)
+            try attachBackend(backend, to: machine, slot: slot)
         }
         try machine.loadBootPayload()
 
-        let runThread = Thread {
-            do {
-                let stop = try machine.run()
-                FileHandle.standardError.write(Data("dory-hv: guest stopped before agent answered: \(stop)\n".utf8))
-            } catch {
-                FileHandle.standardError.write(Data("dory-hv: guest failed before agent answered: \(error)\n".utf8))
-            }
-        }
-        runThread.name = "dory-hv.agent-ping.vm"
-        runThread.start()
-
         let deadline = DispatchTime.now().uptimeNanoseconds + options.timeoutSeconds * 1_000_000_000
         let semaphore = DispatchSemaphore(value: 0)
+        let probeFinished = DispatchSemaphore(value: 0)
         let result = AgentPingResultBox()
-        Task.detached {
-            while DispatchTime.now().uptimeNanoseconds < deadline {
-                let connection = vsock.connect(port: VsockPorts.agent)
-                let channel = AgentChannel(connection: connection)
+        let machineRunner = RawHVMachineRunner(
+            machine: machine,
+            threadName: "dory-hv.agent-ping.vcpu0"
+        )
+        try machineRunner.start { machineResult in
+            let failure: any Error
+            switch machineResult {
+            case .success(let reason):
+                failure = VMError.bootFailure(
+                    "guest stopped before agent answered: \(reason)"
+                )
+            case .failure(let error):
+                failure = error
+            }
+            if result.setIfEmpty(.failure(failure)) {
+                semaphore.signal()
+            }
+        }
+
+        let probeTask = Task.detached {
+            defer { probeFinished.signal() }
+            while !Task.isCancelled,
+                  DispatchTime.now().uptimeNanoseconds < deadline {
+                var connection: VsockConnection?
                 do {
+                    let admitted = try vsock.connectForServiceIfCapacity(
+                        port: VsockPorts.agent,
+                        service: .agentRPC
+                    )
+                    connection = admitted
+                    let channel = AgentChannel(connection: admitted)
                     let info = try await channel.info()
-                    result.set(.success(info))
-                    semaphore.signal()
+                    if result.setIfEmpty(.success(info)) {
+                        semaphore.signal()
+                    }
                     return
                 } catch {
-                    connection.close()
-                    try? await Task.sleep(nanoseconds: 500_000_000)
+                    connection?.close()
+                    do {
+                        try await Task.sleep(nanoseconds: 500_000_000)
+                    } catch {
+                        return
+                    }
                 }
             }
-            result.set(.failure(VMError.bootFailure("guest agent did not answer on vsock port 1024 within \(options.timeoutSeconds)s")))
-            semaphore.signal()
+            guard !Task.isCancelled else { return }
+            if result.setIfEmpty(.failure(VMError.bootFailure(
+                "guest agent did not answer on vsock port 1024 within \(options.timeoutSeconds)s"
+            ))) {
+                semaphore.signal()
+            }
         }
         semaphore.wait()
+        probeTask.cancel()
+        probeFinished.wait()
         switch result.get() {
         case .success(let info):
+            _ = try machineRunner.stopAndWait(.powerOff)
             let data = try JSONEncoder().encode(info)
             print(String(decoding: data, as: UTF8.self))
-            exit(0)
         case .failure(let error):
-            fail("\(error)")
+            _ = try? machineRunner.stopAndWait(.crash("agent-ping failed: \(error)"))
+            throw error
         case nil:
-            fail("agent-ping ended without a result")
+            _ = try? machineRunner.stopAndWait(
+                .crash("agent-ping ended without a result")
+            )
+            throw VMError.bootFailure("agent-ping ended without a result")
         }
     } catch {
         fail("\(error)")
@@ -190,135 +216,10 @@ func runAgentPing(_ options: Options) {
 
 let arguments = Array(CommandLine.arguments.dropFirst())
 guard let command = arguments.first else {
-    fail("usage: dory-hv <smoke|madvtest|daxprobe|boot|desktop|agent-ping|data-drive|engine|usb> [options]")
+    fail("usage: dory-hv <smoke|madvtest|desktop|agent-ping|engine|usb|renderer-qualify> [options]")
 }
 
 switch command {
-case "data-drive":
-    guard arguments.count >= 2 else {
-        fail("usage: dory-hv data-drive <resolve|prepare|id|selected-path|select|bind-existing|recover-existing|capacity|grow|backup|verify-backup|restore> [paths]")
-    }
-    let operation = arguments[1]
-    do {
-        let home = DoryDataDrive.processHome()
-        switch operation {
-        case "selected-path":
-            guard arguments.count == 2 else {
-                fail("usage: dory-hv data-drive selected-path")
-            }
-            guard let path = try DoryDataDriveSelectionStore(home: home).selectedPath() else {
-                exit(3)
-            }
-            print(path)
-        case "select", "bind-existing":
-            guard arguments.count == 3 else {
-                fail("usage: dory-hv data-drive \(operation) <absolute .dorydrive path>")
-            }
-            let store = try DoryDataDriveSelectionStore(home: home)
-            let drive = operation == "select"
-                ? try store.prepareSelection(requestedRoot: arguments[2])
-                : try store.bindExistingSelection(requestedRoot: arguments[2])
-            print(try drive.readManifest().id.uuidString.lowercased())
-        case "recover-existing":
-            guard arguments.count == 3 else {
-                fail("usage: dory-hv data-drive recover-existing <absolute .dorydrive path>")
-            }
-            let store = try DoryDataDriveSelectionStore(home: home)
-            let drive = try store.recoverExistingSelection(requestedRoot: arguments[2])
-            print(try drive.readManifest().id.uuidString.lowercased())
-        case "resolve":
-            guard arguments.count == 3 else {
-                fail("usage: dory-hv data-drive resolve <absolute .dorydrive path>")
-            }
-            let drive = try DoryDataDrive(home: home, overrideRoot: arguments[2])
-            print(drive.root)
-        case "prepare":
-            guard arguments.count == 3 else {
-                fail("usage: dory-hv data-drive prepare <absolute .dorydrive path>")
-            }
-            let drive = try DoryDataDrive(home: home, overrideRoot: arguments[2])
-            try drive.prepare()
-            print(try drive.readManifest().id.uuidString.lowercased())
-        case "id":
-            guard arguments.count == 3 else {
-                fail("usage: dory-hv data-drive id <absolute .dorydrive path>")
-            }
-            let drive = try DoryDataDrive(home: home, overrideRoot: arguments[2])
-            try drive.validateManifest()
-            print(try drive.readManifest().id.uuidString.lowercased())
-        case "capacity", "grow":
-            let store = try DoryDataDriveSelectionStore(home: home)
-            guard let drive = try store.inspectSelection() else {
-                fail("no Dory data drive is selected")
-            }
-            let usage: DockerDataDiskUsage
-            if operation == "capacity" {
-                guard arguments.count == 2 else {
-                    fail("usage: dory-hv data-drive capacity")
-                }
-                usage = try DockerDataDisk.usage(at: drive.engineDataDiskPath)
-            } else {
-                guard arguments.count == 3, let capacityGiB = Int(arguments[2]) else {
-                    fail("usage: dory-hv data-drive grow <capacity-gib>")
-                }
-                let driveLock = try EngineStateDirectoryLock(
-                    stateDirectory: drive.root,
-                    lockFileName: "drive.lock"
-                )
-                defer { withExtendedLifetime(driveLock) {} }
-                usage = try DockerDataDisk.grow(
-                    destination: drive.engineDataDiskPath,
-                    capacityGiB: capacityGiB
-                )
-            }
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            print(String(decoding: try encoder.encode(usage), as: UTF8.self))
-        case "backup":
-            guard arguments.count == 4 else {
-                fail("usage: dory-hv data-drive backup <source.dorydrive> <archive.dorybackup>")
-            }
-            let drive = try DoryDataDrive(home: home, overrideRoot: arguments[2])
-            let result = try DoryDataDriveTransaction.backup(from: drive, to: arguments[3])
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            print(String(decoding: try encoder.encode(result), as: UTF8.self))
-        case "verify-backup":
-            guard arguments.count == 3 else {
-                fail("usage: dory-hv data-drive verify-backup <archive.dorybackup>")
-            }
-            let result = try DoryDataDriveArchive.verifyBackup(at: arguments[2])
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            print(String(decoding: try encoder.encode(result), as: UTF8.self))
-        case "restore":
-            guard arguments.count == 4 else {
-                fail("usage: dory-hv data-drive restore <archive.dorybackup> <target.dorydrive>")
-            }
-            let drive = try DoryDataDrive(home: home, overrideRoot: arguments[3])
-            let result = try DoryDataDriveTransaction.restore(at: arguments[2], to: drive)
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            print(String(decoding: try encoder.encode(result), as: UTF8.self))
-        default:
-            fail("usage: dory-hv data-drive <resolve|prepare|id|selected-path|select|bind-existing|recover-existing|capacity|grow|backup|verify-backup|restore> [paths]")
-        }
-    } catch {
-        fail("data-drive \(operation) failed: \(error)")
-    }
-case "lzfse":
-    let sub = arguments.dropFirst().first
-    let paths = Array(arguments.dropFirst(2))
-    guard let sub, paths.count == 2 else { fail("usage: dory-hv lzfse <compress|decompress> <in> <out>") }
-    do {
-        switch sub {
-        case "compress": try LZFSE.compress(source: paths[0], destination: paths[1])
-        case "decompress": try LZFSE.decompress(source: paths[0], destination: paths[1])
-        default: fail("usage: dory-hv lzfse <compress|decompress> <in> <out>")
-        }
-    } catch {
-        fail("lzfse \(sub) failed: \(error)")
-    }
 case "smoke":
     do {
         let result = try HVSmoke.run()
@@ -332,93 +233,11 @@ case "madvtest":
     } catch {
         fail("\(error)")
     }
-case "daxprobe":
+case "renderer-qualify":
     do {
-        let arg = arguments.dropFirst(1).first
-        let base = arg.flatMap { UInt64($0.hasPrefix("0x") ? String($0.dropFirst(2)) : $0, radix: 16) }
-        let result = try DaxCoherenceProbe.run(daxGuestBase: base ?? GuestLayout.daxWindowBase)
-        print("dory-hv: \(result)")
+        try RendererBootstrapQualificationCommand.run(arguments.dropFirst())
     } catch {
-        fail("\(error)")
-    }
-case "boot":
-    let options = parseOptions(arguments.dropFirst())
-    guard let kernel = options.kernel else { fail("boot requires --kernel") }
-    do {
-        let configuration = MachineConfiguration(
-            kernelPath: kernel,
-            commandLine: options.commandLine,
-            memoryBytes: options.memoryMB << 20,
-            cpuCount: options.cpus
-        )
-        let machine = try Machine(configuration: configuration)
-        let console = FileHandle.standardOutput
-        attachPlatformDevices(to: machine, console: console)
-        var backends: [VirtioDeviceBackend] = []
-        for (slot, diskPath) in options.disks.enumerated() {
-            backends.append(try VirtioBlk(path: diskPath, identity: "dory-blk\(slot)"))
-        }
-        var daxSlot: UInt64 = 0
-        for share in options.shares {
-            let daxBase = share.dax ? GuestLayout.daxWindowBase + daxSlot * DaxWindow.defaultSize : nil
-            if share.dax { daxSlot += 1 }
-            backends.append(try share.makeBackend(
-                daxGuestBase: daxBase,
-                requestQueueCount: min(8, max(1, options.cpus))
-            ))
-            FileHandle.standardError.write(Data("dory-hv: sharing \(share.path) as virtiofs tag \(share.tag)\(share.readOnly ? " (ro)" : "")\(share.dax ? " (dax)" : "")\n".utf8))
-        }
-        backends.append(VirtioRng())
-        backends.append(VirtioBalloon(memory: machine.memory) { message in
-            FileHandle.standardError.write(Data("dory-hv: \(message)\n".utf8))
-        })
-        backends.append(VirtioVsock(guestCID: 3))
-        var gvproxyProcess: Process?
-        if let gvproxyPath = options.gvproxy {
-            let networkDirectory = NSHomeDirectory() + "/.dory/hv"
-            try FileManager.default.createDirectory(atPath: networkDirectory, withIntermediateDirectories: true)
-            let datapathSocket = networkDirectory + "/net.sock"
-            let apiSocket = networkDirectory + "/gvproxy-api.sock"
-            try? FileManager.default.removeItem(atPath: datapathSocket)
-            try? FileManager.default.removeItem(atPath: apiSocket)
-
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: gvproxyPath)
-            process.arguments = [
-                "-mtu", String(DoryNetworkMTU.resolved()),
-                "-listen-vfkit", "unixgram://\(datapathSocket)",
-                "-listen", "unix://\(apiSocket)",
-            ]
-            process.standardOutput = FileHandle.standardError
-            process.standardError = FileHandle.standardError
-            try process.run()
-            gvproxyProcess = process
-            for _ in 0..<100 {
-                if FileManager.default.fileExists(atPath: datapathSocket) { break }
-                usleep(50_000)
-            }
-            let vmSocket = networkDirectory + "/vm-net.sock"
-            backends.append(try VirtioNet(socketPath: vmSocket, remotePath: datapathSocket))
-            FileHandle.standardError.write(Data("dory-hv: networking via gvproxy (\(datapathSocket))\n".utf8))
-
-        }
-        defer { gvproxyProcess?.terminate() }
-        for (slot, backend) in backends.enumerated() {
-            let spi = GuestLayout.virtioFirstIRQ + UInt32(slot)
-            let transport = VirtioMMIOTransport(
-                baseAddress: GuestLayout.virtioBase + UInt64(slot) * GuestLayout.virtioSlotSize,
-                backend: backend,
-                memory: machine.memory
-            ) { [weak machine] in
-                machine?.raiseGSI(spi)
-            }
-            machine.attachVirtioSlot(transport)
-        }
-        try machine.loadBootPayload()
-        let stop = try machine.run()
-        print("\ndory-hv: guest stopped: \(stop)")
-    } catch {
-        fail("\(error)")
+        fail("renderer qualification failed: \(error)")
     }
 case "desktop":
     var machineID: String?
@@ -427,22 +246,26 @@ case "desktop":
     var kernel: String?
     var initrd: String?
     var rootfs: String?
+    var runtimeLaunchEnvelope: RuntimeLaunchEnvelope?
+    var legacyGraphicsBackend: DoryDesktopGraphicsBackend?
     var rootDevice = "/dev/vda"
+    var rootDeviceWasSpecified = false
     var genericGuest = false
+    var bootMode: String?
     var gvproxy: String?
     var handoffSocket: String?
     var agentSocket: String?
     var shellSocket: String?
+    var consoleSocket: String?
     var controlSocket: String?
     var usbControlSocket: String?
     var sshAgentSocket: String?
     var memoryMB: UInt64 = 6_144
+    var memoryWasSpecified = false
     var cpus = 6
+    var cpusWereSpecified = false
     var shares = [DoryMachineShareConfiguration]()
     var environment = [String: String]()
-    var resolvedGraphics: DoryGraphicsAccelerationLevel?
-    var resolvedDevices: DoryVirtualMachineDeviceCapabilityRequest?
-    var resolvedPortForwards: [DoryVMPortForward]?
     var displayPresentation: DoryMachineDisplayPresentation = .windowed
     var iterator = arguments.dropFirst().makeIterator()
     while let argument = iterator.next() {
@@ -458,16 +281,43 @@ case "desktop":
         case "--kernel": kernel = iterator.next()
         case "--initrd": initrd = iterator.next()
         case "--rootfs": rootfs = iterator.next()
-        case "--root-device": rootDevice = iterator.next() ?? rootDevice
+        case "--runtime-launch-envelope":
+            guard let value = iterator.next() else {
+                fail("desktop --runtime-launch-envelope requires a value")
+            }
+            do {
+                runtimeLaunchEnvelope = try RuntimeLaunchEnvelope.decodeResolvedRawHVArgument(value)
+            } catch {
+                fail("invalid desktop runtime launch envelope: \(error)")
+            }
+        case "--legacy-graphics":
+            guard let value = iterator.next(),
+                  let backend = DoryDesktopGraphicsBackend(rawValue: value) else {
+                fail("desktop --legacy-graphics requires software, virgl, or virgl-venus")
+            }
+            legacyGraphicsBackend = backend
+        case "--root-device":
+            rootDeviceWasSpecified = true
+            rootDevice = iterator.next() ?? rootDevice
         case "--generic-guest": genericGuest = true
         case "--gvproxy": gvproxy = iterator.next()
         case "--handoff-sock": handoffSocket = iterator.next()
         case "--agent-sock": agentSocket = iterator.next()
         case "--shell-sock": shellSocket = iterator.next()
+        case "--console-sock": consoleSocket = iterator.next()
         case "--ssh-agent-socket": sshAgentSocket = iterator.next()
         case "--memory-mb", "--mem-mb":
-            memoryMB = iterator.next().flatMap(UInt64.init) ?? memoryMB
-        case "--cpus": cpus = iterator.next().flatMap(Int.init) ?? cpus
+            guard let value = iterator.next(), let parsed = UInt64(value), parsed > 0 else {
+                fail("desktop --memory-mb requires a positive integer")
+            }
+            memoryMB = parsed
+            memoryWasSpecified = true
+        case "--cpus":
+            guard let value = iterator.next(), let parsed = Int(value), parsed > 0 else {
+                fail("desktop --cpus requires a positive integer")
+            }
+            cpus = parsed
+            cpusWereSpecified = true
         case "--share":
             guard let value = iterator.next() else { fail("desktop --share requires a value") }
             do { shares.append(try DoryMachineShareConfiguration(argument: value)) }
@@ -477,32 +327,6 @@ case "desktop":
                 fail("desktop --env requires KEY=VALUE")
             }
             environment[String(value[..<equals])] = String(value[value.index(after: equals)...])
-        case "--resolved-graphics":
-            guard let value = iterator.next(),
-                  let graphics = DoryGraphicsAccelerationLevel(rawValue: value) else {
-                fail("desktop --resolved-graphics requires an exact supported level")
-            }
-            resolvedGraphics = graphics
-        case "--resolved-devices":
-            guard let value = iterator.next(),
-                  let data = value.data(using: .utf8),
-                  let devices = try? JSONDecoder().decode(
-                      DoryVirtualMachineDeviceCapabilityRequest.self,
-                      from: data
-                  ) else {
-                fail("desktop --resolved-devices requires a valid device contract")
-            }
-            resolvedDevices = devices
-        case "--resolved-port-forwards":
-            guard let value = iterator.next(),
-                  let data = value.data(using: .utf8),
-                  let forwards = try? JSONDecoder().decode(
-                      [DoryVMPortForward].self,
-                      from: data
-                  ) else {
-                fail("desktop --resolved-port-forwards requires a valid port-forward contract")
-            }
-            resolvedPortForwards = forwards
         case "--display-presentation":
             guard let value = iterator.next(),
                   let data = value.data(using: .utf8),
@@ -519,10 +343,9 @@ case "desktop":
             guard let mode = iterator.next(), ["linux-kernel", "efi-installed"].contains(mode) else {
                 fail("raw-HV desktop requires --boot-mode linux-kernel or efi-installed")
             }
+            bootMode = mode
         case "--control-sock": controlSocket = iterator.next()
         case "--usb-control-sock": usbControlSocket = iterator.next()
-        case "--dockerd-sock":
-            _ = iterator.next()  // accepted for dory-vmm command-line compatibility
         default:
             fail("unknown desktop option \(argument)")
         }
@@ -530,48 +353,166 @@ case "desktop":
     guard let machineID, !machineID.isEmpty else { fail("desktop requires --machine-id") }
     guard let operationID else { fail("desktop requires --operation-id") }
     guard let stateDirectory, !stateDirectory.isEmpty else { fail("desktop requires --state-dir") }
-    guard let kernel else { fail("desktop requires --kernel") }
-    if genericGuest, initrd == nil { fail("desktop --generic-guest requires --initrd") }
-    guard let rootfs else { fail("desktop requires --rootfs") }
+    if let runtimeLaunchEnvelope {
+        guard runtimeLaunchEnvelope.machineID == machineID,
+              runtimeLaunchEnvelope.operationID == operationID,
+              legacyGraphicsBackend == nil,
+              !memoryWasSpecified,
+              !cpusWereSpecified,
+              runtimeLaunchEnvelope.executionResources.schedulingPolicyRevision
+                == RawHVSchedulingPolicy.revision else {
+            fail("desktop invocation identity does not match the immutable runtime launch envelope")
+        }
+    } else if legacyGraphicsBackend == nil {
+        fail("desktop legacy launch requires one typed --legacy-graphics selection")
+    }
+    // Decoding the envelope performs canonical schema-v5 validation. Legacy pathname mode has no
+    // resolved graphics/device/forward authority and deliberately passes nil to DesktopMode.
+    let resolvedGraphics = runtimeLaunchEnvelope?.graphics
+    let resolvedDevices = runtimeLaunchEnvelope?.devices
+    let resolvedPortForwards = runtimeLaunchEnvelope?.portForwards
+    let effectiveMemoryMB = runtimeLaunchEnvelope?.executionResources.memoryMB ?? memoryMB
+    let effectiveCPUCount = runtimeLaunchEnvelope.map {
+        Int($0.executionResources.virtualCPUCount)
+    } ?? cpus
+    let systemDiskQueueCount = runtimeLaunchEnvelope.map {
+        Int($0.executionResources.systemDiskQueueCount)
+    } ?? 1
+    let bootPayload: MachineBootPayload
+    let effectiveRootDevice: String
+    let effectiveGenericGuest: Bool
+    let resolvedSystemDiskLogicalID: DoryVirtualDeviceID?
+    var resolvedRawHVResources: RuntimeLaunchEnvelope.ResolvedRawHVResources?
+    if let runtimeLaunchEnvelope {
+        guard kernel == nil,
+              initrd == nil,
+              rootfs == nil,
+              !rootDeviceWasSpecified,
+              !genericGuest,
+              bootMode == nil else {
+            fail("desktop resolved launch rejects pathname or split boot authority")
+        }
+        do {
+            let resources = try runtimeLaunchEnvelope.validatedResolvedRawHVResources()
+            resolvedRawHVResources = resources
+            guard let systemDiskLogicalID = resources.systemDisk.logicalDeviceID,
+                  let kernelSHA256 = resources.linuxKernel.contentSHA256 else {
+                fail("desktop resolved launch envelope lost required resource identity")
+            }
+            let initrdAuthority = try resources.linuxInitrd.map { slot in
+                guard let sha256 = slot.contentSHA256 else {
+                    throw VMError.invalidConfiguration(
+                        "resolved linuxInitrd is missing exact digest authority"
+                    )
+                }
+                return MachineInheritedBootBlob(
+                    descriptor: slot.descriptor,
+                    byteCount: slot.byteCount,
+                    sha256: sha256,
+                    maximumByteCount: RuntimeLaunchEnvelope.maximumLinuxInitrdBytes
+                )
+            }
+            bootPayload = try MachineBootPayload.inheritedReadOnlyDescriptors(
+                kernel: MachineInheritedBootBlob(
+                    descriptor: resources.linuxKernel.descriptor,
+                    byteCount: resources.linuxKernel.byteCount,
+                    sha256: kernelSHA256,
+                    maximumByteCount: RuntimeLaunchEnvelope.maximumLinuxKernelBytes
+                ),
+                initrd: initrdAuthority
+            )
+            effectiveRootDevice = runtimeLaunchEnvelope.linuxDirectBoot.rootDevice
+            effectiveGenericGuest = runtimeLaunchEnvelope.linuxDirectBoot.genericGuest
+            resolvedSystemDiskLogicalID = systemDiskLogicalID
+        } catch {
+            fail("desktop inherited boot authority is invalid: \(error)")
+        }
+    } else {
+        resolvedRawHVResources = nil
+        guard let kernel else { fail("desktop legacy launch requires --kernel") }
+        if genericGuest, initrd == nil {
+            fail("desktop --generic-guest requires --initrd")
+        }
+        bootPayload = .legacyPaths(kernel: kernel, initrd: initrd)
+        effectiveRootDevice = rootDevice
+        effectiveGenericGuest = genericGuest
+        resolvedSystemDiskLogicalID = nil
+    }
+    let rootDisk: DesktopMode.RootDiskBacking
+    do {
+        rootDisk = try DesktopMode.RootDiskBacking.resolve(
+            legacyPath: rootfs,
+            runtimeLaunchEnvelope: runtimeLaunchEnvelope
+        )
+    } catch {
+        fail("desktop root-disk authority is invalid: \(error)")
+    }
     guard let gvproxy else { fail("desktop requires --gvproxy") }
     guard let handoffSocket else { fail("desktop requires --handoff-sock") }
     guard let agentSocket else { fail("desktop requires --agent-sock") }
     guard let shellSocket else { fail("desktop requires --shell-sock") }
+    guard let consoleSocket else { fail("desktop requires --console-sock") }
     guard let controlSocket else { fail("desktop requires --control-sock") }
-    if resolvedDevices?.removableUSBHotplug == true, usbControlSocket == nil {
-        fail("desktop resolved removable USB hotplug requires --usb-control-sock")
+    if let envelopeDevices = runtimeLaunchEnvelope?.devices {
+        if envelopeDevices.removableUSBHotplug, usbControlSocket == nil {
+            fail("desktop resolved removable USB hotplug requires --usb-control-sock")
+        }
+        if !envelopeDevices.removableUSBHotplug, usbControlSocket != nil {
+            fail("desktop --usb-control-sock is not authorized by the resolved device contract")
+        }
     }
-    if resolvedDevices?.removableUSBHotplug == false, usbControlSocket != nil {
-        fail("desktop --usb-control-sock is not authorized by the resolved device contract")
+    let rendererWorkerLaunch: DesktopRendererWorkerLaunch?
+    do {
+        rendererWorkerLaunch = try await DesktopRendererWorkerLaunch.prepare(
+            resolvedGraphics: resolvedGraphics,
+            rendererBootstrapAuthority: resolvedRawHVResources?.rendererBootstrap,
+            exactManagedKernelSHA256:
+                resolvedRawHVResources?.linuxKernel.contentSHA256
+        )
+    } catch {
+        fail("desktop renderer-worker launch authority is invalid: \(error)")
     }
+    defer { rendererWorkerLaunch?.teardown() }
     do {
         try DesktopMode.run(.init(
             machineID: machineID,
             operationID: operationID,
             stateDirectory: stateDirectory,
-            kernelPath: kernel,
-            initrdPath: initrd,
-            rootfsPath: rootfs,
-            rootDevice: rootDevice,
-            genericGuest: genericGuest,
+            bootPayload: bootPayload,
+            rootDisk: rootDisk,
+            rootDevice: effectiveRootDevice,
+            genericGuest: effectiveGenericGuest,
             gvproxyPath: gvproxy,
             handoffSocketPath: handoffSocket,
             agentSocketPath: agentSocket,
             shellSocketPath: shellSocket,
+            consoleSocketPath: consoleSocket,
             controlSocketPath: controlSocket,
             usbControlSocketPath: usbControlSocket,
             sshAgentSocketPath: sshAgentSocket,
-            memoryMB: memoryMB,
-            cpuCount: cpus,
+            memoryMB: effectiveMemoryMB,
+            cpuCount: effectiveCPUCount,
+            systemDiskQueueCount: systemDiskQueueCount,
             shares: shares,
             environment: environment,
+            legacyGraphicsBackend: legacyGraphicsBackend,
             resolvedGraphics: resolvedGraphics,
+            rendererWorkerLaunch: rendererWorkerLaunch,
+            resolvedPlanSHA256: runtimeLaunchEnvelope?.resolvedPlanSHA256,
+            resolvedPlanRevision: runtimeLaunchEnvelope?.planRevision,
             resolvedDevices: resolvedDevices,
             resolvedPortForwards: resolvedPortForwards,
+            rawHVVirtualHardwareTopology:
+                runtimeLaunchEnvelope?.rawHVVirtualHardwareTopology,
+            resolvedSystemDiskLogicalID: resolvedSystemDiskLogicalID,
             displayPresentation: displayPresentation
         ))
     } catch {
-        fail("desktop failed: \(error)")
+        let status = desktopHelperExitStatus(for: error)
+        let failureKind = status == .rendererCandidateFailure
+            ? "desktop renderer candidate failed"
+            : "desktop failed"
+        fail("\(failureKind): \(error)", status: status)
     }
 case "agent-ping":
     runAgentPing(parseOptions(arguments.dropFirst()))
@@ -587,66 +528,8 @@ case "usb":
         } catch {
             fail("usb list failed: \(error)")
         }
-    case "probe":
-        // Claim a real host device and drive one GET_DESCRIPTOR control transfer through the exact
-        // usbip submit path the guest would use — a host-side smoke test with no guest/VM required.
-        let args = Array(arguments.dropFirst(2))
-        guard let busID = args.first else { fail("usage: dory-hv usb probe <busid> [userAuthorized|seize|capture]") }
-        let mode: HostUsbOpenMode
-        switch args.dropFirst().first {
-        case "seize": mode = .seize
-        case "capture", nil: mode = .capture
-        case "userAuthorized", "user": mode = .userAuthorized
-        case let other?: fail("unknown mode \(other)")
-        }
-        do {
-            FileHandle.standardError.write(Data("dory-hv: claiming \(busID) mode=\(mode)…\n".utf8))
-            let device = try HostUsbDeviceFactory.open(busID: busID, mode: mode)
-            let command = UsbipSubmitCommand(
-                header: UsbipHeaderBasic(command: .cmdSubmit, sequenceNumber: 1, deviceID: 0, direction: .in, endpoint: 0),
-                transferFlags: 0,
-                transferBufferLength: 18,
-                startFrame: 0,
-                numberOfPackets: 0,
-                interval: 0,
-                setup: [0x80, 0x06, 0x00, 0x01, 0x00, 0x00, 0x12, 0x00],  // GET_DESCRIPTOR(device, 18)
-                transferBuffer: []
-            )
-            let reply = try device.submit(command)
-            let bytes = reply.transferBuffer
-            print("CLAIM OK. GET_DESCRIPTOR status=\(reply.status) actualLength=\(reply.actualLength) bytes=\(bytes.count)")
-            if bytes.count >= 12 {
-                let vid = UInt16(bytes[8]) | (UInt16(bytes[9]) << 8)
-                let pid = UInt16(bytes[10]) | (UInt16(bytes[11]) << 8)
-                print(String(format: "device descriptor: bLength=%d bDescriptorType=%d idVendor=0x%04x idProduct=0x%04x", bytes[0], bytes[1], vid, pid))
-            }
-        } catch {
-            fail("usb probe failed: \(error)")
-        }
-    case "attach":
-        let attachArgs = Array(arguments.dropFirst(2))
-        guard let busID = attachArgs.first else { fail("usage: dory-hv usb attach <busid> [userAuthorized|seize|capture]") }
-        let controlSocket = "\(NSHomeDirectory())/.dory/hv/usb-control.sock"
-        do {
-            let response = try UsbControlClient.send(UsbControlRequest(cmd: "attach", busid: busID, mode: attachArgs.dropFirst().first), socketPath: controlSocket)
-            guard response.ok else { fail("usb attach failed: \(response.error ?? "unknown")") }
-            print("attached \(busID) on vhci port \(response.port ?? -1)")
-        } catch {
-            fail("usb attach failed: \(error)")
-        }
-    case "detach":
-        let detachArgs = Array(arguments.dropFirst(2))
-        guard let busID = detachArgs.first else { fail("usage: dory-hv usb detach <busid>") }
-        let controlSocket = "\(NSHomeDirectory())/.dory/hv/usb-control.sock"
-        do {
-            let response = try UsbControlClient.send(UsbControlRequest(cmd: "detach", busid: busID), socketPath: controlSocket)
-            guard response.ok else { fail("usb detach failed: \(response.error ?? "unknown")") }
-            print("detached \(busID)")
-        } catch {
-            fail("usb detach failed: \(error)")
-        }
     default:
-        fail("usage: dory-hv usb <list|probe|attach|detach>")
+        fail("usage: dory-hv usb list")
     }
 case "engine":
     var engineSocket = "\(NSHomeDirectory())/.dory/engine.sock"
@@ -667,6 +550,8 @@ case "engine":
     var directIPv6VirtualNetwork = "fd7d:6f72:7900::/64"
     var directIPv6HostGateway = "fd7d:6f72:7900::1"
     var gpuMode = EngineMode.GPUAccelerationMode.off
+    var reclaimPolicy = EngineMode.ReclaimPolicy.dropCaches
+    var fuseRequestQueuePolicy = EngineMode.FuseRequestQueuePolicy.automatic
     var amd64Emulation = false
     var publishHost = "127.0.0.1"
     var agentVsockForward: String?
@@ -723,6 +608,23 @@ case "engine":
             gpuMode = parseGPUMode(iterator.next() ?? "")
         case let value where value.hasPrefix("--gpu="):
             gpuMode = parseGPUMode(String(value.dropFirst("--gpu=".count)))
+        case "--memory-reclaim":
+            guard let value = iterator.next(),
+                  let parsed = EngineMode.ReclaimPolicy(rawValue: value) else {
+                fail("engine --memory-reclaim requires drop-caches or senpai")
+            }
+            reclaimPolicy = parsed
+        case "--fuse-request-queues":
+            guard let value = iterator.next(), let count = Int(value) else {
+                fail("engine --fuse-request-queues requires an integer from 1 through 8")
+            }
+            do {
+                fuseRequestQueuePolicy = try EngineMode.FuseRequestQueuePolicy(
+                    fixedCount: count
+                )
+            } catch {
+                fail("\(error)")
+            }
         case "--amd64":
             amd64Emulation = true
         case "--publish-host":
@@ -778,25 +680,19 @@ case "engine":
             )
         },
         gpuMode: gpuMode,
+        reclaimPolicy: reclaimPolicy,
+        fuseRequestQueuePolicy: fuseRequestQueuePolicy,
         amd64Emulation: amd64Emulation,
         publishHost: publishHost,
         agentVsockForward: agentVsockForward,
         sshAgentSocket: sshAgentSocket,
         guestAgentPath: guestAgent
     )
-    // Top-level code is implicitly MainActor; a plain Task would inherit it and deadlock behind
-    // the semaphore below. Detach so the engine runs on the concurrent pool.
-    let semaphore = DispatchSemaphore(value: 0)
-    Task.detached {
-        do {
-            try await EngineMode.run(configuration)
-        } catch {
-            FileHandle.standardError.write(Data("dory-hv: engine failed: \(error)\n".utf8))
-            exit(1)
-        }
-        semaphore.signal()
+    do {
+        try EngineMode.run(configuration)
+    } catch {
+        fail("engine failed: \(error)")
     }
-    semaphore.wait()
 default:
     fail("unknown command \(command)")
 }

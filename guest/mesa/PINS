@@ -1,7 +1,47 @@
-# Dory-owned Venus runtime inputs for Apple-silicon desktop guests.
-MESA_VERSION=26.1.4
-MESA_SOURCE_URL=https://archive.mesa3d.org/mesa-26.1.4.tar.xz
-MESA_SOURCE_SHA256=072705caa9adf4740f1489194b13e278ad959166863b5271fe423a86353c9ab6
-MESA_BUILDER_IMAGE=ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90
+# Dory-owned Venus runtime inputs for Apple-silicon desktop guests.  These are the exact Mesa
+# source bytes paired with the maintained UTM renderer candidate, not a nearby release tarball.
+MESA_VERSION=26.0.0-devel
+MESA_SOURCE_REPO=https://gitlab.freedesktop.org/osy/mesa.git
+MESA_SOURCE_COMMIT=79bc850d884a1307356ff61c017e58901b90c7e2
+MESA_SOURCE_TREE=585b6604e6ef58585cfc44f7b4d5eab172ddfbbd
+MESA_SOURCE_DATE_EPOCH=1767751301
+# Build against the oldest admitted GNU-libc baseline. Newer Debian, Ubuntu, and Kali guests may
+# consume this pack only after their exact loader/DSO closure passes the in-guest preflight.
+MESA_BUILDER_IMAGE=debian:bullseye-slim@sha256:f313b4bd62667092a59b3a664d7d3ab8b5e65f41675f48e81455a15dc5abe792
+MESA_DEBIAN_SNAPSHOT=20260713T000000Z
+MESA_DEBIAN_SNAPSHOT_URL=https://snapshot.debian.org/archive/debian/20260713T000000Z
+MESA_DEBIAN_SECURITY_SNAPSHOT_URL=https://snapshot.debian.org/archive/debian-security/20260713T000000Z
+# Mesa's libdrm wrap points at a mutable upstream host. Fetch the exact upstream archive from the
+# same immutable Debian snapshot before Meson runs so fallback resolution is bounded and offline.
+MESA_LIBDRM_VERSION=2.4.123
+MESA_LIBDRM_SOURCE_URL=https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/libd/libdrm/libdrm_2.4.123.orig.tar.xz
+MESA_LIBDRM_SOURCE_SHA256=a2b98567a149a74b0f50e91e825f9c0315d86e7be9b74394dae8b298caadb79e
+MESA_WAYLAND_PROTOCOLS_VERSION=1.41
+MESA_WAYLAND_PROTOCOLS_SOURCE_URL=https://gitlab.freedesktop.org/wayland/wayland-protocols/-/releases/1.41/downloads/wayland-protocols-1.41.tar.xz
+MESA_WAYLAND_PROTOCOLS_SOURCE_SHA256=2786b6b1b79965e313f2c289c12075b9ed700d41844810c51afda10ee329576b
+# wayland-protocols 1.41 requires wayland-scanner >=1.20. Bullseye supplies 1.18, so pin the
+# official scanner source explicitly instead of letting Meson reach an undeclared fallback.
+MESA_WAYLAND_VERSION=1.20.0
+MESA_WAYLAND_SOURCE_URL=https://wayland.freedesktop.org/releases/wayland-1.20.0.tar.xz
+MESA_WAYLAND_SOURCE_SHA256=b8a034154c7059772e0fdbd27dbfcda6c732df29cae56a82274f6ec5d7cd8725
+MESA_RUNTIME_ARCH=aarch64
+MESA_RUNTIME_LIBC_FAMILY=glibc
+# Maximum admitted symbol version. The runtime manifest records the exact maximum actually used.
+MESA_RUNTIME_MAX_GLIBC_SYMBOL=GLIBC_2.31
+MESA_RUNTIME_VULKAN_API=1.3
+MESA_RUNTIME_VULKAN13_FEATURES=dynamicRendering,maintenance4,synchronization2
+MESA_RUNTIME_VULKAN_DEVICE_EXTENSIONS=VK_KHR_external_semaphore_fd,VK_KHR_swapchain
+MESA_RUNTIME_VULKAN_INSTANCE_EXTENSIONS=VK_KHR_surface,VK_KHR_wayland_surface,VK_KHR_xcb_surface
+MESA_RUNTIME_WSI=x11,wayland
+MESA_RUNTIME_WSI_SURFACE_GATE=xcb,wayland
+# The compositor probe binds the exact wlroots Vulkan renderer base used to design Dory's
+# transfer-only scanout extension. The v2 profile requires optimal-device rendering followed by an
+# on-queue copy to a LINEAR DMA-BUF; it never treats this unmodified base revision as qualified.
+# Changing the base or v2 probe requires a new contract and physical evidence.
+WLROOTS_VULKAN_PROFILE_SOURCE_REPO=https://gitlab.freedesktop.org/wlroots/wlroots.git
+WLROOTS_VULKAN_PROFILE_SOURCE_COMMIT=329a88e72424486180ff3339440fa9f8f711af02
+WLROOTS_VULKAN_PROFILE_SOURCE_TREE=ef4676a2279bd364c645f31cd0e1e1cb238e0e0c
+WLROOTS_VULKAN_PROFILE_SOURCE_DATE_EPOCH=1787142943
+MESA_RUNTIME_COMPOSITOR_PROFILE=native-vulkan-optimal-copy-compositor-v2
 MESON_VERSION=1.10.0
 MESON_WHEEL_SHA256=4b27aafce281e652dcb437b28007457411245d975c48b5db3a797d3e93ae1585

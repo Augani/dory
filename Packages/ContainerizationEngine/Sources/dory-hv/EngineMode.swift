@@ -1,4 +1,5 @@
 import DoryCore
+import DoryFSWorkerContracts
 import DoryHV
 import Foundation
 import Synchronization
@@ -82,6 +83,12 @@ enum EngineMode {
         var shares: [VirtioFSShareConfiguration] = []
         var directIP: DirectIPBridgeConfiguration?
         var gpuMode: GPUAccelerationMode = .off
+        /// Launch-plan policy. The helper never reads ambient process environment to select guest
+        /// reclaim behavior.
+        var reclaimPolicy: ReclaimPolicy = .dropCaches
+        /// Explicit queue policy supplied by the daemon. Automatic derives a bounded value from
+        /// the admitted vCPU count; fixed values are validated when the command line is parsed.
+        var fuseRequestQueuePolicy: FuseRequestQueuePolicy = .automatic
         /// Register FEX's seccomp-correct binfmt handler and Dory OCI runtime so
         /// `--platform linux/amd64` images run on the arm64 engine.
         var amd64Emulation: Bool = false
@@ -100,6 +107,37 @@ enum EngineMode {
     enum GPUAccelerationMode: String {
         case off
         case venus
+    }
+
+    enum ReclaimPolicy: String, Equatable, Sendable {
+        case dropCaches = "drop-caches"
+        case senpai
+    }
+
+    enum FuseRequestQueuePolicy: Equatable, Sendable {
+        case automatic
+        case fixed(Int)
+
+        static let maximum = 8
+
+        init(fixedCount: Int) throws {
+            guard (1...Self.maximum).contains(fixedCount) else {
+                throw VMError.invalidConfiguration(
+                    "VirtioFS request queue count must be between 1 and \(Self.maximum)"
+                )
+            }
+            self = .fixed(fixedCount)
+        }
+
+        func resolved(cpuCount: Int) -> Int {
+            switch self {
+            case .automatic:
+                return min(Self.maximum, max(1, cpuCount))
+            case .fixed(let count):
+                precondition((1...Self.maximum).contains(count))
+                return count
+            }
+        }
     }
 
     /// gvproxy is launched and stopped under the same lock so a shutdown signal cannot race the
@@ -160,10 +198,6 @@ enum EngineMode {
             source.resume()
             signalSources.append(source)
         }
-    }
-
-    static var reclaimModeIsSenpai: Bool {
-        (ProcessInfo.processInfo.environment["DORY_ENGINE_RECLAIM_MODE"]?.lowercased() ?? "dropcaches") == "senpai"
     }
 
     // P1.2 host-pressure tier: when macOS reports memory pressure, ping the guest's reclaim listener so
@@ -263,10 +297,13 @@ enum EngineMode {
         reason: String,
         now: @escaping @Sendable () -> Date = Date.init
     ) async {
-        let connection = vsock.connect(port: VsockPorts.agent)
-        let channel = AgentChannel(connection: connection)
         let hostEpochNanoseconds = Int64((now().timeIntervalSince1970 * 1_000_000_000).rounded())
         do {
+            let connection = try vsock.connectForServiceIfCapacity(
+                port: VsockPorts.agent,
+                service: .agentRPC
+            )
+            let channel = AgentChannel(connection: connection)
             let result = try await channel.syncClock(hostEpochNanoseconds: hostEpochNanoseconds)
             note("clock sync \(reason): \(result.synced ? "ok" : "agent declined")")
         } catch {
@@ -452,7 +489,13 @@ enum EngineMode {
         var gvproxyStats: String?
     }
 
-    static func run(_ configuration: Configuration) async throws {
+    static func run(_ configuration: Configuration) throws {
+        guard configuration.gpuMode == .off else {
+            throw VMError.invalidConfiguration(
+                "container-engine GPU acceleration is unavailable; the retired in-process "
+                    + "VirGL loader is not a fallback for the isolated Linux desktop worker"
+            )
+        }
         try DockerSocketBridge.validateSocketPath(configuration.engineSocket)
         if let forwardSocket = configuration.agentVsockForward {
             try AgentVsockForward.validateSocketPath(forwardSocket)
@@ -525,7 +568,7 @@ enum EngineMode {
 
         let bootConfigShare = try writeBootConfiguration(stateDirectory: state, script: guestBootScript(
             shares: configuration.shares,
-            gpuMode: configuration.gpuMode,
+            reclaimPolicy: configuration.reclaimPolicy,
             amd64Emulation: configuration.amd64Emulation,
             nativeIPv6: nativeIPv6,
             bridgeNetwork: bridgeNetwork,
@@ -533,6 +576,11 @@ enum EngineMode {
             allowDockerDataFormat: allowDockerDataFormat
         ), guestAgentPath: configuration.guestAgentPath)
         let guestLogShare = try guestLogShareConfiguration(stateDirectory: state)
+        let filesystemShares = [bootConfigShare, guestLogShare] + configuration.shares
+        let filesystemWorker = try DoryFilesystemWorkerLauncher.startBlocking(
+            shares: filesystemShares
+        )
+        defer { filesystemWorker.client.invalidate() }
 
         let machine = try Machine(configuration: MachineConfiguration(
             kernelPath: configuration.kernelPath,
@@ -540,62 +588,59 @@ enum EngineMode {
             memoryBytes: configuration.memoryMB << 20,
             cpuCount: configuration.cpus
         ))
-        attachPlatformDevices(to: machine)
+        let serialOutput = try BoundedSerialConsolePublisher(destinations: [
+            .init(fileHandle: FileHandle.standardOutput),
+        ])
+        defer {
+            let receipt = serialOutput.stop()
+            if !receipt.isClean {
+                note("serial publisher retired with faults: \(receipt.diagnosticSummary)")
+            }
+        }
+        attachPlatformDevices(to: machine, serialOutput: serialOutput)
 
         var backends: [VirtioDeviceBackend] = []
         backends.append(try VirtioBlk(path: bootRootfs, identity: "dory-rootfs"))
         backends.append(try VirtioBlk(path: dataDisk, identity: "dory-data"))
         backends.append(VirtioRng())
         backends.append(VirtioBalloon(memory: machine.memory) { note($0) })
-        var daxSlot: UInt64 = 0
-        if configuration.gpuMode == .venus {
-            let renderer = try VenusModeRequirement.require {
-                try VirglRenderer.discover()
-            }
-            let hostMemoryBase = GuestLayout.daxWindowBase + daxSlot * DaxWindow.defaultSize
-            let hostVisibleMemory = try VirtioGPUHostVisibleMemory(guestBase: hostMemoryBase)
-            daxSlot += 1
-            backends.append(VirtioGPU(
-                hostMemoryBase: hostMemoryBase,
-                renderer: renderer,
-                hostVisibleMemory: hostVisibleMemory
-            ))
-            note(
-                "experimental gpu=venus: attached virtio-gpu with virglrenderer "
-                    + "\(renderer.libraryPath) and MoltenVK ICD "
-                    + "\(renderer.moltenVKICDPath ?? "unavailable")"
-            )
-        }
         let vsock = VirtioVsock(guestCID: 3)
+        defer { _ = vsock.quiesce() }
         backends.append(vsock)
-        HostAIBridge(log: { note($0) }).attach(to: vsock)
-        sshAgentBridge?.attach(to: vsock)
-        let requestedFuseQueues = ProcessInfo.processInfo.environment["DORY_FUSE_QUEUES"]
-            .flatMap(Int.init) ?? configuration.cpus
-        let fuseRequestQueues = min(8, max(1, requestedFuseQueues))
-        backends.append(try bootConfigShare.makeBackend(requestQueueCount: fuseRequestQueues))
-        backends.append(try guestLogShare.makeBackend(requestQueueCount: fuseRequestQueues))
-        var coherenceEndpoints = [HostShareCoherenceEndpoint]()
+        let hostAIBridge = HostAIBridge(log: { note($0) })
+        defer {
+            sshAgentBridge?.stop()
+            hostAIBridge.stop()
+        }
+        try hostAIBridge.attach(to: vsock)
+        try sshAgentBridge?.attach(to: vsock)
+        let fuseRequestQueues = configuration.fuseRequestQueuePolicy.resolved(
+            cpuCount: configuration.cpus
+        )
+        let workerLifecycle: @Sendable (VirtioFSWorkerLifecycleEvent) -> Void = { event in
+            note(event.diagnostic)
+            if case .failure(let reason) = event {
+                machine.requestStop(.crash(reason))
+            }
+        }
+        backends.append(try bootConfigShare.makeBackend(
+            broker: filesystemWorker.broker(for: bootConfigShare),
+            requestQueueCount: fuseRequestQueues,
+            onWorkerLifecycle: workerLifecycle
+        ))
+        backends.append(try guestLogShare.makeBackend(
+            broker: filesystemWorker.broker(for: guestLogShare),
+            requestQueueCount: fuseRequestQueues,
+            onWorkerLifecycle: workerLifecycle
+        ))
         for share in configuration.shares {
-            let daxBase = share.dax ? GuestLayout.daxWindowBase + daxSlot * DaxWindow.defaultSize : nil
-            if share.dax { daxSlot += 1 }
             let backend = try share.makeBackend(
-                daxGuestBase: daxBase,
-                requestQueueCount: fuseRequestQueues
+                broker: filesystemWorker.broker(for: share),
+                requestQueueCount: fuseRequestQueues,
+                onWorkerLifecycle: workerLifecycle
             )
             backends.append(backend)
-            // Read-only shares cannot accept the same-mode watcher nudge, but they still need host
-            // reverse invalidation so open-file page cache cannot stay stale. Keep metadata caching
-            // disabled and skip only the fsnotify approximation for those endpoints.
-            coherenceEndpoints.append(HostShareCoherenceEndpoint(
-                share: HostFSEventShare(
-                    hostRoot: share.path,
-                    guestRoot: share.guestMountPoint ?? "/mnt/dory/\(share.tag)"
-                ),
-                backend: backend,
-                watcherNudgesEnabled: !share.readOnly
-            ))
-            note("sharing \(share.path) as virtiofs tag \(share.tag)\(share.readOnly ? " (ro)" : "")\(share.dax ? " (dax)" : "")")
+            note("sharing authorized capability as virtiofs tag \(share.tag)\(share.readOnly ? " (ro)" : "")")
         }
 
         let networkPaths = try GVProxyRuntimePaths(
@@ -616,10 +661,11 @@ enum EngineMode {
         // Install before spawning gvproxy. A signal arriving during the remaining VM setup must use
         // the watchdog cleanup path rather than taking the default signal action and orphaning it.
         installGracefulShutdown(shutdownSocket: shutdownSocket)
+        let networkMTU = DoryNetworkMTU.resolved()
         let gvproxy = Process()
         gvproxy.executableURL = URL(fileURLWithPath: configuration.gvproxyPath)
         gvproxy.arguments = [
-            "-mtu", String(DoryNetworkMTU.resolved()),
+            "-mtu", String(networkMTU),
             "-listen-vfkit", "unixgram://\(datapathSocket)",
             "-listen", "unix://\(apiSocket)",
         ]
@@ -664,7 +710,11 @@ enum EngineMode {
             if primaryReady && lanReady { break }
             usleep(50_000)
         }
-        let virtioNet = try VirtioNet(socketPath: networkPaths.vmSocket, remotePath: datapathSocket)
+        let virtioNet = try VirtioNet(
+            socketPath: networkPaths.vmSocket,
+            remotePath: datapathSocket,
+            maximumTransmissionUnit: UInt16(networkMTU)
+        )
         backends.append(virtioNet)
         var sourcePreservingLANClient: SourcePreservingLANPrivilegedClient?
         var sourcePreservingLANSessionID: String?
@@ -702,7 +752,7 @@ enum EngineMode {
             ) { [weak machine] in
                 machine?.raiseGSI(spi)
             }
-            machine.attachVirtioSlot(transport)
+            try machine.attachVirtioSlot(transport, at: slot)
         }
 
         try machine.loadBootPayload()
@@ -714,12 +764,29 @@ enum EngineMode {
         // The Rust dataplane cannot establish its authoritative agent channel without this forward.
         // Bind it before publishing engine.sock and propagate any listener error out of run(), so a
         // configured-but-impossible path terminates dory-hv instead of advertising a half-alive VM.
+        var agentVsockForward: AgentVsockForward?
+        var dockerSocketBridge: DockerSocketBridge?
+        defer {
+            dockerSocketBridge?.stop()
+            agentVsockForward?.stop()
+        }
         if let forwardSocket = configuration.agentVsockForward {
-            try AgentVsockForward(socketPath: forwardSocket, guestCID: 3, log: { note($0) }).attach(to: vsock)
+            let bridge = AgentVsockForward(
+                socketPath: forwardSocket,
+                guestCID: 3,
+                log: { note($0) }
+            )
+            agentVsockForward = bridge
+            try bridge.attach(to: vsock)
         }
         // engine.sock is the sole Docker API endpoint, so its listener is just as required as the
         // dataplane forward. Propagate bind/listen/chmod failures before entering machine.run().
-        try DockerSocketBridge(socketPath: configuration.engineSocket, log: { note($0) }).attach(to: vsock)
+        let dockerBridge = DockerSocketBridge(
+            socketPath: configuration.engineSocket,
+            log: { note($0) }
+        )
+        dockerSocketBridge = dockerBridge
+        try dockerBridge.attach(to: vsock)
         publishForward(local: shutdownSocket, guestPort: 2377, apiSocket: apiSocket, label: "shutdown channel")
         publishForward(
             local: gvproxyHealthSocket,
@@ -728,7 +795,7 @@ enum EngineMode {
             label: "gvproxy datapath canary"
         )
         installClockSyncSignal(vsock: vsock)
-        if reclaimModeIsSenpai {
+        if configuration.reclaimPolicy == .senpai {
             let reclaimSocket = networkPaths.reclaimSocket
             publishForward(local: reclaimSocket, guestPort: 2378, apiSocket: apiSocket, label: "host-pressure reclaim channel")
             installHostPressureReclaim(reclaimSocket: reclaimSocket)
@@ -772,28 +839,62 @@ enum EngineMode {
         // over a fresh shared agent-protocol channel for every operation, so an agent restart does
         // not strand a long-lived control client and capability is revalidated before hardware is
         // claimed and again immediately before the guest vhci mutation.
-        let usbipManager = UsbipManager()
-        usbipManager.attachListener(to: vsock)
+        let usbipManager = UsbipManager(log: { note($0) })
+        try usbipManager.attachListener(to: vsock)
+        defer {
+            // This scope cannot unwind while Machine.run() is executing: either startup failed
+            // before guest execution or run() returned and the guest can no longer retain vhci
+            // state. That terminal boundary safely resolves outcome-unknown guest attachments.
+            switch usbipManager.stopAfterGuestExecutionEnded() {
+            case .completed:
+                break
+            case .authorityRetained(let busIDs):
+                let detail = busIDs.isEmpty
+                    ? "pending listener, bridge, or device drain"
+                    : "claims: \(busIDs.joined(separator: ", "))"
+                note("USB/IP terminal retirement retained authority asynchronously (\(detail))")
+            }
+        }
         let usbControlHandler = UsbControlHandler(
             manager: usbipManager,
+            allowedOpenModes: [.userAuthorized],
             ensureSupported: {
-                let channel = AgentChannel(connection: vsock.connect(port: VsockPorts.agent))
+                let channel = AgentChannel(
+                    connection: try vsock.connectForServiceIfCapacity(
+                        port: VsockPorts.agent,
+                        service: .agentRPC
+                    )
+                )
                 try await channel.requireCapability("usb-vhci", version: 1)
             },
             openDevice: { busID, mode in try HostUsbDeviceFactory.open(busID: busID, mode: mode) },
             notifyAttach: { request in
-                let channel = AgentChannel(connection: vsock.connect(port: VsockPorts.agent))
+                let channel = AgentChannel(
+                    connection: try vsock.connectForServiceIfCapacity(
+                        port: VsockPorts.agent,
+                        service: .agentRPC
+                    )
+                )
                 try await channel.requireCapability("usb-vhci", version: 1)
                 try await channel.usbVhciAttach(request)
             },
             notifyDetach: { request in
-                let channel = AgentChannel(connection: vsock.connect(port: VsockPorts.agent))
+                let channel = AgentChannel(
+                    connection: try vsock.connectForServiceIfCapacity(
+                        port: VsockPorts.agent,
+                        service: .agentRPC
+                    )
+                )
                 try await channel.requireCapability("usb-vhci", version: 1)
                 try await channel.usbVhciDetach(request)
             }
         )
-        let usbControlServer = UsbControlServer(path: configuration.stateDirectory + "/usb-control.sock", handler: usbControlHandler)
-        do { try usbControlServer.start() } catch { note("usb control server unavailable: \(error)") }
+        let usbControlServer = UsbControlServer(
+            path: state + "/usb-control.sock",
+            handler: usbControlHandler
+        )
+        try usbControlServer.start()
+        defer { usbControlServer.stop() }
 
         let memory = machine.memory
         let gauge = DispatchSource.makeTimerSource(queue: .global())
@@ -806,104 +907,13 @@ enum EngineMode {
             note("network gauge: tx \(network.transmitPackets)p/\(network.transmitBytes)B drops=\(network.transmitDrops), rx \(network.receivePackets)p/\(network.receiveBytes)B deferred=\(network.receiveDeferred) drops=\(network.receiveDrops) truncated=\(network.receiveTruncations)")
         }
         gauge.resume()
+        defer { gauge.cancel() }
 
-        var hostFSEventRelay: HostFSEventRelay?
-        var cacheReadinessTask: Task<Void, Never>?
-        var hostFSEventDiagnosticsTimer: (any DispatchSourceTimer)?
-        if !coherenceEndpoints.isEmpty {
-            let activeEndpoints = coherenceEndpoints
-            let coordinator = HostShareCoherenceCoordinator(
-                endpoints: activeEndpoints,
-                guestEvents: GuestFSEventBridge(vsock: vsock),
-                onDegraded: { note($0) },
-                onRecovered: { note($0) },
-                onFatalRecoveryRequired: { reason in
-                    note("host-share coherence requires VM restart: \(reason)")
-                    machine.requestStop(.crash(reason))
-                }
-            )
-            let relay = HostFSEventRelay(
-                shares: activeEndpoints.map(\.share),
-                observeRootsOnDemand: true,
-                send: { changes in
-                    try await coordinator.process(changes)
-                    coordinator.relayDeliverySucceeded()
-                },
-                onFailure: { error in
-                    let message = String(describing: error)
-                    // This updates the readiness generation and drops response TTLs synchronously;
-                    // actor bookkeeping cannot race cache activation back on for a failed batch.
-                    coordinator.relayDeliveryFailed("host-share event relay failed: \(message)")
-                    note("host-share event relay: \(message)")
-                }
-            )
-            let relayStarted = relay.start()
-            try HostShareCoherenceStartupPolicy.requireEventRelay(
-                started: relayStarted,
-                productionShareCount: activeEndpoints.count
-            )
-            for endpoint in activeEndpoints {
-                endpoint.backend.hostFS.setEventObservationHandler { hostPath in
-                    guard relay.observe(hostPath: hostPath) else {
-                        let reason = "failed to start narrow host-share observation for \(hostPath)"
-                        coordinator.relayDeliveryFailed(reason)
-                        note(reason)
-                        machine.requestStop(.crash(reason))
-                        return
-                    }
-                }
-            }
-            hostFSEventRelay = relay
-            writeHostShareResourceDiagnostics(relay.diagnostics, stateDirectory: state)
-            let diagnosticsTimer = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
-            diagnosticsTimer.schedule(deadline: .now() + 5, repeating: 5)
-            diagnosticsTimer.setEventHandler {
-                writeHostShareResourceDiagnostics(relay.diagnostics, stateDirectory: state)
-            }
-            diagnosticsTimer.resume()
-            hostFSEventDiagnosticsTimer = diagnosticsTimer
-            let watcherCount = activeEndpoints.filter(\.watcherNudgesEnabled).count
-            note("host-share invalidation relay active for \(activeEndpoints.count) share(s), watcher nudges on \(watcherCount)")
-            // The VM has not entered its run loop yet, so FUSE INIT, the 16 stable notify
-            // buffers, and the guest agent arrive asynchronously. Poll only the fail-closed
-            // readiness predicate; no environment flag can bypass these gates.
-            if activeEndpoints.contains(where: \.watcherNudgesEnabled) {
-                cacheReadinessTask = Task.detached(priority: .userInitiated) {
-                    var lastError: String?
-                    let deadline = ProcessInfo.processInfo.systemUptime + 120
-                    while ProcessInfo.processInfo.systemUptime < deadline {
-                        guard !Task.isCancelled else { return }
-                        do {
-                            if try await coordinator.activateCachingIfReady() {
-                                note("host-share coherent metadata cache active (\(VirtioFS.maximumCoherentCacheValiditySeconds)s bounded TTL)")
-                                return
-                            }
-                        } catch {
-                            lastError = String(describing: error)
-                        }
-                        do {
-                            try await Task.sleep(nanoseconds: 100_000_000)
-                        } catch {
-                            return
-                        }
-                    }
-                    let detail = lastError.map { ": \($0)" } ?? ""
-                    note("host-share cache readiness timed out; zero-cache safety retained\(detail)")
-                }
-            }
-        }
-        defer {
-            cacheReadinessTask?.cancel()
-            hostFSEventDiagnosticsTimer?.cancel()
-            for endpoint in coherenceEndpoints {
-                endpoint.backend.hostFS.setEventObservationHandler(nil)
-            }
-            hostFSEventRelay?.stop()
-            try? FileManager.default.removeItem(atPath: state + "/host-share-resources.json")
-        }
-
-        let stop = try machine.run()
-        gauge.cancel()
+        let machineRunner = RawHVMachineRunner(
+            machine: machine,
+            threadName: "dory-hv.engine.vcpu0"
+        )
+        let stop = try machineRunner.runToCompletion()
         note("engine stopped: \(stop)")
     }
 
@@ -962,7 +972,7 @@ enum EngineMode {
     /// at 16 KiB granularity) has cold pages to hand back when the engine is idle.
     private static func guestBootScript(
         shares: [VirtioFSShareConfiguration] = [],
-        gpuMode: GPUAccelerationMode = .off,
+        reclaimPolicy: ReclaimPolicy = .dropCaches,
         amd64Emulation: Bool = false,
         nativeIPv6: NativeIPv6NetworkPlan? = nil,
         bridgeNetwork: DoryIPv4BridgeNetwork = try! DoryIPv4BridgeNetwork(),
@@ -1054,13 +1064,6 @@ enum EngineMode {
             "echo 100 > /proc/sys/vm/vfs_cache_pressure 2>/dev/null",
             "echo 262144 > /proc/sys/vm/min_free_kbytes 2>/dev/null",
         ]
-        if gpuMode == .venus {
-            script += [
-                "export DORY_GPU=venus",
-                "for n in $(seq 1 80); do [ -d /dev/dri ] && break; sleep 0.1; done",
-                "[ -d /dev/dri ] && chmod a+rw /dev/dri/renderD* /dev/dri/card* 2>/dev/null || echo DORY-GPU-NO-DRI",
-            ]
-        }
         if amd64Emulation {
             script += BinfmtRegistration.bootCommands()
             script.append("DORY_AMD64_RUNTIME_ARGS='--add-runtime dory-runc=/usr/local/bin/dory-runc --default-runtime dory-runc'")
@@ -1094,15 +1097,16 @@ enum EngineMode {
             GuestDatapathCanary.listener(),
             GuestShutdownCommand.listener(),
             GuestMemoryReclaimBootCommand.hostPressureListener(
-                experimentalSenpai: reclaimModeIsSenpai
+                experimentalSenpai: reclaimPolicy == .senpai
             ),
             // Idle memory reclaim. Default is a gentle pagecache-only drop_caches when the guest is
             // quiet (no compaction — it re-faults the pages free-page reporting already handed back;
-            // no root memory.reclaim — write-rejected on the root cgroup). DORY_ENGINE_RECLAIM_MODE=senpai
-            // swaps in a coldest-first, working-set-protected feeder (MGLRU min_ttl_ms + DAMON_RECLAIM,
-            // memory.reclaim fallback) per the research §5. Kept opt-in until the memory A/B lands.
+            // no root memory.reclaim — write-rejected on the root cgroup). The explicit `senpai`
+            // launch policy swaps in a coldest-first, working-set-protected feeder (MGLRU
+            // min_ttl_ms + DAMON_RECLAIM, memory.reclaim fallback) per the research §5. Kept
+            // opt-in until the memory A/B lands.
             GuestMemoryReclaimBootCommand.idleLoop(
-                experimentalSenpai: reclaimModeIsSenpai
+                experimentalSenpai: reclaimPolicy == .senpai
             ),
             // Hand PID 1 to tini (docker-init, shipped in docker:dind) as a reaping init. exec
             // replaces the boot shell in place, so tini keeps PID 1 while dockerd and the loops
@@ -1145,15 +1149,18 @@ enum EngineMode {
         return "\(console) root=/dev/vda rw panic=0 init=/sbin/init"
     }
 
-    private static func attachPlatformDevices(to machine: Machine) {
+    private static func attachPlatformDevices(
+        to machine: Machine,
+        serialOutput: BoundedSerialConsolePublisher
+    ) {
         #if arch(arm64)
         machine.bus.attach(PL031(baseAddress: GuestLayout.rtcBase))
         machine.attachConsole(PL011(baseAddress: GuestLayout.uartBase) { byte in
-            FileHandle.standardOutput.write(Data([byte]))
+            serialOutput.enqueue(byte)
         })
         #else
         machine.attachConsole(UART16550(basePort: UInt16(truncatingIfNeeded: GuestLayout.uartBase)) { byte in
-            FileHandle.standardOutput.write(Data([byte]))
+            serialOutput.enqueue(byte)
         })
         machine.attachRTC(CMOSRTC(basePort: UInt16(truncatingIfNeeded: GuestLayout.rtcBase)))
         machine.attachResetController(I8042 { [weak machine] in
@@ -1165,27 +1172,6 @@ enum EngineMode {
 
     private static func shellQuote(_ value: String) -> String {
         "'\(value.replacingOccurrences(of: "'", with: "'\"'\"'"))'"
-    }
-
-    private static func writeHostShareResourceDiagnostics(
-        _ diagnostics: HostFSEventRelayDiagnostics,
-        stateDirectory: String
-    ) {
-        let destination = URL(fileURLWithPath: stateDirectory)
-            .appendingPathComponent("host-share-resources.json")
-        let temporary = destination.appendingPathExtension("tmp-(getpid())")
-        do {
-            let encoder = JSONEncoder()
-            encoder.dateEncodingStrategy = .iso8601
-            encoder.outputFormatting = [.sortedKeys]
-            let data = try encoder.encode(diagnostics)
-            try data.write(to: temporary, options: [.atomic])
-            _ = chmod(temporary.path, S_IRUSR | S_IWUSR)
-            _ = rename(temporary.path, destination.path)
-        } catch {
-            try? FileManager.default.removeItem(at: temporary)
-            note("host-share resource diagnostics unavailable: (error)")
-        }
     }
 
     /// Asks gvproxy to serve a guest TCP port as a host unix socket, retrying until the listener

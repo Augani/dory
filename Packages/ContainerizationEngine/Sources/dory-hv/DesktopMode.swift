@@ -3,6 +3,7 @@ import Darwin
 import DoryCore
 import DoryHV
 import DoryOperations
+import DoryVMContracts
 import DorydKit
 import DoryVMMKit
 import Foundation
@@ -15,8 +16,11 @@ final class RawDeviceTelemetryRegistry: @unchecked Sendable {
         var storage: VirtioBlk?
         var network: VirtioNet?
         var sharedDirectory: VirtioFS?
+        var input: VirtioInput?
         var audioMetrics: (@Sendable () -> DoryMacAudioRuntimeMetrics?)?
         var displayMetrics: (@Sendable () -> DesktopFrameMailboxMetrics?)?
+        var presentationBudgetMetrics:
+            (@Sendable () -> DesktopCPUPresentationBudgetMetrics?)?
         var graphicsMetrics: (@Sendable () -> VirtioGPUStatistics?)?
         var unavailableMetrics: [(DoryDeviceTelemetryMetricKind, DoryDeviceTelemetryMetricUnit)]
         var previousTransportStatistics: VirtioMMIOTransportStatistics?
@@ -62,6 +66,8 @@ final class RawDeviceTelemetryRegistry: @unchecked Sendable {
         transport: VirtioMMIOTransport,
         audioMetrics: (@Sendable () -> DoryMacAudioRuntimeMetrics?)? = nil,
         displayMetrics: (@Sendable () -> DesktopFrameMailboxMetrics?)? = nil,
+        presentationBudgetMetrics:
+            (@Sendable () -> DesktopCPUPresentationBudgetMetrics?)? = nil,
         graphicsMetrics: (@Sendable () -> VirtioGPUStatistics?)? = nil
     ) {
         let effectiveGraphicsMetrics: (@Sendable () -> VirtioGPUStatistics?)?
@@ -91,6 +97,14 @@ final class RawDeviceTelemetryRegistry: @unchecked Sendable {
                 unavailable.append(contentsOf: [
                     (.displayFrames, .count),
                     (.displayDrops, .count),
+                    (.displayBudgetRejectedFrames, .count),
+                ])
+            }
+            if presentationBudgetMetrics == nil {
+                unavailable.append(contentsOf: [
+                    (.graphicsPresentationResidentBytes, .bytes),
+                    (.graphicsPresentationPeakResidentBytes, .bytes),
+                    (.graphicsPresentationRejectedReservations, .count),
                 ])
             }
         case is VirtioSound:
@@ -105,11 +119,22 @@ final class RawDeviceTelemetryRegistry: @unchecked Sendable {
                 (.transmittedFrames, .count),
                 (.transmittedBytes, .bytes),
                 (.transmitDrops, .count),
+                (.transmitMalformed, .count),
+                (.transmitOversized, .count),
+                (.transmitInvalidDescriptors, .count),
+                (.transmitBackpressure, .count),
                 (.receivedFrames, .count),
                 (.receivedBytes, .bytes),
                 (.receiveDeferred, .count),
                 (.receiveDrops, .count),
                 (.receiveTruncations, .count),
+                (.receiveMalformed, .count),
+                (.receiveInvalidDescriptors, .count),
+                (.receiveInsufficientCapacity, .count),
+                (.receiveBacklogDrops, .count),
+                (.receiveInactiveDrops, .count),
+                (.receiveSocketErrors, .count),
+                (.receiveActivationFailures, .count),
             ]
         case is VirtioBalloon:
             kind = .balloon
@@ -134,8 +159,10 @@ final class RawDeviceTelemetryRegistry: @unchecked Sendable {
             storage: backend as? VirtioBlk,
             network: backend as? VirtioNet,
             sharedDirectory: backend as? VirtioFS,
+            input: backend as? VirtioInput,
             audioMetrics: audioMetrics,
             displayMetrics: displayMetrics,
+            presentationBudgetMetrics: presentationBudgetMetrics,
             graphicsMetrics: effectiveGraphicsMetrics,
             unavailableMetrics: unavailable,
             previousTransportStatistics: nil,
@@ -218,23 +245,25 @@ final class RawDeviceTelemetryRegistry: @unchecked Sendable {
                     .measured(.deviceResets, value: transport.deviceResets),
                 ]
                 if let network = entries[index].network?.statistics {
-                    metrics.append(contentsOf: [
-                        .measured(.transmittedFrames, value: network.transmitPackets),
-                        .measured(.transmittedBytes, value: network.transmitBytes),
-                        .measured(.transmitDrops, value: network.transmitDrops),
-                        .measured(.receivedFrames, value: network.receivePackets),
-                        .measured(.receivedBytes, value: network.receiveBytes),
-                        .measured(.receiveDeferred, value: network.receiveDeferred),
-                        .measured(.receiveDrops, value: network.receiveDrops),
-                        .measured(.receiveTruncations, value: network.receiveTruncations),
-                    ])
+                    metrics.append(contentsOf: Self.networkMetrics(network))
                 }
                 if let storage = entries[index].storage?.statistics {
+                    let (storageQueueFaults, storageQueueFaultOverflow) =
+                        storage.queuePopFaults.addingReportingOverflow(storage.completionFaults)
                     metrics.append(contentsOf: [
                         .measured(.storageFlushes, value: storage.flushes),
                         .measured(
                             .maximumStorageFlushLatencyNanoseconds,
                             value: storage.maximumFlushLatencyNanoseconds
+                        ),
+                        .measured(.storageInvalidRequests, value: storage.invalidRequests),
+                        .measured(
+                            .storageQueueFaults,
+                            value: storageQueueFaultOverflow ? UInt64.max : storageQueueFaults
+                        ),
+                        .measured(
+                            .storageBoundedDrainStops,
+                            value: storage.boundedDrainStops
                         ),
                     ])
                     let previousSlowFlushes = entries[index].previousStorageStatistics?.slowFlushes ?? 0
@@ -247,6 +276,30 @@ final class RawDeviceTelemetryRegistry: @unchecked Sendable {
                             deviceID: entries[index].id,
                             kind: .storageFlushSlow,
                             occurrences: newSlowFlushes,
+                            monotonicNanoseconds: monotonicNanoseconds
+                        )
+                        health = .degraded
+                    }
+                    let previousQueueFaults: UInt64
+                    if let previous = entries[index].previousStorageStatistics {
+                        let (sum, overflow) = previous.queuePopFaults.addingReportingOverflow(
+                            previous.completionFaults
+                        )
+                        previousQueueFaults = overflow ? UInt64.max : sum
+                    } else {
+                        previousQueueFaults = 0
+                    }
+                    let currentQueueFaults = storageQueueFaultOverflow
+                        ? UInt64.max : storageQueueFaults
+                    let newQueueFaults = Self.monotonicDelta(
+                        current: currentQueueFaults,
+                        previous: previousQueueFaults
+                    )
+                    if newQueueFaults > 0 {
+                        appendEvent(
+                            deviceID: entries[index].id,
+                            kind: .storageQueueFault,
+                            occurrences: newQueueFaults,
                             monotonicNanoseconds: monotonicNanoseconds
                         )
                         health = .degraded
@@ -273,6 +326,7 @@ final class RawDeviceTelemetryRegistry: @unchecked Sendable {
                     entries[index].previousAudioDrops = drops
                 }
                 if let share = entries[index].sharedDirectory?.statistics {
+                    let performance = entries[index].sharedDirectory?.performanceStatistics
                     metrics.append(contentsOf: [
                         .measured(.shareInvalidations, value: share.invalidations),
                         .measured(
@@ -280,6 +334,46 @@ final class RawDeviceTelemetryRegistry: @unchecked Sendable {
                             value: share.invalidationFailures
                         ),
                     ])
+                    if let performance {
+                        metrics.append(contentsOf: [
+                            .measured(
+                                .shareRequestPayloadBytes,
+                                value: performance.requestPayloadBytes
+                            ),
+                            .measured(
+                                .shareWorkerResponsePayloadBytes,
+                                value: performance.workerResponsePayloadBytes
+                            ),
+                            .measured(
+                                .shareGuestPublishedResponseBytes,
+                                value: performance.guestPublishedResponseBytes
+                            ),
+                            .measured(
+                                .shareCompletedRequests,
+                                value: performance.completedRequests
+                            ),
+                            .measured(
+                                .shareFailedRequests,
+                                value: performance.failedRequests
+                            ),
+                            .measured(
+                                .shareInFlightRequests,
+                                value: performance.inFlightRequests
+                            ),
+                            .measured(
+                                .sharePeakInFlightRequests,
+                                value: performance.peakInFlightRequests
+                            ),
+                            .measured(
+                                .shareTotalRequestLatencyNanoseconds,
+                                value: performance.totalRequestLatencyNanoseconds
+                            ),
+                            .measured(
+                                .shareMaximumRequestLatencyNanoseconds,
+                                value: performance.maximumRequestLatencyNanoseconds
+                            ),
+                        ])
+                    }
                     let previousFailures =
                         entries[index].previousShareInvalidationFailures ?? 0
                     let newFailures = Self.monotonicDelta(
@@ -301,10 +395,45 @@ final class RawDeviceTelemetryRegistry: @unchecked Sendable {
                     entries[index].previousShareInvalidationFailures =
                         share.invalidationFailures
                 }
+                if let input = entries[index].input?.statistics {
+                    metrics.append(contentsOf: Self.inputMetrics(input))
+                }
                 if let display = entries[index].displayMetrics?() {
                     metrics.append(contentsOf: [
                         .measured(.displayFrames, value: display.presentedFrames),
                         .measured(.displayDrops, value: display.droppedFrames),
+                        .measured(
+                            .displayBudgetRejectedFrames,
+                            value: display.budgetRejectedFrames
+                        ),
+                        .measured(
+                            .displayReceivedFrameBytes,
+                            value: display.receivedFrameBytes
+                        ),
+                        .measured(
+                            .displayStagingCopyBytes,
+                            value: display.stagingCopyBytes
+                        ),
+                        .measured(
+                            .displayDrainCopyBytes,
+                            value: display.drainCopyBytes
+                        ),
+                        .measured(
+                            .displayUploadedFrameBytes,
+                            value: display.uploadedFrameBytes
+                        ),
+                        .measured(
+                            .displayDroppedFrameBytes,
+                            value: display.droppedFrameBytes
+                        ),
+                        .measured(
+                            .displayPendingFrameBytes,
+                            value: display.pendingFrameBytes
+                        ),
+                        .measured(
+                            .displayPendingFrameDepth,
+                            value: display.pendingFrameDepth
+                        ),
                     ])
                     let previousDrops = entries[index].previousDisplayDrops ?? 0
                     if Self.monotonicDelta(
@@ -314,6 +443,22 @@ final class RawDeviceTelemetryRegistry: @unchecked Sendable {
                         health = .degraded
                     }
                     entries[index].previousDisplayDrops = display.droppedFrames
+                }
+                if let budget = entries[index].presentationBudgetMetrics?() {
+                    metrics.append(contentsOf: [
+                        .measured(
+                            .graphicsPresentationResidentBytes,
+                            value: UInt64(max(0, budget.residentBytes))
+                        ),
+                        .measured(
+                            .graphicsPresentationPeakResidentBytes,
+                            value: UInt64(max(0, budget.peakResidentBytes))
+                        ),
+                        .measured(
+                            .graphicsPresentationRejectedReservations,
+                            value: budget.rejectedReservations
+                        ),
+                    ])
                 }
                 if let graphics = entries[index].graphicsMetrics?() {
                     metrics.append(contentsOf: [
@@ -431,6 +576,107 @@ final class RawDeviceTelemetryRegistry: @unchecked Sendable {
         }
     }
 
+    /// Keep the public diagnostic schema lossless with respect to the bounded virtio-net backend.
+    /// Aggregate drops alone cannot distinguish malformed guest chains from host socket pressure,
+    /// inactive queue epochs, or an activation failure—the exact distinction needed to repair a
+    /// failed physical qualification without speculative changes to guest configuration.
+    static func networkMetrics(
+        _ network: VirtioNetStatistics
+    ) -> [DoryDeviceTelemetryMetric] {
+        [
+            .measured(.transmittedFrames, value: network.transmitPackets),
+            .measured(.transmittedBytes, value: network.transmitBytes),
+            .measured(.transmitDrops, value: network.transmitDrops),
+            .measured(.transmitMalformed, value: network.transmitMalformed),
+            .measured(.transmitOversized, value: network.transmitOversized),
+            .measured(
+                .transmitInvalidDescriptors,
+                value: network.transmitInvalidDescriptors
+            ),
+            .measured(.transmitBackpressure, value: network.transmitBackpressure),
+            .measured(.receivedFrames, value: network.receivePackets),
+            .measured(.receivedBytes, value: network.receiveBytes),
+            .measured(.receiveDeferred, value: network.receiveDeferred),
+            .measured(.receiveDrops, value: network.receiveDrops),
+            .measured(.receiveTruncations, value: network.receiveTruncations),
+            .measured(.receiveMalformed, value: network.receiveMalformed),
+            .measured(
+                .receiveInvalidDescriptors,
+                value: network.receiveInvalidDescriptors
+            ),
+            .measured(
+                .receiveInsufficientCapacity,
+                value: network.receiveInsufficientCapacity
+            ),
+            .measured(.receiveBacklogDrops, value: network.receiveBacklogDrops),
+            .measured(.receiveInactiveDrops, value: network.receiveInactiveDrops),
+            .measured(.receiveSocketErrors, value: network.receiveSocketErrors),
+            .measured(
+                .receiveActivationFailures,
+                value: network.receiveActivationFailures
+            ),
+        ]
+    }
+
+    /// A device-owned snapshot is copied under the input backend's small state lock. It never
+    /// acquires the transport/register lock, walks the guest ring, or derives input behavior from
+    /// transport counters. Keeping this projection one-to-one makes queue pressure and scheduling
+    /// evidence diagnosable without giving the telemetry sampler lifecycle authority.
+    static func inputMetrics(
+        _ input: VirtioInputStatistics
+    ) -> [DoryDeviceTelemetryMetric] {
+        [
+            .measured(.inputSubmittedFrames, value: input.submittedFrames),
+            .measured(.inputPublishedFrames, value: input.publishedFrames),
+            .measured(.inputPublishedEvents, value: input.publishedEvents),
+            .measured(.inputCoalescedMotionFrames, value: input.coalescedMotionFrames),
+            .measured(.inputDroppedFrames, value: input.droppedFrames),
+            .measured(.inputRejectedFrames, value: input.rejectedFrames),
+            .measured(
+                .inputStateReconciliationEvents,
+                value: input.stateReconciliationEvents
+            ),
+            .measured(.inputInvalidEventBuffers, value: input.invalidEventBuffers),
+            .measured(.inputInvalidStatusBuffers, value: input.invalidStatusBuffers),
+            .measured(.inputStatusEvents, value: input.statusEvents),
+            .measured(.inputQueueFaults, value: input.queueFaults),
+            .measured(.inputBoundedDrainStops, value: input.boundedDrainStops),
+            .measured(.inputWorkerTurns, value: input.workerTurns),
+            .measured(.inputWorkerYields, value: input.workerYields),
+            .measured(.inputCoalescedWorkerRequests, value: input.coalescedWorkerRequests),
+            .measured(.inputRevokedWorkerTurns, value: input.revokedWorkerTurns),
+            .measured(
+                .inputPendingFrameSaturationEvents,
+                value: input.pendingFrameSaturationEvents
+            ),
+            .measured(.inputPendingFrameDepth, value: input.pendingFrameDepth),
+            .measured(
+                .inputPendingFrameHighWatermark,
+                value: input.pendingFrameHighWatermark
+            ),
+            .measured(
+                .inputAvailableEventBufferDepth,
+                value: input.availableEventBufferDepth
+            ),
+            .measured(
+                .inputAvailableEventBufferHighWatermark,
+                value: input.availableEventBufferHighWatermark
+            ),
+            .measured(.inputEventQueueDepth, value: input.eventQueueDepth),
+            .measured(.inputEventQueueHighWatermark, value: input.eventQueueHighWatermark),
+            .measured(.inputStatusQueueDepth, value: input.statusQueueDepth),
+            .measured(.inputStatusQueueHighWatermark, value: input.statusQueueHighWatermark),
+            .measured(
+                .inputPublicationLatencyNanoseconds,
+                value: input.publicationLatencyNanoseconds
+            ),
+            .measured(
+                .inputMaximumPublicationLatencyNanoseconds,
+                value: input.maximumPublicationLatencyNanoseconds
+            ),
+        ]
+    }
+
     private func appendEvent(
         deviceID: String,
         kind: DoryDeviceTelemetryEventKind,
@@ -456,31 +702,251 @@ final class RawDeviceTelemetryRegistry: @unchecked Sendable {
     }
 }
 
+/// One-shot LIFO rollback for side effects acquired by a throwing initializer. Registered actions
+/// remain armed until `commit`; an explicit rollback and `deinit` are both safe and idempotent.
+final class DesktopInitializationRollback {
+    private var actions = [() -> Void]()
+    private var finished = false
+
+    func register(_ action: @escaping () -> Void) {
+        precondition(!finished, "cannot register initialization rollback after completion")
+        actions.append(action)
+    }
+
+    func commit() {
+        guard !finished else { return }
+        finished = true
+        actions.removeAll()
+    }
+
+    func performIfNeeded() {
+        guard !finished else { return }
+        finished = true
+        let pending = Array(actions.reversed())
+        actions.removeAll()
+        for action in pending { action() }
+    }
+
+    deinit {
+        performIfNeeded()
+    }
+}
+
+enum DesktopGPUShutdownBoundaryResult: Equatable, Sendable {
+    case completed(epoch: UInt64)
+    case failed(epoch: UInt64, fault: VirtioGPURendererHealthFault)
+    case timedOut(epoch: UInt64)
+
+    var logDescription: String {
+        switch self {
+        case .completed(let epoch):
+            return "completed at GPU epoch \(epoch)"
+        case .failed(let epoch, let fault):
+            return "failed at GPU epoch \(epoch): \(fault)"
+        case .timedOut(let epoch):
+            return "timed out at GPU epoch \(epoch)"
+        }
+    }
+
+    var failure: VMError? {
+        switch self {
+        case .completed:
+            return nil
+        case .failed(let epoch, let fault):
+            return .unexpectedExit(
+                "GPU shutdown quiescence failed at epoch \(epoch): \(fault)"
+            )
+        case .timedOut(let epoch):
+            return .unexpectedExit(
+                "GPU shutdown quiescence timed out at epoch \(epoch)"
+            )
+        }
+    }
+}
+
+/// The process-owned destruction boundary for virtio-gpu. Display detachment must run after the
+/// device has published every release, but before a worker waits for renderer retirement. Keeping
+/// these operations separate prevents AppKit release acknowledgements from being blocked by a
+/// wait on the main actor.
+enum DesktopGPUShutdownBoundary {
+    static let timeoutSeconds: TimeInterval = 5
+
+    static func begin(
+        quiesce: () -> VirtioGPUQuiescence,
+        detachPresentations: () -> Void
+    ) -> VirtioGPUQuiescence {
+        let receipt = quiesce()
+        detachPresentations()
+        return receipt
+    }
+
+    static func wait(
+        for receipt: VirtioGPUQuiescence,
+        timeout: TimeInterval = timeoutSeconds
+    ) -> DesktopGPUShutdownBoundaryResult {
+        guard let outcome = receipt.wait(timeout: timeout) else {
+            return .timedOut(epoch: receipt.epoch)
+        }
+        switch outcome {
+        case .completed:
+            return .completed(epoch: receipt.epoch)
+        case .failed(let fault):
+            return .failed(epoch: receipt.epoch, fault: fault)
+        }
+    }
+}
+
+/// Orders guest setup against the first synchronized renderer presentation before readiness is
+/// published. Generic media must prove graphics first because it has no Dory-owned boot barrier;
+/// managed images must release their display-manager barrier first so a renderer-backed frame can
+/// exist. Any failure escapes before `publish`, preserving the fail-closed handoff contract.
+enum DesktopGuestReadinessBoundary {
+    static func complete<Prepared>(
+        genericGuest: Bool,
+        prepare: () throws -> Prepared,
+        waitForSynchronizedPresentation: () throws -> Void,
+        publish: (Prepared) throws -> Void
+    ) rethrows {
+        let prepared: Prepared
+        if genericGuest {
+            try waitForSynchronizedPresentation()
+            prepared = try prepare()
+        } else {
+            prepared = try prepare()
+            try waitForSynchronizedPresentation()
+        }
+        try publish(prepared)
+    }
+}
+
+enum DesktopMachineExecutionState: Equatable, Sendable {
+    case notStarted
+    case running
+    case ended
+
+    var isTerminalBoundary: Bool {
+        switch self {
+        case .notStarted, .ended: true
+        case .running: false
+        }
+    }
+}
+
 enum DesktopMode {
+    enum RootDiskBacking: Equatable {
+        case legacyPath(String)
+        case resolvedDescriptor(descriptor: Int32, capacityBytes: UInt64)
+
+        var virtualHardwareDiskAuthorityKind: RawHVVirtualHardwareDiskAuthorityKind {
+            switch self {
+            case .legacyPath: .legacyPath
+            case .resolvedDescriptor: .resolvedDescriptor
+            }
+        }
+
+        static func resolve(
+            legacyPath: String?,
+            runtimeLaunchEnvelope: RuntimeLaunchEnvelope?
+        ) throws -> Self {
+            switch (legacyPath, runtimeLaunchEnvelope) {
+            case let (.some(path), nil) where !path.isEmpty:
+                return .legacyPath(path)
+            case let (nil, .some(envelope)):
+                let slot = try envelope.validatedResolvedRawHVSystemDisk()
+                guard fcntl(slot.descriptor, F_GETFD) >= 0 else {
+                    throw VMError.invalidConfiguration(
+                        "resolved systemDisk descriptor \(slot.descriptor) is not inherited"
+                    )
+                }
+                return .resolvedDescriptor(
+                    descriptor: slot.descriptor,
+                    capacityBytes: slot.capacityBytes
+                )
+            default:
+                throw VMError.invalidConfiguration(
+                    "desktop requires exactly one root-disk authority mode"
+                )
+            }
+        }
+
+        func makeBackend(queueCount: Int) throws -> VirtioBlk {
+            switch self {
+            case .legacyPath(let path):
+                return try VirtioBlk(
+                    path: path,
+                    identity: "dory-rootfs",
+                    queueCount: queueCount
+                )
+            case .resolvedDescriptor(let descriptor, let capacityBytes):
+                var info = stat()
+                guard fstat(descriptor, &info) == 0,
+                      (info.st_mode & S_IFMT) == S_IFREG,
+                      info.st_uid == geteuid(),
+                      info.st_nlink == 1,
+                      info.st_size > 0,
+                      (info.st_mode & 0o077) == 0,
+                      UInt64(info.st_size) == capacityBytes else {
+                    throw VMError.invalidConfiguration(
+                        "inherited systemDisk failed owner/link/mode/capacity validation"
+                    )
+                }
+                return try VirtioBlk(
+                    fileDescriptor: descriptor,
+                    identity: "dory-rootfs",
+                    queueCount: queueCount
+                )
+            }
+        }
+    }
+
     struct Configuration {
         var machineID: String
         var operationID: UUID
         var stateDirectory: String
-        var kernelPath: String
-        var initrdPath: String?
-        var rootfsPath: String
+        var bootPayload: MachineBootPayload
+        var rootDisk: RootDiskBacking
         var rootDevice: String
         var genericGuest: Bool
         var gvproxyPath: String
         var handoffSocketPath: String
         var agentSocketPath: String
         var shellSocketPath: String
+        var consoleSocketPath: String
         var controlSocketPath: String
         var usbControlSocketPath: String?
         var sshAgentSocketPath: String?
         var memoryMB: UInt64
         var cpuCount: Int
+        /// Exact guest-visible system-disk queue topology. Resolved launches take this value only
+        /// from the canonical runtime envelope; legacy launches retain one queue.
+        var systemDiskQueueCount: Int = 1
         var shares: [DoryMachineShareConfiguration]
         var environment: [String: String]
+        var legacyGraphicsBackend: DoryDesktopGraphicsBackend? = nil
         var resolvedGraphics: DoryGraphicsAccelerationLevel?
+        /// Fully authenticated before `DesktopMode.run`; nil for every software, host-display,
+        /// and legacy launch. The controller never starts or discovers a renderer process.
+        var rendererWorkerLaunch: DesktopRendererWorkerLaunch? = nil
+        var resolvedPlanSHA256: String? = nil
+        var resolvedPlanRevision: UInt64? = nil
         var resolvedDevices: DoryVirtualMachineDeviceCapabilityRequest?
         var resolvedPortForwards: [DoryVMPortForward]?
+        var rawHVVirtualHardwareTopology: DoryRawHVVirtualHardwareTopology?
+        var resolvedSystemDiskLogicalID: DoryVirtualDeviceID? = nil
         var displayPresentation: DoryMachineDisplayPresentation = .windowed
+
+        /// Shares actually materialized by the resolved directory-sharing policy. Guest setup must
+        /// consume this same inventory so it cannot try to mount a tag whose device was omitted.
+        var attachedShares: [DoryMachineShareConfiguration] {
+            resolvedDevices?.directorySharing == false ? [] : shares
+        }
+
+        var rawHVBootAuthorityKind: RawHVVirtualHardwareBootAuthorityKind {
+            switch bootPayload {
+            case .legacyPaths: .legacyPaths
+            case .immutableBytes: .resolvedImmutableBytes
+            }
+        }
     }
 
     enum NetworkPlan: Equatable {
@@ -609,6 +1075,29 @@ enum DesktopMode {
         }
     }
 
+    enum GenericGuestShareReadiness: Equatable, Sendable {
+        case mounted(Int)
+        case unavailableMissingCapability([String])
+        case unavailableMissingTools([String])
+
+        var detailSuffix: String {
+            switch self {
+            case .mounted(let count):
+                count == 0
+                    ? ""
+                    : "; \(count) virtio-fs share(s) proven mounted by Dory Tools"
+            case .unavailableMissingCapability(let tags):
+                "; requested virtio-fs shares unavailable because Dory Tools does not advertise virtiofs-mount@1: "
+                    + tags.joined(separator: ", ")
+            case .unavailableMissingTools(let tags):
+                tags.isEmpty
+                    ? ""
+                    : "; requested virtio-fs shares unavailable because guest tools are not installed: "
+                        + tags.joined(separator: ", ")
+            }
+        }
+    }
+
     enum ShutdownPlan: Equatable {
         case guestAssisted
         case immediate
@@ -621,7 +1110,7 @@ enum DesktopMode {
 
     private struct ResolvedGraphics {
         var backend: DoryDesktopGraphicsBackend
-        var renderer: VirglRenderer?
+        var rendererWorkerLaunch: DesktopRendererWorkerLaunch?
     }
 
     @MainActor
@@ -632,16 +1121,29 @@ enum DesktopMode {
 
     @MainActor
     private final class Controller: NSObject, NSApplicationDelegate, NSWindowDelegate {
+        private struct MaterializedVirtioBackend {
+            let request: DoryRawHVVirtualDeviceRequest
+            let backend: any VirtioDeviceBackend
+        }
+
         private let configuration: Configuration
         private let application = NSApplication.shared
         private let stateLock: EngineStateDirectoryLock
         private let serialLog: FileHandle
+        private let serialOutput: BoundedSerialConsolePublisher
+        #if arch(arm64)
+        private let serialConsoleInput: RawHVSerialConsoleInput
+        #endif
         private let machine: Machine
+        private let machineRunner: RawHVMachineRunner
+        private let gpu: VirtioGPU
         private let graphicsBackend: DoryDesktopGraphicsBackend
+        private let rendererWorkerLaunch: DesktopRendererWorkerLaunch?
+        private let rendererRuntimeFailureLatch: DesktopRendererRuntimeFailureLatch?
         private let keyboardInput: VirtioInput
         private let pointerInput: VirtioInput
         private let mailboxes: [DesktopFrameMailbox]
-        private let displays: [DesktopMetalView]
+        private let displays: [DesktopDisplayView]
         private let windows: [NSWindow]
         private let displayAssignments: [DoryGuestDisplayPresentationAssignment?]
         private let vsock: VirtioVsock
@@ -658,11 +1160,31 @@ enum DesktopMode {
         private let firstFrame: FirstFrameGate
         private let deviceTelemetry: RawDeviceTelemetryRegistry
         private let lifecycleReceiptServer: VmmLifecycleReceiptServer
+        private let graphicsSelection: DoryRuntimeGraphicsSelection?
+        private var filesystemWorker: DoryFilesystemWorkerLaunch?
         private var signalSources = [DispatchSourceSignal]()
         private var stopError: Error?
         private var stopping = false
+        private var gpuShutdownReceipt: VirtioGPUQuiescence?
+        private var gpuShutdownResult: DesktopGPUShutdownBoundaryResult?
+        private var gpuShutdownWaitScheduled = false
+        private var machineExecutionState = DesktopMachineExecutionState.notStarted
+        private let signalQueue = DispatchQueue(
+            label: "dev.dory.dory-hv.desktop-signals",
+            qos: .userInitiated
+        )
 
         init(configuration: Configuration) throws {
+            let virtualHardwareAttachmentMode = try RawHVVirtualHardwareAttachmentPlan.launchMode(
+                diskAuthority: configuration.rootDisk.virtualHardwareDiskAuthorityKind,
+                bootAuthority: configuration.rawHVBootAuthorityKind,
+                topology: configuration.rawHVVirtualHardwareTopology,
+                resolvedGraphics: configuration.resolvedGraphics,
+                resolvedDevices: configuration.resolvedDevices,
+                resolvedPortForwards: configuration.resolvedPortForwards,
+                resolvedSystemDiskLogicalID: configuration.resolvedSystemDiskLogicalID,
+                directoryShareStableIDs: configuration.shares.map(\.tag)
+            )
             self.configuration = configuration
             let deviceTelemetry = RawDeviceTelemetryRegistry(
                 machineID: configuration.machineID,
@@ -684,11 +1206,25 @@ enum DesktopMode {
                 machineID: configuration.machineID,
                 operationID: configuration.operationID
             )
+            self.serialOutput = try BoundedSerialConsolePublisher(destinations: [
+                .init(fileHandle: FileHandle.standardError),
+                .init(fileHandle: serialLog, synchronizeOnStop: true),
+            ])
             let resolvedGraphics = try Self.resolveGraphics(
-                environment: configuration.environment,
-                exactLevel: configuration.resolvedGraphics
+                legacyBackend: configuration.legacyGraphicsBackend,
+                exactLevel: configuration.resolvedGraphics,
+                rendererWorkerLaunch: configuration.rendererWorkerLaunch
             )
             self.graphicsBackend = resolvedGraphics.backend
+            self.rendererWorkerLaunch = resolvedGraphics.rendererWorkerLaunch
+            let rendererRuntimeFailureLatch = resolvedGraphics.rendererWorkerLaunch == nil
+                ? nil : DesktopRendererRuntimeFailureLatch()
+            self.rendererRuntimeFailureLatch = rendererRuntimeFailureLatch
+            self.graphicsSelection = try Self.graphicsSelection(
+                configuration: configuration,
+                resolvedBackend: resolvedGraphics.backend,
+                rendererWorkerLaunch: resolvedGraphics.rendererWorkerLaunch
+            )
             let networkPlan = try NetworkPlan(resolvedDevices: configuration.resolvedDevices)
             let networkInterface = configuration.resolvedDevices?.networkInterface
             if let networkInterface, !networkInterface.isValid {
@@ -716,9 +1252,8 @@ enum DesktopMode {
                 environment: configuration.environment,
                 genericGuest: configuration.genericGuest
             )
-            self.machine = try Machine(configuration: MachineConfiguration(
-                kernelPath: configuration.kernelPath,
-                initrdPath: configuration.initrdPath,
+            let machine = try Machine(configuration: MachineConfiguration(
+                bootPayload: configuration.bootPayload,
                 commandLine: Self.kernelCommandLine(
                     machineID: configuration.machineID,
                     operationID: configuration.operationID,
@@ -729,20 +1264,36 @@ enum DesktopMode {
                 memoryBytes: configuration.memoryMB << 20,
                 cpuCount: configuration.cpuCount
             ))
-            Self.attachPlatformDevices(to: machine, serialLog: serialLog)
+            self.machine = machine
+            self.machineRunner = RawHVMachineRunner(
+                machine: machine,
+                threadName: "dory-hv.desktop.vcpu0"
+            )
+            #if arch(arm64)
+            let uart = Self.attachPlatformDevices(to: machine, serialOutput: serialOutput)
+            self.serialConsoleInput = try RawHVSerialConsoleInput(
+                socketPath: configuration.consoleSocketPath,
+                uart: uart
+            )
+            #endif
 
             self.keyboardInput = VirtioInput(profile: .keyboard)
             self.pointerInput = VirtioInput(profile: .absolutePointer)
+            let rendererWorkerLaunch = resolvedGraphics.rendererWorkerLaunch
             var mailboxes = [DesktopFrameMailbox]()
             var cursorMailboxes = [DesktopCursorMailbox]()
-            var displays = [DesktopMetalView]()
+            var displays = [DesktopDisplayView]()
+            let presentationBudget = DesktopCPUPresentationBudget.processDefault
             let pointerTopology = DesktopPointerTopology(sizes: displayPlans.map {
                 VirtioGPUScanoutSize(width: $0.widthPixels, height: $0.heightPixels)
             })
             for plan in displayPlans {
-                let mailbox = DesktopFrameMailbox()
+                let mailbox = DesktopFrameMailbox(
+                    scanoutID: plan.scanoutID,
+                    sharedCPUPresentationBudget: presentationBudget
+                )
                 let cursorMailbox = DesktopCursorMailbox()
-                let display = try DesktopMetalView(
+                let metalDisplay = try DesktopMetalView(
                     frame: NSRect(origin: .zero, size: plan.windowSize),
                     keyboardInput: keyboardInput,
                     pointerInput: pointerInput,
@@ -750,6 +1301,27 @@ enum DesktopMode {
                     scanoutID: plan.scanoutID,
                     pointerTopology: pointerTopology
                 )
+                metalDisplay.onDeviceFailure = {
+                    [
+                        weak machine,
+                        weak rendererWorkerLaunch,
+                        rendererRuntimeFailureLatch,
+                    ] reason in
+                    rendererRuntimeFailureLatch?.record(
+                        kind: .metalDevice,
+                        reason: reason
+                    )
+                    rendererWorkerLaunch?.failSynchronizedPresentation(reason)
+                    rendererWorkerLaunch?.teardown(reason: reason)
+                    machine?.requestStop(.crash("Metal display failed closed: \(reason)"))
+                }
+                metalDisplay.onWorkerPresentationCompleted = {
+                    [weak rendererWorkerLaunch] workerGeneration in
+                    rendererWorkerLaunch?.recordSynchronizedPresentation(
+                        workerGeneration: workerGeneration
+                    )
+                }
+                let display: DesktopDisplayView = metalDisplay
                 mailbox.view = display
                 cursorMailbox.view = display
                 mailboxes.append(mailbox)
@@ -761,27 +1333,36 @@ enum DesktopMode {
             let firstFrame = FirstFrameGate(requiredScanoutCount: displayPlans.count)
             self.firstFrame = firstFrame
 
-            let renderer = resolvedGraphics.renderer
-            let hostVisibleMemory = try renderer.map { _ in
-                try VirtioGPUHostVisibleMemory(guestBase: GuestLayout.daxWindowBase)
-            }
+            let hostVisibleMemory = try rendererWorkerLaunch != nil
+                ? VirtioGPUHostVisibleMemory(guestBase: GuestLayout.daxWindowBase)
+                : nil
             let gpu = VirtioGPU(
                 hostMemoryBase: GuestLayout.daxWindowBase,
                 scanoutSizes: displayPlans.map {
                     VirtioGPUScanoutSize(width: $0.widthPixels, height: $0.heightPixels)
                 },
-                renderer: renderer,
+                rendererWorkerCandidate: rendererWorkerLaunch?.commandLane,
                 hostVisibleMemory: hostVisibleMemory,
-                traceResourceLifecycle: configuration.environment["DORY_GPU_TRACE_RESOURCES"] == "1",
                 onScanoutFrame: { [mailboxes, firstFrame] frame in
                     guard mailboxes.indices.contains(Int(frame.scanoutID)) else { return }
                     mailboxes[Int(frame.scanoutID)].submit(frame)
                     firstFrame.signal(scanoutID: frame.scanoutID)
                 },
-                onScanoutResourceReleased: { [mailboxes] resourceID in
-                    for mailbox in mailboxes {
-                        mailbox.release(resourceID: resourceID)
+                onMetalScanout: { [mailboxes] update in
+                    guard mailboxes.indices.contains(Int(update.scanoutID)) else {
+                        update.presentation.discardWithoutPresentation()
+                        return
                     }
+                    mailboxes[Int(update.scanoutID)].submit(update)
+                },
+                onScanoutResourceReleased: { [mailboxes] release in
+                    for mailbox in mailboxes {
+                        mailbox.release(release)
+                    }
+                },
+                onScanoutDisabled: { [mailboxes] scanoutID in
+                    guard mailboxes.indices.contains(Int(scanoutID)) else { return }
+                    mailboxes[Int(scanoutID)].disable()
                 },
                 onCursorUpdate: { [cursorMailboxes] update in
                     guard let update else {
@@ -790,29 +1371,92 @@ enum DesktopMode {
                     }
                     guard cursorMailboxes.indices.contains(Int(update.scanoutID)) else { return }
                     cursorMailboxes[Int(update.scanoutID)].submit(update)
+                },
+                onRendererWorkerFailure: {
+                    [
+                        weak machine,
+                        weak rendererWorkerLaunch,
+                        rendererRuntimeFailureLatch,
+                    ] reason in
+                    rendererRuntimeFailureLatch?.record(
+                        kind: .worker,
+                        reason: reason
+                    )
+                    rendererWorkerLaunch?.failSynchronizedPresentation(reason)
+                    rendererWorkerLaunch?.teardown(reason: reason)
+                    machine?.requestStop(.crash(
+                        "renderer worker failed closed: \(reason)"
+                    ))
                 }
             )
+            self.gpu = gpu
+            let initializationRollback = DesktopInitializationRollback()
+            defer { initializationRollback.performIfNeeded() }
+            initializationRollback.register {
+                let receipt = DesktopGPUShutdownBoundary.begin(
+                    quiesce: { gpu.quiesce(reason: .shutdown) },
+                    detachPresentations: {
+                        for mailbox in mailboxes { mailbox.deliver() }
+                    }
+                )
+                let result = DesktopGPUShutdownBoundary.wait(for: receipt)
+                Self.log(
+                    "dory-hv desktop: GPU initialization rollback \(result.logDescription)"
+                )
+            }
             let vsock = VirtioVsock(guestCID: 3)
             self.vsock = vsock
-            let usbipManager = UsbipManager()
-            usbipManager.attachListener(to: vsock)
+            initializationRollback.register { _ = vsock.quiesce() }
+            let usbipManager = UsbipManager(log: Self.log)
+            try usbipManager.attachListener(to: vsock)
+            initializationRollback.register {
+                // Initialization rollback runs before startMachine(), so guest execution never
+                // acquired vhci state. Use the same explicit terminal boundary as normal teardown.
+                switch usbipManager.stopAfterGuestExecutionEnded() {
+                case .completed:
+                    break
+                case .authorityRetained(let busIDs):
+                    let detail = busIDs.isEmpty
+                        ? "pending listener, bridge, or device drain"
+                        : "claims: \(busIDs.joined(separator: ", "))"
+                    Self.log(
+                        "dory-hv desktop: USB/IP initialization retirement retained authority asynchronously (\(detail))"
+                    )
+                }
+            }
             self.usbipManager = usbipManager
             let usbControlHandler = UsbControlHandler(
                 manager: usbipManager,
+                allowedOpenModes: [.userAuthorized],
                 ensureSupported: {
-                    let channel = AgentChannel(connection: vsock.connect(port: VsockPorts.agent))
+                    let channel = AgentChannel(
+                        connection: try vsock.connectForServiceIfCapacity(
+                            port: VsockPorts.agent,
+                            service: .agentRPC
+                        )
+                    )
                     try await channel.requireCapability("usb-vhci", version: 1)
                 },
                 openDevice: { busID, mode in
                     try HostUsbDeviceFactory.open(busID: busID, mode: mode)
                 },
                 notifyAttach: { request in
-                    let channel = AgentChannel(connection: vsock.connect(port: VsockPorts.agent))
+                    let channel = AgentChannel(
+                        connection: try vsock.connectForServiceIfCapacity(
+                            port: VsockPorts.agent,
+                            service: .agentRPC
+                        )
+                    )
                     try await channel.requireCapability("usb-vhci", version: 1)
                     try await channel.usbVhciAttach(request)
                 },
                 notifyDetach: { request in
-                    let channel = AgentChannel(connection: vsock.connect(port: VsockPorts.agent))
+                    let channel = AgentChannel(
+                        connection: try vsock.connectForServiceIfCapacity(
+                            port: VsockPorts.agent,
+                            service: .agentRPC
+                        )
+                    )
                     try await channel.requireCapability("usb-vhci", version: 1)
                     try await channel.usbVhciDetach(request)
                 }
@@ -828,6 +1472,11 @@ enum DesktopMode {
 
             let runtimeDirectory = (configuration.agentSocketPath as NSString).deletingLastPathComponent
             try FileManager.default.createDirectory(atPath: runtimeDirectory, withIntermediateDirectories: true)
+            guard chmod(runtimeDirectory, 0o700) == 0 else {
+                throw VMError.bootFailure(
+                    "could not secure raw-HV runtime socket directory: \(errno)"
+                )
+            }
             let token = String(configuration.machineID.prefix(12))
             let networkRuntime = try Self.prepareNetwork(
                 plan: networkPlan,
@@ -837,6 +1486,13 @@ enum DesktopMode {
                 token: token,
                 resolvedPortForwards: configuration.resolvedPortForwards
             )
+            initializationRollback.register {
+                networkRuntime.portForwardReconciler?.stop()
+                if let process = networkRuntime.process {
+                    ChildProcessTerminator.terminateAndReap(process)
+                }
+                for path in networkRuntime.socketPaths { unlink(path) }
+            }
             self.gvproxy = networkRuntime.process
             self.networkSocketPaths = networkRuntime.socketPaths
             self.resolvedPortForwardReconciler = networkRuntime.portForwardReconciler
@@ -846,10 +1502,14 @@ enum DesktopMode {
                 }
             }
             do {
-                var backends: [VirtioDeviceBackend] = [
-                    try VirtioBlk(path: configuration.rootfsPath, identity: "dory-rootfs"),
+                let rootDisk = try configuration.rootDisk.makeBackend(
+                    queueCount: configuration.systemDiskQueueCount
+                )
+                let entropy = VirtioRng()
+                var backends: [any VirtioDeviceBackend] = [
+                    rootDisk,
                     gpu,
-                    VirtioRng(),
+                    entropy,
                     balloon,
                     vsock,
                 ]
@@ -862,24 +1522,170 @@ enum DesktopMode {
                 if configuration.resolvedDevices?.audioInput != false {
                     backends.append(sound)
                 }
-                let attachedShares = configuration.resolvedDevices?.directorySharing == false
-                    ? [] : configuration.shares
-                for share in attachedShares {
-                    let rawShare = try VirtioFSShareConfiguration(
+                let attachedShares = configuration.attachedShares
+                let rawShares = try attachedShares.map { share in
+                    try VirtioFSShareConfiguration(
                         tag: share.tag,
                         path: share.hostPath,
                         readOnly: share.readOnly,
                         guestMountPoint: share.guestPath
                     )
-                    backends.append(try rawShare.makeBackend(
-                        requestQueueCount: min(8, max(1, configuration.cpuCount))
-                    ))
+                }
+                let filesystemWorker = rawShares.isEmpty
+                    ? nil
+                    : try DoryFilesystemWorkerLauncher.startBlocking(shares: rawShares)
+                self.filesystemWorker = filesystemWorker
+                if let filesystemWorker {
+                    initializationRollback.register {
+                        filesystemWorker.client.invalidate()
+                    }
+                }
+                var shareBackends = [(share: DoryMachineShareConfiguration,
+                                      backend: any VirtioDeviceBackend)]()
+                for (share, rawShare) in zip(attachedShares, rawShares) {
+                    guard let filesystemWorker else {
+                        throw VMError.invalidConfiguration(
+                            "filesystem worker missing for attached share"
+                        )
+                    }
+                    let backend = try rawShare.makeBackend(
+                        broker: filesystemWorker.broker(for: rawShare),
+                        requestQueueCount: min(8, max(1, configuration.cpuCount)),
+                        onWorkerLifecycle: { [weak machine] event in
+                            Self.log("dory-hv desktop: \(event.diagnostic)")
+                            if case .failure(let reason) = event {
+                                machine?.requestStop(.crash(reason))
+                            }
+                        }
+                    )
+                    backends.append(backend)
+                    shareBackends.append((share, backend))
                 }
                 if let network = networkRuntime.backend {
                     backends.append(network)
                 }
-                for (slot, backend) in backends.enumerated() {
-                    let transport = Self.attachBackend(backend, to: machine, slot: slot)
+
+                let attachments: [(slot: Int, backend: any VirtioDeviceBackend)]
+                let resolvedAssignments: [RawHVVirtualHardwareAttachmentAssignment]?
+                switch virtualHardwareAttachmentMode {
+                case .legacy:
+                    resolvedAssignments = nil
+                case .resolved(let assignments):
+                    resolvedAssignments = assignments
+                }
+                if let preflightAssignments = resolvedAssignments {
+                    let authorizedDevices = preflightAssignments.map(\.request)
+                    var materialized = [MaterializedVirtioBackend]()
+                    materialized.append(try Self.singletonMaterialization(
+                        role: .systemDisk,
+                        authorizedDevices: authorizedDevices,
+                        backend: rootDisk
+                    ))
+                    materialized.append(try Self.singletonMaterialization(
+                        role: .graphics,
+                        authorizedDevices: authorizedDevices,
+                        backend: gpu
+                    ))
+                    materialized.append(try Self.singletonMaterialization(
+                        role: .entropy,
+                        authorizedDevices: authorizedDevices,
+                        backend: entropy
+                    ))
+                    materialized.append(try Self.singletonMaterialization(
+                        role: .balloon,
+                        authorizedDevices: authorizedDevices,
+                        backend: balloon
+                    ))
+                    materialized.append(try Self.singletonMaterialization(
+                        role: .vsock,
+                        authorizedDevices: authorizedDevices,
+                        backend: vsock
+                    ))
+                    if configuration.resolvedDevices?.keyboard == true {
+                        materialized.append(try Self.singletonMaterialization(
+                            role: .keyboard,
+                            authorizedDevices: authorizedDevices,
+                            backend: keyboardInput
+                        ))
+                    }
+                    if configuration.resolvedDevices?.pointer == true {
+                        materialized.append(try Self.singletonMaterialization(
+                            role: .pointer,
+                            authorizedDevices: authorizedDevices,
+                            backend: pointerInput
+                        ))
+                    }
+                    if configuration.resolvedDevices?.audioInput == true {
+                        materialized.append(try Self.singletonMaterialization(
+                            role: .audio,
+                            authorizedDevices: authorizedDevices,
+                            backend: sound
+                        ))
+                    }
+                    for entry in shareBackends {
+                        materialized.append(MaterializedVirtioBackend(
+                            request: DoryRawHVVirtualDeviceRequest(
+                                logicalID: try DoryVirtualDeviceID.derived(
+                                    namespace: .directoryShare,
+                                    stableID: entry.share.tag
+                                ),
+                                role: .directoryShare
+                            ),
+                            backend: entry.backend
+                        ))
+                    }
+                    guard let network = networkRuntime.backend,
+                          let networkInterface = configuration.resolvedDevices?.networkInterface else {
+                        throw VMError.invalidConfiguration(
+                            "resolved RawHV topology requires its stable network function"
+                        )
+                    }
+                    materialized.append(MaterializedVirtioBackend(
+                        request: DoryRawHVVirtualDeviceRequest(
+                            logicalID: try DoryVirtualDeviceID.derived(
+                                namespace: .network,
+                                stableID: networkInterface.id
+                            ),
+                            role: .network
+                        ),
+                        backend: network
+                    ))
+                    guard let topology = configuration.rawHVVirtualHardwareTopology else {
+                        throw VMError.invalidConfiguration(
+                            "resolved RawHV preflight lost its durable topology"
+                        )
+                    }
+                    let assignments = try RawHVVirtualHardwareAttachmentPlan.assignments(
+                        topology: topology,
+                        materializedDevices: materialized.map(\.request)
+                    )
+                    guard assignments == preflightAssignments else {
+                        throw VMError.invalidConfiguration(
+                            "materialized RawHV assignments differ from preflight"
+                        )
+                    }
+                    attachments = try assignments.map { assignment in
+                        guard let materializedBackend = materialized.first(where: {
+                            $0.request == assignment.request
+                        }) else {
+                            throw VMError.invalidConfiguration(
+                                "authorized RawHV device has no materialized backend"
+                            )
+                        }
+                        return (assignment.mmioSlot, materializedBackend.backend)
+                    }
+                } else {
+                    attachments = backends.enumerated().map { ($0.offset, $0.element) }
+                }
+
+                for attachment in attachments {
+                    let slot = attachment.slot
+                    let backend = attachment.backend
+                    let transport = try Self.attachBackend(
+                        backend,
+                        to: machine,
+                        slot: slot
+                    )
                     let audioMetrics: (@Sendable () -> DoryMacAudioRuntimeMetrics?)?
                     if backend === sound {
                         audioMetrics = { [weak audio] in audio?.runtimeMetrics }
@@ -892,7 +1698,8 @@ enum DesktopMode {
                             mailboxes.map(\.metrics).reduce(
                                 DesktopFrameMailboxMetrics(
                                     presentedFrames: 0,
-                                    droppedFrames: 0
+                                    droppedFrames: 0,
+                                    budgetRejectedFrames: 0
                                 )
                             ) { partial, next in
                                 DesktopFrameMailboxMetrics(
@@ -901,6 +1708,31 @@ enum DesktopMode {
                                     ),
                                     droppedFrames: partial.droppedFrames.addingClamped(
                                         next.droppedFrames
+                                    ),
+                                    budgetRejectedFrames:
+                                        partial.budgetRejectedFrames.addingClamped(
+                                            next.budgetRejectedFrames
+                                        ),
+                                    receivedFrameBytes: partial.receivedFrameBytes.addingClamped(
+                                        next.receivedFrameBytes
+                                    ),
+                                    stagingCopyBytes: partial.stagingCopyBytes.addingClamped(
+                                        next.stagingCopyBytes
+                                    ),
+                                    drainCopyBytes: partial.drainCopyBytes.addingClamped(
+                                        next.drainCopyBytes
+                                    ),
+                                    uploadedFrameBytes: partial.uploadedFrameBytes.addingClamped(
+                                        next.uploadedFrameBytes
+                                    ),
+                                    droppedFrameBytes: partial.droppedFrameBytes.addingClamped(
+                                        next.droppedFrameBytes
+                                    ),
+                                    pendingFrameBytes: partial.pendingFrameBytes.addingClamped(
+                                        next.pendingFrameBytes
+                                    ),
+                                    pendingFrameDepth: partial.pendingFrameDepth.addingClamped(
+                                        next.pendingFrameDepth
                                     )
                                 )
                             }
@@ -908,12 +1740,20 @@ enum DesktopMode {
                     } else {
                         displayMetrics = nil
                     }
+                    let presentationBudgetMetrics:
+                        (@Sendable () -> DesktopCPUPresentationBudgetMetrics?)?
+                    if backend === gpu {
+                        presentationBudgetMetrics = { presentationBudget.metrics }
+                    } else {
+                        presentationBudgetMetrics = nil
+                    }
                     deviceTelemetry.register(
                         slot: slot,
                         backend: backend,
                         transport: transport,
                         audioMetrics: audioMetrics,
-                        displayMetrics: displayMetrics
+                        displayMetrics: displayMetrics,
+                        presentationBudgetMetrics: presentationBudgetMetrics
                     )
                     if backend === gpu, configuration.resolvedDevices?.dynamicDisplay != false {
                         for (index, display) in displays.enumerated() {
@@ -936,25 +1776,38 @@ enum DesktopMode {
                         }
                     }
                 }
+                if let resolvedAssignments {
+                    guard machine.attachedVirtioSlots.map(\.slot)
+                            == resolvedAssignments.map(\.mmioSlot) else {
+                        throw VMError.invalidConfiguration(
+                            "materialized MMIO layout differs from the durable RawHV topology"
+                        )
+                    }
+                }
                 try machine.loadBootPayload()
             } catch {
-                if let gvproxy = networkRuntime.process {
-                    ChildProcessTerminator.terminateAndReap(gvproxy)
-                }
-                for path in networkSocketPaths { unlink(path) }
+                initializationRollback.performIfNeeded()
                 throw error
             }
 
             self.agentBridge = GuestVsockSocketBridge(
                 socketPath: configuration.agentSocketPath,
                 guestPort: VsockPorts.agent,
+                service: .agentSocket,
                 log: Self.log
             )
             self.shellBridge = GuestVsockSocketBridge(
                 socketPath: configuration.shellSocketPath,
                 guestPort: 1027,
+                service: .shell,
                 log: Self.log
             )
+            let rollbackAgentBridge = self.agentBridge
+            let rollbackShellBridge = self.shellBridge
+            initializationRollback.register {
+                rollbackAgentBridge.stop()
+                rollbackShellBridge.stop()
+            }
             try agentBridge.attach(to: vsock)
             try shellBridge.attach(to: vsock)
             if let sshAgentSocketPath = configuration.sshAgentSocketPath {
@@ -962,7 +1815,8 @@ enum DesktopMode {
                     socketPath: sshAgentSocketPath,
                     log: Self.log
                 )
-                bridge.attach(to: vsock)
+                initializationRollback.register { bridge.stop() }
+                try bridge.attach(to: vsock)
                 self.sshAgentBridge = bridge
             } else {
                 self.sshAgentBridge = nil
@@ -1014,7 +1868,7 @@ enum DesktopMode {
                     : "\(configuration.machineID) — Dory Linux — Display \(index + 1)"
                 // Keep the Metal surface bound to the window's *actual* content layout. A
                 // dedicated display can transiently remain a normal titled window while AppKit
-                // enters its fullscreen Space. Installing the fixed-size MTKView directly as the
+                // enters its fullscreen Space. Installing a fixed-size display view directly as the
                 // content view left its original 1920x1080 bounds clipped inside a 1920x1020
                 // visible content area, so the framebuffer and absolute tablet normalized
                 // different coordinate spaces. The AppKit-managed container always follows the
@@ -1055,9 +1909,14 @@ enum DesktopMode {
                 }
             }
             clipboard?.start()
+            initializationRollback.commit()
         }
 
         func run() throws {
+            defer {
+                ensureGPUShutdownBeforeTeardown()
+                cleanup()
+            }
             try usbControlServer?.start()
             do {
                 try lifecycleReceiptServer.start()
@@ -1071,7 +1930,7 @@ enum DesktopMode {
             installSignalHandlers()
             for window in windows { window.makeKeyAndOrderFront(nil) }
             application.activate()
-            DispatchQueue.main.async { [weak self] in
+            DesktopAppRunLoop.perform { [weak self] in
                 guard let self else { return }
                 for (window, assignment) in zip(self.windows, self.displayAssignments) {
                     _ = DoryHostDisplayPresentation.enterDedicatedFullscreen(
@@ -1080,9 +1939,8 @@ enum DesktopMode {
                     )
                 }
             }
-            startMachine()
+            try startMachine()
             application.run()
-            cleanup()
             if let stopError { throw stopError }
         }
 
@@ -1153,21 +2011,26 @@ enum DesktopMode {
             for display in displays { display.releasePressedInput() }
         }
 
-        private func startMachine() {
+        private func startMachine() throws {
             let machine = self.machine
-            DispatchQueue.global(qos: .userInteractive).async { [weak self] in
-                do {
-                    let reason = try machine.run()
-                    DispatchQueue.main.async {
-                        MainActor.assumeIsolated {
-                            self?.finish(error: Self.error(for: reason))
+            machineExecutionState = .running
+            do {
+                try machineRunner.start { [weak self] result in
+                    DesktopAppRunLoop.perform {
+                        switch result {
+                        case .success(let reason):
+                            self?.finish(
+                                error: Self.error(for: reason),
+                                machineExecutionEnded: true
+                            )
+                        case .failure(let error):
+                            self?.finish(error: error, machineExecutionEnded: true)
                         }
                     }
-                } catch {
-                    DispatchQueue.main.async {
-                        MainActor.assumeIsolated { self?.finish(error: error) }
-                    }
                 }
+            } catch {
+                machineExecutionState = .notStarted
+                throw error
             }
 
             let configuration = self.configuration
@@ -1176,52 +2039,197 @@ enum DesktopMode {
             DispatchQueue.global(qos: .userInitiated).async { [weak self] in
                 do {
                     if configuration.genericGuest {
-                        guard firstFrame.wait(timeout: 90) else {
-                            throw VMError.bootFailure(
-                                "generic Linux guest did not publish a graphics frame within 90s"
-                            )
-                        }
-                        try VmmHandoffClient.send(
-                            path: configuration.handoffSocketPath,
-                            ready: VmmReadyMessage(
-                                machineID: configuration.machineID,
-                                operationID: DoryOperationIdentity.canonical(
-                                    configuration.operationID
-                                ),
-                                agentBuild: "dory-hv/generic-linux",
-                                controlSocketPath: configuration.controlSocketPath,
-                                detail: "raw-HV generic Linux running with \(graphicsDisplayName) graphics; guest tools are not installed"
-                            )
+                        try DesktopGuestReadinessBoundary.complete(
+                            genericGuest: true,
+                            prepare: {
+                                guard configuration.rendererWorkerLaunch != nil
+                                        || firstFrame.wait(timeout: 90) else {
+                                    throw VMError.bootFailure(
+                                        "generic Linux guest did not publish a graphics frame within 90s"
+                                    )
+                                }
+                                return try Self.prepareGenericGuestIntegration(
+                                    configuration: configuration,
+                                    timeout: 15
+                                )
+                            },
+                            waitForSynchronizedPresentation: {
+                                if let rendererWorkerLaunch =
+                                    configuration.rendererWorkerLaunch {
+                                    // Generic media has no Dory-owned display-manager barrier, so
+                                    // retain the existing renderer-first readiness contract.
+                                    try rendererWorkerLaunch
+                                        .waitForFirstSynchronizedPresentation(timeout: 90)
+                                }
+                            },
+                            publish: { integration in
+                                switch integration {
+                                case let .tools(info, shareState):
+                                    DesktopAppRunLoop.perform { [weak self] in
+                                        self?.clipboard?.markGuestReady()
+                                    }
+                                    try configuration.rendererWorkerLaunch?
+                                        .claimSynchronizedPresentationForPublication()
+                                    try VmmHandoffClient.send(
+                                        path: configuration.handoffSocketPath,
+                                        ready: VmmReadyMessage(
+                                            machineID: configuration.machineID,
+                                            operationID: DoryOperationIdentity.canonical(
+                                                configuration.operationID
+                                            ),
+                                            agentBuild: info.agentBuild,
+                                            agentProtocolVersion: info.protocolVersion,
+                                            agentCapabilities: info.capabilities,
+                                            agentSocketPath: configuration.agentSocketPath,
+                                            shellSocketPath: configuration.shellSocketPath,
+                                            controlSocketPath: configuration.controlSocketPath,
+                                            graphicsSelection: self?.graphicsSelection,
+                                            detail: "raw-HV generic Linux running with \(graphicsDisplayName) graphics and Dory Tools protocol \(info.protocolVersion)\(shareState.detailSuffix)"
+                                        )
+                                    )
+                                case .unavailable:
+                                    let shareState = GenericGuestShareReadiness
+                                        .unavailableMissingTools(
+                                            configuration.attachedShares.map(\.tag)
+                                        )
+                                    try configuration.rendererWorkerLaunch?
+                                        .claimSynchronizedPresentationForPublication()
+                                    try VmmHandoffClient.send(
+                                        path: configuration.handoffSocketPath,
+                                        ready: VmmReadyMessage(
+                                            machineID: configuration.machineID,
+                                            operationID: DoryOperationIdentity.canonical(
+                                                configuration.operationID
+                                            ),
+                                            agentBuild: "dory-hv/generic-linux",
+                                            controlSocketPath: configuration.controlSocketPath,
+                                            graphicsSelection: self?.graphicsSelection,
+                                            detail: "raw-HV generic Linux running with \(graphicsDisplayName) graphics; guest tools are not installed\(shareState.detailSuffix)"
+                                        )
+                                    )
+                                }
+                            }
                         )
                         return
                     }
-                    let info = try Self.prepareGuest(configuration: configuration)
-                    DispatchQueue.main.async { [weak self] in
-                        MainActor.assumeIsolated { self?.clipboard?.markGuestReady() }
-                    }
-                    try VmmHandoffClient.send(
-                        path: configuration.handoffSocketPath,
-                        ready: VmmReadyMessage(
-                            machineID: configuration.machineID,
-                            operationID: DoryOperationIdentity.canonical(
-                                configuration.operationID
-                            ),
-                            agentBuild: info.agentBuild,
-                            agentProtocolVersion: info.protocolVersion,
-                            agentCapabilities: info.capabilities,
-                            agentSocketPath: configuration.agentSocketPath,
-                            shellSocketPath: configuration.shellSocketPath,
-                            controlSocketPath: configuration.controlSocketPath,
-                            detail: "raw-HV desktop running with \(graphicsDisplayName) graphics; dory-agent answered protocol \(info.protocolVersion)"
-                        )
+                    try DesktopGuestReadinessBoundary.complete(
+                        genericGuest: false,
+                        prepare: {
+                            // prepareGuest writes /var/lib/dory/host-configured. The managed
+                            // display manager is deliberately blocked on that marker, so it must
+                            // exist before a renderer-backed presentation can be required.
+                            try Self.prepareGuest(configuration: configuration)
+                        },
+                        waitForSynchronizedPresentation: {
+                            if let rendererWorkerLaunch =
+                                configuration.rendererWorkerLaunch {
+                                // The immutable receipt and kernel/fence authority select the
+                                // candidate, but handoff still requires a real worker-backed frame
+                                // across the producer-fence wait and Metal completion boundary.
+                                try rendererWorkerLaunch
+                                    .waitForFirstSynchronizedPresentation(timeout: 90)
+                            }
+                        },
+                        publish: { info in
+                            DesktopAppRunLoop.perform { [weak self] in
+                                self?.clipboard?.markGuestReady()
+                            }
+                            try configuration.rendererWorkerLaunch?
+                                .claimSynchronizedPresentationForPublication()
+                            try VmmHandoffClient.send(
+                                path: configuration.handoffSocketPath,
+                                ready: VmmReadyMessage(
+                                    machineID: configuration.machineID,
+                                    operationID: DoryOperationIdentity.canonical(
+                                        configuration.operationID
+                                    ),
+                                    agentBuild: info.agentBuild,
+                                    agentProtocolVersion: info.protocolVersion,
+                                    agentCapabilities: info.capabilities,
+                                    agentSocketPath: configuration.agentSocketPath,
+                                    shellSocketPath: configuration.shellSocketPath,
+                                    controlSocketPath: configuration.controlSocketPath,
+                                    graphicsSelection: self?.graphicsSelection,
+                                    detail: "raw-HV desktop running with \(graphicsDisplayName) graphics; dory-agent answered protocol \(info.protocolVersion)"
+                                )
+                            )
+                        }
                     )
                 } catch {
+                    configuration.rendererWorkerLaunch?.teardown(
+                        reason: "desktop readiness failed: \(error)"
+                    )
                     machine.requestStop(.crash("desktop readiness failed: \(error)"))
-                    DispatchQueue.main.async {
-                        MainActor.assumeIsolated { self?.finish(error: error) }
+                    DesktopAppRunLoop.perform {
+                        self?.finish(error: error)
                     }
                 }
             }
+        }
+
+        private enum GenericGuestIntegration: Sendable {
+            case tools(DoryAgentInfo, GenericGuestShareReadiness)
+            case unavailable
+        }
+
+        private nonisolated static func prepareGenericGuestIntegration(
+            configuration: Configuration,
+            timeout: TimeInterval
+        ) throws -> GenericGuestIntegration {
+            let deadline = Date().addingTimeInterval(timeout)
+            var lastToolsError: Error?
+            repeat {
+                let control = AgentControl(configuration: .init(
+                    directSocketPath: configuration.agentSocketPath
+                ))
+                var toolsAnswered = false
+                do {
+                    defer { control.disconnect() }
+                    let info = try control.info()
+                    toolsAnswered = true
+                    guard info.protocolVersion == DoryCore.protocolVersion() else {
+                        throw AgentControlError.incompatibleProtocol(
+                            expected: DoryCore.protocolVersion(),
+                            actual: info.protocolVersion
+                        )
+                    }
+                    guard info.capabilitiesAreCanonical else {
+                        throw AgentControlError.invalidCapabilities
+                    }
+                    guard !configuration.attachedShares.isEmpty else {
+                        return .tools(info, .mounted(0))
+                    }
+                    guard info.supports("virtiofs-mount", minimumVersion: 1) else {
+                        return .tools(
+                            info,
+                            .unavailableMissingCapability(
+                                configuration.attachedShares.map(\.tag)
+                            )
+                        )
+                    }
+                    for share in configuration.attachedShares {
+                        _ = try control.virtioFSMount(
+                            tag: share.tag,
+                            mountPath: share.guestPath,
+                            readOnly: share.readOnly
+                        )
+                    }
+                    return .tools(info, .mounted(configuration.attachedShares.count))
+                } catch {
+                    if toolsAnswered {
+                        // The typed operation is idempotent. A lost response can therefore retry
+                        // until readiness expires without an Exec fallback or an extra mount layer.
+                        lastToolsError = error
+                    }
+                }
+                Thread.sleep(forTimeInterval: 0.25)
+            } while Date() < deadline
+            if let lastToolsError {
+                throw VMError.bootFailure(
+                    "generic Linux virtio-fs integration failed after Dory Tools answered: \(lastToolsError)"
+                )
+            }
+            return .unavailable
         }
 
         private func requestGuestShutdown() {
@@ -1262,8 +2270,69 @@ enum DesktopMode {
             }
         }
 
-        private func finish(error: Error?) {
-            if stopError == nil { stopError = error }
+        private func finish(error: Error?, machineExecutionEnded: Bool = false) {
+            if machineExecutionEnded {
+                machineExecutionState = .ended
+            }
+            if stopError == nil {
+                stopError = rendererRuntimeFailureLatch?.failure ?? error
+            }
+            let receipt = beginGPUShutdownIfNeeded()
+            guard !gpuShutdownWaitScheduled else {
+                stopApplicationAfterGPUShutdown()
+                return
+            }
+            gpuShutdownWaitScheduled = true
+            DispatchQueue.global(qos: .userInitiated).async { [weak self, receipt] in
+                let result = DesktopGPUShutdownBoundary.wait(for: receipt)
+                DesktopAppRunLoop.perform { [weak self] in
+                    guard let self else { return }
+                    self.recordGPUShutdownResult(result)
+                    self.stopApplicationAfterGPUShutdown()
+                }
+            }
+        }
+
+        private func beginGPUShutdownIfNeeded() -> VirtioGPUQuiescence {
+            if let gpuShutdownReceipt { return gpuShutdownReceipt }
+            let receipt = DesktopGPUShutdownBoundary.begin(
+                quiesce: { gpu.quiesce(reason: .shutdown) },
+                detachPresentations: {
+                    for mailbox in mailboxes { mailbox.deliver() }
+                }
+            )
+            gpuShutdownReceipt = receipt
+            Self.log(
+                "dory-hv desktop: waiting for GPU shutdown quiescence at epoch \(receipt.epoch)"
+            )
+            return receipt
+        }
+
+        private func ensureGPUShutdownBeforeTeardown() {
+            guard gpuShutdownResult == nil else { return }
+            let receipt = beginGPUShutdownIfNeeded()
+            // This is the setup-failure and abnormal-run-loop fallback. A final main-actor drain
+            // makes every release acknowledgement visible before the bounded synchronous wait.
+            for mailbox in mailboxes { mailbox.deliver() }
+            recordGPUShutdownResult(DesktopGPUShutdownBoundary.wait(for: receipt))
+        }
+
+        private func recordGPUShutdownResult(_ result: DesktopGPUShutdownBoundaryResult) {
+            guard gpuShutdownResult == nil else { return }
+            gpuShutdownResult = result
+            Self.log("dory-hv desktop: GPU shutdown quiescence \(result.logDescription)")
+            if stopError == nil {
+                stopError = desktopGPUShutdownFailure(
+                    result,
+                    rendererFailureLatch: rendererRuntimeFailureLatch
+                )
+            }
+        }
+
+        private func stopApplicationAfterGPUShutdown() {
+            guard machineExecutionState.isTerminalBoundary, gpuShutdownResult != nil else {
+                return
+            }
             application.stop(nil)
             if let wakeEvent = NSEvent.otherEvent(
                 with: .applicationDefined,
@@ -1281,27 +2350,73 @@ enum DesktopMode {
         }
 
         private func cleanup() {
+            if machineExecutionState == .running {
+                machine.requestStop(.crash("AppKit run loop ended before guest execution"))
+            }
+            if machineExecutionState != .notStarted {
+                do {
+                    _ = try machineRunner.wait()
+                } catch {
+                    Self.log("dory-hv desktop: machine owner-thread join failed: \(error)")
+                    if stopError == nil { stopError = error }
+                }
+                machineExecutionState = .ended
+            }
+            filesystemWorker?.client.invalidate()
+            filesystemWorker = nil
             lifecycleReceiptServer.stop()
+            #if arch(arm64)
+            serialConsoleInput.stop()
+            #endif
             usbControlServer?.stop()
+            precondition(
+                machineExecutionState.isTerminalBoundary,
+                "desktop USB authority cannot retire while Machine.run() is executing"
+            )
+            // application.run() is stopped only by finish(), which is published after Machine.run()
+            // returns. The guest is therefore terminal before physical USB authority is released.
+            switch usbipManager.stopAfterGuestExecutionEnded() {
+            case .completed:
+                break
+            case .authorityRetained(let busIDs):
+                let detail = busIDs.isEmpty
+                    ? "pending listener, bridge, or device drain"
+                    : "claims: \(busIDs.joined(separator: ", "))"
+                Self.log(
+                    "dory-hv desktop: USB/IP terminal retirement retained authority asynchronously (\(detail))"
+                )
+            }
             clipboard?.stop()
+            agentBridge.stop()
+            shellBridge.stop()
+            sshAgentBridge?.stop()
+            _ = vsock.quiesce()
             resolvedPortForwardReconciler?.stop()
             signalSources.forEach { $0.cancel() }
             signalSources.removeAll()
             if let gvproxy {
                 ChildProcessTerminator.terminateAndReap(gvproxy)
             }
-            unlink(configuration.agentSocketPath)
-            unlink(configuration.shellSocketPath)
             for path in networkSocketPaths { unlink(path) }
+            let serialReceipt = serialOutput.stop()
+            if !serialReceipt.isClean {
+                Self.log(
+                    "dory-hv desktop: serial publisher retired with faults: "
+                        + serialReceipt.diagnosticSummary
+                )
+            }
             try? serialLog.close()
         }
 
         private func installSignalHandlers() {
             for number in [SIGTERM, SIGINT] {
                 signal(number, SIG_IGN)
-                let source = DispatchSource.makeSignalSource(signal: number, queue: .main)
+                let source = DispatchSource.makeSignalSource(
+                    signal: number,
+                    queue: signalQueue
+                )
                 source.setEventHandler { [weak self] in
-                    MainActor.assumeIsolated { self?.requestGuestShutdown() }
+                    DesktopAppRunLoop.perform { self?.requestGuestShutdown() }
                 }
                 source.resume()
                 signalSources.append(source)
@@ -1311,9 +2426,12 @@ enum DesktopMode {
             // reliably activate it from Dory.app. Give the UI a narrow same-user signal that asks
             // the helper itself to raise its hidden or covered display window.
             signal(SIGUSR1, SIG_IGN)
-            let raiseSource = DispatchSource.makeSignalSource(signal: SIGUSR1, queue: .main)
+            let raiseSource = DispatchSource.makeSignalSource(
+                signal: SIGUSR1,
+                queue: signalQueue
+            )
             raiseSource.setEventHandler { [weak self] in
-                MainActor.assumeIsolated {
+                DesktopAppRunLoop.perform {
                     guard let self else { return }
                     for window in self.windows { window.makeKeyAndOrderFront(nil) }
                     self.windows.first?.makeKey()
@@ -1372,21 +2490,12 @@ enum DesktopMode {
                         timeoutMs: 30_000,
                         outputLimitBytes: 64 * 1024
                     ), operation: "guest account configuration")
-                    for share in configuration.shares {
-                        try requireSuccess(control.exec(
-                            argv: ["/bin/mkdir", "-p", share.guestPath],
-                            timeoutMs: 10_000,
-                            outputLimitBytes: 64 * 1024
-                        ), operation: "create share mount point \(share.guestPath)")
-                        try requireSuccess(control.exec(
-                            argv: [
-                                "/bin/mount", "-t", "virtiofs", "-o",
-                                share.readOnly ? "ro" : "rw",
-                                share.tag, share.guestPath,
-                            ],
-                            timeoutMs: 30_000,
-                            outputLimitBytes: 64 * 1024
-                        ), operation: "mount share \(share.tag)")
+                    for share in configuration.attachedShares {
+                        _ = try control.virtioFSMount(
+                            tag: share.tag,
+                            mountPath: share.guestPath,
+                            readOnly: share.readOnly
+                        )
                     }
                     try requireSuccess(control.exec(
                         argv: ["/usr/bin/touch", "/var/lib/dory/host-configured"],
@@ -1456,6 +2565,8 @@ enum DesktopMode {
                portIntents.contains(where: { $0.exposure == .lan }) {
                 throw VMError.bootFailure("LAN port exposure requires shared NAT")
             }
+            let resolvedMTU = networkInterface?.maximumTransmissionUnit
+                ?? UInt16(DoryNetworkMTU.resolved())
             if plan == .disconnected {
                 let mac = networkInterface?.macAddressOctets ?? VirtioNet.guestMAC
                 return NetworkRuntime(
@@ -1463,7 +2574,7 @@ enum DesktopMode {
                     socketPaths: [],
                     backend: VirtioDisconnectedNet(
                         macAddress: mac,
-                        maximumTransmissionUnit: networkInterface?.maximumTransmissionUnit
+                        maximumTransmissionUnit: resolvedMTU
                     ),
                     portForwardReconciler: nil
                 )
@@ -1501,8 +2612,7 @@ enum DesktopMode {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: gvproxyPath)
             process.arguments = GVProxyDesktopLaunchPlan.arguments(
-                mtu: networkInterface.map { Int($0.maximumTransmissionUnit) }
-                    ?? DoryNetworkMTU.resolved(),
+                mtu: Int(resolvedMTU),
                 datapathSocket: gvproxySocket,
                 apiSocket: apiSocket,
                 configurationPath: configurationPath
@@ -1531,7 +2641,7 @@ enum DesktopMode {
                         socketPath: vmNetworkSocket,
                         remotePath: gvproxySocket,
                         macAddress: networkInterface?.macAddressOctets ?? VirtioNet.guestMAC,
-                        maximumTransmissionUnit: networkInterface?.maximumTransmissionUnit
+                        maximumTransmissionUnit: resolvedMTU
                     ),
                     portForwardReconciler: reconciler
                 )
@@ -1597,12 +2707,29 @@ enum DesktopMode {
             return lhs.localPort < rhs.localPort
         }
 
+        private static func singletonMaterialization(
+            role: DoryVirtualDeviceRole,
+            authorizedDevices: [DoryRawHVVirtualDeviceRequest],
+            backend: any VirtioDeviceBackend
+        ) throws -> MaterializedVirtioBackend {
+            let matches = authorizedDevices.filter { $0.role == role }
+            guard matches.count == 1, let request = matches.first else {
+                throw VMError.invalidConfiguration(
+                    "authorized RawHV materialization requires exactly one \(role.rawValue) function"
+                )
+            }
+            return MaterializedVirtioBackend(
+                request: request,
+                backend: backend
+            )
+        }
+
         @discardableResult
         private static func attachBackend(
-            _ backend: VirtioDeviceBackend,
+            _ backend: any VirtioDeviceBackend,
             to machine: Machine,
             slot: Int
-        ) -> VirtioMMIOTransport {
+        ) throws -> VirtioMMIOTransport {
             let interrupt = GuestLayout.virtioFirstIRQ + UInt32(slot)
             let transport = VirtioMMIOTransport(
                 baseAddress: GuestLayout.virtioBase + UInt64(slot) * GuestLayout.virtioSlotSize,
@@ -1611,55 +2738,71 @@ enum DesktopMode {
             ) { [weak machine] in
                 machine?.raiseGSI(interrupt)
             }
-            machine.attachVirtioSlot(transport)
+            try machine.attachVirtioSlot(transport, at: slot)
             return transport
         }
 
-        private static func attachPlatformDevices(to machine: Machine, serialLog: FileHandle) {
-            #if arch(arm64)
+        #if arch(arm64)
+        private static func attachPlatformDevices(
+            to machine: Machine,
+            serialOutput: BoundedSerialConsolePublisher
+        ) -> PL011 {
             machine.bus.attach(PL031(baseAddress: GuestLayout.rtcBase))
-            machine.attachConsole(PL011(baseAddress: GuestLayout.uartBase) { byte in
-                FileHandle.standardError.write(Data([byte]))
-                try? serialLog.write(contentsOf: Data([byte]))
-            })
-            #endif
+            let uart = PL011(
+                baseAddress: GuestLayout.uartBase,
+                sink: { byte in
+                    serialOutput.enqueue(byte)
+                },
+                setInterrupt: { [weak machine] asserted in
+                    machine?.setGSI(GuestLayout.uartIRQ, asserted: asserted)
+                }
+            )
+            machine.attachConsole(uart)
+            return uart
         }
+        #endif
 
         private static func resolveGraphics(
-            environment: [String: String],
-            exactLevel: DoryGraphicsAccelerationLevel?
+            legacyBackend: DoryDesktopGraphicsBackend?,
+            exactLevel: DoryGraphicsAccelerationLevel?,
+            rendererWorkerLaunch: DesktopRendererWorkerLaunch?
         ) throws -> ResolvedGraphics {
-            let preference = try DoryDesktopGraphicsPreference(environment: environment)
-            var rendererEnvironment = ProcessInfo.processInfo.environment
-            for key in [
-                DoryDesktopGraphicsPreference.legacyClassicOnlyEnvironmentKey,
-                "DORY_VIRGL_SYNC_MODE",
-                "DORY_VIRGLRENDERER_PATH",
-                "DORY_MOLTENVK_ICD",
-            ] {
-                if let value = environment[key] {
-                    rendererEnvironment[key] = value
-                }
-            }
-
-            func accelerated(classicOnly: Bool) throws -> ResolvedGraphics {
-                rendererEnvironment[DoryDesktopGraphicsPreference.legacyClassicOnlyEnvironmentKey] =
-                    classicOnly ? "1" : "0"
-                let renderer = try VirglRenderer.discover(environment: rendererEnvironment)
-                return ResolvedGraphics(
-                    backend: classicOnly ? .virgl : .virglVenus,
-                    renderer: renderer
-                )
-            }
-
             if let exactLevel {
+                guard legacyBackend == nil else {
+                    throw VMError.bootFailure(
+                        "resolved graphics cannot coexist with a legacy graphics selection"
+                    )
+                }
                 switch exactLevel {
                 case .hardwareAccelerated3D:
-                    return try accelerated(classicOnly: false)
+                    guard let rendererWorkerLaunch else {
+                        throw VMError.bootFailure(
+                            "resolved Venus launch is missing its authenticated renderer worker"
+                        )
+                    }
+                    return ResolvedGraphics(
+                        backend: .virglVenus,
+                        rendererWorkerLaunch: rendererWorkerLaunch
+                    )
                 case .hostAcceleratedDisplay:
-                    return try accelerated(classicOnly: true)
+                    guard rendererWorkerLaunch == nil else {
+                        throw VMError.bootFailure(
+                            "host-display graphics cannot carry renderer-worker authority"
+                        )
+                    }
+                    throw VMError.bootFailure(
+                        "resolved host-accelerated display is not implemented by the RawHV Metal display contract"
+                    )
                 case .software:
-                    return ResolvedGraphics(backend: .software, renderer: nil)
+                    guard rendererWorkerLaunch == nil else {
+                        throw VMError.bootFailure(
+                            "software graphics cannot carry renderer-worker authority"
+                        )
+                    }
+                    return ResolvedGraphics(
+                        backend: .software,
+                        rendererWorkerLaunch: nil
+                    )
                 case .none:
                     throw VMError.bootFailure(
                         "raw-HV desktop cannot satisfy a no-graphics resolved plan"
@@ -1667,21 +2810,82 @@ enum DesktopMode {
                 }
             }
 
-            switch preference.requiredBackend {
-            case .virgl:
-                return try accelerated(classicOnly: true)
-            case .software:
-                return ResolvedGraphics(backend: .software, renderer: nil)
-            case .virglVenus:
-                do {
-                    return try accelerated(classicOnly: false)
-                } catch {
-                    throw VMError.bootFailure(
-                        "Linux desktop requires Dory's VirGL2 + Venus GPU runtime; "
-                            + "select software graphics explicitly for compatibility mode: \(error)"
-                    )
-                }
+            guard let legacyBackend else {
+                throw VMError.bootFailure("desktop launch is missing typed graphics authority")
             }
+            guard rendererWorkerLaunch == nil else {
+                throw VMError.bootFailure(
+                    "legacy graphics cannot carry renderer-worker authority"
+                )
+            }
+            switch legacyBackend {
+            case .virgl:
+                throw VMError.bootFailure(
+                    "legacy in-process VirGL desktop presentation was removed; "
+                        + "launch with a resolved signed renderer worker or select software graphics"
+                )
+            case .software:
+                return ResolvedGraphics(
+                    backend: .software,
+                    rendererWorkerLaunch: nil
+                )
+            case .virglVenus:
+                throw VMError.bootFailure(
+                    "legacy in-process VirGL2 + Venus desktop presentation was removed; "
+                        + "launch with a resolved signed renderer worker or select software graphics"
+                )
+            }
+        }
+
+        private static func graphicsSelection(
+            configuration: Configuration,
+            resolvedBackend: DoryDesktopGraphicsBackend,
+            rendererWorkerLaunch: DesktopRendererWorkerLaunch?
+        ) throws -> DoryRuntimeGraphicsSelection? {
+            guard let exactLevel = configuration.resolvedGraphics else {
+                // Legacy software compatibility launches have no immutable plan generation. Their
+                // display can remain available for migration, but never becomes resolved evidence.
+                return nil
+            }
+            guard let planSHA256 = configuration.resolvedPlanSHA256,
+                  let planRevision = configuration.resolvedPlanRevision,
+                  planRevision > 0 else {
+                throw VMError.bootFailure(
+                    "resolved graphics selection is missing plan-generation authority"
+                )
+            }
+            let selection: DoryRuntimeGraphicsSelection
+            switch (exactLevel, resolvedBackend, rendererWorkerLaunch) {
+            case (.software, .software, nil):
+                selection = DoryRuntimeGraphicsSelection.resolvedSoftware(
+                    operationID: configuration.operationID,
+                    resolvedPlanSHA256: planSHA256,
+                    planRevision: planRevision
+                )
+            case let (.hardwareAccelerated3D, .virglVenus, launch?):
+                selection = DoryRuntimeGraphicsSelection(
+                    operationID: DoryOperationIdentity.canonical(
+                        configuration.operationID
+                    ),
+                    resolvedPlanSHA256: planSHA256,
+                    planRevision: planRevision,
+                    accelerationLevel: .hardwareAccelerated3D,
+                    backend: .virglVenus,
+                    rendererGeneration: launch.workerGeneration.rawValue,
+                    rendererWorkerReceiptSHA256:
+                        launch.rendererWorkerReceiptSHA256,
+                    guestProducerFenceProofSHA256:
+                        launch.qualifiedProducerFenceAuthoritySHA256
+                )
+            default:
+                throw VMError.bootFailure(
+                    "resolved graphics selection lacks its exact renderer authority"
+                )
+            }
+            guard selection.isValid else {
+                throw VMError.bootFailure("resolved software graphics selection is invalid")
+            }
+            return selection
         }
 
         private static func kernelCommandLine(
@@ -1712,9 +2916,6 @@ enum DesktopMode {
                 // expects for /boot/efi, so keep that nonessential mount out of the boot
                 // transaction without modifying the guest filesystem.
                 arguments.append("systemd.mask=boot-efi.mount")
-            }
-            if let legacy = graphicsBackend.legacyKernelArgument {
-                arguments.append(legacy)
             }
             return arguments.joined(separator: " ")
         }

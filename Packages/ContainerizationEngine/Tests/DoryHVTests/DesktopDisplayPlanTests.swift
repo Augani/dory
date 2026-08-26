@@ -129,6 +129,30 @@ import Testing
         ) == .init(x: 0.5, y: 0))
     }
 
+    @Test func scanoutAndPointerShareTheTopLeftOriginContract() {
+        let topOrigin = DesktopScanoutTextureCoordinates.sourceUV(
+            sourceRect: .init(x: 100, y: 50, width: 400, height: 200),
+            backingWidth: 1_000,
+            backingHeight: 500,
+            yOriginTop: true
+        )
+        #expect(topOrigin == SIMD4<Float>(0.1, 0.1, 0.5, 0.5))
+
+        let bottomOrigin = DesktopScanoutTextureCoordinates.sourceUV(
+            sourceRect: .init(x: 100, y: 50, width: 400, height: 200),
+            backingWidth: 1_000,
+            backingHeight: 500,
+            yOriginTop: false
+        )
+        #expect(bottomOrigin == SIMD4<Float>(0.1, 0.5, 0.5, 0.1))
+
+        let pointer = DesktopPointerTopology(sizes: [
+            .init(width: 1_000, height: 500),
+        ]).normalizedPoint(scanoutID: 0, localX: 0.1, localY: 0.1)
+        #expect(pointer.x == 0.1)
+        #expect(pointer.y == 0.1)
+    }
+
     @Test func invalidResolvedGeometryFailsClosed() {
         for display in [
             DoryVirtualMachineDisplayCapabilityRequest(widthPixels: 0, heightPixels: 1_080),

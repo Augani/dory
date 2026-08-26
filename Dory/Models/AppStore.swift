@@ -273,9 +273,10 @@ final class AppStore {
         }
         self.localCATrustManager = localCATrustManager
         let networkHelperMaintenance = DoryAppDelegate.isNetworkHelperMaintenance()
-        let realLaunch = !networkHelperMaintenance
+        let realLaunch = !networkHelperMaintenance && !DoryAppDelegate.isTestHost
             && env["DORY_SECTION"] == nil && env["DORY_APPEARANCE"] == nil
-            && env["XCTestConfigurationFilePath"] == nil && env["DORY_UI_TEST"] != "1"
+            && env["XCTestConfigurationFilePath"] == nil
+            && env["XCTestSessionIdentifier"] == nil && env["DORY_UI_TEST"] != "1"
         // Every launch starts disconnected (empty, engine-off) until a real engine connects: the app
         // ships no demo data. Tests inject their own fixture runtime through the parameter.
         self.runtime = runtime ?? DisconnectedRuntime()
@@ -482,7 +483,7 @@ final class AppStore {
         if MacHostPlatform.current().isAppleSilicon {
             "Dory can still run on this Mac by proxying a local Docker-compatible engine such as Docker Desktop, Colima, Rancher Desktop, Podman, or OrbStack."
         } else {
-            "Dory's built-in Intel engine needs bundled engine assets and Hypervisor.framework support. This install can still proxy a local Docker-compatible engine such as Colima, Docker Desktop, Rancher Desktop, Podman, or OrbStack."
+            "Dory does not ship a built-in Intel engine. This install can proxy a local Docker-compatible engine such as Colima, Docker Desktop, Rancher Desktop, Podman, or OrbStack."
         }
     }
 
@@ -653,7 +654,8 @@ final class AppStore {
 
     private var isAutomationContext: Bool {
         let env = environment
-        return env["XCTestConfigurationFilePath"] != nil || env["XCTestSessionIdentifier"] != nil
+        return DoryAppDelegate.isTestHost
+            || env["XCTestConfigurationFilePath"] != nil || env["XCTestSessionIdentifier"] != nil
             || env["DORY_UI_TEST"] == "1"
             || env["DORY_SECTION"] != nil || env["DORY_SHEET"] != nil || env["DORY_DETAIL_TAB"] != nil
             || env["DORY_APPEARANCE"] != nil || env["DORY_ONBOARDING"] != nil
@@ -749,8 +751,9 @@ final class AppStore {
     private var shimServer: ShimHTTPServer?
     var shimSocketPath: String { daemonSocketPath ?? DockerShim.defaultSocketPath }
     private(set) var shimRunning = false
-    /// Apple Silicon FEX translation for linux/amd64 images. Enabled on new installations and still
-    /// user-disableable; Rosetta remains a separate one-off `dory vm --rosetta` path.
+    /// Apple Silicon FEX translation for x86_64 Linux applications inside Dory's ARM64 container
+    /// VM. Enabled on new installations and still user-disableable. This does not boot an Intel
+    /// distro or ISO; Rosetta likewise translates applications inside an eligible ARM64 Linux VM.
     var rosettaX86Enabled = false
     /// Opt-in experimental GPU acceleration (virtio-gpu/Venus → virglrenderer → MoltenVK → Metal) for
     /// Vulkan and AI compute inside containers. Applied transactionally at engine restart; missing
@@ -984,10 +987,12 @@ final class AppStore {
     func connectBackend() async {
         // Automation launches (UI tests, screenshot harnesses) never boot the real engine: they
         // exercise the app against the honest disconnected state unless they opt into a backend
-        // with an explicit DORY_RUNTIME.
+        // with an explicit runtime, daemon flag, or injected non-Mach-service endpoint.
         let runtimeOverride = environment["DORY_RUNTIME"]
-        if isAutomationContext, runtimeOverride == nil,
-           !(dorydEngineExplicitlyRequested && dorydEngineEnabled && enginePreference == .dory) {
+        let explicitlyAuthorizedBackend = runtimeOverride != nil
+            || !dorydClient.usesMachService
+            || (dorydEngineExplicitlyRequested && dorydEngineEnabled && enginePreference == .dory)
+        if isAutomationContext, !explicitlyAuthorizedBackend {
             loadState = .engineOff
             return
         }
@@ -1043,9 +1048,9 @@ final class AppStore {
         await connectBackend()
     }
 
-    /// Stops and re-provisions the shared engine so engine-level settings (GPU, amd64 emulation,
-    /// memory) or a newly installed Venus runtime take effect. The daemon-owned path captures the
-    /// exact running-container set and explicitly starts only those containers after reconnecting.
+    /// Stops and re-provisions the shared engine so engine-level settings (GPU, x86_64 application
+    /// compatibility, memory) or a newly installed Venus runtime take effect. The daemon-owned path
+    /// captures the exact running-container set and explicitly starts only those containers after reconnecting.
     func restartEngine() async {
         guard runtimeKind == .sharedVM || runtimeKind == .disconnected, !isConnecting else { return }
         sharedVMStatus = "Restarting the engine…"
@@ -1816,11 +1821,12 @@ final class AppStore {
         return getsockopt(descriptor, SOL_SOCKET, SO_ERROR, &socketError, &length) == 0 && socketError == 0
     }
 
-    /// Toggles the FEX x86/amd64 path and restarts the shared engine so the new mode takes effect.
+    /// Toggles FEX for x86_64 Linux applications inside the ARM64 container VM and restarts the
+    /// shared engine. It never exposes an x86_64 guest OS or installer path.
     func setRosettaX86(_ on: Bool) async {
         guard on != rosettaX86Enabled else { return }
         guard !on || MacHostPlatform.current().isAppleSilicon else {
-            showSettingsFailure("x86/amd64 emulation is an Apple-silicon-only option; amd64 is native on Intel Macs.")
+            showSettingsFailure("x86_64 Linux application compatibility is available only inside Dory's ARM64 engine on Apple Silicon; Dory does not ship an Intel engine.")
             return
         }
         guard !engineSettingChangeInFlight else {
@@ -1845,18 +1851,18 @@ final class AppStore {
                 UserDefaults.standard.set(value, forKey: SharedVMProvisioner.Config.rosettaX86Key)
                 UserDefaults.standard.set(previousGPU, forKey: SharedVMProvisioner.Config.gpuVenusKey)
             },
-            applyingMessage: on ? "Enabling x86/amd64 emulation…" : "Disabling x86/amd64 emulation…",
+            applyingMessage: on ? "Enabling x86_64 application compatibility…" : "Disabling x86_64 application compatibility…",
             successMessage: on && previousGPU
-                ? "x86/amd64 emulation enabled. GPU acceleration was disabled to keep the required 4 KiB page size."
-                : (on ? "x86/amd64 emulation enabled." : "x86/amd64 emulation disabled.")
+                ? "x86_64 application compatibility enabled. GPU acceleration was disabled to keep the required 4 KiB page size."
+                : (on ? "x86_64 application compatibility enabled." : "x86_64 application compatibility disabled.")
         ) {
             return
         }
         guard runtimeKind == .sharedVM || runtimeKind == .disconnected, !isConnecting else { return }
-        sharedVMStatus = on ? "Enabling x86/amd64 emulation…" : "Disabling x86/amd64 emulation…"
+        sharedVMStatus = on ? "Enabling x86_64 application compatibility…" : "Disabling x86_64 application compatibility…"
         await SharedVMProvisioner.stopEngine()
         await connectBackend()
-        showSettingsSuccess(on ? "x86/amd64 emulation enabled." : "x86/amd64 emulation disabled.")
+        showSettingsSuccess(on ? "x86_64 application compatibility enabled." : "x86_64 application compatibility disabled.")
     }
 
     /// Toggles experimental GPU acceleration (virtio-gpu/Venus) and restarts the shared engine so the
@@ -1873,7 +1879,7 @@ final class AppStore {
             return
         }
         guard !on || !rosettaX86Enabled else {
-            showSettingsFailure("GPU acceleration cannot be enabled while x86/amd64 emulation is on. FEX requires Dory's 4 KiB guest kernel.")
+            showSettingsFailure("GPU acceleration cannot be enabled while x86_64 application compatibility is on. FEX requires Dory's 4 KiB ARM64 guest kernel.")
             return
         }
         engineSettingChangeInFlight = true
@@ -1976,7 +1982,8 @@ final class AppStore {
     /// long shutdown timeout, let launchd replace doryd with the new explicit environment, then
     /// reconnect and explicitly restart the exact containers that were running before the stop.
     /// Any failure restores the persisted value and makes one recovery attempt with the prior
-    /// configuration so a rejected GPU/amd64 choice cannot strand the engine or user workloads.
+    /// configuration so a rejected GPU/x86_64-application choice cannot strand the engine or user
+    /// workloads.
     private func applyDorydOwnedEngineSetting<Value>(
         previousValue: Value,
         restore: @MainActor (Value) -> Void,
@@ -3450,6 +3457,22 @@ final class AppStore {
             try? await syncFinderStorageLocation(force: true)
             return
         }
+        await applyRuntimeSnapshot(snap, synchronizeFinderStorage: true)
+    }
+
+    private func reloadWithoutExtendingEngineIdle() async {
+        guard runtimeOwnedByDoryd, let docker = runtime as? DockerEngineRuntime,
+              let payload = try? await dorydClient.engineDashboardSnapshot(),
+              let snapshot = try? docker.dashboardSnapshot(from: payload) else {
+            return
+        }
+        await applyRuntimeSnapshot(snapshot, synchronizeFinderStorage: false)
+    }
+
+    private func applyRuntimeSnapshot(
+        _ snap: RuntimeSnapshot,
+        synchronizeFinderStorage: Bool
+    ) async {
         if containers != snap.containers { containers = snap.containers; syncMachineStats(); noteEngineActivity() }
         if images != snap.images { images = snap.images; noteEngineActivity() }
         if volumes != snap.volumes { volumes = snap.volumes }
@@ -3465,7 +3488,9 @@ final class AppStore {
         cpuHistory = cpuHistory.filter { liveIDs.contains($0.key) }
         let newState: LoadState = snap.engineRunning ? .ready : .engineOff
         if loadState != newState { loadState = newState }
-        try? await syncFinderStorageLocation()
+        if synchronizeFinderStorage {
+            try? await syncFinderStorageLocation()
+        }
     }
 
     var canBrowseDoryStorage: Bool {
@@ -3488,6 +3513,10 @@ final class AppStore {
     }
 
     private func syncFinderStorageLocation(force: Bool = false) async throws {
+        // An injected test environment can intentionally omit XCTest's variables while exercising
+        // a real-shaped runtime. The host-process classification is authoritative: tests must
+        // never register, hide, materialize, or publish into the user's live File Provider domain.
+        guard !isAutomationContext else { return }
         guard canBrowseDoryStorage, let docker = runtime as? DockerEngineRuntime else {
             await finderStorageLocation.hide()
             finderStorageLocationActive = false
@@ -3538,7 +3567,11 @@ final class AppStore {
         // or an external docker request wakes it through doryd's data plane.
         if engineSleeping { return }
         capEngineLogIfDue()
-        await reload()
+        if runtimeOwnedByDoryd {
+            await reloadWithoutExtendingEngineIdle()
+        } else {
+            await reload()
+        }
         loadMachines()
         if runtimeKind == .sharedVM { await loadKubernetes() }
         await evaluateIdleSleep()
@@ -3552,7 +3585,11 @@ final class AppStore {
         loadMachines()
         if await syncDorydEngineStateBeforeDockerPoll() { return }
         if engineSleeping { return }
-        await reload()
+        if runtimeOwnedByDoryd {
+            await reloadWithoutExtendingEngineIdle()
+        } else {
+            await reload()
+        }
         if runtimeKind == .sharedVM { await loadKubernetes() }
     }
 
@@ -5268,6 +5305,7 @@ final class AppStore {
             bootMode: status.bootMode,
             installerMediaAttached: status.installerMediaAttached,
             runtimeIdentity: status.runtimeIdentity,
+            runtimeGraphicsSelection: status.runtimeGraphicsSelection,
             cloneReceipt: status.cloneReceipt,
             agentBuild: status.agentBuild,
             agentProtocolVersion: status.agentProtocolVersion,
@@ -5334,7 +5372,7 @@ final class AppStore {
     }
 
     func machineTerminalCommand(_ machine: Machine) -> String? {
-        guard runtimeOwnedByDoryd else { return nil }
+        guard canOpenMachineTerminal(machine) else { return nil }
         return TerminalLauncher.userFacingMachineShellCommand(target: UserFacingMachineShellTarget(
             machineID: machine.name
         ))
@@ -6637,7 +6675,13 @@ final class AppStore {
                     appendMachineCreationLog("Provisioned \(result.recipeID): \(verify)")
                 }
             }
-            appendMachineCreationLog("Machine created and started.")
+            if settings.bootMode == .efi {
+                appendMachineCreationLog(
+                    "VM and display started. Complete Linux setup in the desktop window."
+                )
+            } else {
+                appendMachineCreationLog("Machine created and started.")
+            }
             let refreshed = await refreshMachines()
             machineCreated = refreshed.first { $0.name == name }
             if machineCreated == nil {

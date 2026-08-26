@@ -114,7 +114,7 @@ final class DoryVirtualMachineArtifactAuthorityTests: XCTestCase {
         }
     }
 
-    func testMutableArtifactDigestRejectsSameSizeMutationWithRestoredMtime() throws {
+    func testMutableArtifactIdentityRejectsSameSizeMutationWithRestoredMtime() throws {
         try withFixture("mutable-adversarial") { fixture in
             let disk = try fixture.file(
                 "system.raw",
@@ -163,36 +163,58 @@ final class DoryVirtualMachineArtifactAuthorityTests: XCTestCase {
         }
     }
 
-    func testMutationDuringHashWithRestoredMtimeIsRejectedByChangeTime() throws {
-        try withFixture("mutable-in-hash") { fixture in
-            let disk = try fixture.file(
-                "system.raw",
-                data: Data(repeating: 0x41, count: 2 * 1_024 * 1_024)
+    func testMutableSparseDiskIsNeverContentHashedWhileImmutableMediaStillIs() throws {
+        try withFixture("mutable-no-content-hash") { fixture in
+            let disk = fixture.root + "/system.raw"
+            XCTAssertTrue(FileManager.default.createFile(atPath: disk, contents: nil))
+            let handle = try FileHandle(forWritingTo: URL(fileURLWithPath: disk))
+            try handle.truncate(atOffset: 32 * 1_024 * 1_024 * 1_024)
+            try handle.synchronize()
+            try handle.close()
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o600],
+                ofItemAtPath: disk
             )
-            _ = try fixture.authority.publishMutable(
+            let inspections = InspectionCounter()
+            let authority = DoryVirtualMachineArtifactAuthority(
+                root: fixture.authority.root
+            ) { stage in
+                guard case let .firstChunkHashed(path) = stage else { return }
+                inspections.record(path)
+            }
+
+            _ = try authority.publishMutable(
                 reference: fixture.reference,
                 path: disk,
                 source: .userProvided
             )
-            let mutation = try InHashMutation(path: disk)
-            let inspectingAuthority = DoryVirtualMachineArtifactAuthority(
-                root: fixture.authority.root
-            ) { stage in
-                guard case let .firstChunkHashed(path) = stage else { return }
-                try mutation.apply(to: path)
-            }
-
-            XCTAssertThrowsError(try inspectingAuthority.resolve(
+            _ = try authority.resolve(
                 reference: fixture.reference,
                 kind: .virtualDisk,
                 source: .userProvided
-            )) { error in
-                XCTAssertEqual(
-                    error as? DoryVirtualMachineArtifactAuthorityError,
-                    .artifactChanged
-                )
-            }
-            XCTAssertTrue(mutation.didApply)
+            )
+            XCTAssertEqual(inspections.paths, [])
+
+            let installer = try fixture.file(
+                "installer.iso",
+                data: Data("immutable-efi-installer".utf8)
+            )
+            let installerReference = DoryVMResolverReference(
+                namespace: "legacy-artifact",
+                identifier: String(repeating: "b", count: 64)
+            )
+            _ = try authority.publishImmutable(
+                reference: installerReference,
+                path: installer,
+                kind: .installerISO,
+                source: .userProvided
+            )
+            _ = try authority.resolve(
+                reference: installerReference,
+                kind: .installerISO,
+                source: .userProvided
+            )
+            XCTAssertEqual(inspections.paths, [installer, installer])
         }
     }
 
@@ -451,50 +473,13 @@ private enum PublicationInterruption: Error, Equatable {
     case injected
 }
 
-private final class InHashMutation: @unchecked Sendable {
-    private let expectedPath: String
-    private let timestamps: [timespec]
+private final class InspectionCounter: @unchecked Sendable {
     private let lock = NSLock()
-    private var applied = false
+    private var stored: [String] = []
 
-    init(path: String) throws {
-        var status = stat()
-        guard lstat(path, &status) == 0 else { throw InHashMutationError.statFailed }
-        expectedPath = path
-        timestamps = [status.st_atimespec, status.st_mtimespec]
-    }
+    var paths: [String] { lock.withLock { stored } }
 
-    var didApply: Bool { lock.withLock { applied } }
-
-    func apply(to path: String) throws {
-        try lock.withLock {
-            guard !applied else { return }
-            guard path == expectedPath else { throw InHashMutationError.unexpectedPath }
-            let descriptor = path.withCString {
-                open($0, O_WRONLY | O_CLOEXEC | O_NOFOLLOW)
-            }
-            guard descriptor >= 0 else { throw InHashMutationError.openFailed }
-            defer { close(descriptor) }
-            var byte: UInt8 = 0x42
-            guard pwrite(descriptor, &byte, 1, 0) == 1,
-                  fsync(descriptor) == 0 else {
-                throw InHashMutationError.writeFailed
-            }
-            let result = timestamps.withUnsafeBufferPointer { buffer in
-                utimensat(AT_FDCWD, path, buffer.baseAddress, AT_SYMLINK_NOFOLLOW)
-            }
-            guard result == 0 else { throw InHashMutationError.restoreTimeFailed }
-            applied = true
-        }
-    }
-}
-
-private enum InHashMutationError: Error {
-    case statFailed
-    case unexpectedPath
-    case openFailed
-    case writeFailed
-    case restoreTimeFailed
+    func record(_ path: String) { lock.withLock { stored.append(path) } }
 }
 
 private final class ArtifactFixture {

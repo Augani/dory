@@ -20,6 +20,7 @@ pub mod snapshot_quiesce;
 pub mod sync_apply;
 pub mod telemetry;
 pub mod usb_vhci;
+pub mod virtiofs_mount;
 
 #[cfg(target_os = "linux")]
 pub mod terminal;

@@ -378,9 +378,9 @@ struct NewMachineSheet: View {
             }
         case .unknown:
             isoStatusRow(
-                icon: "questionmark.circle.fill",
-                color: p.amber,
-                text: "EFI architecture was not recognizable; Dory can try this custom image."
+                icon: "xmark.octagon.fill",
+                color: p.red,
+                text: "Dory could not prove a portable ARM64 EFI loader in this ISO. Choose different media."
             )
         case let .unstable(message):
             isoStatusRow(icon: "exclamationmark.octagon.fill", color: p.red, text: message)
@@ -505,7 +505,12 @@ struct NewMachineSheet: View {
                 Text("Use 1–32 lowercase letters, numbers, underscores or dashes; start with a letter or underscore.")
                     .font(.system(size: 11)).foregroundStyle(p.red)
             }
-            Toggle("Share my Mac home (read-write)", isOn: $shareHome)
+            Toggle(
+                customISOInstall
+                    ? "Expose my Mac home to this VM (read-write)"
+                    : "Share my Mac home (read-write)",
+                isOn: $shareHome
+            )
                 .toggleStyle(.switch).tint(p.accent)
                 .font(.system(size: 12.5)).foregroundStyle(p.text)
             Text(shareHome ? sharedHomeDescription : "No Mac home folder is shared unless you turn this on or add scoped mounts.")
@@ -879,11 +884,14 @@ struct NewMachineSheet: View {
 
     private func create() {
         var settings = collectedSettings()
-        let sharedHomeGuestPath = displayMode == .desktop
-            ? "/home/\(normalizedGuestUsername)/Mac"
-            : NSHomeDirectory()
-        if shareHome, !settings.mounts.contains(where: { $0.guest == sharedHomeGuestPath }) {
-            settings.mounts.append(MountPair(host: NSHomeDirectory(), guest: sharedHomeGuestPath))
+        let homeMount = Self.sharedHomeMount(
+            home: NSHomeDirectory(),
+            displayMode: displayMode,
+            customISOInstall: customISOInstall,
+            guestUsername: normalizedGuestUsername
+        )
+        if shareHome, !settings.mounts.contains(where: { $0.guest == homeMount.guest }) {
+            settings.mounts.append(homeMount)
         }
         let machineName = name
         let recipe = customISOInstall ? nil : selectedRecipe
@@ -912,7 +920,12 @@ struct NewMachineSheet: View {
                     if hasSecurityScope { url.stopAccessingSecurityScopedResource() }
                 }
                 do {
-                    return (try DoryInstallerISOInspector.mediaIdentity(atPath: selectedPath), nil)
+                    return (
+                        try DoryInstallerISOInspector.portableEFIMediaIdentity(
+                            atPath: selectedPath
+                        ),
+                        nil
+                    )
                 } catch {
                     return (nil, error.localizedDescription)
                 }
@@ -943,9 +956,9 @@ struct NewMachineSheet: View {
 
     private var installerISOCheckBlocksCreate: Bool {
         switch installerISOCheck {
-        case .compatible, .unknown:
+        case .compatible:
             false
-        case .none, .checking, .unstable, .incompatible, .failed:
+        case .none, .checking, .unknown, .unstable, .incompatible, .failed:
             true
         }
     }
@@ -1098,6 +1111,25 @@ struct NewMachineSheet: View {
         "dory-\(AppStore.generatedMachineToken())"
     }
 
+    static func sharedHomeMount(
+        home: String,
+        displayMode: MachineDisplayMode,
+        customISOInstall: Bool,
+        guestUsername: String
+    ) -> MountPair {
+        if displayMode == .desktop, customISOInstall {
+            return MountPair(
+                host: home,
+                guest: "/mnt/dory-mac-home",
+                shareTag: "mac-home"
+            )
+        }
+        return MountPair(
+            host: home,
+            guest: displayMode == .desktop ? "/home/\(guestUsername)/Mac" : home
+        )
+    }
+
     static func defaultGuestUsername() -> String {
         let normalized = NSUserName().lowercased().map { character -> Character in
             character.isLetter || character.isNumber || character == "_" || character == "-" ? character : "-"
@@ -1123,8 +1155,11 @@ struct NewMachineSheet: View {
     }
 
     private var sharedHomeDescription: String {
-        displayMode == .desktop
-            ? "Your Mac home is available in the desktop at ~/Mac with your Mac user ID."
+        if displayMode == .desktop, customISOInstall {
+            return "Dory exposes the virtiofs tag mac-home. After installation, mount it where you want (for example /mnt/dory-mac-home); an arbitrary distro is not configured automatically."
+        }
+        return displayMode == .desktop
+            ? "Your Mac home is available in the Dory-managed desktop at ~/Mac with your Mac user ID."
             : "Your Mac home is mounted at its native path inside the machine."
     }
 

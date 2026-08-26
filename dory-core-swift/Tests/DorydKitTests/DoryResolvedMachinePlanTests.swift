@@ -1,5 +1,7 @@
+import CryptoKit
 import Darwin
 import DoryOperations
+import DoryVMContracts
 @testable import DorydKit
 import Foundation
 import Testing
@@ -12,6 +14,28 @@ struct DoryResolvedMachinePlanTests {
         #expect(plan.validate().isEmpty)
         let encoded = try JSONEncoder().encode(plan)
         #expect(try JSONDecoder().decode(DoryResolvedMachinePlan.self, from: encoded) == plan)
+    }
+
+    @Test("Linux plans never admit QEMU/HVF as a runnable runtime")
+    func linuxQEMUIsNotRunnable() {
+        var plan = mutableVZPlan()
+        plan.backend = .qemuHypervisorFramework
+
+        #expect(plan.validate().contains {
+            $0.code == .unsupportedRuntimeCombination
+                && $0.field == "bootMedia.media.kind"
+        })
+    }
+
+    @Test("x86_64 Linux plans are invalid even on the VZ backend")
+    func x86LinuxGuestIsNotPersistable() {
+        var plan = mutableVZPlan()
+        plan.guest.architecture = .x86_64
+
+        #expect(plan.validate().contains {
+            $0.code == .unsupportedRuntimeCombination
+                && $0.field == "guest.architecture"
+        })
     }
 
     @Test("golden schema v1 decodes only as a non-runnable migration")
@@ -140,6 +164,45 @@ struct DoryResolvedMachinePlanTests {
         #expect(result.issues.contains { $0.code == .deviceContractMismatch })
     }
 
+    @Test("connected VZ plans enforce the file-handle MTU floor without rejecting detached NICs")
+    func vzFileHandleMTUContract() {
+        func bindNetwork(
+            _ plan: inout DoryResolvedMachinePlan,
+            attachment: DoryVirtualMachineNetworkAttachmentMode,
+            mtu: UInt16
+        ) {
+            let networkInterface = DoryVirtualMachineNetworkInterfaceCapabilityRequest(
+                macAddress: "02:11:22:33:44:55",
+                maximumTransmissionUnit: mtu
+            )
+            plan.devices.networkAttachment = attachment
+            plan.devices.networkInterface = networkInterface
+            plan.selectionEvidence?.plannerRequest.devices = plan.devices
+            plan.qualificationEvidence.runtime?.devices = plan.devices
+        }
+
+        var connectedLow = mutableVZPlan()
+        bindNetwork(&connectedLow, attachment: .sharedNAT, mtu: 1_280)
+        #expect(connectedLow.validate().contains {
+            $0.code == .unsupportedRuntimeCombination
+                && $0.field == "devices.networkInterface.maximumTransmissionUnit"
+        })
+
+        var hostOnlyLow = mutableVZPlan()
+        bindNetwork(&hostOnlyLow, attachment: .isolated, mtu: 1_280)
+        #expect(hostOnlyLow.validate().contains {
+            $0.code == .unsupportedRuntimeCombination
+        })
+
+        var connected = mutableVZPlan()
+        bindNetwork(&connected, attachment: .sharedNAT, mtu: 1_500)
+        #expect(connected.validate().isEmpty)
+
+        var disconnected = mutableVZPlan()
+        bindNetwork(&disconnected, attachment: .disconnected, mtu: 1_280)
+        #expect(disconnected.validate().isEmpty)
+    }
+
     @Test("port forwards are exact start evidence and fail closed structurally")
     func portForwardEvidenceMismatch() {
         let plan = supportedPlan()
@@ -188,6 +251,36 @@ struct DoryResolvedMachinePlanTests {
         let result = DoryResolvedMachinePlanStartValidator.revalidate(plan, against: input)
         #expect(!result.mayStart)
         #expect(result.issues.contains { $0.code == .bootMediaEvidenceMismatch })
+    }
+
+    @Test("portable installed EFI disk needs provenance but no distro qualification")
+    func portableInstalledEFIDiskPlan() throws {
+        var plan = mutableVZPlan()
+        plan.qualificationEvidence = DoryResolvedMachineQualificationEvidence()
+        plan.hostQualification = nil
+
+        #expect(plan.validate().isEmpty)
+        #expect(DoryResolvedMachinePlanStartValidator.revalidate(
+            plan,
+            against: exactInput(for: plan)
+        ).mayStart)
+        let roundTrip = try JSONDecoder().decode(
+            DoryResolvedMachinePlan.self,
+            from: JSONEncoder().encode(plan)
+        )
+        #expect(roundTrip == plan)
+
+        var accelerated = plan
+        accelerated.graphics = .hostAcceleratedDisplay
+        accelerated.selectionEvidence?.plannerRequest.acceptableGraphics = [
+            .hostAcceleratedDisplay,
+        ]
+        #expect(accelerated.validate().contains {
+            $0.code == .missingRuntimeQualification
+        })
+        #expect(accelerated.validate().contains {
+            $0.code == .invalidHostQualification
+        })
     }
 
     @Test("support tier is revalidated and unsupported plans never validate")
@@ -606,7 +699,7 @@ struct DoryResolvedMachinePlanRepositoryTests {
     @Test("create read replace uses owner-only crash-safe optimistic revisions")
     func optimisticLifecycle() throws {
         try withRepository { repository, root in
-            let initial = supportedPlan()
+            let initial = mutableVZPlan()
             try repository.create(initial)
             #expect(try repository.read(id: initial.machineID) == initial)
 
@@ -643,14 +736,197 @@ struct DoryResolvedMachinePlanRepositoryTests {
     @Test("record integrity digest rejects edited plan bytes")
     func tamperedRecord() throws {
         try withRepository { repository, root in
-            let plan = supportedPlan()
+            let plan = mutableVZPlan()
             try repository.create(plan)
             let path = root + "/" + plan.machineID + "/"
                 + DoryResolvedMachinePlanRepository.recordFileName
             var text = try String(contentsOfFile: path, encoding: .utf8)
-            text = text.replacingOccurrences(of: "raw-runtime-1", with: "raw-runtime-2")
+            text = text.replacingOccurrences(of: "vz-runtime-1", with: "vz-runtime-2")
             try Data(text.utf8).write(to: URL(fileURLWithPath: path))
             _ = chmod(path, mode_t(0o600))
+            #expect(throws: DoryResolvedMachinePlanRepositoryError.invalidRecord(path)) {
+                _ = try repository.read(id: plan.machineID)
+            }
+        }
+    }
+
+    @Test("current repository records use one compact canonical JSON representation")
+    func canonicalCurrentRecord() throws {
+        try withRepository { repository, root in
+            let plan = mutableVZPlan()
+            try repository.create(plan)
+            let path = repositoryRecordPath(root: root, machineID: plan.machineID)
+            let data = try Data(contentsOf: URL(fileURLWithPath: path))
+            let rootObject = try #require(
+                JSONSerialization.jsonObject(with: data) as? [String: Any]
+            )
+            let planObject = try #require(rootObject["plan"] as? [String: Any])
+            let canonicalPlan = try repositoryCanonicalJSON(planObject)
+
+            #expect(data == (try repositoryCanonicalJSON(rootObject)))
+            #expect(
+                (rootObject["schemaVersion"] as? NSNumber)?.uint16Value
+                    == DoryResolvedMachinePlanRepositoryRecord.currentSchemaVersion
+            )
+            #expect(rootObject["planSHA256"] as? String == repositorySHA256(canonicalPlan))
+        }
+    }
+
+    @Test("current records reject equivalent noncanonical lexical forms and key ordering")
+    func noncanonicalCurrentRecord() throws {
+        try withRepository { repository, root in
+            let plan = mutableVZPlan()
+            try repository.create(plan)
+            let path = repositoryRecordPath(root: root, machineID: plan.machineID)
+            let original = try Data(contentsOf: URL(fileURLWithPath: path))
+            let originalText = try #require(String(data: original, encoding: .utf8))
+
+            let fractionalRevision = originalText.replacingOccurrences(
+                of: "\"planRevision\":1",
+                with: "\"planRevision\":1.0"
+            )
+            #expect(fractionalRevision != originalText)
+            try overwriteRepositoryRecord(Data(fractionalRevision.utf8), at: path)
+            #expect(throws: DoryResolvedMachinePlanRepositoryError.invalidRecord(path)) {
+                _ = try repository.read(id: plan.machineID)
+            }
+
+            let rootObject = try #require(
+                JSONSerialization.jsonObject(with: original) as? [String: Any]
+            )
+            let planObject = try #require(rootObject["plan"] as? [String: Any])
+            let canonicalPlan = try repositoryCanonicalJSON(planObject)
+            let planText = try #require(String(data: canonicalPlan, encoding: .utf8))
+            let digest = try #require(rootObject["planSHA256"] as? String)
+            let reordered = Data(
+                "{\"schemaVersion\":3,\"planSHA256\":\"\(digest)\",\"plan\":\(planText)}".utf8
+            )
+            try overwriteRepositoryRecord(reordered, at: path)
+            #expect(throws: DoryResolvedMachinePlanRepositoryError.invalidRecord(path)) {
+                _ = try repository.read(id: plan.machineID)
+            }
+        }
+    }
+
+    @Test("record and nested plan authority reject unknown fields even with a valid digest")
+    func unknownAuthorityFields() throws {
+        try withRepository { repository, root in
+            let plan = mutableVZPlan()
+            try repository.create(plan)
+            let path = repositoryRecordPath(root: root, machineID: plan.machineID)
+            let original = try Data(contentsOf: URL(fileURLWithPath: path))
+            let originalRoot = try #require(
+                JSONSerialization.jsonObject(with: original) as? [String: Any]
+            )
+
+            var unknownRecord = originalRoot
+            unknownRecord["futureRecordAuthority"] = true
+            try overwriteRepositoryRecord(
+                try repositoryCanonicalJSON(unknownRecord),
+                at: path
+            )
+            #expect(throws: DoryResolvedMachinePlanRepositoryError.invalidRecord(path)) {
+                _ = try repository.read(id: plan.machineID)
+            }
+
+            var unknownPlan = try #require(originalRoot["plan"] as? [String: Any])
+            unknownPlan["futurePlanAuthority"] = "accepted-by-Codable-without-this-boundary"
+            let canonicalPlan = try repositoryCanonicalJSON(unknownPlan)
+            var recomputedRecord = originalRoot
+            recomputedRecord["plan"] = unknownPlan
+            recomputedRecord["planSHA256"] = repositorySHA256(canonicalPlan)
+            try overwriteRepositoryRecord(
+                try repositoryCanonicalJSON(recomputedRecord),
+                at: path
+            )
+            #expect(throws: DoryResolvedMachinePlanRepositoryError.invalidRecord(path)) {
+                _ = try repository.read(id: plan.machineID)
+            }
+
+            var unknownNestedPlan = try #require(originalRoot["plan"] as? [String: Any])
+            var unknownGuest = try #require(unknownNestedPlan["guest"] as? [String: Any])
+            unknownGuest["futureGuestAuthority"] = true
+            unknownNestedPlan["guest"] = unknownGuest
+            let canonicalNestedPlan = try repositoryCanonicalJSON(unknownNestedPlan)
+            var recomputedNestedRecord = originalRoot
+            recomputedNestedRecord["plan"] = unknownNestedPlan
+            recomputedNestedRecord["planSHA256"] = repositorySHA256(canonicalNestedPlan)
+            try overwriteRepositoryRecord(
+                try repositoryCanonicalJSON(recomputedNestedRecord),
+                at: path
+            )
+            #expect(throws: DoryResolvedMachinePlanRepositoryError.invalidRecord(path)) {
+                _ = try repository.read(id: plan.machineID)
+            }
+        }
+    }
+
+    @Test("historical schema v4 digest remains readable only as replan input")
+    func repositoryV4Migration() throws {
+        try withRepository { repository, root in
+            let plan = mutableVZPlan()
+            let path = try installRepositoryRecord(
+                try legacySchemaV4Record(from: plan),
+                root: root,
+                machineID: plan.machineID
+            )
+            #expect(try Data(contentsOf: URL(fileURLWithPath: path))
+                != (try repositoryCanonicalJSON(JSONSerialization.jsonObject(
+                    with: Data(contentsOf: URL(fileURLWithPath: path))
+                ))))
+
+            let migrated = try repository.read(id: plan.machineID)
+            #expect(migrated.sourceSchemaVersion == 4)
+            #expect(migrated.migrationDisposition == .requiresReplanning)
+            #expect(migrated.rawHVVirtualHardwareTopology == nil)
+            #expect(Set(migrated.validate().map(\.code)) == [.legacyPlanRequiresReplanning])
+
+            let start = DoryResolvedMachinePlanStartValidator.revalidate(
+                migrated,
+                against: DoryResolvedMachinePlanStartRevalidationInput(
+                    machineID: migrated.machineID,
+                    expectedPlanRevision: migrated.planRevision,
+                    currentDefinitionRevision: migrated.definitionRevision,
+                    currentDefinitionSHA256: migrated.definitionSHA256 ?? "",
+                    runtimeEvidence: DoryResolvedMachineRuntimeEvidence(plan: migrated)
+                )
+            )
+            #expect(!start.mayStart)
+            #expect(start.issues.contains { $0.code == .storedPlanInvalid })
+        }
+    }
+
+    @Test("historical schema v4 rejects contradictory provenance and invalid authority")
+    func repositoryV4RejectsContradictions() throws {
+        try withRepository { repository, root in
+            let plan = mutableVZPlan()
+            let path = try installRepositoryRecord(
+                try legacySchemaV4Record(from: plan) {
+                    $0["sourceSchemaVersion"] = 3
+                },
+                root: root,
+                machineID: plan.machineID
+            )
+            #expect(throws: DoryResolvedMachinePlanRepositoryError.invalidRecord(path)) {
+                _ = try repository.read(id: plan.machineID)
+            }
+
+            try overwriteRepositoryRecord(
+                try legacySchemaV4Record(from: plan) {
+                    $0["migrationDisposition"] = "requires-replanning"
+                },
+                at: path
+            )
+            #expect(throws: DoryResolvedMachinePlanRepositoryError.invalidRecord(path)) {
+                _ = try repository.read(id: plan.machineID)
+            }
+
+            try overwriteRepositoryRecord(
+                try legacySchemaV4Record(from: plan) {
+                    $0["planRevision"] = 0
+                },
+                at: path
+            )
             #expect(throws: DoryResolvedMachinePlanRepositoryError.invalidRecord(path)) {
                 _ = try repository.read(id: plan.machineID)
             }
@@ -693,7 +969,7 @@ struct DoryResolvedMachinePlanRepositoryTests {
     @Test("repository rejects symlink hard-link public and oversized records")
     func hostileRecords() throws {
         try withRepository { repository, root in
-            let plan = supportedPlan()
+            let plan = mutableVZPlan()
             try repository.create(plan)
             let directory = root + "/" + plan.machineID
             let record = directory + "/" + DoryResolvedMachinePlanRepository.recordFileName
@@ -734,17 +1010,23 @@ struct DoryResolvedMachinePlanRepositoryTests {
     @Test("invalid and experimental-without-authorization plans are never published")
     func publicationValidation() throws {
         try withRepository { repository, _ in
-            var unsupported = supportedPlan()
+            var unsupported = mutableVZPlan()
             unsupported.supportTier = .unsupported
             #expect(throws: DoryResolvedMachinePlanRepositoryError.self) {
                 try repository.create(unsupported)
             }
 
-            var experimental = supportedPlan()
+            var experimental = mutableVZPlan()
             experimental.supportTier = .experimental
             experimental.qualificationEvidence.runtime = nil
             #expect(throws: DoryResolvedMachinePlanRepositoryError.self) {
                 try repository.create(experimental)
+            }
+
+            var x86Linux = mutableVZPlan()
+            x86Linux.guest.architecture = .x86_64
+            #expect(throws: DoryResolvedMachinePlanRepositoryError.self) {
+                try repository.create(x86Linux)
             }
         }
     }
@@ -758,11 +1040,77 @@ struct DoryResolvedMachinePlanRepositoryTests {
         defer { try? FileManager.default.removeItem(atPath: root) }
         try body(DoryResolvedMachinePlanRepository(root: root), root)
     }
+
+    private func repositoryRecordPath(root: String, machineID: String) -> String {
+        root + "/" + machineID + "/" + DoryResolvedMachinePlanRepository.recordFileName
+    }
+
+    private func repositoryCanonicalJSON(_ object: Any) throws -> Data {
+        try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+    }
+
+    private func repositorySHA256(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func legacySchemaV4Record(
+        from plan: DoryResolvedMachinePlan,
+        mutate: (inout [String: Any]) -> Void = { _ in }
+    ) throws -> Data {
+        var planObject = try #require(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(plan)) as? [String: Any]
+        )
+        planObject["schemaVersion"] = 4
+        planObject["sourceSchemaVersion"] = 4
+        planObject["migrationDisposition"] = "current"
+        planObject.removeValue(forKey: "rawHVVirtualHardwareTopology")
+        mutate(&planObject)
+        let canonicalPlan = try repositoryCanonicalJSON(planObject)
+        return try JSONSerialization.data(
+            withJSONObject: [
+                "schemaVersion": 2,
+                "planSHA256": repositorySHA256(canonicalPlan),
+                "plan": planObject,
+            ],
+            options: [.prettyPrinted, .sortedKeys]
+        )
+    }
+
+    private func installRepositoryRecord(
+        _ data: Data,
+        root: String,
+        machineID: String
+    ) throws -> String {
+        let directory = root + "/" + machineID
+        try FileManager.default.createDirectory(
+            atPath: directory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let path = repositoryRecordPath(root: root, machineID: machineID)
+        #expect(FileManager.default.createFile(
+            atPath: path,
+            contents: data,
+            attributes: [.posixPermissions: 0o600]
+        ))
+        return path
+    }
+
+    private func overwriteRepositoryRecord(_ data: Data, at path: String) throws {
+        try data.write(to: URL(fileURLWithPath: path))
+        #expect(chmod(path, mode_t(0o600)) == 0)
+    }
 }
 
 private func supportedPlan() -> DoryResolvedMachinePlan {
     let artifact = digest("a")
-    let devices = DoryVirtualMachineDeviceCapabilityRequest.minimumBootable
+    let devices = DoryVirtualMachineDeviceCapabilityRequest(
+        networkInterface: .stable(machineID: "workspace-one"),
+        display: DoryVirtualMachineDisplayCapabilityRequest(
+            widthPixels: 1_920,
+            heightPixels: 1_080
+        )
+    )
     let media = DoryBootMedia(
         kind: .installedLinuxBootBundle,
         source: .bundledByDory,
@@ -780,6 +1128,7 @@ private func supportedPlan() -> DoryResolvedMachinePlan {
         backendImplementationIdentifier: "dory.raw-hv-linux.compatibility.v1",
         backendRuntimeBuildIdentifier: "raw-runtime-1",
         virtualHardwareABIVersion: 1,
+        rawHVVirtualHardwareTopology: supportedRawHVTopology(),
         bootMedia: DoryResolvedMachineBootMedia(
             resolverReference: DoryVMResolverReference(
                 namespace: "artifact",
@@ -842,6 +1191,47 @@ private func supportedPlan() -> DoryResolvedMachinePlan {
             runtimeBuild: "raw-runtime-1"
         )
     )
+}
+
+private func supportedRawHVTopology() -> DoryRawHVVirtualHardwareTopology {
+    try! DoryRawHVVirtualHardwareTopology(occupiedSlots: [
+        DoryRawHVVirtualDeviceSlot(
+            logicalID: DoryVirtualDeviceID.derived(
+                namespace: .systemDisk,
+                stableID: "workspace-one-system-disk"
+            ),
+            role: .systemDisk,
+            mmioSlot: 0
+        ),
+        DoryRawHVVirtualDeviceSlot(
+            logicalID: "rawhv-graphics",
+            role: .graphics,
+            mmioSlot: 1
+        ),
+        DoryRawHVVirtualDeviceSlot(
+            logicalID: "rawhv-entropy",
+            role: .entropy,
+            mmioSlot: 2
+        ),
+        DoryRawHVVirtualDeviceSlot(
+            logicalID: "rawhv-balloon",
+            role: .balloon,
+            mmioSlot: 3
+        ),
+        DoryRawHVVirtualDeviceSlot(
+            logicalID: "rawhv-vsock",
+            role: .vsock,
+            mmioSlot: 4
+        ),
+        DoryRawHVVirtualDeviceSlot(
+            logicalID: DoryVirtualDeviceID.derived(
+                namespace: .network,
+                stableID: "nic0"
+            ),
+            role: .network,
+            mmioSlot: 8
+        ),
+    ])
 }
 
 private func mutableVZPlan() -> DoryResolvedMachinePlan {

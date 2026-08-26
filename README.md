@@ -146,7 +146,7 @@ aliases, so compatibility does not make users download duplicate VM payloads.
 | `dory-engine-x.y.z-arm64.tar.gz` | Headless Dory engine bundle |
 | `release-manifest.json` | Artifact names, hashes, and release provenance |
 | `Dory-x.y.z.cdx.json` | CycloneDX software bill of materials for Docker Core |
-| `Dory-x.y.z-performance-evidence.zip` | Exact-candidate raw benchmark, correctness, provenance, and cleanup evidence |
+| `Dory-x.y.z-container-engine-performance-evidence.zip` | Exact-candidate container-engine benchmark, correctness, provenance, and cleanup evidence; not Linux VM qualification |
 | `Dory-x.y.z-reliability-evidence.zip` | Exact-candidate eight-hour resource/file/API and 25-hour unchanged-connection evidence |
 | `components/arm64/catalog.json` | Signed component assets, dependencies, hashes, and exact sizes |
 
@@ -247,6 +247,12 @@ Buildx and BuildKit are bundled. Dory supports build contexts, secrets, SSH moun
 export, registry authentication, cancellation, and common multi-stage builds. Native arm64 images
 are fastest. Common `linux/amd64` images and build workloads run on Apple Silicon through Dory's
 built-in FEX path, which is enabled by default on new installs and can be changed in Settings.
+This translates x86_64 Linux applications inside Dory's ARM64 container VM; it does not boot an
+Intel guest OS or installer. Rosetta has the same application-only boundary when used inside an
+eligible ARM64 Linux VM. Dory exposes no partial x86 VM mode. Future whole-system x86 support
+requires a complete packaged QEMU TCG backend with independently qualified firmware, devices,
+lifecycle, security, recovery, and performance; see the
+[x86 whole-machine emulation contract](docs/x86-linux-whole-machine-emulation.md).
 
 The Build Activity screen keeps durable status, logs, cache use, and cancellation controls for
 builds launched by Dory. Builds started by another Docker client remain that client's responsibility;
@@ -362,7 +368,8 @@ reported as unqualified. It uses native EFI and an NVMe root disk with fsync sem
 display, network, audio, pointer, keyboard, clipboard, and memory-balloon devices; the distribution must include drivers for the
 devices it needs. Desktop ISO machines default to four vCPUs and 4 GB of memory as balanced resource
 defaults, not as compatibility claims. This path remains preview until the real-installer
-physical-Mac release matrix passes.
+physical-Mac release matrix passes. Intel/x86_64 ISOs are rejected before allocation; Rosetta and
+FEX cannot boot them.
 
 ### Machine secrets and host access
 
@@ -511,8 +518,8 @@ dory network --lan-visible on
 ## Runtime modes and resource control
 
 Settings > Engine & Daemon controls the engine backend, CPU count, memory ceiling, common amd64
-support, and preview Venus GPU acceleration. Applying CPU or memory changes restarts the engine
-and restores the containers that were running.
+container-application support, and preview dual VirGL2/Venus GPU acceleration. Applying CPU or
+memory changes restarts the engine and restores the containers that were running.
 
 Dory has four availability modes:
 
@@ -652,7 +659,7 @@ Everything below is available without using the command line:
 | General | Launch at login, menu bar, background daemon, terminal tools, preferred external terminal (system default, Terminal, iTerm2, Ghostty, Warp, WezTerm, Alacritty, Kitty, or a custom app), browser login bridge, Docker host conflict repair, light or dark appearance |
 | Updates | Signed candidate/preflight state, active transaction, next-launch smoke result, rollback, and recovery export |
 | Components | Signed optional payload selection, install/update/verify/remove, current generation, and rollback-safe prior generation |
-| Engine & Daemon | Dory, detected external, or custom socket backend; restart; CPU; memory; amd64 support; preview GPU; local daemon status |
+| Engine & Daemon | Dory, detected external, or custom socket backend; restart; CPU; memory; amd64 container-application support; preview GPU; local daemon status |
 | Resources | Data drive, reveal, backup, verify, restore, select, grow, per-process memory, Mac capacity |
 | Machines | Host environment allow-list and the file-sharing boundary for persistent and sandbox machines |
 | Auto-Idle | Availability mode, delay, blockers, and wake notifications |
@@ -707,10 +714,18 @@ docker run --rm \
 
 - **Unavailable — Intel hosts:** Apple Silicon is the only qualified host architecture. Intel support is planned for a later
   release after dedicated hardware validation.
-- **Supported — Desktop Linux:** managed Ubuntu 24.04 LTS GNOME plus Debian 13 and Kali rolling Xfce arm64 profiles.
+- **Unavailable — Intel Linux guests:** x86_64 installer ISOs do not boot through Dory's ARM64
+  hardware-virtualization paths. Rosetta/FEX translate applications inside ARM64 guests, not a
+  complete Intel guest OS; a future full implementation requires a packaged QEMU TCG backend.
+- **Recovery baseline — Desktop Linux:** managed Ubuntu 24.04 LTS GNOME plus Debian 13 and Kali
+  rolling Xfce arm64 profiles must boot and launch ordinary applications with software graphics.
+  The exact release remains unqualified until the physical managed-desktop gate passes.
 - **Supported — Headless Linux:** Alpine-based arm64 guests with an initial root `/bin/sh` login.
-- **Supported — Desktop Venus/Vulkan:** managed arm64 desktops automatically use the isolated,
-  capability-probed Venus path for Vulkan apps, with ordered fallback to classic VirGL and software.
+- **Unqualified for public release — Desktop GPU acceleration:** the repaired dual VirGL2/Venus
+  tuple passed a 15-minute physical Developer-ID calibration with sustained VirGL, Venus Vulkan
+  WSI, Zed, Firefox, and ordinary GNOME applications, with no rejected resource flush or device
+  loss. Dory still makes no public acceleration claim until that exact tuple is release-signed,
+  notarized, and passes the complete release matrix; software display remains the recovery path.
 - **Qualified-only USB passthrough:** host discovery and explicit app/CLI attach/detach controls are
   wired. They enable only for a running raw-HV machine whose exact signed resolved plan authorizes
   removable USB; current production catalogs do not yet carry that qualification. Remembered replay

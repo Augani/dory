@@ -19,6 +19,17 @@ final class EngineStateDirectoryLockTests: XCTestCase {
         withExtendedLifetime(first) {}
     }
 
+    func testCanonicalizesASymlinkedParentBeforePublishingLockAuthority() throws {
+        let lexicalState = "/tmp/dory-engine-lock-alias-\(UUID().uuidString)"
+        let physicalState = try DoryDataDrive.canonicalPath(lexicalState)
+        defer { try? FileManager.default.removeItem(atPath: physicalState) }
+
+        let first = try EngineStateDirectoryLock(stateDirectory: lexicalState)
+        XCTAssertEqual(first.path, physicalState + "/engine.lock")
+        XCTAssertThrowsError(try EngineStateDirectoryLock(stateDirectory: physicalState))
+        withExtendedLifetime(first) {}
+    }
+
     func testReleasesOwnershipWhenTheEngineOwnerExits() throws {
         let state = temporaryStateDirectory()
         defer { try? FileManager.default.removeItem(atPath: state) }
@@ -47,13 +58,14 @@ final class EngineStateDirectoryLockTests: XCTestCase {
 
     func testSupportsASeparateDriveLifetimeLockInTheBundleRoot() throws {
         let drive = temporaryStateDirectory() + ".dorydrive"
+        let physicalDrive = try DoryDataDrive.canonicalPath(drive)
         defer { try? FileManager.default.removeItem(atPath: drive) }
 
         let first = try EngineStateDirectoryLock(
             stateDirectory: drive,
             lockFileName: "drive.lock"
         )
-        XCTAssertEqual(first.path, drive + "/drive.lock")
+        XCTAssertEqual(first.path, physicalDrive + "/drive.lock")
         XCTAssertThrowsError(try EngineStateDirectoryLock(
             stateDirectory: drive + "/./",
             lockFileName: "drive.lock"
@@ -69,6 +81,7 @@ final class EngineStateDirectoryLockTests: XCTestCase {
             try? FileManager.default.removeItem(atPath: foreign)
         }
         try FileManager.default.createDirectory(atPath: state, withIntermediateDirectories: true)
+        let physicalState = try DoryDataDrive.canonicalPath(state)
         try Data("foreign\n".utf8).write(to: URL(fileURLWithPath: foreign))
         try FileManager.default.linkItem(atPath: foreign, toPath: state + "/engine.lock")
 
@@ -76,7 +89,7 @@ final class EngineStateDirectoryLockTests: XCTestCase {
             guard case let EngineStateDirectoryLockError.cannotOpen(path, code) = error else {
                 return XCTFail("unexpected state-lock error: \(error)")
             }
-            XCTAssertEqual(path, state + "/engine.lock")
+            XCTAssertEqual(path, physicalState + "/engine.lock")
             XCTAssertEqual(code, EINVAL)
         }
         XCTAssertEqual(try String(contentsOfFile: foreign, encoding: .utf8), "foreign\n")

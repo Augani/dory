@@ -142,6 +142,11 @@ public struct DoryMachineTypedSettingsSnapshot: Codable, Sendable, Equatable, Ha
             graphicsPreference = .virgl
         case [.software]:
             graphicsPreference = .software
+        case [.hostAcceleratedDisplay, .software]:
+            // Generic EFI media uses the portable VZ compatibility policy. It is an implicit
+            // planner contract, not one of the legacy raw-HV graphics preferences. Leaving the
+            // optional snapshot field unrepresented preserves that exact policy on replacement.
+            graphicsPreference = nil
         default:
             throw DoryMachineTypedWriteAuthorityError.unsupportedByLegacyRuntime(
                 "desktopGraphicsPreference"

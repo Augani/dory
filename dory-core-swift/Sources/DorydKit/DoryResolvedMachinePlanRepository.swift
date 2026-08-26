@@ -38,11 +38,26 @@ public enum DoryResolvedMachinePlanRepositoryError: Error, Sendable, Equatable, 
     }
 }
 
-/// Integrity envelope for a resolved plan. Schema v1 records decode for migration but have no
-/// integrity digest and therefore always retain the plan's `requiresReplanning` disposition.
+private struct DoryResolvedMachinePlanRepositoryCodingKey: CodingKey {
+    var stringValue: String
+    var intValue: Int? { nil }
+
+    init?(stringValue: String) {
+        self.stringValue = stringValue
+    }
+
+    init?(intValue: Int) { nil }
+}
+
+/// Integrity envelope for a resolved plan.
+///
+/// Record schema v1 has no integrity digest. Record schema v2 is the historical, pretty-printed
+/// integrity envelope and is accepted only for pre-schema-v5 plans that require replanning.
+/// Record schema v3 is the canonical, compact JSON authority used for current plans.
 public struct DoryResolvedMachinePlanRepositoryRecord: Codable, Sendable, Equatable {
     public static let oldestSupportedSchemaVersion: UInt16 = 1
-    public static let currentSchemaVersion: UInt16 = 2
+    public static let legacyIntegritySchemaVersion: UInt16 = 2
+    public static let currentSchemaVersion: UInt16 = 3
 
     public var schemaVersion: UInt16
     public var planSHA256: String?
@@ -54,16 +69,29 @@ public struct DoryResolvedMachinePlanRepositoryRecord: Codable, Sendable, Equata
         self.plan = plan
     }
 
-    private enum CodingKeys: String, CodingKey {
+    private enum CodingKeys: String, CodingKey, CaseIterable {
         case schemaVersion
         case planSHA256
         case plan
     }
 
     public init(from decoder: Decoder) throws {
+        let rawContainer = try decoder.container(
+            keyedBy: DoryResolvedMachinePlanRepositoryCodingKey.self
+        )
+        let knownKeys = Set(CodingKeys.allCases.map(\.rawValue))
+        guard rawContainer.allKeys.allSatisfy({ knownKeys.contains($0.stringValue) }) else {
+            throw DecodingError.dataCorrupted(
+                DecodingError.Context(
+                    codingPath: decoder.codingPath,
+                    debugDescription: "Unknown resolved-plan repository record field."
+                )
+            )
+        }
         let container = try decoder.container(keyedBy: CodingKeys.self)
         schemaVersion = try container.decode(UInt16.self, forKey: .schemaVersion)
         guard schemaVersion == Self.oldestSupportedSchemaVersion
+                || schemaVersion == Self.legacyIntegritySchemaVersion
                 || schemaVersion == Self.currentSchemaVersion else {
             throw DecodingError.dataCorruptedError(
                 forKey: .schemaVersion,
@@ -168,6 +196,9 @@ public final class DoryResolvedMachinePlanRepository: @unchecked Sendable {
             throw DoryResolvedMachinePlanRepositoryError.planNotFound(id)
         }
         let data = try Self.secureRead(path: path)
+        guard let authority = Self.persistedAuthority(recordData: data) else {
+            throw DoryResolvedMachinePlanRepositoryError.invalidRecord(path)
+        }
         let record: DoryResolvedMachinePlanRepositoryRecord
         do {
             record = try JSONDecoder().decode(DoryResolvedMachinePlanRepositoryRecord.self, from: data)
@@ -179,15 +210,35 @@ public final class DoryResolvedMachinePlanRepository: @unchecked Sendable {
         }
         switch record.schemaVersion {
         case DoryResolvedMachinePlanRepositoryRecord.oldestSupportedSchemaVersion:
-            guard record.plan.sourceSchemaVersion == DoryResolvedMachinePlan.oldestSupportedSchemaVersion,
+            guard authority.planSchemaVersion
+                    == DoryResolvedMachinePlan.oldestSupportedSchemaVersion,
+                  record.plan.sourceSchemaVersion
+                    == DoryResolvedMachinePlan.oldestSupportedSchemaVersion,
                   record.plan.migrationDisposition == .requiresReplanning,
                   record.planSHA256 == nil else {
                 throw DoryResolvedMachinePlanRepositoryError.invalidRecord(path)
             }
-        case DoryResolvedMachinePlanRepositoryRecord.currentSchemaVersion:
+        case DoryResolvedMachinePlanRepositoryRecord.legacyIntegritySchemaVersion:
             guard let expected = record.planSHA256,
                   Self.isSHA256(expected),
-                  expected == Self.planSHA256(record.plan),
+                  expected == Self.sha256(authority.canonicalPlanData),
+                  record.plan.sourceSchemaVersion == authority.planSchemaVersion,
+                  record.plan.migrationDisposition == .requiresReplanning,
+                  Self.isHistoricallyValidMigrationPlan(
+                      record.plan,
+                      persistedSchemaVersion: authority.planSchemaVersion
+                  ) else {
+                throw DoryResolvedMachinePlanRepositoryError.invalidRecord(path)
+            }
+        case DoryResolvedMachinePlanRepositoryRecord.currentSchemaVersion:
+            guard authority.planSchemaVersion == DoryResolvedMachinePlan.currentSchemaVersion,
+                  let expected = record.planSHA256,
+                  Self.isSHA256(expected),
+                  expected == Self.sha256(authority.canonicalPlanData),
+                  let decodedCanonicalPlanData = try? Self.canonicalEncodedPlanData(record.plan),
+                  decodedCanonicalPlanData == authority.canonicalPlanData,
+                  record.plan.sourceSchemaVersion == DoryResolvedMachinePlan.currentSchemaVersion,
+                  record.plan.migrationDisposition == .current,
                   record.plan.validate().isEmpty else {
                 throw DoryResolvedMachinePlanRepositoryError.invalidRecord(path)
             }
@@ -216,15 +267,24 @@ public final class DoryResolvedMachinePlanRepository: @unchecked Sendable {
         path: String,
         replacing: Bool
     ) throws {
-        let record = DoryResolvedMachinePlanRepositoryRecord(
-            planSHA256: Self.planSHA256(plan),
-            plan: plan
-        )
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data: Data
         do {
-            data = try encoder.encode(record)
+            let encodedPlan = try JSONEncoder().encode(plan)
+            guard let planObject = try JSONSerialization.jsonObject(
+                with: encodedPlan
+            ) as? [String: Any] else {
+                throw DoryResolvedMachinePlanRepositoryError.invalidRecord(path)
+            }
+            let canonicalPlanData = try Self.canonicalJSONData(planObject)
+            data = try Self.canonicalJSONData([
+                "plan": planObject,
+                "planSHA256": Self.sha256(canonicalPlanData),
+                "schemaVersion": Int(
+                    DoryResolvedMachinePlanRepositoryRecord.currentSchemaVersion
+                ),
+            ])
+        } catch let error as DoryResolvedMachinePlanRepositoryError {
+            throw error
         } catch {
             throw DoryResolvedMachinePlanRepositoryError.filesystem(
                 "encode resolved plan for \(plan.machineID): \(error)"
@@ -405,11 +465,148 @@ public final class DoryResolvedMachinePlanRepository: @unchecked Sendable {
         }
     }
 
-    private static func planSHA256(_ plan: DoryResolvedMachinePlan) -> String {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        guard let data = try? encoder.encode(plan) else { return "" }
-        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    private struct PersistedAuthority {
+        var planSchemaVersion: UInt16
+        var canonicalPlanData: Data
+    }
+
+    /// Parses the untyped wire authority before `Codable` is allowed to synthesize migration
+    /// state. Current records must be byte-for-byte canonical. The only noncanonical exception is
+    /// the historical record wrapper, which is authenticated using its original compact/sorted
+    /// nested-plan digest and can only produce a non-runnable migration value.
+    private static func persistedAuthority(recordData: Data) -> PersistedAuthority? {
+        guard let root = try? JSONSerialization.jsonObject(with: recordData) as? [String: Any],
+              let recordSchemaVersion = exactUInt16(root["schemaVersion"]),
+              let planObject = root["plan"] as? [String: Any],
+              let planSchemaVersion = exactUInt16(planObject["schemaVersion"]),
+              hasOnlyAllowedPlanKeys(planObject, schemaVersion: planSchemaVersion),
+              let canonicalPlanData = try? canonicalJSONData(planObject) else {
+            return nil
+        }
+
+        switch recordSchemaVersion {
+        case DoryResolvedMachinePlanRepositoryRecord.oldestSupportedSchemaVersion:
+            guard Set(root.keys) == ["plan", "schemaVersion"],
+                  planSchemaVersion == DoryResolvedMachinePlan.oldestSupportedSchemaVersion else {
+                return nil
+            }
+        case DoryResolvedMachinePlanRepositoryRecord.legacyIntegritySchemaVersion:
+            guard Set(root.keys) == ["plan", "planSHA256", "schemaVersion"],
+                  (2...4).contains(planSchemaVersion),
+                  exactUInt16(planObject["sourceSchemaVersion"]) == planSchemaVersion,
+                  planObject["migrationDisposition"] as? String
+                    == DoryResolvedMachinePlanMigrationDisposition.current.rawValue else {
+                return nil
+            }
+        case DoryResolvedMachinePlanRepositoryRecord.currentSchemaVersion:
+            guard Set(root.keys) == ["plan", "planSHA256", "schemaVersion"],
+                  planSchemaVersion == DoryResolvedMachinePlan.currentSchemaVersion,
+                  exactUInt16(planObject["sourceSchemaVersion"])
+                    == DoryResolvedMachinePlan.currentSchemaVersion,
+                  planObject["migrationDisposition"] as? String
+                    == DoryResolvedMachinePlanMigrationDisposition.current.rawValue,
+                  let canonicalRecordData = try? canonicalJSONData(root),
+                  canonicalRecordData == recordData else {
+                return nil
+            }
+        default:
+            return nil
+        }
+        return PersistedAuthority(
+            planSchemaVersion: planSchemaVersion,
+            canonicalPlanData: canonicalPlanData
+        )
+    }
+
+    private static func canonicalJSONData(_ object: Any) throws -> Data {
+        guard JSONSerialization.isValidJSONObject(object) else {
+            throw CocoaError(.propertyListWriteInvalid)
+        }
+        return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+    }
+
+    private static func canonicalEncodedPlanData(
+        _ plan: DoryResolvedMachinePlan
+    ) throws -> Data {
+        let encoded = try JSONEncoder().encode(plan)
+        let object = try JSONSerialization.jsonObject(with: encoded)
+        return try canonicalJSONData(object)
+    }
+
+    private static func exactUInt16(_ value: Any?) -> UInt16? {
+        guard let number = value as? NSNumber,
+              CFGetTypeID(number) != CFBooleanGetTypeID(),
+              number.doubleValue.isFinite,
+              number.doubleValue.rounded(.towardZero) == number.doubleValue,
+              number.doubleValue >= 0,
+              number.doubleValue <= Double(UInt16.max) else {
+            return nil
+        }
+        return UInt16(number.doubleValue)
+    }
+
+    private static func hasOnlyAllowedPlanKeys(
+        _ plan: [String: Any],
+        schemaVersion: UInt16
+    ) -> Bool {
+        let versionOne: Set<String> = [
+            "schemaVersion", "machineID", "definitionRevision", "planRevision",
+            "createdAtUnixMilliseconds", "updatedAtUnixMilliseconds", "guest", "backend",
+            "backendRuntimeBuildID", "virtualHardwareABIVersion", "bootMedia",
+            "componentDigests", "devices", "graphics",
+        ]
+        var modern: Set<String> = [
+            "schemaVersion", "sourceSchemaVersion", "migrationDisposition", "machineID",
+            "definitionRevision", "definitionSHA256", "planRevision",
+            "createdAtUnixMilliseconds", "updatedAtUnixMilliseconds", "guest", "backend",
+            "backendImplementationIdentifier", "backendRuntimeBuildIdentifier",
+            "virtualHardwareABIVersion", "bootMedia", "components", "devices", "graphics",
+            "supportTier", "selectionEvidence", "qualificationEvidence", "resourceAdmission",
+            "hostQualification", "experimentalAuthorization",
+        ]
+        switch schemaVersion {
+        case 1:
+            return Set(plan.keys).isSubset(of: versionOne)
+        case 2:
+            break
+        case 3:
+            modern.insert("launchArtifacts")
+        case 4:
+            modern.formUnion(["launchArtifacts", "portForwards"])
+        case DoryResolvedMachinePlan.currentSchemaVersion:
+            modern.formUnion([
+                "launchArtifacts", "portForwards", "rawHVVirtualHardwareTopology",
+            ])
+        default:
+            return false
+        }
+        return Set(plan.keys).isSubset(of: modern)
+    }
+
+    private static func isHistoricallyValidMigrationPlan(
+        _ plan: DoryResolvedMachinePlan,
+        persistedSchemaVersion: UInt16
+    ) -> Bool {
+        guard (2...4).contains(persistedSchemaVersion),
+              plan.sourceSchemaVersion == persistedSchemaVersion,
+              plan.migrationDisposition == .requiresReplanning,
+              plan.rawHVVirtualHardwareTopology == nil else {
+            return false
+        }
+        var allowed: Set<DoryResolvedMachinePlanValidationCode> = [
+            .legacyPlanRequiresReplanning,
+            .invalidVirtualHardwareTopology,
+        ]
+        if persistedSchemaVersion < 4 {
+            allowed.insert(.invalidLaunchArtifactEvidence)
+        }
+        let codes = Set(plan.validate().map(\.code))
+        return codes.contains(.legacyPlanRequiresReplanning)
+            && codes.isSubset(of: allowed)
+    }
+
+    private static func sha256(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
     private static func isSHA256(_ value: String) -> Bool {

@@ -1,8 +1,30 @@
 @testable import DorydKit
 import DoryCore
+import DoryOperations
 import XCTest
 
 final class DorydConfigurationTests: XCTestCase {
+    func testMachServiceOverrideSupportsIsolatedQualificationAndRejectsUnsafeNames() throws {
+        XCTAssertEqual(
+            try DorydEnvironment(values: [:]).machServiceName(),
+            DorydEnvironment.defaultMachServiceName
+        )
+        XCTAssertEqual(
+            try DorydEnvironment(values: [
+                "DORYD_MACH_SERVICE": "dev.dory.doryd.network-qualification_1",
+            ]).machServiceName(),
+            "dev.dory.doryd.network-qualification_1"
+        )
+
+        for invalid in ["", ".dev.dory", "dev.dory.", "dev..dory", "dev/dory", "dory service"] {
+            XCTAssertThrowsError(
+                try DorydEnvironment(values: ["DORYD_MACH_SERVICE": invalid]).machServiceName()
+            ) { error in
+                XCTAssertEqual(error as? DorydEnvironmentError, .invalidMachServiceName(invalid))
+            }
+        }
+    }
+
     func testRawHVPlatformContractMatchesShippedHelperMinimumOS() {
         XCTAssertEqual(DorydHostPlatform.Architecture(machineHardwareName: "arm64e"), .arm64)
         XCTAssertFalse(DorydHostPlatform(architecture: .x86_64, macOSMajorVersion: 14).supportsRawHV)
@@ -76,6 +98,8 @@ final class DorydConfigurationTests: XCTestCase {
             "DORYD_HV_RESTART_LIMIT": "5",
             "DORYD_HV_RESTART_DELAY": "0.1",
             "DORYD_SSH_AUTH_SOCK": "/private/tmp/com.apple.launchd.fixture/Listeners",
+            "DORYD_ENGINE_RECLAIM_POLICY": "senpai",
+            "DORYD_FUSE_REQUEST_QUEUES": "3",
         ], cwd: directory, hostPlatform: DorydHostPlatform(architecture: .arm64, macOSMajorVersion: 15))
 
         let config = try XCTUnwrap(env.dockerTierConfiguration())
@@ -99,10 +123,14 @@ final class DorydConfigurationTests: XCTestCase {
         XCTAssertArgumentPair(
             hv.arguments,
             "--data-drive",
-            directory + "/home/Library/Application Support/Dory/Dory.dorydrive"
+            try DoryDataDrive.canonicalPath(
+                directory + "/home/Library/Application Support/Dory/Dory.dorydrive"
+            )
         )
         XCTAssertArgumentPair(hv.arguments, "--mem-mb", "4096")
         XCTAssertArgumentPair(hv.arguments, "--cpus", "6")
+        XCTAssertArgumentPair(hv.arguments, "--memory-reclaim", "senpai")
+        XCTAssertArgumentPair(hv.arguments, "--fuse-request-queues", "3")
         XCTAssertArgumentPair(
             hv.arguments,
             "--ssh-agent-socket",
@@ -117,6 +145,43 @@ final class DorydConfigurationTests: XCTestCase {
         XCTAssertTrue(hv.arguments.contains("--amd64"))
         XCTAssertArgumentPair(hv.arguments, "--share", "src=/tmp/src:rw")
         XCTAssertArgumentPair(hv.arguments, "--share", "cache=/tmp/cache:ro")
+    }
+
+    func testInvalidEngineRuntimePoliciesFailClosedBeforeHelperLaunch() throws {
+        let directory = "/tmp/doryd-config-runtime-policy-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+
+        let helper = try executableFixture(at: directory + "/dory-hv")
+        let gvproxy = try executableFixture(at: directory + "/gvproxy")
+        let kernel = directory + "/kernel"
+        let rootfs = directory + "/rootfs.ext4"
+        FileManager.default.createFile(atPath: kernel, contents: Data())
+        FileManager.default.createFile(atPath: rootfs, contents: Data())
+        let base = [
+            "DORYD_HOME": directory + "/home",
+            "DORYD_HV_HELPER": helper,
+            "DORYD_HV_KERNEL": kernel,
+            "DORYD_GVPROXY": gvproxy,
+            "DORYD_ENGINE_ROOTFS": rootfs,
+            "DORYD_STATE_DIR": directory + "/state",
+        ]
+        let platform = DorydHostPlatform(architecture: .arm64, macOSMajorVersion: 15)
+
+        for invalid in [
+            ["DORYD_ENGINE_RECLAIM_POLICY": "ambient-magic"],
+            ["DORYD_FUSE_REQUEST_QUEUES": "0"],
+            ["DORYD_FUSE_REQUEST_QUEUES": "9"],
+            ["DORYD_FUSE_REQUEST_QUEUES": "many"],
+        ] {
+            let values = base.merging(invalid) { _, replacement in replacement }
+            let environment = DorydEnvironment(
+                values: values,
+                cwd: directory,
+                hostPlatform: platform
+            )
+            XCTAssertNil(environment.dockerTierConfiguration()?.hvProcess)
+        }
     }
 
     func testReturnsForwardOnlyTierWhenExternalForwardSocketIsProvided() throws {
@@ -182,7 +247,7 @@ final class DorydConfigurationTests: XCTestCase {
         defer { try? FileManager.default.removeItem(atPath: directory) }
 
         let doryd = try executableFixture(at: helpers + "/doryd")
-        _ = try executableFixture(at: helpers + "/dory-hv")
+        _ = try executableFixture(at: helpers + "/DoryHVRunner.app/Contents/MacOS/dory-hv")
         _ = try executableFixture(at: helpers + "/dory-vmm")
         _ = try executableFixture(at: helpers + "/gvproxy")
         FileManager.default.createFile(
@@ -198,6 +263,31 @@ final class DorydConfigurationTests: XCTestCase {
         XCTAssertNil(environment.dockerTierConfiguration())
     }
 
+    func testBundledDaemonRejectsExecutableRawHelperSiblingAsLaunchAuthority() throws {
+        let directory = "/tmp/doryd-config-raw-hv-sibling-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let helpers = directory + "/Dory.app/Contents/Helpers"
+        let resources = directory + "/Dory.app/Contents/Resources"
+        try FileManager.default.createDirectory(atPath: helpers, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: resources, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+
+        let doryd = try executableFixture(at: helpers + "/doryd")
+        _ = try executableFixture(at: helpers + "/DoryHVRunner.app/Contents/MacOS/dory-hv")
+        let rawSibling = try executableFixture(at: helpers + "/dory-hv")
+        _ = try executableFixture(at: helpers + "/gvproxy")
+        FileManager.default.createFile(
+            atPath: resources + "/dory-hv-kernel-\(supportedRawHVGuestArch())",
+            contents: Data()
+        )
+
+        let environment = DorydEnvironment(values: [
+            "DORYD_HOME": directory + "/home",
+            "DORYD_HV_HELPER": rawSibling,
+        ], cwd: directory, executablePath: doryd, hostPlatform: supportedRawHVPlatform())
+
+        XCTAssertNil(environment.dockerTierConfiguration())
+    }
+
     func testSupportedRawHVHostDoesNotReplaceMissingExplicitGVProxyWithBundledFallback() throws {
         let directory = "/tmp/doryd-config-missing-explicit-gvproxy-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let helpers = directory + "/Dory.app/Contents/Helpers"
@@ -207,7 +297,7 @@ final class DorydConfigurationTests: XCTestCase {
         defer { try? FileManager.default.removeItem(atPath: directory) }
 
         let doryd = try executableFixture(at: helpers + "/doryd")
-        let helper = try executableFixture(at: helpers + "/dory-hv")
+        let helper = try executableFixture(at: helpers + "/DoryHVRunner.app/Contents/MacOS/dory-hv")
         _ = try executableFixture(at: helpers + "/gvproxy")
         FileManager.default.createFile(
             atPath: resources + "/dory-hv-kernel-\(supportedRawHVGuestArch())",
@@ -234,7 +324,7 @@ final class DorydConfigurationTests: XCTestCase {
         defer { try? FileManager.default.removeItem(atPath: directory) }
 
         let doryd = try executableFixture(at: helpers + "/doryd")
-        let helper = try executableFixture(at: helpers + "/dory-hv")
+        let helper = try executableFixture(at: helpers + "/DoryHVRunner.app/Contents/MacOS/dory-hv")
         let gvproxy = try executableFixture(at: helpers + "/gvproxy")
         FileManager.default.createFile(
             atPath: resources + "/dory-hv-kernel-\(supportedRawHVGuestArch())",
@@ -260,7 +350,7 @@ final class DorydConfigurationTests: XCTestCase {
         defer { try? FileManager.default.removeItem(atPath: directory) }
 
         let doryd = try executableFixture(at: helpers + "/doryd")
-        let helper = try executableFixture(at: helpers + "/dory-hv")
+        let helper = try executableFixture(at: helpers + "/DoryHVRunner.app/Contents/MacOS/dory-hv")
         let gvproxy = try executableFixture(at: helpers + "/gvproxy")
         _ = helper
         _ = gvproxy
@@ -299,7 +389,7 @@ final class DorydConfigurationTests: XCTestCase {
         defer { try? FileManager.default.removeItem(atPath: directory) }
 
         let doryd = try executableFixture(at: helpers + "/doryd")
-        _ = try executableFixture(at: helpers + "/dory-hv")
+        _ = try executableFixture(at: helpers + "/DoryHVRunner.app/Contents/MacOS/dory-hv")
         _ = try executableFixture(at: helpers + "/gvproxy")
 
         #if arch(x86_64)
@@ -336,7 +426,7 @@ final class DorydConfigurationTests: XCTestCase {
         try FileManager.default.createDirectory(atPath: resources, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(atPath: directory) }
 
-        let helper = try executableFixture(at: helpers + "/dory-hv")
+        let helper = try executableFixture(at: helpers + "/DoryHVRunner.app/Contents/MacOS/dory-hv")
         let gvproxy = try executableFixture(at: helpers + "/gvproxy")
         let headlessKernel = resources + "/dory-hv-kernel-arm64"
         try Data("headless-kernel".utf8).write(to: URL(fileURLWithPath: headlessKernel))
@@ -443,7 +533,7 @@ final class DorydConfigurationTests: XCTestCase {
         defer { try? FileManager.default.removeItem(atPath: directory) }
 
         let doryd = try executableFixture(at: helpers + "/doryd")
-        _ = try executableFixture(at: helpers + "/dory-hv")
+        _ = try executableFixture(at: helpers + "/DoryHVRunner.app/Contents/MacOS/dory-hv")
         _ = try executableFixture(at: helpers + "/gvproxy")
 
         #if arch(x86_64)
@@ -489,7 +579,7 @@ final class DorydConfigurationTests: XCTestCase {
         defer { try? FileManager.default.removeItem(atPath: directory) }
 
         let doryd = try executableFixture(at: helpers + "/doryd")
-        _ = try executableFixture(at: helpers + "/dory-hv")
+        _ = try executableFixture(at: helpers + "/DoryHVRunner.app/Contents/MacOS/dory-hv")
         _ = try executableFixture(at: helpers + "/gvproxy")
         #if arch(x86_64)
         let guestArch = "amd64"
@@ -544,7 +634,7 @@ final class DorydConfigurationTests: XCTestCase {
         defer { try? FileManager.default.removeItem(atPath: directory) }
 
         let doryd = try executableFixture(at: helpers + "/doryd")
-        _ = try executableFixture(at: helpers + "/dory-hv")
+        _ = try executableFixture(at: helpers + "/DoryHVRunner.app/Contents/MacOS/dory-hv")
         _ = try executableFixture(at: helpers + "/gvproxy")
         #if arch(x86_64)
         let guestArch = "amd64"
@@ -597,7 +687,7 @@ final class DorydConfigurationTests: XCTestCase {
         defer { try? FileManager.default.removeItem(atPath: directory) }
 
         let doryd = try executableFixture(at: helpers + "/doryd")
-        _ = try executableFixture(at: helpers + "/dory-hv")
+        _ = try executableFixture(at: helpers + "/DoryHVRunner.app/Contents/MacOS/dory-hv")
         _ = try executableFixture(at: helpers + "/gvproxy")
         #if arch(x86_64)
         let guestArch = "amd64"
@@ -647,7 +737,7 @@ final class DorydConfigurationTests: XCTestCase {
         try FileManager.default.createDirectory(atPath: resources, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(atPath: directory) }
 
-        let helper = try executableFixture(at: helpers + "/dory-hv")
+        let helper = try executableFixture(at: helpers + "/DoryHVRunner.app/Contents/MacOS/dory-hv")
         let gvproxy = try executableFixture(at: helpers + "/gvproxy")
 
         #if arch(x86_64)
@@ -992,6 +1082,10 @@ final class DorydConfigurationTests: XCTestCase {
     }
 
     private func executableFixture(at path: String) throws -> String {
+        try FileManager.default.createDirectory(
+            atPath: URL(fileURLWithPath: path).deletingLastPathComponent().path,
+            withIntermediateDirectories: true
+        )
         try "#!/bin/sh\nexit 0\n".write(toFile: path, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: path)
         return path

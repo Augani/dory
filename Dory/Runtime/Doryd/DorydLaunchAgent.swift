@@ -371,7 +371,9 @@ enum DorydLaunchAgent {
         configuration: Configuration = Configuration()
     ) -> String {
         let vmm = vmmExecutablePath(helpersDirectory: helpersDirectory)
-        let hv = helpersDirectory.appendingPathComponent("dory-hv").path
+        let hv = helpersDirectory
+            .appendingPathComponent("DoryHVRunner.app/Contents/MacOS/dory-hv")
+            .path
         let gvproxy = helpersDirectory.appendingPathComponent("gvproxy").path
         let resourcesDirectory = helpersDirectory
             .deletingLastPathComponent()

@@ -44,8 +44,8 @@ import Testing
         #expect(queue.hasPending)
         let chain = try #require(try queue.pop())
         #expect(chain.head == 0)
-        #expect(chain.readableSegments.count == 1)
-        #expect(chain.writableSegments.count == 1)
+        #expect(chain.readableSegmentCount == 1)
+        #expect(chain.writableSegmentCount == 1)
         #expect(chain.readBytes() == [0xDE, 0xAD, 0xBE, 0xEF])
 
         let wrote = chain.writeBytes([1, 2, 3, 4, 5])
@@ -92,7 +92,9 @@ import Testing
         let chain = try #require(try queue.pop())
 
         queue.reset()  // guest resets the ring mid-flight (size -> 0)
-        // push must not divide by zero; it returns false rather than trapping.
+        // The typed API distinguishes revocation from a published completion that suppressed its
+        // interrupt. The compatibility Bool remains a safe no-op rather than dividing by zero.
+        #expect(try queue.pushOutcome(chain, written: 0) == .revoked)
         #expect(try queue.push(chain, written: 0) == false)
     }
 
@@ -118,6 +120,24 @@ import Testing
         #expect(!queue.hasPending)
     }
 
+    @Test func preservesZeroLengthDescriptorPresenceWithoutChangingSegmentView() throws {
+        let memory = try makeMemory()
+        let queue = Virtqueue(memory: memory)
+        queue.configure(size: 8, descriptorTable: descTable, availRing: availRing, usedRing: usedRing)
+        queue.setReady(true)
+        try writeDescriptor(memory, index: 0, addr: dataOut, len: 4, flags: 0x1, next: 1)
+        try writeDescriptor(memory, index: 1, addr: dataOut + 4, len: 0, flags: 0x1, next: 2)
+        try writeDescriptor(memory, index: 2, addr: dataIn, len: 8, flags: 0x2, next: 0)
+        try memory.write(UInt16(0), at: availRing)
+        try memory.write(UInt16(0), at: availRing + 4)
+        try memory.write(UInt16(1), at: availRing + 2)
+
+        let chain = try #require(try queue.pop())
+        #expect(chain.containsZeroLengthDescriptor)
+        #expect(chain.readableSegmentCount == 1)
+        #expect(chain.writableSegmentCount == 1)
+    }
+
     @Test func rejectsOutOfBoundsDescriptorChain() throws {
         let memory = try makeMemory()
         let queue = Virtqueue(memory: memory)
@@ -135,11 +155,11 @@ import Testing
     @Test func releaseRangeRejectsUnalignedAndOutOfBounds() throws {
         let memory = try GuestMemory(guestBase: 0x8000_0000, size: 64 * HostPage.size)
         // Unaligned start.
-        #expect(!memory.releaseRange(guestAddress: 0x8000_0001, length: HostPage.size))
+        #expect(memory.releaseRange(guestAddress: 0x8000_0001, length: HostPage.size) == .rejected)
         // Unaligned length.
-        #expect(!memory.releaseRange(guestAddress: 0x8000_0000, length: HostPage.size / 2))
+        #expect(memory.releaseRange(guestAddress: 0x8000_0000, length: HostPage.size / 2) == .rejected)
         // Out of bounds.
-        #expect(!memory.releaseRange(guestAddress: 0x9000_0000, length: HostPage.size))
+        #expect(memory.releaseRange(guestAddress: 0x9000_0000, length: HostPage.size) == .rejected)
     }
 
     @Test func restorePageNeverDoubleCountsOrTouchesOutOfRange() throws {

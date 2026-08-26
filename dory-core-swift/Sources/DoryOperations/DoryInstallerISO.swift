@@ -140,6 +140,7 @@ public enum DoryInstallerISOInspector {
     private static let scanChunkSize = 1024 * 1024
     private static let maximumDirectoryBytes = 64 * 1024 * 1024
     private static let maximumSingleDirectoryBytes = 16 * 1024 * 1024
+    private static let maximumPortableEFILoaderBytes: Int64 = 64 * 1024 * 1024
     private static let maximumBootRegionBytes: Int64 = 128 * 1024 * 1024
     private static let edgeScanBytes: Int64 = 8 * 1024 * 1024
     private static let trailingScanBytes: Int64 = 64 * 1024 * 1024
@@ -184,6 +185,40 @@ public enum DoryInstallerISOInspector {
             descriptor: descriptor,
             size: Int64(info.st_size),
             path: path
+        )
+    }
+
+    /// Returns a digest-bound identity only when the media carries a structurally valid EFI boot
+    /// path. Unlike `architecture(atPath:)`, this method never treats a marker or ISO9660 filename
+    /// as launch authority. It requires the standard fallback loader inside a validated El Torito
+    /// or MBR FAT EFI-system partition and validates the loader as a matching PE32+ EFI application.
+    public static func portableEFIMediaIdentity(
+        atPath path: String
+    ) throws -> DoryInstallerISOMediaIdentity {
+        let descriptor = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
+        guard descriptor >= 0 else {
+            throw DoryInstallerISOInspectionError.open(path, errno)
+        }
+        defer { close(descriptor) }
+
+        var info = stat()
+        guard fstat(descriptor, &info) == 0,
+              (info.st_mode & S_IFMT) == S_IFREG,
+              info.st_size > 0 else {
+            throw DoryInstallerISOInspectionError.notRegularFile(path)
+        }
+
+        let size = Int64(info.st_size)
+        let architecture = try portableEFIArchitecture(
+            descriptor: descriptor,
+            size: size,
+            path: path
+        )
+        return try mediaIdentity(
+            descriptor: descriptor,
+            size: size,
+            path: path,
+            architecture: architecture
         )
     }
 
@@ -258,9 +293,11 @@ public enum DoryInstallerISOInspector {
     fileprivate static func mediaIdentity(
         descriptor: Int32,
         size: Int64,
-        path: String
+        path: String,
+        architecture trustedArchitecture: DoryInstallerISOArchitecture? = nil
     ) throws -> DoryInstallerISOMediaIdentity {
-        let architecture = try architecture(descriptor: descriptor, size: size, path: path)
+        let architecture = try trustedArchitecture
+            ?? architecture(descriptor: descriptor, size: size, path: path)
         var hasher = SHA256()
         var offset: Int64 = 0
         while offset < size {
@@ -331,6 +368,43 @@ public enum DoryInstallerISOInspector {
             markers: &markers,
             scannedRanges: &scannedRanges
         )
+        return markers.architecture
+    }
+
+    private static func portableEFIArchitecture(
+        descriptor: Int32,
+        size: Int64,
+        path: String
+    ) throws -> DoryInstallerISOArchitecture {
+        let metadata = try inspectISO9660(descriptor: descriptor, size: size, path: path)
+        var markers = PortableEFIMarkerState()
+
+        let partitionRanges = try mbrEFIPartitionRanges(
+            descriptor: descriptor,
+            size: size,
+            path: path
+        )
+        for candidate in metadata.bootImageRanges + partitionRanges {
+            guard let volume = try validatedFATVolume(
+                candidate,
+                descriptor: descriptor,
+                imageSize: size,
+                path: path
+            ) else {
+                continue
+            }
+            try inspectPortableEFIFATNamespace(
+                volume: volume,
+                descriptor: descriptor,
+                path: path,
+                markers: &markers
+            )
+            if markers.architecture == .multiArchitecture { break }
+        }
+
+        guard markers.architecture != .unknown else {
+            throw DoryInstallerISOInspectionError.notPortableEFIBootable(path)
+        }
         return markers.architecture
     }
 
@@ -443,6 +517,96 @@ public enum DoryInstallerISOInspector {
     private struct ISO9660DirectoryEntry {
         var range: ByteRange
         var isDirectory: Bool
+    }
+
+    /// Validates the PE/COFF execution contract firmware actually consumes: executable image,
+    /// bounded optional header, EFI application subsystem, and an exact machine architecture.
+    private static func efiApplicationArchitecture(
+        _ data: Data
+    ) -> DoryInstallerISOArchitecture {
+        guard data.count >= 0x40,
+              data[0] == 0x4D,
+              data[1] == 0x5A else {
+            return .unknown
+        }
+        let peOffset = Int(littleEndianUInt32(data, at: 0x3C))
+        guard peOffset >= 0x40,
+              peOffset <= data.count - 24,
+              data[peOffset] == 0x50,
+              data[peOffset + 1] == 0x45,
+              data[peOffset + 2] == 0,
+              data[peOffset + 3] == 0 else {
+            return .unknown
+        }
+        let machine = littleEndianUInt16(data, at: peOffset + 4)
+        guard machine == 0xAA64 || machine == 0x8664 else { return .unknown }
+        let sectionCount = Int(littleEndianUInt16(data, at: peOffset + 6))
+        let optionalHeaderBytes = Int(littleEndianUInt16(data, at: peOffset + 20))
+        let characteristics = littleEndianUInt16(data, at: peOffset + 22)
+        let optionalHeaderOffset = peOffset + 24
+        guard (1...96).contains(sectionCount),
+              optionalHeaderBytes >= 112,
+              optionalHeaderOffset <= data.count - optionalHeaderBytes,
+              characteristics & 0x0002 != 0 else {
+            return .unknown
+        }
+        let optionalMagic = littleEndianUInt16(data, at: optionalHeaderOffset)
+        let subsystem = littleEndianUInt16(data, at: optionalHeaderOffset + 68)
+        let entryPoint = UInt64(littleEndianUInt32(data, at: optionalHeaderOffset + 16))
+        let sectionAlignment = UInt64(littleEndianUInt32(data, at: optionalHeaderOffset + 32))
+        let fileAlignment = UInt64(littleEndianUInt32(data, at: optionalHeaderOffset + 36))
+        let imageBytes = UInt64(littleEndianUInt32(data, at: optionalHeaderOffset + 56))
+        let headerBytes = UInt64(littleEndianUInt32(data, at: optionalHeaderOffset + 60))
+        let dataDirectoryCount = UInt64(littleEndianUInt32(data, at: optionalHeaderOffset + 108))
+        guard optionalMagic == 0x020B,
+              subsystem == 10,
+              dataDirectoryCount <= 16,
+              UInt64(optionalHeaderBytes) >= 112 + dataDirectoryCount * 8,
+              sectionAlignment > 0,
+              sectionAlignment & (sectionAlignment - 1) == 0,
+              fileAlignment > 0,
+              fileAlignment & (fileAlignment - 1) == 0,
+              sectionAlignment >= fileAlignment,
+              imageBytes > 0,
+              headerBytes > 0,
+              headerBytes <= UInt64(data.count),
+              headerBytes <= imageBytes else {
+            return .unknown
+        }
+        let sectionTableOffset = optionalHeaderOffset + optionalHeaderBytes
+        let sectionTableBytes = sectionCount * 40
+        guard sectionTableOffset <= data.count - sectionTableBytes,
+              UInt64(sectionTableOffset + sectionTableBytes) <= headerBytes else {
+            return .unknown
+        }
+        var entryPointIsExecutable = false
+        for sectionIndex in 0..<sectionCount {
+            let offset = sectionTableOffset + sectionIndex * 40
+            let virtualBytes = UInt64(littleEndianUInt32(data, at: offset + 8))
+            let virtualAddress = UInt64(littleEndianUInt32(data, at: offset + 12))
+            let rawBytes = UInt64(littleEndianUInt32(data, at: offset + 16))
+            let rawOffset = UInt64(littleEndianUInt32(data, at: offset + 20))
+            let sectionCharacteristics = littleEndianUInt32(data, at: offset + 36)
+            let mappedBytes = max(virtualBytes, rawBytes)
+            guard virtualAddress <= imageBytes,
+                  mappedBytes <= imageBytes - virtualAddress,
+                  rawOffset <= UInt64(data.count),
+                  rawBytes <= UInt64(data.count) - rawOffset else {
+                return .unknown
+            }
+            if mappedBytes > 0,
+               sectionCharacteristics & 0x2000_0000 != 0,
+               entryPoint >= virtualAddress,
+               entryPoint < virtualAddress + mappedBytes {
+                entryPointIsExecutable = true
+            }
+        }
+        guard entryPointIsExecutable else { return .unknown }
+        switch machine {
+        case 0xAA64: return .arm64
+        case 0x8664: return .x86_64
+        default: return .unknown
+        }
     }
 
     private static func directoryEntry(
@@ -593,25 +757,70 @@ public enum DoryInstallerISOInspector {
             count: Int(min(Int64(64 * 1024), imageSize - catalogOffset)),
             path: path
         )
+        guard catalog.count >= 64,
+              catalog[0] == 0x01,
+              catalog[30] == 0x55,
+              catalog[31] == 0xAA else {
+            return []
+        }
+        var validationChecksum: UInt32 = 0
+        for offset in stride(from: 0, to: 32, by: 2) {
+            validationChecksum += UInt32(littleEndianUInt16(catalog, at: offset))
+        }
+        guard validationChecksum & 0xFFFF == 0 else { return [] }
+
         var ranges: [ByteRange] = []
-        var platform: UInt8 = catalog.count >= 2 ? catalog[1] : 0
-        var offset = 32
+        func appendBootImage(at offset: Int, platform: UInt8) {
+            guard offset >= 0,
+                  offset + 32 <= catalog.count,
+                  platform == 0xEF,
+                  catalog[offset] == 0x88,
+                  catalog[offset + 1] == 0 else {
+                return
+            }
+            let imageLBA = littleEndianUInt32(catalog, at: offset + 8)
+            let imageOffset = Int64(imageLBA) * logicalBlockSize
+            let sectorCount = UInt64(littleEndianUInt16(catalog, at: offset + 6))
+            let availableBytes = imageSize - imageOffset
+            let declaredBytes: Int64
+            if sectorCount <= 1 {
+                declaredBytes = availableBytes
+            } else {
+                guard sectorCount <= UInt64(Int64.max / 512) else { return }
+                declaredBytes = Int64(sectorCount * 512)
+            }
+            if imageLBA > 0,
+               imageOffset >= 0,
+               imageOffset < imageSize,
+               declaredBytes > 0,
+               declaredBytes <= availableBytes {
+                ranges.append(ByteRange(
+                    offset: imageOffset,
+                    length: min(maximumBootRegionBytes, declaredBytes)
+                ))
+            }
+        }
+
+        appendBootImage(at: 32, platform: catalog[1])
+        var offset = 64
         while offset + 32 <= catalog.count {
             let indicator = catalog[offset]
-            if indicator == 0x90 || indicator == 0x91 {
-                platform = catalog[offset + 1]
-            } else if indicator == 0x88, platform == 0xEF {
-                let imageLBA = littleEndianUInt32(catalog, at: offset + 8)
-                let imageOffset = Int64(imageLBA) * logicalBlockSize
-                if imageOffset >= 0, imageOffset < imageSize {
-                    ranges.append(ByteRange(
-                        offset: imageOffset,
-                        length: min(maximumBootRegionBytes, imageSize - imageOffset)
-                    ))
-                }
+            guard indicator == 0x90 || indicator == 0x91 else { break }
+            let platform = catalog[offset + 1]
+            let entryCount = Int(littleEndianUInt16(catalog, at: offset + 2))
+            guard entryCount > 0,
+                  entryCount <= 2_048,
+                  offset + 32 + entryCount * 32 <= catalog.count else {
+                break
             }
+            for entryIndex in 0..<entryCount {
+                appendBootImage(
+                    at: offset + 32 + entryIndex * 32,
+                    platform: platform
+                )
+            }
+            offset += 32 + entryCount * 32
             if indicator == 0x91 { break }
-            offset += 32
         }
         return ranges
     }
@@ -635,6 +844,415 @@ public enum DoryInstallerISOInspector {
                 length: min(maximumBootRegionBytes, min(declaredLength, size - offset))
             )
         }
+    }
+
+    private enum FATKind {
+        case fat12
+        case fat16
+        case fat32
+    }
+
+    private struct FATVolume {
+        let range: ByteRange
+        let kind: FATKind
+        let bytesPerSector: Int64
+        let sectorsPerCluster: Int64
+        let fatOffset: Int64
+        let fatByteCount: Int64
+        let rootDirectoryRange: ByteRange?
+        let rootCluster: UInt32
+        let dataOffset: Int64
+        let clusterCount: UInt32
+
+        var clusterByteCount: Int64 { bytesPerSector * sectorsPerCluster }
+    }
+
+    private struct FATDirectoryEntry {
+        let firstCluster: UInt32
+        let byteCount: Int64
+        let isDirectory: Bool
+    }
+
+    private enum FATClusterLink {
+        case next(UInt32)
+        case end
+        case invalid
+    }
+
+    /// Validates the complete BPB geometry and first FAT authority used by a bounded EFI carrier.
+    private static func validatedFATVolume(
+        _ candidate: ByteRange,
+        descriptor: Int32,
+        imageSize: Int64,
+        path: String
+    ) throws -> FATVolume? {
+        guard candidate.offset >= 0,
+              candidate.length >= 512,
+              candidate.offset <= imageSize - 512 else {
+            return nil
+        }
+        let bootSector = try read(
+            descriptor: descriptor,
+            offset: candidate.offset,
+            count: 512,
+            path: path
+        )
+        guard bootSector.count == 512,
+              bootSector[510] == 0x55,
+              bootSector[511] == 0xAA,
+              bootSector[0] == 0xE9 || bootSector[0] == 0xEB else {
+            return nil
+        }
+        let bytesPerSector = UInt64(littleEndianUInt16(bootSector, at: 11))
+        let sectorsPerCluster = UInt64(bootSector[13])
+        let reservedSectors = UInt64(littleEndianUInt16(bootSector, at: 14))
+        let fatCount = UInt64(bootSector[16])
+        let rootEntryCount = UInt64(littleEndianUInt16(bootSector, at: 17))
+        guard [512, 1_024, 2_048, 4_096].contains(bytesPerSector),
+              sectorsPerCluster > 0,
+              sectorsPerCluster <= 128,
+              sectorsPerCluster & (sectorsPerCluster - 1) == 0,
+              reservedSectors > 0,
+              (1...2).contains(fatCount) else {
+            return nil
+        }
+        let smallSectorCount = UInt64(littleEndianUInt16(bootSector, at: 19))
+        let largeSectorCount = UInt64(littleEndianUInt32(bootSector, at: 32))
+        let sectorCount = smallSectorCount == 0 ? largeSectorCount : smallSectorCount
+        let fat16Sectors = UInt64(littleEndianUInt16(bootSector, at: 22))
+        let fat32Sectors = UInt64(littleEndianUInt32(bootSector, at: 36))
+        let fatSectors = fat16Sectors == 0 ? fat32Sectors : fat16Sectors
+        guard sectorCount > 0, fatSectors > 0,
+              sectorCount <= UInt64(Int64.max) / bytesPerSector else {
+            return nil
+        }
+        let rootDirectorySectors = (rootEntryCount * 32 + bytesPerSector - 1) / bytesPerSector
+        let metadataSectors = reservedSectors + fatCount * fatSectors + rootDirectorySectors
+        guard metadataSectors < sectorCount else { return nil }
+        let dataSectors = sectorCount - metadataSectors
+        let clusterCount64 = dataSectors / sectorsPerCluster
+        guard clusterCount64 > 0, clusterCount64 <= UInt64(UInt32.max - 2) else {
+            return nil
+        }
+        let kind: FATKind
+        if clusterCount64 < 4_085 {
+            kind = .fat12
+        } else if clusterCount64 < 65_525 {
+            kind = .fat16
+        } else {
+            kind = .fat32
+        }
+        switch kind {
+        case .fat12, .fat16:
+            guard fat16Sectors > 0, rootEntryCount > 0 else { return nil }
+        case .fat32:
+            guard fat16Sectors == 0, rootEntryCount == 0 else { return nil }
+        }
+
+        let fatByteCount64 = fatSectors * bytesPerSector
+        let requiredFATBytes: UInt64
+        switch kind {
+        case .fat12: requiredFATBytes = ((clusterCount64 + 2) * 3 + 1) / 2
+        case .fat16: requiredFATBytes = (clusterCount64 + 2) * 2
+        case .fat32: requiredFATBytes = (clusterCount64 + 2) * 4
+        }
+        guard requiredFATBytes <= fatByteCount64 else { return nil }
+
+        let declaredBytes = Int64(sectorCount * bytesPerSector)
+        guard declaredBytes > 0,
+              declaredBytes <= candidate.length,
+              declaredBytes <= imageSize - candidate.offset else {
+            return nil
+        }
+        let fatOffset = candidate.offset + Int64(reservedSectors * bytesPerSector)
+        let rootDirectoryOffset = candidate.offset
+            + Int64((reservedSectors + fatCount * fatSectors) * bytesPerSector)
+        let rootDirectoryBytes = Int64(rootDirectorySectors * bytesPerSector)
+        let dataOffset = candidate.offset + Int64(metadataSectors * bytesPerSector)
+        let rootCluster = kind == .fat32
+            ? littleEndianUInt32(bootSector, at: 44)
+            : 0
+        guard kind != .fat32
+                || (rootCluster >= 2 && UInt64(rootCluster - 2) < clusterCount64) else {
+            return nil
+        }
+        return FATVolume(
+            range: ByteRange(offset: candidate.offset, length: declaredBytes),
+            kind: kind,
+            bytesPerSector: Int64(bytesPerSector),
+            sectorsPerCluster: Int64(sectorsPerCluster),
+            fatOffset: fatOffset,
+            fatByteCount: Int64(fatByteCount64),
+            rootDirectoryRange: kind == .fat32 ? nil : ByteRange(
+                offset: rootDirectoryOffset,
+                length: rootDirectoryBytes
+            ),
+            rootCluster: rootCluster,
+            dataOffset: dataOffset,
+            clusterCount: UInt32(clusterCount64)
+        )
+    }
+
+    private static func inspectPortableEFIFATNamespace(
+        volume: FATVolume,
+        descriptor: Int32,
+        path: String,
+        markers: inout PortableEFIMarkerState
+    ) throws {
+        guard let root = try fatRootDirectoryData(
+            volume: volume,
+            descriptor: descriptor,
+            path: path
+        ),
+        let efi = fatDirectoryEntry(named: "EFI", in: root, volume: volume),
+        efi.isDirectory,
+        let efiDirectory = try fatClusterChainData(
+            volume: volume,
+            firstCluster: efi.firstCluster,
+            maximumBytes: maximumSingleDirectoryBytes,
+            allowsTruncation: false,
+            descriptor: descriptor,
+            path: path
+        ),
+        let boot = fatDirectoryEntry(named: "BOOT", in: efiDirectory, volume: volume),
+        boot.isDirectory,
+        let bootDirectory = try fatClusterChainData(
+            volume: volume,
+            firstCluster: boot.firstCluster,
+            maximumBytes: maximumSingleDirectoryBytes,
+            allowsTruncation: false,
+            descriptor: descriptor,
+            path: path
+        ) else {
+            return
+        }
+
+        for (name, expected) in [
+            ("BOOTAA64.EFI", DoryInstallerISOArchitecture.arm64),
+            ("BOOTX64.EFI", DoryInstallerISOArchitecture.x86_64),
+        ] {
+            guard let loader = fatDirectoryEntry(
+                named: name,
+                in: bootDirectory,
+                volume: volume
+            ), !loader.isDirectory,
+            loader.byteCount > 0,
+            loader.byteCount <= maximumPortableEFILoaderBytes,
+            let loaderData = try fatClusterChainData(
+                volume: volume,
+                firstCluster: loader.firstCluster,
+                maximumBytes: Int(loader.byteCount),
+                allowsTruncation: true,
+                descriptor: descriptor,
+                path: path
+            ), Int64(loaderData.count) == loader.byteCount,
+            efiApplicationArchitecture(loaderData) == expected else {
+                continue
+            }
+            if expected == .arm64 {
+                markers.foundArm64 = true
+            } else {
+                markers.foundX86 = true
+            }
+        }
+    }
+
+    private static func fatRootDirectoryData(
+        volume: FATVolume,
+        descriptor: Int32,
+        path: String
+    ) throws -> Data? {
+        if let range = volume.rootDirectoryRange {
+            guard range.length > 0,
+                  range.length <= Int64(maximumSingleDirectoryBytes) else {
+                return nil
+            }
+            return try read(
+                descriptor: descriptor,
+                offset: range.offset,
+                count: Int(range.length),
+                path: path
+            )
+        }
+        return try fatClusterChainData(
+            volume: volume,
+            firstCluster: volume.rootCluster,
+            maximumBytes: maximumSingleDirectoryBytes,
+            allowsTruncation: false,
+            descriptor: descriptor,
+            path: path
+        )
+    }
+
+    private static func fatDirectoryEntry(
+        named requestedName: String,
+        in directory: Data,
+        volume: FATVolume
+    ) -> FATDirectoryEntry? {
+        var offset = 0
+        while offset + 32 <= directory.count {
+            let first = directory[offset]
+            if first == 0 { return nil }
+            let attributes = directory[offset + 11]
+            if first != 0xE5, attributes != 0x0F, attributes & 0x08 == 0 {
+                let entry = Data(directory[offset..<(offset + 32)])
+                if fatShortName(entry) == requestedName.uppercased() {
+                    let low = UInt32(littleEndianUInt16(entry, at: 26))
+                    let high = volume.kind == .fat32
+                        ? UInt32(littleEndianUInt16(entry, at: 20))
+                        : 0
+                    return FATDirectoryEntry(
+                        firstCluster: (high << 16) | low,
+                        byteCount: Int64(littleEndianUInt32(entry, at: 28)),
+                        isDirectory: attributes & 0x10 != 0
+                    )
+                }
+            }
+            offset += 32
+        }
+        return nil
+    }
+
+    private static func fatShortName(_ entry: Data) -> String? {
+        guard entry.count == 32 else { return nil }
+        func component(_ range: Range<Int>) -> String? {
+            let bytes = Array(entry[range]).prefix { $0 != 0x20 }
+            guard !bytes.isEmpty,
+                  bytes.allSatisfy({ (0x21...0x7E).contains($0) }) else {
+                return nil
+            }
+            return String(bytes: bytes, encoding: .ascii)?.uppercased()
+        }
+        guard let base = component(0..<8) else { return nil }
+        let extensionBytes = Array(entry[8..<11]).prefix { $0 != 0x20 }
+        guard extensionBytes.allSatisfy({ (0x21...0x7E).contains($0) }),
+              let ext = String(bytes: extensionBytes, encoding: .ascii)?.uppercased() else {
+            return nil
+        }
+        return ext.isEmpty ? base : "\(base).\(ext)"
+    }
+
+    private static func fatClusterChainData(
+        volume: FATVolume,
+        firstCluster: UInt32,
+        maximumBytes: Int,
+        allowsTruncation: Bool,
+        descriptor: Int32,
+        path: String
+    ) throws -> Data? {
+        guard maximumBytes > 0,
+              firstCluster >= 2,
+              firstCluster - 2 < volume.clusterCount else {
+            return nil
+        }
+        var cluster = firstCluster
+        var visited = Set<UInt32>()
+        var result = Data()
+        while visited.insert(cluster).inserted, visited.count <= 65_536 {
+            guard let clusterRange = fatClusterRange(cluster, volume: volume) else {
+                return nil
+            }
+            let clusterData = try read(
+                descriptor: descriptor,
+                offset: clusterRange.offset,
+                count: Int(clusterRange.length),
+                path: path
+            )
+            let remaining = maximumBytes - result.count
+            if clusterData.count > remaining {
+                guard allowsTruncation else { return nil }
+                result.append(clusterData.prefix(remaining))
+                return result
+            }
+            result.append(clusterData)
+            switch try fatClusterLink(
+                cluster,
+                volume: volume,
+                descriptor: descriptor,
+                path: path
+            ) {
+            case .end:
+                return result
+            case .invalid:
+                return nil
+            case let .next(next):
+                if result.count == maximumBytes {
+                    return allowsTruncation ? result : nil
+                }
+                cluster = next
+            }
+        }
+        return nil
+    }
+
+    private static func fatClusterRange(
+        _ cluster: UInt32,
+        volume: FATVolume
+    ) -> ByteRange? {
+        guard cluster >= 2, cluster - 2 < volume.clusterCount else { return nil }
+        let offset = volume.dataOffset + Int64(cluster - 2) * volume.clusterByteCount
+        guard offset >= volume.range.offset,
+              offset <= volume.range.offset + volume.range.length - volume.clusterByteCount else {
+            return nil
+        }
+        return ByteRange(offset: offset, length: volume.clusterByteCount)
+    }
+
+    private static func fatClusterLink(
+        _ cluster: UInt32,
+        volume: FATVolume,
+        descriptor: Int32,
+        path: String
+    ) throws -> FATClusterLink {
+        let entryOffset: Int64
+        let byteCount: Int
+        switch volume.kind {
+        case .fat12:
+            entryOffset = Int64(cluster) + Int64(cluster / 2)
+            byteCount = 2
+        case .fat16:
+            entryOffset = Int64(cluster) * 2
+            byteCount = 2
+        case .fat32:
+            entryOffset = Int64(cluster) * 4
+            byteCount = 4
+        }
+        guard entryOffset >= 0,
+              entryOffset <= volume.fatByteCount - Int64(byteCount) else {
+            return .invalid
+        }
+        let bytes = try read(
+            descriptor: descriptor,
+            offset: volume.fatOffset + entryOffset,
+            count: byteCount,
+            path: path
+        )
+        guard bytes.count == byteCount else { return .invalid }
+        let value: UInt32
+        let endOfChain: UInt32
+        let badCluster: UInt32
+        switch volume.kind {
+        case .fat12:
+            let pair = UInt32(littleEndianUInt16(bytes, at: 0))
+            value = cluster & 1 == 0 ? pair & 0x0FFF : pair >> 4
+            endOfChain = 0x0FF8
+            badCluster = 0x0FF7
+        case .fat16:
+            value = UInt32(littleEndianUInt16(bytes, at: 0))
+            endOfChain = 0xFFF8
+            badCluster = 0xFFF7
+        case .fat32:
+            value = littleEndianUInt32(bytes, at: 0) & 0x0FFF_FFFF
+            endOfChain = 0x0FFF_FFF8
+            badCluster = 0x0FFF_FFF7
+        }
+        if value >= endOfChain { return .end }
+        guard value != badCluster,
+              value >= 2,
+              value - 2 < volume.clusterCount else {
+            return .invalid
+        }
+        return .next(value)
     }
 
     private static func scan(
@@ -702,6 +1320,10 @@ public enum DoryInstallerISOInspector {
             | UInt32(data[offset + 3]) << 24
     }
 
+    private static func littleEndianUInt16(_ data: Data, at offset: Int) -> UInt16 {
+        UInt16(data[offset]) | UInt16(data[offset + 1]) << 8
+    }
+
     private struct ByteRange: Hashable {
         let offset: Int64
         let length: Int64
@@ -724,6 +1346,20 @@ public enum DoryInstallerISOInspector {
             foundArm64 = foundArm64 || other.foundArm64
             foundX86 = foundX86 || other.foundX86
         }
+
+        var architecture: DoryInstallerISOArchitecture {
+            switch (foundArm64, foundX86) {
+            case (true, true): .multiArchitecture
+            case (true, false): .arm64
+            case (false, true): .x86_64
+            case (false, false): .unknown
+            }
+        }
+    }
+
+    private struct PortableEFIMarkerState {
+        var foundArm64 = false
+        var foundX86 = false
 
         var architecture: DoryInstallerISOArchitecture {
             switch (foundArm64, foundX86) {
@@ -1298,6 +1934,7 @@ public enum DoryInstallerISOInspectionError: Error, LocalizedError {
     case invalidISOPath(String)
     case fileNotFound(String)
     case fileTooLarge(String, Int64)
+    case notPortableEFIBootable(String)
 
     public var errorDescription: String? {
         switch self {
@@ -1313,6 +1950,8 @@ public enum DoryInstallerISOInspectionError: Error, LocalizedError {
             "File was not found in the installer ISO: \(path)"
         case let .fileTooLarge(path, size):
             "Installer ISO file exceeds its extraction limit: \(path) (\(size) bytes)"
+        case let .notPortableEFIBootable(path):
+            "Installer media does not contain a structurally valid portable EFI boot path: \(path)"
         }
     }
 }

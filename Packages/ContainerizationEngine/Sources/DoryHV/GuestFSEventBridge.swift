@@ -1,3 +1,4 @@
+import DoryFSWorkerContracts
 import Foundation
 
 public struct GuestFSEventBatchResult: Equatable, Sendable {
@@ -29,6 +30,9 @@ public enum GuestFSEventBridgeError: Error, Equatable {
     case guestExecutionFailed
     case timedOut
     case connectionClosed
+    case serviceAdmissionFailed(VirtioVsockServiceAdmissionError)
+    case connectionAdmissionFailed(VirtioVsockConnectionAdmissionError)
+    case outboundBackpressure
 }
 
 public enum GuestFSEventBatchCodec {
@@ -191,7 +195,17 @@ public final class GuestFSEventBridge: GuestFSEventSending, @unchecked Sendable 
     ) throws -> GuestFSEventBatchResult {
         let deadline = ProcessInfo.processInfo.systemUptime
             + Double(timeoutNanoseconds) / 1_000_000_000
-        let connection = vsock.connect(port: VsockPorts.fsevents)
+        let connection: VsockConnection
+        do {
+            connection = try vsock.connectForServiceIfCapacity(
+                port: VsockPorts.fsevents,
+                service: .fileEvents
+            )
+        } catch let error as VirtioVsockServiceAdmissionError {
+            throw GuestFSEventBridgeError.serviceAdmissionFailed(error)
+        } catch let error as VirtioVsockConnectionAdmissionError {
+            throw GuestFSEventBridgeError.connectionAdmissionFailed(error)
+        }
         try cancellation.install(connection)
         defer { connection.close() }
         do {
@@ -200,6 +214,8 @@ public final class GuestFSEventBridge: GuestFSEventSending, @unchecked Sendable 
             throw GuestFSEventBridgeError.timedOut
         } catch VsockConnectionWriteError.connectionClosed {
             throw GuestFSEventBridgeError.connectionClosed
+        } catch VsockConnectionWriteError.outboundQueueFull {
+            throw GuestFSEventBridgeError.outboundBackpressure
         }
         connection.shutdownSend()
         let prefix = try readExactly(4, from: connection, deadline: deadline)

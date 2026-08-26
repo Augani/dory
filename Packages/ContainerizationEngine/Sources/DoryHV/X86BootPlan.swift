@@ -30,6 +30,8 @@ public enum X86GuestLayout {
     public static let rtcBase: UInt64 = 0x70
     public static let virtioBase: UInt64 = 0xD000_0000
     public static let virtioSlotSize: UInt64 = 0x1000
+    /// The Hypervisor.framework IOAPIC exposes pins 0...23; virtio starts at pin 16.
+    public static let virtioSlotCount = 8
     public static let virtioFirstIRQ: UInt8 = 16
     public static let ramBase: UInt64 = 0x0010_0000
     public static let mmioHoleBase: UInt64 = virtioBase
@@ -63,6 +65,27 @@ public enum X86BootPlanBuilder {
                 size: X86GuestLayout.virtioSlotSize,
                 irq: UInt8(truncatingIfNeeded: UInt32(X86GuestLayout.virtioFirstIRQ) + UInt32(slot))
             )
+        }
+        return build(
+            baseCommandLine: baseCommandLine,
+            memoryBytes: memoryBytes,
+            virtioDevices: virtioDevices
+        )
+    }
+
+    /// Builds every x86 boot surface from explicit occupied slots. Sorting here is defensive: the
+    /// machine ownership table already returns canonical slot order, but callers constructing a
+    /// diagnostic or golden plan must receive identical command-line and MPTABLE inputs regardless
+    /// of attachment order.
+    static func build(
+        baseCommandLine: String = "root=/dev/vda rw panic=0",
+        memoryBytes: UInt64,
+        virtioDevices: [X86VirtioMMIODevice]
+    ) -> X86BootPlan {
+        let virtioDevices = virtioDevices.sorted { lhs, rhs in
+            if lhs.slot != rhs.slot { return lhs.slot < rhs.slot }
+            if lhs.baseAddress != rhs.baseAddress { return lhs.baseAddress < rhs.baseAddress }
+            return lhs.irq < rhs.irq
         }
         let commandLine = commandLine(baseCommandLine: baseCommandLine, virtioDevices: virtioDevices)
         return X86BootPlan(

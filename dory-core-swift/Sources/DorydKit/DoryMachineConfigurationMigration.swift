@@ -702,9 +702,11 @@ public enum DoryMachineConfigurationMigrationBridge {
         } else if acceleratedBoot {
             graphics = typedGraphicsPolicy(graphicsPreference)
         } else {
-            graphics = DoryVMGraphicsPolicy(
-                acceptableLevels: [.hostAcceleratedDisplay, .software]
-            )
+            // Generic EFI media is admitted only through the portable VZ software baseline.
+            // Advertising a currently unqualified display level first turns the proven software
+            // path into a fallback that requires an authorization the create workflow cannot
+            // truthfully supply.
+            graphics = DoryVMGraphicsPolicy(acceptableLevels: [.software])
         }
 
         let definition = DoryVirtualMachineDefinition(

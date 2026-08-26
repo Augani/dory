@@ -1,0 +1,18 @@
+diff --git a/MoltenVK/MoltenVK/GPUObjects/MVKDevice.mm b/MoltenVK/MoltenVK/GPUObjects/MVKDevice.mm
+index 612a5270..110c5426 100644
+--- a/MoltenVK/MoltenVK/GPUObjects/MVKDevice.mm
++++ b/MoltenVK/MoltenVK/GPUObjects/MVKDevice.mm
+@@ -626,9 +626,11 @@ void MVKPhysicalDevice::getFeatures(VkPhysicalDeviceFeatures2* features) {
+ 			}
+ 			case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_KHR: {
+ 				auto* robustness2Features = (VkPhysicalDeviceRobustness2FeaturesKHR*)next;
+-				robustness2Features->robustBufferAccess2 = _gpuCapabilities.isAppleGPU;
++				// Keep unsupported Robustness2 buffer and null-descriptor behavior fail-closed.
++				// The maintained MoltenVK path reports these as unavailable on Apple GPUs too.
++				robustness2Features->robustBufferAccess2 = false;
+ 				robustness2Features->robustImageAccess2 = _gpuCapabilities.isAppleGPU;
+-				robustness2Features->nullDescriptor = _gpuCapabilities.isAppleGPU;
++				robustness2Features->nullDescriptor = false;
+ 				break;
+ 			}
+ 			case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FMA_FEATURES_KHR: {

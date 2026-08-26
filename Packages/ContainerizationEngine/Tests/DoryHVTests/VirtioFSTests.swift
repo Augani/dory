@@ -1,8 +1,11 @@
 import CoreServices
+import DoryFSWorkerContracts
 import Foundation
 import Testing
+@testable import DoryFSWorkerServiceCore
 @testable import DoryHV
 
+@Suite(.serialized)
 struct VirtioFSTests {
     @Test func exposesVirtioFSDeviceIdentityAndQueues() throws {
         let root = try TestVirtioFSRoot()
@@ -25,6 +28,72 @@ struct VirtioFSTests {
         #expect(config[4..<VirtioFS.tagByteCount].allSatisfy { $0 == 0 })
         #expect(config[36..<40].elementsEqual([4, 0, 0, 0]))
         #expect(config[40..<44].elementsEqual([0, 16, 0, 0]))
+    }
+
+    @Test func initialStatusZeroBeforeDriverReadyKeepsWorkerGenerationActive() async throws {
+        let harness = try VirtioFSNotificationHarness()
+
+        // Linux begins discovery by writing zero even though the transport is already reset. This
+        // is not a reset of an established FUSE connection and must not consume the worker's
+        // one-shot bootstrap generation.
+        harness.transport.write(offset: 0x070, value: 0, width: 4)
+        try await Task.sleep(for: .milliseconds(20))
+
+        #expect(await harness.broker.snapshot().state == .active)
+        try harness.configureQueue(1)
+        harness.setDriverReady(notifications: false)
+        let response = try harness.enqueueFuseRequest(
+            makeFuseRequest(opcode: .statfs, unique: 400),
+            queue: 1
+        )
+        #expect(try FuseProtocol.decodeOutHeader(
+            harness.waitForFuseResponse(response)
+        ).unique == 400)
+    }
+
+    @Test func committedDestroyClassifiesFollowingDeviceResetAsConnectionTeardown() async throws {
+        let events = WorkerLifecycleRecorder()
+        let harness = try VirtioFSNotificationHarness(
+            onWorkerLifecycle: { events.record($0) }
+        )
+        try harness.configureQueue(1)
+        harness.setDriverReady(notifications: false)
+
+        let destroy = try harness.enqueueFuseRequest(
+            makeFuseRequest(opcode: .destroy, unique: 403, nodeID: 0),
+            queue: 1,
+            responseCapacity: FuseOutHeader.byteCount
+        )
+        #expect(
+            try FuseProtocol.decodeOutHeader(harness.waitForFuseResponse(destroy)).error == 0
+        )
+        #expect(await eventually { await harness.broker.snapshot().pendingPublications == 0 })
+        try await Task.sleep(for: .milliseconds(20))
+
+        harness.transport.write(offset: 0x070, value: 0, width: 4)
+
+        #expect(await eventually { !events.snapshot.isEmpty })
+        #expect(events.snapshot == [.connectionTeardown])
+        #expect(await harness.broker.snapshot().state == .drained)
+    }
+
+    @Test func establishedResetWithoutDestroyRemainsTypedWorkerFailure() async throws {
+        let events = WorkerLifecycleRecorder()
+        let harness = try VirtioFSNotificationHarness(
+            onWorkerLifecycle: { events.record($0) }
+        )
+        try harness.configureQueue(1)
+        harness.setDriverReady(notifications: false)
+
+        harness.transport.write(offset: 0x070, value: 0, width: 4)
+
+        #expect(await eventually { !events.snapshot.isEmpty })
+        guard case .failure(let reason) = events.snapshot.first else {
+            Issue.record("established reset was not reported as a worker failure")
+            return
+        }
+        #expect(reason.contains("device reset"))
+        #expect(await harness.broker.snapshot().state == .invalidated)
     }
 
     @Test func notificationEncodersMatchFuseWireLayout() throws {
@@ -220,10 +289,20 @@ struct VirtioFSTests {
 
         // Queue 2 reaches the closed gate and keeps its drainer ownership while the low-level
         // submission discovers that this legacy guest did not negotiate notifications.
-        let deferred = try harness.enqueueFuseRequest(
-            makeFuseRequest(opcode: .statfs, unique: 411),
-            queue: 2
-        )
+        let deferredSubmission = Task<PendingFuseRequest, any Error> {
+            try await withCheckedThrowingContinuation { continuation in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    do {
+                        continuation.resume(returning: try harness.enqueueFuseRequest(
+                            makeFuseRequest(opcode: .statfs, unique: 411),
+                            queue: 2
+                        ))
+                    } catch {
+                        continuation.resume(throwing: error)
+                    }
+                }
+            }
+        }
         #expect(await semaphoreSignals(requestDeferred))
 
         releaseActive.signal()
@@ -239,6 +318,7 @@ struct VirtioFSTests {
         // then let that drainer observe the advanced generation and consume the posted descriptor.
         #expect(await semaphoreSignals(scheduledKickCollided))
         releaseDeferredDrainer.signal()
+        let deferred = try await deferredSubmission.value
 
         #expect(try FuseProtocol.decodeOutHeader(harness.waitForFuseResponse(active)).unique == 410)
         #expect(try FuseProtocol.decodeOutHeader(harness.waitForFuseResponse(deferred)).unique == 411)
@@ -308,7 +388,7 @@ struct VirtioFSTests {
         #expect(try FuseProtocol.decodeOutHeader(harness.waitForFuseResponse(second)).unique == 202)
     }
 
-    @Test func resetAndQueueReconfigureRejectResponseFromOldRequestEpoch() async throws {
+    @Test func resetAndQueueReconfigureRejectResponseFromOldRequestEpochAndInvalidatesWorker() async throws {
         let harness = try VirtioFSNotificationHarness(inlineRequests: false)
         try harness.configureQueue(1)
         harness.setDriverReady(notifications: false)
@@ -326,19 +406,19 @@ struct VirtioFSTests {
         )
         #expect(await semaphoreSignals(encoded))
 
-        // Reset invalidates the popped request's epoch. Rebuilding QueueReady must allow a fresh
-        // drainer immediately, while the old response is discarded when its host work resumes.
+        // Reset invalidates the popped request's epoch and the worker generation. Rebuilding
+        // QueueReady cannot make the retired broker reusable; the VM owner must replace the
+        // backend after the fail-stop callback. The old response is discarded when host work
+        // resumes.
         harness.transport.write(offset: 0x070, value: 0, width: 4)
         try harness.configureQueue(1)
         harness.setDriverReady(notifications: false)
         release.signal()
 
-        let fresh = try harness.performFuseRequest(
-            makeFuseRequest(opcode: .statfs, unique: 302),
-            queue: 1
-        )
-        #expect(try FuseProtocol.decodeOutHeader(fresh).unique == 302)
-        #expect(try harness.usedIndex(queue: 1) == 1)
+        #expect(await eventually {
+            await harness.broker.snapshot().state == .invalidated
+        })
+        #expect(try harness.usedIndex(queue: 1) == 0)
     }
 
     @Test func queueEpochDropRollsBackAnUnpublishedLookupReference() async throws {
@@ -348,6 +428,11 @@ struct VirtioFSTests {
         harness.setDriverReady(notifications: false)
         let encoded = DispatchSemaphore(value: 0)
         let release = DispatchSemaphore(value: 0)
+        let hostResponse = FuseResponseRecorder()
+        harness.fs.hostResponseSnapshotTestHook = { header, opcode, response in
+            guard header.unique == 303, opcode == .lookup else { return }
+            hostResponse.store(response)
+        }
         harness.fs.responseFenceTestHook = { header, opcode in
             guard header.unique == 303, opcode == .lookup else { return }
             encoded.signal()
@@ -356,14 +441,15 @@ struct VirtioFSTests {
         defer {
             release.signal()
             harness.fs.responseFenceTestHook = nil
+            harness.fs.hostResponseSnapshotTestHook = nil
         }
 
-        let pending = try harness.enqueueFuseRequest(
+        _ = try harness.enqueueFuseRequest(
             makeFuseRequest(opcode: .lookup, unique: 303, payload: Array("dropped.txt\0".utf8)),
             queue: 1
         )
         #expect(await semaphoreSignals(encoded))
-        let encodedLookup = try harness.encodedResponse(pending)
+        let encodedLookup = try #require(hostResponse.value)
         let droppedNodeID = Array(encodedLookup.dropFirst(FuseOutHeader.byteCount)).leUInt64(at: 0)
 
         harness.setQueueReady(1, false)
@@ -388,7 +474,7 @@ struct VirtioFSTests {
         #expect(freshNodeID > droppedNodeID)
     }
 
-    @Test func undersizedResponseRollsBackLookupGrantAndPublishesCompleteEIOHeader() throws {
+    @Test func undersizedResponseRejectsBeforeLookupGrantAndPublishesCompleteEIOHeader() throws {
         let harness = try VirtioFSNotificationHarness(inlineRequests: false)
         try harness.write("payload", to: "undersized.txt")
         try harness.configureQueue(1)
@@ -410,9 +496,10 @@ struct VirtioFSTests {
             forHostPath: harness.rootURL.appendingPathComponent("undersized.txt").path
         ))
         #expect(snapshot.nodeIDs.isEmpty)
+        #expect(harness.fs.frontendStatistics.executedRequests == 0)
     }
 
-    @Test func deviceResetWaitsForDroppedOpenThenRetiresOldHandlesAndNodes() async throws {
+    @Test func deviceResetWaitsForDroppedOpenThenInvalidatesTheWorkerGeneration() async throws {
         let harness = try VirtioFSNotificationHarness(inlineRequests: false)
         try harness.write("payload", to: "reset-open.txt")
         try harness.configureQueue(1)
@@ -424,6 +511,11 @@ struct VirtioFSTests {
         let oldNodeID = Array(lookup.dropFirst(FuseOutHeader.byteCount)).leUInt64(at: 0)
         let encoded = DispatchSemaphore(value: 0)
         let release = DispatchSemaphore(value: 0)
+        let hostResponse = FuseResponseRecorder()
+        harness.fs.hostResponseSnapshotTestHook = { header, opcode, response in
+            guard header.unique == 306, opcode == .open else { return }
+            hostResponse.store(response)
+        }
         harness.fs.responseFenceTestHook = { header, opcode in
             guard header.unique == 306, opcode == .open else { return }
             encoded.signal()
@@ -432,9 +524,10 @@ struct VirtioFSTests {
         defer {
             release.signal()
             harness.fs.responseFenceTestHook = nil
+            harness.fs.hostResponseSnapshotTestHook = nil
         }
 
-        let pendingOpen = try harness.enqueueFuseRequest(
+        _ = try harness.enqueueFuseRequest(
             makeFuseRequest(
                 opcode: .open,
                 unique: 306,
@@ -444,33 +537,28 @@ struct VirtioFSTests {
             queue: 1
         )
         #expect(await semaphoreSignals(encoded))
-        let encodedOpen = try harness.encodedResponse(pendingOpen)
+        let encodedOpen = try #require(hostResponse.value)
         let staleHandle = Array(encodedOpen.dropFirst(FuseOutHeader.byteCount)).leUInt64(at: 0)
+        #expect(staleHandle != 0)
 
         harness.transport.write(offset: 0x070, value: 0, width: 4)
         try harness.configureQueue(1)
         harness.setDriverReady(notifications: false)
         release.signal()
 
-        let staleRead = try harness.performFuseRequest(
-            makeFuseReadRequest(
-                unique: 307,
-                nodeID: oldNodeID,
-                handle: staleHandle,
-                count: 16
-            ),
-            queue: 1
-        )
-        #expect(try FuseProtocol.decodeOutHeader(staleRead).error == -EBADF)
-        #expect(throws: HostFSError.notFound("node \(oldNodeID)")) {
-            _ = try harness.hostFS.cachedAttributes(nodeID: oldNodeID)
-        }
-
-        let fresh = try harness.performFuseRequest(
-            makeFuseRequest(opcode: .lookup, unique: 308, payload: Array("reset-open.txt\0".utf8)),
-            queue: 1
-        )
-        #expect(Array(fresh.dropFirst(FuseOutHeader.byteCount)).leUInt64(at: 0) > oldNodeID)
+        #expect(await eventually {
+            await harness.broker.snapshot().state == .invalidated
+        })
+        #expect(await eventually {
+            do {
+                _ = try harness.hostFS.cachedAttributes(nodeID: oldNodeID)
+                return false
+            } catch HostFSError.notFound {
+                return true
+            } catch {
+                return false
+            }
+        })
     }
 
     @Test func notificationBarrierCompletesOnlyAfterSameBufferIsReposted() async throws {
@@ -652,120 +740,32 @@ struct VirtioFSTests {
         #expect(!fs.requestPublicationGateClosed)
     }
 
-    @Test func coherentCacheActivationRequiresCompleteNotificationHealthAndFuseInit() throws {
+    @Test func positiveCachingRemainsFailClosedWithHealthyNotifications() throws {
         let harness = try VirtioFSNotificationHarness()
-
         let initial = harness.fs.cacheActivationEligibility
-        #expect(!initial.notificationFeatureNegotiated)
-        #expect(!initial.notificationQueueReady)
-        #expect(initial.stableNotificationBufferCount == 0)
-        #expect(!initial.fuseInitCompleted)
         #expect(!initial.isEligible)
         #expect(harness.fs.activateCoherentCaching() == .ineligible(initial))
         #expect(!harness.fs.coherentCachingActive)
 
-        try harness.configureQueue(1)
-        try harness.configureQueue(2)
-        for index in 0..<(VirtioFS.requiredStableNotificationBufferCountForCaching - 1) {
-            try harness.postWritableBuffer(
-                queue: 1,
-                descriptor: UInt16(index),
-                address: harness.bufferAddress(index),
-                slot: UInt16(index),
-                index: UInt16(index + 1)
-            )
-        }
-        harness.setDriverReady(notifications: true)
-        harness.fs.handleKick(queue: 1, transport: harness.transport)
-        _ = try harness.performFuseRequest(makeFuseInitRequest(), queue: 2)
+        try harness.prepareCoherentCachingEligibility()
+        let healthy = harness.fs.cacheActivationEligibility
+        #expect(healthy.isEligible)
+        #expect(harness.fs.activateCoherentCaching() == .ineligible(healthy))
+        #expect(!harness.fs.coherentCachingActive)
 
-        let oneBufferShort = harness.fs.cacheActivationEligibility
-        #expect(oneBufferShort.notificationFeatureNegotiated)
-        #expect(oneBufferShort.notificationQueueReady)
-        #expect(oneBufferShort.stableNotificationBufferCount == 15)
-        #expect(oneBufferShort.fuseInitCompleted)
-        #expect(!oneBufferShort.isEligible)
-        #expect(harness.fs.activateCoherentCaching() == .ineligible(oneBufferShort))
-
-        let last = VirtioFS.requiredStableNotificationBufferCountForCaching - 1
-        try harness.postWritableBuffer(
-            queue: 1,
-            descriptor: UInt16(last),
-            address: harness.bufferAddress(last),
-            slot: UInt16(last),
-            index: UInt16(last + 1)
-        )
-        harness.fs.handleKick(queue: 1, transport: harness.transport)
-
-        let ready = harness.fs.cacheActivationEligibility
-        #expect(ready.stableNotificationBufferCount == 16)
-        #expect(ready.isEligible)
-        #expect(harness.fs.activateCoherentCaching() == .activated)
-        #expect(harness.fs.coherentCachingActive)
-
-        try harness.write("cached", to: "cached.txt")
+        try harness.write("uncached", to: "uncached.txt")
         let lookup = try harness.performFuseRequest(
-            makeFuseRequest(opcode: .lookup, unique: 2, payload: Array("cached.txt\0".utf8)),
-            queue: 2
-        )
-        let entry = Array(lookup.dropFirst(FuseOutHeader.byteCount))
-        let nodeID = entry.leUInt64(at: 0)
-        #expect(entry.leUInt64(at: 16) == VirtioFS.maximumCoherentCacheValiditySeconds)
-        #expect(entry.leUInt64(at: 24) == VirtioFS.maximumCoherentCacheValiditySeconds)
-
-        let getattr = try harness.performFuseRequest(
             makeFuseRequest(
-                opcode: .getattr,
-                unique: 3,
-                nodeID: nodeID,
-                payload: FuseProtocol.encodeGetattrIn(FuseGetattrIn())
+                opcode: .lookup,
+                unique: 6,
+                payload: Array("uncached.txt\\0".utf8)
             ),
             queue: 2
         )
-        #expect(Array(getattr.dropFirst(FuseOutHeader.byteCount)).leUInt64(at: 0) == VirtioFS.maximumCoherentCacheValiditySeconds)
-
-        let opened = try harness.performFuseRequest(
-            makeFuseRequest(opcode: .open, unique: 4, nodeID: nodeID, payload: [UInt8](repeating: 0, count: 8)),
-            queue: 2
-        )
-        #expect(Array(opened.dropFirst(FuseOutHeader.byteCount)).leUInt32(at: 8) == (1 << 5))
-        let openedDir = try harness.performFuseRequest(
-            makeFuseRequest(opcode: .opendir, unique: 5),
-            queue: 2
-        )
-        #expect(Array(openedDir.dropFirst(FuseOutHeader.byteCount)).leUInt32(at: 8) == 0)
-
-        let miss = try harness.performFuseRequest(
-            makeFuseRequest(opcode: .lookup, unique: 6, payload: Array("missing.txt\0".utf8)),
-            queue: 2
-        )
-        // Coherent mode grants a bounded negative dentry (nodeid 0) instead of a bare ENOENT.
-        #expect(try FuseProtocol.decodeOutHeader(miss).error == 0)
-        #expect(miss.count == FuseOutHeader.byteCount + 128)
-        let missEntry = Array(miss.dropFirst(FuseOutHeader.byteCount))
-        #expect(missEntry.leUInt64(at: 0) == 0)
-        #expect(missEntry.leUInt64(at: 16) == FuseServer.negativeCoherentCacheValiditySeconds)
-        #expect(missEntry.leUInt64(at: 24) == 0)
-
-        harness.fs.deactivateCoherentCaching()
-        #expect(!harness.fs.coherentCachingActive)
-        let safeLookup = try harness.performFuseRequest(
-            makeFuseRequest(opcode: .lookup, unique: 7, payload: Array("cached.txt\0".utf8)),
-            queue: 2
-        )
-        let safeEntry = Array(safeLookup.dropFirst(FuseOutHeader.byteCount))
-        #expect(safeEntry.leUInt64(at: 16) == 0)
-        #expect(safeEntry.leUInt64(at: 24) == 0)
-
-        #expect(harness.fs.activateCoherentCaching() == .activated)
-        harness.transport.write(offset: 0x070, value: 0, width: 4)
-        #expect(!harness.fs.coherentCachingActive)
-        let reset = harness.fs.cacheActivationEligibility
-        #expect(!reset.notificationFeatureNegotiated)
-        #expect(!reset.notificationQueueReady)
-        #expect(reset.stableNotificationBufferCount == 0)
-        #expect(!reset.fuseInitCompleted)
-        #expect(!reset.isEligible)
+        let entry = Array(lookup.dropFirst(FuseOutHeader.byteCount))
+        #expect(entry.leUInt64(at: 16) == 0)
+        #expect(entry.leUInt64(at: 24) == 0)
+        #expect(VirtioFS.maximumCoherentCacheValiditySeconds == 0)
     }
 
     @Test func interruptSuppressionDoesNotRollBackPublishedGrants() throws {
@@ -794,279 +794,13 @@ struct VirtioFSTests {
         readPayload.appendLE(UInt32(0))
         let listing = try harness.performFuseRequest(
             makeFuseRequest(opcode: .readdirplus, unique: 31, payload: readPayload),
-            queue: 2
+            queue: 2,
+            responseCapacity: FuseOutHeader.byteCount + 4_096
         )
         #expect(try FuseProtocol.decodeOutHeader(listing).error == 0)
     }
 
-    @Test func eventLossRecoversInPlaceWithHealthyNotificationChannel() async throws {
-        let harness = try VirtioFSNotificationHarness()
-        try harness.write("stale", to: "stale.txt")
-        try harness.write("alive", to: "alive.txt")
-        try harness.prepareCoherentCachingEligibility()
-
-        let guest = CoordinatorGuestFSEventSender()
-        let fatals = CoordinatorFatalRecorder()
-        let recoveries = CoordinatorFatalRecorder()
-        let coordinator = HostShareCoherenceCoordinator(
-            endpoints: [HostShareCoherenceEndpoint(
-                share: HostFSEventShare(hostRoot: harness.rootURL.path, guestRoot: "/workspace"),
-                backend: harness.fs
-            )],
-            guestEvents: guest,
-            onRecovered: { message in recoveries.append(message) },
-            onFatalRecoveryRequired: { reason in fatals.append(reason) }
-        )
-        #expect(try await coordinator.activateCachingIfReady())
-        #expect(harness.fs.coherentCachingActive)
-
-        // Pin both identities through real lookups, then remove one behind FSEvents' back —
-        // exactly the state a lost event window leaves behind.
-        let staleLookup = try harness.performFuseRequest(
-            makeFuseRequest(opcode: .lookup, unique: 21, payload: Array("stale.txt\0".utf8)),
-            queue: 2
-        )
-        #expect(Array(staleLookup.dropFirst(FuseOutHeader.byteCount)).leUInt64(at: 0) != 0)
-        let aliveLookup = try harness.performFuseRequest(
-            makeFuseRequest(opcode: .lookup, unique: 22, payload: Array("alive.txt\0".utf8)),
-            queue: 2
-        )
-        #expect(Array(aliveLookup.dropFirst(FuseOutHeader.byteCount)).leUInt64(at: 0) != 0)
-        try harness.remove("stale.txt")
-
-        let usedBefore = try harness.usedIndex(queue: 1)
-        let dropped = HostFSEventChange(
-            hostPath: harness.rootURL.path,
-            guestPath: "/workspace",
-            flags: UInt32(
-                kFSEventStreamEventFlagMustScanSubDirs |
-                kFSEventStreamEventFlagUserDropped
-            ),
-            eventID: 77
-        )
-        let done = CoordinatorFatalRecorder()
-        let processing = Task {
-            defer { done.append("done") }
-            try await coordinator.process([dropped])
-        }
-        var pumps = 0
-        while done.reasons.isEmpty, pumps < 512 {
-            _ = try? harness.acknowledgeConsumedInvalidations()
-            pumps += 1
-            try await Task.sleep(nanoseconds: 5_000_000)
-        }
-        try await processing.value
-
-        #expect(fatals.reasons.isEmpty)
-        #expect(await !coordinator.isDegraded)
-        #expect(!harness.fs.requestPublicationGateClosed)
-        // The recovery sweep actually published notifications and caching came back.
-        #expect(try harness.usedIndex(queue: 1) > usedBefore)
-        #expect(harness.fs.coherentCachingActive)
-        #expect(recoveries.reasons.count == 1)
-        #expect(recoveries.reasons[0].contains("caching reactivated"))
-    }
-
-    @Test func coordinatorNotificationTimeoutFailsClosedWithinOneSecondPolicy() async throws {
-        let harness = try VirtioFSNotificationHarness()
-        try harness.write("old", to: "watched.txt")
-        try harness.prepareCoherentCachingEligibility()
-        #expect(!harness.fs.coherentCachingActive)
-        #expect(HostShareCoherenceCoordinator.reverseInvalidationFailCloseDeadline == .seconds(1))
-
-        let guest = CoordinatorGuestFSEventSender()
-        let fatals = CoordinatorFatalRecorder()
-        let coordinator = HostShareCoherenceCoordinator(
-            endpoints: [HostShareCoherenceEndpoint(
-                share: HostFSEventShare(hostRoot: harness.rootURL.path, guestRoot: "/workspace"),
-                backend: harness.fs
-            )],
-            guestEvents: guest,
-            onFatalRecoveryRequired: { reason in fatals.append(reason) }
-        )
-
-        #expect(try await coordinator.activateCachingIfReady())
-        #expect(harness.fs.coherentCachingActive)
-        #expect(await guest.calls == [.init(operationID: 0, paths: [])])
-
-        // Establish a positive inode/dentry whose one-second validity requires reverse
-        // invalidation before a watcher wakeup may be delivered.
-        let lookup = try harness.performFuseRequest(
-            makeFuseRequest(opcode: .lookup, unique: 2, payload: Array("watched.txt\0".utf8)),
-            queue: 2
-        )
-        let entry = Array(lookup.dropFirst(FuseOutHeader.byteCount))
-        let nodeID = entry.leUInt64(at: 0)
-        #expect(nodeID != 0)
-        #expect(entry.leUInt64(at: 16) == VirtioFS.maximumCoherentCacheValiditySeconds)
-        var openPayload = [UInt8]()
-        openPayload.appendLE(UInt32(O_RDWR))
-        openPayload.appendLE(UInt32(0))
-        let opened = try harness.performFuseRequest(
-            makeFuseRequest(opcode: .open, unique: 3, nodeID: nodeID, payload: openPayload),
-            queue: 2
-        )
-        let handle = Array(opened.dropFirst(FuseOutHeader.byteCount)).leUInt64(at: 0)
-        #expect(handle != 0)
-
-        try harness.write("new", to: "watched.txt")
-        let clock = ContinuousClock()
-        let started = clock.now
-        let change = HostFSEventChange(
-            hostPath: harness.rootURL.appendingPathComponent("watched.txt").path,
-            guestPath: "/workspace/watched.txt",
-            flags: UInt32(kFSEventStreamEventFlagItemModified),
-            eventID: 9
-        )
-        let processing = Task {
-            try await coordinator.process([change])
-        }
-        #expect(await eventually { harness.fs.requestPublicationGateClosed })
-
-        // Model delayed dirty-page writeback arriving after the host edit while the kernel refuses
-        // to repost the invalidation buffer. It must remain unpublished both during the wait and
-        // after the coordinator requests fatal recovery.
-        let delayedWrite = try harness.enqueueFuseRequest(
-            makeFuseWriteRequest(
-                unique: 4,
-                nodeID: nodeID,
-                handle: handle,
-                contents: Array("guest-late".utf8)
-            ),
-            queue: 2
-        )
-        #expect(await eventually { harness.fs.deferredRequestQueueSnapshot.contains(2) })
-        #expect(try harness.responseLength(delayedWrite) == 0)
-
-        try await processing.value
-        let elapsed = started.duration(to: clock.now)
-
-        #expect(await coordinator.isDegraded)
-        #expect(!harness.fs.coherentCachingActive)
-        #expect(fatals.reasons.count == 1)
-        #expect(fatals.reasons[0].contains("reverse invalidation failed"))
-        #expect(fatals.reasons[0].contains("acknowledgementTimedOut"))
-        // Scheduler headroom still proves the old two-second data-loss window cannot regress
-        // unnoticed: the policy fires at one second, well before that unsafe boundary.
-        #expect(elapsed < .seconds(2))
-        // A timed-out notification has uncertain page-cache state, so the coordinator must ask
-        // for a VM restart without sending the guest watcher nudge or publishing delayed writes.
-        #expect(await guest.calls == [.init(operationID: 0, paths: [])])
-        #expect(harness.fs.requestPublicationGateClosed)
-        #expect(try harness.responseLength(delayedWrite) == 0)
-        #expect(try harness.contents(of: "watched.txt") == "new")
-
-        // Even a late repost/ack racing recovery cannot reopen the one-way failure latch.
-        try harness.acknowledgeFirstInvalidation()
-        harness.fs.handleKick(queue: 2, transport: harness.transport)
-        try await Task.sleep(for: .milliseconds(20))
-        #expect(harness.fs.requestPublicationGateClosed)
-        #expect(try harness.responseLength(delayedWrite) == 0)
-        #expect(try harness.contents(of: "watched.txt") == "new")
-    }
-
-    @Test func coordinatorQuiescenceTimeoutRejectsBlockedActiveResponsePublication() async throws {
-        let harness = try VirtioFSNotificationHarness(inlineRequests: false)
-        try harness.write("old", to: "active-race.txt")
-        try harness.prepareCoherentCachingEligibility()
-
-        let guest = CoordinatorGuestFSEventSender()
-        let fatals = CoordinatorFatalRecorder()
-        let coordinator = HostShareCoherenceCoordinator(
-            endpoints: [HostShareCoherenceEndpoint(
-                share: HostFSEventShare(hostRoot: harness.rootURL.path, guestRoot: "/workspace"),
-                backend: harness.fs
-            )],
-            guestEvents: guest,
-            onFatalRecoveryRequired: { reason in fatals.append(reason) }
-        )
-        #expect(try await coordinator.activateCachingIfReady())
-
-        let lookup = try harness.performFuseRequest(
-            makeFuseRequest(opcode: .lookup, unique: 420, payload: Array("active-race.txt\0".utf8)),
-            queue: 2
-        )
-        let nodeID = Array(lookup.dropFirst(FuseOutHeader.byteCount)).leUInt64(at: 0)
-        var openPayload = [UInt8]()
-        openPayload.appendLE(UInt32(O_RDWR))
-        openPayload.appendLE(UInt32(0))
-        let opened = try harness.performFuseRequest(
-            makeFuseRequest(opcode: .open, unique: 421, nodeID: nodeID, payload: openPayload),
-            queue: 2
-        )
-        let handle = Array(opened.dropFirst(FuseOutHeader.byteCount)).leUInt64(at: 0)
-
-        let activeEncoded = DispatchSemaphore(value: 0)
-        let releaseActive = DispatchSemaphore(value: 0)
-        let activePassedFence = DispatchSemaphore(value: 0)
-        harness.fs.responseFenceTestHook = { header, opcode in
-            guard header.unique == 422, opcode == .write else { return }
-            activeEncoded.signal()
-            releaseActive.wait()
-            activePassedFence.signal()
-        }
-        let reachedLatchedGate = DispatchSemaphore(value: 0)
-        harness.fs.requestGateDrainTestHook = { event in
-            guard event == .deferred(queue: 2) else { return }
-            reachedLatchedGate.signal()
-        }
-        defer {
-            releaseActive.signal()
-            harness.fs.responseFenceTestHook = nil
-            harness.fs.requestGateDrainTestHook = nil
-        }
-
-        let usedBeforeActive = try harness.usedIndex(queue: 2)
-        _ = try harness.enqueueFuseRequest(
-            makeFuseWriteRequest(
-                unique: 422,
-                nodeID: nodeID,
-                handle: handle,
-                contents: Array("guest-preboundary".utf8)
-            ),
-            queue: 2
-        )
-        #expect(await semaphoreSignals(activeEncoded))
-        #expect(try harness.usedIndex(queue: 2) == usedBeforeActive)
-
-        // The guest write syscall has already run but its used-ring response is deliberately held.
-        // A later host edit wins at the path. The deadline cannot undo that pre-boundary syscall;
-        // it must establish fatal recovery and prevent the delayed response from publishing.
-        try harness.write("host-new", to: "active-race.txt")
-        let change = HostFSEventChange(
-            hostPath: harness.rootURL.appendingPathComponent("active-race.txt").path,
-            guestPath: "/workspace/active-race.txt",
-            flags: UInt32(kFSEventStreamEventFlagItemModified),
-            eventID: 10
-        )
-        let clock = ContinuousClock()
-        let started = clock.now
-        let processing = Task {
-            try await coordinator.process([change])
-        }
-        #expect(await eventually { harness.fs.requestPublicationGateClosed })
-        try await processing.value
-        let elapsed = started.duration(to: clock.now)
-
-        // The policy deadline is verified above as exactly one second. Allow bounded hosted-runner
-        // scheduling headroom here while staying safely below the old two-second failure window.
-        #expect(elapsed < .milliseconds(1_500))
-        #expect(await coordinator.isDegraded)
-        #expect(fatals.reasons.count == 1)
-        #expect(fatals.reasons[0].contains("requestDrainTimedOut(activeRequests: 1)"))
-        #expect(harness.fs.requestPublicationGateClosed)
-        #expect(!harness.fs.coherentCachingActive)
-        #expect(await guest.calls == [.init(operationID: 0, paths: [])])
-        #expect(try harness.usedIndex(queue: 2) == usedBeforeActive)
-
-        releaseActive.signal()
-        #expect(await semaphoreSignals(activePassedFence))
-        #expect(await semaphoreSignals(reachedLatchedGate))
-        #expect(try harness.usedIndex(queue: 2) == usedBeforeActive)
-        #expect(try harness.contents(of: "active-race.txt") == "host-new")
-    }
-
-    @Test func notificationQueueDisableAndReconfigureSynchronouslyRevokeCaching() async throws {
+    @Test func notificationQueueDisableAndReconfigureSynchronouslyRevokeThePublicationEpoch() async throws {
         let harness = try VirtioFSNotificationHarness()
         try harness.configureQueue(1)
         try harness.configureQueue(2)
@@ -1082,8 +816,10 @@ struct VirtioFSTests {
         harness.setDriverReady(notifications: true)
         harness.fs.handleKick(queue: 1, transport: harness.transport)
         _ = try harness.performFuseRequest(makeFuseInitRequest(), queue: 2)
-        #expect(harness.fs.activateCoherentCaching() == .activated)
-        #expect(VirtioFS.maximumCoherentCacheValiditySeconds == 30)
+        let healthy = harness.fs.cacheActivationEligibility
+        #expect(healthy.isEligible)
+        #expect(harness.fs.activateCoherentCaching() == .ineligible(healthy))
+        #expect(!harness.fs.coherentCachingActive)
 
         let barrier = try await harness.fs.submitInvalidation(.inode(nodeID: 41))
         #expect(!barrier.isCompleted)
@@ -1122,7 +858,8 @@ struct VirtioFSTests {
         #expect(restored.stableNotificationBufferCount == 16)
         #expect(restored.fuseInitCompleted)
         #expect(restored.isEligible)
-        #expect(harness.fs.activateCoherentCaching() == .activated)
+        #expect(harness.fs.activateCoherentCaching() == .ineligible(restored))
+        #expect(!harness.fs.coherentCachingActive)
 
         // QueueReady=1 reconfigures an already-ready queue and must revoke the old epoch too.
         try harness.configureQueue(1)
@@ -1131,142 +868,6 @@ struct VirtioFSTests {
         #expect(reconfigured.notificationQueueReady)
         #expect(reconfigured.stableNotificationBufferCount == 0)
         #expect(!reconfigured.isEligible)
-    }
-
-    @Test func queueDisableNeutralizesMetadataResponseEncodedInPriorCacheEpoch() async throws {
-        let harness = try VirtioFSNotificationHarness(inlineRequests: false)
-        try harness.write("cached", to: "epoch.txt")
-        try harness.prepareCoherentCaching()
-        let encoded = DispatchSemaphore(value: 0)
-        let release = DispatchSemaphore(value: 0)
-        harness.fs.responseFenceTestHook = { header, opcode in
-            guard header.unique == 90, opcode == .lookup else { return }
-            encoded.signal()
-            release.wait()
-        }
-
-        let pending = try harness.enqueueFuseRequest(
-            makeFuseRequest(opcode: .lookup, unique: 90, payload: Array("epoch.txt\0".utf8)),
-            queue: 2
-        )
-        #expect(await semaphoreSignals(encoded))
-
-        harness.setQueueReady(1, false)
-        #expect(!harness.fs.coherentCachingActive)
-        release.signal()
-
-        let response = try harness.waitForFuseResponse(pending)
-        let entry = Array(response.dropFirst(FuseOutHeader.byteCount))
-        #expect(entry.leUInt64(at: 0) != 0)
-        #expect(entry.leUInt64(at: 16) == 0)
-        #expect(entry.leUInt64(at: 24) == 0)
-    }
-
-    @Test func queueDisableNeutralizesLinkResponseEncodedInPriorCacheEpoch() async throws {
-        let harness = try VirtioFSNotificationHarness(inlineRequests: false)
-        try harness.write("source", to: "source.txt")
-        try harness.prepareCoherentCaching()
-        let lookup = try harness.performFuseRequest(
-            makeFuseRequest(
-                opcode: .lookup,
-                unique: 91,
-                payload: Array("source.txt\0".utf8)
-            ),
-            queue: 2
-        )
-        let sourceNodeID = Array(lookup.dropFirst(FuseOutHeader.byteCount)).leUInt64(at: 0)
-
-        let encoded = DispatchSemaphore(value: 0)
-        let release = DispatchSemaphore(value: 0)
-        harness.fs.responseFenceTestHook = { header, opcode in
-            guard header.unique == 92, opcode == .link else { return }
-            encoded.signal()
-            release.wait()
-        }
-        defer {
-            release.signal()
-            harness.fs.responseFenceTestHook = nil
-        }
-
-        var linkPayload = [UInt8]()
-        linkPayload.appendLE(sourceNodeID)
-        linkPayload.append(contentsOf: "linked.txt\0".utf8)
-        let pending = try harness.enqueueFuseRequest(
-            makeFuseRequest(
-                opcode: .link,
-                unique: 92,
-                payload: linkPayload
-            ),
-            queue: 2
-        )
-        #expect(await semaphoreSignals(encoded))
-
-        // The LINK has already encoded fuse_entry_out with a one-second validity grant. A queue
-        // epoch transition that overtakes publication must strip both validity fields.
-        harness.setQueueReady(1, false)
-        #expect(!harness.fs.coherentCachingActive)
-        release.signal()
-
-        let response = try harness.waitForFuseResponse(pending)
-        #expect(try FuseProtocol.decodeOutHeader(response).error == 0)
-        let entry = Array(response.dropFirst(FuseOutHeader.byteCount))
-        #expect(entry.leUInt64(at: 0) == sourceNodeID)
-        #expect(entry.leUInt64(at: 16) == 0)
-        #expect(entry.leUInt64(at: 24) == 0)
-    }
-
-    @Test func lossMarkerFailStopSurvivesLateNotificationAckAndDeviceReset() async throws {
-        let harness = try VirtioFSNotificationHarness()
-        try harness.prepareCoherentCaching()
-
-        // Leave a low-level notification in flight so its later ack exercises the same gate state
-        // that fatal recovery must permanently dominate.
-        let barrier = try await harness.fs.submitInvalidation(.inode(nodeID: HostFS.rootNodeID))
-        #expect(!barrier.isCompleted)
-
-        let fatals = CoordinatorFatalRecorder()
-        let coordinator = HostShareCoherenceCoordinator(
-            endpoints: [HostShareCoherenceEndpoint(
-                share: HostFSEventShare(hostRoot: harness.rootURL.path, guestRoot: "/workspace"),
-                backend: harness.fs
-            )],
-            guestEvents: CoordinatorGuestFSEventSender(),
-            onFatalRecoveryRequired: { reason in fatals.append(reason) }
-        )
-        try await coordinator.process([HostFSEventChange(
-            hostPath: harness.rootURL.path,
-            guestPath: "/workspace",
-            flags: UInt32(
-                kFSEventStreamEventFlagMustScanSubDirs |
-                kFSEventStreamEventFlagKernelDropped
-            ),
-            eventID: 500
-        )])
-
-        #expect(fatals.reasons.count == 1)
-        #expect(harness.fs.requestPublicationGateClosed)
-        let blocked = try harness.enqueueFuseRequest(
-            makeFuseRequest(opcode: .statfs, unique: 501),
-            queue: 2
-        )
-        #expect(await eventually { harness.fs.deferredRequestQueueSnapshot.contains(2) })
-        #expect(try harness.responseLength(blocked) == 0)
-
-        try harness.acknowledgeFirstInvalidation()
-        try await barrier.wait()
-        #expect(harness.fs.requestPublicationGateClosed)
-        #expect(try harness.responseLength(blocked) == 0)
-
-        harness.transport.write(offset: 0x070, value: 0, width: 4)
-        #expect(harness.fs.requestPublicationGateClosed)
-        try harness.configureQueue(1)
-        harness.setDriverReady(notifications: false)
-        let afterReset = try harness.enqueueFuseRequest(
-            makeFuseRequest(opcode: .statfs, unique: 502),
-            queue: 1
-        )
-        #expect(await eventually { harness.fs.deferredRequestQueueSnapshot.contains(1) })
-        #expect(try harness.responseLength(afterReset) == 0)
     }
 
     @Test func invalidationFenceLetsLockHoldingLookupDrainBeforeDeleteAck() async throws {
@@ -1309,11 +910,11 @@ struct VirtioFSTests {
         )
         // LOOKUP may hold the parent VFS lock that FUSE_NOTIFY_DELETE needs. It must drain across
         // the write fence; Linux's writer ordering makes the notification invalidate afterward.
-        // The drained miss is a bounded negative dentry; the queued DELETE retires it in order.
+        // Positive and negative metadata caching are fail-closed, so the drained miss is ENOENT
+        // rather than a cached negative-entry grant.
         let newResponse = try harness.waitForFuseResponse(newPending)
-        #expect(try FuseProtocol.decodeOutHeader(newResponse).error == 0)
-        #expect(newResponse.count == FuseOutHeader.byteCount + 128)
-        #expect(Array(newResponse.dropFirst(FuseOutHeader.byteCount)).leUInt64(at: 0) == 0)
+        #expect(try FuseProtocol.decodeOutHeader(newResponse).error == -ENOENT)
+        #expect(newResponse.count == FuseOutHeader.byteCount)
 
         release.signal()
         let oldResponse = try harness.waitForFuseResponse(oldPending)
@@ -1389,6 +990,9 @@ struct VirtioFSTests {
         let root = try TestVirtioFSRoot()
         let host = try HostFS(rootPath: root.url.path)
 
+        #expect(VirtioFS.defaultRequestQueueCount(activeProcessorCount: 0) == 1)
+        #expect(VirtioFS.defaultRequestQueueCount(activeProcessorCount: 4) == 4)
+        #expect(VirtioFS.defaultRequestQueueCount(activeProcessorCount: 64) == 8)
         #expect(try VirtioFS(tag: "low", hostFS: host, requestQueueCount: 0).requestQueueCount == 1)
         #expect(try VirtioFS(tag: "high", hostFS: host, requestQueueCount: 99).requestQueueCount == 16)
     }
@@ -1405,20 +1009,679 @@ struct VirtioFSTests {
         }
     }
 
-    @Test func daxConfigurationIsExplicitAndPageAligned() throws {
-        let root = try TestVirtioFSRoot()
-        let host = try HostFS(rootPath: root.url.path)
+}
 
-        let config = VirtioFSDaxConfiguration(guestBase: 0x1_0000_0000, length: 0x20_0000)
-        let fs = try VirtioFS(tag: "home", hostFS: host, daxConfiguration: config)
+@Suite("VirtioFS frontend admission", .serialized)
+struct VirtioFSFrontendAdmissionTests {
+    @Test func rejectsMalformedDirectionOrderAndZeroLengthDescriptors() throws {
+        let harness = try VirtioFSNotificationHarness()
+        try harness.configureQueue(1)
+        harness.setDriverReady(notifications: false)
+        let request = makeFuseRequest(opcode: .statfs, unique: 700)
+        let malformed: [[FuseDescriptorFixture]] = [
+            [.writable(FuseOutHeader.byteCount)],
+            [.writable(FuseOutHeader.byteCount), .readable(request)],
+            [
+                .readable(Array(request[..<20])),
+                .writable(FuseOutHeader.byteCount),
+                .readable(Array(request[20...])),
+            ],
+            [
+                .readable(request),
+                .zeroLength(deviceWritable: false),
+                .writable(FuseOutHeader.byteCount),
+            ],
+        ]
 
-        #expect(fs.daxConfiguration == config)
-        #expect(fs.sharedMemoryRegions == [
-            VirtioSharedMemoryRegion(id: 0, guestBase: 0x1_0000_0000, length: 0x20_0000),
-        ])
-        #expect(throws: VirtioFSError.invalidDaxWindow) {
-            _ = try VirtioFS(tag: "bad", hostFS: host, daxConfiguration: VirtioFSDaxConfiguration(guestBase: 0x1001, length: 0x2000))
+        for descriptors in malformed {
+            let pending = try harness.enqueueDescriptorChain(descriptors, queue: 1)
+            try harness.waitForUsed(pending)
+            #expect(try harness.usedLength(pending) == 0)
         }
+        #expect(harness.fs.frontendStatistics == VirtioFSFrontendStatistics(
+            rejectedRequests: 4,
+            executedRequests: 0,
+            terminalQueueFaults: 0
+        ))
+
+        let valid = try harness.enqueueDescriptorChain([
+            .readable(Array(request[..<20])),
+            .readable(Array(request[20...])),
+            .writable(FuseOutHeader.byteCount + 80),
+        ], queue: 1)
+        let response = try harness.waitForFuseResponse(valid)
+        #expect(try FuseProtocol.decodeOutHeader(response).error == 0)
+        #expect(harness.fs.frontendStatistics.executedRequests == 1)
+    }
+
+    @Test func requiresHeaderLengthToEqualTheCompleteReadablePrefix() throws {
+        let harness = try VirtioFSNotificationHarness()
+        try harness.configureQueue(1)
+        harness.setDriverReady(notifications: false)
+        var request = makeFuseRequest(opcode: .statfs, unique: 701)
+        overwriteFuseLength(&request, with: UInt32(request.count + 1))
+
+        let pending = try harness.enqueueDescriptorChain([
+            .readable(Array(request[..<24])),
+            .readable(Array(request[24...])),
+            .writable(FuseOutHeader.byteCount),
+        ], queue: 1)
+        let response = try harness.waitForFuseResponse(pending)
+        let header = try FuseProtocol.decodeOutHeader(response)
+        #expect(header.unique == 701)
+        #expect(header.error == -FuseProtocol.linuxErrno(EINVAL))
+        #expect(harness.fs.frontendStatistics.rejectedRequests == 1)
+        #expect(harness.fs.frontendStatistics.executedRequests == 0)
+    }
+
+    @Test func enforcesBoundedRequestBeforeGenericServerExecution() throws {
+        let harness = try VirtioFSNotificationHarness()
+        try harness.configureQueue(1)
+        harness.setDriverReady(notifications: false)
+        let request = makeFuseRequest(
+            opcode: .write,
+            unique: 702,
+            payload: [UInt8](repeating: 0, count: VirtioFSRequestAdmission.maximumPayloadBytes + 1)
+        )
+
+        let pending = try harness.enqueueDescriptorChain([
+            .readable(request),
+            .writable(FuseOutHeader.byteCount),
+        ], queue: 1)
+        let response = try harness.waitForFuseResponse(pending)
+        #expect(try FuseProtocol.decodeOutHeader(response).error == -FuseProtocol.linuxErrno(E2BIG))
+        #expect(harness.fs.frontendStatistics.rejectedRequests == 1)
+        #expect(harness.fs.frontendStatistics.executedRequests == 0)
+    }
+
+    @Test func enforcesHiprioAndNormalRequestQueueOpcodeRouting() throws {
+        let harness = try VirtioFSNotificationHarness()
+        try harness.configureQueue(0)
+        try harness.configureQueue(1)
+        harness.setDriverReady(notifications: false)
+
+        let wrongHiprio = try harness.enqueueDescriptorChain([
+            .readable(makeFuseRequest(opcode: .statfs, unique: 710)),
+            .writable(FuseOutHeader.byteCount),
+        ], queue: 0)
+        #expect(try FuseProtocol.decodeOutHeader(
+            harness.waitForFuseResponse(wrongHiprio)
+        ).error == -FuseProtocol.linuxErrno(EPROTO))
+
+        var interruptPayload = [UInt8]()
+        interruptPayload.appendLE(UInt64(0x1234))
+        let wrongInterrupt = try harness.enqueueDescriptorChain([
+            .readable(makeFuseRequest(opcode: .interrupt, unique: 711, payload: interruptPayload)),
+            .writable(FuseOutHeader.byteCount),
+        ], queue: 1)
+        #expect(try FuseProtocol.decodeOutHeader(
+            harness.waitForFuseResponse(wrongInterrupt)
+        ).error == -FuseProtocol.linuxErrno(EPROTO))
+
+        var forgetPayload = [UInt8]()
+        forgetPayload.appendLE(UInt64(1))
+        let wrongForget = try harness.enqueueDescriptorChain([
+            .readable(makeFuseRequest(opcode: .forget, unique: 712, payload: forgetPayload)),
+        ], queue: 1)
+        try harness.waitForUsed(wrongForget)
+        #expect(try harness.usedLength(wrongForget) == 0)
+
+        var batchPayload = [UInt8]()
+        batchPayload.appendLE(UInt32(0))
+        batchPayload.appendLE(UInt32(0))
+        let wrongBatch = try harness.enqueueDescriptorChain([
+            .readable(makeFuseRequest(opcode: .batchForget, unique: 713, payload: batchPayload)),
+        ], queue: 1)
+        try harness.waitForUsed(wrongBatch)
+        #expect(try harness.usedLength(wrongBatch) == 0)
+
+        let interruptWithoutResponse = try harness.enqueueDescriptorChain([
+            .readable(makeFuseRequest(opcode: .interrupt, unique: 714, payload: interruptPayload)),
+        ], queue: 0)
+        try harness.waitForUsed(interruptWithoutResponse)
+        #expect(try harness.usedLength(interruptWithoutResponse) == 0)
+
+        let interrupt = try harness.enqueueDescriptorChain([
+            .readable(makeFuseRequest(opcode: .interrupt, unique: 715, payload: interruptPayload)),
+            .writable(FuseOutHeader.byteCount),
+        ], queue: 0)
+        #expect(try FuseProtocol.decodeOutHeader(
+            harness.waitForFuseResponse(interrupt)
+        ).error == 0)
+
+        let forget = try harness.enqueueDescriptorChain([
+            .readable(makeFuseRequest(opcode: .forget, unique: 716, payload: forgetPayload)),
+        ], queue: 0)
+        try harness.waitForUsed(forget)
+        #expect(try harness.usedLength(forget) == 0)
+
+        let batch = try harness.enqueueDescriptorChain([
+            .readable(makeFuseRequest(opcode: .batchForget, unique: 717, payload: batchPayload)),
+        ], queue: 0)
+        try harness.waitForUsed(batch)
+        #expect(try harness.usedLength(batch) == 0)
+
+        #expect(harness.fs.frontendStatistics == VirtioFSFrontendStatistics(
+            rejectedRequests: 5,
+            executedRequests: 3,
+            terminalQueueFaults: 0
+        ))
+    }
+
+    @Test func rejectsInsufficientSuccessCapacityBeforeHostMutation() throws {
+        let harness = try VirtioFSNotificationHarness()
+        try harness.configureQueue(1)
+        harness.setDriverReady(notifications: false)
+        var payload = [UInt8]()
+        payload.appendLE(UInt32(0o755))
+        payload.appendLE(UInt32(0))
+        payload.append(contentsOf: "must-not-exist\0".utf8)
+
+        let response = try harness.performFuseRequest(
+            makeFuseRequest(opcode: .mkdir, unique: 720, payload: payload),
+            queue: 1,
+            responseCapacity: FuseOutHeader.byteCount
+        )
+        #expect(try FuseProtocol.decodeOutHeader(response).error == -FuseProtocol.linuxErrno(EIO))
+        #expect(!FileManager.default.fileExists(
+            atPath: harness.rootURL.appendingPathComponent("must-not-exist").path
+        ))
+        #expect(harness.fs.frontendStatistics.executedRequests == 0)
+    }
+
+    @Test func oneAdmittedMutationCrossesTheGenericExecutionSeamOnce() throws {
+        let harness = try VirtioFSNotificationHarness()
+        try harness.configureQueue(1)
+        harness.setDriverReady(notifications: false)
+        let executions = LockedIntCounter()
+        harness.fs.requestExecutionTestHook = { header, opcode in
+            guard header.unique == 721, opcode == .mkdir else { return }
+            executions.increment()
+        }
+        defer { harness.fs.requestExecutionTestHook = nil }
+        var payload = [UInt8]()
+        payload.appendLE(UInt32(0o755))
+        payload.appendLE(UInt32(0))
+        payload.append(contentsOf: "exactly-once\0".utf8)
+
+        let response = try harness.performFuseRequest(
+            makeFuseRequest(opcode: .mkdir, unique: 721, payload: payload),
+            queue: 1,
+            responseCapacity: FuseOutHeader.byteCount + 128
+        )
+        #expect(try FuseProtocol.decodeOutHeader(response).error == 0)
+        #expect(executions.value == 1)
+        #expect(FileManager.default.fileExists(
+            atPath: harness.rootURL.appendingPathComponent("exactly-once").path
+        ))
+        #expect(harness.fs.frontendStatistics.executedRequests == 1)
+    }
+
+    @Test func measuresEachAdmittedRequestOwnershipBoundaryAndLatency() async throws {
+        let harness = try VirtioFSNotificationHarness()
+        try harness.configureQueue(1)
+        harness.setDriverReady(notifications: false)
+        let request = makeFuseRequest(opcode: .statfs, unique: 722)
+
+        let response = try harness.performFuseRequest(
+            request,
+            queue: 1,
+            responseCapacity: FuseOutHeader.byteCount + 128
+        )
+        #expect(try FuseProtocol.decodeOutHeader(response).error == 0)
+        #expect(await eventually {
+            let statistics = harness.fs.performanceStatistics
+            return statistics.completedRequests == 1
+                && statistics.inFlightRequests == 0
+        })
+
+        let statistics = harness.fs.performanceStatistics
+        #expect(statistics == VirtioFSPerformanceStatistics(
+            requestPayloadBytes: UInt64(request.count),
+            workerResponsePayloadBytes: UInt64(response.count),
+            guestPublishedResponseBytes: UInt64(response.count),
+            completedRequests: 1,
+            failedRequests: 0,
+            inFlightRequests: 0,
+            peakInFlightRequests: 1,
+            totalRequestLatencyNanoseconds: statistics.maximumRequestLatencyNanoseconds,
+            maximumRequestLatencyNanoseconds: statistics.maximumRequestLatencyNanoseconds
+        ))
+    }
+
+    @Test func burstBeyondBrokerCapacityBackpressuresAndFairlyResumesRequestQueues() async throws {
+        let lifecycle = WorkerLifecycleRecorder()
+        let harness = try VirtioFSNotificationHarness(
+            requestQueueCount: 8,
+            onWorkerLifecycle: lifecycle.record
+        )
+        for queue in 1...8 { try harness.configureQueue(queue) }
+        harness.setDriverReady(notifications: false)
+
+        let entered = LockedIntCounter()
+        let releaseExecution = DispatchSemaphore(value: 0)
+        harness.workerChannel.beforeRequestExecutionTestHook = {
+            entered.increment()
+            releaseExecution.wait()
+        }
+        defer {
+            harness.workerChannel.beforeRequestExecutionTestHook = nil
+            for _ in 0..<40 { releaseExecution.signal() }
+        }
+
+        var burst = [(queue: Int, request: [UInt8])]()
+        burst.reserveCapacity(40)
+        for queue in 1...8 {
+            for offset in 0..<5 {
+                burst.append((
+                    queue: queue,
+                    request: makeFuseRequest(
+                        opcode: .statfs,
+                        unique: UInt64(800 + (queue - 1) * 5 + offset)
+                    )
+                ))
+            }
+        }
+        let pending = try harness.enqueueSmallFuseRequestBurst(
+            burst,
+            responseCapacity: FuseOutHeader.byteCount + 128
+        )
+
+        #expect(harness.fs.performanceStatistics.inFlightRequests == 32)
+        #expect(harness.fs.capacityDeferredRequestQueueSnapshot == Set([7, 8]))
+        #expect(await eventually(timeout: .seconds(5)) { entered.value == 32 })
+        #expect(lifecycle.snapshot.isEmpty)
+        #expect(await harness.broker.snapshot().state == .active)
+
+        for _ in 0..<40 { releaseExecution.signal() }
+        for queue in 1...8 {
+            #expect(await eventually(timeout: .seconds(5)) {
+                (try? harness.usedIndex(queue: queue)) == 5
+            })
+        }
+        #expect(await eventually(timeout: .seconds(5)) {
+            let statistics = harness.fs.performanceStatistics
+            return statistics.completedRequests == 40
+                && statistics.failedRequests == 0
+                && statistics.inFlightRequests == 0
+        })
+        for request in pending {
+            #expect(try harness.responseLength(request) >= UInt32(FuseOutHeader.byteCount))
+        }
+        #expect(harness.fs.capacityDeferredRequestQueueSnapshot.isEmpty)
+        #expect(lifecycle.snapshot.isEmpty)
+        #expect(await harness.broker.snapshot().state == .active)
+    }
+
+    @Test func lowerShareCeilingBackpressuresBeforePopWithoutWorkerInvalidation() async throws {
+        let shareLimits = try fsShareResourceLimits(maximumInFlightRequests: 2)
+        let lifecycle = WorkerLifecycleRecorder()
+        let harness = try VirtioFSNotificationHarness(
+            requestQueueCount: 3,
+            shareResourceLimits: shareLimits,
+            onWorkerLifecycle: lifecycle.record
+        )
+        for queue in 1...3 { try harness.configureQueue(queue) }
+        harness.setDriverReady(notifications: false)
+
+        let entered = LockedIntCounter()
+        let releaseExecution = DispatchSemaphore(value: 0)
+        harness.workerChannel.beforeRequestExecutionTestHook = {
+            entered.increment()
+            releaseExecution.wait()
+        }
+        defer {
+            harness.workerChannel.beforeRequestExecutionTestHook = nil
+            for _ in 0..<3 { releaseExecution.signal() }
+        }
+
+        let pending = try harness.enqueueSmallFuseRequestBurst(
+            (1...3).map { queue in
+                (
+                    queue: queue,
+                    request: makeFuseRequest(
+                        opcode: .statfs,
+                        unique: UInt64(900 + queue)
+                    )
+                )
+            },
+            responseCapacity: FuseOutHeader.byteCount + 80
+        )
+
+        #expect(harness.broker.effectiveAdmissionLimits.maximumInFlightRequests == 2)
+        #expect(await eventually { entered.value == 2 })
+        #expect(harness.fs.capacityDeferredRequestQueueSnapshot == Set([3]))
+        #expect(harness.broker.workspaceAdmissionSnapshot.inFlightRequests == 2)
+        #expect(harness.broker.workspaceAdmissionSnapshot.peakInFlightRequests == 2)
+        #expect(lifecycle.snapshot.isEmpty)
+        #expect(await harness.broker.snapshot().state == .active)
+
+        releaseExecution.signal()
+        #expect(await eventually { entered.value == 3 })
+        #expect(harness.broker.workspaceAdmissionSnapshot.inFlightRequests == 2)
+        #expect(harness.broker.workspaceAdmissionSnapshot.peakInFlightRequests == 2)
+
+        for _ in 0..<3 { releaseExecution.signal() }
+        for request in pending { try harness.waitForUsed(request) }
+        #expect(await eventually {
+            harness.broker.workspaceAdmissionSnapshot.inFlightRequests == 0
+        })
+        #expect(harness.fs.capacityDeferredRequestQueueSnapshot.isEmpty)
+        #expect(lifecycle.snapshot.isEmpty)
+        #expect(await harness.broker.snapshot().state == .active)
+    }
+
+    @Test func crossShareAggregateSaturationFairlyReservesReleasedWorkspaceCapacity() async throws {
+        let workerLimits = try fsWorkerAdmissionLimits(
+            maximumInFlightRequests: 4,
+            maximumAggregateRequestBytes: 80,
+            maximumAggregateResponseBytes: 192
+        )
+        let shareLimits = try fsShareResourceLimits(
+            maximumInFlightRequests: 4,
+            maximumAggregateRequestBytes: 80,
+            maximumAggregateResponseBytes: 192
+        )
+        let generation = try DoryFSWorkerGeneration(rawValue: 77)
+        let firstCapability = try DoryFSShareCapabilityID(
+            rawValue: #require(UUID(uuidString: "aaaaaaaa-0000-4000-8000-000000000001"))
+        )
+        let secondCapability = try DoryFSShareCapabilityID(
+            rawValue: #require(UUID(uuidString: "bbbbbbbb-0000-4000-8000-000000000002"))
+        )
+        let authority = DoryFSWorkerWorkspaceAdmissionAuthority(
+            workerLimits: workerLimits,
+            shareLimits: [
+                firstCapability: shareLimits,
+                secondCapability: shareLimits,
+            ]
+        )
+        let firstLifecycle = WorkerLifecycleRecorder()
+        let secondLifecycle = WorkerLifecycleRecorder()
+        let first = try VirtioFSNotificationHarness(
+            workerLimits: workerLimits,
+            shareResourceLimits: shareLimits,
+            generation: generation,
+            capabilityID: firstCapability,
+            admissionAuthority: authority,
+            onWorkerLifecycle: firstLifecycle.record
+        )
+        let second = try VirtioFSNotificationHarness(
+            workerLimits: workerLimits,
+            shareResourceLimits: shareLimits,
+            generation: generation,
+            capabilityID: secondCapability,
+            admissionAuthority: authority,
+            onWorkerLifecycle: secondLifecycle.record
+        )
+        try first.configureQueue(1)
+        try second.configureQueue(1)
+        first.setDriverReady(notifications: false)
+        second.setDriverReady(notifications: false)
+
+        let entered = LockedUInt64Recorder()
+        let releaseExecution = DispatchSemaphore(value: 0)
+        first.workerChannel.requestExecutionCorrelationTestHook = { correlationID in
+            entered.append(correlationID)
+            releaseExecution.wait()
+        }
+        second.workerChannel.requestExecutionCorrelationTestHook = { correlationID in
+            entered.append(correlationID)
+            releaseExecution.wait()
+        }
+        defer {
+            first.workerChannel.requestExecutionCorrelationTestHook = nil
+            second.workerChannel.requestExecutionCorrelationTestHook = nil
+            for _ in 0..<4 { releaseExecution.signal() }
+        }
+
+        let firstInitial = try first.enqueueSmallFuseRequestBurst([(
+            queue: 1,
+            request: makeFuseRequest(opcode: .statfs, unique: 1_001)
+        )], responseCapacity: FuseOutHeader.byteCount + 80)
+        let secondInitial = try second.enqueueSmallFuseRequestBurst([(
+            queue: 1,
+            request: makeFuseRequest(opcode: .statfs, unique: 2_001)
+        )], responseCapacity: FuseOutHeader.byteCount + 80)
+        #expect(await eventually { entered.snapshot.count == 2 })
+
+        let firstDeferred = try first.enqueueSmallFuseRequestBurst([(
+            queue: 1,
+            request: makeFuseRequest(opcode: .statfs, unique: 1_002)
+        )], responseCapacity: FuseOutHeader.byteCount + 80)
+        let secondDeferred = try second.enqueueSmallFuseRequestBurst([(
+            queue: 1,
+            request: makeFuseRequest(opcode: .statfs, unique: 2_002)
+        )], responseCapacity: FuseOutHeader.byteCount + 80)
+
+        var workspace = first.broker.workspaceAdmissionSnapshot
+        #expect(workspace.inFlightRequests == 2)
+        #expect(workspace.aggregateRequestBytes == 80)
+        #expect(workspace.aggregateResponseBytes == 192)
+        #expect(workspace.deferredWaiters == 2)
+        #expect(first.fs.capacityDeferredRequestQueueSnapshot == Set([1]))
+        #expect(second.fs.capacityDeferredRequestQueueSnapshot == Set([1]))
+
+        releaseExecution.signal()
+        #expect(await eventually { entered.snapshot.contains(1_002) })
+        #expect(!entered.snapshot.contains(2_002))
+        workspace = first.broker.workspaceAdmissionSnapshot
+        #expect(workspace.inFlightRequests == 2)
+        #expect(workspace.peakInFlightRequests == 2)
+        #expect(workspace.deferredWaiters == 1)
+
+        releaseExecution.signal()
+        #expect(await eventually { entered.snapshot.contains(2_002) })
+        workspace = first.broker.workspaceAdmissionSnapshot
+        #expect(workspace.inFlightRequests == 2)
+        #expect(workspace.peakInFlightRequests == 2)
+        #expect(workspace.deferredWaiters == 0)
+
+        for _ in 0..<4 { releaseExecution.signal() }
+        try first.waitForUsed(try #require(firstDeferred.last))
+        try second.waitForUsed(try #require(secondDeferred.last))
+        for request in firstInitial + firstDeferred {
+            #expect(try first.responseLength(request) >= UInt32(FuseOutHeader.byteCount))
+        }
+        for request in secondInitial + secondDeferred {
+            #expect(try second.responseLength(request) >= UInt32(FuseOutHeader.byteCount))
+        }
+        #expect(await eventually {
+            first.broker.workspaceAdmissionSnapshot.inFlightRequests == 0
+        })
+        #expect(firstLifecycle.snapshot.isEmpty)
+        #expect(secondLifecycle.snapshot.isEmpty)
+        #expect(await first.broker.snapshot().state == .active)
+        #expect(await second.broker.snapshot().state == .active)
+    }
+
+    @Test func workspaceInvalidationTerminatesCapacityDeferredSiblingFrontend() async throws {
+        let workerLimits = try fsWorkerAdmissionLimits(
+            maximumInFlightRequests: 1,
+            maximumAggregateRequestBytes: FuseInHeader.byteCount,
+            maximumAggregateResponseBytes: FuseOutHeader.byteCount + 80
+        )
+        let shareLimits = try fsShareResourceLimits(
+            maximumInFlightRequests: 1,
+            maximumAggregateRequestBytes: FuseInHeader.byteCount,
+            maximumAggregateResponseBytes: FuseOutHeader.byteCount + 80
+        )
+        let generation = try DoryFSWorkerGeneration(rawValue: 78)
+        let firstCapability = try DoryFSShareCapabilityID(
+            rawValue: #require(UUID(uuidString: "aaaaaaaa-0000-4000-8000-000000000011"))
+        )
+        let secondCapability = try DoryFSShareCapabilityID(
+            rawValue: #require(UUID(uuidString: "bbbbbbbb-0000-4000-8000-000000000012"))
+        )
+        let authority = DoryFSWorkerWorkspaceAdmissionAuthority(
+            workerLimits: workerLimits,
+            shareLimits: [
+                firstCapability: shareLimits,
+                secondCapability: shareLimits,
+            ]
+        )
+        let firstLifecycle = WorkerLifecycleRecorder()
+        let secondLifecycle = WorkerLifecycleRecorder()
+        let first = try VirtioFSNotificationHarness(
+            workerLimits: workerLimits,
+            shareResourceLimits: shareLimits,
+            generation: generation,
+            capabilityID: firstCapability,
+            admissionAuthority: authority,
+            onWorkerLifecycle: firstLifecycle.record
+        )
+        let second = try VirtioFSNotificationHarness(
+            workerLimits: workerLimits,
+            shareResourceLimits: shareLimits,
+            generation: generation,
+            capabilityID: secondCapability,
+            admissionAuthority: authority,
+            onWorkerLifecycle: secondLifecycle.record
+        )
+        try first.configureQueue(1)
+        try second.configureQueue(1)
+        first.setDriverReady(notifications: false)
+        second.setDriverReady(notifications: false)
+
+        let entered = DispatchSemaphore(value: 0)
+        let releaseExecution = DispatchSemaphore(value: 0)
+        first.workerChannel.beforeRequestExecutionTestHook = {
+            entered.signal()
+            releaseExecution.wait()
+        }
+        defer {
+            first.workerChannel.beforeRequestExecutionTestHook = nil
+            releaseExecution.signal()
+        }
+
+        _ = try first.enqueueSmallFuseRequestBurst([(
+            queue: 1,
+            request: makeFuseRequest(opcode: .statfs, unique: 3_001)
+        )], responseCapacity: FuseOutHeader.byteCount + 80)
+        #expect(await semaphoreSignals(entered))
+
+        _ = try second.enqueueSmallFuseRequestBurst([(
+            queue: 1,
+            request: makeFuseRequest(opcode: .statfs, unique: 4_001)
+        )], responseCapacity: FuseOutHeader.byteCount + 80)
+        #expect(second.fs.capacityDeferredRequestQueueSnapshot == Set([1]))
+        #expect(try second.usedIndex(queue: 1) == 0)
+
+        await first.broker.invalidate()
+
+        #expect(await eventually {
+            second.fs.capacityDeferredRequestQueueSnapshot.isEmpty
+                && secondLifecycle.snapshot.count == 1
+        })
+        guard case .failure(let diagnostic) = try #require(secondLifecycle.snapshot.first) else {
+            Issue.record("expected deferred sibling admission to report terminal worker failure")
+            return
+        }
+        #expect(diagnostic.contains("filesystem worker admission terminated"))
+        #expect(try second.usedIndex(queue: 1) == 0)
+        // The test channels are intentionally independent. The sibling broker therefore remains
+        // active here, proving the frontend was terminated by the shared admission authority
+        // rather than by a coincidental channel-invalidation callback.
+        #expect(await second.broker.snapshot().state == .active)
+    }
+
+    @Test func resetOvertakesBlockedHostWorkAndRejectsItsStalePublication() async throws {
+        let harness = try VirtioFSNotificationHarness(inlineRequests: false)
+        try harness.write("before", to: "reset-during-write.txt")
+        try harness.configureQueue(1)
+        harness.setDriverReady(notifications: false)
+        let lookup = try harness.performFuseRequest(
+            makeFuseRequest(
+                opcode: .lookup,
+                unique: 730,
+                payload: Array("reset-during-write.txt\0".utf8)
+            ),
+            queue: 1
+        )
+        let nodeID = Array(lookup.dropFirst(FuseOutHeader.byteCount)).leUInt64(at: 0)
+        var openPayload = [UInt8]()
+        openPayload.appendLE(UInt32(O_RDWR))
+        openPayload.appendLE(UInt32(0))
+        let opened = try harness.performFuseRequest(
+            makeFuseRequest(
+                opcode: .open,
+                unique: 731,
+                nodeID: nodeID,
+                payload: openPayload
+            ),
+            queue: 1
+        )
+        let handle = Array(opened.dropFirst(FuseOutHeader.byteCount)).leUInt64(at: 0)
+
+        let hostWorkLoaded = DispatchSemaphore(value: 0)
+        let releaseHostWork = DispatchSemaphore(value: 0)
+        harness.workerChannel.server.fileOperationLoadedTestHook = {
+            hostWorkLoaded.signal()
+            releaseHostWork.wait()
+        }
+        defer {
+            releaseHostWork.signal()
+            harness.workerChannel.server.fileOperationLoadedTestHook = nil
+        }
+        let stale = try harness.enqueueFuseRequest(
+            makeFuseWriteRequest(
+                unique: 732,
+                nodeID: nodeID,
+                handle: handle,
+                contents: Array("after!".utf8)
+            ),
+            queue: 1,
+            responseCapacity: FuseOutHeader.byteCount + 8
+        )
+        #expect(await semaphoreSignals(hostWorkLoaded))
+
+        let resetReturned = DispatchSemaphore(value: 0)
+        let transport = harness.transport
+        DispatchQueue.global().async {
+            transport.write(offset: 0x070, value: 0, width: 4)
+            resetReturned.signal()
+        }
+        let resetOvertookHostWork = await semaphoreSignals(
+            resetReturned,
+            timeout: .milliseconds(500)
+        )
+        guard resetOvertookHostWork else {
+            releaseHostWork.signal()
+            _ = await semaphoreSignals(resetReturned)
+            Issue.record("device reset waited on a guest queue lease during host filesystem work")
+            return
+        }
+
+        try harness.configureQueue(1)
+        harness.setDriverReady(notifications: false)
+        releaseHostWork.signal()
+        #expect(await eventually {
+            (try? harness.contents(of: "reset-during-write.txt")) == "after!"
+        })
+        #expect(try harness.usedIndex(queue: 1) == 0)
+        #expect(try harness.responseLength(stale) == 0)
+
+        #expect(await eventually {
+            await harness.broker.snapshot().state == .invalidated
+        })
+        #expect(await eventually {
+            let statistics = harness.fs.performanceStatistics
+            return statistics.completedRequests == 2
+                && statistics.failedRequests == 1
+                && statistics.inFlightRequests == 0
+        })
+    }
+
+    @Test func malformedVirtqueueWalkLatchesExplicitTerminalTelemetry() throws {
+        let harness = try VirtioFSNotificationHarness()
+        try harness.configureQueue(1)
+        harness.setDriverReady(notifications: false)
+
+        try harness.enqueueOutOfBoundsHead(queue: 1)
+
+        #expect(try harness.usedIndex(queue: 1) == 0)
+        #expect(harness.fs.frontendStatistics.terminalQueueFaults == 1)
+        #expect(harness.fs.requestPublicationGateClosed)
     }
 }
 
@@ -1444,12 +1707,15 @@ private final class TestVirtioFSRoot {
     }
 }
 
-private final class VirtioFSNotificationHarness {
+private final class VirtioFSNotificationHarness: @unchecked Sendable {
     private static let base: UInt64 = 0x8000_0000
-    // Queue and buffer fixtures use fixed offsets through 0x73xxx on both host architectures.
-    private static let memorySize: UInt64 = 0x10_0000
+    // Queue rings, notification buffers, maximum-sized requests, and responses occupy disjoint
+    // fixture regions so adversarial request sizes cannot corrupt the harness itself.
+    private static let memorySize: UInt64 = 0x40_0000
     private let root: TestVirtioFSRoot
     let hostFS: HostFS
+    let workerChannel: DoryFSWorkerTestChannel
+    let broker: DoryFSWorkerBroker
     let fs: VirtioFS
     let memory: GuestMemory
     let transport: VirtioMMIOTransport
@@ -1465,16 +1731,46 @@ private final class VirtioFSNotificationHarness {
     init(
         notificationBacklogLimit: Int = 256,
         requestQueueCount: Int = 1,
-        inlineRequests: Bool? = nil
+        inlineRequests: Bool? = nil,
+        workerLimits: DoryFSWorkerLimits = .production,
+        shareResourceLimits: DoryFSShareResourceLimits = .production,
+        generation: DoryFSWorkerGeneration = DoryFSWorkerTestChannel.generation,
+        capabilityID: DoryFSShareCapabilityID = DoryFSWorkerTestChannel.capabilityID,
+        admissionAuthority: DoryFSWorkerWorkspaceAdmissionAuthority? = nil,
+        onWorkerLifecycle: @escaping @Sendable (VirtioFSWorkerLifecycleEvent) -> Void = { _ in }
     ) throws {
         root = try TestVirtioFSRoot()
         hostFS = try HostFS(rootPath: root.url.path)
+        workerChannel = DoryFSWorkerTestChannel(
+            hostFS: hostFS,
+            executeInline: inlineRequests ?? false,
+            generation: generation,
+            capabilityID: capabilityID
+        )
+        if let admissionAuthority {
+            broker = DoryFSWorkerBroker(
+                shareCapabilityID: capabilityID,
+                generation: generation,
+                limits: workerLimits,
+                shareResourceLimits: shareResourceLimits,
+                admissionAuthority: admissionAuthority,
+                channel: workerChannel
+            )
+        } else {
+            broker = DoryFSWorkerBroker(
+                shareCapabilityID: capabilityID,
+                generation: generation,
+                limits: workerLimits,
+                shareResourceLimits: shareResourceLimits,
+                channel: workerChannel
+            )
+        }
         fs = try VirtioFS(
             tag: "home",
-            hostFS: hostFS,
+            broker: broker,
             requestQueueCount: requestQueueCount,
             notificationBacklogLimit: notificationBacklogLimit,
-            inlineRequests: inlineRequests
+            onWorkerLifecycle: onWorkerLifecycle
         )
         memory = try GuestMemory(guestBase: Self.base, size: Self.memorySize)
         transport = VirtioMMIOTransport(
@@ -1486,11 +1782,16 @@ private final class VirtioFSNotificationHarness {
     }
 
     func setDriverReady(notifications: Bool) {
-        if notifications {
-            transport.write(offset: 0x024, value: 0, width: 4)
-            transport.write(offset: 0x020, value: VirtioFS.notificationFeature, width: 4)
-        }
-        transport.write(offset: 0x070, value: 0x4, width: 4)
+        transport.write(offset: 0x024, value: 0, width: 4)
+        transport.write(
+            offset: 0x020,
+            value: notifications ? VirtioFS.notificationFeature : 0,
+            width: 4
+        )
+        transport.write(offset: 0x024, value: 1, width: 4)
+        transport.write(offset: 0x020, value: VirtqueueFeature.version1 >> 32, width: 4)
+        transport.write(offset: 0x070, value: 0x0B, width: 4)
+        transport.write(offset: 0x070, value: 0x0F, width: 4)
     }
 
     func configureQueue(_ queue: Int) throws {
@@ -1533,11 +1834,19 @@ private final class VirtioFSNotificationHarness {
     }
 
     func bufferAddress(_ index: Int) -> UInt64 {
-        Self.base + 0x20_000 + UInt64(index) * UInt64(VirtioFS.notificationBufferSize)
+        Self.base + 0x10_0000 + UInt64(index) * UInt64(VirtioFS.notificationBufferSize)
     }
 
     func usedIndex(queue: Int) throws -> UInt16 {
         try memory.read(UInt16.self, at: queueLayout(queue).used + 2)
+    }
+
+    func usedLength(_ pending: PendingFuseRequest) throws -> UInt32 {
+        let slot = UInt64((pending.expectedUsedIndex &- 1) % 32)
+        return try memory.read(
+            UInt32.self,
+            at: queueLayout(pending.queue).used + 8 + slot * 8
+        )
     }
 
     /// Sets VRING_AVAIL_F_NO_INTERRUPT, exactly what the Linux driver does while it polls the
@@ -1560,7 +1869,10 @@ private final class VirtioFSNotificationHarness {
 
     func prepareCoherentCaching() throws {
         try prepareCoherentCachingEligibility()
-        guard fs.activateCoherentCaching() == .activated else {
+        let eligibility = fs.cacheActivationEligibility
+        guard eligibility.isEligible,
+              fs.activateCoherentCaching() == .ineligible(eligibility),
+              !fs.coherentCachingActive else {
             throw VirtioFSHarnessError.cacheActivationFailed
         }
     }
@@ -1666,8 +1978,8 @@ private final class VirtioFSNotificationHarness {
         responseCapacity: Int = 512
     ) throws -> PendingFuseRequest {
         let layout = queueLayout(queue)
-        let requestAddress = Self.base + 0x60_000 + UInt64(queue) * 0x1_000
-        let responseAddress = Self.base + 0x70_000 + UInt64(queue) * 0x1_000
+        let requestAddress = Self.base + 0x20_0000 + UInt64(queue) * 0x1_100
+        let responseAddress = Self.base + 0x38_0000 + UInt64(queue) * 0x1_000
         try memory.write(request, at: requestAddress)
         try memory.write([UInt8](repeating: 0, count: responseCapacity), at: responseAddress)
 
@@ -1701,6 +2013,172 @@ private final class VirtioFSNotificationHarness {
         )
     }
 
+    func enqueueDescriptorChain(
+        _ descriptors: [FuseDescriptorFixture],
+        queue: Int,
+        kick: Bool = true
+    ) throws -> PendingFuseRequest {
+        guard !descriptors.isEmpty, descriptors.count <= 32 else {
+            throw VirtioFSHarnessError.invalidDescriptorFixture
+        }
+        let layout = queueLayout(queue)
+        var readableAddress = Self.base + 0x20_0000 + UInt64(queue) * 0x1_100
+        var writableAddress = Self.base + 0x38_0000 + UInt64(queue) * 0x1_000
+        var firstWritableAddress: UInt64?
+        var writableCapacity = 0
+
+        for (index, descriptor) in descriptors.enumerated() {
+            guard descriptor.length >= 0,
+                  let wireLength = UInt32(exactly: descriptor.length),
+                  descriptor.deviceWritable || descriptor.bytes.count == descriptor.length else {
+                throw VirtioFSHarnessError.invalidDescriptorFixture
+            }
+            let dataAddress: UInt64
+            if descriptor.deviceWritable {
+                dataAddress = writableAddress
+                firstWritableAddress = firstWritableAddress ?? dataAddress
+                if descriptor.length > 0 {
+                    try memory.write(
+                        [UInt8](repeating: 0, count: descriptor.length),
+                        at: dataAddress
+                    )
+                }
+                writableAddress += UInt64(max(1, descriptor.length))
+                writableCapacity += descriptor.length
+            } else {
+                dataAddress = readableAddress
+                if !descriptor.bytes.isEmpty {
+                    try memory.write(descriptor.bytes, at: dataAddress)
+                }
+                readableAddress += UInt64(max(1, descriptor.length))
+            }
+
+            let descriptorAddress = layout.descriptor + UInt64(index) * 16
+            try memory.write(dataAddress, at: descriptorAddress)
+            try memory.write(wireLength, at: descriptorAddress + 8)
+            var flags: UInt16 = descriptor.deviceWritable ? 0x2 : 0
+            if index + 1 < descriptors.count { flags |= 0x1 }
+            try memory.write(flags, at: descriptorAddress + 12)
+            try memory.write(UInt16(index + 1), at: descriptorAddress + 14)
+        }
+
+        let next = requestIndexLock.withLock {
+            let next = (requestAvailIndices[queue] ?? 0) &+ 1
+            requestAvailIndices[queue] = next
+            return next
+        }
+        let slot = (next &- 1) % 32
+        try memory.write(UInt16(0), at: layout.avail + 4 + UInt64(slot) * 2)
+        try memory.write(next, at: layout.avail + 2)
+        if kick {
+            fs.handleKick(queue: queue, transport: transport)
+        }
+        return PendingFuseRequest(
+            queue: queue,
+            expectedUsedIndex: next,
+            responseAddress: firstWritableAddress ?? 0,
+            responseCapacity: writableCapacity
+        )
+    }
+
+    /// Builds several independent two-descriptor chains per request queue without kicking until the
+    /// complete burst is visible. This fixture is intentionally small-payload-only: its purpose is
+    /// to exercise frontend admission/backpressure, while the ordinary helper retains the separate
+    /// one-MiB request/response regions used by payload-boundary tests.
+    func enqueueSmallFuseRequestBurst(
+        _ requests: [(queue: Int, request: [UInt8])],
+        responseCapacity: Int
+    ) throws -> [PendingFuseRequest] {
+        guard responseCapacity > 0, responseCapacity <= 0x100 else {
+            throw VirtioFSHarnessError.invalidDescriptorFixture
+        }
+        var pending = [PendingFuseRequest]()
+        pending.reserveCapacity(requests.count)
+        var queues = Set<Int>()
+
+        for entry in requests {
+            guard entry.queue > 0,
+                  entry.queue < fs.queueCount,
+                  !entry.request.isEmpty,
+                  entry.request.count <= 0x100 else {
+                throw VirtioFSHarnessError.invalidDescriptorFixture
+            }
+            let layout = queueLayout(entry.queue)
+            let next = requestIndexLock.withLock {
+                let next = (requestAvailIndices[entry.queue] ?? 0) &+ 1
+                requestAvailIndices[entry.queue] = next
+                return next
+            }
+            let ordinal = Int(next &- 1)
+            guard ordinal < 16 else {
+                throw VirtioFSHarnessError.invalidDescriptorFixture
+            }
+            let requestAddress = Self.base
+                + 0x20_0000
+                + UInt64(entry.queue) * 0x4000
+                + UInt64(ordinal) * 0x100
+            let responseAddress = Self.base
+                + 0x30_0000
+                + UInt64(entry.queue) * 0x4000
+                + UInt64(ordinal) * 0x100
+            try memory.write(entry.request, at: requestAddress)
+            try memory.write(
+                [UInt8](repeating: 0, count: responseCapacity),
+                at: responseAddress
+            )
+
+            let readableDescriptor = UInt16(ordinal * 2)
+            let writableDescriptor = readableDescriptor + 1
+            let readableDescriptorAddress = layout.descriptor
+                + UInt64(readableDescriptor) * 16
+            try memory.write(requestAddress, at: readableDescriptorAddress)
+            try memory.write(UInt32(entry.request.count), at: readableDescriptorAddress + 8)
+            try memory.write(UInt16(0x1), at: readableDescriptorAddress + 12)
+            try memory.write(writableDescriptor, at: readableDescriptorAddress + 14)
+
+            let writableDescriptorAddress = layout.descriptor
+                + UInt64(writableDescriptor) * 16
+            try memory.write(responseAddress, at: writableDescriptorAddress)
+            try memory.write(UInt32(responseCapacity), at: writableDescriptorAddress + 8)
+            try memory.write(UInt16(0x2), at: writableDescriptorAddress + 12)
+            try memory.write(UInt16(0), at: writableDescriptorAddress + 14)
+
+            let slot = (next &- 1) % 32
+            try memory.write(
+                readableDescriptor,
+                at: layout.avail + 4 + UInt64(slot) * 2
+            )
+            try memory.write(next, at: layout.avail + 2)
+            queues.insert(entry.queue)
+            pending.append(PendingFuseRequest(
+                queue: entry.queue,
+                expectedUsedIndex: next,
+                responseAddress: responseAddress,
+                responseCapacity: responseCapacity
+            ))
+        }
+
+        for queue in queues.sorted() {
+            fs.handleKick(queue: queue, transport: transport)
+        }
+        return pending
+    }
+
+    func enqueueOutOfBoundsHead(queue: Int, kick: Bool = true) throws {
+        let layout = queueLayout(queue)
+        let next = requestIndexLock.withLock {
+            let next = (requestAvailIndices[queue] ?? 0) &+ 1
+            requestAvailIndices[queue] = next
+            return next
+        }
+        let slot = (next &- 1) % 32
+        try memory.write(UInt16(32), at: layout.avail + 4 + UInt64(slot) * 2)
+        try memory.write(next, at: layout.avail + 2)
+        if kick {
+            fs.handleKick(queue: queue, transport: transport)
+        }
+    }
+
     func waitForFuseResponse(
         _ pending: PendingFuseRequest,
         timeout: TimeInterval = 2
@@ -1721,16 +2199,47 @@ private final class VirtioFSNotificationHarness {
         throw VirtioFSHarnessError.responseTimedOut
     }
 
+    func waitForUsed(
+        _ pending: PendingFuseRequest,
+        timeout: TimeInterval = 2
+    ) throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if try usedIndex(queue: pending.queue) == pending.expectedUsedIndex { return }
+            Thread.sleep(forTimeInterval: 0.0001)
+        }
+        throw VirtioFSHarnessError.responseTimedOut
+    }
+
     private func queueLayout(_ queue: Int) -> (descriptor: UInt64, avail: UInt64, used: UInt64) {
-        let start = Self.base + 0x1000 + UInt64(queue - 1) * 0x4000
+        let start = Self.base + 0x1000 + UInt64(queue) * 0x4000
         return (start, start + 0x1000, start + 0x2000)
     }
 }
 
 private enum VirtioFSHarnessError: Error {
     case invalidResponseLength(UInt32)
+    case invalidDescriptorFixture
     case responseTimedOut
     case cacheActivationFailed
+}
+
+private struct FuseDescriptorFixture {
+    let bytes: [UInt8]
+    let length: Int
+    let deviceWritable: Bool
+
+    static func readable(_ bytes: [UInt8]) -> Self {
+        Self(bytes: bytes, length: bytes.count, deviceWritable: false)
+    }
+
+    static func writable(_ byteCount: Int) -> Self {
+        Self(bytes: [], length: byteCount, deviceWritable: true)
+    }
+
+    static func zeroLength(deviceWritable: Bool) -> Self {
+        Self(bytes: [], length: 0, deviceWritable: deviceWritable)
+    }
 }
 
 private struct PendingFuseRequest: Sendable {
@@ -1740,29 +2249,88 @@ private struct PendingFuseRequest: Sendable {
     let responseCapacity: Int
 }
 
-private actor CoordinatorGuestFSEventSender: GuestFSEventSending {
-    struct Call: Equatable, Sendable {
-        var operationID: UInt64
-        var paths: [String]
-    }
+private final class FuseResponseRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [UInt8]?
 
-    private(set) var calls = [Call]()
+    var value: [UInt8]? { lock.withLock { storage } }
 
-    func send(operationID: UInt64, paths: [String]) async throws -> GuestFSEventBatchResult {
-        calls.append(Call(operationID: operationID, paths: paths))
-        return GuestFSEventBatchResult(pathCount: UInt32(paths.count), failedIndices: [])
+    func store(_ response: [UInt8]) {
+        lock.withLock { storage = response }
     }
 }
 
-private final class CoordinatorFatalRecorder: @unchecked Sendable {
+private final class LockedIntCounter: @unchecked Sendable {
     private let lock = NSLock()
-    private var storage = [String]()
+    private var storage = 0
 
-    var reasons: [String] { lock.withLock { storage } }
+    var value: Int { lock.withLock { storage } }
 
-    func append(_ reason: String) {
-        lock.withLock { storage.append(reason) }
+    func increment() {
+        lock.withLock { storage += 1 }
     }
+}
+
+private final class LockedUInt64Recorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage = [UInt64]()
+
+    var snapshot: [UInt64] { lock.withLock { storage } }
+
+    func append(_ value: UInt64) {
+        lock.withLock { storage.append(value) }
+    }
+}
+
+private final class WorkerLifecycleRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var events = [VirtioFSWorkerLifecycleEvent]()
+
+    var snapshot: [VirtioFSWorkerLifecycleEvent] {
+        lock.withLock { events }
+    }
+
+    func record(_ event: VirtioFSWorkerLifecycleEvent) {
+        lock.withLock { events.append(event) }
+    }
+}
+
+private func fsWorkerAdmissionLimits(
+    maximumInFlightRequests: Int,
+    maximumAggregateRequestBytes: Int,
+    maximumAggregateResponseBytes: Int
+) throws -> DoryFSWorkerLimits {
+    try DoryFSWorkerLimits(
+        maximumRequestBytes: FuseInHeader.byteCount,
+        maximumResponseBytes: FuseOutHeader.byteCount + 80,
+        maximumFrameBytes: 512,
+        maximumInFlightRequests: maximumInFlightRequests,
+        maximumAggregateRequestBytes: maximumAggregateRequestBytes,
+        maximumAggregateResponseBytes: maximumAggregateResponseBytes,
+        maximumOperationNanoseconds: 3_000_000_000,
+        maximumDrainNanoseconds: 3_000_000_000
+    )
+}
+
+private func fsShareResourceLimits(
+    maximumInFlightRequests: Int,
+    maximumAggregateRequestBytes: Int = DoryFSShareResourceLimits.production.maximumAggregateRequestBytes,
+    maximumAggregateResponseBytes: Int = DoryFSShareResourceLimits.production.maximumAggregateResponseBytes
+) throws -> DoryFSShareResourceLimits {
+    let production = DoryFSShareResourceLimits.production
+    return try DoryFSShareResourceLimits(
+        maximumInFlightRequests: maximumInFlightRequests,
+        maximumAggregateRequestBytes: maximumAggregateRequestBytes,
+        maximumAggregateResponseBytes: maximumAggregateResponseBytes,
+        maximumLiveNonRootNodes: production.maximumLiveNonRootNodes,
+        maximumFileHandles: production.maximumFileHandles,
+        maximumDirectoryHandles: production.maximumDirectoryHandles,
+        maximumDirectoryCursorEntries: production.maximumDirectoryCursorEntries,
+        maximumDirectoryCursorNameBytes: production.maximumDirectoryCursorNameBytes,
+        maximumAdvisoryLockOwners: production.maximumAdvisoryLockOwners,
+        maximumPendingBlockingLocks: production.maximumPendingBlockingLocks,
+        reservedFileDescriptorHeadroom: production.reservedFileDescriptorHeadroom
+    )
 }
 
 private func makeFuseInitRequest() -> [UInt8] {
@@ -1809,17 +2377,25 @@ private func makeFuseWriteRequest(
     return makeFuseRequest(opcode: .write, unique: unique, nodeID: nodeID, payload: payload)
 }
 
+private func overwriteFuseLength(_ request: inout [UInt8], with value: UInt32) {
+    precondition(request.count >= MemoryLayout<UInt32>.size)
+    request[0] = UInt8(truncatingIfNeeded: value)
+    request[1] = UInt8(truncatingIfNeeded: value >> 8)
+    request[2] = UInt8(truncatingIfNeeded: value >> 16)
+    request[3] = UInt8(truncatingIfNeeded: value >> 24)
+}
+
 private func eventually(
     timeout: Duration = .seconds(2),
-    _ condition: () -> Bool
+    _ condition: () async -> Bool
 ) async -> Bool {
     let clock = ContinuousClock()
     let deadline = clock.now.advanced(by: timeout)
     while clock.now < deadline {
-        if condition() { return true }
+        if await condition() { return true }
         await Task.yield()
     }
-    return condition()
+    return await condition()
 }
 
 private func semaphoreSignals(

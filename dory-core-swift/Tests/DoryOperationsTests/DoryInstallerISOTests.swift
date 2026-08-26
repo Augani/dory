@@ -204,6 +204,91 @@ final class DoryInstallerISOTests: XCTestCase {
         )
     }
 
+    func testPortableEFIIdentityRejectsAnUnstructuredLoaderMarker() throws {
+        let media = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dory-portable-efi-bait-\(UUID().uuidString).iso")
+        defer { try? FileManager.default.removeItem(at: media) }
+        try Data("EFI/BOOT/BOOTAA64.EFI\nnot-an-iso".utf8).write(to: media)
+
+        XCTAssertEqual(
+            try DoryInstallerISOInspector.architecture(atPath: media.path),
+            .arm64,
+            "the permissive preflight may still provide a compatibility hint"
+        )
+        XCTAssertThrowsError(
+            try DoryInstallerISOInspector.portableEFIMediaIdentity(atPath: media.path)
+        ) { error in
+            guard case .notPortableEFIBootable = error as? DoryInstallerISOInspectionError else {
+                return XCTFail("expected structural EFI rejection, got \(error)")
+            }
+        }
+    }
+
+    func testPortableEFIIdentityDoesNotTreatISO9660FilenameAsBootCarrier() throws {
+        let media = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dory-portable-efi-arm64-\(UUID().uuidString).iso")
+        defer { try? FileManager.default.removeItem(at: media) }
+        let contents = makePortableISO9660(loaderName: "BOOTAA64.EFI")
+        try contents.write(to: media)
+
+        XCTAssertEqual(contents.count, 24 * 2_048)
+        XCTAssertThrowsError(
+            try DoryInstallerISOInspector.portableEFIMediaIdentity(atPath: media.path)
+        )
+    }
+
+    func testPortableEFIIdentityRejectsFilenameBaitWithInvalidPEApplication() throws {
+        let media = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dory-portable-efi-invalid-pe-\(UUID().uuidString).iso")
+        defer { try? FileManager.default.removeItem(at: media) }
+        try makePortableISO9660(
+            loaderName: "BOOTAA64.EFI",
+            validEFIApplication: false
+        ).write(to: media)
+
+        XCTAssertThrowsError(
+            try DoryInstallerISOInspector.portableEFIMediaIdentity(atPath: media.path)
+        ) { error in
+            guard case .notPortableEFIBootable = error as? DoryInstallerISOInspectionError else {
+                return XCTFail("expected invalid EFI application rejection, got \(error)")
+            }
+        }
+    }
+
+    func testPortableEFIIdentityTraversesFAT12FallbackPathAndIgnoresSlackBait() throws {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dory-portable-fat12-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+
+        let valid = base.appendingPathComponent("valid.img")
+        try makeMBRFAT12EFI(includesFallbackEntry: true).write(to: valid)
+        XCTAssertEqual(
+            try DoryInstallerISOInspector.portableEFIMediaIdentity(atPath: valid.path)
+                .architecture,
+            .arm64
+        )
+
+        let bait = base.appendingPathComponent("slack-bait.img")
+        try makeMBRFAT12EFI(includesFallbackEntry: false).write(to: bait)
+        XCTAssertThrowsError(
+            try DoryInstallerISOInspector.portableEFIMediaIdentity(atPath: bait.path)
+        )
+    }
+
+    func testPortableEFIIdentityAcceptsCompleteFAT16LoaderLargerThanFourMiB() throws {
+        let media = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dory-portable-fat16-large-loader-\(UUID().uuidString).img")
+        defer { try? FileManager.default.removeItem(at: media) }
+        try makeMBRFAT16EFIWithLargeLoader().write(to: media)
+
+        XCTAssertEqual(
+            try DoryInstallerISOInspector.portableEFIMediaIdentity(atPath: media.path)
+                .architecture,
+            .x86_64
+        )
+    }
+
     func testRuntimeCatalogSeparatesArchitectureFromExactHostMediaEvidence() {
         let ubuntu24044 = DoryInstallerISOMediaIdentity(
             architecture: .arm64,
@@ -326,7 +411,11 @@ final class DoryInstallerISOTests: XCTestCase {
         try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: base) }
 
-        let identity = try DoryInstallerISOInspector.mediaIdentity(atPath: sourcePath)
+        // Exercise the same strict carrier/FAT/PE path used by portable production admission,
+        // rather than accepting a filename or raw marker as architecture authority.
+        let identity = try DoryInstallerISOInspector.portableEFIMediaIdentity(
+            atPath: sourcePath
+        )
         XCTAssertEqual(identity.architecture, .x86_64)
         if let expectedSHA256 = environment["DORY_TEST_INSTALLER_ISO_SHA256"],
            !expectedSHA256.isEmpty {
@@ -404,6 +493,399 @@ final class DoryInstallerISOTests: XCTestCase {
             nextDataOffset += section.1.count
         }
         return data
+    }
+
+    private func makePortableISO9660(
+        loaderName: String,
+        validEFIApplication: Bool = true
+    ) -> Data {
+        let blockSize = 2_048
+        var image = Data(repeating: 0, count: 24 * blockSize)
+        let loader = validEFIApplication
+            ? makeEFIApplicationPE(
+                machine: loaderName.caseInsensitiveCompare("BOOTAA64.EFI") == .orderedSame
+                    ? 0xAA64
+                    : 0x8664
+            )
+            : Data("MZ\0\0filename-bait".utf8)
+
+        var primary = Data(repeating: 0, count: blockSize)
+        primary[0] = 1
+        primary.replaceSubrange(1..<6, with: Data("CD001".utf8))
+        primary[6] = 1
+        let rootRecord = iso9660DirectoryRecord(
+            identifier: Data([0]),
+            extentLBA: 20,
+            byteCount: UInt32(blockSize),
+            isDirectory: true
+        )
+        primary.replaceSubrange(156..<(156 + rootRecord.count), with: rootRecord)
+        image.replaceSubrange((16 * blockSize)..<(17 * blockSize), with: primary)
+
+        var terminator = Data(repeating: 0, count: blockSize)
+        terminator[0] = 255
+        terminator.replaceSubrange(1..<6, with: Data("CD001".utf8))
+        terminator[6] = 1
+        image.replaceSubrange((17 * blockSize)..<(18 * blockSize), with: terminator)
+
+        writeISO9660Directory(
+            records: [
+                iso9660DirectoryRecord(
+                    identifier: Data([0]), extentLBA: 20,
+                    byteCount: UInt32(blockSize), isDirectory: true
+                ),
+                iso9660DirectoryRecord(
+                    identifier: Data([1]), extentLBA: 20,
+                    byteCount: UInt32(blockSize), isDirectory: true
+                ),
+                iso9660DirectoryRecord(
+                    identifier: Data("EFI".utf8), extentLBA: 21,
+                    byteCount: UInt32(blockSize), isDirectory: true
+                ),
+            ],
+            atLBA: 20,
+            in: &image,
+            blockSize: blockSize
+        )
+        writeISO9660Directory(
+            records: [
+                iso9660DirectoryRecord(
+                    identifier: Data([0]), extentLBA: 21,
+                    byteCount: UInt32(blockSize), isDirectory: true
+                ),
+                iso9660DirectoryRecord(
+                    identifier: Data([1]), extentLBA: 20,
+                    byteCount: UInt32(blockSize), isDirectory: true
+                ),
+                iso9660DirectoryRecord(
+                    identifier: Data("BOOT".utf8), extentLBA: 22,
+                    byteCount: UInt32(blockSize), isDirectory: true
+                ),
+            ],
+            atLBA: 21,
+            in: &image,
+            blockSize: blockSize
+        )
+        writeISO9660Directory(
+            records: [
+                iso9660DirectoryRecord(
+                    identifier: Data([0]), extentLBA: 22,
+                    byteCount: UInt32(blockSize), isDirectory: true
+                ),
+                iso9660DirectoryRecord(
+                    identifier: Data([1]), extentLBA: 21,
+                    byteCount: UInt32(blockSize), isDirectory: true
+                ),
+                iso9660DirectoryRecord(
+                    identifier: Data(loaderName.utf8), extentLBA: 23,
+                    byteCount: UInt32(loader.count), isDirectory: false
+                ),
+            ],
+            atLBA: 22,
+            in: &image,
+            blockSize: blockSize
+        )
+        image.replaceSubrange(
+            (23 * blockSize)..<(23 * blockSize + loader.count),
+            with: loader
+        )
+        return image
+    }
+
+    private func makeEFIApplicationPE(machine: UInt16) -> Data {
+        let peOffset = 0x80
+        let optionalHeaderSize = 0xF0
+        var data = Data(repeating: 0, count: 512)
+        data[0] = 0x4D
+        data[1] = 0x5A
+        putUInt32(UInt32(peOffset), into: &data, at: 0x3C)
+        data.replaceSubrange(peOffset..<(peOffset + 4), with: Data([0x50, 0x45, 0, 0]))
+        putUInt16(machine, into: &data, at: peOffset + 4)
+        putUInt16(1, into: &data, at: peOffset + 6)
+        putUInt16(UInt16(optionalHeaderSize), into: &data, at: peOffset + 20)
+        putUInt16(0x0002, into: &data, at: peOffset + 22)
+        putUInt16(0x020B, into: &data, at: peOffset + 24)
+        putUInt32(64, into: &data, at: peOffset + 24 + 4)
+        putUInt32(0x1C0, into: &data, at: peOffset + 24 + 16)
+        putUInt32(0x1C0, into: &data, at: peOffset + 24 + 20)
+        putUInt32(0x20, into: &data, at: peOffset + 24 + 32)
+        putUInt32(0x20, into: &data, at: peOffset + 24 + 36)
+        putUInt32(0x200, into: &data, at: peOffset + 24 + 56)
+        putUInt32(0x1C0, into: &data, at: peOffset + 24 + 60)
+        putUInt16(10, into: &data, at: peOffset + 24 + 68)
+        putUInt32(16, into: &data, at: peOffset + 24 + 108)
+        let section = peOffset + 24 + optionalHeaderSize
+        data.replaceSubrange(section..<(section + 5), with: Data(".text".utf8))
+        putUInt32(64, into: &data, at: section + 8)
+        putUInt32(0x1C0, into: &data, at: section + 12)
+        putUInt32(64, into: &data, at: section + 16)
+        putUInt32(0x1C0, into: &data, at: section + 20)
+        putUInt32(0x6000_0020, into: &data, at: section + 36)
+        data[0x1C0] = 0xC3
+        return data
+    }
+
+    private func makeMBRFAT12EFI(includesFallbackEntry: Bool) -> Data {
+        let sectorBytes = 512
+        let partitionSectors = 2_880
+        let partitionOffset = sectorBytes
+        var image = Data(repeating: 0, count: (partitionSectors + 1) * sectorBytes)
+        image[446 + 4] = 0xEF
+        putUInt32(1, into: &image, at: 446 + 8)
+        putUInt32(UInt32(partitionSectors), into: &image, at: 446 + 12)
+        image[510] = 0x55
+        image[511] = 0xAA
+
+        var boot = Data(repeating: 0, count: sectorBytes)
+        boot.replaceSubrange(0..<3, with: Data([0xEB, 0x3C, 0x90]))
+        putUInt16(UInt16(sectorBytes), into: &boot, at: 11)
+        boot[13] = 1
+        putUInt16(1, into: &boot, at: 14)
+        boot[16] = 2
+        putUInt16(224, into: &boot, at: 17)
+        putUInt16(UInt16(partitionSectors), into: &boot, at: 19)
+        boot[21] = 0xF0
+        putUInt16(9, into: &boot, at: 22)
+        boot[510] = 0x55
+        boot[511] = 0xAA
+        image.replaceSubrange(
+            partitionOffset..<(partitionOffset + sectorBytes),
+            with: boot
+        )
+
+        var fat = Data(repeating: 0, count: 9 * sectorBytes)
+        fat[0] = 0xF0
+        fat[1] = 0xFF
+        fat[2] = 0xFF
+        for cluster: UInt16 in [2, 3, 4] {
+            putFAT12(0x0FFF, forCluster: cluster, into: &fat)
+        }
+        let firstFATOffset = partitionOffset + sectorBytes
+        image.replaceSubrange(
+            firstFATOffset..<(firstFATOffset + fat.count),
+            with: fat
+        )
+        image.replaceSubrange(
+            (firstFATOffset + fat.count)..<(firstFATOffset + fat.count * 2),
+            with: fat
+        )
+
+        let rootOffset = partitionOffset + 19 * sectorBytes
+        var root = Data(repeating: 0, count: 14 * sectorBytes)
+        writeFATShortEntry(
+            base: "EFI",
+            ext: "",
+            attributes: 0x10,
+            firstCluster: 2,
+            byteCount: 0,
+            at: 0,
+            in: &root
+        )
+        image.replaceSubrange(rootOffset..<(rootOffset + root.count), with: root)
+
+        let dataOffset = partitionOffset + 33 * sectorBytes
+        var efiDirectory = Data(repeating: 0, count: sectorBytes)
+        writeFATShortEntry(
+            base: "BOOT",
+            ext: "",
+            attributes: 0x10,
+            firstCluster: 3,
+            byteCount: 0,
+            at: 0,
+            in: &efiDirectory
+        )
+        image.replaceSubrange(dataOffset..<(dataOffset + sectorBytes), with: efiDirectory)
+
+        var bootDirectory = Data(repeating: 0, count: sectorBytes)
+        if includesFallbackEntry {
+            writeFATShortEntry(
+                base: "BOOTAA64",
+                ext: "EFI",
+                attributes: 0x20,
+                firstCluster: 4,
+                byteCount: 512,
+                at: 0,
+                in: &bootDirectory
+            )
+        } else {
+            bootDirectory.replaceSubrange(128..<140, with: Data("BOOTAA64.EFI".utf8))
+        }
+        image.replaceSubrange(
+            (dataOffset + sectorBytes)..<(dataOffset + 2 * sectorBytes),
+            with: bootDirectory
+        )
+        let loader = makeEFIApplicationPE(machine: 0xAA64)
+        image.replaceSubrange(
+            (dataOffset + 2 * sectorBytes)..<(dataOffset + 2 * sectorBytes + loader.count),
+            with: loader
+        )
+        return image
+    }
+
+    /// A standards-shaped FAT16 ESP whose fallback loader is deliberately larger than the old
+    /// four-MiB inspection prefix. Its complete chain must be present before PE admission passes.
+    private func makeMBRFAT16EFIWithLargeLoader() -> Data {
+        let sectorBytes = 512
+        let partitionSectors = 16_384
+        let fatSectors = 64
+        let rootDirectorySectors = 32
+        let partitionOffset = sectorBytes
+        let dataStartSector = 1 + 2 * fatSectors + rootDirectorySectors
+        let loaderBytes = 5 * 1_024 * 1_024 + sectorBytes
+        let loaderClusters = loaderBytes / sectorBytes
+        var image = Data(repeating: 0, count: (partitionSectors + 1) * sectorBytes)
+
+        image[446 + 4] = 0xEF
+        putUInt32(1, into: &image, at: 446 + 8)
+        putUInt32(UInt32(partitionSectors), into: &image, at: 446 + 12)
+        image[510] = 0x55
+        image[511] = 0xAA
+
+        var boot = Data(repeating: 0, count: sectorBytes)
+        boot.replaceSubrange(0..<3, with: Data([0xEB, 0x3C, 0x90]))
+        putUInt16(UInt16(sectorBytes), into: &boot, at: 11)
+        boot[13] = 1
+        putUInt16(1, into: &boot, at: 14)
+        boot[16] = 2
+        putUInt16(512, into: &boot, at: 17)
+        putUInt16(UInt16(partitionSectors), into: &boot, at: 19)
+        boot[21] = 0xF8
+        putUInt16(UInt16(fatSectors), into: &boot, at: 22)
+        boot[510] = 0x55
+        boot[511] = 0xAA
+        image.replaceSubrange(
+            partitionOffset..<(partitionOffset + sectorBytes),
+            with: boot
+        )
+
+        var fat = Data(repeating: 0, count: fatSectors * sectorBytes)
+        putUInt16(0xFFF8, into: &fat, at: 0)
+        putUInt16(0xFFFF, into: &fat, at: 2)
+        putUInt16(0xFFFF, into: &fat, at: 2 * 2)
+        putUInt16(0xFFFF, into: &fat, at: 3 * 2)
+        for index in 0..<loaderClusters {
+            let cluster = 4 + index
+            let next: UInt16 = index == loaderClusters - 1
+                ? 0xFFFF
+                : UInt16(cluster + 1)
+            putUInt16(next, into: &fat, at: cluster * 2)
+        }
+        let firstFATOffset = partitionOffset + sectorBytes
+        image.replaceSubrange(
+            firstFATOffset..<(firstFATOffset + fat.count),
+            with: fat
+        )
+        image.replaceSubrange(
+            (firstFATOffset + fat.count)..<(firstFATOffset + fat.count * 2),
+            with: fat
+        )
+
+        let rootOffset = partitionOffset + (1 + 2 * fatSectors) * sectorBytes
+        var root = Data(repeating: 0, count: rootDirectorySectors * sectorBytes)
+        writeFATShortEntry(
+            base: "EFI", ext: "", attributes: 0x10,
+            firstCluster: 2, byteCount: 0, at: 0, in: &root
+        )
+        image.replaceSubrange(rootOffset..<(rootOffset + root.count), with: root)
+
+        let dataOffset = partitionOffset + dataStartSector * sectorBytes
+        var efiDirectory = Data(repeating: 0, count: sectorBytes)
+        writeFATShortEntry(
+            base: "BOOT", ext: "", attributes: 0x10,
+            firstCluster: 3, byteCount: 0, at: 0, in: &efiDirectory
+        )
+        image.replaceSubrange(dataOffset..<(dataOffset + sectorBytes), with: efiDirectory)
+
+        var bootDirectory = Data(repeating: 0, count: sectorBytes)
+        writeFATShortEntry(
+            base: "BOOTX64", ext: "EFI", attributes: 0x20,
+            firstCluster: 4, byteCount: UInt32(loaderBytes), at: 0,
+            in: &bootDirectory
+        )
+        image.replaceSubrange(
+            (dataOffset + sectorBytes)..<(dataOffset + 2 * sectorBytes),
+            with: bootDirectory
+        )
+
+        var loader = Data(repeating: 0, count: loaderBytes)
+        loader.replaceSubrange(0..<512, with: makeEFIApplicationPE(machine: 0x8664))
+        image.replaceSubrange(
+            (dataOffset + 2 * sectorBytes)..<(dataOffset + 2 * sectorBytes + loader.count),
+            with: loader
+        )
+        return image
+    }
+
+    private func putFAT12(
+        _ value: UInt16,
+        forCluster cluster: UInt16,
+        into fat: inout Data
+    ) {
+        let offset = Int(cluster) + Int(cluster / 2)
+        if cluster & 1 == 0 {
+            fat[offset] = UInt8(truncatingIfNeeded: value)
+            fat[offset + 1] = (fat[offset + 1] & 0xF0)
+                | UInt8(truncatingIfNeeded: value >> 8) & 0x0F
+        } else {
+            fat[offset] = (fat[offset] & 0x0F)
+                | UInt8(truncatingIfNeeded: value << 4) & 0xF0
+            fat[offset + 1] = UInt8(truncatingIfNeeded: value >> 4)
+        }
+    }
+
+    private func writeFATShortEntry(
+        base: String,
+        ext: String,
+        attributes: UInt8,
+        firstCluster: UInt16,
+        byteCount: UInt32,
+        at offset: Int,
+        in directory: inout Data
+    ) {
+        let baseBytes = Array(base.uppercased().utf8.prefix(8))
+        let extBytes = Array(ext.uppercased().utf8.prefix(3))
+        directory.replaceSubrange(offset..<(offset + 8), with: Data(
+            baseBytes + Array(repeating: 0x20, count: 8 - baseBytes.count)
+        ))
+        directory.replaceSubrange((offset + 8)..<(offset + 11), with: Data(
+            extBytes + Array(repeating: 0x20, count: 3 - extBytes.count)
+        ))
+        directory[offset + 11] = attributes
+        putUInt16(firstCluster, into: &directory, at: offset + 26)
+        putUInt32(byteCount, into: &directory, at: offset + 28)
+    }
+
+    private func iso9660DirectoryRecord(
+        identifier: Data,
+        extentLBA: UInt32,
+        byteCount: UInt32,
+        isDirectory: Bool
+    ) -> Data {
+        let padding = identifier.count.isMultiple(of: 2) ? 1 : 0
+        var record = Data(repeating: 0, count: 33 + identifier.count + padding)
+        record[0] = UInt8(record.count)
+        putUInt32(extentLBA, into: &record, at: 2)
+        putUInt32(byteCount, into: &record, at: 10)
+        record[25] = isDirectory ? 0x02 : 0
+        putUInt16(1, into: &record, at: 28)
+        record[32] = UInt8(identifier.count)
+        record.replaceSubrange(33..<(33 + identifier.count), with: identifier)
+        return record
+    }
+
+    private func writeISO9660Directory(
+        records: [Data],
+        atLBA lba: Int,
+        in image: inout Data,
+        blockSize: Int
+    ) {
+        var directory = Data(repeating: 0, count: blockSize)
+        var offset = 0
+        for record in records {
+            directory.replaceSubrange(offset..<(offset + record.count), with: record)
+            offset += record.count
+        }
+        image.replaceSubrange((lba * blockSize)..<((lba + 1) * blockSize), with: directory)
     }
 
     private func putUInt16(_ value: UInt16, into data: inout Data, at offset: Int) {

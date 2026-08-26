@@ -1,3 +1,4 @@
+import DoryFSWorkerContracts
 import Foundation
 
 public struct PVHMemoryMapEntry: Equatable, Sendable {

@@ -284,7 +284,7 @@ public enum DoryAppleSiliconVirtualMachineBackendPlanner {
         case (.linux, .linuxKernel), (.linux, .installedLinuxBootBundle):
             return [.doryHypervisor]
         case (.linux, _):
-            return [.appleVirtualizationFramework, .qemuHypervisorFramework]
+            return [.appleVirtualizationFramework]
         case (.macOS, _):
             return [.appleVirtualizationFramework]
         case (.windows, _):

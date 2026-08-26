@@ -1,5 +1,6 @@
 import CryptoKit
 import DoryOperations
+import DoryVMContracts
 import Foundation
 
 /// Inventory output stays daemon-local and non-Codable. The opaque trusted records can only be
@@ -52,13 +53,16 @@ public struct DoryDaemonVirtualMachineBackendRuntimeInventory: Sendable, Equatab
     public var backend: DoryVirtualizationBackendIdentity
     public var runtimeBuildIdentifier: String
     public var components: [DoryResolvedBackendComponentEvidence]
-    public var hostQualification: DoryResolvedHostQualificationEvidence
+    /// Exact signed host qualification for managed or accelerated claims. The portable
+    /// user-provided ARM64 EFI VZ/software baseline binds the verified helper build and components
+    /// but intentionally has no distro-specific host qualification.
+    public var hostQualification: DoryResolvedHostQualificationEvidence?
 
     public init(
         backend: DoryVirtualizationBackendIdentity,
         runtimeBuildIdentifier: String,
         components: [DoryResolvedBackendComponentEvidence],
-        hostQualification: DoryResolvedHostQualificationEvidence
+        hostQualification: DoryResolvedHostQualificationEvidence? = nil
     ) {
         self.backend = backend
         self.runtimeBuildIdentifier = runtimeBuildIdentifier
@@ -115,11 +119,14 @@ public struct DoryDaemonVirtualMachineTrustedInventorySnapshot: Sendable {
     ) -> DoryDaemonVirtualMachineBackendRuntimeInventory? {
         let candidates = backendRuntimes.filter { runtime in
             guard runtime.backend == descriptor.request.backend else { return false }
-            guard let evidence = descriptor.runtimeQualificationEvidence else { return true }
+            guard let evidence = descriptor.runtimeQualificationEvidence else {
+                return runtime.hostQualification == nil
+            }
+            guard let hostQualification = runtime.hostQualification else { return false }
             return runtime.runtimeBuildIdentifier == evidence.backendRuntimeBuildID
-                && runtime.hostQualification.qualificationIdentity
+                && hostQualification.qualificationIdentity
                     == evidence.qualificationIdentity
-                && runtime.hostQualification.qualificationReportSHA256
+                && hostQualification.qualificationReportSHA256
                     == evidence.qualificationReportSHA256
         }
         return candidates.count == 1 ? candidates[0] : nil
@@ -300,6 +307,7 @@ public enum DoryDaemonVirtualMachinePlanningFailureCode: String, Sendable, Equat
     case backendUnavailable = "backend-unavailable"
     case backendInventoryUnavailable = "backend-inventory-unavailable"
     case resourceAdmissionMismatch = "resource-admission-mismatch"
+    case virtualHardwareTopologyRejected = "virtual-hardware-topology-rejected"
     case planConstructionRejected = "plan-construction-rejected"
     case backendPlanRejected = "backend-plan-rejected"
     case persistenceRejected = "persistence-rejected"
@@ -446,10 +454,12 @@ public final class DoryDaemonVirtualMachinePlanningCoordinator: @unchecked Senda
         }
 
         let timing: (revision: UInt64, created: Int64, updated: Int64)
+        let previousRawHVTopology: DoryRawHVVirtualHardwareTopology?
         switch input.publication {
         case .create:
             let timestamp = now()
             timing = (1, timestamp, timestamp)
+            previousRawHVTopology = nil
         case let .replace(expected):
             let current: DoryResolvedMachinePlan
             do { current = try plans.read(id: definition.identity.id) }
@@ -459,6 +469,26 @@ public final class DoryDaemonVirtualMachinePlanningCoordinator: @unchecked Senda
             }
             timing = (expected + 1, current.createdAtUnixMilliseconds,
                       max(now(), current.createdAtUnixMilliseconds))
+            previousRawHVTopology = current.backend == .doryHypervisor
+                ? current.rawHVVirtualHardwareTopology : nil
+        }
+
+        let rawHVVirtualHardwareTopology: DoryRawHVVirtualHardwareTopology?
+        if selected.request.backend == .doryHypervisor {
+            do {
+                rawHVVirtualHardwareTopology = try DoryRawHVVirtualHardwareTopologyPlanner.resolve(
+                    definition: definition,
+                    resolvedDevices: selected.request.devices,
+                    previousTopology: previousRawHVTopology
+                )
+            } catch {
+                throw failure(
+                    .virtualHardwareTopologyRejected,
+                    "RawHV cannot materialize the requested virtual hardware: \(error)"
+                )
+            }
+        } else {
+            rawHVVirtualHardwareTopology = nil
         }
 
         let plan: DoryResolvedMachinePlan
@@ -472,6 +502,7 @@ public final class DoryDaemonVirtualMachinePlanningCoordinator: @unchecked Senda
                 updatedAtUnixMilliseconds: timing.updated,
                 backendDescriptor: backend.descriptor,
                 backendRuntimeBuildIdentifier: runtime.runtimeBuildIdentifier,
+                rawHVVirtualHardwareTopology: rawHVVirtualHardwareTopology,
                 resolverReference: snapshot.media.reference,
                 launchArtifacts: snapshot.launchArtifacts,
                 portForwards: definition.portForwards,

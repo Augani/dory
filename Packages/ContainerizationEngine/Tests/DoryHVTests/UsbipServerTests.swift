@@ -30,9 +30,11 @@ struct UsbipServerTests {
     @Test func submitIsForwardedToExportedDevice() throws {
         let device = StubUsbDevice(descriptor: fixtureUsbDevice(), submitPayload: [7, 8, 9])
         let server = UsbipServer(devices: [device])
+        let context = UsbipRequestContext()
+        defer { server.closeSession(context, busID: "3-2") }
         let command = UsbipSubmitCommand(
             header: UsbipHeaderBasic(command: .cmdSubmit, sequenceNumber: 44, deviceID: 0x0003_0002, direction: .in, endpoint: 1),
-            transferFlags: 0,
+            transferFlags: UsbipTransferFlag.directionIn,
             transferBufferLength: 3,
             startFrame: 0xffff_ffff,
             numberOfPackets: 0,
@@ -41,7 +43,7 @@ struct UsbipServerTests {
             transferBuffer: []
         )
 
-        let response = try server.handleURB(command.encoded(), busID: "3-2")
+        let response = try server.handleURB(command.encoded(), busID: "3-2", context: context)
         let replyHeader = try UsbipHeaderBasic(decoding: Array(response.prefix(UsbipHeaderBasic.byteCount)))
 
         #expect(device.submitted.map(\.header.sequenceNumber) == [44])
@@ -54,12 +56,14 @@ struct UsbipServerTests {
     @Test func unlinkIsForwardedToExportedDevice() throws {
         let device = StubUsbDevice(descriptor: fixtureUsbDevice())
         let server = UsbipServer(devices: [device])
+        let context = UsbipRequestContext()
+        defer { server.closeSession(context, busID: "3-2") }
         let command = UsbipUnlinkCommand(
             header: UsbipHeaderBasic(command: .cmdUnlink, sequenceNumber: 45, deviceID: 0x0003_0002, direction: .out, endpoint: 0),
             unlinkSequenceNumber: 44
         )
 
-        let response = try server.handleURB(command.encoded(), busID: "3-2")
+        let response = try server.handleURB(command.encoded(), busID: "3-2", context: context)
 
         #expect(device.unlinked.map(\.unlinkSequenceNumber) == [44])
         #expect(response.prefix(4).elementsEqual([0, 0, 0, 4]))
@@ -69,9 +73,11 @@ struct UsbipServerTests {
     @Test func isochronousSubmitReturnsPipeErrorWithoutForwarding() throws {
         let device = StubUsbDevice(descriptor: fixtureUsbDevice())
         let server = UsbipServer(devices: [device])
+        let context = UsbipRequestContext()
+        defer { server.closeSession(context, busID: "3-2") }
         let command = UsbipSubmitCommand(
             header: UsbipHeaderBasic(command: .cmdSubmit, sequenceNumber: 46, deviceID: 0x0003_0002, direction: .in, endpoint: 2),
-            transferFlags: 0,
+            transferFlags: UsbipTransferFlag.directionIn,
             transferBufferLength: 0,
             startFrame: 0,
             numberOfPackets: 2,
@@ -80,7 +86,7 @@ struct UsbipServerTests {
             transferBuffer: []
         )
 
-        let response = try server.handleURB(command.encoded(), busID: "3-2")
+        let response = try server.handleURB(command.encoded(), busID: "3-2", context: context)
         let replyHeader = try UsbipHeaderBasic(decoding: Array(response.prefix(UsbipHeaderBasic.byteCount)))
 
         #expect(device.submitted.isEmpty)
@@ -102,17 +108,26 @@ private final class StubUsbDevice: UsbipExportedDevice, @unchecked Sendable {
         self.submitPayload = submitPayload
     }
 
-    func submit(_ command: UsbipSubmitCommand) throws -> UsbipSubmitReply {
+    func submit(
+        _ command: UsbipSubmitCommand,
+        context: UsbipRequestContext
+    ) throws -> UsbipSubmitReply {
         submitted.append(command)
         let header = UsbipHeaderBasic(command: .retSubmit, sequenceNumber: command.header.sequenceNumber, deviceID: 0, direction: .out, endpoint: 0)
         return UsbipSubmitReply(header: header, status: 0, actualLength: UInt32(submitPayload.count), transferBuffer: submitPayload)
     }
 
-    func unlink(_ command: UsbipUnlinkCommand) throws -> UsbipUnlinkReply {
+    func unlink(
+        _ command: UsbipUnlinkCommand,
+        context: UsbipRequestContext
+    ) throws -> UsbipUnlinkReply {
         unlinked.append(command)
         let header = UsbipHeaderBasic(command: .retUnlink, sequenceNumber: command.header.sequenceNumber, deviceID: 0, direction: .out, endpoint: 0)
         return UsbipUnlinkReply(header: header, status: 0)
     }
+
+    func closeSession(_ context: UsbipRequestContext) {}
+    func shutdown() {}
 }
 
 private func fixtureUsbDevice() -> UsbipDeviceDescriptor {

@@ -10,6 +10,81 @@ final class MachineManagerTests: XCTestCase {
         ids.sorted().map { DoryAgentCapability(id: $0, version: 1) }
     }
 
+    private struct EFIFirmwareRecoveryFixture {
+        let base: String
+        let configuration: MachineManagerConfiguration
+        let installerNVRAM: String
+        let installedNVRAM: String
+        let promotionMarker: String
+    }
+
+    private func makeEFIFirmwareRecoveryFixture(
+        installerAttached: Bool
+    ) throws -> EFIFirmwareRecoveryFixture {
+        let base = "/tmp/dory-machine-efi-nvram-matrix-\(getpid())-"
+            + "\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        let installer = "\(base)/installer.iso"
+        let disk = "\(base)/disk.raw"
+        try Data("EFI/BOOT/BOOTAA64.EFI".utf8).write(
+            to: URL(fileURLWithPath: installer)
+        )
+        try Data("disk".utf8).write(to: URL(fileURLWithPath: disk))
+        let state = "\(base)/machines"
+        let configuration = MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: state,
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: false
+        )
+        let manager = MachineManager(configuration: configuration)
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "linux",
+            kernelPath: "",
+            rootfsPath: disk,
+            bootMode: .efi,
+            installerISOPath: installer,
+            memoryMB: 4096,
+            cpuCount: 4,
+            displayMode: .desktop
+        ))
+        let directory = "\(state)/linux"
+        let installerNVRAM = "\(directory)/NVRAM.installer"
+        let installedNVRAM = "\(directory)/NVRAM"
+        if !installerAttached {
+            try writePrivateFirmwareTestData(
+                Data("installer-variable-store".utf8),
+                toPath: installerNVRAM
+            )
+            _ = try manager.update(id: "linux", installerMediaAttached: false)
+        }
+        return EFIFirmwareRecoveryFixture(
+            base: base,
+            configuration: configuration,
+            installerNVRAM: installerNVRAM,
+            installedNVRAM: installedNVRAM,
+            promotionMarker: "\(directory)/.dory-nvram-promotion-pending-v1"
+        )
+    }
+
+    private func writePrivateFirmwareTestData(_ data: Data, toPath path: String) throws {
+        try data.write(to: URL(fileURLWithPath: path))
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: path
+        )
+    }
+
+    private func writeCompleteFirmwarePromotionMarker(
+        _ fixture: EFIFirmwareRecoveryFixture
+    ) throws {
+        try writePrivateFirmwareTestData(
+            Data("dory-nvram-promotion-v1\nmachine=linux\n".utf8),
+            toPath: fixture.promotionMarker
+        )
+    }
+
     func testShareArgumentsRoundTripDelimiterHeavyPathsAndJSON() throws {
         let shares = [
             DoryMachineShareConfiguration(
@@ -3164,11 +3239,406 @@ final class MachineManagerTests: XCTestCase {
 
         let reloaded = MachineManager(configuration: configuration)
         XCTAssertEqual(reloaded.list().map(\.id), ["ubuntu"])
+        try Data("installed-efi-variables".utf8).write(
+            to: URL(fileURLWithPath: "\(state)/ubuntu/NVRAM.installer")
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: "\(state)/ubuntu/NVRAM.installer"
+        )
         let ejected = try reloaded.update(id: "ubuntu", installerMediaAttached: false)
         XCTAssertEqual(ejected.bootMode, .efi)
         XCTAssertFalse(ejected.installerMediaAttached)
         let attached = try reloaded.update(id: "ubuntu", installerMediaAttached: true)
         XCTAssertTrue(attached.installerMediaAttached)
+    }
+
+    func testGenericEFIEjectionColdBootsVZWithoutInstallerKernelExtraction() throws {
+        let base = "/tmp/dory-machine-generic-efi-cold-boot-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let capture = base + "/arguments.txt"
+        let vzHelper = base + "/dory-vmm"
+        let rawHVHelper = base + "/dory-hv"
+        try "#!/bin/sh\nprintf '%s\\n' \"$@\" > '\(capture)'\nsleep 30\n".write(
+            toFile: vzHelper,
+            atomically: true,
+            encoding: .utf8
+        )
+        try "#!/bin/sh\nexit 97\n".write(
+            toFile: rawHVHelper,
+            atomically: true,
+            encoding: .utf8
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: vzHelper
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: rawHVHelper
+        )
+        let installer = base + "/generic-arm64.iso"
+        let disk = base + "/installed-system.raw"
+        try Data("EFI/BOOT/BOOTAA64.EFI\nno-supported-direct-kernel-layout".utf8).write(
+            to: URL(fileURLWithPath: installer)
+        )
+        try Data("installed-efi-system".utf8).write(to: URL(fileURLWithPath: disk))
+        let state = base + "/machines"
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: vzHelper,
+            acceleratedDesktopExecutablePath: rawHVHelper,
+            stateDirectory: state,
+            requiresReadyHandoff: false
+        ))
+        defer { try? manager.delete(id: "generic-linux") }
+
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "generic-linux",
+            kernelPath: "",
+            rootfsPath: disk,
+            bootMode: .efi,
+            installerISOPath: installer,
+            memoryMB: 4096,
+            cpuCount: 4,
+            displayMode: .desktop
+        ))
+        let machineDirectory = state + "/generic-linux"
+        let machineIdentifier = machineDirectory + "/MachineIdentifier"
+        let installerNVRAM = machineDirectory + "/NVRAM.installer"
+        let nvram = machineDirectory + "/NVRAM"
+        let machineIdentifierData = Data("stable-machine-identifier".utf8)
+        let nvramData = Data("installer-recorded-efi-boot-state".utf8)
+        try machineIdentifierData.write(to: URL(fileURLWithPath: machineIdentifier))
+        try nvramData.write(to: URL(fileURLWithPath: installerNVRAM))
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: machineIdentifier
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: installerNVRAM
+        )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: nvram))
+
+        let ejected = try manager.update(
+            id: "generic-linux",
+            installerMediaAttached: false
+        )
+        XCTAssertFalse(ejected.installerMediaAttached)
+        XCTAssertFalse(DoryInstalledLinuxBootBundle.isBundle(
+            atPath: machineDirectory + "/kernel"
+        ))
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: machineIdentifier)),
+                       machineIdentifierData)
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: nvram)), nvramData)
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: installerNVRAM)),
+                       nvramData)
+
+        _ = try manager.start(id: "generic-linux")
+        let arguments = try waitForFileContent(capture)
+            .split(separator: "\n").map(String.init)
+        let bootModeIndex = try XCTUnwrap(arguments.firstIndex(of: "--boot-mode"))
+        XCTAssertEqual(arguments[bootModeIndex + 1], "efi")
+        XCTAssertFalse(arguments.contains("--installer-iso"))
+        XCTAssertFalse(arguments.contains("efi-installed"))
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: machineIdentifier)),
+                       machineIdentifierData)
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: nvram)), nvramData)
+
+        _ = try manager.stop(id: "generic-linux")
+        _ = try manager.update(id: "generic-linux", installerMediaAttached: true)
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: installerNVRAM),
+            "recovery attachment must start from a fresh CD-first EFI variable store"
+        )
+        let recoveryNVRAMData = Data("later-recovery-boot-state".utf8)
+        try recoveryNVRAMData.write(to: URL(fileURLWithPath: installerNVRAM))
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: installerNVRAM
+        )
+        _ = try manager.update(id: "generic-linux", installerMediaAttached: false)
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: nvram)), nvramData)
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: installerNVRAM)),
+                       recoveryNVRAMData)
+    }
+
+    func testFailedInstalledEFIBootRollsBackPromotedVariableStoreForRetry() throws {
+        let base = "/tmp/dory-machine-efi-nvram-rollback-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let installer = "\(base)/installer.iso"
+        let disk = "\(base)/installed-disk.raw"
+        try Data("EFI/BOOT/BOOTAA64.EFI".utf8).write(to: URL(fileURLWithPath: installer))
+        try Data("installed system".utf8).write(to: URL(fileURLWithPath: disk))
+        let starter = RecordingProcessStarter(failingAttempts: [2])
+        let state = "\(base)/machines"
+        let manager = MachineManager(
+            configuration: MachineManagerConfiguration(
+                vmmExecutablePath: "/bin/sleep",
+                stateDirectory: state,
+                baseArguments: ["30"],
+                passMachineArguments: false,
+                requiresReadyHandoff: false
+            ),
+            processStarter: { process in try starter.start(process) }
+        )
+        defer { try? manager.delete(id: "linux") }
+
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "linux",
+            kernelPath: "",
+            rootfsPath: disk,
+            bootMode: .efi,
+            installerISOPath: installer,
+            memoryMB: 4096,
+            cpuCount: 4,
+            displayMode: .desktop
+        ))
+        let machineDirectory = "\(state)/linux"
+        let installerNVRAM = "\(machineDirectory)/NVRAM.installer"
+        let installedNVRAM = "\(machineDirectory)/NVRAM"
+        let installerState = Data("installer-boot-order".utf8)
+        try installerState.write(to: URL(fileURLWithPath: installerNVRAM))
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: installerNVRAM
+        )
+        _ = try manager.start(id: "linux")
+
+        XCTAssertThrowsError(
+            try manager.update(id: "linux", installerMediaAttached: false)
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("original configuration was restored"))
+        }
+        XCTAssertEqual(starter.attemptCount, 3)
+        XCTAssertTrue(try XCTUnwrap(manager.status(id: "linux")).installerMediaAttached)
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: installedNVRAM),
+            "a failed installed boot must not leave a stale promotion that blocks a fresh retry"
+        )
+        XCTAssertEqual(
+            try Data(contentsOf: URL(fileURLWithPath: installerNVRAM)),
+            installerState
+        )
+
+        let retried = try manager.update(id: "linux", installerMediaAttached: false)
+        XCTAssertFalse(retried.installerMediaAttached)
+        XCTAssertEqual(starter.attemptCount, 4)
+        XCTAssertEqual(
+            try Data(contentsOf: URL(fileURLWithPath: installedNVRAM)),
+            installerState
+        )
+    }
+
+    func testFirstInstallerEjectRequiresFirmwareVariableStore() throws {
+        let base = "/tmp/dory-machine-efi-missing-nvram-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let installer = "\(base)/installer.iso"
+        let disk = "\(base)/disk.raw"
+        try Data("EFI/BOOT/BOOTAA64.EFI".utf8).write(to: URL(fileURLWithPath: installer))
+        try Data("disk".utf8).write(to: URL(fileURLWithPath: disk))
+        let state = "\(base)/machines"
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: state,
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: false
+        ))
+        defer { try? manager.delete(id: "linux") }
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "linux",
+            kernelPath: "",
+            rootfsPath: disk,
+            bootMode: .efi,
+            installerISOPath: installer,
+            memoryMB: 4096,
+            cpuCount: 4,
+            displayMode: .desktop
+        ))
+        let runningPID = try XCTUnwrap(try manager.start(id: "linux").pid)
+
+        XCTAssertThrowsError(
+            try manager.update(id: "linux", installerMediaAttached: false)
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("complete an installer boot"))
+        }
+        let stillRunning = try XCTUnwrap(manager.status(id: "linux"))
+        XCTAssertEqual(stillRunning.state, .running)
+        XCTAssertEqual(stillRunning.pid, runningPID)
+        XCTAssertTrue(stillRunning.installerMediaAttached)
+        let stored = try JSONDecoder().decode(
+            DoryMachineConfiguration.self,
+            from: Data(contentsOf: URL(fileURLWithPath: "\(state)/linux/machine.json"))
+        )
+        XCTAssertNotNil(stored.installerISOPath)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: "\(state)/linux/NVRAM"))
+    }
+
+    func testDaemonRestartRollsBackInterruptedNVRAMPromotionWhileISOIsAttached() throws {
+        let base = "/tmp/dory-machine-efi-nvram-recovery-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let installer = "\(base)/installer.iso"
+        let disk = "\(base)/disk.raw"
+        try Data("EFI/BOOT/BOOTAA64.EFI".utf8).write(to: URL(fileURLWithPath: installer))
+        try Data("disk".utf8).write(to: URL(fileURLWithPath: disk))
+        let state = "\(base)/machines"
+        let configuration = MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: state,
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: false
+        )
+        let manager = MachineManager(configuration: configuration)
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "linux",
+            kernelPath: "",
+            rootfsPath: disk,
+            bootMode: .efi,
+            installerISOPath: installer,
+            memoryMB: 4096,
+            cpuCount: 4,
+            displayMode: .desktop
+        ))
+        let directory = "\(state)/linux"
+        let installedNVRAM = "\(directory)/NVRAM"
+        let marker = "\(directory)/.dory-nvram-promotion-pending-v1"
+        try Data("installer-state".utf8).write(to: URL(fileURLWithPath: installedNVRAM))
+        try Data("dory-nvram-promotion-v1\nmachine=linux\n".utf8).write(
+            to: URL(fileURLWithPath: marker)
+        )
+        for path in [installedNVRAM, marker] {
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o600],
+                ofItemAtPath: path
+            )
+        }
+
+        let recovered = MachineManager(configuration: configuration)
+        XCTAssertEqual(recovered.list().map(\.id), ["linux"])
+        XCTAssertTrue(try XCTUnwrap(recovered.status(id: "linux")).installerMediaAttached)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: installedNVRAM))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker))
+        try recovered.delete(id: "linux")
+    }
+
+    func testDaemonRestartCommitsInterruptedNVRAMPromotionWhenISOIsDetached() throws {
+        let fixture = try makeEFIFirmwareRecoveryFixture(installerAttached: false)
+        defer { try? FileManager.default.removeItem(atPath: fixture.base) }
+        let installedState = Data("installed-system-authoritative-state".utf8)
+        try writePrivateFirmwareTestData(
+            installedState,
+            toPath: fixture.installedNVRAM
+        )
+        try writePrivateFirmwareTestData(
+            Data("stale-installer-state".utf8),
+            toPath: fixture.installerNVRAM
+        )
+        try writeCompleteFirmwarePromotionMarker(fixture)
+
+        let recovered = MachineManager(configuration: fixture.configuration)
+        let status = try XCTUnwrap(recovered.status(id: "linux"))
+        XCTAssertEqual(status.state, .stopped)
+        XCTAssertFalse(status.installerMediaAttached)
+        XCTAssertEqual(
+            try Data(contentsOf: URL(fileURLWithPath: fixture.installedNVRAM)),
+            installedState,
+            "detached media makes the installed variable store authoritative"
+        )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.promotionMarker))
+    }
+
+    func testDaemonRestartRecreatesMissingPromotedNVRAMWhenISOIsDetached() throws {
+        let fixture = try makeEFIFirmwareRecoveryFixture(installerAttached: false)
+        defer { try? FileManager.default.removeItem(atPath: fixture.base) }
+        let installerState = Data("recoverable-installer-variable-store".utf8)
+        try writePrivateFirmwareTestData(
+            installerState,
+            toPath: fixture.installerNVRAM
+        )
+        try FileManager.default.removeItem(atPath: fixture.installedNVRAM)
+        try writeCompleteFirmwarePromotionMarker(fixture)
+
+        let recovered = MachineManager(configuration: fixture.configuration)
+        let status = try XCTUnwrap(recovered.status(id: "linux"))
+        XCTAssertEqual(status.state, .stopped)
+        XCTAssertFalse(status.installerMediaAttached)
+        XCTAssertEqual(
+            try Data(contentsOf: URL(fileURLWithPath: fixture.installedNVRAM)),
+            installerState
+        )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.promotionMarker))
+    }
+
+    func testDaemonRestartRollsBackPartialNVRAMPromotionWhileISOIsAttached() throws {
+        let fixture = try makeEFIFirmwareRecoveryFixture(installerAttached: true)
+        defer { try? FileManager.default.removeItem(atPath: fixture.base) }
+        try writePrivateFirmwareTestData(
+            Data("partial-promoted-state".utf8),
+            toPath: fixture.installedNVRAM
+        )
+        try writePrivateFirmwareTestData(
+            Data("dory-nvram-promotion-v1\nmachine=".utf8),
+            toPath: fixture.promotionMarker
+        )
+
+        let recovered = MachineManager(configuration: fixture.configuration)
+        let status = try XCTUnwrap(recovered.status(id: "linux"))
+        XCTAssertEqual(status.state, .stopped)
+        XCTAssertTrue(status.installerMediaAttached)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.installedNVRAM))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.promotionMarker))
+    }
+
+    func testDaemonRestartFailsClosedForInvalidNVRAMPromotionMarkerWhenISOIsDetached() throws {
+        let fixture = try makeEFIFirmwareRecoveryFixture(installerAttached: false)
+        defer { try? FileManager.default.removeItem(atPath: fixture.base) }
+        let installedState = try Data(
+            contentsOf: URL(fileURLWithPath: fixture.installedNVRAM)
+        )
+        try writePrivateFirmwareTestData(
+            Data("dory-nvram-promotion-v1\nmachine=another-machine\n".utf8),
+            toPath: fixture.promotionMarker
+        )
+
+        let recovered = MachineManager(configuration: fixture.configuration)
+        let status = try XCTUnwrap(recovered.status(id: "linux"))
+        XCTAssertEqual(status.state, .failed)
+        XCTAssertFalse(status.installerMediaAttached)
+        XCTAssertEqual(status.failure?.code, .lifecycleRecoveryRequired)
+        XCTAssertTrue(status.lastError?.contains("incomplete or invalid") == true)
+        XCTAssertEqual(
+            try Data(contentsOf: URL(fileURLWithPath: fixture.installedNVRAM)),
+            installedState
+        )
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.promotionMarker))
+    }
+
+    func testDaemonRestartFailsClosedForSymlinkedNVRAMPromotionMarkerWhenISOIsDetached() throws {
+        let fixture = try makeEFIFirmwareRecoveryFixture(installerAttached: false)
+        defer { try? FileManager.default.removeItem(atPath: fixture.base) }
+        let markerTarget = "\(fixture.base)/untrusted-marker-target"
+        try writePrivateFirmwareTestData(
+            Data("dory-nvram-promotion-v1\nmachine=linux\n".utf8),
+            toPath: markerTarget
+        )
+        XCTAssertEqual(symlink(markerTarget, fixture.promotionMarker), 0)
+
+        let recovered = MachineManager(configuration: fixture.configuration)
+        let status = try XCTUnwrap(recovered.status(id: "linux"))
+        XCTAssertEqual(status.state, .failed)
+        XCTAssertFalse(status.installerMediaAttached)
+        XCTAssertEqual(status.failure?.code, .lifecycleRecoveryRequired)
+        XCTAssertTrue(status.lastError?.contains("incomplete or invalid") == true)
+        var markerInfo = stat()
+        XCTAssertEqual(lstat(fixture.promotionMarker, &markerInfo), 0)
+        XCTAssertEqual(markerInfo.st_mode & S_IFMT, S_IFLNK)
     }
 
     func testRunningEFIInstallerEjectRetriesTransientStartupExitBeforeRollback() throws {
@@ -3180,9 +3650,10 @@ final class MachineManagerTests: XCTestCase {
         let disk = "\(base)/installed-disk.img"
         try Data("arm64 installer".utf8).write(to: URL(fileURLWithPath: installer))
         try Data("installed system".utf8).write(to: URL(fileURLWithPath: disk))
+        let state = "\(base)/machines"
         let manager = MachineManager(configuration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
-            stateDirectory: "\(base)/machines",
+            stateDirectory: state,
             baseArguments: ["30"],
             passMachineArguments: false,
             requiresReadyHandoff: true,
@@ -3218,6 +3689,10 @@ final class MachineManagerTests: XCTestCase {
         // The production helper emits readiness only after VZ has started. Mirror that settled
         // boundary after the test injects its synthetic handoff directly into the supervisor.
         Thread.sleep(forTimeInterval: 0.1)
+        try writePrivateFirmwareTestData(
+            Data("installer-boot-order".utf8),
+            toPath: "\(state)/linux/NVRAM.installer"
+        )
 
         let updateFinished = expectation(description: "installer eject finished")
         let updateResult = LockedResult<DoryMachineStatus>()
@@ -4200,7 +4675,9 @@ final class MachineManagerTests: XCTestCase {
             requestedOperationID.uuidString.lowercased()
         )
         XCTAssertEqual(try value(after: "--display-mode"), "desktop")
-        for flag in ["--dockerd-sock", "--agent-sock", "--shell-sock", "--control-sock"] {
+        for flag in [
+            "--dockerd-sock", "--agent-sock", "--shell-sock", "--console-sock", "--control-sock",
+        ] {
             let path = try value(after: flag)
             XCTAssertTrue(path.hasPrefix(runtime + "/"), "\(flag) should use transient runtime storage")
             XCTAssertLessThan(path.utf8.count, 104)
@@ -4215,7 +4692,17 @@ final class MachineManagerTests: XCTestCase {
         let fallbackCapture = base + "/fallback.txt"
         let desktopHelper = base + "/dory-hv"
         let fallbackHelper = base + "/dory-vmm"
+        let stateDirectory = base + "/machines"
         try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: base)
+        try FileManager.default.createDirectory(
+            atPath: stateDirectory,
+            withIntermediateDirectories: false
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: stateDirectory
+        )
         try "#!/bin/sh\nprintf '%s\\n' \"$@\" > '\(desktopCapture)'\nsleep 30\n".write(
             toFile: desktopHelper,
             atomically: true,
@@ -4231,7 +4718,7 @@ final class MachineManagerTests: XCTestCase {
         let manager = MachineManager(configuration: MachineManagerConfiguration(
             vmmExecutablePath: fallbackHelper,
             acceleratedDesktopExecutablePath: desktopHelper,
-            stateDirectory: base + "/machines",
+            stateDirectory: stateDirectory,
             baseArguments: ["fallback"],
             acceleratedDesktopBaseArguments: ["desktop", "--gvproxy", "/tmp/gvproxy"],
             requiresReadyHandoff: false
@@ -4247,7 +4734,14 @@ final class MachineManagerTests: XCTestCase {
             id: "desktop",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath,
-            displayMode: .desktop
+            displayMode: .desktop,
+            environment: [
+                DoryDesktopVMMPreference.environmentKey:
+                    DoryDesktopVMMPreference.accelerated.rawValue,
+                DoryDesktopGraphicsPreference.environmentKey:
+                    DoryDesktopGraphicsPreference.software.rawValue,
+                "DORY_TEST_MARKER": "kept",
+            ]
         ))
         _ = try manager.start(id: "desktop")
         for _ in 0..<100 where !FileManager.default.fileExists(atPath: desktopCapture) {
@@ -4256,13 +4750,23 @@ final class MachineManagerTests: XCTestCase {
         let desktopArguments = try String(contentsOfFile: desktopCapture, encoding: .utf8)
             .split(separator: "\n").map(String.init)
         XCTAssertEqual(Array(desktopArguments.prefix(3)), ["desktop", "--gvproxy", "/tmp/gvproxy"])
+        let legacyGraphicsIndex = try XCTUnwrap(
+            desktopArguments.firstIndex(of: "--legacy-graphics")
+        )
+        XCTAssertEqual(desktopArguments[legacyGraphicsIndex + 1], "software")
+        XCTAssertFalse(desktopArguments.contains {
+            $0.hasPrefix("DORY_DESKTOP_GRAPHICS=")
+                || $0.hasPrefix("DORY_DESKTOP_VMM=")
+        })
+        XCTAssertTrue(desktopArguments.contains("DORY_TEST_MARKER=kept"))
+        XCTAssertFalse(desktopArguments.contains("--dockerd-sock"))
         let desktopDisplayIndex = try XCTUnwrap(desktopArguments.firstIndex(of: "--display-mode"))
         XCTAssertEqual(desktopArguments[desktopDisplayIndex + 1], "desktop")
         let usbControlIndex = try XCTUnwrap(
             desktopArguments.firstIndex(of: "--usb-control-sock")
         )
         let usbControlPath = desktopArguments[usbControlIndex + 1]
-        XCTAssertTrue(usbControlPath.hasPrefix(base + "/machines/"))
+        XCTAssertTrue(usbControlPath.hasPrefix(stateDirectory + "/"))
         XCTAssertTrue(usbControlPath.hasSuffix("/u.sock"))
         XCTAssertLessThan(usbControlPath.utf8.count, 104)
         _ = try manager.stop(id: "desktop")
@@ -4281,6 +4785,7 @@ final class MachineManagerTests: XCTestCase {
         let compatibleArguments = try String(contentsOfFile: fallbackCapture, encoding: .utf8)
             .split(separator: "\n").map(String.init)
         XCTAssertEqual(compatibleArguments.first, "fallback")
+        XCTAssertTrue(compatibleArguments.contains("--dockerd-sock"))
         XCTAssertFalse(compatibleArguments.contains("--usb-control-sock"))
         let compatibleDisplayIndex = try XCTUnwrap(compatibleArguments.firstIndex(of: "--display-mode"))
         XCTAssertEqual(compatibleArguments[compatibleDisplayIndex + 1], "desktop")
@@ -4303,6 +4808,19 @@ final class MachineManagerTests: XCTestCase {
         let fallbackDisplayIndex = try XCTUnwrap(fallbackArguments.firstIndex(of: "--display-mode"))
         XCTAssertEqual(fallbackArguments[fallbackDisplayIndex + 1], "headless")
         _ = try manager.stop(id: "headless")
+    }
+
+    func testTypedGraphicsLaunchRemovesLegacyEnvironmentAuthority() {
+        let filtered = MachineManager.environmentWithoutLegacyDesktopLaunchAuthority([
+            DoryDesktopVMMPreference.environmentKey:
+                DoryDesktopVMMPreference.accelerated.rawValue,
+            DoryDesktopGraphicsPreference.environmentKey:
+                DoryDesktopGraphicsPreference.software.rawValue,
+            DoryDesktopGraphicsPreference.legacyClassicOnlyEnvironmentKey: "1",
+            "DORY_TEST_MARKER": "kept",
+        ])
+
+        XCTAssertEqual(filtered, ["DORY_TEST_MARKER": "kept"])
     }
 
     func testInstalledEFIBootBundleLaunchesThroughAcceleratedGenericLinuxRuntime() throws {
@@ -4354,6 +4872,10 @@ final class MachineManagerTests: XCTestCase {
             cpuCount: 4,
             displayMode: .desktop
         ))
+        let directKernel = "\(state)/ubuntu/direct-kernel"
+        let directInitrd = "\(state)/ubuntu/direct-initrd"
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directKernel))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directInitrd))
         _ = try manager.start(id: "ubuntu")
         let arguments = try waitForFileContent(capture)
             .split(separator: "\n").map(String.init)
@@ -4365,11 +4887,11 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertEqual(Array(arguments.prefix(3)), ["desktop", "--gvproxy", "/tmp/gvproxy"])
         XCTAssertEqual(try value(after: "--boot-mode"), "efi-installed")
         XCTAssertEqual(try value(after: "--root-device"), "/dev/vda2")
-        XCTAssertEqual(try value(after: "--kernel"), "\(state)/ubuntu/direct-kernel")
-        XCTAssertEqual(try value(after: "--initrd"), "\(state)/ubuntu/direct-initrd")
+        XCTAssertEqual(try value(after: "--kernel"), directKernel)
+        XCTAssertEqual(try value(after: "--initrd"), directInitrd)
         XCTAssertTrue(arguments.contains("--generic-guest"))
-        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: "\(state)/ubuntu/direct-kernel")), kernel)
-        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: "\(state)/ubuntu/direct-initrd")), initrd)
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: directKernel)), kernel)
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: directInitrd)), initrd)
     }
 
     func testWakeClockSyncsRunningMachineAgents() throws {
@@ -4808,6 +5330,96 @@ final class MachineManagerTests: XCTestCase {
         let snapshot = try XCTUnwrap(manager.memorySnapshots().first)
         XCTAssertEqual(snapshot.currentTargetMB, 3072)
         XCTAssertEqual(snapshot.maximumTargetMB, 4096)
+    }
+
+    func testRawHVControlSocketDoesNotAdvertiseOrAcceptTargetDrivenBallooning() throws {
+        let base = "/tmp/dory-machine-rawhv-balloon-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let helper = base + "/dory-hv"
+        let stateDirectory = base + "/machines"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: base
+        )
+        try FileManager.default.createDirectory(
+            atPath: stateDirectory,
+            withIntermediateDirectories: false
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: stateDirectory
+        )
+        try "#!/bin/sh\nsleep 30\n".write(
+            toFile: helper,
+            atomically: true,
+            encoding: .utf8
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: helper
+        )
+        let connector = RecordingMachineAgentConnector(telemetry: DoryTelemetry(
+            memTotalKB: 4096 * 1024,
+            memAvailableKB: 2048 * 1024,
+            psiSomeAvg10: 0,
+            psiFullAvg10: 0
+        ))
+        let balloon = RecordingMachineBalloonController()
+        let manager = MachineManager(
+            configuration: MachineManagerConfiguration(
+                vmmExecutablePath: "/bin/false",
+                acceleratedDesktopExecutablePath: helper,
+                stateDirectory: stateDirectory,
+                acceleratedDesktopBaseArguments: [],
+                requiresReadyHandoff: true
+            ),
+            balloonController: balloon,
+            agentConnector: connector.connect(socketPath:)
+        )
+        defer {
+            try? manager.delete(id: "dev")
+            try? FileManager.default.removeItem(atPath: base)
+        }
+
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "dev",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath,
+            memoryMB: 4096,
+            cpuCount: 2,
+            displayMode: .desktop,
+            environment: [
+                DoryDesktopVMMPreference.environmentKey:
+                    DoryDesktopVMMPreference.accelerated.rawValue,
+                DoryDesktopGraphicsPreference.environmentKey:
+                    DoryDesktopGraphicsPreference.software.rawValue,
+            ]
+        ))
+        let starting = try manager.start(id: "dev")
+        try sendVmmHandoff(
+            path: try XCTUnwrap(starting.handoffSocketPath),
+            ready: VmmReadyMessage(
+                machineID: "dev",
+                operationID: try XCTUnwrap(starting.activeOperationID),
+                agentBuild: "dory-agent/test",
+                agentProtocolVersion: DoryCore.protocolVersion(),
+                agentCapabilities: Self.agentCapabilities("telemetry"),
+                agentSocketPath: "/run/agent.sock",
+                controlSocketPath: "/run/rawhv-control.sock"
+            ),
+            fileDescriptors: []
+        )
+        let running = try waitForMachineState(manager, id: "dev", state: .running)
+        XCTAssertEqual(running.state, .running, running.lastError ?? "missing failure detail")
+        XCTAssertNotNil(running.agentSocketPath)
+
+        XCTAssertEqual(manager.memorySnapshots().first?.canBalloon, false)
+        XCTAssertThrowsError(
+            try manager.applyBalloonTarget(machineID: "dev", targetMB: 3072)
+        ) { error in
+            XCTAssertEqual(error as? MachineManagerError, .balloonUnavailable("dev"))
+        }
+        XCTAssertTrue(balloon.applied.isEmpty)
     }
 
     func testHandoffSocketStartFailureReleasesManagerLock() throws {

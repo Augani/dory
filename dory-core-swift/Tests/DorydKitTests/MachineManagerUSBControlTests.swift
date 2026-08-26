@@ -4,55 +4,6 @@ import XCTest
 @testable import DorydKit
 
 final class MachineManagerUSBControlTests: XCTestCase {
-    func testRoutesAttachAndDetachOnlyToThePinnedRawHVLaunch() throws {
-        let fixture = try Fixture(capabilities: [
-            DoryAgentCapability(id: "usb-vhci", version: 1),
-        ])
-        defer { fixture.cleanup() }
-
-        let attachment = try fixture.manager.attachUSBDevice(
-            id: "desktop",
-            busID: "3-2",
-            mode: .capture
-        )
-        XCTAssertEqual(attachment.machineID, "desktop")
-        XCTAssertEqual(attachment.busID, "3-2")
-        XCTAssertEqual(attachment.port, 4)
-
-        try fixture.manager.detachUSBDevice(id: "desktop", busID: "3-2")
-
-        let calls = fixture.controller.calls
-        XCTAssertEqual(calls.count, 2)
-        XCTAssertEqual(calls[0].operation, "attach")
-        XCTAssertEqual(calls[0].machineID, "desktop")
-        XCTAssertEqual(calls[0].busID, "3-2")
-        XCTAssertEqual(calls[0].mode, .capture)
-        XCTAssertTrue(calls[0].socketPath.hasPrefix(fixture.runtimeDirectory + "/"))
-        XCTAssertTrue(calls[0].socketPath.hasSuffix("/u.sock"))
-        XCTAssertLessThan(calls[0].socketPath.utf8.count, 104)
-        XCTAssertEqual(calls[1].operation, "detach")
-        XCTAssertEqual(calls[1].socketPath, calls[0].socketPath)
-    }
-
-    func testRejectsMissingGuestCapabilityBeforeContactingUSBController() throws {
-        let fixture = try Fixture(capabilities: [
-            DoryAgentCapability(id: "exec", version: 1),
-        ])
-        defer { fixture.cleanup() }
-
-        XCTAssertThrowsError(
-            try fixture.manager.attachUSBDevice(id: "desktop", busID: "3-2")
-        ) { error in
-            XCTAssertEqual(error as? MachineManagerError, .usbUnavailable("desktop"))
-        }
-        XCTAssertThrowsError(
-            try fixture.manager.detachUSBDevice(id: "desktop", busID: "3-2")
-        ) { error in
-            XCTAssertEqual(error as? MachineManagerError, .usbUnavailable("desktop"))
-        }
-        XCTAssertTrue(fixture.controller.calls.isEmpty)
-    }
-
     func testResolvedOnlyPublicRouteRejectsLegacyCompatibility() throws {
         let fixture = try Fixture(capabilities: [
             DoryAgentCapability(id: "usb-vhci", version: 1),
@@ -70,6 +21,167 @@ final class MachineManagerUSBControlTests: XCTestCase {
             XCTAssertEqual(error as? MachineManagerError, .usbUnavailable("desktop"))
         }
         XCTAssertTrue(fixture.controller.calls.isEmpty)
+        let runtimeLeaves = try FileManager.default.contentsOfDirectory(
+            atPath: fixture.runtimeDirectory
+        ).filter { $0.wholeMatch(of: /[0-9a-f]{24}/) != nil }
+        XCTAssertEqual(runtimeLeaves.count, 1)
+        let runtimeLeaf = try XCTUnwrap(runtimeLeaves.first)
+        let attributes = try FileManager.default.attributesOfItem(
+            atPath: fixture.runtimeDirectory + "/" + runtimeLeaf
+        )
+        XCTAssertEqual(attributes[.posixPermissions] as? NSNumber, NSNumber(value: 0o700))
+    }
+
+    func testAttachTransactionCompensatesWhenPinnedLaunchAuthorityChanges() throws {
+        let controller = TransactionUSBController(attachBehavior: .success)
+        let transaction = DoryResolvedUSBControlTransaction(controller: controller)
+
+        XCTAssertThrowsError(try transaction.attach(
+            machineID: "desktop",
+            socketPath: "/private/tmp/runtime/u.sock",
+            busID: "3-2",
+            mode: .userAuthorized,
+            launchAuthorityRemainsValid: { false }
+        )) { error in
+            XCTAssertEqual(
+                error as? MachineManagerError,
+                .usbControlFailed(
+                    "desktop",
+                    "live launch changed while attaching the USB device"
+                )
+            )
+        }
+        XCTAssertEqual(controller.operations, ["attach:3-2", "detach:3-2"])
+    }
+
+    func testAttachTransactionCompensatesUnknownHelperOutcome() throws {
+        let attachFailure = DoryMachineUSBControlError.outcomeUnknown(
+            operation: "attach",
+            detail: "response was lost"
+        )
+        let controller = TransactionUSBController(
+            attachBehavior: .failure(attachFailure)
+        )
+        let transaction = DoryResolvedUSBControlTransaction(controller: controller)
+
+        XCTAssertThrowsError(try transaction.attach(
+            machineID: "desktop",
+            socketPath: "/private/tmp/runtime/u.sock",
+            busID: "3-2",
+            mode: .userAuthorized,
+            launchAuthorityRemainsValid: { true }
+        )) { error in
+            XCTAssertEqual(
+                error as? MachineManagerError,
+                .usbControlFailed(
+                    "desktop",
+                    "attach request failed: \(attachFailure)"
+                )
+            )
+        }
+        XCTAssertEqual(controller.operations, ["attach:3-2", "detach:3-2"])
+    }
+
+    func testAttachTransactionPreservesOriginalFailureWhenCompensationIsUncertain() throws {
+        let detachFailure = DoryMachineUSBControlError.outcomeUnknown(
+            operation: "detach",
+            detail: "response was lost"
+        )
+        let controller = TransactionUSBController(
+            attachBehavior: .mismatchedMachine,
+            detachError: detachFailure
+        )
+        let transaction = DoryResolvedUSBControlTransaction(controller: controller)
+
+        XCTAssertThrowsError(try transaction.attach(
+            machineID: "desktop",
+            socketPath: "/private/tmp/runtime/u.sock",
+            busID: "3-2",
+            mode: .userAuthorized,
+            launchAuthorityRemainsValid: { true }
+        )) { error in
+            XCTAssertEqual(
+                error as? MachineManagerError,
+                .usbAttachCompensationUncertain(
+                    "desktop",
+                    original: "helper response does not match the requested machine and device",
+                    compensation: detachFailure.description
+                )
+            )
+        }
+        XCTAssertEqual(controller.operations, ["attach:3-2", "detach:3-2"])
+    }
+
+    func testAttachTransactionDoesNotCompensateDefiniteRejection() throws {
+        let rejection = DoryMachineUSBControlError.rejected("device is busy")
+        let controller = TransactionUSBController(attachBehavior: .failure(rejection))
+        let transaction = DoryResolvedUSBControlTransaction(controller: controller)
+
+        XCTAssertThrowsError(try transaction.attach(
+            machineID: "desktop",
+            socketPath: "/private/tmp/runtime/u.sock",
+            busID: "3-2",
+            mode: .userAuthorized,
+            launchAuthorityRemainsValid: { true }
+        )) { error in
+            XCTAssertEqual(
+                error as? MachineManagerError,
+                .usbControlFailed("desktop", "attach request failed: \(rejection)")
+            )
+        }
+        XCTAssertEqual(controller.operations, ["attach:3-2"])
+    }
+
+    func testDetachTransactionPreservesUnknownHelperOutcome() throws {
+        let detachFailure = DoryMachineUSBControlError.outcomeUnknown(
+            operation: "detach",
+            detail: "response was lost"
+        )
+        let controller = TransactionUSBController(
+            attachBehavior: .success,
+            detachError: detachFailure
+        )
+        let transaction = DoryResolvedUSBControlTransaction(controller: controller)
+
+        XCTAssertThrowsError(try transaction.detach(
+            machineID: "desktop",
+            socketPath: "/private/tmp/runtime/u.sock",
+            busID: "3-2",
+            launchAuthorityRemainsValid: { true }
+        )) { error in
+            XCTAssertEqual(
+                error as? MachineManagerError,
+                .usbDetachOutcomeUnknown(
+                    "desktop",
+                    busID: "3-2",
+                    detail: detachFailure.description
+                )
+            )
+        }
+        XCTAssertEqual(controller.operations, ["detach:3-2"])
+    }
+
+    func testDetachTransactionTreatsPostSuccessAuthorityChangeAsUnknown() throws {
+        let controller = TransactionUSBController(attachBehavior: .success)
+        let transaction = DoryResolvedUSBControlTransaction(controller: controller)
+
+        XCTAssertThrowsError(try transaction.detach(
+            machineID: "desktop",
+            socketPath: "/private/tmp/runtime/u.sock",
+            busID: "3-2",
+            launchAuthorityRemainsValid: { false }
+        )) { error in
+            XCTAssertEqual(
+                error as? MachineManagerError,
+                .usbDetachOutcomeUnknown(
+                    "desktop",
+                    busID: "3-2",
+                    detail: "the helper confirmed detach, but the live launch changed before "
+                        + "the manager could confirm its authority"
+                )
+            )
+        }
+        XCTAssertEqual(controller.operations, ["detach:3-2"])
     }
 
     private final class Fixture {
@@ -134,6 +246,76 @@ final class MachineManagerUSBControlTests: XCTestCase {
             try? manager.delete(id: "desktop")
             try? FileManager.default.removeItem(atPath: root)
         }
+    }
+}
+
+private final class TransactionUSBController: DoryMachineUSBControlling, @unchecked Sendable {
+    enum AttachBehavior {
+        case success
+        case mismatchedMachine
+        case failure(any Error)
+    }
+
+    private let lock = NSLock()
+    private let attachBehavior: AttachBehavior
+    private let detachError: (any Error)?
+    private var storedOperations = [String]()
+
+    init(
+        attachBehavior: AttachBehavior,
+        detachError: (any Error)? = nil
+    ) {
+        self.attachBehavior = attachBehavior
+        self.detachError = detachError
+    }
+
+    var operations: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedOperations
+    }
+
+    func attach(
+        machineID: String,
+        socketPath: String,
+        busID: String,
+        mode: DoryMachineUSBOpenMode
+    ) throws -> DoryMachineUSBAttachment {
+        _ = socketPath
+        _ = mode
+        lock.lock()
+        storedOperations.append("attach:\(busID)")
+        lock.unlock()
+        switch attachBehavior {
+        case .success:
+            return attachment(machineID: machineID, busID: busID)
+        case .mismatchedMachine:
+            return attachment(machineID: machineID + "-wrong", busID: busID)
+        case .failure(let error):
+            throw error
+        }
+    }
+
+    func detach(socketPath: String, busID: String) throws {
+        _ = socketPath
+        lock.lock()
+        storedOperations.append("detach:\(busID)")
+        lock.unlock()
+        if let detachError { throw detachError }
+    }
+
+    private func attachment(
+        machineID: String,
+        busID: String
+    ) -> DoryMachineUSBAttachment {
+        DoryMachineUSBAttachment(
+            machineID: machineID,
+            busID: busID,
+            port: 4,
+            vsockPort: 1025,
+            deviceID: 0x0003_0002,
+            speed: 3
+        )
     }
 }
 

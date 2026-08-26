@@ -1,0 +1,13 @@
+diff --git a/Source/ThirdParty/ANGLE/src/libANGLE/GLES1Renderer.h b/Source/ThirdParty/ANGLE/src/libANGLE/GLES1Renderer.h
+index 98c7894ad5..dbaedb4881 100644
+--- a/Source/ThirdParty/ANGLE/src/libANGLE/GLES1Renderer.h
++++ b/Source/ThirdParty/ANGLE/src/libANGLE/GLES1Renderer.h
+@@ -58,7 +58,7 @@ struct GLES1ShaderState
+ {
+     GLES1ShaderState();
+     ~GLES1ShaderState();
+-    GLES1ShaderState(const GLES1ShaderState &other);
++    GLES1ShaderState(const GLES1ShaderState &other) = default;
+ 
+     size_t hash() const;
+ 

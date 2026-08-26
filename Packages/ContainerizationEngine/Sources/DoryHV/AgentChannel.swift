@@ -12,6 +12,8 @@ protocol AgentControlRPC: AnyObject, Sendable {
     func info() throws -> DoryAgentInfo
     func clockSync(hostEpochNs: Int64) throws -> Bool
     func portsWatch() throws -> DoryPortsSnapshot
+    func virtioFSMount(tag: String, mountPath: String, readOnly: Bool) throws
+        -> DoryVirtioFSMountReceipt
     func usbVhciAttach(busID: String, port: UInt32, vsockPort: UInt32, deviceID: UInt32, speed: UInt32) throws
     func usbVhciDetach(busID: String, port: UInt32) throws
     func close()
@@ -20,6 +22,11 @@ protocol AgentControlRPC: AnyObject, Sendable {
 extension DoryAgentControlHandle: AgentControlRPC {}
 
 extension AgentControlRPC {
+    func virtioFSMount(tag: String, mountPath: String, readOnly: Bool) throws
+        -> DoryVirtioFSMountReceipt {
+        throw AgentProtocolError.capabilityUnavailable("virtiofs-mount", 1)
+    }
+
     func usbVhciAttach(busID: String, port: UInt32, vsockPort: UInt32, deviceID: UInt32, speed: UInt32) throws {
         throw AgentProtocolError.capabilityUnavailable("usb-vhci", 1)
     }
@@ -47,18 +54,12 @@ public enum AgentProtocolError: Error, Equatable, Sendable {
 public final class AgentChannel: @unchecked Sendable {
     typealias ClientConnector = @Sendable (Int32) throws -> any AgentControlRPC
 
-    private final class ConnectionBox: @unchecked Sendable {
-        let connection: VsockConnection
-
-        init(_ connection: VsockConnection) {
-            self.connection = connection
-        }
-    }
-
     private let lock = NSLock()
+    private let relayCompletion = DispatchGroup()
     private let connector: ClientConnector
     private var connection: VsockConnection?
     private var relayConnection: VsockConnection?
+    private var relaySession: VsockUnixRelay.RelaySession?
     private var client: (any AgentControlRPC)?
 
     public init(connection: VsockConnection) {
@@ -136,6 +137,28 @@ public final class AgentChannel: @unchecked Sendable {
         }
     }
 
+    /// Mount a published virtio-fs share through the negotiated guest-tools primitive. Capability
+    /// validation is part of this operation so a caller cannot accidentally invoke a mutating RPC
+    /// against an arbitrary generic Linux guest merely because an agent transport answered.
+    public func mountVirtioFS(_ request: VirtioFSMountRequest) async throws
+        -> VirtioFSMountReceipt {
+        try await requireCapability("virtiofs-mount", version: 1)
+        let proof = try await perform {
+            try $0.virtioFSMount(
+                tag: request.tag,
+                mountPath: request.mountPath,
+                readOnly: request.readOnly
+            )
+        }
+        return VirtioFSMountReceipt(
+            tag: proof.tag,
+            mountPath: proof.mountPath,
+            readOnly: proof.readOnly,
+            alreadyMounted: proof.alreadyMounted,
+            mountID: proof.mountID
+        )
+    }
+
     public func usbVhciDetach(_ request: UsbAgentDetachRequest) async throws {
         guard let port = UInt32(exactly: request.port) else {
             throw AgentProtocolError.invalidVhciPort(request.port)
@@ -177,9 +200,20 @@ public final class AgentChannel: @unchecked Sendable {
         }
         let rustDescriptor = descriptors[0]
         let relayDescriptor = descriptors[1]
-        let connectionBox = ConnectionBox(connection)
+        relayCompletion.enter()
+        let completion = relayCompletion
+        let session = VsockUnixRelay.RelaySession(
+            client: relayDescriptor,
+            connection: connection,
+            completion: { completion.leave() }
+        )
+        relaySession = session
+        if let ownedConnection = connection as? ServiceOwnedVsockConnection,
+           !ownedConnection.replaceServiceStopAction({ session.requestStop() }) {
+            session.requestStop()
+        }
         Thread.detachNewThread {
-            VsockUnixRelay.serve(client: relayDescriptor, connection: connectionBox.connection)
+            session.run()
         }
 
         do {
@@ -193,7 +227,7 @@ public final class AgentChannel: @unchecked Sendable {
             // Rust owns/closes its socketpair fd on every return path, but a read EOF is only a
             // half-close to the generic stream relay. Explicitly reset the vsock side so its other
             // pump cannot wait forever on a silent guest after handshake timeout/failure.
-            connection.close()
+            session.requestStop()
             throw error
         }
     }
@@ -202,17 +236,23 @@ public final class AgentChannel: @unchecked Sendable {
         lock.lock()
         let unclaimedConnection = connection
         let activeRelayConnection = relayConnection
+        let activeRelaySession = relaySession
         let activeClient = client
         connection = nil
         relayConnection = nil
+        relaySession = nil
         client = nil
         lock.unlock()
         // Closing the Rust endpoint first lets a healthy guest observe EOF; resetting the in-process
         // vsock immediately afterwards deterministically wakes both detached relay pumps even if the
         // guest never acknowledges shutdown.
         activeClient?.close()
+        activeRelaySession?.requestStop()
         activeRelayConnection?.close()
         unclaimedConnection?.close()
+        if activeRelaySession != nil {
+            _ = relayCompletion.wait(timeout: .now() + 1)
+        }
     }
 }
 
@@ -268,6 +308,40 @@ public struct ClockSyncResult: Equatable, Sendable {
 
     public init(synced: Bool) {
         self.synced = synced
+    }
+}
+
+public struct VirtioFSMountRequest: Equatable, Sendable {
+    public var tag: String
+    public var mountPath: String
+    public var readOnly: Bool
+
+    public init(tag: String, mountPath: String, readOnly: Bool) {
+        self.tag = tag
+        self.mountPath = mountPath
+        self.readOnly = readOnly
+    }
+}
+
+public struct VirtioFSMountReceipt: Equatable, Sendable {
+    public var tag: String
+    public var mountPath: String
+    public var readOnly: Bool
+    public var alreadyMounted: Bool
+    public var mountID: UInt64
+
+    public init(
+        tag: String,
+        mountPath: String,
+        readOnly: Bool,
+        alreadyMounted: Bool,
+        mountID: UInt64
+    ) {
+        self.tag = tag
+        self.mountPath = mountPath
+        self.readOnly = readOnly
+        self.alreadyMounted = alreadyMounted
+        self.mountID = mountID
     }
 }
 

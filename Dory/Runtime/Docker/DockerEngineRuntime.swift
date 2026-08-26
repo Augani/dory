@@ -566,6 +566,34 @@ struct DockerEngineRuntime: ContainerRuntime {
         )
     }
 
+    /// Decodes the non-waking dashboard payload produced by doryd's private observation path.
+    /// Runtime statistics are intentionally omitted: collecting them is an active two-sample
+    /// operation and belongs to an explicit user refresh, not the background idle observer.
+    func dashboardSnapshot(from payload: [String: Data]) throws -> RuntimeSnapshot {
+        func required<T: Decodable>(_ key: String, as type: T.Type) throws -> T {
+            guard let data = payload[key] else {
+                throw RuntimeFeatureError.unsupported("doryd dashboard snapshot omitted \(key)")
+            }
+            return try decoder.decode(T.self, from: data)
+        }
+
+        let summaries = try required("containers", as: [DockerContainerSummary].self)
+        let imageSummaries = try required("images", as: [DockerImageSummary].self)
+        let volumeList = try required("volumes", as: DockerVolumeList.self)
+        let networkSummaries = try required("networks", as: [DockerNetwork].self)
+        let version = try required("version", as: DockerVersion.self)
+        return RuntimeSnapshot(
+            containers: summaries.map { map($0, stats: nil) },
+            images: imageSummaries.compactMap(mapImage),
+            volumes: volumeList.volumes?.map(mapVolume) ?? [],
+            networks: networkSummaries.map(mapNetwork),
+            pods: [],
+            machines: [],
+            engineRunning: true,
+            engineVersion: version.version ?? "docker"
+        )
+    }
+
     /// Fail closed for migration inventory. The normal dashboard deliberately tolerates optional
     /// table failures, but silently translating a timed-out `/volumes` or `/networks` request into
     /// an empty array would produce an image-only partial import and misleading success report.

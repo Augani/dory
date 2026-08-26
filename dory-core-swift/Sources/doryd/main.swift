@@ -3,16 +3,19 @@ import DorydKit
 import Darwin
 import Foundation
 
-// doryd: bind ~/.dory/dory.sock (0600), serve the control XPC MachService,
-// and run forever under launchd. Bind failure is fatal; launchd owns restart.
-let machServiceName = "dev.dory.doryd"
-
 // Docker clients routinely close request/attach streams as soon as they have enough response data.
 // Treat those as ordinary EPIPEs in the Rust dataplane instead of letting SIGPIPE terminate doryd.
 _ = signal(SIGPIPE, SIG_IGN)
 
 let env = ProcessInfo.processInfo.environment
 let dorydEnvironment = DorydEnvironment(values: env)
+let machServiceName: String
+do {
+    machServiceName = try dorydEnvironment.machServiceName()
+} catch {
+    FileHandle.standardError.write(Data("doryd: invalid XPC service configuration: \(error)\n".utf8))
+    exit(1)
+}
 let dataDriveSelectionAuthority: DoryDataDriveSelectionAuthority
 let dataDrive: DoryDataDrive
 do {

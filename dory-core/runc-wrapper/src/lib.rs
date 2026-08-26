@@ -9,6 +9,17 @@ use std::path::{Path, PathBuf};
 pub const FEX_BUNDLE_PATH: &str = "/usr/lib/dory/fex";
 pub const FEX_RUNTIME_PATH: &str = "/run/dory-fex";
 pub const FEX_SERVER_SOCKET_PATH: &str = "/run/dory-fex/FEXServer.Socket";
+pub const DORY_RUNC_PATH: &str = "/usr/local/bin/dory-runc";
+pub const REAL_RUNC_PATH: &str = "/usr/local/bin/runc.real";
+
+const NESTED_RUNC_CANDIDATES: [&str; 6] = [
+    "/usr/local/sbin/runc",
+    "/usr/local/bin/runc",
+    "/usr/sbin/runc",
+    "/usr/bin/runc",
+    "/sbin/runc",
+    "/bin/runc",
+];
 
 const DEFAULT_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 const FORCED_ENVIRONMENT: [(&str, &str); 5] = [
@@ -322,6 +333,154 @@ pub fn inject_fex(spec: &mut Value) -> Result<bool, WrapperError> {
     Ok(changed)
 }
 
+/// Interposes Dory's OCI admission wrapper when a privileged container carries its own runc.
+/// Nested container managers otherwise bypass the outer engine wrapper, so their workloads reach
+/// the host binfmt handler without the private FEXServer mount and fail at process startup.
+fn inject_nested_runtime(
+    spec: &mut Value,
+    bundle: &Path,
+    wrapper_source: &Path,
+) -> Result<bool, WrapperError> {
+    let has_sys_admin = spec
+        .pointer("/process/capabilities/bounding")
+        .and_then(Value::as_array)
+        .is_some_and(|capabilities| {
+            capabilities
+                .iter()
+                .any(|capability| capability.as_str() == Some("CAP_SYS_ADMIN"))
+        });
+    if !has_sys_admin {
+        return Ok(false);
+    }
+
+    let root_path = spec
+        .pointer("/root/path")
+        .and_then(Value::as_str)
+        .ok_or_else(|| WrapperError::InvalidSpec("OCI root.path must be a string".to_owned()))?;
+    let root_path = Path::new(root_path);
+    let root_path = if root_path.is_absolute() {
+        root_path.to_path_buf()
+    } else {
+        bundle.join(root_path)
+    };
+    let canonical_root = fs::canonicalize(&root_path).map_err(|error| {
+        io_error(
+            format!("cannot resolve OCI root {}", root_path.display()),
+            error,
+        )
+    })?;
+    if !canonical_root.is_dir() {
+        return Err(WrapperError::InvalidSpec(format!(
+            "OCI root {} is not a directory",
+            canonical_root.display()
+        )));
+    }
+
+    let mut nested_runtime = None;
+    for candidate in NESTED_RUNC_CANDIDATES {
+        let path = canonical_root.join(candidate.trim_start_matches('/'));
+        let Ok(canonical) = fs::canonicalize(&path) else {
+            continue;
+        };
+        if !canonical.starts_with(&canonical_root) {
+            return Err(WrapperError::InvalidSpec(format!(
+                "nested runc {} resolves outside the OCI root",
+                path.display()
+            )));
+        }
+        let metadata = fs::metadata(&canonical).map_err(|error| {
+            io_error(
+                format!("cannot inspect nested runc {}", canonical.display()),
+                error,
+            )
+        })?;
+        if metadata.is_file() && metadata.permissions().mode() & 0o111 != 0 {
+            nested_runtime = Some((candidate, canonical));
+            break;
+        }
+    }
+    let Some((nested_destination, nested_source)) = nested_runtime else {
+        return Ok(false);
+    };
+
+    let wrapper_metadata = fs::metadata(wrapper_source).map_err(|error| {
+        io_error(
+            format!(
+                "cannot inspect Dory nested-runtime wrapper {}",
+                wrapper_source.display()
+            ),
+            error,
+        )
+    })?;
+    if !wrapper_metadata.is_file() || wrapper_metadata.permissions().mode() & 0o111 == 0 {
+        return Err(WrapperError::InvalidSpec(format!(
+            "Dory nested-runtime wrapper {} is not an executable regular file",
+            wrapper_source.display()
+        )));
+    }
+
+    let mounts = spec
+        .get_mut("mounts")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| {
+            WrapperError::InvalidSpec("OCI config mounts must be an array".to_owned())
+        })?;
+    let expected_mounts = [
+        (nested_source.as_path(), REAL_RUNC_PATH),
+        (wrapper_source, DORY_RUNC_PATH),
+        (wrapper_source, nested_destination),
+    ];
+    let mut expected_present = [false; 3];
+    for mount in mounts.iter() {
+        let destination = mount
+            .get("destination")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                WrapperError::InvalidSpec("OCI mount is missing a string destination".to_owned())
+            })?;
+        let destination = normalized_destination(destination);
+        if let Some((index, (source, _))) = expected_mounts
+            .iter()
+            .enumerate()
+            .find(|(_, (_, expected_destination))| destination == *expected_destination)
+        {
+            let expected_options = json!(["bind", "ro", "nosuid", "nodev"]);
+            let is_expected = mount.get("source").and_then(Value::as_str)
+                == Some(source.to_string_lossy().as_ref())
+                && mount.get("type").and_then(Value::as_str) == Some("bind")
+                && mount.get("options") == Some(&expected_options);
+            if !is_expected {
+                return Err(WrapperError::InvalidSpec(format!(
+                    "OCI mount destination {destination} is reserved by Dory's nested runtime"
+                )));
+            }
+            expected_present[index] = true;
+        }
+    }
+
+    if expected_present.iter().any(|present| *present) {
+        if expected_present.iter().all(|present| *present) {
+            return Ok(false);
+        }
+        return Err(WrapperError::InvalidSpec(
+            "OCI config contains an incomplete Dory nested-runtime mount contract".to_owned(),
+        ));
+    }
+
+    let bind_mount = |source: &Path, destination: &str| {
+        json!({
+            "destination": destination,
+            "type": "bind",
+            "source": source.to_string_lossy(),
+            "options": ["bind", "ro", "nosuid", "nodev"]
+        })
+    };
+    for (source, destination) in expected_mounts {
+        mounts.push(bind_mount(source, destination));
+    }
+    Ok(true)
+}
+
 fn normalized_destination(destination: &str) -> &str {
     if destination == "/" {
         destination
@@ -391,7 +550,9 @@ pub fn prepare_bundle(bundle: &Path) -> Result<bool, WrapperError> {
     let original = fs::read(&config_path)
         .map_err(|error| io_error(format!("cannot read {}", config_path.display()), error))?;
     let mut spec: Value = serde_json::from_slice(&original)?;
-    if !inject_fex(&mut spec)? {
+    let fex_changed = inject_fex(&mut spec)?;
+    let nested_changed = inject_nested_runtime(&mut spec, bundle, Path::new(DORY_RUNC_PATH))?;
+    if !fex_changed && !nested_changed {
         return Ok(false);
     }
     let mut encoded = serde_json::to_vec(&spec)?;
@@ -493,6 +654,14 @@ mod tests {
             "root": { "path": "rootfs" },
             "mounts": []
         })
+    }
+
+    fn privileged_spec(environment: &[&str]) -> Value {
+        let mut value = spec(environment);
+        value["process"]["capabilities"] = json!({
+            "bounding": ["CAP_CHOWN", "CAP_SYS_ADMIN"]
+        });
+        value
     }
 
     fn environment(spec: &Value) -> Vec<&str> {
@@ -655,6 +824,60 @@ mod tests {
             fs::metadata(&config).unwrap().permissions().mode() & 0o777,
             0o640
         );
+
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn privileged_nested_runc_is_interposed_without_image_specific_detection() {
+        let directory = temporary_directory("nested-runc");
+        let rootfs = directory.join("rootfs");
+        let nested = rootfs.join("usr/local/sbin/runc");
+        let wrapper = directory.join("dory-runc");
+        fs::create_dir_all(nested.parent().unwrap()).unwrap();
+        fs::write(&nested, b"nested-runc").unwrap();
+        fs::write(&wrapper, b"dory-runc").unwrap();
+        fs::set_permissions(&nested, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let mut value = privileged_spec(&[]);
+        assert!(inject_nested_runtime(&mut value, &directory, &wrapper).unwrap());
+        assert!(!inject_nested_runtime(&mut value, &directory, &wrapper).unwrap());
+        let mounts = value["mounts"].as_array().unwrap();
+        assert_eq!(mounts.len(), 3);
+        assert_eq!(
+            mounts[0]["source"],
+            fs::canonicalize(&nested)
+                .unwrap()
+                .to_string_lossy()
+                .as_ref()
+        );
+        assert_eq!(mounts[0]["destination"], REAL_RUNC_PATH);
+        assert_eq!(mounts[1]["source"], wrapper.to_string_lossy().as_ref());
+        assert_eq!(mounts[1]["destination"], DORY_RUNC_PATH);
+        assert_eq!(mounts[2]["destination"], "/usr/local/sbin/runc");
+        assert_eq!(
+            mounts[2]["options"],
+            json!(["bind", "ro", "nosuid", "nodev"])
+        );
+
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn unprivileged_container_never_receives_nested_runtime_interposition() {
+        let directory = temporary_directory("unprivileged-nested-runc");
+        let nested = directory.join("rootfs/usr/local/sbin/runc");
+        let wrapper = directory.join("dory-runc");
+        fs::create_dir_all(nested.parent().unwrap()).unwrap();
+        fs::write(&nested, b"nested-runc").unwrap();
+        fs::write(&wrapper, b"dory-runc").unwrap();
+        fs::set_permissions(&nested, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let mut value = spec(&[]);
+        assert!(!inject_nested_runtime(&mut value, &directory, &wrapper).unwrap());
+        assert!(value["mounts"].as_array().unwrap().is_empty());
 
         fs::remove_dir_all(directory).unwrap();
     }

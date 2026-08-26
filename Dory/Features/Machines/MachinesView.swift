@@ -125,6 +125,7 @@ private struct MachineCard: View {
     let machine: Machine
     @State private var confirmingDelete = false
     @State private var confirmingToolsRepair = false
+    @State private var confirmingInstallerMediaChange = false
     @State private var showingIntegrationHealth = false
     @State private var showingSerialConsole = false
     @State private var isTransferDropTargeted = false
@@ -305,6 +306,43 @@ private struct MachineCard: View {
         } message: {
             Text("Dory will create a last-good snapshot, reinstall the active signed desktop and tools payload, restart the machine, and roll back automatically if verification fails.")
         }
+        .confirmationDialog(
+            installerMediaDialogTitle,
+            isPresented: $confirmingInstallerMediaChange,
+            titleVisibility: .visible
+        ) {
+            Button(installerMediaActionTitle) {
+                store.setMachineInstallerMedia(
+                    machine,
+                    attached: !machine.installerMediaAttached
+                )
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(installerMediaDialogMessage)
+        }
+    }
+
+    private var installerMediaDialogTitle: String {
+        machine.installerMediaAttached
+            ? "Eject the installer ISO from \(machine.name)?"
+            : "Attach the installer ISO to \(machine.name)?"
+    }
+
+    private var installerMediaActionTitle: String {
+        let action = machine.installerMediaAttached ? "Eject Installer" : "Attach Installer"
+        return isActive ? action + " and Restart" : action
+    }
+
+    private var installerMediaDialogMessage: String {
+        if machine.installerMediaAttached {
+            return isActive
+                ? "Dory will request a graceful shutdown, eject the ISO, and restart from the installed virtual disk. Continue only after the Linux installer has finished writing the disk."
+                : "The next Start will boot from the installed virtual disk without the ISO. Continue only after installation is complete."
+        }
+        return isActive
+            ? "Dory will request a graceful shutdown, attach the read-only installer ISO, and restart into EFI recovery/install media."
+            : "The next Start will boot with the read-only installer ISO attached."
     }
 
     private var distroBadge: some View {
@@ -561,7 +599,7 @@ private struct MachineCard: View {
             if machine.bootMode == .efi {
                 Divider()
                 Button {
-                    store.setMachineInstallerMedia(machine, attached: !machine.installerMediaAttached)
+                    confirmingInstallerMediaChange = true
                 } label: {
                     Label(
                         machine.installerMediaAttached ? "Eject Installer ISO" : "Attach Installer ISO",

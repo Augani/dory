@@ -135,7 +135,9 @@ CID="$(docker_cmd create --platform "$PLATFORM" \
   tar xf linux.tar.xz --strip-components=1
   for kernel_patch in $DORY_KERNEL_PATCHES; do
     echo "Applying $kernel_patch"
-    patch --batch --forward -p1 < "/tmp/dory-kernel-config/$kernel_patch"
+    # Kernel artifacts are release inputs. Never let GNU patch silently repair a stale
+    # context: an offset or fuzzy hunk could produce a bootable but unqualified kernel.
+    patch --batch --forward --fuzz=0 -p1 < "/tmp/dory-kernel-config/$kernel_patch"
   done
   make defconfig
   CONFIG_PATHS=""

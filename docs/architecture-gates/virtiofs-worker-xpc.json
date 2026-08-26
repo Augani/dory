@@ -1,0 +1,85 @@
+{
+  "schemaVersion": 1,
+  "gate": "virtiofs-worker-isolation",
+  "qualificationState": "blocked",
+  "currentBlocker": "The worker target, runner-local XPCServices embed, sandbox/bookmark entitlements, bidirectional fixed code-signing requirements, one-connection/one-bootstrap authority, outer-app runner embed, and RawHV runtime cutover exist in source. The gate remains blocked until the exact Developer ID release candidate proves the complete nested graph, signatures and entitlements and passes the sandbox, root-replacement, process-isolation, interruption, blocked-syscall and crash physical matrix.",
+  "currentEvidence": {
+    "runnerTarget": "DoryHVRunner",
+    "runnerExecutable": "dory-hv",
+    "runnerMinimumMacOS": "15.0",
+    "runnerDebugBuild": "passed",
+    "runnerDeepStrictCodeSignature": "passed",
+    "runnerSecondaryExecutableCount": 0,
+    "filesystemWorkerTarget": "DoryFSWorker",
+    "filesystemWorkerProductType": "com.apple.product-type.xpc-service",
+    "runnerLocalWorkerEmbed": true,
+    "workerSandboxEntitlement": true,
+    "workerApplicationBookmarkEntitlement": true,
+    "bidirectionalFixedCodeSigningRequirements": true,
+    "oneAcceptedConnectionPerWorkerProcess": true,
+    "oneBootstrapAttemptPerWorkerProcess": true,
+    "outerApplicationRunnerEmbed": true,
+    "rawHVRuntimeCutover": true,
+    "pathFreeBootstrapContractTests": 10,
+    "bootstrapAbsoluteMaximumBytes": 4194304,
+    "exactCandidateNestedGraphVerified": false,
+    "physicalIsolationMatrixPassed": false,
+    "qualificationBearing": false
+  },
+  "requiredContractProduct": "DoryFSWorkerContracts",
+  "requiredWorker": {
+    "targetProductType": "com.apple.product-type.xpc-service",
+    "bundlePackageType": "XPC!",
+    "bundleSuffix": ".xpc",
+    "containingApplication": "Dory.app/Contents/Helpers/DoryHVRunner.app",
+    "containingExecutable": "DoryHVRunner.app/Contents/MacOS/dory-hv",
+    "embeddedLocation": "DoryHVRunner.app/Contents/XPCServices",
+    "listener": "XPC service listener",
+    "oneAuthoritySetPerProcess": true,
+    "rejectAdditionalWorkspaceBootstrap": true
+  },
+  "requiredWorkerEntitlements": {
+    "com.apple.security.app-sandbox": true,
+    "com.apple.security.files.bookmarks.app-scope": true
+  },
+  "forbiddenWorkerEntitlements": [
+    "com.apple.security.inherit",
+    "com.apple.security.files.user-selected.read-only",
+    "com.apple.security.files.user-selected.read-write",
+    "com.apple.security.files.downloads.read-only",
+    "com.apple.security.files.downloads.read-write",
+    "com.apple.security.temporary-exception.files.absolute-path.read-only",
+    "com.apple.security.temporary-exception.files.absolute-path.read-write",
+    "com.apple.security.temporary-exception.files.home-relative-path.read-only",
+    "com.apple.security.temporary-exception.files.home-relative-path.read-write"
+  ],
+  "requiredBuildChecks": [
+    "The DoryHVRunner Xcode application target compiles the real dory-hv sources as its CFBundleExecutable; a launcher that execs a secondary payload is forbidden.",
+    "The runner target has a target dependency on the worker target.",
+    "A Copy Files phase embeds the signed worker directly in DoryHVRunner.app/Contents/XPCServices.",
+    "Dory.app embeds the signed runner in Contents/Helpers and binds the runner, worker, and every nested dependency into the exact-candidate inventory.",
+    "codesign --verify --deep --strict succeeds on DoryHVRunner.app and the containing Dory.app.",
+    "codesign -d --entitlements :- confirms the worker sandbox and bookmark entitlements.",
+    "The supervisor authenticates the worker signing identifier and team before bootstrap.",
+    "The worker executable links DoryFSWorkerContracts and accepts only version-1 bounded frames."
+  ],
+  "requiredPhysicalTests": [
+    "On every supported macOS release, a raw Contents/Helpers executable cannot resolve the private worker while the runner CFBundleExecutable can.",
+    "Two concurrent runner application processes receive distinct worker process identities.",
+    "A second live workspace cannot reuse or extend the first worker process authority set.",
+    "The worker cannot open the user home, an authorized root sibling, or another workspace root.",
+    "A stale bookmark or replaced root identity is rejected before FUSE admission.",
+    "Connection interruption and invalidation fail all in-flight work and workspace readiness.",
+    "A blocked filesystem syscall cannot outlive the bounded supervisor shutdown deadline.",
+    "Late replies from an invalidated generation never reach guest memory."
+  ],
+  "notAcceptedAsIsolation": [
+    "posix_spawn executable",
+    "Process or NSTask child",
+    "in-process DispatchQueue worker",
+    "raw Dory.app/Contents/Helpers/dory-hv executable",
+    "runner launcher that execs a secondary VMM payload",
+    "unsigned helper bundle",
+    "XPC service that accumulates roots from unrelated workspaces"
+  ]
+}

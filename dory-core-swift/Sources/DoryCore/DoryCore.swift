@@ -209,6 +209,30 @@ public struct DoryAgentInfo: Sendable, Equatable {
     }
 }
 
+/// Kernel-observed proof for one capability-gated virtio-fs mount. `mountID` comes from
+/// `/proc/self/mountinfo`; it is never synthesized by the host or inferred from a successful RPC.
+public struct DoryVirtioFSMountReceipt: Sendable, Equatable {
+    public var tag: String
+    public var mountPath: String
+    public var readOnly: Bool
+    public var alreadyMounted: Bool
+    public var mountID: UInt64
+
+    public init(
+        tag: String,
+        mountPath: String,
+        readOnly: Bool,
+        alreadyMounted: Bool,
+        mountID: UInt64
+    ) {
+        self.tag = tag
+        self.mountPath = mountPath
+        self.readOnly = readOnly
+        self.alreadyMounted = alreadyMounted
+        self.mountID = mountID
+    }
+}
+
 public enum DoryLifecycleReceiptAction: String, Sendable, Equatable, Hashable, Codable {
     case preparePause = "prepare-pause"
     case resumed
@@ -794,6 +818,27 @@ public final class DoryAgentControlHandle: @unchecked Sendable {
 
     public func usbVhciDetach(busID: String, port: UInt32) throws {
         try withControl { try $0.usbVhciDetach(busId: busID, port: port) }
+    }
+
+    public func virtioFSMount(
+        tag: String,
+        mountPath: String,
+        readOnly: Bool
+    ) throws -> DoryVirtioFSMountReceipt {
+        let raw = try withControl {
+            try $0.virtiofsMount(
+                tag: tag,
+                mountPath: mountPath,
+                readOnly: readOnly
+            )
+        }
+        return DoryVirtioFSMountReceipt(
+            tag: raw.tag,
+            mountPath: raw.mountPath,
+            readOnly: raw.readOnly,
+            alreadyMounted: raw.alreadyMounted,
+            mountID: raw.mountId
+        )
     }
 
     public func exec(

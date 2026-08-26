@@ -6,6 +6,7 @@ import Foundation
     func protocolVersion(reply: @escaping (UInt32) -> Void)
     func dorySocketPath(reply: @escaping (String) -> Void)
     func engineStatus(reply: @escaping (String, String) -> Void)
+    func engineDashboardSnapshot(reply: @escaping (NSDictionary, String) -> Void)
     func engineStart(reply: @escaping (Bool, String) -> Void)
     func engineStop(reply: @escaping (Bool, String) -> Void)
     func engineSleep(reply: @escaping (Bool, String) -> Void)

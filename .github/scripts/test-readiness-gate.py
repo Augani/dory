@@ -29,6 +29,9 @@ class ReadinessGateTests(unittest.TestCase):
             "physical Intel qualification must target exactly the Dory engine",
             "independently confirmed native Intel host facts",
             "READINESS_STOP_ORBSTACK_CONFIRMED=STOP-ORBSTACK-FOR-READINESS",
+            "Rosetta translates applications only inside an eligible ARM64 Linux VM",
+            "Dory exposes no partial x86 VM mode",
+            "packaged QEMU TCG backend",
             'stat -f %u "$ENGINE_SOCK"',
             'docker_e image inspect "$ALPINE_IMAGE"',
             "container lifecycle + logs + exec + stats",
@@ -45,6 +48,8 @@ class ReadinessGateTests(unittest.TestCase):
             "node:20-alpine",
             "FROM ubuntu:24.04",
             "docker_e pull",
+            "pending dory-vmm Rosetta",
+            "Rosetta x86-64 machine execution",
         ):
             self.assertNotIn(stale, text, stale)
 
@@ -69,6 +74,31 @@ write_summary
             payload = json.loads(summary.read_text(encoding="utf-8"))
             self.assertEqual(payload["runId"], 'quoted"run')
             self.assertEqual(payload["engines"], 'dory,"other')
+
+    def test_x86_guest_boundary_has_no_partial_vm_claim(self) -> None:
+        public_contracts = (
+            ROOT / "README.md",
+            ROOT / "COMPATIBILITY.md",
+            ROOT / "website/public/llms-full.txt",
+            ROOT / "docs/linux-vm-performance-contract.md",
+        )
+        for contract in public_contracts:
+            text = contract.read_text(encoding="utf-8")
+            self.assertIn("no partial x86 VM", text, contract)
+            self.assertIn("packaged QEMU TCG backend", text, contract)
+
+        llms_contract = (ROOT / "website/public/llms-full.txt").read_text(encoding="utf-8")
+        self.assertIn("`dory vm` is also unavailable and fails closed", llms_contract)
+        self.assertNotIn("`dory vm` is an in-process framework engine surface", llms_contract)
+
+        app_store = (ROOT / "Dory/Models/AppStore.swift").read_text(encoding="utf-8")
+        for stale in (
+            "Dory's built-in Intel engine needs",
+            "one-off `dory vm --rosetta` path",
+            "x86/amd64 emulation enabled",
+        ):
+            self.assertNotIn(stale, app_store, stale)
+        self.assertIn("x86_64 Linux applications inside Dory's ARM64 container", app_store)
 
     def test_mutable_fixture_fails_before_docker_or_socket_access(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

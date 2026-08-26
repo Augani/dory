@@ -106,19 +106,28 @@ extension DoryDaemonVirtualMachineProductionTrustFactory {
         publicKey: String,
         expectedArchitecture: String
     ) -> DoryDaemonVirtualMachineProductionActivationResult {
-        let canonicalStateDirectory = URL(
-            fileURLWithPath: machineConfiguration.stateDirectory
-        ).standardizedFileURL.path
-        guard canonicalStateDirectory == machineConfiguration.stateDirectory else {
+        let canonicalStateDirectory = store.drive.machinesDirectory
+        guard machineConfiguration.stateDirectory == canonicalStateDirectory else {
             return unavailableActivation(
                 .stateAuthorityUnavailable,
-                "Production planning requires one canonical state authority."
+                "Production VM state must be the selected data drive's exact machines root."
             )
         }
         guard machineConfiguration.passMachineArguments else {
             return unavailableActivation(
                 .installationRejected,
                 "Production resolved launches require exact machine argument binding."
+            )
+        }
+        let machineStateBroker: DoryMachineStateBroker
+        do {
+            machineStateBroker = try DoryMachineStateBroker(
+                canonicalStateRootPath: canonicalStateDirectory
+            )
+        } catch {
+            return unavailableActivation(
+                .stateAuthorityUnavailable,
+                "Production machine-state authority could not be acquired."
             )
         }
 
@@ -140,14 +149,29 @@ extension DoryDaemonVirtualMachineProductionTrustFactory {
             ))
         }
 
+        let rendererCrashSuppressionStore = DoryRendererCrashSuppressionStore(
+            stateDirectory: canonicalStateDirectory
+        )
+
         // This is the only manager admitted to the activated context. Public activation has no
         // manager/dependency injection point: executable paths, runtime/log roots, lifecycle
         // services, process launching, and guest architecture all come from the verified
         // production configuration and MachineManager's production defaults.
         let machineManager = MachineManager(
             configuration: machineConfiguration,
-            launchPolicy: .perWorkspaceAuthority
+            launchPolicy: .perWorkspaceAuthority,
+            machineStateBroker: machineStateBroker
         )
+        do {
+            try machineManager.installRendererCrashSuppressionStore(
+                rendererCrashSuppressionStore
+            )
+        } catch {
+            return unavailableActivation(
+                .installationRejected,
+                "MachineManager rejected renderer runtime-health authority."
+            )
+        }
 
         let backends: [any MachineBackend]
         do {
@@ -190,6 +214,10 @@ extension DoryDaemonVirtualMachineProductionTrustFactory {
             runtimes: material.runtimes,
             runtimeVerifier: material.runtimeVerifier,
             hostProbe: material.hostProbe,
+            rendererReleaseIdentityProvider:
+                material.rendererReleaseIdentityProvider,
+            rendererCrashSuppressionStore:
+                rendererCrashSuppressionStore,
             mutationAuthority: machineManager,
             recoveryProvider: DoryDaemonVirtualMachineProductionRecoveryProvider(
                 stateDirectory: canonicalStateDirectory

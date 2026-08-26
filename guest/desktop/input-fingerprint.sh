@@ -36,6 +36,7 @@ INPUTS=(
   guest/desktop/PINS
   guest/desktop/build.sh
   guest/desktop/apply-update.sh
+  guest/desktop/install-graphics-pack.sh
   guest/desktop/build-update-bundle.py
   guest/desktop/input-fingerprint.sh
   guest/desktop/verify-build.sh

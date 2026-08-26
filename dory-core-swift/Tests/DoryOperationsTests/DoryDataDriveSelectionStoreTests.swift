@@ -302,9 +302,10 @@ final class DoryDataDriveSelectionStoreTests: XCTestCase {
             "Library/Application Support/Dory/Absent.dorydrive",
             isDirectory: true
         ).path
+        let canonicalRoot = try DoryDataDrive(home: base.path, overrideRoot: root).root
 
         XCTAssertThrowsError(try store.bindExistingSelection(requestedRoot: root)) { error in
-            XCTAssertEqual(error as? DoryDataDriveSelectionError, .uninitializedDrive(root))
+            XCTAssertEqual(error as? DoryDataDriveSelectionError, .uninitializedDrive(canonicalRoot))
         }
         XCTAssertFalse(FileManager.default.fileExists(atPath: root))
         XCTAssertFalse(FileManager.default.fileExists(atPath: store.path))

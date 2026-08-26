@@ -32,6 +32,10 @@ public struct DoryVirtualMachineQualificationRecord: Codable, Sendable, Equatabl
     public var hostOperatingSystemBuild: String
     public var components: [DoryVirtualMachineQualifiedComponent]
     public var virtioGPUKernelAndDeviceSupportQualified: Bool
+    /// `true` only when the exact guest kernel waits for the framebuffer writer fence before its
+    /// virtio-gpu KMS path publishes `RESOURCE_FLUSH`. Older manifests decode this as `nil` and
+    /// therefore cannot authorize acceleration.
+    public var producerFenceBeforeFlushQualified: Bool?
     public var venusVulkanGuestRuntimeQualified: Bool
 
     public init(
@@ -51,6 +55,7 @@ public struct DoryVirtualMachineQualificationRecord: Codable, Sendable, Equatabl
         hostOperatingSystemBuild: String,
         components: [DoryVirtualMachineQualifiedComponent],
         virtioGPUKernelAndDeviceSupportQualified: Bool = false,
+        producerFenceBeforeFlushQualified: Bool = false,
         venusVulkanGuestRuntimeQualified: Bool = false
     ) {
         self.qualificationIdentity = qualificationIdentity
@@ -70,6 +75,7 @@ public struct DoryVirtualMachineQualificationRecord: Codable, Sendable, Equatabl
         self.components = components.sorted { $0.componentIdentifier < $1.componentIdentifier }
         self.virtioGPUKernelAndDeviceSupportQualified =
             virtioGPUKernelAndDeviceSupportQualified
+        self.producerFenceBeforeFlushQualified = producerFenceBeforeFlushQualified
         self.venusVulkanGuestRuntimeQualified = venusVulkanGuestRuntimeQualified
     }
 }
@@ -236,6 +242,8 @@ public struct DoryVerifiedVirtualMachineQualificationAuthority: Sendable {
                 ),
                 virtioGPUKernelAndDeviceSupportQualified:
                     record.virtioGPUKernelAndDeviceSupportQualified,
+                producerFenceBeforeFlushQualified:
+                    record.producerFenceBeforeFlushQualified == true,
                 venusVulkanGuestRuntimeQualified:
                     record.venusVulkanGuestRuntimeQualified
             )
@@ -428,8 +436,9 @@ public enum DoryVirtualMachineQualificationAuthorityResolver {
 }
 
 public enum DoryQualifiedBootMediaInspector {
-    public static let inspectorID = "dory.iso9660-efi-inspector"
-    public static let inspectorVersion: UInt16 = 1
+    public static let inspectorID = "dory.portable-efi-media-inspector"
+    /// v2 replaces marker/filename inference with validated FAT traversal and PE32+ EFI evidence.
+    public static let inspectorVersion: UInt16 = 2
 
     /// Structural inspection is bound to a catalog-authenticated exact qualification. This avoids
     /// treating a caller-declared guest family as a fact about arbitrary ISO bytes.
@@ -443,7 +452,9 @@ public enum DoryQualifiedBootMediaInspector {
             throw DoryVirtualMachineQualificationAuthorityError.mediaInspectionFailed
         }
         let identity: DoryInstallerISOMediaIdentity
-        do { identity = try DoryInstallerISOInspector.mediaIdentity(atPath: path) }
+        do {
+            identity = try DoryInstallerISOInspector.portableEFIMediaIdentity(atPath: path)
+        }
         catch {
             throw DoryVirtualMachineQualificationAuthorityError.mediaInspectionFailed
         }
@@ -463,7 +474,8 @@ public enum DoryQualifiedBootMediaInspector {
             artifactSHA256: identity.sha256,
             byteCount: identity.byteCount,
             architecture: identity.architecture.rawValue,
-            guest: record.guest,
+            declaredGuest: record.guest,
+            detectedGuestFamily: record.guest.family,
             efiBootable: true
         )
         let evidence = DoryBootMediaInspectionAuditEvidence(
@@ -497,11 +509,70 @@ public enum DoryQualifiedBootMediaInspector {
         )
     }
 
+    /// Produces a digest-bound structural receipt for the one unqualified installer contract Dory
+    /// can safely expose: user-provided ARM64 EFI Linux media on the portable VZ software path.
+    /// This receipt deliberately carries no catalog evidence and therefore cannot authorize a
+    /// managed image, accelerated graphics, or a different backend.
+    public static func inspectPortableLinuxARM64InstallerISO(
+        atPath path: String
+    ) throws -> (
+        media: DoryBootMedia,
+        inspection: DoryTrustedBootMediaInspection,
+        auditEvidence: DoryBootMediaInspectionAuditEvidence
+    ) {
+        let identity: DoryInstallerISOMediaIdentity
+        do {
+            identity = try DoryInstallerISOInspector.portableEFIMediaIdentity(atPath: path)
+        }
+        catch {
+            throw DoryVirtualMachineQualificationAuthorityError.mediaInspectionFailed
+        }
+        guard identity.architecture == .arm64
+                || identity.architecture == .multiArchitecture else {
+            throw DoryVirtualMachineQualificationAuthorityError.mediaInspectionFailed
+        }
+        let guest = DoryGuestPlatform(family: .linux, architecture: .arm64)
+        let report = ISOInspectionReport(
+            artifactSHA256: identity.sha256,
+            byteCount: identity.byteCount,
+            architecture: identity.architecture.rawValue,
+            declaredGuest: guest,
+            detectedGuestFamily: nil,
+            efiBootable: true
+        )
+        let evidence = DoryBootMediaInspectionAuditEvidence(
+            inspectionIdentity: "\(inspectorID):\(identity.sha256)",
+            artifactSHA256: identity.sha256,
+            inspectionReportSHA256: digest(canonicalData(report)),
+            inspectorID: inspectorID,
+            inspectorVersion: inspectorVersion
+        )
+        return (
+            DoryBootMedia(
+                kind: .installerISO,
+                source: .userProvided,
+                artifactSHA256: identity.sha256
+            ),
+            DoryTrustedBootMediaInspection(
+                auditEvidence: evidence,
+                detectedKind: .installerISO,
+                detectedGuestFamily: nil,
+                detectedArchitecture: .arm64,
+                isEFIBootable: true
+            ),
+            evidence
+        )
+    }
+
     private struct ISOInspectionReport: Codable {
         var artifactSHA256: String
         var byteCount: UInt64
         var architecture: String
-        var guest: DoryGuestPlatform
+        /// The platform requested by the caller. This is not structural media evidence.
+        var declaredGuest: DoryGuestPlatform
+        /// Only catalog-qualified media can make an exact family assertion. Portable EFI
+        /// inspection proves the loader architecture, but deliberately leaves this nil.
+        var detectedGuestFamily: DoryGuestFamily?
         var efiBootable: Bool
     }
 

@@ -446,6 +446,25 @@ struct DorydLaunchAgentTests {
         #expect(plist.contains("<string>0</string>"))
     }
 
+    @Test func launchAgentBindsRawHVToNestedRunnerApplication() throws {
+        let plist = DorydLaunchAgent.launchAgentPlist(
+            program: "/Applications/Dory.app/Contents/Helpers/doryd",
+            helpersDirectory: URL(fileURLWithPath: "/Applications/Dory.app/Contents/Helpers")
+        )
+        let data = try #require(plist.data(using: .utf8))
+        let root = try #require(
+            try PropertyListSerialization.propertyList(from: data, options: [], format: nil)
+                as? [String: Any]
+        )
+        let environment = try #require(root["EnvironmentVariables"] as? [String: String])
+
+        #expect(
+            environment["DORYD_HV_HELPER"]
+                == "/Applications/Dory.app/Contents/Helpers/DoryHVRunner.app/Contents/MacOS/dory-hv"
+        )
+        #expect(environment["DORYD_HV_HELPER"] != "/Applications/Dory.app/Contents/Helpers/dory-hv")
+    }
+
     @Test func launchAgentCanDisableDaemonOwnedDomains() throws {
         let plist = DorydLaunchAgent.launchAgentPlist(
             program: "/Applications/Dory.app/Contents/Helpers/doryd",

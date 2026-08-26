@@ -1,4 +1,3 @@
-import Darwin
 import Foundation
 
 /// Publishes one private host Unix socket and relays each accepted connection to a fixed guest
@@ -6,16 +5,26 @@ import Foundation
 public final class GuestVsockSocketBridge: @unchecked Sendable {
     private let socketPath: String
     private let guestPort: UInt32
+    private let service: VirtioVsockService
     private let log: @Sendable (String) -> Void
+    private let listener: BoundedVsockSocketListener
 
     public init(
         socketPath: String,
         guestPort: UInt32,
+        service: VirtioVsockService,
         log: @escaping @Sendable (String) -> Void = { _ in }
     ) {
         self.socketPath = socketPath
         self.guestPort = guestPort
+        self.service = service
         self.log = log
+        self.listener = BoundedVsockSocketListener(
+            socketPath: socketPath,
+            mode: 0o600,
+            endpointLabel: "vsock bridge",
+            log: log
+        )
     }
 
     public static func validateSocketPath(_ socketPath: String) throws {
@@ -23,44 +32,29 @@ public final class GuestVsockSocketBridge: @unchecked Sendable {
     }
 
     public func attach(to vsock: VirtioVsock) throws {
-        let listener = try VsockUnixRelay.makeListener(socketPath: socketPath, mode: 0o600)
-        let path = socketPath
         let port = guestPort
-        let log = log
-        let box = VsockBox(vsock)
-        Thread.detachNewThread {
-            while true {
-                let client = accept(listener, nil, nil)
-                guard client >= 0 else {
-                    if errno == EINTR { continue }
-                    log("vsock bridge accept failed on \(path): errno \(errno)")
-                    break
-                }
-                var noSigpipe: Int32 = 1
-                _ = setsockopt(
-                    client,
-                    SOL_SOCKET,
-                    SO_NOSIGPIPE,
-                    &noSigpipe,
-                    socklen_t(MemoryLayout<Int32>.size)
-                )
-                let connection = ConnectionBox(box.vsock.connect(port: port))
-                Thread.detachNewThread {
-                    VsockUnixRelay.serve(client: client, connection: connection.value)
-                }
+        let logger = log
+        try listener.attach(to: vsock, service: service) { _ in
+            do {
+                return try vsock.connectIfCapacity(port: port)
+            } catch {
+                logger("vsock bridge rejected guest port \(port): \(error)")
+                return nil
             }
-            close(listener)
         }
         log("vsock bridge serving \(socketPath) over guest port \(guestPort)")
     }
 
-    private final class VsockBox: @unchecked Sendable {
-        let vsock: VirtioVsock
-        init(_ vsock: VirtioVsock) { self.vsock = vsock }
+    public func stop(timeout: TimeInterval = 1) {
+        listener.stop(timeout: timeout)
     }
 
-    private final class ConnectionBox: @unchecked Sendable {
-        let value: VsockConnection
-        init(_ value: VsockConnection) { self.value = value }
+    var activeSessionCount: Int { listener.activeSessionCount }
+    var serviceAdmissionSnapshot: VirtioVsockServiceAdmissionSnapshot? {
+        listener.serviceAdmissionSnapshot
+    }
+
+    deinit {
+        stop()
     }
 }

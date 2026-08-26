@@ -92,7 +92,7 @@ rustup target add "$TARGET" >/dev/null
 AGENT="$ROOT/dory-core/target/$TARGET/release/dory-agent"
 [ -x "$AGENT" ] || { echo "dory-agent was not produced for $TARGET" >&2; exit 1; }
 
-COMMON_PACKAGES="systemd-sysv,dbus,dbus-user-session,dconf-cli,udev,kmod,network-manager,openssh-server,sudo,ca-certificates,curl,git,vim-tiny,less,man-db,bash-completion,xserver-xorg-core,xserver-xorg-input-libinput,x11-xserver-utils,x11-utils,xterm,libgl1-mesa-dri,mesa-vulkan-drivers,mesa-utils,vulkan-tools,spice-vdagent,wl-clipboard,xclip,pipewire-audio,wireplumber,polkitd,pkexec,fonts-dejavu-core,fonts-noto-core,locales,util-linux,e2fsprogs,iproute2,iputils-ping,dnsutils,netcat-openbsd,procps,rsync,tar,gzip,xz-utils,zstd,fuse3,gvfs,gvfs-backends,binfmt-support"
+COMMON_PACKAGES="systemd-sysv,dbus,dbus-user-session,dconf-cli,udev,kmod,network-manager,openssh-server,sudo,ca-certificates,curl,git,vim-tiny,less,man-db,bash-completion,binutils,xserver-xorg-core,xserver-xorg-input-libinput,x11-xserver-utils,x11-utils,xterm,libgl1-mesa-dri,libxcb-keysyms1,mesa-vulkan-drivers,mesa-utils,vulkan-tools,spice-vdagent,wl-clipboard,xclip,pipewire-audio,wireplumber,polkitd,pkexec,fonts-dejavu-core,fonts-noto-core,locales,util-linux,e2fsprogs,iproute2,iputils-ping,dnsutils,netcat-openbsd,procps,rsync,tar,gzip,xz-utils,zstd,fuse3,gvfs,gvfs-backends,binfmt-support"
 XFCE_PACKAGES="xfce4,xfce4-terminal,xfce4-notifyd,xfce4-power-manager,lightdm,lightdm-gtk-greeter,mate-polkit,mousepad,ristretto,file-roller"
 case "$DISTRO" in
   debian) PACKAGES="$COMMON_PACKAGES,$XFCE_PACKAGES,network-manager-gnome,desktop-base,firefox-esr,evince,galculator" ;;
@@ -149,14 +149,15 @@ CID="$(docker_cmd create --privileged --platform linux/arm64 \
       "$DORY_DESKTOP_SUITE" /rootfs "$DORY_DESKTOP_MIRROR"
 
     cp -a --no-preserve=ownership /tmp/rootfs-overlay/. /rootfs/
-    zstd -q -d -c /tmp/dory-mesa-venus-arm64.tar.zst | tar -xf - -C /rootfs
+    /tmp/install-graphics-pack.sh /tmp/dory-mesa-venus-arm64.tar.zst /rootfs 0
     install -m0755 /tmp/dory-agent /rootfs/usr/bin/dory-agent
     chmod 0755 /rootfs/usr/lib/dory/clipboard /rootfs/usr/lib/dory/configure-machine /rootfs/usr/lib/dory/first-boot \
       /rootfs/usr/lib/dory/start-agent /rootfs/usr/lib/dory/wait-host-configuration \
       /rootfs/usr/lib/dory/configure-display /rootfs/usr/lib/dory/configure-zram \
       /rootfs/usr/lib/dory/configure-graphics-backend \
-      /rootfs/usr/lib/dory/configure-intel-translation \
-      /rootfs/usr/lib/dory/dory-vulkan-probe
+      /rootfs/usr/lib/dory/preflight-graphics-pack \
+      /rootfs/usr/lib/dory/resolve-graphics-backend \
+      /rootfs/usr/lib/dory/configure-intel-translation
 
     if [ "$DORY_DESKTOP_DISTRO" = ubuntu ]; then
       key=/rootfs/etc/apt/keyrings/packages.mozilla.org.asc
@@ -287,6 +288,7 @@ EOF
 docker_cmd cp "$AGENT" "$CID:/tmp/dory-agent"
 docker_cmd cp guest/desktop/rootfs-overlay "$CID:/tmp/rootfs-overlay"
 docker_cmd cp "$VENUS_RUNTIME" "$CID:/tmp/dory-mesa-venus-arm64.tar.zst"
+docker_cmd cp guest/desktop/install-graphics-pack.sh "$CID:/tmp/install-graphics-pack.sh"
 docker_cmd start -a "$CID"
 docker_cmd cp "$CID:/out/$ARTIFACT_PREFIX-rootfs-arm64.ext4.zst" "$STAGING/"
 docker_cmd cp "$CID:/out/$ARTIFACT_PREFIX-packages-arm64.txt" "$STAGING/"
@@ -299,6 +301,7 @@ python3 guest/desktop/build-update-bundle.py \
   --overlay guest/desktop/rootfs-overlay \
   --agent "$AGENT" \
   --venus-runtime "$VENUS_RUNTIME" \
+  --graphics-installer guest/desktop/install-graphics-pack.sh \
   --apply guest/desktop/apply-update.sh \
   --output "$STAGING/$ARTIFACT_PREFIX-update-arm64.tar"
 "$ZSTD_BIN" -q -d --sparse -f "$STAGING/$ARTIFACT_PREFIX-rootfs-arm64.ext4.zst" \

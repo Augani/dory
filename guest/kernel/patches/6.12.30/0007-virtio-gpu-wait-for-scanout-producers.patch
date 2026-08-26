@@ -1,0 +1,71 @@
+From 30f86b8f86ada845fbd0d853b3a3d238567ac2c2 Mon Sep 17 00:00:00 2001
+From: Dongwon Kim <dongwon.kim@intel.com>
+Date: Sun, 20 Oct 2024 16:08:02 -0700
+Subject: [PATCH] drm/virtio: Use drm_gem_plane_helper_prepare_fb()
+
+Backport upstream commit 30f86b8f86ada845fbd0d853b3a3d238567ac2c2
+to Dory's pinned Linux 6.12.30 kernel.
+
+Use drm_gem_plane_helper_prepare_fb() for framebuffer synchronization.
+The helper attaches the framebuffer's producer fence to the plane state,
+and the DRM atomic helper waits for it before invoking the plane update.
+This gives the subsequent virtio-gpu RESOURCE_FLUSH a real producer-
+completion boundary for Venus and native contexts instead of relying on
+queue ordering or a host-side ctx0 flush.
+
+Upstream-commit: 30f86b8f86ada845fbd0d853b3a3d238567ac2c2
+Signed-off-by: Dongwon Kim <dongwon.kim@intel.com>
+Signed-off-by: Dmitry Osipenko <dmitry.osipenko@collabora.com>
+Signed-off-by: Dory Project <dory@local>
+---
+ drivers/gpu/drm/virtio/virtgpu_plane.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/drivers/gpu/drm/virtio/virtgpu_plane.c b/drivers/gpu/drm/virtio/virtgpu_plane.c
+index 4ba35784899e..2fb08cb43a99 100644
+--- a/drivers/gpu/drm/virtio/virtgpu_plane.c
++++ b/drivers/gpu/drm/virtio/virtgpu_plane.c
+@@ -26,6 +26,7 @@
+ #include <drm/drm_atomic_helper.h>
+ #include <drm/drm_damage_helper.h>
+ #include <drm/drm_fourcc.h>
++#include <drm/drm_gem_atomic_helper.h>
+ 
+ #include "virtgpu_drv.h"
+ 
+@@ -261,30 +262,33 @@ static int virtio_gpu_plane_prepare_fb(struct drm_plane *plane,
+ static int virtio_gpu_plane_prepare_fb(struct drm_plane *plane,
+ 				       struct drm_plane_state *new_state)
+ {
+ 	struct drm_device *dev = plane->dev;
+ 	struct virtio_gpu_device *vgdev = dev->dev_private;
+ 	struct virtio_gpu_framebuffer *vgfb;
+ 	struct virtio_gpu_plane_state *vgplane_st;
+ 	struct virtio_gpu_object *bo;
+ 
+ 	if (!new_state->fb)
+ 		return 0;
+ 
+ 	vgfb = to_virtio_gpu_framebuffer(new_state->fb);
+ 	vgplane_st = to_virtio_gpu_plane_state(new_state);
+ 	bo = gem_to_virtio_gpu_obj(vgfb->base.obj[0]);
++
++	drm_gem_plane_helper_prepare_fb(plane, new_state);
++
+ 	if (!bo || (plane->type == DRM_PLANE_TYPE_PRIMARY && !bo->guest_blob))
+ 		return 0;
+ 
+ 	if (bo->dumb) {
+ 		vgplane_st->fence = virtio_gpu_fence_alloc(vgdev,
+ 						     vgdev->fence_drv.context,
+ 						     0);
+ 		if (!vgplane_st->fence)
+ 			return -ENOMEM;
+ 	}
+ 
+ 	return 0;
+ }
+ 
+ static void virtio_gpu_plane_cleanup_fb(struct drm_plane *plane,
+-- 
+2.50.1

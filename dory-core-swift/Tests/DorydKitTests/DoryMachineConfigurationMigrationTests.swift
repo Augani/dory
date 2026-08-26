@@ -338,6 +338,7 @@ struct DoryMachineConfigurationMigrationTests {
         #expect(migrated.definition.boot.devices[0].source == .userProvided)
         #expect(migrated.definition.boot.devices[0].removable)
         #expect(migrated.definition.backendPreference.backend == .appleVirtualizationFramework)
+        #expect(migrated.definition.graphics.acceptableLevels == [.software])
         #expect(migrated.artifactPath(for: migrated.definition.boot.devices[0].artifact)
             == legacy.installerISOPath)
         #expect(try migrated.legacyConfiguration() == legacy)

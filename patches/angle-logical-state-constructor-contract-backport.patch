@@ -1,0 +1,40 @@
+diff --git a/Source/ThirdParty/ANGLE/src/libANGLE/angletypes.h b/Source/ThirdParty/ANGLE/src/libANGLE/angletypes.h
+index f653dd5d05..2a4850666f 100644
+--- a/Source/ThirdParty/ANGLE/src/libANGLE/angletypes.h
++++ b/Source/ThirdParty/ANGLE/src/libANGLE/angletypes.h
+@@ -225,7 +225,7 @@ struct Box
+ 
+ struct RasterizerState final
+ {
+-    // This will zero-initialize the struct, including padding.
++    // Initializes every logical member to its GL default.
+     RasterizerState();
+     RasterizerState(const RasterizerState &other);
+     RasterizerState &operator=(const RasterizerState &other);
+@@ -268,7 +268,7 @@ bool operator!=(const RasterizerState &a, const RasterizerState &b);
+ 
+ struct BlendState final
+ {
+-    // This will zero-initialize the struct, including padding.
++    // Initializes every logical member to its GL default.
+     BlendState();
+     BlendState(const BlendState &other);
+ 
+@@ -291,7 +291,7 @@ bool operator!=(const BlendState &a, const BlendState &b);
+ 
+ struct DepthStencilState final
+ {
+-    // This will zero-initialize the struct, including padding.
++    // Initializes every logical member to its GL default.
+     DepthStencilState();
+     DepthStencilState(const DepthStencilState &other);
+     DepthStencilState &operator=(const DepthStencilState &other);
+@@ -350,7 +350,7 @@ static_assert(sizeof(PackedSamplerCompleteness) == sizeof(uint32_t), "Unexpected
+ class SamplerState final
+ {
+   public:
+-    // This will zero-initialize the struct, including padding.
++    // Initializes every logical member to its GL default.
+     SamplerState();
+     SamplerState(const SamplerState &other);
+ 

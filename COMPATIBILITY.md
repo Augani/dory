@@ -31,7 +31,7 @@ workload data.
 | Compose | Bundled Compose v2 with profiles, overrides, `.env`, builds, health dependencies, and external resources |
 | Registry authentication | Docker-compatible login and credential flow |
 | Bind mounts | Home-directory and `/Volumes` paths are shared at their native macOS paths |
-| amd64 images on Apple Silicon | Supported for common development workloads through bundled FEX |
+| amd64 images on Apple Silicon | Supported for common application/container workloads through bundled FEX inside Dory's ARM64 engine; this is not an x86_64 guest OS or ISO path |
 
 Some specialized Docker extensions and host-specific plugins may assume another product's internal
 paths. Open an issue with the exact tool and version when that happens.
@@ -77,7 +77,7 @@ engine resources.
 | Development recipes | Curated Node, Python, Go, Rust, Java, Ruby, and DevOps toolsets for Debian and Alpine |
 | Graphical Linux sessions | Supported with managed Ubuntu GNOME and Debian/Kali Xfce profiles on Apple Silicon |
 | Desktop display | Retina-sharp 2x framebuffer, dynamic window resizing, and matching GNOME or Xfce scaling |
-| Desktop Vulkan | Supported through Dory's isolated, capability-probed Venus runtime on Apple-silicon raw-HV; Automatic falls back to classic VirGL and software when unavailable |
+| Desktop GPU acceleration | **Unqualified for public release:** the repaired dual VirGL2+Venus tuple passed a 15-minute physical Developer-ID calibration on Apple M2 Pro with GNOME, Firefox, Files, Calculator, Settings, Terminal, sustained VirGL OpenGL, Venus Vulkan WSI, and native-Venus Zed; no rejected resource flush or device loss occurred. Public support remains closed until the same tuple is release-signed/notarized and passes the complete release matrix; software display remains the recovery path |
 | Existing desktop updates | Signed in-place package, browser, guest-integration, and kernel updates with a retained last-good snapshot and automatic failure/interruption rollback |
 | Custom arm64 installer ISO | Preview: architecture preflight, exact-media SHA-256/runtime evidence, native EFI boot, private managed ISO copy and recovery console, thin-provisioned disk, persistent machine identity/NVRAM, and attach/eject lifecycle |
 
@@ -88,6 +88,13 @@ installation, reboot, media-ejection, device, and guest-tools qualification pass
 Architecture compatibility does not imply runtime qualification: Dory records the exact ISO hash,
 host model, and macOS build, blocks known-unstable tuples, and labels unseen combinations as
 unqualified.
+
+Rosetta translates x86_64 Linux applications inside an eligible ARM64 Linux VM; Dory's current
+container path uses FEX for the same application-level boundary. Neither boots an Intel distro,
+kernel, or installer. Dory exposes no partial x86 VM mode. A future whole-system x86 product would
+require a complete packaged QEMU TCG backend with independently qualified firmware, devices,
+lifecycle, security, recovery, and performance, as defined by the
+[whole-machine emulation contract](docs/x86-linux-whole-machine-emulation.md).
 
 ## Networking
 
@@ -145,6 +152,8 @@ grants; `full` is an explicit unrestricted choice. See the
   builds. Remembered replay remains unavailable.
 - Audio passthrough is unavailable.
 - Intel-host public builds are unavailable before dedicated physical qualification.
+- Intel/x86_64 Linux installer ISO boot is unavailable; application translation inside an ARM64
+  guest does not change that boundary.
 - Managed image update discovery/replacement, mDNS/multicast relay, and general L2 bridging are
   unavailable in 0.4.
 

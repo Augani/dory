@@ -1,0 +1,211 @@
+diff --git a/Source/ThirdParty/ANGLE/src/libANGLE/angletypes.cpp b/Source/ThirdParty/ANGLE/src/libANGLE/angletypes.cpp
+index 7f9f56de4a..d379d6a6e6 100644
+--- a/Source/ThirdParty/ANGLE/src/libANGLE/angletypes.cpp
++++ b/Source/ThirdParty/ANGLE/src/libANGLE/angletypes.cpp
+@@ -52,8 +52,6 @@ bool IsExtendedBlendFactor(gl::BlendFactorType blendFactor)
+ 
+ RasterizerState::RasterizerState()
+ {
+-    memset(this, 0, sizeof(RasterizerState));
+-
+     cullFace            = false;
+     cullMode            = CullFaceMode::Back;
+     frontFace           = GL_CCW;
+@@ -72,19 +70,54 @@ RasterizerState::RasterizerState()
+ }
+ 
+ RasterizerState::RasterizerState(const RasterizerState &other)
+-{
+-    memcpy(this, &other, sizeof(RasterizerState));
+-}
++    : cullFace(other.cullFace),
++      cullMode(other.cullMode),
++      frontFace(other.frontFace),
++      polygonMode(other.polygonMode),
++      polygonOffsetPoint(other.polygonOffsetPoint),
++      polygonOffsetLine(other.polygonOffsetLine),
++      polygonOffsetFill(other.polygonOffsetFill),
++      polygonOffsetFactor(other.polygonOffsetFactor),
++      polygonOffsetUnits(other.polygonOffsetUnits),
++      polygonOffsetClamp(other.polygonOffsetClamp),
++      depthClamp(other.depthClamp),
++      pointDrawMode(other.pointDrawMode),
++      multiSample(other.multiSample),
++      rasterizerDiscard(other.rasterizerDiscard),
++      dither(other.dither)
++{}
+ 
+ RasterizerState &RasterizerState::operator=(const RasterizerState &other)
+ {
+-    memcpy(this, &other, sizeof(RasterizerState));
++    cullFace            = other.cullFace;
++    cullMode            = other.cullMode;
++    frontFace           = other.frontFace;
++    polygonMode         = other.polygonMode;
++    polygonOffsetPoint  = other.polygonOffsetPoint;
++    polygonOffsetLine   = other.polygonOffsetLine;
++    polygonOffsetFill   = other.polygonOffsetFill;
++    polygonOffsetFactor = other.polygonOffsetFactor;
++    polygonOffsetUnits  = other.polygonOffsetUnits;
++    polygonOffsetClamp  = other.polygonOffsetClamp;
++    depthClamp          = other.depthClamp;
++    pointDrawMode       = other.pointDrawMode;
++    multiSample         = other.multiSample;
++    rasterizerDiscard   = other.rasterizerDiscard;
++    dither              = other.dither;
+     return *this;
+ }
+ 
+ bool operator==(const RasterizerState &a, const RasterizerState &b)
+ {
+-    return memcmp(&a, &b, sizeof(RasterizerState)) == 0;
++    return a.cullFace == b.cullFace && a.cullMode == b.cullMode && a.frontFace == b.frontFace &&
++           a.polygonMode == b.polygonMode && a.polygonOffsetPoint == b.polygonOffsetPoint &&
++           a.polygonOffsetLine == b.polygonOffsetLine &&
++           a.polygonOffsetFill == b.polygonOffsetFill &&
++           a.polygonOffsetFactor == b.polygonOffsetFactor &&
++           a.polygonOffsetUnits == b.polygonOffsetUnits &&
++           a.polygonOffsetClamp == b.polygonOffsetClamp && a.depthClamp == b.depthClamp &&
++           a.pointDrawMode == b.pointDrawMode && a.multiSample == b.multiSample &&
++           a.rasterizerDiscard == b.rasterizerDiscard && a.dither == b.dither;
+ }
+ 
+ bool operator!=(const RasterizerState &a, const RasterizerState &b)
+@@ -94,8 +127,6 @@ bool operator!=(const RasterizerState &a, const RasterizerState &b)
+ 
+ BlendState::BlendState()
+ {
+-    memset(this, 0, sizeof(BlendState));
+-
+     blend              = false;
+     sourceBlendRGB     = GL_ONE;
+     sourceBlendAlpha   = GL_ONE;
+@@ -110,13 +141,27 @@ BlendState::BlendState()
+ }
+ 
+ BlendState::BlendState(const BlendState &other)
+-{
+-    memcpy(this, &other, sizeof(BlendState));
+-}
++    : blend(other.blend),
++      sourceBlendRGB(other.sourceBlendRGB),
++      destBlendRGB(other.destBlendRGB),
++      sourceBlendAlpha(other.sourceBlendAlpha),
++      destBlendAlpha(other.destBlendAlpha),
++      blendEquationRGB(other.blendEquationRGB),
++      blendEquationAlpha(other.blendEquationAlpha),
++      colorMaskRed(other.colorMaskRed),
++      colorMaskGreen(other.colorMaskGreen),
++      colorMaskBlue(other.colorMaskBlue),
++      colorMaskAlpha(other.colorMaskAlpha)
++{}
+ 
+ bool operator==(const BlendState &a, const BlendState &b)
+ {
+-    return memcmp(&a, &b, sizeof(BlendState)) == 0;
++    return a.blend == b.blend && a.sourceBlendRGB == b.sourceBlendRGB &&
++           a.destBlendRGB == b.destBlendRGB && a.sourceBlendAlpha == b.sourceBlendAlpha &&
++           a.destBlendAlpha == b.destBlendAlpha && a.blendEquationRGB == b.blendEquationRGB &&
++           a.blendEquationAlpha == b.blendEquationAlpha && a.colorMaskRed == b.colorMaskRed &&
++           a.colorMaskGreen == b.colorMaskGreen && a.colorMaskBlue == b.colorMaskBlue &&
++           a.colorMaskAlpha == b.colorMaskAlpha;
+ }
+ 
+ bool operator!=(const BlendState &a, const BlendState &b)
+@@ -126,8 +171,6 @@ bool operator!=(const BlendState &a, const BlendState &b)
+ 
+ DepthStencilState::DepthStencilState()
+ {
+-    memset(this, 0, sizeof(DepthStencilState));
+-
+     depthTest                = false;
+     depthFunc                = GL_LESS;
+     depthMask                = true;
+@@ -147,13 +190,42 @@ DepthStencilState::DepthStencilState()
+ }
+ 
+ DepthStencilState::DepthStencilState(const DepthStencilState &other)
+-{
+-    memcpy(this, &other, sizeof(DepthStencilState));
+-}
++    : depthTest(other.depthTest),
++      depthFunc(other.depthFunc),
++      depthMask(other.depthMask),
++      stencilTest(other.stencilTest),
++      stencilFunc(other.stencilFunc),
++      stencilMask(other.stencilMask),
++      stencilFail(other.stencilFail),
++      stencilPassDepthFail(other.stencilPassDepthFail),
++      stencilPassDepthPass(other.stencilPassDepthPass),
++      stencilWritemask(other.stencilWritemask),
++      stencilBackFunc(other.stencilBackFunc),
++      stencilBackMask(other.stencilBackMask),
++      stencilBackFail(other.stencilBackFail),
++      stencilBackPassDepthFail(other.stencilBackPassDepthFail),
++      stencilBackPassDepthPass(other.stencilBackPassDepthPass),
++      stencilBackWritemask(other.stencilBackWritemask)
++{}
+ 
+ DepthStencilState &DepthStencilState::operator=(const DepthStencilState &other)
+ {
+-    memcpy(this, &other, sizeof(DepthStencilState));
++    depthTest                = other.depthTest;
++    depthFunc                = other.depthFunc;
++    depthMask                = other.depthMask;
++    stencilTest              = other.stencilTest;
++    stencilFunc              = other.stencilFunc;
++    stencilMask              = other.stencilMask;
++    stencilFail              = other.stencilFail;
++    stencilPassDepthFail     = other.stencilPassDepthFail;
++    stencilPassDepthPass     = other.stencilPassDepthPass;
++    stencilWritemask         = other.stencilWritemask;
++    stencilBackFunc          = other.stencilBackFunc;
++    stencilBackMask          = other.stencilBackMask;
++    stencilBackFail          = other.stencilBackFail;
++    stencilBackPassDepthFail = other.stencilBackPassDepthFail;
++    stencilBackPassDepthPass = other.stencilBackPassDepthPass;
++    stencilBackWritemask     = other.stencilBackWritemask;
+     return *this;
+ }
+ 
+@@ -183,7 +255,16 @@ bool DepthStencilState::isStencilBackNoOp() const
+ 
+ bool operator==(const DepthStencilState &a, const DepthStencilState &b)
+ {
+-    return memcmp(&a, &b, sizeof(DepthStencilState)) == 0;
++    return a.depthTest == b.depthTest && a.depthFunc == b.depthFunc && a.depthMask == b.depthMask &&
++           a.stencilTest == b.stencilTest && a.stencilFunc == b.stencilFunc &&
++           a.stencilMask == b.stencilMask && a.stencilFail == b.stencilFail &&
++           a.stencilPassDepthFail == b.stencilPassDepthFail &&
++           a.stencilPassDepthPass == b.stencilPassDepthPass &&
++           a.stencilWritemask == b.stencilWritemask && a.stencilBackFunc == b.stencilBackFunc &&
++           a.stencilBackMask == b.stencilBackMask && a.stencilBackFail == b.stencilBackFail &&
++           a.stencilBackPassDepthFail == b.stencilBackPassDepthFail &&
++           a.stencilBackPassDepthPass == b.stencilBackPassDepthPass &&
++           a.stencilBackWritemask == b.stencilBackWritemask;
+ }
+ 
+ bool operator!=(const DepthStencilState &a, const DepthStencilState &b)
+@@ -192,9 +273,20 @@ bool operator!=(const DepthStencilState &a, const DepthStencilState &b)
+ }
+ 
+ SamplerState::SamplerState()
++    : mMinFilter(0),
++      mMagFilter(0),
++      mWrapS(0),
++      mWrapT(0),
++      mWrapR(0),
++      mMaxAnisotropy(0),
++      mMinLod(0),
++      mMaxLod(0),
++      mCompareMode(0),
++      mCompareFunc(0),
++      mSRGBDecode(0),
++      mBorderColor(),
++      mCompleteness{}
+ {
+-    memset(this, 0, sizeof(SamplerState));
+-
+     setMinFilter(GL_NEAREST_MIPMAP_LINEAR);
+     setMagFilter(GL_LINEAR);
+     setWrapS(GL_REPEAT);

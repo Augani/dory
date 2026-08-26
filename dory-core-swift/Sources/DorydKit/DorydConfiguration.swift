@@ -3,6 +3,17 @@ import Darwin
 import DoryCore
 import Foundation
 
+public enum DorydEnvironmentError: Error, Equatable, Sendable, CustomStringConvertible {
+    case invalidMachServiceName(String)
+
+    public var description: String {
+        switch self {
+        case let .invalidMachServiceName(value):
+            "DORYD_MACH_SERVICE is not a valid launchd Mach service name: \(value)"
+        }
+    }
+}
+
 struct DorydHostPlatform: Sendable, Equatable {
     enum Architecture: Sendable, Equatable {
         case arm64
@@ -64,6 +75,8 @@ struct DorydHostPlatform: Sendable, Equatable {
 }
 
 public struct DorydEnvironment: Sendable {
+    public static let defaultMachServiceName = "dev.dory.doryd"
+
     public var values: [String: String]
     public var home: String
     public var cwd: String
@@ -97,6 +110,33 @@ public struct DorydEnvironment: Sendable {
         self.cwd = cwd
         self.executablePath = executablePath
         self.hostPlatform = hostPlatform
+    }
+
+    /// Resolves the launchd endpoint independently of the daemon's state roots. A bounded,
+    /// explicit override lets physical qualification run beside the installed daemon instead of
+    /// booting production out of the user's login session.
+    public func machServiceName() throws -> String {
+        let name = values["DORYD_MACH_SERVICE"] ?? Self.defaultMachServiceName
+        let bytes = Array(name.utf8)
+        let isAlphaNumeric: (UInt8) -> Bool = { byte in
+            (UInt8(ascii: "0")...UInt8(ascii: "9")).contains(byte)
+                || (UInt8(ascii: "A")...UInt8(ascii: "Z")).contains(byte)
+                || (UInt8(ascii: "a")...UInt8(ascii: "z")).contains(byte)
+        }
+        guard !bytes.isEmpty,
+              bytes.count <= 255,
+              isAlphaNumeric(bytes[0]),
+              isAlphaNumeric(bytes[bytes.count - 1]),
+              bytes.allSatisfy({ byte in
+                  isAlphaNumeric(byte)
+                      || byte == UInt8(ascii: ".")
+                      || byte == UInt8(ascii: "-")
+                      || byte == UInt8(ascii: "_")
+              }),
+              !name.contains("..") else {
+            throw DorydEnvironmentError.invalidMachServiceName(name)
+        }
+        return name
     }
 
     public func dockerTierConfiguration() -> DockerTierConfiguration? {
@@ -305,9 +345,8 @@ public struct DorydEnvironment: Sendable {
         guard rawHVSupported,
               hostGuestArch == "arm64",
               bool("DORYD_ACCELERATED_DESKTOP", default: true),
-              let helper = executablePath(
-                firstOf: ["DORYD_DESKTOP_HV_HELPER", "DORYD_HV_HELPER", "DORY_HV_HELPER"],
-                fallbackCandidates: helperCandidates(named: "dory-hv")
+              let helper = rawHVExecutablePath(
+                firstOf: ["DORYD_DESKTOP_HV_HELPER", "DORYD_HV_HELPER", "DORY_HV_HELPER"]
               ),
               let gvproxy = executablePath(
                 firstOf: ["DORYD_GVPROXY", "DORY_GVPROXY"],
@@ -335,13 +374,32 @@ public struct DorydEnvironment: Sendable {
         stateDirectory: String,
         forwardSocket: String
     ) -> HvProcessConfiguration? {
-        guard let helper = executablePath(firstOf: ["DORYD_HV_HELPER", "DORY_HV_HELPER"], fallbackCandidates: helperCandidates(named: "dory-hv")),
+        guard let helper = rawHVExecutablePath(firstOf: ["DORYD_HV_HELPER", "DORY_HV_HELPER"]),
               let kernel = hvKernelPath(stateDirectory: stateDirectory),
               let gvproxy = executablePath(firstOf: ["DORYD_GVPROXY", "DORY_GVPROXY"], fallbackCandidates: gvproxyCandidates()) else {
             return nil
         }
 
         let legacyEngineSocket = string("DORYD_HV_ENGINE_SOCK") ?? "\(stateDirectory)/engine.sock"
+        let reclaimPolicy = string("DORYD_ENGINE_RECLAIM_POLICY") ?? "drop-caches"
+        guard reclaimPolicy == "drop-caches" || reclaimPolicy == "senpai" else {
+            reportEngineConfigurationError(
+                "DORYD_ENGINE_RECLAIM_POLICY must be drop-caches or senpai"
+            )
+            return nil
+        }
+        let fuseRequestQueues: Int
+        if let rawFuseRequestQueues = string("DORYD_FUSE_REQUEST_QUEUES") {
+            guard let parsed = Int(rawFuseRequestQueues), (1...8).contains(parsed) else {
+                reportEngineConfigurationError(
+                    "DORYD_FUSE_REQUEST_QUEUES must be an integer from 1 through 8"
+                )
+                return nil
+            }
+            fuseRequestQueues = parsed
+        } else {
+            fuseRequestQueues = min(8, max(1, clampedCPUs()))
+        }
         var arguments = [
             "engine",
             "--engine-sock", legacyEngineSocket,
@@ -351,6 +409,8 @@ public struct DorydEnvironment: Sendable {
             "--state-dir", stateDirectory,
             "--mem-mb", String(clampedMemoryMB()),
             "--cpus", String(clampedCPUs()),
+            "--memory-reclaim", reclaimPolicy,
+            "--fuse-request-queues", String(fuseRequestQueues),
         ]
         guard let drive = dataDrive() else { return nil }
         arguments.append(contentsOf: ["--data-drive", drive.root])
@@ -609,6 +669,38 @@ public struct DorydEnvironment: Sendable {
         ].compactMap { $0 }
     }
 
+    /// A bundled daemon has exactly one raw-HV launch authority: the executable sealed inside the
+    /// nested runner application. Environment overrides remain available to standalone developer
+    /// and headless-runtime launches, but can neither replace nor bypass the signed app graph.
+    private func rawHVExecutablePath(firstOf keys: [String]) -> String? {
+        if let bundled = bundledHVRunnerExecutablePath {
+            if let explicit = path(firstOf: keys), standardizedPath(explicit) != bundled {
+                reportEngineConfigurationError(
+                    "the bundled daemon requires DoryHVRunner.app; raw dory-hv overrides are not launch authorities"
+                )
+                return nil
+            }
+            return FileManager.default.isExecutableFile(atPath: bundled) ? bundled : nil
+        }
+        return executablePath(
+            firstOf: keys,
+            fallbackCandidates: helperCandidates(named: "dory-hv")
+        )
+    }
+
+    private var bundledHVRunnerExecutablePath: String? {
+        guard let bundleHelpersDirectory else { return nil }
+        return standardizedPath(
+            URL(fileURLWithPath: bundleHelpersDirectory)
+                .appendingPathComponent("DoryHVRunner.app/Contents/MacOS/dory-hv")
+                .path
+        )
+    }
+
+    private func standardizedPath(_ path: String) -> String {
+        URL(fileURLWithPath: path).standardizedFileURL.path
+    }
+
     private func gvproxyCandidates() -> [String] {
         [
             bundleHelpersDirectory.map { "\($0)/gvproxy" },
@@ -664,13 +756,18 @@ public struct DorydEnvironment: Sendable {
     private var bundleContentsDirectory: String? {
         guard !executablePath.isEmpty else { return nil }
         let executableURL = URL(fileURLWithPath: executablePath)
-        let contentsURL = executableURL
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
+        let helpersURL = executableURL.deletingLastPathComponent()
+        let contentsURL = helpersURL.deletingLastPathComponent()
+        let applicationURL = contentsURL.deletingLastPathComponent()
+        guard helpersURL.lastPathComponent == "Helpers",
+              contentsURL.lastPathComponent == "Contents",
+              applicationURL.pathExtension == "app" else {
+            return nil
+        }
         guard FileManager.default.fileExists(atPath: contentsURL.path) else {
             return nil
         }
-        return contentsURL.path
+        return contentsURL.standardizedFileURL.path
     }
 
     private var bundleResourcesDirectory: String? {

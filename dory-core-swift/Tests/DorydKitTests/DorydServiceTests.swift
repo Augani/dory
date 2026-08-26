@@ -2229,10 +2229,7 @@ final class DorydServiceTests: XCTestCase {
             XCTAssertEqual(desktop?["displayName"] as? String, "Ubuntu Legacy")
             XCTAssertEqual(typed?["desktopRuntimePreference"] as? String, "compatible")
             XCTAssertEqual(typed?["desktopGraphicsPreference"] as? String, "software")
-            XCTAssertEqual(
-                body["diagnosticOverrides"] as? [String],
-                ["virgl-renderer-path"]
-            )
+            XCTAssertNil(body["diagnosticOverrides"])
             XCTAssertFalse(body.description.contains("/private/opaque-renderer.dylib"))
             typedUpdate.fulfill()
         }
@@ -2327,7 +2324,52 @@ final class DorydServiceTests: XCTestCase {
         XCTAssertNil(manager.status(id: "desktop-sandbox"))
     }
 
-    func testPerWorkspaceCreateInvokesProductionPlanningAndFailsClosed() throws {
+    func testMachineCreateRejectsNonPortableEFIImageBeforeWorkspaceImport() throws {
+        let base = "/tmp/doryd-service-efi-preflight-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let installer = base + "/marker-only-arm64.iso"
+        try Data("EFI/BOOT/BOOTAA64.EFI".utf8).write(to: URL(fileURLWithPath: installer))
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: installer
+        )
+        let state = base + "/machines"
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: state,
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: false
+        ))
+        let service = DorydService(
+            socketPath: "/tmp/doryd-test.sock",
+            machineManager: manager
+        )
+
+        let reply = expectation(description: "portable EFI preflight rejection")
+        service.machineCreate([
+            "id": "not-portable",
+            "kernelPath": "",
+            "rootfsPath": "",
+            "bootMode": "efi",
+            "installerISOPath": installer,
+            "diskSizeBytes": MachineManager.minimumEFIDiskSizeBytes,
+            "memoryMB": UInt64(4_096),
+            "cpuCount": 4,
+            "displayMode": "desktop",
+        ]) { ok, _, message in
+            XCTAssertFalse(ok)
+            XCTAssertTrue(message.contains("not a portable ARM64 EFI Linux ISO"), message)
+            reply.fulfill()
+        }
+        wait(for: [reply], timeout: 5)
+
+        XCTAssertNil(manager.status(id: "not-portable"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: state + "/not-portable"))
+    }
+
+    func testPerWorkspaceCreatePlanningFailureRollsBackBeforeNameCanCollide() throws {
         let base = "/tmp/doryd-service-production-plan-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let manager = MachineManager(
             configuration: MachineManagerConfiguration(
@@ -2386,36 +2428,25 @@ final class DorydServiceTests: XCTestCase {
         XCTAssertEqual(captured.request.workspacePublication, .retainExistingExact)
         XCTAssertEqual(captured.artifacts.count, 2)
         XCTAssertTrue(captured.artifacts.allSatisfy { $0.path.hasPrefix(base + "/planned/") })
-        XCTAssertEqual(manager.status(id: "planned")?.runtimeIdentity.mode, .requiresReplanning)
-        XCTAssertEqual(
-            manager.status(id: "planned")?.typedSettings?
-                .guestIdentityIntent.account?.username,
-            "developer"
-        )
-        XCTAssertTrue(manager.status(id: "planned")?.environment.isEmpty == true)
-        XCTAssertEqual(
-            manager.status(id: "planned")?.sandboxPolicy?.sshAgentAccess,
-            .denied
-        )
-        let persisted = try JSONDecoder().decode(
-            DoryMachineConfiguration.self,
-            from: Data(contentsOf: URL(fileURLWithPath: base + "/planned/machine.json"))
-        )
-        XCTAssertTrue(persisted.environment.isEmpty)
+        XCTAssertNil(manager.status(id: "planned"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: base + "/planned"))
         let listReply = expectation(description: "native typed status projection")
         service.machineList { rows, message in
             XCTAssertEqual(message, "")
             let row = (rows as? [NSDictionary])?.first { $0["id"] as? String == "planned" }
-            XCTAssertNil(row?["env"])
-            let typed = row?["typedSettings"] as? NSDictionary
-            let identity = typed?["guestIdentityIntent"] as? NSDictionary
-            let account = identity?["account"] as? NSDictionary
-            XCTAssertEqual(account?["username"] as? String, "developer")
-            XCTAssertEqual(typed?["networkMode"] as? String, "disconnected")
+            XCTAssertNil(row)
             listReply.fulfill()
         }
         wait(for: [listReply], timeout: 5)
-        XCTAssertThrowsError(try manager.start(id: "planned"))
+
+        // A planning rejection must not reserve the name. Recreating it directly also supplies a
+        // workspace for the update/restore planning-failure coverage below.
+        let recreated = try manager.create(DoryMachineConfiguration(
+            id: "planned",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath
+        ))
+        XCTAssertEqual(recreated.runtimeIdentity.mode, .requiresReplanning)
 
         let updateReply = expectation(description: "production update planning rejection")
         service.machineUpdate("planned", config: [
@@ -2993,6 +3024,16 @@ final class DorydServiceTests: XCTestCase {
             start.fulfill()
         }
         wait(for: [start], timeout: 5)
+        let provision = expectation(description: "machineProvision reply")
+        proxy.machineProvision("dev", request: ["recipe": "rust"]) { ok, body, message in
+            XCTAssertTrue(ok, message)
+            XCTAssertEqual(body["recipe"] as? String, "rust")
+            let install = body["install"] as? NSDictionary
+            let verify = body["verify"] as? NSDictionary
+            XCTAssertEqual(install?["exitCode"] as? Int32, 0)
+            XCTAssertEqual(verify?["stdout"] as? String, "cargo 1.0\n")
+            provision.fulfill()
+        }
         try sendVmmHandoff(
             path: try XCTUnwrap(handoffPath.isEmpty ? nil : handoffPath),
             ready: VmmReadyMessage(
@@ -3006,18 +3047,6 @@ final class DorydServiceTests: XCTestCase {
             ),
             fileDescriptors: []
         )
-        _ = try waitForServiceMachineState(manager, id: "dev", state: .running)
-
-        let provision = expectation(description: "machineProvision reply")
-        proxy.machineProvision("dev", request: ["recipe": "rust"]) { ok, body, message in
-            XCTAssertTrue(ok, message)
-            XCTAssertEqual(body["recipe"] as? String, "rust")
-            let install = body["install"] as? NSDictionary
-            let verify = body["verify"] as? NSDictionary
-            XCTAssertEqual(install?["exitCode"] as? Int32, 0)
-            XCTAssertEqual(verify?["stdout"] as? String, "cargo 1.0\n")
-            provision.fulfill()
-        }
         wait(for: [provision], timeout: 5)
     }
 

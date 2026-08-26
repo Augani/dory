@@ -7,6 +7,7 @@ nonisolated protocol DorydControlXPC {
     func protocolVersion(reply: @escaping (UInt32) -> Void)
     func dorySocketPath(reply: @escaping (String) -> Void)
     func engineStatus(reply: @escaping (String, String) -> Void)
+    func engineDashboardSnapshot(reply: @escaping (NSDictionary, String) -> Void)
     func engineStart(reply: @escaping (Bool, String) -> Void)
     func engineStop(reply: @escaping (Bool, String) -> Void)
     func engineSleep(reply: @escaping (Bool, String) -> Void)
@@ -667,15 +668,25 @@ nonisolated struct DorydMachineRuntimeIdentity: Codable, Sendable, Equatable, Ha
         if let graphicsQualification, !graphicsQualification.isValidGraphicsReference {
             return false
         }
-        guard hostQualification?.isValidHostReference == true else { return false }
         switch supportTier {
         case "supported":
-            guard runtimeQualification?.isValidRuntimeReference == true,
-                  experimentalAuthorizationIdentity == nil else {
-                return false
+            if isPortableVZSoftwareBaseline {
+                guard graphicsQualification == nil,
+                      runtimeQualification == nil,
+                      hostQualification == nil,
+                      experimentalAuthorizationIdentity == nil else {
+                    return false
+                }
+            } else {
+                guard hostQualification?.isValidHostReference == true,
+                      runtimeQualification?.isValidRuntimeReference == true,
+                      experimentalAuthorizationIdentity == nil else {
+                    return false
+                }
             }
         case "experimental":
-            guard experimentalAuthorizationIdentity?.isSafeEvidenceIdentifier == true,
+            guard hostQualification?.isValidHostReference == true,
+                  experimentalAuthorizationIdentity?.isSafeEvidenceIdentifier == true,
                   runtimeQualification.map(\.isValidRuntimeReference) ?? true else {
                 return false
             }
@@ -692,8 +703,62 @@ nonisolated struct DorydMachineRuntimeIdentity: Codable, Sendable, Equatable, Ha
         }
     }
 
+    /// Portable user-installed Linux intentionally has no exact-media runtime or host
+    /// qualification. Admit only the narrow non-accelerated VZ contract that the daemon can prove
+    /// structurally; every managed or accelerated plan still requires signed qualification.
+    private var isPortableVZSoftwareBaseline: Bool {
+        guard backend == "apple-virtualization-framework",
+              backendImplementationIdentifier == "dory.vz-linux.compatibility.v1",
+              graphics == "software",
+              selectionDisposition == "primary",
+              bootMedia?.source == "user-provided",
+              let kind = bootMedia?.kind,
+              kind == "installer-iso" || kind == "virtual-disk",
+              components?.contains(where: { $0.componentIdentifier == "dory-vmm" }) == true else {
+            return false
+        }
+        return true
+    }
+
     var authorizesRemovableUSBHotplug: Bool {
         mode == "resolved-plan" && removableUSBHotplug == true && isValid
+    }
+}
+
+nonisolated struct DorydMachineRuntimeGraphicsSelection: Sendable, Equatable, Hashable {
+    static let currentSchemaVersion: UInt16 = 1
+    var schemaVersion: UInt16
+    var operationID: String
+    var resolvedPlanSHA256: String
+    var planRevision: UInt64
+    var accelerationLevel: String
+    var backend: String
+    var rendererGeneration: UInt64?
+    var rendererWorkerReceiptSHA256: String?
+    var guestProducerFenceProofSHA256: String?
+
+    var isValid: Bool {
+        guard schemaVersion == Self.currentSchemaVersion,
+              operationID.isCanonicalLowercaseUUID,
+              resolvedPlanSHA256.isLowercaseSHA256,
+              planRevision > 0 else { return false }
+        switch (accelerationLevel, backend) {
+        case ("software", "software"):
+            return rendererGeneration == nil
+                && rendererWorkerReceiptSHA256 == nil
+                && guestProducerFenceProofSHA256 == nil
+        case ("host-accelerated-display", "virgl"),
+             ("hardware-accelerated-3d", "virgl-venus"):
+            return rendererGeneration.map { $0 > 0 } == true
+                && rendererWorkerReceiptSHA256?.isLowercaseSHA256 == true
+                && guestProducerFenceProofSHA256?.isLowercaseSHA256 == true
+        default:
+            return false
+        }
+    }
+
+    var isQualifiedAcceleration: Bool {
+        isValid && accelerationLevel != "software"
     }
 }
 
@@ -729,6 +794,12 @@ nonisolated private extension String {
         utf8.count == 64 && utf8.allSatisfy { byte in
             (byte >= 48 && byte <= 57) || (byte >= 97 && byte <= 102)
         }
+    }
+
+    var isCanonicalLowercaseUUID: Bool {
+        utf8.count == 36
+            && self == lowercased()
+            && UUID(uuidString: self).map { $0.uuidString.lowercased() == self } == true
     }
 
     var isSafeEvidenceIdentifier: Bool {
@@ -1079,6 +1150,7 @@ nonisolated struct DorydMachineStatus: Sendable, Equatable {
     var typedSettings: DorydMachineTypedSettings? = nil
     var displayPresentation: DoryMachineDisplayPresentation = .windowed
     var runtimeIdentity: DorydMachineRuntimeIdentity = .legacyCompatibility
+    var runtimeGraphicsSelection: DorydMachineRuntimeGraphicsSelection? = nil
     var installedDesktopPayloadReceipt: DorydInstalledDesktopPayloadReceipt? = nil
     var cloneReceipt: DorydMachineCloneReceipt? = nil
     var savedState: DorydMachineSavedStateSummary? = nil
@@ -1842,6 +1914,26 @@ nonisolated final class DorydClient: @unchecked Sendable {
         try await call { proxy, finish in
             proxy.engineStatus { state, detail in
                 finish(.success(DorydEngineStatus(state: state, detail: detail)))
+            }
+        }
+    }
+
+    func engineDashboardSnapshot() async throws -> [String: Data] {
+        try await call { proxy, finish in
+            proxy.engineDashboardSnapshot { dictionary, error in
+                guard error.isEmpty else {
+                    finish(.failure(DorydClientError.daemon(error)))
+                    return
+                }
+                var result: [String: Data] = [:]
+                for (key, value) in dictionary {
+                    guard let key = key as? String, let data = value as? Data else {
+                        finish(.failure(DorydClientError.daemon("invalid dashboard snapshot payload")))
+                        return
+                    }
+                    result[key] = data
+                }
+                finish(.success(result))
             }
         }
     }
@@ -2859,6 +2951,11 @@ nonisolated final class DorydClient: @unchecked Sendable {
               let runtimeIdentity = machineRuntimeIdentity(from: dictionary) else {
             return nil
         }
+        guard let runtimeGraphicsSelection = machineRuntimeGraphicsSelection(
+            from: dictionary["runtimeGraphicsSelection"],
+            state: state,
+            runtimeIdentity: runtimeIdentity
+        ) else { return nil }
         let environment = machineEnvironment(from: dictionary["env"])
         guard let typedSettings = machineTypedSettings(from: dictionary) else {
             return nil
@@ -2951,6 +3048,7 @@ nonisolated final class DorydClient: @unchecked Sendable {
             typedSettings: typedSettings.value,
             displayPresentation: displayPresentation,
             runtimeIdentity: runtimeIdentity,
+            runtimeGraphicsSelection: runtimeGraphicsSelection.value,
             installedDesktopPayloadReceipt: installedDesktopPayloadReceipt.value,
             cloneReceipt: cloneReceipt.value,
             savedState: savedState.value
@@ -3844,6 +3942,67 @@ nonisolated final class DorydClient: @unchecked Sendable {
         return identity
     }
 
+    private struct OptionalRuntimeGraphicsSelection {
+        var value: DorydMachineRuntimeGraphicsSelection?
+    }
+
+    /// The plan describes what may launch; this receipt describes what the active RawHV helper
+    /// actually selected. A running resolved RawHV machine without an exact matching receipt is
+    /// rejected instead of inheriting the plan's acceleration label.
+    nonisolated private static func machineRuntimeGraphicsSelection(
+        from encoded: Any?,
+        state: String,
+        runtimeIdentity: DorydMachineRuntimeIdentity
+    ) -> OptionalRuntimeGraphicsSelection? {
+        guard let encoded else {
+            if ["running", "paused"].contains(state),
+               runtimeIdentity.mode == "resolved-plan",
+               runtimeIdentity.backend == DoryVirtualizationBackendIdentity.doryHypervisor.rawValue {
+                return nil
+            }
+            return OptionalRuntimeGraphicsSelection(value: nil)
+        }
+        guard ["starting", "running", "paused"].contains(state),
+              runtimeIdentity.mode == "resolved-plan",
+              runtimeIdentity.backend == DoryVirtualizationBackendIdentity.doryHypervisor.rawValue,
+              let dictionary = encoded as? NSDictionary,
+              let keys = dictionary.allKeys as? [String],
+              keys.count == Set(keys).count,
+              Set(keys).isSubset(of: [
+                  "schemaVersion", "operationID", "resolvedPlanSHA256", "planRevision",
+                  "accelerationLevel", "backend", "rendererGeneration",
+                  "rendererWorkerReceiptSHA256", "guestProducerFenceProofSHA256",
+              ]),
+              let schemaVersion = uint16(dictionary["schemaVersion"]),
+              let operationID = dictionary["operationID"] as? String,
+              let resolvedPlanSHA256 = dictionary["resolvedPlanSHA256"] as? String,
+              let planRevision = strictUInt64(dictionary["planRevision"]),
+              let accelerationLevel = dictionary["accelerationLevel"] as? String,
+              let backend = dictionary["backend"] as? String else {
+            return nil
+        }
+        let selection = DorydMachineRuntimeGraphicsSelection(
+            schemaVersion: schemaVersion,
+            operationID: operationID,
+            resolvedPlanSHA256: resolvedPlanSHA256,
+            planRevision: planRevision,
+            accelerationLevel: accelerationLevel,
+            backend: backend,
+            rendererGeneration: dictionary["rendererGeneration"].flatMap(strictUInt64),
+            rendererWorkerReceiptSHA256:
+                dictionary["rendererWorkerReceiptSHA256"] as? String,
+            guestProducerFenceProofSHA256:
+                dictionary["guestProducerFenceProofSHA256"] as? String
+        )
+        guard selection.isValid,
+              selection.resolvedPlanSHA256 == runtimeIdentity.planSHA256,
+              selection.planRevision == runtimeIdentity.planRevision,
+              selection.accelerationLevel == runtimeIdentity.graphics else {
+            return nil
+        }
+        return OptionalRuntimeGraphicsSelection(value: selection)
+    }
+
     /// An absent field is compatible with an older daemon. Once present, every row is a durable
     /// device-identity claim; silently dropping a malformed row could make the next app edit
     /// delete a share the user never removed.
@@ -4699,8 +4858,8 @@ nonisolated final class DorydClient: @unchecked Sendable {
         guard rawKeys.count == keys.count,
               requiredKeys.isSubset(of: keys),
               keys.subtracting(requiredKeys).isSubset(of: ["sourceBackend"]),
-              let schemaVersion = uint16(dictionary["schemaVersion"]),
-              schemaVersion == 1,
+              let rawSchemaVersion = strictUInt64(dictionary["schemaVersion"]),
+              rawSchemaVersion == 1,
               let contentID = dictionary["contentID"] as? String,
               contentID.isLowercaseSHA256,
               let sourceMachineID = dictionary["sourceMachineID"] as? String,
@@ -4711,10 +4870,13 @@ nonisolated final class DorydClient: @unchecked Sendable {
               ["arm64", "x86_64"].contains(architecture),
               let bootMode = dictionary["bootMode"] as? String,
               ["linux-kernel", "efi"].contains(bootMode),
-              let diskSizeBytes = uint64(dictionary["diskSizeBytes"]), diskSizeBytes > 0,
-              let virtualHardwareABIVersion = uint16(
+              let diskSizeBytes = strictUInt64(dictionary["diskSizeBytes"]),
+              diskSizeBytes > 0,
+              let rawVirtualHardwareABIVersion = strictUInt64(
                   dictionary["virtualHardwareABIVersion"]
-              ), virtualHardwareABIVersion > 0,
+              ),
+              rawVirtualHardwareABIVersion > 0,
+              rawVirtualHardwareABIVersion <= UInt16.max,
               let sourceRuntimeMode = dictionary["sourceRuntimeMode"] as? String,
               ["legacy-compatibility", "resolved-plan", "requires-replanning"]
                 .contains(sourceRuntimeMode),
@@ -4779,14 +4941,14 @@ nonisolated final class DorydClient: @unchecked Sendable {
             return nil
         }
         return DorydMachineImportAssessment(
-            schemaVersion: schemaVersion,
+            schemaVersion: UInt16(rawSchemaVersion),
             contentID: contentID,
             sourceMachineID: sourceMachineID,
             sourceSnapshotID: sourceSnapshotID,
             architecture: architecture,
             bootMode: bootMode,
             diskSizeBytes: diskSizeBytes,
-            virtualHardwareABIVersion: virtualHardwareABIVersion,
+            virtualHardwareABIVersion: UInt16(rawVirtualHardwareABIVersion),
             sourceRuntimeMode: sourceRuntimeMode,
             sourceBackend: sourceBackend,
             portable: portable,
@@ -4881,19 +5043,22 @@ nonisolated final class DorydClient: @unchecked Sendable {
                   "capabilityVersion",
               ],
               keys.count == 5,
-              let schemaVersion = uint16(raw["schemaVersion"]),
+              let rawSchemaVersion = strictUInt64(raw["schemaVersion"]),
+              rawSchemaVersion <= UInt16.max,
               let receiptID = raw["receiptID"] as? String,
               let agentBuild = raw["agentBuild"] as? String,
-              let agentProtocolVersion = uint32(raw["agentProtocolVersion"]),
-              let capabilityVersion = uint32(raw["capabilityVersion"]) else {
+              let rawAgentProtocolVersion = strictUInt64(raw["agentProtocolVersion"]),
+              rawAgentProtocolVersion <= UInt32.max,
+              let rawCapabilityVersion = strictUInt64(raw["capabilityVersion"]),
+              rawCapabilityVersion <= UInt32.max else {
             return nil
         }
         let receipt = DorydMachineSnapshotQuiesceReceipt(
-            schemaVersion: schemaVersion,
+            schemaVersion: UInt16(rawSchemaVersion),
             receiptID: receiptID,
             agentBuild: agentBuild,
-            agentProtocolVersion: agentProtocolVersion,
-            capabilityVersion: capabilityVersion
+            agentProtocolVersion: UInt32(rawAgentProtocolVersion),
+            capabilityVersion: UInt32(rawCapabilityVersion)
         )
         guard receipt.isValid else { return nil }
         return ParsedMachineSnapshotQuiesceReceipt(value: receipt)

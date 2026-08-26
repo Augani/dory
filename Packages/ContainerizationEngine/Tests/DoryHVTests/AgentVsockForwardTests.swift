@@ -38,6 +38,16 @@ import Testing
         #expect(ForwardPreamble.read(from: fds[1]) == nil)
     }
 
+    @Test func preambleDeadlineBoundsTheWholeFrame() {
+        var fds: [Int32] = [0, 0]
+        #expect(socketpair(AF_UNIX, SOCK_STREAM, 0, &fds) == 0)
+        defer { close(fds[0]); close(fds[1]) }
+
+        let started = ProcessInfo.processInfo.systemUptime
+        #expect(ForwardPreamble.read(from: fds[1], timeout: 0.02) == nil)
+        #expect(ProcessInfo.processInfo.systemUptime - started < 1)
+    }
+
     /// The full docker-tier relay in-process: a client dials the forward socket, sends the preamble
     /// plus a request and half-closes; a fake guest dockerd (driving VirtioVsock's guest side)
     /// receives the request bytes after the host's SEND-only shutdown, streams a reply, and
@@ -46,7 +56,9 @@ import Testing
         let device = VirtioVsock(guestCID: 3)
         let path = temporarySocketPath()
         defer { unlink(path) }
-        try AgentVsockForward(socketPath: path, guestCID: 3).attach(to: device)
+        let forward = AgentVsockForward(socketPath: path, guestCID: 3)
+        try forward.attach(to: device)
+        defer { forward.stop() }
 
         let guest = FakeGuestEcho(device: device, expect: [UInt8]("ping".utf8), reply: [UInt8]("pong".utf8))
         guest.start()
@@ -68,7 +80,9 @@ import Testing
         let device = VirtioVsock(guestCID: 3)
         let path = temporarySocketPath()
         defer { unlink(path) }
-        try AgentVsockForward(socketPath: path, guestCID: 3).attach(to: device)
+        let forward = AgentVsockForward(socketPath: path, guestCID: 3)
+        try forward.attach(to: device)
+        defer { forward.stop() }
 
         let client = try connectUnix(path)
         defer { close(client) }
@@ -83,7 +97,9 @@ import Testing
         let device = VirtioVsock(guestCID: 3)
         let path = temporarySocketPath()
         defer { unlink(path) }
-        try AgentVsockForward(socketPath: path, guestCID: 3).attach(to: device)
+        let forward = AgentVsockForward(socketPath: path, guestCID: 3)
+        try forward.attach(to: device)
+        defer { forward.stop() }
 
         let client = try connectUnix(path)
         defer { close(client) }
@@ -114,10 +130,12 @@ import Testing
         let path = prefix + String(repeating: "x", count: maximum - prefix.utf8.count)
         #expect(path.utf8.count == maximum)
 
-        let listener = try VsockUnixRelay.makeListener(socketPath: path, mode: 0o600)
+        let listener = try VsockUnixRelay.makeOwnedListener(
+            socketPath: path,
+            mode: 0o600
+        )
         defer {
-            unlink(path)
-            close(listener)
+            VsockUnixRelay.retireOwnedListener(listener, socketPath: path)
         }
         #expect(FileManager.default.fileExists(atPath: path))
     }
@@ -145,6 +163,73 @@ import Testing
         #expect(throws: UnixSocketListenerError.embeddedNull(path: path)) {
             try AgentVsockForward.validateSocketPath(path)
         }
+    }
+
+    @Test func validationRejectsRelativePathsBeforeAnySyscall() {
+        let path = "forward.sock"
+        #expect(throws: UnixSocketListenerError.invalidAbsolutePath(path: path)) {
+            try AgentVsockForward.validateSocketPath(path)
+        }
+    }
+
+    @Test func listenerRefusesToReplaceAFileOrSymlink() throws {
+        let directory = "/tmp/dory-forward-path-attack-\(getpid())-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(
+            atPath: directory,
+            withIntermediateDirectories: false
+        )
+        #expect(chmod(directory, 0o700) == 0)
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        let target = directory + "/target"
+        let filePath = directory + "/forward.sock"
+        try Data("preserve".utf8).write(to: URL(fileURLWithPath: filePath))
+
+        #expect(throws: UnixSocketListenerError.untrustedExistingNode(path: filePath)) {
+            _ = try VsockUnixRelay.makeOwnedListener(socketPath: filePath, mode: 0o600)
+        }
+        #expect(try Data(contentsOf: URL(fileURLWithPath: filePath)) == Data("preserve".utf8))
+
+        try FileManager.default.removeItem(atPath: filePath)
+        try Data("target".utf8).write(to: URL(fileURLWithPath: target))
+        #expect(symlink(target, filePath) == 0)
+        #expect(throws: UnixSocketListenerError.untrustedExistingNode(path: filePath)) {
+            _ = try VsockUnixRelay.makeOwnedListener(socketPath: filePath, mode: 0o600)
+        }
+        var status = stat()
+        #expect(lstat(filePath, &status) == 0)
+        #expect(status.st_mode & S_IFMT == S_IFLNK)
+    }
+
+    @Test func listenerRefusesToReplaceALiveSameUserEndpoint() throws {
+        let directory = "/tmp/dory-live-vsock-\(getpid())-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(
+            atPath: directory,
+            withIntermediateDirectories: false
+        )
+        #expect(chmod(directory, 0o700) == 0)
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        let path = directory + "/live.sock"
+        let listener = try VsockUnixRelay.makeOwnedListener(
+            socketPath: path,
+            mode: 0o600
+        )
+        defer {
+            VsockUnixRelay.retireOwnedListener(listener, socketPath: path)
+        }
+
+        var before = stat()
+        #expect(lstat(path, &before) == 0)
+        #expect(throws: UnixSocketListenerError.endpointInUse(path: path)) {
+            _ = try VsockUnixRelay.makeOwnedListener(
+                socketPath: path,
+                mode: 0o600
+            )
+        }
+        var after = stat()
+        #expect(lstat(path, &after) == 0)
+        #expect(after.st_dev == before.st_dev)
+        #expect(after.st_ino == before.st_ino)
+        #expect(after.st_gen == before.st_gen)
     }
 
     @Test func configuredForwardPropagatesBindFailure() {

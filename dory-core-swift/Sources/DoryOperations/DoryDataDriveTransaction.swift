@@ -140,8 +140,11 @@ public enum DoryDataDriveTransaction {
     static func backupPlan(
         drive: DoryDataDrive,
         manifest: DoryDataDriveManifest,
-        destination: String
+        destination requestedDestination: String
     ) throws -> DoryOperationPlan {
+        // The durable plan is an authority boundary. Keep it canonical even for recovery/test
+        // callers that do not enter through `backup(from:to:)` first.
+        let destination = try canonicalBackupPath(requestedDestination)
         let sourceFingerprint = try fingerprint(
             path: drive.root,
             identity: manifest.id.uuidString.lowercased() + "|"
@@ -173,10 +176,11 @@ public enum DoryDataDriveTransaction {
     }
 
     static func restorePlan(
-        archive: String,
+        archive requestedArchive: String,
         verification: DoryDataDriveArchiveVerification,
         drive: DoryDataDrive
     ) throws -> DoryOperationPlan {
+        let archive = try canonicalBackupPath(requestedArchive)
         let targetFingerprint = try fingerprint(
             path: drive.root,
             identity: verification.sourceDriveID.uuidString.lowercased() + "|"

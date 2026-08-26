@@ -1,9 +1,77 @@
 import Darwin
 import DoryCore
+import DoryOperations
 @testable import DorydKit
 import XCTest
 
 final class VmmHandoffTests: XCTestCase {
+    func testResolvedSoftwareGraphicsSelectionRoundTripsAsLiveAuthority() throws {
+        let operationID = UUID()
+        let planSHA256 = String(repeating: "a", count: 64)
+        let selection = DoryRuntimeGraphicsSelection.resolvedSoftware(
+            operationID: operationID,
+            resolvedPlanSHA256: planSHA256,
+            planRevision: 7
+        )
+
+        XCTAssertTrue(selection.isValid)
+        XCTAssertTrue(selection.matchesResolvedRawHVLaunch(
+            operationID: operationID,
+            planSHA256: planSHA256,
+            planRevision: 7,
+            accelerationLevel: .software
+        ))
+
+        let encoded = try JSONEncoder().encode(VmmReadyMessage(
+            machineID: "dev",
+            operationID: operationID.uuidString.lowercased(),
+            graphicsSelection: selection
+        ))
+        let decoded = try JSONDecoder().decode(VmmReadyMessage.self, from: encoded)
+        XCTAssertEqual(decoded.graphicsSelection, selection)
+    }
+
+    func testAcceleratedGraphicsSelectionRequiresBothRendererAndGuestFenceProofs() {
+        let operationID = UUID().uuidString.lowercased()
+        let planSHA256 = String(repeating: "a", count: 64)
+        let rendererReceipt = String(repeating: "b", count: 64)
+        let guestFenceProof = String(repeating: "c", count: 64)
+
+        let missingFence = DoryRuntimeGraphicsSelection(
+            operationID: operationID,
+            resolvedPlanSHA256: planSHA256,
+            planRevision: 1,
+            accelerationLevel: .hardwareAccelerated3D,
+            backend: .virglVenus,
+            rendererGeneration: 1,
+            rendererWorkerReceiptSHA256: rendererReceipt
+        )
+        XCTAssertFalse(missingFence.isValid)
+
+        let missingRenderer = DoryRuntimeGraphicsSelection(
+            operationID: operationID,
+            resolvedPlanSHA256: planSHA256,
+            planRevision: 1,
+            accelerationLevel: .hardwareAccelerated3D,
+            backend: .virglVenus,
+            rendererGeneration: 1,
+            guestProducerFenceProofSHA256: guestFenceProof
+        )
+        XCTAssertFalse(missingRenderer.isValid)
+
+        let complete = DoryRuntimeGraphicsSelection(
+            operationID: operationID,
+            resolvedPlanSHA256: planSHA256,
+            planRevision: 1,
+            accelerationLevel: .hardwareAccelerated3D,
+            backend: .virglVenus,
+            rendererGeneration: 1,
+            rendererWorkerReceiptSHA256: rendererReceipt,
+            guestProducerFenceProofSHA256: guestFenceProof
+        )
+        XCTAssertTrue(complete.isValid)
+    }
+
     func testReceivesReadyMessageAndFileDescriptor() throws {
         let base = "/tmp/dory-vmm-handoff-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)

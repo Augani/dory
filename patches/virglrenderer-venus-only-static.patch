@@ -1,0 +1,1002 @@
+diff --git a/config.h.meson b/config.h.meson
+index 99ead1a..fc7d181 100644
+--- a/config.h.meson
++++ b/config.h.meson
+@@ -36,6 +36,7 @@
+ #mesondefine CHECK_GL_ERRORS
+ #mesondefine ENABLE_GBM_ALLOCATION
+ #mesondefine ENABLE_VENUS
++#mesondefine ENABLE_VENUS_ONLY
+ #mesondefine ENABLE_NEPTUNE
+ #mesondefine ENABLE_VULKAN_DLOAD
+ #mesondefine ENABLE_VULKAN_PRELOAD
+diff --git a/meson.build b/meson.build
+index b863ecc..7ed632d 100644
+--- a/meson.build
++++ b/meson.build
+@@ -56,6 +56,52 @@ endif
+ 
+ with_host_windows = host_machine.system() == 'windows'
+ with_host_darwin = host_machine.system() == 'darwin'
++with_venus_only = get_option('venus-only')
++
++if with_venus_only
++   if not get_option('venus')
++      error('venus-only requires -Dvenus=true')
++   endif
++   if get_option('render-server-mode') != 'thread'
++      error('venus-only requires -Drender-server-mode=thread')
++   endif
++   if get_option('render-server-worker') != 'thread'
++      error('venus-only requires -Drender-server-worker=thread')
++   endif
++   if get_option('vulkan-dload')
++      error('venus-only requires -Dvulkan-dload=false')
++   endif
++   if get_option('platforms').length() != 0
++      error('venus-only requires -Dplatforms=[]')
++   endif
++   if get_option('neptune')
++      error('venus-only is incompatible with Neptune')
++   endif
++   if get_option('drm-renderers').length() != 0
++      error('venus-only is incompatible with DRM native-context renderers')
++   endif
++   if get_option('minigbm_allocation')
++      error('venus-only is incompatible with minigbm allocation')
++   endif
++   if get_option('check-gl-errors')
++      error('venus-only is incompatible with GL error checking')
++   endif
++   if get_option('video')
++      error('venus-only is incompatible with VirGL video')
++   endif
++   if get_option('vtest')
++      error('venus-only is incompatible with vtest')
++   endif
++   if get_option('tests')
++      error('venus-only is incompatible with the GL/Neptune unit-test suite')
++   endif
++   if get_option('fuzzer')
++      error('venus-only is incompatible with the VirGL fuzzer')
++   endif
++   if get_option('vulkan-preload')
++      error('venus-only thread workers are incompatible with Vulkan preload')
++   endif
++endif
+ 
+ warnings = [
+    '-Werror=enum-int-mismatch',
+@@ -85,10 +131,13 @@ prog_python = import('python').find_installation('python3')
+ not_found = dependency('', required: false)
+ gbm_dep = not_found
+ thread_dep = dependency('threads')
+-epoxy_dep = dependency('epoxy', version: '>= 1.5.4')
++epoxy_dep = not_found
++if not with_venus_only
++   epoxy_dep = dependency('epoxy', version: '>= 1.5.4')
++endif
+ m_dep = cc.find_library('m', required : false)
+ dl_dep = not_found
+-if not with_host_windows and not with_host_darwin
++if not with_venus_only and not with_host_windows and not with_host_darwin
+   if not cc.has_function('dlopen')
+     dl_dep = cc.find_library('dl', required : true)
+   endif
+@@ -101,6 +150,9 @@ conf_data.set('_GNU_SOURCE', 1)
+ # the lib. It's up to virglrenderer users to decide whether to use these
+ # APIs. Unstable APIs may be changed or removed without a notice.
+ conf_data.set('VIRGL_RENDERER_UNSTABLE_APIS', 1)
++if with_venus_only
++   conf_data.set('ENABLE_VENUS_ONLY', 1)
++endif
+ 
+ drm_renderers = get_option('drm-renderers')
+ 
+@@ -135,8 +187,12 @@ if with_drm_renderers
+   conf_data.set('ENABLE_DRM', 1)
+ endif
+ 
+-libdrm_dep = dependency('libdrm', version : '>=2.4.50', required: with_drm_renderers or get_option('video'))
+-libdrm_amdgpu_dep = dependency('libdrm_amdgpu', version : '>=2.4.121', required: with_drm_amdgpu)
++libdrm_dep = not_found
++libdrm_amdgpu_dep = not_found
++if not with_venus_only
++   libdrm_dep = dependency('libdrm', version : '>=2.4.50', required: with_drm_renderers or get_option('video'))
++   libdrm_amdgpu_dep = dependency('libdrm_amdgpu', version : '>=2.4.121', required: with_drm_amdgpu)
++endif
+ conf_data.set('ENABLE_LIBDRM', libdrm_dep.found())
+ drm_uapi_dep = declare_dependency(
+    include_directories: include_directories('src' / 'drm' / 'drm-uapi')
+@@ -185,7 +241,7 @@ if cc.has_header('sys/uio.h')
+    conf_data.set('HAVE_SYS_UIO_H', 1)
+ endif
+ 
+-if cc.has_header('dlfcn.h')
++if not with_venus_only and cc.has_header('dlfcn.h')
+    conf_data.set('HAVE_DLFCN_H', 1)
+ endif
+ 
+@@ -509,6 +565,7 @@ summary({'c_args': (' ').join(get_option('c_args')),
+         'gbm': gbm_dep.found(),
+         'metal': metal_dep.found(),
+         'venus': with_venus,
++        'venus-only': with_venus_only,
+         'neptune': with_neptune,
+         'drm-amdgpu': with_drm_amdgpu,
+         'drm-asahi': with_drm_asahi,
+diff --git a/meson_options.txt b/meson_options.txt
+index 1862ee5..d1dbd26 100644
+--- a/meson_options.txt
++++ b/meson_options.txt
+@@ -45,6 +45,13 @@ option(
+   description : 'enable support for venus'
+ )
+ 
++option(
++  'venus-only',
++  type : 'boolean',
++  value : false,
++  description : 'build a fail-closed Venus render-server library without VirGL, GL, or winsys support'
++)
++
+ option(
+   'vulkan-dload',
+   type : 'boolean',
+diff --git a/server/render_protocol.h b/server/render_protocol.h
+index 9dd4c48..821dca2 100644
+--- a/server/render_protocol.h
++++ b/server/render_protocol.h
+@@ -121,8 +121,9 @@ struct render_context_op_nop_request {
+  * atomic_uint represents the current sequence number of a ring (as defined by
+  * the virtio-gpu spec).
+  *
+- * The eventfd is optional.  When given, it will be written to when there are
+- * changes to any of the sequence numbers.
++ * The notification descriptor is optional.  When given, it will be written to
++ * when there are changes to any of the sequence numbers.  It is an eventfd on
++ * Linux and the write side of a nonblocking pipe on Darwin.
+  *
+  * This roughly corresponds to virgl_renderer_context_create_with_flags.
+  */
+@@ -130,7 +131,7 @@ struct render_context_op_init_request {
+    struct render_context_op_header header;
+    uint32_t flags; /* VIRGL_RENDERER_CONTEXT_FLAG_*/
+    size_t shmem_size;
+-   /* followed by 1 shmem fd and optionally 1 eventfd */
++   /* followed by 1 shmem fd and optionally 1 notification write descriptor */
+ };
+ 
+ /* Export a blob resource from the context
+diff --git a/src/gallium/meson.build b/src/gallium/meson.build
+index ac8f8be..e9a1487 100644
+--- a/src/gallium/meson.build
++++ b/src/gallium/meson.build
+@@ -101,6 +101,6 @@ libgallium = static_library(
+ gallium_dep = declare_dependency(
+    link_with: libgallium,
+    include_directories: [inc_gallium, inc_configuration],
+-   sources: [u_format_table_c, u_format_gen_h],
++   sources: [u_format_gen_h],
+    dependencies: mesa_dep,
+ )
+diff --git a/src/meson.build b/src/meson.build
+index e6e48ca..78434d8 100644
+--- a/src/meson.build
++++ b/src/meson.build
+@@ -197,13 +197,14 @@ video_sources = [
+ 
+ virgl_depends = [
+    gallium_dep,
+-   epoxy_dep,
+-   libdrm_dep,
+    thread_dep,
+    m_dep,
+-   dl_dep,
+ ]
+ 
++if not with_venus_only
++   virgl_depends += [epoxy_dep, libdrm_dep, dl_dep]
++endif
++
+ if with_tracing == 'perfetto'
+    virgl_depends += [vperfetto_min_dep]
+ endif
+@@ -216,27 +217,29 @@ if with_tracing == 'sysprof'
+    virgl_depends += [sysprof_dep]
+ endif
+ 
+-virgl_sources += vrend_sources
++if not with_venus_only
++   virgl_sources += vrend_sources
+ 
+-if gbm_dep.found()
+-   virgl_sources += vrend_winsys_gbm_sources
+-   virgl_depends += [gbm_dep]
+-endif
++   if gbm_dep.found()
++      virgl_sources += vrend_winsys_gbm_sources
++      virgl_depends += [gbm_dep]
++   endif
+ 
+-if have_egl
+-   virgl_sources += vrend_winsys_egl_sources
+-endif
++   if have_egl
++      virgl_sources += vrend_winsys_egl_sources
++   endif
+ 
+-if have_glx
+-   virgl_sources += vrend_winsys_glx_sources
+-   virgl_depends += [glx_dep]
+-endif
++   if have_glx
++      virgl_sources += vrend_winsys_glx_sources
++      virgl_depends += [glx_dep]
++   endif
+ 
+-if metal_dep.found()
+-   virgl_sources += vrend_metal_sources
+-   # Foundation pulls in the Objective-C runtime (libobjc) that vrend_metal.m
+-   # needs; without it a Metal-only (e.g. venus-less) build fails to link.
+-   virgl_depends += [metal_dep, dependency('appleframeworks', modules : ['Foundation'])]
++   if metal_dep.found()
++      virgl_sources += vrend_metal_sources
++      # Foundation pulls in the Objective-C runtime (libobjc) that vrend_metal.m
++      # needs; without it a Metal-only (e.g. venus-less) build fails to link.
++      virgl_depends += [metal_dep, dependency('appleframeworks', modules : ['Foundation'])]
++   endif
+ endif
+ 
+ if with_venus
+diff --git a/src/proxy/proxy_context.c b/src/proxy/proxy_context.c
+index 9b33453..736b013 100644
+--- a/src/proxy/proxy_context.c
++++ b/src/proxy/proxy_context.c
+@@ -148,8 +148,8 @@ proxy_context_retire_timeline_fences_locked(struct proxy_context *ctx,
+ static void
+ proxy_context_retire_fences_internal(struct proxy_context *ctx)
+ {
+-   if (ctx->sync_thread.fence_eventfd >= 0)
+-      flush_eventfd(ctx->sync_thread.fence_eventfd);
++   if (ctx->sync_thread.fence_notification_read_fd >= 0)
++      flush_eventfd(ctx->sync_thread.fence_notification_read_fd);
+ 
+    if (proxy_renderer.flags & VIRGL_RENDERER_ASYNC_FENCE_CB)
+       mtx_lock(&ctx->timeline_mutex);
+@@ -175,7 +175,7 @@ proxy_context_sync_thread(void *arg)
+    struct proxy_context *ctx = arg;
+    struct pollfd poll_fds[2] = {
+       [0] = {
+-         .fd = ctx->sync_thread.fence_eventfd,
++         .fd = ctx->sync_thread.fence_notification_read_fd,
+          .events = POLLIN,
+       },
+       [1] = {
+@@ -294,7 +294,7 @@ proxy_context_get_fencing_fd(struct virgl_context *base)
+    struct proxy_context *ctx = (struct proxy_context *)base;
+ 
+    assert(!(proxy_renderer.flags & VIRGL_RENDERER_ASYNC_FENCE_CB));
+-   return ctx->sync_thread.fence_eventfd;
++   return ctx->sync_thread.fence_notification_read_fd;
+ }
+ 
+ static int
+@@ -548,14 +548,17 @@ proxy_context_destroy(struct virgl_context *base)
+    if (!proxy_client_destroy_context(ctx->client, ctx->base.ctx_id))
+       proxy_log("failed to destroy ctx %d", ctx->base.ctx_id);
+ 
+-   if (ctx->sync_thread.fence_eventfd >= 0) {
++   if (ctx->sync_thread.fence_notification_read_fd >= 0) {
+       if (ctx->sync_thread.created) {
+          ctx->sync_thread.stop = true;
+-         write_eventfd(ctx->sync_thread.fence_eventfd, 1);
++         write_eventfd(ctx->sync_thread.fence_notification_write_fd, 1);
+          thrd_join(ctx->sync_thread.thread, NULL);
+       }
+ 
+-      close(ctx->sync_thread.fence_eventfd);
++      close(ctx->sync_thread.fence_notification_read_fd);
++      if (ctx->sync_thread.fence_notification_write_fd !=
++          ctx->sync_thread.fence_notification_read_fd)
++         close(ctx->sync_thread.fence_notification_write_fd);
+    }
+ 
+    if (ctx->shmem.ptr)
+@@ -605,8 +608,8 @@ static bool
+ proxy_context_init_fencing(struct proxy_context *ctx)
+ {
+    /* The render server updates the shmem for the current seqnos and
+-    * optionally notifies using the eventfd.  That means, when only
+-    * VIRGL_RENDERER_THREAD_SYNC is set, we just need to set up the eventfd.
++    * optionally writes to a notification descriptor.  That means, when only
++    * VIRGL_RENDERER_THREAD_SYNC is set, we just need to set up notification.
+     * When VIRGL_RENDERER_ASYNC_FENCE_CB is also set, we need to create a sync
+     * thread as well.
+     *
+@@ -615,11 +618,42 @@ proxy_context_init_fencing(struct proxy_context *ctx)
+    if (!(proxy_renderer.flags & VIRGL_RENDERER_THREAD_SYNC))
+       return true;
+ 
+-   ctx->sync_thread.fence_eventfd = create_eventfd(0);
+-   if (ctx->sync_thread.fence_eventfd < 0) {
++#ifdef __APPLE__
++   int notification_fds[2];
++   if (pipe(notification_fds)) {
++      proxy_log("failed to create fence notification pipe");
++      return false;
++   }
++   for (uint32_t i = 0; i < ARRAY_SIZE(notification_fds); i++) {
++      const int status_flags = fcntl(notification_fds[i], F_GETFL);
++      const int descriptor_flags = fcntl(notification_fds[i], F_GETFD);
++      if (status_flags < 0 || descriptor_flags < 0 ||
++          fcntl(notification_fds[i], F_SETFL, status_flags | O_NONBLOCK) ||
++          fcntl(notification_fds[i], F_SETFD, descriptor_flags | FD_CLOEXEC)) {
++         proxy_log("failed to configure fence notification pipe");
++         close(notification_fds[0]);
++         close(notification_fds[1]);
++         return false;
++      }
++   }
++   /* The server owns a duplicate writer; a client teardown must return EPIPE, not SIGPIPE. */
++   if (fcntl(notification_fds[1], F_SETNOSIGPIPE, 1)) {
++      proxy_log("failed to suppress SIGPIPE for fence notification pipe");
++      close(notification_fds[0]);
++      close(notification_fds[1]);
++      return false;
++   }
++   ctx->sync_thread.fence_notification_read_fd = notification_fds[0];
++   ctx->sync_thread.fence_notification_write_fd = notification_fds[1];
++#else
++   const int eventfd = create_eventfd(0);
++   if (eventfd < 0) {
+       proxy_log("failed to create fence eventfd");
+       return false;
+    }
++   ctx->sync_thread.fence_notification_read_fd = eventfd;
++   ctx->sync_thread.fence_notification_write_fd = eventfd;
++#endif
+ 
+    if (proxy_renderer.flags & VIRGL_RENDERER_ASYNC_FENCE_CB) {
+       int ret = thrd_create(&ctx->sync_thread.thread, proxy_context_sync_thread, ctx);
+@@ -704,7 +738,10 @@ proxy_context_init(struct proxy_context *ctx, uint32_t ctx_flags)
+       .flags = ctx_flags,
+       .shmem_size = ctx->shmem.size,
+    };
+-   const int req_fds[2] = { ctx->shmem.fd, ctx->sync_thread.fence_eventfd };
++   const int req_fds[2] = {
++      ctx->shmem.fd,
++      ctx->sync_thread.fence_notification_write_fd,
++   };
+    const int req_fd_count = req_fds[1] >= 0 ? 2 : 1;
+    if (!proxy_socket_send_request_with_fds(&ctx->socket, &req, sizeof(req), req_fds,
+                                            req_fd_count)) {
+@@ -746,7 +783,8 @@ proxy_context_create(uint32_t ctx_id,
+    mtx_init(&ctx->timeline_mutex, mtx_plain);
+    mtx_init(&ctx->free_fences_mutex, mtx_plain);
+    list_inithead(&ctx->free_fences);
+-   ctx->sync_thread.fence_eventfd = -1;
++   ctx->sync_thread.fence_notification_read_fd = -1;
++   ctx->sync_thread.fence_notification_write_fd = -1;
+ 
+    if (!proxy_context_init(ctx, ctx_flags)) {
+       proxy_context_destroy(&ctx->base);
+diff --git a/src/proxy/proxy_context.h b/src/proxy/proxy_context.h
+index ce29eca..662fcaa 100644
+--- a/src/proxy/proxy_context.h
++++ b/src/proxy/proxy_context.h
+@@ -52,7 +52,8 @@ struct proxy_context {
+ 
+    struct {
+       /* when VIRGL_RENDERER_THREAD_SYNC is set */
+-      int fence_eventfd;
++      int fence_notification_read_fd;
++      int fence_notification_write_fd;
+ 
+       /* when VIRGL_RENDERER_ASYNC_FENCE_CB is also set */
+       thrd_t thread;
+diff --git a/src/virglrenderer.c b/src/virglrenderer.c
+index 7107672..492bb12 100644
+--- a/src/virglrenderer.c
++++ b/src/virglrenderer.c
+@@ -25,7 +25,9 @@
+ #include <stdio.h>
+ #include <time.h>
+ 
++#ifndef ENABLE_VENUS_ONLY
+ #include <epoxy/gl.h>
++#endif
+ 
+ #include <sys/stat.h>
+ #include <fcntl.h>
+@@ -43,12 +45,15 @@
+ #include "vkr_allocator.h"
+ #include "drm_renderer.h"
+ #include "proxy/proxy_renderer.h"
++#include "vrend/vrend_iov.h"
++#ifndef ENABLE_VENUS_ONLY
+ #include "vrend/vrend_renderer.h"
+ #include "vrend/vrend_winsys.h"
+ 
+-#ifdef ENABLE_METAL
++#if defined(ENABLE_METAL) && !defined(ENABLE_VENUS_ONLY)
+ #include "vrend/vrend_metal.h"
+ #endif
++#endif
+ 
+ #ifndef WIN32
+ #include "util/libsync.h"
+@@ -59,9 +64,12 @@
+ 
+ #include "virgl_context.h"
+ #include "virgl_fence.h"
++#include "virgl_protocol.h"
+ #include "virgl_resource.h"
+ #include "virgl_util.h"
+ 
++#define VIRGL_DRM_FORMAT_MOD_INVALID 0x00ffffffffffffffULL
++
+ struct global_state {
+    bool client_initialized;
+    void *cookie;
+@@ -70,22 +78,45 @@ struct global_state {
+ 
+    bool resource_initialized;
+    bool context_initialized;
++#ifndef ENABLE_VENUS_ONLY
+    bool winsys_initialized;
+    bool vrend_initialized;
+-   bool proxy_initialized;
+    bool external_winsys_initialized;
++#endif
++   bool proxy_initialized;
+    bool drm_initialized;
+    bool fence_initialized;
+ };
+ 
+ static struct global_state state;
+ 
++static bool
++virgl_iovec_size(const struct iovec *iovecs, uint32_t iovec_count, size_t *out_size)
++{
++   size_t size = 0;
++
++   if (!iovecs && iovec_count)
++      return false;
++
++   for (uint32_t i = 0; i < iovec_count; i++) {
++      if (iovecs[i].iov_len > SIZE_MAX - size)
++         return false;
++      size += iovecs[i].iov_len;
++   }
++
++   *out_size = size;
++   return true;
++}
++
+ /* new API - just wrap internal API for now */
+ 
+-static int virgl_renderer_resource_create_internal(struct virgl_renderer_resource_create_args *args,
++static int virgl_renderer_resource_create_internal(UNUSED struct virgl_renderer_resource_create_args *args,
+                                                    UNUSED struct iovec *iov, UNUSED uint32_t num_iovs,
+-                                                   void *image)
++                                                   UNUSED void *image)
+ {
++#ifdef ENABLE_VENUS_ONLY
++   return EINVAL;
++#else
+    struct virgl_resource *res;
+    struct pipe_resource *pipe_res;
+    struct vrend_renderer_resource_create_args vrend_args =  { 0 };
+@@ -124,6 +155,7 @@ static int virgl_renderer_resource_create_internal(struct virgl_renderer_resourc
+    res->map_info = map_info;
+ 
+    return 0;
++#endif
+ }
+ 
+ int virgl_renderer_resource_create(struct virgl_renderer_resource_create_args *args,
+@@ -179,14 +211,16 @@ void virgl_renderer_resource_unref(uint32_t res_handle)
+    virgl_resource_remove(res->res_id);
+ }
+ 
+-void virgl_renderer_fill_caps(uint32_t set, uint32_t version,
++void virgl_renderer_fill_caps(uint32_t set, UNUSED uint32_t version,
+                               void *caps)
+ {
+    switch (set) {
+    case VIRTGPU_DRM_CAPSET_VIRGL:
+    case VIRTGPU_DRM_CAPSET_VIRGL2:
++#ifndef ENABLE_VENUS_ONLY
+       if (state.vrend_initialized)
+          vrend_renderer_fill_caps(set, version, (union virgl_caps *)caps);
++#endif
+       break;
+    case VIRTGPU_DRM_CAPSET_VENUS:
+       if (state.proxy_initialized)
+@@ -244,10 +278,14 @@ int virgl_renderer_context_create_with_flags(uint32_t ctx_id,
+    switch (capset_id) {
+    case VIRTGPU_DRM_CAPSET_VIRGL:
+    case VIRTGPU_DRM_CAPSET_VIRGL2:
++#ifdef ENABLE_VENUS_ONLY
++      return EINVAL;
++#else
+       if (!state.vrend_initialized)
+          return EINVAL;
+       ctx = vrend_renderer_context_create(ctx_id, nlen, name);
+       break;
++#endif
+    case VIRTGPU_DRM_CAPSET_VENUS:
+       if (!state.proxy_initialized)
+          return EINVAL;
+@@ -356,11 +394,15 @@ int virgl_renderer_transfer_write_iov(uint32_t handle,
+       return ctx->transfer_3d(ctx, res, &transfer_info,
+                               VIRGL_TRANSFER_TO_HOST);
+    } else {
++#ifdef ENABLE_VENUS_ONLY
++      return EINVAL;
++#else
+       if (!res->pipe_resource)
+          return EINVAL;
+ 
+       return vrend_renderer_transfer_pipe(res->pipe_resource, &transfer_info,
+                                           VIRGL_TRANSFER_TO_HOST);
++#endif
+    }
+ }
+ 
+@@ -395,11 +437,15 @@ int virgl_renderer_transfer_read_iov(uint32_t handle, uint32_t ctx_id,
+       return ctx->transfer_3d(ctx, res, &transfer_info,
+                               VIRGL_TRANSFER_FROM_HOST);
+    } else {
++#ifdef ENABLE_VENUS_ONLY
++      return EINVAL;
++#else
+       if (!res->pipe_resource)
+          return EINVAL;
+ 
+       return vrend_renderer_transfer_pipe(res->pipe_resource, &transfer_info,
+                                           VIRGL_TRANSFER_FROM_HOST);
++#endif
+    }
+ }
+ 
+@@ -432,9 +478,13 @@ void virgl_renderer_resource_detach_iov(int res_handle, struct iovec **iov_p, in
+ int virgl_renderer_create_fence(int client_fence_id, UNUSED uint32_t ctx_id)
+ {
+    TRACE_FUNC();
++#ifndef ENABLE_VENUS_ONLY
+    const uint32_t fence_id = (uint32_t)client_fence_id;
+    if (state.vrend_initialized)
+       return vrend_renderer_create_ctx0_fence(fence_id);
++#else
++   (void)client_fence_id;
++#endif
+    return EINVAL;
+ }
+ 
+@@ -473,8 +523,10 @@ int virgl_renderer_context_get_poll_fd(uint32_t ctx_id)
+ 
+ void virgl_renderer_force_ctx_0(void)
+ {
++#ifndef ENABLE_VENUS_ONLY
+    if (state.vrend_initialized)
+       vrend_renderer_force_ctx_0();
++#endif
+ }
+ 
+ void virgl_renderer_ctx_attach_resource(int ctx_id, int res_handle)
+@@ -499,8 +551,8 @@ void virgl_renderer_ctx_detach_resource(int ctx_id, int res_handle)
+ 
+ static int virgl_renderer_resource_get_info_common(int res_handle,
+                                                    struct virgl_renderer_resource_info *info,
+-                                                   enum virgl_renderer_native_handle_type *type,
+-                                                   virgl_renderer_native_handle *handle)
++                                                   UNUSED enum virgl_renderer_native_handle_type *type,
++                                                   UNUSED virgl_renderer_native_handle *handle)
+ {
+    int ret = 0;
+ 
+@@ -518,6 +570,7 @@ static int virgl_renderer_resource_get_info_common(int res_handle,
+    if (!res->pipe_resource)
+       return 0;
+ 
++#ifndef ENABLE_VENUS_ONLY
+    vrend_renderer_resource_get_info(res->pipe_resource,
+                                     (struct vrend_renderer_resource_info *)info);
+ 
+@@ -535,6 +588,7 @@ static int virgl_renderer_resource_get_info_common(int res_handle,
+          *type = VIRGL_NATIVE_HANDLE_METAL_TEXTURE;
+       }
+    }
++#endif
+ #endif
+ 
+    return ret;
+@@ -549,6 +603,7 @@ int virgl_renderer_resource_get_info(int res_handle,
+    if ((ret = virgl_renderer_resource_get_info_common(res_handle, info, NULL, NULL)) != 0)
+        return ret;
+ 
++#ifndef ENABLE_VENUS_ONLY
+    if (state.winsys_initialized) {
+       return vrend_winsys_get_attrs_for_texture(info->tex_id,
+                                                 info->virgl_format,
+@@ -557,6 +612,7 @@ int virgl_renderer_resource_get_info(int res_handle,
+                                                 NULL,
+                                                 NULL);
+    }
++#endif
+ 
+    return 0;
+ }
+@@ -575,6 +631,7 @@ int virgl_renderer_resource_get_info_ext(int res_handle,
+ 
+    info_ext->version = VIRGL_RENDERER_RESOURCE_INFO_EXT_VERSION;
+ 
++#ifndef ENABLE_VENUS_ONLY
+    if (state.winsys_initialized) {
+       return vrend_winsys_get_attrs_for_texture(info_ext->base.tex_id,
+                                                 info_ext->base.virgl_format,
+@@ -583,6 +640,7 @@ int virgl_renderer_resource_get_info_ext(int res_handle,
+                                                 &info_ext->planes,
+                                                 &info_ext->modifiers);
+    }
++#endif
+ 
+    return 0;
+ }
+@@ -596,7 +654,12 @@ void virgl_renderer_get_cap_set(uint32_t cap_set, uint32_t *max_ver,
+    switch (cap_set) {
+    case VIRTGPU_DRM_CAPSET_VIRGL:
+    case VIRTGPU_DRM_CAPSET_VIRGL2:
++#ifdef ENABLE_VENUS_ONLY
++      *max_ver = 0;
++      *max_size = 0;
++#else
+       vrend_renderer_get_cap_set(cap_set, max_ver, max_size);
++#endif
+       break;
+    case VIRTGPU_DRM_CAPSET_VENUS:
+       *max_ver = 0;
+@@ -619,19 +682,23 @@ void virgl_renderer_get_cap_set(uint32_t cap_set, uint32_t *max_ver,
+    }
+ }
+ 
+-void virgl_renderer_get_rect(int resource_id, struct iovec *iov, unsigned int num_iovs,
+-                             uint32_t offset, int x, int y, int width, int height)
++void virgl_renderer_get_rect(int resource_id, UNUSED struct iovec *iov,
++                             UNUSED unsigned int num_iovs, UNUSED uint32_t offset,
++                             UNUSED int x, UNUSED int y, UNUSED int width, UNUSED int height)
+ {
+    TRACE_FUNC();
+    struct virgl_resource *res = virgl_resource_lookup(resource_id);
+    if (!res || !res->pipe_resource)
+       return;
+ 
++#ifndef ENABLE_VENUS_ONLY
+    vrend_renderer_get_rect(res->pipe_resource, iov, num_iovs, offset, x, y,
+                            width, height);
++#endif
+ }
+ 
+ 
++#ifndef ENABLE_VENUS_ONLY
+ static void ctx0_fence_retire(uint64_t fence_id, UNUSED void *retire_data)
+ {
+    // ctx0 fence_id is created from uint32_t but stored internally as uint64_t,
+@@ -743,6 +810,7 @@ static const struct vrend_if_cbs vrend_cbs = {
+    destroy_gl_context_surfaceless,
+    make_current_surfaceless,
+ };
++#endif
+ 
+ static int
+ proxy_renderer_cb_get_server_fd(uint32_t version)
+@@ -757,8 +825,13 @@ static const struct proxy_renderer_cbs proxy_cbs = {
+    proxy_renderer_cb_get_server_fd,
+ };
+ 
+-void *virgl_renderer_get_cursor_data(uint32_t resource_id, uint32_t *width, uint32_t *height)
++void *virgl_renderer_get_cursor_data(UNUSED uint32_t resource_id,
++                                     UNUSED uint32_t *width,
++                                     UNUSED uint32_t *height)
+ {
++#ifdef ENABLE_VENUS_ONLY
++   return NULL;
++#else
+    struct virgl_resource *res = virgl_resource_lookup(resource_id);
+    if (!res || !res->pipe_resource)
+       return NULL;
+@@ -767,6 +840,7 @@ void *virgl_renderer_get_cursor_data(uint32_t resource_id, uint32_t *width, uint
+    return vrend_renderer_get_cursor_contents(res->pipe_resource,
+                                              width,
+                                              height);
++#endif
+ }
+ 
+ static bool
+@@ -787,8 +861,10 @@ virgl_context_foreach_retire_fences(struct virgl_context *ctx,
+ void virgl_renderer_poll(void)
+ {
+    TRACE_FUNC();
++#ifndef ENABLE_VENUS_ONLY
+    if (state.vrend_initialized)
+       vrend_renderer_poll();
++#endif
+ 
+    struct virgl_context_foreach_args args;
+    args.callback = virgl_context_foreach_retire_fences;
+@@ -798,8 +874,10 @@ void virgl_renderer_poll(void)
+ void virgl_renderer_cleanup(UNUSED void *cookie)
+ {
+    TRACE_FUNC();
++#ifndef ENABLE_VENUS_ONLY
+    if (state.vrend_initialized)
+       vrend_renderer_prepare_reset();
++#endif
+ 
+    if (state.context_initialized)
+       virgl_context_table_cleanup();
+@@ -810,14 +888,18 @@ void virgl_renderer_cleanup(UNUSED void *cookie)
+    if (state.proxy_initialized)
+       proxy_renderer_fini();
+ 
++#ifndef ENABLE_VENUS_ONLY
+    if (state.vrend_initialized)
+       vrend_renderer_fini();
++#endif
+ 
+    if (state.fence_initialized)
+       virgl_fence_table_cleanup();
+ 
++#ifndef ENABLE_VENUS_ONLY
+    if (state.winsys_initialized || state.external_winsys_initialized)
+       vrend_winsys_cleanup();
++#endif
+ 
+    if (state.drm_initialized)
+       drm_renderer_fini();
+@@ -835,8 +917,29 @@ int virgl_renderer_init(void *cookie, int flags, struct virgl_renderer_callbacks
+ 
+    int ret;
+ 
++#ifdef ENABLE_VENUS_ONLY
++   const int required_flags = VIRGL_RENDERER_VENUS |
++                              VIRGL_RENDERER_RENDER_SERVER |
++                              VIRGL_RENDERER_NO_VIRGL;
++   const int allowed_flags = required_flags |
++                             VIRGL_RENDERER_THREAD_SYNC |
++                             VIRGL_RENDERER_ASYNC_FENCE_CB |
++                             VIRGL_RENDERER_USE_EXTERNAL_BLOB |
++                             VIRGL_RENDERER_USE_GUEST_VRAM;
++   if ((flags & required_flags) != required_flags || (flags & ~allowed_flags)) {
++      virgl_error("venus-only renderer requires VENUS, RENDER_SERVER, and NO_VIRGL without classic renderer flags\n");
++      return -EINVAL;
++   }
++#endif
++
++   /* The Darwin Venus proxy uses a split pipe because kqueue fds cannot cross SCM_RIGHTS. */
++   bool has_thread_sync_notification = has_eventfd();
++#if defined(ENABLE_VENUS_ONLY) && defined(__APPLE__)
++   has_thread_sync_notification = true;
++#endif
++
+    /* VIRGL_RENDERER_THREAD_SYNC is a hint and can be silently ignored */
+-   if (!has_eventfd() || getenv("VIRGL_DISABLE_MT"))
++   if (!has_thread_sync_notification || getenv("VIRGL_DISABLE_MT"))
+       flags &= ~VIRGL_RENDERER_THREAD_SYNC;
+ 
+    if (state.client_initialized && (state.cookie != cookie ||
+@@ -861,9 +964,13 @@ int virgl_renderer_init(void *cookie, int flags, struct virgl_renderer_callbacks
+    }
+ 
+    if (!state.resource_initialized) {
++#ifdef ENABLE_VENUS_ONLY
++      const struct virgl_resource_pipe_callbacks *pipe_cbs = NULL;
++#else
+       const struct virgl_resource_pipe_callbacks *pipe_cbs =
+          (flags & VIRGL_RENDERER_NO_VIRGL) ? NULL :
+          vrend_renderer_get_pipe_callbacks();
++#endif
+ 
+       ret = virgl_resource_table_init(pipe_cbs);
+       if (ret) {
+@@ -882,6 +989,7 @@ int virgl_renderer_init(void *cookie, int flags, struct virgl_renderer_callbacks
+       state.context_initialized = true;
+    }
+ 
++#ifndef ENABLE_VENUS_ONLY
+    if (!state.winsys_initialized && !(flags & VIRGL_RENDERER_NO_VIRGL) &&
+        (flags & (VIRGL_RENDERER_USE_EGL | VIRGL_RENDERER_USE_GLX))) {
+       int drm_fd = -1;
+@@ -963,7 +1071,13 @@ int virgl_renderer_init(void *cookie, int flags, struct virgl_renderer_callbacks
+       }
+       state.vrend_initialized = true;
+    }
++#endif
+ 
+    if (!state.proxy_initialized && (flags & VIRGL_RENDERER_RENDER_SERVER)) {
+-      ret = proxy_renderer_init(&proxy_cbs, flags | VIRGL_RENDERER_NO_VIRGL);
++      uint32_t proxy_flags = flags | VIRGL_RENDERER_NO_VIRGL;
++#ifdef __APPLE__
++      if (!getenv("VIRGL_DISABLE_MT"))
++         proxy_flags |= VIRGL_RENDERER_THREAD_SYNC;
++#endif
++      ret = proxy_renderer_init(&proxy_cbs, proxy_flags);
+       if (ret) {
+@@ -1004,27 +1118,34 @@ fail:
+    return ret;
+ }
+ 
+-int virgl_renderer_get_fd_for_texture(uint32_t tex_id, int *fd)
++int virgl_renderer_get_fd_for_texture(UNUSED uint32_t tex_id, UNUSED int *fd)
+ {
+    TRACE_FUNC();
++#ifndef ENABLE_VENUS_ONLY
+    if (state.winsys_initialized)
+       return vrend_winsys_get_fd_for_texture(tex_id, fd);
++#endif
+    return -1;
+ }
+ 
+-int virgl_renderer_get_fd_for_texture2(uint32_t tex_id, int *fd, int *stride, int *offset)
++int virgl_renderer_get_fd_for_texture2(UNUSED uint32_t tex_id, UNUSED int *fd,
++                                       UNUSED int *stride, UNUSED int *offset)
+ {
+    TRACE_FUNC();
++#ifndef ENABLE_VENUS_ONLY
+    if (state.winsys_initialized)
+       return vrend_winsys_get_fd_for_texture2(tex_id, fd, stride, offset);
++#endif
+    return -1;
+ }
+ 
+ void virgl_renderer_reset(void)
+ {
+    TRACE_FUNC();
++#ifndef ENABLE_VENUS_ONLY
+    if (state.vrend_initialized)
+       vrend_renderer_prepare_reset();
++#endif
+ 
+    if (state.context_initialized)
+       virgl_context_table_reset();
+@@ -1035,8 +1151,10 @@ void virgl_renderer_reset(void)
+    if (state.proxy_initialized)
+       proxy_renderer_reset();
+ 
++#ifndef ENABLE_VENUS_ONLY
+    if (state.vrend_initialized)
+       vrend_renderer_reset();
++#endif
+ 
+    if (state.drm_initialized)
+       drm_renderer_reset();
+@@ -1045,8 +1163,10 @@ void virgl_renderer_reset(void)
+ int virgl_renderer_get_poll_fd(void)
+ {
+    TRACE_FUNC();
++#ifndef ENABLE_VENUS_ONLY
+    if (state.vrend_initialized)
+       return vrend_renderer_get_poll_fd();
++#endif
+ 
+    return -1;
+ }
+@@ -1112,9 +1232,11 @@ static int virgl_renderer_export_query(void *execute_args, uint32_t execute_size
+       return -EINVAL;
+ 
+ 
+-   if (res->pipe_resource) {
++#ifndef ENABLE_VENUS_ONLY
++   if (res->pipe_resource)
+       return vrend_renderer_export_query(res->pipe_resource, export_query);
+-   } else if (!export_query->in_export_fds) {
++#endif
++   if (!export_query->in_export_fds) {
+       /* Untyped resources are expected to be exported with
+        * virgl_renderer_resource_export_blob instead and have no type
+        * information.  But when this is called to query (in_export_fds is
+@@ -1125,7 +1247,7 @@ static int virgl_renderer_export_query(void *execute_args, uint32_t execute_size
+       export_query->out_fds[0] = -1;
+       export_query->out_strides[0] = 0;
+       export_query->out_offsets[0] = 0;
+-      export_query->out_modifier = DRM_FORMAT_MOD_INVALID;
++      export_query->out_modifier = VIRGL_DRM_FORMAT_MOD_INVALID;
+       return 0;
+    } else {
+       return -EINVAL;
+@@ -1207,8 +1329,9 @@ int virgl_renderer_resource_create_blob(const struct virgl_renderer_resource_cre
+    if (args->size == 0)
+       return -EINVAL;
+    if (has_guest_storage) {
+-      const size_t iov_size = vrend_get_iovec_size(args->iovecs, args->num_iovs);
+-      if (iov_size < args->size)
++      size_t iov_size;
++      if (!virgl_iovec_size(args->iovecs, args->num_iovs, &iov_size) ||
++          iov_size < args->size)
+          return -EINVAL;
+    } else {
+       if (args->num_iovs)
+@@ -1275,13 +1398,16 @@ int virgl_renderer_resource_map(uint32_t res_handle, void **out_map, uint64_t *o
+    if (!res || res->mapped)
+       return -EINVAL;
+ 
++#ifndef ENABLE_VENUS_ONLY
+    if (res->pipe_resource) {
+       ret = vrend_renderer_resource_map(res->pipe_resource, &map, &map_size);
+       if (!ret) {
+          res->map_size = map_size;
+          res->mapped_from_pipe_resource = true;
+       }
+-   } else {
++   } else
++#endif
++   {
+       enum virgl_resource_fd_type fd_type = res->fd_type;
+       enum virgl_resource_fd_type export_fd_type = res->fd_type;
+       int fd = res->fd;
+@@ -1392,10 +1518,13 @@ int virgl_renderer_resource_unmap(uint32_t res_handle)
+    if (!res || !res->mapped)
+       return -EINVAL;
+ 
++#ifndef ENABLE_VENUS_ONLY
+    if (res->mapped_from_pipe_resource) {
+       assert(res->pipe_resource);
+       ret = vrend_renderer_resource_unmap(res->pipe_resource);
+-   } else {
++   } else
++#endif
++   {
+       switch (res->fd_type) {
+       case VIRGL_RESOURCE_FD_DMABUF:
+       case VIRGL_RESOURCE_FD_SHM:
+@@ -1522,17 +1651,17 @@ virgl_renderer_resource_import_blob(const struct virgl_renderer_resource_import_
+ }
+ 
+ enum virgl_renderer_native_handle_type
+-virgl_renderer_create_handle_for_scanout(uint32_t res_id,
+-                                         uint32_t width,
+-                                         uint32_t height,
+-                                         uint32_t virgl_format,
+-                                         uint32_t padding,
+-                                         uint32_t stride,
+-                                         uint32_t offset,
+-                                         virgl_renderer_native_handle *handle)
++virgl_renderer_create_handle_for_scanout(UNUSED uint32_t res_id,
++                                         UNUSED uint32_t width,
++                                         UNUSED uint32_t height,
++                                         UNUSED uint32_t virgl_format,
++                                         UNUSED uint32_t padding,
++                                         UNUSED uint32_t stride,
++                                         UNUSED uint32_t offset,
++                                         UNUSED virgl_renderer_native_handle *handle)
+ {
+    TRACE_FUNC();
+-#ifdef ENABLE_METAL
++#if defined(ENABLE_METAL) && !defined(ENABLE_VENUS_ONLY)
+    struct virgl_resource *res = virgl_resource_lookup(res_id);
+ 
+    if (!res)
+@@ -1585,17 +1714,17 @@ virgl_renderer_create_handle_for_scanout(uint32_t res_id,
+ #endif /* HAVE_EPOXY_EGL_H */
+ 
+    return VIRGL_NATIVE_HANDLE_NONE;
+-#else /* !ENABLE_METAL */
++#else /* !ENABLE_METAL || ENABLE_VENUS_ONLY */
+    return VIRGL_NATIVE_HANDLE_NONE;
+ #endif
+ }
+ 
+ void
+-virgl_renderer_release_handle_for_scanout(enum virgl_renderer_native_handle_type type,
+-                                          virgl_renderer_native_handle handle)
++virgl_renderer_release_handle_for_scanout(UNUSED enum virgl_renderer_native_handle_type type,
++                                          UNUSED virgl_renderer_native_handle handle)
+ {
+    TRACE_FUNC();
+-#ifdef ENABLE_METAL
++#if defined(ENABLE_METAL) && !defined(ENABLE_VENUS_ONLY)
+    if (type == VIRGL_NATIVE_HANDLE_METAL_TEXTURE) {
+       virgl_metal_release_texture(handle);
+    }

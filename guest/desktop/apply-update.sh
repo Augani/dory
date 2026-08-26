@@ -50,7 +50,7 @@ require_package() {
 # must not turn into an unreviewed, network-dependent distribution upgrade. Validate the small
 # runtime surface the integration layer needs, then update only Dory-owned files below. Ubuntu,
 # Debian, and Kali remain responsible for their normal package updates inside the guest.
-for package in binfmt-support dconf-cli network-manager openssh-server pipewire spice-vdagent x11-utils zstd; do
+for package in binfmt-support binutils dconf-cli libxcb-keysyms1 network-manager openssh-server pipewire spice-vdagent x11-utils zstd; do
   require_package "$package"
 done
 case "$EXPECTED_DISTRO" in
@@ -72,14 +72,19 @@ fi
 # only Dory-owned integration files; package-manager and user configuration remain guest-owned.
 MANAGED_USER="$(cat /var/lib/dory/username 2>/dev/null || printf 'dory\n')"
 id "$MANAGED_USER" >/dev/null 2>&1 || fail "the managed desktop account is missing"
+rm -f \
+  /etc/environment.d/60-dory-desktop.conf \
+  /usr/lib/firefox/distribution/policies.json \
+  /usr/share/firefox-esr/distribution/policies.json
 tar -xf "$ROOT/rootfs-overlay.tar" -C /
-zstd -q -d -c "$ROOT/dory-mesa-venus-arm64.tar.zst" | tar -xf - -C /
+"$ROOT/install-graphics-pack.sh" "$ROOT/dory-mesa-venus-arm64.tar.zst" / 0
 install -m0755 "$ROOT/dory-agent" /usr/bin/dory-agent
 chmod 0755 /usr/lib/dory/clipboard /usr/lib/dory/configure-machine /usr/lib/dory/first-boot \
   /usr/lib/dory/start-agent /usr/lib/dory/wait-host-configuration \
   /usr/lib/dory/configure-display /usr/lib/dory/configure-zram \
-  /usr/lib/dory/configure-graphics-backend /usr/lib/dory/configure-intel-translation \
-  /usr/lib/dory/dory-vulkan-probe
+  /usr/lib/dory/configure-graphics-backend /usr/lib/dory/preflight-graphics-pack \
+  /usr/lib/dory/resolve-graphics-backend \
+  /usr/lib/dory/configure-intel-translation
 chmod 0600 /etc/NetworkManager/system-connections/dory-wired.nmconnection
 chmod 0644 /etc/polkit-1/rules.d/49-dory-passwordless-admin.rules
 if [ -x /usr/bin/dconf ]; then

@@ -1,6 +1,9 @@
+import DoryFSWorkerContracts
 import Foundation
 import Testing
+@testable import DoryFSWorkerServiceCore
 @testable import DoryHV
+@testable import dory_hv
 
 struct VirtioFSShareConfigurationTests {
     @Test func parsesReadWriteShareArgument() throws {
@@ -141,11 +144,13 @@ struct VirtioFSShareConfigurationTests {
         }
     }
 
-    @Test func makeBackendWithoutDaxHasNoDaxConfiguration() throws {
+    @Test func makeBackendUsesRequiredWorkerBroker() throws {
         let dir = FileManager.default.temporaryDirectory.path
         let share = try VirtioFSShareConfiguration(argument: "t=\(dir)")
-        let device = try share.makeBackend(daxGuestBase: GuestLayout.daxWindowBase, requestQueueCount: 3)
-        #expect(device.daxConfiguration == nil)
+        let device = try share.makeBackend(
+            broker: try broker(rootPath: dir),
+            requestQueueCount: 3
+        )
         #expect(device.requestQueueCount == 3)
     }
 
@@ -154,11 +159,20 @@ struct VirtioFSShareConfigurationTests {
         var share = try VirtioFSShareConfiguration(argument: "t=\(dir)")
         share.dax = true
         do {
-            _ = try share.makeBackend(daxGuestBase: GuestLayout.daxWindowBase)
+            _ = try share.makeBackend(broker: try broker(rootPath: dir))
             Issue.record("mutating a validated configuration unexpectedly enabled DAX")
         } catch {
             #expect(String(describing: error).contains("DAX host shares are disabled"))
         }
+    }
+
+    private func broker(rootPath: String) throws -> DoryFSWorkerBroker {
+        let channel = DoryFSWorkerTestChannel(hostFS: try HostFS(rootPath: rootPath))
+        return DoryFSWorkerBroker(
+            shareCapabilityID: DoryFSWorkerTestChannel.capabilityID,
+            generation: DoryFSWorkerTestChannel.generation,
+            channel: channel
+        )
     }
 
     @Test func writableShareTopologyRejectsAliasesAndNestedRoots() throws {

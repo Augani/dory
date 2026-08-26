@@ -1,0 +1,15 @@
+diff --git a/MoltenVK/MoltenVK/GPUObjects/MVKSync.mm b/MoltenVK/MoltenVK/GPUObjects/MVKSync.mm
+index 3402287..51752fd 100644
+--- a/MoltenVK/MoltenVK/GPUObjects/MVKSync.mm
++++ b/MoltenVK/MoltenVK/GPUObjects/MVKSync.mm
+@@ -168,7 +168,8 @@ VkResult MVKSemaphoreMTLEvent::exportFd(VkExternalSemaphoreHandleTypeFlagBits ha
+ 	* ... exporting a semaphore payload to a handle with copy transference has the same side
+ 	* effects on the source semaphore’s payload as executing a semaphore wait operation.
+ 	*/
+-	uint64_t value = _mtlEventValue.load();
++	uint64_t value = _mtlEventValue.fetch_add(1);
+-	[(id<MTLSharedEvent>)_mtlEvent waitUntilSignaledValue:value timeoutMS:kMVKUndefinedLargeUInt64];
++	// Metal rejects enormous timeout values, so implement Vulkan's unbounded wait in chunks.
++	while (![(id<MTLSharedEvent>)_mtlEvent waitUntilSignaledValue:value timeoutMS:1000]) {}
+ 	*pFd = -1;
+ 	return VK_SUCCESS;

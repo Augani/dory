@@ -4,6 +4,10 @@ cd "$(dirname "$0")"
 source ./config-policy.sh
 source ./profile.sh
 
+[ "$#" -le 1 ] || {
+  echo "usage: $0 [arm64|amd64]" >&2
+  exit 64
+}
 ARCH="${1:-arm64}"
 OUT="${DORY_KERNEL_OUT_DIR:-../out}"
 PROFILE="$(dory_kernel_resolve_profile)"

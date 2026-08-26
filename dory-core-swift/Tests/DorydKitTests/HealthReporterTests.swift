@@ -1,6 +1,7 @@
 import Darwin
 import DoryCore
 import DoryOperations
+import DoryVMContracts
 @testable import DorydKit
 import Foundation
 import XCTest
@@ -472,7 +473,7 @@ final class HealthReporterTests: XCTestCase {
         XCTAssertEqual(runtime.data["virtual_hardware_abi"], "1")
         XCTAssertEqual(
             runtime.data["diagnostic_overrides"],
-            "gpu-resource-tracing,virgl-renderer-path"
+            "gpu-resource-tracing"
         )
         XCTAssertNil(runtime.data["environment"])
 
@@ -934,7 +935,14 @@ private func portForwardTelemetry(
 private func healthResolvedPlan() -> DoryResolvedMachinePlan {
     let artifact = healthDigest("a")
     let guest = DoryGuestPlatform(family: .linux, architecture: .arm64)
-    let devices = DoryVirtualMachineDeviceCapabilityRequest(gracefulShutdown: true)
+    let devices = DoryVirtualMachineDeviceCapabilityRequest(
+        networkInterface: .stable(machineID: "qualified"),
+        display: DoryVirtualMachineDisplayCapabilityRequest(
+            widthPixels: 1_920,
+            heightPixels: 1_080
+        ),
+        gracefulShutdown: true
+    )
     let media = DoryBootMedia(
         kind: .installedLinuxBootBundle,
         source: .bundledByDory,
@@ -952,6 +960,7 @@ private func healthResolvedPlan() -> DoryResolvedMachinePlan {
         backendImplementationIdentifier: "dory.raw-hv-linux.v1",
         backendRuntimeBuildIdentifier: "raw-runtime-1",
         virtualHardwareABIVersion: 1,
+        rawHVVirtualHardwareTopology: healthSupportedRawHVTopology(),
         bootMedia: DoryResolvedMachineBootMedia(
             resolverReference: DoryVMResolverReference(
                 namespace: "artifact",
@@ -1039,6 +1048,47 @@ private func healthResolvedPlan() -> DoryResolvedMachinePlan {
             qualifierVersion: 1
         )
     )
+}
+
+private func healthSupportedRawHVTopology() -> DoryRawHVVirtualHardwareTopology {
+    try! DoryRawHVVirtualHardwareTopology(occupiedSlots: [
+        DoryRawHVVirtualDeviceSlot(
+            logicalID: DoryVirtualDeviceID.derived(
+                namespace: .systemDisk,
+                stableID: "qualified-system-disk"
+            ),
+            role: .systemDisk,
+            mmioSlot: 0
+        ),
+        DoryRawHVVirtualDeviceSlot(
+            logicalID: "rawhv-graphics",
+            role: .graphics,
+            mmioSlot: 1
+        ),
+        DoryRawHVVirtualDeviceSlot(
+            logicalID: "rawhv-entropy",
+            role: .entropy,
+            mmioSlot: 2
+        ),
+        DoryRawHVVirtualDeviceSlot(
+            logicalID: "rawhv-balloon",
+            role: .balloon,
+            mmioSlot: 3
+        ),
+        DoryRawHVVirtualDeviceSlot(
+            logicalID: "rawhv-vsock",
+            role: .vsock,
+            mmioSlot: 4
+        ),
+        DoryRawHVVirtualDeviceSlot(
+            logicalID: DoryVirtualDeviceID.derived(
+                namespace: .network,
+                stableID: "nic0"
+            ),
+            role: .network,
+            mmioSlot: 8
+        ),
+    ])
 }
 
 private func healthDigest(_ character: Character) -> String {

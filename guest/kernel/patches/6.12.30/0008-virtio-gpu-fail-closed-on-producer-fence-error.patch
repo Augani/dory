@@ -1,0 +1,67 @@
+From: Dory Project <dory@local>
+Date: Sun, 23 Aug 2026 13:24:00 +0000
+Subject: [PATCH] drm/virtio: fail plane preparation when producer-fence capture fails
+
+The upstream virtio-gpu producer-fence patch calls
+drm_gem_plane_helper_prepare_fb() but does not propagate its error. The
+helper can fail while acquiring or combining reservation fences. Continuing
+the atomic commit in that case would emit RESOURCE_FLUSH without the producer
+completion proof that Dory's Metal presentation contract requires.
+
+Return the helper error and leave the prior framebuffer active. Acceleration
+must fail closed rather than present an unowned resource.
+---
+ drivers/gpu/drm/virtio/virtgpu_plane.c | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/gpu/drm/virtio/virtgpu_plane.c b/drivers/gpu/drm/virtio/virtgpu_plane.c
+index 2fb08cb43a99..ca6efec21c37 100644
+--- a/drivers/gpu/drm/virtio/virtgpu_plane.c
++++ b/drivers/gpu/drm/virtio/virtgpu_plane.c
+@@ -255,39 +255,42 @@ static void virtio_gpu_primary_plane_update(struct drm_plane *plane,
+ 	virtio_gpu_resource_flush(plane,
+ 				  rect.x1,
+ 				  rect.y1,
+ 				  rect.x2 - rect.x1,
+ 				  rect.y2 - rect.y1);
+ }
+ 
+ static int virtio_gpu_plane_prepare_fb(struct drm_plane *plane,
+ 				       struct drm_plane_state *new_state)
+ {
+ 	struct drm_device *dev = plane->dev;
+ 	struct virtio_gpu_device *vgdev = dev->dev_private;
+ 	struct virtio_gpu_framebuffer *vgfb;
+ 	struct virtio_gpu_plane_state *vgplane_st;
+ 	struct virtio_gpu_object *bo;
++	int ret;
+ 
+ 	if (!new_state->fb)
+ 		return 0;
+ 
+ 	vgfb = to_virtio_gpu_framebuffer(new_state->fb);
+ 	vgplane_st = to_virtio_gpu_plane_state(new_state);
+ 	bo = gem_to_virtio_gpu_obj(vgfb->base.obj[0]);
+ 
+-	drm_gem_plane_helper_prepare_fb(plane, new_state);
++	ret = drm_gem_plane_helper_prepare_fb(plane, new_state);
++	if (ret)
++		return ret;
+ 
+ 	if (!bo || (plane->type == DRM_PLANE_TYPE_PRIMARY && !bo->guest_blob))
+ 		return 0;
+ 
+ 	if (bo->dumb) {
+ 		vgplane_st->fence = virtio_gpu_fence_alloc(vgdev,
+ 						     vgdev->fence_drv.context,
+ 						     0);
+ 		if (!vgplane_st->fence)
+ 			return -ENOMEM;
+ 	}
+ 
+ 	return 0;
+ }
+ 
+ static void virtio_gpu_plane_cleanup_fb(struct drm_plane *plane,
+-- 
+2.50.1

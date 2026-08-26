@@ -8,19 +8,119 @@ public protocol MMIODevice: AnyObject {
 
 /// Routes guest data aborts to the owning device by physical address.
 public final class MMIOBus {
-    private var devices: [MMIODevice] = []
+    private struct Region {
+        let baseAddress: UInt64
+        let lastAddress: UInt64
+        let device: MMIODevice
+
+        @inline(__always)
+        func contains(_ address: UInt64) -> Bool {
+            address >= baseAddress && address <= lastAddress
+        }
+    }
+
+    /// Device attachment is a boot-time operation. `seal()` makes that topology immutable before
+    /// vCPU threads begin reading it concurrently.
+    private var regions: [Region] = []
+    private var isSealed = false
 
     public init() {}
 
     public func attach(_ device: MMIODevice) {
-        devices.append(device)
+        precondition(!isSealed, "MMIO devices must be attached before the bus is sealed")
+        precondition(device.size > 0, "MMIO device windows must not be empty")
+        let (lastAddress, overflow) = device.baseAddress.addingReportingOverflow(device.size - 1)
+        precondition(!overflow, "MMIO device window must fit in the physical address space")
+
+        let insertionIndex = firstRegionIndex(startingAtOrAfter: device.baseAddress)
+        if insertionIndex > 0 {
+            precondition(
+                regions[insertionIndex - 1].lastAddress < device.baseAddress,
+                "MMIO device windows must not overlap"
+            )
+        }
+        if insertionIndex < regions.count {
+            precondition(
+                lastAddress < regions[insertionIndex].baseAddress,
+                "MMIO device windows must not overlap"
+            )
+        }
+        regions.insert(
+            Region(baseAddress: device.baseAddress, lastAddress: lastAddress, device: device),
+            at: insertionIndex
+        )
     }
 
+    /// Freezes the cold-path topology before concurrent vCPU execution starts.
+    public func seal() {
+        isSealed = true
+    }
+
+    @inline(__always)
     public func device(for address: UInt64) -> (MMIODevice, UInt64)? {
-        for device in devices where address >= device.baseAddress && address < device.baseAddress + device.size {
-            return (device, address - device.baseAddress)
+        guard let region = region(containing: address) else { return nil }
+        return (region.device, address - region.baseAddress)
+    }
+
+    /// The vCPU-local cache makes repeated accesses to one device O(1), while cache misses use a
+    /// binary search over the immutable region table instead of scanning every attached device.
+    @inline(__always)
+    func device(
+        for address: UInt64,
+        cache: inout MMIORouteCache
+    ) -> (MMIODevice, UInt64)? {
+        precondition(isSealed, "MMIO cached lookup requires a sealed bus")
+        if let device = cache.device,
+           address >= cache.baseAddress,
+           address <= cache.lastAddress {
+            return (device, address - cache.baseAddress)
         }
-        return nil
+        guard let region = region(containing: address) else {
+            cache.clear()
+            return nil
+        }
+        cache.baseAddress = region.baseAddress
+        cache.lastAddress = region.lastAddress
+        cache.device = region.device
+        return (region.device, address - region.baseAddress)
+    }
+
+    @inline(__always)
+    private func region(containing address: UInt64) -> Region? {
+        let insertionIndex = firstRegionIndex(startingAtOrAfter: address)
+        if insertionIndex < regions.count, regions[insertionIndex].baseAddress == address {
+            return regions[insertionIndex]
+        }
+        guard insertionIndex > 0 else { return nil }
+        let candidate = regions[insertionIndex - 1]
+        return candidate.contains(address) ? candidate : nil
+    }
+
+    @inline(__always)
+    private func firstRegionIndex(startingAtOrAfter address: UInt64) -> Int {
+        var lowerBound = 0
+        var upperBound = regions.count
+        while lowerBound < upperBound {
+            let midpoint = lowerBound + (upperBound - lowerBound) / 2
+            if regions[midpoint].baseAddress < address {
+                lowerBound = midpoint + 1
+            } else {
+                upperBound = midpoint
+            }
+        }
+        return lowerBound
+    }
+}
+
+/// One instance lives on each vCPU stack, so the common repeated-device path needs no lock or
+/// shared mutable cache state.
+struct MMIORouteCache {
+    fileprivate var baseAddress: UInt64 = 0
+    fileprivate var lastAddress: UInt64 = 0
+    fileprivate var device: MMIODevice?
+
+    fileprivate mutating func clear() {
+        device = nil
     }
 }
 

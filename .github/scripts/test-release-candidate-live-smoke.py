@@ -44,7 +44,15 @@ class ReleaseCandidateLiveSmokeTests(unittest.TestCase):
             'ZED_VERSION="1.16.1"',
             "releases/download/v$ZED_VERSION/zed-linux-aarch64.tar.gz",
             "384499c75d75c6aab53110dbc1d8856f6f774baaa32dc57b9963f9e29f8d007b",
-            "zed_native_venus=PASS",
+            'managed_desktop_baseline=$MANAGED_DESKTOP_BASELINE_RESULT',
+            'mesa_virgl_desktop=$MESA_VIRGL_DESKTOP_RESULT',
+            'renderer_release_signature=$RENDERER_RELEASE_SIGNATURE_RESULT',
+            'zed_native_venus=$ZED_NATIVE_VENUS_RESULT',
+            "--require-acceleration",
+            "--require-release-signature",
+            "native Ubuntu Venus/Zed application evidence did not pass",
+            "Mesa VirGL desktop application evidence did not pass",
+            "renderer release qualification signature was not authenticated",
             "signed desktop component candidate is unavailable or indirect",
         ):
             self.assertIn(proof, text, proof)

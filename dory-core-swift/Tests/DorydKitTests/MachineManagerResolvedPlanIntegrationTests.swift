@@ -1,12 +1,58 @@
 import CryptoKit
+import Darwin
 import DoryCore
 import DoryOperations
+import DoryRendererWorkerWireContracts
 import Foundation
 import Testing
 @testable import DorydKit
 
 @Suite("MachineManager resolved-plan launch integration", .serialized)
 struct MachineManagerResolvedPlanIntegrationTests {
+    @Test("single-use renderer identity binds only the resolved RawHV hardware-3D launch")
+    func rendererIdentityBindsExactResolvedLaunch() throws {
+        let identity = try rendererReleaseIdentityFixture()
+        let binding = MachineBackendLaunchBinding(
+            machineID: "dev",
+            operationID: UUID(),
+            backend: RawHVLinuxMachineBackend.backendDescriptor,
+            componentIdentifier: "dory-hv",
+            executablePath: "/bin/sh",
+            graphics: .hardwareAccelerated3D,
+            devices: .minimumBootable
+        )
+        let authorization = DoryDaemonVirtualMachinePreSpawnAuthorization
+            .resolvingLaunchAuthority { .rendererReleaseIdentity(identity) }
+        let launchAuthority = try authorization.authorizeResolvedLaunch()
+        #expect(try MachineManager.resolvedRendererReleaseIdentity(
+            preSpawnLaunchAuthority: launchAuthority,
+            resolvedLaunchBinding: binding
+        ) == identity)
+        #expect(throws: DoryDaemonVirtualMachinePreSpawnAuthorizationError.alreadyConsumed) {
+            _ = try authorization.authorizeResolvedLaunch()
+        }
+
+        #expect(throws: MachineManagerError.self) {
+            _ = try MachineManager.resolvedRendererReleaseIdentity(
+                preSpawnLaunchAuthority: .noRendererReleaseIdentityRequired,
+                resolvedLaunchBinding: binding
+            )
+        }
+
+        var displayBinding = binding
+        displayBinding.graphics = .hostAcceleratedDisplay
+        #expect(try MachineManager.resolvedRendererReleaseIdentity(
+            preSpawnLaunchAuthority: .noRendererReleaseIdentityRequired,
+            resolvedLaunchBinding: displayBinding
+        ) == nil)
+        #expect(throws: MachineManagerError.self) {
+            _ = try MachineManager.resolvedRendererReleaseIdentity(
+                preSpawnLaunchAuthority: .rendererReleaseIdentity(identity),
+                resolvedLaunchBinding: displayBinding
+            )
+        }
+    }
+
     @Test("validated persisted plan dispatches once without public-start recursion")
     func exactPlanDispatchesThroughRegistry() throws {
         try withHarness("success") { manager, starter, state in
@@ -209,7 +255,7 @@ struct MachineManagerResolvedPlanIntegrationTests {
         }
     }
 
-    @Test("resolved raw-HV launch carries explicit graphics and device arguments")
+    @Test("resolved raw-HV launch uses the runtime envelope as its sole device authority")
     func resolvedLaunchUsesExactHelperArguments() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(
             "dory-resolved-arguments-\(UUID().uuidString)"
@@ -226,24 +272,20 @@ struct MachineManagerResolvedPlanIntegrationTests {
         try withHarness(
             "exact-arguments",
             acceleratedExecutablePath: helper,
-            passMachineArguments: true
-        ) { manager, starter, _ in
+            passMachineArguments: true,
+            initialEnvironment: ["DORY_LOG_HARD_MAX_BYTES": "1048576"]
+        ) { manager, starter, state in
+            let definition = try DoryWorkspaceRepository(root: state)
+                .readPersistedRecord(id: "dev").definition
+            let devices = DoryDaemonVirtualMachinePlanningCoordinator.devices(for: definition)
             let plans = MutablePlanStore()
             let operations = manager.resolvedLaunchCompatibilityOperations(for: .doryHypervisor)
             let registry = try rawRegistry(operations: operations, executablePath: helper)
             let helperSHA256 = try fileSHA256(path: helper)
-            let devices = DoryVirtualMachineDeviceCapabilityRequest(
-                display: DoryVirtualMachineDisplayCapabilityRequest(
-                    widthPixels: 1_920,
-                    heightPixels: 1_080
-                ),
-                removableUSBHotplug: true
-            )
             let resolver = ClosureLaunchResolver { request in
                 let resolution = try exactResolution(
                     request: request,
-                    componentSHA256: helperSHA256,
-                    devices: devices
+                    componentSHA256: helperSHA256
                 )
                 plans.set(resolution.resolvedPlan)
                 return resolution
@@ -262,8 +304,7 @@ struct MachineManagerResolvedPlanIntegrationTests {
             while Date() < deadline {
                 if let contents = try? String(contentsOfFile: capture, encoding: .utf8) {
                     arguments = contents.split(separator: "\n").map(String.init)
-                    if arguments.contains("--resolved-devices"),
-                       arguments.contains("--resolved-port-forwards") {
+                    if arguments.contains("--runtime-launch-envelope") {
                         break
                     }
                 }
@@ -271,29 +312,182 @@ struct MachineManagerResolvedPlanIntegrationTests {
             }
             func value(after flag: String) throws -> String {
                 let index = try #require(arguments.firstIndex(of: flag))
-                return arguments[index + 1]
+                let valueIndex = arguments.index(after: index)
+                return try #require(
+                    arguments.indices.contains(valueIndex) ? arguments[valueIndex] : nil,
+                    "missing value after \(flag) in captured helper arguments"
+                )
             }
-            #expect(try value(after: "--resolved-graphics") == "host-accelerated-display")
             #expect(try value(after: "--operation-id") == started.activeOperationID)
-            #expect(arguments.contains("--usb-control-sock"))
-            let deviceData = Data(try value(after: "--resolved-devices").utf8)
-            #expect(try JSONDecoder().decode(
-                DoryVirtualMachineDeviceCapabilityRequest.self,
-                from: deviceData
-            ) == devices)
-            let portForwardData = Data(try value(after: "--resolved-port-forwards").utf8)
-            #expect(try JSONDecoder().decode(
-                [DoryVMPortForward].self,
-                from: portForwardData
-            ).isEmpty)
-            #expect(arguments.contains("DORY_DESKTOP_GRAPHICS=virgl"))
-            #expect(arguments.contains("DORY_DESKTOP_VMM=accelerated"))
-            #expect(!arguments.contains("DORY_DESKTOP_GRAPHICS=auto"))
+            let envelope = try RuntimeLaunchEnvelope.decodeResolvedRawHVArgument(
+                value(after: "--runtime-launch-envelope")
+            )
+            #expect(envelope.machineID == "dev")
+            #expect(envelope.operationID.uuidString.lowercased() == started.activeOperationID)
+            #expect(envelope.graphics == .hostAcceleratedDisplay)
+            #expect(envelope.devices == devices)
+            #expect(envelope.portForwards.isEmpty)
+            #expect(envelope.executionResources.memoryMB == 2_048)
+            #expect(envelope.executionResources.virtualCPUCount == 2)
+            #expect(envelope.executionResources.systemDiskQueueCount == 2)
+            #expect(envelope.executionResources.schedulingPolicyRevision == 1)
+            #expect(!arguments.contains("--rootfs"))
+            #expect(!arguments.contains("--memory-mb"))
+            #expect(!arguments.contains("--cpus"))
+            #expect(!arguments.contains("--dockerd-sock"))
+            #expect(!arguments.contains("--usb-control-sock"))
+            #expect(!arguments.contains("--resolved-graphics"))
+            #expect(!arguments.contains("--resolved-devices"))
+            #expect(!arguments.contains("--resolved-port-forwards"))
+            #expect(!arguments.contains { $0.hasPrefix("DORY_DESKTOP_GRAPHICS=") })
+            #expect(!arguments.contains { $0.hasPrefix("DORY_DESKTOP_VMM=") })
+            #expect(arguments.contains("DORY_LOG_HARD_MAX_BYTES=1048576"))
         }
     }
 
-    @Test("resolved USB control requires exact plan and guest capability authority")
-    func resolvedUSBControlUsesExactAuthorization() throws {
+    @Test("resolved raw-HV rejects launch when trusted machine-state authority is absent")
+    func resolvedRawHVRequiresMachineStateBroker() throws {
+        try withHarness(
+            "missing-machine-state-broker",
+            injectStateBroker: false
+        ) { manager, starter, _ in
+            try installExactRawHVInfrastructure(manager)
+
+            #expect(throws: MachineManagerError.self) {
+                _ = try manager.start(id: "dev")
+            }
+            #expect(starter.count == 0)
+        }
+    }
+
+    @Test("machine-directory replacement after admission closes FDs and never spawns")
+    func machineDirectoryReplacementAfterAdmissionFailsClosed() throws {
+        try withHarness("machine-state-replacement") { manager, starter, state in
+            try installExactRawHVInfrastructure(manager)
+            let machineDirectory = state + "/dev"
+            let displaced = state + "/displaced-dev"
+            manager.installRawHVStateAuthorityPreFinalRevalidationHookForTesting { machineID in
+                guard machineID == "dev" else {
+                    throw MachineManagerError.persistence("unexpected machine ID")
+                }
+                try FileManager.default.moveItem(
+                    atPath: machineDirectory,
+                    toPath: displaced
+                )
+                try FileManager.default.createDirectory(
+                    atPath: machineDirectory,
+                    withIntermediateDirectories: false,
+                    attributes: [.posixPermissions: 0o700]
+                )
+                guard chmod(machineDirectory, mode_t(0o700)) == 0 else {
+                    throw POSIXError(.EACCES)
+                }
+            }
+            defer {
+                if FileManager.default.fileExists(atPath: displaced) {
+                    try? FileManager.default.removeItem(atPath: machineDirectory)
+                    try? FileManager.default.moveItem(
+                        atPath: displaced,
+                        toPath: machineDirectory
+                    )
+                }
+            }
+
+            #expect(throws: MachineManagerError.self) {
+                _ = try manager.start(id: "dev")
+            }
+            #expect(starter.count == 0)
+            try assertDiskLeaseReleased(path: displaced + "/rootfs.ext4")
+            #expect(try FileManager.default.contentsOfDirectory(atPath: displaced)
+                .contains { $0.hasPrefix(".rawhv-") } == false)
+        }
+    }
+
+    @Test("root replacement after admission propagates quarantine and never spawns")
+    func machineStateRootReplacementAfterAdmissionFailsClosed() throws {
+        try withHarness("machine-state-root-replacement") { manager, starter, state in
+            try installExactRawHVInfrastructure(manager)
+            let displaced = state + ".displaced"
+            manager.installRawHVStateAuthorityPreFinalRevalidationHookForTesting { machineID in
+                guard machineID == "dev" else {
+                    throw MachineManagerError.persistence("unexpected machine ID")
+                }
+                try FileManager.default.moveItem(atPath: state, toPath: displaced)
+                try FileManager.default.createDirectory(
+                    atPath: state,
+                    withIntermediateDirectories: false,
+                    attributes: [.posixPermissions: 0o700]
+                )
+                guard chmod(state, mode_t(0o700)) == 0 else {
+                    throw POSIXError(.EACCES)
+                }
+            }
+            defer {
+                if FileManager.default.fileExists(atPath: displaced) {
+                    try? FileManager.default.removeItem(atPath: state)
+                    try? FileManager.default.moveItem(atPath: displaced, toPath: state)
+                }
+            }
+
+            #expect(throws: MachineManagerError.self) {
+                _ = try manager.start(id: "dev")
+            }
+            #expect(starter.count == 0)
+            try assertDiskLeaseReleased(path: displaced + "/dev/rootfs.ext4")
+            #expect(try FileManager.default.contentsOfDirectory(atPath: displaced + "/dev")
+                .contains { $0.hasPrefix(".rawhv-") } == false)
+        }
+    }
+
+    @Test("machine-directory mode drift after admission never spawns")
+    func machineDirectoryModeDriftAfterAdmissionFailsClosed() throws {
+        try withHarness("machine-state-mode-drift") { manager, starter, state in
+            try installExactRawHVInfrastructure(manager)
+            let machineDirectory = state + "/dev"
+            manager.installRawHVStateAuthorityPreFinalRevalidationHookForTesting { machineID in
+                guard machineID == "dev", chmod(machineDirectory, mode_t(0o755)) == 0 else {
+                    throw POSIXError(.EACCES)
+                }
+            }
+            defer { _ = chmod(machineDirectory, mode_t(0o700)) }
+
+            #expect(throws: MachineManagerError.self) {
+                _ = try manager.start(id: "dev")
+            }
+            #expect(starter.count == 0)
+            try assertDiskLeaseReleased(path: machineDirectory + "/rootfs.ext4")
+            #expect(try FileManager.default.contentsOfDirectory(atPath: machineDirectory)
+                .contains { $0.hasPrefix(".rawhv-") } == false)
+        }
+    }
+
+    @Test("launch authority drift after raw-HV admission closes descriptors")
+    func launchAuthorityDriftAfterRawHVAdmissionClosesDescriptors() throws {
+        try withHarness("launch-authority-drift") { manager, starter, state in
+            try installExactRawHVInfrastructure(manager)
+            let machineDirectory = state + "/dev"
+            manager.installRawHVStateAuthorityPreFinalRevalidationHookForTesting { machineID in
+                guard machineID == "dev" else {
+                    throw MachineManagerError.persistence("unexpected machine ID")
+                }
+                try manager.mutateReservedLaunchAuthorityForTesting(
+                    machineID: machineID,
+                    mutation: .operation
+                )
+            }
+
+            #expect(throws: MachineManagerError.self) {
+                _ = try manager.start(id: "dev")
+            }
+            #expect(starter.count == 0)
+            try assertDiskLeaseReleased(path: machineDirectory + "/rootfs.ext4")
+            #expect(try FileManager.default.contentsOfDirectory(atPath: machineDirectory)
+                .contains { $0.hasPrefix(".rawhv-") } == false)
+        }
+    }
+
+    @Test("resolved USB control rejects attach without desired-state authority")
+    func resolvedUSBControlRejectsMissingAuthorization() throws {
         let usb = ResolvedPlanRecordingUSBController()
         try withHarness(
             "resolved-usb-control",
@@ -304,11 +498,135 @@ struct MachineManagerResolvedPlanIntegrationTests {
             let plans = MutablePlanStore()
             let operations = manager.resolvedLaunchCompatibilityOperations(for: .doryHypervisor)
             let registry = try rawRegistry(operations: operations)
-            let devices = DoryVirtualMachineDeviceCapabilityRequest(
-                removableUSBHotplug: true
-            )
             let resolver = ClosureLaunchResolver { request in
-                let resolution = try exactResolution(request: request, devices: devices)
+                let resolution = try exactResolution(request: request)
+                plans.set(resolution.resolvedPlan)
+                return resolution
+            }
+            try manager.installResolvedLaunchInfrastructure(
+                registry: registry,
+                resolver: resolver,
+                plans: plans,
+                expectedPlanRevision: { _ in 1 }
+            )
+
+            let starting = try manager.start(id: "dev")
+            let selection = try graphicsSelection(
+                plan: plans.read(id: "dev"),
+                operationID: try #require(starting.activeOperationID)
+            )
+            try sendVmmHandoff(
+                path: try #require(starting.handoffSocketPath),
+                ready: VmmReadyMessage(
+                    machineID: "dev",
+                    operationID: starting.activeOperationID,
+                    agentBuild: "dory-agent/resolved-usb-test",
+                    agentProtocolVersion: DoryCore.protocolVersion(),
+                    agentCapabilities: [DoryAgentCapability(id: "usb-vhci", version: 1)],
+                    agentSocketPath: "/run/dory-agent.sock",
+                    controlSocketPath: "/run/dory-control.sock",
+                    graphicsSelection: selection
+                ),
+                fileDescriptors: []
+            )
+            for _ in 0..<200 {
+                if manager.status(id: "dev")?.state == .running { break }
+                Thread.sleep(forTimeInterval: 0.01)
+            }
+            let readyStatus = try #require(manager.status(id: "dev"))
+            #expect(
+                readyStatus.state == .running,
+                "resolved USB readiness failed: \(readyStatus.lastError ?? "unknown")"
+            )
+            #expect(starter.count == 1)
+
+            #expect(throws: MachineManagerError.self) {
+                _ = try manager.attachResolvedUSBDevice(
+                    id: "dev",
+                    busID: "3-2"
+                )
+            }
+            #expect(usb.callCount == 0)
+        }
+    }
+
+    @Test("resolved wake clock synchronization follows desired-state authority")
+    func resolvedClockSyncUsesExactAuthorization() throws {
+        let clock = ResolvedClockSyncRecorder()
+        try withHarness(
+            "resolved-clock-sync",
+            requiresReadyHandoff: true,
+            useShortStatePath: true,
+            agentConnector: clock.connect(socketPath:)
+        ) { manager, starter, _ in
+            let plans = MutablePlanStore()
+            let operations = manager.resolvedLaunchCompatibilityOperations(
+                for: .doryHypervisor
+            )
+            let registry = try rawRegistry(operations: operations)
+            let resolver = ClosureLaunchResolver { request in
+                let resolution = try exactResolution(request: request)
+                plans.set(resolution.resolvedPlan)
+                return resolution
+            }
+            try manager.installResolvedLaunchInfrastructure(
+                registry: registry,
+                resolver: resolver,
+                plans: plans,
+                expectedPlanRevision: { _ in 1 }
+            )
+
+            let starting = try manager.start(id: "dev")
+            let selection = try graphicsSelection(
+                plan: plans.read(id: "dev"),
+                operationID: try #require(starting.activeOperationID)
+            )
+            try sendVmmHandoff(
+                path: try #require(starting.handoffSocketPath),
+                ready: VmmReadyMessage(
+                    machineID: "dev",
+                    operationID: starting.activeOperationID,
+                    agentBuild: "dory-agent/resolved-clock-test",
+                    agentProtocolVersion: DoryCore.protocolVersion(),
+                    agentCapabilities: [
+                        DoryAgentCapability(id: "clock-sync", version: 1),
+                    ],
+                    agentSocketPath: "/run/dory-agent.sock",
+                    controlSocketPath: "/run/dory-control.sock",
+                    graphicsSelection: selection
+                ),
+                fileDescriptors: []
+            )
+            for _ in 0..<200 {
+                if manager.status(id: "dev")?.state == .running { break }
+                Thread.sleep(forTimeInterval: 0.01)
+            }
+            #expect(manager.status(id: "dev")?.state == .running)
+            #expect(starter.count == 1)
+
+            let result = manager.syncAgentClock(
+                now: Date(timeIntervalSince1970: 1_234.5)
+            )
+            #expect(result.attempted)
+            #expect(result.synced)
+            #expect(clock.syncs == [1_234_500_000_000])
+        }
+    }
+
+    @Test("resolved RawHV readiness rejects a missing live graphics selection")
+    func resolvedRawHVReadinessRequiresGraphicsSelection() throws {
+        try withHarness(
+            "resolved-graphics-receipt",
+            requiresReadyHandoff: true,
+            useShortStatePath: true
+        ) { manager, starter, _ in
+            let plans = MutablePlanStore()
+            let operations = manager.resolvedLaunchCompatibilityOperations(
+                for: .doryHypervisor
+            )
+            let registry = try rawRegistry(operations: operations)
+            let resolver = ClosureLaunchResolver { request in
+                let resolution = try exactResolution(request: request)
                 plans.set(resolution.resolvedPlan)
                 return resolution
             }
@@ -325,112 +643,25 @@ struct MachineManagerResolvedPlanIntegrationTests {
                 ready: VmmReadyMessage(
                     machineID: "dev",
                     operationID: starting.activeOperationID,
-                    agentBuild: "dory-agent/resolved-usb-test",
-                    agentProtocolVersion: DoryCore.protocolVersion(),
-                    agentCapabilities: [DoryAgentCapability(id: "usb-vhci", version: 1)],
-                    agentSocketPath: "/run/dory-agent.sock",
+                    agentBuild: "dory-agent/missing-graphics-receipt",
                     controlSocketPath: "/run/dory-control.sock"
                 ),
                 fileDescriptors: []
             )
             for _ in 0..<200 {
-                if manager.status(id: "dev")?.state == .running { break }
+                if manager.status(id: "dev")?.state == .failed { break }
                 Thread.sleep(forTimeInterval: 0.01)
             }
-            let readyStatus = try #require(manager.status(id: "dev"))
-            #expect(
-                readyStatus.state == .running,
-                "resolved USB readiness failed: \(readyStatus.lastError ?? "unknown")"
-            )
+            let failed = try #require(manager.status(id: "dev"))
+            #expect(failed.state == .failed)
+            #expect(failed.runtimeGraphicsSelection == nil)
+            #expect(failed.lastError?.contains("graphics selection") == true)
             #expect(starter.count == 1)
-
-            let attachment = try manager.attachResolvedUSBDevice(
-                id: "dev",
-                busID: "3-2"
-            )
-            #expect(attachment.busID == "3-2")
-            #expect(usb.callCount == 1)
-            #expect(throws: MachineManagerError.self) {
-                _ = try manager.attachResolvedUSBDevice(
-                    id: "dev",
-                    busID: "3-3",
-                    mode: .capture
-                )
-            }
-            #expect(usb.callCount == 1)
-            try manager.detachResolvedUSBDevice(id: "dev", busID: "3-2")
-            #expect(usb.callCount == 2)
         }
     }
 
-    @Test("resolved wake clock synchronization follows the exact device contract")
-    func resolvedClockSyncUsesExactAuthorization() throws {
-        for authorized in [false, true] {
-            let clock = ResolvedClockSyncRecorder()
-            try withHarness(
-                "resolved-clock-sync-\(authorized)",
-                requiresReadyHandoff: true,
-                useShortStatePath: true,
-                agentConnector: clock.connect(socketPath:)
-            ) { manager, starter, _ in
-                let plans = MutablePlanStore()
-                let operations = manager.resolvedLaunchCompatibilityOperations(
-                    for: .doryHypervisor
-                )
-                let registry = try rawRegistry(operations: operations)
-                let devices = DoryVirtualMachineDeviceCapabilityRequest(
-                    clockSynchronization: authorized
-                )
-                let resolver = ClosureLaunchResolver { request in
-                    let resolution = try exactResolution(
-                        request: request,
-                        devices: devices
-                    )
-                    plans.set(resolution.resolvedPlan)
-                    return resolution
-                }
-                try manager.installResolvedLaunchInfrastructure(
-                    registry: registry,
-                    resolver: resolver,
-                    plans: plans,
-                    expectedPlanRevision: { _ in 1 }
-                )
-
-                let starting = try manager.start(id: "dev")
-                try sendVmmHandoff(
-                    path: try #require(starting.handoffSocketPath),
-                    ready: VmmReadyMessage(
-                        machineID: "dev",
-                        operationID: starting.activeOperationID,
-                        agentBuild: "dory-agent/resolved-clock-test",
-                        agentProtocolVersion: DoryCore.protocolVersion(),
-                        agentCapabilities: [
-                            DoryAgentCapability(id: "clock-sync", version: 1),
-                        ],
-                        agentSocketPath: "/run/dory-agent.sock",
-                        controlSocketPath: "/run/dory-control.sock"
-                    ),
-                    fileDescriptors: []
-                )
-                for _ in 0..<200 {
-                    if manager.status(id: "dev")?.state == .running { break }
-                    Thread.sleep(forTimeInterval: 0.01)
-                }
-                #expect(manager.status(id: "dev")?.state == .running)
-                #expect(starter.count == 1)
-
-                let result = manager.syncAgentClock(
-                    now: Date(timeIntervalSince1970: 1_234.5)
-                )
-                #expect(result.attempted == authorized)
-                #expect(result.synced == authorized)
-                #expect(clock.syncs == (authorized ? [1_234_500_000_000] : []))
-            }
-        }
-    }
-
-    @Test("resolved installed-Linux launch rematerializes verified boot outputs after authorization")
-    func resolvedInstalledLinuxRevalidatesMaterializedOutputs() throws {
+    @Test("resolved installed-Linux launch never materializes legacy boot paths")
+    func resolvedInstalledLinuxUsesOnlyDescriptorBootAuthority() throws {
         let root = try makeState("resolved-installed-linux")
         defer { try? FileManager.default.removeItem(atPath: root) }
         let sourceBundle = root + "/source.boot"
@@ -451,17 +682,30 @@ struct MachineManagerResolvedPlanIntegrationTests {
             to: URL(fileURLWithPath: sourceDisk)
         )
         let starter = CountingProcessStarter()
+        let managedState = root + "/machines"
+        try FileManager.default.createDirectory(
+            atPath: managedState,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        _ = chmod(managedState, mode_t(0o700))
+        let stateBroker = try DoryMachineStateBroker(
+            canonicalStateRootPath: managedState
+        )
         let manager = MachineManager(
             configuration: MachineManagerConfiguration(
-                vmmExecutablePath: "/bin/sleep",
-                acceleratedDesktopExecutablePath: "/bin/sleep",
-                stateDirectory: root + "/machines",
-                baseArguments: ["30"],
-                acceleratedDesktopBaseArguments: ["30"],
-                passMachineArguments: false,
+                vmmExecutablePath: "/bin/sh",
+                acceleratedDesktopExecutablePath: "/bin/sh",
+                stateDirectory: managedState,
+                baseArguments: ["-c", "exec /bin/sleep 30", "dory-test-runtime"],
+                acceleratedDesktopBaseArguments: [
+                    "-c", "exec /bin/sleep 30", "dory-test-runtime",
+                ],
+                passMachineArguments: true,
                 requiresReadyHandoff: false
             ),
             launchPolicy: .requireResolvedPlan,
+            machineStateBroker: stateBroker,
             processStarter: { process in try starter.start(process) }
         )
         defer {
@@ -486,13 +730,14 @@ struct MachineManagerResolvedPlanIntegrationTests {
         let resolver = ClosureLaunchResolver { request in
             let resolution = try exactResolution(
                 request: request,
+                bootArtifactSHA256: try fileSHA256(path: sourceBundle),
                 preSpawnRevalidation: {
-                    try Data("stale-kernel".utf8).write(
-                        to: URL(fileURLWithPath: directKernel)
-                    )
-                    try Data("stale-initrd".utf8).write(
-                        to: URL(fileURLWithPath: directInitrd)
-                    )
+                    guard !FileManager.default.fileExists(atPath: directKernel),
+                          !FileManager.default.fileExists(atPath: directInitrd) else {
+                        throw MachineManagerError.persistence(
+                            "resolved preparation materialized legacy boot paths"
+                        )
+                    }
                 }
             )
             plans.set(resolution.resolvedPlan)
@@ -507,8 +752,8 @@ struct MachineManagerResolvedPlanIntegrationTests {
 
         _ = try manager.start(id: "installed")
         #expect(starter.count == 1)
-        #expect(try Data(contentsOf: URL(fileURLWithPath: directKernel)) == kernel)
-        #expect(try Data(contentsOf: URL(fileURLWithPath: directInitrd)) == initrd)
+        #expect(!FileManager.default.fileExists(atPath: directKernel))
+        #expect(!FileManager.default.fileExists(atPath: directInitrd))
     }
 
     @Test("resolved snapshot disk capacity is bound to resource admission")
@@ -586,12 +831,14 @@ struct MachineManagerResolvedPlanIntegrationTests {
 
             let restarted = MachineManager(
                 configuration: MachineManagerConfiguration(
-                    vmmExecutablePath: "/bin/sleep",
-                    acceleratedDesktopExecutablePath: "/bin/sleep",
+                    vmmExecutablePath: "/bin/sh",
+                    acceleratedDesktopExecutablePath: "/bin/sh",
                     stateDirectory: state,
-                    baseArguments: ["30"],
-                    acceleratedDesktopBaseArguments: ["30"],
-                    passMachineArguments: false,
+                    baseArguments: ["-c", "exec /bin/sleep 30", "dory-test-runtime"],
+                    acceleratedDesktopBaseArguments: [
+                        "-c", "exec /bin/sleep 30", "dory-test-runtime",
+                    ],
+                    passMachineArguments: true,
                     requiresReadyHandoff: false
                 ),
                 launchPolicy: .requireResolvedPlan
@@ -882,6 +1129,33 @@ struct MachineManagerResolvedPlanIntegrationTests {
         }
     }
 
+    @Test("resolved raw-HV cannot omit the immutable helper envelope")
+    func resolvedLaunchRejectsOmittedMachineArguments() throws {
+        try withHarness(
+            "missing-envelope",
+            passMachineArguments: false
+        ) { manager, starter, _ in
+            let plans = MutablePlanStore()
+            let operations = manager.resolvedLaunchCompatibilityOperations(for: .doryHypervisor)
+            let resolver = ClosureLaunchResolver { request in
+                let resolution = try exactResolution(request: request)
+                plans.set(resolution.resolvedPlan)
+                return resolution
+            }
+            try manager.installResolvedLaunchInfrastructure(
+                registry: try rawRegistry(operations: operations),
+                resolver: resolver,
+                plans: plans,
+                expectedPlanRevision: { _ in 1 }
+            )
+
+            #expect(throws: MachineManagerError.self) {
+                _ = try manager.start(id: "dev")
+            }
+            #expect(starter.count == 0)
+        }
+    }
+
     @Test("adapter-issued executable is launched instead of manager backend lookup")
     func adapterExecutableBindingIsUsed() throws {
         try withHarness(
@@ -889,7 +1163,7 @@ struct MachineManagerResolvedPlanIntegrationTests {
             acceleratedExecutablePath: nil
         ) { manager, starter, state in
             let runtimePath = state + "/adapter-runtime"
-            try writeExecutable("#!/bin/sh\nexec /bin/sleep \"$@\"\n", path: runtimePath)
+            try writeExecutable("#!/bin/sh\nexec /bin/sleep 30\n", path: runtimePath)
             let plans = MutablePlanStore()
             let operations = manager.resolvedLaunchCompatibilityOperations(for: .doryHypervisor)
             let registry = try rawRegistry(
@@ -1575,13 +1849,13 @@ struct MachineManagerResolvedPlanIntegrationTests {
     }
 
     private func makeState(_ label: String) throws -> String {
-        let state = FileManager.default.temporaryDirectory
-            .appendingPathComponent("dory-authority-\(label)-\(UUID().uuidString)")
-            .path
+        let state = "/private/tmp/dory-authority-\(label)-\(UUID().uuidString)"
         try FileManager.default.createDirectory(
             atPath: state,
-            withIntermediateDirectories: true
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
         )
+        _ = chmod(state, mode_t(0o700))
         return state
     }
 
@@ -1590,17 +1864,23 @@ struct MachineManagerResolvedPlanIntegrationTests {
         policy: DoryMachineLaunchPolicy,
         starter: CountingProcessStarter = CountingProcessStarter()
     ) -> MachineManager {
-        MachineManager(
+        let stateBroker = try! DoryMachineStateBroker(
+            canonicalStateRootPath: state
+        )
+        return MachineManager(
             configuration: MachineManagerConfiguration(
-                vmmExecutablePath: "/bin/sleep",
-                acceleratedDesktopExecutablePath: "/bin/sleep",
+                vmmExecutablePath: "/bin/sh",
+                acceleratedDesktopExecutablePath: "/bin/sh",
                 stateDirectory: state,
-                baseArguments: ["30"],
-                acceleratedDesktopBaseArguments: ["30"],
-                passMachineArguments: false,
+                baseArguments: ["-c", "exec /bin/sleep 30", "dory-test-runtime"],
+                acceleratedDesktopBaseArguments: [
+                    "-c", "exec /bin/sleep 30", "dory-test-runtime",
+                ],
+                passMachineArguments: true,
                 requiresReadyHandoff: false
             ),
             launchPolicy: policy,
+            machineStateBroker: stateBroker,
             processStarter: { process in try starter.start(process) }
         )
     }
@@ -1656,10 +1936,12 @@ struct MachineManagerResolvedPlanIntegrationTests {
     private func withHarness(
         _ label: String,
         launchPolicy: DoryMachineLaunchPolicy = .requireResolvedPlan,
-        acceleratedExecutablePath: String? = "/bin/sleep",
-        passMachineArguments: Bool = false,
+        acceleratedExecutablePath: String? = "/bin/sh",
+        passMachineArguments: Bool = true,
         requiresReadyHandoff: Bool = false,
         useShortStatePath: Bool = false,
+        injectStateBroker: Bool = true,
+        initialEnvironment: [String: String] = [:],
         usbController: any DoryMachineUSBControlling = UnixDoryMachineUSBController(),
         agentConnector: @escaping MachineManager.AgentConnector = { socketPath in
             try LocalAgentControl.connect(socketPath: socketPath)
@@ -1667,22 +1949,32 @@ struct MachineManagerResolvedPlanIntegrationTests {
         _ body: (MachineManager, CountingProcessStarter, String) throws -> Void
     ) throws {
         let state = useShortStatePath
-            ? "/tmp/dory-r-\(UUID().uuidString)"
-            : FileManager.default.temporaryDirectory
-                .appendingPathComponent("dory-resolved-start-\(label)-\(UUID().uuidString)")
-                .path
+            ? "/private/tmp/dory-r-\(UUID().uuidString)"
+            : "/private/tmp/dory-resolved-start-\(label)-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(
+            atPath: state,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        _ = chmod(state, mode_t(0o700))
+        let stateBroker = injectStateBroker
+            ? try DoryMachineStateBroker(canonicalStateRootPath: state)
+            : nil
         let starter = CountingProcessStarter()
         let manager = MachineManager(
             configuration: MachineManagerConfiguration(
-                vmmExecutablePath: "/bin/sleep",
+                vmmExecutablePath: "/bin/sh",
                 acceleratedDesktopExecutablePath: acceleratedExecutablePath,
                 stateDirectory: state,
-                baseArguments: ["30"],
-                acceleratedDesktopBaseArguments: ["30"],
+                baseArguments: ["-c", "exec /bin/sleep 30", "dory-test-runtime"],
+                acceleratedDesktopBaseArguments: [
+                    "-c", "exec /bin/sleep 30", "dory-test-runtime",
+                ],
                 passMachineArguments: passMachineArguments,
                 requiresReadyHandoff: requiresReadyHandoff
             ),
             launchPolicy: launchPolicy,
+            machineStateBroker: stateBroker,
             usbController: usbController,
             agentConnector: agentConnector,
             processStarter: { process in try starter.start(process) }
@@ -1698,14 +1990,46 @@ struct MachineManagerResolvedPlanIntegrationTests {
             rootfsPath: doryTestRootfsPath,
             memoryMB: 2_048,
             cpuCount: 2,
-            displayMode: .desktop
+            displayMode: .desktop,
+            environment: initialEnvironment
         ))
         try body(manager, starter, state)
     }
 
+    private func installExactRawHVInfrastructure(
+        _ manager: MachineManager
+    ) throws {
+        let plans = MutablePlanStore()
+        let operations = manager.resolvedLaunchCompatibilityOperations(
+            for: .doryHypervisor
+        )
+        let registry = try rawRegistry(operations: operations)
+        let resolver = ClosureLaunchResolver { request in
+            let resolution = try exactResolution(request: request)
+            plans.set(resolution.resolvedPlan)
+            return resolution
+        }
+        try manager.installResolvedLaunchInfrastructure(
+            registry: registry,
+            resolver: resolver,
+            plans: plans,
+            expectedPlanRevision: { _ in 1 }
+        )
+    }
+
+    private func assertDiskLeaseReleased(path: String) throws {
+        let descriptor = open(path, O_RDWR | O_CLOEXEC | O_NOFOLLOW)
+        guard descriptor >= 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        defer { close(descriptor) }
+        #expect(flock(descriptor, LOCK_EX | LOCK_NB) == 0)
+        _ = flock(descriptor, LOCK_UN)
+    }
+
     private func rawRegistry(
         operations: MachineBackendCompatibilityOperations,
-        executablePath: String = "/bin/sleep"
+        executablePath: String = "/bin/sh"
     ) throws -> BackendRegistry {
         try BackendRegistry(backends: [RawHVLinuxMachineBackend(
             executablePath: executablePath,
@@ -1713,15 +2037,36 @@ struct MachineManagerResolvedPlanIntegrationTests {
         )])
     }
 
+    private func rendererReleaseIdentityFixture() throws
+        -> DoryRendererReleaseIdentityV1
+    {
+        DoryRendererReleaseIdentityV1(
+            runnerCodeDirectoryHash: try DoryCodeDirectoryHash(
+                lowercaseHexadecimal: String(repeating: "11", count: 20)
+            ),
+            rendererWorkerCodeDirectoryHash: try DoryCodeDirectoryHash(
+                lowercaseHexadecimal: String(repeating: "22", count: 20)
+            ),
+            tupleDefinitionSHA256: try DoryRendererArtifactDigest(
+                lowercaseSHA256:
+                    DoryRendererSourceTuple.productionDefinitionSHA256
+            )
+        )
+    }
+
     private func exactResolution(
         request: DoryDaemonVirtualMachineLaunchPlanRequest,
         componentSHA256: String? = nil,
-        devices: DoryVirtualMachineDeviceCapabilityRequest = .minimumBootable,
+        bootArtifactSHA256: String? = nil,
         preSpawnRevalidation: @escaping @Sendable () throws -> Void = {}
     ) throws -> DoryDaemonVirtualMachineLaunchPlanResolution {
+        let devices = DoryDaemonVirtualMachinePlanningCoordinator.devices(
+            for: request.definition
+        )
         let definitionDigest = SHA256.hash(data: request.canonicalDefinitionData)
             .map { String(format: "%02x", $0) }.joined()
-        let artifact = digest("a")
+        let artifact = try bootArtifactSHA256
+            ?? fileSHA256(path: request.machine.kernelPath)
         let media = DoryBootMedia(
             kind: request.definition.boot.devices[0].kind,
             source: .userProvided,
@@ -1732,7 +2077,7 @@ struct MachineManagerResolvedPlanIntegrationTests {
         if let componentSHA256 {
             launcherSHA256 = componentSHA256
         } else {
-            launcherSHA256 = try fileSHA256(path: "/bin/sleep")
+            launcherSHA256 = try fileSHA256(path: "/bin/sh")
         }
         let plan = DoryResolvedMachinePlan(
             machineID: request.machine.id,
@@ -1747,19 +2092,23 @@ struct MachineManagerResolvedPlanIntegrationTests {
                 RawHVLinuxMachineBackend.backendDescriptor.implementationIdentifier,
             backendRuntimeBuildIdentifier: runtime,
             virtualHardwareABIVersion: request.definition.virtualHardwareABIVersion,
-        bootMedia: DoryResolvedMachineBootMedia(
+            rawHVVirtualHardwareTopology: try DoryRawHVVirtualHardwareTopologyPlanner.resolve(
+                definition: request.definition,
+                resolvedDevices: devices
+            ),
+            bootMedia: DoryResolvedMachineBootMedia(
                 resolverReference: DoryVMResolverReference(
                     namespace: "machine",
                     identifier: "dev-kernel"
                 ),
-            media: media
-        ),
-        launchArtifacts: resolvedBootLaunchArtifacts(
-            reference: DoryVMResolverReference(
-                namespace: "machine", identifier: "dev-kernel"
+                media: media
             ),
-            media: media
-        ),
+            launchArtifacts: resolvedBootLaunchArtifacts(
+                reference: DoryVMResolverReference(
+                    namespace: "machine", identifier: "dev-kernel"
+                ),
+                media: media
+            ),
             components: [DoryResolvedBackendComponentEvidence(
                 componentIdentifier: "dory-hv",
                 buildIdentifier: runtime,
@@ -1817,8 +2166,11 @@ struct MachineManagerResolvedPlanIntegrationTests {
                 qualifierVersion: 1
             )
         )
-        guard plan.validate().isEmpty else {
-            throw MachineManagerError.persistence("fixture plan is invalid")
+        let validationIssues = plan.validate()
+        guard validationIssues.isEmpty else {
+            throw MachineManagerError.persistence(
+                "fixture plan is invalid: \(validationIssues)"
+            )
         }
         let capability = DoryVirtualMachineCapabilityDescriptor(
             evaluatorVersion: DoryVirtualMachineCapabilityDescriptor.appleSiliconEvaluatorVersion,
@@ -1915,6 +2267,48 @@ struct MachineManagerResolvedPlanIntegrationTests {
         encoder.outputFormatting = [.sortedKeys]
         return SHA256.hash(data: try encoder.encode(plan))
             .map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func graphicsSelection(
+        plan: DoryResolvedMachinePlan,
+        operationID: String
+    ) throws -> DoryRuntimeGraphicsSelection {
+        switch plan.graphics {
+        case .software:
+            return DoryRuntimeGraphicsSelection(
+                operationID: operationID,
+                resolvedPlanSHA256: try planSHA256(plan),
+                planRevision: plan.planRevision,
+                accelerationLevel: .software,
+                backend: .software
+            )
+        case .hostAcceleratedDisplay:
+            return DoryRuntimeGraphicsSelection(
+                operationID: operationID,
+                resolvedPlanSHA256: try planSHA256(plan),
+                planRevision: plan.planRevision,
+                accelerationLevel: .hostAcceleratedDisplay,
+                backend: .virgl,
+                rendererGeneration: 1,
+                rendererWorkerReceiptSHA256: digest("7"),
+                guestProducerFenceProofSHA256: digest("8")
+            )
+        case .hardwareAccelerated3D:
+            return DoryRuntimeGraphicsSelection(
+                operationID: operationID,
+                resolvedPlanSHA256: try planSHA256(plan),
+                planRevision: plan.planRevision,
+                accelerationLevel: .hardwareAccelerated3D,
+                backend: .virglVenus,
+                rendererGeneration: 1,
+                rendererWorkerReceiptSHA256: digest("7"),
+                guestProducerFenceProofSHA256: digest("8")
+            )
+        case .none:
+            throw MachineManagerError.persistence(
+                "RawHV desktop fixture cannot emit a headless graphics selection"
+            )
+        }
     }
 
     private func fileSHA256(path: String) throws -> String {

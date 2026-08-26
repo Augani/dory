@@ -1,4 +1,5 @@
 import DoryCore
+import DoryOperations
 import Foundation
 import ObjectiveC
 
@@ -126,6 +127,19 @@ public final class DorydService: NSObject, DorydControl {
         reply(status.state.rawValue, status.lastError ?? "")
     }
 
+    public func engineDashboardSnapshot(reply: @escaping (NSDictionary, String) -> Void) {
+        guard let dockerTier else {
+            reply([:], "docker tier is not configured")
+            return
+        }
+        do {
+            let snapshot = try dockerTier.dashboardSnapshot()
+            reply(snapshot.mapValues { $0 as NSData } as NSDictionary, "")
+        } catch {
+            reply([:], "dashboard observation failed: \(error)")
+        }
+    }
+
     public func engineStart(reply: @escaping (Bool, String) -> Void) {
         promoteEngine(event: "start", reply: reply)
     }
@@ -247,6 +261,7 @@ public final class DorydService: NSObject, DorydControl {
             reply(false, [:], "machine manager is not configured")
             return
         }
+        var createdMachineID: String?
         do {
             let typedSettings = try DoryMachineTypedSettingsPatch(
                 xpcDictionary: config,
@@ -256,11 +271,23 @@ public final class DorydService: NSObject, DorydControl {
                 config
             )
             let machine = try DoryMachineConfiguration(xpcDictionary: config)
+            if machine.bootMode == .efi, let installerISOPath = machine.installerISOPath {
+                do {
+                    _ = try DoryQualifiedBootMediaInspector
+                        .inspectPortableLinuxARM64InstallerISO(atPath: installerISOPath)
+                } catch {
+                    throw MachineManagerError.persistence(
+                        "The selected installer is not a portable ARM64 EFI Linux ISO. "
+                            + "Choose media with a standard EFI/BOOT/BOOTAA64.EFI loader."
+                    )
+                }
+            }
             var status = try machineManager.create(
                 machine,
                 typedSettings: typedSettings.isEmpty ? nil : typedSettings,
                 sandboxPolicy: sandboxPolicy
             )
+            createdMachineID = machine.id
             if machineManager.configuredLaunchPolicy == .perWorkspaceAuthority {
                 guard let productionPlanningController else {
                     throw MachineManagerError.persistence(
@@ -275,8 +302,24 @@ public final class DorydService: NSObject, DorydControl {
             incidentWriter?.record(type: "machine.create", detail: machine.id)
             reply(true, status.xpcDictionary, "")
         } catch {
-            incidentWriter?.record(type: "machine.create_failed", detail: "\(error)")
-            reply(false, [:], "\(error)")
+            var message = "\(error)"
+            if let createdMachineID {
+                do {
+                    try machineManager.delete(id: createdMachineID)
+                    incidentWriter?.record(
+                        type: "machine.create_rolled_back",
+                        detail: createdMachineID
+                    )
+                } catch let rollbackError {
+                    message += "; failed to remove the incomplete machine: \(rollbackError)"
+                    incidentWriter?.record(
+                        type: "machine.create_rollback_failed",
+                        detail: "\(createdMachineID): \(rollbackError)"
+                    )
+                }
+            }
+            incidentWriter?.record(type: "machine.create_failed", detail: message)
+            reply(false, [:], message)
         }
     }
 
@@ -409,6 +452,9 @@ public final class DorydService: NSObject, DorydControl {
         }
         do {
             let update = try MachineUpdateRequest(xpcDictionary: config)
+            let previousState = machineManager.status(id: machineID)?.state
+            let restoresActiveInstallerSession = update.installerMediaAttached != nil
+                && (previousState == .running || previousState == .paused)
             var status = try machineManager.update(
                 id: machineID,
                 memoryMB: update.memoryMB,
@@ -430,6 +476,9 @@ public final class DorydService: NSObject, DorydControl {
                     id: machineID,
                     controller: productionPlanningController
                 )
+                if restoresActiveInstallerSession {
+                    status = try machineManager.start(id: machineID)
+                }
             }
             incidentWriter?.record(type: "machine.update", detail: machineID)
             reply(true, status.xpcDictionary, "")
@@ -967,6 +1016,7 @@ public final class DorydService: NSObject, DorydControl {
         }
         do {
             let provisionRequest = try MachineProvisionRequest(xpcDictionary: request)
+            _ = try machineManager.waitUntilAgentReady(id: machineID)
             let result = try MachineRecipeProvisioner.provision(
                 machineID: machineID,
                 recipeID: provisionRequest.recipeID,
@@ -2542,6 +2592,9 @@ private extension DoryMachineStatus {
         }
         dictionary["displayPresentation"] = displayPresentation.xpcDictionary
         dictionary["runtimeIdentity"] = runtimeIdentity.xpcDictionary
+        if let runtimeGraphicsSelection, runtimeGraphicsSelection.isValid {
+            dictionary["runtimeGraphicsSelection"] = runtimeGraphicsSelection.xpcDictionary
+        }
         if let installedDesktopPayloadReceipt {
             dictionary["installedDesktopPayloadReceipt"] =
                 installedDesktopPayloadReceipt.xpcDictionary
@@ -2568,6 +2621,29 @@ private extension DoryMachineStatus {
                 "createdAtUnixMilliseconds": savedState.createdAtUnixMilliseconds,
                 "portable": false,
             ] as NSDictionary
+        }
+        return dictionary as NSDictionary
+    }
+}
+
+private extension DoryRuntimeGraphicsSelection {
+    var xpcDictionary: NSDictionary {
+        var dictionary: [String: Any] = [
+            "schemaVersion": schemaVersion,
+            "operationID": operationID,
+            "resolvedPlanSHA256": resolvedPlanSHA256,
+            "planRevision": planRevision,
+            "accelerationLevel": accelerationLevel.rawValue,
+            "backend": backend.rawValue,
+        ]
+        if let rendererGeneration {
+            dictionary["rendererGeneration"] = rendererGeneration
+        }
+        if let rendererWorkerReceiptSHA256 {
+            dictionary["rendererWorkerReceiptSHA256"] = rendererWorkerReceiptSHA256
+        }
+        if let guestProducerFenceProofSHA256 {
+            dictionary["guestProducerFenceProofSHA256"] = guestProducerFenceProofSHA256
         }
         return dictionary as NSDictionary
     }

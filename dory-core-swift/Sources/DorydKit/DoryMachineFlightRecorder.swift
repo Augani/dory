@@ -502,8 +502,21 @@ final class DoryMachineFlightRecorderStore: @unchecked Sendable {
     }
 
     fileprivate static func isMachineID(_ value: String) -> Bool {
-        value.wholeMatch(of: /[A-Za-z0-9][A-Za-z0-9_.-]{0,62}/) != nil
-            && !value.hasPrefix(".")
+        let bytes = value.utf8
+        guard (1...63).contains(bytes.count),
+              let first = bytes.first,
+              Self.isASCIILetterOrDigit(first) else {
+            return false
+        }
+        return bytes.dropFirst().allSatisfy {
+            Self.isASCIILetterOrDigit($0) || $0 == 0x5f || $0 == 0x2e || $0 == 0x2d
+        }
+    }
+
+    private static func isASCIILetterOrDigit(_ byte: UInt8) -> Bool {
+        (0x30...0x39).contains(byte)
+            || (0x41...0x5a).contains(byte)
+            || (0x61...0x7a).contains(byte)
     }
 
     private static func isPrivateDirectory(_ path: String) -> Bool {

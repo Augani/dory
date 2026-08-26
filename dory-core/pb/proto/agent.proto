@@ -126,6 +126,24 @@ message UsbVhciDetachResponse {
   uint32 port = 3;
 }
 
+// Mount one host-published virtio-fs device inside a qualified Linux guest. This is deliberately a
+// Dory Tools capability instead of an Exec recipe: the agent validates the exact mount authority,
+// invokes mount(2) directly, and returns only after /proc/self/mountinfo proves the kernel-observed
+// source, target, access mode, and mount identity. Callers must negotiate `virtiofs-mount@1`.
+message VirtiofsMountRequest {
+  string tag = 1;
+  string mount_path = 2;
+  bool read_only = 3;
+}
+message VirtiofsMountResponse {
+  bool mounted = 1;
+  bool already_mounted = 2;
+  string tag = 3;
+  string mount_path = 4;
+  bool read_only = 5;
+  uint64 mount_id = 6;
+}
+
 // Run a bounded non-interactive command in the guest. This is the primitive doryd uses for
 // VM-machine provisioning and smoke checks; streaming terminals/debug shells can layer on a
 // separate channel later.
@@ -271,6 +289,7 @@ message AgentRequest {
     LifecycleReceiptRequest lifecycle_receipt = 14;
     UsbVhciAttachRequest usb_vhci_attach = 15;
     UsbVhciDetachRequest usb_vhci_detach = 16;
+    VirtiofsMountRequest virtiofs_mount = 17;
   }
 }
 
@@ -293,5 +312,6 @@ message AgentResponse {
     LifecycleReceiptResponse lifecycle_receipt = 15;
     UsbVhciAttachResponse usb_vhci_attach = 16;
     UsbVhciDetachResponse usb_vhci_detach = 17;
+    VirtiofsMountResponse virtiofs_mount = 18;
   }
 }

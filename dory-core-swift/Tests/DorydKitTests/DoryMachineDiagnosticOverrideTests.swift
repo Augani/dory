@@ -13,16 +13,12 @@ struct DoryMachineDiagnosticOverrideTests {
             "PRIVATE_TOKEN": "opaque",
         ])
 
-        #expect(overrides == [
-            .gpuResourceTracing,
-            .virglRendererPath,
-            .virglSyncMode,
-        ])
+        #expect(overrides == [.gpuResourceTracing])
         #expect(overrides.map(\.rawValue).joined().contains("/private") == false)
         #expect(overrides.map(\.rawValue).joined().contains("opaque") == false)
     }
 
-    @Test("invalid compatibility values are not reported as active")
+    @Test("retired renderer overrides and invalid tracing values are inactive")
     func invalidValuesAreInactive() {
         #expect(DoryMachineDiagnosticOverride.configured(in: [
             "DORY_GPU_TRACE_RESOURCES": "true",
