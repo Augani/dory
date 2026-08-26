@@ -566,6 +566,12 @@ final class AppStore {
         dorydEngineFlags(environment: environment).enabled
     }
 
+    /// A clean installed app can spend tens of seconds registering and validating its signed
+    /// LaunchAgent before doryd publishes the Mach service. Keep the app in its truthful starting
+    /// state for that whole first-launch window instead of converting a still-progressing launch
+    /// into a sticky engine error. Docker readiness has its own subsequent bounded wait.
+    nonisolated static let dorydBackendAttachTimeout: TimeInterval = 60
+
     private nonisolated static func dorydEngineFlags(environment: [String: String]) -> (enabled: Bool, required: Bool, explicit: Bool) {
         // Dory 0.4 has one production local-engine owner. Keep the positive flags only as an
         // automation signal that a test explicitly wants to attach to doryd; historical disable
@@ -1007,7 +1013,9 @@ final class AppStore {
         )
     }
 
-    private func waitForDorydBackend(timeout: TimeInterval = 8) async throws -> (DorydEngineStatus, String) {
+    private func waitForDorydBackend(
+        timeout: TimeInterval = AppStore.dorydBackendAttachTimeout
+    ) async throws -> (DorydEngineStatus, String) {
         let deadline = Date().addingTimeInterval(timeout)
         var lastError: Error?
         repeat {

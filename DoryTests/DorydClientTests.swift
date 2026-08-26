@@ -616,6 +616,10 @@ struct DorydClientTests {
         #expect(AppStore.dorydEngineEnabled(environment: ["DORY_APP_DISABLE_DORYD": "1"]))
     }
 
+    @Test func cleanInstallAttachWindowCoversSignedLaunchAgentStartup() {
+        #expect(AppStore.dorydBackendAttachTimeout >= 60)
+    }
+
     @Test func customDomainPatternsAcceptExactAndLeftmostWildcardOnly() {
         #expect(AppStore.normalizedCustomDomainPattern(" Admin.MyProject.Local. ") == "admin.myproject.local")
         #expect(AppStore.normalizedCustomDomainPattern("*.Tenant.Test") == "*.tenant.test")
