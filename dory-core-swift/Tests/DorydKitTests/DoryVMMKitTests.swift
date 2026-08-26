@@ -7,6 +7,24 @@ import Virtualization
 import XCTest
 
 final class DoryVMMKitTests: XCTestCase {
+    func testVZDesktopForwardsAppKitScrollDirectionWithoutRewritingTheEvent() throws {
+        let cgEvent = try XCTUnwrap(CGEvent(
+            scrollWheelEvent2Source: nil,
+            units: .pixel,
+            wheelCount: 2,
+            wheel1: 9,
+            wheel2: -4,
+            wheel3: 0
+        ))
+        let appKitEvent = try XCTUnwrap(NSEvent(cgEvent: cgEvent))
+
+        let guestEvent = DoryVMMInputBridge.scrollEventForGuest(appKitEvent)
+
+        XCTAssertTrue(guestEvent === appKitEvent)
+        XCTAssertEqual(guestEvent.scrollingDeltaY, appKitEvent.scrollingDeltaY)
+        XCTAssertEqual(guestEvent.scrollingDeltaX, appKitEvent.scrollingDeltaX)
+    }
+
     @MainActor
     func testClipboardRetriesInitialHostPushUntilDesktopSessionIsReady() async throws {
         let pasteboard = NSPasteboard.withUniqueName()

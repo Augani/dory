@@ -265,11 +265,14 @@ final class DoryVMMDesktopApplication: NSObject, NSApplicationDelegate, NSWindow
     }
 }
 
-/// `VZVirtualMachineView` forwards the device-oriented Core Graphics wheel deltas to Linux.
-/// AppKit normally applies the user's macOS natural-scrolling preference before an `NSView`
-/// consumes those deltas, but the VM view bypasses that normalization. Preserve all of the event's
-/// phase and momentum metadata while correcting the delta fields only when AppKit says the host
-/// preference inverted them from the physical device.
+/// AppKit has already applied the user's natural-scrolling preference by the time an `NSView`
+/// receives an event. Forward that exact event to Virtualization.framework so Dory's VZ and RawHV
+/// desktops agree at the Linux input boundary. Rewriting Core Graphics fields here applies the
+/// preference twice and makes the guest scroll opposite to the host.
+enum DoryVMMInputBridge {
+    static func scrollEventForGuest(_ event: NSEvent) -> NSEvent { event }
+}
+
 @MainActor
 private final class DoryVirtualMachineView: VZVirtualMachineView {
     var onMacShortcut: ((NSEvent) -> Bool)?
@@ -304,30 +307,6 @@ private final class DoryVirtualMachineView: VZVirtualMachineView {
     }
 
     override func scrollWheel(with event: NSEvent) {
-        guard event.isDirectionInvertedFromDevice,
-              let correctedCGEvent = event.cgEvent?.copy() else {
-            super.scrollWheel(with: event)
-            return
-        }
-
-        Self.invertIntegerDelta(.scrollWheelEventDeltaAxis1, in: correctedCGEvent)
-        Self.invertIntegerDelta(.scrollWheelEventDeltaAxis2, in: correctedCGEvent)
-        Self.invertIntegerDelta(.scrollWheelEventPointDeltaAxis1, in: correctedCGEvent)
-        Self.invertIntegerDelta(.scrollWheelEventPointDeltaAxis2, in: correctedCGEvent)
-        Self.invertFixedPointDelta(.scrollWheelEventFixedPtDeltaAxis1, in: correctedCGEvent)
-        Self.invertFixedPointDelta(.scrollWheelEventFixedPtDeltaAxis2, in: correctedCGEvent)
-        guard let correctedEvent = NSEvent(cgEvent: correctedCGEvent) else {
-            super.scrollWheel(with: event)
-            return
-        }
-        super.scrollWheel(with: correctedEvent)
-    }
-
-    private static func invertIntegerDelta(_ field: CGEventField, in event: CGEvent) {
-        event.setIntegerValueField(field, value: -event.getIntegerValueField(field))
-    }
-
-    private static func invertFixedPointDelta(_ field: CGEventField, in event: CGEvent) {
-        event.setDoubleValueField(field, value: -event.getDoubleValueField(field))
+        super.scrollWheel(with: DoryVMMInputBridge.scrollEventForGuest(event))
     }
 }

@@ -1239,6 +1239,8 @@ public final class MachineManager: @unchecked Sendable {
     private var lastLaunchReservationGeneration: UInt64 = 0
 #if DEBUG
     private var lifecycleFaultInjector: (@Sendable (MachineLifecycleFaultPoint) throws -> Void)?
+    private var readinessPublishTestHook:
+        (@Sendable (_ machineID: String) -> Void)?
     private var shareAuthorityPreSpawnTestHook: (@Sendable (_ machineID: String) throws -> Void)?
     private var rawHVStateAuthorityPreFinalRevalidationTestHook:
         (@Sendable (_ machineID: String) throws -> Void)?
@@ -6549,9 +6551,9 @@ public final class MachineManager: @unchecked Sendable {
         return statusLocked(id: id, entry: entry)
     }
 
-    /// Waits for an in-progress launch to publish the agent endpoint used by guest operations.
-    /// Start intentionally returns after spawning the helper, so callers that immediately need
-    /// the guest agent must cross this readiness boundary instead of racing the handoff callback.
+    /// Observes an in-progress launch until its handoff owner publishes the agent endpoint used by
+    /// guest operations. Start intentionally returns after spawning the helper, so callers that
+    /// immediately need the guest agent wait here without competing to terminalize its lifecycle.
     public func waitUntilAgentReady(id: String) throws -> DoryMachineStatus {
         guard let initial = status(id: id) else {
             throw MachineManagerError.unknownMachine(id)
@@ -6562,7 +6564,6 @@ public final class MachineManager: @unchecked Sendable {
         ) + 1
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
-            publishAcceptedReadiness(id: id)
             guard let current = status(id: id) else {
                 throw MachineManagerError.unknownMachine(id)
             }
@@ -11692,6 +11693,12 @@ public final class MachineManager: @unchecked Sendable {
         }
         lock.unlock()
 
+#if DEBUG
+        let preCompletionTestHook = managerStateLock.withLock {
+            readinessPublishTestHook
+        }
+        preCompletionTestHook?(machineID)
+#endif
         completeActiveStartLifecycle(id: machineID)
 
         var agentSocketPath: String?
@@ -13907,6 +13914,14 @@ public final class MachineManager: @unchecked Sendable {
     }
 
 #if DEBUG
+    func installReadinessPublishHookForTesting(
+        _ hook: @escaping @Sendable (_ machineID: String) -> Void
+    ) {
+        managerStateLock.withLock {
+            readinessPublishTestHook = hook
+        }
+    }
+
     func installLifecycleFaultInjectorForTesting(
         _ injector: @escaping @Sendable (MachineLifecycleFaultPoint) throws -> Void
     ) {

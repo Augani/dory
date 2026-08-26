@@ -143,6 +143,69 @@ final class MachineManagerLifecycleJournalIntegrationTests: XCTestCase {
         )
     }
 
+    func testAgentReadinessWaiterObservesButNeverFinalizesStartJournal() throws {
+        let fixture = try LifecycleFixture(name: #function, requiresReadyHandoff: true)
+        defer { fixture.cleanup() }
+        let manager = fixture.makeManager()
+        _ = try fixture.createMachine(manager)
+        let starting = try manager.start(id: fixture.machineID)
+        let machineID = fixture.machineID
+        let handoffSocketPath = try XCTUnwrap(starting.handoffSocketPath)
+        let operationID = try XCTUnwrap(starting.activeOperationID)
+
+        let publicationEntered = DispatchSemaphore(value: 0)
+        let allowPublication = DispatchSemaphore(value: 0)
+        let publicationProbe = LockedReadinessPublicationProbe()
+        manager.installReadinessPublishHookForTesting { publishedMachineID in
+            publicationProbe.record(machineID: publishedMachineID)
+            publicationEntered.signal()
+            _ = allowPublication.wait(timeout: .now() + 2)
+        }
+
+        let waiterCompleted = expectation(description: "agent readiness waiter completed")
+        let waiterState = LockedLifecycleWaitResult()
+        DispatchQueue.global(qos: .userInitiated).async {
+            waiterState.capture { try manager.waitUntilAgentReady(id: machineID) }
+            waiterCompleted.fulfill()
+        }
+
+        let handoffCompleted = expectation(description: "VMM handoff completed")
+        let handoffState = LockedLifecycleWaitResult()
+        DispatchQueue.global(qos: .userInitiated).async {
+            handoffState.capture {
+                try performLifecycleHandoff(
+                    manager: manager,
+                    machineID: machineID,
+                    path: handoffSocketPath,
+                    operationID: operationID
+                )
+            }
+            handoffCompleted.fulfill()
+        }
+
+        XCTAssertEqual(publicationEntered.wait(timeout: .now() + 2), .success)
+        Thread.sleep(forTimeInterval: 0.1)
+        XCTAssertEqual(
+            publicationProbe.machineIDs,
+            [machineID],
+            "the handoff callback must be the sole readiness publisher"
+        )
+        XCTAssertEqual(
+            publicationProbe.count,
+            1,
+            "an observing readiness waiter must not race the handoff lifecycle owner"
+        )
+        allowPublication.signal()
+
+        wait(for: [handoffCompleted, waiterCompleted], timeout: 3)
+        XCTAssertNoThrow(try handoffState.get())
+        XCTAssertEqual(try waiterState.get().state, .running)
+        XCTAssertEqual(
+            try waitForJournal(fixture, kind: .workspaceStart, status: .completed).state.status,
+            .completed
+        )
+    }
+
     func testPerMachineFenceAllowsDifferentMachinesToReachReadinessConcurrently() throws {
         let fixture = try LifecycleFixture(name: #function, requiresReadyHandoff: true)
         defer { fixture.cleanup() }
@@ -667,6 +730,55 @@ private final class LifecycleFixture {
 
     func cleanup() {
         try? FileManager.default.removeItem(atPath: base)
+    }
+}
+
+private final class LockedLifecycleWaitResult: @unchecked Sendable {
+    private let lock = NSLock()
+    private var result: Result<DoryMachineStatus, Error>?
+
+    func capture(_ operation: () throws -> DoryMachineStatus) {
+        let captured = Result { try operation() }
+        lock.withLock { result = captured }
+    }
+
+    func get() throws -> DoryMachineStatus {
+        try lock.withLock { try XCTUnwrap(result).get() }
+    }
+}
+
+private func performLifecycleHandoff(
+    manager: MachineManager,
+    machineID: String,
+    path: String,
+    operationID: String
+) throws -> DoryMachineStatus {
+    try sendVmmHandoff(
+        path: path,
+        ready: VmmReadyMessage(
+            machineID: machineID,
+            operationID: operationID,
+            agentSocketPath: "/run/dory-agent.sock"
+        ),
+        fileDescriptors: []
+    )
+    return try XCTUnwrap(manager.status(id: machineID))
+}
+
+private final class LockedReadinessPublicationProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recordedMachineIDs: [String] = []
+
+    func record(machineID: String) {
+        lock.withLock { recordedMachineIDs.append(machineID) }
+    }
+
+    var count: Int {
+        lock.withLock { recordedMachineIDs.count }
+    }
+
+    var machineIDs: [String] {
+        lock.withLock { recordedMachineIDs }
     }
 }
 
