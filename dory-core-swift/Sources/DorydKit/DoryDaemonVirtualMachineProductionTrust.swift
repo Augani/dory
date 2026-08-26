@@ -1194,7 +1194,7 @@ public struct DoryDaemonVirtualMachineProductionTrustFactory: Sendable {
 
     /// Compiled into and covered by the daemon's code signature. Production catalog compatibility
     /// must not trust an environment override or a mutable outer Info.plist.
-    public static let compiledDaemonVersion = "0.4.5"
+    public static let compiledDaemonVersion = "0.4.6"
 
     public init() {
         authorityResolver = { store, publicKey, architecture, appVersion in

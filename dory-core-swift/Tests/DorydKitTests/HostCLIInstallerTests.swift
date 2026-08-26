@@ -10,7 +10,7 @@ final class HostCLIInstallerTests: XCTestCase {
         try FileManager.default.createDirectory(atPath: home, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(atPath: directory) }
 
-        for tool in ["docker", "docker-buildx", "docker-compose", "kubectl", "dory", "dory-doctor", "dorydctl"] {
+        for tool in ["docker", "docker-credential-osxkeychain", "docker-buildx", "docker-compose", "kubectl", "dory", "dory-doctor", "dorydctl"] {
             _ = try executableFixture(at: helpers + "/\(tool)")
         }
 
@@ -24,6 +24,10 @@ final class HostCLIInstallerTests: XCTestCase {
         XCTAssertNil(result.dockerContextError)
         XCTAssertTrue(FileManager.default.fileExists(atPath: home + "/.dory/bin/docker"))
         XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: home + "/.dory/bin/docker"), helpers + "/docker")
+        XCTAssertEqual(
+            try FileManager.default.destinationOfSymbolicLink(atPath: home + "/.dory/bin/docker-credential-osxkeychain"),
+            helpers + "/docker-credential-osxkeychain"
+        )
         XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: home + "/.docker/cli-plugins/docker-compose"), helpers + "/docker-compose")
         XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: home + "/.docker/cli-plugins/docker-buildx"), helpers + "/docker-buildx")
         let profile = try String(contentsOfFile: home + "/.zprofile", encoding: .utf8)
@@ -39,7 +43,7 @@ final class HostCLIInstallerTests: XCTestCase {
         try FileManager.default.createDirectory(atPath: home, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(atPath: directory) }
 
-        for tool in ["docker", "docker-buildx", "docker-compose", "kubectl", "dory", "dory-doctor", "dorydctl"] {
+        for tool in ["docker", "docker-credential-osxkeychain", "docker-buildx", "docker-compose", "kubectl", "dory", "dory-doctor", "dorydctl"] {
             _ = try executableFixture(at: helpers + "/\(tool)")
         }
 
@@ -57,7 +61,7 @@ final class HostCLIInstallerTests: XCTestCase {
         try FileManager.default.createDirectory(atPath: home, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(atPath: directory) }
 
-        for tool in ["docker", "docker-buildx", "docker-compose", "kubectl", "dory", "dory-doctor", "dorydctl"] {
+        for tool in ["docker", "docker-credential-osxkeychain", "docker-buildx", "docker-compose", "kubectl", "dory", "dory-doctor", "dorydctl"] {
             _ = try executableFixture(at: helpers + "/\(tool)")
         }
         let recorder = HostCLICommandRecorder(inspectStatus: 1)
@@ -86,7 +90,7 @@ final class HostCLIInstallerTests: XCTestCase {
         try FileManager.default.createDirectory(atPath: home, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(atPath: directory) }
 
-        for tool in ["docker", "docker-buildx", "docker-compose", "kubectl", "dory", "dory-doctor", "dorydctl"] {
+        for tool in ["docker", "docker-credential-osxkeychain", "docker-buildx", "docker-compose", "kubectl", "dory", "dory-doctor", "dorydctl"] {
             _ = try executableFixture(at: helpers + "/\(tool)")
         }
         let recorder = HostCLICommandRecorder(inspectStatus: 0)
@@ -112,7 +116,7 @@ final class HostCLIInstallerTests: XCTestCase {
         try FileManager.default.createDirectory(atPath: home, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(atPath: directory) }
 
-        for tool in ["docker", "docker-buildx", "docker-compose", "kubectl", "dory", "dory-doctor", "dorydctl"] {
+        for tool in ["docker", "docker-credential-osxkeychain", "docker-buildx", "docker-compose", "kubectl", "dory", "dory-doctor", "dorydctl"] {
             _ = try executableFixture(at: helpers + "/\(tool)")
         }
         let recorder = HostCLICommandRecorder(inspectStatus: 0, inspectHost: "ssh://foreign.example")
@@ -139,7 +143,7 @@ final class HostCLIInstallerTests: XCTestCase {
         defer { try? FileManager.default.removeItem(atPath: directory) }
 
         let doryd = try executableFixture(at: helpers + "/doryd")
-        for tool in ["docker", "docker-buildx", "docker-compose", "kubectl", "dory", "dory-doctor", "dorydctl"] {
+        for tool in ["docker", "docker-credential-osxkeychain", "docker-buildx", "docker-compose", "kubectl", "dory", "dory-doctor", "dorydctl"] {
             _ = try executableFixture(at: helpers + "/\(tool)")
         }
 
@@ -185,7 +189,7 @@ final class HostCLIInstallerTests: XCTestCase {
         try FileManager.default.createDirectory(atPath: dotfiles, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(atPath: directory) }
 
-        for tool in ["docker", "docker-buildx", "docker-compose", "kubectl", "dory", "dory-doctor", "dorydctl"] {
+        for tool in ["docker", "docker-credential-osxkeychain", "docker-buildx", "docker-compose", "kubectl", "dory", "dory-doctor", "dorydctl"] {
             _ = try executableFixture(at: helpers + "/\(tool)")
         }
         let target = dotfiles + "/zprofile"
@@ -210,7 +214,7 @@ final class HostCLIInstallerTests: XCTestCase {
         try FileManager.default.createDirectory(atPath: home, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(atPath: directory) }
 
-        for tool in ["docker", "docker-buildx", "docker-compose", "kubectl", "dory", "dory-doctor", "dorydctl"] {
+        for tool in ["docker", "docker-credential-osxkeychain", "docker-buildx", "docker-compose", "kubectl", "dory", "dory-doctor", "dorydctl"] {
             _ = try executableFixture(at: helpers + "/\(tool)")
         }
 
@@ -237,7 +241,7 @@ final class HostCLIInstallerTests: XCTestCase {
         try FileManager.default.createDirectory(atPath: home, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(atPath: directory) }
 
-        for tool in ["docker", "docker-buildx", "docker-compose", "kubectl", "dory", "dory-doctor", "dorydctl"] {
+        for tool in ["docker", "docker-credential-osxkeychain", "docker-buildx", "docker-compose", "kubectl", "dory", "dory-doctor", "dorydctl"] {
             _ = try executableFixture(at: helpers + "/\(tool)")
         }
 
@@ -247,12 +251,14 @@ final class HostCLIInstallerTests: XCTestCase {
         let result = installer.remove()
 
         XCTAssertTrue(result.removed.contains("docker"))
+        XCTAssertTrue(result.removed.contains("docker-credential-osxkeychain"))
         XCTAssertTrue(result.composePluginRemoved)
         XCTAssertTrue(result.buildxPluginRemoved)
         XCTAssertTrue(result.dockerContextRemoved)
         XCTAssertNil(result.dockerContextError)
         XCTAssertTrue(result.pathProfileChanged)
         XCTAssertFalse(FileManager.default.fileExists(atPath: home + "/.dory/bin/docker"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: home + "/.dory/bin/docker-credential-osxkeychain"))
         XCTAssertFalse(FileManager.default.fileExists(atPath: home + "/.docker/cli-plugins/docker-compose"))
         XCTAssertFalse(FileManager.default.fileExists(atPath: home + "/.docker/cli-plugins/docker-buildx"))
         XCTAssertFalse(FileManager.default.fileExists(atPath: home + "/.zprofile"))
@@ -267,7 +273,7 @@ final class HostCLIInstallerTests: XCTestCase {
         try FileManager.default.createDirectory(atPath: home, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(atPath: directory) }
 
-        for tool in ["docker", "docker-buildx", "docker-compose", "kubectl", "dory", "dory-doctor", "dorydctl"] {
+        for tool in ["docker", "docker-credential-osxkeychain", "docker-buildx", "docker-compose", "kubectl", "dory", "dory-doctor", "dorydctl"] {
             _ = try executableFixture(at: helpers + "/\(tool)")
         }
 
@@ -291,7 +297,7 @@ final class HostCLIInstallerTests: XCTestCase {
         try FileManager.default.createDirectory(atPath: home, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(atPath: directory) }
 
-        for tool in ["docker", "docker-buildx", "docker-compose", "kubectl", "dory", "dory-doctor", "dorydctl"] {
+        for tool in ["docker", "docker-credential-osxkeychain", "docker-buildx", "docker-compose", "kubectl", "dory", "dory-doctor", "dorydctl"] {
             _ = try executableFixture(at: helpers + "/\(tool)")
         }
         let installer = HostCLIInstaller(home: home, helpersDirectory: helpers)
@@ -340,7 +346,7 @@ final class HostCLIInstallerTests: XCTestCase {
         try FileManager.default.createDirectory(atPath: plugins, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(atPath: directory) }
 
-        for tool in ["docker", "docker-buildx", "docker-compose", "kubectl", "dory", "dory-doctor", "dorydctl"] {
+        for tool in ["docker", "docker-credential-osxkeychain", "docker-buildx", "docker-compose", "kubectl", "dory", "dory-doctor", "dorydctl"] {
             _ = try executableFixture(at: helpers + "/\(tool)")
         }
         try "user-compose\n".write(toFile: plugins + "/docker-compose", atomically: true, encoding: .utf8)

@@ -271,7 +271,7 @@ security add-trusted-cert -d -r trustRoot -k "$LOGIN_KEYCHAIN" "$TLS_ROOT/cert.p
 
 printf 'generation-one\n' > "$FEED_ROOT/component-v1.txt"
 printf 'generation-two\n' > "$FEED_ROOT/component-v2.txt"
-DORY_HV_SHA256="$(shasum -a 256 "$CANDIDATE_APP/Contents/Helpers/dory-hv" | awk '{print $1}')"
+DORY_HV_SHA256="$(shasum -a 256 "$CANDIDATE_APP/Contents/Helpers/DoryHVRunner.app/Contents/MacOS/dory-hv" | awk '{print $1}')"
 BUNDLED_KERNEL_SHA256="$(shasum -a 256 "$CANDIDATE_APP/Contents/Resources/dory-hv-kernel-arm64.lzfse" | awk '{print $1}')"
 HOST_MODEL="$(sysctl -n hw.model)"
 HOST_BUILD="$(sw_vers -buildVersion)"

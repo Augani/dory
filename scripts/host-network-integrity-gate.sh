@@ -598,7 +598,7 @@ cleanup
     echo "app_executable_sha256=$(shasum -a 256 "$APP/Contents/MacOS/Dory" | awk '{print $1}')"
     echo "docker_sha256=$(shasum -a 256 "$DOCKER" | awk '{print $1}')"
     echo "doryd_sha256=$(shasum -a 256 "$APP/Contents/Helpers/doryd" | awk '{print $1}')"
-    echo "dory_hv_sha256=$(shasum -a 256 "$APP/Contents/Helpers/dory-hv" | awk '{print $1}')"
+    echo "dory_hv_sha256=$(shasum -a 256 "$APP/Contents/Helpers/DoryHVRunner.app/Contents/MacOS/dory-hv" | awk '{print $1}')"
     echo "dorydctl_sha256=$(shasum -a 256 "$MACHINE_CTL" | awk '{print $1}')"
     echo "tailscale_cli_sha256=$(shasum -a 256 "$TAILSCALE_BIN" | awk '{print $1}')"
     echo "machine_kernel_sha256=$(shasum -a 256 "$MACHINE_KERNEL" | awk '{print $1}')"

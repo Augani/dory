@@ -29,10 +29,10 @@ write_lipo_arches() {
   chmod +x "$FAKE_LIPO"
 }
 
-write_payload "v0.8.9-dory2"
+write_payload "v0.8.9-dory3"
 write_lipo_arches "x86_64 arm64"
 PAYLOAD_SHA="$(shasum -a 256 "$PAYLOAD" | awk '{print $1}')"
-DORY_LIPO_BIN="$FAKE_LIPO" dory_verify_gvproxy_payload "$PAYLOAD" "v0.8.9-dory2" "$PAYLOAD_SHA" \
+DORY_LIPO_BIN="$FAKE_LIPO" dory_verify_gvproxy_payload "$PAYLOAD" "v0.8.9-dory3" "$PAYLOAD_SHA" \
   || fail "valid universal payload was rejected"
 
 FAKE_CODESIGN="$TMP/codesign"
@@ -61,14 +61,14 @@ fi
 printf '%s  Contents/Helpers/gvproxy\n' "$PAYLOAD_SHA" > "$INVENTORY"
 
 if DORY_LIPO_BIN="$FAKE_LIPO" dory_verify_gvproxy_payload \
-  "$PAYLOAD" "v0.8.9-dory2" "0000000000000000000000000000000000000000000000000000000000000000" \
+  "$PAYLOAD" "v0.8.9-dory3" "0000000000000000000000000000000000000000000000000000000000000000" \
   >/dev/null 2>&1; then
   fail "checksum mismatch was accepted"
 fi
 
 write_lipo_arches "arm64"
 if DORY_LIPO_BIN="$FAKE_LIPO" dory_verify_gvproxy_payload \
-  "$PAYLOAD" "v0.8.9-dory2" "$PAYLOAD_SHA" >/dev/null 2>&1; then
+  "$PAYLOAD" "v0.8.9-dory3" "$PAYLOAD_SHA" >/dev/null 2>&1; then
   fail "single-slice payload was accepted"
 fi
 
@@ -92,14 +92,17 @@ dory_gvproxy_validate_overrides || fail "default pinned metadata was rejected"
 (DORY_GVPROXY_VERSION="v0.9.0"; DORY_GVPROXY_SHA256="$PAYLOAD_SHA"; \
   dory_gvproxy_validate_overrides) || fail "paired custom metadata was rejected"
 
-[ "$DORY_GVPROXY_DEFAULT_VERSION" = "v0.8.9-dory2" ] || fail "default version pin regressed"
+[ "$DORY_GVPROXY_DEFAULT_VERSION" = "v0.8.9-dory3" ] || fail "default version pin regressed"
 [ "$DORY_GVPROXY_DEFAULT_SHA256" = \
-  "47c278f1636736ba552de3d2f0e68409cdc968d63bc02149637e449f40274459" ] \
+  "56e0cde99ff2b589e467294145d66796ab4d990ae89a3633b0ef037dfcba03cd" ] \
   || fail "default checksum pin regressed"
 for reproducible_input in \
+  'DORY_VERSION="v0.8.9-dory3"' \
   'GO_TOOLCHAIN="go1.26.5"' \
   'GO_MOD_SHA256="75848c190dca5cc7af27ebe017d5a4d59d4a117c97eaa6b8ac0359e58d868eec"' \
   'GO_SUM_SHA256="25b1a52ad3181030b6ccf92af5d69a1a4282f8f2342dad5348b5c954c304c4b3"' \
+  'HOST_ONLY_PATCH_SHA256="b09e6d840bd27b670837ae392fe1f1787f4316b604ff7effafe2ac57f7678516"' \
+  'host-only-connectivity-v1' \
   'export GOTOOLCHAIN="$GO_TOOLCHAIN"' \
   'go test -mod=readonly' \
   'go build -mod=readonly' \

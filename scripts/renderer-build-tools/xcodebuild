@@ -1,0 +1,45 @@
+#!/bin/bash
+# Enforce the renderer build's reviewed Xcode concurrency ceiling, including xcodebuild calls
+# made by upstream dependency scripts that do not expose their own jobs option.
+set -euo pipefail
+
+REAL_XCODEBUILD="${DORY_XCODEBUILD_REAL:-}"
+JOBS="${DORY_XCODEBUILD_JOBS:-}"
+
+case "$REAL_XCODEBUILD" in
+  /*) ;;
+  *) echo "renderer xcodebuild wrapper: DORY_XCODEBUILD_REAL must be an absolute path" >&2; exit 2 ;;
+esac
+[ -x "$REAL_XCODEBUILD" ] || {
+  echo "renderer xcodebuild wrapper: real xcodebuild is not executable" >&2
+  exit 2
+}
+case "$JOBS" in
+  ''|*[!0-9]*) echo "renderer xcodebuild wrapper: DORY_XCODEBUILD_JOBS must be an integer" >&2; exit 2 ;;
+esac
+[ "$JOBS" -gt 0 ] || {
+  echo "renderer xcodebuild wrapper: DORY_XCODEBUILD_JOBS must be positive" >&2
+  exit 2
+}
+
+# xcodebuild accepts its last concurrency option. Reject an upstream override instead of letting
+# argument order silently replace the reviewed ceiling injected below. Creating an XCFramework is
+# a serial packaging operation rather than a build action, and Xcode rejects build-only `-jobs`
+# there; MoltenVK legitimately invokes that mode from inside its package target.
+PACKAGING_ONLY=false
+for argument in "$@"; do
+  case "$argument" in
+    -jobs|-jobs=*)
+      echo "renderer xcodebuild wrapper: caller-supplied -jobs is forbidden" >&2
+      exit 2
+      ;;
+    -create-xcframework)
+      PACKAGING_ONLY=true
+      ;;
+  esac
+done
+
+if [ "$PACKAGING_ONLY" = true ]; then
+  exec "$REAL_XCODEBUILD" "$@"
+fi
+exec "$REAL_XCODEBUILD" -jobs "$JOBS" "$@" ARCHS=arm64

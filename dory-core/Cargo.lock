@@ -785,6 +785,7 @@ dependencies = [
 name = "dory-runc-wrapper"
 version = "0.0.0"
 dependencies = [
+ "libc",
  "serde_json",
 ]
 

@@ -536,6 +536,65 @@ final class DoryComponentsTests: XCTestCase {
         )
     }
 
+    func testExtendedAttributeCtimeChangeRevalidatesDigestInsteadOfInvalidatingComponent() throws {
+        let fixture = try Fixture(name: "metadata-ctime")
+        defer { fixture.cleanup() }
+        let payload = Data("desktop kernel payload".utf8)
+        let component = release(id: .linuxDesktop, data: payload)
+        let catalog = catalog(components: [core(), component])
+        let catalogData = try encoded(catalog)
+        let source = try fixture.write(payload, name: "desktop-kernel")
+        try fixture.store.install(
+            component,
+            catalogDigest: DoryComponentCatalogVerifier.digest(catalogData),
+            downloadedAssets: [component.assets[0].path: source.path]
+        )
+        let path = try XCTUnwrap(fixture.store.assetPath(
+            component: .linuxDesktop,
+            path: component.assets[0].path
+        ))
+        let metadata = Data("macOS provenance".utf8)
+        let result = metadata.withUnsafeBytes {
+            setxattr(path, "dev.dory.test-provenance", $0.baseAddress, metadata.count, 0, 0)
+        }
+        XCTAssertEqual(result, 0)
+
+        XCTAssertEqual(try fixture.store.verify(.linuxDesktop).id, .linuxDesktop)
+        XCTAssertNotNil(fixture.store.assetPath(component: .linuxDesktop, path: component.assets[0].path))
+        XCTAssertEqual(
+            fixture.store.list(
+                catalog: catalog,
+                catalogDigest: DoryComponentCatalogVerifier.digest(catalogData)
+            ).first(where: { $0.id == .linuxDesktop })?.state,
+            .installed
+        )
+    }
+
+    func testSameSizeTamperWithRestoredMtimeFailsCtimeDigestFallback() throws {
+        let fixture = try Fixture(name: "ctime-tamper")
+        defer { fixture.cleanup() }
+        let payload = Data("trusted-machine-image".utf8)
+        let component = release(id: .linuxMachines, data: payload)
+        let source = try fixture.write(payload, name: "machine")
+        try fixture.store.install(
+            component,
+            catalogDigest: String(repeating: "a", count: 64),
+            downloadedAssets: [component.assets[0].path: source.path]
+        )
+        let path = try XCTUnwrap(fixture.store.assetPath(
+            component: .linuxMachines,
+            path: component.assets[0].path
+        ))
+        let originalModified = try XCTUnwrap(
+            FileManager.default.attributesOfItem(atPath: path)[.modificationDate] as? Date
+        )
+        try Data("untrusted-machine-img".utf8).write(to: URL(fileURLWithPath: path))
+        try FileManager.default.setAttributes([.modificationDate: originalModified], ofItemAtPath: path)
+
+        XCTAssertThrowsError(try fixture.store.verify(.linuxMachines))
+        XCTAssertNil(fixture.store.assetPath(component: .linuxMachines, path: component.assets[0].path))
+    }
+
     func testCorruptComponentRecordsCanBeRepairedAndRemoved() throws {
         let fixture = try Fixture(name: "corrupt-record-recovery")
         defer { fixture.cleanup() }

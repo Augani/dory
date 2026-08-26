@@ -1,6 +1,9 @@
 #!/bin/bash
-# Boot and exercise every managed desktop with the exact signed release candidate. This gate is
-# intentionally destructive only to its uniquely named temporary machines and work directory.
+# Boot and exercise every managed rootfs desktop with the exact signed release candidate. Generic
+# ARM64 EFI ISO installation on the Virtualization.framework software-display baseline belongs to
+# a separate end-to-end gate; success here must never be reported as ISO qualification.
+# This gate is intentionally destructive only to its uniquely named temporary machines and work
+# directory.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -22,9 +25,13 @@ DESKTOP_VERSION=""
 SELECTED_DISTRO="all"
 WORKROOT="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/dory-desktop-linux-live"
 CONFIRM=""
+REQUIRE_ACCELERATION=0
+REQUIRE_RELEASE_SIGNATURE=0
+RENDERER_RELEASE_SIGNATURE_RESULT=NOT-REQUIRED
+MESA_VIRGL_DESKTOP_RESULT=NOT-REQUIRED
 
 usage() {
-  echo "usage: desktop-linux-live-gate.sh --ctl PATH --component-dir PATH --kernel PATH [--distro all|debian|ubuntu|kali] [desktop assets] --zed-archive PATH --zed-version VERSION --zed-sha256 SHA256 --version VERSION --workroot PATH --confirm EXACT-CANDIDATE-DESKTOPS" >&2
+  echo "usage: desktop-linux-live-gate.sh --ctl PATH --component-dir PATH --kernel PATH [--distro all|debian|ubuntu|kali] [desktop assets] [Ubuntu-only acceleration assets: --zed-archive PATH --zed-version VERSION --zed-sha256 SHA256] [--require-acceleration] [--require-release-signature] --version VERSION --workroot PATH --confirm EXACT-CANDIDATE-DESKTOPS" >&2
   exit 64
 }
 
@@ -46,6 +53,8 @@ while [ "$#" -gt 0 ]; do
     --version) DESKTOP_VERSION="${2:?missing version}"; shift 2 ;;
     --workroot) WORKROOT="${2:?missing path}"; shift 2 ;;
     --confirm) CONFIRM="${2:?missing confirmation}"; shift 2 ;;
+    --require-acceleration) REQUIRE_ACCELERATION=1; shift ;;
+    --require-release-signature) REQUIRE_RELEASE_SIGNATURE=1; REQUIRE_ACCELERATION=1; shift ;;
     *) usage ;;
   esac
 done
@@ -59,11 +68,17 @@ esac
 [ -d "$COMPONENT_DIR" ] && [ ! -L "$COMPONENT_DIR" ] \
   || { echo "desktop live gate: missing component candidate directory: $COMPONENT_DIR" >&2; exit 66; }
 HELPERS="$(cd "$(dirname "$CTL")" && pwd)"
-VMM="$HELPERS/dory-hv"
+RUNNER_APP="$HELPERS/DoryHVRunner.app"
+VMM="$RUNNER_APP/Contents/MacOS/dory-hv"
 VZ_VMM="$HELPERS/dory-vmm"
 [ -x "$VMM" ] || { echo "desktop live gate: accelerated candidate dory-hv is missing: $VMM" >&2; exit 66; }
-[ -x "$VZ_VMM" ] || { echo "desktop live gate: fallback candidate dory-vmm is missing: $VZ_VMM" >&2; exit 66; }
-assets=("$KERNEL" "$ZED_ARCHIVE")
+[ -x "$VZ_VMM" ] || { echo "desktop live gate: portable baseline candidate dory-vmm is missing: $VZ_VMM" >&2; exit 66; }
+QUALIFY_UBUNTU_ACCELERATION=0
+case "$SELECTED_DISTRO" in
+  all|ubuntu) QUALIFY_UBUNTU_ACCELERATION=1 ;;
+esac
+assets=("$KERNEL")
+[ "$QUALIFY_UBUNTU_ACCELERATION" = 0 ] || assets+=("$ZED_ARCHIVE")
 case "$SELECTED_DISTRO" in
   all) assets+=("$DEBIAN_ROOTFS" "$UBUNTU_ROOTFS" "$KALI_ROOTFS" "$DEBIAN_UPDATE" "$UBUNTU_UPDATE" "$KALI_UPDATE") ;;
   debian) assets+=("$DEBIAN_ROOTFS" "$DEBIAN_UPDATE") ;;
@@ -81,7 +96,8 @@ absolute_asset() {
   printf '%s/%s\n' "$asset_directory" "$(basename "$asset_input")"
 }
 KERNEL="$(absolute_asset "$KERNEL")"
-ZED_ARCHIVE="$(absolute_asset "$ZED_ARCHIVE")"
+[ "$QUALIFY_UBUNTU_ACCELERATION" = 0 ] \
+  || ZED_ARCHIVE="$(absolute_asset "$ZED_ARCHIVE")"
 COMPONENT_DIR="$(cd "$COMPONENT_DIR" && pwd -P)"
 case "$SELECTED_DISTRO" in
   all)
@@ -107,12 +123,27 @@ case "$SELECTED_DISTRO" in
 esac
 printf '%s\n' "$DESKTOP_VERSION" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$' \
   || { echo "desktop live gate: invalid desktop version: $DESKTOP_VERSION" >&2; exit 64; }
-printf '%s\n' "$ZED_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' \
-  || { echo "desktop live gate: invalid Zed version: $ZED_VERSION" >&2; exit 64; }
-printf '%s\n' "$ZED_SHA256" | grep -Eq '^[0-9a-f]{64}$' \
-  || { echo "desktop live gate: invalid Zed digest" >&2; exit 64; }
-[ "$(shasum -a 256 "$ZED_ARCHIVE" | awk '{print $1}')" = "$ZED_SHA256" ] \
-  || { echo "desktop live gate: Zed archive digest mismatch" >&2; exit 66; }
+if [ "$QUALIFY_UBUNTU_ACCELERATION" = 1 ]; then
+  printf '%s\n' "$ZED_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' \
+    || { echo "desktop live gate: invalid Zed version: $ZED_VERSION" >&2; exit 64; }
+  TUPLE_ZED_TAG="$(python3 - "$ROOT/Config/DoryRendererProductionTuple.json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    value = json.load(handle)["guestMesaBuildPolicy"]["applicationReadiness"]["applicationTag"]
+if not isinstance(value, str) or not value.startswith("v"):
+    raise SystemExit("renderer tuple has an invalid application tag")
+print(value)
+PY
+)" || { echo "desktop live gate: cannot read the renderer tuple Zed tag" >&2; exit 66; }
+  [ "v$ZED_VERSION" = "$TUPLE_ZED_TAG" ] \
+    || { echo "desktop live gate: Zed $ZED_VERSION differs from tuple $TUPLE_ZED_TAG" >&2; exit 66; }
+  printf '%s\n' "$ZED_SHA256" | grep -Eq '^[0-9a-f]{64}$' \
+    || { echo "desktop live gate: invalid Zed digest" >&2; exit 64; }
+  [ "$(shasum -a 256 "$ZED_ARCHIVE" | awk '{print $1}')" = "$ZED_SHA256" ] \
+    || { echo "desktop live gate: Zed archive digest mismatch" >&2; exit 66; }
+fi
 [ -n "${RUNNER_TEMP:-}" ] \
   || { echo "desktop live gate: RUNNER_TEMP must identify the dedicated release workspace" >&2; exit 64; }
 case "$RUNNER_TEMP" in /*) ;; *) echo "desktop live gate: RUNNER_TEMP must be absolute" >&2; exit 64 ;; esac
@@ -133,20 +164,35 @@ PY
 rm -rf "$WORKROOT"
 mkdir -p "$WORKROOT/share" "$WORKROOT/evidence"
 printf 'Dory desktop release gate\n' > "$WORKROOT/share/host-marker.txt"
-cp "$ZED_ARCHIVE" "$WORKROOT/share/zed-linux-aarch64.tar.gz"
-[ "$(shasum -a 256 "$WORKROOT/share/zed-linux-aarch64.tar.gz" | awk '{print $1}')" = "$ZED_SHA256" ]
+if [ "$QUALIFY_UBUNTU_ACCELERATION" = 1 ]; then
+  cp "$ZED_ARCHIVE" "$WORKROOT/share/zed-linux-aarch64.tar.gz"
+  [ "$(shasum -a 256 "$WORKROOT/share/zed-linux-aarch64.tar.gz" | awk '{print $1}')" = "$ZED_SHA256" ]
+fi
 codesign --verify --strict "$VMM"
 codesign -d --entitlements :- "$VMM" > "$WORKROOT/evidence/dory-hv-entitlements.plist" 2>&1
 grep -q 'com.apple.security.hypervisor' "$WORKROOT/evidence/dory-hv-entitlements.plist"
 grep -q 'com.apple.security.device.audio-input' "$WORKROOT/evidence/dory-hv-entitlements.plist"
-grep -q 'com.apple.security.cs.disable-library-validation' "$WORKROOT/evidence/dory-hv-entitlements.plist"
+if grep -q 'com.apple.security.cs.disable-library-validation' "$WORKROOT/evidence/dory-hv-entitlements.plist"; then
+  echo "desktop live gate: dory-hv retains obsolete dynamic renderer library authority" >&2
+  exit 1
+fi
 codesign --verify --strict "$VZ_VMM"
 codesign -d --entitlements :- "$VZ_VMM" > "$WORKROOT/evidence/dory-vmm-entitlements.plist" 2>&1
 grep -q 'com.apple.security.virtualization' "$WORKROOT/evidence/dory-vmm-entitlements.plist"
 grep -q 'com.apple.security.device.audio-input' "$WORKROOT/evidence/dory-vmm-entitlements.plist"
 grep -q 'NSMicrophoneUsageDescription' "$HELPERS/../Info.plist"
+if [ "$REQUIRE_RELEASE_SIGNATURE" = 1 ]; then
+  codesign --verify --deep --strict "$RUNNER_APP"
+  python3 "$ROOT/scripts/verify-renderer-bootstrap-qualification.py" \
+    --runner-app "$RUNNER_APP" --managed-kernel "$KERNEL" \
+    --repo-root "$ROOT" --require-release-signature \
+    > "$WORKROOT/evidence/renderer-bootstrap-qualification.txt"
+  grep -Fqx 'renderer.qualification.releaseSignature=verified' \
+    "$WORKROOT/evidence/renderer-bootstrap-qualification.txt"
+  RENDERER_RELEASE_SIGNATURE_RESULT=PASS
+fi
 ACTIVE_MACHINE=""
-ZED_QUALIFIED=0
+ZED_RESULT=NOT-SELECTED
 
 cleanup() {
   result=$?
@@ -349,12 +395,14 @@ PY
   fi
 
   created="$WORKROOT/evidence/$distro-create.json"
+  graphics_preference=auto
+  [ "$REQUIRE_ACCELERATION" = 0 ] || graphics_preference=virgl-venus
   "$CTL" machine create "$machine" \
     --kernel "$installed_kernel" --rootfs "$installed_rootfs" --memory-mb 4096 --cpus 4 \
     --display-mode desktop \
     --share "releasegate=$WORKROOT/share:/home/dorygate/Mac:ro" \
     --guest-user dorygate --guest-uid 1550 \
-    --desktop-distro "$distro" --runtime accelerated --graphics virgl-venus \
+    --desktop-distro "$distro" --runtime accelerated --graphics "$graphics_preference" \
     --clipboard bidirectional > "$created"
   python3 - "$created" <<'PY'
 import json, sys
@@ -385,8 +433,13 @@ PY
 )"
   ps -ww -p "$machine_pid" -o command= | grep -F "$VMM" \
     > "$WORKROOT/evidence/$distro-vmm-command.txt"
-  grep -F -- '--resolved-graphics hardware-accelerated-3d' \
-    "$WORKROOT/evidence/$distro-vmm-command.txt"
+  if [ "$REQUIRE_ACCELERATION" = 1 ]; then
+    grep -F -- '--resolved-graphics hardware-accelerated-3d' \
+      "$WORKROOT/evidence/$distro-vmm-command.txt"
+  else
+    grep -E -- '--resolved-graphics (hardware-accelerated-3d|software)' \
+      "$WORKROOT/evidence/$distro-vmm-command.txt"
+  fi
 
   app_checks=""
   for app in $expected_apps; do
@@ -396,16 +449,56 @@ PY
     set -eu
     systemctl is-active '$manager' >/dev/null
     systemctl is-active dory-zram.service >/dev/null
-    test \"\$(cat /run/dory/graphics-backend)\" = virgl2+venus
-    grep -q '^venus-ready:' /run/dory/graphics-status
+    requested_graphics=\$(cat /run/dory/graphics-requested-backend)
+    effective_graphics=\$(cat /run/dory/graphics-backend)
+    if test '$REQUIRE_ACCELERATION' = 1; then
+      test \"\$requested_graphics\" = virgl2+venus
+      test \"\$effective_graphics\" = virgl2+venus
+      grep -q '^venus-ready:' /run/dory/graphics-status
+    else
+      case \"\$requested_graphics:\$effective_graphics\" in
+        virgl2+venus:virgl2+venus)
+          grep -q '^venus-ready:' /run/dory/graphics-status
+          ;;
+        virgl2+venus:virgl2)
+          grep -q '^venus-unavailable:' /run/dory/graphics-status
+          grep -q 'fallback=virgl2$' /run/dory/graphics-status
+          ;;
+        software:software)
+          grep -q '^software-ready$' /run/dory/graphics-status
+          ;;
+        *)
+          echo \"inconsistent managed-desktop graphics resolution: \$requested_graphics -> \$effective_graphics\" >&2
+          exit 1
+          ;;
+      esac
+    fi
     grep -q '^/dev/zram0 ' /proc/swaps
     pgrep -u dorygate -x '$session' >/dev/null
     desktop_uid=\$(id -u dorygate)
     desktop_environment=\$(runuser -u dorygate -- env XDG_RUNTIME_DIR=\"/run/user/\$desktop_uid\" \
       DBUS_SESSION_BUS_ADDRESS=\"unix:path=/run/user/\$desktop_uid/bus\" \
       systemctl --user show-environment)
-    printf '%s\n' \"\$desktop_environment\" | grep -Fqx 'MOZ_ENABLE_WAYLAND=0'
     printf '%s\n' \"\$desktop_environment\" | grep -Fqx 'GSK_RENDERER=gl'
+    if test '$distro' = ubuntu; then
+      printf '%s\n' \"\$desktop_environment\" | grep -Fqx 'MOZ_ENABLE_WAYLAND=0'
+      printf '%s\n' \"\$desktop_environment\" | grep -Fqx 'XDG_SESSION_TYPE=x11'
+    fi
+    if test \"\$effective_graphics\" = virgl2+venus; then
+      printf '%s\n' \"\$desktop_environment\" | grep -Fqx \
+        'VK_DRIVER_FILES=/opt/dory/mesa/share/vulkan/icd.d/virtio_icd.aarch64.json'
+      printf '%s\n' \"\$desktop_environment\" | grep -Fqx \
+        'VK_ICD_FILENAMES=/opt/dory/mesa/share/vulkan/icd.d/virtio_icd.aarch64.json'
+    elif printf '%s\n' \"\$desktop_environment\" \
+        | grep -Eq '^(VK_DRIVER_FILES|VK_ICD_FILENAMES)='; then
+      echo 'Venus environment survived a non-Venus recovery backend' >&2
+      exit 1
+    fi
+    if printf '%s\n' \"\$desktop_environment\" \
+        | grep -Eq '^LD_LIBRARY_PATH=.|^venus_implicit_fencing='; then
+      echo 'retired process-wide renderer override reached the desktop session' >&2
+      exit 1
+    fi
     ethernet=\$(nmcli -t -f DEVICE,TYPE,STATE device status | awk -F: '\$2 ~ /^ethernet\$/ && \$3 ~ /^connected\$/ { print \$1; exit }')
     test -n \"\$ethernet\"
     ip -4 -o addr show dev \"\$ethernet\" | grep -q ' inet '
@@ -436,6 +529,65 @@ PY
     printf persistence-pass > /home/dorygate/.dory-release-marker
     echo system-pass
   " > "$WORKROOT/evidence/$distro-system.json"
+
+  if [ "$REQUIRE_ACCELERATION" = 1 ]; then
+    assert_exec_token "$machine" mesa-virgl-desktop sh -lc "
+      set -eu
+      test \"\$(cat /run/dory/graphics-requested-backend)\" = virgl2+venus
+      test \"\$(cat /run/dory/graphics-backend)\" = virgl2+venus
+      command -v glxinfo >/dev/null
+      command -v glxgears >/dev/null
+      uid=\$(id -u dorygate)
+      runtime=/run/user/\$uid
+      session_env=\$(runuser -u dorygate -- env XDG_RUNTIME_DIR=\"\$runtime\" \
+        DBUS_SESSION_BUS_ADDRESS=\"unix:path=\$runtime/bus\" systemctl --user show-environment \
+        | grep -E '^(DISPLAY|XAUTHORITY)=')
+      display=\$(printf '%s\n' \"\$session_env\" | sed -n 's/^DISPLAY=//p')
+      xauth=\$(printf '%s\n' \"\$session_env\" | sed -n 's/^XAUTHORITY=//p')
+      test -n \"\$display\"
+      test -n \"\$xauth\"
+      glx=\$(runuser -u dorygate -- env -u LIBGL_ALWAYS_SOFTWARE \
+        DISPLAY=\"\$display\" XAUTHORITY=\"\$xauth\" glxinfo -B)
+      printf '%s\n' \"\$glx\"
+      printf '%s\n' \"\$glx\" | grep -Eiq '^direct rendering:[[:space:]]*Yes$'
+      printf '%s\n' \"\$glx\" | grep -Eiq '^OpenGL renderer string:.*virgl'
+      if printf '%s\n' \"\$glx\" \
+          | grep -Eiq 'llvmpipe|softpipe|swrast|software rasterizer'; then
+        echo 'Mesa desktop probe selected a software renderer' >&2
+        exit 1
+      fi
+      rm -f /tmp/dory-release-glxgears.log
+      runuser -u dorygate -- env -u LIBGL_ALWAYS_SOFTWARE \
+        DISPLAY=\"\$display\" XAUTHORITY=\"\$xauth\" glxgears -info \
+        >/tmp/dory-release-glxgears.log 2>&1 &
+      launcher=\$!
+      mapped=0
+      for _ in \$(seq 1 30); do
+        if kill -0 \"\$launcher\" 2>/dev/null \
+            && runuser -u dorygate -- env DISPLAY=\"\$display\" XAUTHORITY=\"\$xauth\" \
+              xwininfo -root -tree 2>/dev/null | grep -Eiq 'glxgears'; then
+          mapped=1
+          break
+        fi
+        sleep 1
+      done
+      test \"\$mapped\" = 1
+      sleep 30
+      kill -0 \"\$launcher\"
+      pgrep -u dorygate -x '$session' >/dev/null
+      runuser -u dorygate -- env DISPLAY=\"\$display\" XAUTHORITY=\"\$xauth\" \
+        xwininfo -root -tree 2>/dev/null | grep -Eiq 'glxgears'
+      if grep -Eiq 'llvmpipe|softpipe|swrast|software rasterizer|device lost|context lost|GPU reset' \
+          /tmp/dory-release-glxgears.log; then
+        cat /tmp/dory-release-glxgears.log >&2
+        exit 1
+      fi
+      kill \"\$launcher\"
+      wait \"\$launcher\" 2>/dev/null || true
+      echo mesa-virgl-desktop
+    " > "$WORKROOT/evidence/$distro-mesa-virgl.json"
+    MESA_VIRGL_DESKTOP_RESULT=PASS
+  fi
 
   # Arm a receipt that can only be written by systemd while the guest is performing an orderly
   # shutdown. Merely terminating the VM helper cannot create this marker, so the subsequent boot
@@ -909,12 +1061,16 @@ APPLESCRIPT
       runtime=/run/user/\$uid
       session_env=\$(runuser -u dorygate -- env XDG_RUNTIME_DIR=\"\$runtime\" \
         DBUS_SESSION_BUS_ADDRESS=\"unix:path=\$runtime/bus\" systemctl --user show-environment \
-        | grep -E '^(DISPLAY|DBUS_SESSION_BUS_ADDRESS|XAUTHORITY|XDG_RUNTIME_DIR|GSK_RENDERER)=')
+        | grep -E '^(DISPLAY|DBUS_SESSION_BUS_ADDRESS|XAUTHORITY|XDG_RUNTIME_DIR|GSK_RENDERER|MOZ_ENABLE_WAYLAND|XDG_SESSION_TYPE)=')
       display=\$(printf '%s\n' \"\$session_env\" | sed -n 's/^DISPLAY=//p')
       dbus=\$(printf '%s\n' \"\$session_env\" | sed -n 's/^DBUS_SESSION_BUS_ADDRESS=//p')
       xauth=\$(printf '%s\n' \"\$session_env\" | sed -n 's/^XAUTHORITY=//p')
       renderer=\$(printf '%s\n' \"\$session_env\" | sed -n 's/^GSK_RENDERER=//p')
+      moz_wayland=\$(printf '%s\n' \"\$session_env\" | sed -n 's/^MOZ_ENABLE_WAYLAND=//p')
+      session_type=\$(printf '%s\n' \"\$session_env\" | sed -n 's/^XDG_SESSION_TYPE=//p')
       test \"\$renderer\" = gl
+      test \"\$moz_wayland\" = 0
+      test \"\$session_type\" = x11
       runuser -u dorygate -- env DISPLAY=\"\$display\" XAUTHORITY=\"\$xauth\" \
         XDG_RUNTIME_DIR=\"\$runtime\" DBUS_SESSION_BUS_ADDRESS=\"\$dbus\" GSK_RENDERER=\"\$renderer\" \
         XDG_CURRENT_DESKTOP=ubuntu:GNOME DESKTOP_SESSION=ubuntu GDMSESSION=ubuntu \
@@ -944,6 +1100,10 @@ APPLESCRIPT
           for process_pattern in '/usr/bin/nautilus' '/usr/bin/gnome-calculator' 'gnome-control-center'; do
             process_id=\$(pgrep -n -u dorygate -f \"\$process_pattern\")
             tr '\\0' '\\n' <\"/proc/\$process_id/environ\" | grep -Fqx 'GSK_RENDERER=gl'
+            if tr '\\0' '\\n' <\"/proc/\$process_id/environ\" | grep -Eq '^LD_LIBRARY_PATH=.'; then
+              echo 'GTK process inherited a retired renderer library override' >&2
+              exit 1
+            fi
           done
           echo gtk-windows-mapped
           exit 0
@@ -955,57 +1115,136 @@ APPLESCRIPT
       exit 1
     " > "$WORKROOT/evidence/$distro-gtk-windows.json"
 
-    assert_exec_token "$machine" zed-native-venus sh -lc "
-      set -eu
-      uid=\$(id -u dorygate)
-      runtime=/run/user/\$uid
-      session_env=\$(runuser -u dorygate -- env XDG_RUNTIME_DIR=\"\$runtime\" \\
-        DBUS_SESSION_BUS_ADDRESS=\"unix:path=\$runtime/bus\" systemctl --user show-environment \\
-        | grep -E '^(DISPLAY|DBUS_SESSION_BUS_ADDRESS|XAUTHORITY|XDG_RUNTIME_DIR|VK_DRIVER_FILES|LD_LIBRARY_PATH)=')
-      display=\$(printf '%s\n' \"\$session_env\" | sed -n 's/^DISPLAY=//p')
-      dbus=\$(printf '%s\n' \"\$session_env\" | sed -n 's/^DBUS_SESSION_BUS_ADDRESS=//p')
-      xauth=\$(printf '%s\n' \"\$session_env\" | sed -n 's/^XAUTHORITY=//p')
-      vk_driver=\$(printf '%s\n' \"\$session_env\" | sed -n 's/^VK_DRIVER_FILES=//p')
-      library_path=\$(printf '%s\n' \"\$session_env\" | sed -n 's/^LD_LIBRARY_PATH=//p')
-      test -n \"\$display\"
-      test -n \"\$xauth\"
-      test -n \"\$vk_driver\"
-      test -n \"\$library_path\"
-      rm -rf /home/dorygate/.local/zed.app
-      runuser -u dorygate -- mkdir -p /home/dorygate/.local /home/dorygate/Projects/dory-gate
-      test \"\$(sha256sum /home/dorygate/Mac/zed-linux-aarch64.tar.gz | awk '{print \$1}')\" \\
-        = '$ZED_SHA256'
-      printf 'fn main() { println!(\"Dory Venus gate\"); }\n' \\
-        > /home/dorygate/Projects/dory-gate/main.rs
-      chown -R dorygate:dorygate /home/dorygate/Projects/dory-gate
-      runuser -u dorygate -- tar -xzf /home/dorygate/Mac/zed-linux-aarch64.tar.gz \\
-        -C /home/dorygate/.local
-      test -x /home/dorygate/.local/zed.app/bin/zed
-      runuser -u dorygate -- /home/dorygate/.local/zed.app/bin/zed --version \\
-        | grep -F '$ZED_VERSION'
-      runuser -u dorygate -- env -u ZED_ALLOW_EMULATED_GPU \\
-        DISPLAY=\"\$display\" XAUTHORITY=\"\$xauth\" \\
-        XDG_RUNTIME_DIR=\"\$runtime\" DBUS_SESSION_BUS_ADDRESS=\"\$dbus\" \\
-        VK_DRIVER_FILES=\"\$vk_driver\" LD_LIBRARY_PATH=\"\$library_path\" \\
-        /home/dorygate/.local/zed.app/bin/zed /home/dorygate/Projects/dory-gate/main.rs \\
-        >/tmp/dory-release-zed.log 2>&1
-      for _ in \$(seq 1 60); do
-        zed_pid=\$(pgrep -n -u dorygate -f '/zed.app/libexec/zed-editor' || true)
-        if test -n \"\$zed_pid\" \\
-            && tr '\\0' '\\n' <\"/proc/\$zed_pid/environ\" | grep -Fqx \"VK_DRIVER_FILES=\$vk_driver\" \\
-            && tr '\\0' '\\n' <\"/proc/\$zed_pid/environ\" | grep -Fqx \"LD_LIBRARY_PATH=\$library_path\" \\
-            && ! tr '\\0' '\\n' <\"/proc/\$zed_pid/environ\" | grep -q '^ZED_ALLOW_EMULATED_GPU=' \\
-            && runuser -u dorygate -- env DISPLAY=\"\$display\" XAUTHORITY=\"\$xauth\" \\
-              xwininfo -root -tree 2>/dev/null | grep -Eiq 'zed|dory-gate/main.rs'; then
-          echo zed-native-venus
-          exit 0
+    # Native Venus application qualification is Ubuntu-only. The baseline gate records an honest
+    # optional result; require-acceleration upgrades unavailable or failed evidence to a
+    # release-blocking failure.
+    ZED_RESULT=UNAVAILABLE
+    if assert_exec_token "$machine" venus-available sh -lc \
+        "test \"\$(cat /run/dory/graphics-backend)\" = virgl2+venus && echo venus-available" \
+        > "$WORKROOT/evidence/$distro-venus-availability.json" 2>&1; then
+      if assert_exec_token "$machine" zed-native-venus sh -lc "
+        set -eu
+        test \"\$(cat /run/dory/graphics-backend)\" = virgl2+venus
+        grep -q '^venus-ready:' /run/dory/graphics-status
+        for proof in contract=vulkan-1.3-application driver=venus hardware-device=yes \
+          dynamic-rendering=yes synchronization2=yes maintenance4=yes \
+          color-atlas-texture-binding=yes color-atlas-copy-dst=yes \
+          external-sync-fd=yes import-signaled-fd=yes export-sync-fd=yes \
+          queue-submit2=yes fence-signal=yes; do
+          grep -Fq \"\$proof\" /run/dory/graphics-status
+        done
+        uid=\$(id -u dorygate)
+        runtime=/run/user/\$uid
+        complete_session_env=\$(runuser -u dorygate -- env XDG_RUNTIME_DIR=\"\$runtime\" \\
+          DBUS_SESSION_BUS_ADDRESS=\"unix:path=\$runtime/bus\" systemctl --user show-environment)
+        if printf '%s\n' \"\$complete_session_env\" \\
+            | grep -Eq '^LD_LIBRARY_PATH=.|^(venus_implicit_fencing|ZED_ALLOW_EMULATED_GPU)='; then
+          echo 'retired or emulated GPU policy reached the desktop session' >&2
+          exit 1
         fi
-        sleep 1
-      done
-      cat /tmp/dory-release-zed.log >&2
+        session_env=\$(printf '%s\n' \"\$complete_session_env\" \\
+          | grep -E '^(DISPLAY|XDG_SESSION_TYPE|DBUS_SESSION_BUS_ADDRESS|XAUTHORITY|XDG_RUNTIME_DIR|VK_DRIVER_FILES|VK_ICD_FILENAMES)=')
+        display=\$(printf '%s\n' \"\$session_env\" | sed -n 's/^DISPLAY=//p')
+        session_type=\$(printf '%s\n' \"\$session_env\" | sed -n 's/^XDG_SESSION_TYPE=//p')
+        dbus=\$(printf '%s\n' \"\$session_env\" | sed -n 's/^DBUS_SESSION_BUS_ADDRESS=//p')
+        xauth=\$(printf '%s\n' \"\$session_env\" | sed -n 's/^XAUTHORITY=//p')
+        vk_driver=\$(printf '%s\n' \"\$session_env\" | sed -n 's/^VK_DRIVER_FILES=//p')
+        vk_icd=\$(printf '%s\n' \"\$session_env\" | sed -n 's/^VK_ICD_FILENAMES=//p')
+        test \"\$session_type\" = x11
+        test -n \"\$display\"
+        test -n \"\$xauth\"
+        test -n \"\$vk_driver\"
+        test \"\$vk_icd\" = \"\$vk_driver\"
+        surface_probe=\$(runuser -u dorygate -- env -u LD_LIBRARY_PATH \
+          DISPLAY=\"\$display\" XAUTHORITY=\"\$xauth\" \
+          XDG_RUNTIME_DIR=\"\$runtime\" DBUS_SESSION_BUS_ADDRESS=\"\$dbus\" \
+          VK_DRIVER_FILES=\"\$vk_driver\" VK_ICD_FILENAMES=\"\$vk_icd\" \
+          timeout 15 /opt/dory/mesa/libexec/dory-vulkan-probe --wsi=xcb)
+        for proof in contract=vulkan-1.3-application driver=venus hardware-device=yes \
+          dynamic-rendering=yes synchronization2=yes maintenance4=yes \
+          color-atlas-texture-binding=yes color-atlas-copy-dst=yes export-sync-fd=yes \
+          wsi-surface=xcb surface-create=yes present-queue=yes fifo-present=yes \
+          surface-format-policy=first-capability-format \
+          swapchain-create=yes swapchain-extent=64x64 swapchain-acquire=yes \
+          swapchain-render=yes queue-present=yes present-idle=yes; do
+          printf '%s\n' \"\$surface_probe\" | grep -Fq \"\$proof\"
+        done
+        printf '%s\n' \"\$surface_probe\" | grep -Eq 'surface-format-id=[1-9][0-9]*'
+        printf '%s\n' \"\$surface_probe\" | grep -Eq 'color-atlas-format=(bgra8|rgba8)-unorm'
+        printf '%s\n' \"\$surface_probe\" | grep -Eq 'swapchain-images=[1-9][0-9]*'
+        printf 'vulkan-surface-readiness: %s\n' \"\$surface_probe\"
+        rm -rf /home/dorygate/.local/zed.app
+        runuser -u dorygate -- mkdir -p /home/dorygate/.local /home/dorygate/Projects/dory-gate
+        test \"\$(sha256sum /home/dorygate/Mac/zed-linux-aarch64.tar.gz | awk '{print \$1}')\" \\
+          = '$ZED_SHA256'
+        printf 'fn main() { println!(\"Dory Venus gate\"); }\n' \\
+          > /home/dorygate/Projects/dory-gate/main.rs
+        chown -R dorygate:dorygate /home/dorygate/Projects/dory-gate
+        runuser -u dorygate -- tar -xzf /home/dorygate/Mac/zed-linux-aarch64.tar.gz \\
+          -C /home/dorygate/.local
+        test -x /home/dorygate/.local/zed.app/bin/zed
+        runuser -u dorygate -- /home/dorygate/.local/zed.app/bin/zed --version \\
+          | tr -cs '0-9.' '\\n' | grep -Fx '$ZED_VERSION'
+        runuser -u dorygate -- env -u ZED_ALLOW_EMULATED_GPU \\
+          DISPLAY=\"\$display\" XAUTHORITY=\"\$xauth\" \\
+          XDG_RUNTIME_DIR=\"\$runtime\" DBUS_SESSION_BUS_ADDRESS=\"\$dbus\" \\
+          VK_DRIVER_FILES=\"\$vk_driver\" VK_ICD_FILENAMES=\"\$vk_icd\" \\
+          /home/dorygate/.local/zed.app/bin/zed --foreground \\
+          /home/dorygate/Projects/dory-gate/main.rs \\
+          >/tmp/dory-release-zed.log 2>&1 &
+        zed_cli_pid=\$!
+        for _ in \$(seq 1 60); do
+          zed_pid=
+          for candidate_pid in \$(pgrep -u dorygate -f '/zed.app/libexec/zed-editor' || true); do
+            candidate_command=\$(tr '\\0' ' ' <\"/proc/\$candidate_pid/cmdline\")
+            case \"\$candidate_command\" in
+              *crash-handler*) continue ;;
+            esac
+            zed_pid=\$candidate_pid
+            break
+          done
+          if test -n \"\$zed_pid\" \\
+              && tr '\\0' '\\n' <\"/proc/\$zed_pid/environ\" | grep -Fqx \"VK_DRIVER_FILES=\$vk_driver\" \\
+              && tr '\\0' '\\n' <\"/proc/\$zed_pid/environ\" | grep -Fqx \"VK_ICD_FILENAMES=\$vk_icd\" \\
+              && ! tr '\\0' '\\n' <\"/proc/\$zed_pid/environ\" | grep -Eq '^LD_LIBRARY_PATH=.' \\
+              && ! tr '\\0' '\\n' <\"/proc/\$zed_pid/environ\" | grep -q '^ZED_ALLOW_EMULATED_GPU=' \\
+              && ! tr '\\0' '\\n' <\"/proc/\$zed_pid/environ\" | grep -q '^venus_implicit_fencing=' \\
+              && grep -Fq '/opt/dory/mesa/lib/libvulkan_virtio.so' \"/proc/\$zed_pid/maps\" \\
+              && runuser -u dorygate -- env DISPLAY=\"\$display\" XAUTHORITY=\"\$xauth\" \\
+                xwininfo -root -tree 2>/dev/null | grep -Eiq 'zed|dory-gate/main.rs'; then
+            sleep 30
+            kill -0 \"\$zed_cli_pid\"
+            kill -0 \"\$zed_pid\"
+            grep -Fq '/opt/dory/mesa/lib/libvulkan_virtio.so' \"/proc/\$zed_pid/maps\"
+            runuser -u dorygate -- env DISPLAY=\"\$display\" XAUTHORITY=\"\$xauth\" \\
+              xwininfo -root -tree 2>/dev/null | grep -Eiq 'zed|dory-gate/main.rs'
+            if grep -Eiq 'unsupported GPU|GPU[^[:alnum:]]+not supported|software rendering|llvmpipe|VK_ERROR_DEVICE_LOST|device lost|falling back[^[:alnum:]]+(to )?(CPU|software)' \\
+                /tmp/dory-release-zed.log; then
+              cat /tmp/dory-release-zed.log >&2
+              exit 1
+            fi
+            echo zed-native-venus
+            exit 0
+          fi
+          sleep 1
+        done
+        cat /tmp/dory-release-zed.log >&2
+        exit 1
+      " > "$WORKROOT/evidence/$distro-zed.json" 2> "$WORKROOT/evidence/$distro-zed.stderr"; then
+        ZED_RESULT=PASS
+      else
+        ZED_RESULT=FAIL
+        echo "desktop live gate: Ubuntu Venus/Zed qualification failed" >&2
+      fi
+    else
+      printf '%s\n' \
+        'Venus unavailable; managed Ubuntu Xorg continued on the VirGL2 compatibility fallback.' \
+        > "$WORKROOT/evidence/$distro-zed-skipped.txt"
+    fi
+    if [ "$REQUIRE_ACCELERATION" = 1 ] && [ "$ZED_RESULT" != PASS ]; then
+      echo "desktop live gate: strict acceleration requires native Ubuntu Venus/Zed PASS" >&2
       exit 1
-    " > "$WORKROOT/evidence/$distro-zed.json"
-    ZED_QUALIFIED=1
+    fi
   fi
 
   "$CTL" machine stop "$machine" > "$WORKROOT/evidence/$distro-stop.json"
@@ -1235,15 +1474,19 @@ fi
 
 {
   printf 'source_commit=%s\n' "${GITHUB_SHA:-local}"
+  printf 'scope=managed-rootfs-only\n'
+  printf 'generic_arm64_efi_iso_software_baseline=SEPARATE-GATE\n'
   printf 'distros=%s\n' "$SELECTED_DISTRO"
   printf 'kernel_sha256=%s\n' "$(shasum -a 256 "$KERNEL" | awk '{print $1}')"
-  printf 'zed_version=%s\n' "$ZED_VERSION"
-  printf 'zed_sha256=%s\n' "$ZED_SHA256"
-  if [ "$ZED_QUALIFIED" = 1 ]; then
-    printf 'zed_native_venus=PASS\n'
-  else
-    printf 'zed_native_venus=NOT-RUN\n'
+  if [ "$QUALIFY_UBUNTU_ACCELERATION" = 1 ]; then
+    printf 'zed_version=%s\n' "$ZED_VERSION"
+    printf 'zed_sha256=%s\n' "$ZED_SHA256"
   fi
+  printf 'zed_native_venus=%s\n' "$ZED_RESULT"
+  printf 'mesa_virgl_desktop=%s\n' "$MESA_VIRGL_DESKTOP_RESULT"
+  printf 'renderer_release_signature=%s\n' "$RENDERER_RELEASE_SIGNATURE_RESULT"
+  printf 'acceleration_required=%s\n' "$REQUIRE_ACCELERATION"
+  printf 'managed_desktop_baseline=PASS\n'
   printf 'snapshot_restore_exact_bytes=PASS\n'
   printf 'graceful_shutdown=PASS\n'
   printf 'dynamic_retina_display=PASS\n'
@@ -1267,7 +1510,5 @@ fi
 } > "$WORKROOT/evidence/manifest.txt"
 
 rm -f "$WORKROOT/share/zed-linux-aarch64.tar.gz"
-[ "$SELECTED_DISTRO" != all ] && [ "$SELECTED_DISTRO" != ubuntu ] \
-  || [ "$ZED_QUALIFIED" = 1 ]
 
-echo "Desktop Linux exact-candidate live gate: PASS ($WORKROOT/evidence/manifest.txt)"
+echo "Desktop Linux managed-rootfs baseline gate: PASS ($WORKROOT/evidence/manifest.txt)"

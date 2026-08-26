@@ -1,14 +1,17 @@
 use serde_json::{json, Value};
+use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 pub const FEX_BUNDLE_PATH: &str = "/usr/lib/dory/fex";
 pub const FEX_RUNTIME_PATH: &str = "/run/dory-fex";
 pub const FEX_SERVER_SOCKET_PATH: &str = "/run/dory-fex/FEXServer.Socket";
+pub const FEX_SERVER_PATH: &str = "/usr/lib/dory/fex/FEXServer";
+pub const FEX_INIT_PATH: &str = "/run/dory-fex/dory-fex-init";
 pub const DORY_RUNC_PATH: &str = "/usr/local/bin/dory-runc";
 pub const REAL_RUNC_PATH: &str = "/usr/local/bin/runc.real";
 
@@ -233,6 +236,7 @@ pub fn inject_fex(spec: &mut Value) -> Result<bool, WrapperError> {
     })?;
     let mut has_expected_bundle_mount = false;
     let mut has_expected_runtime_mount = false;
+    let mut has_expected_hook_mount = false;
     for mount in mounts.iter() {
         let Some(mount) = mount.as_object() else {
             return Err(WrapperError::InvalidSpec(
@@ -263,6 +267,15 @@ pub fn inject_fex(spec: &mut Value) -> Result<bool, WrapperError> {
                     )));
                 }
             }
+            FEX_INIT_PATH => {
+                if is_expected_hook_mount(mount) {
+                    has_expected_hook_mount = true;
+                } else {
+                    return Err(WrapperError::InvalidSpec(format!(
+                        "OCI mount destination {FEX_INIT_PATH} is reserved by Dory's amd64 runtime"
+                    )));
+                }
+            }
             _ => continue,
         }
     }
@@ -280,7 +293,16 @@ pub fn inject_fex(spec: &mut Value) -> Result<bool, WrapperError> {
             "destination": FEX_RUNTIME_PATH,
             "type": "tmpfs",
             "source": "tmpfs",
-            "options": ["nosuid", "nodev", "noexec", "mode=1777", "size=1m"]
+            "options": ["nosuid", "nodev", "mode=1777", "size=1m"]
+        }));
+        changed = true;
+    }
+    if !has_expected_hook_mount {
+        mounts.push(json!({
+            "destination": FEX_INIT_PATH,
+            "type": "bind",
+            "source": DORY_RUNC_PATH,
+            "options": ["bind", "ro", "nosuid", "nodev"]
         }));
         changed = true;
     }
@@ -517,9 +539,25 @@ fn is_expected_runtime_mount(mount: &serde_json::Map<String, Value>) -> bool {
                     == &[
                         Value::String("nosuid".to_owned()),
                         Value::String("nodev".to_owned()),
-                        Value::String("noexec".to_owned()),
                         Value::String("mode=1777".to_owned()),
                         Value::String("size=1m".to_owned()),
+                    ]
+            })
+}
+
+fn is_expected_hook_mount(mount: &serde_json::Map<String, Value>) -> bool {
+    mount.get("source").and_then(Value::as_str) == Some(DORY_RUNC_PATH)
+        && mount.get("type").and_then(Value::as_str) == Some("bind")
+        && mount
+            .get("options")
+            .and_then(Value::as_array)
+            .is_some_and(|options| {
+                options
+                    == &[
+                        Value::String("bind".to_owned()),
+                        Value::String("ro".to_owned()),
+                        Value::String("nosuid".to_owned()),
+                        Value::String("nodev".to_owned()),
                     ]
             })
 }
@@ -537,6 +575,189 @@ fn fex_path(existing: &str) -> String {
     }
 }
 
+fn resolve_in_container_root(root: &Path, path: &Path) -> io::Result<PathBuf> {
+    let mut pending = path
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(value) => Some(value.to_os_string()),
+            std::path::Component::ParentDir => Some(OsString::from("..")),
+            _ => None,
+        })
+        .collect::<VecDeque<_>>();
+    let mut resolved = root.to_path_buf();
+    let mut symlinks = 0_u8;
+
+    while let Some(component) = pending.pop_front() {
+        if component == ".." {
+            if resolved == root {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "container path escapes its root",
+                ));
+            }
+            resolved.pop();
+            continue;
+        }
+
+        let candidate = resolved.join(&component);
+        let metadata = fs::symlink_metadata(&candidate)?;
+        if !metadata.file_type().is_symlink() {
+            resolved = candidate;
+            continue;
+        }
+
+        symlinks = symlinks.saturating_add(1);
+        if symlinks > 40 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "too many symlinks in container executable path",
+            ));
+        }
+        let target = fs::read_link(&candidate)?;
+        if target.is_absolute() {
+            resolved = root.to_path_buf();
+        }
+        let target_components = target
+            .components()
+            .filter_map(|component| match component {
+                std::path::Component::Normal(value) => Some(value.to_os_string()),
+                std::path::Component::ParentDir => Some(OsString::from("..")),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        for component in target_components.into_iter().rev() {
+            pending.push_front(component);
+        }
+    }
+
+    Ok(resolved)
+}
+
+fn executable_path(spec: &Value, bundle: &Path) -> Result<Option<PathBuf>, WrapperError> {
+    let root_path = spec
+        .pointer("/root/path")
+        .and_then(Value::as_str)
+        .ok_or_else(|| WrapperError::InvalidSpec("OCI root.path must be a string".to_owned()))?;
+    let root_path = Path::new(root_path);
+    let root_path = if root_path.is_absolute() {
+        root_path.to_path_buf()
+    } else {
+        bundle.join(root_path)
+    };
+    let canonical_root = match fs::canonicalize(&root_path) {
+        Ok(path) => path,
+        Err(_) => return Ok(None),
+    };
+    let process = spec
+        .get("process")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            WrapperError::InvalidSpec("OCI config process must be an object".to_owned())
+        })?;
+    let program = process
+        .get("args")
+        .and_then(Value::as_array)
+        .and_then(|args| args.first())
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            WrapperError::InvalidSpec("OCI process args must not be empty".to_owned())
+        })?;
+    let cwd = process.get("cwd").and_then(Value::as_str).unwrap_or("/");
+    let candidates = if program.contains('/') {
+        let relative = if program.starts_with('/') {
+            PathBuf::from(program.trim_start_matches('/'))
+        } else {
+            Path::new(cwd.trim_start_matches('/')).join(program)
+        };
+        vec![relative]
+    } else {
+        let path = process
+            .get("env")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .find_map(|entry| entry.strip_prefix("PATH="))
+            .unwrap_or(DEFAULT_PATH);
+        path.split(':')
+            .filter(|entry| !entry.is_empty())
+            .map(|entry| Path::new(entry.trim_start_matches('/')).join(program))
+            .collect()
+    };
+    for candidate in candidates {
+        let Ok(canonical) = resolve_in_container_root(&canonical_root, &candidate) else {
+            continue;
+        };
+        if canonical.starts_with(&canonical_root) && canonical.is_file() {
+            return Ok(Some(canonical));
+        }
+    }
+    Ok(None)
+}
+
+fn is_x86_64_executable(path: &Path, root: &Path, depth: u8) -> io::Result<bool> {
+    if depth > 4 {
+        return Ok(false);
+    }
+    let mut file = File::open(path)?;
+    let mut header = [0_u8; 256];
+    let length = file.read(&mut header)?;
+    if length >= 20 && &header[..4] == b"\x7fELF" {
+        return Ok(header[4] == 2 && header[5] == 1 && header[18] == 0x3e && header[19] == 0);
+    }
+    if length >= 3 && &header[..2] == b"#!" {
+        let line = String::from_utf8_lossy(&header[2..length]);
+        let interpreter = line
+            .lines()
+            .next()
+            .unwrap_or("")
+            .trim()
+            .split_whitespace()
+            .next();
+        if let Some(interpreter) = interpreter.filter(|value| value.starts_with('/')) {
+            let canonical =
+                resolve_in_container_root(root, Path::new(interpreter.trim_start_matches('/')))?;
+            if canonical.starts_with(root) {
+                return is_x86_64_executable(&canonical, root, depth + 1);
+            }
+        }
+    }
+    Ok(false)
+}
+
+fn wrap_x86_64_entrypoint(spec: &mut Value, bundle: &Path) -> Result<bool, WrapperError> {
+    let Some(executable) = executable_path(spec, bundle)? else {
+        return Ok(false);
+    };
+    let root_path = spec
+        .pointer("/root/path")
+        .and_then(Value::as_str)
+        .expect("validated root path");
+    let root = if Path::new(root_path).is_absolute() {
+        fs::canonicalize(root_path)
+    } else {
+        fs::canonicalize(bundle.join(root_path))
+    }
+    .map_err(|error| io_error("cannot resolve OCI root for amd64 detection", error))?;
+    if !is_x86_64_executable(&executable, &root, 0)
+        .map_err(|error| io_error(format!("cannot inspect {}", executable.display()), error))?
+    {
+        return Ok(false);
+    }
+    let args = spec
+        .pointer_mut("/process/args")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| WrapperError::InvalidSpec("OCI process args must be an array".to_owned()))?;
+    if args.first().and_then(Value::as_str) == Some(FEX_INIT_PATH) {
+        return Ok(false);
+    }
+    let original = std::mem::take(args);
+    args.push(Value::String(FEX_INIT_PATH.to_owned()));
+    args.push(Value::String("fex-init".to_owned()));
+    args.extend(original);
+    Ok(true)
+}
+
 pub fn prepare_bundle(bundle: &Path) -> Result<bool, WrapperError> {
     let config_path = bundle.join("config.json");
     let metadata = fs::symlink_metadata(&config_path)
@@ -551,8 +772,9 @@ pub fn prepare_bundle(bundle: &Path) -> Result<bool, WrapperError> {
         .map_err(|error| io_error(format!("cannot read {}", config_path.display()), error))?;
     let mut spec: Value = serde_json::from_slice(&original)?;
     let fex_changed = inject_fex(&mut spec)?;
+    let init_changed = wrap_x86_64_entrypoint(&mut spec, bundle)?;
     let nested_changed = inject_nested_runtime(&mut spec, bundle, Path::new(DORY_RUNC_PATH))?;
-    if !fex_changed && !nested_changed {
+    if !fex_changed && !init_changed && !nested_changed {
         return Ok(false);
     }
     let mut encoded = serde_json::to_vec(&spec)?;
@@ -692,7 +914,7 @@ mod tests {
         assert!(inject_fex(&mut value).unwrap());
         assert!(!inject_fex(&mut value).unwrap());
 
-        assert_eq!(value["mounts"].as_array().unwrap().len(), 2);
+        assert_eq!(value["mounts"].as_array().unwrap().len(), 3);
         assert_eq!(value["mounts"][0]["source"], FEX_BUNDLE_PATH);
         assert_eq!(value["mounts"][0]["destination"], FEX_BUNDLE_PATH);
         assert_eq!(
@@ -704,8 +926,61 @@ mod tests {
         assert_eq!(value["mounts"][1]["type"], "tmpfs");
         assert_eq!(
             value["mounts"][1]["options"],
-            json!(["nosuid", "nodev", "noexec", "mode=1777", "size=1m"])
+            json!(["nosuid", "nodev", "mode=1777", "size=1m"])
         );
+        assert_eq!(value["mounts"][2]["source"], DORY_RUNC_PATH);
+        assert_eq!(value["mounts"][2]["destination"], FEX_INIT_PATH);
+        assert_eq!(
+            value["mounts"][2]["options"],
+            json!(["bind", "ro", "nosuid", "nodev"])
+        );
+    }
+
+    #[test]
+    fn wraps_only_x86_64_entrypoints_with_native_fex_init() {
+        let directory = temporary_directory("entrypoint-architecture");
+        let executable = directory.join("rootfs/bin/sh");
+        fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        let mut x86_header = vec![0_u8; 64];
+        x86_header[..6].copy_from_slice(b"\x7fELF\x02\x01");
+        x86_header[18] = 0x3e;
+        fs::write(&executable, &x86_header).unwrap();
+
+        let mut value = spec(&[]);
+        assert!(wrap_x86_64_entrypoint(&mut value, &directory).unwrap());
+        assert_eq!(
+            value["process"]["args"],
+            json!([FEX_INIT_PATH, "fex-init", "/bin/sh"])
+        );
+        assert!(!wrap_x86_64_entrypoint(&mut value, &directory).unwrap());
+
+        value["process"]["args"] = json!(["/bin/sh"]);
+        x86_header[18] = 0xb7;
+        fs::write(&executable, &x86_header).unwrap();
+        assert!(!wrap_x86_64_entrypoint(&mut value, &directory).unwrap());
+        assert_eq!(value["process"]["args"], json!(["/bin/sh"]));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn resolves_absolute_entrypoint_symlinks_inside_the_container_root() {
+        let directory = temporary_directory("absolute-entrypoint-symlink");
+        let root = directory.join("rootfs");
+        let executable = root.join("bin/busybox");
+        fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        let mut x86_header = vec![0_u8; 64];
+        x86_header[..6].copy_from_slice(b"\x7fELF\x02\x01");
+        x86_header[18] = 0x3e;
+        fs::write(&executable, x86_header).unwrap();
+        std::os::unix::fs::symlink("/bin/busybox", root.join("bin/sh")).unwrap();
+
+        let mut value = spec(&[]);
+        assert!(wrap_x86_64_entrypoint(&mut value, &directory).unwrap());
+        assert_eq!(
+            value["process"]["args"],
+            json!([FEX_INIT_PATH, "fex-init", "/bin/sh"])
+        );
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

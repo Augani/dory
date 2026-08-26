@@ -700,6 +700,20 @@ public struct DoryComponentAssetFingerprint: Codable, Sendable, Equatable {
     public let modifiedNanoseconds: Int64
     public let changedSeconds: Int64
     public let changedNanoseconds: Int64
+
+    /// File content and ownership identity that is unaffected by extended-attribute updates.
+    /// macOS can attach provenance metadata after a download has been published, which changes
+    /// ctime without changing the file bytes. A ctime-only difference is never trusted by itself:
+    /// the store performs a complete digest and code-requirement verification before accepting it.
+    fileprivate func matchesContentIdentity(of other: Self) -> Bool {
+        path == other.path
+            && device == other.device
+            && inode == other.inode
+            && size == other.size
+            && permissions == other.permissions
+            && modifiedSeconds == other.modifiedSeconds
+            && modifiedNanoseconds == other.modifiedNanoseconds
+    }
 }
 
 public enum DoryComponentState: String, Codable, Sendable {
@@ -1106,7 +1120,7 @@ public struct DoryComponentStore: Sendable {
         }
         let candidate = installationRoot(id: id, name: installed.installationName) + "/payload/" + path
         guard let expected = installed.assetFingerprints.first(where: { $0.path == path }),
-              (try? Self.assetFingerprint(candidate, asset: asset)) == expected else {
+              (try? validateInstalledAsset(candidate, asset: asset, expected: expected)) != nil else {
             return nil
         }
         return candidate
@@ -1241,11 +1255,29 @@ public struct DoryComponentStore: Sendable {
             throw DoryComponentError.invalidAsset(payload)
         }
         for (asset, expected) in zip(installed.assets, installed.assetFingerprints) {
-            guard expected.path == asset.path,
-                  try Self.assetFingerprint(payload + "/" + asset.path, asset: asset) == expected else {
+            guard expected.path == asset.path else {
                 throw DoryComponentError.digestMismatch(payload + "/" + asset.path)
             }
+            try validateInstalledAsset(payload + "/" + asset.path, asset: asset, expected: expected)
         }
+    }
+
+    /// Preserve the inode-based fast path while handling a macOS ctime-only metadata update
+    /// without declaring immutable, digest-correct component bytes corrupt. Any difference beyond
+    /// ctime still fails closed. A ctime-only difference takes the deliberately slower cryptographic
+    /// path, so an in-place rewrite with a restored mtime cannot bypass component integrity.
+    private func validateInstalledAsset(
+        _ path: String,
+        asset: DoryComponentAsset,
+        expected: DoryComponentAssetFingerprint
+    ) throws {
+        let current = try Self.assetFingerprint(path, asset: asset)
+        if current == expected { return }
+        guard current.matchesContentIdentity(of: expected) else {
+            throw DoryComponentError.digestMismatch(path)
+        }
+        try verifyFile(path, bytes: asset.installedBytes, digest: asset.installedSHA256)
+        try Self.verifyCodeRequirement(path, requirement: asset.codeRequirement)
     }
 
     private static func assetFingerprint(

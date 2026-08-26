@@ -32,7 +32,7 @@ public struct HostCLIInstaller: Sendable {
     private static let endSentinel = "# <<< dory cli <<<"
     private static let restoreNoTrailingNewline = "# dory:restore-no-trailing-newline"
     private static let removeEmptyProfile = "# dory:remove-empty-profile"
-    private static let tools = ["docker", "docker-buildx", "docker-compose", "kubectl", "dory", "dory-doctor", "dorydctl"]
+    private static let tools = ["docker", "docker-credential-osxkeychain", "docker-buildx", "docker-compose", "kubectl", "dory", "dory-doctor", "dorydctl"]
     private static let profiles = [".zprofile", ".zshrc", ".bash_profile", ".bashrc", ".profile"]
     private static let defaultProfiles = [".zprofile", ".zshrc"]
 

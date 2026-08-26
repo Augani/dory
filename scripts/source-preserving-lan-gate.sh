@@ -185,15 +185,16 @@ app_assessment="$(spctl --assess --type execute --verbose=4 "$APP" 2>&1)" \
   || die "Gatekeeper rejected the candidate app"
 grep -F 'source=Notarized Developer ID' <<< "$app_assessment" >/dev/null \
   || die "candidate app is not accepted as Notarized Developer ID"
-for helper in dory-hv dory-network-helper gvproxy; do
+for helper in dory-network-helper gvproxy; do
   codesign --verify --strict "$APP/Contents/Helpers/$helper"
 done
+codesign --verify --strict "$APP/Contents/Helpers/DoryHVRunner.app"
 codesign -dv --verbose=4 "$APP" 2> "$WORKROOT/evidence/app-signature.txt"
 grep -q 'TeamIdentifier=864H636QW4' "$WORKROOT/evidence/app-signature.txt" \
   || die "candidate app has the wrong signing team"
 [ -s "$APP/Contents/Library/LaunchDaemons/dev.dory.network-helper.plist" ] \
   || die "candidate app omits the privileged network LaunchDaemon"
-cmp "$RUNTIME/bin/dory-hv" "$APP/Contents/Helpers/dory-hv" \
+cmp "$RUNTIME/bin/dory-hv" "$APP/Contents/Helpers/DoryHVRunner.app/Contents/MacOS/dory-hv" \
   || die "runtime dory-hv differs from the candidate app"
 cmp "$RUNTIME/bin/gvproxy" "$APP/Contents/Helpers/gvproxy" \
   || die "runtime gvproxy differs from the candidate app"

@@ -4,10 +4,12 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 UPSTREAM_VERSION="v0.8.9"
-DORY_VERSION="v0.8.9-dory2"
+DORY_VERSION="v0.8.9-dory3"
 SOURCE_SHA256="6cbcb7959a5d90b59253ea6d8bdf0285e2cfbc3b301398704b41e3069293f4fb"
 PATCH="$ROOT/patches/gvproxy-native-ipv6.patch"
 PATCH_SHA256="3d6db9d9c2e6ff79b8abd334afe3664c84b84ca11a6308e8cc3d30f8fc05ab96"
+HOST_ONLY_PATCH="$ROOT/patches/gvproxy-host-only.patch"
+HOST_ONLY_PATCH_SHA256="b09e6d840bd27b670837ae392fe1f1787f4316b604ff7effafe2ac57f7678516"
 GO_TOOLCHAIN="go1.26.5"
 GO_MOD_SHA256="75848c190dca5cc7af27ebe017d5a4d59d4a117c97eaa6b8ac0359e58d868eec"
 GO_SUM_SHA256="25b1a52ad3181030b6ccf92af5d69a1a4282f8f2342dad5348b5c954c304c4b3"
@@ -43,6 +45,11 @@ actual_patch_sha="$(shasum -a 256 "$PATCH" | awk '{print $1}')"
   echo "build-gvproxy: patch digest mismatch (expected $PATCH_SHA256, got $actual_patch_sha)" >&2
   exit 1
 }
+actual_host_only_patch_sha="$(shasum -a 256 "$HOST_ONLY_PATCH" | awk '{print $1}')"
+[ "$actual_host_only_patch_sha" = "$HOST_ONLY_PATCH_SHA256" ] || {
+  echo "build-gvproxy: host-only patch digest mismatch (expected $HOST_ONLY_PATCH_SHA256, got $actual_host_only_patch_sha)" >&2
+  exit 1
+}
 
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/dory-gvproxy-build.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
@@ -59,6 +66,7 @@ actual_source_sha="$(shasum -a 256 "$ARCHIVE" | awk '{print $1}')"
 }
 tar -xzf "$ARCHIVE" -C "$SOURCE" --strip-components=1
 patch --batch --forward -p1 -d "$SOURCE" < "$PATCH"
+patch --batch --forward -p1 -d "$SOURCE" < "$HOST_ONLY_PATCH"
 
 actual_go_mod_sha="$(shasum -a 256 "$SOURCE/go.mod" | awk '{print $1}')"
 actual_go_sum_sha="$(shasum -a 256 "$SOURCE/go.sum" | awk '{print $1}')"
@@ -137,6 +145,7 @@ if [ -n "$PROVENANCE" ]; then
     echo "source_url=https://github.com/containers/gvisor-tap-vsock/archive/refs/tags/${UPSTREAM_VERSION}.tar.gz"
     echo "source_sha256=$SOURCE_SHA256"
     echo "patch_sha256=$PATCH_SHA256"
+    echo "host_only_patch_sha256=$HOST_ONLY_PATCH_SHA256"
     echo "go_toolchain=$GO_TOOLCHAIN"
     echo "go_mod_sha256=$GO_MOD_SHA256"
     echo "go_sum_sha256=$GO_SUM_SHA256"
@@ -149,7 +158,7 @@ if [ -n "$PROVENANCE" ]; then
     echo "arm64_sha256=$arm64_sha"
     echo "amd64_sha256=$amd64_sha"
     echo "verified_sha256=$output_sha"
-    echo "features=native-ipv6-v2,host-route-aware-aaaa-v1,source-preserving-lan-qemu-v1"
+    echo "features=native-ipv6-v2,host-route-aware-aaaa-v1,source-preserving-lan-qemu-v1,host-only-connectivity-v1"
     echo "architectures=$actual_arches"
   } > "$PROVENANCE"
 fi

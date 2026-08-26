@@ -1,0 +1,1 @@
+{"kind":"dev.dory.linux-vm-performance-sampling-plan","metrics":[{"expectedSampleCount":3,"metricDefinitionRevision":1,"metricID":"ux.boot.login-ready.duration","minimumIndependentRounds":3,"unit":"milliseconds"}],"schemaVersion":1}

@@ -15,7 +15,14 @@ while [ -L "$DORY_SCRIPT_SOURCE" ]; do
 done
 DORY_SCRIPT_DIR="$(cd -P "$(dirname "$DORY_SCRIPT_SOURCE")" >/dev/null 2>&1 && pwd)"
 
-DORY_CLI_VERSION="0.0.0-dev"
+DORY_CLI_VERSION="${DORY_CLI_VERSION:-0.0.0-dev}"
+# When this script is bundled at Dory.app/Contents/Helpers/dory, report the app's authoritative
+# marketing version instead of leaking the source-tree development fallback into a release CLI.
+DORY_BUNDLE_INFO="$DORY_SCRIPT_DIR/../Info.plist"
+if [ -f "$DORY_BUNDLE_INFO" ]; then
+  DORY_BUNDLED_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$DORY_BUNDLE_INFO" 2>/dev/null || true)"
+  [ -z "$DORY_BUNDLED_VERSION" ] || DORY_CLI_VERSION="$DORY_BUNDLED_VERSION"
+fi
 DORY_SOCK="${DORY_SOCK:-$HOME/.dory/dory.sock}"
 KUBECONFIG_DORY="$HOME/.kube/dory-config"
 RECIPE_DIR="${DORY_RECIPE_DIR:-$HOME/.dory/recipes}"
@@ -168,11 +175,6 @@ dory — Dory CLI
                                Share a local port or machine endpoint through a public HTTPS tunnel
   dory k8s <kubectl args...>   Run kubectl against Dory's Kubernetes cluster
   dory ssh <machine>           SSH into a Linux machine as you (real ssh when available)
-  dory vm [--image R] [--arch amd64|arm64] [--rosetta] [--mount h:g] -- <cmd>
-                               Run a container on Dory's in-process framework engine
-                               (Rosetta-fast x86 + host file mounts)
-  dory vm --devices            Boot a VM with USB + audio passthrough and dynamic
-                               memory ballooning (reclaims RAM to macOS)
   dory version                 Print the dory CLI version
   dory help                    Show this help
 EOF
@@ -1609,13 +1611,19 @@ doryd_machine_cmd() {
         set --
       fi
       args=("$name")
-      if ! dory_machine_has_option --kernel "$@"; then
+      # A generic EFI installer owns its boot path. Do not silently mix the
+      # managed direct-kernel/rootfs image into an ISO-backed machine request.
+      local uses_installer_iso=0
+      if dory_machine_has_option --installer-iso "$@"; then
+        uses_installer_iso=1
+      fi
+      if [ "$uses_installer_iso" -eq 0 ] && ! dory_machine_has_option --kernel "$@"; then
         local kernel
         kernel="$(sandbox_default_kernel || true)"
         [ -n "$kernel" ] || { echo "Linux Machines is not installed. Run: dory component install linux-machines" >&2; exit 1; }
         args+=(--kernel "$kernel")
       fi
-      if ! dory_machine_has_option --rootfs "$@"; then
+      if [ "$uses_installer_iso" -eq 0 ] && ! dory_machine_has_option --rootfs "$@"; then
         local rootfs
         rootfs="$(sandbox_default_rootfs || true)"
         [ -n "$rootfs" ] || { echo "Linux Machines is not installed. Run: dory component install linux-machines" >&2; exit 1; }
@@ -2949,7 +2957,7 @@ usb_cmd() {
         esac
       done
       [ -n "$busid" ] || { echo "usage: dory usb attach <busid> [--mode userAuthorized|seize|capture]" >&2; exit 2; }
-      echo "dory usb attach is unavailable: host discovery works, but guest USB/IP attach/detach RPC is not implemented" >&2
+      echo "dory usb attach is unavailable: removable-device plan authorization and physical qualification are not complete" >&2
       return 3
       ;;
     detach)
@@ -2962,7 +2970,7 @@ usb_cmd() {
         esac
       done
       [ -n "$busid" ] || { echo "usage: dory usb detach <busid>" >&2; exit 2; }
-      echo "dory usb detach is unavailable: guest USB/IP attach/detach RPC is not implemented" >&2
+      echo "dory usb detach is unavailable: removable-device plan authorization and physical qualification are not complete" >&2
       return 3
       ;;
     *) echo "usage: dory usb ls|attach|detach" >&2; exit 2 ;;
@@ -4913,7 +4921,7 @@ data = {
             "invoke": "dory usb ls",
             "json": False,
             "safeForAutomation": True,
-            "notes": "Host discovery is supported. Attach, detach, and replay are unavailable and fail closed until the guest USB/IP RPC and physical qualification exist.",
+            "notes": "Host discovery and private machine routing are supported. Attach, detach, and replay remain unavailable until removable-device plan authorization and physical qualification exist.",
         },
         {
             "id": "upgrade",
@@ -5157,7 +5165,8 @@ case "${1:-help}" in
                     if [ -z "$home" ]; then if [ "$user" = "root" ]; then home="/root"; else home="/home/$user"; fi; fi
                     exec "$DOCKER_BIN" -H "unix://$DORY_SOCK" exec -it -u "$user" -w "$home" "$cid" "$shell" -l
                   fi ;;
-  vm)             shift; H="$(vmm_helper || true)"; [ -z "$H" ] && { echo "dory-vmm helper not found; build+sign it (see scripts/bundle-engine.sh)" >&2; exit 1; }; exec "$H" "$@" ;;
+  vm)             echo "dory vm is unavailable. Dory does not run Intel Linux ISOs on Apple Silicon; Rosetta and FEX translate Intel applications or containers inside ARM64 Linux and are not whole-system emulation." >&2
+                  exit 64 ;;
   k8s)            shift
                   if ! [ -x "$KUBECTL_BIN" ] && ! command -v "$KUBECTL_BIN" >/dev/null 2>&1; then
                     echo "Kubernetes is not installed. Run: dory component install kubernetes" >&2

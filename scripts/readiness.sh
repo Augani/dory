@@ -92,7 +92,7 @@ Options:
   --settle SECONDS     Wait time before/after memory workload (default: $SETTLE)
   --skip-memory        Skip memory measurements
   --skip-nonnative-arch
-                       Skip the non-native architecture emulation check
+                       Skip the non-native container application emulation check
   --skip-amd64         Legacy alias for --skip-nonnative-arch
   --online             Run online registry search check
   --domains            Run *.dory.local / *.orb.local checks when integration is active
@@ -104,7 +104,7 @@ Options:
   --bridge             Run guest→host bridge (dory-open) check
   --guest-agent        Run dory-hv guest-agent vsock smoke (requires DORY_GUEST_KERNEL and DORY_GUEST_INITFS)
   --dax                Run the low-level DAX mapping probe only (production host-share DAX is rejected)
-  --rosetta            Record Rosetta machine backend status (pending dory-vmm Rosetta support)
+  --rosetta            Record the Rosetta application-only boundary (no Intel VM/ISO boot)
   --usb                Record the unavailable guest USB attach/detach RPC explicitly
   --vpn                Record route/DNS state and run userspace networking checks during VPN coexistence testing
   --debug-shell        Record the unavailable agent namespace-debug RPC explicitly
@@ -1217,11 +1217,6 @@ test_dax() {
   "$hv" daxprobe | grep -q "dax coherence passed"
 }
 
-test_rosetta() {
-  echo "Rosetta machine execution is pending the dory-vmm machine backend; the removed legacy VZ helper path is no longer supported"
-  return 2
-}
-
 test_guest_agent() {
   is_dory_engine || return 2
   local hv="${DORY_HV_BIN:-$ROOT/Packages/ContainerizationEngine/.build/debug/dory-hv}"
@@ -1420,12 +1415,12 @@ run_engine() {
     skip_case "$CURRENT_ENGINE" "dory-hv low-level DAX mapping probe" "enable with --dax (production host-share DAX remains disabled)"
   fi
 
-  if [ "$RUN_ROSETTA" = "1" ] && [ "$(host_guest_arch)" = "amd64" ]; then
-    required_unavailable_case "$CURRENT_ENGINE" "Rosetta x86-64 machine execution" "probe is not applicable on Intel hosts; amd64 is native"
-  elif [ "$RUN_ROSETTA" = "1" ]; then
-    run_case "$CURRENT_ENGINE" "Rosetta x86-64 machine execution" test_rosetta
+  if [ "$RUN_ROSETTA" = "1" ]; then
+    required_unavailable_case "$CURRENT_ENGINE" "Rosetta x86_64 Linux application translation boundary" \
+      "Rosetta translates applications only inside an eligible ARM64 Linux VM; it cannot boot an Intel ISO, Dory exposes no partial x86 VM mode, and future whole-system support requires a packaged QEMU TCG backend"
   else
-    skip_case "$CURRENT_ENGINE" "Rosetta x86-64 machine execution" "pending dory-vmm Rosetta machine backend"
+    skip_case "$CURRENT_ENGINE" "Rosetta x86_64 Linux application translation boundary" \
+      "not a whole-system VM probe; enable with --rosetta to record the unsupported Intel ISO boundary"
   fi
 
   if [ "$RUN_CLOCK_SYNC" = "1" ] && [ "$CURRENT_ENGINE" != "doryd" ]; then

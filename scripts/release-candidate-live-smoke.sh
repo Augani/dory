@@ -377,9 +377,34 @@ if [ "$REQUIRED_ARCH" = arm64 ]; then
     --zed-archive "$ZED_ARCHIVE" \
     --zed-version "$ZED_VERSION" \
     --zed-sha256 "$ZED_SHA256" \
+    --require-acceleration \
+    --require-release-signature \
     --version "$DESKTOP_VERSION" \
     --workroot "$LOG_ROOT/desktop-linux" \
     --confirm EXACT-CANDIDATE-DESKTOPS
+  DESKTOP_GATE_MANIFEST="$LOG_ROOT/desktop-linux/evidence/manifest.txt"
+  [ -f "$DESKTOP_GATE_MANIFEST" ] && [ ! -L "$DESKTOP_GATE_MANIFEST" ] \
+    || fail "managed desktop gate did not publish its evidence manifest"
+  MANAGED_DESKTOP_BASELINE_RESULT="$(
+    sed -n 's/^managed_desktop_baseline=//p' "$DESKTOP_GATE_MANIFEST"
+  )"
+  ZED_NATIVE_VENUS_RESULT="$(
+    sed -n 's/^zed_native_venus=//p' "$DESKTOP_GATE_MANIFEST"
+  )"
+  MESA_VIRGL_DESKTOP_RESULT="$(
+    sed -n 's/^mesa_virgl_desktop=//p' "$DESKTOP_GATE_MANIFEST"
+  )"
+  RENDERER_RELEASE_SIGNATURE_RESULT="$(
+    sed -n 's/^renderer_release_signature=//p' "$DESKTOP_GATE_MANIFEST"
+  )"
+  [ "$MANAGED_DESKTOP_BASELINE_RESULT" = PASS ] \
+    || fail "managed desktop application baseline did not pass"
+  [ "$ZED_NATIVE_VENUS_RESULT" = PASS ] \
+    || fail "native Ubuntu Venus/Zed application evidence did not pass"
+  [ "$MESA_VIRGL_DESKTOP_RESULT" = PASS ] \
+    || fail "Mesa VirGL desktop application evidence did not pass"
+  [ "$RENDERER_RELEASE_SIGNATURE_RESULT" = PASS ] \
+    || fail "renderer release qualification signature was not authenticated"
 
   scripts/sandbox-security-gate.sh \
     --dory "$DORY_CLI" \
@@ -466,7 +491,10 @@ fi
   if [ "$REQUIRED_ARCH" = arm64 ]; then
     echo "zed_version=$ZED_VERSION"
     echo "zed_sha256=$ZED_SHA256"
-    echo "zed_native_venus=PASS"
+    echo "managed_desktop_baseline=$MANAGED_DESKTOP_BASELINE_RESULT"
+    echo "mesa_virgl_desktop=$MESA_VIRGL_DESKTOP_RESULT"
+    echo "renderer_release_signature=$RENDERER_RELEASE_SIGNATURE_RESULT"
+    echo "zed_native_venus=$ZED_NATIVE_VENUS_RESULT"
   fi
   echo "p0_smoke=PASS"
   echo "live_candidate=PASS"

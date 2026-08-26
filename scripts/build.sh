@@ -18,9 +18,12 @@ xcodebuild. This command creates a development app only; it does not create or p
 Useful environment controls:
   DEVELOPER_DIR=PATH              Select a full Xcode toolchain
   DORY_XCODE_CONFIGURATION=NAME  Xcode configuration to build (Debug by default)
-  DORY_BUILD_DEBUG_HELPERS=0      Skip dory-hv/gvproxy bundling
+  DORY_XCODE_CODE_SIGNING_ALLOWED=YES|NO
+                                  Select one unambiguous Xcode signing mode (NO by default)
+  DORY_BUILD_DEBUG_HELPERS=0      Skip gvproxy and local Linux asset bundling (the runner stays embedded)
   DORY_BUILD_DORYD_HELPERS=0      Skip doryd/dory-vmm helper bundling
   DORY_DESKTOP_BUNDLE_MODE=MODE   none (default) or all (Debian, Ubuntu, and Kali)
+  DORY_REQUIRE_CORE_ASSETS=0|1    Require a bootable bundled Docker Core (defaults to 1 for Release)
   DORY_ALLOW_MISSING_GVPROXY=1    Permit an intentionally incomplete development bundle
 EOF
 }
@@ -36,6 +39,15 @@ case "$XCODE_CONFIGURATION" in
   Debug|Release) ;;
   *) echo "error: DORY_XCODE_CONFIGURATION must be 'Debug' or 'Release'" >&2; exit 64 ;;
 esac
+if [ "$XCODE_CONFIGURATION" = Release ]; then
+  REQUIRE_CORE_ASSETS="${DORY_REQUIRE_CORE_ASSETS:-1}"
+else
+  REQUIRE_CORE_ASSETS="${DORY_REQUIRE_CORE_ASSETS:-0}"
+fi
+case "$REQUIRE_CORE_ASSETS" in
+  0|1) ;;
+  *) echo "error: DORY_REQUIRE_CORE_ASSETS must be '0' or '1'" >&2; exit 64 ;;
+esac
 
 DESKTOP_BUNDLE_MODE="${DORY_DESKTOP_BUNDLE_MODE:-none}"
 case "$DESKTOP_BUNDLE_MODE" in
@@ -44,6 +56,17 @@ case "$DESKTOP_BUNDLE_MODE" in
 esac
 if [ "$DESKTOP_BUNDLE_MODE" = all ] && [ "${DORY_BUILD_DEBUG_HELPERS:-1}" != 1 ]; then
   echo "error: the all-inclusive build needs DORY_BUILD_DEBUG_HELPERS=1 to compress desktop assets" >&2
+  exit 64
+fi
+
+BUNDLE_SIGN_IDENTITY="${DORY_BUNDLE_SIGN_IDENTITY:--}"
+BUNDLE_EXPECTED_TEAM="${DORY_BUNDLE_EXPECTED_TEAM:--}"
+if [ "$BUNDLE_SIGN_IDENTITY" = - ] && [ "$BUNDLE_EXPECTED_TEAM" != - ]; then
+  echo "error: an expected bundle team requires DORY_BUNDLE_SIGN_IDENTITY" >&2
+  exit 64
+fi
+if [ "$BUNDLE_SIGN_IDENTITY" != - ] && [ "$BUNDLE_EXPECTED_TEAM" = - ]; then
+  echo "error: DORY_BUNDLE_SIGN_IDENTITY requires DORY_BUNDLE_EXPECTED_TEAM" >&2
   exit 64
 fi
 
@@ -59,6 +82,8 @@ fi
 
 # shellcheck source=gvproxy-payload.sh
 source scripts/gvproxy-payload.sh
+# shellcheck source=host-cli-payload.sh
+source scripts/host-cli-payload.sh
 
 find_xcode() {
   local dev app found
@@ -93,12 +118,10 @@ if [ -z "${DEVELOPER_DIR:-}" ]; then
   fi
 fi
 
-# Both doryd/dory-vmm and raw dory-hv link the same Rust handshake+mux+protobuf client through
-# DoryCore. Its generated Swift and XCFramework are intentionally ignored build products, so a
-# clean checkout must materialize them before either Swift package is resolved.
-if [ "${DORY_BUILD_DEBUG_HELPERS:-1}" = "1" ] || [ "${DORY_BUILD_DORYD_HELPERS:-1}" = "1" ]; then
-  scripts/build-dory-ffi-xcframework.sh --if-needed || exit 1
-fi
+# DoryHVRunner and doryd/dory-vmm link the same Rust handshake+mux+protobuf client through
+# DoryCore. The runner is now an unconditional dependency of Dory.app, so every clean build must
+# materialize the ignored generated Swift and XCFramework before Xcode resolves either package.
+scripts/build-dory-ffi-xcframework.sh --if-needed || exit 1
 
 LOG=/tmp/dory_build.log
 
@@ -109,8 +132,18 @@ for app in "$HOME"/Library/Developer/Xcode/DerivedData/Dory-*/Build/Products/"$X
   rm -rf "$app"
 done
 
+XCODE_CODE_SIGNING_ALLOWED="${DORY_XCODE_CODE_SIGNING_ALLOWED:-NO}"
+case "$XCODE_CODE_SIGNING_ALLOWED" in
+  YES|NO) ;;
+  *) echo "error: DORY_XCODE_CODE_SIGNING_ALLOWED must be 'YES' or 'NO'" >&2; exit 64 ;;
+esac
+
+# Pass CODE_SIGNING_ALLOWED exactly once. Supplying a contradictory default before caller build
+# settings lets an enclosing target observe signing while dependent XPC products are still emitted
+# ad hoc, which breaks the runner's pinned peer requirements during renderer qualification.
 xcodebuild -project Dory.xcodeproj -scheme Dory -destination 'platform=macOS' \
-  -configuration "$XCODE_CONFIGURATION" build CODE_SIGNING_ALLOWED=NO "$@" > "$LOG" 2>&1
+  -configuration "$XCODE_CONFIGURATION" build \
+  CODE_SIGNING_ALLOWED="$XCODE_CODE_SIGNING_ALLOWED" "$@" > "$LOG" 2>&1
 status=$?
 
 # Xcode 27 intermittently re-serializes the project to objectVersion 110 (breaks stable Xcode + CI);
@@ -169,14 +202,14 @@ debug_engine_rootfs_source() {
 }
 
 bundle_debug_engine_rootfs() {
-  local app="$1" arch="$2" compressor="$3" src out host_guest_arch
+  local app="$1" arch="$2" src out host_guest_arch
   src="$(debug_engine_rootfs_source "$arch" || true)"
   [ -n "$src" ] || return 0
   out="$app/Contents/Resources/dory-engine-rootfs-$arch.ext4.lzfse"
   mkdir -p "$app/Contents/Resources"
   case "$src" in
     *.lzfse) cp "$src" "$out" ;;
-    *) "$compressor" lzfse compress "$src" "$out" ;;
+    *) /usr/bin/compression_tool -encode -a lzfse -i "$src" -o "$out" ;;
   esac
   chmod 0644 "$out"
   xattr -cr "$out" 2>/dev/null || true
@@ -189,8 +222,29 @@ bundle_debug_engine_rootfs() {
   fi
 }
 
+verify_bundled_docker_core() {
+  local app="$1" arch resource
+  [ "$REQUIRE_CORE_ASSETS" = 1 ] || return 0
+  case "$(uname -m)" in
+    x86_64) arch=amd64 ;;
+    *) arch=arm64 ;;
+  esac
+  for resource in \
+    "$app/Contents/Helpers/DoryHVRunner.app/Contents/MacOS/dory-hv" \
+    "$app/Contents/Helpers/gvproxy" \
+    "$app/Contents/Resources/dory-hv-kernel-$arch.lzfse" \
+    "$app/Contents/Resources/dory-engine-rootfs-$arch.ext4.lzfse" \
+    "$app/Contents/Resources/dory-agent-linux-$arch"; do
+    [ -f "$resource" ] && [ ! -L "$resource" ] && [ -s "$resource" ] || {
+      echo "error: Docker Core cannot be declared bundled because a required runtime asset is missing: $resource" >&2
+      echo "error: build and verify guest/out kernel, engine rootfs, and guest agent before creating a Release app" >&2
+      return 1
+    }
+  done
+}
+
 bundle_debug_desktop_assets() {
-  local app="$1" compressor="$2" kernel kernel_out distro rootfs rootfs_out metadata
+  local app="$1" kernel kernel_out distro rootfs rootfs_out metadata
   [ "$DESKTOP_BUNDLE_MODE" = all ] || return 0
   [ "$(uname -m)" = "arm64" ] || return 0
   kernel="guest/out/Image-desktop"
@@ -198,7 +252,7 @@ bundle_debug_desktop_assets() {
   DORY_KERNEL_PROFILE=accelerated-desktop guest/kernel/verify-build.sh arm64 >/dev/null || return 1
   kernel_out="$app/Contents/Resources/dory-desktop-kernel-arm64.lzfse"
   if [ ! -f "$kernel_out" ] || [ "$kernel" -nt "$kernel_out" ]; then
-    "$compressor" lzfse compress "$kernel" "$kernel_out" || return 1
+    /usr/bin/compression_tool -encode -a lzfse -i "$kernel" -o "$kernel_out" || return 1
   fi
   for distro in debian ubuntu kali; do
     rootfs="guest/out/dory-desktop-$distro-rootfs-arm64.ext4"
@@ -206,7 +260,7 @@ bundle_debug_desktop_assets() {
     guest/desktop/verify-build.sh arm64 "$distro" >/dev/null || return 1
     rootfs_out="$app/Contents/Resources/dory-desktop-$distro-rootfs-arm64.ext4.lzfse"
     if [ ! -f "$rootfs_out" ] || [ "$rootfs" -nt "$rootfs_out" ]; then
-      "$compressor" lzfse compress "$rootfs" "$rootfs_out" || return 1
+      /usr/bin/compression_tool -encode -a lzfse -i "$rootfs" -o "$rootfs_out" || return 1
     fi
     for metadata in \
       "guest/out/dory-desktop-$distro-build-arm64.stamp" \
@@ -231,20 +285,11 @@ write_debug_bundle_capabilities() {
 }
 
 bundle_debug_hv_helper() {
-  local pkg configuration hv_bin entitlements app helper
+  local app runner_app helper
   local gvproxy_src gvproxy_version gvproxy_sha256 gvproxy_tmp
   [ "${DORY_BUILD_DEBUG_HELPERS:-1}" = "1" ] || return 0
-  configuration="${DORY_DEBUG_HELPER_CONFIGURATION:-release}"
-  pkg="Packages/ContainerizationEngine"
-  [ -d "$pkg" ] || return 0
 
-  echo "note: building and bundling dory-hv helper ($configuration)" >&2
-  ( cd "$pkg" && swift build -c "$configuration" --product dory-hv ) || return 1
-  hv_bin="$(cd "$pkg" && swift build -c "$configuration" --product dory-hv --show-bin-path 2>/dev/null)/dory-hv"
-  if [ ! -x "$hv_bin" ]; then
-    hv_bin="$(find "$pkg/.build" -name dory-hv -type f -ipath "*/$configuration/*" -not -path '*dSYM*' -print | head -1)"
-  fi
-  [ -x "$hv_bin" ] || { echo "error: dory-hv helper was not produced" >&2; return 1; }
+  echo "note: bundling Linux assets for the Xcode-built DoryHVRunner application" >&2
 
   dory_gvproxy_validate_overrides || return 1
   gvproxy_version="$(dory_gvproxy_version)"
@@ -282,32 +327,27 @@ bundle_debug_hv_helper() {
     return 1
   fi
 
-  entitlements="$(mktemp "${TMPDIR:-/tmp}/dory-hv-entitlements.XXXXXX")"
-  cat > "$entitlements" <<'PLIST'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict><key>com.apple.security.hypervisor</key><true/></dict></plist>
-PLIST
-  /usr/libexec/PlistBuddy \
-    -c 'Add :com.apple.security.cs.disable-library-validation bool true' \
-    "$entitlements" >/dev/null || return 1
-  /usr/libexec/PlistBuddy \
-    -c 'Add :com.apple.security.device.audio-input bool true' \
-    "$entitlements" >/dev/null || return 1
-
   for app in "$HOME"/Library/Developer/Xcode/DerivedData/Dory-*/Build/Products/"$XCODE_CONFIGURATION"/Dory.app; do
     [ -d "$app" ] || continue
     mkdir -p "$app/Contents/Helpers"
     mkdir -p "$app/Contents/Resources"
-    helper="$app/Contents/Helpers/dory-hv"
-    cp "$hv_bin" "$helper"
-    codesign --force --options runtime --entitlements "$entitlements" -s - "$helper" >/dev/null 2>&1 \
-      || codesign --force --entitlements "$entitlements" -s - "$helper" >/dev/null
-    xattr -cr "$helper" 2>/dev/null || true
+    runner_app="$app/Contents/Helpers/DoryHVRunner.app"
+    helper="$runner_app/Contents/MacOS/dory-hv"
+    [ -d "$runner_app" ] && [ ! -L "$runner_app" ] && [ -x "$helper" ] \
+      || { echo "error: Xcode did not embed DoryHVRunner.app" >&2; return 1; }
+    [ ! -e "$app/Contents/Helpers/dory-hv" ] \
+      || { echo "error: obsolete parallel Contents/Helpers/dory-hv remains" >&2; return 1; }
+    codesign --force --options runtime \
+      --entitlements Packages/ContainerizationEngine/dory-hv.entitlements \
+      -s "$BUNDLE_SIGN_IDENTITY" "$runner_app" >/dev/null 2>&1 \
+      || codesign --force \
+        --entitlements Packages/ContainerizationEngine/dory-hv.entitlements \
+        -s "$BUNDLE_SIGN_IDENTITY" "$runner_app" >/dev/null
+    xattr -cr "$runner_app" 2>/dev/null || true
     if [ -n "$gvproxy_src" ] && [ -x "$gvproxy_src" ]; then
       cp "$gvproxy_src" "$app/Contents/Helpers/gvproxy"
-      codesign --force --options runtime -s - "$app/Contents/Helpers/gvproxy" >/dev/null 2>&1 \
-        || codesign --force -s - "$app/Contents/Helpers/gvproxy" >/dev/null
+      codesign --force --options runtime -s "$BUNDLE_SIGN_IDENTITY" "$app/Contents/Helpers/gvproxy" >/dev/null 2>&1 \
+        || codesign --force -s "$BUNDLE_SIGN_IDENTITY" "$app/Contents/Helpers/gvproxy" >/dev/null
       xattr -cr "$app/Contents/Helpers/gvproxy" 2>/dev/null || true
       if [ -n "$gvproxy_tmp" ] && [ -s "$gvproxy_tmp.provenance" ]; then
         cp "$gvproxy_tmp.provenance" "$app/Contents/Resources/gvproxy-provenance.txt"
@@ -329,85 +369,63 @@ PLIST
         cp "guest/out/initfs-$arch.ext4" "$app/Contents/Resources/dory-machine-rootfs-$arch.ext4"
         chmod 0644 "$app/Contents/Resources/dory-machine-rootfs-$arch.ext4"
         if [ "$arch" = "arm64" ]; then
-          cp "$app/Contents/Resources/dory-machine-rootfs-$arch.ext4" "$app/Contents/Resources/dory-machine-rootfs.ext4"
+          ln -sf "dory-machine-rootfs-$arch.ext4" "$app/Contents/Resources/dory-machine-rootfs.ext4"
         fi
       fi
-      bundle_debug_engine_rootfs "$app" "$arch" "$hv_bin"
+      bundle_debug_engine_rootfs "$app" "$arch"
     done
     if [ -f "guest/out/Image" ]; then
       cp "guest/out/Image" "$app/Contents/Resources/dory-hv-kernel-arm64"
       cp "$app/Contents/Resources/dory-hv-kernel-arm64" "$app/Contents/Resources/dory-hv-kernel"
-      "$hv_bin" lzfse compress "guest/out/Image" "$app/Contents/Resources/dory-hv-kernel-arm64.lzfse"
+      /usr/bin/compression_tool -encode -a lzfse \
+        -i "guest/out/Image" \
+        -o "$app/Contents/Resources/dory-hv-kernel-arm64.lzfse"
       cp "$app/Contents/Resources/dory-hv-kernel-arm64.lzfse" "$app/Contents/Resources/dory-hv-kernel.lzfse"
     fi
     if [ -f "guest/out/Image-gpu" ]; then
-      "$hv_bin" lzfse compress "guest/out/Image-gpu" "$app/Contents/Resources/dory-hv-kernel-gpu-arm64.lzfse"
+      /usr/bin/compression_tool -encode -a lzfse \
+        -i "guest/out/Image-gpu" \
+        -o "$app/Contents/Resources/dory-hv-kernel-gpu-arm64.lzfse"
     fi
-    bundle_debug_desktop_assets "$app" "$hv_bin" || return 1
+    bundle_debug_desktop_assets "$app" || return 1
+    verify_bundled_docker_core "$app" || return 1
   done
 
-  rm -f "$entitlements"
   rm -f "$gvproxy_tmp" "$gvproxy_tmp.provenance"
 }
 
-bundle_debug_gpu_renderer() {
-  local renderer provenance molten_prefix molten molten_provenance epoxy icd app framework resources dylib dep
-  [ "${DORY_BUILD_DEBUG_HELPERS:-1}" = "1" ] || return 0
-  renderer="$PWD/.build/virglrenderer/libvirglrenderer.dylib"
-  provenance="$PWD/.build/virglrenderer/provenance.txt"
-  molten_prefix="$PWD/.build/moltenvk"
-  molten_provenance="$molten_prefix/provenance.txt"
-  echo "note: building and bundling Dory's patched GPU renderer" >&2
-  if [ ! -f "$molten_prefix/lib/libMoltenVK.dylib" ] \
-      || ! nm -gU "$molten_prefix/lib/libMoltenVK.dylib" \
-        | grep '_dory_moltenvk_spirv_native_array_fix$' >/dev/null; then
-    scripts/build-moltenvk.sh --prefix "$molten_prefix" --provenance "$molten_provenance" || return 1
-  fi
-  DORY_MOLTENVK_PREFIX="$molten_prefix" scripts/build-virglrenderer.sh \
-    --output "$renderer" --provenance "$provenance" || return 1
-  molten="$molten_prefix/lib/libMoltenVK.dylib"
-  epoxy="$(brew --prefix libepoxy 2>/dev/null)/lib/libepoxy.0.dylib"
-  icd="$molten_prefix/share/vulkan/icd.d/MoltenVK_icd.json"
-  for dylib in "$renderer" "$molten" "$epoxy"; do
-    [ -f "$dylib" ] || { echo "error: missing GPU renderer dependency $dylib" >&2; return 1; }
-  done
-  [ -f "$icd" ] || { echo "error: missing MoltenVK_icd.json" >&2; return 1; }
-
+verify_debug_renderer_packaging() {
+  local app runner_app legacy managed_kernel
+  managed_kernel="${DORY_RENDERER_MANAGED_KERNEL:-guest/out/Image-desktop}"
   for app in "$HOME"/Library/Developer/Xcode/DerivedData/Dory-*/Build/Products/"$XCODE_CONFIGURATION"/Dory.app; do
     [ -d "$app" ] || continue
-    framework="$app/Contents/Frameworks"
-    resources="$app/Contents/Resources"
-    mkdir -p "$framework" "$resources/vulkan/icd.d"
-    install -m0755 "$renderer" "$framework/libvirglrenderer.dylib"
-    install -m0755 "$molten" "$framework/libMoltenVK.dylib"
-    install -m0755 "$epoxy" "$framework/libepoxy.0.dylib"
-    for dylib in "$framework/libvirglrenderer.dylib" \
-                 "$framework/libMoltenVK.dylib" \
-                 "$framework/libepoxy.0.dylib"; do
-      install_name_tool -id "@rpath/$(basename "$dylib")" "$dylib" 2>/dev/null || true
-      for dep in $(otool -L "$dylib" | awk 'NR > 1 {print $1}'); do
-        case "$dep" in
-          /opt/homebrew/*|/usr/local/*)
-            install_name_tool -change "$dep" "@rpath/$(basename "$dep")" "$dylib" 2>/dev/null || true ;;
-        esac
-      done
-      otool -l "$dylib" | grep -q 'path @loader_path ' \
-        || install_name_tool -add_rpath @loader_path "$dylib" 2>/dev/null \
-        || true
-      codesign --force -s - "$dylib" >/dev/null || return 1
+    runner_app="$app/Contents/Helpers/DoryHVRunner.app"
+    [ -d "$runner_app" ] && [ ! -L "$runner_app" ] \
+      || { echo "error: Xcode did not embed a direct DoryHVRunner.app" >&2; return 1; }
+    if [ "$XCODE_CONFIGURATION" = Release ]; then
+      [ -f "$managed_kernel" ] && [ ! -L "$managed_kernel" ] \
+        || { echo "error: renderer verification requires the exact managed desktop kernel: $managed_kernel" >&2; return 1; }
+      if [ "$BUNDLE_EXPECTED_TEAM" = - ]; then
+        python3 scripts/package-renderer-production-bundle.py verify \
+          --runner-app "$runner_app" --outer-app "$app" \
+          --expected-team - --allow-adhoc-test \
+          --managed-kernel "$managed_kernel" || return 1
+      else
+        python3 scripts/package-renderer-production-bundle.py verify \
+          --runner-app "$runner_app" --outer-app "$app" \
+          --expected-team "$BUNDLE_EXPECTED_TEAM" \
+          --managed-kernel "$managed_kernel" || return 1
+      fi
+      continue
+    fi
+    [ ! -e "$runner_app/Contents/Resources/renderer-production-inventory.json" ] \
+      || { echo "error: Debug runner fabricated a production renderer inventory" >&2; return 1; }
+    for legacy in \
+      libEGL.dylib libGLESv2.dylib libepoxy.0.dylib libMoltenVK.dylib \
+      libvirglrenderer.dylib libvulkan.1.dylib; do
+      [ ! -e "$runner_app/Contents/Frameworks/$legacy" ] \
+        || { echo "error: Debug runner retained obsolete dynamic renderer $legacy" >&2; return 1; }
     done
-    sed -E 's#"library_path"[[:space:]]*:[[:space:]]*"[^"]+"#"library_path": "@executable_path/../Frameworks/libMoltenVK.dylib"#' \
-      "$icd" > "$resources/vulkan/icd.d/MoltenVK_icd.json"
-    install -m0644 "$provenance" "$resources/virglrenderer-provenance.txt"
-    install -m0644 "$molten_provenance" "$resources/moltenvk-provenance.txt"
-    echo "bundled_sha256=$(shasum -a 256 "$framework/libvirglrenderer.dylib" | awk '{print $1}')" \
-      >> "$resources/virglrenderer-provenance.txt"
-    nm -gU "$framework/libvirglrenderer.dylib" \
-      | grep '_dory_virglrenderer_macos_fragment_coord_fix$' >/dev/null || return 1
-    nm -gU "$framework/libvirglrenderer.dylib" \
-      | grep '_dory_virglrenderer_macos_venus_fence_fix$' >/dev/null || return 1
-    nm -gU "$framework/libMoltenVK.dylib" \
-      | grep '_dory_moltenvk_spirv_native_array_fix$' >/dev/null || return 1
   done
 }
 
@@ -443,10 +461,10 @@ bundle_doryd_swiftpm_helpers() {
       helper="$app/Contents/Helpers/$product"
       cp "$bin_path/$product" "$helper"
       if [ "$product" = "dory-vmm" ]; then
-        codesign --force --options runtime --entitlements "$entitlements" -s - "$helper" >/dev/null 2>&1 \
-          || codesign --force --entitlements "$entitlements" -s - "$helper" >/dev/null
+        codesign --force --options runtime --entitlements "$entitlements" -s "$BUNDLE_SIGN_IDENTITY" "$helper" >/dev/null 2>&1 \
+          || codesign --force --entitlements "$entitlements" -s "$BUNDLE_SIGN_IDENTITY" "$helper" >/dev/null
       else
-        codesign --force -s - "$helper" >/dev/null
+        codesign --force -s "$BUNDLE_SIGN_IDENTITY" "$helper" >/dev/null
       fi
       xattr -cr "$helper" 2>/dev/null || true
     done
@@ -455,8 +473,8 @@ bundle_doryd_swiftpm_helpers() {
     mkdir -p "$vmm_app/Contents/MacOS"
     install -m 0755 "$bin_path/dory-vmm" "$vmm_executable"
     install -m 0644 dory-core-swift/Sources/dory-vmm/Info.plist "$vmm_app/Contents/Info.plist"
-    codesign --force --options runtime --entitlements "$entitlements" -s - "$vmm_app" >/dev/null 2>&1 \
-      || codesign --force --entitlements "$entitlements" -s - "$vmm_app" >/dev/null
+    codesign --force --options runtime --entitlements "$entitlements" -s "$BUNDLE_SIGN_IDENTITY" "$vmm_app" >/dev/null 2>&1 \
+      || codesign --force --entitlements "$entitlements" -s "$BUNDLE_SIGN_IDENTITY" "$vmm_app" >/dev/null
     write_doryd_launch_agent "$app"
     mkdir -p "$app/Contents/Library/LaunchDaemons"
     cp "Config/dev.dory.network-helper.plist" \
@@ -595,6 +613,26 @@ download_docker_buildx() {
   printf '%s\n' "$out"
 }
 
+download_docker_credential_osxkeychain() {
+  [ "${DORY_BUNDLE_HOST_CLI_DOWNLOADS:-1}" = "1" ] || return 1
+  local version arch cache out expected
+  version="$(dory_host_cli_version docker-credential-osxkeychain)"
+  arch="$(host_arch)"
+  cache="$(host_cli_cache_dir)"
+  out="$cache/docker-credential-osxkeychain-$version-$arch"
+  expected="$(dory_host_cli_expected_sha256 docker-credential-osxkeychain "$arch")"
+  if [ -x "$out" ] && dory_verify_host_cli_payload "$out" "$expected"; then
+    printf '%s\n' "$out"
+    return 0
+  fi
+  mkdir -p "$cache"
+  fetch_url "https://github.com/docker/docker-credential-helpers/releases/download/$version/docker-credential-osxkeychain-$version.darwin-$arch" "$out" || return 1
+  dory_verify_host_cli_payload "$out" "$expected" || return 1
+  chmod 0755 "$out"
+  xattr -cr "$out" 2>/dev/null || true
+  printf '%s\n' "$out"
+}
+
 download_kubectl() {
   [ "${DORY_BUNDLE_HOST_CLI_DOWNLOADS:-1}" = "1" ] || return 1
   local version arch cache out
@@ -623,19 +661,21 @@ copy_host_cli_helper() {
   cp "$source" "$dest"
   chmod 0755 "$dest"
   xattr -cr "$dest" 2>/dev/null || true
-  codesign --force -s - "$dest" >/dev/null 2>&1 || true
+  codesign --force -s "$BUNDLE_SIGN_IDENTITY" "$dest" >/dev/null 2>&1 || true
 }
 
 bundle_host_cli_helpers() {
-  local app docker docker_buildx docker_compose kubectl
+  local app docker docker_credential docker_buildx docker_compose kubectl
   [ "${DORY_BUNDLE_HOST_CLI:-1}" = "1" ] || return 0
   docker="$(first_existing_cli "${DORY_DOCKER_CLI:-}" /Applications/Dory.app/Contents/Helpers/docker "$HOME/.dory/bin/docker" /opt/homebrew/bin/docker /usr/local/bin/docker "$(command -v docker 2>/dev/null || true)" || download_docker_cli || true)"
+  docker_credential="$(first_existing_cli "${DORY_DOCKER_CREDENTIAL_HELPER:-}" /Applications/Dory.app/Contents/Helpers/docker-credential-osxkeychain "$HOME/.dory/bin/docker-credential-osxkeychain" /opt/homebrew/bin/docker-credential-osxkeychain /usr/local/bin/docker-credential-osxkeychain "$(command -v docker-credential-osxkeychain 2>/dev/null || true)" || download_docker_credential_osxkeychain || true)"
   docker_buildx="$(first_existing_cli "${DORY_DOCKER_BUILDX:-}" /Applications/Dory.app/Contents/Helpers/docker-buildx "$HOME/.docker/cli-plugins/docker-buildx" "$HOME/.dory/bin/docker-buildx" /opt/homebrew/lib/docker/cli-plugins/docker-buildx /usr/local/lib/docker/cli-plugins/docker-buildx || download_docker_buildx || true)"
   docker_compose="$(first_existing_cli "${DORY_DOCKER_COMPOSE:-}" /Applications/Dory.app/Contents/Helpers/docker-compose "$HOME/.docker/cli-plugins/docker-compose" "$HOME/.dory/bin/docker-compose" /opt/homebrew/bin/docker-compose /usr/local/bin/docker-compose "$(command -v docker-compose 2>/dev/null || true)" || download_docker_compose || true)"
   kubectl="$(first_existing_cli "${DORY_KUBECTL:-}" /Applications/Dory.app/Contents/Helpers/kubectl "$HOME/.dory/bin/kubectl" /opt/homebrew/bin/kubectl /usr/local/bin/kubectl "$(command -v kubectl 2>/dev/null || true)" || download_kubectl || true)"
   for app in "$HOME"/Library/Developer/Xcode/DerivedData/Dory-*/Build/Products/"$XCODE_CONFIGURATION"/Dory.app; do
     [ -d "$app" ] || continue
     copy_host_cli_helper "$app" docker "$docker"
+    copy_host_cli_helper "$app" docker-credential-osxkeychain "$docker_credential"
     copy_host_cli_helper "$app" docker-buildx "$docker_buildx"
     copy_host_cli_helper "$app" docker-compose "$docker_compose"
     copy_host_cli_helper "$app" kubectl "$kubectl"
@@ -657,28 +697,29 @@ sign_debug_apps() {
   for app in "$HOME"/Library/Developer/Xcode/DerivedData/Dory-*/Build/Products/"$XCODE_CONFIGURATION"/Dory.app; do
     [ -d "$app" ] || continue
     xattr -cr "$app" 2>/dev/null || true
-    for helper in docker docker-buildx docker-compose kubectl dory dory-doctor; do
+    for helper in docker docker-credential-osxkeychain docker-buildx docker-compose kubectl dory dory-doctor; do
       [ -f "$app/Contents/Helpers/$helper" ] || continue
-      codesign --force -s - "$app/Contents/Helpers/$helper" >/dev/null 2>&1 || true
+      codesign --force -s "$BUNDLE_SIGN_IDENTITY" "$app/Contents/Helpers/$helper" >/dev/null 2>&1 || true
     done
     # Xcode strips development-only framework headers after SwiftPM has signed the artifact.
     # Refresh each top-level framework seal before sealing the modified app bundle.
     for framework in "$app"/Contents/Frameworks/*.framework; do
       [ -d "$framework" ] || continue
-      codesign --force -s - "$framework" >/dev/null || return 1
+      codesign --force -s "$BUNDLE_SIGN_IDENTITY" "$framework" >/dev/null || return 1
     done
     for extension in "$app"/Contents/PlugIns/*.appex; do
       [ -d "$extension" ] || continue
       codesign --force --options runtime \
         --entitlements DoryStorageProvider/DoryStorageProvider.entitlements \
-        -s - "$extension" >/dev/null || return 1
+        -s "$BUNDLE_SIGN_IDENTITY" "$extension" >/dev/null || return 1
     done
-    # Ad hoc debug signatures do not carry a Team ID. Enabling the hardened
-    # runtime here would make library validation reject bundled frameworks such
-    # as Sparkle even though the app passes static signature verification.
-    # Release archives are signed separately with the Developer ID identity.
-    codesign --force --entitlements Dory/Dory.entitlements \
-      -s - "$app" >/dev/null || return 1
+    if [ "$BUNDLE_SIGN_IDENTITY" = - ]; then
+      codesign --force --entitlements Dory/Dory.entitlements \
+        -s - "$app" >/dev/null || return 1
+    else
+      codesign --force --options runtime --entitlements Dory/Dory.entitlements \
+        -s "$BUNDLE_SIGN_IDENTITY" "$app" >/dev/null || return 1
+    fi
     codesign --verify --deep --strict "$app" || return 1
   done
 }
@@ -694,7 +735,7 @@ write_doryd_launch_agent() {
   if [ -x "$helpers/DoryVMM.app/Contents/MacOS/dory-vmm" ]; then
     vmm="$helpers/DoryVMM.app/Contents/MacOS/dory-vmm"
   fi
-  hv="$helpers/dory-hv"
+  hv="$helpers/DoryHVRunner.app/Contents/MacOS/dory-hv"
   gvproxy="$helpers/gvproxy"
   kernel="$resources/dory-hv-kernel"
   amd64="${DORYD_AMD64:-0}"
@@ -745,6 +786,8 @@ write_doryd_launch_agent() {
         <string>$amd64</string>
         <key>DORYD_HOST_CLI</key>
         <string>1</string>
+        <key>DORYD_REQUIRE_ENGINE_ROOTFS</key>
+        <string>1</string>
         <key>DORYD_NETWORKING</key>
         <string>1</string>
         <key>DORYD_DOMAIN_SUFFIX</key>
@@ -780,9 +823,6 @@ if [ "$status" -eq 0 ]; then
   bundle_debug_hv_helper || status=$?
 fi
 if [ "$status" -eq 0 ]; then
-  bundle_debug_gpu_renderer || status=$?
-fi
-if [ "$status" -eq 0 ]; then
   bundle_doryd_swiftpm_helpers || status=$?
 fi
 if [ "$status" -eq 0 ]; then
@@ -796,6 +836,9 @@ if [ "$status" -eq 0 ]; then
 fi
 if [ "$status" -eq 0 ]; then
   sign_debug_apps || status=$?
+fi
+if [ "$status" -eq 0 ]; then
+  verify_debug_renderer_packaging || status=$?
 fi
 
 grep -E '(error:|warning:.*\.swift|BUILD SUCCEEDED|BUILD FAILED)' "$LOG" | tail -60 || true

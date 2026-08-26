@@ -9,6 +9,19 @@ cd "$ROOT"
 bash -n scripts/dory
 bash -n scripts/readiness.sh
 
+generic_efi_create="$(
+  DORYDCTL_BIN=/bin/echo \
+  DORY_SANDBOX_KERNEL=/bin/sh \
+  DORY_SANDBOX_ROOTFS=/bin/sh \
+    scripts/dory machine create generic-arm64 \
+      --installer-iso /tmp/generic-arm64.iso
+)"
+[ "$generic_efi_create" = \
+  "machine create generic-arm64 --installer-iso /tmp/generic-arm64.iso" ] || {
+  echo "generic EFI installer inherited managed direct-kernel/rootfs defaults" >&2
+  exit 1
+}
+
 if grep -Eq 'struct\.pack\(">I"|debug\.shell|^[[:space:]]*agent_rpc(_readiness)?\(\)' \
   scripts/dory scripts/readiness.sh; then
   echo "legacy JSON agent wire consumer found" >&2

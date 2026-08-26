@@ -205,6 +205,13 @@ preflight_public_toolchain() {
     || release_error "public releases require approved Xcode 26.6 build 17F109 or 17F113"
 }
 
+preflight_component_supply_chain() {
+  # The release workflow emits an immutable unqualified candidate before the SBOM, but the
+  # physical-campaign receipt producer and schema-2 qualification cutover are not complete. Keep
+  # public publication fail-closed; a candidate inventory is launch input, never support evidence.
+  release_error "public component publication is blocked: physical campaign receipts and schema-2 VM qualification are not yet bound to the exact candidate inventory and SBOM"
+}
+
 preflight_public_release() {
   [ "${DORY_PUBLIC_RELEASE:-0}" = "1" ] || return 0
 
@@ -237,6 +244,14 @@ preflight_public_release() {
     || release_error "public full releases advertise the Apple-silicon Venus GPU payload and must bundle it"
   [ "${DORY_BUNDLE_VENUS_REQUIRED:-0}" = "1" ] \
     || release_error "public full releases must fail when the advertised Venus renderer is unavailable"
+  [ -z "${DORY_RENDERER_DEPENDENCY_PREFIX+x}" ] \
+    || release_error "public releases cannot consume an external renderer dependency stage"
+  [ -z "${DORY_RENDERER_DEPENDENCY_INVENTORY+x}" ] \
+    || release_error "public releases cannot consume an external renderer dependency inventory"
+  [ -z "${DORY_RENDERER_LINK_ROOT+x}" ] \
+    || release_error "public releases cannot consume an external renderer link stage"
+  [ -z "${DORY_RENDERER_LINK_INVENTORY+x}" ] \
+    || release_error "public releases cannot consume an external renderer link inventory"
   [ "$SIGN_IDENTITY" != "-" ] \
     || release_error "public releases cannot use ad-hoc signing"
   [ "${DORY_SKIP_NOTARIZE:-0}" != "1" ] \
@@ -245,6 +260,10 @@ preflight_public_release() {
     || release_error "public releases cannot skip signing preflight"
   [ "${DORY_ALLOW_ADHOC_SIGN:-0}" != "1" ] \
     || release_error "public releases cannot allow ad-hoc nested-code fallback"
+  [ "${DORY_RENDERER_ALLOW_ADHOC_TEST:-0}" != "1" ] \
+    || release_error "public releases cannot enable renderer ad-hoc test signing"
+  [ "${DORY_RENDERER_RELEASE_IDENTITY_MODE:-production}" = production ] \
+    || release_error "public releases require the production doryd renderer release identity"
   [ "${DORY_ALLOW_UNVERIFIED_GUEST_ASSETS:-0}" != "1" ] \
     || release_error "public releases cannot use unverified guest assets"
   [ "${DORY_ALLOW_MISSING_HOST_CLI:-0}" != "1" ] \
@@ -287,6 +306,8 @@ preflight_public_release() {
     || release_error "public releases must create the Sparkle signature from the configured private key"
   [ -z "${DORY_SPARKLE_SIGN_UPDATE:-}" ] \
     || release_error "public releases must use sign_update from the release build's pinned Sparkle package"
+
+  preflight_component_supply_chain
 
   scripts/verify-clean-release-source.sh . >/dev/null \
     || release_error "public release source does not exactly match commit $SOURCE_COMMIT"
@@ -464,6 +485,54 @@ preflight_release() {
   fi
 }
 
+prepare_release_renderer_host() {
+  [ "${DORY_BUNDLE_ENGINE:-1}" = "1" ] || return 0
+  [ "${DORY_BUNDLE_VENUS:-1}" = "1" ] || return 0
+
+  local dependency_prefix dependency_inventory link_root link_inventory jobs
+  local fresh_arguments=()
+  dependency_prefix="${DORY_RENDERER_DEPENDENCY_PREFIX:-$BUILD_DIR/renderer-production-dependencies}"
+  dependency_inventory="${DORY_RENDERER_DEPENDENCY_INVENTORY:-$dependency_prefix/renderer-dependencies.json}"
+  link_root="${DORY_RENDERER_LINK_ROOT:-$BUILD_DIR/virglrenderer-static}"
+  link_inventory="${DORY_RENDERER_LINK_INVENTORY:-$link_root/renderer-static-link-inventory.json}"
+  jobs="${DORY_RENDERER_BUILD_JOBS:-3}"
+  if [ "${DORY_PUBLIC_RELEASE:-0}" = 1 ]; then
+    dependency_prefix="$BUILD_DIR/renderer-production-dependencies"
+    dependency_inventory="$dependency_prefix/renderer-dependencies.json"
+    link_root="$BUILD_DIR/virglrenderer-static"
+    link_inventory="$link_root/renderer-static-link-inventory.json"
+    fresh_arguments+=(--fresh)
+  fi
+
+  echo "==> Preparing the exact rendererHost stage before Xcode seals DoryHVRunner.app..."
+  scripts/prepare-renderer-production-host.sh \
+    --dependency-prefix "$dependency_prefix" \
+    --dependency-inventory "$dependency_inventory" \
+    --link-root "$link_root" \
+    --link-inventory "$link_inventory" \
+    --jobs "$jobs" \
+    "${fresh_arguments[@]+"${fresh_arguments[@]}"}"
+  DORY_RENDERER_LINK_ROOT="$link_root"
+  DORY_RENDERER_LINK_INVENTORY="$link_inventory"
+  export DORY_RENDERER_LINK_ROOT DORY_RENDERER_LINK_INVENTORY
+}
+
+renderer_managed_kernel_source() {
+  local candidate
+  for candidate in \
+    "${DORY_RENDERER_MANAGED_KERNEL:-}" \
+    "${DORY_DESKTOP_KERNEL_ARM64:-}" \
+    "${DORY_DESKTOP_KERNEL:-}" \
+    "$REPO_ROOT/guest/out/Image-desktop"; do
+    [ -n "$candidate" ] || continue
+    if [ -f "$candidate" ] && [ ! -L "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
 assert_file_exists() {
   [ -f "$1" ] || release_error "$2 missing: $1"
 }
@@ -536,24 +605,64 @@ stapler_with_retry() {
 }
 
 verify_full_bundle() {
-  local app="$1" helpers resources frameworks launch_agent asset_arch helper cli_version
+  local app="$1" helpers resources launch_agent asset_arch helper cli_version
+  local runner_app runner fs_worker_xpc fs_worker renderer_worker_xpc renderer_worker
+  local renderer_resources renderer_identity_mode renderer_managed_kernel
+  local renderer_release_arguments=()
   helpers="$app/Contents/Helpers"
   resources="$app/Contents/Resources"
-  frameworks="$app/Contents/Frameworks"
   launch_agent="$resources/dev.dory.doryd.plist"
+  runner_app="$helpers/DoryHVRunner.app"
+  runner="$runner_app/Contents/MacOS/dory-hv"
+  fs_worker_xpc="$runner_app/Contents/XPCServices/DoryFSWorker.xpc"
+  fs_worker="$fs_worker_xpc/Contents/MacOS/DoryFSWorker"
+  renderer_worker_xpc="$runner_app/Contents/XPCServices/DoryRendererWorker.xpc"
+  renderer_worker="$renderer_worker_xpc/Contents/MacOS/DoryRendererWorker"
+  renderer_resources="$runner_app/Contents/Resources"
 
   echo "==> Verifying full clean-Mac bundle payload..."
-  for helper in doryd dorydctl dory-vmm dory-network-helper dory-dataplane-proxy dory-hv gvproxy docker docker-buildx docker-compose dory dory-doctor; do
+  for helper in doryd dorydctl dory-vmm dory-network-helper dory-dataplane-proxy gvproxy docker docker-buildx docker-compose dory dory-doctor; do
     assert_executable_exists "$helpers/$helper" "bundled helper"
   done
-  for helper in doryd dorydctl dory-vmm dory-network-helper dory-dataplane-proxy dory-hv; do
+  [ -d "$runner_app" ] && [ ! -L "$runner_app" ] \
+    || release_error "nested DoryHVRunner.app is missing or indirect"
+  [ ! -e "$helpers/dory-hv" ] \
+    || release_error "obsolete parallel Contents/Helpers/dory-hv is present"
+  assert_executable_exists "$runner" "nested DoryHVRunner executable"
+  [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$runner_app/Contents/Info.plist" 2>/dev/null)" = dory-hv ] \
+    || release_error "DoryHVRunner.app CFBundleExecutable is not dory-hv"
+  [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$runner_app/Contents/Info.plist" 2>/dev/null)" = com.pythonxi.Dory.HVRunner ] \
+    || release_error "DoryHVRunner.app bundle identifier is invalid"
+  [ -d "$fs_worker_xpc" ] && [ ! -L "$fs_worker_xpc" ] \
+    || release_error "nested DoryFSWorker.xpc is missing or indirect"
+  [ -d "$renderer_worker_xpc" ] && [ ! -L "$renderer_worker_xpc" ] \
+    || release_error "nested DoryRendererWorker.xpc is missing or indirect"
+  assert_executable_exists "$fs_worker" "nested filesystem worker executable"
+  assert_executable_exists "$renderer_worker" "nested renderer worker executable"
+  [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$fs_worker_xpc/Contents/Info.plist" 2>/dev/null)" = com.pythonxi.Dory.HVRunner.FSWorker ] \
+    || release_error "DoryFSWorker.xpc bundle identifier is invalid"
+  [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$renderer_worker_xpc/Contents/Info.plist" 2>/dev/null)" = com.pythonxi.Dory.HVRunner.RendererWorker ] \
+    || release_error "DoryRendererWorker.xpc bundle identifier is invalid"
+  codesign --verify --strict --verbose=2 "$fs_worker_xpc" \
+    || release_error "DoryFSWorker.xpc signature is invalid"
+  codesign --verify --strict --verbose=2 "$renderer_worker_xpc" \
+    || release_error "DoryRendererWorker.xpc signature is invalid"
+  codesign --verify --deep --strict --verbose=2 "$runner_app" \
+    || release_error "DoryHVRunner.app signature graph is invalid"
+  assert_macho_arches "$runner" "$HELPER_ARCHES"
+  assert_macho_arches "$fs_worker" "$HELPER_ARCHES"
+  assert_macho_arches "$renderer_worker" "$HELPER_ARCHES"
+  for helper in doryd dorydctl dory-vmm dory-network-helper dory-dataplane-proxy; do
     assert_macho_arches "$helpers/$helper" "$HELPER_ARCHES"
   done
   for helper in gvproxy docker docker-buildx docker-compose; do
     assert_macho_arches "$helpers/$helper" "$HOST_CLI_ARCHES"
   done
   scripts/verify-macos-deployment-targets.sh "$app" "$HELPER_ARCHES"
-  for helper in doryd dorydctl dory-vmm dory-network-helper dory-dataplane-proxy dory-hv gvproxy docker docker-buildx docker-compose dory dory-doctor; do
+  verify_developer_id_signature "$fs_worker_xpc"
+  verify_developer_id_signature "$renderer_worker_xpc"
+  verify_developer_id_signature "$runner_app"
+  for helper in doryd dorydctl dory-vmm dory-network-helper dory-dataplane-proxy gvproxy docker docker-buildx docker-compose dory dory-doctor; do
     verify_developer_id_signature "$helpers/$helper"
   done
   cli_version="$("$helpers/dory" version)"
@@ -579,35 +688,54 @@ verify_full_bundle() {
   [ "$(stat -f '%Lp' "$resources/host-cli-provenance.txt")" = 644 ] \
     || release_error "host CLI provenance must use portable mode 0644"
   if [ "${DORY_BUNDLE_VENUS:-1}" = "1" ]; then
-    assert_file_exists "$frameworks/libvirglrenderer.dylib" "patched VirGL/Venus renderer"
-    assert_file_exists "$frameworks/libMoltenVK.dylib" "MoltenVK renderer"
-    assert_file_exists "$resources/vulkan/icd.d/MoltenVK_icd.json" "MoltenVK ICD"
-    assert_file_exists "$resources/virglrenderer-provenance.txt" "VirGL renderer provenance"
-    assert_file_exists "$resources/moltenvk-provenance.txt" "MoltenVK provenance"
-    nm -gU "$frameworks/libvirglrenderer.dylib" \
-      | grep '_dory_virglrenderer_macos_fragment_coord_fix$' >/dev/null \
-      || release_error "bundled VirGL renderer is missing Dory's macOS shader compatibility fix"
-    nm -gU "$frameworks/libvirglrenderer.dylib" \
-      | grep '_dory_virglrenderer_macos_venus_fence_fix$' >/dev/null \
-      || release_error "bundled VirGL renderer is missing Dory's macOS Venus fence fix"
-    nm -gU "$frameworks/libvirglrenderer.dylib" \
-      | grep -E '_virgl_renderer_resource_(get_map_ptr|map)$' >/dev/null \
-      || release_error "bundled VirGL renderer has no host-visible Venus map entry point"
-    nm -gU "$frameworks/libMoltenVK.dylib" \
-      | grep '_dory_moltenvk_spirv_native_array_fix$' >/dev/null \
-      || release_error "bundled MoltenVK is missing Dory's SPIRV native-array fix"
-    otool -L "$frameworks/libvirglrenderer.dylib" \
-      | grep '@loader_path/libMoltenVK\.dylib' >/dev/null \
-      || release_error "bundled VirGL renderer is not linked to its MoltenVK sibling"
-    grep -q '^features=venus,macos-core-shader-compat-v2,macos-venus-fence-callback-v1,moltenvk-native-array-v1$' "$resources/virglrenderer-provenance.txt" \
-      || release_error "VirGL renderer provenance does not declare Dory's shader and fence fixes"
-    grep -q '^features=spirv-native-function-arrays-v1$' "$resources/moltenvk-provenance.txt" \
-      || release_error "MoltenVK provenance does not declare Dory's shader fix"
-    grep -Eq '^bundled_sha256=[0-9a-f]{64}$' "$resources/virglrenderer-provenance.txt" \
-      || release_error "VirGL renderer provenance is missing the bundled dylib digest"
-    verify_developer_id_signature "$frameworks/libvirglrenderer.dylib"
-    verify_developer_id_signature "$frameworks/libMoltenVK.dylib"
+    assert_file_exists "$renderer_resources/renderer-production-inventory.json" \
+      "static dual VirGL2 + Venus renderer inventory"
+    renderer_managed_kernel="$(renderer_managed_kernel_source)" \
+      || release_error "exact managed desktop kernel is unavailable for renderer verification"
+    [ "${DORY_PUBLIC_RELEASE:-0}" != 1 ] \
+      || renderer_release_arguments+=(--require-release-signature)
+    local renderer_expected_team="$TEAM"
+    local renderer_adhoc_arguments=()
+    if [ "$SIGN_IDENTITY" = "-" ]; then
+      renderer_expected_team=-
+      [ "${DORY_RENDERER_ALLOW_ADHOC_TEST:-0}" = 1 ] \
+        || release_error "ad-hoc renderer verification requires DORY_RENDERER_ALLOW_ADHOC_TEST=1"
+      renderer_adhoc_arguments+=(--allow-adhoc-test)
+    fi
+    python3 "$REPO_ROOT/scripts/package-renderer-production-bundle.py" verify \
+      --runner-app "$runner_app" \
+      --outer-app "$app" \
+      --expected-team "$renderer_expected_team" \
+      --managed-kernel "$renderer_managed_kernel" \
+      "${renderer_adhoc_arguments[@]+"${renderer_adhoc_arguments[@]}"}" \
+      "${renderer_release_arguments[@]+"${renderer_release_arguments[@]}"}" \
+      || release_error "static dual-renderer runner or outer application signature graph is invalid"
   fi
+  renderer_identity_mode="${DORY_RENDERER_RELEASE_IDENTITY_MODE:-}"
+  if [ -z "$renderer_identity_mode" ]; then
+    if [ "${DORY_PUBLIC_RELEASE:-0}" = 1 ]; then
+      renderer_identity_mode=production
+    else
+      renderer_identity_mode=disabled
+    fi
+  fi
+  case "$renderer_identity_mode" in
+    production)
+      [ "${DORY_BUNDLE_VENUS:-1}" = 1 ] \
+        || release_error "production renderer release identity exists without the dual renderer worker"
+      python3 "$REPO_ROOT/scripts/renderer-release-identity.py" verify \
+        --runner-app "$runner_app" \
+        --doryd "$helpers/doryd" \
+        --expected-team "$TEAM" \
+        || release_error "final doryd renderer release identity is invalid"
+      ;;
+    disabled)
+      python3 "$REPO_ROOT/scripts/renderer-release-identity.py" verify-absent \
+        --doryd "$helpers/doryd" \
+        || release_error "non-production doryd fabricated renderer release identity"
+      ;;
+    *) release_error "unsupported renderer release identity mode: $renderer_identity_mode" ;;
+  esac
   assert_file_exists "$resources/dory-payload-sha256.txt" "payload digest inventory"
   assert_file_exists "$launch_agent" "bundled launchd plist"
   plutil -lint "$launch_agent" >/dev/null
@@ -685,7 +813,7 @@ sign_app() {
 PLIST
   fi
   # NOT --deep: bundle-engine.sh already signed nested helpers with their own entitlements
-  # (dory-hv needs com.apple.security.hypervisor, dory-vmm needs virtualization), and --deep
+  # (DoryHVRunner needs com.apple.security.hypervisor, dory-vmm needs virtualization), and --deep
   # would re-sign them without those entitlements.
   codesign --force --options runtime --timestamp --entitlements "$entitlements" --sign "$SIGN_IDENTITY" "$app"
 }
@@ -717,7 +845,13 @@ verify_dmg_signature() {
 }
 
 archive_variant() {
-  local variant="$1" archive="$2"
+  local variant="$1" archive="$2" managed_kernel managed_kernel_sha256
+  if [ "${DORY_BUNDLE_VENUS:-1}" = 1 ] && [ "$XCODE_ARCHS" != arm64 ]; then
+    release_error "the production renderer tuple is exactly arm64; disable Venus for non-arm64 release variants"
+  fi
+  managed_kernel="$(renderer_managed_kernel_source)" \
+    || release_error "the exact managed desktop kernel must exist before renderer packaging"
+  managed_kernel_sha256="$(sha256_file "$managed_kernel")"
   echo "==> Archiving + signing Dory $VERSION $variant (Developer ID, team $TEAM, archs: $XCODE_ARCHS)..."
   xcodebuild -project Dory.xcodeproj -scheme Dory -configuration Release -scmProvider system \
     -destination 'generic/platform=macOS' -derivedDataPath "$DERIVED_DATA_DIR" -archivePath "$archive" \
@@ -727,7 +861,14 @@ archive_variant() {
     CURRENT_PROJECT_VERSION="$BUILD" \
     CODE_SIGN_STYLE=Manual \
     CODE_SIGN_IDENTITY="$SIGN_IDENTITY" \
+    OTHER_CODE_SIGN_FLAGS=--timestamp \
     DEVELOPMENT_TEAM="$TEAM" \
+    DORY_BUNDLE_VENUS="${DORY_BUNDLE_VENUS:-1}" \
+    DORY_BUNDLE_VENUS_REQUIRED="${DORY_BUNDLE_VENUS_REQUIRED:-0}" \
+    DORY_RENDERER_LINK_ROOT="${DORY_RENDERER_LINK_ROOT:-}" \
+    DORY_RENDERER_LINK_INVENTORY="${DORY_RENDERER_LINK_INVENTORY:-}" \
+    DORY_RENDERER_MANAGED_KERNEL="$managed_kernel" \
+    DORY_RENDERER_MANAGED_KERNEL_SHA256="$managed_kernel_sha256" \
     archive
 }
 
@@ -861,6 +1002,10 @@ if [ "${DORY_RELEASE_RESUME_ACCEPTED_DESKTOP:-0}" != "1" ]; then
 fi
 mkdir -p "$BUILD_DIR"
 
+if [ "${DORY_RELEASE_RESUME_ACCEPTED_DESKTOP:-0}" != "1" ]; then
+  prepare_release_renderer_host
+fi
+
 ZIPS=()
 DMGS=()
 FIRST_ARCHIVE=""
@@ -874,6 +1019,7 @@ ARM64_DMG=""
 DESKTOP_APP=""
 DESKTOP_ZIP=""
 DESKTOP_DMG=""
+COMPONENT_CANDIDATE_DIR="$BUILD_DIR/component-candidate/arm64"
 COMPONENT_OUTPUT_DIR="$BUILD_DIR/components/arm64"
 COMPONENT_INPUT_DIR="$BUILD_DIR/component-inputs"
 COMPONENT_KUBECTL="$COMPONENT_INPUT_DIR/kubectl"
@@ -980,31 +1126,29 @@ for requested in $RELEASE_VARIANTS; do
   if [ "$VARIANT" = arm64 ] \
     && [ "${DORY_BUNDLE_ENGINE:-1}" = "1" ] \
     && [ "${DORY_BUILD_COMPONENTS:-1}" = "1" ]; then
-    [ -f "$DMG" ] || release_error "focused component catalog requires the Core DMG"
+    [ -f "$DMG" ] || release_error "component candidate assembly requires the Core DMG"
     assert_executable_exists "$COMPONENT_KUBECTL" "exported Kubernetes component"
     assert_file_exists "$COMPONENT_KUBECTL_PROVENANCE" "Kubernetes component provenance"
     assert_macho_arches "$COMPONENT_KUBECTL" arm64
     verify_developer_id_signature "$COMPONENT_KUBECTL"
-    echo "==> Building signed focused component catalog..."
-    scripts/build-components.py \
+    echo "==> Assembling immutable unqualified component candidate..."
+    scripts/build-components.py assemble \
       --version "$VERSION" \
       --minimum-app-version "$VERSION" \
       --core-artifact "$DMG" \
       --core-app "$APP" \
       --kubectl "$COMPONENT_KUBECTL" \
-      --output "$COMPONENT_OUTPUT_DIR" \
-      --asset-base-url "https://github.com/Augani/dory/releases/download/v$VERSION" \
-      --signer "$DORY_SPARKLE_SIGN_UPDATE"
-    assert_file_exists "$COMPONENT_OUTPUT_DIR/catalog.json" "component catalog"
-    assert_file_exists "$COMPONENT_OUTPUT_DIR/catalog.json.sig" "component catalog signature"
-    assert_file_exists "$COMPONENT_OUTPUT_DIR/catalog.json.sha256" "component catalog digest"
-    mkdir -p website/public/components/arm64
-    cp "$COMPONENT_OUTPUT_DIR/catalog.json" website/public/components/arm64/catalog.json
-    cp "$COMPONENT_OUTPUT_DIR/catalog.json.sig" website/public/components/arm64/catalog.json.sig
-    cp "$COMPONENT_OUTPUT_DIR/catalog.json.sha256" website/public/components/arm64/catalog.json.sha256
+      --output "$COMPONENT_CANDIDATE_DIR" \
+      --asset-base-url "https://github.com/Augani/dory/releases/download/v$VERSION"
+    assert_file_exists "$COMPONENT_CANDIDATE_DIR/component-candidate-inventory.json" \
+      "component candidate inventory"
+    assert_file_exists "$COMPONENT_CANDIDATE_DIR/component-candidate-inventory.json.sha256" \
+      "component candidate inventory digest"
+    [ ! -e "$COMPONENT_CANDIDATE_DIR/catalog.json" ] \
+      || release_error "unqualified component candidate unexpectedly contains a support catalog"
     while IFS= read -r component_asset; do
       COMPONENT_ASSETS+=("$component_asset")
-    done < <(find "$COMPONENT_OUTPUT_DIR" -maxdepth 1 -type f -print | LC_ALL=C sort)
+    done < <(find "$COMPONENT_CANDIDATE_DIR" -maxdepth 1 -type f -print | LC_ALL=C sort)
   fi
   ZIPS+=("$ZIP")
   [ -f "$DMG" ] && DMGS+=("$DMG")
@@ -1145,7 +1289,7 @@ if [ "${DORY_BUNDLE_ENGINE:-1}" = "1" ] && [ "${DORY_BUILD_RUNTIME:-1}" = "1" ] 
   RUNTIME_DIR="$BUILD_DIR/runtime/$RUNTIME_NAME"
   rm -rf "$BUILD_DIR/runtime"
   mkdir -p "$RUNTIME_DIR/bin" "$RUNTIME_DIR/share/dory"
-  cp "$ARM64_APP/Contents/Helpers/dory-hv" "$RUNTIME_DIR/bin/"
+  cp "$ARM64_APP/Contents/Helpers/DoryHVRunner.app/Contents/MacOS/dory-hv" "$RUNTIME_DIR/bin/"
   cp "$ARM64_APP/Contents/Helpers/gvproxy" "$RUNTIME_DIR/bin/"
   cp "$ARM64_APP/Contents/Helpers/dory-dataplane-proxy" "$RUNTIME_DIR/bin/"
   cp "$ARM64_APP/Contents/Resources/dory-hv-kernel-arm64.lzfse" "$RUNTIME_DIR/share/dory/"
@@ -1280,9 +1424,12 @@ if [ -n "${GITHUB_OUTPUT:-}" ]; then
     echo "manifest=$MANIFEST"
     echo "appcast=$APPCAST"
     echo "desktop_appcast=$DESKTOP_APPCAST"
+    echo "component_candidate_inventory=$(path_if_exists "$COMPONENT_CANDIDATE_DIR/component-candidate-inventory.json")"
+    echo "component_candidate_inventory_digest=$(path_if_exists "$COMPONENT_CANDIDATE_DIR/component-candidate-inventory.json.sha256")"
+    echo "component_candidate_directory=$COMPONENT_CANDIDATE_DIR"
     echo "component_catalog=$(path_if_exists "$COMPONENT_OUTPUT_DIR/catalog.json")"
     echo "component_catalog_signature=$(path_if_exists "$COMPONENT_OUTPUT_DIR/catalog.json.sig")"
-    echo "component_directory=$COMPONENT_OUTPUT_DIR"
+    echo "component_directory=$([ -d "$COMPONENT_OUTPUT_DIR" ] && printf '%s' "$COMPONENT_OUTPUT_DIR")"
     echo "appcast_zip=$APPCAST_ZIP"
     echo "zip_arm64=$(path_if_exists "$BUILD_DIR/Dory-$VERSION-arm64.zip")"
     echo "zip_x86_64=$(path_if_exists "$BUILD_DIR/Dory-$VERSION-x86_64.zip")"

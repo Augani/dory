@@ -153,7 +153,7 @@ def main() -> None:
         "app_executable_sha256": args.app / "Contents/MacOS/Dory",
         "docker_sha256": args.app / "Contents/Helpers/docker",
         "doryd_sha256": args.app / "Contents/Helpers/doryd",
-        "dory_hv_sha256": args.app / "Contents/Helpers/dory-hv",
+        "dory_hv_sha256": args.app / "Contents/Helpers/DoryHVRunner.app/Contents/MacOS/dory-hv",
         "dorydctl_sha256": args.app / "Contents/Helpers/dorydctl",
         "machine_kernel_sha256": args.app / "Contents/Resources/dory-hv-kernel-arm64",
         "machine_rootfs_sha256": args.app / "Contents/Resources/dory-machine-rootfs-arm64.ext4",

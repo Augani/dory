@@ -1169,6 +1169,18 @@ scripts/dory help | grep -q "dory mcp serve"
 scripts/dory help | grep -q "dory sandbox run"
 scripts/dory help | grep -q "dory wait engine"
 scripts/dory help | grep -q "dory events"
+! scripts/dory help | grep -q "dory vm"
+
+set +e
+vm_output="$(scripts/dory vm --rosetta 2>&1)"
+vm_status=$?
+set -e
+[ "$vm_status" -eq 64 ] || {
+  echo "dory vm did not fail closed with EX_USAGE" >&2
+  exit 1
+}
+printf '%s\n' "$vm_output" | grep -Fq "does not run Intel Linux ISOs on Apple Silicon"
+printf '%s\n' "$vm_output" | grep -Fq "not whole-system emulation"
 
 mcp_list="$(printf '%s\n%s\n%s\n' \
   '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}' \

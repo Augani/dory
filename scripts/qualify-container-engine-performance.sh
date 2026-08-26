@@ -1,7 +1,8 @@
 #!/bin/bash
-# Destructive clean-account exact-candidate performance campaign. Runs isolated/default and
-# matched/interleaved comparisons, verifies every raw result, cleans all selected engine state, and
-# produces the stable release evidence ZIP described by PERFORMANCE_QUALIFICATION.md.
+# Destructive clean-account exact-candidate container-engine performance campaign. Runs
+# isolated/default and matched/interleaved comparisons, verifies every raw result, cleans all
+# selected engine state, and produces the stable release evidence ZIP described by
+# docs/container-engine-performance-qualification.md. This does not qualify a full Linux VM.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -9,7 +10,7 @@ CANDIDATE_DIR=""
 VERSION=""
 BUILD=""
 SOURCE_COMMIT=""
-WORKROOT="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/dory-release-performance"
+WORKROOT="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/dory-container-engine-performance"
 ALPINE_IMAGE="${DORY_BENCH_ALPINE_IMAGE:-}"
 IPERF_IMAGE="${DORY_BENCH_IPERF_IMAGE:-}"
 NODE_IMAGE="${DORY_BENCH_NODE_IMAGE:-}"
@@ -28,7 +29,7 @@ CONFIRM=""
 
 usage() {
   cat <<'EOF'
-Usage: scripts/qualify-release-performance.sh [required options]
+Usage: scripts/qualify-container-engine-performance.sh [required options]
 
 Candidate:
   --candidate-dir DIR      Downloaded immutable release artifacts
@@ -60,11 +61,13 @@ Safety and output:
 Live execution also requires DORY_RELEASE_CLEAN_USER=1 and DORY_RELEASE_BENCHMARK_USER=1. It must
 run in a dedicated physical Apple-silicon account with no Dory, OrbStack, or Colima state. It
 installs and completely purges OrbStack and Colima, deletes all Dory benchmark state, and restores
-the prior Docker context. The retained output is Dory-VERSION-performance-evidence.zip.
+the prior Docker context. The retained output is
+Dory-VERSION-container-engine-performance-evidence.zip. It cannot authorize Linux VM support or
+whole-VM performance claims.
 EOF
 }
 
-die() { echo "release performance qualification: $*" >&2; exit 2; }
+die() { echo "container-engine performance qualification: $*" >&2; exit 2; }
 need_value() { [ "$2" -ge 2 ] || die "$1 requires a value"; }
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -130,8 +133,8 @@ case "$WORKROOT" in /*) ;; *) die "workroot must be absolute" ;; esac
 case "$WORKROOT" in *[[:space:]]*) die "workroot must not contain whitespace" ;; esac
 WORKROOT_PARENT="$(dirname "$WORKROOT")"
 WORKROOT_NAME="$(basename "$WORKROOT")"
-[ "$WORKROOT_NAME" = dory-release-performance ] \
-  || die "workroot must use the dedicated dory-release-performance name"
+[ "$WORKROOT_NAME" = dory-container-engine-performance ] \
+  || die "workroot must use the dedicated dory-container-engine-performance name"
 [ -d "$WORKROOT_PARENT" ] && [ ! -L "$WORKROOT_PARENT" ] \
   || die "workroot parent must be a direct directory"
 WORKROOT_PARENT="$(cd "$WORKROOT_PARENT" && pwd -P)"
@@ -390,7 +393,7 @@ def output(*command):
     return subprocess.check_output(command, text=True).strip()
 manifest = {
     "schemaVersion": 1,
-    "kind": "dev.dory.performance-qualification",
+    "kind": "dev.dory.container-engine-performance-qualification",
     "status": "PASS",
     "releaseQualifying": True,
     "candidate": {
@@ -419,24 +422,25 @@ manifest = {
     "startedUTC": started,
     "finishedUTC": finished,
     "cleanup": "PASS",
-    "methodology": "PERFORMANCE_QUALIFICATION.md",
+    "methodology": "container-engine-performance-qualification.md",
 }
 with open(path, "w", encoding="utf-8") as handle:
     json.dump(manifest, handle, indent=2, sort_keys=True)
     handle.write("\n")
 PY
 
-cp "$ROOT/PERFORMANCE_QUALIFICATION.md" "$WORKROOT/package/"
+cp "$ROOT/docs/container-engine-performance-qualification.md" "$WORKROOT/package/"
 cp "$WORKROOT/logs/"*.log "$RAW/"
 (cd "$WORKROOT/package" && find . -type f ! -name sha256.txt -print | LC_ALL=C sort \
   | while IFS= read -r path; do shasum -a 256 "${path#./}"; done > sha256.txt)
 (cd "$WORKROOT/package" && shasum -a 256 -c sha256.txt)
-PACKAGE_NAME="Dory-$VERSION-performance-evidence"
+PACKAGE_NAME="Dory-$VERSION-container-engine-performance-evidence"
 PACKAGE_ROOT="$WORKROOT/$PACKAGE_NAME"
 mv "$WORKROOT/package" "$PACKAGE_ROOT"
 OUTPUT="$WORKROOT/$PACKAGE_NAME.zip"
 (cd "$WORKROOT" && zip -X -q -r "$OUTPUT" "$PACKAGE_NAME")
 unzip -t "$OUTPUT" >/dev/null
 OUTPUT_SHA="$(shasum -a 256 "$OUTPUT" | awk '{print $1}')"
-printf 'performance_evidence=%s\nperformance_evidence_sha256=%s\n' "$OUTPUT" "$OUTPUT_SHA"
-echo "release performance qualification PASS: $OUTPUT"
+printf 'container_engine_performance_evidence=%s\ncontainer_engine_performance_evidence_sha256=%s\n' \
+  "$OUTPUT" "$OUTPUT_SHA"
+echo "container-engine performance qualification PASS: $OUTPUT"
