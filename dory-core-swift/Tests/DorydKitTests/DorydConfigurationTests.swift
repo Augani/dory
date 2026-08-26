@@ -1114,6 +1114,39 @@ final class DorydConfigurationTests: XCTestCase {
         XCTAssertEqual(env.machineManagerConfiguration()?.stateDirectory, canonicalDrive + "/machines")
     }
 
+    func testDataDriveConfigurationResumesInterruptedFirstLaunchSelection() throws {
+        let directory = "/tmp/doryd-provisioning-drive-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let home = directory + "/home"
+        try FileManager.default.createDirectory(atPath: home, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        let store = try DoryDataDriveSelectionStore(home: home)
+        let drive = try DoryDataDrive(home: home)
+        let driveID = UUID()
+        try FileManager.default.createDirectory(
+            atPath: URL(fileURLWithPath: store.path).deletingLastPathComponent().path,
+            withIntermediateDirectories: true
+        )
+        let selection = """
+        {
+          "canonicalPath" : "\(drive.root.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\""))",
+          "driveID" : "\(driveID.uuidString)",
+          "phase" : "provisioning",
+          "schemaVersion" : 2,
+          "selectedAt" : "2026-08-26T00:00:00.000Z"
+        }
+        """
+        try Data(selection.utf8).write(to: URL(fileURLWithPath: store.path))
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: store.path)
+
+        let environment = DorydEnvironment(values: ["DORYD_HOME": home], cwd: directory)
+        let configured = try environment.dataDriveConfiguration()
+        XCTAssertEqual(configured.root, drive.root)
+
+        let resumed = try store.prepareSelection(requestedRoot: configured.root)
+        XCTAssertEqual(try resumed.readManifest().id, driveID)
+        XCTAssertEqual(try store.read()?.phase, .ready)
+    }
+
     private func executableFixture(at path: String) throws -> String {
         try FileManager.default.createDirectory(
             atPath: URL(fileURLWithPath: path).deletingLastPathComponent().path,

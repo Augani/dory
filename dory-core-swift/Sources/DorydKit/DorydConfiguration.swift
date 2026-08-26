@@ -363,9 +363,24 @@ public struct DorydEnvironment: Sendable {
 
     public func dataDriveConfiguration() throws -> DoryDataDrive {
         let explicit = string("DORYD_DATA_DRIVE") ?? string("DORY_DATA_DRIVE")
-        let selected = explicit == nil
-            ? try DoryDataDriveSelectionStore(home: home).selectedPath()
-            : nil
+        let selected: String?
+        if explicit == nil {
+            do {
+                selected = try DoryDataDriveSelectionStore(home: home).selectedPath()
+            } catch let error as DoryDataDriveSelectionError {
+                switch error {
+                case .provisioningIncomplete(let path, _):
+                    // doryd is the selected-drive lifecycle owner. Passing the recorded path into
+                    // prepareSelection lets its UUID-bound transaction finish after an interrupted
+                    // first launch; every other selection failure remains fail-closed.
+                    selected = path
+                default:
+                    throw error
+                }
+            }
+        } else {
+            selected = nil
+        }
         return try DoryDataDrive(
             home: home,
             overrideRoot: explicit ?? selected
