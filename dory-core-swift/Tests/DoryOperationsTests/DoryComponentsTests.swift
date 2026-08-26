@@ -595,6 +595,29 @@ final class DoryComponentsTests: XCTestCase {
         XCTAssertNil(fixture.store.assetPath(component: .linuxMachines, path: component.assets[0].path))
     }
 
+    func testListTreatsExplicitOptionalAppPayloadsAsBundled() throws {
+        let fixture = try Fixture(name: "explicit-bundled-components")
+        defer { fixture.cleanup() }
+        let runtime = release(id: .linuxDesktop, data: Data("desktop-kernel".utf8))
+        let ubuntu = release(id: .desktopUbuntu, data: Data("ubuntu-rootfs".utf8))
+        let componentCatalog = catalog(components: [core(), runtime, ubuntu])
+
+        let statuses = fixture.store.list(
+            catalog: componentCatalog,
+            bundledComponents: [.dockerCore, .linuxDesktop, .desktopUbuntu],
+            bundledVersion: "0.4.6"
+        )
+
+        XCTAssertEqual(statuses.first(where: { $0.id == .dockerCore })?.state, .bundled)
+        XCTAssertEqual(statuses.first(where: { $0.id == .linuxDesktop })?.state, .bundled)
+        XCTAssertEqual(statuses.first(where: { $0.id == .desktopUbuntu })?.state, .bundled)
+        XCTAssertEqual(
+            statuses.first(where: { $0.id == .desktopUbuntu })?.installedVersion,
+            "0.4.6"
+        )
+        XCTAssertNil(try fixture.store.installedComponent(.desktopUbuntu))
+    }
+
     func testCorruptComponentRecordsCanBeRepairedAndRemoved() throws {
         let fixture = try Fixture(name: "corrupt-record-recovery")
         defer { fixture.cleanup() }

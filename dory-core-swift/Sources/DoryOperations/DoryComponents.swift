@@ -792,14 +792,28 @@ public struct DoryComponentStore: Sendable {
         catalog: DoryComponentCatalog,
         catalogDigest expectedCatalogDigest: String? = nil
     ) -> [DoryComponentStatus] {
+        list(
+            catalog: catalog,
+            catalogDigest: expectedCatalogDigest,
+            bundledComponents: [.dockerCore],
+            bundledVersion: nil
+        )
+    }
+
+    public func list(
+        catalog: DoryComponentCatalog,
+        catalogDigest expectedCatalogDigest: String? = nil,
+        bundledComponents: Set<DoryComponentID>,
+        bundledVersion: String?
+    ) -> [DoryComponentStatus] {
         catalog.components.map { release in
-            if release.id == .dockerCore {
+            if bundledComponents.contains(release.id) {
                 return DoryComponentStatus(
                     id: release.id,
                     displayName: release.displayName,
                     summary: release.summary,
                     availableVersion: release.version,
-                    installedVersion: release.version,
+                    installedVersion: bundledVersion ?? release.version,
                     installationOperationID: nil,
                     state: .bundled,
                     downloadBytes: release.downloadBytes,

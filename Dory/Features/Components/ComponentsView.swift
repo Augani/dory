@@ -308,7 +308,7 @@ struct ComponentsView: View {
         case .notInstalled: p.text3
         }
         let label: String = switch state {
-        case .bundled: "Core"
+        case .bundled: "Included"
         case .installed: "Installed"
         case .updateAvailable: "Update"
         case .invalid: "Repair"
@@ -407,7 +407,9 @@ struct ComponentsView: View {
             catalogData = loadedData
             statuses = store.list(
                 catalog: loadedCatalog,
-                catalogDigest: DoryComponentCatalogVerifier.digest(loadedData)
+                catalogDigest: DoryComponentCatalogVerifier.digest(loadedData),
+                bundledComponents: AppInfo.bundledComponents,
+                bundledVersion: AppInfo.version
             )
             usingCachedCatalog = cached
             errorMessage = nil
@@ -418,6 +420,7 @@ struct ComponentsView: View {
 
     @MainActor @discardableResult
     private func install(_ id: DoryComponentID, showSuccess: Bool = true) async -> Bool {
+        if AppInfo.bundledComponents.contains(id) { return true }
         guard let catalog, !catalogData.isEmpty else { return false }
         let operationID = UUID()
         var affectedComponents: Set<DoryComponentID> = [id]
@@ -467,7 +470,12 @@ struct ComponentsView: View {
                 affectedBy: activatedComponents,
                 operationID: operationID
             )
-            statuses = store.list(catalog: catalog, catalogDigest: digest)
+            statuses = store.list(
+                catalog: catalog,
+                catalogDigest: digest,
+                bundledComponents: AppInfo.bundledComponents,
+                bundledVersion: AppInfo.version
+            )
             HostDockerCLI.reconcileOptionalTools(enabled: appStore.routeDockerCLI)
             if showSuccess {
                 let updated = desktopUpdates.isEmpty
@@ -507,7 +515,9 @@ struct ComponentsView: View {
             if let catalog {
                 statuses = store.list(
                     catalog: catalog,
-                    catalogDigest: DoryComponentCatalogVerifier.digest(catalogData)
+                    catalogDigest: DoryComponentCatalogVerifier.digest(catalogData),
+                    bundledComponents: AppInfo.bundledComponents,
+                    bundledVersion: AppInfo.version
                 )
             }
             appStore.showSettingsSuccess("\(displayName(id)) passed verification.")
@@ -525,7 +535,9 @@ struct ComponentsView: View {
             try store.remove(id, catalog: catalog)
             statuses = store.list(
                 catalog: catalog,
-                catalogDigest: DoryComponentCatalogVerifier.digest(catalogData)
+                catalogDigest: DoryComponentCatalogVerifier.digest(catalogData),
+                bundledComponents: AppInfo.bundledComponents,
+                bundledVersion: AppInfo.version
             )
             HostDockerCLI.reconcileOptionalTools(enabled: appStore.routeDockerCLI)
             appStore.showSettingsSuccess("Removed \(displayName(id)). Your workload data was preserved.")
@@ -541,7 +553,9 @@ struct ComponentsView: View {
         var visited: Set<DoryComponentID> = []
         var ordered: [DoryComponentRelease] = []
         func append(_ current: DoryComponentID) throws {
-            guard current != .dockerCore, !visited.contains(current) else { return }
+            guard !AppInfo.bundledComponents.contains(current), !visited.contains(current) else {
+                return
+            }
             guard let release = catalog.component(current) else {
                 throw DoryComponentError.unknownComponent(current.rawValue)
             }
