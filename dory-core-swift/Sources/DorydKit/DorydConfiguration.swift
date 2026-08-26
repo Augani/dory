@@ -328,6 +328,8 @@ public struct DorydEnvironment: Sendable {
             acceleratedDesktopExecutablePath: acceleratedDesktop?.executablePath,
             stateDirectory: stateDirectory,
             runtimeDirectory: string("DORYD_MACHINE_RUNTIME_DIR") ?? "\(home)/.dory/machines",
+            lifecycleJournalHome: string("DORYD_MACHINE_LIFECYCLE_JOURNAL_DIR")
+                ?? "\(stateDirectory)/.lifecycle-journal",
             baseArguments: baseArguments,
             acceleratedDesktopBaseArguments: acceleratedDesktop?.arguments ?? [],
             passMachineArguments: bool("DORYD_VMM_PASS_MACHINE_ARGS", default: true),
@@ -517,7 +519,7 @@ public struct DorydEnvironment: Sendable {
         if let sshAuthSock = string("DORYD_SSH_AUTH_SOCK"), sshAuthSock.hasPrefix("/") {
             arguments.append(contentsOf: ["--ssh-agent-socket", sshAuthSock])
         }
-        if bool("DORYD_SHARE_HOME", default: true) {
+        if bool("DORYD_SHARE_HOME", default: false) {
             let homeShare = DoryMachineShareConfiguration(
                 tag: "home",
                 hostPath: home,
@@ -571,7 +573,7 @@ public struct DorydEnvironment: Sendable {
         // Mounted drives are part of the default Docker bind-mount contract even when sharing the
         // user's home has been disabled explicitly.
         var shares = ["volumes=/Volumes:rw:at=/Volumes:safe"]
-        if bool("DORYD_SHARE_HOME", default: true) {
+        if bool("DORYD_SHARE_HOME", default: false) {
             shares.insert("home=\(home):rw:at=\(home):safe", at: 0)
         }
         return shares

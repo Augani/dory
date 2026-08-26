@@ -122,7 +122,7 @@ struct NewMachineSettingsTests {
             inputEnabled: true,
             outputEnabled: true
         ))
-        #expect(s.virtualMachineSettings?.intelApplicationTranslationEnabled == false)
+        #expect(s.virtualMachineSettings?.intelApplicationTranslationEnabled == nil)
         #expect(s.ports.isEmpty)
     }
 
@@ -197,22 +197,20 @@ struct NewMachineSettingsTests {
         ))
     }
 
-    @Test func desktopIntelApplicationTranslationIsExplicitTypedIntent() {
-        let enabled = NewMachineSheet.buildSettings(
+    @Test func newMachinesDoNotRequestUnsupportedIntelApplicationTranslation() {
+        let desktop = NewMachineSheet.buildSettings(
             cpus: 4,
             memoryGB: 4,
-            mounts: [],
-            intelApplicationTranslationEnabled: true
+            mounts: []
         )
-        #expect(enabled.env.isEmpty)
-        #expect(enabled.virtualMachineSettings?.intelApplicationTranslationEnabled == true)
+        #expect(desktop.env.isEmpty)
+        #expect(desktop.virtualMachineSettings?.intelApplicationTranslationEnabled == nil)
 
         let headless = NewMachineSheet.buildSettings(
             cpus: 2,
             memoryGB: 2,
             mounts: [],
-            displayMode: .headless,
-            intelApplicationTranslationEnabled: true
+            displayMode: .headless
         )
         #expect(headless.virtualMachineSettings?.intelApplicationTranslationEnabled == nil)
     }

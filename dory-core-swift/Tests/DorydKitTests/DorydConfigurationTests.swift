@@ -375,8 +375,19 @@ final class DorydConfigurationTests: XCTestCase {
         XCTAssertArgumentPair(hv.arguments, "--gvproxy", helpers + "/gvproxy")
         XCTAssertArgumentPair(hv.arguments, "--guest-agent", guestAgent)
         XCTAssertFalse(hv.arguments.contains("--amd64"), "amd64 emulation must remain an explicit Settings opt-in")
-        XCTAssertArgumentPair(hv.arguments, "--share", "home=\(directory)/home:rw:at=\(directory)/home:safe")
+        XCTAssertFalse(hv.arguments.contains("home=\(directory)/home:rw:at=\(directory)/home:safe"))
         XCTAssertArgumentPair(hv.arguments, "--share", "volumes=/Volumes:rw:at=/Volumes:safe")
+
+        var homeSharingEnvironment = env
+        homeSharingEnvironment.values["DORYD_SHARE_HOME"] = "1"
+        let homeSharingHV = try XCTUnwrap(
+            homeSharingEnvironment.dockerTierConfiguration()?.hvProcess
+        )
+        XCTAssertArgumentPair(
+            homeSharingHV.arguments,
+            "--share",
+            "home=\(directory)/home:rw:at=\(directory)/home:safe"
+        )
     }
 
     func testDockerTierPreparesCompressedHeadlessKernelWhenRawKernelIsNotBundled() throws {
@@ -833,15 +844,13 @@ final class DorydConfigurationTests: XCTestCase {
             "--ssh-agent-socket",
             "/private/tmp/com.apple.launchd.fixture/Listeners"
         )
-        XCTAssertArgumentPair(
-            vmm.arguments,
-            "--share",
+        XCTAssertFalse(vmm.arguments.contains(
             DoryMachineShareConfiguration(
                 tag: "home",
                 hostPath: directory + "/home",
                 guestPath: directory + "/home"
             ).argumentValue
-        )
+        ))
         XCTAssertArgumentPair(
             vmm.arguments,
             "--share",
@@ -853,6 +862,21 @@ final class DorydConfigurationTests: XCTestCase {
         )
         XCTAssertArgumentPair(vmm.arguments, "--cmdline", "console=hvc0 root=/dev/vda rw rootwait panic=1 dory.machine_id=docker dory.home=\(directory)/home")
         XCTAssertEqual(FileManager.default.contents(atPath: preparedRootfs), Data("vmm-rootfs-fixture".utf8))
+
+        var homeSharingEnvironment = env
+        homeSharingEnvironment.values["DORYD_SHARE_HOME"] = "1"
+        let homeSharingVMM = try XCTUnwrap(
+            homeSharingEnvironment.dockerTierConfiguration()?.vmmProcess
+        )
+        XCTAssertArgumentPair(
+            homeSharingVMM.arguments,
+            "--share",
+            DoryMachineShareConfiguration(
+                tag: "home",
+                hostPath: directory + "/home",
+                guestPath: directory + "/home"
+            ).argumentValue
+        )
 
         // Sonoma uses this writable VZ rootfs path. A new bundle identity must replace the old
         // system image while the same identity remains persistent between launches.
@@ -960,6 +984,7 @@ final class DorydConfigurationTests: XCTestCase {
             vmmExecutablePath: helper,
             stateDirectory: directory + "/machines",
             runtimeDirectory: directory + "/home/.dory/machines",
+            lifecycleJournalHome: directory + "/machines/.lifecycle-journal",
             baseArguments: ["--foreground", "--verbose"],
             passMachineArguments: false,
             logDirectory: directory + "/logs",
@@ -978,12 +1003,16 @@ final class DorydConfigurationTests: XCTestCase {
         ], cwd: directory)
 
         let config = try XCTUnwrap(env.machineManagerConfiguration())
+        let canonicalDirectory = try DoryDataDrive.canonicalPath(directory)
+        let canonicalMachineState = canonicalDirectory
+            + "/home/Library/Application Support/Dory/Dory.dorydrive/machines"
         XCTAssertEqual(config.vmmExecutablePath, helper)
         XCTAssertEqual(config.runtimeDirectory, directory + "/home/.dory/machines")
         XCTAssertEqual(
-            config.stateDirectory,
-            directory + "/home/Library/Application Support/Dory/Dory.dorydrive/machines"
+            config.lifecycleJournalHome,
+            canonicalMachineState + "/.lifecycle-journal"
         )
+        XCTAssertEqual(config.stateDirectory, canonicalMachineState)
         XCTAssertTrue(config.requiresReadyHandoff)
     }
 
@@ -1040,6 +1069,8 @@ final class DorydConfigurationTests: XCTestCase {
         FileManager.default.createFile(atPath: kernel, contents: Data())
         let home = directory + "/home"
         let drive = home + "/Library/Application Support/Dory/External.dorydrive"
+        let canonicalDrive = try DoryDataDrive.canonicalPath(directory)
+            + "/home/Library/Application Support/Dory/External.dorydrive"
         let env = DorydEnvironment(values: [
             "DORYD_HOME": home,
             "DORYD_DATA_DRIVE": drive,
@@ -1050,8 +1081,8 @@ final class DorydConfigurationTests: XCTestCase {
         ], cwd: directory, hostPlatform: supportedRawHVPlatform())
 
         let hv = try XCTUnwrap(env.dockerTierConfiguration()?.hvProcess)
-        XCTAssertArgumentPair(hv.arguments, "--data-drive", drive)
-        XCTAssertEqual(env.machineManagerConfiguration()?.stateDirectory, drive + "/machines")
+        XCTAssertArgumentPair(hv.arguments, "--data-drive", canonicalDrive)
+        XCTAssertEqual(env.machineManagerConfiguration()?.stateDirectory, canonicalDrive + "/machines")
     }
 
     func testRememberedDataDriveRoutesDockerAndMachinePersistenceWithoutEnvironmentOverride() throws {
@@ -1066,6 +1097,8 @@ final class DorydConfigurationTests: XCTestCase {
         let home = directory + "/home"
         try FileManager.default.createDirectory(atPath: home, withIntermediateDirectories: true)
         let drive = home + "/Library/Application Support/Dory/Selected.dorydrive"
+        let canonicalDrive = try DoryDataDrive.canonicalPath(directory)
+            + "/home/Library/Application Support/Dory/Selected.dorydrive"
         let store = try DoryDataDriveSelectionStore(home: home)
         _ = try store.prepareSelection(requestedRoot: drive)
         let env = DorydEnvironment(values: [
@@ -1077,8 +1110,8 @@ final class DorydConfigurationTests: XCTestCase {
         ], cwd: directory, hostPlatform: supportedRawHVPlatform())
 
         let hv = try XCTUnwrap(env.dockerTierConfiguration()?.hvProcess)
-        XCTAssertArgumentPair(hv.arguments, "--data-drive", drive)
-        XCTAssertEqual(env.machineManagerConfiguration()?.stateDirectory, drive + "/machines")
+        XCTAssertArgumentPair(hv.arguments, "--data-drive", canonicalDrive)
+        XCTAssertEqual(env.machineManagerConfiguration()?.stateDirectory, canonicalDrive + "/machines")
     }
 
     private func executableFixture(at path: String) throws -> String {

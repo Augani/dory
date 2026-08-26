@@ -22,7 +22,6 @@ struct NewMachineSheet: View {
     @State private var portForwardRows: [MachinePortForwardDraft] = []
     @State private var audioInputEnabled = true
     @State private var audioOutputEnabled = true
-    @State private var intelApplicationTranslationEnabled = false
     @State private var hostDisplays: [HostDisplayChoice] = []
     @State private var dedicatedHostDisplayUUID: String?
 
@@ -105,7 +104,6 @@ struct NewMachineSheet: View {
                         )
                         audioBlock
                         displayAssignmentBlock
-                        intelApplicationTranslationBlock
                         optionsRow
                         advancedSection
                     }
@@ -607,17 +605,6 @@ struct NewMachineSheet: View {
         }
     }
 
-    @ViewBuilder private var intelApplicationTranslationBlock: some View {
-        if displayMode == .desktop, !customISOInstall {
-            MachineIntelApplicationTranslationControl(
-                isEnabled: $intelApplicationTranslationEnabled,
-                editable: true,
-                runtimeCompatible: true,
-                accessibilityPrefix: "new-machine"
-            )
-        }
-    }
-
     private var advancedSection: some View {
         VStack(alignment: .leading, spacing: 0) {
             Button {
@@ -987,8 +974,7 @@ struct NewMachineSheet: View {
         networkMode: DoryVMNetworkMode = .sharedNAT,
         portForwards: [DoryVMPortForward] = [],
         audioInputEnabled: Bool = true,
-        audioOutputEnabled: Bool = true,
-        intelApplicationTranslationEnabled: Bool = false
+        audioOutputEnabled: Bool = true
     ) -> MachineSettings {
         let typedSettings: DorydMachineTypedSettings
         if displayMode == .desktop {
@@ -1017,8 +1003,7 @@ struct NewMachineSheet: View {
                 audioConfiguration: DoryVMAudioConfiguration(
                     inputEnabled: audioInputEnabled,
                     outputEnabled: audioOutputEnabled
-                ),
-                intelApplicationTranslationEnabled: intelApplicationTranslationEnabled
+                )
             )
         } else {
             typedSettings = DorydMachineTypedSettings(
@@ -1072,8 +1057,7 @@ struct NewMachineSheet: View {
             networkMode: networkMode,
             portForwards: resolvedPortForwards ?? [],
             audioInputEnabled: audioInputEnabled,
-            audioOutputEnabled: audioOutputEnabled,
-            intelApplicationTranslationEnabled: intelApplicationTranslationEnabled
+            audioOutputEnabled: audioOutputEnabled
         )
         if customISOInstall {
             settings.bootMode = .efi

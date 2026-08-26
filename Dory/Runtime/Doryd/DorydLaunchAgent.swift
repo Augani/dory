@@ -6,6 +6,20 @@ enum DorydLaunchAgent {
     static let label = "dev.dory.doryd"
     static let stateDirectory = "\(NSHomeDirectory())/.dory"
     static let logPath = "\(NSHomeDirectory())/.dory/doryd.log"
+    /// dory-hv and Linux Machine helpers create private Unix sockets and disposable boot assets.
+    /// Keep those beneath Darwin's per-user 0700 temporary directory rather than the user's home:
+    /// a permissive or network-backed home is not a trustworthy Unix-socket ancestor, and the
+    /// hypervisor deliberately refuses to weaken that boundary. Durable Docker and Machine data
+    /// remains in the selected Dory data drive under Application Support.
+    static var runtimeDirectory: URL {
+        runtimeDirectory(temporaryDirectory: FileManager.default.temporaryDirectory)
+    }
+
+    static func runtimeDirectory(temporaryDirectory: URL) -> URL {
+        temporaryDirectory
+            .appendingPathComponent(label, isDirectory: true)
+            .standardizedFileURL
+    }
     // Docker gets 20 seconds, dory-hv gets 25, and doryd gets 30 before its own last resort.
     // launchd's system default is only five seconds on current macOS, so make upgrade/logout
     // replacement honor the same graceful shutdown contract as an explicit engine stop.
@@ -357,6 +371,15 @@ enum DorydLaunchAgent {
         let directory = url.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(atPath: stateDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: runtimeDirectory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: runtimeDirectory.path
+        )
         if let existing = try? String(contentsOf: url, encoding: .utf8),
            existing == install.plistContents {
             return false
@@ -368,7 +391,8 @@ enum DorydLaunchAgent {
     static func launchAgentPlist(
         program: String,
         helpersDirectory: URL,
-        configuration: Configuration = Configuration()
+        configuration: Configuration = Configuration(),
+        runtimeDirectory: URL = DorydLaunchAgent.runtimeDirectory
     ) -> String {
         let vmm = vmmExecutablePath(helpersDirectory: helpersDirectory)
         let hv = helpersDirectory
@@ -413,6 +437,12 @@ enum DorydLaunchAgent {
                 <string>\(xmlEscaped(helpersDirectory.path))</string>
                 <key>DORYD_RESOURCES_DIR</key>
                 <string>\(xmlEscaped(resourcesDirectory))</string>
+                <key>DORYD_STATE_DIR</key>
+                <string>\(xmlEscaped(runtimeDirectory.appendingPathComponent("docker", isDirectory: true).path))</string>
+                <key>DORYD_MACHINE_RUNTIME_DIR</key>
+                <string>\(xmlEscaped(runtimeDirectory.appendingPathComponent("machines", isDirectory: true).path))</string>
+                <key>DORYD_SHARE_HOME</key>
+                <string>0</string>
                 <key>DORYD_HOST_CLI</key>
                 <string>\(configuration.hostCLIEnabled ? "1" : "0")</string>
                 <key>DORYD_AMD64</key>

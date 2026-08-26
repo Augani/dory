@@ -237,6 +237,12 @@ struct DorydLaunchAgentTests {
         #expect(plist.contains("<string>\(helpersURL.path)</string>"))
         #expect(plist.contains("<key>DORYD_RESOURCES_DIR</key>"))
         #expect(plist.contains("<string>\(contentsURL.appendingPathComponent("Resources").path)</string>"))
+        #expect(plist.contains("<key>DORYD_STATE_DIR</key>"))
+        #expect(plist.contains("<string>\(DorydLaunchAgent.runtimeDirectory.appendingPathComponent("docker").path)</string>"))
+        #expect(plist.contains("<key>DORYD_MACHINE_RUNTIME_DIR</key>"))
+        #expect(plist.contains("<string>\(DorydLaunchAgent.runtimeDirectory.appendingPathComponent("machines").path)</string>"))
+        #expect(plist.contains("<key>DORYD_SHARE_HOME</key>"))
+        #expect(plist.contains("<string>0</string>"))
         #expect(plist.contains("<key>DORYD_HOST_CLI</key>"))
         #expect(plist.contains("<string>1</string>"))
         #expect(plist.contains("<key>DORYD_AMD64</key>"))
@@ -525,9 +531,11 @@ struct DorydLaunchAgentTests {
     }
 
     @Test func launchAgentEngineChoicesAreOptInByDefault() throws {
+        let runtimeDirectory = URL(fileURLWithPath: "/private/var/folders/test/T/dev.dory.doryd")
         let plist = DorydLaunchAgent.launchAgentPlist(
             program: "/Applications/Dory.app/Contents/Helpers/doryd",
-            helpersDirectory: URL(fileURLWithPath: "/Applications/Dory.app/Contents/Helpers")
+            helpersDirectory: URL(fileURLWithPath: "/Applications/Dory.app/Contents/Helpers"),
+            runtimeDirectory: runtimeDirectory
         )
         let data = try #require(plist.data(using: .utf8))
         let root = try #require(
@@ -537,8 +545,23 @@ struct DorydLaunchAgentTests {
 
         #expect(environment["DORYD_AMD64"] == "0")
         #expect(environment["DORYD_GPU"] == "off")
+        #expect(environment["DORYD_STATE_DIR"] == runtimeDirectory.appendingPathComponent("docker").path)
+        #expect(environment["DORYD_MACHINE_RUNTIME_DIR"] == runtimeDirectory.appendingPathComponent("machines").path)
+        #expect(environment["DORYD_SHARE_HOME"] == "0")
         #expect(
             environment["DORYD_BRIDGE_SUBNET"] == DoryIPv4BridgeNetwork.defaultCIDR
+        )
+    }
+
+    @Test func runtimeDirectoryIsScopedBeneathThePrivateDarwinDirectory() {
+        let darwinTemporaryDirectory = URL(
+            fileURLWithPath: "/private/var/folders/fixture/T",
+            isDirectory: true
+        )
+
+        #expect(
+            DorydLaunchAgent.runtimeDirectory(temporaryDirectory: darwinTemporaryDirectory).path
+                == "/private/var/folders/fixture/T/dev.dory.doryd"
         )
     }
 
