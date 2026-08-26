@@ -71,7 +71,11 @@ struct ComponentsView: View {
             }
             dataSafetyPanel
         }
-        .frame(maxWidth: 820, alignment: .leading)
+        .frame(
+            maxWidth: embedded ? 820 : DoryPageGrid.componentContentMaximumWidth,
+            alignment: .leading
+        )
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var header: some View {
@@ -100,9 +104,12 @@ struct ComponentsView: View {
 
     private var componentGrid: some View {
         LazyVGrid(
-            columns: [GridItem(.adaptive(minimum: embedded ? 300 : 340, maximum: 410), spacing: 12)],
+            columns: DoryPageGrid.columns(
+                minimum: embedded ? 300 : DoryPageGrid.componentCardMinimumWidth,
+                maximum: embedded ? 410 : DoryPageGrid.componentCardMaximumWidth
+            ),
             alignment: .leading,
-            spacing: 12
+            spacing: DoryPageGrid.spacing
         ) {
             ForEach(statuses) { status in
                 componentCard(status)

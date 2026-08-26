@@ -9,7 +9,10 @@ struct MachinesView: View {
 
     let displayMode: MachineDisplayMode
 
-    private let columns = [GridItem(.adaptive(minimum: 340, maximum: 500), spacing: 14)]
+    private let columns = DoryPageGrid.columns(
+        minimum: DoryPageGrid.resourceCardMinimumWidth,
+        maximum: DoryPageGrid.resourceCardMaximumWidth
+    )
 
     var body: some View {
         content
@@ -108,12 +111,14 @@ struct MachinesView: View {
 
     private var machineGrid: some View {
         ScrollView {
-            LazyVGrid(columns: columns, alignment: .leading, spacing: 14) {
+            LazyVGrid(columns: columns, alignment: .leading, spacing: DoryPageGrid.spacing) {
                 ForEach(matchingFilteredMachines) { machine in
                     MachineCard(machine: machine)
                 }
             }
-            .padding(18)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, DoryPageGrid.horizontalInset)
+            .padding(.vertical, DoryPageGrid.verticalInset)
         }
     }
 }
@@ -214,7 +219,7 @@ private struct MachineCard: View {
 
             Divider().overlay(p.border)
 
-            HStack(spacing: 8) {
+            HStack(spacing: 10) {
                 actionButton(
                     isRunning ? "stop.fill" : "play.fill",
                     isRunning ? "Stop" : ((isPaused || isSuspended) ? "Resume" : "Start"),
@@ -804,11 +809,14 @@ private struct MachineCard: View {
         Button(action: action) {
             HStack(spacing: 6) {
                 Image(systemName: systemImage).font(.system(size: 11, weight: .semibold))
-                Text(title).font(.system(size: 12, weight: .semibold))
+                Text(title)
+                    .font(.system(size: 12, weight: .semibold))
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
             }
             .foregroundStyle(prominent ? p.accentText : p.text)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 7)
+            .frame(maxWidth: .infinity, minHeight: 32)
+            .padding(.horizontal, 10)
             .background(prominent ? p.accentSoft : p.bgInput, in: RoundedRectangle(cornerRadius: 8))
             .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(prominent ? p.accentWeak : p.border))
         }
@@ -821,7 +829,7 @@ private struct MachineCard: View {
         Button(action: action) {
             Image(systemName: systemImage).font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(p.red)
-                .frame(width: 34, height: 30)
+                .frame(width: 38, height: 32)
                 .background(p.redWeak, in: RoundedRectangle(cornerRadius: 8))
                 .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(p.border))
         }
