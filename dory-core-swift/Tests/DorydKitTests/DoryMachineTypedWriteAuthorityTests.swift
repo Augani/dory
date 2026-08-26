@@ -302,6 +302,23 @@ struct DoryMachineTypedWriteAuthorityTests {
             try files.applying(to: [:], displayMode: .desktop)
         }
 
+        let fixedAudio = DoryMachineTypedSettingsPatch(
+            audioInputEnabled: .set(true),
+            audioOutputEnabled: .set(true)
+        )
+        #expect(try fixedAudio.applying(
+            to: ["OPAQUE": "preserved"],
+            displayMode: .desktop
+        ) == ["OPAQUE": "preserved"])
+        #expect(throws: DoryMachineTypedWriteAuthorityError.unsupportedByLegacyRuntime(
+            "audio"
+        )) {
+            try DoryMachineTypedSettingsPatch(
+                audioInputEnabled: .set(false),
+                audioOutputEnabled: .set(true)
+            ).applying(to: [:], displayMode: .desktop)
+        }
+
         let desktop = DoryMachineTypedSettingsPatch(desktopDisplayName: .set("Ubuntu"))
         #expect(throws: DoryMachineTypedWriteAuthorityError.unsupportedForDisplay(
             "guestIdentityIntent.desktop"

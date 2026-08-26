@@ -991,11 +991,11 @@ struct NewMachineSheet: View {
                         desktopEnvironment: desktopDistro.desktopName
                     )
                 ),
-                clipboardPolicy: DoryVMClipboardPolicy(
-                    text: .bidirectional,
-                    image: .bidirectional,
-                    files: .bidirectional
-                ),
+                // Text and image clipboard are supported by both the compatibility runtime and
+                // resolved workspace plans. File transfer uses Dory's separately authorized
+                // machine transfer channel; advertising it as clipboard intent makes a clean
+                // install unrepresentable before a schema-v2 qualification catalog is active.
+                clipboardPolicy: .legacyDesktop(.bidirectional),
                 runtimePreference: .automatic,
                 graphicsPreference: .automatic,
                 networkMode: networkMode,

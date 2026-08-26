@@ -766,7 +766,20 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
                 "portForwards"
             )
         }
-        guard !audioInputEnabled.isChanged, !audioOutputEnabled.isChanged else {
+        // The compatibility desktop always attaches its combined input/output audio device. An
+        // explicit request for that exact fixed state is therefore a representable no-op (and is
+        // what the native new-machine UI sends). Any clear or disabled direction would claim a
+        // mutation the compatibility runtime cannot perform and must still fail closed.
+        let audioMatchesFixedCompatibilityState: Bool = {
+            func matches(_ update: DoryMachineTypedSettingUpdate<Bool>) -> Bool {
+                switch update {
+                case .unchanged, .set(true): true
+                case .clear, .set(false): false
+                }
+            }
+            return matches(audioInputEnabled) && matches(audioOutputEnabled)
+        }()
+        guard audioMatchesFixedCompatibilityState else {
             throw DoryMachineTypedWriteAuthorityError.unsupportedByLegacyRuntime("audio")
         }
         guard !intelApplicationTranslationEnabled.isChanged else {
