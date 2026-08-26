@@ -127,7 +127,7 @@ extension DoryDaemonVirtualMachineProductionTrustFactory {
         } catch {
             return unavailableActivation(
                 .stateAuthorityUnavailable,
-                "Production machine-state authority could not be acquired."
+                "Production machine-state authority could not be acquired: \(error)"
             )
         }
 

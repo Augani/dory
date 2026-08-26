@@ -33,6 +33,30 @@ private enum DoryMachineFileTransferUIError: LocalizedError {
     }
 }
 
+private enum DorydBackendReadinessError: LocalizedError, CustomStringConvertible {
+    case engineUnavailable(state: String, detail: String)
+    case dockerTimedOut(socketPath: String, detail: String)
+
+    var errorDescription: String? {
+        switch self {
+        case let .engineUnavailable(state, detail):
+            if detail.isEmpty {
+                "Dory's engine became \(state) before Docker was ready."
+            } else {
+                "Dory's engine became \(state): \(detail)"
+            }
+        case let .dockerTimedOut(socketPath, detail):
+            if detail.isEmpty {
+                "Dory's engine is running, but Docker did not answer at \(socketPath)."
+            } else {
+                "Dory's engine is running, but Docker did not answer at \(socketPath): \(detail)"
+            }
+        }
+    }
+
+    var description: String { errorDescription ?? "Dory's engine did not become ready." }
+}
+
 enum ContainerFilter: String, CaseIterable, Sendable {
     case running, all, stopped
     var label: String {
@@ -889,13 +913,16 @@ final class AppStore {
             let (status, socketPath) = try await waitForDorydBackend()
             daemonSocketPath = socketPath
             runtimeOwnedByDoryd = true
-            runtime = DockerEngineRuntime(socketPath: socketPath, kind: .sharedVM)
+            let dockerRuntime = DockerEngineRuntime(socketPath: socketPath, kind: .sharedVM)
+            runtime = dockerRuntime
 
             if status.state != "running" {
                 // Opening Dory is an explicit "I want the engine" signal. doryd may arm a sleeping
                 // socket at login or after Auto-Idle, but the app should promote it to a live engine
                 // on attach; idle policy decides only whether it may sleep again later.
                 await refreshDorydRuntimeMode()
+                loadState = .connecting
+                sharedVMStatus = "Starting Dory's engine… The first launch can take a minute."
                 let started = try await dorydClient.engineStart()
                 guard started.ok else {
                     sharedVMStatus = started.message.isEmpty ? "doryd could not start the engine." : started.message
@@ -909,25 +936,75 @@ final class AppStore {
 
             engineSleeping = false
             engineActivity.setSleeping(false)
+            loadState = .connecting
+            sharedVMStatus = "Dory's engine is running; connecting to Docker…"
+            let snapshot = try await waitForDorydDockerReadiness(
+                runtime: dockerRuntime,
+                socketPath: socketPath
+            )
+            await applyRuntimeSnapshot(snapshot, synchronizeFinderStorage: true)
             sharedVMStatus = "Running through doryd"
-            await reload()
-            if loadState == .engineOff {
-                sharedVMStatus = "doryd started, but Docker did not answer at \(socketPath)."
-                _ = try? await dorydClient.engineStop()
-                runtimeOwnedByDoryd = false
-                daemonSocketPath = nil
-                runtime = DisconnectedRuntime()
-                return false
-            }
             await loadCustomDomainRoutes()
             return true
         } catch {
             runtimeOwnedByDoryd = false
             daemonSocketPath = nil
-            sharedVMStatus = "doryd is unavailable: \(error)"
+            if let readinessError = error as? DorydBackendReadinessError {
+                sharedVMStatus = readinessError.description
+            } else {
+                sharedVMStatus = "doryd is unavailable: \(error)"
+            }
             loadState = .engineOff
+            runtime = DisconnectedRuntime()
             return false
         }
+    }
+
+    /// `engineStart` confirms doryd's lifecycle promotion, but attaching clients can still race the
+    /// publication of the forwarded Unix socket or the first complete Docker inventory response.
+    /// Keep the UI in a truthful connecting state and retry that narrow handoff. A failed probe must
+    /// never stop daemon-owned work that is still becoming ready.
+    private func waitForDorydDockerReadiness(
+        runtime: DockerEngineRuntime,
+        socketPath: String,
+        timeout: TimeInterval = 30
+    ) async throws -> RuntimeSnapshot {
+        let deadline = Date().addingTimeInterval(timeout)
+        var lastRuntimeError = ""
+
+        repeat {
+            do {
+                return try await runtime.snapshot()
+            } catch {
+                lastRuntimeError = error.localizedDescription
+            }
+
+            if let status = try? await dorydClient.engineStatus() {
+                switch status.state {
+                case "failed", "stopped", "unconfigured":
+                    throw DorydBackendReadinessError.engineUnavailable(
+                        state: status.state,
+                        detail: status.detail
+                    )
+                case "starting":
+                    sharedVMStatus = "Starting Dory's engine… The first launch can take a minute."
+                case "running":
+                    sharedVMStatus = "Dory's engine is running; connecting to Docker…"
+                case "sleeping":
+                    sharedVMStatus = "Waking Dory's engine…"
+                default:
+                    sharedVMStatus = "Waiting for Dory's engine…"
+                }
+            }
+
+            try Task.checkCancellation()
+            try await Task.sleep(for: .milliseconds(250))
+        } while Date() < deadline
+
+        throw DorydBackendReadinessError.dockerTimedOut(
+            socketPath: socketPath,
+            detail: lastRuntimeError
+        )
     }
 
     private func waitForDorydBackend(timeout: TimeInterval = 8) async throws -> (DorydEngineStatus, String) {
@@ -5200,6 +5277,9 @@ final class AppStore {
             if requiresMachineSnapshot {
                 machines = try await dorydClient.machineList().map {
                     Self.machine(fromDoryd: $0, domainSuffix: domainSuffix)
+                }
+                if actionError?.hasPrefix("doryd machine list failed:") == true {
+                    actionError = nil
                 }
                 if let eventBatch {
                     advanceMachineEventSequence(

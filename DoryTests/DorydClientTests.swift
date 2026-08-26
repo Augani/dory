@@ -3746,6 +3746,47 @@ struct DorydClientTests {
     }
 
     @MainActor
+    @Test func appStoreWaitsForDelayedDockerSocketWithoutStoppingDoryd() async throws {
+        let base = "/tmp/doryd-delayed-docker-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let socketPath = base + "/doryd.sock"
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let shim = DockerShim(runtime: MockRuntime())
+        let dockerServer = ShimHTTPServer(socketPath: socketPath) { request in
+            await shim.handle(request)
+        }
+        defer { dockerServer.stop() }
+
+        let listener = NSXPCListener.anonymous()
+        let service = FakeDorydService(socketPath: socketPath)
+        service.setEngineStatus("stopped", detail: "cold start")
+        let delegate = FakeDorydListenerDelegate(service: service)
+        listener.delegate = delegate
+        listener.resume()
+        defer { listener.invalidate() }
+
+        let delayedSocket = Task { @MainActor in
+            try await Task.sleep(for: .milliseconds(300))
+            try dockerServer.start()
+        }
+        let store = AppStore(
+            dorydClient: DorydClient(endpoint: listener.endpoint),
+            useDorydEngine: true
+        )
+        store.routeDockerCLI = false
+
+        await store.connectBackend()
+        try await delayedSocket.value
+
+        #expect(service.engineStartCount == 1)
+        #expect(service.engineStopCount == 0)
+        #expect(store.runtimeKind == .sharedVM)
+        #expect(store.loadState == .ready)
+        #expect(store.engineRunning)
+        #expect(store.sharedVMStatus == "Running through doryd")
+    }
+
+    @MainActor
     @Test func appStoreStartsSleepingDorydOnAttach() async throws {
         let base = "/tmp/doryd-start-sleeping-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let socketPath = base + "/doryd.sock"
