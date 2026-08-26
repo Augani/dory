@@ -240,7 +240,7 @@ struct DorydLaunchAgentTests {
         #expect(plist.contains("<key>DORYD_STATE_DIR</key>"))
         #expect(plist.contains("<string>\(DorydLaunchAgent.runtimeDirectory.appendingPathComponent("docker").path)</string>"))
         #expect(plist.contains("<key>DORYD_MACHINE_RUNTIME_DIR</key>"))
-        #expect(plist.contains("<string>\(DorydLaunchAgent.runtimeDirectory.appendingPathComponent("machines").path)</string>"))
+        #expect(plist.contains("<string>\(DorydLaunchAgent.runtimeDirectory.appendingPathComponent("m").path)</string>"))
         #expect(plist.contains("<key>DORYD_SHARE_HOME</key>"))
         #expect(plist.contains("<string>0</string>"))
         #expect(plist.contains("<key>DORYD_HOST_CLI</key>"))
@@ -546,23 +546,36 @@ struct DorydLaunchAgentTests {
         #expect(environment["DORYD_AMD64"] == "0")
         #expect(environment["DORYD_GPU"] == "off")
         #expect(environment["DORYD_STATE_DIR"] == runtimeDirectory.appendingPathComponent("docker").path)
-        #expect(environment["DORYD_MACHINE_RUNTIME_DIR"] == runtimeDirectory.appendingPathComponent("machines").path)
+        #expect(environment["DORYD_MACHINE_RUNTIME_DIR"] == runtimeDirectory.appendingPathComponent("m").path)
         #expect(environment["DORYD_SHARE_HOME"] == "0")
         #expect(
             environment["DORYD_BRIDGE_SUBNET"] == DoryIPv4BridgeNetwork.defaultCIDR
         )
     }
 
-    @Test func runtimeDirectoryIsScopedBeneathThePrivateDarwinDirectory() {
+    @Test func runtimeDirectoryIsScopedBeneathThePrivateDarwinDirectoryAndFitsMachineSockets() {
         let darwinTemporaryDirectory = URL(
-            fileURLWithPath: "/private/var/folders/fixture/T",
+            fileURLWithPath: "/private/var/folders/8f/l7zyp8_15jl68g9stnzw7lvw0000gn/T",
             isDirectory: true
+        )
+        let runtimeDirectory = DorydLaunchAgent.runtimeDirectory(
+            temporaryDirectory: darwinTemporaryDirectory
         )
 
         #expect(
-            DorydLaunchAgent.runtimeDirectory(temporaryDirectory: darwinTemporaryDirectory).path
-                == "/private/var/folders/fixture/T/dev.dory.doryd"
+            runtimeDirectory.path
+                == darwinTemporaryDirectory.appendingPathComponent("d").standardizedFileURL.path
         )
+
+        // MachineManager uses a 96-bit (24-hex-character) namespace token. console.sock is the
+        // longest current per-machine endpoint, so proving it fits also covers handoff, agent,
+        // shell, control, Docker, and USB sockets. sockaddr_un reserves one byte for the NUL.
+        let longestMachineSocket = runtimeDirectory
+            .appendingPathComponent("m", isDirectory: true)
+            .appendingPathComponent(String(repeating: "a", count: 24), isDirectory: true)
+            .appendingPathComponent("console.sock")
+            .path
+        #expect(longestMachineSocket.utf8.count <= 103)
     }
 
     @Test func launchAgentDoesNotOwnRuntimeModePolicy() {

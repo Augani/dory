@@ -17,7 +17,10 @@ enum DorydLaunchAgent {
 
     static func runtimeDirectory(temporaryDirectory: URL) -> URL {
         temporaryDirectory
-            .appendingPathComponent(label, isDirectory: true)
+            // Darwin Unix-domain sockets have only 103 usable pathname bytes. The private
+            // per-user temporary-directory prefix is already long on real systems, so keep this
+            // disposable namespace deliberately short. Durable state still uses the Dory drive.
+            .appendingPathComponent("d", isDirectory: true)
             .standardizedFileURL
     }
     // Docker gets 20 seconds, dory-hv gets 25, and doryd gets 30 before its own last resort.
@@ -440,7 +443,7 @@ enum DorydLaunchAgent {
                 <key>DORYD_STATE_DIR</key>
                 <string>\(xmlEscaped(runtimeDirectory.appendingPathComponent("docker", isDirectory: true).path))</string>
                 <key>DORYD_MACHINE_RUNTIME_DIR</key>
-                <string>\(xmlEscaped(runtimeDirectory.appendingPathComponent("machines", isDirectory: true).path))</string>
+                <string>\(xmlEscaped(runtimeDirectory.appendingPathComponent("m", isDirectory: true).path))</string>
                 <key>DORYD_SHARE_HOME</key>
                 <string>0</string>
                 <key>DORYD_HOST_CLI</key>
