@@ -1,3 +1,4 @@
+import Darwin
 import DoryCore
 import DoryFSWorkerContracts
 import DoryHV
@@ -489,6 +490,62 @@ enum EngineMode {
         var gvproxyStats: String?
     }
 
+    /// Runtime sockets share this directory with disposable boot state, so creating it with the
+    /// process umask is not sufficient: a normal 022 umask produces 0755 and the USB control
+    /// listener correctly refuses that boundary. Acquire the directory without following a final
+    /// symlink, verify ownership, and enforce the same 0700 invariant expected by every socket
+    /// publisher before any engine artifact or sidecar is created.
+    static func prepareStateDirectory(_ rawPath: String) throws -> String {
+        let path = URL(fileURLWithPath: rawPath).standardizedFileURL.path
+        if mkdir(path, mode_t(0o700)) != 0, errno != EEXIST {
+            let code = errno
+            throw VMError.invalidConfiguration(
+                "cannot create owner-private engine state directory \(path): errno \(code)"
+            )
+        }
+
+        let descriptor = open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
+        guard descriptor >= 0 else {
+            let code = errno
+            throw VMError.invalidConfiguration(
+                "cannot open owner-private engine state directory \(path): errno \(code)"
+            )
+        }
+        defer { close(descriptor) }
+
+        var opened = stat()
+        guard fstat(descriptor, &opened) == 0,
+              opened.st_mode & mode_t(S_IFMT) == mode_t(S_IFDIR),
+              opened.st_uid == geteuid() else {
+            throw VMError.invalidConfiguration(
+                "engine state directory is not owned by the current user: \(path)"
+            )
+        }
+        guard fchmod(descriptor, mode_t(0o700)) == 0 else {
+            let code = errno
+            throw VMError.invalidConfiguration(
+                "cannot secure engine state directory \(path): errno \(code)"
+            )
+        }
+
+        var secured = stat()
+        var linked = stat()
+        guard fstat(descriptor, &secured) == 0,
+              lstat(path, &linked) == 0,
+              secured.st_dev == opened.st_dev,
+              secured.st_ino == opened.st_ino,
+              linked.st_dev == secured.st_dev,
+              linked.st_ino == secured.st_ino,
+              linked.st_mode & mode_t(S_IFMT) == mode_t(S_IFDIR),
+              linked.st_uid == geteuid(),
+              linked.st_mode & mode_t(0o7777) == mode_t(0o700) else {
+            throw VMError.invalidConfiguration(
+                "engine state directory did not retain owner-private identity: \(path)"
+            )
+        }
+        return path
+    }
+
     static func run(_ configuration: Configuration) throws {
         guard configuration.gpuMode == .off else {
             throw VMError.invalidConfiguration(
@@ -509,8 +566,7 @@ enum EngineMode {
             configuration.directIP?.subnetCIDR ?? DoryIPv4BridgeNetwork.defaultCIDR
         )
         let sourcePreservingLAN = configuration.publishHost == "0.0.0.0"
-        let state = URL(fileURLWithPath: configuration.stateDirectory).standardizedFileURL.path
-        try FileManager.default.createDirectory(atPath: state, withIntermediateDirectories: true)
+        let state = try prepareStateDirectory(configuration.stateDirectory)
         let stateDirectoryLock = try EngineStateDirectoryLock(stateDirectory: state)
         defer { withExtendedLifetime(stateDirectoryLock) {} }
 

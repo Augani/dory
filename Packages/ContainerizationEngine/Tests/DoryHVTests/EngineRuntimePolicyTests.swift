@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import Testing
 @testable import dory_hv
@@ -22,6 +23,38 @@ struct EngineRuntimePolicyTests {
         }
         #expect(throws: (any Error).self) {
             _ = try EngineMode.FuseRequestQueuePolicy(fixedCount: 9)
+        }
+    }
+
+    @Test func engineStateDirectoryIsOwnerPrivateAndDoesNotFollowFinalSymlinks() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dory-engine-state-policy-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let fresh = root.appendingPathComponent("fresh", isDirectory: true).path
+        #expect(try EngineMode.prepareStateDirectory(fresh) == fresh)
+        var freshStatus = stat()
+        #expect(lstat(fresh, &freshStatus) == 0)
+        #expect(freshStatus.st_uid == geteuid())
+        #expect(freshStatus.st_mode & mode_t(0o7777) == mode_t(0o700))
+
+        let state = root.appendingPathComponent("runtime", isDirectory: true).path
+        try FileManager.default.createDirectory(atPath: state, withIntermediateDirectories: false)
+        #expect(chmod(state, mode_t(0o755)) == 0)
+
+        #expect(try EngineMode.prepareStateDirectory(state) == state)
+        var status = stat()
+        #expect(lstat(state, &status) == 0)
+        #expect(status.st_uid == geteuid())
+        #expect(status.st_mode & mode_t(0o7777) == mode_t(0o700))
+
+        let target = root.appendingPathComponent("target", isDirectory: true).path
+        let alias = root.appendingPathComponent("alias", isDirectory: true).path
+        try FileManager.default.createDirectory(atPath: target, withIntermediateDirectories: false)
+        #expect(symlink(target, alias) == 0)
+        #expect(throws: (any Error).self) {
+            _ = try EngineMode.prepareStateDirectory(alias)
         }
     }
 
