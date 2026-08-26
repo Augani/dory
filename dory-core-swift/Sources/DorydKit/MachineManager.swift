@@ -7908,7 +7908,11 @@ public final class MachineManager: @unchecked Sendable {
            machine.displayMode == .desktop,
            supportsAcceleratedBoot,
            machine.installerISOPath == nil,
-           desktopPreference != .compatible,
+           // A resolved binding above is the only authority that can make `automatic` choose
+           // raw-HV. Without one (the legacy-compatibility path), automatic must retain the
+           // Virtualization.framework fallback because the retired in-process renderer cannot
+           // satisfy it. Explicit accelerated + software remains the bounded recovery contract.
+           desktopPreference == .accelerated,
            let executablePath = configuration.acceleratedDesktopExecutablePath {
             return (executablePath, configuration.acceleratedDesktopBaseArguments, true)
         }
@@ -7930,7 +7934,7 @@ public final class MachineManager: @unchecked Sendable {
                 "accelerated installed-Linux runtime is unavailable; reattach and eject the installer media to derive its boot assets"
             )
         }
-        guard preference == .accelerated || (installedEFIDesktop && preference != .compatible) else {
+        guard preference == .accelerated else {
             return
         }
         guard let executablePath = configuration.acceleratedDesktopExecutablePath,
@@ -9848,7 +9852,7 @@ public final class MachineManager: @unchecked Sendable {
               machine.bootMode == .efi,
               machine.displayMode == .desktop,
               machine.installerISOPath == nil,
-              try DoryDesktopVMMPreference(environment: machine.environment) != .compatible,
+              try DoryDesktopVMMPreference(environment: machine.environment) == .accelerated,
               configuration.acceleratedDesktopExecutablePath != nil else {
             return
         }
@@ -9907,7 +9911,7 @@ public final class MachineManager: @unchecked Sendable {
     ) throws {
         guard machine.bootMode == .efi,
               machine.installerISOPath == nil,
-              try DoryDesktopVMMPreference(environment: machine.environment) != .compatible,
+              try DoryDesktopVMMPreference(environment: machine.environment) == .accelerated,
               DoryInstalledLinuxBootBundle.isBundle(atPath: machine.kernelPath) else {
             return
         }

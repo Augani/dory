@@ -2,10 +2,11 @@ import Foundation
 
 /// Stable host/guest contract for choosing the desktop virtualization implementation.
 ///
-/// `automatic` is the product default: doryd prefers Dory's accelerated raw-Hypervisor runtime
-/// when it is available, while retaining Virtualization.framework as the selectable compatibility
-/// runtime. The explicit values are useful for qualification and for recovering a machine on a
-/// host whose accelerated graphics stack is temporarily unavailable.
+/// `automatic` is the product default: a resolved launch plan may select Dory's accelerated
+/// raw-Hypervisor runtime when signed renderer authority is available. An unresolved compatibility
+/// launch retains Virtualization.framework rather than reviving the removed in-process renderer.
+/// The explicit values are useful for qualification and for recovering a machine on a host whose
+/// accelerated graphics stack is temporarily unavailable.
 public enum DoryDesktopVMMPreference: String, CaseIterable, Sendable, Codable {
     public static let environmentKey = "DORY_DESKTOP_VMM"
 

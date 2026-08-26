@@ -4726,6 +4726,7 @@ final class MachineManagerTests: XCTestCase {
         defer {
             try? manager.delete(id: "desktop")
             try? manager.delete(id: "compatible")
+            try? manager.delete(id: "automatic")
             try? manager.delete(id: "headless")
             try? FileManager.default.removeItem(atPath: base)
         }
@@ -4790,6 +4791,25 @@ final class MachineManagerTests: XCTestCase {
         let compatibleDisplayIndex = try XCTUnwrap(compatibleArguments.firstIndex(of: "--display-mode"))
         XCTAssertEqual(compatibleArguments[compatibleDisplayIndex + 1], "desktop")
         _ = try manager.stop(id: "compatible")
+        try FileManager.default.removeItem(atPath: fallbackCapture)
+
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "automatic",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath,
+            displayMode: .desktop
+        ))
+        _ = try manager.start(id: "automatic")
+        for _ in 0..<100 where !FileManager.default.fileExists(atPath: fallbackCapture) {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        let automaticArguments = try String(contentsOfFile: fallbackCapture, encoding: .utf8)
+            .split(separator: "\n").map(String.init)
+        XCTAssertEqual(automaticArguments.first, "fallback")
+        XCTAssertTrue(automaticArguments.contains("--dockerd-sock"))
+        XCTAssertFalse(automaticArguments.contains("--legacy-graphics"))
+        XCTAssertFalse(automaticArguments.contains("--usb-control-sock"))
+        _ = try manager.stop(id: "automatic")
         try FileManager.default.removeItem(atPath: fallbackCapture)
 
         _ = try manager.create(DoryMachineConfiguration(
@@ -4870,7 +4890,11 @@ final class MachineManagerTests: XCTestCase {
             bootMode: .efi,
             memoryMB: 4096,
             cpuCount: 4,
-            displayMode: .desktop
+            displayMode: .desktop,
+            environment: [
+                DoryDesktopVMMPreference.environmentKey:
+                    DoryDesktopVMMPreference.accelerated.rawValue,
+            ]
         ))
         let directKernel = "\(state)/ubuntu/direct-kernel"
         let directInitrd = "\(state)/ubuntu/direct-initrd"
