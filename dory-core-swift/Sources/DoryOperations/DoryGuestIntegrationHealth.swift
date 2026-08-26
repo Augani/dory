@@ -207,7 +207,7 @@ public struct DoryGuestIntegrationHealth: Codable, Sendable, Equatable, Hashable
         agentProtocolVersion: UInt32?,
         agentCapabilities: [DoryGuestIntegrationNegotiatedCapability]
     ) -> Self {
-        let build = agentBuild.flatMap { isValidAgentBuild($0) ? $0 : nil }
+        let validatedBuild = agentBuild.flatMap { isValidAgentBuild($0) ? $0 : nil }
         guard machineIsRunning else {
             let features = featureRequirements(
                 desktopIntegrationsExpected: desktopIntegrationsExpected,
@@ -236,10 +236,17 @@ public struct DoryGuestIntegrationHealth: Codable, Sendable, Equatable, Hashable
         let capabilitiesAreCanonical = agentCapabilities.allSatisfy(\.isValid)
             && agentCapabilities == agentCapabilities.sorted { $0.id < $1.id }
             && Set(agentCapabilities.map(\.id)).count == agentCapabilities.count
+        // A VMM may report its own helper build when an unmodified EFI guest has no Dory
+        // agent. Integration health represents the guest handshake, not helper readiness, so
+        // never publish half of an agent identity. Besides being misleading, a partial identity
+        // cannot satisfy the wire invariant for `missing-tools`.
+        let hasAgentIdentity = validatedBuild != nil && agentProtocolVersion != nil
+        let build = hasAgentIdentity ? validatedBuild : nil
+        let protocolVersion = hasAgentIdentity ? agentProtocolVersion : nil
         let capabilityVersions = capabilitiesAreCanonical
             ? Dictionary(uniqueKeysWithValues: agentCapabilities.map { ($0.id, $0.version) })
             : [:]
-        let protocolIsSupported = agentProtocolVersion == supportedAgentProtocolVersion
+        let protocolIsSupported = protocolVersion == supportedAgentProtocolVersion
         let handshakeIsSupported = protocolIsSupported && capabilitiesAreCanonical
         let features = featureRequirements(
             desktopIntegrationsExpected: desktopIntegrationsExpected,
@@ -258,7 +265,7 @@ public struct DoryGuestIntegrationHealth: Codable, Sendable, Equatable, Hashable
         }
 
         let state: DoryGuestIntegrationHealthState
-        if build == nil || agentProtocolVersion == nil {
+        if build == nil || protocolVersion == nil {
             state = .missingTools
         } else if !handshakeIsSupported {
             state = .incompatible
@@ -283,7 +290,7 @@ public struct DoryGuestIntegrationHealth: Codable, Sendable, Equatable, Hashable
             state: state,
             runtimeAuthority: runtimeAuthority,
             agentBuild: build,
-            agentProtocolVersion: agentProtocolVersion,
+            agentProtocolVersion: protocolVersion,
             features: features
         )
     }

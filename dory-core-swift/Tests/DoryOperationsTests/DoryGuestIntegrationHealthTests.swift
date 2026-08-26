@@ -57,6 +57,20 @@ struct DoryGuestIntegrationHealthTests {
         #expect(missing.features.first { $0.id == .clockSynchronization }?.state == .unavailable)
         #expect(missing.isValid)
 
+        let efiWithoutGuestTools = DoryGuestIntegrationHealth.evaluate(
+            machineIsRunning: true,
+            runtimeAuthority: .legacyCompatibility,
+            desktopIntegrationsExpected: true,
+            sharedFoldersExpected: false,
+            agentBuild: "dory-vmm/efi",
+            agentProtocolVersion: nil,
+            agentCapabilities: []
+        )
+        #expect(efiWithoutGuestTools.state == .missingTools)
+        #expect(efiWithoutGuestTools.agentBuild == nil)
+        #expect(efiWithoutGuestTools.agentProtocolVersion == nil)
+        #expect(efiWithoutGuestTools.isValid)
+
         let incompatible = DoryGuestIntegrationHealth.evaluate(
             machineIsRunning: true,
             runtimeAuthority: .resolvedPlan,

@@ -2028,6 +2028,48 @@ struct DorydClientTests {
         }
     }
 
+    @MainActor
+    @Test func machineListAcceptsRunningEFIInstallerWithoutGuestTools() async throws {
+        let listener = NSXPCListener.anonymous()
+        let service = FakeDorydService()
+        let delegate = FakeDorydListenerDelegate(service: service)
+        listener.delegate = delegate
+        listener.resume()
+        defer { listener.invalidate() }
+
+        let health = DoryGuestIntegrationHealth.evaluate(
+            machineIsRunning: true,
+            runtimeAuthority: .legacyCompatibility,
+            desktopIntegrationsExpected: true,
+            clipboardTextExpected: true,
+            clipboardImageExpected: true,
+            sharedFoldersExpected: false,
+            qualifiedRuntimeFeatures: [],
+            agentBuild: "dory-vmm/efi",
+            agentProtocolVersion: nil,
+            agentCapabilities: []
+        )
+        #expect(health.state == .missingTools)
+        #expect(health.isValid)
+        service.setMachineEFIRuntime(
+            "dev",
+            integrationHealth: try integrationHealthDictionary(health)
+        )
+
+        let status = try #require(
+            (try await DorydClient(endpoint: listener.endpoint).machineList()).first
+        )
+        #expect(status.bootMode == .efi)
+        #expect(status.installerMediaAttached)
+        #expect(status.agentBuild == "dory-vmm/efi")
+        #expect(status.agentProtocolVersion == nil)
+        #expect(status.integrationHealth?.state == .missingTools)
+
+        let machine = AppStore.machine(fromDoryd: status)
+        #expect(machine.distro == "Custom Linux")
+        #expect(machine.displayMode == .desktop)
+    }
+
     @Test func machineCapabilityHandshakeRejectsMalformedPresentClaims() async throws {
         let listener = NSXPCListener.anonymous()
         let service = FakeDorydService()
@@ -4818,6 +4860,29 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         } else {
             current.removeObject(forKey: "integrationHealth")
         }
+        machines[machineID] = current.copy() as? NSDictionary
+    }
+
+    func setMachineEFIRuntime(
+        _ machineID: String,
+        integrationHealth: NSDictionary
+    ) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let current = machines[machineID]?.mutableCopy() as? NSMutableDictionary else {
+            return
+        }
+        current["bootMode"] = "efi"
+        current["installerMediaAttached"] = true
+        current["displayMode"] = "desktop"
+        current["shares"] = []
+        current["agentBuild"] = "dory-vmm/efi"
+        current.removeObject(forKey: "agentProtocolVersion")
+        current.removeObject(forKey: "agentCapabilities")
+        current.removeObject(forKey: "agentSocketPath")
+        current.removeObject(forKey: "dockerdSocketPath")
+        current.removeObject(forKey: "shellSocketPath")
+        current["integrationHealth"] = integrationHealth
         machines[machineID] = current.copy() as? NSDictionary
     }
 

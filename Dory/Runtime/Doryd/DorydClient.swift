@@ -3007,7 +3007,8 @@ nonisolated final class DorydClient: @unchecked Sendable {
             clipboardImageExpected: clipboardPolicy.image != .off,
             sharedFoldersExpected: !shares.isEmpty,
             expectedRuntimeIdentityMode: runtimeIdentity.mode,
-            expectedAgentBuild: state == "running" ? agentBuild : nil,
+            expectedAgentBuild: state == "running" && agentHandshake.protocolVersion != nil
+                ? agentBuild : nil,
             expectedAgentProtocolVersion: state == "running"
                 ? agentHandshake.protocolVersion : nil
         ) else {
