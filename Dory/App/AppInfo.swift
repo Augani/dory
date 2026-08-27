@@ -29,9 +29,8 @@ nonisolated enum AppInfo {
     /// Candidate-only bridge for booting exact desktop bytes while schema-2 qualification
     /// evidence is collected. Normal builds omit the key and stay fail-closed.
     static var vmQualificationBootstrapEnabled: Bool {
-        booleanBundleValue(
-            Bundle.main.object(forInfoDictionaryKey: "DoryVMQualificationBootstrap"),
-            default: false
+        explicitBuildFlagBundleValue(
+            Bundle.main.object(forInfoDictionaryKey: "DoryVMQualificationBootstrap")
         )
     }
 
@@ -64,5 +63,17 @@ nonisolated enum AppInfo {
             return value.boolValue
         }
         return defaultValue
+    }
+
+    /// Xcode expands custom Info.plist build settings as strings. Accept only the canonical
+    /// enabled value so malformed, missing, and human-authored truthy strings remain disabled.
+    static func explicitBuildFlagBundleValue(_ bundleValue: Any?) -> Bool {
+        if let value = bundleValue as? Bool {
+            return value
+        }
+        if let value = bundleValue as? NSNumber {
+            return value.boolValue
+        }
+        return (bundleValue as? String) == "1"
     }
 }

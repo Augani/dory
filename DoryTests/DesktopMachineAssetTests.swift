@@ -11,10 +11,13 @@ struct DesktopMachineAssetTests {
     }
 
     @Test func qualificationBootstrapBundleValueIsFailClosed() {
-        #expect(!AppInfo.booleanBundleValue(nil, default: false))
-        #expect(AppInfo.booleanBundleValue(true, default: false))
-        #expect(AppInfo.booleanBundleValue(NSNumber(value: true), default: false))
-        #expect(!AppInfo.booleanBundleValue("true", default: false))
+        #expect(!AppInfo.explicitBuildFlagBundleValue(nil))
+        #expect(AppInfo.explicitBuildFlagBundleValue(true))
+        #expect(AppInfo.explicitBuildFlagBundleValue(NSNumber(value: true)))
+        #expect(AppInfo.explicitBuildFlagBundleValue("1"))
+        #expect(!AppInfo.explicitBuildFlagBundleValue("true"))
+        #expect(!AppInfo.explicitBuildFlagBundleValue("YES"))
+        #expect(!AppInfo.explicitBuildFlagBundleValue("unexpected"))
     }
 
     @Test func preparesVerifiedSparseAssetsInTheDriveAndReusesMatchingOutputs() throws {
