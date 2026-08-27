@@ -10,8 +10,15 @@ import XPC
 private final class DoryFSWorkerXPCAdapter: NSObject, DoryFSWorkerXPCProtocol {
     private let service = DoryFSWorkerService()
 
-    func bootstrap(_ request: Data, withReply reply: @escaping (Data) -> Void) {
-        reply(service.bootstrap(exactBytes: request))
+    func bootstrap(
+        _ request: Data,
+        rootDescriptors: [FileHandle],
+        withReply reply: @escaping (Data) -> Void
+    ) {
+        reply(service.bootstrap(
+            exactBytes: request,
+            rootDescriptors: rootDescriptors
+        ))
     }
 
     func exchange(_ frame: Data, withReply reply: @escaping (Data) -> Void) {
@@ -68,7 +75,7 @@ private final class DoryFSWorkerListenerDelegate:
         // fixed source literal; malformed dynamic requirement strings are intentionally impossible.
         connection.setCodeSigningRequirement(Self.runnerSigningRequirement)
 
-        connection.exportedInterface = NSXPCInterface(with: DoryFSWorkerXPCProtocol.self)
+        connection.exportedInterface = DoryFSWorkerXPCInterface.make()
         connection.exportedObject = adapter
         connection.interruptionHandler = Self.terminateProcess
         connection.invalidationHandler = Self.terminateProcess

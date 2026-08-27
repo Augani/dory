@@ -242,7 +242,7 @@ struct DorydLaunchAgentTests {
         #expect(plist.contains("<key>DORYD_MACHINE_RUNTIME_DIR</key>"))
         #expect(plist.contains("<string>\(DorydLaunchAgent.runtimeDirectory.appendingPathComponent("m").path)</string>"))
         #expect(plist.contains("<key>DORYD_SHARE_HOME</key>"))
-        #expect(plist.contains("<string>0</string>"))
+        #expect(plist.contains("<string>1</string>"))
         #expect(plist.contains("<key>DORYD_HOST_CLI</key>"))
         #expect(plist.contains("<string>1</string>"))
         #expect(plist.contains("<key>DORYD_AMD64</key>"))
@@ -551,7 +551,7 @@ struct DorydLaunchAgentTests {
         #expect(environment["DORYD_GPU"] == "off")
         #expect(environment["DORYD_STATE_DIR"] == runtimeDirectory.appendingPathComponent("docker").path)
         #expect(environment["DORYD_MACHINE_RUNTIME_DIR"] == runtimeDirectory.appendingPathComponent("m").path)
-        #expect(environment["DORYD_SHARE_HOME"] == "0")
+        #expect(environment["DORYD_SHARE_HOME"] == "1")
         #expect(
             environment["DORYD_BRIDGE_SUBNET"] == DoryIPv4BridgeNetwork.defaultCIDR
         )

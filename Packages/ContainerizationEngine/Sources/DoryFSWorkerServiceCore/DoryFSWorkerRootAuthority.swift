@@ -2,19 +2,16 @@ import Darwin
 import DoryFSWorkerContracts
 import Foundation
 
-/// Fail-closed errors raised while converting the exact bootstrap envelope into pinned directory
-/// authority. Errors identify shares only by their unforgeable capability; host paths and bookmark
-/// bytes never cross this API boundary.
+/// Fail-closed errors raised while converting the exact bootstrap envelope and XPC-transferred
+/// directory descriptors into pinned worker authority. Errors identify shares only by their
+/// unforgeable capability; host paths and process-local descriptor numbers never cross this API.
 public enum DoryFSWorkerRootAuthorityError: Error, Equatable, Sendable {
     /// A worker process accepts exactly one bootstrap attempt. A failed attempt is terminal too;
-    /// the supervisor must replace the process instead of substituting a different authority set.
+    /// the supervisor must replace the process instead of substituting another authority set.
     case bootstrapAlreadyAttempted
     case bootstrapNotAccepted
-    case bookmarkResolutionFailed(DoryFSShareCapabilityID)
-    case staleBookmark(DoryFSShareCapabilityID)
-    case nonFileBookmark(DoryFSShareCapabilityID)
-    case securityScopeDenied(DoryFSShareCapabilityID)
-    case rootOpenFailed(DoryFSShareCapabilityID, errno: Int32)
+    case descriptorCountMismatch(expected: Int, actual: Int)
+    case rootDescriptorUnavailable(DoryFSShareCapabilityID, errno: Int32)
     case rootInspectionFailed(DoryFSShareCapabilityID, errno: Int32)
     case rootIsNotDirectory(DoryFSShareCapabilityID)
     case rootIdentityMismatch(DoryFSShareCapabilityID)
@@ -22,12 +19,18 @@ public enum DoryFSWorkerRootAuthorityError: Error, Equatable, Sendable {
     case descriptorBorrowFailed(DoryFSShareCapabilityID, errno: Int32)
 }
 
-/// Owns the immutable share roots for one worker process.
+/// Owns the immutable share roots for one signed worker process.
 ///
 /// The public surface deliberately has no URL, path, bookmark, mutation, or root-enumeration API.
-/// The sole authority-use seam is a synchronous descriptor borrow selected by the typed capability
-/// from the accepted bootstrap. Each borrow receives a temporary close-on-exec duplicate; the
-/// integer is invalid once the callback returns and closing it cannot revoke the retained root.
+/// Bootstrap consumes already-open directory descriptors transferred by XPC, duplicates them with
+/// close-on-exec, and independently checks the sealed device/inode/generation identity. The sole
+/// authority-use seam is a synchronous descriptor borrow selected by typed capability.
+///
+/// The worker deliberately shares the runner's host filesystem namespace. Darwin App Sandbox does
+/// not treat an inherited directory descriptor as authority to open its descendants, and an
+/// unsandboxed runner cannot mint a Powerbox grant for another sandbox identity. Applying App
+/// Sandbox here would therefore make every valid `openat` fail with `EPERM`; confinement is instead
+/// the exact signed-XPC, one-shot descriptor, no-path, no-follow capability boundary below.
 public final class DoryFSWorkerRootAuthority: @unchecked Sendable {
     private enum Lifecycle {
         case uninitialized
@@ -38,23 +41,25 @@ public final class DoryFSWorkerRootAuthority: @unchecked Sendable {
 
     private static let processBootstrapAdmission = DoryFSWorkerBootstrapAdmission()
 
-    private let resolver: any DoryFSWorkerBookmarkResolving
     private let bootstrapAdmission: DoryFSWorkerBootstrapAdmission
     private let stateLock = NSLock()
     private var lifecycle: Lifecycle = .uninitialized
 
-    /// Uses the process-wide one-shot gate and Foundation's security-scoped bookmark resolver.
+    /// Uses the process-wide one-shot gate. Production callers cannot substitute path reopening or
+    /// opt out of the descriptor identity check.
     public init() {
-        resolver = DoryFSWorkerFoundationBookmarkResolver.shared
         bootstrapAdmission = Self.processBootstrapAdmission
     }
 
     /// Decodes and consumes one exact bootstrap envelope, returning its exact receipt bytes only
-    /// after every share has resolved, entered scope, opened, and matched its sealed identity.
+    /// after every transferred descriptor has been duplicated and matched to its sealed identity.
     ///
-    /// Any error permanently consumes the process bootstrap attempt. All roots and security scopes
-    /// acquired by the failed transaction are synchronously released before the error is returned.
-    public func bootstrap(exactBytes: Data) throws -> Data {
+    /// Any error permanently consumes the process bootstrap attempt. Every duplicate acquired by
+    /// the failed transaction is synchronously released before the error is returned.
+    public func bootstrap(
+        exactBytes: Data,
+        rootDescriptors: [FileHandle]
+    ) throws -> Data {
         guard bootstrapAdmission.claim() else {
             throw DoryFSWorkerRootAuthorityError.bootstrapAlreadyAttempted
         }
@@ -63,17 +68,23 @@ public final class DoryFSWorkerRootAuthority: @unchecked Sendable {
         var acquired = [OwnedRoot]()
         do {
             let bootstrap = try DoryFSWorkerBootstrapCodec.decode(exactBytes)
+            guard rootDescriptors.count == bootstrap.shares.count else {
+                throw DoryFSWorkerRootAuthorityError.descriptorCountMismatch(
+                    expected: bootstrap.shares.count,
+                    actual: rootDescriptors.count
+                )
+            }
             acquired.reserveCapacity(bootstrap.shares.count)
             for share in bootstrap.shares {
-                acquired.append(try acquireRoot(for: share))
+                acquired.append(try acquireRoot(for: share, from: rootDescriptors))
             }
 
             var roots = [DoryFSShareCapabilityID: OwnedRoot](
                 minimumCapacity: acquired.count
             )
             for root in acquired {
-                // Duplicate capabilities are rejected by the exact bootstrap codec. Retain the
-                // check as a local invariant so future codec versions cannot silently overwrite.
+                // Duplicate capabilities and descriptor indices are rejected by the exact codec.
+                // Retain this invariant locally so future codec versions cannot overwrite roots.
                 guard roots.updateValue(root, forKey: root.capabilityID) == nil else {
                     throw DoryFSWorkerRootAuthorityError.rootIdentityMismatch(root.capabilityID)
                 }
@@ -84,8 +95,6 @@ public final class DoryFSWorkerRootAuthority: @unchecked Sendable {
                 DoryFSWorkerBootstrapReceipt(accepting: bootstrap)
             )
         } catch {
-            // `OwnedRoot.release()` is idempotent because both this rollback and ARC teardown can
-            // observe the same temporary owner while unwinding.
             for root in acquired.reversed() {
                 root.release()
             }
@@ -97,8 +106,8 @@ public final class DoryFSWorkerRootAuthority: @unchecked Sendable {
     /// Borrows the pinned directory for one accepted capability during `body` only.
     ///
     /// The callback is nonescaping and cannot return the descriptor. The temporary duplicate is
-    /// always closed on callback exit, including thrown exits. Code in the future worker runtime
-    /// may construct its share engine inside this lexical scope; it must not retain the integer.
+    /// always closed on callback exit, including thrown exits. A consumer that needs longer-lived
+    /// authority must duplicate it explicitly as part of its own bounded lifetime.
     public func withBorrowedRootFileDescriptor<Result>(
         for capabilityID: DoryFSShareCapabilityID,
         _ body: (Int32) throws -> Result
@@ -115,53 +124,38 @@ public final class DoryFSWorkerRootAuthority: @unchecked Sendable {
         return try body(borrowed)
     }
 
-    // Dependency injection is intentionally internal: production callers cannot replace bookmark
-    // semantics or opt out of the process-wide gate. Focused tests use a fresh gate per scenario.
-    init(
-        resolver: any DoryFSWorkerBookmarkResolving,
-        bootstrapAdmission: DoryFSWorkerBootstrapAdmission
-    ) {
-        self.resolver = resolver
+    // Focused tests use a fresh one-shot gate per scenario. Descriptor acquisition itself is not
+    // injectable: tests exercise the same Darwin duplication and inspection path as production.
+    init(bootstrapAdmission: DoryFSWorkerBootstrapAdmission) {
         self.bootstrapAdmission = bootstrapAdmission
     }
 
     private func acquireRoot(
-        for share: DoryFSShareBootstrapAuthority
+        for share: DoryFSShareBootstrapAuthority,
+        from descriptors: [FileHandle]
     ) throws -> OwnedRoot {
-        let resolution: DoryFSWorkerResolvedBookmark
-        do {
-            resolution = try resolver.resolve(share.securityScopedBookmark)
-        } catch {
-            throw DoryFSWorkerRootAuthorityError.bookmarkResolutionFailed(share.capabilityID)
-        }
-        guard resolution.url.isFileURL else {
-            throw DoryFSWorkerRootAuthorityError.nonFileBookmark(share.capabilityID)
-        }
-        guard resolver.startAccessingSecurityScopedResource(resolution.url) else {
-            throw DoryFSWorkerRootAuthorityError.securityScopeDenied(share.capabilityID)
+        let index = Int(share.rootDescriptorIndex)
+        guard descriptors.indices.contains(index) else {
+            throw DoryFSWorkerRootAuthorityError.descriptorCountMismatch(
+                expected: index + 1,
+                actual: descriptors.count
+            )
         }
 
-        var descriptor: Int32 = -1
-        var transferred = false
-        defer {
-            if !transferred {
-                if descriptor >= 0 {
-                    _ = Darwin.close(descriptor)
-                }
-                resolver.stopAccessingSecurityScopedResource(resolution.url)
-            }
-        }
-
-        descriptor = Self.openDirectoryWithoutFollowing(resolution.url)
-        guard descriptor >= 0 else {
-            throw DoryFSWorkerRootAuthorityError.rootOpenFailed(
+        let duplicate = fcntl(descriptors[index].fileDescriptor, F_DUPFD_CLOEXEC, 0)
+        guard duplicate >= 0 else {
+            throw DoryFSWorkerRootAuthorityError.rootDescriptorUnavailable(
                 share.capabilityID,
                 errno: errno
             )
         }
+        var transferred = false
+        defer {
+            if !transferred { _ = Darwin.close(duplicate) }
+        }
 
         var status = stat()
-        guard fstat(descriptor, &status) == 0 else {
+        guard fstat(duplicate, &status) == 0 else {
             throw DoryFSWorkerRootAuthorityError.rootInspectionFailed(
                 share.capabilityID,
                 errno: errno
@@ -176,25 +170,11 @@ public final class DoryFSWorkerRootAuthority: @unchecked Sendable {
                     == share.expectedRootIdentity.inode,
               UInt64(truncatingIfNeeded: status.st_gen)
                     == share.expectedRootIdentity.generation else {
-            // Foundation's stale bit is advisory: resolution still returned a usable URL, and
-            // Apple's contract asks persistent clients to replace their stored bookmark. This
-            // worker consumes a one-shot process-transfer bookmark and never stores it, so a stale
-            // result is safe only when the independently sealed descriptor identity still matches.
-            // If it does not, distinguish a bookmark that no longer names the sealed root from a
-            // fresh-bookmark identity race without exposing either path or identity on the wire.
-            if resolution.isStale {
-                throw DoryFSWorkerRootAuthorityError.staleBookmark(share.capabilityID)
-            }
             throw DoryFSWorkerRootAuthorityError.rootIdentityMismatch(share.capabilityID)
         }
 
         transferred = true
-        return OwnedRoot(
-            capabilityID: share.capabilityID,
-            descriptor: descriptor,
-            scopedURL: resolution.url,
-            resolver: resolver
-        )
+        return OwnedRoot(capabilityID: share.capabilityID, descriptor: duplicate)
     }
 
     private func acceptedRoot(
@@ -216,30 +196,6 @@ public final class DoryFSWorkerRootAuthority: @unchecked Sendable {
         lifecycle = newValue
         stateLock.unlock()
     }
-
-    private static func openDirectoryWithoutFollowing(_ url: URL) -> Int32 {
-        url.withUnsafeFileSystemRepresentation { representation in
-            guard let representation else {
-                errno = EINVAL
-                return -1
-            }
-            return Darwin.open(
-                representation,
-                O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC
-            )
-        }
-    }
-}
-
-struct DoryFSWorkerResolvedBookmark {
-    let url: URL
-    let isStale: Bool
-}
-
-protocol DoryFSWorkerBookmarkResolving: AnyObject {
-    func resolve(_ bookmark: Data) throws -> DoryFSWorkerResolvedBookmark
-    func startAccessingSecurityScopedResource(_ url: URL) -> Bool
-    func stopAccessingSecurityScopedResource(_ url: URL)
 }
 
 final class DoryFSWorkerBootstrapAdmission: @unchecked Sendable {
@@ -255,53 +211,15 @@ final class DoryFSWorkerBootstrapAdmission: @unchecked Sendable {
     }
 }
 
-private final class DoryFSWorkerFoundationBookmarkResolver:
-    DoryFSWorkerBookmarkResolving,
-    @unchecked Sendable
-{
-    static let shared = DoryFSWorkerFoundationBookmarkResolver()
-
-    func resolve(_ bookmark: Data) throws -> DoryFSWorkerResolvedBookmark {
-        var stale = false
-        let url = try URL(
-            resolvingBookmarkData: bookmark,
-            // The runner sends a one-shot process-transfer bookmark with an implicit ephemeral
-            // scope. Defer activation so RootAuthority can fail closed on the Bool result and pair
-            // every successful start with exactly one stop during rollback or teardown.
-            options: [.withoutUI, .withoutImplicitStartAccessing],
-            relativeTo: nil,
-            bookmarkDataIsStale: &stale
-        )
-        return DoryFSWorkerResolvedBookmark(url: url, isStale: stale)
-    }
-
-    func startAccessingSecurityScopedResource(_ url: URL) -> Bool {
-        url.startAccessingSecurityScopedResource()
-    }
-
-    func stopAccessingSecurityScopedResource(_ url: URL) {
-        url.stopAccessingSecurityScopedResource()
-    }
-}
-
 private final class OwnedRoot: @unchecked Sendable {
     let capabilityID: DoryFSShareCapabilityID
 
     private let releaseLock = NSLock()
     private var descriptor: Int32
-    private let scopedURL: URL
-    private let resolver: any DoryFSWorkerBookmarkResolving
 
-    init(
-        capabilityID: DoryFSShareCapabilityID,
-        descriptor: Int32,
-        scopedURL: URL,
-        resolver: any DoryFSWorkerBookmarkResolving
-    ) {
+    init(capabilityID: DoryFSShareCapabilityID, descriptor: Int32) {
         self.capabilityID = capabilityID
         self.descriptor = descriptor
-        self.scopedURL = scopedURL
-        self.resolver = resolver
     }
 
     func duplicateForBorrow() -> Int32 {
@@ -323,9 +241,7 @@ private final class OwnedRoot: @unchecked Sendable {
         let ownedDescriptor = descriptor
         descriptor = -1
         releaseLock.unlock()
-
         _ = Darwin.close(ownedDescriptor)
-        resolver.stopAccessingSecurityScopedResource(scopedURL)
     }
 
     deinit {

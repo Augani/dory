@@ -1,10 +1,10 @@
 /// Conservative recovery policy for a gvproxy process that is alive but has stopped forwarding.
 ///
-/// Both probes ask the same dockerd instance for `/_ping`. The canary reaches dockerd TCP through a
-/// private gvproxy unix forward; the witness reaches dockerd's unix socket through engine.sock ->
-/// in-process vsock -> guest agent. A failed canary alone is never enough to restart the VM. It
-/// counts only when the independent witness answers at the same time, isolating the sidecar without
-/// treating host network loss, guest startup, or guest overload as a gvproxy fault.
+/// The inert canary reaches the guest agent's HTTP witness through a private gvproxy unix forward;
+/// the independent witness reaches dockerd's Unix socket through engine.sock -> in-process vsock ->
+/// guest agent. A failed canary alone is never enough to restart the VM. It counts only when the
+/// Docker witness answers at the same time, isolating the sidecar without treating host network
+/// loss, guest startup, or guest overload as a gvproxy fault.
 public struct GVProxyDatapathGuard: Sendable {
     public enum Decision: Equatable, Sendable {
         case healthy

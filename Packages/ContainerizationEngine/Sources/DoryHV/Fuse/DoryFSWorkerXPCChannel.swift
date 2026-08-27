@@ -49,9 +49,7 @@ public final class DoryFSWorkerXPCChannel:
     public override init() {
         connection = NSXPCConnection(serviceName: DoryFSWorkerXPC.serviceName)
         super.init()
-        connection.remoteObjectInterface = NSXPCInterface(
-            with: DoryFSWorkerXPCProtocol.self
-        )
+        connection.remoteObjectInterface = DoryFSWorkerXPCInterface.make()
         connection.interruptionHandler = { [weak self] in
             self?.transition(to: .interrupted)
         }
@@ -81,6 +79,7 @@ public final class DoryFSWorkerXPCChannel:
 
     public func bootstrap(
         exactBytes: Data,
+        rootDescriptors: [FileHandle],
         completion: @escaping @Sendable (
             Result<Data, DoryFSWorkerWorkspaceClientError>
         ) -> Void
@@ -99,7 +98,7 @@ public final class DoryFSWorkerXPCChannel:
             transition(to: .interrupted)
             return
         }
-        proxy.bootstrap(exactBytes) { [weak self] bytes in
+        proxy.bootstrap(exactBytes, rootDescriptors: rootDescriptors) { [weak self] bytes in
             guard once.claim() else { return }
             switch Self.unwrapBootstrapResult(bytes) {
             case .success(let payload):
@@ -232,7 +231,10 @@ public final class DoryFSWorkerWorkspaceClient: @unchecked Sendable {
         )
     }
 
-    public static func connect(exactBootstrapBytes: Data) async throws -> Self {
+    public static func connect(
+        exactBootstrapBytes: Data,
+        rootDescriptors: [FileHandle]
+    ) async throws -> Self {
         let bootstrap: DoryFSWorkerBootstrap
         do {
             bootstrap = try DoryFSWorkerBootstrapCodec.decode(exactBootstrapBytes)
@@ -241,7 +243,10 @@ public final class DoryFSWorkerWorkspaceClient: @unchecked Sendable {
         }
         let channel = DoryFSWorkerXPCChannel()
         let receiptBytes: Data = try await withCheckedThrowingContinuation { continuation in
-            channel.bootstrap(exactBytes: exactBootstrapBytes) { result in
+            channel.bootstrap(
+                exactBytes: exactBootstrapBytes,
+                rootDescriptors: rootDescriptors
+            ) { result in
                 continuation.resume(with: result)
             }
         }
@@ -261,6 +266,7 @@ public final class DoryFSWorkerWorkspaceClient: @unchecked Sendable {
 
     public static func connectBlocking(
         exactBootstrapBytes: Data,
+        rootDescriptors: [FileHandle],
         timeout: TimeInterval = 30
     ) throws -> Self {
         let bootstrap: DoryFSWorkerBootstrap
@@ -271,7 +277,10 @@ public final class DoryFSWorkerWorkspaceClient: @unchecked Sendable {
         }
         let channel = DoryFSWorkerXPCChannel()
         let blocking = BlockingBootstrap()
-        channel.bootstrap(exactBytes: exactBootstrapBytes) { result in
+        channel.bootstrap(
+            exactBytes: exactBootstrapBytes,
+            rootDescriptors: rootDescriptors
+        ) { result in
             blocking.condition.withLock {
                 guard blocking.result == nil else { return }
                 blocking.result = result

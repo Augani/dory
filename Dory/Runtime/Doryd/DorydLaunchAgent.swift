@@ -446,8 +446,11 @@ enum DorydLaunchAgent {
                 <string>\(xmlEscaped(runtimeDirectory.appendingPathComponent("docker", isDirectory: true).path))</string>
                 <key>DORYD_MACHINE_RUNTIME_DIR</key>
                 <string>\(xmlEscaped(runtimeDirectory.appendingPathComponent("m", isDirectory: true).path))</string>
+                <!-- Docker bind mounts use native macOS paths. The hypervisor's safe share mode
+                     hides credential stores and other sensitive names while making ordinary
+                     project directories work without per-container VM reconfiguration. -->
                 <key>DORYD_SHARE_HOME</key>
-                <string>0</string>
+                <string>1</string>
                 <key>DORYD_HOST_CLI</key>
                 <string>\(configuration.hostCLIEnabled ? "1" : "0")</string>
                 <key>DORYD_AMD64</key>

@@ -11,7 +11,8 @@ public enum DoryFSWorkerBootstrapError: Error, Equatable, Sendable {
     case incompatibleShareLimit(field: String)
     case invalidShareCount(limit: Int, actual: Int)
     case duplicateShareCapabilityID
-    case invalidBookmarkSize(limit: Int, actual: Int)
+    case invalidRootDescriptorIndex(limit: Int, actual: Int)
+    case duplicateRootDescriptorIndex
     case invalidComponent(String)
     case tooManyComponents(limit: Int, actual: Int)
     case componentBytesTooLarge(limit: Int, actual: Int)
@@ -54,9 +55,9 @@ public struct DoryFSWorkerWorkspaceID: Hashable, Sendable {
     )!
 }
 
-/// Descriptor identity sealed by the daemon before bootstrap and compared by the worker after it
-/// resolves the opaque bookmark. Generation may legitimately be zero on filesystems that do not
-/// expose one; device and inode may not be zero sentinels.
+/// Descriptor identity sealed by the runner before bootstrap and compared by the worker after XPC
+/// transfers the already-open directory descriptor. Generation may legitimately be zero on
+/// filesystems that do not expose one; device and inode may not be zero sentinels.
 public struct DoryFSPinnedRootIdentity: Equatable, Sendable {
     public let device: UInt64
     public let inode: UInt64
@@ -196,7 +197,7 @@ public struct DoryFSShareResourceLimits: Equatable, Sendable {
     }
 
     /// Matches the current production HostFS ceilings while leaving explicit non-guest descriptor
-    /// capacity for the worker channel, bookmark roots, event streams, and supervisor plumbing.
+    /// capacity for the worker channel, pinned roots, event streams, and supervisor plumbing.
     public static let production: Self = try! Self(
         maximumInFlightRequests: 32,
         maximumAggregateRequestBytes: 8 * (40 + 1 * 1_024 * 1_024),
@@ -219,15 +220,16 @@ public struct DoryFSShareResourceLimits: Equatable, Sendable {
 }
 
 /// Complete immutable authority for one share. There is intentionally no host path or guest mount
-/// path: the worker resolves only `securityScopedBookmark`, verifies `expectedRootIdentity`, and
-/// labels subsequent traffic solely by `capabilityID`.
+/// path. `rootDescriptorIndex` binds this record to one descriptor in the XPC bootstrap array; the
+/// worker duplicates that descriptor, verifies `expectedRootIdentity`, and labels subsequent
+/// traffic solely by `capabilityID`.
 public struct DoryFSShareBootstrapAuthority: Equatable, Sendable {
     public let capabilityID: DoryFSShareCapabilityID
     public let expectedRootIdentity: DoryFSPinnedRootIdentity
     public let readOnly: Bool
     public let guestIdentity: DoryFSGuestIdentityPolicy
     public let resourceLimits: DoryFSShareResourceLimits
-    public let securityScopedBookmark: Data
+    public let rootDescriptorIndex: UInt16
     public let hiddenComponents: [String]
     public let rootHiddenComponents: [String]
 
@@ -237,15 +239,14 @@ public struct DoryFSShareBootstrapAuthority: Equatable, Sendable {
         readOnly: Bool,
         guestIdentity: DoryFSGuestIdentityPolicy,
         resourceLimits: DoryFSShareResourceLimits,
-        securityScopedBookmark: Data,
+        rootDescriptorIndex: UInt16,
         hiddenComponents: [String] = [],
         rootHiddenComponents: [String] = []
     ) throws {
-        guard !securityScopedBookmark.isEmpty,
-              securityScopedBookmark.count <= DoryFSWorkerBootstrapCodec.maximumBookmarkBytes else {
-            throw DoryFSWorkerBootstrapError.invalidBookmarkSize(
-                limit: DoryFSWorkerBootstrapCodec.maximumBookmarkBytes,
-                actual: securityScopedBookmark.count
+        guard Int(rootDescriptorIndex) < DoryFSWorkerBootstrapCodec.maximumShares else {
+            throw DoryFSWorkerBootstrapError.invalidRootDescriptorIndex(
+                limit: DoryFSWorkerBootstrapCodec.maximumShares,
+                actual: Int(rootDescriptorIndex)
             )
         }
         let hidden = try Self.canonicalComponents(hiddenComponents)
@@ -267,7 +268,7 @@ public struct DoryFSShareBootstrapAuthority: Equatable, Sendable {
         self.readOnly = readOnly
         self.guestIdentity = guestIdentity
         self.resourceLimits = resourceLimits
-        self.securityScopedBookmark = securityScopedBookmark
+        self.rootDescriptorIndex = rootDescriptorIndex
         self.hiddenComponents = hidden
         self.rootHiddenComponents = rootHidden
     }
@@ -342,9 +343,19 @@ public struct DoryFSWorkerBootstrap: Equatable, Sendable {
         }
         try DoryFSWorkerBootstrapCodec.validate(workerLimits: workerLimits)
         var capabilities = Set<DoryFSShareCapabilityID>()
+        var descriptorIndices = Set<UInt16>()
         for share in shares {
             guard capabilities.insert(share.capabilityID).inserted else {
                 throw DoryFSWorkerBootstrapError.duplicateShareCapabilityID
+            }
+            guard descriptorIndices.insert(share.rootDescriptorIndex).inserted else {
+                throw DoryFSWorkerBootstrapError.duplicateRootDescriptorIndex
+            }
+            guard Int(share.rootDescriptorIndex) < shares.count else {
+                throw DoryFSWorkerBootstrapError.invalidRootDescriptorIndex(
+                    limit: shares.count,
+                    actual: Int(share.rootDescriptorIndex)
+                )
             }
             guard share.resourceLimits.maximumInFlightRequests
                     <= workerLimits.maximumInFlightRequests else {
@@ -365,9 +376,7 @@ public struct DoryFSWorkerBootstrap: Equatable, Sendable {
                 )
             }
         }
-        // Reject an oversized authority set before the encoder allocates and copies its opaque
-        // bookmarks. Per-share limits alone would otherwise permit a bounded but much larger
-        // intermediate buffer than the version-1 wire envelope.
+        // Reject an oversized authority set before the encoder allocates its exact wire envelope.
         _ = try DoryFSWorkerBootstrapCodec.encodedBootstrapByteCount(shares: shares)
         self.workspaceID = workspaceID
         self.generation = generation
@@ -417,15 +426,16 @@ public struct DoryFSWorkerBootstrapReceipt: Equatable, Sendable {
     }
 }
 
-/// Exact little-endian version-1 bootstrap and receipt codec. This is intentionally independent
+/// Exact little-endian version-2 bootstrap and receipt codec. Version 2 replaces path/bookmark
+/// reopening with an index into the bounded FileHandle array transported by XPC. This remains
+/// intentionally independent
 /// of `Codable`, property lists, keyed archives, and Swift object layout.
 public enum DoryFSWorkerBootstrapCodec {
-    public static let version: UInt16 = 1
+    public static let version: UInt16 = 2
     public static let bootstrapHeaderByteCount = 88
     public static let shareRecordHeaderByteCount = 128
     public static let receiptByteCount = 40
     public static let maximumShares = 64
-    public static let maximumBookmarkBytes = 256 * 1_024
     public static let maximumComponentsPerList = 256
     public static let maximumComponentBytes = 255
     public static let maximumComponentBytesPerShare = 128 * 1_024
@@ -646,16 +656,14 @@ public enum DoryFSWorkerBootstrapCodec {
         for share in shares {
             let componentBytes = encodedComponentBytes(share.hiddenComponents)
                 + encodedComponentBytes(share.rootHiddenComponents)
-            let (recordPayload, payloadOverflow) = share.securityScopedBookmark.count
-                .addingReportingOverflow(componentBytes)
             let (recordBytes, recordOverflow) = shareRecordHeaderByteCount
-                .addingReportingOverflow(recordPayload)
+                .addingReportingOverflow(componentBytes)
             let (nextTotal, totalOverflow) = total.addingReportingOverflow(recordBytes)
-            guard !payloadOverflow, !recordOverflow, !totalOverflow,
+            guard !recordOverflow, !totalOverflow,
                   nextTotal <= absoluteMaximumBootstrapBytes else {
                 throw DoryFSWorkerBootstrapError.bootstrapTooLarge(
                     limit: absoluteMaximumBootstrapBytes,
-                    actual: payloadOverflow || recordOverflow || totalOverflow
+                    actual: recordOverflow || totalOverflow
                         ? Int.max
                         : nextTotal
                 )
@@ -702,7 +710,8 @@ public enum DoryFSWorkerBootstrapCodec {
         writer.append(UInt32(limits.maximumAdvisoryLockOwners))
         writer.append(UInt32(limits.maximumPendingBlockingLocks))
         writer.append(UInt32(limits.reservedFileDescriptorHeadroom))
-        writer.append(UInt32(share.securityScopedBookmark.count))
+        writer.append(share.rootDescriptorIndex)
+        writer.append(UInt16(0)) // reserved descriptor transport flags
         writer.append(UInt16(share.hiddenComponents.count))
         writer.append(UInt16(share.rootHiddenComponents.count))
         let componentByteCount = encodedComponentBytes(share.hiddenComponents)
@@ -710,7 +719,6 @@ public enum DoryFSWorkerBootstrapCodec {
         writer.append(UInt32(componentByteCount))
         writer.append(UInt32(0)) // reserved
         precondition(writer.count - recordStart == shareRecordHeaderByteCount)
-        writer.append(Array(share.securityScopedBookmark))
         for component in share.hiddenComponents + share.rootHiddenComponents {
             let bytes = Array(component.utf8)
             writer.append(UInt16(bytes.count))
@@ -796,14 +804,11 @@ public enum DoryFSWorkerBootstrapCodec {
             gid: try reader.readUInt32(field: "share[\(index)].guestGID")
         )
         let limits = try readShareLimits(from: &reader, index: index)
-        let bookmarkLength = Int(
-            try reader.readUInt32(field: "share[\(index)].bookmarkLength")
+        let rootDescriptorIndex = try reader.readUInt16(
+            field: "share[\(index)].rootDescriptorIndex"
         )
-        guard (1...maximumBookmarkBytes).contains(bookmarkLength) else {
-            throw DoryFSWorkerBootstrapError.invalidBookmarkSize(
-                limit: maximumBookmarkBytes,
-                actual: bookmarkLength
-            )
+        guard try reader.readUInt16(field: "share[\(index)].descriptorReserved") == 0 else {
+            throw DoryFSWorkerBootstrapError.nonzeroReservedField
         }
         let hiddenCount = Int(
             try reader.readUInt16(field: "share[\(index)].hiddenCount")
@@ -835,9 +840,6 @@ public enum DoryFSWorkerBootstrapCodec {
         guard try reader.readUInt32(field: "share[\(index)].reserved2") == 0 else {
             throw DoryFSWorkerBootstrapError.nonzeroReservedField
         }
-        let bookmark = Data(
-            try reader.readBytes(count: bookmarkLength, field: "share[\(index)].bookmark")
-        )
         let componentStart = reader.offset
         let hidden = try readComponents(count: hiddenCount, from: &reader, index: index)
         let rootHidden = try readComponents(
@@ -859,7 +861,7 @@ public enum DoryFSWorkerBootstrapCodec {
             readOnly: flags & 1 == 1,
             guestIdentity: guest,
             resourceLimits: limits,
-            securityScopedBookmark: bookmark,
+            rootDescriptorIndex: rootDescriptorIndex,
             hiddenComponents: hidden,
             rootHiddenComponents: rootHidden
         )

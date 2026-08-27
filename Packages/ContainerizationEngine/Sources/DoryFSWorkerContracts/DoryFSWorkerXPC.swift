@@ -6,13 +6,39 @@ public enum DoryFSWorkerXPC {
     public static let serviceName = "com.pythonxi.Dory.HVRunner.FSWorker"
 }
 
-/// The complete Objective-C/XPC surface. Every argument and reply is one exact bounded binary
-/// envelope; no host path, Swift object graph, `Codable` value, or `NSError` crosses the boundary.
+/// The complete Objective-C/XPC surface. Control data remains an exact bounded binary envelope.
+/// Bootstrap additionally transfers a bounded array of already-open directory descriptors; no
+/// host path, Swift object graph, `Codable` value, or `NSError` crosses the boundary.
 @objc(DoryFSWorkerXPCProtocol)
 public protocol DoryFSWorkerXPCProtocol: NSObjectProtocol {
-    func bootstrap(_ request: Data, withReply reply: @escaping (Data) -> Void)
+    func bootstrap(
+        _ request: Data,
+        rootDescriptors: [FileHandle],
+        withReply reply: @escaping (Data) -> Void
+    )
     func exchange(_ frame: Data, withReply reply: @escaping (Data) -> Void)
     func sendOneWay(_ frame: Data)
+}
+
+/// Constructs the single transport interface used by both peers. The descriptor allowlist is
+/// explicit so bootstrap cannot widen into arbitrary secure-coded object authority.
+public enum DoryFSWorkerXPCInterface {
+    public static func make() -> NSXPCInterface {
+        let interface = NSXPCInterface(with: DoryFSWorkerXPCProtocol.self)
+        let descriptorClasses = NSSet(
+            objects: NSArray.self,
+            FileHandle.self
+        ) as! Set<AnyHashable>
+        interface.setClasses(
+            descriptorClasses,
+            for: #selector(
+                DoryFSWorkerXPCProtocol.bootstrap(_:rootDescriptors:withReply:)
+            ),
+            argumentIndex: 1,
+            ofReply: false
+        )
+        return interface
+    }
 }
 
 public enum DoryFSWorkerRPCFailureCode: UInt16, Equatable, Sendable {
@@ -28,20 +54,16 @@ public enum DoryFSWorkerRPCFailureCode: UInt16, Equatable, Sendable {
     case shuttingDown = 10
     case protocolViolation = 11
     case internalFailure = 12
-    case bootstrapBookmarkResolutionFailed = 13
-    case bootstrapBookmarkStale = 14
-    case bootstrapScopeActivationFailed = 15
+    case bootstrapDescriptorTransferFailed = 13
     case bootstrapRootOpenFailed = 16
     case bootstrapRootIdentityMismatch = 17
 }
 
 /// Non-sensitive stage returned when a worker rejects bootstrap authority. The wire result never
-/// includes a host path, capability identifier, bookmark bytes, inode, or errno; it exposes only
+/// includes a host path, capability identifier, descriptor number, inode, or errno; it exposes only
 /// the stage needed to diagnose packaging and sandbox integration without weakening the boundary.
 public enum DoryFSWorkerBootstrapRejectionReason: Equatable, Sendable {
-    case bookmarkResolution
-    case staleBookmark
-    case scopeActivation
+    case descriptorTransfer
     case rootOpen
     case rootIdentity
 }
@@ -49,12 +71,8 @@ public enum DoryFSWorkerBootstrapRejectionReason: Equatable, Sendable {
 public extension DoryFSWorkerRPCFailureCode {
     var bootstrapRejectionReason: DoryFSWorkerBootstrapRejectionReason? {
         switch self {
-        case .bootstrapBookmarkResolutionFailed:
-            .bookmarkResolution
-        case .bootstrapBookmarkStale:
-            .staleBookmark
-        case .bootstrapScopeActivationFailed:
-            .scopeActivation
+        case .bootstrapDescriptorTransferFailed:
+            .descriptorTransfer
         case .bootstrapRootOpenFailed:
             .rootOpen
         case .bootstrapRootIdentityMismatch:

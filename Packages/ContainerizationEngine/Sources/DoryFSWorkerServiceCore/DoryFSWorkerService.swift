@@ -387,7 +387,10 @@ public final class DoryFSWorkerService: @unchecked Sendable {
         self.rootAuthority = rootAuthority
     }
 
-    public func bootstrap(exactBytes: Data) -> Data {
+    public func bootstrap(
+        exactBytes: Data,
+        rootDescriptors: [FileHandle]
+    ) -> Data {
         let claimed = lifecycleLock.withLock { () -> Bool in
             guard case .awaitingBootstrap = lifecycle else { return false }
             lifecycle = .failed
@@ -399,7 +402,10 @@ public final class DoryFSWorkerService: @unchecked Sendable {
 
         do {
             let bootstrap = try DoryFSWorkerBootstrapCodec.decode(exactBytes)
-            let receipt = try rootAuthority.bootstrap(exactBytes: exactBytes)
+            let receipt = try rootAuthority.bootstrap(
+                exactBytes: exactBytes,
+                rootDescriptors: rootDescriptors
+            )
             var shares = [DoryFSShareCapabilityID: Share](
                 minimumCapacity: bootstrap.shares.count
             )
@@ -530,14 +536,9 @@ extension DoryFSWorkerRootAuthorityError {
         switch self {
         case .bootstrapAlreadyAttempted:
             .bootstrapAlreadyAttempted
-        case .bookmarkResolutionFailed, .nonFileBookmark:
-            .bootstrapBookmarkResolutionFailed
-        case .staleBookmark:
-            .bootstrapBookmarkStale
-        case .securityScopeDenied:
-            .bootstrapScopeActivationFailed
-        case .rootOpenFailed, .rootInspectionFailed, .rootIsNotDirectory,
-             .descriptorBorrowFailed:
+        case .descriptorCountMismatch, .rootDescriptorUnavailable:
+            .bootstrapDescriptorTransferFailed
+        case .rootInspectionFailed, .rootIsNotDirectory, .descriptorBorrowFailed:
             .bootstrapRootOpenFailed
         case .rootIdentityMismatch:
             .bootstrapRootIdentityMismatch

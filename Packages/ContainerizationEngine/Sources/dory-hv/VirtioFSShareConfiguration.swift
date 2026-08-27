@@ -209,7 +209,8 @@ enum DoryFilesystemWorkerLauncher {
     ) async throws -> DoryFilesystemWorkerLaunch {
         let prepared = try prepare(shares: shares)
         let client = try await DoryFSWorkerWorkspaceClient.connect(
-            exactBootstrapBytes: prepared.bytes
+            exactBootstrapBytes: prepared.bytes,
+            rootDescriptors: prepared.rootDescriptors
         )
         return DoryFilesystemWorkerLaunch(
             client: client,
@@ -222,7 +223,8 @@ enum DoryFilesystemWorkerLauncher {
     ) throws -> DoryFilesystemWorkerLaunch {
         let prepared = try prepare(shares: shares)
         let client = try DoryFSWorkerWorkspaceClient.connectBlocking(
-            exactBootstrapBytes: prepared.bytes
+            exactBootstrapBytes: prepared.bytes,
+            rootDescriptors: prepared.rootDescriptors
         )
         return DoryFilesystemWorkerLaunch(
             client: client,
@@ -230,16 +232,22 @@ enum DoryFilesystemWorkerLauncher {
         )
     }
 
-    private static func prepare(
+    static func prepare(
         shares: [VirtioFSShareConfiguration]
-    ) throws -> (bytes: Data, capabilities: [String: DoryFSShareCapabilityID]) {
+    ) throws -> (
+        bytes: Data,
+        rootDescriptors: [FileHandle],
+        capabilities: [String: DoryFSShareCapabilityID]
+    ) {
         guard !shares.isEmpty, shares.count <= DoryFSWorkerBootstrapCodec.maximumShares else {
             throw VMError.invalidConfiguration("invalid filesystem worker share count")
         }
         var seenTags = Set<String>()
         var capabilities = [String: DoryFSShareCapabilityID]()
         var authorities = [DoryFSShareBootstrapAuthority]()
+        var rootDescriptors = [FileHandle]()
         authorities.reserveCapacity(shares.count)
+        rootDescriptors.reserveCapacity(shares.count)
         for share in shares {
             guard seenTags.insert(share.tag).inserted else {
                 throw VMError.invalidConfiguration(
@@ -264,18 +272,18 @@ enum DoryFilesystemWorkerLauncher {
                     "cannot inspect virtio-fs share \(share.tag): errno \(savedErrno)"
                 )
             }
-            Darwin.close(descriptor)
-
-            // This authority is transferred to the already-running sandboxed worker and is never
-            // persisted. A plain bookmark carries Foundation's implicit, ephemeral security scope
-            // to the resolving process. Explicit `.withSecurityScope` bookmarks are for a
-            // sandboxed creator to persist and reuse after relaunch; the runner is intentionally
-            // unsandboxed and must not try to mint that different kind of authority.
-            let bookmark = try URL(fileURLWithPath: share.path).bookmarkData(
-                options: [],
-                includingResourceValuesForKeys: nil,
-                relativeTo: nil
-            )
+            // Keep the exact no-follow directory descriptor open and transfer it through signed
+            // XPC. A bookmark created by this unsandboxed runner is only a locator, not a Powerbox
+            // grant for another sandbox identity, while Darwin App Sandbox does not extend an
+            // inherited directory descriptor to descendant `openat` operations. The dedicated
+            // worker therefore shares this runner's host filesystem namespace but receives no host
+            // paths: it duplicates only these descriptors and verifies the sealed identity below
+            // before admitting any FUSE request.
+            let rootDescriptorIndex = UInt16(rootDescriptors.count)
+            rootDescriptors.append(FileHandle(
+                fileDescriptor: descriptor,
+                closeOnDealloc: true
+            ))
             let capability = DoryFSShareCapabilityID.random()
             capabilities[share.tag] = capability
             authorities.append(try DoryFSShareBootstrapAuthority(
@@ -288,7 +296,7 @@ enum DoryFilesystemWorkerLauncher {
                 readOnly: share.readOnly,
                 guestIdentity: DoryFSGuestIdentityPolicy(uid: getuid(), gid: getgid()),
                 resourceLimits: .production,
-                securityScopedBookmark: bookmark,
+                rootDescriptorIndex: rootDescriptorIndex,
                 hiddenComponents: Array(share.hiddenNames),
                 rootHiddenComponents: Array(share.rootHiddenNames)
             ))
@@ -303,6 +311,7 @@ enum DoryFilesystemWorkerLauncher {
         )
         return (
             bytes: try DoryFSWorkerBootstrapCodec.encode(bootstrap),
+            rootDescriptors: rootDescriptors,
             capabilities: capabilities
         )
     }

@@ -317,8 +317,8 @@ final class HostFS: @unchecked Sendable {
 
     /// Constructs the share from an already-authorized directory descriptor. The caller retains
     /// its descriptor; HostFS duplicates it with CLOEXEC and never reopens `eventRootPath` for
-    /// filesystem authority. This is the production seam for a sandbox worker that has resolved a
-    /// security-scoped bookmark and verified the pinned root identity before FUSE admission.
+    /// filesystem authority. This is the production seam for a sandbox worker that received the
+    /// open descriptor over XPC and verified the pinned root identity before FUSE admission.
     public convenience init(
         rootDirectoryFileDescriptor: Int32,
         eventRootPath: String,

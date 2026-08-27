@@ -6,9 +6,7 @@ import Testing
 struct DoryFSWorkerBootstrapContractTests {
     @Test func rpcResultRoundTripsEveryNonSensitiveBootstrapRejectionReason() throws {
         let cases: [(DoryFSWorkerRPCFailureCode, DoryFSWorkerBootstrapRejectionReason)] = [
-            (.bootstrapBookmarkResolutionFailed, .bookmarkResolution),
-            (.bootstrapBookmarkStale, .staleBookmark),
-            (.bootstrapScopeActivationFailed, .scopeActivation),
+            (.bootstrapDescriptorTransferFailed, .descriptorTransfer),
             (.bootstrapRootOpenFailed, .rootOpen),
             (.bootstrapRootIdentityMismatch, .rootIdentity),
         ]
@@ -25,11 +23,11 @@ struct DoryFSWorkerBootstrapContractTests {
     @Test func runnerPromotesTypedBootstrapStageIntoItsDiagnosticError() throws {
         let result = DoryFSWorkerXPCChannel.unwrapBootstrapResult(
             try DoryFSWorkerRPCResultCodec.encode(
-                .failure(.bootstrapScopeActivationFailed)
+                .failure(.bootstrapDescriptorTransferFailed)
             )
         )
 
-        #expect(result == .failure(.bootstrapRejected(.scopeActivation)))
+        #expect(result == .failure(.bootstrapRejected(.descriptorTransfer)))
     }
 
     @Test func canonicalBootstrapAndExactReceiptRoundTrip() throws {
@@ -59,7 +57,7 @@ struct DoryFSWorkerBootstrapContractTests {
         #expect(receipt.acceptedShareCount == UInt16(bootstrap.shares.count))
     }
 
-    @Test func authorityRejectsSentinelsBookmarksAndNonComponents() throws {
+    @Test func authorityRejectsSentinelsDescriptorIndicesAndNonComponents() throws {
         #expect(throws: DoryFSWorkerBootstrapError.invalidWorkspaceIdentity) {
             _ = try DoryFSWorkerWorkspaceID(
                 rawValue: #require(UUID(uuidString: "00000000-0000-0000-0000-000000000000"))
@@ -74,9 +72,9 @@ struct DoryFSWorkerBootstrapContractTests {
 
         let capability = try capability(index: 1)
         let root = try DoryFSPinnedRootIdentity(device: 1, inode: 2, generation: 0)
-        #expect(throws: DoryFSWorkerBootstrapError.invalidBookmarkSize(
-            limit: DoryFSWorkerBootstrapCodec.maximumBookmarkBytes,
-            actual: 0
+        #expect(throws: DoryFSWorkerBootstrapError.invalidRootDescriptorIndex(
+            limit: DoryFSWorkerBootstrapCodec.maximumShares,
+            actual: DoryFSWorkerBootstrapCodec.maximumShares
         )) {
             _ = try DoryFSShareBootstrapAuthority(
                 capabilityID: capability,
@@ -84,7 +82,7 @@ struct DoryFSWorkerBootstrapContractTests {
                 readOnly: false,
                 guestIdentity: DoryFSGuestIdentityPolicy(uid: 0, gid: 0),
                 resourceLimits: .production,
-                securityScopedBookmark: Data()
+                rootDescriptorIndex: UInt16(DoryFSWorkerBootstrapCodec.maximumShares)
             )
         }
         #expect(throws: DoryFSWorkerBootstrapError.invalidComponent("../secret")) {
@@ -136,6 +134,11 @@ struct DoryFSWorkerBootstrapContractTests {
             _ = try makeBootstrap(shares: [duplicate, duplicate])
         }
 
+        let duplicateDescriptor = try bootstrapShare(index: 2, descriptorIndex: 0)
+        #expect(throws: DoryFSWorkerBootstrapError.duplicateRootDescriptorIndex) {
+            _ = try makeBootstrap(shares: [duplicate, duplicateDescriptor])
+        }
+
         let tooMany = try (1...(DoryFSWorkerBootstrapCodec.maximumShares + 1)).map {
             try bootstrapShare(index: $0)
         }
@@ -146,23 +149,6 @@ struct DoryFSWorkerBootstrapContractTests {
             _ = try makeBootstrap(shares: tooMany)
         }
 
-        let maximumBookmarks = try (1...16).map {
-            try bootstrapShare(
-                index: $0,
-                bookmark: Data(count: DoryFSWorkerBootstrapCodec.maximumBookmarkBytes)
-            )
-        }
-        let expectedEncodedBytes = DoryFSWorkerBootstrapCodec.bootstrapHeaderByteCount
-            + maximumBookmarks.count * (
-                DoryFSWorkerBootstrapCodec.shareRecordHeaderByteCount
-                    + DoryFSWorkerBootstrapCodec.maximumBookmarkBytes
-            )
-        #expect(throws: DoryFSWorkerBootstrapError.bootstrapTooLarge(
-            limit: DoryFSWorkerBootstrapCodec.absoluteMaximumBootstrapBytes,
-            actual: expectedEncodedBytes
-        )) {
-            _ = try makeBootstrap(shares: maximumBookmarks)
-        }
     }
 
     @Test func perShareLimitsAreBoundedAndCannotExceedWorkspaceAdmission() throws {
@@ -196,8 +182,8 @@ struct DoryFSWorkerBootstrapContractTests {
         )
 
         var wrongVersion = encoded
-        writeUInt16(2, to: &wrongVersion, at: 4)
-        #expect(throws: DoryFSWorkerBootstrapError.unsupportedBootstrapVersion(2)) {
+        writeUInt16(1, to: &wrongVersion, at: 4)
+        #expect(throws: DoryFSWorkerBootstrapError.unsupportedBootstrapVersion(1)) {
             _ = try DoryFSWorkerBootstrapCodec.decode(wrongVersion)
         }
 
@@ -300,13 +286,17 @@ struct DoryFSWorkerBootstrapContractTests {
             _ = try DoryFSWorkerBootstrapCodec.decode(shortRecord)
         }
 
-        var emptyBookmark = encoded
-        writeUInt32(0, to: &emptyBookmark, at: record + 112)
-        #expect(throws: DoryFSWorkerBootstrapError.invalidBookmarkSize(
-            limit: DoryFSWorkerBootstrapCodec.maximumBookmarkBytes,
-            actual: 0
+        var invalidDescriptorIndex = encoded
+        writeUInt16(
+            UInt16(DoryFSWorkerBootstrapCodec.maximumShares),
+            to: &invalidDescriptorIndex,
+            at: record + 112
+        )
+        #expect(throws: DoryFSWorkerBootstrapError.invalidRootDescriptorIndex(
+            limit: DoryFSWorkerBootstrapCodec.maximumShares,
+            actual: DoryFSWorkerBootstrapCodec.maximumShares
         )) {
-            _ = try DoryFSWorkerBootstrapCodec.decode(emptyBookmark)
+            _ = try DoryFSWorkerBootstrapCodec.decode(invalidDescriptorIndex)
         }
 
         var tooManyComponents = encoded
@@ -333,7 +323,7 @@ struct DoryFSWorkerBootstrapContractTests {
 
     @Test func decodeRejectsDuplicateAndNonCanonicalShareOrder() throws {
         let first = try bootstrapShare(index: 1)
-        let second = try bootstrapShare(index: 2, bookmark: Data([2, 2]))
+        let second = try bootstrapShare(index: 2)
         let encoded = try DoryFSWorkerBootstrapCodec.encode(
             makeBootstrap(shares: [first, second])
         )
@@ -366,7 +356,6 @@ struct DoryFSWorkerBootstrapContractTests {
         let record = DoryFSWorkerBootstrapCodec.bootstrapHeaderByteCount
         let componentStart = record
             + DoryFSWorkerBootstrapCodec.shareRecordHeaderByteCount
-            + share.securityScopedBookmark.count
         var nonCanonical = encoded
         // Skip the UInt16 component length and replace the first ASCII `s`.
         nonCanonical[componentStart + 3] = Character("S").asciiValue!
@@ -392,7 +381,6 @@ struct DoryFSWorkerBootstrapContractTests {
         )
         let duplicateComponentStart = record
             + DoryFSWorkerBootstrapCodec.shareRecordHeaderByteCount
-            + duplicateSource.securityScopedBookmark.count
         // Both names have four UTF-8 bytes. Replace the second spelling while retaining its
         // original length prefix so duplicate validation, not truncation, rejects the frame.
         duplicate.replaceSubrange(
@@ -433,6 +421,23 @@ struct DoryFSWorkerBootstrapContractTests {
             _ = try DoryFSWorkerBootstrapCodec.decodeReceipt(trailing)
         }
     }
+
+    @Test func xpcInterfaceAllowsOnlyTheBoundedRootDescriptorArray() {
+        let interface = DoryFSWorkerXPCInterface.make()
+        let selector = #selector(
+            DoryFSWorkerXPCProtocol.bootstrap(_:rootDescriptors:withReply:)
+        )
+        let expectedClasses = NSSet(
+            objects: NSArray.self,
+            FileHandle.self
+        ) as! Set<AnyHashable>
+
+        #expect(interface.classes(
+            for: selector,
+            argumentIndex: 1,
+            ofReply: false
+        ) == expectedClasses)
+    }
 }
 
 private func makeBootstrap(
@@ -451,7 +456,7 @@ private func makeBootstrap(
 
 private func bootstrapShare(
     index: Int,
-    bookmark: Data? = nil,
+    descriptorIndex: UInt16? = nil,
     hidden: [String] = [],
     rootHidden: [String] = [],
     resourceLimits: DoryFSShareResourceLimits = .production
@@ -469,7 +474,7 @@ private func bootstrapShare(
             gid: UInt32(2_000 + index)
         ),
         resourceLimits: resourceLimits,
-        securityScopedBookmark: bookmark ?? Data([UInt8(truncatingIfNeeded: index)]),
+        rootDescriptorIndex: descriptorIndex ?? UInt16((index - 1) % 64),
         hiddenComponents: hidden,
         rootHiddenComponents: rootHidden
     )

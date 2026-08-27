@@ -9,11 +9,10 @@ struct DoryFSWorkerRootAuthorityTests {
     @Test func rootAuthorityErrorsMapToBoundedNonSensitiveBootstrapReasons() throws {
         let identifier = try capability(index: 1)
         let cases: [(DoryFSWorkerRootAuthorityError, DoryFSWorkerRPCFailureCode)] = [
-            (.bookmarkResolutionFailed(identifier), .bootstrapBookmarkResolutionFailed),
-            (.staleBookmark(identifier), .bootstrapBookmarkStale),
-            (.securityScopeDenied(identifier), .bootstrapScopeActivationFailed),
-            (.rootOpenFailed(identifier, errno: EACCES), .bootstrapRootOpenFailed),
+            (.descriptorCountMismatch(expected: 1, actual: 0), .bootstrapDescriptorTransferFailed),
+            (.rootDescriptorUnavailable(identifier, errno: EBADF), .bootstrapDescriptorTransferFailed),
             (.rootInspectionFailed(identifier, errno: EIO), .bootstrapRootOpenFailed),
+            (.rootIsNotDirectory(identifier), .bootstrapRootOpenFailed),
             (.rootIdentityMismatch(identifier), .bootstrapRootIdentityMismatch),
         ]
 
@@ -22,536 +21,276 @@ struct DoryFSWorkerRootAuthorityTests {
         }
     }
 
-    @Test func acceptsAllSharesThenReturnsExactReceiptAndBoundedDescriptors() throws {
+    @Test func acceptsAllDescriptorsBySealedOrdinalAndBoundsBorrows() throws {
         let tree = try TemporaryDirectoryTree()
         let firstURL = try tree.makeDirectory("first")
         let secondURL = try tree.makeDirectory("second")
-        let firstBookmark = Data([1, 1, 1])
-        let secondBookmark = Data([2, 2, 2])
-        let firstIdentity = try pinnedIdentity(of: firstURL)
-        let secondIdentity = try pinnedIdentity(of: secondURL)
-        let first = try share(
-            index: 1,
-            bookmark: firstBookmark,
-            identity: firstIdentity
-        )
-        let second = try share(
-            index: 2,
-            bookmark: secondBookmark,
-            identity: secondIdentity
-        )
-        let bootstrap = try makeBootstrap(shares: [second, first])
-        let resolver = TestBookmarkResolver([
-            firstBookmark: .init(url: firstURL),
-            secondBookmark: .init(url: secondURL),
-        ])
-        var authority: DoryFSWorkerRootAuthority? = makeAuthority(resolver: resolver)
+        let firstHandle = try openHandle(firstURL, directoryOnly: true)
+        let secondHandle = try openHandle(secondURL, directoryOnly: true)
+        let firstIdentity = try pinnedIdentity(of: firstHandle)
+        let secondIdentity = try pinnedIdentity(of: secondHandle)
+        let first = try share(index: 200, descriptorIndex: 0, identity: firstIdentity)
+        let second = try share(index: 1, descriptorIndex: 1, identity: secondIdentity)
+        let bootstrap = try makeBootstrap(shares: [first, second])
+        var authority: DoryFSWorkerRootAuthority? = makeAuthority()
 
         let receiptBytes = try authority!.bootstrap(
-            exactBytes: DoryFSWorkerBootstrapCodec.encode(bootstrap)
+            exactBytes: DoryFSWorkerBootstrapCodec.encode(bootstrap),
+            rootDescriptors: [firstHandle, secondHandle]
         )
 
         #expect(
             try DoryFSWorkerBootstrapCodec.decodeReceipt(receiptBytes)
                 == DoryFSWorkerBootstrapReceipt(accepting: bootstrap)
         )
-        #expect(resolver.startAttempts(for: firstURL) == 1)
-        #expect(resolver.startAttempts(for: secondURL) == 1)
-        #expect(resolver.activeScopes(for: firstURL) == 1)
-        #expect(resolver.activeScopes(for: secondURL) == 1)
+        #expect(matchingDescriptors(firstIdentity).count == 2)
+        #expect(matchingDescriptors(secondIdentity).count == 2)
 
         var escapedDescriptor: Int32 = -1
         try authority!.withBorrowedRootFileDescriptor(for: first.capabilityID) { descriptor in
             escapedDescriptor = descriptor
-            var status = stat()
-            #expect(fstat(descriptor, &status) == 0)
-            let observedIdentity = try identity(status)
-            #expect(observedIdentity == firstIdentity)
-            let statusFlags = fcntl(descriptor, F_GETFL)
-            #expect(statusFlags >= 0)
-            #expect(statusFlags & O_ACCMODE == O_RDONLY)
-            let descriptorFlags = fcntl(descriptor, F_GETFD)
-            #expect(descriptorFlags >= 0)
-            #expect(descriptorFlags & FD_CLOEXEC != 0)
+            #expect(descriptorNames(descriptor, identity: firstIdentity))
+            #expect(fcntl(descriptor, F_GETFD) & FD_CLOEXEC != 0)
         }
-        // Capturing the temporary integer cannot extend the lexical borrow.
-        #expect(!descriptor(escapedDescriptor, stillNames: firstIdentity))
+        #expect(!descriptorNames(escapedDescriptor, identity: firstIdentity))
 
-        let firstBeforeRelease = matchingDescriptors(firstIdentity)
-        #expect(!firstBeforeRelease.isEmpty)
         authority = nil
-        #expect(resolver.activeScopes(for: firstURL) == 0)
-        #expect(resolver.activeScopes(for: secondURL) == 0)
-        #expect(resolver.stopCalls(for: firstURL) == 1)
-        #expect(resolver.stopCalls(for: secondURL) == 1)
-        #expect(matchingDescriptors(firstIdentity).isDisjoint(with: firstBeforeRelease))
+        #expect(matchingDescriptors(firstIdentity).count == 1)
+        #expect(matchingDescriptors(secondIdentity).count == 1)
     }
 
-    @Test func processAdmissionRejectsSecondAuthorityObject() throws {
+    @Test func descriptorCountMismatchConsumesAttemptWithoutOpeningRoots() throws {
         let tree = try TemporaryDirectoryTree()
         let root = try tree.makeDirectory("root")
-        let bookmark = Data([3])
-        let bootstrap = try makeBootstrap(shares: [
-            share(index: 3, bookmark: bookmark, identity: pinnedIdentity(of: root)),
-        ])
-        let bytes = try DoryFSWorkerBootstrapCodec.encode(bootstrap)
-        let resolver = TestBookmarkResolver([bookmark: .init(url: root)])
-        let gate = DoryFSWorkerBootstrapAdmission()
-        let first = DoryFSWorkerRootAuthority(
-            resolver: resolver,
-            bootstrapAdmission: gate
-        )
-        let second = DoryFSWorkerRootAuthority(
-            resolver: resolver,
-            bootstrapAdmission: gate
-        )
+        let handle = try openHandle(root, directoryOnly: true)
+        let identity = try pinnedIdentity(of: handle)
+        let authorityShare = try share(index: 2, descriptorIndex: 0, identity: identity)
+        let bytes = try encodedBootstrap([authorityShare])
+        let baseline = matchingDescriptors(identity)
+        let authority = makeAuthority()
 
-        _ = try first.bootstrap(exactBytes: bytes)
+        #expect(throws: DoryFSWorkerRootAuthorityError.descriptorCountMismatch(
+            expected: 1,
+            actual: 0
+        )) {
+            _ = try authority.bootstrap(exactBytes: bytes, rootDescriptors: [])
+        }
+        #expect(matchingDescriptors(identity) == baseline)
         #expect(throws: DoryFSWorkerRootAuthorityError.bootstrapAlreadyAttempted) {
-            _ = try second.bootstrap(exactBytes: bytes)
+            _ = try authority.bootstrap(exactBytes: bytes, rootDescriptors: [handle])
         }
-        #expect(resolver.startAttempts(for: root) == 1)
     }
 
-    @Test func malformedExactEnvelopeConsumesTheOnlyBootstrapAttempt() throws {
+    @Test func closedTransferredDescriptorIsRejectedWithoutPathFallback() throws {
         let tree = try TemporaryDirectoryTree()
         let root = try tree.makeDirectory("root")
-        let bookmark = Data([4])
-        let bootstrap = try makeBootstrap(shares: [
-            share(index: 4, bookmark: bookmark, identity: pinnedIdentity(of: root)),
-        ])
-        let valid = try DoryFSWorkerBootstrapCodec.encode(bootstrap)
-        var trailing = valid
-        trailing.append(0)
-        let authority = makeAuthority(
-            resolver: TestBookmarkResolver([bookmark: .init(url: root)])
-        )
+        let descriptor = Darwin.open(root.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+        #expect(descriptor >= 0)
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
+        let identity = try pinnedIdentity(of: handle)
+        let authorityShare = try share(index: 3, descriptorIndex: 0, identity: identity)
+        _ = Darwin.close(descriptor)
+        let authority = makeAuthority()
 
-        #expect(throws: DoryFSWorkerBootstrapError.bootstrapLengthMismatch(
-            declared: UInt32(valid.count),
-            actual: trailing.count
-        )) {
-            _ = try authority.bootstrap(exactBytes: trailing)
-        }
-        #expect(throws: DoryFSWorkerRootAuthorityError.bootstrapAlreadyAttempted) {
-            _ = try authority.bootstrap(exactBytes: valid)
+        do {
+            _ = try authority.bootstrap(
+                exactBytes: encodedBootstrap([authorityShare]),
+                rootDescriptors: [handle]
+            )
+            Issue.record("closed descriptor unexpectedly accepted")
+        } catch let error as DoryFSWorkerRootAuthorityError {
+            guard case .rootDescriptorUnavailable(let capability, let observedErrno) = error else {
+                Issue.record("unexpected error: \(error)")
+                return
+            }
+            #expect(capability == authorityShare.capabilityID)
+            #expect(observedErrno == EBADF)
         }
     }
 
-    @Test func staleOneShotBookmarkIsAcceptedOnlyWhenPinnedIdentityStillMatches() throws {
-        let tree = try TemporaryDirectoryTree()
-        let root = try tree.makeDirectory("root")
-        let bookmark = Data([5])
-        let authorityShare = try share(
-            index: 5,
-            bookmark: bookmark,
-            identity: pinnedIdentity(of: root)
-        )
-        let resolver = TestBookmarkResolver([
-            bookmark: .init(url: root, isStale: true),
-        ])
-        var authority: DoryFSWorkerRootAuthority? = makeAuthority(resolver: resolver)
-
-        _ = try authority!.bootstrap(exactBytes: encodedBootstrap([authorityShare]))
-        #expect(resolver.startAttempts(for: root) == 1)
-        #expect(resolver.activeScopes(for: root) == 1)
-        authority = nil
-        #expect(resolver.stopCalls(for: root) == 1)
-        #expect(resolver.activeScopes(for: root) == 0)
-    }
-
-    @Test func staleBookmarkThatNoLongerNamesPinnedIdentityIsRejectedAndReleased() throws {
-        let tree = try TemporaryDirectoryTree()
-        let original = try tree.makeDirectory("original")
-        let replacement = try tree.makeDirectory("replacement")
-        let bookmark = Data([15])
-        let authorityShare = try share(
-            index: 15,
-            bookmark: bookmark,
-            identity: pinnedIdentity(of: original)
-        )
-        let resolver = TestBookmarkResolver([
-            bookmark: .init(url: replacement, isStale: true),
-        ])
-        let authority = makeAuthority(resolver: resolver)
-
-        #expect(throws: DoryFSWorkerRootAuthorityError.staleBookmark(
-            authorityShare.capabilityID
-        )) {
-            _ = try authority.bootstrap(exactBytes: encodedBootstrap([authorityShare]))
-        }
-        #expect(resolver.startAttempts(for: replacement) == 1)
-        #expect(resolver.stopCalls(for: replacement) == 1)
-        #expect(resolver.activeScopes(for: replacement) == 0)
-    }
-
-    @Test func deniedSecurityScopeNeverOpensOrStopsAnUnstartedScope() throws {
-        let tree = try TemporaryDirectoryTree()
-        let root = try tree.makeDirectory("root")
-        let bookmark = Data([6])
-        let authorityShare = try share(
-            index: 6,
-            bookmark: bookmark,
-            identity: pinnedIdentity(of: root)
-        )
-        let resolver = TestBookmarkResolver([
-            bookmark: .init(url: root, allowsScope: false),
-        ])
-        let before = matchingDescriptors(try pinnedIdentity(of: root))
-        let authority = makeAuthority(resolver: resolver)
-
-        #expect(throws: DoryFSWorkerRootAuthorityError.securityScopeDenied(
-            authorityShare.capabilityID
-        )) {
-            _ = try authority.bootstrap(exactBytes: encodedBootstrap([authorityShare]))
-        }
-        #expect(resolver.startAttempts(for: root) == 1)
-        #expect(resolver.activeScopes(for: root) == 0)
-        #expect(resolver.stopCalls(for: root) == 0)
-        #expect(matchingDescriptors(try pinnedIdentity(of: root)) == before)
-    }
-
-    @Test func rejectsNonDirectoryAndSymbolicLinkRoots() throws {
+    @Test func nonDirectoryDescriptorIsRejected() throws {
         let tree = try TemporaryDirectoryTree()
         let file = try tree.makeFile("ordinary-file")
-        let target = try tree.makeDirectory("target")
-        let link = try tree.makeSymbolicLink("link", destination: target)
+        let handle = try openHandle(file, directoryOnly: false)
+        let authorityShare = try share(
+            index: 4,
+            descriptorIndex: 0,
+            identity: pinnedIdentity(of: handle)
+        )
+        let authority = makeAuthority()
 
-        try assertRootOpenRejected(url: file, index: 7)
-        try assertRootOpenRejected(url: link, index: 8, expectedIdentityURL: target)
+        #expect(throws: DoryFSWorkerRootAuthorityError.rootIsNotDirectory(
+            authorityShare.capabilityID
+        )) {
+            _ = try authority.bootstrap(
+                exactBytes: encodedBootstrap([authorityShare]),
+                rootDescriptors: [handle]
+            )
+        }
     }
 
-    @Test func rejectsPathReplacementAgainstSealedIdentity() throws {
+    @Test func descriptorIdentityMismatchIsRejected() throws {
         let tree = try TemporaryDirectoryTree()
-        let root = try tree.makeDirectory("root")
-        let sealedIdentity = try pinnedIdentity(of: root)
-        let preserved = tree.root.appendingPathComponent("preserved", isDirectory: true)
-        try FileManager.default.moveItem(at: root, to: preserved)
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
-        #expect(try pinnedIdentity(of: root) != sealedIdentity)
-
-        let bookmark = Data([9])
+        let sealed = try openHandle(tree.makeDirectory("sealed"), directoryOnly: true)
+        let replacement = try openHandle(tree.makeDirectory("replacement"), directoryOnly: true)
         let authorityShare = try share(
-            index: 9,
-            bookmark: bookmark,
-            identity: sealedIdentity
+            index: 5,
+            descriptorIndex: 0,
+            identity: pinnedIdentity(of: sealed)
         )
-        let resolver = TestBookmarkResolver([bookmark: .init(url: root)])
-        let authority = makeAuthority(resolver: resolver)
+        let authority = makeAuthority()
 
         #expect(throws: DoryFSWorkerRootAuthorityError.rootIdentityMismatch(
             authorityShare.capabilityID
         )) {
-            _ = try authority.bootstrap(exactBytes: encodedBootstrap([authorityShare]))
-        }
-        #expect(resolver.startAttempts(for: root) == 1)
-        #expect(resolver.stopCalls(for: root) == 1)
-        #expect(resolver.activeScopes(for: root) == 0)
-    }
-
-    @Test func partialMultiShareFailureRollsBackEveryEarlierRootAndScope() throws {
-        let tree = try TemporaryDirectoryTree()
-        let validRoot = try tree.makeDirectory("valid")
-        let invalidRoot = try tree.makeFile("invalid")
-        let validBookmark = Data([10])
-        let invalidBookmark = Data([11])
-        let validIdentity = try pinnedIdentity(of: validRoot)
-        let validShare = try share(
-            index: 10,
-            bookmark: validBookmark,
-            identity: validIdentity
-        )
-        let invalidShare = try share(
-            index: 11,
-            bookmark: invalidBookmark,
-            identity: pinnedIdentity(of: invalidRoot)
-        )
-        let resolver = TestBookmarkResolver([
-            validBookmark: .init(url: validRoot),
-            invalidBookmark: .init(url: invalidRoot),
-        ])
-        let before = matchingDescriptors(validIdentity)
-        let authority = makeAuthority(resolver: resolver)
-
-        do {
             _ = try authority.bootstrap(
-                exactBytes: encodedBootstrap([validShare, invalidShare])
+                exactBytes: encodedBootstrap([authorityShare]),
+                rootDescriptors: [replacement]
             )
-            Issue.record("bootstrap unexpectedly accepted a non-directory second share")
-        } catch let error as DoryFSWorkerRootAuthorityError {
-            guard case .rootOpenFailed(let capabilityID, _) = error else {
-                Issue.record("unexpected authority error: \(error)")
-                return
-            }
-            #expect(capabilityID == invalidShare.capabilityID)
         }
+    }
 
-        #expect(resolver.startAttempts(for: validRoot) == 1)
-        #expect(resolver.stopCalls(for: validRoot) == 1)
-        #expect(resolver.activeScopes(for: validRoot) == 0)
-        #expect(resolver.startAttempts(for: invalidRoot) == 1)
-        #expect(resolver.stopCalls(for: invalidRoot) == 1)
-        #expect(resolver.activeScopes(for: invalidRoot) == 0)
-        #expect(matchingDescriptors(validIdentity) == before)
+    @Test func partialFailureRollsBackEveryEarlierDuplicate() throws {
+        let tree = try TemporaryDirectoryTree()
+        let valid = try openHandle(tree.makeDirectory("valid"), directoryOnly: true)
+        let sealedInvalid = try openHandle(tree.makeDirectory("sealed-invalid"), directoryOnly: true)
+        let replacement = try openHandle(tree.makeDirectory("replacement"), directoryOnly: true)
+        let validIdentity = try pinnedIdentity(of: valid)
+        let validShare = try share(index: 6, descriptorIndex: 0, identity: validIdentity)
+        let invalidShare = try share(
+            index: 7,
+            descriptorIndex: 1,
+            identity: pinnedIdentity(of: sealedInvalid)
+        )
+        let baseline = matchingDescriptors(validIdentity)
+        let authority = makeAuthority()
+
+        #expect(throws: DoryFSWorkerRootAuthorityError.rootIdentityMismatch(
+            invalidShare.capabilityID
+        )) {
+            _ = try authority.bootstrap(
+                exactBytes: encodedBootstrap([validShare, invalidShare]),
+                rootDescriptors: [valid, replacement]
+            )
+        }
+        #expect(matchingDescriptors(validIdentity) == baseline)
         #expect(throws: DoryFSWorkerRootAuthorityError.bootstrapNotAccepted) {
-            try authority.withBorrowedRootFileDescriptor(for: validShare.capabilityID) { _ in }
+            try authority.withBorrowedRootFileDescriptor(for: validShare.capabilityID) { _ in () }
         }
     }
 
-    @Test func unknownCapabilityCannotBorrowOrAlterAcceptedAuthority() throws {
+    @Test func sharedAdmissionRejectsSecondAuthorityObject() throws {
         let tree = try TemporaryDirectoryTree()
-        let root = try tree.makeDirectory("root")
-        let bookmark = Data([12])
-        let accepted = try share(
-            index: 12,
-            bookmark: bookmark,
-            identity: pinnedIdentity(of: root)
+        let handle = try openHandle(tree.makeDirectory("root"), directoryOnly: true)
+        let authorityShare = try share(
+            index: 8,
+            descriptorIndex: 0,
+            identity: pinnedIdentity(of: handle)
         )
-        let authority = makeAuthority(
-            resolver: TestBookmarkResolver([bookmark: .init(url: root)])
-        )
-        _ = try authority.bootstrap(exactBytes: encodedBootstrap([accepted]))
-        let unknown = try capability(index: 13)
-        var invoked = false
+        let bytes = try encodedBootstrap([authorityShare])
+        let gate = DoryFSWorkerBootstrapAdmission()
+        let first = DoryFSWorkerRootAuthority(bootstrapAdmission: gate)
+        let second = DoryFSWorkerRootAuthority(bootstrapAdmission: gate)
 
-        #expect(throws: DoryFSWorkerRootAuthorityError.unknownCapability(unknown)) {
-            try authority.withBorrowedRootFileDescriptor(for: unknown) { _ in
-                invoked = true
-            }
-        }
-        #expect(!invoked)
-
-        // The accepted root remains usable after an unauthorized lookup.
-        try authority.withBorrowedRootFileDescriptor(for: accepted.capabilityID) { descriptor in
-            var status = stat()
-            #expect(fstat(descriptor, &status) == 0)
+        _ = try first.bootstrap(exactBytes: bytes, rootDescriptors: [handle])
+        #expect(throws: DoryFSWorkerRootAuthorityError.bootstrapAlreadyAttempted) {
+            _ = try second.bootstrap(exactBytes: bytes, rootDescriptors: [handle])
         }
     }
 
-    @Test func thrownBorrowClosesTemporaryDescriptorWithoutRevokingRoot() throws {
-        enum ProbeError: Error { case stop }
+    @Test func malformedEnvelopeConsumesTheOnlyBootstrapAttempt() throws {
+        let tree = try TemporaryDirectoryTree()
+        let handle = try openHandle(tree.makeDirectory("root"), directoryOnly: true)
+        let authorityShare = try share(
+            index: 9,
+            descriptorIndex: 0,
+            identity: pinnedIdentity(of: handle)
+        )
+        let valid = try encodedBootstrap([authorityShare])
+        var malformed = valid
+        malformed.append(0)
+        let authority = makeAuthority()
+
+        #expect(throws: DoryFSWorkerBootstrapError.bootstrapLengthMismatch(
+            declared: UInt32(valid.count),
+            actual: malformed.count
+        )) {
+            _ = try authority.bootstrap(exactBytes: malformed, rootDescriptors: [handle])
+        }
+        #expect(throws: DoryFSWorkerRootAuthorityError.bootstrapAlreadyAttempted) {
+            _ = try authority.bootstrap(exactBytes: valid, rootDescriptors: [handle])
+        }
+    }
+
+    @Test func unknownCapabilityAndThrownBorrowDoNotLeakDescriptors() throws {
+        enum BorrowFailure: Error { case expected }
 
         let tree = try TemporaryDirectoryTree()
-        let root = try tree.makeDirectory("root")
-        let rootIdentity = try pinnedIdentity(of: root)
-        let bookmark = Data([14])
-        let accepted = try share(
-            index: 14,
-            bookmark: bookmark,
-            identity: rootIdentity
+        let handle = try openHandle(tree.makeDirectory("root"), directoryOnly: true)
+        let identity = try pinnedIdentity(of: handle)
+        let authorityShare = try share(index: 10, descriptorIndex: 0, identity: identity)
+        let authority = makeAuthority()
+        _ = try authority.bootstrap(
+            exactBytes: encodedBootstrap([authorityShare]),
+            rootDescriptors: [handle]
         )
-        let authority = makeAuthority(
-            resolver: TestBookmarkResolver([bookmark: .init(url: root)])
-        )
-        _ = try authority.bootstrap(exactBytes: encodedBootstrap([accepted]))
+        let beforeBorrow = matchingDescriptors(identity)
         var escaped: Int32 = -1
 
-        #expect(throws: ProbeError.stop) {
-            try authority.withBorrowedRootFileDescriptor(for: accepted.capabilityID) { descriptor in
-                escaped = descriptor
-                throw ProbeError.stop
+        #expect(throws: BorrowFailure.expected) {
+            try authority.withBorrowedRootFileDescriptor(for: authorityShare.capabilityID) {
+                escaped = $0
+                throw BorrowFailure.expected
             }
         }
-        #expect(!descriptor(escaped, stillNames: rootIdentity))
-        try authority.withBorrowedRootFileDescriptor(for: accepted.capabilityID) { descriptor in
-            var status = stat()
-            #expect(fstat(descriptor, &status) == 0)
-            let observedIdentity = try identity(status)
-            #expect(observedIdentity == rootIdentity)
+        #expect(!descriptorNames(escaped, identity: identity))
+        #expect(matchingDescriptors(identity) == beforeBorrow)
+        let unknown = try capability(index: 11)
+        #expect(throws: DoryFSWorkerRootAuthorityError.unknownCapability(unknown)) {
+            try authority.withBorrowedRootFileDescriptor(for: unknown) { _ in () }
         }
     }
 
-    private func assertRootOpenRejected(
-        url: URL,
-        index: Int,
-        expectedIdentityURL: URL? = nil
-    ) throws {
-        let bookmark = Data([UInt8(index)])
-        let authorityShare = try share(
-            index: index,
-            bookmark: bookmark,
-            identity: pinnedIdentity(of: expectedIdentityURL ?? url)
-        )
-        let resolver = TestBookmarkResolver([bookmark: .init(url: url)])
-        let authority = makeAuthority(resolver: resolver)
-
-        do {
-            _ = try authority.bootstrap(exactBytes: encodedBootstrap([authorityShare]))
-            Issue.record("bootstrap unexpectedly opened a non-directory or symbolic-link root")
-        } catch let error as DoryFSWorkerRootAuthorityError {
-            guard case .rootOpenFailed(let capabilityID, _) = error else {
-                Issue.record("unexpected authority error: \(error)")
-                return
-            }
-            #expect(capabilityID == authorityShare.capabilityID)
-        }
-        #expect(resolver.startAttempts(for: url) == 1)
-        #expect(resolver.stopCalls(for: url) == 1)
-        #expect(resolver.activeScopes(for: url) == 0)
-    }
-}
-
-@Suite(.serialized)
-struct DoryFSWorkerServiceTeardownTests {
-    @Test func syncfsFallbackThenCommittedDestroyResetsResourcesAndClosesAdmission() throws {
+    @Test func serviceBootstrapUsesTransferredRootAndRetainsHostFSAuthority() throws {
         let tree = try TemporaryDirectoryTree()
         let root = try tree.makeDirectory("root")
-        let file = root.appendingPathComponent("payload.txt")
-        #expect(FileManager.default.createFile(atPath: file.path, contents: Data([0x44])))
-        let fileIdentity = try pinnedIdentity(of: file)
-        let baselineDescriptors = matchingDescriptors(fileIdentity)
-        let bookmark = Data([20])
+        let handle = try openHandle(root, directoryOnly: true)
         let authorityShare = try share(
-            index: 20,
-            bookmark: bookmark,
-            identity: pinnedIdentity(of: root)
+            index: 12,
+            descriptorIndex: 0,
+            identity: pinnedIdentity(of: handle)
         )
-        let rootAuthority = DoryFSWorkerRootAuthority(
-            resolver: TestBookmarkResolver([bookmark: .init(url: root)]),
-            bootstrapAdmission: DoryFSWorkerBootstrapAdmission()
-        )
-        let service = DoryFSWorkerService(rootAuthority: rootAuthority)
         let bootstrap = try makeBootstrap(shares: [authorityShare])
-        let bootstrapBytes = try DoryFSWorkerBootstrapCodec.encode(bootstrap)
+        let service = DoryFSWorkerService(rootAuthority: makeAuthority())
 
-        let receiptBytes = try unwrapRPC(service.bootstrap(exactBytes: bootstrapBytes))
+        let receiptBytes = try unwrapRPC(service.bootstrap(
+            exactBytes: DoryFSWorkerBootstrapCodec.encode(bootstrap),
+            rootDescriptors: [handle]
+        ))
         #expect(
             try DoryFSWorkerBootstrapCodec.decodeReceipt(receiptBytes)
                 == DoryFSWorkerBootstrapReceipt(accepting: bootstrap)
         )
 
-        let lookup = try execute(
-            service: service,
-            share: authorityShare,
-            requestID: 1,
-            unique: 101,
-            opcode: .lookup,
-            payload: Array("payload.txt\0".utf8),
-            responseCapacity: FuseOutHeader.byteCount + 128
-        )
-        let lookupResponse = try completedResponse(lookup)
-        let nodeID = [UInt8](lookupResponse).leUInt64(at: FuseOutHeader.byteCount)
-        try commit(lookup, service: service)
-
-        let open = try execute(
-            service: service,
-            share: authorityShare,
-            requestID: 2,
-            unique: 102,
-            opcode: .open,
-            nodeID: nodeID,
-            payload: littleEndian(UInt32(O_RDONLY)) + littleEndian(UInt32(0)),
-            responseCapacity: FuseOutHeader.byteCount + 16
-        )
-        _ = try completedResponse(open)
-        try commit(open, service: service)
-        #expect(matchingDescriptors(fileIdentity).count > baselineDescriptors.count)
-
-        let unknown = try execute(
-            service: service,
-            share: authorityShare,
-            requestID: 3,
-            unique: 103,
-            rawOpcode: UInt32.max,
-            opcodeClass: .control,
-            responseCapacity: FuseOutHeader.byteCount
-        )
-        #expect(unknown.outcome == .rejected(.invalidRequest))
-
-        let sync = try execute(
-            service: service,
-            share: authorityShare,
-            requestID: 4,
-            unique: 104,
-            opcode: .syncfs,
-            payload: [UInt8](repeating: 0, count: 8),
-            responseCapacity: FuseOutHeader.byteCount
-        )
-        let syncResponse = try completedResponse(sync)
-        #expect(
-            try FuseProtocol.decodeOutHeader([UInt8](syncResponse)).error
-                == -FuseProtocol.linuxErrno(ENOSYS)
-        )
-        try commit(sync, service: service)
-
-        let destroy = try execute(
-            service: service,
-            share: authorityShare,
-            requestID: 5,
-            unique: 105,
-            opcode: .destroy,
-            nodeID: 0,
-            responseCapacity: FuseOutHeader.byteCount
-        )
-        #expect(try FuseProtocol.decodeOutHeader([UInt8](completedResponse(destroy))).error == 0)
-        try commit(destroy, service: service)
-
-        #expect(matchingDescriptors(fileIdentity) == baselineDescriptors)
-        let afterDestroy = try execute(
-            service: service,
-            share: authorityShare,
-            requestID: 6,
-            unique: 106,
-            opcode: .getattr,
-            payload: FuseProtocol.encodeGetattrIn(FuseGetattrIn()),
-            responseCapacity: FuseOutHeader.byteCount + 104
-        )
-        #expect(afterDestroy.outcome == .rejected(.connectionTeardown))
-    }
-
-    private func execute(
-        service: DoryFSWorkerService,
-        share: DoryFSShareBootstrapAuthority,
-        requestID: UInt64,
-        unique: UInt64,
-        opcode: FuseOpcode,
-        nodeID: UInt64 = HostFS.rootNodeID,
-        payload: [UInt8] = [],
-        responseCapacity: Int
-    ) throws -> DoryFSWorkerReply {
-        try execute(
-            service: service,
-            share: share,
-            requestID: requestID,
-            unique: unique,
-            rawOpcode: opcode.rawValue,
-            opcodeClass: opcode.workerOpcodeClass,
-            nodeID: nodeID,
-            payload: payload,
-            responseCapacity: responseCapacity
-        )
-    }
-
-    private func execute(
-        service: DoryFSWorkerService,
-        share: DoryFSShareBootstrapAuthority,
-        requestID: UInt64,
-        unique: UInt64,
-        rawOpcode: UInt32,
-        opcodeClass: DoryFSWorkerOpcodeClass,
-        nodeID: UInt64 = HostFS.rootNodeID,
-        payload: [UInt8] = [],
-        responseCapacity: Int
-    ) throws -> DoryFSWorkerReply {
-        let requestBytes = FuseProtocol.encodeInHeader(FuseInHeader(
-            length: UInt32(FuseInHeader.byteCount + payload.count),
-            opcode: rawOpcode,
-            unique: unique,
-            nodeID: nodeID,
-            uid: 1_000,
-            gid: 1_000,
-            pid: 42
-        )) + payload
-        let deadline = DispatchTime.now().uptimeNanoseconds + 5_000_000_000
         let request = try DoryFSWorkerRequest(
-            generation: DoryFSWorkerGeneration(rawValue: 17),
-            shareCapabilityID: share.capabilityID,
-            requestID: requestID,
-            correlationID: unique,
-            opcodeClass: opcodeClass,
-            responseCapacity: UInt32(responseCapacity),
-            deadlineUptimeNanoseconds: deadline,
-            payload: Data(requestBytes)
+            generation: bootstrap.generation,
+            shareCapabilityID: authorityShare.capabilityID,
+            requestID: 1,
+            correlationID: 101,
+            opcodeClass: .metadata,
+            responseCapacity: UInt32(FuseOutHeader.byteCount + 104),
+            deadlineUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds + 5_000_000_000,
+            payload: Data(
+                FuseProtocol.encodeInHeader(FuseInHeader(
+                    length: UInt32(FuseInHeader.byteCount + 16),
+                    opcode: FuseOpcode.getattr.rawValue,
+                    unique: 101,
+                    nodeID: HostFS.rootNodeID,
+                    uid: 1_000,
+                    gid: 1_000,
+                    pid: 42
+                )) + FuseProtocol.encodeGetattrIn(FuseGetattrIn())
+            )
         )
         let frame = try DoryFSWorkerFrameCodec.encode(
             .execute(request),
@@ -561,40 +300,32 @@ struct DoryFSWorkerServiceTeardownTests {
         guard case .reply(let reply) = try DoryFSWorkerFrameCodec.decodeServiceFrame(
             response,
             maximumFrameBytes: DoryFSWorkerLimits.production.maximumFrameBytes
-        ) else {
-            throw DoryFSWorkerServiceTeardownTestError.unexpectedServiceFrame
+        ), case .completed(let payload) = reply.outcome else {
+            Issue.record("service did not complete root getattr")
+            return
         }
-        return reply
+        #expect(try FuseProtocol.decodeOutHeader([UInt8](payload)).error == 0)
     }
 
-    private func completedResponse(_ reply: DoryFSWorkerReply) throws -> Data {
-        guard case .completed(let response) = reply.outcome else {
-            throw DoryFSWorkerServiceTeardownTestError.unexpectedReply(reply.outcome)
-        }
-        return response
-    }
-
-    private func commit(
-        _ reply: DoryFSWorkerReply,
-        service: DoryFSWorkerService
-    ) throws {
-        let publication = try DoryFSWorkerPublication(
-            generation: reply.generation,
-            shareCapabilityID: reply.shareCapabilityID,
-            requestID: reply.requestID,
-            correlationID: reply.correlationID
+    @Test func serviceReturnsBoundedDescriptorTransferFailure() throws {
+        let tree = try TemporaryDirectoryTree()
+        let handle = try openHandle(tree.makeDirectory("root"), directoryOnly: true)
+        let authorityShare = try share(
+            index: 13,
+            descriptorIndex: 0,
+            identity: pinnedIdentity(of: handle)
         )
-        service.sendOneWay(exactFrame: try DoryFSWorkerFrameCodec.encode(
-            .commitPublication(publication),
-            maximumFrameBytes: DoryFSWorkerLimits.production.maximumFrameBytes
+        let service = DoryFSWorkerService(rootAuthority: makeAuthority())
+        let result = try DoryFSWorkerRPCResultCodec.decode(service.bootstrap(
+            exactBytes: encodedBootstrap([authorityShare]),
+            rootDescriptors: []
         ))
+        #expect(result == .failure(.bootstrapDescriptorTransferFailed))
     }
 }
 
-private enum DoryFSWorkerServiceTeardownTestError: Error {
+private enum RootAuthorityTestError: Error {
     case unexpectedRPCFailure(DoryFSWorkerRPCFailureCode)
-    case unexpectedServiceFrame
-    case unexpectedReply(DoryFSWorkerReplyOutcome)
 }
 
 private func unwrapRPC(_ data: Data) throws -> Data {
@@ -602,79 +333,7 @@ private func unwrapRPC(_ data: Data) throws -> Data {
     case .success(let payload):
         return payload
     case .failure(let code):
-        throw DoryFSWorkerServiceTeardownTestError.unexpectedRPCFailure(code)
-    }
-}
-
-private func littleEndian<T: FixedWidthInteger>(_ value: T) -> [UInt8] {
-    var value = value.littleEndian
-    return withUnsafeBytes(of: &value) { Array($0) }
-}
-
-private final class TestBookmarkResolver: DoryFSWorkerBookmarkResolving {
-    struct Entry {
-        let url: URL
-        let isStale: Bool
-        let allowsScope: Bool
-
-        init(url: URL, isStale: Bool = false, allowsScope: Bool = true) {
-            self.url = url
-            self.isStale = isStale
-            self.allowsScope = allowsScope
-        }
-    }
-
-    enum ResolutionError: Error { case unknownBookmark }
-
-    private let lock = NSLock()
-    private let entries: [Data: Entry]
-    private var starts = [URL: Int]()
-    private var stops = [URL: Int]()
-    private var active = [URL: Int]()
-
-    init(_ entries: [Data: Entry]) {
-        self.entries = entries
-    }
-
-    func resolve(_ bookmark: Data) throws -> DoryFSWorkerResolvedBookmark {
-        guard let entry = entries[bookmark] else { throw ResolutionError.unknownBookmark }
-        return DoryFSWorkerResolvedBookmark(url: entry.url, isStale: entry.isStale)
-    }
-
-    func startAccessingSecurityScopedResource(_ url: URL) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        starts[url, default: 0] += 1
-        guard entries.values.first(where: { $0.url == url })?.allowsScope == true else {
-            return false
-        }
-        active[url, default: 0] += 1
-        return true
-    }
-
-    func stopAccessingSecurityScopedResource(_ url: URL) {
-        lock.lock()
-        defer { lock.unlock() }
-        stops[url, default: 0] += 1
-        active[url, default: 0] -= 1
-    }
-
-    func startAttempts(for url: URL) -> Int {
-        value(in: starts, for: url)
-    }
-
-    func stopCalls(for url: URL) -> Int {
-        value(in: stops, for: url)
-    }
-
-    func activeScopes(for url: URL) -> Int {
-        value(in: active, for: url)
-    }
-
-    private func value(in values: [URL: Int], for url: URL) -> Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return values[url, default: 0]
+        throw RootAuthorityTestError.unexpectedRPCFailure(code)
     }
 }
 
@@ -683,13 +342,10 @@ private final class TemporaryDirectoryTree {
 
     init() throws {
         root = FileManager.default.temporaryDirectory.appendingPathComponent(
-            "dory-fs-worker-root-authority-\(UUID().uuidString)",
+            "dory-fs-root-authority-\(UUID().uuidString)",
             isDirectory: true
         )
-        try FileManager.default.createDirectory(
-            at: root,
-            withIntermediateDirectories: false
-        )
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
     }
 
     func makeDirectory(_ name: String) throws -> URL {
@@ -706,24 +362,13 @@ private final class TemporaryDirectoryTree {
         return url
     }
 
-    func makeSymbolicLink(_ name: String, destination: URL) throws -> URL {
-        let url = root.appendingPathComponent(name, isDirectory: false)
-        try FileManager.default.createSymbolicLink(at: url, withDestinationURL: destination)
-        return url
-    }
-
     deinit {
         try? FileManager.default.removeItem(at: root)
     }
 }
 
-private func makeAuthority(
-    resolver: TestBookmarkResolver
-) -> DoryFSWorkerRootAuthority {
-    DoryFSWorkerRootAuthority(
-        resolver: resolver,
-        bootstrapAdmission: DoryFSWorkerBootstrapAdmission()
-    )
+private func makeAuthority() -> DoryFSWorkerRootAuthority {
+    DoryFSWorkerRootAuthority(bootstrapAdmission: DoryFSWorkerBootstrapAdmission())
 }
 
 private func encodedBootstrap(
@@ -747,7 +392,7 @@ private func makeBootstrap(
 
 private func share(
     index: Int,
-    bookmark: Data,
+    descriptorIndex: UInt16,
     identity: DoryFSPinnedRootIdentity
 ) throws -> DoryFSShareBootstrapAuthority {
     try DoryFSShareBootstrapAuthority(
@@ -756,7 +401,7 @@ private func share(
         readOnly: index.isMultiple(of: 2),
         guestIdentity: DoryFSGuestIdentityPolicy(uid: 1_000, gid: 1_000),
         resourceLimits: .production,
-        securityScopedBookmark: bookmark,
+        rootDescriptorIndex: descriptorIndex,
         hiddenComponents: [".git"],
         rootHiddenComponents: ["library"]
     )
@@ -770,13 +415,20 @@ private func capability(index: Int) throws -> DoryFSShareCapabilityID {
     )))
 }
 
-private func pinnedIdentity(of url: URL) throws -> DoryFSPinnedRootIdentity {
-    var status = stat()
-    let result: Int32 = url.withUnsafeFileSystemRepresentation { representation in
-        guard let representation else { return Int32(-1) }
-        return lstat(representation, &status)
+private func openHandle(_ url: URL, directoryOnly: Bool) throws -> FileHandle {
+    let flags = O_RDONLY | O_CLOEXEC | (directoryOnly ? O_DIRECTORY : 0)
+    let descriptor = Darwin.open(url.path, flags)
+    guard descriptor >= 0 else {
+        throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
     }
-    guard result == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+    return FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+}
+
+private func pinnedIdentity(of handle: FileHandle) throws -> DoryFSPinnedRootIdentity {
+    var status = stat()
+    guard fstat(handle.fileDescriptor, &status) == 0 else {
+        throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+    }
     return try identity(status)
 }
 
@@ -788,33 +440,21 @@ private func identity(_ status: stat) throws -> DoryFSPinnedRootIdentity {
     )
 }
 
-private func descriptor(
+private func descriptorNames(
     _ descriptor: Int32,
-    stillNames expected: DoryFSPinnedRootIdentity
+    identity expected: DoryFSPinnedRootIdentity
 ) -> Bool {
-    guard descriptor >= 0 else { return false }
     var status = stat()
-    guard fstat(descriptor, &status) == 0 else { return false }
+    guard descriptor >= 0, fstat(descriptor, &status) == 0 else { return false }
     return (try? identity(status)) == expected
 }
 
-private func matchingDescriptors(
-    _ expected: DoryFSPinnedRootIdentity
-) -> Set<Int32> {
+private func matchingDescriptors(_ expected: DoryFSPinnedRootIdentity) -> Set<Int32> {
     var result = Set<Int32>()
     for descriptor in Int32(0)..<Int32(4_096) {
-        if selfDescriptor(descriptor, names: expected) {
+        if descriptorNames(descriptor, identity: expected) {
             result.insert(descriptor)
         }
     }
     return result
-}
-
-private func selfDescriptor(
-    _ descriptor: Int32,
-    names expected: DoryFSPinnedRootIdentity
-) -> Bool {
-    var status = stat()
-    guard fstat(descriptor, &status) == 0 else { return false }
-    return (try? identity(status)) == expected
 }

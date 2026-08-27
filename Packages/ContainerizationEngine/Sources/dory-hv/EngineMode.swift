@@ -1058,7 +1058,7 @@ enum EngineMode {
     }
 
     /// Guest boot: mounts (docker state on the journaled /dev/vdb), DHCP through gvproxy,
-    /// dockerd on its private Unix socket, an inert HTTP datapath canary, a shutdown listener on tcp
+    /// dockerd on its private Unix socket, an agent-owned inert HTTP datapath canary, a shutdown listener on tcp
     /// 2377 (any connection triggers sync + poweroff, giving the host a clean-unmount path), and a light
     /// workload-aware page-cache cap so free page reporting (which handles free pages automatically
     /// at 16 KiB granularity) has cold pages to hand back when the engine is idle.
@@ -1186,7 +1186,6 @@ enum EngineMode {
         )
         script += [
             GuestStorageReclaimCommand.periodicLoop(),
-            GuestDatapathCanary.listener(),
             GuestShutdownCommand.listener(),
             GuestMemoryReclaimBootCommand.hostPressureListener(
                 experimentalSenpai: reclaimPolicy == .senpai
@@ -1200,22 +1199,17 @@ enum EngineMode {
             GuestMemoryReclaimBootCommand.idleLoop(
                 experimentalSenpai: reclaimPolicy == .senpai
             ),
-            // Hand PID 1 to tini (docker-init, shipped in docker:dind) as a reaping init. exec
-            // replaces the boot shell in place, so tini keeps PID 1 while dockerd and the loops
-            // above continue as its children. Container shims double-fork and orphan their exited
-            // children onto PID 1; tini reaps them, so they never pile up as zombies until PID
-            // exhaustion. If tini is ever missing, fall back to an idle shell (accepting zombies
-            // over a failed boot).
-            "[ -x /usr/local/bin/docker-init ] && exec /usr/local/bin/docker-init -s -- sleep 2147483647",
-            "while true; do sleep 2147483647; done",
+            // The Rust guest agent owns PID 1, child reaping, the control plane, and the inert
+            // gvproxy witness. Keeping these lifecycles together prevents a detached boot-shell
+            // listener from disappearing while Docker remains healthy.
+            guestAgentExecCommand(),
         ]
         return script.joined(separator: "\n") + "\n"
     }
 
     private static func guestAgentStartCommand(shares: [VirtioFSShareConfiguration]) -> String {
-        // The share copy comes first: the app refreshes ~/.dory/bin/dory-agent-* from its bundle on
-        // every launch, so preferring it over the rootfs-baked /usr/bin/dory-agent means agent fixes
-        // ship with app updates instead of waiting for a re-bundled engine rootfs.
+        // Stage exactly one agent before starting services. The app-bundled copy comes first, so
+        // agent fixes ship with app updates instead of waiting for a re-bundled engine rootfs.
         var paths = [String]()
         paths.append("/mnt/dory-config/dory-agent")
         for share in shares {
@@ -1225,8 +1219,12 @@ enum EngineMode {
         }
         paths.append("/usr/bin/dory-agent")
         let quotedPaths = paths.map(shellQuote).joined(separator: " ")
-        let ports = HostAIBridge.defaultPorts.map(String.init).joined(separator: ",")
-        return "( for i in $(seq 1 100); do if pgrep -x dory-agent >/dev/null 2>&1; then exit 0; fi; for p in \(quotedPaths); do if [ -r \"$p\" ]; then cp \"$p\" /run/dory-agent && chmod 0755 /run/dory-agent && DORY_HOST_AI_BRIDGE_PORTS=\(shellQuote(ports)) /run/dory-agent >/var/log/dory-agent.log 2>&1 & exit 0; fi; done; sleep 0.2; done; echo 'dory-agent not found after waiting: \(quotedPaths)' >/var/log/dory-agent.log ) & true"
+        return "DORY_AGENT_STAGED=0; for i in $(seq 1 100); do for p in \(quotedPaths); do if [ -r \"$p\" ]; then cp \"$p\" /run/dory-agent && chmod 0755 /run/dory-agent && DORY_AGENT_STAGED=1 && break 2; fi; done; sleep 0.2; done; [ \"$DORY_AGENT_STAGED\" -eq 1 ] || { echo 'dory-agent not found after waiting: \(quotedPaths)' >/var/log/dory-agent.log; sync; poweroff -f; exit 1; }"
+    }
+
+    private static func guestAgentExecCommand() -> String {
+        let bridgePorts = HostAIBridge.defaultPorts.map(String.init).joined(separator: ",")
+        return "DORY_HOST_AI_BRIDGE_PORTS=\(shellQuote(bridgePorts)) \(GuestDatapathCanary.agentEnvironmentAssignment()) exec /run/dory-agent >>/var/log/dory-agent.log 2>&1"
     }
 
     /// The full boot script lives on a dedicated ext4 disk (vdc), so the kernel command line stays

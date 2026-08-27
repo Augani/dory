@@ -36,7 +36,8 @@ pub async fn run() -> std::io::Result<()> {
         serve_docker(),
         serve_shell(),
         serve_fsevents(),
-        serve_ssh_agent()
+        serve_ssh_agent(),
+        crate::datapath_canary::run_from_environment()
     )?;
     Ok(())
 }
