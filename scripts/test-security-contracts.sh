@@ -68,8 +68,20 @@ grep -F 'DorydXPCSecurity.productionDaemonRequirement' \
   dory-core-swift/Sources/dorydctl/main.swift >/dev/null \
   || fail "production dorydctl does not pin doryd's signature"
 
-grep -F 'static let attachSupported = false' Dory/Net/UsbAttachmentStore.swift >/dev/null \
-  || fail "USB passthrough can be advertised before the guest RPC exists"
+# USB passthrough is now implemented end to end. Keep its UI availability bound to the signed
+# raw-hypervisor plan, and keep daemon admission bound to the live guest capability handshake.
+grep -F 'status.runtimeIdentity.authorizesRemovableUSBHotplug' \
+  Dory/Net/UsbAttachmentStore.swift >/dev/null \
+  || fail "USB passthrough UI lost signed-plan authorization"
+grep -F 'supportsAgentCapability(' \
+  dory-core-swift/Sources/DorydKit/MachineManager.swift >/dev/null \
+  || fail "USB passthrough daemon lost live guest capability admission"
+grep -F 'try await channel.usbVhciAttach(request)' \
+  Packages/ContainerizationEngine/Sources/dory-hv/EngineMode.swift >/dev/null \
+  || fail "USB passthrough engine lost its guest attach RPC"
+grep -F 'try await channel.usbVhciDetach(request)' \
+  Packages/ContainerizationEngine/Sources/dory-hv/EngineMode.swift >/dev/null \
+  || fail "USB passthrough engine lost its guest detach RPC"
 
 for kernel_contract in \
   'CONFIG_NETFILTER_XT_MATCH_OWNER=y' \
