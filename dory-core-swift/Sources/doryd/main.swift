@@ -112,11 +112,27 @@ let machineManager = dorydEnvironment.machineManagerConfiguration().flatMap { co
                     .appending("legacy-compatible and cannot acquire production support authority\n").utf8
             ))
         }
+        let bootstrapStateBroker: DoryMachineStateBroker?
+        do {
+            bootstrapStateBroker = dorydEnvironment.vmQualificationBootstrapEnabled
+                ? try DoryMachineStateBroker(
+                    canonicalStateRootPath: configuration.stateDirectory
+                )
+                : nil
+        } catch {
+            FileHandle.standardError.write(Data(
+                "doryd: VM qualification bootstrap state authority unavailable: \(error)\n".utf8
+            ))
+            return nil
+        }
         let manager = MachineManager(
             configuration: configuration,
             launchPolicy: .legacyCompatibility,
             allowsNewMachinesInLegacyCompatibility:
-                dorydEnvironment.vmQualificationBootstrapEnabled
+                dorydEnvironment.vmQualificationBootstrapEnabled,
+            allowsQualificationBootstrapLaunches:
+                dorydEnvironment.vmQualificationBootstrapEnabled,
+            machineStateBroker: bootstrapStateBroker
         )
         manager.installDesktopUpdateArtifactResolver(desktopUpdateArtifactResolver)
         return manager

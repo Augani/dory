@@ -1079,6 +1079,71 @@ struct RawHVRuntimeLaunchAuthority: @unchecked Sendable {
     let inheritedFileDescriptors: [HvProcessInheritedFileDescriptor]
 }
 
+private struct DoryQualificationBootstrapLaunchPlan: Codable, Sendable {
+    let schemaVersion: UInt16
+    let qualificationMode: String
+    let verdict: String
+    let definition: DoryVirtualMachineDefinition
+    let devices: DoryVirtualMachineDeviceCapabilityRequest
+    let topology: DoryRawHVVirtualHardwareTopology
+    let executionResources: RuntimeLaunchEnvelope.RawHVExecutionResources
+    let backendRuntimeBuildIdentifier: String
+    let backendExecutableSHA256: String
+    let managedBootArtifactSHA256: String
+    let systemDiskCapacityBytes: UInt64
+    let components: [DoryResolvedBackendComponentEvidence]
+}
+
+private struct DoryQualificationBootstrapGraphicsExpectation: Sendable {
+    let operationID: UUID
+    let launchPlanSHA256: String
+    let planRevision: UInt64
+}
+
+/// Single-launch handoff authority for the explicitly enabled, non-release-qualifying VM
+/// bootstrap. The box is captured by the handoff server before filesystem admission begins, but
+/// remains empty until the exact envelope and descriptor set have been validated. It is never
+/// persisted and cannot be mistaken for a durable resolved plan.
+private final class DoryQualificationBootstrapHandoffAuthority: @unchecked Sendable {
+    private let lock = NSLock()
+    private var expectation: DoryQualificationBootstrapGraphicsExpectation?
+
+    func publish(_ value: DoryQualificationBootstrapGraphicsExpectation) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        guard expectation == nil else {
+            throw MachineManagerError.persistence(
+                "qualification bootstrap handoff authority was already published"
+            )
+        }
+        expectation = value
+    }
+
+    func accepts(
+        _ selection: DoryRuntimeGraphicsSelection?,
+        operationID: UUID
+    ) -> Bool? {
+        lock.lock()
+        let expected = expectation
+        lock.unlock()
+        guard let expected else { return nil }
+        guard expected.operationID == operationID,
+              let selection else { return false }
+        return selection.matchesResolvedRawHVLaunch(
+            operationID: operationID,
+            planSHA256: expected.launchPlanSHA256,
+            planRevision: expected.planRevision,
+            accelerationLevel: .hardwareAccelerated3D
+        )
+    }
+}
+
+private struct DoryQualificationBootstrapRuntimeAuthority: @unchecked Sendable {
+    let runtime: RawHVRuntimeLaunchAuthority
+    let rendererReleaseIdentity: DoryRendererReleaseIdentityV1
+    let graphicsExpectation: DoryQualificationBootstrapGraphicsExpectation
+}
+
 struct RawHVAdmittedSystemDisk: @unchecked Sendable {
     let capacityBytes: UInt64
     let authority: HvProcessInheritedFileDescriptor
@@ -1197,6 +1262,7 @@ public final class MachineManager: @unchecked Sendable {
     private let flightRecorderStore: DoryMachineFlightRecorderStore
     private let launchPolicy: DoryMachineLaunchPolicy
     private let allowsNewMachinesInLegacyCompatibility: Bool
+    private let allowsQualificationBootstrapLaunches: Bool
     private var storageCapacityProvider: @Sendable (String) throws -> UInt64
     private let lifecycleJournalStore: DoryOperationJournalStore?
     private let lifecycleJournalInitializationError: String?
@@ -1251,6 +1317,7 @@ public final class MachineManager: @unchecked Sendable {
         configuration: MachineManagerConfiguration,
         launchPolicy: DoryMachineLaunchPolicy = .legacyCompatibility,
         allowsNewMachinesInLegacyCompatibility: Bool = true,
+        allowsQualificationBootstrapLaunches: Bool = false,
         machineStateBroker: DoryMachineStateBroker? = nil,
         balloonController: any MachineBalloonControlling = UnixMachineBalloonController(),
         deviceTelemetryController: any MachineDeviceTelemetryControlling =
@@ -1268,6 +1335,8 @@ public final class MachineManager: @unchecked Sendable {
         self.launchPolicy = launchPolicy
         self.allowsNewMachinesInLegacyCompatibility =
             allowsNewMachinesInLegacyCompatibility
+        self.allowsQualificationBootstrapLaunches =
+            allowsQualificationBootstrapLaunches
         self.machineStateBroker = machineStateBroker
         rendererCrashSuppressionStore = nil
         self.balloonController = balloonController
@@ -2221,7 +2290,8 @@ public final class MachineManager: @unchecked Sendable {
                 prepared.machine,
                 shareAuthorities: prepared.shareAuthorities,
                 launchBinding: nil,
-                operationID: operationID
+                operationID: operationID,
+                qualificationBootstrapDefinition: prepared.definition
             )
             if let lifecycle {
                 if status.state == .failed {
@@ -3178,7 +3248,8 @@ public final class MachineManager: @unchecked Sendable {
         launchBinding: MachineBackendLaunchBinding?,
         operationID: UUID,
         preSpawnAuthorization: DoryDaemonVirtualMachinePreSpawnAuthorization? = nil,
-        resolvedPlan: DoryResolvedMachinePlan? = nil
+        resolvedPlan: DoryResolvedMachinePlan? = nil,
+        qualificationBootstrapDefinition: DoryVirtualMachineDefinition? = nil
     ) throws -> DoryMachineStatus {
         let snapshot: MachineLaunchAdmissionSnapshot
         do {
@@ -3196,6 +3267,8 @@ public final class MachineManager: @unchecked Sendable {
         let id = preparedMachine.id
         let handoffPath = configuration.requiresReadyHandoff ? handoffSocketPath(id: id) : nil
         let launchID = UUID()
+        let qualificationBootstrapHandoffAuthority =
+            DoryQualificationBootstrapHandoffAuthority()
         let handoffServer: VmmHandoffServer?
         do {
             try preparePrivateMachineRuntimeDirectory(id: id)
@@ -3205,6 +3278,8 @@ public final class MachineManager: @unchecked Sendable {
                         machineID: id,
                         launchID: launchID,
                         expectedOperationID: operationID,
+                        qualificationBootstrapHandoffAuthority:
+                            qualificationBootstrapHandoffAuthority,
                         result: result
                     )
                 }
@@ -3241,7 +3316,7 @@ public final class MachineManager: @unchecked Sendable {
             } else {
                 preSpawnLaunchAuthority = .noRendererReleaseIdentityRequired
             }
-            let rendererReleaseIdentity = try Self.resolvedRendererReleaseIdentity(
+            var rendererReleaseIdentity = try Self.resolvedRendererReleaseIdentity(
                 preSpawnLaunchAuthority: preSpawnLaunchAuthority,
                 resolvedLaunchBinding: launchBinding
             )
@@ -3287,6 +3362,7 @@ public final class MachineManager: @unchecked Sendable {
                 expectedShares: snapshot.configuration.shares
             )
             let runtimeLaunchAuthority: RawHVRuntimeLaunchAuthority?
+            var qualificationBootstrapLaunch = false
             if launchBinding?.backend.identity == .doryHypervisor {
                 guard let resolvedPlan,
                       let launchBinding,
@@ -3439,6 +3515,17 @@ public final class MachineManager: @unchecked Sendable {
                     )
                 }
                 authorityTransferred = true
+            } else if let bootstrapAuthority = try qualificationBootstrapRuntimeAuthority(
+                machine: launchMachine,
+                definition: qualificationBootstrapDefinition,
+                operationID: operationID
+            ) {
+                runtimeLaunchAuthority = bootstrapAuthority.runtime
+                rendererReleaseIdentity = bootstrapAuthority.rendererReleaseIdentity
+                try qualificationBootstrapHandoffAuthority.publish(
+                    bootstrapAuthority.graphicsExpectation
+                )
+                qualificationBootstrapLaunch = true
             } else {
                 runtimeLaunchAuthority = nil
             }
@@ -3449,7 +3536,8 @@ public final class MachineManager: @unchecked Sendable {
                 resolvedLaunchBinding: launchBinding,
                 restoreStatePath: snapshot.pendingRestoreStatePath,
                 runtimeLaunchAuthority: runtimeLaunchAuthority,
-                rendererReleaseIdentity: rendererReleaseIdentity
+                rendererReleaseIdentity: rendererReleaseIdentity,
+                qualificationBootstrapLaunch: qualificationBootstrapLaunch
             )
         } catch {
             discardUncommittedMachineLaunch(
@@ -7099,6 +7187,219 @@ public final class MachineManager: @unchecked Sendable {
         return policy
     }
 
+    /// Builds a one-launch, descriptor-backed RawHV authority for the explicit local candidate
+    /// build. It reuses the same signed runner/worker graph, immutable renderer bootstrap, sparse
+    /// topology, and suspended-child CDHash gate as production. The plan is deliberately transient
+    /// and permanently labelled non-release-qualifying; durable runtime identity remains legacy.
+    private func qualificationBootstrapRuntimeAuthority(
+        machine: DoryMachineConfiguration,
+        definition: DoryVirtualMachineDefinition?,
+        operationID: UUID
+    ) throws -> DoryQualificationBootstrapRuntimeAuthority? {
+        guard allowsQualificationBootstrapLaunches,
+              launchPolicy == .legacyCompatibility,
+              machine.displayMode == .desktop,
+              machine.installerISOPath == nil,
+              try DoryDesktopVMMPreference(environment: machine.environment)
+                == .accelerated,
+              try DoryDesktopGraphicsPreference(environment: machine.environment)
+                .requiredBackend == .virglVenus else {
+            return nil
+        }
+        guard let definition,
+              definition.identity.id == machine.id,
+              definition.validate().isEmpty,
+              definition.graphics.acceptableLevels.contains(.hardwareAccelerated3D),
+              let bootID = definition.boot.order.first,
+              definition.boot.order.count == 1,
+              let bootMedia = definition.boot.devices.first(where: { $0.id == bootID }),
+              definition.boot.devices.count == 1 else {
+            throw MachineManagerError.persistence(
+                "qualification bootstrap requires one exact valid desktop definition"
+            )
+        }
+        let managedDirectory = machineStateDirectory(id: machine.id)
+        guard machine.rootfsPath == managedDirectory + "/rootfs.ext4",
+              machine.kernelPath == managedDirectory + "/kernel" else {
+            throw MachineManagerError.persistence(
+                "qualification bootstrap paths do not match managed machine storage"
+            )
+        }
+        guard let executablePath = configuration.acceleratedDesktopExecutablePath,
+              FileManager.default.isExecutableFile(atPath: executablePath),
+              let machineStateBroker else {
+            throw MachineManagerError.persistence(
+                "qualification bootstrap runtime authority is unavailable"
+            )
+        }
+
+        let executableSHA256 = try Self.fileSHA256(path: executablePath)
+        let runtimeBuildIdentifier = "sha256:\(executableSHA256)"
+        guard let rendererAdmission = try DoryDaemonRendererProductionAuthority.verifyIfPresent(
+            runnerExecutablePath: executablePath,
+            runtimeBuildIdentifier: runtimeBuildIdentifier
+        ), rendererAdmission.authorizes(runtimeBuildIdentifier: runtimeBuildIdentifier) else {
+            throw MachineManagerError.persistence(
+                "qualification bootstrap rejected the signed renderer component graph"
+            )
+        }
+        guard let runnerCodeDirectoryHash = rendererAdmission.runnerCodeDirectoryHash,
+              let rendererWorkerCodeDirectoryHash =
+                rendererAdmission.rendererWorkerCodeDirectoryHash else {
+            throw MachineManagerError.persistence(
+                "qualification bootstrap signed code identity is unavailable"
+            )
+        }
+        let rendererReleaseIdentity = DoryRendererReleaseIdentityV1(
+            runnerCodeDirectoryHash: runnerCodeDirectoryHash,
+            rendererWorkerCodeDirectoryHash: rendererWorkerCodeDirectoryHash,
+            tupleDefinitionSHA256: try DoryRendererArtifactDigest(
+                lowercaseSHA256: DoryRendererSourceTuple.productionDefinitionSHA256,
+                field: "rendererTupleDefinition"
+            )
+        )
+
+        var diskInfo = stat()
+        guard lstat(machine.rootfsPath, &diskInfo) == 0,
+              diskInfo.st_mode & S_IFMT == S_IFREG,
+              diskInfo.st_size > 0,
+              UInt64(diskInfo.st_size) == definition.resources.diskBytes else {
+            throw MachineManagerError.persistence(
+                "qualification bootstrap system-disk capacity does not match workspace intent"
+            )
+        }
+        let bootArtifactSHA256 = try Self.fileSHA256(path: machine.kernelPath)
+        let devices = DoryDaemonVirtualMachinePlanningCoordinator.devices(for: definition)
+        let topology = try DoryRawHVVirtualHardwareTopologyPlanner.resolve(
+            definition: definition,
+            resolvedDevices: devices
+        )
+        let executionResources = RuntimeLaunchEnvelope.RawHVExecutionResources.production(
+            memoryMB: machine.memoryMB,
+            virtualCPUCount: UInt16(machine.cpuCount)
+        )
+        var components = rendererAdmission.qualifiedComponents.map {
+            DoryResolvedBackendComponentEvidence(
+                componentIdentifier: $0.componentIdentifier,
+                buildIdentifier: $0.buildIdentifier,
+                artifactSHA256: $0.artifactSHA256
+            )
+        }
+        components.append(DoryResolvedBackendComponentEvidence(
+            componentIdentifier: "dory-hv",
+            buildIdentifier: runtimeBuildIdentifier,
+            artifactSHA256: executableSHA256
+        ))
+        components.sort { $0.componentIdentifier < $1.componentIdentifier }
+        let plan = DoryQualificationBootstrapLaunchPlan(
+            schemaVersion: 1,
+            qualificationMode: "candidate-bootstrap",
+            verdict: "not-release-qualifying",
+            definition: definition,
+            devices: devices,
+            topology: topology,
+            executionResources: executionResources,
+            backendRuntimeBuildIdentifier: runtimeBuildIdentifier,
+            backendExecutableSHA256: executableSHA256,
+            managedBootArtifactSHA256: bootArtifactSHA256,
+            systemDiskCapacityBytes: UInt64(diskInfo.st_size),
+            components: components
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let planData = try encoder.encode(plan)
+        let launchPlanSHA256 = SHA256.hash(data: planData).map {
+            String(format: "%02x", $0)
+        }.joined()
+
+        let lease: DoryMachineDirectoryLease
+        do {
+            lease = try machineStateBroker.acquireMachineDirectoryLease(
+                machineID: machine.id
+            )
+        } catch {
+            throw MachineManagerError.persistence(
+                "qualification bootstrap machine-directory authority is unavailable: \(error)"
+            )
+        }
+        let admitted = try lease.withBorrowedDescriptor { directory in
+            try Self.admitResolvedRawHVResources(
+                machineDirectoryDescriptor: directory,
+                machineDirectoryGeneration: lease.generation,
+                expectedDiskCapacityBytes: UInt64(diskInfo.st_size),
+                mediaKind: bootMedia.kind,
+                expectedArtifactSHA256: bootArtifactSHA256,
+                machineBootMode: machine.bootMode,
+                installerISOPath: nil,
+                rendererBootstrapRequest: RawHVRendererBootstrapRequest(
+                    workspaceID: operationID,
+                    generation: definition.lifecycle.revision,
+                    runtimeBuildIdentifier: runtimeBuildIdentifier,
+                    components: components,
+                    rendererWorkerCodeDirectoryHash:
+                        rendererReleaseIdentity.rendererWorkerCodeDirectoryHash
+                )
+            )
+        }
+        var authorityTransferred = false
+        defer {
+            if !authorityTransferred { admitted.close() }
+        }
+        guard let systemDiskLogicalID = topology.occupiedSlots.first(where: {
+            $0.role == .systemDisk
+        })?.logicalID else {
+            throw MachineManagerError.persistence(
+                "qualification bootstrap topology omitted the system disk"
+            )
+        }
+        let envelope = RuntimeLaunchEnvelope.resolvedRawHV(
+            machineID: machine.id,
+            operationID: operationID,
+            resolvedPlanSHA256: launchPlanSHA256,
+            planRevision: definition.lifecycle.revision,
+            backendRuntimeBuildIdentifier: runtimeBuildIdentifier,
+            virtualHardwareABIVersion: definition.virtualHardwareABIVersion,
+            rawHVVirtualHardwareTopology: topology,
+            graphics: .hardwareAccelerated3D,
+            devices: devices,
+            portForwards: definition.portForwards,
+            executionResources: executionResources,
+            systemDiskCapacityBytes: admitted.disk.capacityBytes,
+            systemDiskLogicalID: systemDiskLogicalID,
+            linuxRootDevice: admitted.boot.rootDevice,
+            genericGuest: admitted.boot.genericGuest,
+            linuxKernelByteCount: admitted.boot.kernel.byteCount,
+            linuxKernelSHA256: admitted.boot.kernel.sha256,
+            linuxInitrdByteCount: admitted.boot.initrd?.byteCount,
+            linuxInitrdSHA256: admitted.boot.initrd?.sha256,
+            rendererBootstrapByteCount: admitted.rendererBootstrap?.byteCount,
+            rendererBootstrapSHA256: admitted.rendererBootstrap?.sha256
+        )
+        _ = try envelope.validatedResolvedRawHVResources()
+        do {
+            _ = try lease.revalidate()
+        } catch {
+            throw MachineManagerError.persistence(
+                "qualification bootstrap machine-directory authority changed before spawn: \(error)"
+            )
+        }
+        authorityTransferred = true
+        return DoryQualificationBootstrapRuntimeAuthority(
+            runtime: RawHVRuntimeLaunchAuthority(
+                envelope: envelope,
+                inheritedFileDescriptors: [admitted.disk.authority]
+                    + admitted.boot.authorities
+                    + (admitted.rendererBootstrap.map { [$0.authority] } ?? [])
+            ),
+            rendererReleaseIdentity: rendererReleaseIdentity,
+            graphicsExpectation: DoryQualificationBootstrapGraphicsExpectation(
+                operationID: operationID,
+                launchPlanSHA256: launchPlanSHA256,
+                planRevision: definition.lifecycle.revision
+            )
+        )
+    }
+
     private func processConfiguration(
         for machine: DoryMachineConfiguration,
         operationID: UUID,
@@ -7106,7 +7407,8 @@ public final class MachineManager: @unchecked Sendable {
         resolvedLaunchBinding: MachineBackendLaunchBinding?,
         restoreStatePath: String?,
         runtimeLaunchAuthority: RawHVRuntimeLaunchAuthority?,
-        rendererReleaseIdentity: DoryRendererReleaseIdentityV1?
+        rendererReleaseIdentity: DoryRendererReleaseIdentityV1?,
+        qualificationBootstrapLaunch: Bool = false
     ) throws -> (configuration: HvProcessConfiguration,
                  backend: DoryVirtualizationBackendIdentity) {
         let target = try processTarget(
@@ -7123,7 +7425,8 @@ public final class MachineManager: @unchecked Sendable {
                 acceleratedDesktop: target.acceleratedDesktop,
                 resolvedLaunchBinding: resolvedLaunchBinding,
                 restoreStatePath: restoreStatePath,
-                runtimeLaunchEnvelope: runtimeLaunchAuthority?.envelope
+                runtimeLaunchEnvelope: runtimeLaunchAuthority?.envelope,
+                qualificationBootstrapLaunch: qualificationBootstrapLaunch
             ),
             logPath: "\(configuration.logDirectory)/\(machine.id).log",
             restartPolicy: configuration.requiresReadyHandoff
@@ -7986,7 +8289,8 @@ public final class MachineManager: @unchecked Sendable {
         acceleratedDesktop: Bool,
         resolvedLaunchBinding: MachineBackendLaunchBinding?,
         restoreStatePath: String?,
-        runtimeLaunchEnvelope: RuntimeLaunchEnvelope?
+        runtimeLaunchEnvelope: RuntimeLaunchEnvelope?,
+        qualificationBootstrapLaunch: Bool = false
     ) throws -> [String] {
         guard configuration.passMachineArguments else {
             if runtimeLaunchEnvelope != nil {
@@ -8027,7 +8331,8 @@ public final class MachineManager: @unchecked Sendable {
         }
         if let runtimeLaunchEnvelope {
             guard acceleratedDesktop,
-                  resolvedLaunchBinding?.backend.identity == .doryHypervisor else {
+                  resolvedLaunchBinding?.backend.identity == .doryHypervisor
+                    || qualificationBootstrapLaunch else {
                 throw MachineManagerError.persistence(
                     "runtime launch envelope is not valid for the selected backend"
                 )
@@ -11465,6 +11770,8 @@ public final class MachineManager: @unchecked Sendable {
         machineID: String,
         launchID: UUID,
         expectedOperationID: UUID,
+        qualificationBootstrapHandoffAuthority:
+            DoryQualificationBootstrapHandoffAuthority,
         result: Result<VmmHandoff, Error>
     ) {
         let hasProductionAdmissionLedger = productionAdmissionLedgerSnapshot() != nil
@@ -11535,7 +11842,9 @@ public final class MachineManager: @unchecked Sendable {
                 handoff.ready.graphicsSelection,
                 plan: admissionPlan,
                 backend: entry.activeBackend,
-                operationID: expectedOperationID
+                operationID: expectedOperationID,
+                qualificationBootstrapHandoffAuthority:
+                    qualificationBootstrapHandoffAuthority
             ) else {
                 entry.state = .failed
                 setFailure(
@@ -11660,9 +11969,19 @@ public final class MachineManager: @unchecked Sendable {
         _ selection: DoryRuntimeGraphicsSelection?,
         plan: DoryResolvedMachinePlan?,
         backend: DoryVirtualizationBackendIdentity?,
-        operationID: UUID
+        operationID: UUID,
+        qualificationBootstrapHandoffAuthority:
+            DoryQualificationBootstrapHandoffAuthority
     ) -> Bool {
         switch (plan, backend) {
+        case (nil, .doryHypervisor):
+            if let accepted = qualificationBootstrapHandoffAuthority.accepts(
+                selection,
+                operationID: operationID
+            ) {
+                return accepted
+            }
+            return selection == nil
         case (nil, _):
             // Legacy compatibility has no immutable plan generation and must not publish a
             // resolved graphics claim through a decorative ready payload. It can still have a

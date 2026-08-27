@@ -29,6 +29,10 @@ struct DoryDaemonRendererAccelerationAdmission: Sendable, Equatable {
     let rendererWorkerExecutable: DoryRendererArtifactDigest
     let bootstrapQualification: DoryRendererArtifactDigest?
     let bootstrapQualificationSignature: DoryRendererArtifactDigest?
+    /// Present only when admission was derived from a freshly verified signed runner bundle.
+    /// Recovered durable component evidence intentionally cannot reconstruct code identity.
+    let runnerCodeDirectoryHash: DoryCodeDirectoryHash?
+    let rendererWorkerCodeDirectoryHash: DoryCodeDirectoryHash?
 
     init(
         schemaVersion: UInt16 = Self.currentSchemaVersion,
@@ -37,7 +41,9 @@ struct DoryDaemonRendererAccelerationAdmission: Sendable, Equatable {
         guestMesa: DoryRendererArtifactDigest,
         rendererWorkerExecutable: DoryRendererArtifactDigest,
         bootstrapQualification: DoryRendererArtifactDigest? = nil,
-        bootstrapQualificationSignature: DoryRendererArtifactDigest? = nil
+        bootstrapQualificationSignature: DoryRendererArtifactDigest? = nil,
+        runnerCodeDirectoryHash: DoryCodeDirectoryHash? = nil,
+        rendererWorkerCodeDirectoryHash: DoryCodeDirectoryHash? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.runtimeBuildIdentifier = runtimeBuildIdentifier
@@ -46,6 +52,8 @@ struct DoryDaemonRendererAccelerationAdmission: Sendable, Equatable {
         self.rendererWorkerExecutable = rendererWorkerExecutable
         self.bootstrapQualification = bootstrapQualification
         self.bootstrapQualificationSignature = bootstrapQualificationSignature
+        self.runnerCodeDirectoryHash = runnerCodeDirectoryHash
+        self.rendererWorkerCodeDirectoryHash = rendererWorkerCodeDirectoryHash
     }
 
     var releaseQualificationIsAuthenticated: Bool {
@@ -264,7 +272,7 @@ enum DoryDaemonRendererProductionAuthority {
         // The outer application seal is launch authority even for a software-only RawHV runner.
         // A missing renderer inventory may suppress acceleration; it may not bypass bundle or
         // nested-code signature validation.
-        _ = try verifyCode(
+        let runnerCodeDirectoryHash = try verifyCode(
             at: runnerBundle,
             expectedIdentifier: DoryRendererWorkerIdentity.runnerBundleIdentifier,
             checkNestedCode: true
@@ -475,7 +483,9 @@ enum DoryDaemonRendererProductionAuthority {
             ),
             rendererWorkerExecutable: worker.digest,
             bootstrapQualification: qualification.receiptSHA256,
-            bootstrapQualificationSignature: qualificationSignatureDigest
+            bootstrapQualificationSignature: qualificationSignatureDigest,
+            runnerCodeDirectoryHash: runnerCodeDirectoryHash,
+            rendererWorkerCodeDirectoryHash: workerCodeDirectoryHash
         )
         guard admission.authorizes(runtimeBuildIdentifier: runtimeBuildIdentifier) else {
             throw DoryDaemonRendererProductionAuthorityError.artifactInvalid(

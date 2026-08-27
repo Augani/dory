@@ -732,8 +732,8 @@ public enum DoryLinuxVMCalibrationLauncher {
                 guestUIScaleFactor: 2
             )],
             audio: DoryVMAudioConfiguration(
-                inputEnabled: false,
-                outputEnabled: false
+                inputEnabled: true,
+                outputEnabled: true
             ),
             input: DoryVMInputConfiguration(
                 keyboardEnabled: true,
