@@ -82,7 +82,7 @@ final class DoryVMMKitTests: XCTestCase {
     func testVZDesktopNormalizesNaturalScrollingAtCoreGraphicsBoundary() throws {
         let cgEvent = try XCTUnwrap(CGEvent(
             scrollWheelEvent2Source: nil,
-            units: .pixel,
+            units: .line,
             wheelCount: 2,
             wheel1: 9,
             wheel2: -4,
@@ -122,6 +122,38 @@ final class DoryVMMKitTests: XCTestCase {
             guestCGEvent.getDoubleValueField(.scrollWheelEventFixedPtDeltaAxis2),
             -sourceCGEvent.getDoubleValueField(.scrollWheelEventFixedPtDeltaAxis2)
         )
+    }
+
+    func testVZDesktopPreservesPreciseTrackpadGestureSemantics() throws {
+        let cgEvent = try XCTUnwrap(CGEvent(
+            scrollWheelEvent2Source: nil,
+            units: .pixel,
+            wheelCount: 2,
+            wheel1: 9,
+            wheel2: -4,
+            wheel3: 0
+        ))
+        cgEvent.setIntegerValueField(
+            .scrollWheelEventScrollPhase,
+            value: Int64(NSEvent.Phase.changed.rawValue)
+        )
+        cgEvent.setIntegerValueField(
+            .scrollWheelEventMomentumPhase,
+            value: Int64(NSEvent.Phase.changed.rawValue)
+        )
+        let appKitEvent = try XCTUnwrap(NSEvent(cgEvent: cgEvent))
+
+        XCTAssertTrue(appKitEvent.hasPreciseScrollingDeltas)
+        let guestEvent = DoryVMMInputBridge.scrollEventForGuest(
+            appKitEvent,
+            directionInvertedFromDevice: true
+        )
+
+        XCTAssertTrue(guestEvent === appKitEvent)
+        XCTAssertEqual(guestEvent.scrollingDeltaY, appKitEvent.scrollingDeltaY)
+        XCTAssertEqual(guestEvent.scrollingDeltaX, appKitEvent.scrollingDeltaX)
+        XCTAssertEqual(guestEvent.phase, appKitEvent.phase)
+        XCTAssertEqual(guestEvent.momentumPhase, appKitEvent.momentumPhase)
     }
 
     @MainActor

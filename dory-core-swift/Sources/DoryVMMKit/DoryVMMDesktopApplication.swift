@@ -265,10 +265,13 @@ final class DoryVMMDesktopApplication: NSObject, NSApplicationDelegate, NSWindow
     }
 }
 
-/// `VZVirtualMachineView` consumes the device-oriented Core Graphics wheel fields instead of
-/// AppKit's view-oriented deltas. When macOS natural scrolling is enabled, normalize those fields
-/// once before handing the event to Virtualization.framework. The RawHV display has its own evdev
-/// bridge and must continue to use `NSEvent.scrollingDelta*` directly.
+/// `VZVirtualMachineView` consumes discrete mouse-wheel events from the device-oriented Core
+/// Graphics fields, so natural scrolling needs one sign normalization for those events. Precise
+/// trackpad and Magic Mouse events are already phase-aware AppKit gestures; rebuilding them from a
+/// copied `CGEvent` drops that semantic stream and turns one gesture into a burst of emulated Linux
+/// wheel-button clicks. Preserve precise events unchanged so Virtualization.framework retains
+/// their direction, phase, momentum, and coalescing. The RawHV display has its own evdev bridge and
+/// must continue to use `NSEvent.scrollingDelta*` directly.
 enum DoryVMMInputBridge {
     static func scrollEventForGuest(
         _ event: NSEvent,
@@ -276,7 +279,8 @@ enum DoryVMMInputBridge {
     ) -> NSEvent {
         let requiresNormalization = directionInvertedFromDevice
             ?? event.isDirectionInvertedFromDevice
-        guard requiresNormalization,
+        guard !event.hasPreciseScrollingDeltas,
+              requiresNormalization,
               let normalizedCGEvent = event.cgEvent?.copy() else {
             return event
         }
