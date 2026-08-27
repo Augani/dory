@@ -402,7 +402,8 @@ public enum DoryComponentCatalogVerifier {
                   qualification.component.isRemovable,
                   safeRelativePath(qualification.path),
                   !qualification.manifestIdentity.isEmpty,
-                  qualification.manifestFormatVersion > 0,
+                  qualification.manifestFormatVersion
+                    == DoryVirtualMachineQualificationManifest.schemaVersion,
                   !qualification.signingKeyID.isEmpty,
                   qualificationComponent?.qualification?.isEmpty == false,
                   qualificationComponent?.assets.contains(where: {

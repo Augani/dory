@@ -178,6 +178,43 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertTrue(manager.list().isEmpty)
     }
 
+    func testMigrationOnlyLegacyPolicyRejectsNewMachinesBeforeCreatingState() throws {
+        let base = "/tmp/dory-machine-migration-only-\(getpid())-"
+            + "\(UInt32.random(in: 0..<UInt32.max))"
+        let manager = MachineManager(
+            configuration: MachineManagerConfiguration(
+                vmmExecutablePath: "/bin/sleep",
+                stateDirectory: base,
+                baseArguments: ["30"],
+                passMachineArguments: false,
+                requiresReadyHandoff: false
+            ),
+            launchPolicy: .legacyCompatibility,
+            allowsNewMachinesInLegacyCompatibility: false
+        )
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        XCTAssertThrowsError(try manager.create(DoryMachineConfiguration(
+            id: "blocked",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath,
+            displayMode: .headless
+        ))) { error in
+            guard case let MachineManagerError.persistence(message) = error else {
+                return XCTFail("unexpected error: \(error)")
+            }
+            XCTAssertEqual(
+                message,
+                "new machine creation requires a schema-2 qualified VM component catalog; "
+                    + "legacy compatibility is migration-only"
+            )
+        }
+        XCTAssertTrue(manager.list().isEmpty)
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: "\(base)/blocked")
+        )
+    }
+
     func testPauseResumePreservesTheRunningHelperAndStopAcceptsPausedMachine() throws {
         let base = "/tmp/dory-machine-pause-resume-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let manager = MachineManager(configuration: MachineManagerConfiguration(

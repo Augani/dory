@@ -235,7 +235,8 @@ struct DorySignedComponentCandidateImporterTests {
                         with: ""
                     ),
                     manifestIdentity: "qualification-manifest-1",
-                    manifestFormatVersion: 1,
+                    manifestFormatVersion:
+                        DoryVirtualMachineQualificationManifest.schemaVersion,
                     signingKeyID: Self.digest(key.publicKey.rawRepresentation)
                 )
             )

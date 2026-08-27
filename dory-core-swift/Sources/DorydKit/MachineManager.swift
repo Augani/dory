@@ -1196,6 +1196,7 @@ public final class MachineManager: @unchecked Sendable {
     private let failureStore: DoryMachineFailureStore
     private let flightRecorderStore: DoryMachineFlightRecorderStore
     private let launchPolicy: DoryMachineLaunchPolicy
+    private let allowsNewMachinesInLegacyCompatibility: Bool
     private var storageCapacityProvider: @Sendable (String) throws -> UInt64
     private let lifecycleJournalStore: DoryOperationJournalStore?
     private let lifecycleJournalInitializationError: String?
@@ -1249,6 +1250,7 @@ public final class MachineManager: @unchecked Sendable {
     public init(
         configuration: MachineManagerConfiguration,
         launchPolicy: DoryMachineLaunchPolicy = .legacyCompatibility,
+        allowsNewMachinesInLegacyCompatibility: Bool = true,
         machineStateBroker: DoryMachineStateBroker? = nil,
         balloonController: any MachineBalloonControlling = UnixMachineBalloonController(),
         deviceTelemetryController: any MachineDeviceTelemetryControlling =
@@ -1264,6 +1266,8 @@ public final class MachineManager: @unchecked Sendable {
     ) {
         self.configuration = configuration
         self.launchPolicy = launchPolicy
+        self.allowsNewMachinesInLegacyCompatibility =
+            allowsNewMachinesInLegacyCompatibility
         self.machineStateBroker = machineStateBroker
         rendererCrashSuppressionStore = nil
         self.balloonController = balloonController
@@ -1576,6 +1580,13 @@ public final class MachineManager: @unchecked Sendable {
     ) throws -> DoryMachineStatus {
         let mutationLease = mutationCoordinator.acquire(workspaceID: requestedMachine.id)
         defer { mutationLease.release() }
+        if launchPolicy == .legacyCompatibility,
+           !allowsNewMachinesInLegacyCompatibility {
+            throw MachineManagerError.persistence(
+                "new machine creation requires a schema-2 qualified VM component catalog; "
+                    + "legacy compatibility is migration-only"
+            )
+        }
         var machine = requestedMachine
         // Public create callers cannot manufacture clone evidence. It is minted only by the
         // snapshot-clone path after an exact APFS clone and destination digest verification.

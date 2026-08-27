@@ -133,6 +133,19 @@ final class DoryVirtualMachineQualificationManifestTests: XCTestCase {
             installedComponents: components
         ))
     }
+
+    func testReceiptWithInvalidDetachedSignatureCannotMintTrust() throws {
+        let fixture = try QualificationFixture(validPerformanceSignature: false)
+        defer { fixture.cleanup() }
+        try fixture.installAuthority()
+
+        XCTAssertThrowsError(try fixture.resolveAuthority()) { error in
+            XCTAssertEqual(
+                error as? DoryVirtualMachineQualificationAuthorityError,
+                .performanceEvidenceInvalid("receipt signature is invalid")
+            )
+        }
+    }
 }
 
 private enum RawBackendContract {
@@ -145,6 +158,8 @@ private final class QualificationFixture {
     let privateKey = Curve25519.Signing.PrivateKey()
     let appVersion = "1.0.0"
     let manifestPath = "vm-qualifications.json"
+    let performanceReceiptPath = String(repeating: "e", count: 64)
+        + ".linux-vm-performance-verification.json"
     let hostModel = "Mac15,3"
     let hostBuild = "26A5406c"
     let mediaDigest = String(repeating: "a", count: 64)
@@ -158,6 +173,8 @@ private final class QualificationFixture {
     let catalogData: Data
     let catalogSignature: String
     let manifestData: Data
+    let performanceReceiptData: Data
+    let performanceSignatureData: Data
 
     var hostFacts: DoryAppleSiliconHostFacts {
         DoryAppleSiliconHostFacts(
@@ -191,7 +208,11 @@ private final class QualificationFixture {
         )
     }
 
-    init(catalogSchemaVersion: Int = 2, declaresAuthority: Bool = true) throws {
+    init(
+        catalogSchemaVersion: Int = 2,
+        declaresAuthority: Bool = true,
+        validPerformanceSignature: Bool = true
+    ) throws {
         root = FileManager.default.temporaryDirectory.appendingPathComponent(
             "dory-vm-qualification-\(UUID().uuidString)",
             isDirectory: true
@@ -220,6 +241,43 @@ private final class QualificationFixture {
             graphics: .none,
             devices: devices
         )
+        let signingKeyID = Self.digest(privateKey.publicKey.rawRepresentation)
+        let candidateBinding = DoryVirtualMachineQualificationCandidateBinding(
+            componentCandidateInventorySHA256: String(repeating: "c", count: 64),
+            sbomSHA256: String(repeating: "3", count: 64)
+        )
+        performanceReceiptData = try Self.jsonData([
+            "bundleInventorySHA256": String(repeating: "f", count: 64),
+            "candidate": [
+                "applicationSHA256": String(repeating: "1", count: 64),
+                "budgetSetSHA256": String(repeating: "2", count: 64),
+                "componentCandidateInventorySHA256":
+                    candidateBinding.componentCandidateInventorySHA256,
+                "runtimePlanSHA256": String(repeating: "4", count: 64),
+                "sbomSHA256": candidateBinding.sbomSHA256,
+                "virtualHardwareABIVersion": String(request.virtualHardwareABIVersion),
+            ],
+            "kind": "dev.dory.linux-vm-performance-verification-receipt",
+            "releaseQualified": true,
+            "schemaVersion": 1,
+            "signaturePublicKeyID": signingKeyID,
+            "supportCell": [
+                "backend": "rawhv",
+                "graphicsImplementation": "software",
+                "hostIdentitySHA256": String(repeating: "5", count: 64),
+                "installedSystemIdentitySHA256": String(repeating: "6", count: 64),
+                "installerSHA256": mediaDigest,
+                "matrixCellID": String(repeating: "e", count: 64),
+                "requestedGraphicsQuality": "software",
+                "selectedGraphicsQuality": "software",
+            ],
+        ])
+        let receiptSignature = try privateKey.signature(for: performanceReceiptData)
+        performanceSignatureData = Data(
+            ((validPerformanceSignature
+                ? receiptSignature
+                : Data(repeating: 0, count: 64)).base64EncodedString() + "\n").utf8
+        )
         record = DoryVirtualMachineQualificationRecord(
             qualificationIdentity: "raw-linux-arm64-none-v1",
             guest: request.guest,
@@ -234,14 +292,22 @@ private final class QualificationFixture {
             devices: devices,
             hostHardwareModelIdentifier: hostModel,
             hostOperatingSystemBuild: hostBuild,
-            components: runtimeComponents
+            components: runtimeComponents,
+            performanceQualification: DoryVirtualMachinePerformanceQualificationEvidence(
+                bundleInventorySHA256: String(repeating: "f", count: 64),
+                graphicsImplementation: "software",
+                matrixCellID: String(repeating: "e", count: 64),
+                signaturePublicKeyID: signingKeyID,
+                verificationReceiptPath: performanceReceiptPath,
+                verificationReceiptSHA256: Self.digest(performanceReceiptData)
+            )
         )
-        let signingKeyID = Self.digest(privateKey.publicKey.rawRepresentation)
         manifest = DoryVirtualMachineQualificationManifest(
             manifestIdentity: "dory-vm-qualifications-2026.8",
             catalogReleaseVersion: "1.0.0",
             architecture: "arm64",
             signingKeyID: signingKeyID,
+            candidateBinding: candidateBinding,
             records: [record]
         )
         manifestData = try Self.encoded(manifest)
@@ -256,13 +322,31 @@ private final class QualificationFixture {
         let hostRequirements = isVersionTwo
             ? DoryComponentHostRequirements(platform: "macos", minimumVersion: "14.0")
             : nil
-        let asset = DoryComponentAsset(
+        let manifestAsset = DoryComponentAsset(
             path: manifestPath,
             url: "https://example.invalid/\(manifestPath)",
             downloadBytes: UInt64(manifestData.count),
             installedBytes: UInt64(manifestData.count),
             sha256: Self.digest(manifestData),
             installedSHA256: Self.digest(manifestData),
+            role: isVersionTwo ? .qualificationEvidence : nil
+        )
+        let performanceAsset = DoryComponentAsset(
+            path: performanceReceiptPath,
+            url: "https://example.invalid/\(performanceReceiptPath)",
+            downloadBytes: UInt64(performanceReceiptData.count),
+            installedBytes: UInt64(performanceReceiptData.count),
+            sha256: Self.digest(performanceReceiptData),
+            installedSHA256: Self.digest(performanceReceiptData),
+            role: isVersionTwo ? .qualificationEvidence : nil
+        )
+        let performanceSignatureAsset = DoryComponentAsset(
+            path: performanceReceiptPath + ".sig",
+            url: "https://example.invalid/\(performanceReceiptPath).sig",
+            downloadBytes: UInt64(performanceSignatureData.count),
+            installedBytes: UInt64(performanceSignatureData.count),
+            sha256: Self.digest(performanceSignatureData),
+            installedSHA256: Self.digest(performanceSignatureData),
             role: isVersionTwo ? .qualificationEvidence : nil
         )
         let core = DoryComponentRelease(
@@ -287,9 +371,15 @@ private final class QualificationFixture {
             displayName: "Linux Machines",
             summary: "Qualified Linux runtimes",
             dependencies: [.dockerCore],
-            downloadBytes: UInt64(manifestData.count),
-            installedBytes: UInt64(manifestData.count),
-            assets: [asset],
+            downloadBytes: UInt64(
+                manifestData.count + performanceReceiptData.count
+                    + performanceSignatureData.count
+            ),
+            installedBytes: UInt64(
+                manifestData.count + performanceReceiptData.count
+                    + performanceSignatureData.count
+            ),
+            assets: [manifestAsset, performanceAsset, performanceSignatureAsset],
             architectures: isVersionTwo ? ["arm64"] : nil,
             hostRequirements: hostRequirements,
             provides: isVersionTwo ? ["guest.linux-headless.arm64@1"] : nil,
@@ -327,15 +417,33 @@ private final class QualificationFixture {
             appVersion: appVersion
         )
         let source = root.appendingPathComponent("qualification-source.json")
+        let performanceSource = root.appendingPathComponent("performance-source.json")
+        let performanceSignatureSource = root.appendingPathComponent(
+            "performance-signature-source.txt"
+        )
         try manifestData.write(to: source)
+        try performanceReceiptData.write(to: performanceSource)
+        try performanceSignatureData.write(to: performanceSignatureSource)
         try FileManager.default.setAttributes(
             [.posixPermissions: 0o600],
             ofItemAtPath: source.path
         )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: performanceSource.path
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: performanceSignatureSource.path
+        )
         return try store.install(
             try XCTUnwrap(catalog.component(.linuxMachines)),
             catalogDigest: DoryComponentCatalogVerifier.digest(catalogData),
-            downloadedAssets: [manifestPath: source.path]
+            downloadedAssets: [
+                manifestPath: source.path,
+                performanceReceiptPath: performanceSource.path,
+                performanceReceiptPath + ".sig": performanceSignatureSource.path,
+            ]
         )
     }
 
@@ -354,6 +462,11 @@ private final class QualificationFixture {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         return try encoder.encode(value) + Data("\n".utf8)
+    }
+
+    private static func jsonData(_ value: Any) throws -> Data {
+        try JSONSerialization.data(withJSONObject: value, options: [.prettyPrinted, .sortedKeys])
+            + Data("\n".utf8)
     }
 
     private static func digest(_ data: Data) -> String {

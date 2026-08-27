@@ -100,14 +100,16 @@ let machineManager = dorydEnvironment.machineManagerConfiguration().flatMap { co
             return nil
         }
         // Explicit migration window: no catalog or a signature-verified schema-v1 catalog has no
-        // qualification authority yet, so the existing compatibility path stays labeled.
+        // qualification authority yet. Existing machines retain their labeled compatibility path,
+        // but new machines cannot be created without schema-2 evidence.
         FileHandle.standardError.write(Data(
-            "doryd: VM launch policy legacyCompatibility "
+            "doryd: VM launch policy legacyCompatibilityMigrationOnly "
                 .appending("(\(trustFailure.code.rawValue): \(trustFailure.message))\n").utf8
         ))
         let manager = MachineManager(
             configuration: configuration,
-            launchPolicy: .legacyCompatibility
+            launchPolicy: .legacyCompatibility,
+            allowsNewMachinesInLegacyCompatibility: false
         )
         manager.installDesktopUpdateArtifactResolver(desktopUpdateArtifactResolver)
         return manager

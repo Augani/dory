@@ -1922,15 +1922,39 @@ private final class ProductionTrustFixture: @unchecked Sendable {
             (DoryBootMediaKind.installedLinuxBootBundle, mediaDigest, "bundle"),
             (DoryBootMediaKind.linuxKernel, directKernelDigest, "kernel"),
         ]
-        let records = backends.flatMap { backend, implementation, component in
-            media.flatMap { mediaKind, mediaDigest, mediaSuffix in
-                [
+        let candidateBinding = DoryVirtualMachineQualificationCandidateBinding(
+            componentCandidateInventorySHA256: String(repeating: "c", count: 64),
+            sbomSHA256: String(repeating: "3", count: 64)
+        )
+        var records = [DoryVirtualMachineQualificationRecord]()
+        var performanceFiles = [(path: String, data: Data)]()
+        for (backend, implementation, component) in backends {
+            for (mediaKind, mediaDigest, mediaSuffix) in media {
+                for (suffix, deviceRequest, graphics) in [
                     ("minimum", devices, DoryGraphicsAccelerationLevel.none),
                     ("headless", headlessDevices, DoryGraphicsAccelerationLevel.none),
                     ("desktop", desktopDevices, .software),
-                ].map { suffix, devices, graphics in
-                    DoryVirtualMachineQualificationRecord(
-                        qualificationIdentity: "\(component)-\(mediaSuffix)-\(suffix)-qualification",
+                ] {
+                    let qualificationIdentity =
+                        "\(component)-\(mediaSuffix)-\(suffix)-qualification"
+                    let matrixCellID = Self.digest(Data(qualificationIdentity.utf8))
+                    let receiptPath = matrixCellID
+                        + ".linux-vm-performance-verification.json"
+                    let receiptData = try Self.performanceReceiptData(
+                        backend: backend == .doryHypervisor ? "rawhv" : "vz",
+                        candidateBinding: candidateBinding,
+                        installerSHA256: mediaDigest,
+                        matrixCellID: matrixCellID,
+                        signingKeyID: signingKeyID
+                    )
+                    let signatureData = Data(
+                        (try privateKey.signature(for: receiptData).base64EncodedString()
+                            + "\n").utf8
+                    )
+                    performanceFiles.append((receiptPath, receiptData))
+                    performanceFiles.append((receiptPath + ".sig", signatureData))
+                    records.append(DoryVirtualMachineQualificationRecord(
+                        qualificationIdentity: qualificationIdentity,
                         guest: guest,
                         bootMediaKind: mediaKind,
                         bootMediaSource: .bundledByDory,
@@ -1940,14 +1964,25 @@ private final class ProductionTrustFixture: @unchecked Sendable {
                         backendRuntimeBuildIdentifier: runtimeBuildIdentifier,
                         virtualHardwareABIVersion: 1,
                         graphics: graphics,
-                        devices: devices,
+                        devices: deviceRequest,
                         hostHardwareModelIdentifier: host.hardwareModelIdentifier,
                         hostOperatingSystemBuild: host.operatingSystemBuild,
                         components: [components.first { $0.componentIdentifier == component }!],
                         virtioGPUKernelAndDeviceSupportQualified: graphics != .none,
                         producerFenceBeforeFlushQualified: graphics != .none,
-                        venusVulkanGuestRuntimeQualified: false
-                    )
+                        venusVulkanGuestRuntimeQualified: false,
+                        performanceQualification:
+                            DoryVirtualMachinePerformanceQualificationEvidence(
+                                bundleInventorySHA256: Self.digest(
+                                    Data("bundle-\(matrixCellID)".utf8)
+                                ),
+                                graphicsImplementation: "software",
+                                matrixCellID: matrixCellID,
+                                signaturePublicKeyID: signingKeyID,
+                                verificationReceiptPath: receiptPath,
+                                verificationReceiptSHA256: Self.digest(receiptData)
+                            )
+                    ))
                 }
             }
         }
@@ -1956,6 +1991,7 @@ private final class ProductionTrustFixture: @unchecked Sendable {
             catalogReleaseVersion: releaseVersion,
             architecture: "arm64",
             signingKeyID: signingKeyID,
+            candidateBinding: candidateBinding,
             records: records
         )
         let manifestData = try Self.encoded(manifest)
@@ -1970,7 +2006,7 @@ private final class ProductionTrustFixture: @unchecked Sendable {
         let hostRequirements = isVersionTwo
             ? DoryComponentHostRequirements(platform: "macos", minimumVersion: "14.0")
             : nil
-        let asset = DoryComponentAsset(
+        let manifestAsset = DoryComponentAsset(
             path: manifestPath,
             url: "https://example.invalid/qualification.json",
             downloadBytes: UInt64(manifestData.count),
@@ -1979,15 +2015,30 @@ private final class ProductionTrustFixture: @unchecked Sendable {
             installedSHA256: Self.digest(manifestData),
             role: isVersionTwo ? .qualificationEvidence : nil
         )
+        let performanceAssets = performanceFiles.map { file in
+            DoryComponentAsset(
+                path: file.path,
+                url: "https://example.invalid/\(file.path)",
+                downloadBytes: UInt64(file.data.count),
+                installedBytes: UInt64(file.data.count),
+                sha256: Self.digest(file.data),
+                installedSHA256: Self.digest(file.data),
+                role: isVersionTwo ? .qualificationEvidence : nil
+            )
+        }
+        let qualificationAssets = [manifestAsset] + performanceAssets
+        let qualificationBytes = qualificationAssets.reduce(UInt64(0)) {
+            $0 + $1.downloadBytes
+        }
         let release = DoryComponentRelease(
             id: .linuxMachines,
             version: releaseVersion,
             displayName: "Linux Machines",
             summary: "Qualified VM runtime",
             dependencies: [.dockerCore],
-            downloadBytes: UInt64(manifestData.count),
-            installedBytes: UInt64(manifestData.count),
-            assets: [asset],
+            downloadBytes: qualificationBytes,
+            installedBytes: qualificationBytes,
+            assets: qualificationAssets,
             architectures: isVersionTwo ? ["arm64"] : nil,
             hostRequirements: hostRequirements,
             provides: isVersionTwo ? ["guest.linux-headless.arm64@1"] : nil,
@@ -2039,10 +2090,20 @@ private final class ProductionTrustFixture: @unchecked Sendable {
         let source = root.appendingPathComponent("qualification.json")
         try manifestData.write(to: source)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: source.path)
+        var downloadedAssets = [manifestPath: source.path]
+        for file in performanceFiles {
+            let fileSource = root.appendingPathComponent(file.path)
+            try file.data.write(to: fileSource)
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o600],
+                ofItemAtPath: fileSource.path
+            )
+            downloadedAssets[file.path] = fileSource.path
+        }
         _ = try store.install(
             release,
             catalogDigest: DoryComponentCatalogVerifier.digest(catalogData),
-            downloadedAssets: [manifestPath: source.path]
+            downloadedAssets: downloadedAssets
         )
     }
 
@@ -2050,6 +2111,45 @@ private final class ProductionTrustFixture: @unchecked Sendable {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         return try encoder.encode(value) + Data("\n".utf8)
+    }
+
+    private static func performanceReceiptData(
+        backend: String,
+        candidateBinding: DoryVirtualMachineQualificationCandidateBinding,
+        installerSHA256: String,
+        matrixCellID: String,
+        signingKeyID: String
+    ) throws -> Data {
+        let value: [String: Any] = [
+            "bundleInventorySHA256": digest(Data("bundle-\(matrixCellID)".utf8)),
+            "candidate": [
+                "applicationSHA256": String(repeating: "1", count: 64),
+                "budgetSetSHA256": String(repeating: "2", count: 64),
+                "componentCandidateInventorySHA256":
+                    candidateBinding.componentCandidateInventorySHA256,
+                "runtimePlanSHA256": String(repeating: "4", count: 64),
+                "sbomSHA256": candidateBinding.sbomSHA256,
+                "virtualHardwareABIVersion": "1",
+            ],
+            "kind": "dev.dory.linux-vm-performance-verification-receipt",
+            "releaseQualified": true,
+            "schemaVersion": 1,
+            "signaturePublicKeyID": signingKeyID,
+            "supportCell": [
+                "backend": backend,
+                "graphicsImplementation": "software",
+                "hostIdentitySHA256": String(repeating: "5", count: 64),
+                "installedSystemIdentitySHA256": String(repeating: "6", count: 64),
+                "installerSHA256": installerSHA256,
+                "matrixCellID": matrixCellID,
+                "requestedGraphicsQuality": "software",
+                "selectedGraphicsQuality": "software",
+            ],
+        ]
+        return try JSONSerialization.data(
+            withJSONObject: value,
+            options: [.prettyPrinted, .sortedKeys]
+        ) + Data("\n".utf8)
     }
 
     private static func canonicalData<T: Encodable>(_ value: T) throws -> Data {

@@ -13,6 +13,50 @@ public struct DoryVirtualMachineQualifiedComponent: Codable, Sendable, Equatable
     }
 }
 
+/// Immutable release-candidate identity shared by the qualification manifest and every physical
+/// performance-campaign receipt. Neither digest is inferred from a mutable installation.
+public struct DoryVirtualMachineQualificationCandidateBinding:
+    Codable, Sendable, Equatable, Hashable
+{
+    public var componentCandidateInventorySHA256: String
+    public var sbomSHA256: String
+
+    public init(componentCandidateInventorySHA256: String, sbomSHA256: String) {
+        self.componentCandidateInventorySHA256 = componentCandidateInventorySHA256.lowercased()
+        self.sbomSHA256 = sbomSHA256.lowercased()
+    }
+}
+
+/// Digest-bound pointer from one qualification record to the independently signed result of its
+/// physical performance campaign. A manifest record without this evidence cannot mint runtime or
+/// graphics authority.
+public struct DoryVirtualMachinePerformanceQualificationEvidence:
+    Codable, Sendable, Equatable, Hashable
+{
+    public var bundleInventorySHA256: String
+    public var graphicsImplementation: String
+    public var matrixCellID: String
+    public var signaturePublicKeyID: String
+    public var verificationReceiptPath: String
+    public var verificationReceiptSHA256: String
+
+    public init(
+        bundleInventorySHA256: String,
+        graphicsImplementation: String,
+        matrixCellID: String,
+        signaturePublicKeyID: String,
+        verificationReceiptPath: String,
+        verificationReceiptSHA256: String
+    ) {
+        self.bundleInventorySHA256 = bundleInventorySHA256.lowercased()
+        self.graphicsImplementation = graphicsImplementation
+        self.matrixCellID = matrixCellID.lowercased()
+        self.signaturePublicKeyID = signaturePublicKeyID.lowercased()
+        self.verificationReceiptPath = verificationReceiptPath
+        self.verificationReceiptSHA256 = verificationReceiptSHA256.lowercased()
+    }
+}
+
 /// One signed, exact result from Dory's backend conformance matrix. This is data inside a
 /// catalog-authenticated asset; decoding this type alone never creates trusted capability facts.
 public struct DoryVirtualMachineQualificationRecord: Codable, Sendable, Equatable, Hashable {
@@ -37,6 +81,7 @@ public struct DoryVirtualMachineQualificationRecord: Codable, Sendable, Equatabl
     /// therefore cannot authorize acceleration.
     public var producerFenceBeforeFlushQualified: Bool?
     public var venusVulkanGuestRuntimeQualified: Bool
+    public var performanceQualification: DoryVirtualMachinePerformanceQualificationEvidence
 
     public init(
         qualificationIdentity: String,
@@ -56,7 +101,8 @@ public struct DoryVirtualMachineQualificationRecord: Codable, Sendable, Equatabl
         components: [DoryVirtualMachineQualifiedComponent],
         virtioGPUKernelAndDeviceSupportQualified: Bool = false,
         producerFenceBeforeFlushQualified: Bool = false,
-        venusVulkanGuestRuntimeQualified: Bool = false
+        venusVulkanGuestRuntimeQualified: Bool = false,
+        performanceQualification: DoryVirtualMachinePerformanceQualificationEvidence
     ) {
         self.qualificationIdentity = qualificationIdentity
         self.guest = guest
@@ -77,12 +123,13 @@ public struct DoryVirtualMachineQualificationRecord: Codable, Sendable, Equatabl
             virtioGPUKernelAndDeviceSupportQualified
         self.producerFenceBeforeFlushQualified = producerFenceBeforeFlushQualified
         self.venusVulkanGuestRuntimeQualified = venusVulkanGuestRuntimeQualified
+        self.performanceQualification = performanceQualification
     }
 }
 
 public struct DoryVirtualMachineQualificationManifest: Codable, Sendable, Equatable {
     public static let kind = "dev.dory.virtual-machine-qualification-manifest"
-    public static let schemaVersion: UInt16 = 1
+    public static let schemaVersion: UInt16 = 2
 
     public var kind: String
     public var schemaVersion: UInt16
@@ -90,6 +137,7 @@ public struct DoryVirtualMachineQualificationManifest: Codable, Sendable, Equata
     public var catalogReleaseVersion: String
     public var architecture: String
     public var signingKeyID: String
+    public var candidateBinding: DoryVirtualMachineQualificationCandidateBinding
     public var records: [DoryVirtualMachineQualificationRecord]
 
     public init(
@@ -97,6 +145,7 @@ public struct DoryVirtualMachineQualificationManifest: Codable, Sendable, Equata
         catalogReleaseVersion: String,
         architecture: String,
         signingKeyID: String,
+        candidateBinding: DoryVirtualMachineQualificationCandidateBinding,
         records: [DoryVirtualMachineQualificationRecord]
     ) {
         kind = Self.kind
@@ -105,6 +154,7 @@ public struct DoryVirtualMachineQualificationManifest: Codable, Sendable, Equata
         self.catalogReleaseVersion = catalogReleaseVersion
         self.architecture = architecture
         self.signingKeyID = signingKeyID
+        self.candidateBinding = candidateBinding
         self.records = records
     }
 }
@@ -120,6 +170,8 @@ public enum DoryVirtualMachineQualificationAuthorityError:
     case installedComponentCatalogMismatch
     case manifestUnreadable
     case manifestInvalid(String)
+    case performanceEvidenceUnreadable
+    case performanceEvidenceInvalid(String)
     case qualificationUnavailable
     case mediaInspectionFailed
 
@@ -135,6 +187,10 @@ public enum DoryVirtualMachineQualificationAuthorityError:
             "installed qualification component does not belong to the verified catalog"
         case .manifestUnreadable: "qualification manifest asset cannot be read and verified"
         case let .manifestInvalid(detail): "qualification manifest is invalid: \(detail)"
+        case .performanceEvidenceUnreadable:
+            "performance qualification evidence cannot be read and verified"
+        case let .performanceEvidenceInvalid(detail):
+            "performance qualification evidence is invalid: \(detail)"
         case .qualificationUnavailable: "no exact signed VM qualification matches the request"
         case .mediaInspectionFailed: "boot media does not match its signed qualification"
         }
@@ -286,8 +342,45 @@ public struct DoryResolvedTrustedVirtualMachineQualification: Sendable {
     fileprivate let signingKeyID: String
 }
 
+private struct DoryLinuxVMPerformanceVerificationReceipt: Decodable {
+    static let kind = "dev.dory.linux-vm-performance-verification-receipt"
+    static let schemaVersion: UInt16 = 1
+
+    struct Candidate: Decodable {
+        var applicationSHA256: String
+        var budgetSetSHA256: String
+        var componentCandidateInventorySHA256: String
+        var runtimePlanSHA256: String
+        var sbomSHA256: String
+        var virtualHardwareABIVersion: String
+    }
+
+    struct SupportCell: Decodable {
+        var backend: String
+        var graphicsImplementation: String
+        var hostIdentitySHA256: String
+        var installedSystemIdentitySHA256: String
+        var installerSHA256: String
+        var matrixCellID: String
+        var requestedGraphicsQuality: String
+        var selectedGraphicsQuality: String
+    }
+
+    var bundleInventorySHA256: String
+    var candidate: Candidate
+    var kind: String
+    var releaseQualified: Bool
+    var schemaVersion: UInt16
+    var signaturePublicKeyID: String
+    var supportCell: SupportCell
+}
+
 public enum DoryVirtualMachineQualificationAuthorityResolver {
     public static let maximumManifestBytes = 4 * 1_024 * 1_024
+    public static let maximumPerformanceReceiptBytes = 2 * 1_024 * 1_024
+    public static let maximumPerformanceSignatureBytes = 256
+    private static let performanceReceiptSuffix =
+        ".linux-vm-performance-verification.json"
 
     public static func resolve(
         store: DoryComponentStore,
@@ -355,8 +448,16 @@ public enum DoryVirtualMachineQualificationAuthorityResolver {
             manifest,
             declaration: declaration,
             catalog: cached.catalog,
+            release: release,
             manifestSHA256: declaredAsset.installedSHA256,
             expectedSigningKeyID: signingKeyID(publicKey)
+        )
+        try validatePerformanceEvidence(
+            manifest,
+            release: release,
+            store: store,
+            component: declaration.component,
+            publicKey: publicKey
         )
         return DoryVerifiedVirtualMachineQualificationAuthority(
             catalogDigest: catalogDigest,
@@ -375,6 +476,7 @@ public enum DoryVirtualMachineQualificationAuthorityResolver {
         _ manifest: DoryVirtualMachineQualificationManifest,
         declaration: DoryComponentVirtualMachineQualificationAsset,
         catalog: DoryComponentCatalog,
+        release: DoryComponentRelease,
         manifestSHA256: String,
         expectedSigningKeyID: String
     ) throws {
@@ -388,7 +490,12 @@ public enum DoryVirtualMachineQualificationAuthorityResolver {
               manifest.architecture == catalog.architecture,
               !manifest.records.isEmpty,
               isSHA256(manifestSHA256),
+              isSHA256(manifest.candidateBinding.componentCandidateInventorySHA256),
+              isSHA256(manifest.candidateBinding.sbomSHA256),
+              manifest.candidateBinding.sbomSHA256 == release.provenance?.sbomDigest,
               Set(manifest.records.map(\.qualificationIdentity)).count
+                == manifest.records.count,
+              Set(manifest.records.map(\.performanceQualification.verificationReceiptPath)).count
                 == manifest.records.count,
               manifest.records.allSatisfy(recordIsValid) else {
             throw DoryVirtualMachineQualificationAuthorityError.manifestInvalid(
@@ -420,13 +527,185 @@ public enum DoryVirtualMachineQualificationAuthorityResolver {
                     && !$0.buildIdentifier.isEmpty
                     && isSHA256($0.artifactSHA256)
             }
+            && performanceEvidenceIsStructurallyValid(record.performanceQualification)
+            && (record.graphics != .hardwareAccelerated3D
+                || (record.virtioGPUKernelAndDeviceSupportQualified
+                    && record.producerFenceBeforeFlushQualified == true
+                    && record.venusVulkanGuestRuntimeQualified))
+    }
+
+    private static func performanceEvidenceIsStructurallyValid(
+        _ evidence: DoryVirtualMachinePerformanceQualificationEvidence
+    ) -> Bool {
+        isSHA256(evidence.bundleInventorySHA256)
+            && !evidence.graphicsImplementation.isEmpty
+            && isSHA256(evidence.matrixCellID)
+            && isSHA256(evidence.signaturePublicKeyID)
+            && evidence.verificationReceiptPath
+                == evidence.matrixCellID + performanceReceiptSuffix
+            && isSHA256(evidence.verificationReceiptSHA256)
+    }
+
+    private static func validatePerformanceEvidence(
+        _ manifest: DoryVirtualMachineQualificationManifest,
+        release: DoryComponentRelease,
+        store: DoryComponentStore,
+        component: DoryComponentID,
+        publicKey: String
+    ) throws {
+        let recordReceiptPaths = Set(
+            manifest.records.map(\.performanceQualification.verificationReceiptPath)
+        )
+        let catalogReceiptPaths = Set(release.assets.compactMap { asset in
+            asset.role == .qualificationEvidence
+                && asset.path.hasSuffix(performanceReceiptSuffix)
+                ? asset.path : nil
+        })
+        let catalogSignaturePaths = Set(release.assets.compactMap { asset in
+            asset.role == .qualificationEvidence
+                && asset.path.hasSuffix(performanceReceiptSuffix + ".sig")
+                ? asset.path : nil
+        })
+        guard recordReceiptPaths == catalogReceiptPaths,
+              catalogSignaturePaths == Set(recordReceiptPaths.map { $0 + ".sig" }),
+              let publicKeyData = Data(base64Encoded: publicKey),
+              publicKeyData.count == 32,
+              let verifier = try? Curve25519.Signing.PublicKey(
+                  rawRepresentation: publicKeyData
+              ) else {
+            throw DoryVirtualMachineQualificationAuthorityError.performanceEvidenceInvalid(
+                "receipt set or signing key is incomplete"
+            )
+        }
+
+        for record in manifest.records {
+            let evidence = record.performanceQualification
+            let signaturePath = evidence.verificationReceiptPath + ".sig"
+            guard let receiptAsset = release.assets.first(where: {
+                $0.path == evidence.verificationReceiptPath
+                    && $0.role == .qualificationEvidence
+            }), let signatureAsset = release.assets.first(where: {
+                $0.path == signaturePath && $0.role == .qualificationEvidence
+            }), receiptAsset.installedSHA256 == evidence.verificationReceiptSHA256 else {
+                throw DoryVirtualMachineQualificationAuthorityError.performanceEvidenceInvalid(
+                    "catalog assets do not bind the record receipt"
+                )
+            }
+
+            let receiptData: Data
+            let signatureData: Data
+            do {
+                receiptData = try store.verifiedAssetData(
+                    component: component,
+                    path: receiptAsset.path,
+                    maximumBytes: maximumPerformanceReceiptBytes
+                )
+                signatureData = try store.verifiedAssetData(
+                    component: component,
+                    path: signatureAsset.path,
+                    maximumBytes: maximumPerformanceSignatureBytes
+                )
+            } catch {
+                throw DoryVirtualMachineQualificationAuthorityError
+                    .performanceEvidenceUnreadable
+            }
+            guard digest(receiptData) == evidence.verificationReceiptSHA256 else {
+                throw DoryVirtualMachineQualificationAuthorityError.performanceEvidenceInvalid(
+                    "receipt digest differs from the record"
+                )
+            }
+            guard let signatureText = String(data: signatureData, encoding: .ascii),
+                  signatureText == signatureText.trimmingCharacters(
+                      in: .whitespacesAndNewlines
+                  ) + "\n",
+                  let signature = Data(
+                      base64Encoded: signatureText.trimmingCharacters(
+                          in: .whitespacesAndNewlines
+                      )
+                  ),
+                  signature.count == 64,
+                  verifier.isValidSignature(signature, for: receiptData) else {
+                throw DoryVirtualMachineQualificationAuthorityError.performanceEvidenceInvalid(
+                    "receipt signature is invalid"
+                )
+            }
+
+            let receipt: DoryLinuxVMPerformanceVerificationReceipt
+            do {
+                receipt = try JSONDecoder().decode(
+                    DoryLinuxVMPerformanceVerificationReceipt.self,
+                    from: receiptData
+                )
+            } catch {
+                throw DoryVirtualMachineQualificationAuthorityError.performanceEvidenceInvalid(
+                    "receipt JSON could not be decoded"
+                )
+            }
+            guard performanceReceipt(
+                receipt,
+                binds: record,
+                manifest: manifest
+            ) else {
+                throw DoryVirtualMachineQualificationAuthorityError.performanceEvidenceInvalid(
+                    "receipt does not bind its candidate, support cell, or record"
+                )
+            }
+        }
+    }
+
+    private static func performanceReceipt(
+        _ receipt: DoryLinuxVMPerformanceVerificationReceipt,
+        binds record: DoryVirtualMachineQualificationRecord,
+        manifest: DoryVirtualMachineQualificationManifest
+    ) -> Bool {
+        let evidence = record.performanceQualification
+        let expectedBackend: String
+        switch record.backend {
+        case .doryHypervisor: expectedBackend = "rawhv"
+        case .appleVirtualizationFramework: expectedBackend = "vz"
+        case .qemuHypervisorFramework: return false
+        }
+        let expectedGraphicsQuality = record.graphics == .hardwareAccelerated3D
+            ? "accelerated" : "software"
+        let implementationMatchesQuality = expectedGraphicsQuality == "accelerated"
+            ? receipt.supportCell.graphicsImplementation != "software"
+            : receipt.supportCell.graphicsImplementation == "software"
+
+        return receipt.kind == DoryLinuxVMPerformanceVerificationReceipt.kind
+            && receipt.schemaVersion
+                == DoryLinuxVMPerformanceVerificationReceipt.schemaVersion
+            && receipt.releaseQualified
+            && receipt.signaturePublicKeyID == manifest.signingKeyID
+            && receipt.signaturePublicKeyID == evidence.signaturePublicKeyID
+            && receipt.bundleInventorySHA256 == evidence.bundleInventorySHA256
+            && receipt.candidate.componentCandidateInventorySHA256
+                == manifest.candidateBinding.componentCandidateInventorySHA256
+            && receipt.candidate.sbomSHA256 == manifest.candidateBinding.sbomSHA256
+            && receipt.candidate.virtualHardwareABIVersion
+                == String(record.virtualHardwareABIVersion)
+            && isSHA256(receipt.candidate.applicationSHA256)
+            && isSHA256(receipt.candidate.budgetSetSHA256)
+            && isSHA256(receipt.candidate.runtimePlanSHA256)
+            && receipt.supportCell.backend == expectedBackend
+            && receipt.supportCell.installerSHA256 == record.immutableArtifactSHA256
+            && receipt.supportCell.matrixCellID == evidence.matrixCellID
+            && receipt.supportCell.graphicsImplementation
+                == evidence.graphicsImplementation
+            && receipt.supportCell.requestedGraphicsQuality == expectedGraphicsQuality
+            && receipt.supportCell.selectedGraphicsQuality == expectedGraphicsQuality
+            && implementationMatchesQuality
+            && isSHA256(receipt.supportCell.hostIdentitySHA256)
+            && isSHA256(receipt.supportCell.installedSystemIdentitySHA256)
     }
 
     private static func isSHA256(_ value: String) -> Bool {
         value.utf8.count == 64 && value.utf8.allSatisfy { byte in
-            (48...57).contains(byte) || (65...70).contains(byte)
-                || (97...102).contains(byte)
+            (48...57).contains(byte) || (97...102).contains(byte)
         }
+    }
+
+    private static func digest(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
     private static func signingKeyID(_ publicKeyBase64: String) -> String {
