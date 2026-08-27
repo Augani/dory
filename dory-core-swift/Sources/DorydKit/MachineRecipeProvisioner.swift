@@ -32,6 +32,8 @@ public enum MachineRecipeProvisioner {
     }
 
     private static func packageInstallScript(alpine: String, debian: String) -> String {
+        // Swift multiline strings drop the newline before the closing delimiter.
+        // A later `if` must start on a new line so ash does not see `fiif`.
         """
         if command -v apk >/dev/null 2>&1; then
           apk add --no-cache \(alpine)
@@ -44,7 +46,7 @@ public enum MachineRecipeProvisioner {
           echo "Dory recipes support Alpine apk and Debian apt guests" >&2
           exit 69
         fi
-        """
+        """ + "\n"
     }
 
     public static func recipe(id rawID: String) throws -> Recipe {
