@@ -27,10 +27,14 @@ CATALOG_KIND = "dev.dory.component-catalog"
 CATALOG_SCHEMA = 2
 ARCHITECTURE = "arm64"
 QUALIFICATION_KIND = "dev.dory.virtual-machine-qualification-manifest"
-QUALIFICATION_SCHEMA = 1
+QUALIFICATION_SCHEMA = 2
 QUALIFICATION_COMPONENT = "linux-desktop"
 QUALIFICATION_PATH = "virtual-machine-qualification.json"
 QUALIFICATION_SIGNATURE_PATH = "virtual-machine-qualification.json.sig"
+PERFORMANCE_RECEIPT_KIND = "dev.dory.linux-vm-performance-verification-receipt"
+PERFORMANCE_RECEIPT_SCHEMA = 1
+PERFORMANCE_RECEIPT_SUFFIX = ".linux-vm-performance-verification.json"
+PERFORMANCE_RECEIPT_SIGNATURE_SUFFIX = PERFORMANCE_RECEIPT_SUFFIX + ".sig"
 INVENTORY_KIND = "dev.dory.component-candidate-inventory"
 INVENTORY_SCHEMA = 2
 INVENTORY_PATH = "component-candidate-inventory.json"
@@ -52,10 +56,10 @@ EXPECTED_RUNNER_ENTITLEMENTS = {
     "com.apple.security.device.audio-input": True,
     "com.apple.security.hypervisor": True,
 }
-EXPECTED_FS_WORKER_ENTITLEMENTS = {
-    "com.apple.security.app-sandbox": True,
-    "com.apple.security.files.bookmarks.app-scope": True,
-}
+# The filesystem worker deliberately carries no ambient sandbox grants. Its authority is the
+# one-shot, authenticated XPC transfer of already-open directory descriptors; App Sandbox cannot
+# use an inherited directory descriptor to open descendants and would make valid openat calls fail.
+EXPECTED_FS_WORKER_ENTITLEMENTS: dict[str, object] = {}
 EXPECTED_RENDERER_WORKER_ENTITLEMENTS = {
     "com.apple.security.app-sandbox": True,
     "com.apple.security.application-groups": ["864H636QW4.dory-renderer"],
@@ -340,7 +344,7 @@ def validate_qualification_record(value: object, index: int) -> dict:
         "virtualHardwareABIVersion", "graphics", "devices",
         "hostHardwareModelIdentifier", "hostOperatingSystemBuild", "components",
         "virtioGPUKernelAndDeviceSupportQualified", "producerFenceBeforeFlushQualified",
-        "venusVulkanGuestRuntimeQualified",
+        "venusVulkanGuestRuntimeQualified", "performanceQualification",
     }
     record = exact_keys(
         value,
@@ -442,6 +446,38 @@ def validate_qualification_record(value: object, index: int) -> dict:
         record["venusVulkanGuestRuntimeQualified"],
         f"{label} Venus qualification",
     )
+    performance = exact_keys(
+        record["performanceQualification"],
+        {
+            "bundleInventorySHA256", "graphicsImplementation", "matrixCellID",
+            "signaturePublicKeyID",
+            "verificationReceiptPath", "verificationReceiptSHA256",
+        },
+        set(),
+        f"{label} performance qualification",
+    )
+    sha256_value(
+        performance["bundleInventorySHA256"],
+        f"{label} performance bundle inventory",
+    )
+    sha256_value(performance["matrixCellID"], f"{label} matrix cell")
+    nonempty_string(
+        performance["graphicsImplementation"],
+        f"{label} performance graphics implementation",
+    )
+    sha256_value(
+        performance["signaturePublicKeyID"],
+        f"{label} performance signing key",
+    )
+    expected_receipt_path = (
+        performance["matrixCellID"] + PERFORMANCE_RECEIPT_SUFFIX
+    )
+    if performance["verificationReceiptPath"] != expected_receipt_path:
+        fail(f"{label} performance receipt path does not bind its matrix cell")
+    sha256_value(
+        performance["verificationReceiptSHA256"],
+        f"{label} performance verification receipt",
+    )
     return record
 
 
@@ -516,6 +552,95 @@ def load_qualification_manifest(
         )
         sha256_value(binding["sbomSHA256"], "VM qualification SBOM binding")
     return manifest
+
+
+def load_performance_verification_receipt(
+    path: pathlib.Path,
+    *,
+    public_key_base64: str,
+) -> dict:
+    path = regular_file(path.resolve(), "Linux VM performance verification receipt")
+    if path.stat().st_size > MAX_QUALIFICATION_BYTES:
+        fail("Linux VM performance verification receipt exceeds the maximum size")
+    receipt = load_json_file(
+        path,
+        "Linux VM performance verification receipt",
+        MAX_QUALIFICATION_BYTES,
+    )
+    if path.read_bytes() != canonical_json_bytes(receipt):
+        fail("Linux VM performance verification receipt is not canonical JSON")
+    receipt = exact_keys(
+        receipt,
+        {
+            "bundleInventorySHA256", "candidate", "kind", "releaseQualified",
+            "schemaVersion", "signaturePublicKeyID", "supportCell",
+        },
+        set(),
+        "Linux VM performance verification receipt",
+    )
+    try:
+        public_key = base64.b64decode(public_key_base64, validate=True)
+    except (ValueError, binascii.Error):
+        fail("catalog public key is malformed")
+    if len(public_key) != 32:
+        fail("catalog public key must be a 32-byte Ed25519 key")
+    expected_key_id = hashlib.sha256(public_key).hexdigest()
+    if receipt["kind"] != PERFORMANCE_RECEIPT_KIND \
+            or receipt["schemaVersion"] != PERFORMANCE_RECEIPT_SCHEMA:
+        fail("Linux VM performance verification receipt kind or schema is unsupported")
+    if receipt["releaseQualified"] is not True:
+        fail("Linux VM performance verification receipt is not release-qualified")
+    sha256_value(receipt["bundleInventorySHA256"], "performance bundle inventory")
+    if receipt["signaturePublicKeyID"] != expected_key_id:
+        fail("Linux VM performance verification receipt uses another trust root")
+
+    candidate = exact_keys(
+        receipt["candidate"],
+        {
+            "applicationSHA256", "budgetSetSHA256",
+            "componentCandidateInventorySHA256", "runtimePlanSHA256", "sbomSHA256",
+            "virtualHardwareABIVersion",
+        },
+        set(),
+        "Linux VM performance candidate binding",
+    )
+    for field in (
+        "applicationSHA256", "budgetSetSHA256", "componentCandidateInventorySHA256",
+        "runtimePlanSHA256", "sbomSHA256",
+    ):
+        sha256_value(candidate[field], f"performance candidate {field}")
+    abi = candidate["virtualHardwareABIVersion"]
+    if not isinstance(abi, str) or not abi.isdecimal() \
+            or str(int(abi)) != abi or not 1 <= int(abi) <= 65_535:
+        fail("performance candidate virtual hardware ABI is invalid")
+
+    support = exact_keys(
+        receipt["supportCell"],
+        {
+            "backend", "graphicsImplementation", "hostIdentitySHA256",
+            "installedSystemIdentitySHA256", "installerSHA256", "matrixCellID",
+            "requestedGraphicsQuality", "selectedGraphicsQuality",
+        },
+        set(),
+        "Linux VM performance support-cell binding",
+    )
+    if support["backend"] not in {"rawhv", "vz"}:
+        fail("Linux VM performance support-cell backend is unsupported")
+    for field in (
+        "hostIdentitySHA256", "installedSystemIdentitySHA256", "installerSHA256",
+        "matrixCellID",
+    ):
+        sha256_value(support[field], f"performance support cell {field}")
+    nonempty_string(
+        support["graphicsImplementation"],
+        "performance support-cell graphics implementation",
+    )
+    for field in ("requestedGraphicsQuality", "selectedGraphicsQuality"):
+        if support[field] not in {"accelerated", "software"}:
+            fail(f"performance support-cell {field} is unsupported")
+    if support["requestedGraphicsQuality"] != support["selectedGraphicsQuality"]:
+        fail("release-qualified performance receipt contains a graphics fallback")
+    return receipt
 
 
 def canonical_json_bytes(value: object) -> bytes:
@@ -834,7 +959,7 @@ def signed_application_binding(
         expected_identifier=FS_WORKER_IDENTIFIER,
         expected_executable=FS_WORKER_EXECUTABLE,
         expected_entitlements=EXPECTED_FS_WORKER_ENTITLEMENTS,
-        entitlement_boundary="bookmark sandbox",
+        entitlement_boundary="descriptor capability boundary",
         allow_test_signatures=allow_test_signatures,
     )
     verify_nested_xpc_worker(
@@ -1623,8 +1748,6 @@ def validate_qualification_bindings(manifest: dict, inventory: dict) -> None:
         label = f"qualification record {index}"
         if record["guest"] != {"family": "linux", "architecture": ARCHITECTURE}:
             fail(f"{label} is not Linux arm64 qualification for this catalog")
-        if record["bootMediaSource"] != "dory-bundled":
-            fail(f"{label} does not qualify immutable candidate-bound boot media")
         contract = runtime_contracts.get(record["backend"])
         if contract is None:
             fail(f"{label} backend is not shipped by the Apple Silicon candidate")
@@ -1646,9 +1769,91 @@ def validate_qualification_bindings(manifest: dict, inventory: dict) -> None:
             }
         ]:
             fail(f"{label} component evidence does not match the candidate helper")
-        accepted = bundled_media.get(record["bootMediaKind"])
-        if accepted is None or record.get("immutableArtifactSHA256") not in accepted:
-            fail(f"{label} bundled media digest is not inventory-bound boot media")
+        if record["bootMediaSource"] == "dory-bundled":
+            accepted = bundled_media.get(record["bootMediaKind"])
+            if accepted is None or record.get("immutableArtifactSHA256") not in accepted:
+                fail(f"{label} bundled media digest is not inventory-bound boot media")
+        elif record["bootMediaSource"] in {"vendor-download", "user-provided"}:
+            if record["bootMediaKind"] not in {"installer-iso", "virtual-disk"} \
+                    or record.get("immutableArtifactSHA256") is None:
+                fail(f"{label} external media is not one exact immutable EFI input")
+        else:
+            fail(f"{label} media source is unsupported")
+
+
+def validate_performance_receipt_bindings(
+    manifest: dict,
+    receipts: list[tuple[pathlib.Path, pathlib.Path, dict]],
+    *,
+    inventory_digest: str,
+    sbom_digest: str,
+) -> list[tuple[pathlib.Path, pathlib.Path, dict]]:
+    records_by_path: dict[str, dict] = {}
+    for index, record in enumerate(manifest["records"]):
+        path = record["performanceQualification"]["verificationReceiptPath"]
+        if path in records_by_path:
+            fail("VM qualification records repeat a performance verification receipt")
+        records_by_path[path] = record
+
+    receipts_by_path: dict[str, tuple[pathlib.Path, pathlib.Path, dict]] = {}
+    for receipt_path, signature_path, receipt in receipts:
+        name = receipt_path.name
+        if name in receipts_by_path:
+            fail("performance verification receipt inputs repeat a file name")
+        receipts_by_path[name] = (receipt_path, signature_path, receipt)
+    if set(records_by_path) != set(receipts_by_path):
+        fail("VM qualification records and verified performance receipts are not one-to-one")
+
+    backend_names = {
+        "dory-hypervisor": "rawhv",
+        "apple-virtualization-framework": "vz",
+    }
+    graphics_quality = {
+        "none": "software",
+        "software": "software",
+        "host-accelerated-display": "software",
+        "hardware-accelerated-3d": "accelerated",
+    }
+    ordered: list[tuple[pathlib.Path, pathlib.Path, dict]] = []
+    for path in sorted(records_by_path):
+        record = records_by_path[path]
+        receipt_path, signature_path, receipt = receipts_by_path[path]
+        performance = record["performanceQualification"]
+        candidate = receipt["candidate"]
+        support = receipt["supportCell"]
+        if sha256(receipt_path) != performance["verificationReceiptSHA256"]:
+            fail(f"performance verification receipt digest differs for {path}")
+        if receipt["bundleInventorySHA256"] != performance["bundleInventorySHA256"]:
+            fail(f"performance bundle inventory differs for {path}")
+        if receipt["signaturePublicKeyID"] != performance["signaturePublicKeyID"]:
+            fail(f"performance trust root differs for {path}")
+        if support["matrixCellID"] != performance["matrixCellID"]:
+            fail(f"performance matrix cell differs for {path}")
+        if support["graphicsImplementation"] != performance["graphicsImplementation"]:
+            fail(f"performance graphics implementation differs for {path}")
+        if candidate["componentCandidateInventorySHA256"] != inventory_digest:
+            fail(f"performance receipt binds another component candidate for {path}")
+        if candidate["sbomSHA256"] != sbom_digest:
+            fail(f"performance receipt binds another SBOM for {path}")
+        if candidate["virtualHardwareABIVersion"] \
+                != str(record["virtualHardwareABIVersion"]):
+            fail(f"performance receipt binds another virtual hardware ABI for {path}")
+        if support["installerSHA256"] != record.get("immutableArtifactSHA256"):
+            fail(f"performance receipt binds another boot artifact for {path}")
+        if support["backend"] != backend_names.get(record["backend"]):
+            fail(f"performance receipt binds another backend for {path}")
+        expected_quality = graphics_quality.get(record["graphics"])
+        if support["requestedGraphicsQuality"] != expected_quality \
+                or support["selectedGraphicsQuality"] != expected_quality:
+            fail(f"performance receipt binds another graphics quality for {path}")
+        if expected_quality == "software" \
+                and support["graphicsImplementation"] != "software":
+            fail(f"software qualification uses a non-software implementation for {path}")
+        if expected_quality == "accelerated" \
+                and support["graphicsImplementation"] == "software":
+            fail(f"accelerated qualification uses a software implementation for {path}")
+        ordered.append((receipt_path, signature_path, receipt))
+    return ordered
 
 
 def sign_catalog(catalog_path: pathlib.Path, signer: pathlib.Path) -> str:
@@ -1805,6 +2010,47 @@ def finalize_catalog(
         required=require_binding,
     )
     validate_qualification_bindings(manifest, inventory)
+    receipt_arguments = args.performance_verification_receipt
+    receipt_signature_arguments = args.performance_verification_signature
+    if len(receipt_arguments) != len(receipt_signature_arguments):
+        fail("performance verification receipt and signature counts differ")
+    performance_receipts: list[tuple[pathlib.Path, pathlib.Path, dict]] = []
+    performance_input_digests: dict[pathlib.Path, str] = {}
+    for receipt_argument, signature_argument in zip(
+        receipt_arguments,
+        receipt_signature_arguments,
+        strict=True,
+    ):
+        receipt_path = regular_file(
+            receipt_argument.resolve(),
+            "Linux VM performance verification receipt",
+        )
+        signature_path = regular_file(
+            signature_argument.resolve(),
+            "Linux VM performance verification receipt signature",
+        )
+        if signature_path.name != receipt_path.name + ".sig":
+            fail("performance verification signature name does not bind its receipt")
+        verify_ed25519_signature(
+            repo,
+            receipt_path,
+            signature_path,
+            args.catalog_public_key,
+            "Linux VM performance verification receipt",
+        )
+        receipt = load_performance_verification_receipt(
+            receipt_path,
+            public_key_base64=args.catalog_public_key,
+        )
+        performance_receipts.append((receipt_path, signature_path, receipt))
+        performance_input_digests[receipt_path] = sha256(receipt_path)
+        performance_input_digests[signature_path] = sha256(signature_path)
+    performance_receipts = validate_performance_receipt_bindings(
+        manifest,
+        performance_receipts,
+        inventory_digest=inventory_digest,
+        sbom_digest=sbom_digest,
+    )
     if sha256(qualification_path) != qualification_digest:
         fail("VM qualification manifest changed during validation")
     candidate_snapshot = snapshot_candidate_directory(candidate, inventory)
@@ -1848,6 +2094,27 @@ def finalize_catalog(
                     compression_tool=compression_tool,
                 )
             )
+        for receipt_path, signature_path, _ in performance_receipts:
+            evidence_assets.append(
+                qualification_evidence_asset(
+                    version=inventory["releaseVersion"],
+                    source=receipt_path,
+                    installed_path=receipt_path.name,
+                    staging=staging,
+                    asset_base_url=inventory["assetBaseURL"],
+                    compression_tool=compression_tool,
+                )
+            )
+            evidence_assets.append(
+                qualification_evidence_asset(
+                    version=inventory["releaseVersion"],
+                    source=signature_path,
+                    installed_path=signature_path.name,
+                    staging=staging,
+                    asset_base_url=inventory["assetBaseURL"],
+                    compression_tool=compression_tool,
+                )
+            )
         if evidence_assets[0]["sha256"] != qualification_digest:
             fail("VM qualification manifest changed while finalization copied it")
         if (
@@ -1855,6 +2122,9 @@ def finalize_catalog(
             and evidence_assets[1]["sha256"] != qualification_signature_digest
         ):
             fail("VM qualification signature changed while finalization copied it")
+        for path, expected_digest in performance_input_digests.items():
+            if sha256(path) != expected_digest:
+                fail("performance verification input changed while finalization copied it")
 
         provenance = {
             "sourceCommit": inventory["sourceCommit"],
@@ -1926,6 +2196,9 @@ def finalize_catalog(
             and sha256(qualification_signature) != qualification_signature_digest
         ):
             fail("VM qualification signature changed during finalization")
+        for path, expected_digest in performance_input_digests.items():
+            if sha256(path) != expected_digest:
+                fail("performance verification input changed during finalization")
         publish(staging, output)
         staging = None
     finally:
@@ -1990,6 +2263,18 @@ def add_finalize_arguments(
     parser.add_argument("--sbom", required=True, type=pathlib.Path)
     parser.add_argument("--signer", required=staged, type=pathlib.Path)
     parser.add_argument("--catalog-public-key", default=DEFAULT_CATALOG_PUBLIC_KEY)
+    parser.add_argument(
+        "--performance-verification-receipt",
+        required=True,
+        action="append",
+        type=pathlib.Path,
+    )
+    parser.add_argument(
+        "--performance-verification-signature",
+        required=True,
+        action="append",
+        type=pathlib.Path,
+    )
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

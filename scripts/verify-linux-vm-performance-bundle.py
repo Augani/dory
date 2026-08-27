@@ -271,6 +271,51 @@ class BundleResult:
             and all(result.passed for result in self.budget_results)
         )
 
+    def verification_receipt(self) -> dict[str, Any]:
+        """Return the canonical publication handoff after full bundle authentication.
+
+        This receipt does not replace the signed evidence bundle. Its digest is the compact,
+        machine-readable value embedded into VM qualification manifest schema 2 so the catalog
+        finalizer can prove a one-to-one relationship with the exact verified support cell.
+        """
+        return {
+            "bundleInventorySHA256": self.inventory_sha256,
+            "candidate": {
+                "applicationSHA256": self.candidate.application_sha256,
+                "budgetSetSHA256": self.candidate.budget_set_sha256,
+                "componentCandidateInventorySHA256": (
+                    self.candidate.component_candidate_inventory_sha256
+                ),
+                "runtimePlanSHA256": self.candidate.runtime_plan_sha256,
+                "sbomSHA256": self.candidate.sbom_sha256,
+                "virtualHardwareABIVersion": (
+                    self.candidate.virtual_hardware_abi_version
+                ),
+            },
+            "kind": "dev.dory.linux-vm-performance-verification-receipt",
+            "releaseQualified": self.release_qualified,
+            "schemaVersion": 1,
+            "signaturePublicKeyID": self.public_key_id,
+            "supportCell": {
+                "backend": self.support_cell.backend,
+                "graphicsImplementation": (
+                    self.support_cell.graphics_implementation
+                ),
+                "hostIdentitySHA256": self.support_cell.host_identity_sha256,
+                "installedSystemIdentitySHA256": (
+                    self.support_cell.installed_system_identity_sha256
+                ),
+                "installerSHA256": self.support_cell.installer_sha256,
+                "matrixCellID": self.support_cell.matrix_cell_id,
+                "requestedGraphicsQuality": (
+                    self.support_cell.requested_graphics_quality
+                ),
+                "selectedGraphicsQuality": (
+                    self.support_cell.selected_graphics_quality
+                ),
+            },
+        }
+
 
 @dataclass(frozen=True)
 class CandidateBinding:
@@ -1684,6 +1729,14 @@ def parse_arguments() -> argparse.Namespace:
         "--expected-selected-graphics-quality",
         choices=("accelerated", "software"),
     )
+    parser.add_argument(
+        "--verification-receipt",
+        type=pathlib.Path,
+        help=(
+            "write one canonical publication receipt; requires release-qualified mode and "
+            "every expected candidate/support-cell binding"
+        ),
+    )
     return parser.parse_args()
 
 
@@ -1816,6 +1869,30 @@ def enforce_publication_admission(
         )
 
 
+def write_verification_receipt(path: pathlib.Path, result: BundleResult) -> None:
+    require(result.release_qualified, "verification receipt requires a qualified release bundle")
+    destination = pathlib.Path(os.path.abspath(path))
+    parent = destination.parent.resolve(strict=True)
+    require(parent == destination.parent, "verification receipt has an indirect parent")
+    require(not destination.exists() and not destination.is_symlink(),
+            "verification receipt destination already exists")
+    data = _STRUCTURAL.canonical_json(result.verification_receipt())
+    descriptor = os.open(
+        destination,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+    )
+    try:
+        completed = 0
+        while completed < len(data):
+            written = os.write(descriptor, data[completed:])
+            require(written > 0, "verification receipt write did not make progress")
+            completed += written
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def main() -> int:
     arguments = parse_arguments()
     try:
@@ -1830,6 +1907,17 @@ def main() -> int:
             expected=expected_candidate_binding(arguments),
             expected_cell=expected_support_cell(arguments),
         )
+        if arguments.verification_receipt is not None:
+            require(
+                arguments.require_release_qualified,
+                "verification receipt requires --require-release-qualified",
+            )
+            require(
+                expected_candidate_binding(arguments) is not None
+                and expected_support_cell(arguments) is not None,
+                "verification receipt requires every expected publication binding",
+            )
+            write_verification_receipt(arguments.verification_receipt, result)
     except (EvidenceError, OSError) as error:
         print(f"Linux VM performance bundle error: {error}", file=sys.stderr)
         return 1

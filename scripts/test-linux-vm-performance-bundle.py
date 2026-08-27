@@ -163,44 +163,75 @@ class LinuxVMPerformanceBundleTests(unittest.TestCase):
         verified = MODULE.verify_bundle(FIXTURE_BUNDLE, TEST_PUBLIC_KEY)
         candidate = verified.candidate
         cell = verified.support_cell
-        completed = subprocess.run(
-            [
-                sys.executable,
-                "-B",
-                str(SCRIPT),
-                "--bundle-root",
-                str(FIXTURE_BUNDLE),
-                "--signature-public-key-base64",
-                TEST_PUBLIC_KEY,
-                "--require-release-qualified",
-                "--expected-component-candidate-inventory-sha256",
-                candidate.component_candidate_inventory_sha256,
-                "--expected-application-sha256",
-                candidate.application_sha256,
-                "--expected-sbom-sha256",
-                candidate.sbom_sha256,
-                "--expected-runtime-plan-sha256",
-                candidate.runtime_plan_sha256,
-                "--expected-budget-set-sha256",
-                candidate.budget_set_sha256,
-                "--expected-virtual-hardware-abi-version",
-                candidate.virtual_hardware_abi_version,
-                "--expected-matrix-cell-id",
-                cell.matrix_cell_id,
-                "--expected-installer-sha256",
-                cell.installer_sha256,
-                "--expected-backend",
-                cell.backend,
-                "--expected-selected-graphics-quality",
-                cell.selected_graphics_quality,
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        self.assertEqual(completed.returncode, 0, completed.stderr)
-        self.assertIn("release qualification: PASS", completed.stdout)
-        self.assertNotIn("component catalog", completed.stdout + completed.stderr)
+        with tempfile.TemporaryDirectory() as temporary:
+            receipt = pathlib.Path(temporary).resolve() / "verification-receipt.json"
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    "-B",
+                    str(SCRIPT),
+                    "--bundle-root",
+                    str(FIXTURE_BUNDLE),
+                    "--signature-public-key-base64",
+                    TEST_PUBLIC_KEY,
+                    "--require-release-qualified",
+                    "--expected-component-candidate-inventory-sha256",
+                    candidate.component_candidate_inventory_sha256,
+                    "--expected-application-sha256",
+                    candidate.application_sha256,
+                    "--expected-sbom-sha256",
+                    candidate.sbom_sha256,
+                    "--expected-runtime-plan-sha256",
+                    candidate.runtime_plan_sha256,
+                    "--expected-budget-set-sha256",
+                    candidate.budget_set_sha256,
+                    "--expected-virtual-hardware-abi-version",
+                    candidate.virtual_hardware_abi_version,
+                    "--expected-matrix-cell-id",
+                    cell.matrix_cell_id,
+                    "--expected-installer-sha256",
+                    cell.installer_sha256,
+                    "--expected-backend",
+                    cell.backend,
+                    "--expected-selected-graphics-quality",
+                    cell.selected_graphics_quality,
+                    "--verification-receipt",
+                    str(receipt),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertIn("release qualification: PASS", completed.stdout)
+            self.assertNotIn("component catalog", completed.stdout + completed.stderr)
+            self.assertEqual(receipt.read_bytes(), MODULE._STRUCTURAL.canonical_json(
+                verified.verification_receipt()
+            ))
+            self.assertTrue(load_json(receipt)["releaseQualified"])
+
+    def test_verification_receipt_rejects_nonpublication_invocations(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            receipt = pathlib.Path(temporary).resolve() / "verification-receipt.json"
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    "-B",
+                    str(SCRIPT),
+                    "--bundle-root",
+                    str(FIXTURE_BUNDLE),
+                    "--signature-public-key-base64",
+                    TEST_PUBLIC_KEY,
+                    "--verification-receipt",
+                    str(receipt),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertIn("requires --require-release-qualified", completed.stderr)
+            self.assertFalse(receipt.exists())
 
     def test_payload_sha_tampering_fails_before_qualification(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

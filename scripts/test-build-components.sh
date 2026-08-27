@@ -30,6 +30,8 @@ OUTPUT="$TMP/components/arm64"
 SBOM="$TMP/Dory-test.cdx.json"
 QUALIFICATION="$TMP/virtual-machine-qualification.json"
 QUALIFICATION_SIGNATURE="$TMP/virtual-machine-qualification.json.sig"
+PERFORMANCE_RECEIPT="$TMP/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee.linux-vm-performance-verification.json"
+PERFORMANCE_RECEIPT_SIGNATURE="$PERFORMANCE_RECEIPT.sig"
 PRIVATE_KEY="$TMP/qualification-private-key.raw"
 SIGN_HELPER="$TMP/sign.swift"
 CATALOG_SIGNER="$TMP/sign_update"
@@ -94,16 +96,12 @@ cat > "$WORKER_ENTITLEMENTS" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-<key>com.apple.security.app-sandbox</key><true/>
-<key>com.apple.security.files.bookmarks.app-scope</key><true/>
 </dict></plist>
 PLIST
 cat > "$WORKER_EXCESS_ENTITLEMENTS" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-<key>com.apple.security.app-sandbox</key><true/>
-<key>com.apple.security.files.bookmarks.app-scope</key><true/>
 <key>com.apple.security.network.client</key><true/>
 </dict></plist>
 PLIST
@@ -249,8 +247,10 @@ if assemble >"$TMP/missing-worker.out" 2>&1; then
   exit 1
 fi
 grep -Fq 'nested filesystem worker XPC service is missing' "$TMP/missing-worker.out" \
-  || { echo "component packaging rejected a missing worker for the wrong reason" >&2; exit 1; }
+  || { cat "$TMP/missing-worker.out" >&2; echo "component packaging rejected a missing worker for the wrong reason" >&2; exit 1; }
 mv "$TMP/DoryFSWorker.xpc.hold" "$WORKER_XPC"
+codesign --force --sign - --entitlements "$WORKER_ENTITLEMENTS" "$WORKER_XPC" >/dev/null
+codesign --force --sign - --entitlements "$RUNNER_ENTITLEMENTS" "$RUNNER_APP" >/dev/null
 
 # A runner without the renderer process boundary must also remain unpublishable.
 mv "$RENDERER_XPC" "$TMP/DoryRendererWorker.xpc.hold"
@@ -259,8 +259,10 @@ if assemble >"$TMP/missing-renderer-worker.out" 2>&1; then
   exit 1
 fi
 grep -Fq 'nested renderer worker XPC service is missing' "$TMP/missing-renderer-worker.out" \
-  || { echo "component packaging rejected a missing renderer worker for the wrong reason" >&2; exit 1; }
+  || { cat "$TMP/missing-renderer-worker.out" >&2; echo "component packaging rejected a missing renderer worker for the wrong reason" >&2; exit 1; }
 mv "$TMP/DoryRendererWorker.xpc.hold" "$RENDERER_XPC"
+codesign --force --sign - --entitlements "$RENDERER_ENTITLEMENTS" "$RENDERER_XPC" >/dev/null
+codesign --force --sign - --entitlements "$RUNNER_ENTITLEMENTS" "$RUNNER_APP" >/dev/null
 
 # Ambient capabilities on the worker must not slip through an otherwise valid inside-out graph.
 codesign --force --sign - \
@@ -271,7 +273,7 @@ if assemble >"$TMP/excess-worker-entitlements.out" 2>&1; then
   echo "component packaging accepted excess filesystem worker entitlements" >&2
   exit 1
 fi
-grep -Fq 'filesystem worker entitlements do not match its bookmark sandbox' \
+grep -Fq 'filesystem worker entitlements do not match its descriptor capability boundary' \
   "$TMP/excess-worker-entitlements.out" \
   || { echo "component packaging rejected excess worker entitlements for the wrong reason" >&2; exit 1; }
 codesign --force --sign - --entitlements "$WORKER_ENTITLEMENTS" "$WORKER_XPC" >/dev/null
@@ -437,6 +439,8 @@ if "$ROOT/scripts/build-components.py" finalize \
     --sbom "$SBOM" \
     --qualification-manifest "$TMP/missing-qualification.json" \
     --qualification-signature "$TMP/missing-qualification.json.sig" \
+    --performance-verification-receipt "$TMP/missing-performance-receipt.json" \
+    --performance-verification-signature "$TMP/missing-performance-receipt.json.sig" \
     --signer "$CATALOG_SIGNER" \
     --catalog-public-key "$PUBLIC_KEY" \
     >"$TMP/missing-evidence.out" 2>&1; then
@@ -451,15 +455,18 @@ grep -Fq 'VM qualification manifest is missing' "$TMP/missing-evidence.out" \
 write_qualification() {
   local destination="$1" mutation="$2"
   python3 - \
-    "$destination" "$CANDIDATE" "$SBOM" "$PUBLIC_KEY" "$mutation" <<'PY'
+    "$destination" "$CANDIDATE" "$SBOM" "$PUBLIC_KEY" "$mutation" \
+    "$PERFORMANCE_RECEIPT" <<'PY'
 import base64
 import hashlib
 import json
 import pathlib
 import sys
 
-destination, output, sbom, public_key, mutation = sys.argv[1:]
+destination, output, sbom, public_key, mutation, receipt_path = sys.argv[1:]
 output = pathlib.Path(output)
+receipt_path = pathlib.Path(receipt_path)
+receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
 inventory = json.loads((output / "component-candidate-inventory.json").read_text())
 inventory_digest = hashlib.sha256(
     (output / "component-candidate-inventory.json").read_bytes()
@@ -476,7 +483,7 @@ media = next(
 )
 manifest = {
     "kind": "dev.dory.virtual-machine-qualification-manifest",
-    "schemaVersion": 1,
+    "schemaVersion": 2,
     "manifestIdentity": "dory-release-9.8.7-apple-silicon",
     "catalogReleaseVersion": "9.8.7",
     "architecture": "arm64",
@@ -518,6 +525,14 @@ manifest = {
         "virtioGPUKernelAndDeviceSupportQualified": True,
         "producerFenceBeforeFlushQualified": True,
         "venusVulkanGuestRuntimeQualified": True,
+        "performanceQualification": {
+            "bundleInventorySHA256": receipt["bundleInventorySHA256"],
+            "graphicsImplementation": receipt["supportCell"]["graphicsImplementation"],
+            "matrixCellID": receipt["supportCell"]["matrixCellID"],
+            "signaturePublicKeyID": receipt["signaturePublicKeyID"],
+            "verificationReceiptPath": receipt_path.name,
+            "verificationReceiptSHA256": hashlib.sha256(receipt_path.read_bytes()).hexdigest(),
+        },
     }],
 }
 if mutation == "wrong-inventory":
@@ -543,6 +558,59 @@ sign_file() {
   xcrun swift "$SIGN_HELPER" sign "$PRIVATE_KEY" "$1" > "$2"
 }
 
+write_performance_receipt() {
+  python3 - "$PERFORMANCE_RECEIPT" "$CANDIDATE" "$SBOM" "$PUBLIC_KEY" <<'PY'
+import base64
+import hashlib
+import json
+import pathlib
+import sys
+
+destination, candidate_root, sbom_path, public_key = sys.argv[1:]
+candidate_root = pathlib.Path(candidate_root)
+inventory_path = candidate_root / "component-candidate-inventory.json"
+inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+media = next(
+    item for item in inventory["mediaBindings"]
+    if item["componentIdentifier"] == "linux-desktop"
+    and item["bootMediaKind"] == "linux-kernel"
+)
+receipt = {
+    "bundleInventorySHA256": "f" * 64,
+    "candidate": {
+        "applicationSHA256": "1" * 64,
+        "budgetSetSHA256": "2" * 64,
+        "componentCandidateInventorySHA256": hashlib.sha256(inventory_path.read_bytes()).hexdigest(),
+        "runtimePlanSHA256": "3" * 64,
+        "sbomSHA256": hashlib.sha256(pathlib.Path(sbom_path).read_bytes()).hexdigest(),
+        "virtualHardwareABIVersion": "1",
+    },
+    "kind": "dev.dory.linux-vm-performance-verification-receipt",
+    "releaseQualified": True,
+    "schemaVersion": 1,
+    "signaturePublicKeyID": hashlib.sha256(
+        base64.b64decode(public_key, validate=True)
+    ).hexdigest(),
+    "supportCell": {
+        "backend": "rawhv",
+        "graphicsImplementation": "virgl2+venus",
+        "hostIdentitySHA256": "4" * 64,
+        "installedSystemIdentitySHA256": "5" * 64,
+        "installerSHA256": media["immutableArtifactSHA256"],
+        "matrixCellID": "e" * 64,
+        "requestedGraphicsQuality": "accelerated",
+        "selectedGraphicsQuality": "accelerated",
+    },
+}
+pathlib.Path(destination).write_text(
+    json.dumps(receipt, indent=2, sort_keys=True) + "\n",
+    encoding="utf-8",
+)
+PY
+}
+
+write_performance_receipt
+sign_file "$PERFORMANCE_RECEIPT" "$PERFORMANCE_RECEIPT_SIGNATURE"
 write_qualification "$QUALIFICATION" none
 sign_file "$QUALIFICATION" "$QUALIFICATION_SIGNATURE"
 
@@ -554,6 +622,8 @@ finalize() {
     --sbom "$sbom" \
     --qualification-manifest "$manifest" \
     --qualification-signature "$signature" \
+    --performance-verification-receipt "$PERFORMANCE_RECEIPT" \
+    --performance-verification-signature "$PERFORMANCE_RECEIPT_SIGNATURE" \
     --signer "$CATALOG_SIGNER" \
     --catalog-public-key "$PUBLIC_KEY"
 }
@@ -767,12 +837,25 @@ evidence = {
 assert set(evidence) == {
     "virtual-machine-qualification.json",
     "virtual-machine-qualification.json.sig",
+    "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee.linux-vm-performance-verification.json",
+    "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee.linux-vm-performance-verification.json.sig",
 }
 assert evidence["virtual-machine-qualification.json"]["installedSHA256"] == hashlib.sha256(
     qualification_source.read_bytes()
 ).hexdigest()
 assert evidence["virtual-machine-qualification.json.sig"]["installedSHA256"] == hashlib.sha256(
     qualification_signature_source.read_bytes()
+).hexdigest()
+performance_receipt = qualification_source.parent / (
+    "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    ".linux-vm-performance-verification.json"
+)
+performance_signature = performance_receipt.with_name(performance_receipt.name + ".sig")
+assert evidence[performance_receipt.name]["installedSHA256"] == hashlib.sha256(
+    performance_receipt.read_bytes()
+).hexdigest()
+assert evidence[performance_signature.name]["installedSHA256"] == hashlib.sha256(
+    performance_signature.read_bytes()
 ).hexdigest()
 for asset in evidence.values():
     artifact = root / asset["url"].rsplit("/", 1)[-1]
@@ -782,7 +865,7 @@ qualification = catalog["virtualMachineQualification"]
 assert qualification["component"] == "linux-desktop"
 assert qualification["path"] == "virtual-machine-qualification.json"
 assert qualification["manifestIdentity"] == "dory-release-9.8.7-apple-silicon"
-assert qualification["manifestFormatVersion"] == 1
+assert qualification["manifestFormatVersion"] == 2
 
 assert (root / "catalog.json.sha256").read_text().strip() == hashlib.sha256(
     (root / "catalog.json").read_bytes()

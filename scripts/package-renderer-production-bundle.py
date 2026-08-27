@@ -517,10 +517,12 @@ def verify_filesystem_worker(runner_app: pathlib.Path, expected_team: str,
     verify_arm64(executable, "DoryFSWorker.xpc executable")
     verify_signature(bundle, label="DoryFSWorker.xpc", identifier=FILESYSTEM_WORKER_IDENTIFIER,
                      expected_team=expected_team, allow_adhoc_test=allow_adhoc_test)
-    if read_entitlements(bundle, "DoryFSWorker.xpc") != {
-        "com.apple.security.app-sandbox": True,
-        "com.apple.security.files.bookmarks.app-scope": True,
-    }:
+    # The worker accepts only signed-XPC transferred, identity-sealed directory descriptors. App
+    # Sandbox cannot delegate descendant openat authority through those descriptors, and the
+    # unsandboxed hypervisor cannot mint a Powerbox bookmark for this distinct XPC identity.
+    # Requiring an empty entitlement set makes that deliberate filesystem namespace choice exact;
+    # any added network, device, bookmark, or temporary-exception authority still fails closed.
+    if read_entitlements(bundle, "DoryFSWorker.xpc") != {}:
         fail("DoryFSWorker.xpc entitlements differ from its production authority")
 
 
