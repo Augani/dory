@@ -68,14 +68,15 @@ public struct HostCLIInstaller: Sendable {
     public func install() -> HostCLIInstallResult {
         let fileManager = FileManager.default
         let binDir = "\(home)/.dory/bin"
-        let composePluginDir = "\(home)/.docker/cli-plugins"
+        let pluginDir = "\(home)/.dory/cli-plugins"
+        let legacyPluginDir = "\(home)/.docker/cli-plugins"
         var linked: [String] = []
         var missing: [String] = []
         var composePluginInstalled = false
         var buildxPluginInstalled = false
 
         try? fileManager.createDirectory(atPath: binDir, withIntermediateDirectories: true)
-        try? fileManager.createDirectory(atPath: composePluginDir, withIntermediateDirectories: true)
+        try? fileManager.createDirectory(atPath: pluginDir, withIntermediateDirectories: true)
 
         for tool in Self.tools {
             guard let source = sourcePath(for: tool) else {
@@ -91,11 +92,22 @@ public struct HostCLIInstaller: Sendable {
                 missing.append(tool)
             }
             if tool == "docker-compose" {
-                composePluginInstalled = installOwnedPluginSymlink(source, to: "\(composePluginDir)/docker-compose")
+                composePluginInstalled = installOwnedPluginSymlink(source, to: "\(pluginDir)/docker-compose")
+                _ = removeOwnedPluginSymlink(
+                    at: "\(legacyPluginDir)/docker-compose",
+                    desiredSource: source
+                )
             } else if tool == "docker-buildx" {
-                buildxPluginInstalled = installOwnedPluginSymlink(source, to: "\(composePluginDir)/docker-buildx")
+                buildxPluginInstalled = installOwnedPluginSymlink(source, to: "\(pluginDir)/docker-buildx")
+                _ = removeOwnedPluginSymlink(
+                    at: "\(legacyPluginDir)/docker-buildx",
+                    desiredSource: source
+                )
             }
         }
+        let pluginDirectoryConfigured = configureDockerPluginDirectory(pluginDir, enabled: true)
+        composePluginInstalled = composePluginInstalled && pluginDirectoryConfigured
+        buildxPluginInstalled = buildxPluginInstalled && pluginDirectoryConfigured
         let dockerContext = dockerContextManager()?.reconcile()
             ?? HostDockerContextResult(succeeded: false, error: "docker helper is missing")
 
@@ -114,8 +126,9 @@ public struct HostCLIInstaller: Sendable {
     public func remove() -> HostCLIRemoveResult {
         let fileManager = FileManager.default
         let binDir = "\(home)/.dory/bin"
-        let composePlugin = "\(home)/.docker/cli-plugins/docker-compose"
-        let buildxPlugin = "\(home)/.docker/cli-plugins/docker-buildx"
+        let pluginDir = "\(home)/.dory/cli-plugins"
+        let composePlugin = "\(pluginDir)/docker-compose"
+        let buildxPlugin = "\(pluginDir)/docker-buildx"
         var removed: [String] = []
         let dockerContext = dockerContextManager()?.remove()
             ?? HostDockerContextResult(succeeded: false, error: "docker helper is missing")
@@ -130,6 +143,10 @@ public struct HostCLIInstaller: Sendable {
 
         let hadComposePlugin = removeOwnedPluginSymlink(at: composePlugin, desiredSource: sourcePath(for: "docker-compose"))
         let hadBuildxPlugin = removeOwnedPluginSymlink(at: buildxPlugin, desiredSource: sourcePath(for: "docker-buildx"))
+        _ = configureDockerPluginDirectory(pluginDir, enabled: false)
+        if (try? fileManager.contentsOfDirectory(atPath: pluginDir).isEmpty) == true {
+            try? fileManager.removeItem(atPath: pluginDir)
+        }
 
         return HostCLIRemoveResult(
             removed: removed,
@@ -252,6 +269,78 @@ public struct HostCLIInstaller: Sendable {
         }
         do {
             try fileManager.createSymbolicLink(atPath: destination, withDestinationPath: source)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// Registers Dory's private plugin directory through Docker's supported configuration field.
+    /// This lets Dory coexist with Docker Desktop, OrbStack, and other runtimes that already own
+    /// ~/.docker/cli-plugins without replacing or shadowing their files.
+    @discardableResult
+    private func configureDockerPluginDirectory(_ directory: String, enabled: Bool) -> Bool {
+        let fileManager = FileManager.default
+        let dockerDirectory = "\(home)/.docker"
+        let configPath = "\(dockerDirectory)/config.json"
+        let configURL = URL(fileURLWithPath: configPath)
+        var root: [String: Any] = [:]
+        var existingPermissions = NSNumber(value: 0o600)
+
+        if fileManager.fileExists(atPath: configPath) {
+            guard let data = try? Data(contentsOf: configURL),
+                  let object = try? JSONSerialization.jsonObject(with: data),
+                  let dictionary = object as? [String: Any] else {
+                return false
+            }
+            root = dictionary
+            if let permissions = try? fileManager.attributesOfItem(atPath: configPath)[.posixPermissions]
+                as? NSNumber {
+                existingPermissions = permissions
+            }
+        } else {
+            do {
+                try fileManager.createDirectory(atPath: dockerDirectory, withIntermediateDirectories: true)
+            } catch {
+                return false
+            }
+        }
+
+        let rawDirectories: [String]
+        if let value = root["cliPluginsExtraDirs"] {
+            guard let directories = value as? [String] else { return false }
+            rawDirectories = directories
+        } else {
+            rawDirectories = []
+        }
+        var directories = rawDirectories
+        if enabled {
+            if !directories.contains(where: { standardized($0) == standardized(directory) }) {
+                directories.append(directory)
+            }
+        } else {
+            directories.removeAll { standardized($0) == standardized(directory) }
+        }
+        if directories == rawDirectories { return true }
+        if directories.isEmpty {
+            root.removeValue(forKey: "cliPluginsExtraDirs")
+        } else {
+            root["cliPluginsExtraDirs"] = directories
+        }
+        guard JSONSerialization.isValidJSONObject(root),
+              var data = try? JSONSerialization.data(
+                withJSONObject: root,
+                options: [.prettyPrinted, .sortedKeys]
+              ) else {
+            return false
+        }
+        data.append(0x0A)
+        do {
+            try data.write(to: configURL, options: .atomic)
+            try fileManager.setAttributes(
+                [.posixPermissions: existingPermissions],
+                ofItemAtPath: configPath
+            )
             return true
         } catch {
             return false

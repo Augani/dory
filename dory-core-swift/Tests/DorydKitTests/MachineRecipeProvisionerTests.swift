@@ -1,4 +1,5 @@
 import DoryCore
+import Foundation
 import XCTest
 @testable import DorydKit
 
@@ -48,6 +49,29 @@ final class MachineRecipeProvisionerTests: XCTestCase {
                 XCTAssertTrue(recipe.installScript.contains("/usr/local/bin/fd"), input)
                 XCTAssertTrue(recipe.verifyCommand.contains("fd --version"), input)
             }
+        }
+    }
+
+    func testEveryBuiltInInstallRecipeIsValidPOSIXShell() throws {
+        for capability in MachineRecipeProvisioner.catalog {
+            let recipe = try MachineRecipeProvisioner.recipe(id: capability.id)
+            let shell = Process()
+            let input = Pipe()
+            let errors = Pipe()
+            shell.executableURL = URL(fileURLWithPath: "/bin/sh")
+            shell.arguments = ["-n"]
+            shell.standardInput = input
+            shell.standardError = errors
+            try shell.run()
+            input.fileHandleForWriting.write(Data(recipe.installScript.utf8))
+            try input.fileHandleForWriting.close()
+            shell.waitUntilExit()
+
+            let error = String(
+                decoding: errors.fileHandleForReading.readDataToEndOfFile(),
+                as: UTF8.self
+            )
+            XCTAssertEqual(shell.terminationStatus, 0, "\(capability.id): \(error)")
         }
     }
 

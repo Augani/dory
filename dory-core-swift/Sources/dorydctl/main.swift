@@ -281,6 +281,37 @@ private func componentAppVersion() -> String {
     return Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0-dev"
 }
 
+private func componentBundledComponents() -> Set<DoryComponentID> {
+    if let override = ProcessInfo.processInfo.environment["DORY_COMPONENT_BUNDLED_COMPONENTS"] {
+        return Set(
+            override.split(separator: ",")
+                .compactMap { DoryComponentID(rawValue: String($0)) }
+        ).union([.dockerCore])
+    }
+    let executable = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
+    let infoPath = executable.deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("Info.plist").path
+    if let info = NSDictionary(contentsOfFile: infoPath),
+       let raw = info["DoryBundledComponents"] as? [String] {
+        return Set(raw.compactMap(DoryComponentID.init(rawValue:))).union([.dockerCore])
+    }
+    return [.dockerCore]
+}
+
+private func componentStatuses(
+    store: DoryComponentStore,
+    catalog: ComponentCatalogBundle,
+    digest: String
+) -> [DoryComponentStatus] {
+    store.list(
+        catalog: catalog.catalog,
+        catalogDigest: digest,
+        bundledComponents: componentBundledComponents(),
+        bundledVersion: componentAppVersion()
+    )
+}
+
 private func componentCatalogURL() -> URL {
     if let override = ProcessInfo.processInfo.environment["DORY_COMPONENT_CATALOG_URL"],
        let url = URL(string: override),
@@ -477,7 +508,7 @@ private func runComponent(cursor: inout ArgumentCursor) throws {
         guard cursor.values.isEmpty else {
             throw DorydCtlError.usage("usage: dorydctl component list [--json] [--offline]")
         }
-        let statuses = store.list(catalog: catalog.catalog, catalogDigest: digest)
+        let statuses = componentStatuses(store: store, catalog: catalog, digest: digest)
         if json {
             try emitJSON(componentResultJSON(action: "list", catalog: catalog, statuses: statuses))
         } else {
@@ -517,7 +548,7 @@ private func runComponent(cursor: inout ArgumentCursor) throws {
             }
             if !json { FileHandle.standardError.write(Data("\n".utf8)) }
         }
-        let statuses = store.list(catalog: catalog.catalog, catalogDigest: digest)
+        let statuses = componentStatuses(store: store, catalog: catalog, digest: digest)
         if json {
             try emitJSON(componentResultJSON(
                 action: subcommand,
@@ -542,7 +573,7 @@ private func runComponent(cursor: inout ArgumentCursor) throws {
             throw DoryComponentError.unknownComponent(rawID)
         }
         for id in ids { _ = try store.verify(id) }
-        let statuses = store.list(catalog: catalog.catalog, catalogDigest: digest)
+        let statuses = componentStatuses(store: store, catalog: catalog, digest: digest)
         if json {
             try emitJSON(componentResultJSON(action: "verify", catalog: catalog, statuses: statuses))
         } else {
@@ -554,7 +585,7 @@ private func runComponent(cursor: inout ArgumentCursor) throws {
             throw DoryComponentError.unknownComponent(rawID)
         }
         try store.remove(id, catalog: catalog.catalog)
-        let statuses = store.list(catalog: catalog.catalog, catalogDigest: digest)
+        let statuses = componentStatuses(store: store, catalog: catalog, digest: digest)
         if json {
             try emitJSON(componentResultJSON(action: "remove", catalog: catalog, statuses: statuses))
         } else {

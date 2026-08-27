@@ -28,8 +28,13 @@ final class HostCLIInstallerTests: XCTestCase {
             try FileManager.default.destinationOfSymbolicLink(atPath: home + "/.dory/bin/docker-credential-osxkeychain"),
             helpers + "/docker-credential-osxkeychain"
         )
-        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: home + "/.docker/cli-plugins/docker-compose"), helpers + "/docker-compose")
-        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: home + "/.docker/cli-plugins/docker-buildx"), helpers + "/docker-buildx")
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: home + "/.dory/cli-plugins/docker-compose"), helpers + "/docker-compose")
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: home + "/.dory/cli-plugins/docker-buildx"), helpers + "/docker-buildx")
+        let dockerConfig = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: home + "/.docker/config.json")))
+                as? [String: Any]
+        )
+        XCTAssertEqual(dockerConfig["cliPluginsExtraDirs"] as? [String], [home + "/.dory/cli-plugins"])
         let profile = try String(contentsOfFile: home + "/.zprofile", encoding: .utf8)
         XCTAssertTrue(profile.contains("DORY_CLI_BIN=\"\(home)/.dory/bin\""))
         XCTAssertTrue(FileManager.default.fileExists(atPath: home + "/.zshrc"))
@@ -259,8 +264,13 @@ final class HostCLIInstallerTests: XCTestCase {
         XCTAssertTrue(result.pathProfileChanged)
         XCTAssertFalse(FileManager.default.fileExists(atPath: home + "/.dory/bin/docker"))
         XCTAssertFalse(FileManager.default.fileExists(atPath: home + "/.dory/bin/docker-credential-osxkeychain"))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: home + "/.docker/cli-plugins/docker-compose"))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: home + "/.docker/cli-plugins/docker-buildx"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: home + "/.dory/cli-plugins/docker-compose"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: home + "/.dory/cli-plugins/docker-buildx"))
+        let dockerConfig = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: home + "/.docker/config.json")))
+                as? [String: Any]
+        )
+        XCTAssertNil(dockerConfig["cliPluginsExtraDirs"])
         XCTAssertFalse(FileManager.default.fileExists(atPath: home + "/.zprofile"))
         XCTAssertFalse(FileManager.default.fileExists(atPath: home + "/.zshrc"))
     }
@@ -337,7 +347,7 @@ final class HostCLIInstallerTests: XCTestCase {
         )
     }
 
-    func testInstallerNeverReplacesUnownedDockerPlugins() throws {
+    func testInstallerCoexistsWithUnownedDockerPlugins() throws {
         let directory = "/tmp/doryd-cli-plugin-ownership-\(getpid())-\(UUID().uuidString)"
         let home = directory + "/home"
         let helpers = directory + "/Dory.app/Contents/Helpers"
@@ -358,22 +368,78 @@ final class HostCLIInstallerTests: XCTestCase {
         let installer = HostCLIInstaller(home: home, helpersDirectory: helpers)
         let result = installer.install()
 
-        XCTAssertFalse(result.composePluginInstalled)
-        XCTAssertFalse(result.buildxPluginInstalled)
+        XCTAssertTrue(result.composePluginInstalled)
+        XCTAssertTrue(result.buildxPluginInstalled)
         XCTAssertEqual(try String(contentsOfFile: plugins + "/docker-compose", encoding: .utf8), "user-compose\n")
         XCTAssertEqual(
             try FileManager.default.destinationOfSymbolicLink(atPath: plugins + "/docker-buildx"),
             "/opt/homebrew/lib/docker/cli-plugins/docker-buildx"
         )
+        XCTAssertEqual(
+            try FileManager.default.destinationOfSymbolicLink(
+                atPath: home + "/.dory/cli-plugins/docker-compose"
+            ),
+            helpers + "/docker-compose"
+        )
+        XCTAssertEqual(
+            try FileManager.default.destinationOfSymbolicLink(
+                atPath: home + "/.dory/cli-plugins/docker-buildx"
+            ),
+            helpers + "/docker-buildx"
+        )
 
         let removal = installer.remove()
-        XCTAssertFalse(removal.composePluginRemoved)
-        XCTAssertFalse(removal.buildxPluginRemoved)
+        XCTAssertTrue(removal.composePluginRemoved)
+        XCTAssertTrue(removal.buildxPluginRemoved)
         XCTAssertTrue(FileManager.default.fileExists(atPath: plugins + "/docker-compose"))
         XCTAssertEqual(
             try FileManager.default.destinationOfSymbolicLink(atPath: plugins + "/docker-buildx"),
             "/opt/homebrew/lib/docker/cli-plugins/docker-buildx"
         )
+    }
+
+    func testInstallerPreservesDockerConfigAndForeignPluginDirectories() throws {
+        let directory = "/tmp/doryd-cli-config-coexistence-\(getpid())-\(UUID().uuidString)"
+        let home = directory + "/home"
+        let helpers = directory + "/Dory.app/Contents/Helpers"
+        let dockerDirectory = home + "/.docker"
+        try FileManager.default.createDirectory(atPath: helpers, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: dockerDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+
+        for tool in ["docker", "docker-credential-osxkeychain", "docker-buildx", "docker-compose", "kubectl", "dory", "dory-doctor", "dorydctl"] {
+            _ = try executableFixture(at: helpers + "/\(tool)")
+        }
+        let original: [String: Any] = [
+            "auths": ["registry.example": ["auth": "preserved"]],
+            "credsStore": "osxkeychain",
+            "cliPluginsExtraDirs": ["/opt/foreign/cli-plugins"],
+        ]
+        try JSONSerialization.data(withJSONObject: original).write(
+            to: URL(fileURLWithPath: dockerDirectory + "/config.json")
+        )
+
+        let installer = HostCLIInstaller(home: home, helpersDirectory: helpers)
+        XCTAssertTrue(installer.install().composePluginInstalled)
+        var config = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: dockerDirectory + "/config.json")))
+                as? [String: Any]
+        )
+        XCTAssertEqual(config["credsStore"] as? String, "osxkeychain")
+        XCTAssertEqual((config["auths"] as? [String: Any])?["registry.example"] as? [String: String], ["auth": "preserved"])
+        XCTAssertEqual(
+            config["cliPluginsExtraDirs"] as? [String],
+            ["/opt/foreign/cli-plugins", home + "/.dory/cli-plugins"]
+        )
+
+        _ = installer.remove()
+        config = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: dockerDirectory + "/config.json")))
+                as? [String: Any]
+        )
+        XCTAssertEqual(config["credsStore"] as? String, "osxkeychain")
+        XCTAssertEqual((config["auths"] as? [String: Any])?["registry.example"] as? [String: String], ["auth": "preserved"])
+        XCTAssertEqual(config["cliPluginsExtraDirs"] as? [String], ["/opt/foreign/cli-plugins"])
     }
 
     private func executableFixture(at path: String) throws -> String {

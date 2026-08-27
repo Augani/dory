@@ -119,7 +119,7 @@ public enum MachineRecipeProvisioner {
             installScript: packageInstallScript(
                 alpine: alpinePackages,
                 debian: debianPackages
-            ) + additionalInstallScript,
+            ) + (additionalInstallScript.isEmpty ? "" : "\n" + additionalInstallScript),
             verifyCommand: capability.versionCommand,
             timeoutMs: timeoutMs,
             outputLimitBytes: outputLimitBytes
