@@ -14,7 +14,7 @@ enum AppSection: String, CaseIterable, Identifiable, Sendable {
         case .compose: "Compose"
         case .builds: "Build Activity"
         case .kubernetes: "Kubernetes"
-        case .desktops: "Linux Desktops"
+        case .desktops: "Desktops"
         case .machines: "Linux Servers"
         case .components: "Components"
         case .health: "Health"

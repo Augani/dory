@@ -22,6 +22,7 @@ struct NewMachineSheet: View {
     @State private var portForwardRows: [MachinePortForwardDraft] = []
     @State private var audioInputEnabled = true
     @State private var audioOutputEnabled = true
+    @State private var gpuAccelerationEnabled = true
     @State private var hostDisplays: [HostDisplayChoice] = []
     @State private var dedicatedHostDisplayUUID: String?
 
@@ -102,6 +103,7 @@ struct NewMachineSheet: View {
                             networkMode: networkMode,
                             accessibilityPrefix: "new-machine"
                         )
+                        desktopGraphicsBlock
                         audioBlock
                         displayAssignmentBlock
                         optionsRow
@@ -585,6 +587,23 @@ struct NewMachineSheet: View {
         }
     }
 
+    @ViewBuilder private var desktopGraphicsBlock: some View {
+        if displayMode == .desktop, !customISOInstall {
+            VStack(alignment: .leading, spacing: 8) {
+                sectionLabel("GRAPHICS")
+                Toggle("GPU acceleration", isOn: $gpuAccelerationEnabled)
+                    .toggleStyle(.switch)
+                    .tint(p.accent)
+                    .accessibilityIdentifier("new-machine-gpu-acceleration")
+                Text(gpuAccelerationEnabled
+                     ? "Require Dory's Metal-backed VirGL + Venus runtime for accelerated OpenGL and Vulkan. Creation fails instead of silently falling back to software graphics."
+                     : "Use Apple's compatibility display with software 3D. You can enable GPU acceleration later from the desktop's settings.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(p.text3)
+            }
+        }
+    }
+
     @ViewBuilder private var displayAssignmentBlock: some View {
         if displayMode == .desktop {
             VStack(alignment: .leading, spacing: 8) {
@@ -974,7 +993,8 @@ struct NewMachineSheet: View {
         networkMode: DoryVMNetworkMode = .sharedNAT,
         portForwards: [DoryVMPortForward] = [],
         audioInputEnabled: Bool = true,
-        audioOutputEnabled: Bool = true
+        audioOutputEnabled: Bool = true,
+        gpuAccelerationEnabled: Bool = true
     ) -> MachineSettings {
         let typedSettings: DorydMachineTypedSettings
         if displayMode == .desktop {
@@ -996,8 +1016,8 @@ struct NewMachineSheet: View {
                 // machine transfer channel; advertising it as clipboard intent makes a clean
                 // install unrepresentable before a schema-v2 qualification catalog is active.
                 clipboardPolicy: .legacyDesktop(.bidirectional),
-                runtimePreference: .automatic,
-                graphicsPreference: .automatic,
+                runtimePreference: gpuAccelerationEnabled ? .accelerated : .compatible,
+                graphicsPreference: gpuAccelerationEnabled ? .virglVenus : .software,
                 networkMode: networkMode,
                 portForwards: portForwards,
                 audioConfiguration: DoryVMAudioConfiguration(
@@ -1057,7 +1077,8 @@ struct NewMachineSheet: View {
             networkMode: networkMode,
             portForwards: resolvedPortForwards ?? [],
             audioInputEnabled: audioInputEnabled,
-            audioOutputEnabled: audioOutputEnabled
+            audioOutputEnabled: audioOutputEnabled,
+            gpuAccelerationEnabled: gpuAccelerationEnabled
         )
         if customISOInstall {
             settings.bootMode = .efi

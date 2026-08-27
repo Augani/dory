@@ -48,7 +48,7 @@ final class DoryScreensUITests: XCTestCase {
         nav("volumes"); assertText("Volumes")
         nav("networks"); assertText("Networks")
         nav("kubernetes"); assertText("Kubernetes")
-        nav("desktops"); assertText("Linux Desktops")
+        nav("desktops"); assertText("Desktops")
         nav("machines"); assertText("Linux Servers")
         nav("settings"); assertText("STARTUP")
     }
@@ -121,6 +121,7 @@ final class DoryScreensUITests: XCTestCase {
         XCTAssertTrue(app.buttons["desktop-distro-debian"].waitForExistence(timeout: 4))
         XCTAssertTrue(app.buttons["desktop-distro-ubuntu"].exists)
         XCTAssertTrue(app.buttons["desktop-distro-kali"].exists)
+        XCTAssertTrue(app.switches["new-machine-gpu-acceleration"].exists)
         app.buttons["desktop-distro-ubuntu"].click()
         let advanced = app.buttons["new-machine-advanced-toggle"]
         XCTAssertTrue(advanced.waitForExistence(timeout: 4))
@@ -148,7 +149,7 @@ final class DoryScreensUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["1 core"].exists)
         XCTAssertTrue(app.staticTexts["1 GB"].exists)
         app.buttons["Cancel"].firstMatch.click()
-        assertText("Linux Desktops")
+        assertText("Desktops")
     }
 
     func testNewServerKeepsTheUseCaseEntryPoint() {

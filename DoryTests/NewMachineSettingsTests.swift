@@ -108,8 +108,8 @@ struct NewMachineSettingsTests {
         #expect(s.virtualMachineSettings?.guestIdentityIntent.desktop?.distributionIdentifier == "debian")
         #expect(s.virtualMachineSettings?.guestIdentityIntent.desktop?.version == "13")
         #expect(s.virtualMachineSettings?.clipboardPolicy == .legacyDesktop(.bidirectional))
-        #expect(s.virtualMachineSettings?.runtimePreference == .automatic)
-        #expect(s.virtualMachineSettings?.graphicsPreference == .automatic)
+        #expect(s.virtualMachineSettings?.runtimePreference == .accelerated)
+        #expect(s.virtualMachineSettings?.graphicsPreference == .virglVenus)
         #expect(s.virtualMachineSettings?.networkMode == .sharedNAT)
         #expect(s.virtualMachineSettings?.portForwards == [
             DoryVMPortForward(id: "web", hostPort: 8_080, guestPort: 80),
@@ -191,6 +191,25 @@ struct NewMachineSettingsTests {
             inputEnabled: false,
             outputEnabled: true
         ))
+    }
+
+    @Test func desktopGPUChoiceIsExplicitAndNeverSilentlyFallsBack() {
+        let accelerated = NewMachineSheet.buildSettings(
+            cpus: 4,
+            memoryGB: 4,
+            mounts: []
+        )
+        #expect(accelerated.virtualMachineSettings?.runtimePreference == .accelerated)
+        #expect(accelerated.virtualMachineSettings?.graphicsPreference == .virglVenus)
+
+        let compatible = NewMachineSheet.buildSettings(
+            cpus: 4,
+            memoryGB: 4,
+            mounts: [],
+            gpuAccelerationEnabled: false
+        )
+        #expect(compatible.virtualMachineSettings?.runtimePreference == .compatible)
+        #expect(compatible.virtualMachineSettings?.graphicsPreference == .software)
     }
 
     @Test func newMachinesDoNotRequestUnsupportedIntelApplicationTranslation() {
