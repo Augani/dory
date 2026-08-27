@@ -1,9 +1,27 @@
 import Darwin
 @testable import DoryHV
+@testable import dory_hv
 import Foundation
 import Testing
 
 @Suite struct EngineVsockBridgeLifecycleTests {
+    @Test func engineOwnerRetainsDockerInventorySocketUntilExplicitRetirement() throws {
+        let fixture = try socketFixture(prefix: "dory-engine-bridge-owner")
+        defer { try? FileManager.default.removeItem(atPath: fixture.directory) }
+        let owner = EngineVsockBridgeLifetime(
+            dockerSocketPath: fixture.path,
+            agentSocketPath: nil
+        )
+
+        try owner.attach(to: VirtioVsock(guestCID: 3))
+        #expect(pathIdentity(fixture.path) != nil)
+        let client = try connectUnixSocket(fixture.path)
+        close(client)
+
+        owner.stop()
+        #expect(waitUntil { pathIdentity(fixture.path) == nil })
+    }
+
     @Test func dockerRepeatAttachCannotMutatePathAndStopPreservesReplacement() throws {
         let fixture = try socketFixture(prefix: "dory-docker-bridge-owned")
         defer { try? FileManager.default.removeItem(atPath: fixture.directory) }

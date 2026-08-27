@@ -269,6 +269,47 @@ extension ProcessMemorySampleError: CustomStringConvertible {
     var description: String { message }
 }
 
+enum DoryLoopbackTCPListenerProbe {
+    static func isReachable(port: UInt16, timeoutMilliseconds: Int32 = 150) -> Bool {
+        let descriptor = socket(AF_INET, SOCK_STREAM, 0)
+        guard descriptor >= 0 else { return false }
+        defer { close(descriptor) }
+
+        let originalFlags = fcntl(descriptor, F_GETFL, 0)
+        guard originalFlags >= 0,
+              fcntl(descriptor, F_SETFL, originalFlags | O_NONBLOCK) == 0 else {
+            return false
+        }
+        var address = sockaddr_in()
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_port = port.bigEndian
+        address.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
+        let connected = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                connect(descriptor, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        if connected == 0 { return true }
+        guard errno == EINPROGRESS else { return false }
+
+        var readiness = pollfd(fd: descriptor, events: Int16(POLLOUT), revents: 0)
+        guard poll(&readiness, 1, timeoutMilliseconds) > 0 else { return false }
+        var socketError: Int32 = 0
+        var socketErrorLength = socklen_t(MemoryLayout<Int32>.size)
+        guard getsockopt(
+            descriptor,
+            SOL_SOCKET,
+            SO_ERROR,
+            &socketError,
+            &socketErrorLength
+        ) == 0 else {
+            return false
+        }
+        return socketError == 0
+    }
+}
+
 struct DoryResourceTrendSample: Sendable, Equatable {
     var at: Date
     var openFileDescriptors: Int
@@ -341,6 +382,7 @@ public final class HealthReporter: @unchecked Sendable {
     private let commandRunner: any HealthCommandRunning
     private let registryProbe: any HealthRegistryProbing
     private let memorySampler: any DoryProcessMemorySampling
+    private let loopbackTCPListenerProbe: @Sendable (UInt16) -> Bool
     private let networkingController: NetworkingController?
     private let corporateConnectivity: CorporateConnectivityReconciler?
     private let resourceTrendTracker = DoryResourceTrendTracker()
@@ -372,7 +414,10 @@ public final class HealthReporter: @unchecked Sendable {
             environment: environment,
             home: home,
             fileManager: fileManager,
-            memorySampler: DarwinDoryProcessMemorySampler()
+            memorySampler: DarwinDoryProcessMemorySampler(),
+            loopbackTCPListenerProbe: { port in
+                DoryLoopbackTCPListenerProbe.isReachable(port: port)
+            }
         )
     }
 
@@ -389,7 +434,10 @@ public final class HealthReporter: @unchecked Sendable {
         environment: [String: String] = ProcessInfo.processInfo.environment,
         home: String = NSHomeDirectory(),
         fileManager: FileManager = .default,
-        memorySampler: any DoryProcessMemorySampling
+        memorySampler: any DoryProcessMemorySampling,
+        loopbackTCPListenerProbe: @escaping @Sendable (UInt16) -> Bool = { port in
+            DoryLoopbackTCPListenerProbe.isReachable(port: port)
+        }
     ) {
         self.socketPath = socketPath
         self.dockerTier = dockerTier
@@ -404,6 +452,7 @@ public final class HealthReporter: @unchecked Sendable {
         self.corporateConnectivity = corporateConnectivity
         self.fileManager = fileManager
         self.memorySampler = memorySampler
+        self.loopbackTCPListenerProbe = loopbackTCPListenerProbe
     }
 
     public func report(now: Date = Date()) -> DoctorReport {
@@ -1043,7 +1092,7 @@ public final class HealthReporter: @unchecked Sendable {
             status: .pass,
             code: "network.lan_localhost_only",
             title: "Published ports are localhost-only",
-            detail: "localhost-only - \(count) published port(s) reachable only from this Mac",
+            detail: "localhost-only policy configured for \(count) published port(s)",
             data: ["lan_visible": "false", "published_ports": String(count)]
         )
     }
@@ -1063,14 +1112,61 @@ public final class HealthReporter: @unchecked Sendable {
     }
 
     private func publishedPortsCheck(dockerReachable: Bool) -> HealthCheck {
-        if let ports = publishedPorts() {
+        Self.publishedPortsCheck(
+            ports: publishedPorts(),
+            dockerReachable: dockerReachable,
+            tcpListenerProbe: loopbackTCPListenerProbe
+        )
+    }
+
+    static func publishedPortsCheck(
+        ports: [DoryListenPort]?,
+        dockerReachable: Bool,
+        tcpListenerProbe: (UInt16) -> Bool
+    ) -> HealthCheck {
+        if let ports {
+            let tcpPorts = ports.compactMap { port -> UInt16? in
+                let protocolName = port.protocol.lowercased()
+                guard protocolName == "tcp" || protocolName == "tcp6" else { return nil }
+                return UInt16(exactly: port.port)
+            }
+            let missing = tcpPorts.filter { !tcpListenerProbe($0) }
+            let nonTCPCount = ports.count - tcpPorts.count
+            let data = [
+                "ports": String(ports.count),
+                "tcp_ports": String(tcpPorts.count),
+                "non_tcp_ports": String(nonTCPCount),
+                "missing_tcp_listeners": missing.map(String.init).joined(separator: ","),
+            ]
+            if !missing.isEmpty {
+                return HealthCheck(
+                    id: "network.published_ports",
+                    status: .fail,
+                    code: "network.port_listener_missing",
+                    title: "Published port listeners missing",
+                    detail: "Docker reports \(tcpPorts.count) published TCP port(s), but loopback refused \(missing.map(String.init).joined(separator: ", "))",
+                    action: "Run `dory repair ports --apply`; if a port remains unavailable, attach a Dory support bundle to the issue.",
+                    data: data
+                )
+            }
+            if tcpPorts.isEmpty, nonTCPCount > 0 {
+                return HealthCheck(
+                    id: "network.published_ports",
+                    status: .warn,
+                    code: "network.port_listener_unverified",
+                    title: "Published UDP listeners unverified",
+                    detail: "\(nonTCPCount) non-TCP published port route(s) found; passive diagnostics cannot prove datagram delivery",
+                    action: "Run an application-level UDP probe for the published service.",
+                    data: data
+                )
+            }
             return HealthCheck(
                 id: "network.published_ports",
                 status: .pass,
-                code: "network.port_table_ok",
-                title: "Published port table readable",
-                detail: "\(ports.count) published port route(s) found",
-                data: ["ports": String(ports.count)]
+                code: "network.port_listeners_ready",
+                title: "Published port listeners ready",
+                detail: "\(ports.count) published route(s) found; all \(tcpPorts.count) TCP loopback listener(s) accepted a connection",
+                data: data
             )
         }
         guard dockerReachable else {

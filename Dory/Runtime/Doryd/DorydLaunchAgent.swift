@@ -80,7 +80,9 @@ enum DorydLaunchAgent {
             self.amd64EmulationEnabled = amd64EmulationEnabled
             self.gpuVenusEnabled = gpuVenusEnabled
             self.cpuCount = max(1, cpuCount ?? Self.hostScaledCPUCount())
-            self.memoryMB = max(256, memoryMB ?? Self.hostScaledMemoryMB())
+            self.memoryMB = UInt32(clamping: DoryEngineMemoryPolicy.clampedMemoryMB(
+                memoryMB ?? Self.hostScaledMemoryMB()
+            ))
             self.bridgeSubnetCIDR = (try? DoryIPv4BridgeNetwork(bridgeSubnetCIDR).cidr)
                 ?? DoryIPv4BridgeNetwork.defaultCIDR
             self.sshAuthSock = sshAuthSock.flatMap {
@@ -97,9 +99,9 @@ enum DorydLaunchAgent {
         }
 
         nonisolated static func hostScaledMemoryMB(physicalMemory: UInt64 = ProcessInfo.processInfo.physicalMemory) -> UInt32 {
-            let hostMB = Int(clamping: physicalMemory / (1024 * 1024))
-            let ceiling = max(2048, min(hostMB / 2, hostMB - 4096))
-            return UInt32(clamping: ceiling)
+            UInt32(clamping: DoryEngineMemoryPolicy.hostScaledMemoryMB(
+                physicalMemory: physicalMemory
+            ))
         }
     }
 

@@ -4,6 +4,18 @@ import Testing
 @testable import dory_hv
 
 struct EngineRuntimePolicyTests {
+    @Test func engineMemoryPolicyRejectsAnUnrepresentableGuestMappingBeforeBoot() throws {
+        try EngineMode.validateMemoryMB(62 * 1_024)
+
+        do {
+            try EngineMode.validateMemoryMB(64 * 1_024)
+            Issue.record("64 GiB must exceed the ARM guest-physical aperture")
+        } catch {
+            #expect(String(describing: error).contains("must not exceed 63488 MiB"))
+            #expect(String(describing: error).contains("64-GiB"))
+        }
+    }
+
     @Test func reclaimPolicyHasOnlyExplicitStableWireValues() {
         #expect(EngineMode.ReclaimPolicy(rawValue: "drop-caches") == .dropCaches)
         #expect(EngineMode.ReclaimPolicy(rawValue: "senpai") == .senpai)

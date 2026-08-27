@@ -272,6 +272,8 @@ struct DorydLaunchAgentTests {
         #expect(DorydLaunchAgent.Configuration.hostScaledCPUCount(activeProcessorCount: 2) == 2)
         #expect(DorydLaunchAgent.Configuration.hostScaledMemoryMB(physicalMemory: 16 * 1024 * 1024 * 1024) == 8192)
         #expect(DorydLaunchAgent.Configuration.hostScaledMemoryMB(physicalMemory: 8 * 1024 * 1024 * 1024) == 4096)
+        #expect(DorydLaunchAgent.Configuration.hostScaledMemoryMB(physicalMemory: 128 * 1024 * 1024 * 1024) == 62 * 1024)
+        #expect(DorydLaunchAgent.Configuration(memoryMB: 64 * 1024).memoryMB == 62 * 1024)
     }
 
     @Test func userEngineResourceLimitsReserveCapacityForMacOS() {
@@ -281,6 +283,8 @@ struct DorydLaunchAgentTests {
             == AppStore.EngineResourceLimits(maximumCPUCount: 8, maximumMemoryMB: 4 * 1024))
         #expect(AppStore.engineResourceLimits(activeProcessorCount: 2, physicalMemory: 4 * 1024 * 1024 * 1024)
             == AppStore.EngineResourceLimits(maximumCPUCount: 2, maximumMemoryMB: 2 * 1024))
+        #expect(AppStore.engineResourceLimits(activeProcessorCount: 16, physicalMemory: 128 * 1024 * 1024 * 1024)
+            == AppStore.EngineResourceLimits(maximumCPUCount: 16, maximumMemoryMB: 62 * 1024))
     }
 
     @Test func ensureCurrentRestartsWhenLaunchAgentEnvironmentChanges() async throws {

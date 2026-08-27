@@ -67,6 +67,32 @@ final class DorydConfigurationTests: XCTestCase {
         XCTAssertEqual(DorydEnvironment.hostScaledCPUCount(activeProcessorCount: 2), 2)
         XCTAssertEqual(DorydEnvironment.hostScaledMemoryMB(physicalMemory: 16 * 1024 * 1024 * 1024), 8192)
         XCTAssertEqual(DorydEnvironment.hostScaledMemoryMB(physicalMemory: 8 * 1024 * 1024 * 1024), 4096)
+        XCTAssertEqual(DorydEnvironment.hostScaledMemoryMB(physicalMemory: 128 * 1024 * 1024 * 1024), 62 * 1024)
+    }
+
+    func testDockerTierClampsStaleHighMemoryEnvironmentBeforeHelperLaunch() throws {
+        let directory = "/tmp/doryd-config-memory-cap-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+
+        let helper = try executableFixture(at: directory + "/dory-hv")
+        let gvproxy = try executableFixture(at: directory + "/gvproxy")
+        let kernel = directory + "/kernel"
+        let rootfs = directory + "/rootfs.ext4"
+        FileManager.default.createFile(atPath: kernel, contents: Data())
+        FileManager.default.createFile(atPath: rootfs, contents: Data())
+        let environment = DorydEnvironment(values: [
+            "DORYD_HOME": directory + "/home",
+            "DORYD_HV_HELPER": helper,
+            "DORYD_HV_KERNEL": kernel,
+            "DORYD_GVPROXY": gvproxy,
+            "DORYD_ENGINE_ROOTFS": rootfs,
+            "DORYD_STATE_DIR": directory + "/state",
+            "DORYD_MEMORY_MB": "65536",
+        ], cwd: directory, hostPlatform: supportedRawHVPlatform())
+
+        let arguments = try XCTUnwrap(environment.dockerTierConfiguration()?.hvProcess?.arguments)
+        XCTAssertArgumentPair(arguments, "--mem-mb", "63488")
     }
 
     func testBuildsDockerTierWithDoryHvForwardArguments() throws {

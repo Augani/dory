@@ -33,6 +33,12 @@
 
 ### Fixed
 
+- Kept the engine's Docker inventory bridge alive for the full VM lifetime, restoring automatic
+  gvproxy listeners for published container ports. Port diagnostics and repair now verify real
+  loopback connections instead of treating Docker route metadata as proof of reachability.
+- Capped the Apple-silicon engine at the exact 62 GiB guest-RAM limit imposed by Dory's 2 GiB RAM
+  base and Hypervisor.framework's 64 GiB guest-physical aperture. Existing 64 GiB settings are
+  clamped before launch, and the helper rejects unrepresentable configurations with a clear error.
 - Stopped Firefox and Firefox ESR from producing blank, black, or duplicated desktop frames on
   Dory's current macOS VirGL renderer. Managed desktops now apply Mozilla's supported
   per-browser software-compositing fallback while leaving the Linux desktop and other compatible

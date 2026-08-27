@@ -2,6 +2,7 @@ import Darwin
 import DoryCore
 import DoryFSWorkerContracts
 import DoryHV
+import DoryOperations
 import Foundation
 import Synchronization
 
@@ -59,6 +60,44 @@ package final class PortReconcileSignalRegistration: @unchecked Sendable {
     }
 }
 
+/// Owns both host-to-vsock listeners for the complete engine run. These bridges remove their Unix
+/// sockets in `deinit`; constructing either as an attach-only temporary silently retires the
+/// Docker inventory path while the separate doryd dataplane remains healthy.
+package final class EngineVsockBridgeLifetime: @unchecked Sendable {
+    private let dockerBridge: DockerSocketBridge
+    private let agentBridge: AgentVsockForward?
+
+    package init(
+        dockerSocketPath: String,
+        agentSocketPath: String?,
+        guestCID: UInt32 = 3,
+        log: @escaping @Sendable (String) -> Void = { _ in }
+    ) {
+        dockerBridge = DockerSocketBridge(socketPath: dockerSocketPath, log: log)
+        agentBridge = agentSocketPath.map {
+            AgentVsockForward(
+                socketPath: $0,
+                guestCID: guestCID,
+                log: log
+            )
+        }
+    }
+
+    package func attach(to vsock: VirtioVsock) throws {
+        try agentBridge?.attach(to: vsock)
+        try dockerBridge.attach(to: vsock)
+    }
+
+    package func stop() {
+        dockerBridge.stop()
+        agentBridge?.stop()
+    }
+
+    deinit {
+        stop()
+    }
+}
+
 /// `dory-hv engine`: the production mode SharedVMProvisioner spawns. Owns the full lifecycle:
 /// pulls docker:dind once, boots the VMM with networking, and publishes the Docker API at the
 /// unix socket the app already consumes.
@@ -103,6 +142,16 @@ enum EngineMode {
         /// Current guest agent binary supplied by the app/doryd bundle for this boot. It is copied
         /// into the read-only boot-config share so stale files under the user's home cannot shadow it.
         var guestAgentPath: String?
+    }
+
+    static func validateMemoryMB(_ memoryMB: UInt64) throws {
+        guard memoryMB <= UInt64(DoryEngineMemoryPolicy.maximumMemoryMB) else {
+            throw VMError.invalidConfiguration(
+                "engine RAM must not exceed \(DoryEngineMemoryPolicy.maximumMemoryMB) MiB: "
+                    + "ARM guest RAM begins at 2 GiB and must end within the 64-GiB "
+                    + "Hypervisor.framework guest-physical aperture"
+            )
+        }
     }
 
     enum GPUAccelerationMode: String {
@@ -547,6 +596,7 @@ enum EngineMode {
     }
 
     static func run(_ configuration: Configuration) throws {
+        try validateMemoryMB(configuration.memoryMB)
         guard configuration.gpuMode == .off else {
             throw VMError.invalidConfiguration(
                 "container-engine GPU acceleration is unavailable; the retired in-process "
@@ -820,29 +870,15 @@ enum EngineMode {
         // The Rust dataplane cannot establish its authoritative agent channel without this forward.
         // Bind it before publishing engine.sock and propagate any listener error out of run(), so a
         // configured-but-impossible path terminates dory-hv instead of advertising a half-alive VM.
-        var agentVsockForward: AgentVsockForward?
-        var dockerSocketBridge: DockerSocketBridge?
-        defer {
-            dockerSocketBridge?.stop()
-            agentVsockForward?.stop()
-        }
-        if let forwardSocket = configuration.agentVsockForward {
-            let bridge = AgentVsockForward(
-                socketPath: forwardSocket,
-                guestCID: 3,
-                log: { note($0) }
-            )
-            agentVsockForward = bridge
-            try bridge.attach(to: vsock)
-        }
         // engine.sock is the sole Docker API endpoint, so its listener is just as required as the
         // dataplane forward. Propagate bind/listen/chmod failures before entering machine.run().
-        let dockerBridge = DockerSocketBridge(
-            socketPath: configuration.engineSocket,
+        let engineBridges = EngineVsockBridgeLifetime(
+            dockerSocketPath: configuration.engineSocket,
+            agentSocketPath: configuration.agentVsockForward,
             log: { note($0) }
         )
-        dockerSocketBridge = dockerBridge
-        try dockerBridge.attach(to: vsock)
+        try engineBridges.attach(to: vsock)
+        defer { engineBridges.stop() }
         publishForward(local: shutdownSocket, guestPort: 2377, apiSocket: apiSocket, label: "shutdown channel")
         publishForward(
             local: gvproxyHealthSocket,

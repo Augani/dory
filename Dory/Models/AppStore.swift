@@ -2000,8 +2000,9 @@ final class AppStore {
         physicalMemory: UInt64 = ProcessInfo.processInfo.physicalMemory
     ) -> EngineResourceLimits {
         let maximumCPUCount = max(1, min(activeProcessorCount, Int(UInt16.max)))
-        let hostMemoryMB = Int(clamping: physicalMemory / (1024 * 1024))
-        let maximumMemoryMB = max(2048, min(hostMemoryMB - 4096, Int(UInt32.max)))
+        let maximumMemoryMB = DoryEngineMemoryPolicy.maximumConfigurableMemoryMB(
+            physicalMemory: physicalMemory
+        )
         return EngineResourceLimits(
             maximumCPUCount: maximumCPUCount,
             maximumMemoryMB: maximumMemoryMB

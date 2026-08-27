@@ -7,6 +7,47 @@ import Foundation
 import XCTest
 
 final class HealthReporterTests: XCTestCase {
+    func testPublishedPortHealthRequiresRealTCPListeners() {
+        let ports = [
+            DoryListenPort(protocol: "tcp", port: 3_809),
+            DoryListenPort(protocol: "tcp", port: 8_080),
+        ]
+        let check = HealthReporter.publishedPortsCheck(
+            ports: ports,
+            dockerReachable: true,
+            tcpListenerProbe: { $0 == 3_809 }
+        )
+
+        XCTAssertEqual(check.status, .fail)
+        XCTAssertEqual(check.code, "network.port_listener_missing")
+        XCTAssertEqual(check.data["tcp_ports"], "2")
+        XCTAssertEqual(check.data["missing_tcp_listeners"], "8080")
+        XCTAssertTrue(check.action?.contains("dory repair ports --apply") == true)
+    }
+
+    func testPublishedPortHealthPassesOnlyAfterEveryTCPListenerAccepts() {
+        let check = HealthReporter.publishedPortsCheck(
+            ports: [DoryListenPort(protocol: "tcp", port: 3_809)],
+            dockerReachable: true,
+            tcpListenerProbe: { $0 == 3_809 }
+        )
+
+        XCTAssertEqual(check.status, .pass)
+        XCTAssertEqual(check.code, "network.port_listeners_ready")
+        XCTAssertEqual(check.data["missing_tcp_listeners"], "")
+    }
+
+    func testPublishedPortHealthDoesNotCallAnUnverifiedUDPRouteReachable() {
+        let check = HealthReporter.publishedPortsCheck(
+            ports: [DoryListenPort(protocol: "udp", port: 5_353)],
+            dockerReachable: true,
+            tcpListenerProbe: { _ in XCTFail("UDP route must not use a TCP probe"); return true }
+        )
+
+        XCTAssertEqual(check.status, .warn)
+        XCTAssertEqual(check.code, "network.port_listener_unverified")
+    }
+
     func testMachinePortForwardHealthReportsReadyRecoveringAndContractMismatch() throws {
         let ready = HealthReporter.machinePortForwardCheck(
             machineID: "dev",

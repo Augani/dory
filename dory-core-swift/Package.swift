@@ -56,6 +56,7 @@ let package = Package(
             name: "DorydKit",
             dependencies: [
                 "DoryCore",
+                "DoryOperations",
                 "DoryRendererWorkerWireContracts",
                 "DoryVMContracts",
             ],

@@ -1,4 +1,5 @@
 import Darwin
+import DoryOperations
 import Foundation
 
 /// Brings up Dory's single shared Linux VM — `dory-hv`, our own VMM on Hypervisor.framework — which
@@ -204,9 +205,11 @@ nonisolated enum SharedVMProvisioner {
         ) -> Config {
             let info = ProcessInfo.processInfo
             let cpus = max(4, info.activeProcessorCount - 2)
-            let hostMB = Int(info.physicalMemory / (1024 * 1024))
             let floorMB = rosettaX86 ? amd64EmulationMemoryMB : SharedVMProvisioner.defaultEngineMemoryMB
-            let engineMB = max(floorMB, min(hostMB / 2, hostMB - 4096))
+            let engineMB = DoryEngineMemoryPolicy.hostScaledMemoryMB(
+                physicalMemory: info.physicalMemory,
+                minimumMemoryMB: floorMB
+            )
             return Config(cpus: cpus, memory: "\(engineMB)M", rosettaX86: rosettaX86, gpuVenus: gpuVenus)
         }
     }

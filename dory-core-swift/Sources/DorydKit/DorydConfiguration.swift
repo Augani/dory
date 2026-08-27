@@ -1,6 +1,7 @@
 import CryptoKit
 import Darwin
 import DoryCore
+import DoryOperations
 import Foundation
 
 public enum DorydEnvironmentError: Error, Equatable, Sendable, CustomStringConvertible {
@@ -808,7 +809,9 @@ public struct DorydEnvironment: Sendable {
     }
 
     private func clampedMemoryMB() -> Int {
-        max(256, int("DORYD_MEMORY_MB") ?? Self.hostScaledMemoryMB())
+        DoryEngineMemoryPolicy.clampedMemoryMB(
+            int("DORYD_MEMORY_MB") ?? Self.hostScaledMemoryMB()
+        )
     }
 
     /// Keep standalone doryd launches on the same elastic host-scaled defaults as Dory.app's
@@ -824,8 +827,7 @@ public struct DorydEnvironment: Sendable {
     }
 
     public static func hostScaledMemoryMB(physicalMemory: UInt64 = ProcessInfo.processInfo.physicalMemory) -> Int {
-        let hostMB = Int(clamping: physicalMemory / (1024 * 1024))
-        return max(2048, min(hostMB / 2, hostMB - 4096))
+        DoryEngineMemoryPolicy.hostScaledMemoryMB(physicalMemory: physicalMemory)
     }
 
     private func clampedDockerPort() -> UInt32 {
