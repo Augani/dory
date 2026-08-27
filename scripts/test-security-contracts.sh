@@ -34,6 +34,21 @@ done
 grep -F 'NSMicrophoneUsageDescription' dory-core-swift/Sources/dory-vmm/Info.plist >/dev/null \
   || fail "dory-vmm lost its microphone privacy description"
 
+# DoryFSWorker is confined by a one-shot descriptor capability protocol. App Sandbox rejects
+# openat beneath transferred directory descriptors with EPERM, which makes every virtio-fs mount
+# visible but unreadable. Both build configurations must preserve the intentionally unsandboxed
+# worker; the renderer remains separately sandboxed.
+for fs_worker_configuration in \
+  D0C600000000000000000001 \
+  D0C600000000000000000002; do
+  fs_worker_sandbox="$(awk -v marker="$fs_worker_configuration" '
+    index($0, marker) { in_configuration = 1; next }
+    in_configuration && /ENABLE_APP_SANDBOX = / { print $3; exit }
+  ' Dory.xcodeproj/project.pbxproj)"
+  [ "$fs_worker_sandbox" = 'NO;' ] \
+    || fail "DoryFSWorker $fs_worker_configuration re-enabled App Sandbox"
+done
+
 if grep -R -E --include='*.swift' --include='init' \
   'tcp://0\.0\.0\.0:2375|guestPort: 2375|remote[^\n]*:2375' \
   Packages/ContainerizationEngine/Sources dory-core-swift/Sources guest/initfs/init >/dev/null; then
