@@ -8,6 +8,24 @@ import XCTest
 
 final class DoryVMMKitTests: XCTestCase {
     @MainActor
+    func testDesktopDockIconKeepsDoryIdentityWithDistinctDesktopBadge() throws {
+        let managerIcon = NSImage(size: NSSize(width: 512, height: 512), flipped: false) { bounds in
+            NSColor.systemBlue.setFill()
+            bounds.fill()
+            return true
+        }
+
+        let desktopIcon = DoryDesktopApplicationIdentity.desktopIcon(managerIcon: managerIcon)
+
+        XCTAssertEqual(desktopIcon.size, NSSize(width: 512, height: 512))
+        XCTAssertFalse(desktopIcon.isTemplate)
+        XCTAssertNotEqual(
+            try XCTUnwrap(desktopIcon.tiffRepresentation),
+            try XCTUnwrap(managerIcon.tiffRepresentation)
+        )
+    }
+
+    @MainActor
     func testVZDesktopMicrophoneAcceptsExistingAuthorizationWithoutPrompting() throws {
         var preparedPrompt = false
         var requestedAccess = false

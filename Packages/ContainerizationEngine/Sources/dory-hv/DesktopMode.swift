@@ -1864,8 +1864,8 @@ enum DesktopMode {
                     defer: false
                 )
                 window.title = displayPlans.count == 1
-                    ? "\(configuration.machineID) — Dory Linux"
-                    : "\(configuration.machineID) — Dory Linux — Display \(index + 1)"
+                    ? "\(configuration.machineID) — Dory Desktop"
+                    : "\(configuration.machineID) — Dory Desktop — Display \(index + 1)"
                 // Keep the Metal surface bound to the window's *actual* content layout. A
                 // dedicated display can transiently remain a normal titled window while AppKit
                 // enters its fullscreen Space. Installing a fixed-size display view directly as the
@@ -1924,6 +1924,7 @@ enum DesktopMode {
                 usbControlServer?.stop()
                 throw error
             }
+            DoryDesktopApplicationIdentity.install(on: application)
             application.setActivationPolicy(.regular)
             application.delegate = self
             installApplicationMenu()
@@ -1947,10 +1948,10 @@ enum DesktopMode {
         private func installApplicationMenu() {
             let mainMenu = NSMenu()
 
-            let applicationItem = NSMenuItem(title: "Dory Linux", action: nil, keyEquivalent: "")
-            let applicationMenu = NSMenu(title: "Dory Linux")
+            let applicationItem = NSMenuItem(title: "Dory Desktop", action: nil, keyEquivalent: "")
+            let applicationMenu = NSMenu(title: "Dory Desktop")
             applicationMenu.addItem(
-                withTitle: "Quit Dory Linux",
+                withTitle: "Quit Dory Desktop",
                 action: #selector(NSApplication.terminate(_:)),
                 keyEquivalent: "q"
             )

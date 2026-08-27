@@ -10,7 +10,7 @@ enum DoryVMMHostMicrophoneAccessError: Error, CustomStringConvertible, Equatable
     var description: String {
         switch self {
         case .denied:
-            "Mac microphone access is denied. Enable Dory Linux in System Settings > Privacy & Security > Microphone, or disable Microphone for this desktop."
+            "Mac microphone access is denied. Enable Dory Desktop in System Settings > Privacy & Security > Microphone, or disable Microphone for this desktop."
         case .restricted:
             "Mac microphone access is restricted by system policy. Disable Microphone for this desktop or ask the Mac administrator to allow it."
         case .requestTimedOut:

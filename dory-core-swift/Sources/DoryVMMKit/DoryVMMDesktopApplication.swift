@@ -79,7 +79,7 @@ final class DoryVMMDesktopApplication: NSObject, NSApplicationDelegate, NSWindow
             backing: .buffered,
             defer: false
         )
-        self.window.title = "\(machineID) — Dory Linux"
+        self.window.title = "\(machineID) — Dory Desktop"
         self.window.contentView = machineView
         self.window.minSize = NSSize(width: 640, height: 400)
         self.window.collectionBehavior.insert(.fullScreenPrimary)
@@ -111,6 +111,7 @@ final class DoryVMMDesktopApplication: NSObject, NSApplicationDelegate, NSWindow
     }
 
     private func runUntilStopped() throws {
+        DoryDesktopApplicationIdentity.install(on: application)
         application.setActivationPolicy(.regular)
         application.delegate = self
         clipboard?.start()
