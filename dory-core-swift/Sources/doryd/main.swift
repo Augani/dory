@@ -106,10 +106,17 @@ let machineManager = dorydEnvironment.machineManagerConfiguration().flatMap { co
             "doryd: VM launch policy legacyCompatibilityMigrationOnly "
                 .appending("(\(trustFailure.code.rawValue): \(trustFailure.message))\n").utf8
         ))
+        if dorydEnvironment.vmQualificationBootstrapEnabled {
+            FileHandle.standardError.write(Data(
+                "doryd: VM qualification bootstrap enabled; new machines remain explicitly "
+                    .appending("legacy-compatible and cannot acquire production support authority\n").utf8
+            ))
+        }
         let manager = MachineManager(
             configuration: configuration,
             launchPolicy: .legacyCompatibility,
-            allowsNewMachinesInLegacyCompatibility: false
+            allowsNewMachinesInLegacyCompatibility:
+                dorydEnvironment.vmQualificationBootstrapEnabled
         )
         manager.installDesktopUpdateArtifactResolver(desktopUpdateArtifactResolver)
         return manager

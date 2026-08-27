@@ -10,6 +10,13 @@ struct DesktopMachineAssetTests {
         #expect(!AppInfo.desktopLinuxIncluded(from: NSNumber(value: false)))
     }
 
+    @Test func qualificationBootstrapBundleValueIsFailClosed() {
+        #expect(!AppInfo.booleanBundleValue(nil, default: false))
+        #expect(AppInfo.booleanBundleValue(true, default: false))
+        #expect(AppInfo.booleanBundleValue(NSNumber(value: true), default: false))
+        #expect(!AppInfo.booleanBundleValue("true", default: false))
+    }
+
     @Test func preparesVerifiedSparseAssetsInTheDriveAndReusesMatchingOutputs() throws {
         let base = FileManager.default.temporaryDirectory
             .appendingPathComponent("dory-desktop-assets-\(UUID().uuidString)")

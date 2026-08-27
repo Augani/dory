@@ -43,6 +43,9 @@ enum DorydLaunchAgent {
         var httpProxyPort: UInt16
         var httpsProxyPort: UInt16
         var hostCLIEnabled: Bool
+        /// Candidate-only switch for creating compatibility-labeled VMs while their exact bytes
+        /// are under live qualification. Public builds leave this false.
+        var vmQualificationBootstrapEnabled: Bool
         /// Enables Dory's FEX/binfmt runtime in the native arm64 guest. Keeping this in the
         /// LaunchAgent makes the persisted Settings choice authoritative for doryd.
         var amd64EmulationEnabled: Bool
@@ -63,6 +66,7 @@ enum DorydLaunchAgent {
             httpProxyPort: UInt16 = 8080,
             httpsProxyPort: UInt16 = 8443,
             hostCLIEnabled: Bool = true,
+            vmQualificationBootstrapEnabled: Bool = false,
             amd64EmulationEnabled: Bool = false,
             gpuVenusEnabled: Bool = false,
             cpuCount: UInt16? = nil,
@@ -77,6 +81,7 @@ enum DorydLaunchAgent {
             self.httpProxyPort = httpProxyPort
             self.httpsProxyPort = httpsProxyPort
             self.hostCLIEnabled = hostCLIEnabled
+            self.vmQualificationBootstrapEnabled = vmQualificationBootstrapEnabled
             self.amd64EmulationEnabled = amd64EmulationEnabled
             self.gpuVenusEnabled = gpuVenusEnabled
             self.cpuCount = max(1, cpuCount ?? Self.hostScaledCPUCount())
@@ -453,6 +458,8 @@ enum DorydLaunchAgent {
                 <string>1</string>
                 <key>DORYD_HOST_CLI</key>
                 <string>\(configuration.hostCLIEnabled ? "1" : "0")</string>
+                <key>DORYD_VM_QUALIFICATION_BOOTSTRAP</key>
+                <string>\(configuration.vmQualificationBootstrapEnabled ? "1" : "0")</string>
                 <key>DORYD_AMD64</key>
                 <string>\(configuration.amd64EmulationEnabled ? "1" : "0")</string>
                 <key>DORYD_GPU</key>

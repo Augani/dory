@@ -266,6 +266,14 @@ public struct DorydEnvironment: Sendable {
         bool("DORYD_HOST_CLI", default: true)
     }
 
+    /// Allows an exact local candidate to create compatibility-labeled machines while live
+    /// qualification is collected for the first schema-2 catalog. This never upgrades those
+    /// machines to production authority, is off unless explicitly configured, and must not be
+    /// enabled by public release builds.
+    public var vmQualificationBootstrapEnabled: Bool {
+        bool("DORYD_VM_QUALIFICATION_BOOTSTRAP", default: false)
+    }
+
     public var hostCLIReconcileIntervalSeconds: TimeInterval {
         max(30, double("DORYD_HOST_CLI_RECONCILE_SECONDS") ?? 300)
     }

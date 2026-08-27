@@ -941,6 +941,23 @@ final class DorydConfigurationTests: XCTestCase {
         )
     }
 
+    func testVMQualificationBootstrapIsExplicitAndOffByDefault() {
+        XCTAssertFalse(
+            DorydEnvironment(values: [:], home: "/tmp/doryd-home")
+                .vmQualificationBootstrapEnabled
+        )
+        XCTAssertTrue(
+            DorydEnvironment(values: [
+                "DORYD_VM_QUALIFICATION_BOOTSTRAP": "1",
+            ], home: "/tmp/doryd-home").vmQualificationBootstrapEnabled
+        )
+        XCTAssertFalse(
+            DorydEnvironment(values: [
+                "DORYD_VM_QUALIFICATION_BOOTSTRAP": "unexpected",
+            ], home: "/tmp/doryd-home").vmQualificationBootstrapEnabled
+        )
+    }
+
     func testNetworkRouteReconcileIntervalDefaultsToFiveSecondsAndClamps() {
         XCTAssertEqual(
             DorydEnvironment(values: [:], home: "/tmp/doryd-home").networkRouteReconcileIntervalSeconds,

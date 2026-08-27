@@ -456,6 +456,36 @@ struct DorydLaunchAgentTests {
         #expect(plist.contains("<string>0</string>"))
     }
 
+    @Test func qualificationBootstrapIsExplicitAndOffByDefault() throws {
+        func environment(_ configuration: DorydLaunchAgent.Configuration) throws -> [String: String] {
+            let plist = DorydLaunchAgent.launchAgentPlist(
+                program: "/Applications/Dory.app/Contents/Helpers/doryd",
+                helpersDirectory: URL(fileURLWithPath: "/Applications/Dory.app/Contents/Helpers"),
+                configuration: configuration
+            )
+            let data = try #require(plist.data(using: .utf8))
+            let root = try #require(
+                try PropertyListSerialization.propertyList(
+                    from: data,
+                    options: [],
+                    format: nil
+                ) as? [String: Any]
+            )
+            return try #require(root["EnvironmentVariables"] as? [String: String])
+        }
+
+        #expect(
+            try environment(DorydLaunchAgent.Configuration())[
+                "DORYD_VM_QUALIFICATION_BOOTSTRAP"
+            ] == "0"
+        )
+        #expect(
+            try environment(DorydLaunchAgent.Configuration(
+                vmQualificationBootstrapEnabled: true
+            ))["DORYD_VM_QUALIFICATION_BOOTSTRAP"] == "1"
+        )
+    }
+
     @Test func launchAgentBindsRawHVToNestedRunnerApplication() throws {
         let plist = DorydLaunchAgent.launchAgentPlist(
             program: "/Applications/Dory.app/Contents/Helpers/doryd",

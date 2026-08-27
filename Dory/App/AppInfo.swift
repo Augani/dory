@@ -26,6 +26,15 @@ nonisolated enum AppInfo {
             && [.desktopDebian, .desktopUbuntu, .desktopKali].contains(where: componentAvailable)
     }
 
+    /// Candidate-only bridge for booting exact desktop bytes while schema-2 qualification
+    /// evidence is collected. Normal builds omit the key and stay fail-closed.
+    static var vmQualificationBootstrapEnabled: Bool {
+        booleanBundleValue(
+            Bundle.main.object(forInfoDictionaryKey: "DoryVMQualificationBootstrap"),
+            default: false
+        )
+    }
+
     static func componentAvailable(_ id: DoryComponentID) -> Bool {
         if bundledComponents.contains(id) { return true }
         guard id.isRemovable, let store = try? DoryComponentStore.selected() else { return false }
@@ -44,12 +53,16 @@ nonisolated enum AppInfo {
     }
 
     static func desktopLinuxIncluded(from bundleValue: Any?) -> Bool {
+        booleanBundleValue(bundleValue, default: true)
+    }
+
+    static func booleanBundleValue(_ bundleValue: Any?, default defaultValue: Bool) -> Bool {
         if let value = bundleValue as? Bool {
             return value
         }
         if let value = bundleValue as? NSNumber {
             return value.boolValue
         }
-        return true
+        return defaultValue
     }
 }

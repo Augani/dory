@@ -2549,6 +2549,7 @@ final class AppStore {
             httpProxyPort: httpProxyPort,
             httpsProxyPort: httpsProxyPort,
             hostCLIEnabled: routeDockerCLI,
+            vmQualificationBootstrapEnabled: AppInfo.vmQualificationBootstrapEnabled,
             amd64EmulationEnabled: rosettaX86Enabled && MacHostPlatform.current().isAppleSilicon,
             gpuVenusEnabled: gpuVenusEnabled,
             cpuCount: UInt16(clamping: engineCPUCount),
