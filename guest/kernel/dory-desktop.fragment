@@ -54,3 +54,7 @@ CONFIG_LSM="landlock,lockdown,yama,integrity,apparmor"
 CONFIG_SOUND=y
 CONFIG_SND=y
 CONFIG_SND_VIRTIO=y
+# The generic ALSA loopback card otherwise enumerates before virtio-snd and desktop audio policy
+# can select it as the default sink/source even though it has no Mac speaker or microphone behind
+# it. Dory's two real directions are supplied by virtio-snd, so the phantom device must be absent.
+CONFIG_SND_ALOOP=n

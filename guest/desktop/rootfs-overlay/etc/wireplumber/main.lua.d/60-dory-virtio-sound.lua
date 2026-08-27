@@ -1,12 +1,13 @@
--- Dory's virtio-snd device intentionally has no legacy analog mixer or UCM description. ACP
--- therefore exposes only its generic Pro Audio profile, which WirePlumber 0.4 will not select
--- automatically. Activate that profile so both the speaker and microphone nodes are present from
--- the beginning of every desktop session.
+-- Dory's virtio-snd device intentionally has no legacy analog mixer or UCM description. Match its
+-- stable PCI identity rather than the old virtio-mmio path: Virtualization.framework and Dory's
+-- raw Hypervisor backend can enumerate the same virtio device through different transports.
 table.insert(alsa_monitor.rules, {
   matches = {
     {
-      { "device.name", "matches", "alsa_card.platform-*.virtio_mmio" },
+      { "device.name", "matches", "alsa_card.platform-*" },
       { "device.nick", "matches", "VirtIO SoundCard" },
+      { "device.vendor.id", "matches", "0x1af4" },
+      { "device.product.id", "matches", "0x1059" },
     },
   },
   apply_properties = {
@@ -22,15 +23,15 @@ table.insert(alsa_monitor.rules, {
   },
 })
 
--- Pro Audio normally puts every PCM direction in one start/stop group. Dory maps speaker and
--- microphone onto independent Mac audio graphs, so group them independently as well: opening
--- Firefox must not start an unused microphone, and recording must not keep an unused speaker
--- running. Expose conventional stereo channel names instead of the generic AUX labels produced
--- without a UCM profile.
+-- Dory maps speaker and microphone onto independent Mac audio graphs, so group them independently:
+-- opening Firefox must not start an unused microphone, and recording must not keep an unused
+-- speaker running. The exact node suffix differs between ACP's stereo fallback and Pro Audio, so
+-- bind the stable card identity and direction instead.
 table.insert(alsa_monitor.rules, {
   matches = {
     {
-      { "node.name", "matches", "alsa_output.platform-*.virtio_mmio.pro-output-*" },
+      { "node.name", "matches", "alsa_output.platform-*" },
+      { "alsa.card_name", "matches", "VirtIO SoundCard" },
     },
   },
   apply_properties = {
@@ -38,13 +39,16 @@ table.insert(alsa_monitor.rules, {
     ["node.group"] = "dory-playback",
     ["node.link-group"] = "dory-playback",
     ["audio.position"] = "FL,FR",
+    ["priority.driver"] = 2500,
+    ["priority.session"] = 2500,
   },
 })
 
 table.insert(alsa_monitor.rules, {
   matches = {
     {
-      { "node.name", "matches", "alsa_input.platform-*.virtio_mmio.pro-input-*" },
+      { "node.name", "matches", "alsa_input.platform-*" },
+      { "alsa.card_name", "matches", "VirtIO SoundCard" },
     },
   },
   apply_properties = {
@@ -52,5 +56,7 @@ table.insert(alsa_monitor.rules, {
     ["node.group"] = "dory-capture",
     ["node.link-group"] = "dory-capture",
     ["audio.position"] = "FL,FR",
+    ["priority.driver"] = 2500,
+    ["priority.session"] = 2500,
   },
 })

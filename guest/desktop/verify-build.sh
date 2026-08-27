@@ -218,11 +218,13 @@ WIREPLUMBER_SOUND_RULE="$($DEBUGFS -R \
   'cat /etc/wireplumber/main.lua.d/60-dory-virtio-sound.lua' "$IMAGE" 2>/dev/null)"
 grep -Fq '["device.profile"] = "pro-audio"' <<<"$WIREPLUMBER_SOUND_RULE" \
   || fail "WirePlumber does not activate Dory's virtio sound profile"
-grep -Fq 'alsa_card.platform-*.virtio_mmio' <<<"$WIREPLUMBER_SOUND_RULE" \
-  || fail "WirePlumber sound policy is not scoped to the virtio card"
-grep -Fq 'alsa_output.platform-*.virtio_mmio.pro-output-*' <<<"$WIREPLUMBER_SOUND_RULE" \
+grep -Fq '{ "device.vendor.id", "matches", "0x1af4" }' <<<"$WIREPLUMBER_SOUND_RULE" \
+  || fail "WirePlumber sound policy is not scoped to the virtio vendor"
+grep -Fq '{ "device.product.id", "matches", "0x1059" }' <<<"$WIREPLUMBER_SOUND_RULE" \
+  || fail "WirePlumber sound policy is not scoped to virtio-snd"
+grep -Fq 'alsa_output.platform-*' <<<"$WIREPLUMBER_SOUND_RULE" \
   || fail "WirePlumber does not configure Dory playback"
-grep -Fq 'alsa_input.platform-*.virtio_mmio.pro-input-*' <<<"$WIREPLUMBER_SOUND_RULE" \
+grep -Fq 'alsa_input.platform-*' <<<"$WIREPLUMBER_SOUND_RULE" \
   || fail "WirePlumber does not configure Dory capture"
 [ "$(grep -Fc '["node.pause-on-idle"] = true' <<<"$WIREPLUMBER_SOUND_RULE")" -eq 2 ] \
   || fail "WirePlumber does not suspend both idle Dory audio directions"
@@ -232,6 +234,8 @@ grep -Fq '["node.group"] = "dory-capture"' <<<"$WIREPLUMBER_SOUND_RULE" \
   || fail "WirePlumber does not isolate Dory capture lifecycle"
 [ "$(grep -Fc '["audio.position"] = "FL,FR"' <<<"$WIREPLUMBER_SOUND_RULE")" -eq 2 ] \
   || fail "WirePlumber does not expose conventional stereo channel positions"
+[ "$(grep -Fc '["priority.session"] = 2500' <<<"$WIREPLUMBER_SOUND_RULE")" -eq 2 ] \
+  || fail "WirePlumber does not prioritize both real Dory audio directions"
 
 DESKTOP_COMPATIBILITY_ENV="$($DEBUGFS -R \
   'cat /etc/environment.d/60-dory-desktop.conf' "$IMAGE" 2>/dev/null)"

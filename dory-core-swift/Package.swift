@@ -73,6 +73,7 @@ let package = Package(
             dependencies: ["DoryCore", "DorydKit", "DoryOperations"],
             linkerSettings: [
                 .linkedFramework("AppKit"),
+                .linkedFramework("AVFoundation"),
                 .linkedFramework("Virtualization"),
             ]
         ),

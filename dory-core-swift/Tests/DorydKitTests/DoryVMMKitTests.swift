@@ -7,6 +7,57 @@ import Virtualization
 import XCTest
 
 final class DoryVMMKitTests: XCTestCase {
+    @MainActor
+    func testVZDesktopMicrophoneAcceptsExistingAuthorizationWithoutPrompting() throws {
+        var preparedPrompt = false
+        var requestedAccess = false
+
+        try DoryVMMHostMicrophoneAccess.requireAuthorization(
+            timeout: 0,
+            authorizationStatus: { .authorized },
+            prepareApplicationForPrompt: { preparedPrompt = true },
+            requestAccess: { _ in requestedAccess = true }
+        )
+
+        XCTAssertFalse(preparedPrompt)
+        XCTAssertFalse(requestedAccess)
+    }
+
+    @MainActor
+    func testVZDesktopMicrophoneRequestsUndeterminedAuthorization() throws {
+        var preparedPrompt = false
+
+        try DoryVMMHostMicrophoneAccess.requireAuthorization(
+            timeout: 1,
+            authorizationStatus: { .notDetermined },
+            prepareApplicationForPrompt: { preparedPrompt = true },
+            requestAccess: { completion in completion(true) }
+        )
+
+        XCTAssertTrue(preparedPrompt)
+    }
+
+    @MainActor
+    func testVZDesktopMicrophoneFailsClosedWhenPermissionIsDenied() {
+        XCTAssertThrowsError(try DoryVMMHostMicrophoneAccess.requireAuthorization(
+            timeout: 0,
+            authorizationStatus: { .denied },
+            prepareApplicationForPrompt: {},
+            requestAccess: { _ in }
+        )) { error in
+            XCTAssertEqual(error as? DoryVMMHostMicrophoneAccessError, .denied)
+        }
+
+        XCTAssertThrowsError(try DoryVMMHostMicrophoneAccess.requireAuthorization(
+            timeout: 0,
+            authorizationStatus: { .notDetermined },
+            prepareApplicationForPrompt: {},
+            requestAccess: { _ in }
+        )) { error in
+            XCTAssertEqual(error as? DoryVMMHostMicrophoneAccessError, .requestTimedOut)
+        }
+    }
+
     func testVZDesktopPreservesNonInvertedScrollEvents() throws {
         let cgEvent = try XCTUnwrap(CGEvent(
             scrollWheelEvent2Source: nil,

@@ -1150,6 +1150,17 @@ public enum DoryVMMMain {
             guard let rootfsPath = arguments.rootfsPath else {
                 throw DoryVMMArgumentError.missingRootfs
             }
+            if arguments.displayMode == .desktop,
+               arguments.resolvedDevices?.audioInput != false {
+                guard Thread.isMainThread else {
+                    throw DoryVZMachineError.validation(
+                        "desktop microphone authorization must run on the dory-vmm main thread"
+                    )
+                }
+                try MainActor.assumeIsolated {
+                    try DoryVMMHostMicrophoneAccess.requireAuthorization()
+                }
+            }
             let gracefulShutdownAuthorized = arguments.resolvedDevices?
                 .gracefulShutdown ?? true
             let coordinator = DoryVMMShutdownCoordinator(
