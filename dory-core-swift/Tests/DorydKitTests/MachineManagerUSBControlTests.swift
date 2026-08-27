@@ -219,7 +219,8 @@ final class MachineManagerUSBControlTests: XCTestCase {
                 id: "desktop",
                 kernelPath: doryTestKernelPath,
                 rootfsPath: doryTestRootfsPath,
-                displayMode: .desktop
+                displayMode: .desktop,
+                environment: ["DORY_DESKTOP_VMM": "accelerated"]
             ))
             let starting = try manager.start(id: "desktop")
             try sendVmmHandoff(

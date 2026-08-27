@@ -707,13 +707,7 @@ fn is_x86_64_executable(path: &Path, root: &Path, depth: u8) -> io::Result<bool>
     }
     if length >= 3 && &header[..2] == b"#!" {
         let line = String::from_utf8_lossy(&header[2..length]);
-        let interpreter = line
-            .lines()
-            .next()
-            .unwrap_or("")
-            .trim()
-            .split_whitespace()
-            .next();
+        let interpreter = line.lines().next().unwrap_or("").split_whitespace().next();
         if let Some(interpreter) = interpreter.filter(|value| value.starts_with('/')) {
             let canonical =
                 resolve_in_container_root(root, Path::new(interpreter.trim_start_matches('/')))?;

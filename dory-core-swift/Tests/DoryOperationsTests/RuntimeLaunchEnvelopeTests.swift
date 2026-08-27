@@ -1,4 +1,5 @@
 import DoryVMContracts
+import DoryRendererWorkerWireContracts
 import Foundation
 @testable import DoryOperations
 import XCTest
@@ -10,6 +11,9 @@ final class RuntimeLaunchEnvelopeTests: XCTestCase {
     private static let kernelDigest = String(repeating: "c", count: 64)
     private static let initrdDigest = String(repeating: "d", count: 64)
     private static let rendererBootstrapDigest = String(repeating: "e", count: 64)
+    private static let rendererBootstrapByteCount = UInt64(
+        DoryRendererWorkerBootstrapCodec.fixedByteCount
+    )
     private static let kernelByteCount: UInt64 = 16 * 1_024 * 1_024
     private static let initrdByteCount: UInt64 = 32 * 1_024 * 1_024
     private static let diskByteCount: UInt64 = 8_589_934_592
@@ -85,7 +89,7 @@ final class RuntimeLaunchEnvelopeTests: XCTestCase {
     func testHardware3DRequiresOneExactRendererBootstrapAuthority() throws {
         let envelope = makeEnvelope(
             graphics: .hardwareAccelerated3D,
-            rendererBootstrapByteCount: 336,
+            rendererBootstrapByteCount: Self.rendererBootstrapByteCount,
             rendererBootstrapDigest: Self.rendererBootstrapDigest
         )
         let decoded = try canonicalRoundTrip(envelope)
@@ -100,7 +104,10 @@ final class RuntimeLaunchEnvelopeTests: XCTestCase {
             resources.rendererBootstrap?.descriptor,
             RuntimeLaunchEnvelope.rendererBootstrapDescriptor
         )
-        XCTAssertEqual(resources.rendererBootstrap?.byteCount, 336)
+        XCTAssertEqual(
+            resources.rendererBootstrap?.byteCount,
+            Self.rendererBootstrapByteCount
+        )
         XCTAssertEqual(
             resources.rendererBootstrap?.contentSHA256,
             Self.rendererBootstrapDigest
@@ -115,14 +122,14 @@ final class RuntimeLaunchEnvelopeTests: XCTestCase {
         assertValidationError(
             makeEnvelope(
                 graphics: .hardwareAccelerated3D,
-                rendererBootstrapByteCount: 335,
+                rendererBootstrapByteCount: Self.rendererBootstrapByteCount - 1,
                 rendererBootstrapDigest: Self.rendererBootstrapDigest
             ),
             .invalidRendererBootstrapAuthority
         )
         assertValidationError(
             makeEnvelope(
-                rendererBootstrapByteCount: 336,
+                rendererBootstrapByteCount: Self.rendererBootstrapByteCount,
                 rendererBootstrapDigest: Self.rendererBootstrapDigest
             ),
             .invalidRendererBootstrapAuthority

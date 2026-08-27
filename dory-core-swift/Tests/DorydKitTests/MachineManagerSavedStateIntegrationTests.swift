@@ -110,7 +110,8 @@ final class MachineManagerSavedStateIntegrationTests: XCTestCase {
             id: fixture.machineID,
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath,
-            displayMode: .desktop
+            displayMode: .desktop,
+            environment: ["DORY_DESKTOP_VMM": "accelerated"]
         ))
         _ = try startAndAcceptHandoff(manager, fixture: fixture, create: false)
 

@@ -1290,9 +1290,10 @@ struct SettingsView: View {
 
             groupLabel("AGENT SANDBOXES")
             VStack(spacing: 0) {
-                machinePolicyRow("Persistent machines", "No host folders or host environment values are shared unless a typed, scoped grant explicitly authorizes them.", divider: true)
-                machinePolicyRow("Sandbox runs", "`dory sandbox run` starts a dedicated VM with no host file sharing by default. Add mounts explicitly for scoped workspace access.", divider: true)
-                machinePolicyRow("Shell access", "`dory machine shell NAME` and `dory machine exec NAME -- ...` enter the VM boundary; the agent sees machine files and explicitly mounted folders only.", divider: false)
+                machinePolicyRow("Linux Desktops", "Interactive graphical VMs for desktop and GUI applications. They have a display and are managed by the user.", divider: true)
+                machinePolicyRow("Linux Servers", "General-purpose headless VMs for terminals and long-running services. They are user-managed and are not Agent Sandboxes.", divider: true)
+                machinePolicyRow("Agent Sandboxes", "Dedicated headless VMs for coding agents and Linux CLI applications. They have no desktop/display, deny host sharing and network access by default, and expose typed profiles, templates, limits, reset, and persistent attach.", divider: true)
+                machinePolicyRow("Persistent agent terminal", "`dory sandbox attach NAME` enters the Sandbox as its non-root workload identity and reconnects to its tmux session. `use`, `current`, and `switch` remember which Sandbox an agent works in.", divider: false)
             }
             .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 11))
             .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(p.border))

@@ -1,0 +1,22 @@
+{
+  "schema": "dev.dory.sandbox.template",
+  "version": 1,
+  "id": "polyglot-agent",
+  "displayName": "Polyglot Coding Agent",
+  "summary": "A broad coding workspace with Dory's built-in language and DevOps toolchains.",
+  "profile": "polyglot",
+  "tools": [],
+  "networkPolicy": "none",
+  "allowNetwork": [],
+  "mounts": [],
+  "limits": {
+    "cpus": 6,
+    "memoryMB": 8192,
+    "diskMB": 640,
+    "processes": 1024,
+    "openFiles": 8192,
+    "wallTimeSeconds": 600
+  },
+  "ttlSeconds": 0,
+  "sshAgent": false
+}

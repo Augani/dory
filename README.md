@@ -595,6 +595,10 @@ The stdio MCP server implements protocol version `2025-11-25` and exposes:
 - `dory.engine_status`
 - `dory.machine_list`
 - `dory.machine_exec`
+- `dory.sandbox_capabilities`
+- `dory.sandbox_templates`
+- `dory.sandbox_current`
+- `dory.sandbox_use`
 - `dory.sandbox_run`
 - `dory.sandbox_create`
 - `dory.sandbox_exec`
@@ -608,7 +612,9 @@ The stdio MCP server implements protocol version `2025-11-25` and exposes:
 Launch with `--read-only` to block machine execution and sandbox writes. Agents should inspect first,
 prefer JSON, run dry-run commands before writes, and use the narrowest repair target.
 
-The supported sandbox command creates a dedicated Dory Linux VM, shares no host files by default,
+Agent Sandboxes are dedicated headless VMs for coding agents and Linux CLI applications; they are
+distinct from interactive Linux Desktop VMs and general-purpose user-managed Linux Server VMs.
+The supported sandbox command shares no host files by default,
 runs non-root, defaults mounts to read-only, and enforces `none`, allowlisted `outbound`, or explicit
 `full` network policy. It also provides bounded scratch disk/process/wall limits, ephemeral secret
 and SSH-agent grants, rollback, inspectable manifests, a kill switch, named reuse, and daemon-owned
@@ -624,15 +630,22 @@ For repeated local development or testing, create an Agent-ready named sandbox o
 
 ```sh
 dory sandbox create my-project --workspace .
+dory sandbox capabilities my-project --json
+dory sandbox use my-project
+dory sandbox attach
 dory sandbox exec my-project -- go test ./...
 dory sandbox inspect my-project --json
 dory sandbox reset my-project --json
 dory sandbox kill my-project
 ```
 
-The core profile includes Bash, build tools, Git, curl, jq, ripgrep, Python, SSH tools, and common
-archive utilities. Dory detects Node, Python, Go, Rust, Java, and Ruby projects from the workspace,
-or you can repeat `--tool` to choose explicitly. Tools and caches stay warm between commands.
+The core profile includes Bash, build tools, Git, curl, jq, ripgrep, Python, SSH tools, tmux, and
+common archive utilities. Reusable `dev.dory.sandbox.template v1` JSON files select profiles,
+toolchains, policies, mounts, and limits; `--setup FILE` runs once as the non-root Sandbox identity
+before the reset baseline is captured. Dory detects Node, Python, Go, Rust, Java, and Ruby projects
+from the workspace, or you can choose a profile or repeat `--tool`. Tools and caches stay warm
+between commands. `use/current/attach/switch` remember a Sandbox and reconnect to its in-VM tmux
+session so agent processes survive host-terminal disconnects.
 `reset` restores the prepared baseline without changing the mounted host workspace. The sandbox
 root filesystem is sparse, so its 8 GB logical capacity consumes Mac storage only as data is
 written.

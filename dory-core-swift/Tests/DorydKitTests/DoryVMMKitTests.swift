@@ -83,6 +83,7 @@ final class DoryVMMKitTests: XCTestCase {
                 XCTAssertEqual(argv, [
                     "/usr/lib/dory/clipboard", "get", "text/plain;charset=utf-8",
                 ])
+                recorder.recordClipboardRead()
                 return DoryExecResult(
                     exitCode: 0,
                     stdout: Data("guest clipboard after copy".utf8),
@@ -166,11 +167,14 @@ final class DoryVMMKitTests: XCTestCase {
         while recorder.capabilityProbeCount == 0, ContinuousClock.now < readyDeadline {
             try await Task.sleep(for: .milliseconds(10))
         }
-        NotificationCenter.default.post(
-            name: NSApplication.didResignActiveNotification,
-            object: NSApplication.shared
-        )
         let pullDeadline = ContinuousClock.now + .seconds(2)
+        while recorder.clipboardReadCount == 0, ContinuousClock.now < pullDeadline {
+            NotificationCenter.default.post(
+                name: NSApplication.didResignActiveNotification,
+                object: NSApplication.shared
+            )
+            try await Task.sleep(for: .milliseconds(10))
+        }
         while pasteboard.string(forType: .string) != "text-only guest clipboard",
               ContinuousClock.now < pullDeadline {
             try await Task.sleep(for: .milliseconds(10))
@@ -1585,6 +1589,7 @@ private final class ClipboardWriteRecorder: @unchecked Sendable {
     private var attempts = 0
     private var payload = Data()
     private var capabilityProbes = 0
+    private var clipboardReads = 0
 
     func record(_ value: Data) -> Int {
         lock.lock()
@@ -1616,6 +1621,18 @@ private final class ClipboardWriteRecorder: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return capabilityProbes
+    }
+
+    func recordClipboardRead() {
+        lock.lock()
+        clipboardReads += 1
+        lock.unlock()
+    }
+
+    var clipboardReadCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return clipboardReads
     }
 }
 

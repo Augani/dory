@@ -3,9 +3,28 @@ import XCTest
 @testable import DorydKit
 
 final class MachineRecipeProvisionerTests: XCTestCase {
+    func testCapabilityCatalogIsStableCompleteAndBackedByProvisioningRecipes() throws {
+        let catalog = MachineRecipeProvisioner.catalog
+
+        XCTAssertEqual(
+            catalog.map(\.id),
+            ["agent-core", "node", "python-ml", "go", "rust", "java", "ruby", "docker-host", "k8s-lab", "devops"]
+        )
+        XCTAssertEqual(Set(catalog.map(\.id)).count, catalog.count)
+        for capability in catalog {
+            let recipe = try MachineRecipeProvisioner.recipe(id: capability.id)
+            XCTAssertEqual(recipe.capability, capability)
+            XCTAssertFalse(capability.summary.isEmpty, capability.id)
+            XCTAssertFalse(capability.executables.isEmpty, capability.id)
+            XCTAssertFalse(capability.packages["alpine", default: []].isEmpty, capability.id)
+            XCTAssertFalse(capability.packages["debian", default: []].isEmpty, capability.id)
+            XCTAssertEqual(recipe.verifyCommand, capability.versionCommand)
+        }
+    }
+
     func testBuiltInRecipeAliasesResolveToAlpineAndDebianRecipes() throws {
         let cases: [(String, String, String, String)] = [
-            ("agent-ready", "agent-core", "rg --version", "bash build-essential ca-certificates coreutils curl fd-find file findutils git jq less openssh-client patch python3 python3-pip ripgrep tar unzip zip"),
+            ("agent-ready", "agent-core", "rg --version", "bash build-essential ca-certificates coreutils curl fd-find file findutils git jq less openssh-client patch python3 python3-pip ripgrep tar tmux unzip util-linux zip"),
             ("node", "node", "node --version", "nodejs npm build-essential"),
             ("python", "python-ml", "python3 --version", "python3 python3-pip python3-numpy python3-venv"),
             ("go", "go", "go version", "golang-go"),

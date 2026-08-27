@@ -2500,7 +2500,8 @@ final class MachineManagerTests: XCTestCase {
         try FileManager.default.createDirectory(atPath: sharePath, withIntermediateDirectories: true)
         try """
         #!/bin/sh
-        printf '%s\n' "$@" > "\(argsPath)"
+        printf '%s\n' "$@" > "\(argsPath).tmp"
+        mv "\(argsPath).tmp" "\(argsPath)"
         sleep 30
         """.write(to: URL(fileURLWithPath: helperPath), atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: helperPath)

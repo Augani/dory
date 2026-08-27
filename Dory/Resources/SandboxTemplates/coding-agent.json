@@ -1,0 +1,22 @@
+{
+  "schema": "dev.dory.sandbox.template",
+  "version": 1,
+  "id": "coding-agent",
+  "displayName": "Coding Agent",
+  "summary": "A secure general-purpose coding workspace with Dory's core agent tools.",
+  "profile": "core",
+  "tools": [],
+  "networkPolicy": "none",
+  "allowNetwork": [],
+  "mounts": [],
+  "limits": {
+    "cpus": 4,
+    "memoryMB": 4096,
+    "diskMB": 512,
+    "processes": 512,
+    "openFiles": 4096,
+    "wallTimeSeconds": 600
+  },
+  "ttlSeconds": 0,
+  "sshAgent": false
+}

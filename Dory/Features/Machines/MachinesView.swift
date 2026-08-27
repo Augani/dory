@@ -86,8 +86,8 @@ struct MachinesView: View {
 
     private var emptyMessage: String {
         displayMode == .desktop
-            ? "Create a graphical Linux desktop with its own display, terminal, user, resources, folders, snapshots, and persistent disk."
-            : "Create a lightweight Linux server for terminals, development tools, services, and VPS-style workflows."
+            ? "Create an interactive graphical Linux VM for desktop and GUI applications. It has its own display, terminal, user, resources, folders, snapshots, and persistent disk."
+            : "Create a user-managed headless Linux server VM for terminals, services, and VPS-style workflows. For coding agents, use a policy-enforced Agent Sandbox instead."
     }
 
     private var matchingMachines: [Machine] {

@@ -440,7 +440,7 @@ struct NewMachineSheet: View {
                     .background(p.accentSoft, in: RoundedRectangle(cornerRadius: 9))
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Dory Linux Server").font(.system(size: 12.5, weight: .semibold)).foregroundStyle(p.text)
-                    Text("Lightweight headless Linux for terminals, tools, and local services")
+                    Text("User-managed headless VM for terminals, tools, and local services — Agent Sandboxes are created from the Dory CLI or MCP")
                         .font(.system(size: 10.5)).foregroundStyle(p.text3)
                 }
                 Spacer(minLength: 0)

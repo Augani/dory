@@ -200,7 +200,8 @@ func usage(exitCode: Int32 = 2) -> Never {
           dorydctl [global] machine usb-attach NAME BUS_ID
           dorydctl [global] machine usb-detach NAME BUS_ID
           dorydctl [global] machine exec NAME [--json] [--cwd PATH] [--env KEY=VALUE] [--env-json-stdin] [--timeout-ms N] [--output-limit-bytes N] -- COMMAND [ARG...]
-          dorydctl [global] machine shell NAME
+          dorydctl [global] machine shell NAME [--uid N --gid N --cwd PATH --session NAME]
+          dorydctl [global] machine recipes
           dorydctl [global] machine provision NAME --recipe RECIPE
           dorydctl [global] machine desktop-update NAME --distro debian|ubuntu|kali --version VERSION --distribution-installation ID --runtime-installation ID
           dorydctl [global] machine snapshots [NAME]
@@ -1045,7 +1046,14 @@ func runNetwork(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
               cursor.values.isEmpty else {
             throw DorydCtlError.usage("usage: dorydctl network repair socket|dns|domains|routes|ports|guest-agent|docker-api|data-drive")
         }
-        let repairClient = target == "ports" ? client.withTimeout(atLeast: 10) : client
+        let repairTimeout: TimeInterval
+        switch target {
+        case "docker-api": repairTimeout = 75
+        case "ports": repairTimeout = 25
+        case "guest-agent": repairTimeout = 20
+        default: repairTimeout = 15
+        }
+        let repairClient = client.withTimeout(atLeast: repairTimeout)
         try emitCommandResult(try repairClient.command { proxy, reply in
             proxy.repairSubsystem(target, reply: reply)
         })
@@ -1151,8 +1159,19 @@ func runBalloon(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
 }
 
 func runMachine(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
-    let subcommand = try cursor.take("usage: dorydctl machine list|status|stats|device-telemetry|flight-recorder|console|create|update|desktop-update|start|stop|pause|suspend|resume|restart|delete|usb-attach|usb-detach|exec|shell|provision|snapshots|snapshot|backup")
+    let subcommand = try cursor.take("usage: dorydctl machine list|status|stats|device-telemetry|flight-recorder|console|create|update|desktop-update|start|stop|pause|suspend|resume|restart|delete|usb-attach|usb-detach|exec|shell|recipes|provision|snapshots|snapshot|backup")
     switch subcommand {
+    case "recipes":
+        guard cursor.values.isEmpty else {
+            throw DorydCtlError.usage("usage: dorydctl machine recipes")
+        }
+        let payload = MachineRecipeCatalogPayload(
+            schema: "dev.dory.machine.recipe-catalog",
+            version: 1,
+            recipes: MachineRecipeProvisioner.catalog
+        )
+        let data = try JSONEncoder().encode(payload)
+        try emitJSON(JSONSerialization.jsonObject(with: data))
     case "list":
         let rows: NSArray = try client.call { proxy, finish in
             proxy.machineList { body, message in
@@ -1672,6 +1691,12 @@ func runMachineSnapshot(cursor: inout ArgumentCursor, client: DorydCtlClient) th
     try emitJSON(snapshot)
 }
 
+private struct MachineRecipeCatalogPayload: Encodable {
+    var schema: String
+    var version: Int
+    var recipes: [MachineRecipeCapability]
+}
+
 func runMachineProvision(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
     let usage = "usage: dorydctl machine provision NAME --recipe RECIPE"
     let name = try cursor.take(usage)
@@ -1718,9 +1743,31 @@ func runMachineDesktopUpdate(cursor: inout ArgumentCursor, client: DorydCtlClien
 }
 
 func runMachineShell(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
-    let name = try cursor.take("usage: dorydctl machine shell NAME")
+    let usage = "usage: dorydctl machine shell NAME [--uid N --gid N --cwd PATH --session NAME]"
+    let name = try cursor.take(usage)
+    let uid = try cursor.optionValue("--uid").map { try nonNegativeUInt64($0, option: "--uid") }
+    let gid = try cursor.optionValue("--gid").map { try nonNegativeUInt64($0, option: "--gid") }
+    let cwd = try cursor.optionValue("--cwd")
+    let session = try cursor.optionValue("--session")
+    var initialInput: String?
     guard cursor.values.isEmpty else {
         throw DorydCtlError.usage("unexpected machine shell argument: \(cursor.values[0])")
+    }
+    guard uid == nil || uid! <= UInt32.max, gid == nil || gid! <= UInt32.max else {
+        throw DorydCtlError.usage("--uid and --gid must fit an unsigned 32-bit Linux identity")
+    }
+    let requestsPersistentSession = uid != nil || gid != nil || cwd != nil || session != nil
+    if requestsPersistentSession {
+        guard let uid, let gid, let cwd, let session else {
+            throw DorydCtlError.usage("--uid, --gid, --cwd, and --session must be supplied together")
+        }
+        guard cwd.hasPrefix("/"), !cwd.contains("\n"), !cwd.contains("\r") else {
+            throw DorydCtlError.usage("--cwd must be an absolute path without control lines")
+        }
+        guard session.wholeMatch(of: /[A-Za-z0-9_][A-Za-z0-9_-]{0,63}/) != nil else {
+            throw DorydCtlError.usage("--session must be 1...64 letters, digits, underscores, or dashes")
+        }
+        initialInput = persistentSandboxShellCommand(uid: uid, gid: gid, cwd: cwd, session: session)
     }
     let status = try machineDictionary(name: name, client: client)
     guard status["state"] as? String == "running" else {
@@ -1729,7 +1776,20 @@ func runMachineShell(cursor: inout ArgumentCursor, client: DorydCtlClient) throw
     guard let shellSocketPath = status["shellSocketPath"] as? String, !shellSocketPath.isEmpty else {
         throw DorydCtlError.daemon("machine shell is unavailable: \(name)")
     }
-    try bridgeUnixSocket(path: shellSocketPath)
+    try bridgeUnixSocket(path: shellSocketPath, initialInput: initialInput)
+}
+
+func persistentSandboxShellCommand(uid: UInt64, gid: UInt64, cwd: String, session: String) -> String {
+    let arguments = [
+        "exec", "env", "HOME=/dory-sandbox/.home", "TMPDIR=/dory-sandbox/.tmp",
+        "DORY_SCRATCH=/dory-sandbox", "setpriv", "--reuid", String(uid), "--regid", String(gid),
+        "--clear-groups", "--no-new-privs", "tmux", "new-session", "-A", "-s", session, "-c", cwd,
+    ]
+    return arguments.map(shellArgument).joined(separator: " ")
+}
+
+func shellArgument(_ value: String) -> String {
+    "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
 }
 
 func runMachineExec(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
@@ -1860,18 +1920,38 @@ final class RawTerminalMode {
     }
 }
 
-func bridgeUnixSocket(path: String) throws {
+func bridgeUnixSocket(path: String, initialInput: String? = nil) throws {
     signal(SIGPIPE, SIG_IGN)
     let socketFD = try connectUnixSocket(path: path)
     defer { close(socketFD) }
     let rawMode = RawTerminalMode(fd: STDIN_FILENO)
     defer { withExtendedLifetime(rawMode) {} }
 
+    if let initialInput {
+        let bytes = Array((initialInput + "\n").utf8)
+        try writeAll(bytes, to: socketFD)
+    }
+
     DispatchQueue.global(qos: .userInitiated).async {
         pump(from: STDIN_FILENO, to: socketFD)
         shutdown(socketFD, SHUT_WR)
     }
     pump(from: socketFD, to: STDOUT_FILENO)
+}
+
+func writeAll(_ bytes: [UInt8], to outputFD: Int32) throws {
+    var offset = 0
+    while offset < bytes.count {
+        let wrote = bytes.withUnsafeBytes { raw -> Int in
+            let base = raw.baseAddress!.advanced(by: offset)
+            return write(outputFD, base, bytes.count - offset)
+        }
+        if wrote < 0, errno == EINTR { continue }
+        guard wrote > 0 else {
+            throw DorydCtlError.daemon("write: \(String(cString: strerror(errno)))")
+        }
+        offset += wrote
+    }
 }
 
 func connectUnixSocket(path: String) throws -> Int32 {
