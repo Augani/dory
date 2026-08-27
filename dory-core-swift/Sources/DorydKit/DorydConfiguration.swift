@@ -518,7 +518,7 @@ public struct DorydEnvironment: Sendable {
         }
 
         let handoffSocket = "\(stateDirectory)/dory-vmm-docker-handoff.sock"
-        let cmdline = "console=hvc0 root=/dev/vda rw rootwait panic=1 dory.machine_id=docker dory.home=\(home)"
+        let cmdline = "console=hvc0 root=/dev/vda rw rootwait panic=1 dory.config=required dory.machine_id=docker dory.home=\(home)"
         var arguments = [
             "--machine-id", "docker",
             "--state-dir", stateDirectory,

@@ -6,6 +6,7 @@ struct GuestDatapathCanaryTests {
         #expect(GuestDatapathCanary.port == 2_380)
         #expect(GuestDatapathCanary.environmentKey == "DORY_DATAPATH_CANARY_PORT")
         #expect(GuestDatapathCanary.agentEnvironmentAssignment() == "DORY_DATAPATH_CANARY_PORT=2380")
+        #expect(GuestDatapathCanary.requiredBootConfigurationKernelArgument == "dory.config=required")
         #expect(!GuestDatapathCanary.agentEnvironmentAssignment().contains("2375"))
         #expect(!GuestDatapathCanary.agentEnvironmentAssignment().contains("dockerd"))
     }

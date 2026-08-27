@@ -738,6 +738,7 @@ final class DoryVMMKitTests: XCTestCase {
         let bootLoader = try XCTUnwrap(configuration.bootLoader as? VZLinuxBootLoader)
         XCTAssertEqual(bootLoader.kernelURL.path, kernel)
         XCTAssertTrue(bootLoader.commandLine.contains("root=/dev/vda"))
+        XCTAssertTrue(bootLoader.commandLine.contains("dory.config=required"))
         XCTAssertTrue(bootLoader.commandLine.contains("dory.machine_id=dev"))
         XCTAssertTrue(bootLoader.commandLine.contains(
             "dory.operation_id=\(DoryOperationIdentity.canonical(operationID))"

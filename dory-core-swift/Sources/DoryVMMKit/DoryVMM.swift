@@ -880,6 +880,7 @@ public enum DoryVZConfigurationBuilder {
     ) -> String {
         var arguments = [
             "console=hvc0", "root=/dev/vda", "rw", "rootwait", "panic=1",
+            "dory.config=required",
             "dory.machine_id=\(machineID)",
         ]
         if let operationID {

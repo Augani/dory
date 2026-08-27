@@ -53,11 +53,37 @@ if [ -x /usr/lib/dory/fex/FEX ]; then
   DORY_AMD64_RUNTIME_ARGS="--add-runtime dory-runc=/usr/local/bin/dory-runc --default-runtime dory-runc"
 fi
 
+dory_config_required=0
+for arg in $(cat /proc/cmdline 2>/dev/null); do
+  case "$arg" in
+    dory.config=required) dory_config_required=1 ;;
+  esac
+done
+
+# The virtio-fs device can be enumerated before its userspace worker has completed the first lookup.
+# A one-shot mount/read races that boundary: the mount succeeds, boot.sh is momentarily absent, and
+# init silently starts the stale agent embedded in the rootfs. Wait for both the mount and its
+# authoritative boot script. Product VMMs mark this share required, so they fail closed instead of
+# advertising a partially configured engine; standalone image boots retain the fallback below.
 mkdir -p /mnt/dory-config
-if mount -t virtiofs dorycfg /mnt/dory-config 2>/dev/null; then
-  if [ -r /mnt/dory-config/boot.sh ]; then
-    exec /bin/sh /mnt/dory-config/boot.sh
+dory_config_attempt=0
+while [ "$dory_config_attempt" -lt 200 ]; do
+  if mountpoint /mnt/dory-config \
+    || mount -t virtiofs dorycfg /mnt/dory-config 2>/dev/null; then
+    if [ -r /mnt/dory-config/boot.sh ]; then
+      exec /bin/sh /mnt/dory-config/boot.sh
+    fi
+  elif [ "$dory_config_required" -eq 0 ]; then
+    break
   fi
+  dory_config_attempt=$((dory_config_attempt + 1))
+  sleep 0.05
+done
+if [ "$dory_config_required" -eq 1 ]; then
+  echo "DORY: required dorycfg boot configuration did not become ready" >&2
+  sync
+  poweroff -f
+  exit 1
 fi
 
 for arg in $(cat /proc/cmdline 2>/dev/null); do

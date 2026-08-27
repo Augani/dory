@@ -3,6 +3,7 @@
 public enum GuestDatapathCanary: Sendable {
     public static let port: UInt16 = 2_380
     public static let environmentKey = "DORY_DATAPATH_CANARY_PORT"
+    public static let requiredBootConfigurationKernelArgument = "dory.config=required"
 
     public static func agentEnvironmentAssignment() -> String {
         "\(environmentKey)=\(port)"

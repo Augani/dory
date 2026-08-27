@@ -406,6 +406,7 @@ enum EngineMode {
 
             var guardState = GVProxyDatapathGuard(failureThreshold: 3)
             var reportedInconclusive = false
+            var reportedAwaitingReadiness = false
             while !Task.isCancelled {
                 let canaryResponse = UnixSocketHTTPClient.get(
                     socketPath: healthSocket,
@@ -433,8 +434,16 @@ enum EngineMode {
                     gvproxyCanaryReachable: canaryReachable,
                     dockerAPIReachable: dockerReachable
                 ) {
-                case .healthy, .restartAlreadyRequested:
+                case .healthy:
+                    // A previous engine invocation may have left a failure receipt in this durable
+                    // state directory. Once this invocation proves the canary, that receipt no
+                    // longer describes the live engine.
+                    try? FileManager.default.removeItem(atPath: diagnosticPath)
                     reportedInconclusive = false
+                    reportedAwaitingReadiness = false
+                case .restartAlreadyRequested:
+                    reportedInconclusive = false
+                    reportedAwaitingReadiness = false
                 case .recovered(let previousFailures):
                     persistGVProxyDiagnostic(
                         path: diagnosticPath,
@@ -446,6 +455,25 @@ enum EngineMode {
                     )
                     note("gvproxy datapath canary recovered after \(previousFailures) failed probe(s)")
                     reportedInconclusive = false
+                    reportedAwaitingReadiness = false
+                case .awaitingReadiness:
+                    // A canary that has never answered cannot prove that a previously working
+                    // datapath stopped forwarding. Treat that as a startup/configuration fault,
+                    // preserve the healthy Docker VM, and let the required dorycfg boot contract
+                    // surface the underlying guest setup failure instead of entering a restart loop.
+                    if !reportedAwaitingReadiness {
+                        persistGVProxyDiagnostic(
+                            path: diagnosticPath,
+                            reason: "awaiting-canary-readiness",
+                            consecutiveFailures: 0,
+                            gvproxyPID: gvproxyPID,
+                            apiSocket: apiSocket,
+                            statistics: network.statistics
+                        )
+                        note("gvproxy datapath canary has not completed its initial readiness probe; restart suppressed")
+                        reportedAwaitingReadiness = true
+                    }
+                    reportedInconclusive = false
                 case .inconclusive:
                     // Do not blame gvproxy when the independent guest witness is unavailable. Log
                     // once per inconclusive run and leave VM lifecycle to the Docker supervisor.
@@ -453,8 +481,10 @@ enum EngineMode {
                         note("gvproxy datapath probe inconclusive: Docker witness is unavailable; no restart requested")
                         reportedInconclusive = true
                     }
+                    reportedAwaitingReadiness = false
                 case .suspected(let failures):
                     reportedInconclusive = false
+                    reportedAwaitingReadiness = false
                     persistGVProxyDiagnostic(
                         path: diagnosticPath,
                         reason: "suspected",
@@ -1236,7 +1266,7 @@ enum EngineMode {
         #else
         let console = "console=ttyS0 earlyprintk=serial,ttyS0,115200"
         #endif
-        return "\(console) root=/dev/vda rw panic=0 init=/sbin/init"
+        return "\(console) root=/dev/vda rw panic=0 init=/sbin/init \(GuestDatapathCanary.requiredBootConfigurationKernelArgument)"
     }
 
     private static func attachPlatformDevices(

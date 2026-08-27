@@ -886,7 +886,7 @@ final class DorydConfigurationTests: XCTestCase {
                 guestPath: "/Volumes"
             ).argumentValue
         )
-        XCTAssertArgumentPair(vmm.arguments, "--cmdline", "console=hvc0 root=/dev/vda rw rootwait panic=1 dory.machine_id=docker dory.home=\(directory)/home")
+        XCTAssertArgumentPair(vmm.arguments, "--cmdline", "console=hvc0 root=/dev/vda rw rootwait panic=1 dory.config=required dory.machine_id=docker dory.home=\(directory)/home")
         XCTAssertEqual(FileManager.default.contents(atPath: preparedRootfs), Data("vmm-rootfs-fixture".utf8))
 
         var homeSharingEnvironment = env
