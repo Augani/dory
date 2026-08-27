@@ -28,8 +28,29 @@ QUALIFICATION_MODE="${DORY_RENDERER_QUALIFICATION_MODE:-preview}"
 
 case "$ENABLED:$REQUIRED" in
   0:0)
-    exec python3 "$ROOT/scripts/package-renderer-production-bundle.py" prune \
+    python3 "$ROOT/scripts/package-renderer-production-bundle.py" prune \
       --runner-app "$RUNNER_APP"
+    # CODE_SIGNING_ALLOWED=NO leaves Xcode's linker signatures on copied XPC products. Those
+    # signatures do not bind Info.plist or bundle resources and cannot be sealed safely inside the
+    # runner. Give development builds the same leaf-to-root graph used by release packaging; the
+    # outer build may then sign the runner with either an ad-hoc or Developer ID identity.
+    if [ "${CODE_SIGNING_ALLOWED:-NO}" != YES ]; then
+      for worker_contract in \
+        "DoryFSWorker.xpc:$ROOT/Packages/ContainerizationEngine/DoryFSWorker.entitlements" \
+        "DoryRendererWorker.xpc:$ROOT/Packages/ContainerizationEngine/DoryRendererWorker.entitlements"; do
+        worker_name="${worker_contract%%:*}"
+        worker_entitlements="${worker_contract#*:}"
+        worker_bundle="$RUNNER_APP/Contents/XPCServices/$worker_name"
+        [ -d "$worker_bundle" ] && [ ! -L "$worker_bundle" ] || {
+          echo "error: development runner is missing $worker_name" >&2
+          exit 1
+        }
+        /usr/bin/codesign --force --sign - --options runtime \
+          --entitlements "$worker_entitlements" "$worker_bundle"
+        /usr/bin/codesign --verify --strict "$worker_bundle"
+      done
+    fi
+    exit 0
     ;;
   0:1)
     echo "error: renderer-required=1 requires renderer-enabled=1" >&2
