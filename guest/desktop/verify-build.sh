@@ -218,10 +218,14 @@ WIREPLUMBER_SOUND_RULE="$($DEBUGFS -R \
   'cat /etc/wireplumber/main.lua.d/60-dory-virtio-sound.lua' "$IMAGE" 2>/dev/null)"
 grep -Fq '["device.profile"] = "pro-audio"' <<<"$WIREPLUMBER_SOUND_RULE" \
   || fail "WirePlumber does not activate Dory's virtio sound profile"
-grep -Fq '{ "device.vendor.id", "matches", "0x1af4" }' <<<"$WIREPLUMBER_SOUND_RULE" \
-  || fail "WirePlumber sound policy is not scoped to the virtio vendor"
-grep -Fq '{ "device.product.id", "matches", "0x1059" }' <<<"$WIREPLUMBER_SOUND_RULE" \
-  || fail "WirePlumber sound policy is not scoped to virtio-snd"
+grep -Fq '{ "device.name", "matches", "alsa_card.platform-*" }' <<<"$WIREPLUMBER_SOUND_RULE" \
+  || fail "WirePlumber sound policy is not scoped to platform sound cards"
+grep -Fq '{ "device.nick", "matches", "VirtIO SoundCard" }' <<<"$WIREPLUMBER_SOUND_RULE" \
+  || fail "WirePlumber sound policy is not scoped to Dory's virtio-snd nickname"
+! grep -Fq 'device.vendor.id' <<<"$WIREPLUMBER_SOUND_RULE" \
+  || fail "WirePlumber sound policy requires a PCI vendor property absent on virtio-mmio"
+! grep -Fq 'device.product.id' <<<"$WIREPLUMBER_SOUND_RULE" \
+  || fail "WirePlumber sound policy requires a PCI product property absent on virtio-mmio"
 grep -Fq 'alsa_output.platform-*' <<<"$WIREPLUMBER_SOUND_RULE" \
   || fail "WirePlumber does not configure Dory playback"
 grep -Fq 'alsa_input.platform-*' <<<"$WIREPLUMBER_SOUND_RULE" \

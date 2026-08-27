@@ -1,13 +1,12 @@
--- Dory's virtio-snd device intentionally has no legacy analog mixer or UCM description. Match its
--- stable PCI identity rather than the old virtio-mmio path: Virtualization.framework and Dory's
--- raw Hypervisor backend can enumerate the same virtio device through different transports.
+-- Dory's virtio-snd device intentionally has no legacy analog mixer or UCM description. The ALSA
+-- udev monitor exposes a stable platform-card name and kernel card nickname for both Dory desktop
+-- transports, but virtio-mmio does not publish PCI vendor/product properties. Requiring those
+-- absent properties leaves ACP on its Off profile and PipeWire exposes only Dummy Output.
 table.insert(alsa_monitor.rules, {
   matches = {
     {
       { "device.name", "matches", "alsa_card.platform-*" },
       { "device.nick", "matches", "VirtIO SoundCard" },
-      { "device.vendor.id", "matches", "0x1af4" },
-      { "device.product.id", "matches", "0x1059" },
     },
   },
   apply_properties = {
