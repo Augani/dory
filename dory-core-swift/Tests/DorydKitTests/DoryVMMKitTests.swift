@@ -7,7 +7,7 @@ import Virtualization
 import XCTest
 
 final class DoryVMMKitTests: XCTestCase {
-    func testVZDesktopForwardsAppKitScrollDirectionWithoutRewritingTheEvent() throws {
+    func testVZDesktopPreservesNonInvertedScrollEvents() throws {
         let cgEvent = try XCTUnwrap(CGEvent(
             scrollWheelEvent2Source: nil,
             units: .pixel,
@@ -18,11 +18,59 @@ final class DoryVMMKitTests: XCTestCase {
         ))
         let appKitEvent = try XCTUnwrap(NSEvent(cgEvent: cgEvent))
 
-        let guestEvent = DoryVMMInputBridge.scrollEventForGuest(appKitEvent)
+        let guestEvent = DoryVMMInputBridge.scrollEventForGuest(
+            appKitEvent,
+            directionInvertedFromDevice: false
+        )
 
         XCTAssertTrue(guestEvent === appKitEvent)
         XCTAssertEqual(guestEvent.scrollingDeltaY, appKitEvent.scrollingDeltaY)
         XCTAssertEqual(guestEvent.scrollingDeltaX, appKitEvent.scrollingDeltaX)
+    }
+
+    func testVZDesktopNormalizesNaturalScrollingAtCoreGraphicsBoundary() throws {
+        let cgEvent = try XCTUnwrap(CGEvent(
+            scrollWheelEvent2Source: nil,
+            units: .pixel,
+            wheelCount: 2,
+            wheel1: 9,
+            wheel2: -4,
+            wheel3: 0
+        ))
+        let appKitEvent = try XCTUnwrap(NSEvent(cgEvent: cgEvent))
+        let sourceCGEvent = try XCTUnwrap(appKitEvent.cgEvent)
+
+        let guestEvent = DoryVMMInputBridge.scrollEventForGuest(
+            appKitEvent,
+            directionInvertedFromDevice: true
+        )
+        let guestCGEvent = try XCTUnwrap(guestEvent.cgEvent)
+
+        XCTAssertFalse(guestEvent === appKitEvent)
+        XCTAssertEqual(
+            guestCGEvent.getIntegerValueField(.scrollWheelEventDeltaAxis1),
+            -sourceCGEvent.getIntegerValueField(.scrollWheelEventDeltaAxis1)
+        )
+        XCTAssertEqual(
+            guestCGEvent.getIntegerValueField(.scrollWheelEventDeltaAxis2),
+            -sourceCGEvent.getIntegerValueField(.scrollWheelEventDeltaAxis2)
+        )
+        XCTAssertEqual(
+            guestCGEvent.getIntegerValueField(.scrollWheelEventPointDeltaAxis1),
+            -sourceCGEvent.getIntegerValueField(.scrollWheelEventPointDeltaAxis1)
+        )
+        XCTAssertEqual(
+            guestCGEvent.getIntegerValueField(.scrollWheelEventPointDeltaAxis2),
+            -sourceCGEvent.getIntegerValueField(.scrollWheelEventPointDeltaAxis2)
+        )
+        XCTAssertEqual(
+            guestCGEvent.getDoubleValueField(.scrollWheelEventFixedPtDeltaAxis1),
+            -sourceCGEvent.getDoubleValueField(.scrollWheelEventFixedPtDeltaAxis1)
+        )
+        XCTAssertEqual(
+            guestCGEvent.getDoubleValueField(.scrollWheelEventFixedPtDeltaAxis2),
+            -sourceCGEvent.getDoubleValueField(.scrollWheelEventFixedPtDeltaAxis2)
+        )
     }
 
     @MainActor

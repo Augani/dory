@@ -265,12 +265,44 @@ final class DoryVMMDesktopApplication: NSObject, NSApplicationDelegate, NSWindow
     }
 }
 
-/// AppKit has already applied the user's natural-scrolling preference by the time an `NSView`
-/// receives an event. Forward that exact event to Virtualization.framework so Dory's VZ and RawHV
-/// desktops agree at the Linux input boundary. Rewriting Core Graphics fields here applies the
-/// preference twice and makes the guest scroll opposite to the host.
+/// `VZVirtualMachineView` consumes the device-oriented Core Graphics wheel fields instead of
+/// AppKit's view-oriented deltas. When macOS natural scrolling is enabled, normalize those fields
+/// once before handing the event to Virtualization.framework. The RawHV display has its own evdev
+/// bridge and must continue to use `NSEvent.scrollingDelta*` directly.
 enum DoryVMMInputBridge {
-    static func scrollEventForGuest(_ event: NSEvent) -> NSEvent { event }
+    static func scrollEventForGuest(
+        _ event: NSEvent,
+        directionInvertedFromDevice: Bool? = nil
+    ) -> NSEvent {
+        let requiresNormalization = directionInvertedFromDevice
+            ?? event.isDirectionInvertedFromDevice
+        guard requiresNormalization,
+              let normalizedCGEvent = event.cgEvent?.copy() else {
+            return event
+        }
+
+        let integerFields: [CGEventField] = [
+            .scrollWheelEventDeltaAxis1,
+            .scrollWheelEventDeltaAxis2,
+            .scrollWheelEventPointDeltaAxis1,
+            .scrollWheelEventPointDeltaAxis2,
+        ]
+        let fixedPointFields: [CGEventField] = [
+            .scrollWheelEventFixedPtDeltaAxis1,
+            .scrollWheelEventFixedPtDeltaAxis2,
+        ]
+        // Core Graphics keeps these representations linked. Snapshot every value before writing
+        // any field so a write cannot become the source for a second, accidental inversion.
+        let integerDeltas = integerFields.map { normalizedCGEvent.getIntegerValueField($0) }
+        let fixedPointDeltas = fixedPointFields.map { normalizedCGEvent.getDoubleValueField($0) }
+        for (field, delta) in zip(integerFields, integerDeltas) {
+            normalizedCGEvent.setIntegerValueField(field, value: -delta)
+        }
+        for (field, delta) in zip(fixedPointFields, fixedPointDeltas) {
+            normalizedCGEvent.setDoubleValueField(field, value: -delta)
+        }
+        return NSEvent(cgEvent: normalizedCGEvent) ?? event
+    }
 }
 
 @MainActor
