@@ -122,7 +122,7 @@ run_gvproxy() {
       "$(dory_gvproxy_version)" \
       "$(dory_gvproxy_expected_sha256)"
     grep -qx \
-      'features=native-ipv6-v2,host-route-aware-aaaa-v1,source-preserving-lan-qemu-v1' \
+      'features=native-ipv6-v2,host-route-aware-aaaa-v1,source-preserving-lan-qemu-v1,host-only-connectivity-v1' \
       "$tmp/gvproxy-provenance.txt"
   )
 }

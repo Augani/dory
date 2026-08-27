@@ -448,6 +448,8 @@ elif [ "$1" = "engine" ] && [ "$2" = "wake" ]; then
   printf '{"ok":true,"message":"wake requested"}\n'
 elif [ "$1" = "machine" ] && [ "$2" = "list" ]; then
   printf '[{"id":"dev","state":"running","address":"dev.dory.local"}]\n'
+elif [ "$1" = "machine" ] && [ "$2" = "recipes" ]; then
+  printf '{"schema":"dev.dory.machine.recipe-catalog","version":1,"recipes":[{"id":"agent-core","displayName":"Agent Core","summary":"Core agent terminal tools","category":"foundation","aliases":["agent"],"executables":["bash","git","rg","setpriv","tmux"],"versionCommand":"tmux -V","packages":{"alpine":["tmux","util-linux"],"debian":["tmux","util-linux"]}}]}\n'
 elif [ "$1" = "network" ] && [ "$2" = "authorization-plan" ]; then
   cat <<'JSON'
 {
@@ -486,7 +488,7 @@ JSON
 elif [ "$1" = "machine" ] && [ "$2" = "create" ]; then
   printf '{"id":"%s","state":"created"}\n' "$3"
 elif [ "$1" = "machine" ] && [ "$2" = "status" ]; then
-  printf '{"id":"%s","state":"running","agentSocketPath":"/tmp/dory-test-agent.sock"}\n' "$3"
+  printf '{"id":"%s","state":"running","agentProtocolVersion":1,"agentCapabilities":[{"id":"exec","version":1}],"shares":[],"sandboxPolicy":{"schemaVersion":1,"profile":"agent-ready","tools":["agent-core"],"baselineSnapshotID":"dory-agent-ready-baseline-v1","sshAgentAccess":"denied"}}\n' "$3"
 elif [ "$1" = "machine" ] && [ "$2" = "start" ]; then
   printf '{"id":"%s","state":"running"}\n' "$3"
 elif [ "$1" = "machine" ] && [ "$2" = "stop" ]; then
@@ -509,6 +511,8 @@ elif [ "$1" = "machine" ] && [ "$2" = "restore-snapshot" ]; then
   printf '{"id":"%s","state":"running"}\n' "$3"
 elif [ "$1" = "machine" ] && [ "$2" = "delete-snapshot" ]; then
   printf '{"ok":true,"message":"snapshot deleted"}\n'
+elif [ "$1" = "machine" ] && [ "$2" = "provision" ]; then
+  printf '{"recipe":"%s","ok":true}\n' "$5"
 elif [ "$1" = "machine" ] && [ "$2" = "shell" ]; then
   printf 'shell:%s\n' "$3"
 elif [ "$1" = "machine" ] && [ "$2" = "exec" ]; then
@@ -521,6 +525,7 @@ elif [ "$1" = "machine" ] && [ "$2" = "exec" ]; then
       --cwd) cwd="$2"; shift 2 ;;
       --env-json-stdin) cat > "${DORY_FAKE_ENV_CAPTURE:-/dev/null}"; shift ;;
       --timeout-ms) shift 2 ;;
+      --output-limit-bytes) shift 2 ;;
       --) break ;;
       *) echo "unexpected exec option: $1" >&2; exit 64 ;;
     esac
@@ -714,6 +719,72 @@ scripts/dory sandbox inspect agentgrants --json | python3 -c 'import json,sys; a
 scripts/dory sandbox list --json | python3 -c 'import json,sys; assert "agentgrants" in [r["sandbox"] for r in json.load(sys.stdin)["sandboxes"]]'
 DORYDCTL_BIN="$TMP_HOME/fake-dorydctl" scripts/dory sandbox kill agentgrants | grep -q 'sandbox killed: agentgrants'
 scripts/dory sandbox inspect agentgrants --json | python3 -c 'import json,sys; assert json.load(sys.stdin)["status"] == "killed"'
+
+# Agent Sandboxes have a machine-readable battery catalog, safe reusable templates, a one-time
+# setup receipt, a remembered default, and a persistent tmux attach entrypoint. They are explicitly
+# identified as headless and cannot be confused with Linux Desktop VMs.
+DORYDCTL_BIN="$TMP_HOME/fake-dorydctl" scripts/dory sandbox capabilities --json | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+assert data["schema"] == "dev.dory.sandbox.capabilities"
+assert data["machineClass"] == "headless-agent-sandbox"
+assert data["display"] is False
+assert data["recipes"][0]["id"] == "agent-core"
+assert "tmux" in data["recipes"][0]["executables"]
+'
+scripts/dory sandbox template list --json | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+assert data["schema"] == "dev.dory.sandbox.template-list"
+assert {item["id"] for item in data["templates"]} >= {"coding-agent", "polyglot-agent"}
+'
+scripts/dory sandbox template show coding-agent --json | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+assert data["schema"] == "dev.dory.sandbox.template"
+assert data["machineClass"] == "headless-agent-sandbox"
+assert data["display"] is False
+'
+cat > "$TMP_HOME/setup-agent.sh" <<'SH'
+#!/bin/sh
+mkdir -p "$HOME/.cache/example-agent"
+SH
+template_create_json="$(DORY_SANDBOX_DISABLE_TTL_SCHEDULER=1 DORYDCTL_BIN="$TMP_HOME/fake-dorydctl" DORY_SANDBOX_KERNEL="$TMP_HOME/kernel" DORY_SANDBOX_ROOTFS="$TMP_HOME/rootfs.ext4" \
+  scripts/dory sandbox create templated --template coding-agent --setup "$TMP_HOME/setup-agent.sh" --json)"
+printf '%s' "$template_create_json" | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+manifest = data["manifest"]
+assert manifest["machineClass"] == "headless-agent-sandbox"
+assert manifest["display"] is False
+assert manifest["desktopApplications"] is False
+assert manifest["terminalApplications"] is True
+assert manifest["profile"]["preset"] == "core"
+assert manifest["profile"]["tools"] == ["agent-core"]
+assert manifest["profile"]["setup"]["file"] == "setup-agent.sh"
+assert manifest["profile"]["setup"]["executedOnce"] is True
+assert len(manifest["profile"]["setup"]["sha256"]) == 64
+assert manifest["profile"]["setup"]["contentsPersisted"] is False
+'
+scripts/dory sandbox use templated --json | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+assert data["schema"] == "dev.dory.sandbox.current"
+assert data["sandbox"] == "templated"
+'
+scripts/dory sandbox current --json | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+assert data["sandbox"] == "templated"
+assert data["machineClass"] == "headless-agent-sandbox"
+'
+DORYDCTL_BIN="$TMP_HOME/fake-dorydctl" scripts/dory sandbox exec --json -- /bin/echo isolated | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+assert data["sandbox"] == "templated"
+assert data["exec"]["stdout"] == "isolated\n"
+'
+DORYDCTL_BIN="$TMP_HOME/fake-dorydctl" scripts/dory sandbox attach templated | grep -q '^shell:templated$'
 
 if DORYDCTL_BIN="$TMP_HOME/fake-dorydctl" DORY_SANDBOX_KERNEL="$TMP_HOME/kernel" DORY_SANDBOX_ROOTFS="$TMP_HOME/rootfs.ext4" \
   scripts/dory sandbox run --elevated --network none -- /bin/echo isolated >/dev/null 2>&1; then
@@ -1039,7 +1110,7 @@ import json, sys
 data = json.load(sys.stdin)
 targets = {item["target"] for item in data["actions"]}
 assert {"socket", "context", "dns", "routes", "ports", "domains", "dockerd", "guest-agent"} <= targets
-assert any(item["target"] == "guest-agent" and item["status"] == "skip" for item in data["actions"])
+assert any(item["target"] == "guest-agent" and item["status"] == "warn" for item in data["actions"])
 '
 
 set +e
@@ -1197,6 +1268,10 @@ tools = {item["name"]: item for item in lines[1]["result"]["tools"]}
 assert "dory.agent_guide" in tools
 assert "dory.machine_exec" in tools
 assert "dory.sandbox_run" in tools
+assert "dory.sandbox_capabilities" in tools
+assert "dory.sandbox_templates" in tools
+assert "dory.sandbox_current" in tools
+assert "dory.sandbox_use" in tools
 '
 
 mcp_guide="$(printf '%s\n%s\n' \
@@ -1379,8 +1454,112 @@ ids = {r["id"]: r for r in d["results"]}
 assert "mount.lock" in ids and ids["mount.lock"]["status"] == "skip", ids.get("mount.lock")
 '
 
+# Agent Sandboxes run as non-root and must retain normal Linux sticky temporary directories even
+# though Dory also provides a private TMPDIR on the dedicated scratch disk.
+grep -Fq 'chmod 1777 /tmp' scripts/dory
+grep -Fq 'chmod 1777 /var/tmp' scripts/dory
+
 # Last-known-good doctor diff: a healthy run saves the baseline; a later regression is reported and
 # a failing run never overwrites the good baseline.
+python3 - <<'PY'
+import importlib.machinery, importlib.util, socket, sys
+loader = importlib.machinery.SourceFileLoader("dd_ports", "scripts/dory-doctor")
+dd = importlib.util.module_from_spec(importlib.util.spec_from_loader("dd_ports", loader))
+sys.modules["dd_ports"] = dd
+loader.exec_module(dd)
+
+listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+listener.bind(("127.0.0.1", 0))
+listener.listen()
+ready_port = listener.getsockname()[1]
+probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+probe.bind(("127.0.0.1", 0))
+missing_port = probe.getsockname()[1]
+rows = [
+    {"host_port": ready_port, "protocol": "tcp", "state": "running", "conflict": False},
+    {"host_port": missing_port, "protocol": "tcp", "state": "running", "conflict": False},
+]
+ports, missing = dd.published_tcp_listener_state(rows)
+assert ports == sorted([ready_port, missing_port]), (ports, missing)
+assert missing == [missing_port], missing
+dd.route_table = lambda *_args, **_kwargs: {"ports": rows, "domains": [], "error": ""}
+repair = dd.repair_ports(False)
+assert repair["status"] == "fail", repair
+assert repair["missing_tcp_listeners"] == [missing_port], repair
+dd.dorydctl_json = lambda *_args, **_kwargs: {
+    "available": True,
+    "ok": True,
+    "body": {"message": "published ports reconciled"},
+}
+applied = dd.repair_ports(True)
+assert applied["status"] == "fail", applied
+assert applied["missing_tcp_listeners"] == [missing_port], applied
+probe.close()
+listener.close()
+PY
+
+python3 - <<'PY'
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("dd_repair", "scripts/dory-doctor")
+dd = importlib.util.module_from_spec(importlib.util.spec_from_loader("dd_repair", loader))
+sys.modules["dd_repair"] = dd
+loader.exec_module(dd)
+
+calls = []
+state = {"value": "running"}
+def ctl(args, timeout=4.0):
+    calls.append((tuple(args), timeout))
+    if args == ["engine", "status"]:
+        return {"available": True, "ok": True, "body": {"state": state["value"]}}
+    if args == ["engine", "start"]:
+        state["value"] = "running"
+        return {"available": True, "ok": True, "body": {"message": "started"}}
+    raise AssertionError(args)
+dd.dorydctl_json = ctl
+dd.dockerd_ping_ok = lambda timeout=10.0: True
+healthy = dd.repair_engine(False)
+assert healthy["status"] == "pass", healthy
+assert calls == [(('engine', 'status'), 15)], calls
+
+calls.clear()
+state["value"] = "stopped"
+started = dd.repair_engine(True)
+assert started["status"] == "pass" and started["mutated"] is True, started
+assert (("engine", "start"), 300) in calls, calls
+assert not hasattr(dd, "dory_engine_script"), "bundled repair must not depend on a source-tree engine script"
+
+dd.dorydctl_json = lambda args, timeout=4.0: {
+    "available": True, "ok": True, "body": {"message": "dockerd repaired"},
+}
+dd.dockerd_ping_ok = lambda timeout=10.0: False
+dockerd = dd.repair_dockerd(True)
+assert dockerd["status"] == "fail", dockerd
+assert dockerd["postconditionVerified"] is False, dockerd
+
+dd.dorydctl_json = lambda args, timeout=4.0: {
+    "available": True,
+    "ok": True,
+    "body": {"protocolVersion": 1, "agentBuild": "dory-agent/test"},
+}
+agent = dd.repair_guest_agent(False)
+assert agent["status"] == "pass", agent
+assert "protocol=1" in agent["detail"], agent
+
+dd.dorydctl_json = lambda args, timeout=4.0: {
+    "available": True,
+    "ok": False,
+    "error": "connection unavailable",
+}
+agent = dd.repair_guest_agent(False)
+assert agent["status"] == "warn", agent
+assert "connection unavailable" in agent["detail"], agent
+
+dd.Path.exists = lambda _self: False
+dd.route_table = lambda *_args, **_kwargs: {"ports": [], "domains": [], "error": ""}
+domains = dd.repair_domains(False)
+assert domains["status"] == "skip", domains
+PY
+
 python3 - <<'PY'
 import importlib.machinery, importlib.util, os, sys, tempfile
 loader = importlib.machinery.SourceFileLoader("dd", "scripts/dory-doctor")

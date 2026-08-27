@@ -408,10 +408,6 @@ def repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
-def dory_engine_script() -> Path:
-    return repo_root() / "scripts" / "runtime" / "dory-engine"
-
-
 @dataclass
 class CheckResult:
     id: str
@@ -893,14 +889,30 @@ class Doctor:
                     "The Docker API did not return the container list; run `dory doctor` again once the engine is healthy.",
                 )
                 return
-            count = len(table.get("ports", []))
+            rows = table.get("ports", [])
+            tcp_ports, missing = published_tcp_listener_state(rows)
+            if missing:
+                self.add(
+                    "network.published_ports",
+                    "fail",
+                    "network.port_listener_missing",
+                    "Published port listeners missing",
+                    f"Docker reports {len(tcp_ports)} running TCP publication(s), but loopback refused {','.join(map(str, missing))}",
+                    "Run `dory repair ports --apply`; if a port remains unavailable, attach a Dory support bundle to the issue.",
+                    ports=len(rows),
+                    tcp_ports=len(tcp_ports),
+                    missing_tcp_listeners=missing,
+                )
+                return
+            count = len(rows)
             self.add(
                 "network.published_ports",
                 "pass",
-                "network.port_table_ok",
-                "Published port table readable",
-                f"{count} published port route(s) found",
+                "network.port_listeners_ready",
+                "Published port listeners ready",
+                f"{count} published route(s) found; all {len(tcp_ports)} running TCP loopback listener(s) accepted a connection",
                 ports=count,
+                tcp_ports=len(tcp_ports),
             )
             return
         name, port = self.start_http_container()
@@ -2655,6 +2667,24 @@ def route_table(sock: Path | None = None) -> dict[str, Any]:
     return out
 
 
+def published_tcp_listener_state(rows: list[dict[str, Any]], timeout: float = 0.15) -> tuple[list[int], list[int]]:
+    ports = sorted({
+        int(row["host_port"])
+        for row in rows
+        if str(row.get("protocol") or "tcp").lower() in {"tcp", "tcp6"}
+        and row.get("state") == "running"
+        and 1 <= int(row.get("host_port") or 0) <= 65_535
+    })
+    missing: list[int] = []
+    for port in ports:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=timeout):
+                pass
+        except OSError:
+            missing.append(port)
+    return ports, missing
+
+
 def idle_status(sock: Path | None = None) -> dict[str, Any]:
     daemon = dorydctl_json(["idle", "status"], timeout=5)
     if daemon.get("ok") and isinstance(daemon.get("body"), dict):
@@ -3827,21 +3857,41 @@ def repair_context(apply: bool) -> dict[str, Any]:
     if not binary:
         return {"target": "context", "status": "fail", "detail": "docker CLI not found"}
     host = f"unix://{socket_path()}"
+    inspect = subprocess.run(
+        [binary, "context", "inspect", "dory", "--format", "{{json .Endpoints.docker.Host}}"],
+        text=True, capture_output=True, timeout=10,
+    )
+    show = subprocess.run([binary, "context", "show"], text=True, capture_output=True, timeout=10)
+    inspected_host = inspect.stdout.strip().strip('"') if inspect.returncode == 0 else ""
+    active = show.stdout.strip() if show.returncode == 0 else ""
+    if inspected_host == host and active == "dory":
+        return {"target": "context", "status": "pass", "detail": f"active docker context dory targets {host}"}
     if not apply:
-        return {"target": "context", "status": "warn", "detail": "Dory Docker context may need repair", "next": f"would create/update context dory -> {host} and activate it"}
-    inspect = subprocess.run([binary, "context", "inspect", "dory"], text=True, capture_output=True)
+        return {
+            "target": "context", "status": "warn",
+            "detail": f"docker context mismatch: active={active or 'unavailable'} dory_host={inspected_host or 'unavailable'}",
+            "next": f"would create/update context dory -> {host} and activate it",
+        }
     if inspect.returncode == 0:
-        update = subprocess.run([binary, "context", "update", "dory", "--docker", f"host={host}"], text=True, capture_output=True)
+        update = subprocess.run([binary, "context", "update", "dory", "--docker", f"host={host}"], text=True, capture_output=True, timeout=15)
         if update.returncode != 0:
             return {"target": "context", "status": "fail", "detail": compact(update.stderr or update.stdout)}
     else:
-        create = subprocess.run([binary, "context", "create", "dory", "--description", "Dory", "--docker", f"host={host}"], text=True, capture_output=True)
+        create = subprocess.run([binary, "context", "create", "dory", "--description", "Dory", "--docker", f"host={host}"], text=True, capture_output=True, timeout=15)
         if create.returncode != 0:
             return {"target": "context", "status": "fail", "detail": compact(create.stderr or create.stdout)}
-    use = subprocess.run([binary, "context", "use", "dory"], text=True, capture_output=True)
+    use = subprocess.run([binary, "context", "use", "dory"], text=True, capture_output=True, timeout=15)
     if use.returncode != 0:
         return {"target": "context", "status": "fail", "detail": compact(use.stderr or use.stdout)}
-    return {"target": "context", "status": "pass", "detail": f"docker context dory now targets {host}"}
+    verified = subprocess.run(
+        [binary, "context", "inspect", "dory", "--format", "{{json .Endpoints.docker.Host}}"],
+        text=True, capture_output=True, timeout=10,
+    )
+    verified_show = subprocess.run([binary, "context", "show"], text=True, capture_output=True, timeout=10)
+    verified_host = verified.stdout.strip().strip('"') if verified.returncode == 0 else ""
+    if verified_host != host or verified_show.stdout.strip() != "dory":
+        return {"target": "context", "status": "fail", "detail": "docker context update completed but its endpoint/selection postcondition did not hold"}
+    return {"target": "context", "status": "pass", "detail": f"verified active docker context dory -> {host}"}
 
 
 def dockerd_ping_ok(timeout: float = 10.0) -> bool:
@@ -3853,34 +3903,67 @@ def dockerd_ping_ok(timeout: float = 10.0) -> bool:
 
 
 def repair_engine(apply: bool, restart_engine: bool = False) -> dict[str, Any]:
-    script = dory_engine_script()
-    if not script.exists():
-        return {"target": "engine", "status": "skip", "detail": f"{script} not found"}
+    status = dorydctl_json(["engine", "status"], timeout=15)
+    if not status.get("available"):
+        return {"target": "engine", "status": "fail", "detail": status.get("error", "dorydctl not found")}
+    if not status.get("ok"):
+        return {
+            "target": "engine", "status": "fail", "detail": status.get("error", "doryd engine status failed"),
+            "next": "open Dory and retry; collect a support bundle if doryd remains unavailable",
+        }
+    state = str(status.get("body", {}).get("state") or "unknown")
     if not apply:
-        # Only advertise a restart when the engine actually looks wedged; a healthy engine needs none.
-        if dockerd_ping_ok():
-            return {"target": "engine", "status": "pass", "detail": "engine reachable; no restart needed"}
+        if state == "running" and dockerd_ping_ok():
+            return {"target": "engine", "status": "pass", "detail": "doryd reports running and Docker API is verified"}
+        if state in {"stopped", "sleeping", "failed"}:
+            return {
+                "target": "engine", "status": "warn", "detail": f"doryd reports engine state={state}",
+                "next": "run `dory repair engine --apply` to start the engine through doryd",
+                "dataPlaneDisruptive": False,
+            }
         return {
             "target": "engine",
             "status": "warn",
-            "detail": "Headless engine restart available (disruptive: stops running containers)",
-            "next": f"run `dory repair engine --restart-engine` to bounce the engine ({script} stop && {script} start)",
+            "detail": f"doryd reports engine state={state}, but the Docker API postcondition failed",
+            "next": "run `dory repair dockerd --apply`; use `dory repair engine --apply --restart-engine` only if dockerd-only repair fails",
             "dataPlaneDisruptive": True,
         }
-    if not restart_engine:
-        # Restarting stops running containers, so --apply alone must not bounce the engine.
+    mutated = False
+    if restart_engine:
+        stop = dorydctl_json(["engine", "stop"], timeout=120)
+        if not stop.get("ok"):
+            return {"target": "engine", "status": "fail", "detail": stop.get("error", "doryd engine stop failed"), "dataPlaneDisruptive": True}
+        start = dorydctl_json(["engine", "start"], timeout=300)
+        mutated = True
+    elif state in {"stopped", "sleeping", "failed"}:
+        start = dorydctl_json(["engine", "start"], timeout=300)
+        mutated = True
+    elif state == "running" and dockerd_ping_ok():
+        return {"target": "engine", "status": "pass", "detail": "doryd reports running and Docker API is verified; no mutation applied", "mutated": False}
+    else:
         return {
             "target": "engine",
             "status": "warn",
-            "detail": "engine restart is available but disruptive (stops running containers); not performed without --restart-engine",
-            "next": f"re-run `dory repair engine --apply --restart-engine` to bounce the engine ({script} stop && {script} start)",
+            "detail": "engine is running but Docker API is unhealthy; a disruptive restart was not performed",
+            "next": "run `dory repair dockerd --apply`, then use `dory repair engine --apply --restart-engine` only if needed",
             "dataPlaneDisruptive": True,
+            "mutated": False,
         }
-    stop = subprocess.run([str(script), "stop"], text=True, capture_output=True, timeout=60)
-    start = subprocess.run([str(script), "start"], text=True, capture_output=True, timeout=180)
-    if start.returncode != 0:
-        return {"target": "engine", "status": "fail", "detail": compact(start.stderr or start.stdout), "dataPlaneDisruptive": True}
-    return {"target": "engine", "status": "pass", "detail": compact(stop.stdout + " " + start.stdout), "dataPlaneDisruptive": True}
+    if not start.get("ok"):
+        return {"target": "engine", "status": "fail", "detail": start.get("error", "doryd engine start failed"), "dataPlaneDisruptive": restart_engine, "mutated": mutated}
+    verified = dorydctl_json(["engine", "status"], timeout=15)
+    verified_state = str(verified.get("body", {}).get("state") or "unknown") if verified.get("ok") else "unavailable"
+    if verified_state != "running" or not dockerd_ping_ok(timeout=15):
+        return {
+            "target": "engine", "status": "fail",
+            "detail": f"doryd start completed, but postcondition failed: engine={verified_state} docker_api={'ready' if dockerd_ping_ok(timeout=2) else 'unreachable'}",
+            "dataPlaneDisruptive": restart_engine, "mutated": mutated,
+        }
+    return {
+        "target": "engine", "status": "pass",
+        "detail": "engine is running and Docker API is verified after doryd reconciliation",
+        "dataPlaneDisruptive": restart_engine, "mutated": mutated,
+    }
 
 
 def repair_routes(apply: bool) -> dict[str, Any]:
@@ -3896,7 +3979,7 @@ def repair_routes(apply: bool) -> dict[str, Any]:
             "next": "stop one of the containers using the same host port, then rerun `dory routes`",
         }
     if apply:
-        repair = dorydctl_json(["network", "repair", "routes"], timeout=10)
+        repair = dorydctl_json(["network", "repair", "routes"], timeout=20)
         if repair.get("available"):
             if not repair.get("ok"):
                 return {"target": "routes", "status": "fail", "detail": repair.get("error", "doryd route repair failed")}
@@ -3945,7 +4028,7 @@ def repair_domains(apply: bool) -> dict[str, Any]:
     resolver = Path(f"/etc/resolver/{DOMAIN_SUFFIX}")
     if apply:
         dns = repair_dns(True)
-        domains = dorydctl_json(["network", "repair", "domains"], timeout=10)
+        domains = dorydctl_json(["network", "repair", "domains"], timeout=20)
         if domains.get("available") and not domains.get("ok"):
             return {"target": "domains", "status": "fail", "detail": domains.get("error", "doryd domain repair failed")}
         daemon_detail = domains.get("body", {}).get("message") if domains.get("ok") else None
@@ -3954,11 +4037,22 @@ def repair_domains(apply: bool) -> dict[str, Any]:
             "status": dns.get("status", "warn"),
             "detail": "; ".join(filter(None, [f"{len(table.get('domains', []))} inferred domain route(s)", daemon_detail, dns.get("detail")])),
         }
+    if not resolver.exists():
+        # System-wide *.dory.local resolution is an optional, explicitly authorized feature. Its
+        # absence is not stale state and `repair all --apply` must not turn that choice into a DNS
+        # cache mutation. Keep the direct target available for users who are diagnosing an already
+        # configured resolver, while directing first-time setup through the authorization flow.
+        return {
+            "target": "domains",
+            "status": "skip",
+            "detail": f"{domains} inferred domain route(s); resolver_exists=False",
+            "next": "run `dory network authorize --apply` to enable system-wide *.dory.local resolution",
+        }
     return {
         "target": "domains",
-        "status": "pass" if resolver.exists() else "warn",
-        "detail": f"{domains} inferred domain route(s); resolver_exists={resolver.exists()}",
-        "next": "would flush DNS cache; restart Dory only if the local reverse proxy listener is wedged",
+        "status": "pass",
+        "detail": f"{domains} inferred domain route(s); resolver_exists=True",
+        "next": "run `dory repair domains --apply` only if the configured local domain route is stale",
     }
 
 
@@ -3974,20 +4068,51 @@ def repair_ports(apply: bool) -> dict[str, Any]:
             "detail": f"{len(conflicts)} conflicting published port route(s)",
             "next": "stop one of the conflicting containers; Dory will reconcile route ownership automatically",
         }
+    tcp_ports, missing = published_tcp_listener_state(table.get("ports", []))
+    if missing and not apply:
+        return {
+            "target": "ports",
+            "status": "fail",
+            "detail": f"Docker reports {len(tcp_ports)} running TCP publication(s), but loopback refused {','.join(map(str, missing))}",
+            "next": "run `dory repair ports --apply` to reconcile gvproxy and verify the listeners",
+            "missing_tcp_listeners": missing,
+        }
     if apply:
-        repair = dorydctl_json(["network", "repair", "ports"], timeout=10)
+        repair = dorydctl_json(["network", "repair", "ports"], timeout=30)
         if repair.get("available"):
             if not repair.get("ok"):
                 return {"target": "ports", "status": "fail", "detail": repair.get("error", "doryd port repair failed")}
-            return {"target": "ports", "status": "pass", "detail": repair["body"].get("message", "published ports reconciled")}
-    return {"target": "ports", "status": "pass", "detail": f"{len(table.get('ports', []))} published port route(s) readable; no conflicts"}
+        verified_table = route_table()
+        if verified_table.get("error"):
+            return {"target": "ports", "status": "fail", "detail": verified_table["error"]}
+        verified_tcp_ports, missing = published_tcp_listener_state(verified_table.get("ports", []))
+        if missing:
+            return {
+                "target": "ports",
+                "status": "fail",
+                "detail": f"port reconciliation completed, but loopback still refused {','.join(map(str, missing))}",
+                "missing_tcp_listeners": missing,
+            }
+        detail = repair.get("body", {}).get("message") if repair.get("ok") else None
+        return {
+            "target": "ports",
+            "status": "pass",
+            "detail": detail or f"{len(verified_tcp_ports)} running TCP published listener(s) verified",
+        }
+    return {
+        "target": "ports",
+        "status": "pass",
+        "detail": f"{len(tcp_ports)} running TCP published listener(s) verified; no conflicts",
+    }
 
 
 def repair_dockerd(apply: bool, restart_engine: bool = False, allow_engine_escalation: bool = True) -> dict[str, Any]:
     if apply:
-        repair = dorydctl_json(["network", "repair", "docker-api"], timeout=12)
+        repair = dorydctl_json(["network", "repair", "docker-api"], timeout=80)
         if repair.get("ok"):
-            return {"target": "dockerd", "status": "pass", "detail": repair["body"].get("message", "Docker API reachable")}
+            if dockerd_ping_ok(timeout=15):
+                return {"target": "dockerd", "status": "pass", "detail": repair["body"].get("message", "Docker API reachable"), "postconditionVerified": True}
+            return {"target": "dockerd", "status": "fail", "detail": "doryd dockerd repair returned success, but Docker /_ping remained unavailable", "postconditionVerified": False}
     try:
         # Give a busy or still-booting dockerd time to answer before declaring it wedged and
         # escalating to a disruptive engine bounce.
@@ -4016,11 +4141,37 @@ def repair_dockerd(apply: bool, restart_engine: bool = False, allow_engine_escal
 
 def repair_guest_agent(apply: bool) -> dict[str, Any]:
     if apply:
-        repair = dorydctl_json(["network", "repair", "guest-agent"], timeout=12)
+        repair = dorydctl_json(["network", "repair", "guest-agent"], timeout=25)
         if repair.get("available"):
             if repair.get("ok"):
-                return {"target": "guest-agent", "status": "pass", "detail": repair["body"].get("message", "guest agent reconnected")}
+                verified = dorydctl_json(["docker", "agent-info"], timeout=20)
+                if verified.get("ok"):
+                    return {"target": "guest-agent", "status": "pass", "detail": repair["body"].get("message", "guest agent reconnected"), "postconditionVerified": True}
+                return {"target": "guest-agent", "status": "fail", "detail": f"guest agent repair returned success but verification failed: {verified.get('error', 'agent-info unavailable')}", "postconditionVerified": False}
             return {"target": "guest-agent", "status": "fail", "detail": repair.get("error", "guest agent repair failed")}
+    # App-managed engines place their runtime PID beneath doryd's short private state directory,
+    # not ~/.dory. Probe the authenticated control plane first so Doctor does not incorrectly say
+    # the guest agent is absent (or skip a repair) merely because that implementation detail moved.
+    agent = dorydctl_json(["docker", "agent-info"], timeout=10)
+    if agent.get("available"):
+        if agent.get("ok"):
+            body = agent.get("body") or {}
+            protocol = body.get("protocolVersion", "unknown")
+            build = body.get("agentBuild", "unknown")
+            return {
+                "target": "guest-agent",
+                "status": "pass",
+                "detail": f"doryd verified guest agent protocol={protocol} build={build}",
+            }
+        return {
+            "target": "guest-agent",
+            "status": "warn",
+            "detail": f"doryd guest agent probe failed: {agent.get('error', 'agent-info unavailable')}",
+            "next": "would ask doryd to reconnect and verify the guest agent without restarting the VM",
+        }
+
+    # Legacy/headless installs may not bundle dorydctl. Retain the narrow PID signal fallback for
+    # those environments, but never use it to override an authoritative doryd response.
     pid = shared_engine_pid()
     if not pid:
         return {
