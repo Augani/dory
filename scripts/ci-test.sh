@@ -2,7 +2,7 @@
 # CI gate: the full DoryTests suite must run to completion with zero failures. The retry
 # handles shared-runner host deaths (too few tests ran), never real test failures.
 set -uo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 1
 if [ -n "${DORY_CI_TEST_LOG:-}" ]; then
   LOG="$DORY_CI_TEST_LOG"
   [ ! -L "$LOG" ] || { echo "ci-test: log path cannot be a symlink" >&2; exit 64; }
@@ -12,7 +12,9 @@ else
   LOG_AUTHORITY="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
   [ -d "$LOG_AUTHORITY" ] && [ ! -L "$LOG_AUTHORITY" ] \
     || { echo "ci-test: temporary log authority must be a direct directory" >&2; exit 64; }
-  LOG="$(mktemp "$LOG_AUTHORITY/dory-ci-tests.XXXXXX.log")" \
+  # BSD mktemp requires the X template to terminate the pathname. A suffix leaves the
+  # literal filename behind, so the second local/CI invocation cannot allocate a log.
+  LOG="$(mktemp "$LOG_AUTHORITY/dory-ci-tests.XXXXXX")" \
     || { echo "ci-test: could not allocate a private test log" >&2; exit 1; }
 fi
 

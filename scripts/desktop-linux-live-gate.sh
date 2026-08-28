@@ -64,15 +64,40 @@ case "$SELECTED_DISTRO" in
   all|debian|ubuntu|kali) ;;
   *) echo "desktop live gate: unsupported distro selection: $SELECTED_DISTRO" >&2; exit 64 ;;
 esac
-[ -x "$CTL" ] || { echo "desktop live gate: missing dorydctl: $CTL" >&2; exit 66; }
+[ -f "$CTL" ] && [ ! -L "$CTL" ] && [ -x "$CTL" ] \
+  || { echo "desktop live gate: dorydctl is missing or indirect: $CTL" >&2; exit 66; }
+[ "$(basename "$CTL")" = dorydctl ] \
+  || { echo "desktop live gate: control helper is not the exact dorydctl identity" >&2; exit 66; }
 [ -d "$COMPONENT_DIR" ] && [ ! -L "$COMPONENT_DIR" ] \
   || { echo "desktop live gate: missing component candidate directory: $COMPONENT_DIR" >&2; exit 66; }
-HELPERS="$(cd "$(dirname "$CTL")" && pwd)"
+HELPERS="$(cd "$(dirname "$CTL")" && pwd -P)"
+CTL="$HELPERS/dorydctl"
 RUNNER_APP="$HELPERS/DoryHVRunner.app"
 VMM="$RUNNER_APP/Contents/MacOS/dory-hv"
-VZ_VMM="$HELPERS/dory-vmm"
-[ -x "$VMM" ] || { echo "desktop live gate: accelerated candidate dory-hv is missing: $VMM" >&2; exit 66; }
-[ -x "$VZ_VMM" ] || { echo "desktop live gate: portable baseline candidate dory-vmm is missing: $VZ_VMM" >&2; exit 66; }
+VZ_VMM_APP="$HELPERS/DoryVMM.app"
+VZ_VMM="$VZ_VMM_APP/Contents/MacOS/dory-vmm"
+VZ_VMM_INFO="$VZ_VMM_APP/Contents/Info.plist"
+FS_WORKER_APP="$RUNNER_APP/Contents/XPCServices/DoryFSWorker.xpc"
+FS_WORKER="$FS_WORKER_APP/Contents/MacOS/DoryFSWorker"
+RENDERER_WORKER_APP="$RUNNER_APP/Contents/XPCServices/DoryRendererWorker.xpc"
+RENDERER_WORKER="$RENDERER_WORKER_APP/Contents/MacOS/DoryRendererWorker"
+[ -d "$RUNNER_APP" ] && [ ! -L "$RUNNER_APP" ] \
+  || { echo "desktop live gate: DoryHVRunner.app is missing or indirect: $RUNNER_APP" >&2; exit 66; }
+[ -f "$VMM" ] && [ ! -L "$VMM" ] && [ -x "$VMM" ] \
+  || { echo "desktop live gate: accelerated candidate dory-hv is missing or indirect: $VMM" >&2; exit 66; }
+[ -d "$VZ_VMM_APP" ] && [ ! -L "$VZ_VMM_APP" ] \
+  || { echo "desktop live gate: portable baseline DoryVMM.app is missing: $VZ_VMM_APP" >&2; exit 66; }
+[ -f "$VZ_VMM" ] && [ ! -L "$VZ_VMM" ] && [ -x "$VZ_VMM" ] \
+  || { echo "desktop live gate: portable baseline candidate dory-vmm is missing or indirect: $VZ_VMM" >&2; exit 66; }
+[ -f "$VZ_VMM_INFO" ] && [ ! -L "$VZ_VMM_INFO" ] \
+  || { echo "desktop live gate: portable baseline VMM Info.plist is missing: $VZ_VMM_INFO" >&2; exit 66; }
+[ -d "$FS_WORKER_APP" ] && [ ! -L "$FS_WORKER_APP" ] \
+  && [ -f "$FS_WORKER" ] && [ ! -L "$FS_WORKER" ] && [ -x "$FS_WORKER" ] \
+  || { echo "desktop live gate: filesystem worker is missing or indirect: $FS_WORKER" >&2; exit 66; }
+[ -d "$RENDERER_WORKER_APP" ] && [ ! -L "$RENDERER_WORKER_APP" ] \
+  && [ -f "$RENDERER_WORKER" ] && [ ! -L "$RENDERER_WORKER" ] \
+  && [ -x "$RENDERER_WORKER" ] \
+  || { echo "desktop live gate: renderer worker is missing or indirect: $RENDERER_WORKER" >&2; exit 66; }
 QUALIFY_UBUNTU_ACCELERATION=0
 case "$SELECTED_DISTRO" in
   all|ubuntu) QUALIFY_UBUNTU_ACCELERATION=1 ;;
@@ -168,21 +193,158 @@ if [ "$QUALIFY_UBUNTU_ACCELERATION" = 1 ]; then
   cp "$ZED_ARCHIVE" "$WORKROOT/share/zed-linux-aarch64.tar.gz"
   [ "$(shasum -a 256 "$WORKROOT/share/zed-linux-aarch64.tar.gz" | awk '{print $1}')" = "$ZED_SHA256" ]
 fi
-codesign --verify --strict "$VMM"
-codesign -d --entitlements :- "$VMM" > "$WORKROOT/evidence/dory-hv-entitlements.plist" 2>&1
-grep -q 'com.apple.security.hypervisor' "$WORKROOT/evidence/dory-hv-entitlements.plist"
-grep -q 'com.apple.security.device.audio-input' "$WORKROOT/evidence/dory-hv-entitlements.plist"
-if grep -q 'com.apple.security.cs.disable-library-validation' "$WORKROOT/evidence/dory-hv-entitlements.plist"; then
-  echo "desktop live gate: dory-hv retains obsolete dynamic renderer library authority" >&2
-  exit 1
-fi
-codesign --verify --strict "$VZ_VMM"
-codesign -d --entitlements :- "$VZ_VMM" > "$WORKROOT/evidence/dory-vmm-entitlements.plist" 2>&1
-grep -q 'com.apple.security.virtualization' "$WORKROOT/evidence/dory-vmm-entitlements.plist"
-grep -q 'com.apple.security.device.audio-input' "$WORKROOT/evidence/dory-vmm-entitlements.plist"
-grep -q 'NSMicrophoneUsageDescription' "$HELPERS/../Info.plist"
+verify_bundle_info() {
+  local info="$1" identifier="$2" executable="$3" package_type="$4" service_type="$5" label="$6"
+  shift 6
+  python3 - "$info" "$identifier" "$executable" "$package_type" \
+    "$service_type" "$label" "$@" <<'PY'
+import os
+import plistlib
+import stat
+import sys
+
+path, identifier, executable, package_type, service_type, label, *usage_keys = sys.argv[1:]
+entry = os.lstat(path)
+if not stat.S_ISREG(entry.st_mode) or entry.st_size <= 0:
+    raise SystemExit(f"desktop live gate: {label} Info.plist is not a direct regular file")
+with open(path, "rb") as handle:
+    info = plistlib.load(handle)
+expected = {
+    "CFBundleIdentifier": identifier,
+    "CFBundleExecutable": executable,
+    "CFBundlePackageType": package_type,
+}
+for key, value in expected.items():
+    if info.get(key) != value:
+        raise SystemExit(f"desktop live gate: {label} {key} is not {value}")
+if service_type != "-" and info.get("XPCService") != {"ServiceType": service_type}:
+    raise SystemExit(f"desktop live gate: {label} XPC service identity is invalid")
+for key in usage_keys:
+    value = info.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise SystemExit(f"desktop live gate: {label} is missing {key}")
+PY
+}
+
+verify_exact_worker_graph() {
+  python3 - "$RUNNER_APP/Contents/XPCServices" <<'PY'
+import os
+import sys
+
+root = sys.argv[1]
+expected = {"DoryFSWorker.xpc", "DoryRendererWorker.xpc"}
+entries = {entry.name: entry for entry in os.scandir(root)}
+if set(entries) != expected or not all(
+    entry.is_dir(follow_symlinks=False) and not entry.is_symlink()
+    for entry in entries.values()
+):
+    raise SystemExit("desktop live gate: DoryHVRunner XPC worker graph is not exact")
+PY
+}
+
+verify_exact_entitlements() {
+  local bundle="$1" policy="$2" label="$3" output="$4"
+  codesign -d --entitlements - --xml "$bundle" \
+    > "$output" 2> "$output.codesign.txt"
+  python3 - "$output" "$policy" "$label" <<'PY'
+import plistlib
+import sys
+
+path, policy, label = sys.argv[1:]
+expected = {
+    "outer": {
+        "com.apple.security.application-groups": [
+            "864H636QW4.group.com.pythonxi.Dory"
+        ],
+        "com.apple.security.device.audio-input": True,
+        "com.apple.security.network.client": True,
+        "com.apple.security.network.server": True,
+    },
+    "runner": {
+        "com.apple.security.device.audio-input": True,
+        "com.apple.security.device.camera": True,
+        "com.apple.security.hypervisor": True,
+    },
+    "filesystem-worker": {},
+    "renderer-worker": {
+        "com.apple.security.app-sandbox": True,
+        "com.apple.security.application-groups": ["864H636QW4.dory-renderer"],
+    },
+    "vmm": {
+        "com.apple.security.device.audio-input": True,
+        "com.apple.security.virtualization": True,
+    },
+}[policy]
+with open(path, "rb") as handle:
+    actual = plistlib.load(handle)
+if "com.apple.security.cs.disable-library-validation" in actual:
+    raise SystemExit(f"desktop live gate: {label} retains forbidden library-validation authority")
+if policy == "vmm" and any("xpc" in key.lower() for key in actual):
+    raise SystemExit(f"desktop live gate: {label} retains forbidden XPC authority")
+if actual != expected:
+    raise SystemExit(
+        f"desktop live gate: {label} entitlements are not exact "
+        f"(actual={actual!r}, expected={expected!r})"
+    )
+PY
+}
+
+developer_id_requirement() {
+  local identifier="$1"
+  printf '%s\n' \
+    "identifier \"$identifier\" and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] /* exists */ and certificate leaf[field.1.2.840.113635.100.6.1.13] /* exists */ and certificate leaf[subject.OU] = \"864H636QW4\""
+}
+
+verify_release_identity() {
+  local bundle="$1" identifier="$2" label="$3" requirement actual details
+  requirement="$(developer_id_requirement "$identifier")"
+  codesign --verify --strict "-R=$requirement" "$bundle" \
+    || { echo "desktop live gate: $label is not signed by Dory's Developer ID" >&2; return 1; }
+  actual="$(codesign -d -r- "$bundle" 2>&1 | sed -n 's/^designated => //p')"
+  [ "$actual" = "$requirement" ] \
+    || { echo "desktop live gate: $label designated requirement is not canonical" >&2; return 1; }
+  details="$WORKROOT/evidence/$label-signature.txt"
+  codesign -d --verbose=4 "$bundle" > /dev/null 2> "$details"
+  grep -Fqx "Identifier=$identifier" "$details" \
+    || { echo "desktop live gate: $label signing identifier is invalid" >&2; return 1; }
+  grep -Fqx 'TeamIdentifier=864H636QW4' "$details" \
+    || { echo "desktop live gate: $label signing team is invalid" >&2; return 1; }
+  grep -Eq '^CodeDirectory .*flags=.*\([^)]*runtime[^)]*\)' "$details" \
+    || { echo "desktop live gate: $label is not hardened-runtime signed" >&2; return 1; }
+}
+
+verify_bundle_info "$RUNNER_APP/Contents/Info.plist" \
+  com.pythonxi.Dory.HVRunner dory-hv APPL - DoryHVRunner \
+  NSCameraUsageDescription NSMicrophoneUsageDescription
+verify_bundle_info "$FS_WORKER_APP/Contents/Info.plist" \
+  com.pythonxi.Dory.HVRunner.FSWorker DoryFSWorker 'XPC!' Application DoryFSWorker
+verify_bundle_info "$RENDERER_WORKER_APP/Contents/Info.plist" \
+  com.pythonxi.Dory.HVRunner.RendererWorker DoryRendererWorker 'XPC!' Application DoryRendererWorker
+verify_bundle_info "$VZ_VMM_INFO" dory-vmm dory-vmm APPL - DoryVMM \
+  NSMicrophoneUsageDescription
+verify_exact_worker_graph
+[ ! -e "$VZ_VMM_APP/Contents/XPCServices" ] \
+  || { echo "desktop live gate: DoryVMM must not contain XPCServices" >&2; exit 1; }
+
+codesign --verify --strict "$FS_WORKER_APP"
+codesign --verify --strict "$RENDERER_WORKER_APP"
+codesign --verify --deep --strict "$RUNNER_APP"
+codesign --verify --deep --strict "$VZ_VMM_APP"
+verify_exact_entitlements "$RUNNER_APP" runner DoryHVRunner \
+  "$WORKROOT/evidence/dory-hv-entitlements.plist"
+verify_exact_entitlements "$FS_WORKER_APP" filesystem-worker DoryFSWorker \
+  "$WORKROOT/evidence/dory-fs-worker-entitlements.plist"
+verify_exact_entitlements "$RENDERER_WORKER_APP" renderer-worker DoryRendererWorker \
+  "$WORKROOT/evidence/dory-renderer-worker-entitlements.plist"
+verify_exact_entitlements "$VZ_VMM_APP" vmm DoryVMM \
+  "$WORKROOT/evidence/dory-vmm-entitlements.plist"
 if [ "$REQUIRE_RELEASE_SIGNATURE" = 1 ]; then
-  codesign --verify --deep --strict "$RUNNER_APP"
+  verify_release_identity "$RUNNER_APP" com.pythonxi.Dory.HVRunner DoryHVRunner
+  verify_release_identity "$FS_WORKER_APP" \
+    com.pythonxi.Dory.HVRunner.FSWorker DoryFSWorker
+  verify_release_identity "$RENDERER_WORKER_APP" \
+    com.pythonxi.Dory.HVRunner.RendererWorker DoryRendererWorker
+  verify_release_identity "$VZ_VMM_APP" dory-vmm DoryVMM
   python3 "$ROOT/scripts/verify-renderer-bootstrap-qualification.py" \
     --runner-app "$RUNNER_APP" --managed-kernel "$KERNEL" \
     --repo-root "$ROOT" --require-release-signature \
@@ -191,6 +353,325 @@ if [ "$REQUIRE_RELEASE_SIGNATURE" = 1 ]; then
     "$WORKROOT/evidence/renderer-bootstrap-qualification.txt"
   RENDERER_RELEASE_SIGNATURE_RESULT=PASS
 fi
+
+require_arm64_slice() {
+  local executable="$1" label="$2"
+  lipo -archs "$executable" | tr ' ' '\n' | grep -Fqx arm64 \
+    || { echo "desktop live gate: $label does not contain arm64 code" >&2; return 1; }
+}
+require_arm64_slice "$CTL" dorydctl
+require_arm64_slice "$VMM" DoryHVRunner
+require_arm64_slice "$FS_WORKER" DoryFSWorker
+require_arm64_slice "$RENDERER_WORKER" DoryRendererWorker
+require_arm64_slice "$VZ_VMM" DoryVMM
+
+case "$HELPERS" in
+  */Dory.app/Contents/Helpers)
+    OUTER_APP="${HELPERS%/Contents/Helpers}"
+    ;;
+  *)
+    echo "desktop live gate: helpers are not inside the exact Dory.app candidate" >&2
+    exit 66
+    ;;
+esac
+OUTER_INFO="$OUTER_APP/Contents/Info.plist"
+OUTER_EXECUTABLE="$OUTER_APP/Contents/MacOS/Dory"
+[ -d "$OUTER_APP" ] && [ ! -L "$OUTER_APP" ] \
+  || { echo "desktop live gate: outer Dory.app is missing or indirect" >&2; exit 66; }
+[ -f "$OUTER_EXECUTABLE" ] && [ ! -L "$OUTER_EXECUTABLE" ] \
+  && [ -x "$OUTER_EXECUTABLE" ] \
+  || { echo "desktop live gate: outer Dory executable is missing or indirect" >&2; exit 66; }
+require_arm64_slice "$OUTER_EXECUTABLE" 'outer Dory application'
+verify_bundle_info "$OUTER_INFO" com.pythonxi.Dory Dory APPL - Dory \
+  NSMicrophoneUsageDescription
+python3 - "$OUTER_INFO" "$DESKTOP_VERSION" <<'PY'
+import plistlib
+import re
+import sys
+
+with open(sys.argv[1], "rb") as handle:
+    info = plistlib.load(handle)
+if info.get("CFBundleShortVersionString") != sys.argv[2]:
+    raise SystemExit("desktop live gate: outer Dory release version differs from the candidate")
+build = info.get("CFBundleVersion")
+if not isinstance(build, str) or re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9._+-]{0,127}", build) is None:
+    raise SystemExit("desktop live gate: outer Dory build version is invalid")
+PY
+codesign --verify --deep --strict "$OUTER_APP"
+verify_exact_entitlements "$OUTER_APP" outer Dory \
+  "$WORKROOT/evidence/dory-entitlements.plist"
+if [ "$REQUIRE_RELEASE_SIGNATURE" = 1 ]; then
+  verify_release_identity "$OUTER_APP" com.pythonxi.Dory Dory
+fi
+
+BINDING_EVIDENCE="$WORKROOT/evidence/exact-release-binding.json"
+capture_release_binding() {
+  local destination="$1"
+  python3 - \
+    "$ROOT/scripts/build-components.py" "$ROOT" "$COMPONENT_DIR" "$OUTER_APP" \
+    "$CTL" "$OUTER_EXECUTABLE" "$VMM" "$FS_WORKER" "$RENDERER_WORKER" \
+    "$VZ_VMM" "$DESKTOP_VERSION" "$destination" <<'PY'
+import hashlib
+import importlib.util
+import json
+import os
+import pathlib
+import re
+import stat
+import subprocess
+import sys
+
+(
+    builder_path,
+    repo_path,
+    component_path,
+    application_path,
+    ctl_path,
+    outer_executable_path,
+    runner_path,
+    filesystem_worker_path,
+    renderer_worker_path,
+    vmm_path,
+    expected_version,
+    destination_path,
+) = sys.argv[1:]
+builder_path = pathlib.Path(builder_path)
+repo = pathlib.Path(repo_path)
+component_root = pathlib.Path(component_path)
+application = pathlib.Path(application_path)
+destination = pathlib.Path(destination_path)
+
+spec = importlib.util.spec_from_file_location("dory_release_binding", builder_path)
+if spec is None or spec.loader is None:
+    raise SystemExit("desktop live gate: release-binding verifier could not be loaded")
+builder = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(builder)
+
+def direct_file(path_value: str | pathlib.Path, label: str) -> pathlib.Path:
+    path = pathlib.Path(path_value)
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        raise SystemExit(f"desktop live gate: {label} is missing") from None
+    if not stat.S_ISREG(info.st_mode) or info.st_size <= 0:
+        raise SystemExit(f"desktop live gate: {label} is indirect or empty")
+    return path
+
+def digest(path: pathlib.Path) -> str:
+    value = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            value.update(chunk)
+    return value.hexdigest()
+
+def code_directory_hash(path: pathlib.Path) -> str:
+    completed = subprocess.run(
+        ["codesign", "-d", "--verbose=4", str(path)],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if completed.returncode != 0:
+        raise SystemExit("desktop live gate: could not read candidate code identity")
+    match = re.search(r"^CDHash=([0-9a-f]+)$", completed.stderr, re.MULTILINE)
+    if match is None:
+        raise SystemExit("desktop live gate: candidate code identity omits CDHash")
+    return match.group(1)
+
+inventory, inventory_digest = builder.load_candidate_inventory(component_root)
+if inventory["releaseVersion"] != expected_version:
+    raise SystemExit("desktop live gate: candidate inventory release differs from Dory.app")
+expected_application = {
+    key: inventory["core"]["application"][key]
+    for key in ("entryCount", "regularFileBytes", "graphSHA256")
+}
+actual_application = builder.application_tree_binding(application)
+if actual_application != expected_application:
+    raise SystemExit(
+        "desktop live gate: launched Dory.app differs from the candidate inventory"
+    )
+
+catalog_path = direct_file(component_root / "catalog.json", "signed component catalog")
+catalog_digest_path = direct_file(
+    component_root / "catalog.json.sha256", "component catalog digest"
+)
+catalog_signature_path = direct_file(
+    component_root / "catalog.json.sig", "component catalog signature"
+)
+catalog_bytes = catalog_path.read_bytes()
+catalog_digest = hashlib.sha256(catalog_bytes).hexdigest()
+if catalog_digest_path.read_text(encoding="ascii") != catalog_digest + "\n":
+    raise SystemExit("desktop live gate: catalog digest does not bind catalog.json")
+catalog = json.loads(catalog_bytes, object_pairs_hook=builder.unique_json_object)
+if catalog_bytes != builder.canonical_json_bytes(catalog):
+    raise SystemExit("desktop live gate: component catalog is not canonical JSON")
+if (
+    catalog.get("kind") != builder.CATALOG_KIND
+    or catalog.get("schemaVersion") != builder.CATALOG_SCHEMA
+    or catalog.get("releaseVersion") != expected_version
+    or catalog.get("architecture") != builder.ARCHITECTURE
+):
+    raise SystemExit("desktop live gate: signed component catalog identity is invalid")
+builder.verify_ed25519_signature(
+    repo,
+    catalog_path,
+    catalog_signature_path,
+    builder.DEFAULT_CATALOG_PUBLIC_KEY,
+    "component catalog",
+)
+
+qualification = catalog.get("virtualMachineQualification")
+if not isinstance(qualification, dict):
+    raise SystemExit("desktop live gate: catalog omits VM qualification authority")
+qualification_component = qualification.get("component")
+qualification_installed_path = qualification.get("path")
+components = catalog.get("components")
+if not isinstance(components, list):
+    raise SystemExit("desktop live gate: catalog components are invalid")
+component = next(
+    (
+        value for value in components
+        if isinstance(value, dict) and value.get("id") == qualification_component
+    ),
+    None,
+)
+if component is None or not isinstance(component.get("assets"), list):
+    raise SystemExit("desktop live gate: qualification component is missing")
+qualification_asset = next(
+    (
+        value for value in component["assets"]
+        if isinstance(value, dict) and value.get("path") == qualification_installed_path
+    ),
+    None,
+)
+signature_asset = next(
+    (
+        value for value in component["assets"]
+        if isinstance(value, dict)
+        and value.get("path") == f"{qualification_installed_path}.sig"
+    ),
+    None,
+)
+if qualification_asset is None or signature_asset is None:
+    raise SystemExit("desktop live gate: qualification evidence assets are incomplete")
+
+def delivered_asset(asset: dict, label: str) -> pathlib.Path:
+    if asset.get("compression") != "none" \
+            or asset.get("downloadBytes") != asset.get("installedBytes") \
+            or asset.get("sha256") != asset.get("installedSHA256"):
+        raise SystemExit(f"desktop live gate: {label} is not an exact byte asset")
+    url = asset.get("url")
+    if not isinstance(url, str):
+        raise SystemExit(f"desktop live gate: {label} URL is invalid")
+    filename = url.rsplit("/", 1)[-1]
+    path = direct_file(component_root / filename, label)
+    if path.stat().st_size != asset.get("downloadBytes") or digest(path) != asset.get("sha256"):
+        raise SystemExit(f"desktop live gate: delivered {label} differs from the catalog")
+    return path
+
+qualification_path = delivered_asset(qualification_asset, "VM qualification manifest")
+qualification_signature = delivered_asset(
+    signature_asset, "VM qualification signature"
+)
+builder.verify_ed25519_signature(
+    repo,
+    qualification_path,
+    qualification_signature,
+    builder.DEFAULT_CATALOG_PUBLIC_KEY,
+    "VM qualification",
+)
+qualification_manifest = builder.load_qualification_manifest(
+    qualification_path,
+    release_version=expected_version,
+    public_key_base64=builder.DEFAULT_CATALOG_PUBLIC_KEY,
+)
+candidate_binding = qualification_manifest.get("candidateBinding")
+if not isinstance(candidate_binding, dict) \
+        or candidate_binding.get("componentCandidateInventorySHA256") != inventory_digest:
+    raise SystemExit(
+        "desktop live gate: signed VM qualification binds another candidate inventory"
+    )
+
+helpers = {
+    value["componentIdentifier"]: value for value in inventory["core"]["helpers"]
+}
+runner = helpers.get("dory-hv")
+vmm = helpers.get("dory-vmm")
+if runner is None or vmm is None:
+    raise SystemExit("desktop live gate: candidate helper inventory is incomplete")
+paths = {
+    "controlHelperSHA256": direct_file(ctl_path, "dorydctl"),
+    "outerExecutableSHA256": direct_file(
+        outer_executable_path, "outer Dory executable"
+    ),
+    "runnerExecutableSHA256": direct_file(runner_path, "DoryHVRunner executable"),
+    "filesystemWorkerSHA256": direct_file(
+        filesystem_worker_path, "DoryFSWorker executable"
+    ),
+    "rendererWorkerSHA256": direct_file(
+        renderer_worker_path, "DoryRendererWorker executable"
+    ),
+    "vmmExecutableSHA256": direct_file(vmm_path, "DoryVMM executable"),
+}
+for record, key, path_value in (
+    (runner, "runnerExecutableSHA256", runner_path),
+    (vmm, "vmmExecutableSHA256", vmm_path),
+):
+    path = pathlib.Path(path_value)
+    if path.relative_to(application).as_posix() != record["path"] \
+            or path.stat().st_size != record["bytes"] \
+            or digest(path) != record["sha256"]:
+        raise SystemExit("desktop live gate: candidate helper executable binding differs")
+outer_binding = inventory["core"]["application"]["signedBundle"]
+outer_executable = paths["outerExecutableSHA256"]
+if outer_executable.stat().st_size != outer_binding["executableBytes"] \
+        or digest(outer_executable) != outer_binding["executableSHA256"]:
+    raise SystemExit("desktop live gate: outer Dory executable binding differs")
+worker_files = {
+    value["path"]: value for value in runner["signedBundle"]["files"]
+}
+for path_value, relative in (
+    (
+        filesystem_worker_path,
+        "Contents/XPCServices/DoryFSWorker.xpc/Contents/MacOS/DoryFSWorker",
+    ),
+    (
+        renderer_worker_path,
+        "Contents/XPCServices/DoryRendererWorker.xpc/Contents/MacOS/DoryRendererWorker",
+    ),
+):
+    path = pathlib.Path(path_value)
+    record = worker_files.get(relative)
+    if record is None or path.stat().st_size != record["bytes"] \
+            or digest(path) != record["sha256"]:
+        raise SystemExit("desktop live gate: candidate XPC worker binding differs")
+
+evidence = {
+    "applicationGraphSHA256": expected_application["graphSHA256"],
+    "bundleVersion": outer_binding["bundleVersion"],
+    "catalogSHA256": catalog_digest,
+    "catalogSignatureSHA256": digest(catalog_signature_path),
+    "componentCandidateInventorySHA256": inventory_digest,
+    "qualificationManifestSHA256": digest(qualification_path),
+    "qualificationSignatureSHA256": digest(qualification_signature),
+    "releaseVersion": expected_version,
+    "runnerCodeDirectoryHash": code_directory_hash(paths["runnerExecutableSHA256"]),
+}
+for key, path in paths.items():
+    evidence[key] = digest(path)
+destination.write_bytes(builder.canonical_json_bytes(evidence))
+PY
+}
+capture_release_binding "$BINDING_EVIDENCE"
+assert_release_binding_unchanged() {
+  local current="$WORKROOT/evidence/exact-release-binding.current.json"
+  capture_release_binding "$current"
+  cmp -s "$BINDING_EVIDENCE" "$current" \
+    || { echo "desktop live gate: exact signed release binding changed before launch" >&2; return 1; }
+  rm -f "$current"
+}
 ACTIVE_MACHINE=""
 ZED_RESULT=NOT-SELECTED
 
@@ -240,7 +721,7 @@ wait_for_exec_token() {
   machine="$1"
   token="$2"
   shift 2
-  for attempt in $(seq 1 60); do
+  for _attempt in $(seq 1 60); do
     if output="$(assert_exec_token "$machine" "$token" "$@" 2>/dev/null)"; then
       printf '%s\n' "$output"
       return 0
@@ -255,7 +736,7 @@ wait_for_desktop() {
   machine="$1"
   manager="$2"
   session="$3"
-  for attempt in $(seq 1 120); do
+  for _attempt in $(seq 1 120); do
     if assert_exec_token "$machine" desktop-ready sh -lc \
       "systemctl is-active '$manager' >/dev/null && pgrep -u dorygate -x '$session' >/dev/null && echo desktop-ready" \
       >/dev/null 2>&1; then
@@ -270,7 +751,7 @@ wait_for_desktop() {
 
 wait_for_running() {
   machine="$1"
-  for attempt in $(seq 1 240); do
+  for _attempt in $(seq 1 240); do
     if "$CTL" machine status "$machine" 2>/dev/null | python3 -c '
 import json, sys
 body = json.load(sys.stdin)
@@ -298,6 +779,7 @@ run_desktop() {
   expected_apps="$*"
   machine="dory-release-desktop-${distro}-$$"
   ACTIVE_MACHINE="$machine"
+  assert_release_binding_unchanged
 
   component_id="desktop-$distro"
   candidate_result="$WORKROOT/evidence/$distro-component-import.json"
@@ -306,6 +788,7 @@ run_desktop() {
   selection="$WORKROOT/evidence/$distro-component-selection.txt"
   python3 - "$candidate_result" "$COMPONENT_DIR/catalog.json" \
     "$component_id" "$DESKTOP_VERSION" > "$selection" <<'PY'
+import hashlib
 import json
 import pathlib
 import re
@@ -328,6 +811,9 @@ if not isinstance(operation_id, str) or re.fullmatch(
 digest = result["catalogDigest"]
 if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
     raise SystemExit("component import response has an invalid catalog digest")
+actual_catalog_digest = hashlib.sha256(pathlib.Path(catalog_path).read_bytes()).hexdigest()
+if digest != actual_catalog_digest:
+    raise SystemExit("component import response binds another catalog")
 installations = result["installations"]
 if not isinstance(installations, dict) or set(installations) != {"linux-desktop", component_id}:
     raise SystemExit("component import response does not contain the exact desktop dependency set")
@@ -414,6 +900,7 @@ if body.get("displayMode") != "desktop":
     raise SystemExit(f"machine create did not retain desktop mode: {body!r}")
 PY
 
+  assert_release_binding_unchanged
   "$CTL" machine start "$machine" > "$WORKROOT/evidence/$distro-start.json"
   wait_for_desktop "$machine" "$manager" "$session"
   wait_for_running "$machine"
@@ -431,6 +918,44 @@ if not isinstance(pid, int) or pid <= 0:
 print(pid)
 PY
 )"
+  launched_executable="$(python3 - "$machine_pid" <<'PY'
+import ctypes
+import os
+import sys
+
+pid = int(sys.argv[1])
+buffer = ctypes.create_string_buffer(4096)
+length = ctypes.CDLL(None).proc_pidpath(pid, buffer, len(buffer))
+if length <= 0:
+    raise SystemExit("desktop live gate: could not resolve the launched VM executable")
+print(os.path.realpath(os.fsdecode(buffer.value)))
+PY
+)"
+  [ "$launched_executable" = "$VMM" ] \
+    || { echo "desktop live gate: machine launched a different VM helper: $launched_executable" >&2; exit 1; }
+  expected_vmm_digest="$(python3 - "$BINDING_EVIDENCE" <<'PY'
+import json
+import sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    print(json.load(handle)["runnerExecutableSHA256"])
+PY
+)"
+  [ "$(shasum -a 256 "$launched_executable" | awk '{print $1}')" = \
+      "$expected_vmm_digest" ] \
+    || { echo "desktop live gate: launched VM helper digest differs from the candidate" >&2; exit 1; }
+  codesign --verify --strict "$machine_pid"
+  running_cdhash="$(codesign -d --verbose=4 "$machine_pid" 2>&1 \
+    | sed -n 's/^CDHash=//p')"
+  expected_cdhash="$(python3 - "$BINDING_EVIDENCE" <<'PY'
+import json
+import sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    print(json.load(handle)["runnerCodeDirectoryHash"])
+PY
+)"
+  [ -n "$running_cdhash" ] && [ "$running_cdhash" = "$expected_cdhash" ] \
+    || { echo "desktop live gate: running VM code identity differs from the candidate" >&2; exit 1; }
+  assert_release_binding_unchanged
   ps -ww -p "$machine_pid" -o command= | grep -F "$VMM" \
     > "$WORKROOT/evidence/$distro-vmm-command.txt"
   if [ "$REQUIRE_ACCELERATION" = 1 ]; then
@@ -1486,6 +2011,15 @@ fi
   printf 'mesa_virgl_desktop=%s\n' "$MESA_VIRGL_DESKTOP_RESULT"
   printf 'renderer_release_signature=%s\n' "$RENDERER_RELEASE_SIGNATURE_RESULT"
   printf 'acceleration_required=%s\n' "$REQUIRE_ACCELERATION"
+  python3 - "$BINDING_EVIDENCE" <<'PY'
+import json
+import sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    binding = json.load(handle)
+for key in sorted(binding):
+    print(f"release_binding_{key}={binding[key]}")
+PY
+  printf 'exact_release_binding=PASS\n'
   printf 'managed_desktop_baseline=PASS\n'
   printf 'snapshot_restore_exact_bytes=PASS\n'
   printf 'graceful_shutdown=PASS\n'

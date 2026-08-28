@@ -448,7 +448,8 @@ class Doctor:
         self.run_id = f"{int(time.time())}-{os.getpid()}"
         self.label = f"{RUN_LABEL_KEY}={self.run_id}"
         self.results: list[CheckResult] = []
-        self.created_containers: list[str] = []
+        self.created_containers: set[str] = set()
+        self.probe_container_sequence = 0
 
     def add(
         self,
@@ -507,6 +508,87 @@ class Doctor:
             capture_output=True,
             timeout=timeout or max(self.timeout, 20),
         )
+
+    def register_probe_container(self, purpose: str) -> str:
+        """Reserve one run-scoped name before asking Docker to create the probe."""
+        self.probe_container_sequence += 1
+        role = slugify(purpose)[:32] or "probe"
+        name = f"dory-doctor-{role}-{self.run_id}-{self.probe_container_sequence}"
+        self.created_containers.add(name)
+        return name
+
+    def docker_run_probe(
+        self,
+        purpose: str,
+        args: list[str],
+        timeout: float,
+    ) -> subprocess.CompletedProcess[str]:
+        """Run an ephemeral probe whose residue remains attributable after client failure.
+
+        `docker run --rm` does not remove a container that is still in CREATED when the Docker
+        client times out or is cancelled. Name and register the container before the create request,
+        then make an immediate ownership-checked cleanup attempt on every exceptional exit. The
+        enclosing `run_all` finalizer retries the same exact names if the daemon was temporarily
+        unavailable during that first attempt.
+        """
+        name = self.register_probe_container(purpose)
+        command = [
+            "run",
+            "--name",
+            name,
+            "--rm",
+            "--label",
+            self.label,
+            *args,
+        ]
+        try:
+            result = self.docker(command, timeout=timeout)
+        except BaseException:
+            self.cleanup_containers([name])
+            raise
+        if result.returncode != 0:
+            self.cleanup_containers([name])
+        return result
+
+    def cleanup_containers(self, names: list[str] | set[str]) -> None:
+        """Remove only exact registered containers carrying this doctor's ownership label."""
+        candidates = sorted(set(names).intersection(self.created_containers))
+        if not candidates or not docker_bin():
+            return
+        try:
+            inspected = self.docker(
+                ["inspect", "--type", "container", *candidates],
+                timeout=10,
+            )
+            # Docker can return valid records for found names while also returning non-zero because
+            # another requested name was already removed by --rm. Parse the records, not the status.
+            records = json.loads(inspected.stdout or "[]")
+        except Exception:
+            return
+        if not isinstance(records, list):
+            return
+        expected_names = set(candidates)
+        owned_ids: list[str] = []
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            name = str(record.get("Name") or "").removeprefix("/")
+            config = record.get("Config")
+            labels = (config.get("Labels") or {}) if isinstance(config, dict) else {}
+            container_id = str(record.get("Id") or record.get("ID") or "").lower()
+            if (
+                name in expected_names
+                and isinstance(labels, dict)
+                and labels.get(RUN_LABEL_KEY) == self.run_id
+                and re.fullmatch(r"[0-9a-f]{64}", container_id)
+            ):
+                owned_ids.append(container_id)
+        if not owned_ids:
+            return
+        try:
+            self.docker(["rm", "-f", *sorted(set(owned_ids))], timeout=20)
+        except Exception:
+            pass
 
     def api(self, method: str, path: str, body: bytes | None = None) -> tuple[int, dict[str, str], bytes]:
         return unix_http(self.sock, method, path, body=body, timeout=self.timeout)
@@ -836,13 +918,10 @@ class Doctor:
                 "nslookup \"$1\" 2>/dev/null | "
                 "awk '/^Address[[:space:]]*[0-9]*:/ {print $NF}' | tail -n 8 > /work/dns.txt"
             )
-            result = self.docker(
+            result = self.docker_run_probe(
+                f"dns-{slug}",
                 [
-                    "run",
-                    "--rm",
                     "--pull=missing",
-                    "--label",
-                    self.label,
                     "-v",
                     f"{tmp}:/work",
                     DOCKER_IMAGE,
@@ -1081,13 +1160,10 @@ class Doctor:
                 "printf container-ok > /work/container.txt; "
                 ": > /work/truncate.txt"
             )
-            result = self.docker(
+            result = self.docker_run_probe(
+                "mount-read-write",
                 [
-                    "run",
-                    "--rm",
                     "--pull=missing",
-                    "--label",
-                    self.label,
                     "-v",
                     f"{root}:/work",
                     DOCKER_IMAGE,
@@ -1120,13 +1196,10 @@ class Doctor:
                     "Bind mount changes were not visible on host",
                     f"container_file={ok} truncated={truncated}",
                 )
-            link_result = self.docker(
+            link_result = self.docker_run_probe(
+                "mount-symlink",
                 [
-                    "run",
-                    "--rm",
                     "--pull=missing",
-                    "--label",
-                    self.label,
                     "-v",
                     f"{root}:/work",
                     DOCKER_IMAGE,
@@ -1174,8 +1247,9 @@ class Doctor:
                 "if flock -nx /work/lock true; then echo LOCK_NOT_HONORED; else echo LOCK_HONORED; fi; "
                 "wait"
             )
-            result = self.docker(
-                ["run", "--rm", "--pull=missing", "--label", self.label, "-v", f"{root}:/work", DOCKER_IMAGE,
+            result = self.docker_run_probe(
+                "mount-lock",
+                ["--pull=missing", "-v", f"{root}:/work", DOCKER_IMAGE,
                  "timeout", "12", "sh", "-c", script],
                 timeout=45,
             )
@@ -1221,7 +1295,7 @@ class Doctor:
             watch_file = root / "watch.txt"
             watch_file.write_text("initial\n", encoding="utf-8")
             name = f"dory-doctor-watch-{self.run_id}"
-            self.created_containers.append(name)
+            self.created_containers.add(name)
             command = (
                 "for i in $(seq 1 80); do "
                 "test \"$(cat /work/watch.txt 2>/dev/null || true)\" = changed && exit 0; "
@@ -1257,6 +1331,9 @@ class Doctor:
             except subprocess.TimeoutExpired:
                 proc.kill()
                 stdout, stderr = proc.communicate()
+                self.cleanup_containers([name])
+            if proc.returncode != 0:
+                self.cleanup_containers([name])
             if proc.returncode == 0:
                 self.add("mount.watch", "pass", "mount.watch_visible", "Host edits are visible in mounted container", "polling visibility probe passed")
             else:
@@ -1273,8 +1350,9 @@ class Doctor:
         if not self.active:
             self.add("vm.clock", "skip", "vm.active_probe_skipped", "VM clock probe skipped", "Run `dory doctor --active` to compare guest and host clocks.")
             return
-        result = self.docker(
-            ["run", "--rm", "--pull=missing", "--label", self.label, DOCKER_IMAGE, "date", "+%s"],
+        result = self.docker_run_probe(
+            "clock",
+            ["--pull=missing", DOCKER_IMAGE, "date", "+%s"],
             timeout=60,
         )
         if result.returncode != 0:
@@ -1434,7 +1512,11 @@ class Doctor:
             self.add("disk.guest", "skip", "socket.unreachable", "Guest disk probe skipped", "Docker API is not reachable.")
             return
         try:
-            run = self.docker(["run", "--rm", "--pull=missing", "--label", self.label, DOCKER_IMAGE, "df", "-Pk", "/"], timeout=90)
+            run = self.docker_run_probe(
+                "guest-disk",
+                ["--pull=missing", DOCKER_IMAGE, "df", "-Pk", "/"],
+                timeout=90,
+            )
         except Exception as exc:
             self.add("disk.guest", "warn", "disk.guest_probe_failed", "Guest disk probe failed", str(exc))
             return
@@ -1566,8 +1648,8 @@ class Doctor:
             self.add("network.http_probe", "skip", "socket.unreachable", "HTTP probe skipped", "Docker API is not reachable.")
             return None, None
         name = f"dory-doctor-http-{self.run_id}"
-        self.created_containers.append(name)
-        _ = self.docker(["rm", "-f", name], timeout=15)
+        self.created_containers.add(name)
+        self.cleanup_containers([name])
         host_port = free_tcp_port()
         command = (
             "while true; do "
@@ -1594,6 +1676,7 @@ class Doctor:
             timeout=90,
         )
         if run.returncode != 0:
+            self.cleanup_containers([name])
             self.add(
                 "network.http_probe",
                 "fail",
@@ -1617,13 +1700,7 @@ class Doctor:
         return name, port
 
     def cleanup(self) -> None:
-        if not self.created_containers or not docker_bin():
-            return
-        names = sorted(set(self.created_containers))
-        try:
-            self.docker(["rm", "-f", *names], timeout=20)
-        except Exception:
-            pass
+        self.cleanup_containers(self.created_containers)
 
 
 def unix_http(sock: Path, method: str, path: str, body: bytes | None = None, timeout: float = 5.0) -> tuple[int, dict[str, str], bytes]:

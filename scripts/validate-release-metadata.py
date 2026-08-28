@@ -8,6 +8,7 @@ import json
 import os
 import pathlib
 import re
+import stat
 import subprocess
 import sys
 import urllib.parse
@@ -182,7 +183,7 @@ def validate_catalog(
         "VM qualification path mismatch",
     )
     nonempty_string(qualification["manifestIdentity"], "VM qualification identity")
-    require(qualification["manifestFormatVersion"] == 1, "VM qualification schema mismatch")
+    require(qualification["manifestFormatVersion"] == 2, "VM qualification schema mismatch")
     decoded_key = base64.b64decode(public_key, validate=True)
     require(len(decoded_key) == 32, "component catalog public key is invalid")
     require(
@@ -252,10 +253,22 @@ def validate_catalog(
                 or (not asset["executable"] and "codeRequirement" not in asset),
                 "component asset code requirement does not match executable state",
             )
-            positive_integer(asset["downloadBytes"], "component asset downloadBytes")
-            positive_integer(asset["installedBytes"], "component asset installedBytes")
-            digest_value(asset["sha256"], "component asset digest")
-            digest_value(asset["installedSHA256"], "component installed digest")
+            download_bytes = positive_integer(
+                asset["downloadBytes"], "component asset downloadBytes"
+            )
+            installed_bytes = positive_integer(
+                asset["installedBytes"], "component asset installedBytes"
+            )
+            download_digest = digest_value(asset["sha256"], "component asset digest")
+            installed_digest = digest_value(
+                asset["installedSHA256"], "component installed digest"
+            )
+            if asset["compression"] == "none":
+                require(
+                    download_bytes == installed_bytes
+                    and download_digest == installed_digest,
+                    "uncompressed component asset binding is inconsistent",
+                )
             parsed = urllib.parse.urlparse(nonempty_string(asset["url"], "component asset URL"))
             require(
                 parsed.scheme == "https"
@@ -272,6 +285,23 @@ def validate_catalog(
                 "component asset name is invalid",
             )
             require(artifact_name not in artifact_names, "component asset name is duplicated")
+            artifact_path = component_dir / artifact_name
+            try:
+                artifact_info = artifact_path.lstat()
+            except FileNotFoundError:
+                raise ValueError(f"component asset file is missing: {artifact_name}") from None
+            require(
+                stat.S_ISREG(artifact_info.st_mode) and artifact_info.st_size > 0,
+                f"component asset file is indirect or empty: {artifact_name}",
+            )
+            require(
+                artifact_info.st_size == download_bytes,
+                f"component asset byte count differs from catalog: {artifact_name}",
+            )
+            require(
+                sha256_file(artifact_path) == download_digest,
+                f"component asset digest differs from catalog: {artifact_name}",
+            )
             artifact_names.add(artifact_name)
             component_assets[(component_id, str(installed_path))] = asset
     require(len(set(component_ids)) == len(component_ids), "component IDs are duplicated")

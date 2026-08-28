@@ -82,6 +82,116 @@ export DORY_LAUNCHCTL_BIN="$TMP_HOME/fake-system-bin/launchctl"
 python3 -m py_compile scripts/dory-doctor
 python3 -m py_compile scripts/dory-idle-proxy
 
+# Every active doctor container is named and labelled before create, and exceptional exits remove
+# only the exact container whose label proves ownership by this doctor run.
+python3 - <<'PY'
+import ast
+import importlib.machinery
+import importlib.util
+import json
+import pathlib
+import subprocess
+import sys
+
+loader = importlib.machinery.SourceFileLoader("dd_probe_cleanup", "scripts/dory-doctor")
+dd = importlib.util.module_from_spec(importlib.util.spec_from_loader("dd_probe_cleanup", loader))
+sys.modules["dd_probe_cleanup"] = dd
+loader.exec_module(dd)
+
+
+class Completed:
+    def __init__(self, returncode=0, stdout="", stderr=""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+class FakeDoctor(dd.Doctor):
+    def __init__(self, run_failure=None):
+        super().__init__(active=True)
+        self.run_failure = run_failure
+        self.commands = []
+        self.records = {}
+
+    def docker(self, args, timeout=None):
+        self.commands.append((list(args), timeout))
+        if args[0] == "run":
+            name = args[args.index("--name") + 1]
+            assert args[args.index("--label") + 1] == self.label, args
+            self.records[name] = {
+                "Id": ("a" if self.run_failure != "cancel" else "b") * 64,
+                "Name": f"/{name}",
+                "Config": {"Labels": {dd.RUN_LABEL_KEY: self.run_id}},
+            }
+            if self.run_failure == "timeout":
+                raise subprocess.TimeoutExpired(args, timeout)
+            if self.run_failure == "cancel":
+                raise KeyboardInterrupt()
+            if self.run_failure == "error":
+                return Completed(returncode=125, stderr="create failed")
+            return Completed()
+        if args[0] == "inspect":
+            records = [self.records[name] for name in args[3:] if name in self.records]
+            return Completed(stdout=json.dumps(records))
+        if args[0] == "rm":
+            return Completed()
+        raise AssertionError(args)
+
+
+for failure, expected_id in (("timeout", "a" * 64), ("cancel", "b" * 64), ("error", "a" * 64)):
+    doctor = FakeDoctor(run_failure=failure)
+    try:
+        result = doctor.docker_run_probe("dns-registry", ["alpine:latest", "true"], timeout=1)
+        assert failure == "error" and result.returncode == 125, (failure, result.returncode)
+    except subprocess.TimeoutExpired:
+        assert failure == "timeout", failure
+    except KeyboardInterrupt:
+        assert failure == "cancel", failure
+    run = next(args for args, _ in doctor.commands if args[0] == "run")
+    name = run[run.index("--name") + 1]
+    assert name in doctor.created_containers
+    assert run[:2] == ["run", "--name"] and "--rm" in run and "--label" in run, run
+    removes = [args for args, _ in doctor.commands if args[:2] == ["rm", "-f"]]
+    assert removes == [["rm", "-f", expected_id]], removes
+
+doctor = FakeDoctor()
+owned = doctor.register_probe_container("owned")
+collision = doctor.register_probe_container("user-collision")
+unregistered = "dory-doctor-not-registered"
+doctor.records = {
+    owned: {
+        "Id": "c" * 64,
+        "Name": f"/{owned}",
+        "Config": {"Labels": {dd.RUN_LABEL_KEY: doctor.run_id}},
+    },
+    collision: {
+        "Id": "d" * 64,
+        "Name": f"/{collision}",
+        "Config": {"Labels": {"owner": "user"}},
+    },
+    unregistered: {
+        "Id": "e" * 64,
+        "Name": f"/{unregistered}",
+        "Config": {"Labels": {dd.RUN_LABEL_KEY: doctor.run_id}},
+    },
+}
+doctor.cleanup_containers([owned, collision, unregistered])
+inspect = next(args for args, _ in doctor.commands if args[0] == "inspect")
+assert unregistered not in inspect, inspect
+remove = next(args for args, _ in doctor.commands if args[:2] == ["rm", "-f"])
+assert remove == ["rm", "-f", "c" * 64], remove
+
+source = pathlib.Path("scripts/dory-doctor").read_text(encoding="utf-8")
+for node in ast.walk(ast.parse(source)):
+    if not isinstance(node, ast.List):
+        continue
+    values = [item.value for item in node.elts if isinstance(item, ast.Constant)]
+    if values and values[0] == "run":
+        assert "--name" in values and "--label" in values, values
+        if "--rm" in values:
+            assert values.index("--name") < values.index("--rm"), values
+PY
+
 # The doctor helper deliberately follows PATH for python3. Ensure its registry probe supplements
 # interpreter-specific OpenSSL roots with macOS's CA bundle so Python.org installs behave like the
 # Apple and Homebrew interpreters.

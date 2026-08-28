@@ -5,7 +5,7 @@
 # GUI re-bumps it). Override the toolchain explicitly with
 # DEVELOPER_DIR=/path/to/Xcode.app/Contents/Developer.
 set -u
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 1
 
 usage() {
   cat <<'EOF'
@@ -22,7 +22,7 @@ Useful environment controls:
                                   Select one unambiguous Xcode signing mode (NO by default)
   DORY_BUILD_DEBUG_HELPERS=0      Skip gvproxy and local Linux asset bundling (the runner stays embedded)
   DORY_BUILD_DORYD_HELPERS=0      Skip doryd/dory-vmm helper bundling
-  DORY_DESKTOP_BUNDLE_MODE=MODE   none (default) or all (Debian, Ubuntu, and Kali)
+  DORY_DESKTOP_BUNDLE_MODE=MODE   none (default), one distro, or all
   DORY_REQUIRE_CORE_ASSETS=0|1    Require a bootable bundled Docker Core (defaults to 1 for Release)
   DORY_ALLOW_MISSING_GVPROXY=1    Permit an intentionally incomplete development bundle
 EOF
@@ -51,11 +51,11 @@ esac
 
 DESKTOP_BUNDLE_MODE="${DORY_DESKTOP_BUNDLE_MODE:-none}"
 case "$DESKTOP_BUNDLE_MODE" in
-  none|all) ;;
-  *) echo "error: DORY_DESKTOP_BUNDLE_MODE must be 'none' or 'all'" >&2; exit 64 ;;
+  none|debian|ubuntu|kali|all) ;;
+  *) echo "error: DORY_DESKTOP_BUNDLE_MODE must be 'none', 'debian', 'ubuntu', 'kali', or 'all'" >&2; exit 64 ;;
 esac
-if [ "$DESKTOP_BUNDLE_MODE" = all ] && [ "${DORY_BUILD_DEBUG_HELPERS:-1}" != 1 ]; then
-  echo "error: the all-inclusive build needs DORY_BUILD_DEBUG_HELPERS=1 to compress desktop assets" >&2
+if [ "$DESKTOP_BUNDLE_MODE" != none ] && [ "${DORY_BUILD_DEBUG_HELPERS:-1}" != 1 ]; then
+  echo "error: a desktop-enabled build needs DORY_BUILD_DEBUG_HELPERS=1 to compress desktop assets" >&2
   exit 64
 fi
 
@@ -144,7 +144,8 @@ esac
 xcodebuild -project Dory.xcodeproj -scheme Dory -destination 'platform=macOS' \
   -configuration "$XCODE_CONFIGURATION" build \
   CODE_SIGNING_ALLOWED="$XCODE_CODE_SIGNING_ALLOWED" "$@" > "$LOG" 2>&1
-status=$?
+xcodebuild_status=$?
+status=$xcodebuild_status
 
 # Xcode 27 intermittently re-serializes the project to objectVersion 110 (breaks stable Xcode + CI);
 # pin it back to 77. Only rewrites that one line, so intended pbxproj edits are preserved.
@@ -163,6 +164,78 @@ fetch_url() {
     --connect-timeout "${DORY_CURL_CONNECT_TIMEOUT:-15}" \
     --max-time "${DORY_CURL_MAX_TIME:-240}" \
     "$url" -o "$out"
+}
+
+verify_hardened_runtime_signature() {
+  local payload="$1" label="$2" details
+  codesign --verify --strict "$payload" >/dev/null \
+    || { echo "error: $label signature verification failed" >&2; return 1; }
+  details="$(codesign -d --verbose=4 "$payload" 2>&1)" || return 1
+  printf '%s\n' "$details" | grep -Eq '^CodeDirectory .*flags=.*\([^)]*runtime[^)]*\)' \
+    || { echo "error: $label is not hardened-runtime signed" >&2; return 1; }
+}
+
+sign_hardened_payload() {
+  local payload="$1" entitlements="$2" identifier="$3"
+  if [ "$BUNDLE_SIGN_IDENTITY" = - ]; then
+    # Keep the test/development requirement stable. Without an explicit requirement, repeated
+    # ad-hoc signing can replace the identifier requirement with a cdhash requirement, which is
+    # neither portable nor suitable for immutable component evidence.
+    codesign --force --options runtime \
+      --requirements "=designated => identifier \"$identifier\"" \
+      --entitlements "$entitlements" -s - "$payload" >/dev/null
+  else
+    codesign --force --options runtime \
+      --entitlements "$entitlements" -s "$BUNDLE_SIGN_IDENTITY" "$payload" >/dev/null
+  fi
+}
+
+verify_exact_signed_entitlements() {
+  local payload="$1" expected="$2" label="$3" evidence
+  evidence="$(mktemp "${TMPDIR:-/tmp}/dory-entitlements.XXXXXX")" || return 1
+  if ! codesign -d --entitlements - --xml "$payload" > "$evidence" 2>/dev/null; then
+    rm -f "$evidence"
+    echo "error: could not read $label entitlements" >&2
+    return 1
+  fi
+  if ! python3 - "$expected" "$evidence" "$label" <<'PY'
+import plistlib
+import sys
+
+expected_path, actual_path, label = sys.argv[1:]
+with open(expected_path, "rb") as handle:
+    expected = plistlib.load(handle)
+with open(actual_path, "rb") as handle:
+    actual = plistlib.load(handle)
+policies = {
+    "DoryHVRunner.app": {
+        "com.apple.security.device.audio-input": True,
+        "com.apple.security.device.camera": True,
+        "com.apple.security.hypervisor": True,
+    },
+    "DoryFSWorker.xpc": {},
+    "DoryRendererWorker.xpc": {
+        "com.apple.security.app-sandbox": True,
+        "com.apple.security.application-groups": ["864H636QW4.dory-renderer"],
+    },
+    "DoryVMM.app": {
+        "com.apple.security.device.audio-input": True,
+        "com.apple.security.virtualization": True,
+    },
+    "flat dory-vmm": {
+        "com.apple.security.device.audio-input": True,
+        "com.apple.security.virtualization": True,
+    },
+}
+policy = policies.get(label)
+if policy is None or expected != policy or actual != policy:
+    raise SystemExit(f"error: {label} entitlements are not exact")
+PY
+  then
+    rm -f "$evidence"
+    return 1
+  fi
+  rm -f "$evidence"
 }
 
 debug_engine_rootfs_source() {
@@ -244,9 +317,13 @@ verify_bundled_docker_core() {
 }
 
 bundle_debug_desktop_assets() {
-  local app="$1" kernel kernel_out distro rootfs rootfs_out metadata
-  [ "$DESKTOP_BUNDLE_MODE" = all ] || return 0
+  local app="$1" kernel kernel_out distro distros rootfs rootfs_out metadata
+  [ "$DESKTOP_BUNDLE_MODE" != none ] || return 0
   [ "$(uname -m)" = "arm64" ] || return 0
+  case "$DESKTOP_BUNDLE_MODE" in
+    all) distros="debian ubuntu kali" ;;
+    *) distros="$DESKTOP_BUNDLE_MODE" ;;
+  esac
   kernel="guest/out/Image-desktop"
   [ -f "$kernel" ] || { echo "error: all-inclusive build is missing $kernel" >&2; return 1; }
   DORY_KERNEL_PROFILE=accelerated-desktop guest/kernel/verify-build.sh arm64 >/dev/null || return 1
@@ -254,7 +331,7 @@ bundle_debug_desktop_assets() {
   if [ ! -f "$kernel_out" ] || [ "$kernel" -nt "$kernel_out" ]; then
     /usr/bin/compression_tool -encode -a lzfse -i "$kernel" -o "$kernel_out" || return 1
   fi
-  for distro in debian ubuntu kali; do
+  for distro in $distros; do
     rootfs="guest/out/dory-desktop-$distro-rootfs-arm64.ext4"
     [ -f "$rootfs" ] || { echo "error: all-inclusive build is missing $rootfs" >&2; return 1; }
     guest/desktop/verify-build.sh arm64 "$distro" >/dev/null || return 1
@@ -268,24 +345,41 @@ bundle_debug_desktop_assets() {
       [ -s "$metadata" ] && install -m0644 "$metadata" "$app/Contents/Resources/"
     done
   done
-  for metadata in guest/out/kernel-build-arm64-desktop.stamp; do
-    [ -s "$metadata" ] && install -m0644 "$metadata" "$app/Contents/Resources/"
-  done
+  metadata="guest/out/kernel-build-arm64-desktop.stamp"
+  [ -s "$metadata" ] && install -m0644 "$metadata" "$app/Contents/Resources/"
 }
 
 write_debug_bundle_capabilities() {
-  local app included
+  local app component included distros
   included=false
-  [ "$DESKTOP_BUNDLE_MODE" = all ] && included=true
+  distros=""
+  if [ "$DESKTOP_BUNDLE_MODE" != none ]; then
+    included=true
+    case "$DESKTOP_BUNDLE_MODE" in
+      all) distros="debian ubuntu kali" ;;
+      *) distros="$DESKTOP_BUNDLE_MODE" ;;
+    esac
+  fi
   for app in "$HOME"/Library/Developer/Xcode/DerivedData/Dory-*/Build/Products/"$XCODE_CONFIGURATION"/Dory.app; do
     [ -f "$app/Contents/Info.plist" ] || continue
     /usr/libexec/PlistBuddy -c 'Delete :DoryIncludesDesktopLinux' "$app/Contents/Info.plist" >/dev/null 2>&1 || true
+    /usr/libexec/PlistBuddy -c 'Delete :DoryBundledComponents' "$app/Contents/Info.plist" >/dev/null 2>&1 || true
     /usr/libexec/PlistBuddy -c "Add :DoryIncludesDesktopLinux bool $included" "$app/Contents/Info.plist" || return 1
+    /usr/libexec/PlistBuddy -c 'Add :DoryBundledComponents array' "$app/Contents/Info.plist" || return 1
+    for component in docker-core kubernetes linux-machines; do
+      /usr/libexec/PlistBuddy -c "Add :DoryBundledComponents: string $component" "$app/Contents/Info.plist" || return 1
+    done
+    if [ "$included" = true ]; then
+      /usr/libexec/PlistBuddy -c 'Add :DoryBundledComponents: string linux-desktop' "$app/Contents/Info.plist" || return 1
+      for component in $distros; do
+        /usr/libexec/PlistBuddy -c "Add :DoryBundledComponents: string desktop-$component" "$app/Contents/Info.plist" || return 1
+      done
+    fi
   done
 }
 
 bundle_debug_hv_helper() {
-  local app runner_app helper
+  local app runner_app helper fs_worker_app renderer_worker_app renderer_inventory
   local gvproxy_src gvproxy_version gvproxy_sha256 gvproxy_tmp
   [ "${DORY_BUILD_DEBUG_HELPERS:-1}" = "1" ] || return 0
 
@@ -337,12 +431,48 @@ bundle_debug_hv_helper() {
       || { echo "error: Xcode did not embed DoryHVRunner.app" >&2; return 1; }
     [ ! -e "$app/Contents/Helpers/dory-hv" ] \
       || { echo "error: obsolete parallel Contents/Helpers/dory-hv remains" >&2; return 1; }
-    codesign --force --options runtime \
-      --entitlements Packages/ContainerizationEngine/dory-hv.entitlements \
-      -s "$BUNDLE_SIGN_IDENTITY" "$runner_app" >/dev/null 2>&1 \
-      || codesign --force \
-        --entitlements Packages/ContainerizationEngine/dory-hv.entitlements \
-        -s "$BUNDLE_SIGN_IDENTITY" "$runner_app" >/dev/null
+    fs_worker_app="$runner_app/Contents/XPCServices/DoryFSWorker.xpc"
+    renderer_worker_app="$runner_app/Contents/XPCServices/DoryRendererWorker.xpc"
+    [ -d "$fs_worker_app" ] && [ ! -L "$fs_worker_app" ] \
+      && [ -x "$fs_worker_app/Contents/MacOS/DoryFSWorker" ] \
+      || { echo "error: Xcode did not embed DoryFSWorker.xpc" >&2; return 1; }
+    [ -d "$renderer_worker_app" ] && [ ! -L "$renderer_worker_app" ] \
+      && [ -x "$renderer_worker_app/Contents/MacOS/DoryRendererWorker" ] \
+      || { echo "error: Xcode did not embed DoryRendererWorker.xpc" >&2; return 1; }
+    renderer_inventory="$runner_app/Contents/Resources/renderer-production-inventory.json"
+    if [ -e "$renderer_inventory" ] || [ -L "$renderer_inventory" ]; then
+      [ -f "$renderer_inventory" ] && [ ! -L "$renderer_inventory" ] \
+        || { echo "error: production renderer inventory is not a direct file" >&2; return 1; }
+      # The production inventory and qualification receipt bind the exact, timestamped worker
+      # bytes emitted by Xcode's renderer packaging phase. Re-signing any member of that nested
+      # graph here mutates its CMS bytes after qualification even when its CDHash is unchanged.
+      # Preserve the sealed graph and prove its authority below instead.
+      echo "note: preserving Xcode-sealed production DoryHVRunner graph" >&2
+    else
+      sign_hardened_payload "$fs_worker_app" \
+        Packages/ContainerizationEngine/DoryFSWorker.entitlements \
+        com.pythonxi.Dory.HVRunner.FSWorker || return 1
+      sign_hardened_payload "$renderer_worker_app" \
+        Packages/ContainerizationEngine/DoryRendererWorker.entitlements \
+        com.pythonxi.Dory.HVRunner.RendererWorker || return 1
+      sign_hardened_payload "$runner_app" \
+        Packages/ContainerizationEngine/dory-hv.entitlements \
+        com.pythonxi.Dory.HVRunner || return 1
+    fi
+    verify_hardened_runtime_signature "$fs_worker_app" DoryFSWorker.xpc || return 1
+    verify_exact_signed_entitlements "$fs_worker_app" \
+      Packages/ContainerizationEngine/DoryFSWorker.entitlements DoryFSWorker.xpc \
+      || return 1
+    verify_hardened_runtime_signature "$renderer_worker_app" DoryRendererWorker.xpc \
+      || return 1
+    verify_exact_signed_entitlements "$renderer_worker_app" \
+      Packages/ContainerizationEngine/DoryRendererWorker.entitlements \
+      DoryRendererWorker.xpc || return 1
+    verify_hardened_runtime_signature "$runner_app" DoryHVRunner.app || return 1
+    verify_exact_signed_entitlements "$runner_app" \
+      Packages/ContainerizationEngine/dory-hv.entitlements DoryHVRunner.app || return 1
+    codesign --verify --deep --strict "$runner_app" >/dev/null \
+      || { echo "error: DoryHVRunner.app signed graph is invalid" >&2; return 1; }
     xattr -cr "$runner_app" 2>/dev/null || true
     if [ -n "$gvproxy_src" ] && [ -x "$gvproxy_src" ]; then
       cp "$gvproxy_src" "$app/Contents/Helpers/gvproxy"
@@ -447,11 +577,8 @@ bundle_doryd_swiftpm_helpers() {
   done
   bin_path="$(swift build --package-path dory-core-swift -c "$configuration" --show-bin-path 2>/dev/null)"
 
-  entitlements="$(mktemp "${TMPDIR:-/tmp}/dory-vmm-entitlements.XXXXXX")" || return 1
-  cp dory-core-swift/Sources/dory-vmm/dory-vmm.entitlements "$entitlements" || return 1
-  /usr/libexec/PlistBuddy \
-    -c 'Add :com.apple.security.cs.disable-library-validation bool true' \
-    "$entitlements" >/dev/null || return 1
+  entitlements="dory-core-swift/Sources/dory-vmm/dory-vmm.entitlements"
+  [ -f "$entitlements" ] || { echo "error: dory-vmm entitlements are missing" >&2; return 1; }
 
   for app in "$HOME"/Library/Developer/Xcode/DerivedData/Dory-*/Build/Products/"$XCODE_CONFIGURATION"/Dory.app; do
     [ -d "$app" ] || continue
@@ -461,8 +588,10 @@ bundle_doryd_swiftpm_helpers() {
       helper="$app/Contents/Helpers/$product"
       cp "$bin_path/$product" "$helper"
       if [ "$product" = "dory-vmm" ]; then
-        codesign --force --options runtime --entitlements "$entitlements" -s "$BUNDLE_SIGN_IDENTITY" "$helper" >/dev/null 2>&1 \
-          || codesign --force --entitlements "$entitlements" -s "$BUNDLE_SIGN_IDENTITY" "$helper" >/dev/null
+        sign_hardened_payload "$helper" "$entitlements" dory-vmm || return 1
+        verify_hardened_runtime_signature "$helper" "flat dory-vmm" || return 1
+        verify_exact_signed_entitlements "$helper" "$entitlements" "flat dory-vmm" \
+          || return 1
       else
         codesign --force -s "$BUNDLE_SIGN_IDENTITY" "$helper" >/dev/null
       fi
@@ -473,15 +602,15 @@ bundle_doryd_swiftpm_helpers() {
     mkdir -p "$vmm_app/Contents/MacOS"
     install -m 0755 "$bin_path/dory-vmm" "$vmm_executable"
     install -m 0644 dory-core-swift/Sources/dory-vmm/Info.plist "$vmm_app/Contents/Info.plist"
-    codesign --force --options runtime --entitlements "$entitlements" -s "$BUNDLE_SIGN_IDENTITY" "$vmm_app" >/dev/null 2>&1 \
-      || codesign --force --entitlements "$entitlements" -s "$BUNDLE_SIGN_IDENTITY" "$vmm_app" >/dev/null
+    sign_hardened_payload "$vmm_app" "$entitlements" dory-vmm || return 1
+    verify_hardened_runtime_signature "$vmm_app" DoryVMM.app || return 1
+    verify_exact_signed_entitlements "$vmm_app" "$entitlements" DoryVMM.app || return 1
     write_doryd_launch_agent "$app"
     mkdir -p "$app/Contents/Library/LaunchDaemons"
     cp "Config/dev.dory.network-helper.plist" \
       "$app/Contents/Library/LaunchDaemons/dev.dory.network-helper.plist"
     plutil -lint "$app/Contents/Library/LaunchDaemons/dev.dory.network-helper.plist" >/dev/null
   done
-  rm -f "$entitlements"
 }
 
 bundle_debug_transfer_helper() {
@@ -842,5 +971,6 @@ if [ "$status" -eq 0 ]; then
 fi
 
 grep -E '(error:|warning:.*\.swift|BUILD SUCCEEDED|BUILD FAILED)' "$LOG" | tail -60 || true
-echo "xcodebuild_exit=$status"
+echo "xcodebuild_exit=$xcodebuild_status"
+echo "build_exit=$status"
 exit "$status"

@@ -37,8 +37,49 @@ require_source 'repairDockerDaemon' dory-core-swift/Sources/DorydKit/DockerTier.
   "dockerd-only repair is missing"
 require_source 'guestResourceSnapshot' dory-core-swift/Sources/DorydKit/DockerTier.swift \
   "guest memory/disk composition probe is missing"
-require_source 'host-share-resources.json' Packages/ContainerizationEngine/Sources/dory-hv/EngineMode.swift \
-  "host-share watcher/backpressure snapshot is missing"
+require_source 'dev.dory.guest-resources' dory-core-swift/Sources/DorydKit/DockerTier.swift \
+  "guest memory/disk response is not versioned"
+require_source 'decodeGuestResourceSnapshot' dory-core-swift/Sources/DorydKit/DockerTier.swift \
+  "guest memory/disk response lacks an exact bounded decoder"
+require_source 'file-service-resources.json' Packages/ContainerizationEngine/Sources/dory-hv/FileServiceResourcePublisher.swift \
+  "bounded file-service resource snapshot is missing"
+require_source 'dev.dory.file-service.resources' Packages/ContainerizationEngine/Sources/dory-hv/FileServiceResourcePublisher.swift \
+  "versioned file-service resource schema is missing"
+require_source 'fileServiceResourceSnapshot' dory-core-swift/Sources/DorydKit/DockerTier.swift \
+  "bounded file-service resource decoder is missing"
+require_source 'exactJSONKeys' dory-core-swift/Sources/DorydKit/DockerTier.swift \
+  "file-service decoder no longer rejects schema expansion"
+require_source 'observationActive' dory-core-swift/Sources/DorydKit/DockerTier.swift \
+  "file-service decoder no longer requires a live observation stream"
+require_source 'kFSEventStreamCreateFlagIgnoreSelf' Packages/ContainerizationEngine/Sources/DoryFSWorkerServiceCore/DoryFSWorkerHostCoherence.swift \
+  "worker-local guest-write self suppression is missing"
+require_source 'kFSEventStreamCreateFlagFileEvents' Packages/ContainerizationEngine/Sources/DoryFSWorkerServiceCore/DoryFSWorkerHostCoherence.swift \
+  "exact host child event observation is missing"
+require_source 'FSEventsGetCurrentEventId' Packages/ContainerizationEngine/Sources/DoryFSWorkerServiceCore/DoryFSWorkerHostCoherence.swift \
+  "preactivation event checkpoint is missing"
+require_source 'kFSEventStreamEventFlagHistoryDone' Packages/ContainerizationEngine/Sources/DoryFSWorkerServiceCore/DoryFSWorkerHostCoherence.swift \
+  "observation activation no longer waits for FSEvents catch-up"
+require_source 'activateCoherence' Packages/ContainerizationEngine/Sources/DoryFSWorkerContracts/DoryFSWorkerXPC.swift \
+  "post-handler coherence activation handshake is missing"
+require_source 'DoryFSWorkerCoherenceAcknowledgement' Packages/ContainerizationEngine/Sources/DoryFSWorkerContracts/DoryFSWorkerCoherence.swift \
+  "exact retained-batch acknowledgement contract is missing"
+require_source 'guard coherenceExchange != nil' Packages/ContainerizationEngine/Sources/DoryFSWorkerServiceCore/DoryFSWorkerService.swift \
+  "coherence policy can be advertised without an enforcement exchange"
+require_source 'share.readOnly || configuration.genericGuest' Packages/ContainerizationEngine/Sources/dory-hv/DesktopMode.swift \
+  "generic desktop media no longer stays within invalidation-only capability"
+require_source 'resources.file_service_failed' dory-core-swift/Sources/DorydKit/HealthReporter.swift \
+  "terminal file-service coherence loss is not reported as a failure"
+
+engine_activation_line="$(grep -nF 'try filesystemWorker.client.activateCoherence()' Packages/ContainerizationEngine/Sources/dory-hv/EngineMode.swift | head -1 | cut -d: -f1)"
+engine_guest_line="$(grep -nF 'let stop = try machineRunner.runToCompletion()' Packages/ContainerizationEngine/Sources/dory-hv/EngineMode.swift | head -1 | cut -d: -f1)"
+[ -n "$engine_activation_line" ] && [ -n "$engine_guest_line" ] \
+  && [ "$engine_activation_line" -lt "$engine_guest_line" ] \
+  || fail "engine coherence activation is not ordered before guest execution"
+desktop_activation_line="$(grep -nF 'try filesystemWorker.client.activateCoherence()' Packages/ContainerizationEngine/Sources/dory-hv/DesktopMode.swift | head -1 | cut -d: -f1)"
+desktop_guest_line="$(grep -nF 'try startMachine()' Packages/ContainerizationEngine/Sources/dory-hv/DesktopMode.swift | head -1 | cut -d: -f1)"
+[ -n "$desktop_activation_line" ] && [ -n "$desktop_guest_line" ] \
+  && [ "$desktop_activation_line" -lt "$desktop_guest_line" ] \
+  || fail "desktop coherence activation is not ordered before guest execution"
 for check in resources.processes resources.guest resources.file_service resources.trend network.resources disk.reclaimable; do
   require_source "id: \"$check\"" dory-core-swift/Sources/DorydKit/HealthReporter.swift \
     "health surface omits $check"

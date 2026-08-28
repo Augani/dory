@@ -75,7 +75,7 @@ jobs:
 
       - name: DoryHV logic tests
         working-directory: Packages/ContainerizationEngine
-        run: swift test
+        run: swift test --no-parallel
 
       - name: Build Intel helper slice
         working-directory: Packages/ContainerizationEngine

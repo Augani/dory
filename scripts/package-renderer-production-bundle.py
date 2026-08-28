@@ -99,6 +99,7 @@ MAX_PLIST_BYTES = 1024 * 1024
 MAX_JSON_BYTES = 1024 * 1024
 EXPECTED_RUNNER_ENTITLEMENTS = {
     "com.apple.security.device.audio-input": True,
+    "com.apple.security.device.camera": True,
     "com.apple.security.hypervisor": True,
 }
 RENDERER_APP_SANDBOX_GROUP = "864H636QW4.dory-renderer"

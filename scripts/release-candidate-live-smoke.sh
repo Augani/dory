@@ -21,7 +21,7 @@ STATE="$HOME/.dory"
 APP_SUPPORT="$HOME/Library/Application Support/Dory"
 PREF_DOMAIN="com.pythonxi.Dory"
 PREF_PLIST="$HOME/Library/Preferences/$PREF_DOMAIN.plist"
-LOG_ROOT="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/dory-release-live-${GITHUB_RUN_ID:-$$}-${GITHUB_RUN_ATTEMPT:-1}"
+LOG_ROOT="${DORY_RELEASE_LIVE_LOG_ROOT:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/dory-release-live-${GITHUB_RUN_ID:-$$}-${GITHUB_RUN_ATTEMPT:-1}}"
 REQUIRED_ARCH="${DORY_RELEASE_LIVE_REQUIRED_ARCH:-arm64}"
 REQUIRE_NOTARIZED="${DORY_RELEASE_LIVE_REQUIRE_NOTARIZED:-1}"
 REQUIRE_PHYSICAL_INTEL="${DORY_RELEASE_LIVE_REQUIRE_PHYSICAL_INTEL:-0}"
@@ -44,6 +44,18 @@ DESKTOP_DEBIAN_UPDATE="${DORY_RELEASE_DESKTOP_DEBIAN_UPDATE:-}"
 DESKTOP_UBUNTU_UPDATE="${DORY_RELEASE_DESKTOP_UBUNTU_UPDATE:-}"
 DESKTOP_KALI_UPDATE="${DORY_RELEASE_DESKTOP_KALI_UPDATE:-}"
 DESKTOP_VERSION="${DORY_RELEASE_DESKTOP_VERSION:-}"
+KUBECTL_COMPONENT="${DORY_RELEASE_KUBECTL_COMPONENT:-$ROOT/release-build/component-inputs/kubectl}"
+COMPONENT_INVENTORY="${DORY_RELEASE_COMPONENT_INVENTORY:-$ROOT/release-build/component-candidate/arm64/component-candidate-inventory.json}"
+# kind itself is a host-side test fixture, not a Dory component. Pin the official Darwin ARM64
+# binary so the release gate cannot silently change the cluster lifecycle around issue #78.
+KIND_VERSION="0.29.0"
+KIND_SHA256="314d8f1428842fd1ba2110fd0052a0f0b3ab5773ab1bdcdad1ff036e913310c9"
+KIND_URL="https://kind.sigs.k8s.io/dl/v$KIND_VERSION/kind-darwin-arm64"
+KIND_BINARY=""
+APP_TEAM_IDENTIFIER=""
+KUBECTL_TEAM_IDENTIFIER=""
+KUBECTL_COMPONENT_SHA256=""
+COMPONENT_INVENTORY_SHA256=""
 # Official stable ARM64 artifact published by zed-industries/zed. The physical gate downloads this
 # exact version and refuses any byte change before exposing it through the read-only guest share.
 ZED_VERSION="1.16.1"
@@ -92,6 +104,9 @@ cleanup() {
   rm -f "$PREF_PLIST"
   if [ -n "$ZED_ARCHIVE" ]; then
     rm -f "$ZED_ARCHIVE"
+  fi
+  if [ -n "$KIND_BINARY" ]; then
+    rm -f "$KIND_BINARY"
   fi
   /usr/bin/killall -u "$(/usr/bin/id -un)" cfprefsd >/dev/null 2>&1 || true
   rm -f "$PREF_PLIST"
@@ -169,6 +184,15 @@ if [ "$REQUIRED_ARCH" = arm64 ]; then
   [ -d "$DESKTOP_COMPONENT_DIR" ] && [ ! -L "$DESKTOP_COMPONENT_DIR" ] \
     || fail "signed desktop component candidate is unavailable or indirect: $DESKTOP_COMPONENT_DIR"
   [ -n "$DESKTOP_VERSION" ] || fail "DORY_RELEASE_DESKTOP_VERSION is required"
+  [ -f "$KUBECTL_COMPONENT" ] && [ ! -L "$KUBECTL_COMPONENT" ] \
+    && [ -s "$KUBECTL_COMPONENT" ] && [ -x "$KUBECTL_COMPONENT" ] \
+    || fail "signed Kubernetes component is unavailable or indirect: $KUBECTL_COMPONENT"
+  [ -f "$COMPONENT_INVENTORY" ] && [ ! -L "$COMPONENT_INVENTORY" ] \
+    && [ -s "$COMPONENT_INVENTORY" ] \
+    || fail "immutable component candidate inventory is unavailable or indirect: $COMPONENT_INVENTORY"
+  [ -f "$COMPONENT_INVENTORY.sha256" ] && [ ! -L "$COMPONENT_INVENTORY.sha256" ] \
+    && [ -s "$COMPONENT_INVENTORY.sha256" ] \
+    || fail "component candidate inventory digest is unavailable or indirect"
   [ -n "${SSH_AUTH_SOCK:-}" ] && [ -S "$SSH_AUTH_SOCK" ] \
     || fail "physical release qualification requires a live SSH_AUTH_SOCK"
   ssh-add -L >/dev/null 2>&1 \
@@ -185,6 +209,46 @@ for helper in \
     || fail "candidate executable is unavailable or indirect: $helper"
 done
 codesign --verify --strict --deep "$APP" || fail "candidate app signature is invalid"
+if [ "$REQUIRED_ARCH" = arm64 ]; then
+  codesign --verify --strict "$KUBECTL_COMPONENT" \
+    || fail "signed Kubernetes component signature is invalid"
+  APP_TEAM_IDENTIFIER="$(
+    codesign -dv --verbose=4 "$APP" 2>&1 | sed -n 's/^TeamIdentifier=//p' | tail -1
+  )"
+  KUBECTL_TEAM_IDENTIFIER="$(
+    codesign -dv --verbose=4 "$KUBECTL_COMPONENT" 2>&1 \
+      | sed -n 's/^TeamIdentifier=//p' | tail -1
+  )"
+  [ -n "$APP_TEAM_IDENTIFIER" ] && [ "$APP_TEAM_IDENTIFIER" != 'not set' ] \
+    || fail "candidate app has no signing TeamIdentifier"
+  [ "$KUBECTL_TEAM_IDENTIFIER" = "$APP_TEAM_IDENTIFIER" ] \
+    || fail "Kubernetes component TeamIdentifier does not match the candidate app"
+  COMPONENT_INVENTORY_SHA256="$(shasum -a 256 "$COMPONENT_INVENTORY" | awk '{print $1}')"
+  [ "$(awk 'NF { print $1; exit }' "$COMPONENT_INVENTORY.sha256")" \
+      = "$COMPONENT_INVENTORY_SHA256" ] \
+    || fail "component candidate inventory digest does not authenticate the inventory"
+  KUBECTL_COMPONENT_SHA256="$(shasum -a 256 "$KUBECTL_COMPONENT" | awk '{print $1}')"
+  inventory_kubectl_sha256="$(python3 - "$COMPONENT_INVENTORY" <<'PY'
+import json
+import pathlib
+import sys
+
+payload = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+matches = [
+    asset
+    for component in payload.get("components", [])
+    if component.get("id") == "kubernetes"
+    for asset in component.get("assets", [])
+    if asset.get("path") == "kubectl"
+]
+if len(matches) != 1:
+    raise SystemExit("component candidate inventory must contain exactly one Kubernetes kubectl asset")
+print(matches[0].get("installedSHA256", ""))
+PY
+  )" || fail "component candidate inventory Kubernetes binding is invalid"
+  [ "$inventory_kubectl_sha256" = "$KUBECTL_COMPONENT_SHA256" ] \
+    || fail "Kubernetes component bytes differ from the immutable candidate inventory"
+fi
 if [ "$REQUIRE_NOTARIZED" = 1 ]; then
   xcrun stapler validate "$APP" || fail "candidate app has no valid notarization ticket"
   assessment="$(spctl --assess --type execute --verbose=4 "$APP" 2>&1)" \
@@ -244,6 +308,14 @@ if [ "$REQUIRED_ARCH" = arm64 ]; then
     "$ZED_URL" -o "$ZED_ARCHIVE"
   [ "$(shasum -a 256 "$ZED_ARCHIVE" | awk '{print $1}')" = "$ZED_SHA256" ] \
     || fail "pinned Zed $ZED_VERSION ARM64 archive digest mismatch"
+  KIND_BINARY="$RUNNER_TEMP/dory-kind-$KIND_VERSION-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}"
+  [ ! -e "$KIND_BINARY" ] && [ ! -L "$KIND_BINARY" ] \
+    || fail "kind fixture path already exists or is indirect: $KIND_BINARY"
+  curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 15 --max-time 600 \
+    "$KIND_URL" -o "$KIND_BINARY"
+  [ "$(shasum -a 256 "$KIND_BINARY" | awk '{print $1}')" = "$KIND_SHA256" ] \
+    || fail "pinned kind v$KIND_VERSION Darwin ARM64 binary digest mismatch"
+  chmod 0755 "$KIND_BINARY"
 fi
 defaults write "$PREF_DOMAIN" dory.hasCompletedOnboarding -bool true
 defaults write "$PREF_DOMAIN" dory.keepDorydRunningAfterQuit -bool false
@@ -312,10 +384,15 @@ grep -Fq "$APP/Contents/Helpers/dory-hv" <<< "$hv_command" \
 
 if [ "$REQUIRED_ARCH" = arm64 ]; then
   gpu_kernel="$STATE/hv/assets/dory-hv-kernel-gpu-arm64"
+  engine_rootfs="$STATE/hv/assets/dory-engine-rootfs-arm64.ext4"
   hv_log="$STATE/hv/dory-hv.log"
   [ -s "$gpu_kernel" ] || fail "GPU-specific candidate kernel was not prepared at $gpu_kernel"
+  [ -s "$engine_rootfs" ] \
+    || fail "candidate engine rootfs was not prepared at $engine_rootfs"
   grep -Fq -- "--kernel $gpu_kernel" <<< "$hv_command" \
     || fail "dory-hv did not select the prepared GPU kernel: $hv_command"
+  grep -Fq -- "--rootfs $engine_rootfs" <<< "$hv_command" \
+    || fail "dory-hv did not select the prepared engine rootfs: $hv_command"
   grep -Eq -- '(^|[[:space:]])--gpu[[:space:]]+venus([[:space:]]|$)' <<< "$hv_command" \
     || fail "dory-hv was not launched with --gpu venus: $hv_command"
   grep -Eq -- '(^|[[:space:]])--amd64([[:space:]]|$)' <<< "$hv_command" \
@@ -356,6 +433,24 @@ if [ "$REQUIRED_ARCH" = arm64 ]; then
     scripts/nonnative-build-smoke.sh \
       --target amd64 --socket "$STATE/dory.sock" --docker "$DOCKER_CLI" \
       --image "$NONNATIVE_BUILD_IMAGE"
+
+  scripts/fex-kind-live-gate.sh \
+    --socket "$STATE/dory.sock" \
+    --docker "$DOCKER_CLI" \
+    --kind "$KIND_BINARY" \
+    --kubectl "$KUBECTL_COMPONENT" \
+    --kernel "$gpu_kernel" \
+    --initfs "$engine_rootfs" \
+    --expected-kernel "$ROOT/guest/out/Image-gpu" \
+    --expected-initfs "$ROOT/guest/out/initfs-arm64.ext4" \
+    --source-commit "$SOURCE_COMMIT" \
+    --workroot "$LOG_ROOT/fex-kind" \
+    --confirm EXACT-DORY-FEX-KIND
+  FEX_KIND_GATE_RESULT="$(
+    sed -n 's/^issue_78=//p' "$LOG_ROOT/fex-kind/evidence/manifest.txt"
+  )"
+  [ "$FEX_KIND_GATE_RESULT" = PASS ] \
+    || fail "nested kind v1.33 amd64/FEX issue #78 gate did not pass"
 
   scripts/machine-resource-reconfiguration-gate.sh \
     --ctl "$APP/Contents/Helpers/dorydctl" \
@@ -491,10 +586,15 @@ fi
   if [ "$REQUIRED_ARCH" = arm64 ]; then
     echo "zed_version=$ZED_VERSION"
     echo "zed_sha256=$ZED_SHA256"
+    echo "candidate_team_identifier=$APP_TEAM_IDENTIFIER"
+    echo "kubectl_team_identifier=$KUBECTL_TEAM_IDENTIFIER"
+    echo "kubectl_component_sha256=$KUBECTL_COMPONENT_SHA256"
+    echo "component_inventory_sha256=$COMPONENT_INVENTORY_SHA256"
     echo "managed_desktop_baseline=$MANAGED_DESKTOP_BASELINE_RESULT"
     echo "mesa_virgl_desktop=$MESA_VIRGL_DESKTOP_RESULT"
     echo "renderer_release_signature=$RENDERER_RELEASE_SIGNATURE_RESULT"
     echo "zed_native_venus=$ZED_NATIVE_VENUS_RESULT"
+    echo "fex_kind_issue_78=$FEX_KIND_GATE_RESULT"
   fi
   echo "p0_smoke=PASS"
   echo "live_candidate=PASS"

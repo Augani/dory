@@ -14,6 +14,8 @@ dory_host_cli_validate_metadata || fail "default pinned metadata was rejected"
 [ "$(dory_host_cli_version docker)" = 29.0.1 ] || fail "Docker CLI version pin regressed"
 [ "$(dory_host_cli_version docker-buildx)" = v0.34.1 ] || fail "Buildx version pin regressed"
 [ "$(dory_host_cli_version docker-compose)" = v2.39.2 ] || fail "Compose version pin regressed"
+[ "$(dory_host_cli_version docker-credential-osxkeychain)" = v0.9.8 ] \
+  || fail "Docker credential helper version pin regressed"
 
 printf 'payload\n' > "$TMP/cli"
 sha="$(shasum -a 256 "$TMP/cli" | awk '{print $1}')"
@@ -23,7 +25,7 @@ if dory_verify_host_cli_payload "$TMP/cli" 0000000000000000000000000000000000000
   fail "checksum mismatch was accepted"
 fi
 
-if (DORY_KUBECTL_VERSION=v9.9.9; unset DORY_KUBECTL_SHA256_ARM64 DORY_KUBECTL_SHA256_X86_64; \
+if (export DORY_KUBECTL_VERSION=v9.9.9; unset DORY_KUBECTL_SHA256_ARM64 DORY_KUBECTL_SHA256_X86_64; \
   dory_host_cli_validate_metadata) >/dev/null 2>&1; then
   fail "unpaired kubectl version override was accepted"
 fi
@@ -37,7 +39,7 @@ grep -q 'dory_verify_host_cli_payload' "$ROOT/scripts/bundle-engine.sh" \
   || fail "bundle-engine does not verify downloaded host CLIs"
 grep -Fq 'chmod 0644 "$HOST_CLI_PROVENANCE"' "$ROOT/scripts/bundle-engine.sh" \
   || fail "bundle-engine does not publish portable host CLI provenance permissions"
-[ "$(grep -c 'dory_verify_host_cli_payload .*|| return 1' "$ROOT/scripts/bundle-engine.sh")" -eq 4 ] \
+[ "$(grep -c 'dory_verify_host_cli_payload .*|| return 1' "$ROOT/scripts/bundle-engine.sh")" -eq 5 ] \
   || fail "host CLI checksum failures are not propagated out of conditional download functions"
 grep -A2 'docker-buildx)' "$ROOT/scripts/bundle-engine.sh" | grep -q 'darwin_download_arch' \
   || fail "Buildx download does not use its arm64/amd64 Darwin asset names"

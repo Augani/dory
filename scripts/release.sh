@@ -206,10 +206,21 @@ preflight_public_toolchain() {
 }
 
 preflight_component_supply_chain() {
-  # The release workflow emits an immutable unqualified candidate before the SBOM, but the
-  # physical-campaign receipt producer and schema-2 qualification cutover are not complete. Keep
-  # public publication fail-closed; a candidate inventory is launch input, never support evidence.
-  release_error "public component publication is blocked: physical campaign receipts and schema-2 VM qualification are not yet bound to the exact candidate inventory and SBOM"
+  # The supported order is immutable candidate -> exact app-tree SBOM -> physical Linux VM
+  # campaign -> signed candidate-bound qualification -> schema-2 catalog finalization. The repo
+  # has strict assemblers and verifiers for those artifacts, but no release workflow job currently
+  # produces the physical campaign evidence from the freshly signed candidate. A directory supplied
+  # before candidate assembly cannot prove that ordering and must never authorize publication.
+  [ "${DORY_COMPONENT_CATALOG_SCHEMA:-2}" = 2 ] \
+    || release_error "public component publication requires catalog schema 2"
+  [ -f scripts/build-components.py ] && [ ! -L scripts/build-components.py ] \
+    && [ -x scripts/build-components.py ] \
+    || release_error "schema-2 component assembler must be a direct executable file"
+  for command in assemble verify-candidate finalize; do
+    scripts/build-components.py "$command" --help >/dev/null \
+      || release_error "schema-2 component pipeline does not provide '$command'"
+  done
+  release_error "public component publication is blocked: no physical Linux VM campaign producer is wired after immutable candidate assembly and SBOM generation; pre-candidate or synthetic qualification evidence cannot authorize schema-2 finalization"
 }
 
 preflight_public_release() {
@@ -1146,6 +1157,14 @@ for requested in $RELEASE_VARIANTS; do
       "component candidate inventory digest"
     [ ! -e "$COMPONENT_CANDIDATE_DIR/catalog.json" ] \
       || release_error "unqualified component candidate unexpectedly contains a support catalog"
+    echo "==> Verifying immutable component candidate before qualification..."
+    scripts/build-components.py verify-candidate \
+      --candidate "$COMPONENT_CANDIDATE_DIR" \
+      --core-artifact "$DMG" \
+      --core-app "$APP" \
+      > "$BUILD_DIR/component-candidate-verification.receipt"
+    assert_file_exists "$BUILD_DIR/component-candidate-verification.receipt" \
+      "component candidate verification receipt"
     while IFS= read -r component_asset; do
       COMPONENT_ASSETS+=("$component_asset")
     done < <(find "$COMPONENT_CANDIDATE_DIR" -maxdepth 1 -type f -print | LC_ALL=C sort)

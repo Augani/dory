@@ -34,6 +34,19 @@ done
 grep -F 'NSMicrophoneUsageDescription' dory-core-swift/Sources/dory-vmm/Info.plist >/dev/null \
   || fail "dory-vmm lost its microphone privacy description"
 
+for required_runner_entitlement in \
+  com.apple.security.hypervisor \
+  com.apple.security.device.audio-input \
+  com.apple.security.device.camera; do
+  grep -F "$required_runner_entitlement" \
+    Packages/ContainerizationEngine/dory-hv.entitlements >/dev/null \
+    || fail "DoryHVRunner lost $required_runner_entitlement"
+done
+grep -F 'NSMicrophoneUsageDescription' Config/DoryHVRunner-Info.plist >/dev/null \
+  || fail "DoryHVRunner lost its microphone privacy description"
+grep -F 'NSCameraUsageDescription' Config/DoryHVRunner-Info.plist >/dev/null \
+  || fail "DoryHVRunner lost its camera privacy description"
+
 # DoryFSWorker is confined by a one-shot descriptor capability protocol. App Sandbox rejects
 # openat beneath transferred directory descriptors with EPERM, which makes every virtio-fs mount
 # visible but unreadable. Both build configurations must preserve the intentionally unsandboxed

@@ -72,8 +72,8 @@ mkdir -p "$RESOURCES" "$HELPERS" "$FRAMEWORKS"
 
 DESKTOP_BUNDLE_MODE="${DORY_DESKTOP_BUNDLE_MODE:-none}"
 case "$DESKTOP_BUNDLE_MODE" in
-  none|all) ;;
-  *) echo "DORY_DESKTOP_BUNDLE_MODE must be 'none' or 'all'" >&2; exit 64 ;;
+  none|debian|ubuntu|kali|all) ;;
+  *) echo "DORY_DESKTOP_BUNDLE_MODE must be 'none', 'debian', 'ubuntu', 'kali', or 'all'" >&2; exit 64 ;;
 esac
 COMPONENT_BUNDLE_MODE="${DORY_COMPONENT_BUNDLE_MODE:-legacy}"
 case "$COMPONENT_BUNDLE_MODE" in
@@ -140,9 +140,9 @@ codesign_helper() {
     return
   fi
 
-  local attempt err
+  local _attempt err
   err="$(mktemp "${TMPDIR:-/tmp}/dory-codesign.XXXXXX")"
-  for attempt in 1 2 3; do
+  for _attempt in 1 2 3; do
     if codesign "${base[@]}" -s "$id" "$path" 2>"$err"; then
       rm -f "$err"
       return 0
@@ -388,11 +388,11 @@ renderer_release_identity_mode() {
 
 codesign_production_release_identity() {
   local path="$1" entitlements="$2" id="${DORY_SIGN_ID:-Developer ID Application}"
-  local attempt error_file
+  local _attempt error_file
   [ "$id" != - ] \
     || { echo "    ERROR: production renderer release identity cannot use ad-hoc signing" >&2; return 1; }
   error_file="$(mktemp "${TMPDIR:-/tmp}/dory-release-identity-codesign.XXXXXX")"
-  for attempt in 1 2 3; do
+  for _attempt in 1 2 3; do
     if /usr/bin/codesign --force --options runtime --timestamp --identifier doryd \
         --entitlements "$entitlements" --sign "$id" "$path" 2>"$error_file"; then
       rm -f "$error_file"
@@ -1286,9 +1286,13 @@ link_core_vmm_assets_for_arch() {
 }
 
 bundle_desktop_assets_for_arch() {
-  local arch="$1" kernel_src kernel_out distro rootfs_src rootfs_out metadata
-  [ "$DESKTOP_BUNDLE_MODE" = all ] || return 0
+  local arch="$1" kernel_src kernel_out distro distros rootfs_src rootfs_out metadata
+  [ "$DESKTOP_BUNDLE_MODE" != none ] || return 0
   [ "$arch" = "arm64" ] || return 0
+  case "$DESKTOP_BUNDLE_MODE" in
+    all) distros="debian ubuntu kali" ;;
+    *) distros="$DESKTOP_BUNDLE_MODE" ;;
+  esac
   kernel_src="$(desktop_kernel_source_for_arch "$arch" || true)"
   if [ -z "$kernel_src" ]; then
     echo "    ERROR: all-inclusive build is missing the verified Apple Silicon desktop kernel" >&2
@@ -1301,7 +1305,7 @@ bundle_desktop_assets_for_arch() {
   kernel_out="$RESOURCES/dory-desktop-kernel-arm64.lzfse"
   compress_asset "$kernel_src" "$kernel_out"
   echo "    bundled Resources/$(basename "$kernel_out") ($(du -h "$kernel_out" | awk '{print $1}'))"
-  for distro in debian ubuntu kali; do
+  for distro in $distros; do
     rootfs_src="$(desktop_rootfs_source_for_arch "$arch" "$distro" || true)"
     if [ -z "$rootfs_src" ]; then
       echo "    ERROR: all-inclusive build is missing the verified $distro desktop image" >&2
@@ -1319,9 +1323,8 @@ bundle_desktop_assets_for_arch() {
       [ -s "$metadata" ] && install -m0644 "$metadata" "$RESOURCES/$(basename "$metadata")"
     done
   done
-  for metadata in "$REPO_ROOT/guest/out/kernel-build-arm64-desktop.stamp"; do
-    [ -s "$metadata" ] && install -m0644 "$metadata" "$RESOURCES/$(basename "$metadata")"
-  done
+  metadata="$REPO_ROOT/guest/out/kernel-build-arm64-desktop.stamp"
+  [ -s "$metadata" ] && install -m0644 "$metadata" "$RESOURCES/$(basename "$metadata")"
 }
 
 echo "==> Bundling VM kernel + initfs assets, compressed (so the engine needs no container install)…"
@@ -1389,11 +1392,18 @@ write_doryd_launch_agent
 /usr/libexec/PlistBuddy -c 'Delete :DoryBundledComponents' "$APP/Contents/Info.plist" >/dev/null 2>&1 || true
 /usr/libexec/PlistBuddy -c 'Add :DoryBundledComponents array' "$APP/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c 'Add :DoryBundledComponents:0 string docker-core' "$APP/Contents/Info.plist"
-if [ "$DESKTOP_BUNDLE_MODE" = all ]; then
+if [ "$DESKTOP_BUNDLE_MODE" != none ]; then
   /usr/libexec/PlistBuddy -c 'Add :DoryIncludesDesktopLinux bool true' "$APP/Contents/Info.plist"
   /usr/libexec/PlistBuddy -c "Set :SUFeedURL $DESKTOP_APPCAST_URL" "$APP/Contents/Info.plist"
-  for component in kubernetes linux-machines linux-desktop desktop-debian desktop-ubuntu desktop-kali; do
+  for component in kubernetes linux-machines linux-desktop; do
     /usr/libexec/PlistBuddy -c "Add :DoryBundledComponents: string $component" "$APP/Contents/Info.plist"
+  done
+  case "$DESKTOP_BUNDLE_MODE" in
+    all) desktop_distros="debian ubuntu kali" ;;
+    *) desktop_distros="$DESKTOP_BUNDLE_MODE" ;;
+  esac
+  for component in $desktop_distros; do
+    /usr/libexec/PlistBuddy -c "Add :DoryBundledComponents: string desktop-$component" "$APP/Contents/Info.plist"
   done
 else
   /usr/libexec/PlistBuddy -c 'Add :DoryIncludesDesktopLinux bool false' "$APP/Contents/Info.plist"

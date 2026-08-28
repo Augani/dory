@@ -261,7 +261,10 @@ fi
 
 DORY_RELEASE_LIVE_CONFIRMED=ISOLATED-DORY-RELEASE-USER \
 DORY_RELEASE_SOURCE_COMMIT="$SOURCE_COMMIT" \
+DORY_RELEASE_LIVE_LOG_ROOT="$EVIDENCE/live-smoke" \
   "$ROOT/scripts/release-candidate-live-smoke.sh" "$APP"
+[ -f "$EVIDENCE/live-smoke/live-manifest.txt" ] \
+  || die "physical smoke did not retain its candidate-bound live evidence"
 [ ! -e "$HOME/.dory" ] || die "physical smoke did not restore the clean runtime state"
 [ ! -e "$HOME/Library/Application Support/Dory" ] \
   || die "physical smoke did not restore the clean durable-data state"

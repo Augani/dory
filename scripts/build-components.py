@@ -13,6 +13,7 @@ import json
 import os
 import pathlib
 import plistlib
+import re
 import shutil
 import stat
 import subprocess
@@ -24,6 +25,7 @@ from typing import NoReturn
 
 
 CATALOG_KIND = "dev.dory.component-catalog"
+TEST_CATALOG_KIND = "dev.dory.component-catalog.test-fixture"
 CATALOG_SCHEMA = 2
 ARCHITECTURE = "arm64"
 QUALIFICATION_KIND = "dev.dory.virtual-machine-qualification-manifest"
@@ -51,10 +53,28 @@ RENDERER_WORKER_BUNDLE_PATH = pathlib.PurePosixPath(
 )
 RENDERER_WORKER_IDENTIFIER = "com.pythonxi.Dory.HVRunner.RendererWorker"
 RENDERER_WORKER_EXECUTABLE = "DoryRendererWorker"
+VMM_BUNDLE_PATH = pathlib.PurePosixPath("Contents/Helpers/DoryVMM.app")
+VMM_IDENTIFIER = "dory-vmm"
+VMM_EXECUTABLE = "dory-vmm"
+OUTER_APPLICATION_IDENTIFIER = "com.pythonxi.Dory"
+OUTER_APPLICATION_EXECUTABLE = "Dory"
 SIGNING_TEAM_IDENTIFIER = "864H636QW4"
+EXPECTED_OUTER_APPLICATION_ENTITLEMENTS = {
+    "com.apple.security.application-groups": [
+        "864H636QW4.group.com.pythonxi.Dory"
+    ],
+    "com.apple.security.device.audio-input": True,
+    "com.apple.security.network.client": True,
+    "com.apple.security.network.server": True,
+}
 EXPECTED_RUNNER_ENTITLEMENTS = {
     "com.apple.security.device.audio-input": True,
+    "com.apple.security.device.camera": True,
     "com.apple.security.hypervisor": True,
+}
+EXPECTED_VMM_ENTITLEMENTS = {
+    "com.apple.security.device.audio-input": True,
+    "com.apple.security.virtualization": True,
 }
 # The filesystem worker deliberately carries no ambient sandbox grants. Its authority is the
 # one-shot, authenticated XPC transfer of already-open directory descriptors; App Sandbox cannot
@@ -64,6 +84,8 @@ EXPECTED_RENDERER_WORKER_ENTITLEMENTS = {
     "com.apple.security.app-sandbox": True,
     "com.apple.security.application-groups": ["864H636QW4.dory-renderer"],
 }
+DEVELOPER_ID_INTERMEDIATE_OID = "1.2.840.113635.100.6.2.6"
+DEVELOPER_ID_APPLICATION_OID = "1.2.840.113635.100.6.1.13"
 
 
 def fail(message: str) -> NoReturn:
@@ -107,21 +129,69 @@ def byte_size(path: pathlib.Path) -> int:
     return regular_file(path, "artifact").stat().st_size
 
 
-def tree_size(path: pathlib.Path) -> int:
-    total = 0
+def require_arm64_macho(path: pathlib.Path, label: str) -> None:
+    architectures = run(["lipo", "-archs", str(path)]).split()
+    if "arm64" not in architectures:
+        fail(f"{label} does not contain arm64 code")
+
+
+def application_tree_binding(path: pathlib.Path) -> dict:
+    """Bind every direct app-tree entry without following framework/resource symlinks."""
+    records = []
+    regular_bytes = 0
     for root, directories, files in os.walk(path, followlinks=False):
+        root_path = pathlib.Path(root)
+        names = sorted(set(directories + files))
+        for name in names:
+            candidate = root_path / name
+            info = candidate.lstat()
+            relative = candidate.relative_to(path).as_posix()
+            parts = pathlib.PurePosixPath(relative).parts
+            if len(relative.encode("utf-8")) > 4096 or any(
+                part in {"", ".", ".."} for part in parts
+            ):
+                fail(f"core app contains an unsafe path: {relative}")
+            record = {
+                "path": relative,
+                "mode": stat.S_IMODE(info.st_mode),
+            }
+            if stat.S_ISDIR(info.st_mode):
+                record["kind"] = "directory"
+            elif stat.S_ISREG(info.st_mode):
+                record.update(
+                    {
+                        "kind": "regular",
+                        "bytes": info.st_size,
+                        "sha256": sha256(candidate),
+                    }
+                )
+                regular_bytes += info.st_size
+            elif stat.S_ISLNK(info.st_mode):
+                target = os.readlink(candidate)
+                target_parts = pathlib.PurePosixPath(target).parts
+                if (
+                    not target
+                    or len(target.encode("utf-8")) > 4096
+                    or pathlib.PurePosixPath(target).is_absolute()
+                    or any(part in {"", ".", ".."} for part in target_parts)
+                ):
+                    fail(f"core app contains an unsafe symbolic link: {relative}")
+                record.update({"kind": "symlink", "target": target})
+            else:
+                fail(f"core app contains a special entry: {relative}")
+            records.append(record)
         directories[:] = [
             name for name in directories
-            if not pathlib.Path(root, name).is_symlink()
+            if not (root_path / name).is_symlink()
         ]
-        for name in files:
-            candidate = pathlib.Path(root, name)
-            info = candidate.lstat()
-            if stat.S_ISREG(info.st_mode):
-                total += info.st_size
-    if total <= 0:
-        fail(f"core app contains no regular-file payload: {path}")
-    return total
+    records.sort(key=lambda value: value["path"])
+    if not records or regular_bytes <= 0:
+        fail(f"core app contains no bindable payload: {path}")
+    return {
+        "entryCount": len(records),
+        "regularFileBytes": regular_bytes,
+        "graphSHA256": hashlib.sha256(canonical_json_bytes(records)).hexdigest(),
+    }
 
 
 def run(
@@ -180,6 +250,113 @@ def designated_code_requirement(path: pathlib.Path) -> str:
     fail(f"codesign returned no designated requirement for {path}")
 
 
+def developer_id_designated_requirement(identifier: str) -> str:
+    return (
+        f'identifier "{identifier}" and anchor apple generic and '
+        f'certificate 1[field.{DEVELOPER_ID_INTERMEDIATE_OID}] /* exists */ and '
+        f'certificate leaf[field.{DEVELOPER_ID_APPLICATION_OID}] /* exists */ and '
+        f'certificate leaf[subject.OU] = "{SIGNING_TEAM_IDENTIFIER}"'
+    )
+
+
+def test_designated_requirement(identifier: str) -> str:
+    return f'identifier "{identifier}"'
+
+
+def signature_details(path: pathlib.Path, label: str) -> tuple[str, bool]:
+    completed = subprocess.run(
+        ["codesign", "-d", "--verbose=4", str(path)],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if completed.returncode != 0:
+        fail(f"could not inspect the {label} signature")
+    details = completed.stdout + "\n" + completed.stderr
+    team_identifier = None
+    runtime = False
+    for line in details.splitlines():
+        if line.startswith("TeamIdentifier="):
+            team_identifier = line.split("=", 1)[1].strip()
+        elif line.startswith("CodeDirectory "):
+            flag_names = re.search(r"flags=[^ ]*\(([^)]*)\)", line)
+            if flag_names is not None:
+                runtime = "runtime" in {
+                    value.strip() for value in flag_names.group(1).split(",")
+                }
+    if team_identifier is None:
+        fail(f"{label} signature does not report a team identity")
+    return team_identifier, runtime
+
+
+def signed_identity_evidence(
+    bundle: pathlib.Path,
+    *,
+    relative_path: str,
+    label: str,
+    expected_identifier: str,
+    expected_executable: str,
+    expected_package_type: str,
+    expected_entitlements: dict,
+    allow_test_signatures: bool,
+) -> dict:
+    actual_requirement = designated_code_requirement(bundle)
+    expected_requirement = (
+        test_designated_requirement(expected_identifier)
+        if allow_test_signatures
+        else developer_id_designated_requirement(expected_identifier)
+    )
+    if actual_requirement != expected_requirement:
+        fail(f"{label} designated requirement is not canonical")
+    run(
+        [
+            "codesign",
+            "--verify",
+            "--strict",
+            f"-R={expected_requirement}",
+            str(bundle),
+        ]
+    )
+    team_identifier, hardened_runtime = signature_details(bundle, label)
+    expected_team = "not set" if allow_test_signatures else SIGNING_TEAM_IDENTIFIER
+    if team_identifier != expected_team:
+        fail(f"{label} signing team is not canonical")
+    if hardened_runtime == allow_test_signatures:
+        fail(f"{label} hardened-runtime policy is invalid")
+    entitlements = signed_entitlements(bundle, label)
+    if entitlements != expected_entitlements:
+        fail(f"{label} entitlements do not match their exact authority")
+    code_resources = regular_file(
+        bundle / "Contents" / "_CodeSignature" / "CodeResources",
+        f"{label} CodeResources seal",
+    )
+    return {
+        "path": relative_path,
+        "bundleIdentifier": expected_identifier,
+        "bundleExecutable": expected_executable,
+        "bundlePackageType": expected_package_type,
+        "designatedRequirement": actual_requirement,
+        "signatureKind": (
+            "adhoc-test" if allow_test_signatures else "developer-id-application"
+        ),
+        "teamIdentifier": "-" if allow_test_signatures else SIGNING_TEAM_IDENTIFIER,
+        "hardenedRuntime": hardened_runtime,
+        "entitlements": entitlements,
+        "codeResourcesPath": (
+            "Contents/_CodeSignature/CodeResources"
+            if expected_package_type == "APPL"
+            else (
+                pathlib.PurePosixPath(relative_path)
+                / "Contents"
+                / "_CodeSignature"
+                / "CodeResources"
+            ).as_posix()
+        ),
+        "codeResourcesSHA256": sha256(code_resources),
+    }
+
+
 def signed_entitlements(path: pathlib.Path, label: str) -> dict:
     try:
         entitlements = plistlib.loads(
@@ -204,7 +381,7 @@ def verify_nested_xpc_worker(
     expected_entitlements: dict,
     entitlement_boundary: str,
     allow_test_signatures: bool,
-) -> pathlib.Path:
+) -> dict:
     worker = directory(
         application.joinpath(*bundle_path.parts),
         f"nested {label} XPC service",
@@ -235,25 +412,28 @@ def verify_nested_xpc_worker(
     )
     if worker_executable.stat().st_mode & 0o111 == 0:
         fail(f"nested {label} executable is not executable")
+    require_arm64_macho(worker_executable, f"nested {label} executable")
 
     run(["codesign", "--verify", "--strict", str(worker)])
-    if not allow_test_signatures:
-        worker_requirement = (
-            f'anchor apple generic and identifier "{expected_identifier}" and '
-            f'certificate leaf[subject.OU] = "{SIGNING_TEAM_IDENTIFIER}"'
+    try:
+        return signed_identity_evidence(
+            worker,
+            relative_path=bundle_path.as_posix(),
+            label=f"nested {label}",
+            expected_identifier=expected_identifier,
+            expected_executable=expected_executable,
+            expected_package_type="XPC!",
+            expected_entitlements=expected_entitlements,
+            allow_test_signatures=allow_test_signatures,
         )
-        run(
-            [
-                "codesign",
-                "--verify",
-                "--strict",
-                f"-R={worker_requirement}",
-                str(worker),
-            ]
-        )
-    if signed_entitlements(worker, f"nested {label}") != expected_entitlements:
-        fail(f"nested {label} entitlements do not match its {entitlement_boundary}")
-    return worker
+    except SystemExit as error:
+        message = str(error)
+        if "entitlements do not match their exact authority" in message:
+            fail(
+                f"nested {label} entitlements do not match its "
+                f"{entitlement_boundary}"
+            )
+        raise
 
 
 def source_commit(repo: pathlib.Path, explicit: str | None) -> str:
@@ -931,66 +1111,94 @@ def unqualified_release(
 def signed_application_binding(
     application: pathlib.Path,
     *,
+    label: str,
     relative_path: str,
     expected_identifier: str,
     expected_executable: str,
+    expected_entitlements: dict,
+    requires_hv_workers: bool,
     allow_test_signatures: bool,
+    required_usage_descriptions: tuple[str, ...] = (),
 ) -> dict:
-    application = directory(application, "nested runner application")
+    application = directory(application, f"nested {label} application")
     info_path = regular_file(
-        application / "Contents" / "Info.plist", "nested runner Info.plist"
+        application / "Contents" / "Info.plist", f"nested {label} Info.plist"
     )
     try:
         info = plistlib.loads(info_path.read_bytes())
     except (OSError, plistlib.InvalidFileException, ValueError):
-        fail("nested runner Info.plist is malformed")
+        fail(f"nested {label} Info.plist is malformed")
     if info.get("CFBundleIdentifier") != expected_identifier:
-        fail("nested runner bundle identifier is invalid")
+        fail(f"nested {label} bundle identifier is invalid")
     if info.get("CFBundleExecutable") != expected_executable:
-        fail("nested runner CFBundleExecutable is invalid")
+        fail(f"nested {label} CFBundleExecutable is invalid")
     if info.get("CFBundlePackageType") != "APPL":
-        fail("nested runner bundle package type is invalid")
+        fail(f"nested {label} bundle package type is invalid")
+    for usage_key in required_usage_descriptions:
+        usage_value = info.get(usage_key)
+        if not isinstance(usage_value, str) or not usage_value.strip():
+            fail(f"nested {label} is missing {usage_key}")
+    executable = regular_file(
+        application / "Contents" / "MacOS" / expected_executable,
+        f"nested {label} executable",
+    )
+    if executable.stat().st_mode & 0o111 == 0:
+        fail(f"nested {label} executable is not executable")
+    require_arm64_macho(executable, f"nested {label} executable")
 
     # Verify inside-out before binding every byte in the complete signed graph.
-    verify_nested_xpc_worker(
-        application,
-        bundle_path=FS_WORKER_BUNDLE_PATH,
-        label="filesystem worker",
-        expected_identifier=FS_WORKER_IDENTIFIER,
-        expected_executable=FS_WORKER_EXECUTABLE,
-        expected_entitlements=EXPECTED_FS_WORKER_ENTITLEMENTS,
-        entitlement_boundary="descriptor capability boundary",
-        allow_test_signatures=allow_test_signatures,
-    )
-    verify_nested_xpc_worker(
-        application,
-        bundle_path=RENDERER_WORKER_BUNDLE_PATH,
-        label="renderer worker",
-        expected_identifier=RENDERER_WORKER_IDENTIFIER,
-        expected_executable=RENDERER_WORKER_EXECUTABLE,
-        expected_entitlements=EXPECTED_RENDERER_WORKER_ENTITLEMENTS,
-        entitlement_boundary="minimal sandbox",
-        allow_test_signatures=allow_test_signatures,
-    )
+    nested_bundles = []
+    if requires_hv_workers:
+        xpc_root = directory(
+            application / "Contents" / "XPCServices",
+            "nested runner XPCServices",
+        )
+        expected_workers = {
+            FS_WORKER_BUNDLE_PATH.name,
+            RENDERER_WORKER_BUNDLE_PATH.name,
+        }
+        actual_workers = {entry.name for entry in xpc_root.iterdir()}
+        if actual_workers != expected_workers:
+            fail("nested runner XPC worker graph is not exact")
+        nested_bundles.append(verify_nested_xpc_worker(
+            application,
+            bundle_path=FS_WORKER_BUNDLE_PATH,
+            label="filesystem worker",
+            expected_identifier=FS_WORKER_IDENTIFIER,
+            expected_executable=FS_WORKER_EXECUTABLE,
+            expected_entitlements=EXPECTED_FS_WORKER_ENTITLEMENTS,
+            entitlement_boundary="descriptor capability boundary",
+            allow_test_signatures=allow_test_signatures,
+        ))
+        nested_bundles.append(verify_nested_xpc_worker(
+            application,
+            bundle_path=RENDERER_WORKER_BUNDLE_PATH,
+            label="renderer worker",
+            expected_identifier=RENDERER_WORKER_IDENTIFIER,
+            expected_executable=RENDERER_WORKER_EXECUTABLE,
+            expected_entitlements=EXPECTED_RENDERER_WORKER_ENTITLEMENTS,
+            entitlement_boundary="minimal sandbox",
+            allow_test_signatures=allow_test_signatures,
+        ))
+    elif os.path.lexists(application / "Contents" / "XPCServices"):
+        fail(f"nested {label} application must not contain XPC workers")
     run(["codesign", "--verify", "--deep", "--strict", str(application)])
-    if not allow_test_signatures:
-        runner_requirement = (
-            f'anchor apple generic and identifier "{expected_identifier}" and '
-            f'certificate leaf[subject.OU] = "{SIGNING_TEAM_IDENTIFIER}"'
+    try:
+        application_identity = signed_identity_evidence(
+            application,
+            relative_path=relative_path,
+            label=f"nested {label}",
+            expected_identifier=expected_identifier,
+            expected_executable=expected_executable,
+            expected_package_type="APPL",
+            expected_entitlements=expected_entitlements,
+            allow_test_signatures=allow_test_signatures,
         )
-        run(
-            [
-                "codesign",
-                "--verify",
-                "--strict",
-                f"-R={runner_requirement}",
-                str(application),
-            ]
-        )
-    if signed_entitlements(
-        application, "nested runner"
-    ) != EXPECTED_RUNNER_ENTITLEMENTS:
-        fail("nested runner entitlements do not match its hardware boundary")
+    except SystemExit as error:
+        message = str(error)
+        if "entitlements do not match their exact authority" in message:
+            fail(f"nested {label} entitlements do not match its hardware boundary")
+        raise
 
     files = []
     for candidate in sorted(application.rglob("*")):
@@ -998,12 +1206,12 @@ def signed_application_binding(
         if stat.S_ISDIR(entry.st_mode):
             continue
         if not stat.S_ISREG(entry.st_mode):
-            fail(f"nested runner contains an indirect or special entry: {candidate}")
+            fail(f"nested {label} contains an indirect or special entry: {candidate}")
         relative = candidate.relative_to(application).as_posix()
         if len(relative.encode("utf-8")) > 1024 or any(
             part in {"", ".", ".."} for part in pathlib.PurePosixPath(relative).parts
         ):
-            fail(f"nested runner contains an unsafe path: {relative}")
+            fail(f"nested {label} contains an unsafe path: {relative}")
         files.append(
             {
                 "path": relative,
@@ -1013,28 +1221,149 @@ def signed_application_binding(
             }
         )
     if not files or len(files) > 512:
-        fail("nested runner signed graph has an invalid file count")
+        fail(f"nested {label} signed graph has an invalid file count")
     binding = {
-        "path": relative_path,
-        "bundleIdentifier": expected_identifier,
-        "bundleExecutable": expected_executable,
-        "designatedRequirement": designated_code_requirement(application),
+        **application_identity,
+        "nestedBundles": nested_bundles,
         "files": files,
     }
     binding["graphSHA256"] = hashlib.sha256(canonical_json_bytes(binding)).hexdigest()
     return binding
 
 
+def outer_application_binding(
+    application: pathlib.Path,
+    *,
+    release_version: str,
+    allow_test_signatures: bool,
+) -> dict:
+    application = directory(application, "outer Dory application")
+    info_path = regular_file(
+        application / "Contents" / "Info.plist", "outer Dory Info.plist"
+    )
+    try:
+        info = plistlib.loads(info_path.read_bytes())
+    except (OSError, plistlib.InvalidFileException, ValueError):
+        fail("outer Dory Info.plist is malformed")
+    if info.get("CFBundleIdentifier") != OUTER_APPLICATION_IDENTIFIER:
+        fail("outer Dory bundle identifier is invalid")
+    if info.get("CFBundleExecutable") != OUTER_APPLICATION_EXECUTABLE:
+        fail("outer Dory CFBundleExecutable is invalid")
+    if info.get("CFBundlePackageType") != "APPL":
+        fail("outer Dory bundle package type is invalid")
+    if info.get("CFBundleShortVersionString") != release_version:
+        fail("outer Dory marketing version does not match the component release")
+    bundle_version = safe_release_value(
+        info.get("CFBundleVersion"), "outer Dory bundle version"
+    )
+    executable = regular_file(
+        application / "Contents" / "MacOS" / OUTER_APPLICATION_EXECUTABLE,
+        "outer Dory executable",
+    )
+    if executable.stat().st_mode & 0o111 == 0:
+        fail("outer Dory executable is not executable")
+    require_arm64_macho(executable, "outer Dory executable")
+    run(["codesign", "--verify", "--deep", "--strict", str(application)])
+    identity = signed_identity_evidence(
+        application,
+        relative_path="Dory.app",
+        label="outer Dory application",
+        expected_identifier=OUTER_APPLICATION_IDENTIFIER,
+        expected_executable=OUTER_APPLICATION_EXECUTABLE,
+        expected_package_type="APPL",
+        expected_entitlements=EXPECTED_OUTER_APPLICATION_ENTITLEMENTS,
+        allow_test_signatures=allow_test_signatures,
+    )
+    return {
+        **identity,
+        "bundleShortVersion": release_version,
+        "bundleVersion": bundle_version,
+        "executableBytes": byte_size(executable),
+        "executableSHA256": sha256(executable),
+    }
+
+
+def disk_image_application_binding(
+    artifact: pathlib.Path,
+    *,
+    expected_application: dict,
+) -> dict:
+    artifact = regular_file(artifact, "Docker Core disk image")
+    if artifact.suffix.lower() != ".dmg":
+        fail("Docker Core artifact must be an Apple disk image")
+    before_info = artifact.lstat()
+    # DiskImages may update a verification xattr on first attachment, which changes ctime without
+    # changing the direct file, its mode, its bytes, or its release identity. Keep the byte-level
+    # TOCTOU check strict while excluding that reader-induced metadata side effect.
+    before_identity = (
+        before_info.st_dev,
+        before_info.st_ino,
+        before_info.st_mode,
+        before_info.st_size,
+        before_info.st_mtime_ns,
+    )
+    before_digest = sha256(artifact)
+    mount_parent = pathlib.Path(tempfile.mkdtemp(prefix="dory-core-dmg-"))
+    mount_point = mount_parent / "volume"
+    mount_point.mkdir(mode=0o700)
+    attached = False
+    try:
+        run(
+            [
+                "hdiutil", "attach", "-readonly", "-nobrowse", "-noautoopen",
+                "-owners", "off", "-mountpoint", str(mount_point), str(artifact),
+            ]
+        )
+        attached = True
+        mounted_application = directory(
+            mount_point / "Dory.app", "Docker Core disk-image Dory.app"
+        )
+        mounted_binding = application_tree_binding(mounted_application)
+        if mounted_binding != expected_application:
+            fail("Docker Core disk image does not contain the exact supplied Dory.app")
+    finally:
+        if attached:
+            completed = subprocess.run(
+                ["hdiutil", "detach", str(mount_point)],
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            if completed.returncode != 0:
+                fail("could not detach the verified Docker Core disk image")
+        shutil.rmtree(mount_parent, ignore_errors=True)
+    after_info = artifact.lstat()
+    after_identity = (
+        after_info.st_dev,
+        after_info.st_ino,
+        after_info.st_mode,
+        after_info.st_size,
+        after_info.st_mtime_ns,
+    )
+    if after_identity != before_identity or sha256(artifact) != before_digest:
+        fail("Docker Core disk image changed while its application was verified")
+    return {
+        "bytes": before_identity[3],
+        "sha256": before_digest,
+        "format": "apple-disk-image",
+        "embeddedApplicationPath": "Dory.app",
+        "embeddedApplicationGraphSHA256": expected_application["graphSHA256"],
+    }
+
+
 def core_binding(
     core_artifact: pathlib.Path,
     core_app: pathlib.Path,
     *,
+    release_version: str,
     allow_test_signatures: bool,
 ) -> dict:
+    application_tree = application_tree_binding(core_app)
     helpers = []
     helper_paths = {
         "dory-hv": "Contents/Helpers/DoryHVRunner.app/Contents/MacOS/dory-hv",
-        "dory-vmm": "Contents/Helpers/dory-vmm",
+        "dory-vmm": "Contents/Helpers/DoryVMM.app/Contents/MacOS/dory-vmm",
     }
     for identifier in ("dory-hv", "dory-vmm"):
         relative_path = helper_paths[identifier]
@@ -1051,15 +1380,48 @@ def core_binding(
         if identifier == "dory-hv":
             record["signedBundle"] = signed_application_binding(
                 core_app / "Contents/Helpers/DoryHVRunner.app",
+                label="runner",
                 relative_path="Contents/Helpers/DoryHVRunner.app",
                 expected_identifier="com.pythonxi.Dory.HVRunner",
                 expected_executable="dory-hv",
+                expected_entitlements=EXPECTED_RUNNER_ENTITLEMENTS,
+                requires_hv_workers=True,
                 allow_test_signatures=allow_test_signatures,
+                required_usage_descriptions=(
+                    "NSCameraUsageDescription", "NSMicrophoneUsageDescription",
+                ),
+            )
+        else:
+            record["signedBundle"] = signed_application_binding(
+                core_app.joinpath(*VMM_BUNDLE_PATH.parts),
+                label="VMM",
+                relative_path=VMM_BUNDLE_PATH.as_posix(),
+                expected_identifier=VMM_IDENTIFIER,
+                expected_executable=VMM_EXECUTABLE,
+                expected_entitlements=EXPECTED_VMM_ENTITLEMENTS,
+                requires_hv_workers=False,
+                allow_test_signatures=allow_test_signatures,
+                required_usage_descriptions=("NSMicrophoneUsageDescription",),
             )
         helpers.append(record)
+    application = {
+        **application_tree,
+        "signedBundle": outer_application_binding(
+            core_app,
+            release_version=release_version,
+            allow_test_signatures=allow_test_signatures,
+        ),
+    }
+    artifact = disk_image_application_binding(
+        core_artifact,
+        expected_application=application_tree,
+    )
+    if application_tree_binding(core_app) != application_tree:
+        fail("outer Dory application changed while its release binding was created")
     return {
-        "artifact": {"bytes": byte_size(core_artifact), "sha256": sha256(core_artifact)},
-        "installedBytes": tree_size(core_app),
+        "artifact": artifact,
+        "application": application,
+        "installedBytes": application["regularFileBytes"],
         "helpers": helpers,
     }
 
@@ -1089,8 +1451,7 @@ def build_candidate_inventory(args: argparse.Namespace, repo: pathlib.Path) -> N
         args.minimum_app_version or version, "minimum app version"
     )
     source_root = (args.source_root or repo / "guest" / "out").resolve()
-    core_artifact = regular_file(args.core_artifact.resolve(), "Docker Core artifact")
-    core_app = directory(args.core_app.resolve(), "Docker Core app")
+    core_artifact, core_app = resolved_core_inputs(args)
     kubectl = regular_file(args.kubectl.resolve(), "kubectl")
     compression_tool = regular_file(
         pathlib.Path("/usr/bin/compression_tool"), "macOS compression_tool"
@@ -1102,8 +1463,20 @@ def build_candidate_inventory(args: argparse.Namespace, repo: pathlib.Path) -> N
         args.asset_base_url
         or f"https://github.com/Augani/dory/releases/download/v{version}"
     )
-    output = args.output.resolve()
-    output.parent.mkdir(parents=True, exist_ok=True)
+    output_argument = absolute_without_resolving(args.output)
+    if output_argument.is_symlink():
+        fail("component candidate output cannot be a symbolic link")
+    output_argument.parent.mkdir(parents=True, exist_ok=True)
+    output_parent = directory(
+        output_argument.parent, "component candidate output parent"
+    ).resolve()
+    output = output_parent / output_argument.name
+    if output in {
+        pathlib.Path("/"),
+        pathlib.Path.home().resolve(),
+        pathlib.Path.cwd().resolve(),
+    }:
+        fail(f"refusing unsafe component candidate output: {output}")
     staging: pathlib.Path | None = pathlib.Path(
         tempfile.mkdtemp(prefix=f".{output.name}.partial-", dir=output.parent)
     )
@@ -1111,6 +1484,7 @@ def build_candidate_inventory(args: argparse.Namespace, repo: pathlib.Path) -> N
         core = core_binding(
             core_artifact,
             core_app,
+            release_version=version,
             allow_test_signatures=args.skip_source_verification,
         )
         components = [
@@ -1247,6 +1621,263 @@ def validate_inventory_asset(
     return asset, name
 
 
+SIGNED_IDENTITY_KEYS = {
+    "path", "bundleIdentifier", "bundleExecutable", "bundlePackageType",
+    "designatedRequirement", "signatureKind", "teamIdentifier",
+    "hardenedRuntime", "entitlements", "codeResourcesPath",
+    "codeResourcesSHA256",
+}
+
+
+def validate_signed_identity_evidence(
+    value: object,
+    configuration: dict,
+    label: str,
+) -> dict:
+    identity = exact_keys(value, SIGNED_IDENTITY_KEYS, set(), label)
+    for field, expected in (
+        ("path", configuration["path"]),
+        ("bundleIdentifier", configuration["identifier"]),
+        ("bundleExecutable", configuration["executable"]),
+        ("bundlePackageType", configuration["packageType"]),
+        ("entitlements", configuration["entitlements"]),
+        ("codeResourcesPath", configuration["codeResourcesPath"]),
+    ):
+        if identity[field] != expected:
+            fail(f"{label} {field} is invalid")
+    sha256_value(identity["codeResourcesSHA256"], f"{label} CodeResources digest")
+    signature_kind = identity["signatureKind"]
+    if signature_kind == "developer-id-application":
+        expected_team = SIGNING_TEAM_IDENTIFIER
+        expected_runtime = True
+        expected_requirement = developer_id_designated_requirement(
+            configuration["identifier"]
+        )
+    elif signature_kind == "adhoc-test":
+        expected_team = "-"
+        expected_runtime = False
+        expected_requirement = test_designated_requirement(configuration["identifier"])
+    else:
+        fail(f"{label} signature kind is invalid")
+    if identity["teamIdentifier"] != expected_team:
+        fail(f"{label} team identifier is invalid")
+    if identity["hardenedRuntime"] is not expected_runtime:
+        fail(f"{label} hardened-runtime evidence is invalid")
+    if identity["designatedRequirement"] != expected_requirement:
+        fail(f"{label} designated requirement is not canonical")
+    return identity
+
+
+def validate_core_signed_bundle(helper: dict, identifier: str) -> None:
+    configurations = {
+        "dory-hv": {
+            "path": "Contents/Helpers/DoryHVRunner.app",
+            "identifier": "com.pythonxi.Dory.HVRunner",
+            "executable": "dory-hv",
+            "packageType": "APPL",
+            "entitlements": EXPECTED_RUNNER_ENTITLEMENTS,
+            "codeResourcesPath": "Contents/_CodeSignature/CodeResources",
+            "nestedBundles": (
+                {
+                    "label": "filesystem worker",
+                    "path": FS_WORKER_BUNDLE_PATH.as_posix(),
+                    "identifier": FS_WORKER_IDENTIFIER,
+                    "executable": FS_WORKER_EXECUTABLE,
+                    "packageType": "XPC!",
+                    "entitlements": EXPECTED_FS_WORKER_ENTITLEMENTS,
+                    "codeResourcesPath": (
+                        FS_WORKER_BUNDLE_PATH
+                        / "Contents" / "_CodeSignature" / "CodeResources"
+                    ).as_posix(),
+                },
+                {
+                    "label": "renderer worker",
+                    "path": RENDERER_WORKER_BUNDLE_PATH.as_posix(),
+                    "identifier": RENDERER_WORKER_IDENTIFIER,
+                    "executable": RENDERER_WORKER_EXECUTABLE,
+                    "packageType": "XPC!",
+                    "entitlements": EXPECTED_RENDERER_WORKER_ENTITLEMENTS,
+                    "codeResourcesPath": (
+                        RENDERER_WORKER_BUNDLE_PATH
+                        / "Contents" / "_CodeSignature" / "CodeResources"
+                    ).as_posix(),
+                },
+            ),
+        },
+        "dory-vmm": {
+            "path": VMM_BUNDLE_PATH.as_posix(),
+            "identifier": VMM_IDENTIFIER,
+            "executable": VMM_EXECUTABLE,
+            "packageType": "APPL",
+            "entitlements": EXPECTED_VMM_ENTITLEMENTS,
+            "codeResourcesPath": "Contents/_CodeSignature/CodeResources",
+            "nestedBundles": (),
+        },
+    }
+    configuration = configurations.get(identifier)
+    if configuration is None:
+        fail(f"{identifier} cannot declare a core signed bundle")
+    label = f"{identifier} signed bundle"
+    signed_bundle = exact_keys(
+        helper["signedBundle"],
+        SIGNED_IDENTITY_KEYS | {"nestedBundles", "files", "graphSHA256"},
+        set(),
+        label,
+    )
+    root_identity = validate_signed_identity_evidence(
+        {key: signed_bundle[key] for key in SIGNED_IDENTITY_KEYS},
+        configuration,
+        label,
+    )
+    nested_values = signed_bundle["nestedBundles"]
+    nested_configurations = configuration["nestedBundles"]
+    if not isinstance(nested_values, list) \
+            or len(nested_values) != len(nested_configurations):
+        fail(f"{label} nested signed graph is invalid")
+    nested_identities = []
+    for index, (nested_value, nested_configuration) in enumerate(
+        zip(nested_values, nested_configurations, strict=True)
+    ):
+        nested_identities.append(
+            validate_signed_identity_evidence(
+                nested_value,
+                nested_configuration,
+                f"{label} {nested_configuration['label']} {index}",
+            )
+        )
+    files = signed_bundle["files"]
+    if not isinstance(files, list) or not files or len(files) > 512:
+        fail(f"{label} file graph is invalid")
+    previous_path = ""
+    file_records = {}
+    for file_index, file_value in enumerate(files):
+        file_record = exact_keys(
+            file_value,
+            {"path", "bytes", "mode", "sha256"},
+            set(),
+            f"{label} file {file_index}",
+        )
+        relative = nonempty_string(
+            file_record["path"],
+            f"{label} file {file_index} path",
+            1024,
+        )
+        parts = pathlib.PurePosixPath(relative).parts
+        if relative.startswith("/") or any(part in {"", ".", ".."} for part in parts):
+            fail(f"{label} contains an unsafe file path")
+        if relative <= previous_path:
+            fail(f"{label} files are not uniquely sorted")
+        previous_path = relative
+        positive_integer_value(file_record["bytes"], f"{label} file bytes")
+        mode = file_record["mode"]
+        if isinstance(mode, bool) or not isinstance(mode, int) or not 0 <= mode <= 0o7777:
+            fail(f"{label} file mode is invalid")
+        sha256_value(file_record["sha256"], f"{label} file digest")
+        if identifier == "dory-vmm" and parts[:2] == ("Contents", "XPCServices"):
+            fail("dory-vmm signed bundle must not contain XPC workers")
+        file_records[relative] = file_record
+
+    required_records = {
+        "Contents/Info.plist": f"{label} Info.plist",
+        root_identity["codeResourcesPath"]: f"{label} CodeResources seal",
+    }
+    executable_relative = f"Contents/MacOS/{configuration['executable']}"
+    required_records[executable_relative] = f"{label} declared executable"
+    declared_executables = {executable_relative}
+    for nested_identity, nested_configuration in zip(
+        nested_identities, nested_configurations, strict=True
+    ):
+        nested_path = pathlib.PurePosixPath(nested_configuration["path"])
+        required_records[(nested_path / "Contents" / "Info.plist").as_posix()] = (
+            f"{label} {nested_configuration['label']} Info.plist"
+        )
+        nested_executable = (
+            nested_path / "Contents" / "MacOS" / nested_configuration["executable"]
+        ).as_posix()
+        required_records[nested_executable] = (
+            f"{label} {nested_configuration['label']} executable"
+        )
+        required_records[nested_identity["codeResourcesPath"]] = (
+            f"{label} {nested_configuration['label']} CodeResources seal"
+        )
+        declared_executables.add(nested_executable)
+    for required_path, required_label in required_records.items():
+        if required_path not in file_records:
+            fail(f"{label} does not contain its required {required_label}")
+
+    executable_record = file_records[executable_relative]
+    if executable_record["mode"] & 0o111 == 0:
+        fail(f"{label} declared executable is not executable")
+    if (
+        executable_record["bytes"] != helper["bytes"]
+        or executable_record["sha256"] != helper["sha256"]
+    ):
+        fail(f"{identifier} executable binding differs from its signed bundle graph")
+
+    for executable_path in declared_executables:
+        if file_records[executable_path]["mode"] & 0o111 == 0:
+            fail(f"{label} executable binding is not executable")
+    for relative in file_records:
+        if (
+            relative.startswith("Contents/MacOS/")
+            or "/Contents/MacOS/" in relative
+        ) and relative not in declared_executables:
+            fail(f"{label} contains an undeclared bundle executable")
+    identity_records = [root_identity] + nested_identities
+    for identity in identity_records:
+        seal_record = file_records[identity["codeResourcesPath"]]
+        if seal_record["sha256"] != identity["codeResourcesSHA256"]:
+            fail(f"{label} CodeResources evidence differs from its signed graph")
+
+    graph_payload = dict(signed_bundle)
+    graph_digest = graph_payload.pop("graphSHA256")
+    sha256_value(graph_digest, f"{label} graph digest")
+    if hashlib.sha256(canonical_json_bytes(graph_payload)).hexdigest() != graph_digest:
+        fail(f"{label} graph digest is invalid")
+
+
+def validate_outer_application_signed_bundle(
+    value: object,
+    *,
+    release_version: str,
+) -> dict:
+    label = "outer Dory signed bundle"
+    bundle = exact_keys(
+        value,
+        SIGNED_IDENTITY_KEYS
+        | {
+            "bundleShortVersion",
+            "bundleVersion",
+            "executableBytes",
+            "executableSHA256",
+        },
+        set(),
+        label,
+    )
+    validate_signed_identity_evidence(
+        {key: bundle[key] for key in SIGNED_IDENTITY_KEYS},
+        {
+            "path": "Dory.app",
+            "identifier": OUTER_APPLICATION_IDENTIFIER,
+            "executable": OUTER_APPLICATION_EXECUTABLE,
+            "packageType": "APPL",
+            "entitlements": EXPECTED_OUTER_APPLICATION_ENTITLEMENTS,
+            "codeResourcesPath": "Contents/_CodeSignature/CodeResources",
+        },
+        label,
+    )
+    if bundle["bundleShortVersion"] != release_version:
+        fail("outer Dory signed bundle release version is invalid")
+    safe_release_value(bundle["bundleVersion"], "outer Dory signed bundle build version")
+    positive_integer_value(
+        bundle["executableBytes"], "outer Dory signed bundle executable bytes"
+    )
+    sha256_value(
+        bundle["executableSHA256"], "outer Dory signed bundle executable digest"
+    )
+    return bundle
+
+
 def validate_candidate_inventory(value: object) -> dict:
     inventory = exact_keys(
         value,
@@ -1273,12 +1904,52 @@ def validate_candidate_inventory(value: object) -> dict:
     sha256_value(inventory["recipeDigest"], "inventory recipe digest")
 
     core = exact_keys(
-        inventory["core"], {"artifact", "installedBytes", "helpers"}, set(), "core binding"
+        inventory["core"],
+        {"application", "artifact", "installedBytes", "helpers"},
+        set(),
+        "core binding",
     )
-    artifact = exact_keys(core["artifact"], {"bytes", "sha256"}, set(), "core artifact")
+    artifact = exact_keys(
+        core["artifact"],
+        {
+            "bytes",
+            "sha256",
+            "format",
+            "embeddedApplicationPath",
+            "embeddedApplicationGraphSHA256",
+        },
+        set(),
+        "core artifact",
+    )
     positive_integer_value(artifact["bytes"], "core artifact bytes")
     sha256_value(artifact["sha256"], "core artifact digest")
+    if artifact["format"] != "apple-disk-image":
+        fail("core artifact format is unsupported")
+    if artifact["embeddedApplicationPath"] != "Dory.app":
+        fail("core artifact embedded application path is invalid")
+    sha256_value(
+        artifact["embeddedApplicationGraphSHA256"],
+        "core artifact embedded application graph digest",
+    )
+    application = exact_keys(
+        core["application"],
+        {"entryCount", "regularFileBytes", "graphSHA256", "signedBundle"},
+        set(),
+        "core application binding",
+    )
+    positive_integer_value(application["entryCount"], "core application entry count")
+    positive_integer_value(
+        application["regularFileBytes"], "core application regular-file bytes"
+    )
+    sha256_value(application["graphSHA256"], "core application graph digest")
+    if artifact["embeddedApplicationGraphSHA256"] != application["graphSHA256"]:
+        fail("core disk image does not bind the declared application graph")
+    validate_outer_application_signed_bundle(
+        application["signedBundle"], release_version=version
+    )
     positive_integer_value(core["installedBytes"], "core installed bytes")
+    if core["installedBytes"] != application["regularFileBytes"]:
+        fail("core installed bytes do not match the application graph")
     helpers = core["helpers"]
     if not isinstance(helpers, list) or len(helpers) != 2:
         fail("core helper binding must contain dory-hv and dory-vmm")
@@ -1286,8 +1957,11 @@ def validate_candidate_inventory(value: object) -> dict:
     for index, value in enumerate(helpers):
         helper = exact_keys(
             value,
-            {"componentIdentifier", "path", "bytes", "sha256", "executable"},
-            {"signedBundle"},
+            {
+                "componentIdentifier", "path", "bytes", "sha256", "executable",
+                "signedBundle",
+            },
+            set(),
             f"core helper {index}",
         )
         identifier = nonempty_string(
@@ -1296,97 +1970,15 @@ def validate_candidate_inventory(value: object) -> dict:
         helper_ids.append(identifier)
         expected_path = {
             "dory-hv": "Contents/Helpers/DoryHVRunner.app/Contents/MacOS/dory-hv",
-            "dory-vmm": "Contents/Helpers/dory-vmm",
+            "dory-vmm": "Contents/Helpers/DoryVMM.app/Contents/MacOS/dory-vmm",
         }.get(identifier)
-        if helper["path"] != expected_path:
+        if expected_path is None or helper["path"] != expected_path:
             fail(f"core helper {index} path does not bind its identifier")
         positive_integer_value(helper["bytes"], f"core helper {index} bytes")
         sha256_value(helper["sha256"], f"core helper {index} digest")
         if boolean_value(helper["executable"], f"core helper {index} executable") is not True:
             fail(f"core helper {index} is not executable")
-        if identifier == "dory-hv":
-            signed_bundle = exact_keys(
-                helper.get("signedBundle"),
-                {
-                    "path", "bundleIdentifier", "bundleExecutable",
-                    "designatedRequirement", "files", "graphSHA256",
-                },
-                set(),
-                "dory-hv signed bundle",
-            )
-            if signed_bundle["path"] != "Contents/Helpers/DoryHVRunner.app":
-                fail("dory-hv signed bundle path is invalid")
-            if signed_bundle["bundleIdentifier"] != "com.pythonxi.Dory.HVRunner":
-                fail("dory-hv signed bundle identifier is invalid")
-            if signed_bundle["bundleExecutable"] != "dory-hv":
-                fail("dory-hv signed bundle executable is invalid")
-            nonempty_string(
-                signed_bundle["designatedRequirement"],
-                "dory-hv designated requirement",
-                4096,
-            )
-            files = signed_bundle["files"]
-            if not isinstance(files, list) or not files or len(files) > 512:
-                fail("dory-hv signed bundle file graph is invalid")
-            previous_path = ""
-            executable_record = None
-            worker_info_record = None
-            worker_executable_record = None
-            worker_info_relative = (
-                FS_WORKER_BUNDLE_PATH / "Contents" / "Info.plist"
-            ).as_posix()
-            worker_executable_relative = (
-                FS_WORKER_BUNDLE_PATH
-                / "Contents"
-                / "MacOS"
-                / FS_WORKER_EXECUTABLE
-            ).as_posix()
-            for file_index, file_value in enumerate(files):
-                file_record = exact_keys(
-                    file_value,
-                    {"path", "bytes", "mode", "sha256"},
-                    set(),
-                    f"dory-hv signed bundle file {file_index}",
-                )
-                relative = nonempty_string(
-                    file_record["path"],
-                    f"dory-hv signed bundle file {file_index} path",
-                    1024,
-                )
-                parts = pathlib.PurePosixPath(relative).parts
-                if relative.startswith("/") or any(part in {"", ".", ".."} for part in parts):
-                    fail("dory-hv signed bundle contains an unsafe file path")
-                if relative <= previous_path:
-                    fail("dory-hv signed bundle files are not uniquely sorted")
-                previous_path = relative
-                positive_integer_value(file_record["bytes"], "dory-hv signed bundle file bytes")
-                mode = file_record["mode"]
-                if isinstance(mode, bool) or not isinstance(mode, int) or not 0 <= mode <= 0o7777:
-                    fail("dory-hv signed bundle file mode is invalid")
-                sha256_value(file_record["sha256"], "dory-hv signed bundle file digest")
-                if relative == "Contents/MacOS/dory-hv":
-                    executable_record = file_record
-                elif relative == worker_info_relative:
-                    worker_info_record = file_record
-                elif relative == worker_executable_relative:
-                    worker_executable_record = file_record
-            if executable_record is None:
-                fail("dory-hv signed bundle does not contain its declared executable")
-            if executable_record["bytes"] != helper["bytes"] or executable_record["sha256"] != helper["sha256"]:
-                fail("dory-hv executable binding differs from its signed bundle graph")
-            if worker_info_record is None:
-                fail("dory-hv signed bundle does not contain the filesystem worker Info.plist")
-            if worker_executable_record is None:
-                fail("dory-hv signed bundle does not contain the filesystem worker executable")
-            if worker_executable_record["mode"] & 0o111 == 0:
-                fail("dory-hv filesystem worker binding is not executable")
-            graph_payload = dict(signed_bundle)
-            graph_digest = graph_payload.pop("graphSHA256")
-            sha256_value(graph_digest, "dory-hv signed bundle graph digest")
-            if hashlib.sha256(canonical_json_bytes(graph_payload)).hexdigest() != graph_digest:
-                fail("dory-hv signed bundle graph digest is invalid")
-        elif "signedBundle" in helper:
-            fail("only dory-hv may declare the nested runner signed bundle")
+        validate_core_signed_bundle(helper, identifier)
     if helper_ids != ["dory-hv", "dory-vmm"]:
         fail("core helper bindings must be uniquely sorted")
 
@@ -1529,6 +2121,38 @@ def load_candidate_inventory(output: pathlib.Path) -> tuple[dict, str]:
     if digest_text != digest + "\n":
         fail("candidate inventory digest does not match the inventory")
     return inventory, digest
+
+
+def require_release_core_signatures(inventory: dict) -> None:
+    identities = [inventory["core"]["application"]["signedBundle"]]
+    for helper in inventory["core"]["helpers"]:
+        signed_bundle = helper["signedBundle"]
+        identities.extend([signed_bundle] + signed_bundle["nestedBundles"])
+    for identity in identities:
+        if (
+            identity["signatureKind"] != "developer-id-application"
+            or identity["teamIdentifier"] != SIGNING_TEAM_IDENTIFIER
+            or identity["hardenedRuntime"] is not True
+        ):
+            fail("staged finalization requires Developer ID core signature evidence")
+
+
+def require_matching_core_inputs(
+    inventory: dict,
+    *,
+    core_artifact: pathlib.Path,
+    core_app: pathlib.Path,
+    allow_test_signatures: bool,
+    phase: str,
+) -> None:
+    actual = core_binding(
+        core_artifact,
+        core_app,
+        release_version=inventory["releaseVersion"],
+        allow_test_signatures=allow_test_signatures,
+    )
+    if actual != inventory["core"]:
+        fail(f"core signature evidence differs from the exact {phase} inputs")
 
 
 def validate_candidate_directory(output: pathlib.Path, inventory: dict, *, exact: bool) -> None:
@@ -1730,6 +2354,16 @@ def verify_ed25519_signature(
     )
 
 
+def catalog_public_key_bytes(value: str, label: str) -> bytes:
+    try:
+        decoded = base64.b64decode(value, validate=True)
+    except (ValueError, binascii.Error):
+        fail(f"{label} is not valid base64")
+    if len(decoded) != 32:
+        fail(f"{label} is not an Ed25519 public key")
+    return decoded
+
+
 def validate_qualification_bindings(manifest: dict, inventory: dict) -> None:
     runtime_contracts = {
         "dory-hypervisor": ("dory.raw-hv-linux.compatibility.v1", "dory-hv"),
@@ -1785,6 +2419,7 @@ def validate_performance_receipt_bindings(
     manifest: dict,
     receipts: list[tuple[pathlib.Path, pathlib.Path, dict]],
     *,
+    application_digest: str,
     inventory_digest: str,
     sbom_digest: str,
 ) -> list[tuple[pathlib.Path, pathlib.Path, dict]]:
@@ -1831,6 +2466,8 @@ def validate_performance_receipt_bindings(
             fail(f"performance matrix cell differs for {path}")
         if support["graphicsImplementation"] != performance["graphicsImplementation"]:
             fail(f"performance graphics implementation differs for {path}")
+        if candidate["applicationSHA256"] != application_digest:
+            fail(f"performance receipt binds another Dory application for {path}")
         if candidate["componentCandidateInventorySHA256"] != inventory_digest:
             fail(f"performance receipt binds another component candidate for {path}")
         if candidate["sbomSHA256"] != sbom_digest:
@@ -1931,6 +2568,16 @@ def qualification_evidence_asset(
     )
 
 
+def resolved_core_inputs(args: argparse.Namespace) -> tuple[pathlib.Path, pathlib.Path]:
+    artifact_argument = absolute_without_resolving(args.core_artifact)
+    core_artifact = regular_file(
+        artifact_argument, "exact core release artifact input"
+    ).resolve()
+    app_argument = absolute_without_resolving(args.core_app)
+    core_app = directory(app_argument, "exact core application input").resolve()
+    return core_artifact, core_app
+
+
 def finalize_catalog(
     args: argparse.Namespace,
     repo: pathlib.Path,
@@ -1963,6 +2610,27 @@ def finalize_catalog(
     ):
         fail("final component output must be separate from the candidate directory")
     inventory, inventory_digest = load_candidate_inventory(candidate)
+    allow_test_signatures = getattr(args, "allow_test_signatures", False)
+    catalog_key = catalog_public_key_bytes(
+        args.catalog_public_key, "catalog public key"
+    )
+    production_catalog_key = catalog_public_key_bytes(
+        DEFAULT_CATALOG_PUBLIC_KEY, "production catalog public key"
+    )
+    if allow_test_signatures and catalog_key == production_catalog_key:
+        fail(
+            "test-signature finalization requires a non-production catalog trust root"
+        )
+    if require_catalog_signature and not allow_test_signatures:
+        require_release_core_signatures(inventory)
+    core_artifact, core_app = resolved_core_inputs(args)
+    require_matching_core_inputs(
+        inventory,
+        core_artifact=core_artifact,
+        core_app=core_app,
+        allow_test_signatures=allow_test_signatures,
+        phase="pre-finalization core",
+    )
     validate_candidate_directory(candidate, inventory, exact=True)
     compression_tool = regular_file(
         pathlib.Path("/usr/bin/compression_tool"), "macOS compression_tool"
@@ -2048,6 +2716,7 @@ def finalize_catalog(
     performance_receipts = validate_performance_receipt_bindings(
         manifest,
         performance_receipts,
+        application_digest=inventory["core"]["application"]["graphSHA256"],
         inventory_digest=inventory_digest,
         sbom_digest=sbom_digest,
     )
@@ -2152,7 +2821,7 @@ def finalize_catalog(
                 )
 
         catalog = {
-            "kind": CATALOG_KIND,
+            "kind": TEST_CATALOG_KIND if allow_test_signatures else CATALOG_KIND,
             "schemaVersion": CATALOG_SCHEMA,
             "releaseVersion": inventory["releaseVersion"],
             "generatedAt": inventory["generatedAt"],
@@ -2169,6 +2838,16 @@ def finalize_catalog(
         }
         catalog_path = staging / "catalog.json"
         write_bytes(catalog_path, canonical_json_bytes(catalog))
+        # The public signer must only authenticate evidence re-derived from the same immutable app
+        # and release artifact. Recompute immediately before invoking it to close the candidate /
+        # qualification work-window TOCTOU boundary.
+        require_matching_core_inputs(
+            inventory,
+            core_artifact=core_artifact,
+            core_app=core_app,
+            allow_test_signatures=allow_test_signatures,
+            phase="pre-signing core",
+        )
         if signer is not None:
             catalog_signature_path = staging / "catalog.json.sig"
             write_text(catalog_signature_path, sign_catalog(catalog_path, signer) + "\n")
@@ -2178,6 +2857,13 @@ def finalize_catalog(
                 catalog_signature_path,
                 args.catalog_public_key,
                 "component catalog",
+            )
+            require_matching_core_inputs(
+                inventory,
+                core_artifact=core_artifact,
+                core_app=core_app,
+                allow_test_signatures=allow_test_signatures,
+                phase="post-signing core",
             )
         write_text(staging / "catalog.json.sha256", sha256(catalog_path) + "\n")
 
@@ -2211,12 +2897,28 @@ def verify_candidate(args: argparse.Namespace) -> None:
     candidate_argument = absolute_without_resolving(args.candidate)
     candidate = directory(candidate_argument, "component candidate input").resolve()
     inventory, inventory_digest = load_candidate_inventory(candidate)
+    core_artifact, core_app = resolved_core_inputs(args)
+    allow_test_signatures = getattr(args, "allow_test_signatures", False)
+    require_matching_core_inputs(
+        inventory,
+        core_artifact=core_artifact,
+        core_app=core_app,
+        allow_test_signatures=allow_test_signatures,
+        phase="candidate-verification core",
+    )
     snapshot = snapshot_candidate_directory(candidate, inventory)
     compression_tool = regular_file(
         pathlib.Path("/usr/bin/compression_tool"), "macOS compression_tool"
     )
     validate_installed_and_media_bindings(candidate, inventory, compression_tool)
     verify_candidate_snapshot(candidate, inventory, snapshot)
+    require_matching_core_inputs(
+        inventory,
+        core_artifact=core_artifact,
+        core_app=core_app,
+        allow_test_signatures=allow_test_signatures,
+        phase="post-verification core",
+    )
     receipt = {
         "architecture": inventory["architecture"],
         "componentCandidateInventorySHA256": inventory_digest,
@@ -2251,11 +2953,15 @@ def add_finalize_arguments(
     staged: bool,
     include_candidate: bool = True,
     include_output: bool = True,
+    include_core_inputs: bool = True,
 ) -> None:
     if include_candidate:
         parser.add_argument("--candidate", required=True, type=pathlib.Path)
     if include_output:
         parser.add_argument("--output", required=True, type=pathlib.Path)
+    if include_core_inputs:
+        parser.add_argument("--core-artifact", required=True, type=pathlib.Path)
+        parser.add_argument("--core-app", required=True, type=pathlib.Path)
     parser.add_argument("--qualification-manifest", required=True, type=pathlib.Path)
     parser.add_argument(
         "--qualification-signature", required=staged, type=pathlib.Path
@@ -2263,6 +2969,9 @@ def add_finalize_arguments(
     parser.add_argument("--sbom", required=True, type=pathlib.Path)
     parser.add_argument("--signer", required=staged, type=pathlib.Path)
     parser.add_argument("--catalog-public-key", default=DEFAULT_CATALOG_PUBLIC_KEY)
+    parser.add_argument(
+        "--allow-test-signatures", action="store_true", help=argparse.SUPPRESS
+    )
     parser.add_argument(
         "--performance-verification-receipt",
         required=True,
@@ -2297,6 +3006,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="verify immutable candidate bytes without creating support metadata",
     )
     verify.add_argument("--candidate", required=True, type=pathlib.Path)
+    verify.add_argument("--core-artifact", required=True, type=pathlib.Path)
+    verify.add_argument("--core-app", required=True, type=pathlib.Path)
+    verify.add_argument(
+        "--allow-test-signatures", action="store_true", help=argparse.SUPPRESS
+    )
     legacy = subparsers.add_parser(
         "legacy", help="compatibility-only combined build for existing local fixtures"
     )
@@ -2306,6 +3020,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         staged=False,
         include_candidate=False,
         include_output=False,
+        include_core_inputs=False,
     )
     return parser.parse_args(arguments)
 
@@ -2330,8 +3045,14 @@ def main() -> None:
         # must use the separate candidate and final output contract.
         if not args.skip_source_verification:
             fail("legacy component builds are restricted to local test fixtures")
-        legacy_output = args.output.resolve()
-        legacy_output.parent.mkdir(parents=True, exist_ok=True)
+        legacy_output_argument = absolute_without_resolving(args.output)
+        if legacy_output_argument.is_symlink():
+            fail("legacy component output cannot be a symbolic link")
+        legacy_output_argument.parent.mkdir(parents=True, exist_ok=True)
+        legacy_output_parent = directory(
+            legacy_output_argument.parent, "legacy component output parent"
+        ).resolve()
+        legacy_output = legacy_output_parent / legacy_output_argument.name
         legacy_candidate = legacy_output.parent / (
             f".{legacy_output.name}.legacy-candidate-{uuid.uuid4().hex}"
         )

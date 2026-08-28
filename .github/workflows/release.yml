@@ -58,6 +58,11 @@ on:
       version:
         description: 'Version to release (e.g. 0.1.0)'
         required: true
+        type: string
+      build:
+        description: 'Monotonic CURRENT_PROJECT_VERSION to release (e.g. 52)'
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -67,8 +72,69 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  release-metadata:
+    name: Validate authoritative release version and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.identity.outputs.version }}
+      build: ${{ steps.identity.outputs.build }}
+      previous_version: ${{ steps.identity.outputs.previous_version }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 0
+      - name: Prove project identity and monotonic build before artifact work
+        id: identity
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_BUILD: ${{ inputs.build }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/main || {
+            echo "Manual public releases must run from main, not $GITHUB_REF" >&2
+            exit 1
+          }
+          printf '%s\n' "$RELEASE_VERSION" \
+            | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' || {
+            echo "release version must be a stable semantic version" >&2
+            exit 1
+          }
+          printf '%s\n' "$RELEASE_BUILD" | grep -Eq '^[1-9][0-9]*$' || {
+            echo "release build must be a positive integer" >&2
+            exit 1
+          }
+          git fetch --force --tags origin main
+          test "$GITHUB_SHA" = "$(git rev-parse origin/main)" || {
+            echo "Release commit $GITHUB_SHA is not the exact current origin/main commit" >&2
+            exit 1
+          }
+          if git show-ref --verify --quiet "refs/tags/v$RELEASE_VERSION"; then
+            echo "release tag v$RELEASE_VERSION already exists" >&2
+            exit 1
+          fi
+          release_status="$(curl -sS --retry 3 --retry-delay 2 --connect-timeout 15 --max-time 60 \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -o "$RUNNER_TEMP/requested-release.json" -w '%{http_code}' \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/v$RELEASE_VERSION")"
+          case "$release_status" in
+            404) ;;
+            200) echo "release v$RELEASE_VERSION already exists" >&2; exit 1 ;;
+            *) echo "could not prove release v$RELEASE_VERSION is absent (GitHub HTTP $release_status)" >&2; exit 1 ;;
+          esac
+          python3 .github/scripts/verify-release-identity.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --project Dory.xcodeproj/project.pbxproj \
+            --version "$RELEASE_VERSION" \
+            --build "$RELEASE_BUILD" \
+            --github-output "$GITHUB_OUTPUT"
+
   release-configuration:
     name: Required release credentials and tap access
+    needs: release-metadata
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -228,7 +294,7 @@ jobs:
 
   rust-workspace:
     name: Linux full Rust quality gate
-    needs: release-configuration
+    needs: [release-configuration, release-metadata]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -248,7 +314,7 @@ jobs:
 
   guest-assets-arm64:
     name: Build verified arm64 guest assets
-    needs: release-configuration
+    needs: [release-configuration, release-metadata]
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 180
     steps:
@@ -320,7 +386,7 @@ jobs:
 
   prepublication-quality:
     name: macOS pre-publication quality gate
-    needs: release-configuration
+    needs: [release-configuration, release-metadata]
     runs-on: macos-latest
     timeout-minutes: 120
     steps:
@@ -407,10 +473,10 @@ jobs:
         run: bash scripts/ci-test.sh
       - name: Dory core Swift tests
         working-directory: dory-core-swift
-        run: swift test
+        run: swift test --no-parallel
       - name: DoryHV tests
         working-directory: Packages/ContainerizationEngine
-        run: swift test
+        run: swift test --no-parallel
       - name: Dory UI tests
         run: |
           ui_derived_data="$RUNNER_TEMP/dory-ui-derived-data"
@@ -442,14 +508,15 @@ jobs:
             CODE_SIGN_IDENTITY=-
   release_candidate:
     name: Build, sign, notarize, and stage immutable candidate
-    needs: [rust-workspace, prepublication-quality, guest-assets-arm64]
+    needs: [release-metadata, rust-workspace, prepublication-quality, guest-assets-arm64]
     # Publication is intentionally bound to the dedicated physical Apple-silicon release host.
     # Hosted/nested runners are not eligible. Dory launches from one clean v1 data-drive schema;
     # pre-release Dory formats are not release fixtures.
     runs-on: [self-hosted, macOS, arm64, dory, release]
     timeout-minutes: 720
     outputs:
-      version: ${{ steps.ver.outputs.version }}
+      version: ${{ needs.release-metadata.outputs.version }}
+      build: ${{ needs.release-metadata.outputs.build }}
       sha256: ${{ steps.build.outputs.sha256 }}
       dmg: ${{ steps.build.outputs.dmg }}
       zip: ${{ steps.build.outputs.zip }}
@@ -491,25 +558,6 @@ jobs:
           test -z "$(git status --porcelain --untracked-files=no)"
           git rev-parse HEAD | grep -qx "$GITHUB_SHA"
 
-      - name: Resolve version
-        id: ver
-        run: |
-          if [ -n "${{ github.event.inputs.version }}" ]; then
-            [ "$GITHUB_REF" = refs/heads/main ] || {
-              echo "Manual public releases must run from main, not $GITHUB_REF" >&2
-              exit 1
-            }
-            V="${{ github.event.inputs.version }}"
-          else
-            V="${GITHUB_REF_NAME#v}"
-          fi
-          git fetch --no-tags origin main
-          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || {
-            echo "Release commit $GITHUB_SHA is not reachable from main" >&2
-            exit 1
-          }
-          echo "version=$V" >> "$GITHUB_OUTPUT"
-
       - name: Select the pinned Xcode 26.6 release toolchain
         run: |
           xcode_app=/Applications/Xcode-26.6.0-Release.Candidate.app
@@ -542,11 +590,14 @@ jobs:
         run: brew install meson ninja pkgconf molten-vk libepoxy
 
       - name: Preserve previous released appcast history
+        env:
+          PREVIOUS_RELEASE_VERSION: ${{ needs.release-metadata.outputs.previous_version }}
         run: |
           previous="$RUNNER_TEMP/previous-appcast.xml"
-          if curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 15 --max-time 60 \
-            https://github.com/Augani/dory/releases/latest/download/appcast.xml \
-            -o "$previous"; then
+          if [ -n "$PREVIOUS_RELEASE_VERSION" ]; then
+            curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 15 --max-time 60 \
+              "https://github.com/Augani/dory/releases/download/v$PREVIOUS_RELEASE_VERSION/appcast.xml" \
+              -o "$previous"
             python3 - "$previous" <<'PY'
           import sys
           import xml.etree.ElementTree as ET
@@ -573,7 +624,7 @@ jobs:
           PY
             cp "$previous" website/public/appcast.xml
           else
-            echo "No prior release appcast asset exists; using the checked-in bootstrap history."
+            echo "No prior stable release exists; using the checked-in bootstrap history."
           fi
 
       - name: Import Developer ID certificate
@@ -611,17 +662,17 @@ jobs:
           DORY_BUILD_APPCAST: '1'
           DORY_BUILD_APP_UPDATE: '1'
           DORY_COMPONENT_CATALOG_SCHEMA: '2'
-          DORY_RELEASE_ASSET_BASE_URL: https://github.com/Augani/dory/releases/download/v${{ steps.ver.outputs.version }}
+          DORY_RELEASE_ASSET_BASE_URL: https://github.com/Augani/dory/releases/download/v${{ inputs.version }}
           DORY_SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY || secrets.SPARKLE_ED_PRIVATE_KEY }}
           DORY_RELEASE_SOURCE_COMMIT: ${{ github.sha }}
-        run: scripts/release.sh "${{ steps.ver.outputs.version }}" "${{ github.run_number }}"
+        run: scripts/release.sh "${{ inputs.version }}" "${{ inputs.build }}"
 
       - name: Validate public release outputs
         run: |
           scripts/validate-release-outputs.sh \
             release-build \
-            "${{ steps.ver.outputs.version }}" \
-            "${{ github.run_number }}"
+            "${{ inputs.version }}" \
+            "${{ inputs.build }}"
 
       - name: Extract the exact signed Sparkle update candidate
         id: sparkle_candidate
@@ -729,14 +780,14 @@ jobs:
           DORY_RELEASE_DESKTOP_DEBIAN_UPDATE: ${{ github.workspace }}/guest/out/dory-desktop-debian-update-arm64.tar
           DORY_RELEASE_DESKTOP_UBUNTU_UPDATE: ${{ github.workspace }}/guest/out/dory-desktop-ubuntu-update-arm64.tar
           DORY_RELEASE_DESKTOP_KALI_UPDATE: ${{ github.workspace }}/guest/out/dory-desktop-kali-update-arm64.tar
-          DORY_RELEASE_DESKTOP_VERSION: ${{ steps.ver.outputs.version }}
+          DORY_RELEASE_DESKTOP_VERSION: ${{ inputs.version }}
         run: |
           scripts/direct-dmg-install-gate.sh \
             --dmg "${{ steps.build.outputs.dmg }}" \
-            --sbom "release-build/Dory-${{ steps.ver.outputs.version }}.cdx.json" \
+            --sbom "release-build/Dory-${{ inputs.version }}.cdx.json" \
             --release-manifest release-build/release-manifest.json \
-            --version "${{ steps.ver.outputs.version }}" \
-            --build "${{ github.run_number }}" \
+            --version "${{ inputs.version }}" \
+            --build "${{ inputs.build }}" \
             --source-commit "$GITHUB_SHA" \
             --workroot "$RUNNER_TEMP/dory-release-direct-dmg" \
             --confirm CLEAN-RELEASE-USER-DMG-INSTALL
@@ -751,10 +802,10 @@ jobs:
             --update-zip "${{ steps.build.outputs.app_update }}" \
             --appcast release-build/appcast.xml \
             --release-manifest release-build/release-manifest.json \
-            --sbom "release-build/Dory-${{ steps.ver.outputs.version }}.cdx.json" \
+            --sbom "release-build/Dory-${{ inputs.version }}.cdx.json" \
             --sparkle-source "${{ steps.sparkle_source.outputs.path }}" \
-            --version "${{ steps.ver.outputs.version }}" \
-            --build "${{ github.run_number }}" \
+            --version "${{ inputs.version }}" \
+            --build "${{ inputs.build }}" \
             --source-commit "$GITHUB_SHA" \
             --signing-identity "Developer ID Application" \
             --workroot "$RUNNER_TEMP/dory-release-live-sparkle" \
@@ -775,8 +826,8 @@ jobs:
           scripts/interrupted-upgrade-rollback-gate.sh \
             --candidate-app "${{ steps.sparkle_candidate.outputs.app }}" \
             --sign-update "$sign_update" \
-            --version "${{ steps.ver.outputs.version }}" \
-            --build "${{ github.run_number }}" \
+            --version "${{ inputs.version }}" \
+            --build "${{ inputs.build }}" \
             --source-commit "$GITHUB_SHA" \
             --fixture-image "$DORY_RELEASE_FIXTURE_IMAGE" \
             --signing-identity "Developer ID Application" \
@@ -835,7 +886,7 @@ jobs:
           scripts/homebrew-install-gate.sh \
             --candidate-dir release-build \
             --version "$VERSION" \
-            --build "${{ github.run_number }}" \
+            --build "${{ inputs.build }}" \
             --source-commit "$GITHUB_SHA" \
             --workroot "$RUNNER_TEMP/dory-homebrew-install" \
             --confirm CLEAN-RELEASE-USER-HOMEBREW-INSTALL
@@ -890,7 +941,7 @@ jobs:
           scripts/qualify-release-candidate.sh \
             --build-dir release-build \
             --version "${{ needs.release_candidate.outputs.version }}" \
-            --build "${{ github.run_number }}" \
+            --build "${{ inputs.build }}" \
             --source-commit "${{ github.sha }}" \
             --confirm QUALIFY-EXACT-DORY-RELEASE
 
@@ -918,7 +969,7 @@ jobs:
           scripts/qualify-container-engine-performance.sh \
             --candidate-dir release-build \
             --version "${{ needs.release_candidate.outputs.version }}" \
-            --build "${{ github.run_number }}" \
+            --build "${{ inputs.build }}" \
             --source-commit "$GITHUB_SHA" \
             --workroot "$RUNNER_TEMP/dory-container-engine-performance" \
             --alpine-image "${{ vars.DORY_RELEASE_ALPINE_IMAGE }}" \
@@ -1217,7 +1268,7 @@ jobs:
       - name: Verify container-engine performance evidence binding and internal digests
         env:
           VERSION: ${{ needs.release_candidate.outputs.version }}
-          BUILD: ${{ github.run_number }}
+          BUILD: ${{ inputs.build }}
         run: |
           set -euo pipefail
           archive="container-engine-performance-evidence/Dory-$VERSION-container-engine-performance-evidence.zip"
@@ -1308,7 +1359,7 @@ jobs:
           python3 - \
             homebrew-install-evidence/manifest.txt \
             "$GITHUB_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" \
-            "$VERSION" "${{ github.run_number }}" "$ARM64_SHA256" <<'PY'
+            "$VERSION" "${{ inputs.build }}" "$ARM64_SHA256" <<'PY'
           import sys
 
           path, commit, run_id, attempt, version, build, digest = sys.argv[1:8]
@@ -1343,7 +1394,7 @@ jobs:
       - name: Verify Sparkle install evidence binding
         env:
           VERSION: ${{ needs.release_candidate.outputs.version }}
-          BUILD: ${{ github.run_number }}
+          BUILD: ${{ inputs.build }}
         run: |
           set -euo pipefail
           manifests="$(find live-release-evidence -path '*/dory-release-live-sparkle/*/evidence/manifest.txt' -type f -print)"
@@ -1371,7 +1422,7 @@ jobs:
       - name: Verify interrupted transactional-upgrade evidence binding
         env:
           VERSION: ${{ needs.release_candidate.outputs.version }}
-          BUILD: ${{ github.run_number }}
+          BUILD: ${{ inputs.build }}
         run: |
           set -euo pipefail
           manifests="$(find live-release-evidence \
@@ -1435,7 +1486,7 @@ jobs:
           manifest="$(printf '%s\n' "$manifests" | awk 'NF { print; exit }')"
           dmg_sha="$(shasum -a 256 "release-build/Dory-$VERSION.dmg" | awk '{print $1}')"
           python3 - "$manifest" "$GITHUB_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" \
-            "$VERSION" "${{ github.run_number }}" "$dmg_sha" <<'PY'
+            "$VERSION" "${{ inputs.build }}" "$dmg_sha" <<'PY'
           import sys
 
           path, commit, run_id, attempt, version, build, digest = sys.argv[1:8]
@@ -1494,7 +1545,7 @@ jobs:
       - name: Verify durable qualification and candidate digest binding
         env:
           VERSION: ${{ needs.release_candidate.outputs.version }}
-          BUILD: ${{ github.run_number }}
+          BUILD: ${{ inputs.build }}
           SOURCE_COMMIT: ${{ github.sha }}
           PRIMARY_SHA256: ${{ needs.release_candidate.outputs.sha256 }}
         run: |
@@ -1624,7 +1675,7 @@ jobs:
       - name: Package stable reliability evidence
         env:
           VERSION: ${{ needs.release_candidate.outputs.version }}
-          BUILD: ${{ github.run_number }}
+          BUILD: ${{ inputs.build }}
           SOURCE_COMMIT: ${{ github.sha }}
           PRIMARY_SHA256: ${{ needs.release_candidate.outputs.sha256 }}
         run: |
@@ -1685,80 +1736,246 @@ jobs:
             release-build/components/arm64/catalog.json.sig
           if-no-files-found: error
 
-      - name: Publish GitHub Release
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
-        with:
-          tag_name: v${{ needs.release_candidate.outputs.version }}
-          name: Dory ${{ needs.release_candidate.outputs.version }}
-          files: |
-            release-build/Dory-${{ needs.release_candidate.outputs.version }}-arm64.zip
-            release-build/Dory-${{ needs.release_candidate.outputs.version }}.zip
-            release-build/Dory-${{ needs.release_candidate.outputs.version }}-arm64.dmg
-            release-build/Dory-${{ needs.release_candidate.outputs.version }}.dmg
-            release-build/Dory-${{ needs.release_candidate.outputs.version }}-app-update.zip
-            release-build/dory-engine-${{ needs.release_candidate.outputs.version }}-arm64.tar.gz
-            release-build/Dory-${{ needs.release_candidate.outputs.version }}.cdx.json
-            release-build/release-manifest.json
-            release-build/appcast.xml
-            release-build/components/arm64/*
-            container-engine-performance-evidence/Dory-${{ needs.release_candidate.outputs.version }}-container-engine-performance-evidence.zip
-            ${{ runner.temp }}/Dory-${{ needs.release_candidate.outputs.version }}-reliability-evidence.zip
+      - name: Revalidate tag and release absence immediately before publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.release_candidate.outputs.version }}
+          BUILD: ${{ needs.release_candidate.outputs.build }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git fetch --force origin main
+          test "$GITHUB_SHA" = "$(git rev-parse origin/main)" || {
+            echo "Qualified commit $GITHUB_SHA is no longer the exact current origin/main commit" >&2
+            exit 1
+          }
+          python3 .github/scripts/verify-release-identity.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --project Dory.xcodeproj/project.pbxproj \
+            --version "$VERSION" \
+            --build "$BUILD"
+          prove_absent() {
+            local endpoint="$1" label="$2" output="$RUNNER_TEMP/publication-$3.json" status
+            status="$(curl -sS --retry 3 --retry-delay 2 --connect-timeout 15 --max-time 60 \
+              -H 'Accept: application/vnd.github+json' \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H 'X-GitHub-Api-Version: 2022-11-28' \
+              -o "$output" -w '%{http_code}' \
+              "https://api.github.com/repos/$GITHUB_REPOSITORY/$endpoint")"
+            case "$status" in
+              404) ;;
+              200) echo "$label already exists immediately before publication" >&2; exit 1 ;;
+              *) echo "could not prove $label is absent (GitHub HTTP $status)" >&2; exit 1 ;;
+            esac
+          }
+          prove_absent "git/ref/tags/v$VERSION" "tag v$VERSION" tag
+          prove_absent "releases/tags/v$VERSION" "release v$VERSION" release
+      - name: Create a private draft, verify its exact assets, then publish it
+        id: published_release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.release_candidate.outputs.version }}
+          BUILD: ${{ needs.release_candidate.outputs.build }}
+          PRIMARY_SHA256: ${{ needs.release_candidate.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          body="$RUNNER_TEMP/dory-release-body.md"
+          cat > "$body" <<'EOF'
+          Native Docker & Linux containers for Apple Silicon, a free, open-source alternative to
+          OrbStack and Docker Desktop. Intel support is planned after the Apple Silicon production
+          contract is complete.
+
+          **0.4 trust release**
+
+          - Supported dedicated-VM agent sandboxes with enforced egress, scoped mounts and
+            credentials, non-root execution, resource caps, TTL cleanup, and rollback.
+          - Reason-coded staged readiness, bounded targeted repairs, incident provenance, and
+            attributed resource/storage/network diagnostics.
+          - Guided corporate proxy, registry CA, split-DNS, VPN, and route reconciliation.
+          - Transactional Sparkle/component upgrades with next-launch smoke tests, automatic
+            last-known-good rollback, and an export route when durable schema rollback is unsafe.
+          - Build Activity with durable Dory-launched build history, logs, cache visibility, and
+            cancellation; exact-selection transactional migration with completeness evidence.
+          - Verified scheduled local machine recovery bundles with retention and periodic
+            disposable boot proof, isolated from manual snapshots.
+          - Explicit-scope confirmation or recoverable undo for destructive UI, keyboard, menu,
+            CLI, migration, cleanup, component, and missing-drive paths.
+          - Exact-candidate physical, duration, compatibility, migration, update, security, and
+            container-engine performance evidence bound to the shipped manifest and SBOM.
+
+          **Apple Silicon downloads**
+
+          | Asset | What it is |
+          |---|---|
+          | `Dory-@VERSION@-arm64.dmg` / `.zip` | Full app optimized for Apple silicon |
+          | `Dory-@VERSION@.dmg` / `.zip` | Compatibility alias for the arm64 build |
+          | `dory-engine-@VERSION@-arm64.tar.gz` | Headless engine runtime, no GUI — `./dory-engine start`, then `docker context use dory-engine` |
+          | `Dory-@VERSION@.cdx.json` | CycloneDX 1.6 SBOM for the exact shipped app tree |
+          | `Dory-@VERSION@-container-engine-performance-evidence.zip` | Raw isolated/interleaved container-engine benchmark data, provenance, correctness evidence, and generated summaries; not Linux VM qualification |
+          | `Dory-@VERSION@-reliability-evidence.zip` | Candidate-bound eight-hour resource/file/API and 25-hour unchanged-connection qualification records |
+
+          **Install**
+
+          ```sh
+          brew install --cask Augani/dory/dory
+          ```
+
+          …or download the matching `.dmg` below and drag Dory to Applications.
+
+          Dory.app and its built-in engine run on macOS 14 Sonoma or later. Sonoma uses the
+          bundled Virtualization.framework `dory-vmm` tier; supported macOS 15+ hosts use
+          Dory's raw `dory-hv` tier. An existing Docker-compatible engine remains selectable
+          from Settings → Engine Backend.
+
+          ```
+          arm64 zip sha256: @PRIMARY_SHA256@
+          ```
+
+          Read next: `README.md`, `CHANGELOG.md`, `COMPATIBILITY.md`, and the documentation at
+          https://augani.github.io/dory/docs/.
+          EOF
+          python3 - "$body" "$VERSION" "$PRIMARY_SHA256" <<'PY'
+          import pathlib
+          import sys
+
+          path = pathlib.Path(sys.argv[1])
+          rendered = path.read_text(encoding="utf-8")
+          rendered = rendered.replace("@VERSION@", sys.argv[2])
+          rendered = rendered.replace("@PRIMARY_SHA256@", sys.argv[3])
+          path.write_text(rendered, encoding="utf-8")
+          PY
+          python3 .github/scripts/publish-github-release.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --version "$VERSION" \
+            --build "$BUILD" \
+            --project Dory.xcodeproj/project.pbxproj \
+            --source-commit "$GITHUB_SHA" \
+            --name "Dory $VERSION" \
+            --body-file "$body" \
+            --github-output "$GITHUB_OUTPUT" \
+            release-build/Dory-${{ needs.release_candidate.outputs.version }}-arm64.zip \
+            release-build/Dory-${{ needs.release_candidate.outputs.version }}.zip \
+            release-build/Dory-${{ needs.release_candidate.outputs.version }}-arm64.dmg \
+            release-build/Dory-${{ needs.release_candidate.outputs.version }}.dmg \
+            release-build/Dory-${{ needs.release_candidate.outputs.version }}-app-update.zip \
+            release-build/dory-engine-${{ needs.release_candidate.outputs.version }}-arm64.tar.gz \
+            release-build/Dory-${{ needs.release_candidate.outputs.version }}.cdx.json \
+            release-build/release-manifest.json \
+            release-build/appcast.xml \
+            release-build/components/arm64/* \
+            container-engine-performance-evidence/Dory-${{ needs.release_candidate.outputs.version }}-container-engine-performance-evidence.zip \
+            ${{ runner.temp }}/Dory-${{ needs.release_candidate.outputs.version }}-reliability-evidence.zip \
             ${{ runner.temp }}/Dory-${{ needs.release_candidate.outputs.version }}-reliability-evidence.zip.sha256
-          fail_on_unmatched_files: true
-          generate_release_notes: true
-          body: |
-            Native Docker & Linux containers for Apple Silicon, a free, open-source alternative to
-            OrbStack and Docker Desktop. Intel support is planned after the Apple Silicon production
-            contract is complete.
 
-            **0.4 trust release**
+      - name: Prove the published release ref and exact asset set
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.release_candidate.outputs.version }}
+          RELEASE_ID: ${{ steps.published_release.outputs.id }}
+        run: |
+          set -euo pipefail
+          python3 - "$GITHUB_REPOSITORY" "$VERSION" "$GITHUB_SHA" "$RELEASE_ID" <<'PY'
+          import hashlib
+          import json
+          import os
+          import pathlib
+          import sys
+          import time
+          import urllib.error
+          import urllib.parse
+          import urllib.request
 
-            - Supported dedicated-VM agent sandboxes with enforced egress, scoped mounts and
-              credentials, non-root execution, resource caps, TTL cleanup, and rollback.
-            - Reason-coded staged readiness, bounded targeted repairs, incident provenance, and
-              attributed resource/storage/network diagnostics.
-            - Guided corporate proxy, registry CA, split-DNS, VPN, and route reconciliation.
-            - Transactional Sparkle/component upgrades with next-launch smoke tests, automatic
-              last-known-good rollback, and an export route when durable schema rollback is unsafe.
-            - Build Activity with durable Dory-launched build history, logs, cache visibility, and
-              cancellation; exact-selection transactional migration with completeness evidence.
-            - Verified scheduled local machine recovery bundles with retention and periodic
-              disposable boot proof, isolated from manual snapshots.
-            - Explicit-scope confirmation or recoverable undo for destructive UI, keyboard, menu,
-              CLI, migration, cleanup, component, and missing-drive paths.
-            - Exact-candidate physical, duration, compatibility, migration, update, security, and
-              container-engine performance evidence bound to the shipped manifest and SBOM.
+          repository, version, expected_commit, expected_release_id = sys.argv[1:]
+          token = os.environ.get("GH_TOKEN", "")
+          if not token:
+              raise SystemExit("publication verification has no GitHub token")
+          headers = {
+              "Accept": "application/vnd.github+json",
+              "Authorization": f"Bearer {token}",
+              "User-Agent": "Dory-release-publication-verifier",
+              "X-GitHub-Api-Version": "2022-11-28",
+          }
 
-            **Apple Silicon downloads**
+          def request(path):
+              url = f"https://api.github.com/repos/{repository}/{path}"
+              with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=60) as response:
+                  return json.load(response)
 
-            | Asset | What it is |
-            |---|---|
-            | `Dory-${{ needs.release_candidate.outputs.version }}-arm64.dmg` / `.zip` | Full app optimized for Apple silicon |
-            | `Dory-${{ needs.release_candidate.outputs.version }}.dmg` / `.zip` | Compatibility alias for the arm64 build |
-            | `dory-engine-${{ needs.release_candidate.outputs.version }}-arm64.tar.gz` | Headless engine runtime, no GUI — `./dory-engine start`, then `docker context use dory-engine` |
-            | `Dory-${{ needs.release_candidate.outputs.version }}.cdx.json` | CycloneDX 1.6 SBOM for the exact shipped app tree |
-            | `Dory-${{ needs.release_candidate.outputs.version }}-container-engine-performance-evidence.zip` | Raw isolated/interleaved container-engine benchmark data, provenance, correctness evidence, and generated summaries; not Linux VM qualification |
-            | `Dory-${{ needs.release_candidate.outputs.version }}-reliability-evidence.zip` | Candidate-bound eight-hour resource/file/API and 25-hour unchanged-connection qualification records |
+          reference = request(f"git/ref/tags/{urllib.parse.quote('v' + version, safe='')}")
+          target = reference.get("object") if isinstance(reference, dict) else None
+          for _ in range(8):
+              if not isinstance(target, dict):
+                  raise SystemExit("published tag has an invalid Git object")
+              if target.get("type") == "commit":
+                  break
+              if target.get("type") != "tag" or not isinstance(target.get("sha"), str):
+                  raise SystemExit("published tag does not resolve to a commit")
+              tag_object = request(f"git/tags/{target['sha']}")
+              target = tag_object.get("object") if isinstance(tag_object, dict) else None
+          else:
+              raise SystemExit("published tag indirection exceeds the safety bound")
+          if target.get("sha") != expected_commit:
+              raise SystemExit(
+                  f"published tag resolves to {target.get('sha')}, expected qualified commit {expected_commit}"
+              )
 
-            **Install**
+          root = pathlib.Path("release-build")
+          explicit = [
+              root / f"Dory-{version}-arm64.zip",
+              root / f"Dory-{version}.zip",
+              root / f"Dory-{version}-arm64.dmg",
+              root / f"Dory-{version}.dmg",
+              root / f"Dory-{version}-app-update.zip",
+              root / f"dory-engine-{version}-arm64.tar.gz",
+              root / f"Dory-{version}.cdx.json",
+              root / "release-manifest.json",
+              root / "appcast.xml",
+              pathlib.Path("container-engine-performance-evidence")
+                  / f"Dory-{version}-container-engine-performance-evidence.zip",
+              pathlib.Path(os.environ["RUNNER_TEMP"])
+                  / f"Dory-{version}-reliability-evidence.zip",
+              pathlib.Path(os.environ["RUNNER_TEMP"])
+                  / f"Dory-{version}-reliability-evidence.zip.sha256",
+          ]
+          explicit.extend(sorted((root / "components" / "arm64").glob("*")))
+          expected = {}
+          def digest_file(path):
+              digest = hashlib.sha256()
+              with path.open("rb") as handle:
+                  for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                      digest.update(chunk)
+              return digest.hexdigest()
 
-            ```sh
-            brew install --cask Augani/dory/dory
-            ```
+          for path in explicit:
+              info = path.lstat()
+              if not path.is_file() or path.is_symlink() or info.st_size <= 0:
+                  raise SystemExit(f"publication input is missing or indirect: {path}")
+              digest = digest_file(path)
+              if path.name in expected:
+                  raise SystemExit(f"publication repeats asset name {path.name}")
+              expected[path.name] = (info.st_size, f"sha256:{digest}")
 
-            …or download the matching `.dmg` below and drag Dory to Applications.
-
-            Dory.app and its built-in engine run on macOS 14 Sonoma or later. Sonoma uses the
-            bundled Virtualization.framework `dory-vmm` tier; supported macOS 15+ hosts use
-            Dory's raw `dory-hv` tier. An existing Docker-compatible engine remains selectable
-            from Settings → Engine Backend.
-
-            ```
-            arm64 zip sha256: ${{ needs.release_candidate.outputs.sha256 }}
-            ```
-
-            Read next: `README.md`, `CHANGELOG.md`, `COMPATIBILITY.md`, and the documentation at
-            https://augani.github.io/dory/docs/.
+          release = None
+          for attempt in range(1, 13):
+              release = request(f"releases/tags/{urllib.parse.quote('v' + version, safe='')}")
+              assets = release.get("assets") if isinstance(release, dict) else None
+              actual = {
+                  asset.get("name"): (asset.get("size"), asset.get("digest"))
+                  for asset in assets or [] if isinstance(asset, dict)
+              }
+              if actual == expected:
+                  break
+              if attempt == 12:
+                  raise SystemExit(f"published release asset set differs: {actual!r} != {expected!r}")
+              time.sleep(5)
+          if str(release.get("id")) != expected_release_id:
+              raise SystemExit("published release ID differs from the action result")
+          if release.get("tag_name") != f"v{version}" or release.get("draft") or release.get("prerelease"):
+              raise SystemExit("published release identity is invalid")
+          if release.get("target_commitish") != expected_commit:
+              raise SystemExit("published release target_commitish differs from the qualified commit")
+          print(f"Published v{version} is exactly bound to {expected_commit} and {len(expected)} assets.")
+          PY
 
       - name: Remove runner-local qualification state after successful publication
         run: rm -rf "$QUALIFICATION"
@@ -1767,6 +1984,8 @@ jobs:
     name: Publish generated appcast to the live Sparkle feed
     needs: publish_release
     runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
     permissions:
       contents: read
       pages: write
@@ -1779,6 +1998,8 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - name: Configure the job-scoped Sparkle authority cache
+        run: echo "DORY_SPARKLE_AUTHORITY_CACHE=$RUNNER_TEMP/dory-sparkle-authority" >> "$GITHUB_ENV"
       - name: Download metadata generated from the signed release
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -1791,6 +2012,7 @@ jobs:
           path: component-catalog-artifact
       - name: Validate generated live feed input
         run: |
+          set -euo pipefail
           test -s appcast-artifact/appcast.xml
           test -s component-catalog-artifact/catalog.json
           test -s component-catalog-artifact/catalog.json.sha256
@@ -1822,6 +2044,14 @@ jobs:
           name = os.path.basename(urllib.parse.urlparse(enclosure.attrib["url"]).path)
           require(name == f"Dory-{version}-app-update.zip", f"generated appcast points at {name}")
           PY
+          metadata="$RUNNER_TEMP/generated-release-metadata"
+          mkdir -p "$metadata/components/arm64"
+          cp appcast-artifact/appcast.xml "$metadata/appcast.xml"
+          for name in catalog.json catalog.json.sha256 catalog.json.sig; do
+            cp "component-catalog-artifact/$name" "$metadata/components/arm64/$name"
+          done
+          python3 .github/scripts/verify-pages-release-metadata.py \
+            verify "$metadata" generated-release
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
@@ -1833,6 +2063,7 @@ jobs:
         working-directory: website
       - name: Overlay the exact release metadata onto the complete site
         run: |
+          set -euo pipefail
           test -d docs-build
           cp appcast-artifact/appcast.xml docs-build/appcast.xml
           cmp appcast-artifact/appcast.xml docs-build/appcast.xml
@@ -1841,6 +2072,8 @@ jobs:
             cp "component-catalog-artifact/$name" "docs-build/components/arm64/$name"
             cmp "component-catalog-artifact/$name" "docs-build/components/arm64/$name"
           done
+          python3 .github/scripts/verify-pages-release-metadata.py \
+            verify docs-build release-pages-artifact
       - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
       - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
         with:
@@ -1849,6 +2082,7 @@ jobs:
         uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
       - name: Verify the public update metadata exactly matches this release
         run: |
+          set -euo pipefail
           live="$RUNNER_TEMP/live-release-metadata"
           rm -rf "$live"
           mkdir -p "$live/components/arm64"
@@ -1867,6 +2101,8 @@ jobs:
                && cmp component-catalog-artifact/catalog.json "$live/components/arm64/catalog.json" \
                && cmp component-catalog-artifact/catalog.json.sha256 "$live/components/arm64/catalog.json.sha256" \
                && cmp component-catalog-artifact/catalog.json.sig "$live/components/arm64/catalog.json.sig"; then
+              python3 .github/scripts/verify-pages-release-metadata.py \
+                verify "$live" public-release
               echo "Public appcast and component catalog exactly match ${{ needs.publish_release.outputs.version }}"
               exit 0
             fi

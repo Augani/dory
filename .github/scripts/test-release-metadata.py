@@ -81,6 +81,13 @@ class ReleaseCatalogTests(unittest.TestCase):
         self.catalog_path = self.components / "catalog.json"
         self.digest_path = self.components / "catalog.json.sha256"
         self.signature_path = self.components / "catalog.json.sig"
+        self.asset_name = (
+            "Dory-9.8.7-component-linux-desktop-arm64-"
+            "virtual-machine-qualification.json"
+        )
+        self.asset_payload = b"q"
+        (self.components / self.asset_name).write_bytes(self.asset_payload)
+        asset_digest = hashlib.sha256(self.asset_payload).hexdigest()
         key_id = hashlib.sha256(base64.b64decode(self.public_key, validate=True)).hexdigest()
         self.catalog = {
             "kind": "dev.dory.component-catalog",
@@ -99,25 +106,24 @@ class ReleaseCatalogTests(unittest.TestCase):
                         "role": "qualification-evidence",
                         "url": (
                             "https://github.com/Augani/dory/releases/download/v9.8.7/"
-                            "Dory-9.8.7-component-linux-desktop-arm64-"
-                            "virtual-machine-qualification.json"
+                            f"{self.asset_name}"
                         ),
                         "compression": "none",
                         "downloadBytes": 1,
                         "installedBytes": 1,
-                        "sha256": "c" * 64,
-                        "installedSHA256": "d" * 64,
+                        "sha256": asset_digest,
+                        "installedSHA256": asset_digest,
                         "executable": False,
                     }],
                     qualification=["qualification-1"],
-                    attestation_digest="d" * 64,
+                    attestation_digest=asset_digest,
                 ),
             ],
             "virtualMachineQualification": {
                 "component": "linux-desktop",
                 "path": "virtual-machine-qualification.json",
                 "manifestIdentity": "qualification-1",
-                "manifestFormatVersion": 1,
+                "manifestFormatVersion": 2,
                 "signingKeyID": key_id,
             },
         }
@@ -199,6 +205,18 @@ class ReleaseCatalogTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "schema 2"):
             self.validate()
 
+    def test_test_fixture_catalog_kind_is_never_public_release_metadata(self) -> None:
+        self.catalog["kind"] = "dev.dory.component-catalog.test-fixture"
+        self.publish()
+        with self.assertRaisesRegex(ValueError, "kind mismatch"):
+            self.validate()
+
+    def test_qualification_schema_one_is_rejected_even_when_correctly_signed(self) -> None:
+        self.catalog["virtualMachineQualification"]["manifestFormatVersion"] = 1
+        self.publish()
+        with self.assertRaisesRegex(ValueError, "qualification schema"):
+            self.validate()
+
     def test_catalog_mutation_with_rewritten_digest_fails_signature(self) -> None:
         self.publish()
         self.catalog["generatedAt"] = "2026-08-21T01:02:04Z"
@@ -210,6 +228,35 @@ class ReleaseCatalogTests(unittest.TestCase):
         self.catalog["unexpected"] = True
         self.publish()
         with self.assertRaisesRegex(ValueError, "shape is invalid"):
+            self.validate()
+
+    def test_signed_asset_digest_must_match_delivered_bytes(self) -> None:
+        self.catalog["components"][1]["assets"][0]["sha256"] = "e" * 64
+        self.catalog["components"][1]["assets"][0]["installedSHA256"] = "e" * 64
+        self.publish()
+        with self.assertRaisesRegex(ValueError, "digest differs from catalog"):
+            self.validate()
+
+    def test_signed_asset_size_must_match_delivered_bytes(self) -> None:
+        self.catalog["components"][1]["assets"][0]["downloadBytes"] = 2
+        self.catalog["components"][1]["assets"][0]["installedBytes"] = 2
+        self.publish()
+        with self.assertRaisesRegex(ValueError, "byte count differs from catalog"):
+            self.validate()
+
+    def test_uncompressed_asset_must_have_equal_stored_and_installed_binding(self) -> None:
+        self.catalog["components"][1]["assets"][0]["installedSHA256"] = "f" * 64
+        self.publish()
+        with self.assertRaisesRegex(ValueError, "uncompressed component asset"):
+            self.validate()
+
+    def test_delivered_asset_symlink_is_rejected(self) -> None:
+        artifact = self.components / self.asset_name
+        direct = self.components / "direct-qualification.json"
+        artifact.rename(direct)
+        artifact.symlink_to(direct.name)
+        self.publish()
+        with self.assertRaisesRegex(ValueError, "indirect or empty"):
             self.validate()
 
     def test_catalog_symlink_is_rejected_before_signature_verification(self) -> None:
