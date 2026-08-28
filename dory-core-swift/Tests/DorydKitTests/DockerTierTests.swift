@@ -1411,6 +1411,7 @@ final class DockerTierTests: XCTestCase {
         let retained = UnconfirmedStopDockerProcess(pid: 42_500)
         let replacement = ReadyDockerManagedProcess(pid: 42_501)
         let factoryCalls = LockedInt()
+        let states = LockedTierStates()
         let tier = DockerTier(
             configuration: DockerTierConfiguration(
                 home: base + "/home",
@@ -1428,6 +1429,7 @@ final class DockerTierTests: XCTestCase {
             idleController: IdleController(),
             dockerReadyWaiter: { _, _, _ in true }
         )
+        tier.setLifecycleStateObserver { states.append($0) }
         tier.installManagedProcessFactory { _, terminationHandler in
             if factoryCalls.increment() == 1 {
                 retained.setUnexpectedTerminationHandler(terminationHandler)
@@ -1454,6 +1456,10 @@ final class DockerTierTests: XCTestCase {
             return status.state == .running && status.hvPID == 42_501
         })
         XCTAssertEqual(factoryCalls.value, 2)
+        XCTAssertTrue(waitUntil(timeout: 1) {
+            states.value == [.running, .starting, .failed, .starting, .running]
+        })
+        XCTAssertEqual(states.value, [.running, .starting, .failed, .starting, .running])
     }
 
     func testExplicitStopNeverTriggersSupervisorRestart() throws {
@@ -1661,6 +1667,7 @@ final class DockerTierTests: XCTestCase {
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: helper)
 
         let readyCalls = LockedInt()
+        let states = LockedTierStates()
         let tier = DockerTier(
             configuration: DockerTierConfiguration(
                 home: base + "/home",
@@ -1687,6 +1694,7 @@ final class DockerTierTests: XCTestCase {
                 return false
             }
         )
+        tier.setLifecycleStateObserver { states.append($0) }
         defer { tier.stop() }
         try tier.start()
         let firstPID = try XCTUnwrap(tier.status().hvPID)
@@ -1716,6 +1724,10 @@ final class DockerTierTests: XCTestCase {
         XCTAssertTrue(tier.status().lastError?.contains("restart limit") == true)
         XCTAssertNil(tier.status().hvPID)
         XCTAssertFalse(FileManager.default.fileExists(atPath: tier.socketPath))
+        XCTAssertTrue(waitUntil(timeout: 1) {
+            states.value == [.running, .starting, .starting, .failed]
+        })
+        XCTAssertEqual(states.value, [.running, .starting, .starting, .failed])
     }
 
     func testUnconfirmedHelperStopFailsClosedAndBlocksReplacementGeneration() throws {

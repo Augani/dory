@@ -3812,6 +3812,54 @@ struct DorydClientTests {
     }
 
     @MainActor
+    @Test func appStoreAutoRefreshPublishesDorydRestartingStateWithoutDockerPoll() async throws {
+        let base = "/tmp/doryd-restarting-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let socketPath = base + "/doryd.sock"
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let shim = DockerShim(runtime: MockRuntime())
+        let dockerServer = ShimHTTPServer(socketPath: socketPath) { request in
+            await shim.handle(request)
+        }
+        try dockerServer.start()
+        defer { dockerServer.stop() }
+
+        let listener = NSXPCListener.anonymous()
+        let service = FakeDorydService(socketPath: socketPath)
+        let delegate = FakeDorydListenerDelegate(service: service)
+        listener.delegate = delegate
+        listener.resume()
+        defer { listener.invalidate() }
+
+        let store = AppStore(
+            dorydClient: DorydClient(endpoint: listener.endpoint),
+            useDorydEngine: true
+        )
+        store.routeDockerCLI = false
+        await store.connectBackend()
+        #expect(store.engineRunning)
+        #expect(store.loadState == .ready)
+        let dashboardPollsBeforeRestart = service.engineDashboardSnapshotCount
+
+        service.setEngineStatus(
+            "starting",
+            detail: "Managed helper exited; restart attempt 1/3 queued."
+        )
+        await store.refreshIfIdle()
+
+        #expect(!store.engineSleeping)
+        #expect(!store.engineRunning)
+        #expect(store.loadState == .connecting)
+        #expect(store.sharedVMStatus == "Managed helper exited; restart attempt 1/3 queued.")
+        #expect(service.engineDashboardSnapshotCount == dashboardPollsBeforeRestart)
+
+        service.setEngineStatus("starting", detail: "")
+        await store.refreshIfIdle()
+        #expect(store.sharedVMStatus == "Starting the engine…")
+        #expect(service.engineDashboardSnapshotCount == dashboardPollsBeforeRestart)
+    }
+
+    @MainActor
     @Test func appStoreAutoRefreshUsesDaemonObservationInsteadOfPublicDockerActivity() async throws {
         let base = "/tmp/danwp-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let socketPath = base + "/doryd.sock"

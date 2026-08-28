@@ -368,6 +368,50 @@ struct DoryFSWorkerRootAuthorityTests {
                 == DoryFSWorkerBootstrapReceipt(accepting: bootstrap)
         )
     }
+
+    @Test func serviceSeparatesObservationPreparationFromDeliveryActivation() throws {
+        let tree = try TemporaryDirectoryTree()
+        let handle = try openHandle(tree.makeDirectory("root"), directoryOnly: true)
+        let authorityShare = try share(
+            index: 16,
+            descriptorIndex: 0,
+            identity: pinnedIdentity(of: handle),
+            coherencePolicy: .invalidationOnly
+        )
+        let bootstrap = try makeBootstrap(shares: [authorityShare])
+        let service = DoryFSWorkerService(
+            coherenceExchange: { exactFrame in
+                let batch = try DoryFSWorkerCoherenceCodec.decodeBatch(exactFrame)
+                return DoryFSWorkerCoherenceCodec.encode(
+                    try DoryFSWorkerCoherenceAcknowledgement(accepting: batch)
+                )
+            },
+            onCoherenceFailure: { _ in }
+        )
+
+        _ = try unwrapRPC(service.bootstrap(
+            exactBytes: DoryFSWorkerBootstrapCodec.encode(bootstrap),
+            rootDescriptors: [handle]
+        ))
+
+        let prepared = try DoryFSWorkerCoherenceStatusCodec.decode(
+            service.prepareCoherenceExactBytes()
+        )
+        #expect(prepared.generation == bootstrap.generation)
+        #expect(!prepared.running)
+        #expect(prepared.configuredShareCount == 1)
+        #expect(prepared.observationStreamCount == 1)
+        #expect(
+            prepared.requiredObservationShareCount == prepared.observedRequiredShareCount
+        )
+
+        let active = try DoryFSWorkerCoherenceStatusCodec.decode(
+            service.activateCoherenceExactBytes()
+        )
+        #expect(active.generation == bootstrap.generation)
+        #expect(active.running)
+        #expect(active.observationStreamCount == 1)
+    }
 }
 
 private enum RootAuthorityTestError: Error {

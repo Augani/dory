@@ -18,6 +18,7 @@ public protocol DoryFSWorkerXPCProtocol: NSObjectProtocol {
     )
     func exchange(_ frame: Data, withReply reply: @escaping (Data) -> Void)
     func sendOneWay(_ frame: Data)
+    func prepareCoherence(withReply reply: @escaping (Data) -> Void)
     func activateCoherence(withReply reply: @escaping (Data) -> Void)
     func coherenceStatus(withReply reply: @escaping (Data) -> Void)
 }

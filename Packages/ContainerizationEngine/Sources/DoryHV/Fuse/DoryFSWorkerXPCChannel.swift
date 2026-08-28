@@ -28,6 +28,7 @@ public final class DoryFSWorkerXPCChannel:
         case active
         case interrupted
         case invalidated
+        case closed
     }
 
     private final class ReplyOnce: @unchecked Sendable {
@@ -143,7 +144,9 @@ public final class DoryFSWorkerXPCChannel:
     }
 
     public func activateCoherence(
-        timeout: TimeInterval = 2
+        timeout: TimeInterval = Double(
+            DoryFSWorkerCoherenceTiming.activationRequestNanoseconds
+        ) / 1_000_000_000
     ) throws -> DoryFSWorkerCoherenceStatus {
         let state = BlockingCoherenceStatus()
         guard let proxy = connection.remoteObjectProxyWithErrorHandler({ [weak self] _ in
@@ -153,6 +156,36 @@ public final class DoryFSWorkerXPCChannel:
             throw DoryFSWorkerWorkspaceClientError.malformedCoherenceStatus
         }
         proxy.activateCoherence { bytes in state.resolve(bytes) }
+        let result = state.condition.withLock { () -> (Bool, Data?) in
+            let deadline = Date(timeIntervalSinceNow: max(0, timeout))
+            while !state.completed, state.condition.wait(until: deadline) {}
+            return (state.completed, state.bytes)
+        }
+        guard result.0 else {
+            invalidate()
+            throw DoryFSWorkerWorkspaceClientError.coherenceStatusTimedOut
+        }
+        guard let bytes = result.1,
+              let status = try? DoryFSWorkerCoherenceStatusCodec.decode(bytes) else {
+            invalidate()
+            throw DoryFSWorkerWorkspaceClientError.malformedCoherenceStatus
+        }
+        return status
+    }
+
+    public func prepareCoherence(
+        timeout: TimeInterval = Double(
+            DoryFSWorkerCoherenceTiming.preparationRequestNanoseconds
+        ) / 1_000_000_000
+    ) throws -> DoryFSWorkerCoherenceStatus {
+        let state = BlockingCoherenceStatus()
+        guard let proxy = connection.remoteObjectProxyWithErrorHandler({ [weak self] _ in
+            state.resolve(nil)
+            self?.transition(to: .interrupted)
+        }) as? DoryFSWorkerXPCProtocol else {
+            throw DoryFSWorkerWorkspaceClientError.malformedCoherenceStatus
+        }
+        proxy.prepareCoherence { bytes in state.resolve(bytes) }
         let result = state.condition.withLock { () -> (Bool, Data?) in
             let deadline = Date(timeIntervalSinceNow: max(0, timeout))
             while !state.completed, state.condition.wait(until: deadline) {}
@@ -197,6 +230,8 @@ public final class DoryFSWorkerXPCChannel:
                 return .interrupted
             case .invalidated:
                 return .invalidated
+            case .closed:
+                return nil
             }
         }
         if let immediate { handler(immediate) }
@@ -284,6 +319,19 @@ public final class DoryFSWorkerXPCChannel:
         connection.invalidate()
     }
 
+    /// Retires an intentionally completed worker without translating normal XPC invalidation into
+    /// a guest crash. Unexpected interruption and all failure-driven invalidation still use the
+    /// lifecycle path above and remain fail-stop.
+    public func close() {
+        let shouldClose = stateLock.withLock { () -> Bool in
+            guard case .active = state else { return false }
+            state = .closed
+            lifecycleHandlers.removeAll(keepingCapacity: false)
+            return true
+        }
+        if shouldClose { connection.invalidate() }
+    }
+
     private func transition(to requested: State) {
         let delivery: (
             handlers: [@Sendable (DoryFSWorkerChannelEvent) -> Void],
@@ -300,6 +348,8 @@ public final class DoryFSWorkerXPCChannel:
                 return (handlers, .interrupted)
             case .invalidated:
                 return (handlers, .invalidated)
+            case .closed:
+                return nil
             }
         }
         if let delivery {
@@ -476,11 +526,40 @@ public final class DoryFSWorkerWorkspaceClient: @unchecked Sendable {
         try channel.coherenceStatus(timeout: timeout)
     }
 
-    public func activateCoherence(timeout: TimeInterval = 2) throws {
+    public func prepareCoherence(
+        timeout: TimeInterval = Double(
+            DoryFSWorkerCoherenceTiming.preparationRequestNanoseconds
+        ) / 1_000_000_000
+    ) throws {
+        let status = try channel.prepareCoherence(timeout: timeout)
+        let configuredCoherenceShareCount = UInt32(bootstrap.shares.filter {
+            $0.coherencePolicy != .disabled
+        }.count)
+        let preparedStateIsValid = configuredCoherenceShareCount == 0
+            ? status.running && status.observationStreamCount == 0
+            : !status.running && status.observationStreamCount > 0
+        guard status.generation == bootstrap.generation,
+              status.configuredShareCount == configuredCoherenceShareCount,
+              status.requiredObservationShareCount == status.observedRequiredShareCount,
+              preparedStateIsValid else {
+            channel.invalidate()
+            throw DoryFSWorkerWorkspaceClientError.malformedCoherenceStatus
+        }
+    }
+
+    public func activateCoherence(
+        timeout: TimeInterval = Double(
+            DoryFSWorkerCoherenceTiming.activationRequestNanoseconds
+        ) / 1_000_000_000
+    ) throws {
         let status = try channel.activateCoherence(timeout: timeout)
+        let configuredCoherenceShareCount = UInt32(bootstrap.shares.filter {
+            $0.coherencePolicy != .disabled
+        }.count)
         guard status.generation == bootstrap.generation,
               status.running,
-              status.configuredShareCount == 0 || status.observationStreamCount > 0,
+              status.configuredShareCount == configuredCoherenceShareCount,
+              configuredCoherenceShareCount == 0 || status.observationStreamCount > 0,
               status.requiredObservationShareCount == status.observedRequiredShareCount else {
             channel.invalidate()
             throw DoryFSWorkerWorkspaceClientError.malformedCoherenceStatus
@@ -489,5 +568,9 @@ public final class DoryFSWorkerWorkspaceClient: @unchecked Sendable {
 
     public func invalidate() {
         channel.invalidate()
+    }
+
+    public func close() {
+        channel.close()
     }
 }

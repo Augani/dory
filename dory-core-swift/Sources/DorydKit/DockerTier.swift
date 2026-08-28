@@ -1472,6 +1472,14 @@ public final class DockerTier: @unchecked Sendable {
     /// It waits behind an in-flight cold wake instead of racing a second helper launch, and it can
     /// restart a tier that an explicit engine stop left fully stopped.
     public func promoteToRunning(timeout: TimeInterval = 240) throws {
+        _ = try promoteToRunningEvent(timeout: timeout)
+    }
+
+    /// Package-internal admission primitive used by doryd control operations. The returned event
+    /// identifies the exact running lifecycle generation that satisfied the promotion; callers can
+    /// therefore reject a later replacement generation instead of treating any running state as
+    /// success for an older request.
+    func promoteToRunningEvent(timeout: TimeInterval = 240) throws -> DockerTierLifecycleEvent {
         let deadline = Date().addingTimeInterval(max(1, timeout))
         var attemptedPromotion = false
 
@@ -1479,7 +1487,12 @@ public final class DockerTier: @unchecked Sendable {
             let snapshot = status()
             switch snapshot.state {
             case .running:
-                return
+                let admittedEvent = currentLifecycleEvent()
+                guard admittedEvent.state == .running else {
+                    guard Date() < deadline else { throw TierError.promotionTimeout }
+                    continue
+                }
+                return admittedEvent
             case .starting:
                 guard waitForPromotionStateChange(until: deadline) else {
                     throw TierError.promotionTimeout
@@ -1561,7 +1574,8 @@ public final class DockerTier: @unchecked Sendable {
     /// confirm exit, and make that uncertainty visible instead of publishing a stopped lifecycle.
     private func retainUnconfirmedHelperLocked(
         _ helper: any DockerManagedProcess,
-        context: String
+        context: String,
+        publishFailureEvent: Bool = false
     ) {
         if !retiringHelpers.contains(where: { $0 === helper }) {
             retiringHelpers.append(helper)
@@ -1572,9 +1586,13 @@ public final class DockerTier: @unchecked Sendable {
         activeHelperGeneration = nil
         activeGuestDataDiskLaunchAuthority = nil
         helperStartedAt = nil
+        let transitionedToFailure = state != .failed
         setStateLocked(.failed)
         lastError = "\(context): \(TierError.helperTerminationPending.description)"
         idleController?.setSleeping(false)
+        if publishFailureEvent, transitionedToFailure {
+            enqueueLifecycleStateObserverLocked(.failed)
+        }
     }
 
     /// Stop outside the tier lock, then atomically preserve an exact helper whose exit could not
@@ -1583,7 +1601,8 @@ public final class DockerTier: @unchecked Sendable {
     @discardableResult
     private func stopManagedHelperAndRetainIfNeeded(
         _ helper: (any DockerManagedProcess)?,
-        context: String
+        context: String,
+        publishFailureEvent: Bool = false
     ) -> Bool {
         guard let helper else { return true }
 
@@ -1623,7 +1642,11 @@ public final class DockerTier: @unchecked Sendable {
         if isStillCurrent {
             helperProcess = nil
         }
-        retainUnconfirmedHelperLocked(helper, context: context)
+        retainUnconfirmedHelperLocked(
+            helper,
+            context: context,
+            publishFailureEvent: publishFailureEvent
+        )
         wakeTask = nil
         lock.unlock()
         return false
@@ -1935,7 +1958,8 @@ public final class DockerTier: @unchecked Sendable {
             startedResources?.activityServer?.stop()
             let helperTerminated = stopManagedHelperAndRetainIfNeeded(
                 startedHelper,
-                context: "failed Docker tier launch could not confirm helper exit"
+                context: "failed Docker tier launch could not confirm helper exit",
+                publishFailureEvent: !publishFailure
             )
 
             let ownsLifecycle: Bool
@@ -4180,12 +4204,14 @@ public final class DockerTier: @unchecked Sendable {
             restartDelay = policy.delay(forAttempt: attempt)
             setStateLocked(.starting)
             lastError = "managed helper \(detail); restart attempt \(attempt)/\(policy.maxRestarts) queued"
+            enqueueLifecycleStateObserverLocked(.starting)
             terminalFailureDetail = lastError ?? "managed helper restart cleanup failed"
         } else {
             restart = nil
             restartDelay = 0
             setStateLocked(.failed)
             lastError = "managed helper \(detail); automatic restart limit (\(policy.maxRestarts)) exhausted"
+            enqueueLifecycleStateObserverLocked(.failed)
             terminalFailureDetail = lastError ?? "managed helper restart limit exhausted"
         }
         restartWorkItem = nil
@@ -4228,7 +4254,8 @@ public final class DockerTier: @unchecked Sendable {
             }
             retainUnconfirmedHelperLocked(
                 helper,
-                context: "unexpected helper loss could not confirm terminal exit"
+                context: "unexpected helper loss could not confirm terminal exit",
+                publishFailureEvent: true
             )
             let token = UUID()
             retainedHelperRecoveryToken = token
@@ -4312,6 +4339,7 @@ public final class DockerTier: @unchecked Sendable {
             restartWorkItem = restart
             setStateLocked(.starting)
             lastError = "unexpected helper retirement was confirmed; automatic recovery queued"
+            enqueueLifecycleStateObserverLocked(.starting)
             shouldScheduleRestart = true
         } else {
             restartWorkItem = nil
@@ -4408,12 +4436,14 @@ public final class DockerTier: @unchecked Sendable {
             delay = policy.delay(forAttempt: attempt)
             setStateLocked(.starting)
             lastError = "restart attempt \(attempt - 1) failed: \(error); attempt \(attempt)/\(policy.maxRestarts) queued"
+            enqueueLifecycleStateObserverLocked(.starting)
         } else {
             restart = nil
             restartWorkItem = nil
             delay = 0
             setStateLocked(.failed)
             lastError = "automatic restart limit (\(policy.maxRestarts)) exhausted after launch failure: \(error)"
+            enqueueLifecycleStateObserverLocked(.failed)
         }
         lock.unlock()
 

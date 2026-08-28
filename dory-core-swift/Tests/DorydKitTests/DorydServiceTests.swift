@@ -359,6 +359,211 @@ final class DorydServiceTests: XCTestCase {
         XCTAssertEqual(idlePolicyStore.currentEngineDesiredState(), "running")
     }
 
+    func testEngineStartRejectsReplacementRunningGenerationAfterPromotion() throws {
+        let home = "/tmp/doryd-service-stale-start-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: home, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        try persistServiceCorporateProfile(home: home)
+
+        let reconcileGate = ServiceCorporateReconcileGate()
+        let corporateConnectivity = serviceCorporateConnectivity(
+            home: home,
+            gate: reconcileGate
+        )
+        let first = ServiceUnexpectedTerminationDockerProcess(pid: 53_101)
+        let replacement = ServiceUnexpectedTerminationDockerProcess(pid: 53_102)
+        let processes = ServiceManagedProcessSequence([first, replacement])
+        let tier = DockerTier(
+            configuration: DockerTierConfiguration(
+                home: home,
+                forwardSocketPath: home + "/forward.sock",
+                hvProcess: HvProcessConfiguration(
+                    executablePath: "/bin/false",
+                    restartPolicy: HvRestartPolicy(
+                        maxRestarts: 1,
+                        delaySeconds: 0,
+                        maximumDelaySeconds: 0
+                    )
+                )
+            ),
+            dockerReadyWaiter: { _, _, _ in true }
+        )
+        tier.installManagedProcessFactory { _, terminationHandler in
+            processes.next(terminationHandler: terminationHandler)
+        }
+        let incidents = IncidentWriter(path: home + "/incidents.jsonl")
+        let service = DorydService(
+            socketPath: tier.socketPath,
+            dockerTier: tier,
+            corporateConnectivity: corporateConnectivity,
+            incidentWriter: incidents
+        )
+        let reply = ServiceEnginePromotionReply()
+        defer {
+            reconcileGate.release()
+            _ = tier.stop()
+        }
+
+        service.engineStart { ok, detail in reply.record(ok: ok, detail: detail) }
+        XCTAssertTrue(reconcileGate.waitUntilEntered(timeout: 2))
+
+        first.reportUnexpectedTermination()
+        XCTAssertTrue(waitUntilServiceCondition(timeout: 2) {
+            let status = tier.status()
+            return status.state == .running && status.hvPID == 53_102
+        })
+        reconcileGate.release()
+
+        let result = try XCTUnwrap(reply.wait(timeout: 2))
+        XCTAssertFalse(result.ok)
+        XCTAssertTrue(result.detail.contains("superseded"), result.detail)
+        XCTAssertTrue(result.detail.contains("admitting running lifecycle epoch"), result.detail)
+        XCTAssertTrue(result.detail.contains("bounded status is running"), result.detail)
+        let operationIncidents = incidents.read(
+            limit: 10,
+            matchingTypes: ["engine.start", "engine.start_failed"]
+        )
+        XCTAssertEqual(operationIncidents.map(\.type), ["engine.start_failed"])
+    }
+
+    func testEngineWakeRejectsDeadAdmittedHelperBeforeTerminationCallback() throws {
+        let home = "/tmp/doryd-service-stale-wake-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: home, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        try persistServiceCorporateProfile(home: home)
+
+        let reconcileGate = ServiceCorporateReconcileGate()
+        let corporateConnectivity = serviceCorporateConnectivity(
+            home: home,
+            gate: reconcileGate
+        )
+        let helper = ServiceUnexpectedTerminationDockerProcess(pid: 53_201)
+        let tier = DockerTier(
+            configuration: DockerTierConfiguration(
+                home: home,
+                forwardSocketPath: home + "/forward.sock",
+                hvProcess: HvProcessConfiguration(
+                    executablePath: "/bin/false",
+                    restartPolicy: .none
+                )
+            ),
+            dockerReadyWaiter: { _, _, _ in true }
+        )
+        tier.installManagedProcessFactory { _, terminationHandler in
+            helper.setUnexpectedTerminationHandler(terminationHandler)
+            return helper
+        }
+        let incidents = IncidentWriter(path: home + "/incidents.jsonl")
+        let service = DorydService(
+            socketPath: tier.socketPath,
+            dockerTier: tier,
+            corporateConnectivity: corporateConnectivity,
+            incidentWriter: incidents
+        )
+        let reply = ServiceEnginePromotionReply()
+        defer {
+            reconcileGate.release()
+            _ = tier.stop()
+        }
+
+        service.engineWake { ok, detail in reply.record(ok: ok, detail: detail) }
+        XCTAssertTrue(reconcileGate.waitUntilEntered(timeout: 2))
+
+        helper.markExitedWithoutNotifying()
+        XCTAssertEqual(
+            tier.currentLifecycleEvent().state,
+            .running,
+            "the adversary must expose the pre-callback liveness window"
+        )
+        reconcileGate.release()
+
+        let result = try XCTUnwrap(reply.wait(timeout: 2))
+        XCTAssertFalse(result.ok)
+        XCTAssertTrue(result.detail.contains("superseded"), result.detail)
+        XCTAssertTrue(result.detail.contains("bounded status is failed"), result.detail)
+        let operationIncidents = incidents.read(
+            limit: 10,
+            matchingTypes: ["engine.wake", "engine.wake_failed"]
+        )
+        XCTAssertEqual(operationIncidents.map(\.type), ["engine.wake_failed"])
+    }
+
+    func testUnexpectedHelperRecoveryRecordsIncidentsWithoutOverwritingRunningIntent() throws {
+        let home = "/tmp/doryd-service-recovery-incidents-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        defer { try? FileManager.default.removeItem(atPath: home) }
+
+        let first = ServiceUnexpectedTerminationDockerProcess(pid: 53_001)
+        let replacement = ServiceUnexpectedTerminationDockerProcess(pid: 53_002)
+        let processes = ServiceManagedProcessSequence([first, replacement])
+        let tier = DockerTier(
+            configuration: DockerTierConfiguration(
+                home: home,
+                forwardSocketPath: home + "/forward.sock",
+                hvProcess: HvProcessConfiguration(
+                    executablePath: "/bin/false",
+                    restartPolicy: HvRestartPolicy(
+                        maxRestarts: 1,
+                        delaySeconds: 0,
+                        maximumDelaySeconds: 0
+                    )
+                )
+            ),
+            dockerReadyWaiter: { _, _, _ in true }
+        )
+        tier.installManagedProcessFactory { _, terminationHandler in
+            processes.next(terminationHandler: terminationHandler)
+        }
+
+        let store = IdlePolicyStore(home: home, environment: [:])
+        let incidents = IncidentWriter(path: home + "/incidents.jsonl")
+        let desiredStates = ServiceDesiredStateRecorder()
+        let service = DorydService(
+            socketPath: tier.socketPath,
+            dockerTier: tier,
+            idlePolicyStore: store,
+            incidentWriter: incidents,
+            engineDesiredStateWriter: { state in
+                desiredStates.append(state)
+                try store.setEngineDesiredState(state)
+            }
+        )
+        defer { _ = tier.stop() }
+
+        try tier.start()
+        XCTAssertTrue(desiredStates.waitUntilCount(1, timeout: 1))
+        first.reportUnexpectedTermination()
+        XCTAssertTrue(waitUntilServiceCondition(timeout: 1) {
+            let status = tier.status()
+            return status.state == .running && status.hvPID == 53_002
+        })
+        XCTAssertTrue(desiredStates.waitUntilCount(2, timeout: 1))
+
+        replacement.reportUnexpectedTermination()
+        XCTAssertTrue(waitUntilServiceCondition(timeout: 1) {
+            tier.status().state == .failed
+        })
+        XCTAssertTrue(waitUntilServiceCondition(timeout: 1) {
+            incidents.read(limit: 10, matchingTypes: ["engine.lifecycle"]).count == 4
+        })
+
+        let lifecycleDetails = incidents
+            .read(limit: 10, matchingTypes: ["engine.lifecycle"])
+            .reversed()
+            .compactMap(\.detail)
+        XCTAssertEqual(
+            lifecycleDetails,
+            [
+                "docker tier running",
+                "docker tier starting",
+                "docker tier running",
+                "docker tier failed",
+            ]
+        )
+        XCTAssertEqual(desiredStates.values, ["running", "running"])
+        XCTAssertEqual(store.currentEngineDesiredState(), "running")
+        withExtendedLifetime(service) {}
+    }
+
     func testEngineStopReportsUnconfirmedHelperAndPreservesRunningIntent() throws {
         let home = "/tmp/doryd-service-unconfirmed-stop-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         defer { try? FileManager.default.removeItem(atPath: home) }
@@ -3992,6 +4197,219 @@ private final class ServiceBlockingStopDockerProcess: DockerManagedProcess, @unc
     }
 }
 
+private final class ServiceUnexpectedTerminationDockerProcess: DockerManagedProcess, @unchecked Sendable {
+    private let lock = NSLock()
+    private let processID: Int32
+    private var running = false
+    private var unexpectedTerminationHandler: HvProcessUnexpectedTerminationHandler?
+
+    init(pid: Int32) {
+        processID = pid
+    }
+
+    func start() throws {
+        lock.lock()
+        running = true
+        lock.unlock()
+    }
+
+    func suspend() -> Bool { true }
+    func resume() -> Bool { true }
+
+    func stop() -> Bool {
+        lock.lock()
+        running = false
+        lock.unlock()
+        return true
+    }
+
+    func waitForTermination(timeout: TimeInterval) -> Bool {
+        _ = timeout
+        lock.lock()
+        defer { lock.unlock() }
+        return !running
+    }
+
+    func lifecycleObservation(
+        until deadline: DispatchTime
+    ) -> DockerManagedProcessObservation? {
+        _ = deadline
+        lock.lock()
+        defer { lock.unlock() }
+        return DockerManagedProcessObservation(
+            pid: running ? processID : nil,
+            isRunning: running
+        )
+    }
+
+    func setUnexpectedTerminationHandler(
+        _ handler: HvProcessUnexpectedTerminationHandler?
+    ) {
+        lock.lock()
+        unexpectedTerminationHandler = handler
+        lock.unlock()
+    }
+
+    func reportUnexpectedTermination() {
+        lock.lock()
+        running = false
+        let handler = unexpectedTerminationHandler
+        lock.unlock()
+        handler?(HvProcessTermination(status: SIGKILL, wasUncaughtSignal: true))
+    }
+
+    func markExitedWithoutNotifying() {
+        lock.lock()
+        running = false
+        lock.unlock()
+    }
+}
+
+private final class ServiceManagedProcessSequence: @unchecked Sendable {
+    private let lock = NSLock()
+    private var processes: [ServiceUnexpectedTerminationDockerProcess]
+
+    init(_ processes: [ServiceUnexpectedTerminationDockerProcess]) {
+        self.processes = processes
+    }
+
+    func next(
+        terminationHandler: HvProcessUnexpectedTerminationHandler?
+    ) -> ServiceUnexpectedTerminationDockerProcess? {
+        lock.lock()
+        guard !processes.isEmpty else {
+            lock.unlock()
+            return nil
+        }
+        let process = processes.removeFirst()
+        lock.unlock()
+        process.setUnexpectedTerminationHandler(terminationHandler)
+        return process
+    }
+}
+
+private final class ServiceCorporateReconcileGate: @unchecked Sendable {
+    private let entered = DispatchSemaphore(value: 0)
+    private let released = DispatchSemaphore(value: 0)
+
+    func apply() -> CorporateGuestApplyResult {
+        entered.signal()
+        _ = released.wait(timeout: .now() + 5)
+        return CorporateGuestApplyResult(
+            state: "fixture applied",
+            changed: false,
+            dockerdRestarted: false
+        )
+    }
+
+    func waitUntilEntered(timeout: TimeInterval) -> Bool {
+        entered.wait(timeout: .now() + max(0, timeout)) == .success
+    }
+
+    func release() {
+        released.signal()
+    }
+}
+
+private final class ServiceEnginePromotionReply: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var storedResult: (ok: Bool, detail: String)?
+
+    func record(ok: Bool, detail: String) {
+        condition.lock()
+        storedResult = (ok, detail)
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    func wait(timeout: TimeInterval) -> (ok: Bool, detail: String)? {
+        condition.lock()
+        let deadline = Date().addingTimeInterval(max(0, timeout))
+        while storedResult == nil, condition.wait(until: deadline) {}
+        let result = storedResult
+        condition.unlock()
+        return result
+    }
+}
+
+private struct ServiceCorporateHealthCommandRunner: HealthCommandRunning {
+    func run(
+        executablePath: String,
+        arguments: [String],
+        environment _: [String: String],
+        timeout _: TimeInterval
+    ) -> HealthCommandOutput {
+        switch ([executablePath] + arguments).joined(separator: " ") {
+        case "/usr/sbin/scutil --proxy":
+            HealthCommandOutput(exitCode: 0, stdout: "<dictionary> {\n}\n", stderr: "")
+        case "/sbin/route -n get default":
+            HealthCommandOutput(
+                exitCode: 0,
+                stdout: "gateway: 10.0.0.1\ninterface: en0\n",
+                stderr: ""
+            )
+        case "/sbin/ifconfig -l":
+            HealthCommandOutput(exitCode: 0, stdout: "lo0 en0\n", stderr: "")
+        case "/usr/sbin/scutil --dns", "/usr/sbin/netstat -rn -f inet":
+            HealthCommandOutput(exitCode: 0, stdout: "", stderr: "")
+        default:
+            HealthCommandOutput(exitCode: 127, stdout: "", stderr: "unexpected fixture command")
+        }
+    }
+}
+
+private func persistServiceCorporateProfile(home: String) throws {
+    try CorporateConnectivityStore(home: home).save(CorporateConnectivityProfile(
+        enabled: false,
+        host: CorporateProxyLayer(source: .disabled),
+        dockerd: CorporateProxyLayer(source: .disabled),
+        buildKit: CorporateProxyLayer(source: .disabled),
+        containers: CorporateProxyLayer(source: .disabled),
+        registries: CorporateRegistryConfiguration(probeRegistries: []),
+        bridgeSubnet: "198.18.0.0/24"
+    ))
+}
+
+private func serviceCorporateConnectivity(
+    home: String,
+    gate: ServiceCorporateReconcileGate
+) -> CorporateConnectivityReconciler {
+    CorporateConnectivityReconciler(
+        home: home,
+        inspector: CorporateConnectivitySystemInspector(
+            runner: ServiceCorporateHealthCommandRunner()
+        ),
+        guestApply: { _, _, _ in gate.apply() }
+    )
+}
+
+private final class ServiceDesiredStateRecorder: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var storedValues: [String] = []
+
+    var values: [String] {
+        condition.lock()
+        defer { condition.unlock() }
+        return storedValues
+    }
+
+    func append(_ value: String) {
+        condition.lock()
+        storedValues.append(value)
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    func waitUntilCount(_ count: Int, timeout: TimeInterval) -> Bool {
+        condition.lock()
+        let deadline = Date().addingTimeInterval(max(0, timeout))
+        while storedValues.count < count, condition.wait(until: deadline) {}
+        let reached = storedValues.count >= count
+        condition.unlock()
+        return reached
+    }
+}
+
 private enum DesiredStateWriterTestError: Error {
     case rejected
 }
@@ -4056,6 +4474,19 @@ private struct StaticHostUSBDiscovery: DoryHostUSBDiscovering {
     init(devices: [DoryHostUSBDevice]) { values = devices }
 
     func devices() throws -> [DoryHostUSBDevice] { values }
+}
+
+private func waitUntilServiceCondition(
+    timeout: TimeInterval,
+    pollInterval: TimeInterval = 0.005,
+    _ condition: () -> Bool
+) -> Bool {
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+        if condition() { return true }
+        Thread.sleep(forTimeInterval: pollInterval)
+    }
+    return condition()
 }
 
 private func waitForServiceMachineState(

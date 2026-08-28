@@ -3809,6 +3809,13 @@ final class AppStore {
             engineActivity.touch()
             sharedVMStatus = status.detail.isEmpty ? "Running through doryd" : status.detail
             return false
+        case "starting":
+            engineSleeping = false
+            engineActivity.setSleeping(false)
+            engineRunning = false
+            loadState = .connecting
+            sharedVMStatus = status.detail.isEmpty ? "Starting the engine…" : status.detail
+            return true
         case "stopped", "failed", "unconfigured":
             engineSleeping = false
             engineActivity.setSleeping(false)

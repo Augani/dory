@@ -366,6 +366,10 @@ public final class DorydService: NSObject, DorydControl {
                 case .sleeping, .stopped:
                     desiredState = "sleeping"
                 case .starting, .failed:
+                    incidentWriter?.record(
+                        type: "engine.lifecycle",
+                        detail: "docker tier \(event.state.rawValue)"
+                    )
                     return
                 }
                 do {
@@ -2223,21 +2227,40 @@ public final class DorydService: NSObject, DorydControl {
         let corporateConnectivity = corporateConnectivity
         let operationLock = engineLifecycleOperationLock
         Task.detached {
-            let failure: String? = operationLock.withLock {
+            let outcome: (ok: Bool, detail: String) = operationLock.withLock {
                 do {
-                    try dockerTier.promoteToRunning()
-                    return nil
+                    let admittedEvent = try dockerTier.promoteToRunningEvent()
+                    _ = corporateConnectivity?.reconcileCurrent(runProbes: false)
+
+                    // A running state by itself is not enough: supervised recovery may already
+                    // have replaced the generation that this request admitted. Conversely, an
+                    // unchanged event alone is not enough because a dead helper can be observed
+                    // before its termination callback commits the next lifecycle. Require both
+                    // bounded live status and the exact admitted epoch immediately before success.
+                    let finalStatus = dockerTier.status()
+                    let currentEvent = dockerTier.currentLifecycleEvent()
+                    guard !finalStatus.isStopping,
+                          finalStatus.state == .running,
+                          currentEvent == admittedEvent else {
+                        let boundedState = finalStatus.isStopping
+                            ? "stopping"
+                            : finalStatus.state.rawValue
+                        return (
+                            false,
+                            "docker tier \(event) promotion was superseded after admitting running lifecycle epoch \(admittedEvent.epoch); current lifecycle epoch \(currentEvent.epoch) is \(currentEvent.state.rawValue), bounded status is \(boundedState)"
+                        )
+                    }
+                    return (true, "")
                 } catch {
-                    return "\(error)"
+                    return (false, "\(error)")
                 }
             }
-            if let failure {
-                incidentWriter?.record(type: "engine.\(event)_failed", detail: failure)
-                replyBox.reply(false, failure)
-            } else {
-                _ = corporateConnectivity?.reconcileCurrent(runProbes: false)
+            if outcome.ok {
                 incidentWriter?.record(type: "engine.\(event)", detail: "docker tier running")
                 replyBox.reply(true, "")
+            } else {
+                incidentWriter?.record(type: "engine.\(event)_failed", detail: outcome.detail)
+                replyBox.reply(false, outcome.detail)
             }
         }
     }

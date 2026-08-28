@@ -60,13 +60,46 @@ struct DoryFSWorkerHostCoherenceTests {
         #expect(try await waitForPathToExist(
             share.root.appendingPathComponent("atomic-install.txt").path
         ))
-        try relay.activate()
+        try relay.prepare()
+
+        #expect(!relay.statistics.running)
+        #expect(try await waitForPendingEvent(in: relay))
+        #expect(exchange.exactFrames.isEmpty)
+
+        try relay.activateDelivery()
 
         #expect(try await waitForNudge("atomic-install.txt", in: exchange))
         #expect(failures.error == nil)
         let active = relay.statistics
         #expect(active.running)
         #expect(active.requiredObservationShareCount == active.observedRequiredShareCount)
+    }
+
+    @Test func deliveryActivationRequiresPreparedObservation() throws {
+        let share = try CoherenceTemporaryShare()
+        let hostFS = try HostFS(rootPath: share.root.path)
+        let capability = try hostCoherenceCapability(9)
+        let exchange = HostCoherenceExchangeRecorder()
+        let failures = HostCoherenceFailureRecorder()
+        let relay = try DoryFSWorkerHostCoherence(
+            generation: DoryFSWorkerGeneration(rawValue: 109),
+            shares: [(capability, hostFS, .invalidationAndWatcherNudge)],
+            exchange: exchange.exchange,
+            onFailure: failures.record
+        )
+        defer { relay.stop() }
+
+        #expect(throws: DoryFSWorkerHostCoherenceError.observationUnavailable) {
+            try relay.activateDelivery()
+        }
+        #expect(exchange.exactFrames.isEmpty)
+        #expect(failures.error == nil)
+
+        try relay.prepare()
+        try relay.activateDelivery()
+
+        #expect(relay.statistics.running)
+        #expect(failures.error == nil)
     }
 
     @Test func transientDeliveryRetriesTheExactRetainedBatch() async throws {
@@ -98,6 +131,123 @@ struct DoryFSWorkerHostCoherenceTests {
         #expect(relay.statistics.deliveredBatchCount >= 1)
     }
 
+    @Test func deliveryActivationReconcilesKnownInodeWithoutWaitingForFSEvents() throws {
+        let share = try CoherenceTemporaryShare()
+        let file = share.root.appendingPathComponent("edited-during-boot.txt")
+        try Data("before".utf8).write(to: file)
+        let hostFS = try HostFS(rootPath: share.root.path)
+        let entry = try hostFS.lookup(parent: HostFS.rootNodeID, name: file.lastPathComponent)
+        let capability = try hostCoherenceCapability(8)
+        let exchange = HostCoherenceExchangeRecorder()
+        let failures = HostCoherenceFailureRecorder()
+        let relay = try DoryFSWorkerHostCoherence(
+            generation: DoryFSWorkerGeneration(rawValue: 108),
+            shares: [(capability, hostFS, .invalidationAndWatcherNudge)],
+            exchange: exchange.exchange,
+            onFailure: failures.record
+        )
+        defer { relay.stop() }
+
+        try relay.prepare()
+        let prepared = relay.statistics
+        #expect(!prepared.running)
+        #expect(prepared.requiredObservationShareCount == 1)
+        #expect(prepared.observedRequiredShareCount == 1)
+        #expect(prepared.observationStreamCount == 1)
+
+        try runExternal("/usr/bin/touch", [file.path])
+        // Do not wait for the FSEvents callback. The activation-time known-inode sweep must make
+        // cache safety independent of when fseventsd journals this edit.
+        try relay.activateDelivery()
+
+        #expect(relay.statistics.running)
+        #expect(exchange.containsInodeInvalidation(entry.nodeID))
+        #expect(relay.statistics.deliveredBatchCount >= 1)
+        #expect(failures.error == nil)
+    }
+
+    @Test func activationIsNotPublishedUntilCatchupAcknowledgementCompletes() async throws {
+        let share = try CoherenceTemporaryShare()
+        let file = share.root.appendingPathComponent("blocked-activation.txt")
+        let hostFS = try HostFS(rootPath: share.root.path)
+        let capability = try hostCoherenceCapability(10)
+        let exchange = BlockingHostCoherenceExchange()
+        let failures = HostCoherenceFailureRecorder()
+        let relay = try DoryFSWorkerHostCoherence(
+            generation: DoryFSWorkerGeneration(rawValue: 110),
+            shares: [(capability, hostFS, .invalidationAndWatcherNudge)],
+            exchange: exchange.exchange,
+            onFailure: failures.record
+        )
+        defer {
+            exchange.release()
+            relay.stop()
+        }
+
+        try relay.prepare()
+        try runExternal("/usr/bin/touch", [file.path])
+        #expect(try await waitForPendingEvent(in: relay))
+
+        let first = Task.detached { try relay.activateDelivery() }
+        #expect(try await exchange.waitUntilBlocked())
+        #expect(!relay.statistics.running)
+
+        let secondCompletion = HostCoherenceCompletionRecorder()
+        let second = Task.detached {
+            try relay.activateDelivery()
+            secondCompletion.record()
+        }
+        try await Task.sleep(nanoseconds: 50_000_000)
+        #expect(!secondCompletion.completed)
+        #expect(!relay.statistics.running)
+
+        exchange.release()
+        try await first.value
+        try await second.value
+
+        #expect(secondCompletion.completed)
+        #expect(relay.statistics.running)
+        #expect(exchange.containsNudge(file.lastPathComponent))
+        #expect(failures.error == nil)
+    }
+
+    @Test func activationReplayRetainsCallbackContextUntilQueueDrain() async throws {
+        let share = try CoherenceTemporaryShare()
+        let hostFS = try HostFS(rootPath: share.root.path)
+        let capability = try hostCoherenceCapability(11)
+        let exchange = HostCoherenceExchangeRecorder()
+        let failures = HostCoherenceFailureRecorder()
+        let cleanup = HostCoherenceBlockingHook()
+        let completion = HostCoherenceCompletionRecorder()
+        let relay = try DoryFSWorkerHostCoherence(
+            generation: DoryFSWorkerGeneration(rawValue: 111),
+            shares: [(capability, hostFS, .invalidationAndWatcherNudge)],
+            exchange: exchange.exchange,
+            onFailure: failures.record
+        )
+        relay.activationReplayCleanupQueueTestHook = cleanup.block
+        defer {
+            cleanup.release()
+            relay.stop()
+        }
+
+        try relay.prepare()
+        let activation = Task.detached {
+            try relay.activateDelivery()
+            completion.record()
+        }
+        #expect(try await cleanup.waitUntilBlocked())
+        #expect(!completion.completed)
+        #expect(!relay.statistics.running)
+
+        cleanup.release()
+        try await activation.value
+
+        #expect(completion.completed)
+        #expect(relay.statistics.running)
+        #expect(failures.error == nil)
+    }
+
     @Test func ignoreSelfSuppressesWorkerMutationButAcceptsDifferentPID() async throws {
         let share = try CoherenceTemporaryShare()
         let hostFS = try HostFS(rootPath: share.root.path)
@@ -112,6 +262,7 @@ struct DoryFSWorkerHostCoherenceTests {
         )
         defer { relay.stop() }
         try relay.activate()
+        let activationFrameCount = exchange.exactFrames.count
 
         try Data("guest write".utf8).write(
             to: share.root.appendingPathComponent("same-worker-pid.txt")
@@ -119,7 +270,7 @@ struct DoryFSWorkerHostCoherenceTests {
         relay.flushObservationStreams()
         try await Task.sleep(nanoseconds: 50_000_000)
         relay.flushObservationStreams()
-        #expect(exchange.exactFrames.isEmpty)
+        #expect(exchange.exactFrames.count == activationFrameCount)
 
         try runExternal("/usr/bin/touch", [
             share.root.appendingPathComponent("different-pid.txt").path,
@@ -183,6 +334,7 @@ struct DoryFSWorkerHostCoherenceTests {
 private enum HostCoherenceRecorderError: Error {
     case transientFailure
     case processFailed(Int32)
+    case timedOut
 }
 
 private final class HostCoherenceExchangeRecorder: @unchecked Sendable {
@@ -202,6 +354,19 @@ private final class HostCoherenceExchangeRecorder: @unchecked Sendable {
         lock.withLock { batches.contains { $0.nudgeRelativePaths.contains(path) } }
     }
 
+    func containsInodeInvalidation(_ nodeID: UInt64) -> Bool {
+        lock.withLock {
+            batches.contains { batch in
+                batch.invalidations.contains { invalidation in
+                    if case .inode(let candidate, _, _) = invalidation {
+                        return candidate == nodeID
+                    }
+                    return false
+                }
+            }
+        }
+    }
+
     func exchange(_ frame: Data) throws -> Data {
         let batch = try DoryFSWorkerCoherenceCodec.decodeBatch(frame)
         let attempt = lock.withLock { () -> Int in
@@ -215,6 +380,94 @@ private final class HostCoherenceExchangeRecorder: @unchecked Sendable {
         return DoryFSWorkerCoherenceCodec.encode(
             try DoryFSWorkerCoherenceAcknowledgement(accepting: batch)
         )
+    }
+}
+
+private final class BlockingHostCoherenceExchange: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var blocked = false
+    private var released = false
+    private var batches = [DoryFSWorkerCoherenceBatch]()
+
+    func exchange(_ frame: Data) throws -> Data {
+        let batch = try DoryFSWorkerCoherenceCodec.decodeBatch(frame)
+        condition.lock()
+        batches.append(batch)
+        blocked = true
+        condition.broadcast()
+        let deadline = Date(timeIntervalSinceNow: 5)
+        while !released {
+            guard condition.wait(until: deadline) else {
+                condition.unlock()
+                throw HostCoherenceRecorderError.timedOut
+            }
+        }
+        condition.unlock()
+        return DoryFSWorkerCoherenceCodec.encode(
+            try DoryFSWorkerCoherenceAcknowledgement(accepting: batch)
+        )
+    }
+
+    func waitUntilBlocked() async throws -> Bool {
+        for _ in 0..<200 {
+            if condition.withLock({ blocked }) { return true }
+            try await Task.sleep(nanoseconds: 25_000_000)
+        }
+        return false
+    }
+
+    func release() {
+        condition.withLock {
+            released = true
+            condition.broadcast()
+        }
+    }
+
+    func containsNudge(_ path: String) -> Bool {
+        condition.withLock {
+            batches.contains { $0.nudgeRelativePaths.contains(path) }
+        }
+    }
+}
+
+private final class HostCoherenceCompletionRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var didComplete = false
+
+    var completed: Bool { lock.withLock { didComplete } }
+
+    func record() {
+        lock.withLock { didComplete = true }
+    }
+}
+
+private final class HostCoherenceBlockingHook: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var blocked = false
+    private var released = false
+
+    func block() {
+        condition.lock()
+        blocked = true
+        condition.broadcast()
+        let deadline = Date(timeIntervalSinceNow: 5)
+        while !released, condition.wait(until: deadline) {}
+        condition.unlock()
+    }
+
+    func waitUntilBlocked() async throws -> Bool {
+        for _ in 0..<200 {
+            if condition.withLock({ blocked }) { return true }
+            try await Task.sleep(nanoseconds: 25_000_000)
+        }
+        return false
+    }
+
+    func release() {
+        condition.withLock {
+            released = true
+            condition.broadcast()
+        }
     }
 }
 
@@ -271,6 +524,17 @@ private func runExternal(_ executable: String, _ arguments: [String]) throws {
 private func waitForPathToExist(_ path: String) async throws -> Bool {
     for _ in 0..<200 {
         if FileManager.default.fileExists(atPath: path) { return true }
+        try await Task.sleep(nanoseconds: 25_000_000)
+    }
+    return false
+}
+
+private func waitForPendingEvent(
+    in relay: DoryFSWorkerHostCoherence
+) async throws -> Bool {
+    for _ in 0..<200 {
+        relay.flushObservationStreams()
+        if relay.statistics.pendingEventCount > 0 { return true }
         try await Task.sleep(nanoseconds: 25_000_000)
     }
     return false

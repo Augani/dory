@@ -97,14 +97,41 @@ final class DoryFSWorkerHostCoherence: @unchecked Sendable {
         }
     }
 
-    private final class CallbackBox {
+    private final class CallbackBox: @unchecked Sendable {
         weak var relay: DoryFSWorkerHostCoherence?
         let capability: DoryFSShareCapabilityID
+        let historyCompletion: (@Sendable () -> Void)?
 
-        init(relay: DoryFSWorkerHostCoherence, capability: DoryFSShareCapabilityID) {
+        init(
+            relay: DoryFSWorkerHostCoherence,
+            capability: DoryFSShareCapabilityID,
+            historyCompletion: (@Sendable () -> Void)? = nil
+        ) {
             self.relay = relay
             self.capability = capability
+            self.historyCompletion = historyCompletion
         }
+    }
+
+    private final class ActivationHistoryCompletion: @unchecked Sendable {
+        private let lock = NSLock()
+        private var completed = false
+
+        var isComplete: Bool { lock.withLock { completed } }
+
+        func complete() {
+            lock.withLock { completed = true }
+        }
+    }
+
+    private struct ActivationReplayStream {
+        let stream: FSEventStreamRef
+        // FSEventStreamContext uses an unretained pointer; retain this box through final queue drain.
+        let box: CallbackBox
+        let completion: ActivationHistoryCompletion
+        let endpoint: Endpoint
+        let observationRoot: String
+        let expectedIdentity: HostFSEventPathIdentity
     }
 
     static let pendingEventLimit = 65_536
@@ -118,6 +145,36 @@ final class DoryFSWorkerHostCoherence: @unchecked Sendable {
         kFSEventStreamCreateFlagFileEvents
     )
 
+    private static let streamCallback: FSEventStreamCallback = {
+        _, info, count, eventPaths, eventFlags, eventIDs in
+        guard let info else { return }
+        let box = Unmanaged<CallbackBox>.fromOpaque(info).takeUnretainedValue()
+        let paths = unsafeBitCast(eventPaths, to: NSArray.self)
+        var changes = [Change]()
+        changes.reserveCapacity(count)
+        var historyDone = false
+        for index in 0..<count {
+            guard let path = paths.object(at: index) as? String else { continue }
+            let flags = UInt32(eventFlags[index])
+            if flags & UInt32(kFSEventStreamEventFlagHistoryDone) != 0 {
+                historyDone = true
+                continue
+            }
+            guard flags & UInt32(kFSEventStreamEventFlagOwnEvent) == 0 else { continue }
+            changes.append(Change(
+                path: URL(fileURLWithPath: path).standardizedFileURL.path,
+                flags: flags,
+                eventID: UInt64(eventIDs[index]),
+                directoryAggregate: false
+            ))
+        }
+        box.relay?.record(changes, capability: box.capability)
+        if historyDone {
+            box.relay?.historyDidFinish(capability: box.capability)
+            box.historyCompletion?()
+        }
+    }
+
     private let generation: DoryFSWorkerGeneration
     /// Checkpoint taken while the worker's sealed root authorities are being assembled. Streams
     /// are intentionally not started until the runner exports its sink, but starting from this
@@ -128,6 +185,10 @@ final class DoryFSWorkerHostCoherence: @unchecked Sendable {
     private let exchange: Exchange
     private let onFailure: Failure
     private let streamQueue = DispatchQueue(label: "dev.dory.fs-worker.fsevents")
+    /// Serializes the readiness linearization and its synchronous acknowledgement drain. State is
+    /// still owned by `lock`; this gate only makes duplicate activation requests join the first
+    /// transaction instead of observing an intermediate state.
+    private let activationLock = NSLock()
     private let lock = NSLock()
     private var streams = [String: FSEventStreamRef]()
     private var callbackBoxes = [String: CallbackBox]()
@@ -137,6 +198,7 @@ final class DoryFSWorkerHostCoherence: @unchecked Sendable {
     private var pending = [DoryFSShareCapabilityID: [String: Change]]()
     private var running = false
     private var activationCatchupInProgress = false
+    private var activationDeliveryInProgress = false
     private var activationComplete = false
     private var flushScheduled = false
     private var terminalFailureReported = false
@@ -145,6 +207,9 @@ final class DoryFSWorkerHostCoherence: @unchecked Sendable {
     private var deliveredBatchCount: UInt64 = 0
     private var failedBatchCount: UInt64 = 0
     private var eventLossCount: UInt64 = 0
+    /// Test-only queue marker. Production leaves this nil; a blocked marker proves activation does
+    /// not release an unretained replay context ahead of callbacks queued at invalidation.
+    var activationReplayCleanupQueueTestHook: (@Sendable () -> Void)?
 
     init(
         generation: DoryFSWorkerGeneration,
@@ -197,19 +262,19 @@ final class DoryFSWorkerHostCoherence: @unchecked Sendable {
         }
     }
 
-    /// Runner invokes this only after exporting and installing its exact coherence handler. Root
-    /// streams are armed before any guest request can resolve a child, closing the initially-empty
-    /// share gap and retaining host mutations that race activation.
-    func activate() throws {
-        let shouldActivate = lock.withLock { () -> Bool in
+    /// Arms every root stream and drains retained FSEvents history without delivering a batch to
+    /// the runner. The VM calls this before it starts so there is no observation gap, while guest
+    /// watcher delivery remains impossible until the guest has explicitly proved readiness.
+    func prepare() throws {
+        let shouldPrepare = lock.withLock { () -> Bool in
             guard !terminalFailureReported, !running else { return false }
             running = true
             activationCatchupInProgress = true
             return true
         }
-        guard shouldActivate else {
+        guard shouldPrepare else {
             guard lock.withLock({
-                running && activationComplete && !terminalFailureReported
+                running && !activationCatchupInProgress && !terminalFailureReported
             }) else {
                 throw DoryFSWorkerHostCoherenceError.observationUnavailable
             }
@@ -239,28 +304,131 @@ final class DoryFSWorkerHostCoherence: @unchecked Sendable {
             // activation returns. The runner sink is installed at this point, so no preactivation
             // host edit can be ACKed, dropped, or delivered into a missing handler window.
             flushObservationStreams()
-            let catchup = lock.withLock { () -> (ready: Bool, mustFlush: Bool) in
+            let caughtUp = lock.withLock { () -> Bool in
                 let ready = running
                     && requiredCapabilities.isSubset(of: historyCaughtUpCapabilities)
-                guard ready else { return (false, false) }
+                guard ready else { return false }
                 activationCatchupInProgress = false
                 observedCapabilities = requiredCapabilities
-                let mustFlush = !pending.isEmpty
-                if mustFlush { flushScheduled = true }
-                return (true, mustFlush)
+                return true
             }
-            guard catchup.ready else {
+            guard caughtUp else {
                 throw DoryFSWorkerHostCoherenceError.observationUnavailable
             }
-            if catchup.mustFlush { flush() }
-            guard lock.withLock({ running && !terminalFailureReported }) else {
-                throw DoryFSWorkerHostCoherenceError.observationUnavailable
-            }
-            lock.withLock { activationComplete = true }
         } catch {
             failStop(.observationUnavailable)
             throw DoryFSWorkerHostCoherenceError.observationUnavailable
         }
+    }
+
+    /// Opens delivery only after the VM has completed the guest-watcher protocol handshake. Any
+    /// mutation retained by `prepare()` is synchronously acknowledged before this method returns,
+    /// so callers cannot publish workload readiness ahead of coherence catch-up. An event not yet
+    /// journaled at the replay marker remains on the continuously armed persistent stream; cache
+    /// safety at readiness does not depend on that callback because the known-inode sweep is ACKed.
+    func activateDelivery() throws {
+        activationLock.lock()
+        defer { activationLock.unlock() }
+
+        let alreadyActive = lock.withLock { activationComplete }
+        if alreadyActive { return }
+
+        guard lock.withLock({
+            running
+                && !terminalFailureReported
+                && !activationCatchupInProgress
+                && requiredCapabilities.isSubset(of: historyCaughtUpCapabilities)
+                && observedCapabilities == requiredCapabilities
+        }) else {
+            throw DoryFSWorkerHostCoherenceError.observationUnavailable
+        }
+
+        // Persistent delivery has no observable high-water mark for a quiet watched root. Create
+        // one activation-only replay from the worker's sealed checkpoint and require HistoryDone
+        // for every capability. A filesystem commit may still be awaiting journal ingestion at
+        // that marker, so readiness also owns a conservative, event-independent cache sweep below.
+        try replayObservationHistoryForActivation()
+
+        let activationDeadline = Self.saturatingAdd(
+            DispatchTime.now().uptimeNanoseconds,
+            DoryFSWorkerCoherenceTiming.activationCatchupNanoseconds
+        )
+        let reconciliationBatches: [DoryFSWorkerCoherenceBatch]
+        do {
+            reconciliationBatches = try activationReconciliationBatches()
+        } catch let error as DoryFSWorkerHostCoherenceError {
+            failStop(error)
+            throw error
+        } catch {
+            failStop(.planOverflow)
+            throw DoryFSWorkerHostCoherenceError.planOverflow
+        }
+
+        let mustFlush = lock.withLock { () -> Bool? in
+            guard running,
+                  !terminalFailureReported,
+                  !activationCatchupInProgress,
+                  requiredCapabilities.isSubset(of: historyCaughtUpCapabilities),
+                  observedCapabilities == requiredCapabilities else {
+                return nil
+            }
+            if activationComplete { return false }
+            activationDeliveryInProgress = true
+            let mustFlush = !pending.isEmpty
+            if mustFlush { flushScheduled = true }
+            return mustFlush
+        }
+        guard let mustFlush else {
+            throw DoryFSWorkerHostCoherenceError.observationUnavailable
+        }
+        do {
+            for batch in reconciliationBatches {
+                try deliverRetainingUntilAcknowledged(
+                    batch,
+                    activationDeadlineUptimeNanoseconds: activationDeadline
+                )
+                lock.withLock {
+                    deliveredBatchCount = Self.saturatingAdd(deliveredBatchCount, 1)
+                }
+            }
+        } catch let error as DoryFSWorkerHostCoherenceError {
+            lock.withLock {
+                failedBatchCount = Self.saturatingAdd(failedBatchCount, 1)
+            }
+            failStop(error)
+            throw error
+        } catch {
+            lock.withLock {
+                failedBatchCount = Self.saturatingAdd(failedBatchCount, 1)
+            }
+            failStop(.acknowledgementUnavailable)
+            throw DoryFSWorkerHostCoherenceError.acknowledgementUnavailable
+        }
+        if mustFlush {
+            flush(activationDeadlineUptimeNanoseconds: activationDeadline)
+        }
+        let committed = lock.withLock { () -> Bool in
+            guard running, activationDeliveryInProgress, !terminalFailureReported else {
+                activationDeliveryInProgress = false
+                return false
+            }
+            activationDeliveryInProgress = false
+            activationComplete = true
+            return true
+        }
+        guard committed else {
+            throw DoryFSWorkerHostCoherenceError.acknowledgementUnavailable
+        }
+        // Events committed after the activation barrier may have accumulated while the retained
+        // batch was in reverse XPC. They are steady-state work and can now use the normal scheduler.
+        scheduleFlush()
+    }
+
+    /// Compatibility helper for same-process embedders and focused tests that do not own a VM
+    /// readiness boundary. Production composition roots use the two explicit phases above.
+    func activate() throws {
+        try prepare()
+        try activateDelivery()
     }
 
     /// Makes every event that already reached FSEvents observable before returning. Activation
@@ -275,6 +443,7 @@ final class DoryFSWorkerHostCoherence: @unchecked Sendable {
         let retired = lock.withLock { () -> ([FSEventStreamRef], [CallbackBox]) in
             running = false
             activationCatchupInProgress = false
+            activationDeliveryInProgress = false
             activationComplete = false
             flushScheduled = false
             pending.removeAll(keepingCapacity: false)
@@ -343,33 +512,7 @@ final class DoryFSWorkerHostCoherence: @unchecked Sendable {
         )
         guard let stream = FSEventStreamCreate(
             nil,
-            { _, info, count, eventPaths, eventFlags, eventIDs in
-                guard let info else { return }
-                let box = Unmanaged<CallbackBox>.fromOpaque(info).takeUnretainedValue()
-                let paths = unsafeBitCast(eventPaths, to: NSArray.self)
-                var changes = [Change]()
-                changes.reserveCapacity(count)
-                var historyDone = false
-                for index in 0..<count {
-                    guard let path = paths.object(at: index) as? String else { continue }
-                    let flags = UInt32(eventFlags[index])
-                    if flags & UInt32(kFSEventStreamEventFlagHistoryDone) != 0 {
-                        historyDone = true
-                        continue
-                    }
-                    guard flags & UInt32(kFSEventStreamEventFlagOwnEvent) == 0 else { continue }
-                    changes.append(Change(
-                        path: URL(fileURLWithPath: path).standardizedFileURL.path,
-                        flags: flags,
-                        eventID: UInt64(eventIDs[index]),
-                        directoryAggregate: false
-                    ))
-                }
-                box.relay?.record(changes, capability: box.capability)
-                if historyDone {
-                    box.relay?.historyDidFinish(capability: box.capability)
-                }
-            },
+            Self.streamCallback,
             &context,
             [observationRoot] as CFArray,
             preactivationEventID,
@@ -414,6 +557,161 @@ final class DoryFSWorkerHostCoherence: @unchecked Sendable {
                 throw DoryFSWorkerHostCoherenceError.observationUnavailable
             }
         }
+    }
+
+    /// Replays the journal history observable for this worker generation into the same retained
+    /// pending map and waits for each stream's HistoryDone marker. Persistent streams remain armed
+    /// throughout, so later journal ingestion continues as steady-state delivery without an
+    /// observation gap. Duplicate callbacks coalesce by capability and path before delivery.
+    private func replayObservationHistoryForActivation() throws {
+        let capabilities = lock.withLock { requiredCapabilities }
+        let orderedEndpoints = endpoints.values.filter {
+            capabilities.contains($0.capability)
+        }.sorted {
+            $0.capability.rawValue.uuidString < $1.capability.rawValue.uuidString
+        }
+        var replays = [ActivationReplayStream]()
+        defer {
+            for replay in replays {
+                FSEventStreamStop(replay.stream)
+                FSEventStreamInvalidate(replay.stream)
+            }
+            // CoreServices retains only the raw context pointer. Invalidation prevents new
+            // callbacks, but callbacks already submitted to this dispatch queue may still use it.
+            // Drain a marker enqueued after invalidation before releasing streams and boxes.
+            if let hook = activationReplayCleanupQueueTestHook {
+                streamQueue.async(execute: hook)
+            }
+            streamQueue.sync {}
+            for replay in replays {
+                FSEventStreamRelease(replay.stream)
+                _ = replay.box
+            }
+        }
+
+        do {
+            for endpoint in orderedEndpoints {
+                let observationRoot = try endpoint.hostFS.eventObservationRoot(
+                    forHostPath: endpoint.root
+                )
+                let expectedIdentity = try endpoint.hostFS.eventObservationIdentity(
+                    forRootPath: observationRoot
+                )
+                guard try Self.pathnameIdentity(observationRoot) == expectedIdentity else {
+                    throw DoryFSWorkerHostCoherenceError.observationUnavailable
+                }
+
+                let completion = ActivationHistoryCompletion()
+                let box = CallbackBox(
+                    relay: self,
+                    capability: endpoint.capability,
+                    historyCompletion: completion.complete
+                )
+                var context = FSEventStreamContext(
+                    version: 0,
+                    info: Unmanaged.passUnretained(box).toOpaque(),
+                    retain: nil,
+                    release: nil,
+                    copyDescription: nil
+                )
+                guard let stream = FSEventStreamCreate(
+                    nil,
+                    Self.streamCallback,
+                    &context,
+                    [observationRoot] as CFArray,
+                    preactivationEventID,
+                    0,
+                    Self.streamFlags
+                ) else {
+                    throw DoryFSWorkerHostCoherenceError.observationUnavailable
+                }
+                FSEventStreamSetDispatchQueue(stream, streamQueue)
+                guard FSEventStreamStart(stream) else {
+                    FSEventStreamInvalidate(stream)
+                    FSEventStreamRelease(stream)
+                    throw DoryFSWorkerHostCoherenceError.observationUnavailable
+                }
+                replays.append(ActivationReplayStream(
+                    stream: stream,
+                    box: box,
+                    completion: completion,
+                    endpoint: endpoint,
+                    observationRoot: observationRoot,
+                    expectedIdentity: expectedIdentity
+                ))
+            }
+
+            for replay in replays { FSEventStreamFlushSync(replay.stream) }
+            streamQueue.sync {}
+
+            guard lock.withLock({ running && !terminalFailureReported }),
+                  replays.allSatisfy({ $0.completion.isComplete }) else {
+                throw DoryFSWorkerHostCoherenceError.observationUnavailable
+            }
+            for replay in replays {
+                guard try Self.pathnameIdentity(replay.observationRoot)
+                        == replay.expectedIdentity,
+                      try replay.endpoint.hostFS.eventObservationIdentity(
+                          forRootPath: replay.observationRoot
+                      ) == replay.expectedIdentity else {
+                    throw DoryFSWorkerHostCoherenceError.observationUnavailable
+                }
+            }
+        } catch let error as DoryFSWorkerHostCoherenceError {
+            failStop(error)
+            throw error
+        } catch {
+            failStop(.observationUnavailable)
+            throw DoryFSWorkerHostCoherenceError.observationUnavailable
+        }
+    }
+
+    /// Invalidates every inode identity already known to the guest before readiness. This sweep is
+    /// deliberately independent of FSEvents callback timing: pre-activation FUSE replies are
+    /// fail-closed to zero validity, and this final acknowledged invalidation prevents a positive
+    /// lookup or open inode from carrying stale content across the activation boundary. Newly
+    /// unknown names have no negative dentry grant before activation and are discovered normally.
+    private func activationReconciliationBatches() throws -> [DoryFSWorkerCoherenceBatch] {
+        var batches = [DoryFSWorkerCoherenceBatch]()
+        for endpoint in endpoints.values.sorted(by: {
+            $0.capability.rawValue.uuidString < $1.capability.rawValue.uuidString
+        }) {
+            let keyedInvalidations = endpoint.hostFS.knownNodeIDsForLossRecovery().map {
+                (
+                    key: "i:\($0)",
+                    value: DoryFSWorkerCoherenceInvalidation.inode(
+                        nodeID: $0,
+                        offset: 0,
+                        length: -1
+                    )
+                )
+            }.sorted { $0.key < $1.key }
+            var start = 0
+            while start < keyedInvalidations.count {
+                let end = min(
+                    keyedInvalidations.count,
+                    start + DoryFSWorkerCoherenceCodec.maximumInvalidations
+                )
+                let batchID = lock.withLock { () -> UInt64 in
+                    let value = nextBatchID
+                    nextBatchID = value == UInt64.max ? 1 : value + 1
+                    return value
+                }
+                do {
+                    batches.append(try DoryFSWorkerCoherenceBatch(
+                        generation: generation,
+                        shareCapabilityID: endpoint.capability,
+                        batchID: batchID,
+                        invalidations: keyedInvalidations[start..<end].map(\.value),
+                        nudgeRelativePaths: []
+                    ))
+                } catch {
+                    throw DoryFSWorkerHostCoherenceError.planOverflow
+                }
+                start = end
+            }
+        }
+        return batches
     }
 
     private func historyDidFinish(capability: DoryFSShareCapabilityID) {
@@ -483,6 +781,7 @@ final class DoryFSWorkerHostCoherence: @unchecked Sendable {
         let shouldSchedule = lock.withLock { () -> Bool in
             guard running,
                   !activationCatchupInProgress,
+                  activationComplete,
                   !flushScheduled,
                   !pending.isEmpty else { return false }
             flushScheduled = true
@@ -495,9 +794,11 @@ final class DoryFSWorkerHostCoherence: @unchecked Sendable {
         }
     }
 
-    private func flush() {
+    private func flush(
+        activationDeadlineUptimeNanoseconds: UInt64? = nil
+    ) {
         let batches = lock.withLock { () -> [(Endpoint, [Change])] in
-            guard running else { return [] }
+            guard running, activationComplete || activationDeliveryInProgress else { return [] }
             let batches = pending.compactMap { capability, byPath -> (Endpoint, [Change])? in
                 guard let endpoint = endpoints[capability] else { return nil }
                 return (endpoint, byPath.values.sorted {
@@ -511,7 +812,10 @@ final class DoryFSWorkerHostCoherence: @unchecked Sendable {
         do {
             for (endpoint, changes) in batches {
                 if let batch = try plan(changes, endpoint: endpoint) {
-                    try deliverRetainingUntilAcknowledged(batch)
+                    try deliverRetainingUntilAcknowledged(
+                        batch,
+                        activationDeadlineUptimeNanoseconds: activationDeadlineUptimeNanoseconds
+                    )
                     lock.withLock {
                         deliveredBatchCount = Self.saturatingAdd(deliveredBatchCount, 1)
                     }
@@ -537,7 +841,8 @@ final class DoryFSWorkerHostCoherence: @unchecked Sendable {
     }
 
     private func deliverRetainingUntilAcknowledged(
-        _ batch: DoryFSWorkerCoherenceBatch
+        _ batch: DoryFSWorkerCoherenceBatch,
+        activationDeadlineUptimeNanoseconds: UInt64?
     ) throws {
         let exactFrame: Data
         do {
@@ -547,6 +852,10 @@ final class DoryFSWorkerHostCoherence: @unchecked Sendable {
         }
         let expected = try DoryFSWorkerCoherenceAcknowledgement(accepting: batch)
         for _ in 0..<Self.acknowledgementAttempts {
+            if let activationDeadlineUptimeNanoseconds,
+               DispatchTime.now().uptimeNanoseconds >= activationDeadlineUptimeNanoseconds {
+                throw DoryFSWorkerHostCoherenceError.acknowledgementUnavailable
+            }
             do {
                 let reply = try exchange(exactFrame)
                 guard try DoryFSWorkerCoherenceCodec.decodeAcknowledgement(reply) == expected else {

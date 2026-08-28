@@ -43,7 +43,11 @@ private final class DoryFSWorkerReverseExchange: @unchecked Sendable {
             state.resolve(.success(reply))
         }
         let result = state.condition.withLock {
-            let deadline = Date(timeIntervalSinceNow: 2)
+            let deadline = Date(
+                timeIntervalSinceNow: Double(
+                    DoryFSWorkerCoherenceTiming.reverseExchangeNanoseconds
+                ) / 1_000_000_000
+            )
             while state.result == nil, state.condition.wait(until: deadline) {}
             return state.result
         }
@@ -90,6 +94,10 @@ private final class DoryFSWorkerXPCAdapter: NSObject, DoryFSWorkerXPCProtocol {
 
     func coherenceStatus(withReply reply: @escaping (Data) -> Void) {
         reply(service.coherenceStatusExactBytes())
+    }
+
+    func prepareCoherence(withReply reply: @escaping (Data) -> Void) {
+        reply(service.prepareCoherenceExactBytes())
     }
 
     func activateCoherence(withReply reply: @escaping (Data) -> Void) {

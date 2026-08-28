@@ -1244,6 +1244,7 @@ enum DesktopMode {
         private let deviceTelemetry: RawDeviceTelemetryRegistry
         private let lifecycleReceiptServer: VmmLifecycleReceiptServer
         private let graphicsSelection: DoryRuntimeGraphicsSelection?
+        private let guestFSEventBridge: GuestFSEventBridge?
         private var filesystemWorker: DoryFilesystemWorkerLaunch?
         private var hostShareCoherence: DoryHostShareCoherenceBridge?
         private var signalSources = [DispatchSourceSignal]()
@@ -1708,10 +1709,12 @@ enum DesktopMode {
                         policy: coherencePolicyByTag[share.tag] ?? .disabled
                     ))
                 }
+                var configuredGuestFSEventBridge: GuestFSEventBridge?
                 if let filesystemWorker {
+                    let guestFSEventBridge = GuestFSEventBridge(vsock: vsock)
                     let hostShareCoherence = DoryHostShareCoherenceBridge(
                         endpoints: coherenceEndpoints,
-                        guestEvents: GuestFSEventBridge(vsock: vsock)
+                        guestEvents: guestFSEventBridge
                     ) { [weak machine] reason in
                         Self.log("dory-hv desktop: \(reason)")
                         machine?.requestStop(.crash(reason))
@@ -1728,9 +1731,15 @@ enum DesktopMode {
                             "filesystem worker coherence channel \(event)"
                         )
                     }
-                    try filesystemWorker.client.activateCoherence()
+                    try filesystemWorker.client.prepareCoherence()
                     self.hostShareCoherence = hostShareCoherence
+                    if coherenceEndpoints.contains(where: {
+                        $0.policy == .invalidationAndWatcherNudge
+                    }) {
+                        configuredGuestFSEventBridge = guestFSEventBridge
+                    }
                 }
+                guestFSEventBridge = configuredGuestFSEventBridge
                 if let network = networkRuntime.backend {
                     backends.append(network)
                 }
@@ -2208,8 +2217,20 @@ enum DesktopMode {
             let graphicsDisplayName = graphicsBackend.displayName
             let firstFrame = self.firstFrame
             let cameraAttachment = self.cameraAttachment
+            let guestFSEventBridge = self.guestFSEventBridge
+            let filesystemWorker = self.filesystemWorker
             Task.detached(priority: .userInitiated) { [weak self] in
                 do {
+                    if let guestFSEventBridge {
+                        try await guestFSEventBridge.establishReadiness()
+                        Self.log(
+                            "dory-hv desktop: host-share watcher bridge ready on guest vsock:\(VsockPorts.fsevents)"
+                        )
+                    }
+                    try filesystemWorker?.client.activateCoherence()
+                    if filesystemWorker != nil {
+                        Self.log("dory-hv desktop: host-share coherence delivery active")
+                    }
                     if configuration.genericGuest {
                         try await DesktopGuestReadinessBoundary.complete(
                             genericGuest: true,
@@ -2545,7 +2566,7 @@ enum DesktopMode {
                 }
                 machineExecutionState = .ended
             }
-            filesystemWorker?.client.invalidate()
+            filesystemWorker?.client.close()
             filesystemWorker = nil
             hostShareCoherence = nil
             lifecycleReceiptServer.stop()

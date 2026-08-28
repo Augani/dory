@@ -604,7 +604,18 @@ public final class DoryFSWorkerService: @unchecked Sendable {
     public func activateCoherenceExactBytes() -> Data {
         guard let workspace = activeWorkspace() else { return Data() }
         do {
-            try workspace.hostCoherence?.activate()
+            try workspace.hostCoherence?.activateDelivery()
+            return coherenceStatusExactBytes()
+        } catch {
+            lifecycleLock.withLock { lifecycle = .failed }
+            return Data()
+        }
+    }
+
+    public func prepareCoherenceExactBytes() -> Data {
+        guard let workspace = activeWorkspace() else { return Data() }
+        do {
+            try workspace.hostCoherence?.prepare()
             return coherenceStatusExactBytes()
         } catch {
             lifecycleLock.withLock { lifecycle = .failed }

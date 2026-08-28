@@ -943,7 +943,7 @@ enum EngineMode {
             shares: filesystemShares,
             coherencePolicyByTag: coherencePolicyByTag
         )
-        defer { filesystemWorker.client.invalidate() }
+        defer { filesystemWorker.client.close() }
 
         let machine = try Machine(configuration: MachineConfiguration(
             kernelPath: configuration.kernelPath,
@@ -1027,9 +1027,10 @@ enum EngineMode {
             ))
             note("sharing authorized capability as virtiofs tag \(share.tag)\(share.readOnly ? " (ro)" : "")")
         }
+        let guestFSEventBridge = GuestFSEventBridge(vsock: vsock)
         let hostShareCoherence = DoryHostShareCoherenceBridge(
             endpoints: coherenceEndpoints,
-            guestEvents: GuestFSEventBridge(vsock: vsock)
+            guestEvents: guestFSEventBridge
         ) { reason in
             note(reason)
             machine.requestStop(.crash(reason))
@@ -1044,7 +1045,7 @@ enum EngineMode {
         filesystemWorker.installLifecycleHandler { [weak hostShareCoherence] event in
             hostShareCoherence?.failStop("filesystem worker coherence channel \(event)")
         }
-        try filesystemWorker.client.activateCoherence()
+        try filesystemWorker.client.prepareCoherence()
         let fileServiceResources = FileServiceResourcePublisher(
             stateDirectory: state,
             worker: filesystemWorker,
@@ -1309,7 +1310,23 @@ enum EngineMode {
             machine: machine,
             threadName: "dory-hv.engine.vcpu0"
         )
-        let stop = try machineRunner.runToCompletion()
+        try machineRunner.start()
+        do {
+            if coherenceEndpoints.contains(where: {
+                $0.policy == .invalidationAndWatcherNudge
+            }) {
+                try guestFSEventBridge.establishReadinessBlocking()
+                note("host-share watcher bridge ready on guest vsock:\(VsockPorts.fsevents)")
+            }
+            try filesystemWorker.client.activateCoherence()
+            note("host-share coherence delivery active")
+        } catch {
+            let reason = "host-share coherence did not become ready: \(error)"
+            machine.requestStop(.crash(reason))
+            _ = try? machineRunner.wait()
+            throw VMError.bootFailure(reason)
+        }
+        let stop = try machineRunner.wait()
         note("engine stopped: \(stop)")
     }
 

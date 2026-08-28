@@ -687,3 +687,26 @@ public enum DoryFSWorkerCoherenceCodec {
         }
     }
 }
+
+/// End-to-end timing budget for worker-to-runner coherence and guest watcher notification. The
+/// guest listener starts only after Linux has mounted and prepared its data disk, so an explicit
+/// zero-path probe owns a bounded cold-start window. Real deliveries retain the short fail-stop
+/// deadline and never nest that cold-start retry inside reverse XPC.
+public enum DoryFSWorkerCoherenceTiming {
+    public static let guestWatcherAttemptNanoseconds: UInt64 = 2_000_000_000
+    public static let guestWatcherStartupGraceNanoseconds: UInt64 = 30_000_000_000
+    public static let guestWatcherRetryDelayNanoseconds: UInt64 = 50_000_000
+    public static let guestWatcherMaximumRetryDelayNanoseconds: UInt64 = 250_000_000
+    public static let preparationRequestNanoseconds: UInt64 = 5_000_000_000
+
+    /// A steady-state reverse delivery can consume the one-second virtiofs invalidation budget and
+    /// the two-second guest-watcher budget. Keep scheduler headroom outside both inner deadlines.
+    public static let reverseExchangeNanoseconds: UInt64 = 4_000_000_000
+
+    /// Activation drains every retained share before workload readiness. A total budget prevents a
+    /// pathological number of slow shares from turning startup into an unbounded XPC transaction.
+    public static let activationCatchupNanoseconds: UInt64 = 40_000_000_000
+
+    /// The outer request contains the catch-up budget plus one already-started reverse exchange.
+    public static let activationRequestNanoseconds: UInt64 = 45_000_000_000
+}
