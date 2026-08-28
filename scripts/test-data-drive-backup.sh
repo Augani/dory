@@ -11,12 +11,27 @@ if [ ! -x "$HELPER" ]; then
 fi
 
 TMP_HOME="$(mktemp -d /tmp/dory-data-backup-gate.XXXXXX)"
+TMP_HOME="$(cd "$TMP_HOME" && pwd -P)"
 trap 'rm -rf "$TMP_HOME"' EXIT
 DRIVE="$TMP_HOME/Library/Application Support/Dory/Dory.dorydrive"
 RESTORED="$TMP_HOME/Library/Application Support/Dory/Restored.dorydrive"
 ARCHIVE="$TMP_HOME/Full.dorybackup"
 
 HOME="$TMP_HOME" "$HELPER" data-drive select "$DRIVE" >/dev/null
+
+# The public CLI ships in Contents/Resources while the only supported raw-HV executable lives in
+# the signed nested runner. Prove an installed layout resolves that helper without a development
+# override; the obsolete flat Contents/Helpers/dory-hv path no longer exists.
+INSTALLED_APP="$TMP_HOME/TestDory.app"
+INSTALLED_CLI="$INSTALLED_APP/Contents/Resources/dory"
+INSTALLED_HELPER="$INSTALLED_APP/Contents/Helpers/DoryHVRunner.app/Contents/MacOS/dory-hv"
+mkdir -p "$(dirname "$INSTALLED_CLI")" "$(dirname "$INSTALLED_HELPER")"
+cp "$REPO_ROOT/scripts/dory" "$INSTALLED_CLI"
+cp "$HELPER" "$INSTALLED_HELPER"
+chmod 0755 "$INSTALLED_CLI" "$INSTALLED_HELPER"
+installed_selected="$(HOME="$TMP_HOME" "$INSTALLED_CLI" data path)"
+[ "$installed_selected" = "$DRIVE" ]
+
 printf 'verified-cli-roundtrip\n' > "$DRIVE/engine/fixture.txt"
 xattr -wx dev.dory.test 0001feff "$DRIVE/engine/fixture.txt"
 truncate -s 33554432 "$DRIVE/engine/sparse.img"

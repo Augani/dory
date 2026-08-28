@@ -67,6 +67,7 @@ vmm_helper() {
 
 hv_helper() {
   for p in "${DORY_HV_BIN:-}" \
+           "$DORY_SCRIPT_DIR/../Helpers/DoryHVRunner.app/Contents/MacOS/dory-hv" \
            "$DORY_SCRIPT_DIR/../Helpers/dory-hv" \
            "$DORY_SCRIPT_DIR/../Packages/ContainerizationEngine/.build/debug/dory-hv" \
            "$DORY_SCRIPT_DIR/../Packages/ContainerizationEngine/.build/out/Products/Release/dory-hv" \

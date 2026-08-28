@@ -16,11 +16,15 @@ PROBE_URL=https://registry.corp.example/v2/
 TAILSCALE_EXIT_NODE=release-exit-node.example.ts.net
 APP="$TMP/Dory.app"
 EVIDENCE="$TMP/evidence"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Helpers" "$APP/Contents/Resources" "$EVIDENCE"
+mkdir -p \
+  "$APP/Contents/MacOS" \
+  "$APP/Contents/Helpers/DoryHVRunner.app/Contents/MacOS" \
+  "$APP/Contents/Resources" \
+  "$EVIDENCE"
 printf app > "$APP/Contents/MacOS/Dory"
 printf docker > "$APP/Contents/Helpers/docker"
 printf doryd > "$APP/Contents/Helpers/doryd"
-printf hv > "$APP/Contents/Helpers/dory-hv"
+printf hv > "$APP/Contents/Helpers/DoryHVRunner.app/Contents/MacOS/dory-hv"
 printf ctl > "$APP/Contents/Helpers/dorydctl"
 printf kernel > "$APP/Contents/Resources/dory-hv-kernel-arm64"
 printf rootfs > "$APP/Contents/Resources/dory-machine-rootfs-arm64.ext4"
@@ -44,7 +48,7 @@ github_run_attempt=$ATTEMPT
 app_executable_sha256=$(sha "$APP/Contents/MacOS/Dory")
 docker_sha256=$(sha "$APP/Contents/Helpers/docker")
 doryd_sha256=$(sha "$APP/Contents/Helpers/doryd")
-dory_hv_sha256=$(sha "$APP/Contents/Helpers/dory-hv")
+dory_hv_sha256=$(sha "$APP/Contents/Helpers/DoryHVRunner.app/Contents/MacOS/dory-hv")
 dorydctl_sha256=$(sha "$APP/Contents/Helpers/dorydctl")
 machine_kernel_sha256=$(sha "$APP/Contents/Resources/dory-hv-kernel-arm64")
 machine_rootfs_sha256=$(sha "$APP/Contents/Resources/dory-machine-rootfs-arm64.ext4")

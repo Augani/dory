@@ -223,10 +223,122 @@ do {
     fail("application launch authority handoff failed: \(error)")
 }
 guard let command = arguments.first else {
-    fail("usage: dory-hv <smoke|madvtest|desktop|agent-ping|engine|usb|renderer-qualify> [options]")
+    fail("usage: dory-hv <smoke|madvtest|desktop|agent-ping|data-drive|engine|usb|renderer-qualify> [options]")
 }
 
 switch command {
+case "data-drive":
+    guard arguments.count >= 2 else {
+        fail("usage: dory-hv data-drive <resolve|prepare|id|selected-path|select|bind-existing|recover-existing|capacity|grow|backup|verify-backup|restore> [paths]")
+    }
+    let operation = arguments[1]
+    do {
+        let home = DoryDataDrive.processHome()
+        switch operation {
+        case "selected-path":
+            guard arguments.count == 2 else {
+                fail("usage: dory-hv data-drive selected-path")
+            }
+            guard let path = try DoryDataDriveSelectionStore(home: home).selectedPath() else {
+                exit(3)
+            }
+            print(path)
+        case "select", "bind-existing":
+            guard arguments.count == 3 else {
+                fail("usage: dory-hv data-drive \(operation) <absolute .dorydrive path>")
+            }
+            let store = try DoryDataDriveSelectionStore(home: home)
+            let drive = operation == "select"
+                ? try store.prepareSelection(requestedRoot: arguments[2])
+                : try store.bindExistingSelection(requestedRoot: arguments[2])
+            print(try drive.readManifest().id.uuidString.lowercased())
+        case "recover-existing":
+            guard arguments.count == 3 else {
+                fail("usage: dory-hv data-drive recover-existing <absolute .dorydrive path>")
+            }
+            let store = try DoryDataDriveSelectionStore(home: home)
+            let drive = try store.recoverExistingSelection(requestedRoot: arguments[2])
+            print(try drive.readManifest().id.uuidString.lowercased())
+        case "resolve":
+            guard arguments.count == 3 else {
+                fail("usage: dory-hv data-drive resolve <absolute .dorydrive path>")
+            }
+            let drive = try DoryDataDrive(home: home, overrideRoot: arguments[2])
+            print(drive.root)
+        case "prepare":
+            guard arguments.count == 3 else {
+                fail("usage: dory-hv data-drive prepare <absolute .dorydrive path>")
+            }
+            let drive = try DoryDataDrive(home: home, overrideRoot: arguments[2])
+            try drive.prepare()
+            print(try drive.readManifest().id.uuidString.lowercased())
+        case "id":
+            guard arguments.count == 3 else {
+                fail("usage: dory-hv data-drive id <absolute .dorydrive path>")
+            }
+            let drive = try DoryDataDrive(home: home, overrideRoot: arguments[2])
+            try drive.validateManifest()
+            print(try drive.readManifest().id.uuidString.lowercased())
+        case "capacity", "grow":
+            let store = try DoryDataDriveSelectionStore(home: home)
+            guard let drive = try store.inspectSelection() else {
+                fail("no Dory data drive is selected")
+            }
+            let usage: DockerDataDiskUsage
+            if operation == "capacity" {
+                guard arguments.count == 2 else {
+                    fail("usage: dory-hv data-drive capacity")
+                }
+                usage = try DockerDataDisk.usage(at: drive.engineDataDiskPath)
+            } else {
+                guard arguments.count == 3, let capacityGiB = Int(arguments[2]) else {
+                    fail("usage: dory-hv data-drive grow <capacity-gib>")
+                }
+                let driveLock = try EngineStateDirectoryLock(
+                    stateDirectory: drive.root,
+                    lockFileName: "drive.lock"
+                )
+                defer { withExtendedLifetime(driveLock) {} }
+                usage = try DockerDataDisk.grow(
+                    destination: drive.engineDataDiskPath,
+                    capacityGiB: capacityGiB
+                )
+            }
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            print(String(decoding: try encoder.encode(usage), as: UTF8.self))
+        case "backup":
+            guard arguments.count == 4 else {
+                fail("usage: dory-hv data-drive backup <source.dorydrive> <archive.dorybackup>")
+            }
+            let drive = try DoryDataDrive(home: home, overrideRoot: arguments[2])
+            let result = try DoryDataDriveTransaction.backup(from: drive, to: arguments[3])
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            print(String(decoding: try encoder.encode(result), as: UTF8.self))
+        case "verify-backup":
+            guard arguments.count == 3 else {
+                fail("usage: dory-hv data-drive verify-backup <archive.dorybackup>")
+            }
+            let result = try DoryDataDriveArchive.verifyBackup(at: arguments[2])
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            print(String(decoding: try encoder.encode(result), as: UTF8.self))
+        case "restore":
+            guard arguments.count == 4 else {
+                fail("usage: dory-hv data-drive restore <archive.dorybackup> <target.dorydrive>")
+            }
+            let drive = try DoryDataDrive(home: home, overrideRoot: arguments[3])
+            let result = try DoryDataDriveTransaction.restore(at: arguments[2], to: drive)
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            print(String(decoding: try encoder.encode(result), as: UTF8.self))
+        default:
+            fail("usage: dory-hv data-drive <resolve|prepare|id|selected-path|select|bind-existing|recover-existing|capacity|grow|backup|verify-backup|restore> [paths]")
+        }
+    } catch {
+        fail("data-drive \(operation) failed: \(error)")
+    }
 case "smoke":
     do {
         let result = try HVSmoke.run()

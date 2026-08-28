@@ -70,16 +70,18 @@ require_source 'share.readOnly || configuration.genericGuest' Packages/Container
 require_source 'resources.file_service_failed' dory-core-swift/Sources/DorydKit/HealthReporter.swift \
   "terminal file-service coherence loss is not reported as a failure"
 
+engine_start_line="$(grep -nF 'try machineRunner.start()' Packages/ContainerizationEngine/Sources/dory-hv/EngineMode.swift | head -1 | cut -d: -f1)"
 engine_activation_line="$(grep -nF 'try filesystemWorker.client.activateCoherence()' Packages/ContainerizationEngine/Sources/dory-hv/EngineMode.swift | head -1 | cut -d: -f1)"
-engine_guest_line="$(grep -nF 'let stop = try machineRunner.runToCompletion()' Packages/ContainerizationEngine/Sources/dory-hv/EngineMode.swift | head -1 | cut -d: -f1)"
-[ -n "$engine_activation_line" ] && [ -n "$engine_guest_line" ] \
-  && [ "$engine_activation_line" -lt "$engine_guest_line" ] \
-  || fail "engine coherence activation is not ordered before guest execution"
-desktop_activation_line="$(grep -nF 'try filesystemWorker.client.activateCoherence()' Packages/ContainerizationEngine/Sources/dory-hv/DesktopMode.swift | head -1 | cut -d: -f1)"
-desktop_guest_line="$(grep -nF 'try startMachine()' Packages/ContainerizationEngine/Sources/dory-hv/DesktopMode.swift | head -1 | cut -d: -f1)"
-[ -n "$desktop_activation_line" ] && [ -n "$desktop_guest_line" ] \
-  && [ "$desktop_activation_line" -lt "$desktop_guest_line" ] \
-  || fail "desktop coherence activation is not ordered before guest execution"
+engine_wait_line="$(grep -nF 'let stop = try machineRunner.wait()' Packages/ContainerizationEngine/Sources/dory-hv/EngineMode.swift | head -1 | cut -d: -f1)"
+[ -n "$engine_start_line" ] && [ -n "$engine_activation_line" ] && [ -n "$engine_wait_line" ] \
+  && [ "$engine_start_line" -lt "$engine_activation_line" ] \
+  && [ "$engine_activation_line" -lt "$engine_wait_line" ] \
+  || fail "engine coherence activation is not ordered between machine start and owner-thread join"
+desktop_start_line="$(grep -nF 'try machineRunner.start { [weak self] result in' Packages/ContainerizationEngine/Sources/dory-hv/DesktopMode.swift | head -1 | cut -d: -f1)"
+desktop_activation_line="$(grep -nF 'try filesystemWorker?.client.activateCoherence()' Packages/ContainerizationEngine/Sources/dory-hv/DesktopMode.swift | head -1 | cut -d: -f1)"
+[ -n "$desktop_start_line" ] && [ -n "$desktop_activation_line" ] \
+  && [ "$desktop_start_line" -lt "$desktop_activation_line" ] \
+  || fail "desktop coherence activation is not ordered after machine start"
 for check in resources.processes resources.guest resources.file_service resources.trend network.resources disk.reclaimable; do
   require_source "id: \"$check\"" dory-core-swift/Sources/DorydKit/HealthReporter.swift \
     "health surface omits $check"
