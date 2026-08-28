@@ -346,8 +346,8 @@ Headless machines retain the smaller Alpine, `root`, and `/bin/sh` contract.
 ### Machine secrets and host access
 
 New machines do not receive arbitrary host environment variables. Settings contains an allow-list.
-`ANTHROPIC_API_KEY` is the default entry, while `OPENAI_API_KEY`, `GH_TOKEN`, and `HF_TOKEN` are
-available presets. Only named, non-empty values are copied at creation time.
+`ANTHROPIC_API_KEY` is the default entry, while `OPENAI_API_KEY`, `ORCAROUTER_API_KEY`, `GH_TOKEN`,
+and `HF_TOKEN` are available presets. Only named, non-empty values are copied at creation time.
 
 Mac folders are also private by default. A persistent machine sees only mounts selected at creation,
 and an agent sandbox sees no host files unless an explicit mount is supplied.

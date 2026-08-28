@@ -4,7 +4,7 @@ import Testing
 struct MachineEnvImportTests {
     @Test func defaultsContainAnthropicOnly() {
         #expect(MachineEnvImport.defaultNames == ["ANTHROPIC_API_KEY"])
-        #expect(MachineEnvImport.optionalExtras == ["OPENAI_API_KEY", "GH_TOKEN", "HF_TOKEN"])
+        #expect(MachineEnvImport.optionalExtras == ["OPENAI_API_KEY", "ORCAROUTER_API_KEY", "GH_TOKEN", "HF_TOKEN"])
     }
 
     @Test func normalizeUppercasesAndDedupes() {

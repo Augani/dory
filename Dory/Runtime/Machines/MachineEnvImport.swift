@@ -2,7 +2,7 @@ import Foundation
 
 nonisolated enum MachineEnvImport {
     static let defaultNames: [String] = ["ANTHROPIC_API_KEY"]
-    static let optionalExtras: [String] = ["OPENAI_API_KEY", "GH_TOKEN", "HF_TOKEN"]
+    static let optionalExtras: [String] = ["OPENAI_API_KEY", "ORCAROUTER_API_KEY", "GH_TOKEN", "HF_TOKEN"]
 
     static func normalize(_ names: [String]) -> [String] {
         var seen = Set<String>()

@@ -1291,7 +1291,7 @@ struct SettingsView: View {
                     .help("Save environment allow-list")
                     .accessibilityIdentifier("machine-env-save")
                 }
-                TextField("ANTHROPIC_API_KEY, GH_TOKEN", text: $machineEnvAllowListDraft, onCommit: commitMachineEnvAllowListDraft)
+                TextField("ANTHROPIC_API_KEY, ORCAROUTER_API_KEY", text: $machineEnvAllowListDraft, onCommit: commitMachineEnvAllowListDraft)
                     .textFieldStyle(.plain)
                     .font(.mono(12))
                     .foregroundStyle(p.text)
