@@ -1565,6 +1565,11 @@ struct DorydClientTests {
             service.latestMachineStopOperationID
                 == stopOperationID.uuidString.lowercased()
         )
+        let refreshedKernel = try await client.machineRefreshManagedDesktopKernel(
+            "dev",
+            sourcePath: "/vm/.assets/dory-desktop-kernel-arm64",
+            sourceSHA256: String(repeating: "a", count: 64)
+        )
         let updatedMachine = try await client.machineUpdate(
             "dev",
             memoryMB: 4096,
@@ -1644,6 +1649,11 @@ struct DorydClientTests {
                 == desktopUpdateOperationID.uuidString.lowercased()
         )
         #expect(desktopUpdate.operationID == desktopUpdateOperationID.uuidString.lowercased())
+        #expect(refreshedKernel.id == "dev")
+        #expect(
+            service.latestManagedDesktopKernelRefreshRequest?["sourcePath"] as? String
+                == "/vm/.assets/dory-desktop-kernel-arm64"
+        )
         let createShares = try #require(
             service.latestMachineCreateConfig?["shares"] as? [NSDictionary]
         )
@@ -4584,6 +4594,7 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     private var _machineDeleteMessage = ""
     private var _machineCreateCount = 0
     private var _machineUpdateCount = 0
+    private var _latestManagedDesktopKernelRefreshRequest: NSDictionary?
     private var _machineProvisionCount = 0
     private var _machineProvisionOK = true
     private var _machineProvisionMessage = ""
@@ -5034,6 +5045,10 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     var latestMachineUpdateConfig: NSDictionary? {
         lock.lock(); defer { lock.unlock() }
         return _latestMachineUpdateConfig
+    }
+    var latestManagedDesktopKernelRefreshRequest: NSDictionary? {
+        lock.lock(); defer { lock.unlock() }
+        return _latestManagedDesktopKernelRefreshRequest
     }
     var latestMachineProvisionRecipe: String? {
         lock.lock(); defer { lock.unlock() }
@@ -5518,6 +5533,21 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         machines[machineID] = row
         lock.unlock()
         reply(true, row, "")
+    }
+
+    func machineRefreshManagedDesktopKernel(
+        _ machineID: String,
+        request: NSDictionary,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        lock.lock()
+        _latestManagedDesktopKernelRefreshRequest = request
+        let current = machines[machineID] ?? Self.machineRow(
+            id: machineID,
+            state: "stopped"
+        )
+        lock.unlock()
+        reply(true, current, "")
     }
 
     func machineDisplayPresentationSet(

@@ -1068,6 +1068,49 @@ public final class DorydService: NSObject, DorydControl {
         }
     }
 
+    public func machineRefreshManagedDesktopKernel(
+        _ machineID: String,
+        request: NSDictionary,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        guard let machineManager else {
+            reply(false, [:], "machine manager is not configured")
+            return
+        }
+        do {
+            let refresh = try MachineManagedDesktopKernelRefreshRequest(
+                xpcDictionary: request
+            )
+            var status = try machineManager.refreshManagedDesktopKernel(
+                id: machineID,
+                sourcePath: refresh.sourcePath,
+                sourceSHA256: refresh.sourceSHA256
+            )
+            if machineManager.configuredLaunchPolicy == .perWorkspaceAuthority {
+                guard let productionPlanningController else {
+                    throw MachineManagerError.persistence(
+                        "production planning controller is not configured"
+                    )
+                }
+                status = try machineManager.resolveAndPublishProductionPlan(
+                    id: machineID,
+                    controller: productionPlanningController
+                )
+            }
+            incidentWriter?.record(
+                type: "machine.managed_desktop_kernel_refresh",
+                detail: machineID + " sha256=" + refresh.sourceSHA256
+            )
+            reply(true, status.xpcDictionary, "")
+        } catch {
+            incidentWriter?.record(
+                type: "machine.managed_desktop_kernel_refresh_failed",
+                detail: machineID + ": " + String(describing: error)
+            )
+            reply(false, [:], String(describing: error))
+        }
+    }
+
     public func machineSnapshot(
         _ machineID: String,
         request: NSDictionary,
@@ -2015,6 +2058,26 @@ private struct MachineProvisionRequest {
         guard !recipeID.isEmpty else {
             throw XPCRemoteConfigError.invalid("recipe")
         }
+    }
+}
+
+private struct MachineManagedDesktopKernelRefreshRequest {
+    var sourcePath: String
+    var sourceSHA256: String
+
+    init(xpcDictionary dictionary: NSDictionary) throws {
+        guard let keys = dictionary.allKeys as? [String],
+              Set(keys) == ["sourcePath", "sourceSHA256"],
+              let sourcePath = dictionary["sourcePath"] as? String,
+              sourcePath.hasPrefix("/"),
+              sourcePath.utf8.count <= 4_096,
+              !sourcePath.contains("\0"),
+              let sourceSHA256 = dictionary["sourceSHA256"] as? String,
+              sourceSHA256.wholeMatch(of: /[0-9a-f]{64}/) != nil else {
+            throw XPCRemoteConfigError.invalid("managedDesktopKernelRefresh")
+        }
+        self.sourcePath = sourcePath
+        self.sourceSHA256 = sourceSHA256
     }
 }
 

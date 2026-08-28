@@ -868,6 +868,19 @@ enum DesktopMachineExecutionState: Equatable, Sendable {
     }
 }
 
+/// Dispatch signal sources run on a dedicated queue, while every controller operation is isolated
+/// to the main actor. Keep the source callback itself nonisolated and use the AppKit run-loop relay
+/// for the actor hop. Capturing a `Controller` directly in `setEventHandler` makes Swift annotate
+/// the callback as main-actor code even though libdispatch invokes it on the signal queue, causing
+/// a deliberate executor-precondition crash before SIGTERM can request a clean guest shutdown.
+enum DesktopSignalEventRelay {
+    static func makeHandler(
+        _ operation: @escaping @MainActor @Sendable () -> Void
+    ) -> @Sendable () -> Void {
+        { DesktopAppRunLoop.perform(operation) }
+    }
+}
+
 enum DesktopMode {
     enum RootDiskBacking: Equatable {
         case legacyPath(String)
@@ -2504,9 +2517,9 @@ enum DesktopMode {
                     signal: number,
                     queue: signalQueue
                 )
-                source.setEventHandler { [weak self] in
-                    DesktopAppRunLoop.perform { self?.requestGuestShutdown() }
-                }
+                source.setEventHandler(handler: DesktopSignalEventRelay.makeHandler {
+                    [weak self] in self?.requestGuestShutdown()
+                })
                 source.resume()
                 signalSources.append(source)
             }
@@ -2519,14 +2532,13 @@ enum DesktopMode {
                 signal: SIGUSR1,
                 queue: signalQueue
             )
-            raiseSource.setEventHandler { [weak self] in
-                DesktopAppRunLoop.perform {
-                    guard let self else { return }
-                    for window in self.windows { window.makeKeyAndOrderFront(nil) }
-                    self.windows.first?.makeKey()
-                    self.application.activate()
-                }
-            }
+            raiseSource.setEventHandler(handler: DesktopSignalEventRelay.makeHandler {
+                [weak self] in
+                guard let self else { return }
+                for window in self.windows { window.makeKeyAndOrderFront(nil) }
+                self.windows.first?.makeKey()
+                self.application.activate()
+            })
             raiseSource.resume()
             signalSources.append(raiseSource)
         }

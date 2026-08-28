@@ -178,6 +178,98 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertTrue(manager.list().isEmpty)
     }
 
+    func testManagedDesktopKernelRefreshIsAtomicScopedAndRequiresStoppedMachine() throws {
+        let base = "/tmp/dory-machine-kernel-refresh-\(getpid())-"
+            + "\(UInt32.random(in: 0..<UInt32.max))"
+        let state = base + "/machines"
+        let rootfs = base + "/source.ext4"
+        try FileManager.default.createDirectory(
+            atPath: base,
+            withIntermediateDirectories: true
+        )
+        try Data("user-root-disk-must-survive".utf8).write(
+            to: URL(fileURLWithPath: rootfs)
+        )
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: state,
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: false
+        ))
+        defer {
+            try? manager.delete(id: "desktop")
+            try? FileManager.default.removeItem(atPath: base)
+        }
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "desktop",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: rootfs,
+            displayMode: .desktop,
+            environment: ["DORY_DESKTOP_DISTRO": "ubuntu"]
+        ))
+
+        let assetDirectory = state + "/.assets"
+        try FileManager.default.createDirectory(
+            atPath: assetDirectory,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let preparedKernel = assetDirectory + "/dory-desktop-kernel-arm64"
+        let preparedBytes = Data("managed-kernel-v2".utf8)
+        try preparedBytes.write(to: URL(fileURLWithPath: preparedKernel))
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: preparedKernel
+        )
+        let digest = SHA256.hash(data: preparedBytes)
+            .map { String(format: "%02x", $0) }
+            .joined()
+
+        XCTAssertThrowsError(try manager.refreshManagedDesktopKernel(
+            id: "desktop",
+            sourcePath: base + "/caller-kernel",
+            sourceSHA256: digest
+        )) { error in
+            XCTAssertTrue(String(describing: error).contains("outside daemon asset authority"))
+        }
+        XCTAssertThrowsError(try manager.refreshManagedDesktopKernel(
+            id: "desktop",
+            sourcePath: preparedKernel,
+            sourceSHA256: String(repeating: "0", count: 64)
+        )) { error in
+            XCTAssertTrue(String(describing: error).contains("prepared digest"))
+        }
+
+        let refreshed = try manager.refreshManagedDesktopKernel(
+            id: "desktop",
+            sourcePath: preparedKernel,
+            sourceSHA256: digest
+        )
+        XCTAssertEqual(refreshed.state, .created)
+        XCTAssertEqual(
+            try Data(contentsOf: URL(fileURLWithPath: state + "/desktop/kernel")),
+            preparedBytes
+        )
+        XCTAssertEqual(
+            try Data(contentsOf: URL(fileURLWithPath: state + "/desktop/rootfs.ext4")),
+            Data("user-root-disk-must-survive".utf8)
+        )
+        XCTAssertFalse(
+            try FileManager.default.contentsOfDirectory(atPath: state + "/desktop")
+                .contains { $0.hasPrefix(".kernel-refresh-") }
+        )
+
+        _ = try manager.start(id: "desktop")
+        XCTAssertThrowsError(try manager.refreshManagedDesktopKernel(
+            id: "desktop",
+            sourcePath: preparedKernel,
+            sourceSHA256: digest
+        )) { error in
+            XCTAssertTrue(String(describing: error).contains("requires a stopped machine"))
+        }
+    }
+
     func testMigrationOnlyLegacyPolicyRejectsNewMachinesBeforeCreatingState() throws {
         let base = "/tmp/dory-machine-migration-only-\(getpid())-"
             + "\(UInt32.random(in: 0..<UInt32.max))"

@@ -47,6 +47,14 @@ struct DoryMacAudioQueueCapacity {
     }
 }
 
+enum DoryMacAudioPlaybackCompletionPolicy {
+    // VirtIO PCM completion advances Linux's ALSA hardware pointer. A data-consumed callback only
+    // means AVAudioPlayerNode removed the buffer from its scheduling queue, which can happen much
+    // faster than real time and lets the guest overrun the audible timeline. dataRendered is paced
+    // by the engine render timeline without depending on a physical device's played-back callback.
+    static let callbackType: AVAudioPlayerNodeCompletionCallbackType = .dataRendered
+}
+
 struct DoryMacAudioRuntimeMetrics: Equatable, Sendable {
     var queuedPlaybackBytes: Int
     var pendingCaptureBytes: Int
@@ -323,12 +331,16 @@ final class DoryMacAudioBackend: VirtioSoundHost, @unchecked Sendable {
                 completion: completion
             )
             queuedPlaybackBytes += data.count
-            // The virtio descriptor protects the guest-owned period, not the audible speaker
-            // timeline. We have already copied that period into an AVAudioPCMBuffer, so complete
-            // it when Core Audio consumes the buffer. Waiting for `.dataPlayedBack` couples the
-            // Linux PCM ring to the host device's presentation callback and can deadlock ALSA on
-            // devices that do not publish that callback for an application-owned engine.
-            player.scheduleBuffer(buffer, completionCallbackType: .dataConsumed) {
+            // Completing the VirtIO descriptor advances Linux's ALSA hardware pointer, so this
+            // acknowledgement must be paced by Core Audio's render timeline. `.dataConsumed`
+            // merely drains the scheduling queue and can make the guest run PCM millions of
+            // periods ahead of real time. `.dataPlayedBack` depends on a physical-device callback
+            // that some application-owned engines do not publish. `.dataRendered` provides the
+            // correct bounded contract between those two stages.
+            player.scheduleBuffer(
+                buffer,
+                completionCallbackType: DoryMacAudioPlaybackCompletionPolicy.callbackType
+            ) {
                 [weak self] _ in
                 guard let self else { return }
                 self.queue.async {

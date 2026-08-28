@@ -5998,6 +5998,118 @@ public final class MachineManager: @unchecked Sendable {
         }
     }
 
+    /// Reconciles the Dory-owned direct-boot kernel before a managed desktop starts. Desktop
+    /// root disks are deliberately outside this operation: applications, accounts, settings, and
+    /// every other guest byte remain untouched. The source is restricted to the daemon's selected
+    /// data-drive asset cache and is verified before an atomic replacement is published.
+    public func refreshManagedDesktopKernel(
+        id: String,
+        sourcePath: String,
+        sourceSHA256: String
+    ) throws -> DoryMachineStatus {
+        let mutationLease = mutationCoordinator.acquire(workspaceID: id)
+        defer { mutationLease.release() }
+        try requireNoActivePlanningMutation(id: id)
+        let directMutation = try retainDirectWorkspaceMutationLock(id: id)
+        defer { releaseDirectWorkspaceMutationLock(id: id, retention: directMutation) }
+
+        guard sourceSHA256.wholeMatch(of: /[0-9a-f]{64}/) != nil else {
+            throw MachineManagerError.persistence(
+                "managed desktop kernel digest is invalid"
+            )
+        }
+        let entry: MachineEntry
+        lock.lock()
+        guard let current = machines[id] else {
+            lock.unlock()
+            throw MachineManagerError.unknownMachine(id)
+        }
+        entry = current
+        lock.unlock()
+        guard entry.process == nil, entry.handoffServer == nil,
+              [.created, .stopped, .failed].contains(entry.state) else {
+            throw MachineManagerError.persistence(
+                "managed desktop kernel refresh requires a stopped machine"
+            )
+        }
+        let machine = entry.configuration
+        try validateManagedMachineArtifacts(machine)
+        guard machine.bootMode == .linuxKernel,
+              machine.displayMode == .desktop,
+              machine.installerISOPath == nil else {
+            throw MachineManagerError.persistence(
+                "managed desktop kernel refresh does not apply to this machine"
+            )
+        }
+
+        let assetDirectory = configuration.stateDirectory + "/.assets"
+        let expectedSourcePath = assetDirectory + "/dory-desktop-kernel-"
+            + configuration.guestArchitecture
+        guard sourcePath == expectedSourcePath,
+              Self.isPrivateDirectory(path: assetDirectory),
+              Self.isPrivateRegularFile(path: sourcePath) else {
+            throw MachineManagerError.persistence(
+                "managed desktop kernel source is outside daemon asset authority"
+            )
+        }
+        if let receipt = machine.effectiveInstalledDesktopPayloadReceipt,
+           receipt.provenance == .verifiedUpdateBundle,
+           receipt.kernelSHA256 != sourceSHA256 {
+            throw MachineManagerError.persistence(
+                "managed desktop runtime changed; install its signed guest update before launch"
+            )
+        }
+
+        let sourceByteCount = Self.fileSize(path: sourcePath)
+        guard sourceByteCount > 0,
+              try Self.sha256(path: sourcePath) == sourceSHA256 else {
+            throw MachineManagerError.persistence(
+                "managed desktop kernel source does not match its prepared digest"
+            )
+        }
+        if try Self.sha256(path: machine.kernelPath) == sourceSHA256 {
+            return status(id: id) ?? DoryMachineStatus(id: id, state: entry.state)
+        }
+
+        let stagingPath = machineStateDirectory(id: id)
+            + "/.kernel-refresh-" + UUID().uuidString.lowercased()
+        defer { try? FileManager.default.removeItem(atPath: stagingPath) }
+        try Self.cloneOrCopyFile(source: sourcePath, destination: stagingPath)
+        guard Self.fileSize(path: stagingPath) == sourceByteCount,
+              try Self.sha256(path: stagingPath) == sourceSHA256,
+              try Self.sha256(path: sourcePath) == sourceSHA256 else {
+            throw MachineManagerError.persistence(
+                "managed desktop kernel changed while it was staged"
+            )
+        }
+        guard rename(stagingPath, machine.kernelPath) == 0 else {
+            throw MachineManagerError.persistence(
+                "could not publish managed desktop kernel: "
+                    + String(cString: strerror(errno))
+            )
+        }
+        try Self.syncDirectory(path: machineStateDirectory(id: id))
+        guard try Self.sha256(path: machine.kernelPath) == sourceSHA256 else {
+            throw MachineManagerError.persistence(
+                "published managed desktop kernel failed verification"
+            )
+        }
+
+        // The artifact graph changed even though the user's VM definition did not. Invalidate any
+        // resolved launch identity so the service must publish a plan bound to this exact kernel.
+        try publishConfiguration(machine)
+        lock.lock()
+        if var refreshed = machines[id] {
+            if refreshed.state == .failed {
+                refreshed.state = .stopped
+            }
+            clearFailure(on: &refreshed)
+            machines[id] = refreshed
+        }
+        lock.unlock()
+        return status(id: id) ?? DoryMachineStatus(id: id, state: .stopped)
+    }
+
     public func listSnapshots(machineID: String? = nil) throws -> [DoryMachineSnapshot] {
         let ids: [String]
         if let machineID {

@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Testing
 @testable import Dory
@@ -48,6 +49,13 @@ struct DesktopMachineAssetTests {
         )
         #expect(prepared.kernelPath == assets.appendingPathComponent("dory-desktop-kernel-arm64").path)
         #expect(prepared.rootfsPath == assets.appendingPathComponent("dory-desktop-rootfs-arm64.ext4").path)
+        #expect(
+            try DesktopMachineAssetProvisioner.preparedKernelSHA256(
+                at: prepared.kernelPath
+            ) == SHA256.hash(data: kernelBytes)
+                .map { String(format: "%02x", $0) }
+                .joined()
+        )
         let rootfsSize = try #require(
             try FileManager.default.attributesOfItem(atPath: prepared.rootfsPath)[.size] as? NSNumber
         )

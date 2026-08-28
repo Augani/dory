@@ -2113,6 +2113,58 @@ final class DorydServiceTests: XCTestCase {
         wait(for: [legacyRequest], timeout: 2)
     }
 
+    func testManagedDesktopKernelRefreshRejectsUnboundedCallerAuthority() throws {
+        let base = "/tmp/doryd-service-kernel-refresh-\(getpid())-"
+            + "\(UInt32.random(in: 0..<UInt32.max))"
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: base,
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: false
+        ))
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let service = DorydService(
+            socketPath: "/tmp/doryd-test.sock",
+            machineManager: manager
+        )
+
+        let extraKey = expectation(description: "extra refresh authority rejected")
+        service.machineRefreshManagedDesktopKernel("dev", request: [
+            "sourcePath": base + "/.assets/dory-desktop-kernel-arm64",
+            "sourceSHA256": String(repeating: "a", count: 64),
+            "destinationPath": base + "/dev/kernel",
+        ]) { ok, _, message in
+            XCTAssertFalse(ok)
+            XCTAssertTrue(message.contains("managedDesktopKernelRefresh"))
+            extraKey.fulfill()
+        }
+        wait(for: [extraKey], timeout: 2)
+
+        let malformedDigest = expectation(description: "malformed refresh digest rejected")
+        service.machineRefreshManagedDesktopKernel("dev", request: [
+            "sourcePath": base + "/.assets/dory-desktop-kernel-arm64",
+            "sourceSHA256": "ABC123",
+        ]) { ok, _, message in
+            XCTAssertFalse(ok)
+            XCTAssertTrue(message.contains("managedDesktopKernelRefresh"))
+            malformedDigest.fulfill()
+        }
+        wait(for: [malformedDigest], timeout: 2)
+
+        let typedRequest = expectation(description: "typed refresh reaches manager")
+        service.machineRefreshManagedDesktopKernel("dev", request: [
+            "sourcePath": base + "/.assets/dory-desktop-kernel-arm64",
+            "sourceSHA256": String(repeating: "a", count: 64),
+        ]) { ok, _, message in
+            XCTAssertFalse(ok)
+            XCTAssertFalse(message.contains("managedDesktopKernelRefresh"), message)
+            XCTAssertTrue(message.contains("dev"), message)
+            typedRequest.fulfill()
+        }
+        wait(for: [typedRequest], timeout: 2)
+    }
+
     func testMachineWritesRequireTypedIntentAndPreserveLegacyEnvironmentFieldLocally() throws {
         let base = "/tmp/doryd-service-typed-write-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let manager = MachineManager(configuration: MachineManagerConfiguration(

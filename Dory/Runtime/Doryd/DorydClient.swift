@@ -27,6 +27,7 @@ nonisolated protocol DorydControlXPC {
     func machineResume(_ machineID: String, operationID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineRestart(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineUpdate(_ machineID: String, config: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void)
+    func machineRefreshManagedDesktopKernel(_ machineID: String, request: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineDisplayPresentationSet(_ machineID: String, presentation: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineDelete(_ machineID: String, reply: @escaping (Bool, String) -> Void)
     func machineList(reply: @escaping (NSArray, String) -> Void)
@@ -2132,6 +2133,28 @@ nonisolated final class DorydClient: @unchecked Sendable {
         }
         return try await withTimeout(atLeast: 120).statusCommand { proxy, reply in
             proxy.machineUpdate(machineID, config: config as NSDictionary, reply: reply)
+        } decode: {
+            Self.machineStatus(from: $0)
+        }
+    }
+
+    /// Reconciles only Dory's managed direct-boot kernel. The daemon reopens, hashes, and copies
+    /// the private prepared asset atomically; the guest disk and all user data remain untouched.
+    func machineRefreshManagedDesktopKernel(
+        _ machineID: String,
+        sourcePath: String,
+        sourceSHA256: String
+    ) async throws -> DorydMachineStatus {
+        let request: NSDictionary = [
+            "sourcePath": sourcePath,
+            "sourceSHA256": sourceSHA256,
+        ]
+        return try await withTimeout(atLeast: 120).statusCommand { proxy, reply in
+            proxy.machineRefreshManagedDesktopKernel(
+                machineID,
+                request: request,
+                reply: reply
+            )
         } decode: {
             Self.machineStatus(from: $0)
         }

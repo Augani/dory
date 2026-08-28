@@ -6,6 +6,13 @@ import Testing
 
 @Suite("Desktop audio configuration recovery")
 struct DesktopAudioRecoveryTests {
+    @Test("VirtIO completion advances only after Core Audio renders a period")
+    func playbackCompletionUsesRenderedTimeline() {
+        #expect(DoryMacAudioPlaybackCompletionPolicy.callbackType == .dataRendered)
+        #expect(DoryMacAudioPlaybackCompletionPolicy.callbackType != .dataConsumed)
+        #expect(DoryMacAudioPlaybackCompletionPolicy.callbackType != .dataPlayedBack)
+    }
+
     @Test("negotiated PCM buffers are hard queue bounds")
     func queueCapacityIsBoundedWithoutOverflow() {
         #expect(DoryMacAudioQueueCapacity.accepts(parameters: VirtioSoundPCMParameters(
