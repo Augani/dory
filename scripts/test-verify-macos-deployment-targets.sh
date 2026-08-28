@@ -7,11 +7,16 @@ TMP="$(cd "$TMP" && pwd -P)"
 trap 'rm -rf "$TMP"' EXIT
 BIN="$TMP/bin"
 APP="$TMP/Dory.app"
-mkdir -p "$BIN" "$APP/Contents/MacOS" "$APP/Contents/Helpers"
+mkdir -p \
+  "$BIN" \
+  "$APP/Contents/MacOS" \
+  "$APP/Contents/Helpers" \
+  "$APP/Contents/Helpers/DoryHVRunner.app/Contents/MacOS"
 
 for executable in \
   MacOS/Dory Helpers/doryd Helpers/dorydctl Helpers/dory-vmm \
-  Helpers/dory-network-helper Helpers/dory-dataplane-proxy Helpers/dory-hv; do
+  Helpers/dory-network-helper Helpers/dory-dataplane-proxy \
+  Helpers/DoryHVRunner.app/Contents/MacOS/dory-hv; do
   printf '#!/bin/sh\nexit 0\n' > "$APP/Contents/$executable"
   chmod 0755 "$APP/Contents/$executable"
 done
@@ -34,7 +39,7 @@ cat > "$BIN/vtool" <<'SH'
 last=""
 for argument in "$@"; do last="$argument"; done
 minimum=14.0
-case "$last" in *'/Helpers/dory-hv') minimum=15.0 ;; esac
+case "$last" in *'/DoryHVRunner.app/Contents/MacOS/dory-hv') minimum=15.0 ;; esac
 case "$last" in
   *'/Helpers/dory-vmm') [ "${DORY_TEST_BAD_VMM_TARGET:-0}" != 1 ] || minimum=15.0 ;;
 esac
