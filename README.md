@@ -19,7 +19,7 @@
 </p>
 
 <p align="center">
-  <a href="https://augani.github.io/dory/"><strong>Website</strong></a> ·
+  <a href="https://usedory.dev/"><strong>Website</strong></a> ·
   <a href="https://github.com/Augani/dory/releases/latest"><strong>Download</strong></a> ·
   <a href="COMPATIBILITY.md"><strong>Compatibility</strong></a> ·
   <a href="https://augani.github.io/dory/docs/architecture.md"><strong>Architecture</strong></a> ·
@@ -37,7 +37,7 @@
 > without deleting containers, volumes, cluster state, machine disks, snapshots, or exports.
 
 <p align="center">
-  <a href="https://augani.github.io/dory/#product"><strong>Explore the interactive Dory interface</strong></a>
+  <a href="https://usedory.dev/experience/"><strong>Explore the interactive Dory interface</strong></a>
 </p>
 
 ## What Dory is
@@ -791,7 +791,7 @@ gates against the exact candidate.
 | `dory-core/` | Rust guest agent, data plane, sync, and FFI components |
 | `Packages/ContainerizationEngine/` | Virtual machine engine and device implementations |
 | `guest/` | Reproducible Linux guest inputs |
-| `website/` | Human and machine-readable GitHub Pages source |
+| `website/` | GitHub Pages documentation plus signed update and component metadata |
 | `scripts/dory` | Public CLI and agent contract |
 | `scripts/test.sh` | Public test entrypoint |
 

@@ -7,7 +7,7 @@ cask "dory" do
   url "https://github.com/Augani/dory/releases/download/v#{version}/Dory-#{version}.zip"
   name "Dory"
   desc "Native Docker and Linux container runtime"
-  homepage "https://github.com/Augani/dory"
+  homepage "https://usedory.dev/"
 
   auto_updates true
   # Dory's first public production track is Apple Silicon. Intel support remains on the roadmap.

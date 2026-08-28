@@ -8,7 +8,7 @@ Run Linux GUI apps beside containers on Apple Silicon. ~112 MB of duplicate Core
 
 Preview agent VMs: no host files by default, network none, rollback + auto-delete.
 
-https://augani.github.io/dory/
+https://usedory.dev/
 
 ## LinkedIn
 
@@ -30,7 +30,7 @@ Build the world. Contain the chaos.
 
 Dory is open source and built for Apple Silicon Macs.
 
-https://augani.github.io/dory/
+https://usedory.dev/
 
 #Linux #AIAgents #OpenSource
 
