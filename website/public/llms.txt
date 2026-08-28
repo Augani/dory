@@ -9,7 +9,7 @@ Dory ships one Docker Core app. A signed catalog adds removable Kubernetes, Linu
 ## Canonical documentation
 
 - [Complete agent reference](https://augani.github.io/dory/llms-full.txt): Stable commands, safety rules, schemas, recovery, examples, and product boundaries
-- [Versioned agent capability map](https://augani.github.io/dory/agent-guide.json): Machine-readable JSON contract for Dory 0.4.5
+- [Versioned agent capability map](https://augani.github.io/dory/agent-guide.json): Machine-readable JSON contract for Dory 0.4.6
 - [Agent and MCP guide](https://augani.github.io/dory/docs/agents.md): MCP configuration, tools, machine execution, sandbox policy, and recovery loop
 - [Operations guide](https://augani.github.io/dory/docs/operations.md): Installation, storage, networking, migration, diagnostics, and repair
 - [Compatibility contract](https://augani.github.io/dory/docs/compatibility.md): Supported, preview, and unavailable behavior

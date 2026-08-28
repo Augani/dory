@@ -1,6 +1,17 @@
 # Changelog
 
-## Unreleased
+## 0.4.6 - 2026-08-28
+
+### Added
+
+- Added named headless agent sandboxes with reusable sessions, coding-agent and polyglot templates,
+  dependency discovery, declarative recipes, persistent caches, and repairable provisioning.
+- Added native Apple-silicon Linux desktop devices for speakers, microphone, camera, clipboard,
+  mouse, trackpad, keyboard, Retina resize, full-screen display, and host-device recovery.
+- Added an isolated dual VirGL/Venus renderer path for accelerated OpenGL and Vulkan applications,
+  including native Zed startup and explicit GPU policy controls in Dory.
+- Added a clear Desktops versus headless Sandboxes product model and expanded machine cards,
+  controls, resource grids, diagnostics, and lifecycle feedback.
 
 ### Changed
 
@@ -33,6 +44,19 @@
 
 ### Fixed
 
+- Fixed first launch and recovery paths that could leave `doryd` unavailable, report “machine
+  manager is not configured,” require an extra Try Again click, or time out while cleaning up an
+  incomplete server or desktop.
+- Fixed Desktop and Server creation failures caused by overlong handoff sockets, stale typed
+  settings, incomplete component activation, and provisioning before the daemon was ready.
+- Fixed Docker tier discovery and repair when the macOS credential helper or bundled CLI plugins
+  were missing, while preserving the selected data drive and exact engine storage authority.
+- Fixed inverted or sluggish mouse and trackpad scrolling, lost pointer clicks, upside-down or
+  flickering frames, desktop audio pacing, microphone/camera device recovery, and runner identity.
+- Fixed strict OrbStack migration capacity checks when Docker object-level `/system/df` is
+  unavailable by using the authoritative guest data-disk capacity and usage probe.
+- Fixed the Agent Core recipe composition so POSIX `sh` receives `fi\nif` instead of the invalid
+  `fiif` token reported by the external sandbox provisioning PR.
 - Kept the engine's Docker inventory bridge alive for the full VM lifetime, restoring automatic
   gvproxy listeners for published container ports. Port diagnostics and repair now verify real
   loopback connections instead of treating Docker route metadata as proof of reachability.
