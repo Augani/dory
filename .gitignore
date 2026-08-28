@@ -193,6 +193,8 @@ docs/
 /scripts/fixtures/*
 !/scripts/fixtures/linux-vm-performance-bundle-schema1/
 !/scripts/fixtures/linux-vm-performance-bundle-schema1/**
+!/scripts/fixtures/hostshare_guest_probe.py
+!/scripts/fixtures/hostshare_nonping_probe.py
 
 # Internal engine notes (not published)
 Packages/ContainerizationEngine/Docs/

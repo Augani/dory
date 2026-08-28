@@ -5,7 +5,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 HARNESS="$ROOT/scripts/benchmark-developer-workflows.sh"
-QUALIFIER="$ROOT/scripts/qualify-release-performance.sh"
+QUALIFIER="$ROOT/scripts/qualify-container-engine-performance.sh"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/dory-developer-benchmark-test.XXXXXX")"
 trap '/bin/rm -rf "$TMP"' EXIT
 fail() { echo "benchmark developer workflow test: $*" >&2; exit 1; }
