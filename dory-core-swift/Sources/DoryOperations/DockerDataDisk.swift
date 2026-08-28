@@ -57,6 +57,52 @@ public enum DockerDataDiskLaunchContract {
     public static let childFileDescriptor: Int32 = 19
     public static let fileDescriptorArgument = "--docker-data-disk-fd"
     public static let filesystemUUIDArgument = "--docker-data-disk-uuid"
+
+    /// Reads one filesystem UUID using only the default `blkid` output contract shared by
+    /// BusyBox and util-linux. Dory's Alpine engine image exposes BusyBox `blkid`, which rejects
+    /// util-linux-only `-s UUID -o value` arguments. Keep this exact function shared by both VM
+    /// backends and the post-boot resource probe so admission and reconciliation cannot drift.
+    public static let guestFilesystemUUIDShellFunction = #"""
+        dory_docker_data_uuid() {
+          [ "$#" -eq 1 ] || return 64
+          DORY_BLKID_RECORD=$(blkid "$1" 2>/dev/null) || return 1
+          printf '%s\n' "$DORY_BLKID_RECORD" | awk '
+            BEGIN {
+              matches=0
+              invalid=0
+            }
+            {
+              for (i = 1; i <= NF; i++) {
+                if ($i ~ /^UUID=/) {
+                  if ($i !~ /^UUID="[^"]*"$/) {
+                    invalid=1
+                    continue
+                  }
+                  value=$i
+                  sub(/^UUID="/, "", value)
+                  sub(/"$/, "", value)
+                  matches++
+                }
+              }
+            }
+            END {
+              if (invalid || matches != 1) exit 1
+              component_count=split(value, components, "-")
+              if (component_count != 5 ||
+                  length(components[1]) != 8 ||
+                  length(components[2]) != 4 ||
+                  length(components[3]) != 4 ||
+                  length(components[4]) != 4 ||
+                  length(components[5]) != 12) exit 1
+              compact=components[1] components[2] components[3] components[4] components[5]
+              if (compact ~ /[^0-9A-Fa-f]/) exit 1
+              print tolower(value)
+            }
+          '
+        }
+        """#
+
+    public static let guestFilesystemUUIDShellCommand = "dory_docker_data_uuid /dev/vdb"
 }
 
 /// Owns the exact private Docker disk file admitted through a trusted directory descriptor. The

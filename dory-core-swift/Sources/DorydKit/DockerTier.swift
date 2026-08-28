@@ -3068,6 +3068,7 @@ public final class DockerTier: @unchecked Sendable {
     static let guestResourceProbeScript = #"""
         set -eu
         export LC_ALL=C
+        \#(DockerDataDiskLaunchContract.guestFilesystemUUIDShellFunction)
         awk '
           /^MemTotal:/ { total=$2; have_total=1 }
           /^MemAvailable:/ { available=$2; have_available=1 }
@@ -3103,7 +3104,7 @@ public final class DockerTier: @unchecked Sendable {
         DORY_DEVICE_MAJOR_MINOR=$(cat /sys/class/block/vdb/dev)
         test "$DORY_MOUNT_MAJOR_MINOR" = "$DORY_BLOCK_NODE_MAJOR_MINOR" || exit 76
         test "$DORY_MOUNT_MAJOR_MINOR" = "$DORY_DEVICE_MAJOR_MINOR" || exit 76
-        DORY_FILESYSTEM_UUID=$(blkid -s UUID -o value /dev/vdb | tr 'A-F' 'a-f')
+        DORY_FILESYSTEM_UUID=$(\#(DockerDataDiskLaunchContract.guestFilesystemUUIDShellCommand)) || exit 77
         test -n "$DORY_FILESYSTEM_UUID" || exit 77
         printf "disk_mount_source=/dev/vdb\ndisk_filesystem_type=ext4\ndisk_device_major_minor=%s\ndisk_filesystem_uuid=%s\n" "$DORY_DEVICE_MAJOR_MINOR" "$DORY_FILESYSTEM_UUID"
         df -P -k /var/lib/docker | awk '
@@ -3125,7 +3126,7 @@ public final class DockerTier: @unchecked Sendable {
         DORY_FINAL_DEVICE_MAJOR_MINOR=$(cat /sys/class/block/vdb/dev)
         test "$DORY_FINAL_BLOCK_NODE_MAJOR_MINOR" = "$DORY_DEVICE_MAJOR_MINOR" || exit 81
         test "$DORY_FINAL_DEVICE_MAJOR_MINOR" = "$DORY_DEVICE_MAJOR_MINOR" || exit 81
-        DORY_FINAL_FILESYSTEM_UUID=$(blkid -s UUID -o value /dev/vdb | tr 'A-F' 'a-f')
+        DORY_FINAL_FILESYSTEM_UUID=$(\#(DockerDataDiskLaunchContract.guestFilesystemUUIDShellCommand)) || exit 81
         test "$DORY_FINAL_FILESYSTEM_UUID" = "$DORY_FILESYSTEM_UUID" || exit 81
         """#
 

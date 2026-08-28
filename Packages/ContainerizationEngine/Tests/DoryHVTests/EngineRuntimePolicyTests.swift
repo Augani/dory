@@ -1,4 +1,5 @@
 import Darwin
+import DoryOperations
 import Foundation
 import Testing
 @testable import dory_hv
@@ -191,6 +192,14 @@ struct EngineRuntimePolicyTests {
         )
         let canonicalUUID = dockerDataDiskUUID.uuidString.lowercased()
         #expect(script.contains("DORY_DOCKER_DATA_UUID='\(canonicalUUID)'"))
+        #expect(script.contains(DockerDataDiskLaunchContract.guestFilesystemUUIDShellFunction))
+        #expect(
+            script.contains(
+                "$(\(DockerDataDiskLaunchContract.guestFilesystemUUIDShellCommand))"
+            )
+        )
+        #expect(!script.contains("blkid -s UUID"))
+        #expect(!script.contains("-o value /dev/vdb"))
         let formatPrefix = #"mkfs.ext4 -U "$DORY_DOCKER_DATA_UUID""#
         #expect(script.components(separatedBy: formatPrefix).count - 1 == 2)
 

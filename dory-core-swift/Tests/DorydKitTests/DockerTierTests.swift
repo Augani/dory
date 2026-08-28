@@ -2000,6 +2000,30 @@ final class DockerTierTests: XCTestCase {
             2,
             "the syntax-tested production probe must use the exact fixture-tested parser both times"
         )
+        XCTAssertTrue(
+            DockerTier.guestResourceProbeScript.contains(
+                DockerDataDiskLaunchContract.guestFilesystemUUIDShellFunction
+            )
+        )
+        XCTAssertEqual(
+            DockerTier.guestResourceProbeScript.components(
+                separatedBy: "$(\(DockerDataDiskLaunchContract.guestFilesystemUUIDShellCommand))"
+            ).count - 1,
+            2,
+            "initial and final probe reads must use the same BusyBox-compatible parser"
+        )
+        XCTAssertTrue(
+            DockerTier.guestResourceProbeScript.contains(
+                "$(\(DockerDataDiskLaunchContract.guestFilesystemUUIDShellCommand)) || exit 77"
+            )
+        )
+        XCTAssertTrue(
+            DockerTier.guestResourceProbeScript.contains(
+                "$(\(DockerDataDiskLaunchContract.guestFilesystemUUIDShellCommand)) || exit 81"
+            )
+        )
+        XCTAssertFalse(DockerTier.guestResourceProbeScript.contains("blkid -s UUID"))
+        XCTAssertFalse(DockerTier.guestResourceProbeScript.contains("-o value /dev/vdb"))
 
         func execute(_ fixture: String, name: String) throws -> (Int32, String, String) {
             let fixtureURL = root.appendingPathComponent(name)

@@ -290,6 +290,105 @@ final class DockerDataDiskTests: XCTestCase {
         XCTAssertEqual(DockerDataDisk.maximumCapacityGiB, 2_048)
     }
 
+    func testGuestFilesystemUUIDReaderUsesBusyBoxCompatibleDefaultBlkidOutput() throws {
+        let root = temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let bin = root + "/bin"
+        try FileManager.default.createDirectory(
+            atPath: bin,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let fakeBlkid = bin + "/blkid"
+        try Data(#"""
+        #!/bin/sh
+        if [ "$#" -ne 1 ] || [ "$1" != "/dev/vdb" ]; then
+          echo "unsupported blkid arguments" >&2
+          exit 64
+        fi
+        if [ "$DORY_FAKE_BLKID_STATUS" -ne 0 ]; then
+          exit "$DORY_FAKE_BLKID_STATUS"
+        fi
+        printf '%s\n' "$DORY_FAKE_BLKID_OUTPUT"
+        """#.utf8).write(to: URL(fileURLWithPath: fakeBlkid), options: .atomic)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: fakeBlkid
+        )
+
+        func readUUID(
+            from output: String,
+            blkidStatus: Int32 = 0
+        ) throws -> (status: Int32, stdout: String, stderr: String) {
+            let standardOutput = Pipe()
+            let standardError = Pipe()
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/sh")
+            process.arguments = [
+                "-c",
+                """
+                set -eu
+                \(DockerDataDiskLaunchContract.guestFilesystemUUIDShellFunction)
+                \(DockerDataDiskLaunchContract.guestFilesystemUUIDShellCommand)
+                """,
+            ]
+            process.environment = [
+                "DORY_FAKE_BLKID_OUTPUT": output,
+                "DORY_FAKE_BLKID_STATUS": String(blkidStatus),
+                "LC_ALL": "C",
+                "PATH": "\(bin):/usr/bin:/bin",
+            ]
+            process.standardOutput = standardOutput
+            process.standardError = standardError
+            try process.run()
+            process.waitUntilExit()
+            return (
+                process.terminationStatus,
+                String(
+                    decoding: standardOutput.fileHandleForReading.readDataToEndOfFile(),
+                    as: UTF8.self
+                ),
+                String(
+                    decoding: standardError.fileHandleForReading.readDataToEndOfFile(),
+                    as: UTF8.self
+                )
+            )
+        }
+
+        let expected = "7bb0bc1b-d4be-456f-afae-6acd18c6e2fc"
+        let busyBox = try readUUID(
+            from: #"/dev/vdb: LABEL="DORY" UUID="7BB0BC1B-D4BE-456F-AFAE-6ACD18C6E2FC" TYPE="ext4" PARTUUID="ignored""#
+        )
+        XCTAssertEqual(busyBox.status, 0, busyBox.stderr)
+        XCTAssertEqual(busyBox.stdout, expected + "\n")
+        XCTAssertEqual(busyBox.stderr, "")
+
+        let invalidRecords = [
+            #"/dev/vdb: TYPE="ext4" PARTUUID="7BB0BC1B-D4BE-456F-AFAE-6ACD18C6E2FC""#,
+            #"/dev/vdb: UUID="not-a-uuid" TYPE="ext4""#,
+            #"/dev/vdb: UUID="7bb0bc1b-d4be-456f-afae-6acd18c6e2fc" UUID="7bb0bc1b-d4be-456f-afae-6acd18c6e2fc" TYPE="ext4""#,
+            #"/dev/vdb: UUID="7bb0bc1b-d4be-456f-afae-6acd18c6e2fc TYPE="ext4""#,
+            #"/dev/vdb: UUID="7bb0bc1b-d4be-456f-afae-6acd18c6e2f" TYPE="ext4""#,
+            #"/dev/vdb: UUID="7bb0bc1b-d4be-456f-afae-6acd18c6e2fg" TYPE="ext4""#,
+            """
+            /dev/vdb: UUID="7bb0bc1b-d4be-456f-afae-6acd18c6e2fc" TYPE="ext4"
+            /dev/vdc: UUID="11111111-2222-4333-8444-555555555555" TYPE="ext4"
+            """,
+            "",
+        ]
+        for record in invalidRecords {
+            let invalid = try readUUID(from: record)
+            XCTAssertEqual(invalid.status, 1, "\(record)\n\(invalid.stderr)")
+            XCTAssertEqual(invalid.stdout, "", record)
+            XCTAssertEqual(invalid.stderr, "", record)
+        }
+
+        let failedBlkid = try readUUID(from: "", blkidStatus: 7)
+        XCTAssertEqual(failedBlkid.status, 1, failedBlkid.stderr)
+        XCTAssertEqual(failedBlkid.stdout, "")
+        XCTAssertEqual(failedBlkid.stderr, "")
+    }
+
     func testUsageReportsDefaultWithoutCreatingDiskAndExplicitGrowthStaysSparse() throws {
         let root = temporaryRoot()
         defer { try? FileManager.default.removeItem(atPath: root) }

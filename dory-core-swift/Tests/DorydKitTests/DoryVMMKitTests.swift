@@ -1517,6 +1517,22 @@ final class DoryVMMKitTests: XCTestCase {
         XCTAssertTrue(bootScript.contains(
             "DORY_DATA_EXPECTED_UUID='01234567-89ab-4cde-8f01-23456789abcd'"
         ))
+        XCTAssertTrue(
+            bootScript.contains(
+                DockerDataDiskLaunchContract.guestFilesystemUUIDShellFunction
+            )
+        )
+        XCTAssertEqual(
+            bootScript.components(
+                separatedBy: "$(\(DockerDataDiskLaunchContract.guestFilesystemUUIDShellCommand))"
+            ).count - 1,
+            2,
+            "existing and newly formatted ext4 identities must use the shared BusyBox parser"
+        )
+        XCTAssertTrue(bootScript.contains("DORY-DATA-DISK-UUID-UNREADABLE;"))
+        XCTAssertTrue(bootScript.contains("DORY-DATA-DISK-UUID-UNREADABLE-AFTER-FORMAT;"))
+        XCTAssertFalse(bootScript.contains("blkid -s UUID"))
+        XCTAssertFalse(bootScript.contains("-o value /dev/vdb"))
         XCTAssertEqual(
             bootScript.components(separatedBy: "mkfs.ext4 -F -U").count - 1,
             2,
