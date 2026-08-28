@@ -32,6 +32,13 @@ final class MachineRecipeProvisionerTests: XCTestCase {
         }
     }
 
+    func testAgentCoreInstallScriptDoesNotJoinFiIntoTheFdShim() throws {
+        let script = try MachineRecipeProvisioner.recipe(id: "agent-core").installScript
+        XCTAssertFalse(script.contains("fiif"), script)
+        XCTAssertTrue(script.contains("fi\nif ! command -v fd"), script)
+        XCTAssertTrue(script.contains("exit 69\nfi\n"), script)
+    }
+
     func testRequiredProvisioningStageRejectsNonzeroExitWithStderr() {
         let result = DoryExecResult(
             exitCode: 17,
