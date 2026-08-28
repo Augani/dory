@@ -127,6 +127,7 @@ nonisolated struct DorydMachineTypedSettings: Sendable, Equatable, Hashable {
     var networkMode: DoryVMNetworkMode? = nil
     var portForwards: [DoryVMPortForward] = []
     var audioConfiguration: DoryVMAudioConfiguration? = nil
+    var cameraConfiguration: DoryVMCameraConfiguration? = nil
     var intelApplicationTranslationEnabled: Bool? = nil
 
     init(
@@ -137,6 +138,7 @@ nonisolated struct DorydMachineTypedSettings: Sendable, Equatable, Hashable {
         networkMode: DoryVMNetworkMode? = nil,
         portForwards: [DoryVMPortForward] = [],
         audioConfiguration: DoryVMAudioConfiguration? = nil,
+        cameraConfiguration: DoryVMCameraConfiguration? = nil,
         intelApplicationTranslationEnabled: Bool? = nil
     ) {
         self.guestIdentityIntent = guestIdentityIntent
@@ -146,6 +148,7 @@ nonisolated struct DorydMachineTypedSettings: Sendable, Equatable, Hashable {
         self.networkMode = networkMode
         self.portForwards = portForwards
         self.audioConfiguration = audioConfiguration
+        self.cameraConfiguration = cameraConfiguration
         self.intelApplicationTranslationEnabled = intelApplicationTranslationEnabled
     }
 
@@ -206,11 +209,17 @@ nonisolated struct DorydMachineTypedSettings: Sendable, Equatable, Hashable {
                 inputEnabled: true,
                 outputEnabled: true
             )
+            cameraConfiguration = DoryVMCameraConfiguration(
+                enabled: legacyEnvironment[
+                    DoryVMCameraConfiguration.legacyEnabledEnvironmentKey
+                ] == "1"
+            )
         } else {
             clipboardPolicy = nil
             runtimePreference = nil
             graphicsPreference = nil
             audioConfiguration = nil
+            cameraConfiguration = nil
         }
     }
 
@@ -222,6 +231,7 @@ nonisolated struct DorydMachineTypedSettings: Sendable, Equatable, Hashable {
             && networkMode == nil
             && portForwards.isEmpty
             && audioConfiguration == nil
+            && cameraConfiguration == nil
             && intelApplicationTranslationEnabled == nil
     }
 
@@ -274,6 +284,9 @@ nonisolated struct DorydMachineTypedSettings: Sendable, Equatable, Hashable {
                 "outputEnabled": audioConfiguration.outputEnabled,
             ] as NSDictionary
         }
+        if let cameraConfiguration {
+            result["cameraEnabled"] = cameraConfiguration.enabled
+        }
         if let intelApplicationTranslationEnabled {
             result["intelApplicationTranslationEnabled"] = intelApplicationTranslationEnabled
         }
@@ -296,6 +309,7 @@ nonisolated struct DorydMachineTypedSettings: Sendable, Equatable, Hashable {
         hasher.combine(portForwards)
         hasher.combine(audioConfiguration?.inputEnabled)
         hasher.combine(audioConfiguration?.outputEnabled)
+        hasher.combine(cameraConfiguration?.enabled)
         hasher.combine(intelApplicationTranslationEnabled)
     }
 
@@ -398,6 +412,12 @@ nonisolated struct DorydMachineTypedSettingsPatch: Sendable, Equatable {
         Self.encodeAudio(
             baseline.audioConfiguration,
             desired.audioConfiguration,
+            into: &result
+        )
+        Self.encode(
+            baseline.cameraConfiguration?.enabled,
+            desired.cameraConfiguration?.enabled,
+            key: "cameraEnabled",
             into: &result
         )
         Self.encode(
@@ -3653,7 +3673,8 @@ nonisolated final class DorydClient: @unchecked Sendable {
               Set(keys).isSubset(of: [
                 "guestIdentityIntent", "clipboardPolicy",
                 "desktopRuntimePreference", "desktopGraphicsPreference", "networkMode",
-                "portForwards", "audio", "intelApplicationTranslationEnabled",
+                "portForwards", "audio", "cameraEnabled",
+                "intelApplicationTranslationEnabled",
               ]), keys.count == Set(keys).count else {
             return nil
         }
@@ -3815,6 +3836,12 @@ nonisolated final class DorydClient: @unchecked Sendable {
                 outputEnabled: output.boolValue
             )
         } else { audioConfiguration = nil }
+        let cameraConfiguration: DoryVMCameraConfiguration?
+        if let encoded = value["cameraEnabled"] {
+            guard let number = encoded as? NSNumber,
+                  CFGetTypeID(number) == CFBooleanGetTypeID() else { return nil }
+            cameraConfiguration = DoryVMCameraConfiguration(enabled: number.boolValue)
+        } else { cameraConfiguration = nil }
         let intelApplicationTranslationEnabled: Bool?
         if let encoded = value["intelApplicationTranslationEnabled"] {
             guard let number = encoded as? NSNumber,
@@ -3829,6 +3856,7 @@ nonisolated final class DorydClient: @unchecked Sendable {
             networkMode: networkMode,
             portForwards: portForwards,
             audioConfiguration: audioConfiguration,
+            cameraConfiguration: cameraConfiguration,
             intelApplicationTranslationEnabled: intelApplicationTranslationEnabled
         ))
     }

@@ -3845,6 +3845,38 @@ private final class FakeVirtioGPURenderer: VirtioGPURenderer, @unchecked Sendabl
         #expect(response.leUInt64(at: 20) & (1 << 7) != 0)  // 48 kHz
     }
 
+    @Test func advertisesOnlyTheEnabledAudioDirection() {
+        let outputOnly = VirtioSound(
+            host: TestSoundHost(),
+            enabledDirections: [.output]
+        )
+        let inputOnly = VirtioSound(
+            host: TestSoundHost(),
+            enabledDirections: [.input]
+        )
+
+        #expect(outputOnly.configSpace.leUInt32(at: 4) == 1)
+        #expect(inputOnly.configSpace.leUInt32(at: 4) == 1)
+
+        var request = [UInt8]()
+        request.appendLE(UInt32(0x0100))
+        request.appendLE(UInt32(0))
+        request.appendLE(UInt32(1))
+        request.appendLE(UInt32(32))
+
+        let outputResponse = outputOnly.controlResponseForTesting(request, responseCapacity: 36)
+        let inputResponse = inputOnly.controlResponseForTesting(request, responseCapacity: 36)
+
+        #expect(outputResponse.count == 36)
+        #expect(inputResponse.count == 36)
+        #expect(outputResponse.leUInt32(at: 0) == 0x8000)
+        #expect(inputResponse.leUInt32(at: 0) == 0x8000)
+        #expect(outputResponse[28] == VirtioSoundDirection.output.rawValue)
+        #expect(inputResponse[28] == VirtioSoundDirection.input.rawValue)
+        #expect(status(outputOnly, setParameters(streamID: 0)) == 0x8000)
+        #expect(status(inputOnly, setParameters(streamID: 0)) == 0x8000)
+    }
+
     @Test func enforcesTheVirtioPCMStreamLifecycle() {
         let host = TestSoundHost()
         let sound = VirtioSound(host: host)

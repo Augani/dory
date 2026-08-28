@@ -28,6 +28,8 @@
 	<true/>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Dory connects the Linux guest to local host services and published ports.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Dory shares your Mac camera with Linux desktop machines when you enable camera input.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Dory shares your Mac microphone with Linux desktop machines when you use audio input.</string>
 	<key>NSPrincipalClass</key>

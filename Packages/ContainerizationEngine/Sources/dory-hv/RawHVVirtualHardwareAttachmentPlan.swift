@@ -65,7 +65,6 @@ enum RawHVVirtualHardwareAttachmentPlan {
             throw RawHVVirtualHardwareAttachmentPlanError.incompleteLaunchAuthority
         }
         guard resolvedGraphics != .none,
-              resolvedDevices.audioInput == resolvedDevices.audioOutput,
               resolvedDevices.directorySharing == !directoryShareStableIDs.isEmpty,
               let networkInterface = resolvedDevices.networkInterface,
               networkInterface.isValid else {
@@ -108,7 +107,7 @@ enum RawHVVirtualHardwareAttachmentPlan {
         if resolvedDevices.pointer {
             requests.append(try canonicalFixedRequest(.pointer))
         }
-        if resolvedDevices.audioInput {
+        if resolvedDevices.audioInput || resolvedDevices.audioOutput {
             requests.append(try canonicalFixedRequest(.audio))
         }
         requests.append(DoryRawHVVirtualDeviceRequest(

@@ -71,6 +71,7 @@ struct VirtualMachineCapabilitiesTests {
         )
         #expect(object["removableUSBHotplug"] == nil)
         #expect(object["intelApplicationTranslation"] == nil)
+        #expect(object["cameraInput"] == nil)
         object.removeValue(forKey: "networkInterface")
         let historical = try JSONSerialization.data(withJSONObject: object)
 
@@ -82,6 +83,7 @@ struct VirtualMachineCapabilitiesTests {
         #expect(decoded.clipboardPolicy == nil)
         #expect(!decoded.removableUSBHotplug)
         #expect(!decoded.intelApplicationTranslation)
+        #expect(!decoded.cameraInput)
 
         object.removeValue(forKey: "keyboard")
         let truncated = try JSONSerialization.data(withJSONObject: object)
@@ -1098,8 +1100,13 @@ struct VirtualMachineCapabilitiesTests {
             devices: DoryVirtualMachineDeviceCapabilityRequest(directorySharing: true)
         )
         let qualifiedRawDesktopDevices = DoryVirtualMachineDeviceCapabilityRequest(
+            display: DoryVirtualMachineDisplayCapabilityRequest(
+                widthPixels: 1_920,
+                heightPixels: 1_080
+            ),
             audioInput: true,
             audioOutput: true,
+            cameraInput: true,
             keyboard: true,
             pointer: true,
             directorySharing: true,
@@ -1139,7 +1146,7 @@ struct VirtualMachineCapabilitiesTests {
             mediaArtifactSHA256: Self.guestArtifactSHA256,
             devices: qualifiedRawHostOnlyDevices
         )
-        let unsupportedAudioShape = evaluate(
+        let outputOnlyAudio = evaluate(
             family: .linux,
             media: .installedLinuxBootBundle,
             source: .userProvided,
@@ -1147,6 +1154,29 @@ struct VirtualMachineCapabilitiesTests {
             graphics: .software,
             mediaArtifactSHA256: Self.guestArtifactSHA256,
             devices: DoryVirtualMachineDeviceCapabilityRequest(audioOutput: true)
+        )
+        let unsupportedVZCamera = evaluate(
+            family: .linux,
+            media: .virtualDisk,
+            source: .userProvided,
+            backend: .appleVirtualizationFramework,
+            graphics: .software,
+            devices: DoryVirtualMachineDeviceCapabilityRequest(
+                display: DoryVirtualMachineDisplayCapabilityRequest(
+                    widthPixels: 1_920,
+                    heightPixels: 1_080
+                ),
+                cameraInput: true
+            )
+        )
+        let unsupportedHeadlessCamera = evaluate(
+            family: .linux,
+            media: .installedLinuxBootBundle,
+            source: .userProvided,
+            backend: .doryHypervisor,
+            graphics: .software,
+            mediaArtifactSHA256: Self.guestArtifactSHA256,
+            devices: DoryVirtualMachineDeviceCapabilityRequest(cameraInput: true)
         )
         let directionalClipboard = DoryVirtualMachineDeviceCapabilityRequest(
             clipboard: true,
@@ -1200,7 +1230,11 @@ struct VirtualMachineCapabilitiesTests {
         #expect(qualifiedRawDisconnected.resolvedDevices == qualifiedRawDisconnectedDevices)
         #expect(qualifiedRawHostOnly.availability.isUsable)
         #expect(qualifiedRawHostOnly.resolvedDevices == qualifiedRawHostOnlyDevices)
-        #expect(unsupportedAudioShape.availability.reason?.code == .audioOutputUnsupported)
+        #expect(outputOnlyAudio.availability.isUsable)
+        #expect(outputOnlyAudio.resolvedDevices?.audioOutput == true)
+        #expect(outputOnlyAudio.resolvedDevices?.audioInput == false)
+        #expect(unsupportedVZCamera.availability.reason?.code == .cameraInputUnsupported)
+        #expect(unsupportedHeadlessCamera.availability.reason?.code == .cameraInputUnsupported)
         #expect(qualifiedDirectionalClipboard.availability.isUsable)
         #expect(qualifiedDirectionalClipboard.resolvedDevices == directionalClipboard)
         #expect(mismatchedClipboard.availability.reason?.code == .clipboardPolicyInvalid)

@@ -30,6 +30,7 @@ struct DoryMachineTypedWriteAuthorityTests {
             ]),
             audioInputEnabled: .set(false),
             audioOutputEnabled: .set(true),
+            cameraEnabled: .set(true),
             intelApplicationTranslationEnabled: .set(true)
         )
 
@@ -95,6 +96,7 @@ struct DoryMachineTypedWriteAuthorityTests {
                 "DORY_CLIPBOARD_POLICY": "host-to-guest",
                 "DORY_DESKTOP_VMM": "accelerated",
                 "DORY_DESKTOP_GRAPHICS": "virgl-venus",
+                "DORY_DESKTOP_CAMERA": "1",
                 "PRIVATE_TOKEN": "must-never-cross-xpc",
             ],
             displayMode: .desktop
@@ -113,6 +115,7 @@ struct DoryMachineTypedWriteAuthorityTests {
             inputEnabled: true,
             outputEnabled: true
         ))
+        #expect(snapshot.cameraConfiguration == DoryVMCameraConfiguration(enabled: true))
         #expect(snapshot.intelApplicationTranslationEnabled == nil)
         #expect(snapshot.xpcDictionary.description.contains("must-never-cross-xpc") == false)
 
@@ -133,6 +136,7 @@ struct DoryMachineTypedWriteAuthorityTests {
         )
         historical.removeValue(forKey: "networkMode")
         historical.removeValue(forKey: "audioConfiguration")
+        historical.removeValue(forKey: "cameraConfiguration")
         historical.removeValue(forKey: "portForwards")
         historical.removeValue(forKey: "intelApplicationTranslationEnabled")
         let decoded = try JSONDecoder().decode(
@@ -141,6 +145,7 @@ struct DoryMachineTypedWriteAuthorityTests {
         )
         #expect(decoded.networkMode == .sharedNAT)
         #expect(decoded.audioConfiguration == nil)
+        #expect(decoded.cameraConfiguration == nil)
         #expect(decoded.portForwards.isEmpty)
         #expect(decoded.intelApplicationTranslationEnabled == nil)
     }
@@ -555,6 +560,46 @@ struct DoryMachineTypedWriteAuthorityTests {
         #expect(reset.audioOutputEnabled == .clear)
     }
 
+    @Test("camera wire shape is strict, desktop-scoped, and resets explicitly")
+    func exactCameraWireShape() throws {
+        let patch = try DoryMachineTypedSettingsPatch(
+            xpcDictionary: ["cameraEnabled": true],
+            allowsClears: true
+        )
+        #expect(patch.cameraEnabled == .set(true))
+        #expect(patch.xpcDictionary["cameraEnabled"] as? Bool == true)
+
+        for raw: Any in [1, "true", NSArray()] {
+            #expect(throws: DoryMachineTypedWriteAuthorityError.invalidField(
+                "cameraEnabled"
+            )) {
+                try DoryMachineTypedSettingsPatch(
+                    xpcDictionary: ["cameraEnabled": raw],
+                    allowsClears: true
+                )
+            }
+        }
+        #expect(throws: DoryMachineTypedWriteAuthorityError.invalidField(
+            "cameraEnabled"
+        )) {
+            try DoryMachineTypedSettingsPatch(
+                xpcDictionary: ["cameraEnabled": NSNull()],
+                allowsClears: false
+            )
+        }
+
+        let reset = try DoryMachineTypedSettingsPatch(
+            xpcDictionary: ["cameraEnabled": NSNull()],
+            allowsClears: true
+        )
+        #expect(reset.cameraEnabled == .clear)
+        #expect(throws: DoryMachineTypedWriteAuthorityError.unsupportedForDisplay(
+            "cameraEnabled"
+        )) {
+            try patch.applying(to: [:], displayMode: .headless)
+        }
+    }
+
     @Test("CLI consumes typed persistence options and leaves raw env unconsumed")
     func cliTypedOptions() throws {
         var arguments = [
@@ -573,6 +618,7 @@ struct DoryMachineTypedWriteAuthorityTests {
             "--forward", "dns:udp:5353:53:lan",
             "--audio-input", "off",
             "--audio-output", "on",
+            "--camera", "on",
             "--intel-application-translation", "on",
             "--env", "TOKEN=secret",
         ]
@@ -601,6 +647,7 @@ struct DoryMachineTypedWriteAuthorityTests {
         ]))
         #expect(patch.audioInputEnabled == .set(false))
         #expect(patch.audioOutputEnabled == .set(true))
+        #expect(patch.cameraEnabled == .set(true))
         #expect(patch.intelApplicationTranslationEnabled == .set(true))
         #expect(arguments == ["--memory-mb", "4096", "--env", "TOKEN=secret"])
         #expect(patch.xpcDictionary["env"] == nil)
@@ -629,6 +676,7 @@ struct DoryMachineTypedWriteAuthorityTests {
             "--clear-network",
             "--clear-forwards",
             "--clear-audio",
+            "--clear-camera",
             "--clear-intel-application-translation",
         ]
         let patch = try DoryMachineTypedSettingsPatch.consumeCLIArguments(
@@ -647,6 +695,7 @@ struct DoryMachineTypedWriteAuthorityTests {
         #expect(patch.portForwards == .clear)
         #expect(patch.audioInputEnabled == .clear)
         #expect(patch.audioOutputEnabled == .clear)
+        #expect(patch.cameraEnabled == .clear)
         #expect(patch.intelApplicationTranslationEnabled == .clear)
 
         var createClear = ["--clear-clipboard"]

@@ -35,6 +35,44 @@ struct DoryVirtualMachineDefinitionTests {
         #expect(!json.contains("hostLocationID"))
     }
 
+    @Test("camera intent is additive, durable, and requires a graphical desktop")
+    func cameraIntentContract() throws {
+        var definition = linuxDefinition()
+        #expect(!definition.camera.enabled)
+
+        let defaultData = try JSONEncoder().encode(definition)
+        let defaultObject = try #require(
+            JSONSerialization.jsonObject(with: defaultData) as? [String: Any]
+        )
+        #expect(defaultObject["camera"] == nil)
+
+        definition.camera.enabled = true
+        let enabledData = try JSONEncoder().encode(definition)
+        let decoded = try JSONDecoder().decode(
+            DoryVirtualMachineDefinition.self,
+            from: enabledData
+        )
+        #expect(decoded.camera == DoryVMCameraConfiguration(enabled: true))
+        #expect(decoded.isValid)
+
+        var historicalObject = try #require(
+            JSONSerialization.jsonObject(with: enabledData) as? [String: Any]
+        )
+        historicalObject.removeValue(forKey: "camera")
+        let historical = try JSONDecoder().decode(
+            DoryVirtualMachineDefinition.self,
+            from: JSONSerialization.data(withJSONObject: historicalObject)
+        )
+        #expect(!historical.camera.enabled)
+
+        definition.displays = []
+        #expect(has(
+            .integrationRequiresDisplay,
+            "camera.enabled",
+            in: definition.validate()
+        ))
+    }
+
     @Test("schema 2 records migrate storage provenance and typed-intent defaults")
     func additiveSchemaTwoMigration() throws {
         let encoder = JSONEncoder()

@@ -12,7 +12,6 @@ public enum DoryRawHVVirtualHardwareTopologyPlanningError:
     case unsupportedStorageTopology
     case readOnlySystemDisk
     case headlessDisplayUnsupported
-    case asymmetricAudioUnsupported
     case missingStableNetworkInterface
     case resolvedDeviceContractMismatch
     case topologyDeviceSetMismatch
@@ -29,8 +28,6 @@ public enum DoryRawHVVirtualHardwareTopologyPlanningError:
             "RawHV requires its system disk to be writable"
         case .headlessDisplayUnsupported:
             "RawHV currently requires at least one resolved display"
-        case .asymmetricAudioUnsupported:
-            "RawHV exposes audio input and output through one combined device"
         case .missingStableNetworkInterface:
             "RawHV requires one valid, stable network-interface identity"
         case .resolvedDeviceContractMismatch:
@@ -103,9 +100,6 @@ public enum DoryRawHVVirtualHardwareTopologyPlanner {
         guard !resolvedDevices.displays.isEmpty else {
             throw DoryRawHVVirtualHardwareTopologyPlanningError.headlessDisplayUnsupported
         }
-        guard resolvedDevices.audioInput == resolvedDevices.audioOutput else {
-            throw DoryRawHVVirtualHardwareTopologyPlanningError.asymmetricAudioUnsupported
-        }
         guard let networkInterface = resolvedDevices.networkInterface,
               networkInterface.isValid else {
             throw DoryRawHVVirtualHardwareTopologyPlanningError.missingStableNetworkInterface
@@ -129,7 +123,9 @@ public enum DoryRawHVVirtualHardwareTopologyPlanner {
         ]
         if resolvedDevices.keyboard { requests.append(try fixedRequest(.keyboard)) }
         if resolvedDevices.pointer { requests.append(try fixedRequest(.pointer)) }
-        if resolvedDevices.audioInput { requests.append(try fixedRequest(.audio)) }
+        if resolvedDevices.audioInput || resolvedDevices.audioOutput {
+            requests.append(try fixedRequest(.audio))
+        }
 
         // Disconnected is a link state, not removal of the NIC. Keeping the function present
         // preserves interface identity when connectivity policy changes.
@@ -188,6 +184,7 @@ public enum DoryRawHVVirtualHardwareTopologyPlanner {
             },
             audioInput: definition.audio.inputEnabled,
             audioOutput: definition.audio.outputEnabled,
+            cameraInput: definition.camera.enabled,
             keyboard: definition.input.keyboardEnabled,
             pointer: definition.input.pointerEnabled,
             directorySharing: !definition.shares.isEmpty,

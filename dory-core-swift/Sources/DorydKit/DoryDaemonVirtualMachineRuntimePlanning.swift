@@ -568,6 +568,7 @@ public final class DoryDaemonVirtualMachinePlanningCoordinator: @unchecked Senda
             },
             audioInput: definition.audio.inputEnabled,
             audioOutput: definition.audio.outputEnabled,
+            cameraInput: definition.camera.enabled,
             keyboard: definition.input.keyboardEnabled,
             pointer: definition.input.pointerEnabled,
             directorySharing: !definition.shares.isEmpty,

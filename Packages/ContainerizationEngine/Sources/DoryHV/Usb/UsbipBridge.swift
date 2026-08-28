@@ -161,6 +161,7 @@ public final class UsbipBridge: @unchecked Sendable {
             log("USB/IP import request rejected: \(error)")
             return
         }
+        log("USB/IP import request received for \(busID)")
         guard authorizeImport(busID) else {
             log("USB/IP import authorization expired for \(busID)")
             _ = write(UsbipImportReply(status: 1, device: nil).encoded())
@@ -180,6 +181,7 @@ public final class UsbipBridge: @unchecked Sendable {
             return
         }
         importedBusID = busID
+        log("USB/IP import reply accepted for \(busID); awaiting Linux URBs")
 
         while true {
             guard let header = readExact(

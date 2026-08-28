@@ -163,9 +163,10 @@ private struct TaskVirtioSoundCompletionScheduler: VirtioSoundCompletionScheduli
     }
 }
 
-/// VirtIO 1.3 sound with one output and one input PCM stream. No optional sound feature is
+/// VirtIO 1.3 sound with the explicitly enabled PCM directions. No optional sound feature is
 /// advertised: shared-memory transport, polling, period events, XRUN events, jacks, channel maps,
-/// and mixer controls remain unsupported rather than being emulated incompletely.
+/// and mixer controls remain unsupported rather than being emulated incompletely. Omitting input
+/// removes the capture PCM stream entirely, so a UI privacy toggle cannot retain microphone access.
 public final class VirtioSound: VirtioDeviceBackend, @unchecked Sendable {
     public let deviceID: UInt32 = 25
     public let deviceFeatures: UInt64 = 0
@@ -225,7 +226,6 @@ public final class VirtioSound: VirtioDeviceBackend, @unchecked Sendable {
         var writableBytes: Int
     }
 
-    private static let streamCount = 2
     private static let controlStatusSize = 4
     private static let pcmTransferHeaderSize = 4
     private static let pcmStatusSize = 8
@@ -244,15 +244,13 @@ public final class VirtioSound: VirtioDeviceBackend, @unchecked Sendable {
     private let log: @Sendable (String) -> Void
     private let limits: VirtioSoundLimits
     private let completionScheduler: any VirtioSoundCompletionScheduling
+    private let streamDirections: [VirtioSoundDirection]
     private let lock = NSLock()
-    private var streams = [
-        Stream(direction: .output),
-        Stream(direction: .input),
-    ]
+    private var streams: [Stream]
     private var nextRequestID: UInt64 = 1
     // Each stream advances independently so releasing capture cannot invalidate an in-flight
     // playback completion (and vice versa).
-    private var streamGenerations = [UInt64](repeating: 1, count: streamCount)
+    private var streamGenerations: [UInt64]
     private var pendingPlayback = [UInt64: PendingIO]()
     private var pendingCapture = [UInt64: PendingIO]()
     private var retainedEventBuffers = [VirtqueueChain]()
@@ -274,10 +272,12 @@ public final class VirtioSound: VirtioDeviceBackend, @unchecked Sendable {
 
     public convenience init(
         host: VirtioSoundHost,
+        enabledDirections: [VirtioSoundDirection] = [.output, .input],
         log: @escaping @Sendable (String) -> Void = { _ in }
     ) {
         self.init(
             host: host,
+            enabledDirections: enabledDirections,
             log: log,
             limits: .production,
             completionScheduler: TaskVirtioSoundCompletionScheduler()
@@ -286,14 +286,26 @@ public final class VirtioSound: VirtioDeviceBackend, @unchecked Sendable {
 
     init(
         host: VirtioSoundHost,
+        enabledDirections: [VirtioSoundDirection] = [.output, .input],
         log: @escaping @Sendable (String) -> Void = { _ in },
         limits: VirtioSoundLimits,
         completionScheduler: any VirtioSoundCompletionScheduling
     ) {
+        let canonicalDirections = [VirtioSoundDirection.output, .input].filter {
+            enabledDirections.contains($0)
+        }
+        precondition(!canonicalDirections.isEmpty)
+        precondition(canonicalDirections.count == enabledDirections.count)
         self.host = host
         self.log = log
         self.limits = limits
         self.completionScheduler = completionScheduler
+        self.streamDirections = canonicalDirections
+        self.streams = canonicalDirections.map { Stream(direction: $0) }
+        self.streamGenerations = [UInt64](
+            repeating: 1,
+            count: canonicalDirections.count
+        )
     }
 
     deinit {
@@ -310,7 +322,7 @@ public final class VirtioSound: VirtioDeviceBackend, @unchecked Sendable {
     public var configSpace: [UInt8] {
         var bytes = [UInt8]()
         bytes.appendLE(UInt32(0))
-        bytes.appendLE(UInt32(Self.streamCount))
+        bytes.appendLE(UInt32(streamDirections.count))
         bytes.appendLE(UInt32(0))
         return bytes
     }
@@ -338,7 +350,7 @@ public final class VirtioSound: VirtioDeviceBackend, @unchecked Sendable {
             pendingCapture.removeAll()
             retainedEventBuffers.removeAll()
             terminalQueues.removeAll()
-            streams = [Stream(direction: .output), Stream(direction: .input)]
+            streams = streamDirections.map { Stream(direction: $0) }
             return values.compactMap(\.watchdog)
         }
         watchdogs.forEach { $0.cancel() }
@@ -356,13 +368,17 @@ public final class VirtioSound: VirtioDeviceBackend, @unchecked Sendable {
                 retainedEventBuffers.removeAll()
                 return []
             case 2:
-                streamGenerations[0] &+= 1
+                if let streamID = streamID(for: .output) {
+                    streamGenerations[streamID] &+= 1
+                }
                 let values = Array(pendingPlayback.values)
                 discardedPlayback = values.count
                 pendingPlayback.removeAll()
                 return values.compactMap(\.watchdog)
             case 3:
-                streamGenerations[1] &+= 1
+                if let streamID = streamID(for: .input) {
+                    streamGenerations[streamID] &+= 1
+                }
                 let values = Array(pendingCapture.values)
                 discardedCapture = values.count
                 pendingCapture.removeAll()
@@ -503,7 +519,7 @@ public final class VirtioSound: VirtioDeviceBackend, @unchecked Sendable {
             let streamID = Int(request.leUInt32(at: 0))
             let audio = Data(request[Self.pcmTransferHeaderSize...])
             let reservation: (UInt64, VirtioSoundPCMParameters)? = lock.withLock {
-                guard streamID == 0,
+                guard streams.indices.contains(streamID),
                       streams[streamID].direction == .output,
                       streams[streamID].lifecycle == .prepared
                         || streams[streamID].lifecycle == .running,
@@ -606,7 +622,7 @@ public final class VirtioSound: VirtioDeviceBackend, @unchecked Sendable {
             requestedBytes += payloadBytes
             let streamID = Int(rawStreamID)
             let reservation: (UInt64, VirtioSoundPCMParameters)? = lock.withLock {
-                guard streamID == 1,
+                guard streams.indices.contains(streamID),
                       streams[streamID].direction == .input,
                       streams[streamID].lifecycle == .prepared
                         || streams[streamID].lifecycle == .running,
@@ -879,8 +895,8 @@ public final class VirtioSound: VirtioDeviceBackend, @unchecked Sendable {
         let start = Int(request.leUInt32(at: 4))
         let count = Int(request.leUInt32(at: 8))
         let itemSize = Int(request.leUInt32(at: 12))
-        guard count > 0, start < Self.streamCount,
-              count <= Self.streamCount - start,
+        guard count > 0, start < streamDirections.count,
+              count <= streamDirections.count - start,
               itemSize == Self.pcmInfoSize else {
             return Self.header(.badMessage)
         }
@@ -893,11 +909,7 @@ public final class VirtioSound: VirtioDeviceBackend, @unchecked Sendable {
             response.appendLE(UInt32(0))
             response.appendLE(Self.supportedFormats)
             response.appendLE(Self.supportedRates)
-            response.append(
-                streamID == 0
-                    ? VirtioSoundDirection.output.rawValue
-                    : VirtioSoundDirection.input.rawValue
-            )
+            response.append(streamDirections[streamID].rawValue)
             response.append(1)
             response.append(2)
             response.append(contentsOf: repeatElement(0, count: 5))
@@ -914,7 +926,7 @@ public final class VirtioSound: VirtioDeviceBackend, @unchecked Sendable {
         let channels = Int(request[20])
         let format = request[21]
         let rate = request[22]
-        guard streamID >= 0, streamID < Self.streamCount,
+        guard streams.indices.contains(streamID),
               bufferBytes > 0, bufferBytes <= limits.maximumBufferBytes,
               periodBytes > 0, periodBytes <= limits.maximumPeriodBytes,
               periodBytes <= bufferBytes,
@@ -967,7 +979,7 @@ public final class VirtioSound: VirtioDeviceBackend, @unchecked Sendable {
         transport: VirtioMMIOTransport?
     ) -> [UInt8] {
         guard responseCapacity >= Self.controlStatusSize else { return [] }
-        guard streamID >= 0, streamID < Self.streamCount else { return Self.header(.badMessage) }
+        guard streams.indices.contains(streamID) else { return Self.header(.badMessage) }
         let current = lock.withLock { streams[streamID] }
         switch code {
         case Request.pcmPrepare:
@@ -1078,6 +1090,10 @@ public final class VirtioSound: VirtioDeviceBackend, @unchecked Sendable {
         }
         if interrupt { transport.notifyUsed() }
         return succeeded
+    }
+
+    private func streamID(for direction: VirtioSoundDirection) -> Int? {
+        streamDirections.firstIndex(of: direction)
     }
 
     private static func orderedLayout(_ access: VirtqueueLeaseAccess) -> OrderedLayout? {

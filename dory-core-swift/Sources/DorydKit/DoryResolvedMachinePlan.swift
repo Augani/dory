@@ -977,7 +977,6 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
             reject("rawHVVirtualHardwareTopology.occupiedSlots")
         }
         if devices.displays.isEmpty
-            || devices.audioInput != devices.audioOutput
             || devices.networkInterface?.isValid != true {
             reject("devices")
         }
@@ -985,7 +984,7 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
             (.graphics, true),
             (.keyboard, devices.keyboard),
             (.pointer, devices.pointer),
-            (.audio, devices.audioInput),
+            (.audio, devices.audioInput || devices.audioOutput),
             // Disconnected means a link-down NIC, not removal of the guest-visible function.
             (.network, true),
         ]

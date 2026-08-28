@@ -70,10 +70,12 @@ public enum UsbControlError: Error, Equatable, Sendable, CustomStringConvertible
 public final class UsbControlHandler: @unchecked Sendable {
     private let manager: UsbipManager
     private let allowedOpenModes: Set<HostUsbOpenMode>
-    private let ensureSupported: () async throws -> Void
-    private let openDevice: (String, HostUsbOpenMode) throws -> any UsbipExportedDevice
-    private let notifyAttach: (UsbAgentAttachRequest) async throws -> Void
-    private let notifyDetach: (UsbAgentDetachRequest) async throws -> Void
+    private let ensureSupported: @Sendable () async throws -> Void
+    private let openDevice:
+        @Sendable (String, HostUsbOpenMode) throws -> any UsbipExportedDevice
+    private let notifyAttach: @Sendable (UsbAgentAttachRequest) async throws -> Void
+    private let notifyDetach: @Sendable (UsbAgentDetachRequest) async throws -> Void
+    private let trace: @Sendable (String) -> Void
 
     private let lock = NSLock()
     private enum AttachmentState: Equatable {
@@ -108,10 +110,12 @@ public final class UsbControlHandler: @unchecked Sendable {
     public init(
         manager: UsbipManager,
         allowedOpenModes: Set<HostUsbOpenMode> = [.userAuthorized],
-        ensureSupported: @escaping () async throws -> Void = {},
-        openDevice: @escaping (String, HostUsbOpenMode) throws -> any UsbipExportedDevice,
-        notifyAttach: @escaping (UsbAgentAttachRequest) async throws -> Void,
-        notifyDetach: @escaping (UsbAgentDetachRequest) async throws -> Void
+        ensureSupported: @escaping @Sendable () async throws -> Void = {},
+        openDevice: @escaping @Sendable (String, HostUsbOpenMode) throws
+            -> any UsbipExportedDevice,
+        notifyAttach: @escaping @Sendable (UsbAgentAttachRequest) async throws -> Void,
+        notifyDetach: @escaping @Sendable (UsbAgentDetachRequest) async throws -> Void,
+        trace: @escaping @Sendable (String) -> Void = { _ in }
     ) {
         self.manager = manager
         self.allowedOpenModes = allowedOpenModes
@@ -119,6 +123,7 @@ public final class UsbControlHandler: @unchecked Sendable {
         self.openDevice = openDevice
         self.notifyAttach = notifyAttach
         self.notifyDetach = notifyDetach
+        self.trace = trace
     }
 
     public func attach(
@@ -137,7 +142,9 @@ public final class UsbControlHandler: @unchecked Sendable {
         defer { manager.finishControlMutation(mutation) }
         // Capability negotiation is also an admitted, potentially uncancellable RPC. Keep it under
         // the manager generation lease so stop cannot report a clean drain while it is still running.
+        trace("attach \(busID): checking guest usb-vhci capability")
         try await ensureSupported()
+        trace("attach \(busID): guest usb-vhci capability confirmed")
         guard manager.isControlMutationCurrent(mutation) else {
             throw UsbControlError.managerStoppedDuringTransition(busID)
         }
@@ -165,7 +172,9 @@ public final class UsbControlHandler: @unchecked Sendable {
         }
         let device: any UsbipExportedDevice
         do {
+            trace("attach \(busID): opening host device")
             device = try openDevice(busID, mode)
+            trace("attach \(busID): host device opened")
         } catch {
             lock.withLock { rollbackLocked(busID, expected: .attaching(port: port)) }
             throw error
@@ -211,6 +220,7 @@ public final class UsbControlHandler: @unchecked Sendable {
         }
         do {
             try manager.register(device, under: mutation)
+            trace("attach \(busID): USB/IP export registered on vsock port \(manager.port)")
         } catch {
             lock.withLock { rollbackLocked(busID, expected: .attaching(port: port)) }
             throw error
@@ -228,7 +238,9 @@ public final class UsbControlHandler: @unchecked Sendable {
             throw UsbControlError.managerStoppedDuringTransition(busID)
         }
         do {
+            trace("attach \(busID): requesting Linux VHCI port \(port)")
             try await notifyAttach(request)
+            trace("attach \(busID): Linux VHCI attach acknowledged")
         } catch {
             try await compensateAttachUncertainty(
                 busID: busID,
@@ -255,6 +267,7 @@ public final class UsbControlHandler: @unchecked Sendable {
                 rejectionDetail: "manager stopped after the guest attach RPC committed"
             )
         }
+        trace("attach \(busID): committed")
         return attachment
     }
 

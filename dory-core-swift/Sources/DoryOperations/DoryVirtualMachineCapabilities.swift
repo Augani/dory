@@ -262,6 +262,8 @@ public struct DoryVirtualMachineDeviceCapabilityRequest: Codable, Sendable, Equa
     }
     public var audioInput: Bool
     public var audioOutput: Bool
+    /// Exposes the selected host camera as a standard UVC capture device.
+    public var cameraInput: Bool
     public var keyboard: Bool
     public var pointer: Bool
     public var directorySharing: Bool
@@ -285,6 +287,7 @@ public struct DoryVirtualMachineDeviceCapabilityRequest: Codable, Sendable, Equa
         displays: [DoryVirtualMachineDisplayCapabilityRequest]? = nil,
         audioInput: Bool = false,
         audioOutput: Bool = false,
+        cameraInput: Bool = false,
         keyboard: Bool = false,
         pointer: Bool = false,
         directorySharing: Bool = false,
@@ -301,6 +304,7 @@ public struct DoryVirtualMachineDeviceCapabilityRequest: Codable, Sendable, Equa
         self.displays = displays ?? display.map { [$0] } ?? []
         self.audioInput = audioInput
         self.audioOutput = audioOutput
+        self.cameraInput = cameraInput
         self.keyboard = keyboard
         self.pointer = pointer
         self.directorySharing = directorySharing
@@ -320,6 +324,7 @@ public struct DoryVirtualMachineDeviceCapabilityRequest: Codable, Sendable, Equa
         case displays
         case audioInput
         case audioOutput
+        case cameraInput
         case keyboard
         case pointer
         case directorySharing
@@ -355,6 +360,7 @@ public struct DoryVirtualMachineDeviceCapabilityRequest: Codable, Sendable, Equa
         }
         audioInput = try container.decode(Bool.self, forKey: .audioInput)
         audioOutput = try container.decode(Bool.self, forKey: .audioOutput)
+        cameraInput = try container.decodeIfPresent(Bool.self, forKey: .cameraInput) ?? false
         keyboard = try container.decode(Bool.self, forKey: .keyboard)
         pointer = try container.decode(Bool.self, forKey: .pointer)
         directorySharing = try container.decode(Bool.self, forKey: .directorySharing)
@@ -387,6 +393,9 @@ public struct DoryVirtualMachineDeviceCapabilityRequest: Codable, Sendable, Equa
         }
         try container.encode(audioInput, forKey: .audioInput)
         try container.encode(audioOutput, forKey: .audioOutput)
+        if cameraInput {
+            try container.encode(true, forKey: .cameraInput)
+        }
         try container.encode(keyboard, forKey: .keyboard)
         try container.encode(pointer, forKey: .pointer)
         try container.encode(directorySharing, forKey: .directorySharing)
@@ -500,6 +509,7 @@ public enum DoryCapabilityReasonCode: String, Codable, Sendable, CaseIterable, H
     case networkAttachmentUnsupported = "network-attachment-unsupported"
     case audioInputUnsupported = "audio-input-unsupported"
     case audioOutputUnsupported = "audio-output-unsupported"
+    case cameraInputUnsupported = "camera-input-unsupported"
     case keyboardInputUnsupported = "keyboard-input-unsupported"
     case pointerInputUnsupported = "pointer-input-unsupported"
     case directorySharingUnsupported = "directory-sharing-unsupported"
@@ -1871,7 +1881,7 @@ public enum DoryAppleSiliconCapabilityEvaluator {
             && request.backend == .doryHypervisor
         let isLinuxDesktopRuntime = isGraphical && (isLinuxVZ || isLinuxRawHV)
         let audioIsImplemented = isLinuxVZ && isGraphical
-            || isLinuxRawHV && isGraphical && devices.audioInput == devices.audioOutput
+            || isLinuxRawHV && isGraphical
         if devices.audioInput, !audioIsImplemented {
             return unavailable(
                 tier: tier,
@@ -1884,6 +1894,14 @@ public enum DoryAppleSiliconCapabilityEvaluator {
                 tier: tier,
                 code: .audioOutputUnsupported,
                 message: "The selected guest/backend contract does not implement host audio output."
+            )
+        }
+        if devices.cameraInput,
+           !(isLinuxRawHV && isGraphical && !devices.displays.isEmpty) {
+            return unavailable(
+                tier: tier,
+                code: .cameraInputUnsupported,
+                message: "The selected guest/backend contract does not implement host camera input."
             )
         }
 

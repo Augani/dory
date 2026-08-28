@@ -11379,6 +11379,7 @@ public final class MachineManager: @unchecked Sendable {
         expected.sandboxPolicy = definition.sandboxPolicy
         expected.networkMode = definition.networkMode
         expected.portForwards = definition.portForwards
+        expected.camera = definition.camera
         return expected == definition && definition.validate().isEmpty
     }
 
@@ -11396,6 +11397,9 @@ public final class MachineManager: @unchecked Sendable {
         // (the RawHV envelope or VZ's split device argument), while this transient projection
         // remains representable without persisting or widening the native workspace authority.
         projected.clipboardPolicy = compatibility.clipboardPolicy
+        // The compatibility machine persists camera intent through its typed environment bridge,
+        // but only the RawHV envelope can authorize the actual UVC transport.
+        projected.camera = compatibility.camera
         return projected
     }
 

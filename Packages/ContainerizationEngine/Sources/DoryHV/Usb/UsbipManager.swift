@@ -555,6 +555,7 @@ public final class UsbipManager: @unchecked Sendable {
             authorization: .awaitingImport
         )
         lock.unlock()
+        log("USB/IP guest connection accepted with \(exported.count) exported device(s)")
 
         let bridge = UsbipBridge(
             connection: connection,
@@ -587,7 +588,10 @@ public final class UsbipManager: @unchecked Sendable {
             bridge.requestStop()
         }
 
-        if shouldStart { bridge.start() }
+        if shouldStart {
+            log("USB/IP bridge started")
+            bridge.start()
+        }
         else { bridge.requestStop() }
     }
 
@@ -613,6 +617,7 @@ public final class UsbipManager: @unchecked Sendable {
             deviceGeneration: expectedGeneration
         )
         bridgeRecords[bridgeToken] = bridge
+        log("USB/IP import authorized for \(busID)")
         return true
     }
 

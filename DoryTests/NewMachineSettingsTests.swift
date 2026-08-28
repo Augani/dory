@@ -118,6 +118,8 @@ struct NewMachineSettingsTests {
             inputEnabled: true,
             outputEnabled: true
         ))
+        #expect(s.virtualMachineSettings?.cameraConfiguration
+            == DoryVMCameraConfiguration(enabled: true))
         #expect(s.virtualMachineSettings?.intelApplicationTranslationEnabled == nil)
         #expect(s.ports.isEmpty)
     }
@@ -176,6 +178,7 @@ struct NewMachineSettingsTests {
         #expect(settings.virtualMachineSettings?.graphicsPreference == nil)
         #expect(settings.virtualMachineSettings?.networkMode == .disconnected)
         #expect(settings.virtualMachineSettings?.audioConfiguration == nil)
+        #expect(settings.virtualMachineSettings?.cameraConfiguration == nil)
     }
 
     @Test func desktopAudioDirectionsAreCollectedIndependently() {
@@ -191,6 +194,18 @@ struct NewMachineSettingsTests {
             inputEnabled: false,
             outputEnabled: true
         ))
+    }
+
+    @Test func desktopCameraChoiceIsExplicit() {
+        let settings = NewMachineSheet.buildSettings(
+            cpus: 4,
+            memoryGB: 4,
+            mounts: [],
+            cameraEnabled: false
+        )
+
+        #expect(settings.virtualMachineSettings?.cameraConfiguration
+            == DoryVMCameraConfiguration(enabled: false))
     }
 
     @Test func desktopGPUChoiceIsExplicitAndNeverSilentlyFallsBack() {

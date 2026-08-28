@@ -17,6 +17,36 @@ CONFIG_USB_XHCI_HCD=y
 CONFIG_USB_XHCI_PLATFORM=y
 CONFIG_USB_HID=y
 
+# Dory's host camera is exported as a standards-compliant USB Video Class 1.1 bulk device over
+# USB/IP/VHCI. Keep the upstream UVC/V4L2 path built in so the camera appears as /dev/video* before
+# the desktop session starts; Dory kernels intentionally do not depend on loadable modules.
+CONFIG_MEDIA_SUPPORT=y
+CONFIG_MEDIA_SUPPORT_FILTER=y
+# CONFIG_MEDIA_SUBDRV_AUTOSELECT is not set
+CONFIG_MEDIA_CAMERA_SUPPORT=y
+# CONFIG_MEDIA_ANALOG_TV_SUPPORT is not set
+# CONFIG_MEDIA_DIGITAL_TV_SUPPORT is not set
+# CONFIG_MEDIA_RADIO_SUPPORT is not set
+# CONFIG_MEDIA_SDR_SUPPORT is not set
+# CONFIG_MEDIA_PLATFORM_SUPPORT is not set
+# CONFIG_MEDIA_TEST_SUPPORT is not set
+# arm64 defconfig enables these non-UVC media families as modules. Dory kernels intentionally
+# disable modules, which would otherwise promote that unrelated hardware support into the image
+# when MEDIA_SUPPORT becomes built-in.
+# CONFIG_RC_CORE is not set
+# CONFIG_MEDIA_CEC_SUPPORT is not set
+# CONFIG_VIDEO_CAMERA_SENSOR is not set
+# CONFIG_VIDEO_MAX96712 is not set
+# CONFIG_VIDEO_MESON_VDEC is not set
+CONFIG_VIDEO_DEV=y
+# Mainline V4L2 enables the controller core for camera-class devices. Retain that small common core
+# while excluding every hardware-specific media family below.
+CONFIG_MEDIA_CONTROLLER=y
+CONFIG_MEDIA_USB_SUPPORT=y
+# CONFIG_MEDIA_PCI_SUPPORT is not set
+CONFIG_USB_VIDEO_CLASS=y
+CONFIG_USB_VIDEO_CLASS_INPUT_EVDEV=y
+
 # Give full desktop guests compressed swap without consuming another host-backed disk. Browsers
 # and GNOME otherwise run out of reclaimable memory abruptly at the VM memory ceiling.
 CONFIG_ZSMALLOC=y

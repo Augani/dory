@@ -19,7 +19,8 @@ final class AgentControlTests: XCTestCase {
         XCTAssertEqual(info.agentBuild, "fake-agent")
         XCTAssertEqual(info.capabilities.map(\.id), [
             "clock-sync", "exec", "exec-stdin", "lifecycle-receipt", "ports-watch",
-            "snapshot-quiesce", "sync-pull", "sync-push", "telemetry", "virtiofs-mount",
+            "snapshot-quiesce", "sync-pull", "sync-push", "telemetry", "usb-vhci",
+            "virtiofs-mount",
         ])
         XCTAssertEqual(counter.value, 1)
 
@@ -94,6 +95,20 @@ final class AgentControlTests: XCTestCase {
         XCTAssertEqual(fake.virtioFSMountCalls, [
             .init(tag: "workspace", mountPath: "/mnt/dory/workspace", readOnly: true),
         ])
+        try control.usbVhciAttach(
+            busID: "255-1",
+            port: 2,
+            vsockPort: 1_025,
+            deviceID: (255 << 16) | 1,
+            speed: 3
+        )
+        try control.usbVhciDetach(busID: "255-1", port: 2)
+        XCTAssertEqual(fake.usbVhciAttachCalls, [
+            .init(busID: "255-1", port: 2, vsockPort: 1_025, deviceID: (255 << 16) | 1, speed: 3),
+        ])
+        XCTAssertEqual(fake.usbVhciDetachCalls, [
+            .init(busID: "255-1", port: 2),
+        ])
         let exec = try control.exec(argv: ["/bin/echo", "ok"], cwd: "/tmp")
         XCTAssertEqual(exec.exitCode, 0)
         XCTAssertEqual(String(data: exec.stdout, encoding: .utf8), "ok\n")
@@ -130,6 +145,16 @@ final class AgentControlTests: XCTestCase {
             )
         }
         XCTAssertTrue(missing.virtioFSMountCalls.isEmpty)
+        XCTAssertThrowsError(try missingControl.usbVhciAttach(
+            busID: "255-1",
+            port: 0,
+            vsockPort: 1_025,
+            deviceID: (255 << 16) | 1,
+            speed: 3
+        )) { error in
+            XCTAssertEqual(error as? AgentControlError, .capabilityUnavailable("usb-vhci"))
+        }
+        XCTAssertTrue(missing.usbVhciAttachCalls.isEmpty)
 
         let oldSnapshotCapability = FakeAgentControlClient(capabilities: [
             DoryAgentCapability(id: "snapshot-quiesce", version: 1),
@@ -203,6 +228,19 @@ private final class FakeAgentControlClient: AgentControlClient, @unchecked Senda
         var readOnly: Bool
     }
     private var receivedVirtioFSMountCalls: [VirtioFSMountCall] = []
+    struct UsbVhciAttachCall: Equatable {
+        var busID: String
+        var port: UInt32
+        var vsockPort: UInt32
+        var deviceID: UInt32
+        var speed: UInt32
+    }
+    struct UsbVhciDetachCall: Equatable {
+        var busID: String
+        var port: UInt32
+    }
+    private var receivedUsbVhciAttachCalls: [UsbVhciAttachCall] = []
+    private var receivedUsbVhciDetachCalls: [UsbVhciDetachCall] = []
 
     init(
         protocolVersion: UInt32 = DoryCore.protocolVersion(),
@@ -216,6 +254,7 @@ private final class FakeAgentControlClient: AgentControlClient, @unchecked Senda
             DoryAgentCapability(id: "sync-pull", version: 1),
             DoryAgentCapability(id: "sync-push", version: 1),
             DoryAgentCapability(id: "telemetry", version: 1),
+            DoryAgentCapability(id: "usb-vhci", version: 1),
             DoryAgentCapability(id: "virtiofs-mount", version: 1),
         ]
     ) {
@@ -281,6 +320,18 @@ private final class FakeAgentControlClient: AgentControlClient, @unchecked Senda
         lock.lock()
         defer { lock.unlock() }
         return receivedVirtioFSMountCalls
+    }
+
+    var usbVhciAttachCalls: [UsbVhciAttachCall] {
+        lock.lock()
+        defer { lock.unlock() }
+        return receivedUsbVhciAttachCalls
+    }
+
+    var usbVhciDetachCalls: [UsbVhciDetachCall] {
+        lock.lock()
+        defer { lock.unlock() }
+        return receivedUsbVhciDetachCalls
     }
 
     func info() throws -> DoryAgentInfo {
@@ -409,6 +460,30 @@ private final class FakeAgentControlClient: AgentControlClient, @unchecked Senda
             alreadyMounted: false,
             mountID: 73
         )
+    }
+
+    func usbVhciAttach(
+        busID: String,
+        port: UInt32,
+        vsockPort: UInt32,
+        deviceID: UInt32,
+        speed: UInt32
+    ) throws {
+        lock.lock()
+        receivedUsbVhciAttachCalls.append(.init(
+            busID: busID,
+            port: port,
+            vsockPort: vsockPort,
+            deviceID: deviceID,
+            speed: speed
+        ))
+        lock.unlock()
+    }
+
+    func usbVhciDetach(busID: String, port: UInt32) throws {
+        lock.lock()
+        receivedUsbVhciDetachCalls.append(.init(busID: busID, port: port))
+        lock.unlock()
     }
 
     func exec(

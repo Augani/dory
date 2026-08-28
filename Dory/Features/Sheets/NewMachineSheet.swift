@@ -22,6 +22,7 @@ struct NewMachineSheet: View {
     @State private var portForwardRows: [MachinePortForwardDraft] = []
     @State private var audioInputEnabled = true
     @State private var audioOutputEnabled = true
+    @State private var cameraEnabled = true
     @State private var gpuAccelerationEnabled = true
     @State private var hostDisplays: [HostDisplayChoice] = []
     @State private var dedicatedHostDisplayUUID: String?
@@ -566,7 +567,7 @@ struct NewMachineSheet: View {
     @ViewBuilder private var audioBlock: some View {
         if displayMode == .desktop {
             VStack(alignment: .leading, spacing: 8) {
-                sectionLabel("AUDIO")
+                sectionLabel("AUDIO & VIDEO")
                 HStack(spacing: 24) {
                     Toggle("Microphone", isOn: $audioInputEnabled)
                         .toggleStyle(.switch)
@@ -576,11 +577,18 @@ struct NewMachineSheet: View {
                         .toggleStyle(.switch)
                         .tint(p.accent)
                         .accessibilityIdentifier("new-machine-audio-output")
+                    Toggle("Camera", isOn: $cameraEnabled)
+                        .toggleStyle(.switch)
+                        .tint(p.accent)
+                        .accessibilityIdentifier("new-machine-camera")
+                        .disabled(customISOInstall)
                     Spacer(minLength: 0)
                 }
                 .font(.system(size: 12.5))
                 .foregroundStyle(p.text)
-                Text("Only enabled audio directions are attached to the Linux desktop. The selected backend must qualify the exact combination before launch.")
+                Text(customISOInstall
+                     ? "Speakers and microphone use standard VirtIO audio. Camera sharing is currently available on Dory-managed accelerated desktops, not custom ISO compatibility guests."
+                     : "Enabled devices are attached explicitly. Camera sharing appears in Linux as a standard UVC webcam and follows macOS camera permission.")
                     .font(.system(size: 11))
                     .foregroundStyle(p.text3)
             }
@@ -994,6 +1002,7 @@ struct NewMachineSheet: View {
         portForwards: [DoryVMPortForward] = [],
         audioInputEnabled: Bool = true,
         audioOutputEnabled: Bool = true,
+        cameraEnabled: Bool = true,
         gpuAccelerationEnabled: Bool = true
     ) -> MachineSettings {
         let typedSettings: DorydMachineTypedSettings
@@ -1023,7 +1032,8 @@ struct NewMachineSheet: View {
                 audioConfiguration: DoryVMAudioConfiguration(
                     inputEnabled: audioInputEnabled,
                     outputEnabled: audioOutputEnabled
-                )
+                ),
+                cameraConfiguration: DoryVMCameraConfiguration(enabled: cameraEnabled)
             )
         } else {
             typedSettings = DorydMachineTypedSettings(
@@ -1078,6 +1088,7 @@ struct NewMachineSheet: View {
             portForwards: resolvedPortForwards ?? [],
             audioInputEnabled: audioInputEnabled,
             audioOutputEnabled: audioOutputEnabled,
+            cameraEnabled: cameraEnabled && !customISOInstall,
             gpuAccelerationEnabled: gpuAccelerationEnabled
         )
         if customISOInstall {
@@ -1093,7 +1104,8 @@ struct NewMachineSheet: View {
                 audioConfiguration: DoryVMAudioConfiguration(
                     inputEnabled: audioInputEnabled,
                     outputEnabled: audioOutputEnabled
-                )
+                ),
+                cameraConfiguration: DoryVMCameraConfiguration(enabled: false)
             )
         }
         settings.displayPresentation = DoryMachineDisplayPresentation(

@@ -122,4 +122,26 @@ while IFS= read -r expected; do
     || fail "$CONFIG does not honor required policy $expected"
 done <<< "$REQUIRED_POLICIES"
 
+# Desktop camera support must not reactivate arm64 defconfig's unrelated media modules. Since Dory
+# builds a monolithic kernel, those modules would otherwise be promoted into the release image.
+if [ "$PROFILE" = desktop ] || [ "$PROFILE" = accelerated-desktop ]; then
+  for forbidden_media_symbol in \
+    MEDIA_SUBDRV_AUTOSELECT \
+    MEDIA_ANALOG_TV_SUPPORT \
+    MEDIA_DIGITAL_TV_SUPPORT \
+    MEDIA_RADIO_SUPPORT \
+    MEDIA_SDR_SUPPORT \
+    MEDIA_PLATFORM_SUPPORT \
+    MEDIA_TEST_SUPPORT \
+    MEDIA_PCI_SUPPORT \
+    MEDIA_CEC_SUPPORT \
+    RC_CORE \
+    VIDEO_CAMERA_SENSOR \
+    VIDEO_MAX96712 \
+    VIDEO_MESON_VDEC; do
+    dory_kernel_config_honors_policy "$CONFIG" "$forbidden_media_symbol" n \
+      || fail "$CONFIG unexpectedly enables $forbidden_media_symbol"
+  done
+fi
+
 echo "verified $ARCH kernel input fingerprint $EXPECTED_INPUT"

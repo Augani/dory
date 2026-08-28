@@ -8,6 +8,42 @@ import DorydKit
 import DoryVMMKit
 import Foundation
 
+private final class DoryDesktopCameraAttachment: @unchecked Sendable {
+    private let backend: DoryMacCameraBackend
+    private let handler: UsbControlHandler
+    private let log: @Sendable (String) -> Void
+
+    init(
+        backend: DoryMacCameraBackend,
+        handler: UsbControlHandler,
+        log: @escaping @Sendable (String) -> Void
+    ) {
+        self.backend = backend
+        self.handler = handler
+        self.log = log
+    }
+
+    func attach() async throws {
+        log("dory-hv desktop: preparing Mac camera for Linux attachment")
+        do {
+            try backend.prepareAndAuthorize()
+        } catch {
+            backend.stop()
+            throw error
+        }
+        do {
+            let attachment = try await handler.attach(busID: DoryVirtualUVCCamera.busID)
+            log(
+                "dory-hv desktop: Dory UVC Camera attached on Linux VHCI port "
+                    + "\(attachment.port)"
+            )
+        } catch {
+            backend.stop()
+            throw error
+        }
+    }
+}
+
 final class RawDeviceTelemetryRegistry: @unchecked Sendable {
     private struct Entry {
         var id: String
@@ -805,8 +841,8 @@ enum DesktopGuestReadinessBoundary {
         genericGuest: Bool,
         prepare: () throws -> Prepared,
         waitForSynchronizedPresentation: () throws -> Void,
-        publish: (Prepared) throws -> Void
-    ) rethrows {
+        publish: (Prepared) async throws -> Void
+    ) async rethrows {
         let prepared: Prepared
         if genericGuest {
             try waitForSynchronizedPresentation()
@@ -815,7 +851,7 @@ enum DesktopGuestReadinessBoundary {
             prepared = try prepare()
             try waitForSynchronizedPresentation()
         }
-        try publish(prepared)
+        try await publish(prepared)
     }
 }
 
@@ -1155,6 +1191,7 @@ enum DesktopMode {
         private let shellBridge: GuestVsockSocketBridge
         private let sshAgentBridge: HostSSHAgentBridge?
         private let usbipManager: UsbipManager
+        private let cameraAttachment: DoryDesktopCameraAttachment?
         private let usbControlServer: UsbControlServer?
         private let clipboard: DoryDesktopClipboardCoordinator?
         private let firstFrame: FirstFrameGate
@@ -1236,11 +1273,6 @@ enum DesktopMode {
                 resolvedDevices: configuration.resolvedDevices
             )
             if let devices = configuration.resolvedDevices {
-                guard devices.audioInput == devices.audioOutput else {
-                    throw VMError.bootFailure(
-                        "raw-HV audio is a combined input/output device"
-                    )
-                }
                 guard devices.directorySharing == !configuration.shares.isEmpty else {
                     throw VMError.bootFailure(
                         "resolved directory-sharing contract does not match the launch shares"
@@ -1425,47 +1457,95 @@ enum DesktopMode {
                 }
             }
             self.usbipManager = usbipManager
+            let cameraBackend = configuration.resolvedDevices?.cameraInput == true
+                ? DoryMacCameraBackend(log: Self.log) : nil
+            if let cameraBackend {
+                initializationRollback.register { cameraBackend.stop() }
+            }
             let usbControlHandler = UsbControlHandler(
                 manager: usbipManager,
                 allowedOpenModes: [.userAuthorized],
                 ensureSupported: {
-                    let channel = AgentChannel(
-                        connection: try vsock.connectForServiceIfCapacity(
-                            port: VsockPorts.agent,
-                            service: .agentRPC
-                        )
-                    )
-                    try await channel.requireCapability("usb-vhci", version: 1)
+                    Self.log("dory-hv desktop: USB camera opening Dory Tools capability channel")
+                    let control = AgentControl(configuration: .init(
+                        directSocketPath: configuration.agentSocketPath
+                    ))
+                    defer { control.disconnect() }
+                    let info = try control.info()
+                    guard info.protocolVersion == DoryCore.protocolVersion(),
+                          info.capabilitiesAreCanonical,
+                          info.supports("usb-vhci", minimumVersion: 1) else {
+                        throw UsbControlError.guestAgentRPCUnavailable
+                    }
+                    Self.log("dory-hv desktop: USB camera confirmed Dory Tools usb-vhci@1")
                 },
                 openDevice: { busID, mode in
-                    try HostUsbDeviceFactory.open(busID: busID, mode: mode)
+                    if busID == DoryVirtualUVCCamera.busID, let cameraBackend {
+                        return HostUsbDevice(
+                            descriptor: DoryVirtualUVCCamera.descriptor(),
+                            backend: DoryVirtualUVCCameraBackend(frameSource: cameraBackend),
+                            timeout: 5,
+                            maxConcurrentRequests: 8,
+                            maxInFlightBytes: 16 * 1_024 * 1_024,
+                            shutdownTimeout: 2
+                        )
+                    }
+                    return try HostUsbDeviceFactory.open(busID: busID, mode: mode)
                 },
                 notifyAttach: { request in
-                    let channel = AgentChannel(
-                        connection: try vsock.connectForServiceIfCapacity(
-                            port: VsockPorts.agent,
-                            service: .agentRPC
-                        )
+                    Self.log("dory-hv desktop: USB camera requesting Linux VHCI attachment")
+                    let control = AgentControl(configuration: .init(
+                        directSocketPath: configuration.agentSocketPath
+                    ))
+                    defer { control.disconnect() }
+                    try control.usbVhciAttach(
+                        busID: request.busid,
+                        port: UInt32(request.port),
+                        vsockPort: request.vsock_port,
+                        deviceID: request.device_id,
+                        speed: request.speed
                     )
-                    try await channel.requireCapability("usb-vhci", version: 1)
-                    try await channel.usbVhciAttach(request)
+                    Self.log("dory-hv desktop: USB camera Linux VHCI attachment acknowledged")
                 },
                 notifyDetach: { request in
-                    let channel = AgentChannel(
-                        connection: try vsock.connectForServiceIfCapacity(
-                            port: VsockPorts.agent,
-                            service: .agentRPC
-                        )
+                    Self.log("dory-hv desktop: USB camera requesting Linux VHCI detach")
+                    let control = AgentControl(configuration: .init(
+                        directSocketPath: configuration.agentSocketPath
+                    ))
+                    defer { control.disconnect() }
+                    try control.usbVhciDetach(
+                        busID: request.busid,
+                        port: UInt32(request.port)
                     )
-                    try await channel.requireCapability("usb-vhci", version: 1)
-                    try await channel.usbVhciDetach(request)
-                }
+                    Self.log("dory-hv desktop: USB camera Linux VHCI detach acknowledged")
+                },
+                trace: { Self.log("dory-hv desktop: USB camera \($0)") }
             )
+            self.cameraAttachment = cameraBackend.map {
+                DoryDesktopCameraAttachment(
+                    backend: $0,
+                    handler: usbControlHandler,
+                    log: Self.log
+                )
+            }
             self.usbControlServer = configuration.usbControlSocketPath.map {
                 UsbControlServer(path: $0, handler: usbControlHandler)
             }
             self.audio = DoryMacAudioBackend(log: Self.log)
-            let sound = VirtioSound(host: audio, log: Self.log)
+            var audioDirections = [VirtioSoundDirection]()
+            if configuration.resolvedDevices?.audioOutput != false {
+                audioDirections.append(.output)
+            }
+            if configuration.resolvedDevices?.audioInput != false {
+                audioDirections.append(.input)
+            }
+            let sound = audioDirections.isEmpty
+                ? nil
+                : VirtioSound(
+                    host: audio,
+                    enabledDirections: audioDirections,
+                    log: Self.log
+                )
             let balloon = VirtioBalloon(memory: machine.memory) { message in
                 Self.log(message)
             }
@@ -1519,7 +1599,7 @@ enum DesktopMode {
                 if configuration.resolvedDevices?.pointer != false {
                     backends.append(pointerInput)
                 }
-                if configuration.resolvedDevices?.audioInput != false {
+                if let sound {
                     backends.append(sound)
                 }
                 let attachedShares = configuration.attachedShares
@@ -1615,7 +1695,7 @@ enum DesktopMode {
                             backend: pointerInput
                         ))
                     }
-                    if configuration.resolvedDevices?.audioInput == true {
+                    if let sound {
                         materialized.append(try Self.singletonMaterialization(
                             role: .audio,
                             authorizedDevices: authorizedDevices,
@@ -1687,7 +1767,7 @@ enum DesktopMode {
                         slot: slot
                     )
                     let audioMetrics: (@Sendable () -> DoryMacAudioRuntimeMetrics?)?
-                    if backend === sound {
+                    if let sound, backend === sound {
                         audioMetrics = { [weak audio] in audio?.runtimeMetrics }
                     } else {
                         audioMetrics = nil
@@ -2037,10 +2117,11 @@ enum DesktopMode {
             let configuration = self.configuration
             let graphicsDisplayName = graphicsBackend.displayName
             let firstFrame = self.firstFrame
-            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let cameraAttachment = self.cameraAttachment
+            Task.detached(priority: .userInitiated) { [weak self] in
                 do {
                     if configuration.genericGuest {
-                        try DesktopGuestReadinessBoundary.complete(
+                        try await DesktopGuestReadinessBoundary.complete(
                             genericGuest: true,
                             prepare: {
                                 guard configuration.rendererWorkerLaunch != nil
@@ -2066,6 +2147,7 @@ enum DesktopMode {
                             publish: { integration in
                                 switch integration {
                                 case let .tools(info, shareState):
+                                    try await cameraAttachment?.attach()
                                     DesktopAppRunLoop.perform { [weak self] in
                                         self?.clipboard?.markGuestReady()
                                     }
@@ -2089,6 +2171,11 @@ enum DesktopMode {
                                         )
                                     )
                                 case .unavailable:
+                                    if cameraAttachment != nil {
+                                        throw VMError.bootFailure(
+                                            "Camera sharing requires Dory Tools with usb-vhci@1 in this Linux guest"
+                                        )
+                                    }
                                     let shareState = GenericGuestShareReadiness
                                         .unavailableMissingTools(
                                             configuration.attachedShares.map(\.tag)
@@ -2113,7 +2200,7 @@ enum DesktopMode {
                         )
                         return
                     }
-                    try DesktopGuestReadinessBoundary.complete(
+                    try await DesktopGuestReadinessBoundary.complete(
                         genericGuest: false,
                         prepare: {
                             // prepareGuest writes /var/lib/dory/host-configured. The managed
@@ -2132,6 +2219,7 @@ enum DesktopMode {
                             }
                         },
                         publish: { info in
+                            try await cameraAttachment?.attach()
                             DesktopAppRunLoop.perform { [weak self] in
                                 self?.clipboard?.markGuestReady()
                             }

@@ -325,6 +325,17 @@ public struct DoryVMAudioConfiguration: Codable, Sendable, Equatable {
     }
 }
 
+/// Host-camera sharing policy. The runtime exposes an enabled camera as a standard UVC device, so
+/// Linux applications use the normal `uvcvideo`/V4L2 stack instead of a Dory-specific API.
+public struct DoryVMCameraConfiguration: Codable, Sendable, Equatable {
+    public static let legacyEnabledEnvironmentKey = "DORY_DESKTOP_CAMERA"
+    public var enabled: Bool
+
+    public init(enabled: Bool = false) {
+        self.enabled = enabled
+    }
+}
+
 public struct DoryVMInputConfiguration: Codable, Sendable, Equatable {
     public var keyboardEnabled: Bool
     public var pointerEnabled: Bool
@@ -510,6 +521,7 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
         }
     }
     public var audio: DoryVMAudioConfiguration
+    public var camera: DoryVMCameraConfiguration
     public var input: DoryVMInputConfiguration
     public var shares: [DoryVMShare]
     public var integrations: [DoryVMGuestIntegration]
@@ -534,6 +546,7 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
         display: DoryVMDisplayConfiguration = DoryVMDisplayConfiguration(),
         displays: [DoryVMDisplayConfiguration]? = nil,
         audio: DoryVMAudioConfiguration = DoryVMAudioConfiguration(),
+        camera: DoryVMCameraConfiguration = DoryVMCameraConfiguration(),
         input: DoryVMInputConfiguration = DoryVMInputConfiguration(),
         shares: [DoryVMShare] = [],
         integrations: [DoryVMGuestIntegration] = [],
@@ -556,6 +569,7 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
         self.portForwards = portForwards
         self.displays = displays ?? (display.enabled ? [display] : [])
         self.audio = audio
+        self.camera = camera
         self.input = input
         self.shares = shares
         self.integrations = integrations
@@ -584,6 +598,7 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
         case display
         case displays
         case audio
+        case camera
         case input
         case shares
         case integrations
@@ -693,6 +708,10 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
             )
             displays = legacyDisplay.enabled ? [legacyDisplay] : []
             audio = try container.decode(DoryVMAudioConfiguration.self, forKey: .audio)
+            camera = try container.decodeIfPresent(
+                DoryVMCameraConfiguration.self,
+                forKey: .camera
+            ) ?? DoryVMCameraConfiguration()
             input = try container.decode(DoryVMInputConfiguration.self, forKey: .input)
             shares = legacyShares.map { share in
                 DoryVMShare(
@@ -763,6 +782,10 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
             displays = legacyDisplay.enabled ? [legacyDisplay] : []
         }
         audio = try container.decode(DoryVMAudioConfiguration.self, forKey: .audio)
+        camera = try container.decodeIfPresent(
+            DoryVMCameraConfiguration.self,
+            forKey: .camera
+        ) ?? DoryVMCameraConfiguration()
         input = try container.decode(DoryVMInputConfiguration.self, forKey: .input)
         shares = try container.decode([DoryVMShare].self, forKey: .shares)
         integrations = try container.decode([DoryVMGuestIntegration].self, forKey: .integrations)
@@ -798,6 +821,9 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
         try container.encode(portForwards, forKey: .portForwards)
         try container.encode(displays, forKey: .displays)
         try container.encode(audio, forKey: .audio)
+        if camera.enabled {
+            try container.encode(camera, forKey: .camera)
+        }
         try container.encode(input, forKey: .input)
         try container.encode(shares, forKey: .shares)
         try container.encode(integrations, forKey: .integrations)
@@ -1113,6 +1139,9 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
         }
         if !display.enabled, integrations.contains(.dynamicDisplay) {
             issues.append(issue(.integrationRequiresDisplay, "integrations"))
+        }
+        if !display.enabled, camera.enabled {
+            issues.append(issue(.integrationRequiresDisplay, "camera.enabled"))
         }
     }
 

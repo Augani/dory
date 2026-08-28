@@ -13,11 +13,11 @@ struct DesktopGuestReadinessBoundaryTests {
         case rendererReadiness
     }
 
-    @Test func managedGuestPreparesBeforeWaitingAndPublishing() {
+    @Test func managedGuestPreparesBeforeWaitingAndPublishing() async {
         var steps = [Step]()
         let expected = 37
 
-        DesktopGuestReadinessBoundary.complete(
+        await DesktopGuestReadinessBoundary.complete(
             genericGuest: false,
             prepare: {
                 steps.append(.prepare)
@@ -36,10 +36,10 @@ struct DesktopGuestReadinessBoundaryTests {
         #expect(steps == [.prepare, .wait, .publish])
     }
 
-    @Test func genericGuestRetainsRendererFirstOrdering() {
+    @Test func genericGuestRetainsRendererFirstOrdering() async {
         var steps = [Step]()
 
-        DesktopGuestReadinessBoundary.complete(
+        await DesktopGuestReadinessBoundary.complete(
             genericGuest: true,
             prepare: {
                 #expect(steps == [.wait])
@@ -56,11 +56,11 @@ struct DesktopGuestReadinessBoundaryTests {
         #expect(steps == [.wait, .prepare, .publish])
     }
 
-    @Test func managedRendererFailureAfterPreparationPreventsPublication() {
+    @Test func managedRendererFailureAfterPreparationPreventsPublication() async {
         var steps = [Step]()
 
-        #expect(throws: BoundaryFailure.rendererReadiness) {
-            try DesktopGuestReadinessBoundary.complete(
+        await #expect(throws: BoundaryFailure.rendererReadiness) {
+            try await DesktopGuestReadinessBoundary.complete(
                 genericGuest: false,
                 prepare: {
                     steps.append(.prepare)
@@ -78,11 +78,11 @@ struct DesktopGuestReadinessBoundaryTests {
         #expect(steps == [.prepare, .wait])
     }
 
-    @Test func genericRendererFailurePreventsPreparationAndPublication() {
+    @Test func genericRendererFailurePreventsPreparationAndPublication() async {
         var steps = [Step]()
 
-        #expect(throws: BoundaryFailure.rendererReadiness) {
-            try DesktopGuestReadinessBoundary.complete(
+        await #expect(throws: BoundaryFailure.rendererReadiness) {
+            try await DesktopGuestReadinessBoundary.complete(
                 genericGuest: true,
                 prepare: {
                     steps.append(.prepare)

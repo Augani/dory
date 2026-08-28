@@ -500,6 +500,7 @@ struct DorydClientTests {
         #expect(defaults.graphicsPreference == .automatic)
         #expect(defaults.networkMode == .sharedNAT)
         #expect(defaults.portForwards.isEmpty)
+        #expect(defaults.cameraConfiguration == DoryVMCameraConfiguration(enabled: false))
         #expect(defaults.intelApplicationTranslationEnabled == nil)
 
         var disconnected = defaults
@@ -538,6 +539,15 @@ struct DorydClientTests {
         #expect(audio.count == 1)
         #expect(audio["inputEnabled"] as? Bool == false)
         #expect(audio["outputEnabled"] == nil)
+
+        var cameraEnabled = defaults
+        cameraEnabled.cameraConfiguration?.enabled = true
+        let cameraWire = DorydMachineTypedSettingsPatch(
+            baseline: defaults,
+            desired: cameraEnabled
+        ).xpcDictionary
+        #expect(cameraWire.count == 1)
+        #expect(cameraWire["cameraEnabled"] as? Bool == true)
 
         var translationEnabled = defaults
         translationEnabled.intelApplicationTranslationEnabled = true
@@ -737,6 +747,7 @@ struct DorydClientTests {
                 "inputEnabled": false,
                 "outputEnabled": true,
             ] as NSDictionary,
+            "cameraEnabled": true,
             "intelApplicationTranslationEnabled": true,
         ])
         let delegate = FakeDorydListenerDelegate(service: service)
@@ -760,6 +771,8 @@ struct DorydClientTests {
             inputEnabled: false,
             outputEnabled: true
         ))
+        #expect(status.typedSettings?.cameraConfiguration
+            == DoryVMCameraConfiguration(enabled: true))
         #expect(status.typedSettings?.intelApplicationTranslationEnabled == true)
 
         service.setMachineTypedSettings("dev", ["unknown": "claim"])
@@ -769,6 +782,7 @@ struct DorydClientTests {
 
         for malformed: NSDictionary in [
             ["audio": ["inputEnabled": 0, "outputEnabled": true]],
+            ["cameraEnabled": 1],
             ["intelApplicationTranslationEnabled": 1],
             ["audio": ["inputEnabled": true]],
             ["portForwards": [[

@@ -53,6 +53,14 @@ public protocol AgentControlClient: Sendable {
         mountPath: String,
         readOnly: Bool
     ) throws -> DoryVirtioFSMountReceipt
+    func usbVhciAttach(
+        busID: String,
+        port: UInt32,
+        vsockPort: UInt32,
+        deviceID: UInt32,
+        speed: UInt32
+    ) throws
+    func usbVhciDetach(busID: String, port: UInt32) throws
     func exec(
         argv: [String],
         cwd: String,
@@ -72,6 +80,27 @@ public protocol AgentControlClient: Sendable {
 }
 
 public extension AgentControlClient {
+    func usbVhciAttach(
+        busID: String,
+        port: UInt32,
+        vsockPort: UInt32,
+        deviceID: UInt32,
+        speed: UInt32
+    ) throws {
+        _ = busID
+        _ = port
+        _ = vsockPort
+        _ = deviceID
+        _ = speed
+        throw AgentControlError.capabilityUnavailable("usb-vhci")
+    }
+
+    func usbVhciDetach(busID: String, port: UInt32) throws {
+        _ = busID
+        _ = port
+        throw AgentControlError.capabilityUnavailable("usb-vhci")
+    }
+
     func virtioFSMount(
         tag: String,
         mountPath: String,
@@ -296,6 +325,29 @@ public final class AgentControl: @unchecked Sendable {
             mountPath: mountPath,
             readOnly: readOnly
         )
+    }
+
+    /// Attach one host-authorized USB/IP export through the same bounded agent endpoint used by
+    /// every other desktop lifecycle RPC. This avoids a second in-process vsock control spine and
+    /// requires the guest's negotiated `usb-vhci@1` capability before mutation.
+    public func usbVhciAttach(
+        busID: String,
+        port: UInt32,
+        vsockPort: UInt32,
+        deviceID: UInt32,
+        speed: UInt32
+    ) throws {
+        try client(requiring: "usb-vhci").usbVhciAttach(
+            busID: busID,
+            port: port,
+            vsockPort: vsockPort,
+            deviceID: deviceID,
+            speed: speed
+        )
+    }
+
+    public func usbVhciDetach(busID: String, port: UInt32) throws {
+        try client(requiring: "usb-vhci").usbVhciDetach(busID: busID, port: port)
     }
 
     public func exec(

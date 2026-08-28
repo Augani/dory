@@ -732,6 +732,12 @@ public enum DoryMachineConfigurationMigrationBridge {
             audio: isDesktop
                 ? DoryVMAudioConfiguration(inputEnabled: true, outputEnabled: true)
                 : DoryVMAudioConfiguration(inputEnabled: false, outputEnabled: false),
+            camera: DoryVMCameraConfiguration(
+                enabled: isDesktop
+                    && configuration.environment[
+                        DoryVMCameraConfiguration.legacyEnabledEnvironmentKey
+                    ] == "1"
+            ),
             input: isDesktop
                 ? DoryVMInputConfiguration()
                 : DoryVMInputConfiguration(keyboardEnabled: false, pointerEnabled: false),

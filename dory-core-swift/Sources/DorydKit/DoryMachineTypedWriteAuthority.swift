@@ -41,6 +41,7 @@ public struct DoryMachineTypedSettingsSnapshot: Codable, Sendable, Equatable, Ha
     public var networkMode: DoryVMNetworkMode
     public var portForwards: [DoryVMPortForward]
     public var audioConfiguration: DoryVMAudioConfiguration?
+    public var cameraConfiguration: DoryVMCameraConfiguration?
     public var intelApplicationTranslationEnabled: Bool?
 
     private enum CodingKeys: String, CodingKey {
@@ -51,6 +52,7 @@ public struct DoryMachineTypedSettingsSnapshot: Codable, Sendable, Equatable, Ha
         case networkMode
         case portForwards
         case audioConfiguration
+        case cameraConfiguration
         case intelApplicationTranslationEnabled
     }
 
@@ -84,6 +86,10 @@ public struct DoryMachineTypedSettingsSnapshot: Codable, Sendable, Equatable, Ha
             DoryVMAudioConfiguration.self,
             forKey: .audioConfiguration
         )
+        cameraConfiguration = try container.decodeIfPresent(
+            DoryVMCameraConfiguration.self,
+            forKey: .cameraConfiguration
+        )
         intelApplicationTranslationEnabled = try container.decodeIfPresent(
             Bool.self,
             forKey: .intelApplicationTranslationEnabled
@@ -99,6 +105,7 @@ public struct DoryMachineTypedSettingsSnapshot: Codable, Sendable, Equatable, Ha
         try container.encode(networkMode, forKey: .networkMode)
         try container.encode(portForwards, forKey: .portForwards)
         try container.encodeIfPresent(audioConfiguration, forKey: .audioConfiguration)
+        try container.encodeIfPresent(cameraConfiguration, forKey: .cameraConfiguration)
         try container.encodeIfPresent(
             intelApplicationTranslationEnabled,
             forKey: .intelApplicationTranslationEnabled
@@ -117,9 +124,11 @@ public struct DoryMachineTypedSettingsSnapshot: Codable, Sendable, Equatable, Ha
             runtimePreference = nil
             graphicsPreference = nil
             audioConfiguration = nil
+            cameraConfiguration = nil
             return
         }
         audioConfiguration = definition.audio
+        cameraConfiguration = definition.camera
         clipboardPolicy = definition.clipboardPolicy
         switch (definition.backendPreference.mode, definition.backendPreference.backend) {
         case (.automatic, nil):
@@ -225,11 +234,17 @@ public struct DoryMachineTypedSettingsSnapshot: Codable, Sendable, Equatable, Ha
                 inputEnabled: true,
                 outputEnabled: true
             )
+            cameraConfiguration = DoryVMCameraConfiguration(
+                enabled: legacyEnvironment[
+                    DoryVMCameraConfiguration.legacyEnabledEnvironmentKey
+                ] == "1"
+            )
         } else {
             clipboardPolicy = nil
             runtimePreference = nil
             graphicsPreference = nil
             audioConfiguration = nil
+            cameraConfiguration = nil
         }
     }
 
@@ -252,6 +267,7 @@ public struct DoryMachineTypedSettingsSnapshot: Codable, Sendable, Equatable, Ha
             portForwards: .set(portForwards),
             audioInputEnabled: update(audioConfiguration?.inputEnabled),
             audioOutputEnabled: update(audioConfiguration?.outputEnabled),
+            cameraEnabled: update(cameraConfiguration?.enabled),
             intelApplicationTranslationEnabled: update(
                 intelApplicationTranslationEnabled
             )
@@ -287,6 +303,7 @@ public struct DoryMachineTypedSettingsSnapshot: Codable, Sendable, Equatable, Ha
             portForwards: .set(portForwards),
             audioInputEnabled: update(audioConfiguration?.inputEnabled),
             audioOutputEnabled: update(audioConfiguration?.outputEnabled),
+            cameraEnabled: update(cameraConfiguration?.enabled),
             intelApplicationTranslationEnabled: update(
                 intelApplicationTranslationEnabled
             )
@@ -309,6 +326,7 @@ public struct DoryMachineTypedSettingsSnapshot: Codable, Sendable, Equatable, Ha
         hasher.combine(portForwards)
         hasher.combine(audioConfiguration?.inputEnabled)
         hasher.combine(audioConfiguration?.outputEnabled)
+        hasher.combine(cameraConfiguration?.enabled)
         hasher.combine(intelApplicationTranslationEnabled)
     }
 
@@ -344,6 +362,7 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
     public var portForwards: DoryMachineTypedSettingUpdate<[DoryVMPortForward]>
     public var audioInputEnabled: DoryMachineTypedSettingUpdate<Bool>
     public var audioOutputEnabled: DoryMachineTypedSettingUpdate<Bool>
+    public var cameraEnabled: DoryMachineTypedSettingUpdate<Bool>
     public var intelApplicationTranslationEnabled: DoryMachineTypedSettingUpdate<Bool>
 
     public init(
@@ -360,6 +379,7 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
         portForwards: DoryMachineTypedSettingUpdate<[DoryVMPortForward]> = .unchanged,
         audioInputEnabled: DoryMachineTypedSettingUpdate<Bool> = .unchanged,
         audioOutputEnabled: DoryMachineTypedSettingUpdate<Bool> = .unchanged,
+        cameraEnabled: DoryMachineTypedSettingUpdate<Bool> = .unchanged,
         intelApplicationTranslationEnabled: DoryMachineTypedSettingUpdate<Bool> = .unchanged
     ) {
         self.guestUsername = guestUsername
@@ -375,6 +395,7 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
         self.portForwards = portForwards
         self.audioInputEnabled = audioInputEnabled
         self.audioOutputEnabled = audioOutputEnabled
+        self.cameraEnabled = cameraEnabled
         self.intelApplicationTranslationEnabled = intelApplicationTranslationEnabled
     }
 
@@ -392,6 +413,7 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
             && !portForwards.isChanged
             && !audioInputEnabled.isChanged
             && !audioOutputEnabled.isChanged
+            && !cameraEnabled.isChanged
             && !intelApplicationTranslationEnabled.isChanged
     }
 
@@ -472,6 +494,9 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
         if let raw = try takeOption("--audio-output", from: &arguments) {
             patch.audioOutputEnabled = .set(try cliBoolean(raw, option: "--audio-output"))
         }
+        if let raw = try takeOption("--camera", from: &arguments) {
+            patch.cameraEnabled = .set(try cliBoolean(raw, option: "--camera"))
+        }
         if let raw = try takeOption("--intel-application-translation", from: &arguments) {
             patch.intelApplicationTranslationEnabled = .set(try cliBoolean(
                 raw,
@@ -487,6 +512,7 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
         let clearsNetwork = takeFlag("--clear-network", from: &arguments)
         let clearsPortForwards = takeFlag("--clear-forwards", from: &arguments)
         let clearsAudio = takeFlag("--clear-audio", from: &arguments)
+        let clearsCamera = takeFlag("--clear-camera", from: &arguments)
         let clearsIntelApplicationTranslation = takeFlag(
             "--clear-intel-application-translation",
             from: &arguments
@@ -494,6 +520,7 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
         guard allowsClears || (!clearsAccount && !clearsDesktop && !clearsClipboard
             && !clearsRuntime && !clearsGraphics && !clearsNetwork
             && !clearsPortForwards && !clearsAudio
+            && !clearsCamera
             && !clearsIntelApplicationTranslation) else {
             throw DoryMachineTypedWriteAuthorityError.invalidField("clear options")
         }
@@ -558,6 +585,12 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
             patch.audioInputEnabled = .clear
             patch.audioOutputEnabled = .clear
         }
+        if clearsCamera {
+            guard !patch.cameraEnabled.isChanged else {
+                throw DoryMachineTypedWriteAuthorityError.invalidField("--clear-camera")
+            }
+            patch.cameraEnabled = .clear
+        }
         if clearsIntelApplicationTranslation {
             guard !patch.intelApplicationTranslationEnabled.isChanged else {
                 throw DoryMachineTypedWriteAuthorityError.invalidField(
@@ -612,6 +645,12 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
         if let rawAudio = dictionary["audio"] {
             try decodeAudio(rawAudio, allowsClears: allowsClears)
         }
+        cameraEnabled = try Self.decodeBool(
+            dictionary,
+            key: "cameraEnabled",
+            field: "cameraEnabled",
+            allowsClears: allowsClears
+        )
         intelApplicationTranslationEnabled = try Self.decodeBool(
             dictionary,
             key: "intelApplicationTranslationEnabled",
@@ -683,6 +722,7 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
                 result["audio"] = audio as NSDictionary
             }
         }
+        Self.encode(cameraEnabled, key: "cameraEnabled", into: &result)
         Self.encode(
             intelApplicationTranslationEnabled,
             key: "intelApplicationTranslationEnabled",
@@ -781,6 +821,16 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
         }()
         guard audioMatchesFixedCompatibilityState else {
             throw DoryMachineTypedWriteAuthorityError.unsupportedByLegacyRuntime("audio")
+        }
+        switch cameraEnabled {
+        case .unchanged:
+            break
+        case .clear, .set(false):
+            environment.removeValue(
+                forKey: DoryVMCameraConfiguration.legacyEnabledEnvironmentKey
+            )
+        case .set(true):
+            environment[DoryVMCameraConfiguration.legacyEnabledEnvironmentKey] = "1"
         }
         guard !intelApplicationTranslationEnabled.isChanged else {
             throw DoryMachineTypedWriteAuthorityError.unsupportedByLegacyRuntime(
@@ -891,6 +941,14 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
                 clearValue: defaults.outputEnabled
             )
             definition.audio = audio
+        }
+        switch cameraEnabled {
+        case .unchanged:
+            break
+        case .clear, .set(false):
+            definition.camera.enabled = false
+        case .set(true):
+            definition.camera.enabled = true
         }
         switch intelApplicationTranslationEnabled {
         case .unchanged:
@@ -1200,6 +1258,9 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
         if (audioInputEnabled.isChanged || audioOutputEnabled.isChanged),
            displayMode != .desktop {
             throw DoryMachineTypedWriteAuthorityError.unsupportedForDisplay("audio")
+        }
+        if cameraEnabled.isChanged, displayMode != .desktop {
+            throw DoryMachineTypedWriteAuthorityError.unsupportedForDisplay("cameraEnabled")
         }
         if case .set(true) = intelApplicationTranslationEnabled,
            displayMode != .desktop {

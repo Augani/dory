@@ -735,6 +735,7 @@ public enum DoryLinuxVMCalibrationLauncher {
                 inputEnabled: true,
                 outputEnabled: true
             ),
+            camera: DoryVMCameraConfiguration(enabled: true),
             input: DoryVMInputConfiguration(
                 keyboardEnabled: true,
                 pointerEnabled: true

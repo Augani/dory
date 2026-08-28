@@ -1361,6 +1361,7 @@ private struct MachineEditSheet: View {
     @State private var audioInputEnabled = true
     @State private var audioOutputEnabled = true
     @State private var originalAudioConfiguration: DoryVMAudioConfiguration?
+    @State private var cameraEnabled = false
     @State private var intelApplicationTranslationEnabled = false
     @State private var typedSettings = DorydMachineTypedSettings()
 
@@ -1445,6 +1446,7 @@ private struct MachineEditSheet: View {
         originalAudioConfiguration = typedSettings.audioConfiguration
         audioInputEnabled = typedSettings.audioConfiguration?.inputEnabled ?? true
         audioOutputEnabled = typedSettings.audioConfiguration?.outputEnabled ?? true
+        cameraEnabled = typedSettings.cameraConfiguration?.enabled ?? false
         intelApplicationTranslationEnabled = typedSettings
             .intelApplicationTranslationEnabled ?? false
         mountRows = settings.mounts.map {
@@ -1564,7 +1566,7 @@ private struct MachineEditSheet: View {
     @ViewBuilder private var audioBlock: some View {
         if displayMode == .desktop {
             VStack(alignment: .leading, spacing: 8) {
-                sectionLabel("AUDIO")
+                sectionLabel("AUDIO & VIDEO")
                 HStack(spacing: 24) {
                     Toggle("Microphone", isOn: $audioInputEnabled)
                         .toggleStyle(.switch)
@@ -1574,13 +1576,20 @@ private struct MachineEditSheet: View {
                         .toggleStyle(.switch)
                         .tint(p.accent)
                         .accessibilityIdentifier("edit-machine-audio-output")
+                    Toggle("Camera", isOn: $cameraEnabled)
+                        .toggleStyle(.switch)
+                        .tint(p.accent)
+                        .accessibilityIdentifier("edit-machine-camera")
+                        .disabled(machine.bootMode == .efi)
                     Spacer(minLength: 0)
                 }
                 .font(.system(size: 12.5))
                 .foregroundStyle(p.text)
                 .disabled(!audioPolicyEditable)
                 Text(audioPolicyEditable
-                     ? "Only enabled audio directions are attached. Changing this policy requires a backend qualified for the exact device combination."
+                     ? (machine.bootMode == .efi
+                        ? "Speakers and microphone use standard VirtIO audio. Camera sharing is currently available on Dory-managed accelerated desktops, not custom ISO compatibility guests."
+                        : "Enabled devices are attached explicitly. Camera sharing appears in Linux as a standard UVC webcam and follows macOS camera permission.")
                      : "This compatibility machine keeps its historical combined audio device. Replan it into the resolved runtime before changing audio policy.")
                     .font(.system(size: 11))
                     .foregroundStyle(p.text3)
@@ -1836,6 +1845,11 @@ private struct MachineEditSheet: View {
                 inputEnabled: audioInputEnabled,
                 outputEnabled: audioOutputEnabled
             )
+            if machine.bootMode != .efi {
+                typedSettings.cameraConfiguration = DoryVMCameraConfiguration(
+                    enabled: cameraEnabled
+                )
+            }
         }
         if displayMode == .desktop, machine.bootMode != .efi {
             let previousUsername = typedSettings.guestIdentityIntent.account?.username ?? "dory"
