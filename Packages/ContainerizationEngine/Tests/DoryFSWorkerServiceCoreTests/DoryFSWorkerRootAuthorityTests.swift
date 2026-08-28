@@ -322,6 +322,52 @@ struct DoryFSWorkerRootAuthorityTests {
         ))
         #expect(result == .failure(.bootstrapDescriptorTransferFailed))
     }
+
+    @Test func serviceRejectsAdvertisedCoherenceWithoutAnExchange() throws {
+        let tree = try TemporaryDirectoryTree()
+        let handle = try openHandle(tree.makeDirectory("root"), directoryOnly: true)
+        let authorityShare = try share(
+            index: 14,
+            descriptorIndex: 0,
+            identity: pinnedIdentity(of: handle),
+            coherencePolicy: .invalidationOnly
+        )
+        let service = DoryFSWorkerService(rootAuthority: makeAuthority())
+
+        let result = try DoryFSWorkerRPCResultCodec.decode(service.bootstrap(
+            exactBytes: encodedBootstrap([authorityShare]),
+            rootDescriptors: [handle]
+        ))
+
+        #expect(result == .failure(.bootstrapRejected))
+        #expect(try DoryFSWorkerRPCResultCodec.decode(service.bootstrap(
+            exactBytes: encodedBootstrap([authorityShare]),
+            rootDescriptors: [handle]
+        )) == .failure(.bootstrapAlreadyAttempted))
+    }
+
+    @Test func serviceAllowsDisabledOnlySharesWithoutAnExchange() throws {
+        let tree = try TemporaryDirectoryTree()
+        let handle = try openHandle(tree.makeDirectory("root"), directoryOnly: true)
+        let authorityShare = try share(
+            index: 15,
+            descriptorIndex: 0,
+            identity: pinnedIdentity(of: handle),
+            coherencePolicy: .disabled
+        )
+        let bootstrap = try makeBootstrap(shares: [authorityShare])
+        let service = DoryFSWorkerService(rootAuthority: makeAuthority())
+
+        let receipt = try unwrapRPC(service.bootstrap(
+            exactBytes: DoryFSWorkerBootstrapCodec.encode(bootstrap),
+            rootDescriptors: [handle]
+        ))
+
+        #expect(
+            try DoryFSWorkerBootstrapCodec.decodeReceipt(receipt)
+                == DoryFSWorkerBootstrapReceipt(accepting: bootstrap)
+        )
+    }
 }
 
 private enum RootAuthorityTestError: Error {
@@ -393,12 +439,14 @@ private func makeBootstrap(
 private func share(
     index: Int,
     descriptorIndex: UInt16,
-    identity: DoryFSPinnedRootIdentity
+    identity: DoryFSPinnedRootIdentity,
+    coherencePolicy: DoryFSShareCoherencePolicy = .disabled
 ) throws -> DoryFSShareBootstrapAuthority {
     try DoryFSShareBootstrapAuthority(
         capabilityID: capability(index: index),
         expectedRootIdentity: identity,
         readOnly: index.isMultiple(of: 2),
+        coherencePolicy: coherencePolicy,
         guestIdentity: DoryFSGuestIdentityPolicy(uid: 1_000, gid: 1_000),
         resourceLimits: .production,
         rootDescriptorIndex: descriptorIndex,

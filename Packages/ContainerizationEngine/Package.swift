@@ -48,7 +48,8 @@ let package = Package(
         // Hypervisor.framework, IOKit, and the daemon so a signed service can embed it directly.
         .target(
             name: "DoryFSWorkerServiceCore",
-            dependencies: ["DoryFSWorkerContracts"]
+            dependencies: ["DoryFSWorkerContracts"],
+            linkerSettings: [.linkedFramework("CoreServices")]
         ),
         // Path-free binary authority shared by the VMM and the signed renderer service. The
         // contract intentionally has no dependency on Hypervisor.framework, AppKit, Metal, or the

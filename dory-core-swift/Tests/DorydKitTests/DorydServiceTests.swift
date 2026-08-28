@@ -276,6 +276,14 @@ final class DorydServiceTests: XCTestCase {
             stopped.fulfill()
         }
         wait(for: [stopped], timeout: 5)
+
+        let diskUsage = expectation(description: "dockerGuestDataDiskUsage unconfigured reply")
+        proxy.dockerGuestDataDiskUsage { body, detail in
+            XCTAssertEqual(body.count, 0)
+            XCTAssertTrue(detail.contains("not configured"))
+            diskUsage.fulfill()
+        }
+        wait(for: [diskUsage], timeout: 5)
     }
 
     func testEngineStartAndStopOverXPCDriveDockerTier() throws {
@@ -349,6 +357,416 @@ final class DorydServiceTests: XCTestCase {
         XCTAssertTrue(wakeOK, wakeMessage)
         XCTAssertEqual(tier.status().state, .running)
         XCTAssertEqual(idlePolicyStore.currentEngineDesiredState(), "running")
+    }
+
+    func testEngineStopReportsUnconfirmedHelperAndPreservesRunningIntent() throws {
+        let home = "/tmp/doryd-service-unconfirmed-stop-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        defer { try? FileManager.default.removeItem(atPath: home) }
+
+        let helper = UnconfirmedStopDockerProcess(pid: 51_515)
+        let tier = DockerTier(
+            configuration: DockerTierConfiguration(
+                home: home,
+                forwardSocketPath: home + "/forward.sock",
+                hvProcess: HvProcessConfiguration(
+                    executablePath: "/bin/false",
+                    arguments: []
+                )
+            ),
+            dockerReadyWaiter: { _, _, _ in true }
+        )
+        tier.installManagedProcessFactory { _, _ in helper }
+        let idlePolicyStore = IdlePolicyStore(home: home, environment: [:])
+        let service = DorydService(
+            socketPath: tier.socketPath,
+            dockerTier: tier,
+            idlePolicyStore: idlePolicyStore
+        )
+        defer {
+            helper.confirmExit()
+            tier.stop()
+        }
+
+        try tier.start()
+        XCTAssertEqual(idlePolicyStore.currentEngineDesiredState(), "running")
+
+        let reply = expectation(description: "engineStop unconfirmed helper reply")
+        var stopped = true
+        var detail = ""
+        service.engineStop { ok, message in
+            stopped = ok
+            detail = message
+            reply.fulfill()
+        }
+        wait(for: [reply], timeout: 2)
+
+        XCTAssertFalse(stopped)
+        XCTAssertTrue(detail.contains("termination is still being verified"), detail)
+        XCTAssertEqual(tier.status().state, .failed)
+        XCTAssertEqual(tier.status().hvPID, 51_515)
+        XCTAssertEqual(
+            idlePolicyStore.currentEngineDesiredState(),
+            "running",
+            "an unconfirmed exit must not persist a stopped/sleeping intent"
+        )
+    }
+
+    func testEngineStopReportsDesiredStatePersistenceFailureInsteadOfFakeSuccess() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "doryd-service-persistence-failure-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        // A directory at the exact config-file path is a deterministic write failure that does
+        // not depend on the test user's privileges.
+        let blockedConfig = root.appendingPathComponent("config.json", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: blockedConfig,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let store = IdlePolicyStore(environment: ["DORY_CONFIG": blockedConfig.path])
+        let tier = DockerTier(configuration: DockerTierConfiguration(
+            home: root.path,
+            forwardSocketPath: root.appendingPathComponent("forward.sock").path
+        ))
+        let service = DorydService(
+            socketPath: tier.socketPath,
+            dockerTier: tier,
+            idlePolicyStore: store
+        )
+
+        var stopped = true
+        var stopDetail = ""
+        service.engineStop { ok, detail in
+            stopped = ok
+            stopDetail = detail
+        }
+
+        XCTAssertFalse(stopped)
+        XCTAssertTrue(stopDetail.contains("desired-state persistence failed"), stopDetail)
+        XCTAssertEqual(tier.status().state, .stopped)
+        XCTAssertEqual(
+            store.currentEngineDesiredState(),
+            "running",
+            "failed persistence must not pretend that restart intent changed"
+        )
+
+        var statusDetail = ""
+        service.engineStatus { state, detail in
+            XCTAssertEqual(state, DockerTierState.stopped.rawValue)
+            statusDetail = detail
+        }
+        XCTAssertTrue(statusDetail.contains("could not persist engine desired state sleeping"))
+    }
+
+    func testEngineStopRejectsBackloggedSleepingPersistenceFromAnOlderLifecycleEpoch() throws {
+        let root = URL(
+            fileURLWithPath: "/tmp/doryd-service-stale-stop-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))",
+            isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = IdlePolicyStore(home: root.path, environment: [:])
+        let writer = BlockingDesiredStateWriter(
+            store: store,
+            failingCallIndex: 3
+        )
+        let tier = DockerTier(
+            configuration: DockerTierConfiguration(
+                home: root.path,
+                forwardSocketPath: root.appendingPathComponent("forward.sock").path
+            ),
+            dockerReadyWaiter: { _, _, _ in true }
+        )
+        let service = DorydService(
+            socketPath: tier.socketPath,
+            dockerTier: tier,
+            idlePolicyStore: store,
+            engineDesiredStateWriter: { try writer.write($0) }
+        )
+        defer {
+            writer.releaseFirstCall()
+            _ = tier.stop()
+        }
+
+        try tier.start()
+        XCTAssertTrue(writer.waitUntilFirstCallEntered(timeout: 2))
+        XCTAssertTrue(tier.stop())
+        try tier.start()
+
+        let stopObserved = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .userInitiated).async {
+            let deadline = Date().addingTimeInterval(2)
+            while tier.currentLifecycleEvent().state != .stopped, Date() < deadline {
+                Thread.sleep(forTimeInterval: 0.005)
+            }
+            stopObserved.signal()
+            writer.releaseFirstCall()
+        }
+
+        // Release this deterministic observer backlog in commit order:
+        // old running, old stopped, replacement running, exact requested stop. Only the fourth
+        // callback is allowed to satisfy this engineStop, and it intentionally fails persistence.
+        var stopped = true
+        var detail = ""
+        service.engineStop { ok, message in
+            stopped = ok
+            detail = message
+        }
+        XCTAssertEqual(stopObserved.wait(timeout: .now()), .success)
+        XCTAssertTrue(writer.waitUntilCallCount(4, timeout: 2))
+
+        XCTAssertFalse(stopped)
+        XCTAssertTrue(detail.contains("desired-state persistence failed"), detail)
+        XCTAssertEqual(writer.states, ["running", "sleeping", "running", "sleeping"])
+        XCTAssertEqual(
+            store.currentEngineDesiredState(),
+            "running",
+            "the exact failed stop write must not be masked by an older sleeping callback"
+        )
+    }
+
+    func testDesiredStateJournalRejectsAnOutcomeRecordedAfterItsMonotonicDeadline() {
+        let journal = EngineDesiredStatePersistenceJournal()
+        let event = DockerTierLifecycleEvent(epoch: 41, state: .stopped)
+        let checkpoint = journal.checkpoint()
+        let deadline = DispatchTime.now()
+        Thread.sleep(forTimeInterval: 0.001)
+        journal.record(.succeeded(state: "sleeping"), for: event)
+
+        let startedAt = ProcessInfo.processInfo.systemUptime
+        let outcome = journal.waitForOutcome(
+            after: checkpoint,
+            expectedEvent: event,
+            deadline: deadline
+        )
+        let elapsed = ProcessInfo.processInfo.systemUptime - startedAt
+
+        XCTAssertNil(outcome)
+        XCTAssertLessThan(elapsed, 0.01)
+    }
+
+    func testEngineStatusPublishesTruthfulStoppingStateDuringHelperRetirement() throws {
+        let home = "/tmp/doryd-service-stopping-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        defer { try? FileManager.default.removeItem(atPath: home) }
+
+        let helper = ServiceBlockingStopDockerProcess(pid: 52_005)
+        let tier = DockerTier(
+            configuration: DockerTierConfiguration(
+                home: home,
+                forwardSocketPath: home + "/forward.sock",
+                hvProcess: HvProcessConfiguration(
+                    executablePath: "/bin/false",
+                    arguments: []
+                )
+            ),
+            dockerReadyWaiter: { _, _, _ in true }
+        )
+        tier.installManagedProcessFactory { _, _ in helper }
+        let service = DorydService(socketPath: tier.socketPath, dockerTier: tier)
+        try tier.start()
+
+        let stopFinished = DispatchSemaphore(value: 0)
+        defer {
+            helper.finishStop()
+            _ = tier.stop()
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+            _ = tier.stop()
+            stopFinished.signal()
+        }
+        XCTAssertTrue(helper.waitUntilStopEntered(timeout: 2))
+
+        var reportedState = ""
+        var reportedDetail = ""
+        service.engineStatus { state, detail in
+            reportedState = state
+            reportedDetail = detail
+        }
+
+        XCTAssertEqual(reportedState, "stopping")
+        XCTAssertEqual(reportedDetail, "docker endpoint and helper retirement is in progress")
+        XCTAssertNotEqual(reportedState, DockerTierState.failed.rawValue)
+
+        helper.finishStop()
+        XCTAssertEqual(stopFinished.wait(timeout: .now() + 2), .success)
+        XCTAssertEqual(tier.status().state, .stopped)
+    }
+
+    func testDaemonShutdownBoundaryReapsRetainedHelperWithinBound() throws {
+        let home = "/tmp/doryd-shutdown-retirement-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        let helper = UnconfirmedStopDockerProcess(pid: 52_525)
+        let tier = DockerTier(
+            configuration: DockerTierConfiguration(
+                home: home,
+                forwardSocketPath: home + "/forward.sock",
+                hvProcess: HvProcessConfiguration(
+                    executablePath: "/bin/false",
+                    arguments: []
+                )
+            ),
+            dockerReadyWaiter: { _, _, _ in true }
+        )
+        tier.installManagedProcessFactory { _, _ in helper }
+        try tier.start()
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.05) {
+            helper.confirmExit()
+        }
+
+        let startedAt = ProcessInfo.processInfo.systemUptime
+        let outcome = DorydDockerTierShutdownBoundary.complete(
+            dockerTier: tier,
+            retirementTimeout: 1
+        )
+        let elapsed = ProcessInfo.processInfo.systemUptime - startedAt
+
+        XCTAssertEqual(outcome, .terminated)
+        XCTAssertTrue(outcome.permitsDaemonExit)
+        XCTAssertLessThan(elapsed, 1.25)
+        XCTAssertFalse(helper.isRunning)
+        XCTAssertNil(tier.status().hvPID)
+    }
+
+    func testDaemonShutdownBoundaryRetainsAuthorityAfterStrictTimeout() throws {
+        let home = "/tmp/doryd-shutdown-retained-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        let helper = UnconfirmedStopDockerProcess(pid: 53_535)
+        let tier = DockerTier(
+            configuration: DockerTierConfiguration(
+                home: home,
+                forwardSocketPath: home + "/forward.sock",
+                hvProcess: HvProcessConfiguration(
+                    executablePath: "/bin/false",
+                    arguments: []
+                )
+            ),
+            dockerReadyWaiter: { _, _, _ in true }
+        )
+        tier.installManagedProcessFactory { _, _ in helper }
+        try tier.start()
+        defer {
+            helper.confirmExit()
+            _ = tier.waitForTerminalRetirement(timeout: 1)
+        }
+
+        let startedAt = ProcessInfo.processInfo.systemUptime
+        let outcome = DorydDockerTierShutdownBoundary.complete(
+            dockerTier: tier,
+            retirementTimeout: 0.02
+        )
+        let elapsed = ProcessInfo.processInfo.systemUptime - startedAt
+
+        guard case let .authorityRetained(pid, detail) = outcome else {
+            return XCTFail("expected retained shutdown authority, got \(outcome)")
+        }
+        XCTAssertEqual(pid, 53_535)
+        XCTAssertTrue(detail.contains("termination is still being verified"), detail)
+        XCTAssertFalse(outcome.permitsDaemonExit)
+        XCTAssertTrue(helper.isRunning)
+        XCTAssertLessThan(elapsed, 0.5)
+    }
+
+    func testDaemonShutdownRetirementObserverFinishesAfterLateTerminalEvent() throws {
+        let home = "/tmp/doryd-shutdown-observer-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        let helper = UnconfirmedStopDockerProcess(pid: 53_536)
+        let tier = DockerTier(
+            configuration: DockerTierConfiguration(
+                home: home,
+                forwardSocketPath: home + "/forward.sock",
+                hvProcess: HvProcessConfiguration(executablePath: "/bin/false", arguments: [])
+            ),
+            dockerReadyWaiter: { _, _, _ in true }
+        )
+        tier.installManagedProcessFactory { _, _ in helper }
+        try tier.start()
+
+        let outcome = DorydDockerTierShutdownBoundary.complete(
+            dockerTier: tier,
+            retirementTimeout: 0.02
+        )
+        guard case .authorityRetained = outcome else {
+            return XCTFail("expected retained shutdown authority, got \(outcome)")
+        }
+
+        let observerFinished = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .userInitiated).async {
+            _ = DorydDockerTierShutdownBoundary.awaitTerminalRetirement(
+                dockerTier: tier,
+                observationWindow: 0.05
+            )
+            observerFinished.signal()
+        }
+        XCTAssertEqual(observerFinished.wait(timeout: .now() + 0.03), .timedOut)
+
+        helper.confirmExit()
+        XCTAssertEqual(observerFinished.wait(timeout: .now() + 1), .success)
+        XCTAssertEqual(tier.status().state, .stopped)
+        XCTAssertNil(tier.status().hvPID)
+    }
+
+    func testDaemonShutdownBoundaryDoesNotJoinABlockedConcurrentStopWithoutBound() throws {
+        let home = "/tmp/doryd-shutdown-join-bound-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        let helper = ServiceBlockingStopDockerProcess(pid: 54_545)
+        let tier = DockerTier(
+            configuration: DockerTierConfiguration(
+                home: home,
+                forwardSocketPath: home + "/forward.sock",
+                hvProcess: HvProcessConfiguration(executablePath: "/bin/false", arguments: [])
+            ),
+            dockerReadyWaiter: { _, _, _ in true }
+        )
+        tier.installManagedProcessFactory { _, _ in helper }
+        try tier.start()
+
+        let stopFinished = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .userInitiated).async {
+            _ = tier.stop()
+            stopFinished.signal()
+        }
+        XCTAssertTrue(helper.waitUntilStopEntered(timeout: 2))
+
+        let startedAt = ProcessInfo.processInfo.systemUptime
+        let outcome = DorydDockerTierShutdownBoundary.complete(
+            dockerTier: tier,
+            shutdownTimeout: 0.03,
+            retirementTimeout: 0.03
+        )
+        let elapsed = ProcessInfo.processInfo.systemUptime - startedAt
+
+        guard case let .authorityRetained(pid, detail) = outcome else {
+            helper.finishStop()
+            return XCTFail("expected retained authority, got \(outcome)")
+        }
+        XCTAssertEqual(pid, 54_545)
+        XCTAssertTrue(detail.contains("bounded TERM/KILL window"), detail)
+        XCTAssertLessThan(elapsed, 0.25)
+        XCTAssertThrowsError(try tier.start()) { error in
+            XCTAssertEqual("\(error)", DockerTier.TierError.daemonShuttingDown.description)
+        }
+
+        let observerFinished = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .userInitiated).async {
+            _ = DorydDockerTierShutdownBoundary.awaitTerminalRetirement(
+                dockerTier: tier,
+                observationWindow: 0.02
+            )
+            observerFinished.signal()
+        }
+        XCTAssertEqual(observerFinished.wait(timeout: .now() + 0.03), .timedOut)
+
+        helper.finishStop()
+        XCTAssertEqual(stopFinished.wait(timeout: .now() + 2), .success)
+        XCTAssertEqual(observerFinished.wait(timeout: .now() + 1), .success)
+        XCTAssertNil(tier.status().hvPID)
     }
 
     func testKeepAwakeModePromotesSleepingEngineBeforeReportingApplied() throws {
@@ -493,17 +911,33 @@ final class DorydServiceTests: XCTestCase {
     func testDockerAgentInfoPortsAndTelemetryOverXPC() throws {
         let home = "/tmp/doryd-service-agent-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         defer { try? FileManager.default.removeItem(atPath: home) }
+        let dataDriveID = try XCTUnwrap(UUID(
+            uuidString: "01234567-89ab-4cde-8f01-23456789abcd"
+        ))
+        let filesystemUUID = try XCTUnwrap(UUID(
+            uuidString: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+        ))
         let agent = AgentControl(configuration: AgentControlConfiguration(forwardSocketPath: home + "/agent.sock")) { _ in
             ServiceFakeAgentControlClient()
         }
         let tier = DockerTier(
             configuration: DockerTierConfiguration(home: home, forwardSocketPath: home + "/forward.sock"),
-            agentControl: agent
+            agentControl: agent,
+            guestDataDiskAuthorityProvider: { _ in
+                DockerGuestDataDiskAuthority(
+                    dataDriveID: dataDriveID,
+                    filesystemUUID: filesystemUUID
+                )
+            }
         )
         try tier.start()
         defer { tier.stop() }
 
-        let service = DorydService(socketPath: tier.socketPath, dockerTier: tier)
+        let service = DorydService(
+            socketPath: tier.socketPath,
+            dockerTier: tier,
+            dockerDataDriveID: dataDriveID
+        )
         let listener = makeAnonymousListener(service: service)
         listener.resume()
         defer { listener.invalidate() }
@@ -549,6 +983,23 @@ final class DorydServiceTests: XCTestCase {
         }
         wait(for: [telemetryReply], timeout: 5)
 
+        let diskUsageReply = expectation(description: "dockerGuestDataDiskUsage reply")
+        proxy.dockerGuestDataDiskUsage { body, message in
+            XCTAssertEqual(message, "")
+            XCTAssertEqual(Set(body.allKeys.compactMap { $0 as? String }), [
+                "schema", "engineSocketPath", "dataDriveID", "totalBytes", "usedBytes",
+                "availableBytes",
+            ])
+            XCTAssertEqual(body["schema"] as? UInt16, 1)
+            XCTAssertEqual(body["engineSocketPath"] as? String, tier.socketPath)
+            XCTAssertEqual(body["dataDriveID"] as? String, dataDriveID.uuidString.lowercased())
+            XCTAssertEqual(body["totalBytes"] as? UInt64, 128 * 1024 * 1024 * 1024)
+            XCTAssertEqual(body["usedBytes"] as? UInt64, 8 * 1024 * 1024 * 1024)
+            XCTAssertEqual(body["availableBytes"] as? UInt64, 120 * 1024 * 1024 * 1024)
+            diskUsageReply.fulfill()
+        }
+        wait(for: [diskUsageReply], timeout: 5)
+
         let clockReply = expectation(description: "dockerAgentClockSync reply")
         proxy.dockerAgentClockSync { body, message in
             XCTAssertEqual(message, "")
@@ -561,6 +1012,14 @@ final class DorydServiceTests: XCTestCase {
         wait(for: [clockReply], timeout: 5)
 
         tier.stop()
+        let stoppedDiskUsageReply = expectation(description: "stopped dockerGuestDataDiskUsage reply")
+        proxy.dockerGuestDataDiskUsage { body, message in
+            XCTAssertEqual(body.count, 0)
+            XCTAssertTrue(message.contains("unavailable"), message)
+            stoppedDiskUsageReply.fulfill()
+        }
+        wait(for: [stoppedDiskUsageReply], timeout: 5)
+
         let stoppedClockReply = expectation(description: "stopped dockerAgentClockSync reply")
         proxy.dockerAgentClockSync { body, message in
             XCTAssertEqual(body["attempted"] as? Bool, false)
@@ -569,6 +1028,198 @@ final class DorydServiceTests: XCTestCase {
             stoppedClockReply.fulfill()
         }
         wait(for: [stoppedClockReply], timeout: 5)
+    }
+
+    func testDockerGuestDataDiskUsageFailsClosedWithoutExactRuntimeIdentity() throws {
+        let home = "/tmp/doryd-service-disk-identity-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        let guestDriveID = try XCTUnwrap(UUID(
+            uuidString: "aaaaaaaa-1111-4222-8333-bbbbbbbbbbbb"
+        ))
+        let filesystemUUID = try XCTUnwrap(UUID(
+            uuidString: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+        ))
+        let agent = AgentControl(
+            configuration: AgentControlConfiguration(forwardSocketPath: home + "/agent.sock")
+        ) { _ in
+            ServiceFakeAgentControlClient()
+        }
+        let tier = DockerTier(
+            configuration: DockerTierConfiguration(
+                home: home,
+                forwardSocketPath: home + "/forward.sock"
+            ),
+            agentControl: agent,
+            guestDataDiskAuthorityProvider: { _ in
+                DockerGuestDataDiskAuthority(
+                    dataDriveID: guestDriveID,
+                    filesystemUUID: filesystemUUID
+                )
+            }
+        )
+        try tier.start()
+        defer { tier.stop() }
+
+        let missingIdentity = DorydService(socketPath: tier.socketPath, dockerTier: tier)
+        let missingReply = expectation(description: "missing data-drive identity")
+        missingIdentity.dockerGuestDataDiskUsage { body, message in
+            XCTAssertEqual(body.count, 0)
+            XCTAssertTrue(message.contains("identity is unavailable"), message)
+            missingReply.fulfill()
+        }
+
+        let driveID = try XCTUnwrap(UUID(
+            uuidString: "01234567-89ab-4cde-8f01-23456789abcd"
+        ))
+        let mismatchedSocket = DorydService(
+            socketPath: tier.socketPath + ".other",
+            dockerTier: tier,
+            dockerDataDriveID: driveID
+        )
+        let socketReply = expectation(description: "mismatched Docker socket")
+        mismatchedSocket.dockerGuestDataDiskUsage { body, message in
+            XCTAssertEqual(body.count, 0)
+            XCTAssertTrue(message.contains("not bound"), message)
+            socketReply.fulfill()
+        }
+
+        let mismatchedDrive = DorydService(
+            socketPath: tier.socketPath,
+            dockerTier: tier,
+            dockerDataDriveID: driveID
+        )
+        let driveReply = expectation(description: "mismatched selected data drive")
+        mismatchedDrive.dockerGuestDataDiskUsage { body, message in
+            XCTAssertEqual(body.count, 0)
+            XCTAssertTrue(message.contains("not bound to the selected data drive"), message)
+            driveReply.fulfill()
+        }
+
+        wait(for: [missingReply, socketReply, driveReply], timeout: 5)
+    }
+
+    func testDataDriveRepairReprobesRunningGuestAndRejectsWrongOrStoppedIdentity() throws {
+        let home = "/tmp/doryd-service-data-drive-repair-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        let dataDriveID = try XCTUnwrap(UUID(
+            uuidString: "01234567-89ab-4cde-8f01-23456789abcd"
+        ))
+        let wrongDataDriveID = try XCTUnwrap(UUID(
+            uuidString: "11111111-2222-4333-8444-555555555555"
+        ))
+        let filesystemUUID = try XCTUnwrap(UUID(
+            uuidString: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+        ))
+        let client = ServiceFakeAgentControlClient()
+        let agent = AgentControl(
+            configuration: AgentControlConfiguration(forwardSocketPath: home + "/agent.sock")
+        ) { _ in client }
+        let tier = DockerTier(
+            configuration: DockerTierConfiguration(
+                home: home,
+                forwardSocketPath: home + "/forward.sock"
+            ),
+            agentControl: agent,
+            guestDataDiskAuthorityProvider: { _ in
+                DockerGuestDataDiskAuthority(
+                    dataDriveID: dataDriveID,
+                    filesystemUUID: filesystemUUID
+                )
+            }
+        )
+        try tier.start()
+        defer { _ = tier.stop() }
+
+        let service = DorydService(
+            socketPath: tier.socketPath,
+            home: home,
+            dockerTier: tier,
+            dockerDataDriveID: dataDriveID
+        )
+        var repaired = false
+        var repairDetail = ""
+        service.repairSubsystem("data-drive") { ok, detail in
+            repaired = ok
+            repairDetail = detail
+        }
+        XCTAssertTrue(repaired, repairDetail)
+        XCTAssertTrue(repairDetail.contains("re-probed selected drive"), repairDetail)
+        XCTAssertTrue(repairDetail.contains("/dev/vdb"), repairDetail)
+        XCTAssertTrue(repairDetail.contains(filesystemUUID.uuidString.lowercased()), repairDetail)
+
+        let wrongService = DorydService(
+            socketPath: tier.socketPath,
+            home: home,
+            dockerTier: tier,
+            dockerDataDriveID: wrongDataDriveID
+        )
+        var wrongRepaired = true
+        var wrongDetail = ""
+        wrongService.repairSubsystem("data-drive") { ok, detail in
+            wrongRepaired = ok
+            wrongDetail = detail
+        }
+        XCTAssertFalse(wrongRepaired)
+        XCTAssertTrue(wrongDetail.contains("not bound to the selected data drive"), wrongDetail)
+
+        XCTAssertTrue(tier.stop())
+        var stoppedRepaired = true
+        var stoppedDetail = ""
+        service.repairSubsystem("data-drive") { ok, detail in
+            stoppedRepaired = ok
+            stoppedDetail = detail
+        }
+        XCTAssertFalse(stoppedRepaired)
+        XCTAssertTrue(stoppedDetail.contains("not running"), stoppedDetail)
+    }
+
+    func testDataDriveRepairRejectsRootfsProbeInsteadOfClaimingHostManifestSuccess() throws {
+        let home = "/tmp/doryd-service-data-drive-rootfs-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        let dataDriveID = try XCTUnwrap(UUID(
+            uuidString: "01234567-89ab-4cde-8f01-23456789abcd"
+        ))
+        let filesystemUUID = try XCTUnwrap(UUID(
+            uuidString: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+        ))
+        let rootfsRecord = serviceGuestResourceRecord().replacingOccurrences(
+            of: "disk_mount_source=/dev/vdb\ndisk_filesystem_type=ext4",
+            with: "disk_mount_source=/dev/vda\ndisk_filesystem_type=ext4"
+        )
+        let client = ServiceFakeAgentControlClient(guestResourceOutput: rootfsRecord)
+        let agent = AgentControl(
+            configuration: AgentControlConfiguration(forwardSocketPath: home + "/agent.sock")
+        ) { _ in client }
+        let tier = DockerTier(
+            configuration: DockerTierConfiguration(
+                home: home,
+                forwardSocketPath: home + "/forward.sock"
+            ),
+            agentControl: agent,
+            guestDataDiskAuthorityProvider: { _ in
+                DockerGuestDataDiskAuthority(
+                    dataDriveID: dataDriveID,
+                    filesystemUUID: filesystemUUID
+                )
+            }
+        )
+        try tier.start()
+        defer { _ = tier.stop() }
+        let service = DorydService(
+            socketPath: tier.socketPath,
+            home: home,
+            dockerTier: tier,
+            dockerDataDriveID: dataDriveID
+        )
+
+        var repaired = true
+        var detail = ""
+        service.repairSubsystem("data-drive") { ok, message in
+            repaired = ok
+            detail = message
+        }
+        XCTAssertFalse(repaired)
+        XCTAssertTrue(detail.contains("invalid versioned record"), detail)
     }
 
     func testRemoteConnectPushAndStatusOverXPC() throws {
@@ -3262,6 +3913,143 @@ final class DorydServiceTests: XCTestCase {
     }
 }
 
+private final class ServiceBlockingStopDockerProcess: DockerManagedProcess, @unchecked Sendable {
+    private let condition = NSCondition()
+    private let processID: Int32
+    private let stopEntered = DispatchSemaphore(value: 0)
+    private var running = false
+    private var mayFinishStop = false
+
+    init(pid: Int32) {
+        processID = pid
+    }
+
+    var pid: Int32? {
+        condition.lock()
+        defer { condition.unlock() }
+        return running ? processID : nil
+    }
+
+    var isRunning: Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        return running
+    }
+
+    func start() throws {
+        condition.lock()
+        running = true
+        mayFinishStop = false
+        condition.unlock()
+    }
+
+    func suspend() -> Bool { true }
+    func resume() -> Bool { true }
+
+    func stop() -> Bool {
+        stopEntered.signal()
+        condition.lock()
+        let deadline = Date().addingTimeInterval(2)
+        while !mayFinishStop, condition.wait(until: deadline) {}
+        let confirmed = mayFinishStop
+        if confirmed {
+            running = false
+            condition.broadcast()
+        }
+        condition.unlock()
+        return confirmed
+    }
+
+    func waitForTermination(timeout: TimeInterval) -> Bool {
+        condition.lock()
+        let deadline = Date().addingTimeInterval(max(0, timeout))
+        while running, condition.wait(until: deadline) {}
+        let terminated = !running
+        condition.unlock()
+        return terminated
+    }
+
+    func lifecycleObservation(
+        until deadline: DispatchTime
+    ) -> DockerManagedProcessObservation? {
+        condition.lock()
+        defer { condition.unlock() }
+        return DockerManagedProcessObservation(
+            pid: running ? processID : nil,
+            isRunning: running
+        )
+    }
+
+    func waitUntilStopEntered(timeout: TimeInterval) -> Bool {
+        stopEntered.wait(timeout: .now() + max(0, timeout)) == .success
+    }
+
+    func finishStop() {
+        condition.lock()
+        mayFinishStop = true
+        condition.broadcast()
+        condition.unlock()
+    }
+}
+
+private enum DesiredStateWriterTestError: Error {
+    case rejected
+}
+
+private final class BlockingDesiredStateWriter: @unchecked Sendable {
+    private let condition = NSCondition()
+    private let firstCallEntered = DispatchSemaphore(value: 0)
+    private let firstCallRelease = DispatchSemaphore(value: 0)
+    private let store: IdlePolicyStore
+    private let failingCallIndex: Int
+    private var storedStates: [String] = []
+
+    init(store: IdlePolicyStore, failingCallIndex: Int) {
+        self.store = store
+        self.failingCallIndex = failingCallIndex
+    }
+
+    var states: [String] {
+        condition.lock()
+        defer { condition.unlock() }
+        return storedStates
+    }
+
+    func write(_ state: String) throws {
+        condition.lock()
+        let callIndex = storedStates.count
+        storedStates.append(state)
+        condition.broadcast()
+        condition.unlock()
+
+        if callIndex == 0 {
+            firstCallEntered.signal()
+            firstCallRelease.wait()
+        }
+        guard callIndex != failingCallIndex else {
+            throw DesiredStateWriterTestError.rejected
+        }
+        try store.setEngineDesiredState(state)
+    }
+
+    func waitUntilFirstCallEntered(timeout: TimeInterval) -> Bool {
+        firstCallEntered.wait(timeout: .now() + max(0, timeout)) == .success
+    }
+
+    func releaseFirstCall() {
+        firstCallRelease.signal()
+    }
+
+    func waitUntilCallCount(_ count: Int, timeout: TimeInterval) -> Bool {
+        condition.lock()
+        let deadline = Date().addingTimeInterval(max(0, timeout))
+        while storedStates.count < count, condition.wait(until: deadline) {}
+        let reached = storedStates.count >= count
+        condition.unlock()
+        return reached
+    }
+}
+
 private struct StaticHostUSBDiscovery: DoryHostUSBDiscovering {
     var values: [DoryHostUSBDevice]
 
@@ -3347,9 +4135,14 @@ private struct ServiceFakeHealthRegistryProbe: HealthRegistryProbing {
 
 private final class ServiceFakeAgentControlClient: AgentControlClient, @unchecked Sendable {
     private let watchedPorts: [DoryListenPort]
+    private let guestResourceOutput: String
 
-    init(ports: [DoryListenPort] = [DoryListenPort(protocol: "tcp", port: 8080)]) {
+    init(
+        ports: [DoryListenPort] = [DoryListenPort(protocol: "tcp", port: 8080)],
+        guestResourceOutput: String = serviceGuestResourceRecord()
+    ) {
         self.watchedPorts = ports
+        self.guestResourceOutput = guestResourceOutput
     }
 
     func info() throws -> DoryAgentInfo {
@@ -3457,6 +4250,9 @@ private final class ServiceFakeAgentControlClient: AgentControlClient, @unchecke
         if argv.prefix(2) == ["/usr/bin/id", "-u"]
             || argv.prefix(2) == ["/usr/bin/id", "-g"] {
             output = "1000\n"
+        } else if command.contains("/proc/meminfo")
+            && command.contains("/proc/self/mountinfo") {
+            output = guestResourceOutput
         } else if command.contains("apk add --no-cache cargo rust") {
             output = "installed rust\n"
         } else if command.contains("cargo --version") {
@@ -3475,6 +4271,28 @@ private final class ServiceFakeAgentControlClient: AgentControlClient, @unchecke
     }
 
     func close() {}
+}
+
+private func serviceGuestResourceRecord() -> String {
+    """
+    schema=dev.dory.guest-resources
+    version=2
+    mem_total_kb=2048
+    mem_available_kb=1024
+    mem_free_kb=512
+    buffers_kb=128
+    cached_kb=256
+    sreclaimable_kb=64
+    shmem_kb=32
+    disk_mount_source=/dev/vdb
+    disk_filesystem_type=ext4
+    disk_device_major_minor=254:16
+    disk_filesystem_uuid=aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee
+    disk_total_bytes=137438953472
+    disk_used_bytes=8589934592
+    disk_available_bytes=128849018880
+
+    """
 }
 
 private final class ServiceFakeRemoteAgentClient: RemoteAgentClient, @unchecked Sendable {

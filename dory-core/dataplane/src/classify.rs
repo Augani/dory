@@ -1,7 +1,7 @@
-//! Route a Docker request to one of four dispositions. Everything is passthrough now that the
+//! Route a Docker request to one of five dispositions. Everything is passthrough now that the
 //! backend is a real `dockerd`; the exceptions are the streaming/hijack endpoints (which must not be
 //! buffered — buffering `build`/`load` reintroduces the `/wait`-before-`/start` deadlock) and
-//! container create (which needs the compatibility rewrites).
+//! the small create/inspect compatibility translations.
 
 use crate::http_head::RequestHead;
 
@@ -13,6 +13,8 @@ pub enum Disposition {
     Hijack,
     /// Rewrite the create body for shared-VM compatibility, then relay.
     CreateRewrite,
+    /// Rewrite guest-only wildcard port bindings back to the effective host loopback endpoint.
+    ContainerInspectRewrite,
     /// Verify fixed macOS host ports before asking guest dockerd to start the container.
     ContainerStartPreflight,
 }
@@ -24,6 +26,13 @@ pub fn classify(head: &RequestHead) -> Disposition {
     let (m, p) = (head.method.as_str(), head.path.as_str());
     if m == "POST" && p == "/containers/create" {
         return Disposition::CreateRewrite;
+    }
+    if m == "GET"
+        && p.strip_prefix("/containers/")
+            .and_then(|value| value.strip_suffix("/json"))
+            .is_some_and(|container| !container.is_empty())
+    {
+        return Disposition::ContainerInspectRewrite;
     }
     if m == "POST" && p.starts_with("/containers/") && p.ends_with("/start") {
         return Disposition::ContainerStartPreflight;
@@ -65,14 +74,18 @@ mod tests {
     }
 
     #[test]
-    fn list_and_inspect_pass_through() {
+    fn list_passes_through_and_container_inspect_is_rewritten() {
         assert_eq!(
             disp("GET /v1.47/containers/json HTTP/1.1\r\n\r\n"),
             Disposition::Passthrough
         );
         assert_eq!(
             disp("GET /containers/abc/json HTTP/1.1\r\n\r\n"),
-            Disposition::Passthrough
+            Disposition::ContainerInspectRewrite
+        );
+        assert_eq!(
+            disp("GET /v1.47/containers/abc/json?size=1 HTTP/1.1\r\n\r\n"),
+            Disposition::ContainerInspectRewrite
         );
     }
 

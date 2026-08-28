@@ -11,9 +11,11 @@
 pub mod classify;
 pub mod create_rewrite;
 pub mod http_head;
+pub mod inspect_rewrite;
 pub mod serve;
 
 pub use classify::Disposition;
 pub use create_rewrite::{rewrite_create_body, RewriteError, RewriteOpts};
 pub use http_head::{parse_head, RequestHead};
+pub use inspect_rewrite::rewrite_container_inspect_body;
 pub use serve::{serve, serve_fd, Backend, ForwardBackend, ServeOpts, UnixBackend};

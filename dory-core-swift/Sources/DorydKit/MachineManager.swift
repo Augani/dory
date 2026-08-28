@@ -1204,7 +1204,15 @@ struct RawHVAdmittedRuntimeResources: @unchecked Sendable {
 public final class MachineManager: @unchecked Sendable {
     public typealias AgentConnector = @Sendable (String) throws -> any AgentControlClient
     public typealias ProcessStarter = @Sendable (HvProcess) throws -> Void
+    public typealias ProcessStopper = @Sendable (HvProcess) -> Bool
     public typealias ResolvedPlanRevisionProvider = @Sendable (_ machineID: String) -> UInt64?
+
+    struct FailedRuntimeAuthoritySnapshot: Equatable {
+        var hasProcess: Bool
+        var processIsRunning: Bool
+        var hasResolvedAdmissionAuthority: Bool
+        var backend: DoryVirtualizationBackendIdentity?
+    }
 
     private static let deletionQuarantinePrefix = ".dory-machine-delete-"
     private static let machineDiskTemporaryPrefix = ".rootfs.ext4.tmp-"
@@ -1252,6 +1260,7 @@ public final class MachineManager: @unchecked Sendable {
     private let vzLifecycleController: any MachineVZLifecycleControlling
     private let savedStateStore: DoryMachineSavedStateStore
     private let processStarter: ProcessStarter
+    private let processStopper: ProcessStopper
     private let machineStateBroker: DoryMachineStateBroker?
     private var rendererCrashSuppressionStore:
         DoryRendererCrashSuppressionStore?
@@ -1299,6 +1308,7 @@ public final class MachineManager: @unchecked Sendable {
     private var activePlanningMutationIDs: Set<String> = []
     private var activeDirectWorkspaceMutationLocks:
         [String: MachineManagerDirectMutationRetention] = [:]
+    private var pendingMachineProcessRetirements: Set<ObjectIdentifier> = []
     private var desktopUpdateArtifactResolver: (any DoryDesktopUpdateArtifactResolving)?
     private var forceSnapshotCopyFallback = false
     /// Monotonic while `lock` is held. The UUID in each reservation protects the one practically
@@ -1329,7 +1339,10 @@ public final class MachineManager: @unchecked Sendable {
         agentConnector: @escaping AgentConnector = { socketPath in
             try LocalAgentControl.connect(socketPath: socketPath)
         },
-        processStarter: @escaping ProcessStarter = { process in try process.start() }
+        processStarter: @escaping ProcessStarter = { process in try process.start() },
+        processStopper: @escaping ProcessStopper = { process in
+            process.stop(timeout: DoryEngineShutdownTiming.hostTerminationSeconds)
+        }
     ) {
         self.configuration = configuration
         self.launchPolicy = launchPolicy
@@ -1346,6 +1359,7 @@ public final class MachineManager: @unchecked Sendable {
         self.vzLifecycleController = vzLifecycleController
         self.agentConnector = agentConnector
         self.processStarter = processStarter
+        self.processStopper = processStopper
         self.storageCapacityProvider = { path in
             try MachineManager.availableStorageCapacity(forDestinationPath: path)
         }
@@ -3175,17 +3189,52 @@ public final class MachineManager: @unchecked Sendable {
     private func discardUncommittedMachineLaunch(
         snapshot: MachineLaunchAdmissionSnapshot,
         handoffServer: VmmHandoffServer?,
-        process: HvProcess? = nil
-    ) {
+        process: HvProcess? = nil,
+        deferredAdmissionPlan: DoryResolvedMachinePlan? = nil
+    ) -> Bool {
         // Keep the reservation authoritative until every locally-created endpoint and descriptor
         // owner is stopped. Clearing first would permit a newer launch to reuse those paths while
         // teardown of the older generation was still in progress.
         handoffServer?.stop()
-        process?.stop(timeout: DoryEngineShutdownTiming.hostTerminationSeconds)
+        if let process, !processStopper(process) {
+            // The exact helper (or a failed-launch application retirement) remains authoritative.
+            // Leave the reservation in place so no later start can reuse its VM disk/descriptors;
+            // a background terminal waiter clears it only after the retained reaper proves exit.
+            DispatchQueue.global(qos: .utility).async { [self, process] in
+                process.waitUntilTerminated()
+                let machineID = snapshot.configuration.id
+                let mutationLease = mutationCoordinator.acquire(workspaceID: machineID)
+                defer { mutationLease.release() }
+                do {
+                    try markResolvedAdmissionStopped(plan: deferredAdmissionPlan)
+                    clearLaunchReservation(
+                        machineID: machineID,
+                        matching: snapshot.reservation
+                    )
+                } catch {
+                    lock.lock()
+                    if var current = machines[machineID],
+                       current.launchReservation == snapshot.reservation {
+                        current.state = .failed
+                        setFailure(
+                            on: &current,
+                            code: .resourceAdmissionRejected,
+                            message: "retired uncommitted helper could not settle resource admission: \(error)",
+                            causes: [.resourceAdmission, .runtimeAuthority],
+                            recoveryDisposition: .repair
+                        )
+                        machines[machineID] = current
+                    }
+                    lock.unlock()
+                }
+            }
+            return false
+        }
         clearLaunchReservation(
             machineID: snapshot.configuration.id,
             matching: snapshot.reservation
         )
+        return true
     }
 
     private func commitPreparedMachineLaunch(
@@ -3242,6 +3291,99 @@ public final class MachineManager: @unchecked Sendable {
         }
     }
 
+    /// Caller must own this workspace's mutation lease. Terminal observation is the boundary at
+    /// which the failed generation may release its resource admission and detach disk/backend
+    /// authority. If admission settlement fails, every authority stays attached for explicit
+    /// repair instead of publishing a reusable machine.
+    @discardableResult
+    private func finalizeFailedMachineProcessRetirement(
+        machineID: String,
+        process: HvProcess
+    ) throws -> Bool {
+        lock.lock()
+        guard let entry = machines[machineID], entry.process === process else {
+            lock.unlock()
+            return false
+        }
+        let admissionPlan = entry.activeResolvedPlan
+        lock.unlock()
+
+        try markResolvedAdmissionStopped(plan: admissionPlan)
+
+        lock.lock()
+        guard var current = machines[machineID], current.process === process else {
+            lock.unlock()
+            return false
+        }
+        let handoffServer = current.handoffServer
+        current.process = nil
+        current.handoffServer = nil
+        current.handoff = nil
+        current.launchID = nil
+        current.runtimeAddress = nil
+        current.currentBalloonTargetMB = nil
+        current.activeResolvedPlan = nil
+        current.activeBackend = nil
+        current.readinessAcceptedPendingPublication = false
+        machines[machineID] = current
+        lock.unlock()
+        handoffServer?.stop()
+        return true
+    }
+
+    /// Keep an unconfirmed helper or prepublication app retirement attached to the failed entry.
+    /// The exact supervisor owns its descriptors until a background waiter proves terminal state;
+    /// only then does a workspace-fenced settlement release admission/backend authority.
+    private func retainFailedMachineProcessUntilTerminalObservation(
+        machineID: String,
+        process: HvProcess,
+        context: String
+    ) {
+        let identity = ObjectIdentifier(process)
+        let shouldSchedule: Bool
+        lock.lock()
+        if var current = machines[machineID], current.process === process {
+            current.state = .failed
+            let base = current.lastError.map { "\($0); " } ?? ""
+            current.lastError =
+                "\(base)\(context); helper termination is still being verified"
+            machines[machineID] = current
+            shouldSchedule = pendingMachineProcessRetirements.insert(identity).inserted
+        } else {
+            shouldSchedule = false
+        }
+        lock.unlock()
+        guard shouldSchedule else { return }
+
+        DispatchQueue.global(qos: .utility).async { [self, process] in
+            process.waitUntilTerminated()
+            let mutationLease = mutationCoordinator.acquire(workspaceID: machineID)
+            defer { mutationLease.release() }
+            do {
+                _ = try finalizeFailedMachineProcessRetirement(
+                    machineID: machineID,
+                    process: process
+                )
+            } catch {
+                lock.lock()
+                if var current = machines[machineID], current.process === process {
+                    setFailure(
+                        on: &current,
+                        code: .resourceAdmissionRejected,
+                        message: "terminal helper observation could not settle resource admission: \(error)",
+                        causes: [.resourceAdmission, .runtimeAuthority],
+                        recoveryDisposition: .repair
+                    )
+                    machines[machineID] = current
+                }
+                lock.unlock()
+            }
+            lock.lock()
+            pendingMachineProcessRetirements.remove(identity)
+            lock.unlock()
+        }
+    }
+
     private func spawnPreparedMachine(
         _ preparedMachine: DoryMachineConfiguration,
         shareAuthorities: [DoryMachineShareRuntimeAuthority],
@@ -3287,7 +3429,7 @@ public final class MachineManager: @unchecked Sendable {
                 return server
             }
         } catch {
-            discardUncommittedMachineLaunch(
+            _ = discardUncommittedMachineLaunch(
                 snapshot: snapshot,
                 handoffServer: nil
             )
@@ -3540,7 +3682,7 @@ public final class MachineManager: @unchecked Sendable {
                 qualificationBootstrapLaunch: qualificationBootstrapLaunch
             )
         } catch {
-            discardUncommittedMachineLaunch(
+            _ = discardUncommittedMachineLaunch(
                 snapshot: snapshot,
                 handoffServer: handoffServer
             )
@@ -3573,11 +3715,17 @@ public final class MachineManager: @unchecked Sendable {
                 resolvedPlan: resolvedPlan
             )
         } catch {
-            discardUncommittedMachineLaunch(
+            let terminal = discardUncommittedMachineLaunch(
                 snapshot: snapshot,
                 handoffServer: handoffServer,
-                process: process
+                process: process,
+                deferredAdmissionPlan: resolvedPlan
             )
+            guard terminal else {
+                throw MachineManagerError.persistence(
+                    "resolved launch compare-and-commit failed: \(error); exact helper retirement remains in progress"
+                )
+            }
             throw resolvedLaunchFailureAfterStoppingAdmission(
                 error,
                 plan: resolvedPlan,
@@ -3589,18 +3737,14 @@ public final class MachineManager: @unchecked Sendable {
             try processStarter(process)
         } catch {
             var handoffToStop: VmmHandoffServer?
-            var admissionPlanToStop: DoryResolvedMachinePlan?
             lock.lock()
             if var current = machines[id],
                current.launchID == launchID,
                current.process === process {
                 handoffToStop = current.handoffServer
-                admissionPlanToStop = current.activeResolvedPlan
                 current.handoffServer = nil
                 current.launchID = nil
                 current.runtimeAddress = nil
-                current.activeResolvedPlan = nil
-                current.activeBackend = nil
                 current.state = .failed
                 setFailure(
                     on: &current,
@@ -3613,12 +3757,27 @@ public final class MachineManager: @unchecked Sendable {
             }
             lock.unlock()
             handoffToStop?.stop()
-            process.stop(timeout: DoryEngineShutdownTiming.hostTerminationSeconds)
-            throw resolvedLaunchFailureAfterStoppingAdmission(
-                error,
-                plan: admissionPlanToStop,
-                context: "resolved process start failed"
-            )
+            guard processStopper(process) else {
+                retainFailedMachineProcessUntilTerminalObservation(
+                    machineID: id,
+                    process: process,
+                    context: "resolved process start failed before publication"
+                )
+                throw MachineManagerError.persistence(
+                    "resolved process start failed: \(error); exact helper retirement remains in progress"
+                )
+            }
+            do {
+                _ = try finalizeFailedMachineProcessRetirement(
+                    machineID: id,
+                    process: process
+                )
+            } catch let settlementError {
+                throw MachineManagerError.persistence(
+                    "resolved process start failed: \(error); resource settlement failed: \(settlementError)"
+                )
+            }
+            throw error
         }
         lock.lock()
         if var current = machines[id], current.process === process {
@@ -3641,15 +3800,11 @@ public final class MachineManager: @unchecked Sendable {
                 }
                 lock.unlock()
             } catch {
-                var admissionPlanToStop: DoryResolvedMachinePlan?
                 var handoffToStop: VmmHandoffServer?
                 lock.lock()
                 if var current = machines[id], current.launchID == launchID {
-                    admissionPlanToStop = current.activeResolvedPlan
                     handoffToStop = current.handoffServer
                     current.state = .failed
-                    current.activeResolvedPlan = nil
-                    current.activeBackend = nil
                     current.handoffServer = nil
                     current.handoff = nil
                     current.launchID = nil
@@ -3666,12 +3821,27 @@ public final class MachineManager: @unchecked Sendable {
                 }
                 lock.unlock()
                 handoffToStop?.stop()
-                process.stop(timeout: DoryEngineShutdownTiming.hostTerminationSeconds)
-                throw resolvedLaunchFailureAfterStoppingAdmission(
-                    error,
-                    plan: admissionPlanToStop,
-                    context: "resolved launch admission commit failed"
-                )
+                guard processStopper(process) else {
+                    retainFailedMachineProcessUntilTerminalObservation(
+                        machineID: id,
+                        process: process,
+                        context: "resolved launch admission commit failed"
+                    )
+                    throw MachineManagerError.persistence(
+                        "resolved launch admission commit failed: \(error); exact helper retirement remains in progress"
+                    )
+                }
+                do {
+                    _ = try finalizeFailedMachineProcessRetirement(
+                        machineID: id,
+                        process: process
+                    )
+                } catch let settlementError {
+                    throw MachineManagerError.persistence(
+                        "resolved launch admission commit failed: \(error); resource settlement failed: \(settlementError)"
+                    )
+                }
+                throw error
             }
         }
         return status(id: id) ?? DoryMachineStatus(id: id, state: .running)
@@ -3767,15 +3937,38 @@ public final class MachineManager: @unchecked Sendable {
             // the workspace operation fence.
             entry.activeOperationID = nil
             entry.activeOperationKind = nil
-            let admissionPlan = entry.activeResolvedPlan
-            entry.activeResolvedPlan = nil
-            entry.activeBackend = nil
             self.machines[id] = entry
             self.lock.unlock()
-            process.stop(timeout: DoryEngineShutdownTiming.hostTerminationSeconds)
+            let terminated = self.processStopper(process)
             let mutationLease = self.mutationCoordinator.acquire(workspaceID: id)
             defer { mutationLease.release() }
-            try? self.markResolvedAdmissionStopped(plan: admissionPlan)
+            if terminated {
+                do {
+                    _ = try self.finalizeFailedMachineProcessRetirement(
+                        machineID: id,
+                        process: process
+                    )
+                } catch {
+                    self.lock.lock()
+                    if var current = self.machines[id], current.process === process {
+                        self.setFailure(
+                            on: &current,
+                            code: .resourceAdmissionRejected,
+                            message: "readiness timeout could not settle terminal helper admission: \(error)",
+                            causes: [.resourceAdmission, .runtimeAuthority],
+                            recoveryDisposition: .repair
+                        )
+                        self.machines[id] = current
+                    }
+                    self.lock.unlock()
+                }
+            } else {
+                self.retainFailedMachineProcessUntilTerminalObservation(
+                    machineID: id,
+                    process: process,
+                    context: "readiness timeout"
+                )
+            }
             self.failActiveStartLifecycle(id: id, stepID: "start.readiness-timeout")
         }
     }
@@ -3788,7 +3981,8 @@ public final class MachineManager: @unchecked Sendable {
         var handoffServer: VmmHandoffServer?
         var admissionPlan: DoryResolvedMachinePlan?
         var rendererCandidate: DoryRendererCrashSuppressionCandidate?
-        let rendererCandidateFailure = !termination.wasUncaughtSignal
+        let rendererCandidateFailure = termination.statusIsKnown
+            && !termination.wasUncaughtSignal
             && termination.status
                 == DoryDesktopHelperExitStatus.rendererCandidateFailure.rawValue
         lock.lock()
@@ -4079,8 +4273,30 @@ public final class MachineManager: @unchecked Sendable {
             }
             guard process.waitForExpectedExit(timeout: 30),
                   process.terminationStatus == 0 else {
-                process.stop(timeout: DoryEngineShutdownTiming.hostTerminationSeconds)
-                helperExited = true
+                helperExited = processStopper(process)
+                if !helperExited {
+                    lock.lock()
+                    if var current = machines[id], current.process === process {
+                        current.state = .failed
+                        setFailure(
+                            on: &current,
+                            code: .lifecycleOperationFailed,
+                            message: "saved-state failure left helper termination awaiting exact observation",
+                            causes: [.processExit, .runtimeAuthority],
+                            recoveryDisposition: .repair
+                        )
+                        machines[id] = current
+                    }
+                    lock.unlock()
+                    retainFailedMachineProcessUntilTerminalObservation(
+                        machineID: id,
+                        process: process,
+                        context: "saved-state failure"
+                    )
+                    throw MachineManagerError.persistence(
+                        "VMM helper termination remains in progress after saved-state failure; runtime authority is retained"
+                    )
+                }
                 throw MachineManagerError.persistence(
                     "VMM helper did not exit cleanly after saving state"
                 )
@@ -4722,6 +4938,49 @@ public final class MachineManager: @unchecked Sendable {
             entry = current
             let process = entry.process
             let handoffServer = entry.handoffServer
+            lock.unlock()
+
+            handoffServer?.stop()
+            guard process.map(processStopper) != false else {
+                // SIGKILL was issued, but terminal observation did not arrive within the bounded
+                // grace period. Keep the process, backend plan, and disk authority attached to the
+                // failed entry so start/delete/update cannot reuse them while its retained reaper
+                // continues off the mutation path.
+                resumedPausedBackend = false
+                lock.lock()
+                if var current = machines[id], current.process === process {
+                    current.state = .failed
+                    setFailure(
+                        on: &current,
+                        code: .lifecycleOperationFailed,
+                        message: "machine helper termination could not be confirmed within the bounded stop window",
+                        causes: [.processExit, .runtimeAuthority],
+                        recoveryDisposition: .repair
+                    )
+                    machines[id] = current
+                }
+                lock.unlock()
+                if let process {
+                    retainFailedMachineProcessUntilTerminalObservation(
+                        machineID: id,
+                        process: process,
+                        context: "explicit stop"
+                    )
+                }
+                throw MachineManagerError.persistence(
+                    "machine \(id) helper termination remains in progress; its runtime authority is retained"
+                )
+            }
+
+            lock.lock()
+            guard let current = machines[id],
+                  Self.sameObject(current.process, process) else {
+                lock.unlock()
+                throw MachineManagerError.persistence(
+                    "machine \(id) changed while helper termination was being committed"
+                )
+            }
+            entry = current
             entry.process = nil
             entry.handoffServer = nil
             entry.handoff = nil
@@ -4738,8 +4997,6 @@ public final class MachineManager: @unchecked Sendable {
             machines[id] = entry
             lock.unlock()
 
-            handoffServer?.stop()
-            process?.stop(timeout: DoryEngineShutdownTiming.hostTerminationSeconds)
             stopCommitted = true
             if !preserveResolvedAdmissionForRestart {
                 try markResolvedAdmissionStopped(plan: admissionPlan)
@@ -4805,33 +5062,54 @@ public final class MachineManager: @unchecked Sendable {
         let runningEntries = machines.map { id, entry in
             (
                 id: id,
+                state: entry.state,
                 process: entry.process,
                 handoffServer: entry.handoffServer,
                 admissionPlan: entry.activeResolvedPlan ?? entry.runtimeIdentity.resolvedPlan
             )
         }
-        for id in machines.keys {
-            if machines[id]?.state == .suspended { continue }
-            machines[id]?.process = nil
-            machines[id]?.handoffServer = nil
-            machines[id]?.handoff = nil
-            machines[id]?.launchID = nil
-            machines[id]?.runtimeAddress = nil
-            machines[id]?.currentBalloonTargetMB = nil
-            machines[id]?.activeResolvedPlan = nil
-            machines[id]?.activeBackend = nil
-            machines[id]?.state = .stopped
-            if var entry = machines[id] {
-                clearFailure(on: &entry)
-                machines[id] = entry
-            }
-        }
         lock.unlock()
 
         for entry in runningEntries {
+            if entry.state == .suspended { continue }
             entry.handoffServer?.stop()
-            entry.process?.stop(timeout: DoryEngineShutdownTiming.hostTerminationSeconds)
-            try? markResolvedAdmissionStopped(plan: entry.admissionPlan)
+            let terminated = entry.process.map(processStopper) != false
+            lock.lock()
+            if var current = machines[entry.id],
+               Self.sameObject(current.process, entry.process) {
+                if terminated {
+                    current.process = nil
+                    current.handoffServer = nil
+                    current.handoff = nil
+                    current.launchID = nil
+                    current.runtimeAddress = nil
+                    current.currentBalloonTargetMB = nil
+                    current.activeResolvedPlan = nil
+                    current.activeBackend = nil
+                    current.state = .stopped
+                    clearFailure(on: &current)
+                } else {
+                    current.state = .failed
+                    setFailure(
+                        on: &current,
+                        code: .lifecycleOperationFailed,
+                        message: "machine helper termination could not be confirmed during engine shutdown",
+                        causes: [.processExit, .runtimeAuthority],
+                        recoveryDisposition: .repair
+                    )
+                }
+                machines[entry.id] = current
+            }
+            lock.unlock()
+            if terminated {
+                try? markResolvedAdmissionStopped(plan: entry.admissionPlan)
+            } else if let process = entry.process {
+                retainFailedMachineProcessUntilTerminalObservation(
+                    machineID: entry.id,
+                    process: process,
+                    context: "engine shutdown"
+                )
+            }
         }
     }
 
@@ -6762,6 +7040,22 @@ public final class MachineManager: @unchecked Sendable {
         return statusLocked(id: id, entry: entry)
     }
 
+    /// Internal observation used by lifecycle contract tests. Public status deliberately exposes
+    /// the durable runtime identity rather than these transient ownership details, but teardown
+    /// tests must prove that a failed generation cannot detach its exact process/plan/backend
+    /// authority before terminal observation.
+    func failedRuntimeAuthoritySnapshot(id: String) -> FailedRuntimeAuthoritySnapshot? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let entry = machines[id] else { return nil }
+        return FailedRuntimeAuthoritySnapshot(
+            hasProcess: entry.process != nil,
+            processIsRunning: entry.process?.isRunning == true,
+            hasResolvedAdmissionAuthority: entry.activeResolvedPlan != nil,
+            backend: entry.activeBackend
+        )
+    }
+
     /// Observes an in-progress launch until its handoff owner publishes the agent endpoint used by
     /// guest operations. Start intentionally returns after spawning the helper, so callers that
     /// immediately need the guest agent wait here without competing to terminalize its lifecycle.
@@ -7545,7 +7839,12 @@ public final class MachineManager: @unchecked Sendable {
                 ? configuration.startupRestartPolicy
                 : .none,
             runtimeLaunchEnvelope: runtimeLaunchAuthority?.envelope,
-            inheritedFileDescriptors: runtimeLaunchAuthority?.inheritedFileDescriptors ?? []
+            inheritedFileDescriptors: runtimeLaunchAuthority?.inheritedFileDescriptors ?? [],
+            launchStyle: Self.processLaunchStyle(
+                executablePath: target.executablePath,
+                acceleratedDesktop: target.acceleratedDesktop,
+                requiresProtectedDeviceAttribution: machine.displayMode == .desktop
+            )
         )
         process.rendererReleaseIdentity = rendererReleaseIdentity
         return (
@@ -7554,6 +7853,26 @@ public final class MachineManager: @unchecked Sendable {
                 ?? (target.acceleratedDesktop
                     ? .doryHypervisor : .appleVirtualizationFramework)
         )
+    }
+
+    /// Signed desktop applications receive protected-device attribution through LaunchServices.
+    /// Flat development/test helpers remain direct children, while production DoryHVRunner and
+    /// DoryVMM app paths can never silently inherit the unentitled daemon's TCC identity.
+    static func processLaunchStyle(
+        executablePath: String,
+        acceleratedDesktop: Bool,
+        requiresProtectedDeviceAttribution: Bool
+    ) -> HvProcessLaunchStyle {
+        guard requiresProtectedDeviceAttribution else { return .directExecutable }
+        let path = URL(fileURLWithPath: executablePath).standardizedFileURL.path
+        if acceleratedDesktop,
+           path.hasSuffix("/DoryHVRunner.app/Contents/MacOS/dory-hv") {
+            return .applicationBundle
+        }
+        if path.hasSuffix("/DoryVMM.app/Contents/MacOS/dory-vmm") {
+            return .applicationBundle
+        }
+        return .directExecutable
     }
 
     /// Converts the single-use production trust output into process configuration authority.
@@ -7900,7 +8219,7 @@ public final class MachineManager: @unchecked Sendable {
             workspaceID: DoryRendererWorkspaceID(rawValue: request.workspaceID),
             generation: DoryRendererWorkerGeneration(rawValue: request.generation),
             sourceTuple: .productionCandidate,
-            producerFenceContract: .managedLinux61230PrepareFBV1,
+            producerFenceContract: .managedLinux612106PrepareFBV1,
             requestedCapabilities: .productionAcceleration,
             artifacts: renderer.artifactManifest(
                 managedGuestKernel: kernel,
@@ -11926,8 +12245,6 @@ public final class MachineManager: @unchecked Sendable {
                 )
                 entry.launchID = nil
                 entry.runtimeAddress = nil
-                entry.activeResolvedPlan = nil
-                entry.activeBackend = nil
                 entry.readinessAcceptedPendingPublication = false
                 processToStop = entry.process
                 break
@@ -11948,8 +12265,6 @@ public final class MachineManager: @unchecked Sendable {
                 )
                 entry.launchID = nil
                 entry.runtimeAddress = nil
-                entry.activeResolvedPlan = nil
-                entry.activeBackend = nil
                 entry.readinessAcceptedPendingPublication = false
                 processToStop = entry.process
                 break
@@ -11977,8 +12292,6 @@ public final class MachineManager: @unchecked Sendable {
                 )
                 entry.launchID = nil
                 entry.runtimeAddress = nil
-                entry.activeResolvedPlan = nil
-                entry.activeBackend = nil
                 entry.readinessAcceptedPendingPublication = false
                 processToStop = entry.process
                 break
@@ -12006,8 +12319,6 @@ public final class MachineManager: @unchecked Sendable {
             )
             entry.launchID = nil
             entry.runtimeAddress = nil
-            entry.activeResolvedPlan = nil
-            entry.activeBackend = nil
             entry.readinessAcceptedPendingPublication = false
             processToStop = entry.process
         }
@@ -12015,7 +12326,6 @@ public final class MachineManager: @unchecked Sendable {
         lock.unlock()
 
         handoffServer?.stop()
-        processToStop?.stop()
 
         if requiresAdmissionCommit, let admissionPlan {
             do {
@@ -12029,7 +12339,6 @@ public final class MachineManager: @unchecked Sendable {
                 }
                 lock.unlock()
                 if !lifecycleReadinessSucceeded {
-                    try markResolvedAdmissionStopped(plan: admissionPlan)
                     lifecycleFailureStepID = "start.readiness-state-changed"
                 }
             } catch {
@@ -12052,17 +12361,13 @@ public final class MachineManager: @unchecked Sendable {
                     current.handoff = nil
                     current.launchID = nil
                     current.runtimeAddress = nil
-                    current.activeResolvedPlan = nil
-                    current.activeBackend = nil
                     current.readinessAcceptedPendingPublication = false
                     machines[machineID] = current
                 }
                 lock.unlock()
-                try? markResolvedAdmissionStopped(plan: admissionPlan)
                 lifecycleFailureStepID = "start.admission-failed"
             }
         } else if !lifecycleReadinessSucceeded {
-            try? markResolvedAdmissionStopped(plan: admissionPlan)
             lifecycleFailureStepID = "start.readiness-failed"
         }
 
@@ -12072,13 +12377,41 @@ public final class MachineManager: @unchecked Sendable {
         // acquire the lock here and preserve journal-before-status ordering.
         let mutationLease = mutationCoordinator.acquire(workspaceID: machineID)
         defer { mutationLease.release() }
+        if let processToStop {
+            if processStopper(processToStop) {
+                do {
+                    _ = try finalizeFailedMachineProcessRetirement(
+                        machineID: machineID,
+                        process: processToStop
+                    )
+                } catch {
+                    lock.lock()
+                    if var current = machines[machineID], current.process === processToStop {
+                        setFailure(
+                            on: &current,
+                            code: .resourceAdmissionRejected,
+                            message: "readiness rejection could not settle terminal helper admission: \(error)",
+                            causes: [.resourceAdmission, .runtimeAuthority],
+                            recoveryDisposition: .repair
+                        )
+                        machines[machineID] = current
+                    }
+                    lock.unlock()
+                }
+            } else {
+                retainFailedMachineProcessUntilTerminalObservation(
+                    machineID: machineID,
+                    process: processToStop,
+                    context: "readiness rejection"
+                )
+            }
+        }
         if lifecycleReadinessSucceeded {
             publishAcceptedReadiness(id: machineID)
         } else if let lifecycleFailureStepID {
             failActiveStartLifecycle(id: machineID, stepID: lifecycleFailureStepID)
         }
 
-        processToStop?.stop()
     }
 
     private static func graphicsReadinessMatches(

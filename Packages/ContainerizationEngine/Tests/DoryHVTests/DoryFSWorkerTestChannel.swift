@@ -33,6 +33,8 @@ final class DoryFSWorkerTestChannel: DoryFSWorkerChannel, @unchecked Sendable {
     private var lifecycleHandlers = [@Sendable (DoryFSWorkerChannelEvent) -> Void]()
     private var _beforeRequestExecutionTestHook: (@Sendable () -> Void)?
     private var _requestExecutionCorrelationTestHook: (@Sendable (UInt64) -> Void)?
+    private var _beforePublicationAcknowledgementTestHook:
+        (@Sendable (DoryFSWorkerPublication, Bool) -> Void)?
 
     var beforeRequestExecutionTestHook: (@Sendable () -> Void)? {
         get { lock.withLock { _beforeRequestExecutionTestHook } }
@@ -42,6 +44,12 @@ final class DoryFSWorkerTestChannel: DoryFSWorkerChannel, @unchecked Sendable {
     var requestExecutionCorrelationTestHook: (@Sendable (UInt64) -> Void)? {
         get { lock.withLock { _requestExecutionCorrelationTestHook } }
         set { lock.withLock { _requestExecutionCorrelationTestHook = newValue } }
+    }
+
+    var beforePublicationAcknowledgementTestHook:
+        (@Sendable (DoryFSWorkerPublication, Bool) -> Void)? {
+        get { lock.withLock { _beforePublicationAcknowledgementTestHook } }
+        set { lock.withLock { _beforePublicationAcknowledgementTestHook = newValue } }
     }
 
     init(
@@ -91,8 +99,10 @@ final class DoryFSWorkerTestChannel: DoryFSWorkerChannel, @unchecked Sendable {
         case .interrupt(let interrupt):
             server.interrupt(requestUnique: interrupt.targetCorrelationID)
         case .commitPublication(let publication):
+            beforePublicationAcknowledgementTestHook?(publication, true)
             acknowledge(publication, committed: true)
         case .discardPublication(let publication):
+            beforePublicationAcknowledgementTestHook?(publication, false)
             acknowledge(publication, committed: false)
         case .invalidate:
             invalidate()

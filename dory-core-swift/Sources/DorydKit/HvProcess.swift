@@ -2,6 +2,135 @@ import Darwin
 import DoryOperations
 import Foundation
 
+/// A semaphore-backed lifecycle mutex whose timed acquisition uses Dispatch's monotonic clock.
+/// Process stop paths use the timed form so a concurrent launch cannot consume an unbounded part
+/// of the caller's shutdown budget before terminal cleanup even begins.
+final class DoryProcessLifecycleMutex: @unchecked Sendable {
+    private let semaphore = DispatchSemaphore(value: 1)
+
+    func lock() {
+        semaphore.wait()
+    }
+
+    func lock(until deadline: DispatchTime) -> Bool {
+        semaphore.wait(timeout: deadline) == .success
+    }
+
+    func unlock() {
+        semaphore.signal()
+    }
+}
+
+/// Coalesces stop requests that could not acquire a supervisor's launch mutex before the caller's
+/// absolute deadline. The operation is deliberately independent from that mutex: recording the
+/// request cannot be delayed by a LaunchServices or `posix_spawn` handoff, and the private worker
+/// retains the supervisor until it has acquired the mutex and applied the stop to the exact
+/// supervised generation. Callers never wait on this worker after their own deadline expires.
+final class DoryDeferredProcessStopCoordinator: @unchecked Sendable {
+    private final class Operation: @unchecked Sendable {
+        let signal: Int32
+        let gracefulTimeout: TimeInterval
+        let forcedTimeout: TimeInterval
+        let completion = DispatchGroup()
+
+        init(signal: Int32, gracefulTimeout: TimeInterval, forcedTimeout: TimeInterval) {
+            self.signal = signal
+            self.gracefulTimeout = gracefulTimeout
+            self.forcedTimeout = forcedTimeout
+            completion.enter()
+        }
+    }
+
+    private let lock = NSLock()
+    private let queue: DispatchQueue
+    private var operation: Operation?
+
+    init(label: String) {
+        queue = DispatchQueue(label: label, qos: .utility)
+    }
+
+    var isPending: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return operation != nil
+    }
+
+    /// Joins the exact deferred operation that was pending at entry. A later operation cannot be
+    /// substituted underneath the waiter, and the caller supplies the complete monotonic budget.
+    func wait(until deadline: DispatchTime) -> Bool {
+        lock.lock()
+        let pending = operation
+        lock.unlock()
+        guard let pending else { return true }
+        return pending.completion.wait(timeout: deadline) == .success
+    }
+
+    /// Returns `true` only for the caller that created the one pending operation. Later callers
+    /// join that retained operation by leaving it installed; they do not enqueue duplicate signals.
+    @discardableResult
+    func schedule(
+        signal: Int32,
+        gracefulTimeout: TimeInterval,
+        forcedTimeout: TimeInterval,
+        perform: @escaping @Sendable (Int32, TimeInterval, TimeInterval) -> Void
+    ) -> Bool {
+        lock.lock()
+        guard operation == nil else {
+            lock.unlock()
+            return false
+        }
+        let operation = Operation(
+            signal: signal,
+            gracefulTimeout: gracefulTimeout.isFinite ? max(0, gracefulTimeout) : 5,
+            forcedTimeout: forcedTimeout.isFinite ? max(0, forcedTimeout) : 2
+        )
+        self.operation = operation
+        lock.unlock()
+
+        queue.async { [self, operation] in
+            perform(
+                operation.signal,
+                operation.gracefulTimeout,
+                operation.forcedTimeout
+            )
+            lock.lock()
+            if self.operation === operation {
+                self.operation = nil
+            }
+            operation.completion.leave()
+            lock.unlock()
+        }
+        return true
+    }
+}
+
+/// One absolute stop budget, measured from public API entry. The graceful and forced phases never
+/// manufacture fresh relative timeouts after waiting for another lifecycle operation's mutex.
+struct DoryProcessStopDeadline: Sendable, Equatable {
+    let graceful: DispatchTime
+    let final: DispatchTime
+
+    init(
+        gracefulTimeout: TimeInterval,
+        forcedTimeout: TimeInterval,
+        startedAt: DispatchTime = .now()
+    ) {
+        let boundedGraceful = gracefulTimeout.isFinite ? max(0, gracefulTimeout) : 5
+        let boundedForced = forcedTimeout.isFinite ? max(0, forcedTimeout) : 2
+        graceful = Self.adding(boundedGraceful, to: startedAt)
+        final = Self.adding(boundedForced, to: graceful)
+    }
+
+    private static func adding(_ seconds: TimeInterval, to time: DispatchTime) -> DispatchTime {
+        let maximumSeconds = Double(UInt64.max) / 1_000_000_000
+        let nanoseconds = seconds >= maximumSeconds
+            ? UInt64.max
+            : UInt64(seconds * 1_000_000_000)
+        let sum = time.uptimeNanoseconds.addingReportingOverflow(nanoseconds)
+        return DispatchTime(uptimeNanoseconds: sum.overflow ? UInt64.max : sum.partialValue)
+    }
+}
+
 public struct HvRestartPolicy: Sendable, Equatable {
     public var maxRestarts: Int
     public var delaySeconds: TimeInterval
@@ -32,18 +161,35 @@ public struct HvRestartPolicy: Sendable, Equatable {
 public struct HvProcessTermination: Sendable, Equatable {
     public var status: Int32
     public var wasUncaughtSignal: Bool
+    public var statusIsKnown: Bool
 
-    public init(status: Int32, wasUncaughtSignal: Bool) {
+    public init(
+        status: Int32,
+        wasUncaughtSignal: Bool,
+        statusIsKnown: Bool = true
+    ) {
         self.status = status
         self.wasUncaughtSignal = wasUncaughtSignal
+        self.statusIsKnown = statusIsKnown
     }
 
     public var description: String {
-        wasUncaughtSignal ? "terminated by signal \(status)" : "exited with status \(status)"
+        guard statusIsKnown else { return "exited; status unavailable" }
+        return wasUncaughtSignal
+            ? "terminated by signal \(status)"
+            : "exited with status \(status)"
     }
 }
 
 public typealias HvProcessUnexpectedTerminationHandler = @Sendable (HvProcessTermination) -> Void
+
+public enum HvProcessLaunchStyle: Sendable, Equatable {
+    /// Ordinary CLI helpers remain direct daemon children and retain waitpid supervision.
+    case directExecutable
+    /// A signed `.app` is launched by LaunchServices so TCC attributes protected devices to the
+    /// application itself. Runtime descriptors arrive through the authenticated launch gate.
+    case applicationBundle
+}
 
 /// Owns one daemon-admitted descriptor for the complete supervised launch, including bounded
 /// startup restarts. Ownership is transferred at initialization and released exactly once.
@@ -107,6 +253,7 @@ public struct HvProcessConfiguration: Sendable {
     public var restartPolicy: HvRestartPolicy
     public var runtimeLaunchEnvelope: RuntimeLaunchEnvelope?
     public var inheritedFileDescriptors: [HvProcessInheritedFileDescriptor]
+    public var launchStyle: HvProcessLaunchStyle
     /// Populated only by the resolved production RawHV path after decoding the release identity
     /// from the live daemon. Legacy and test launches intentionally leave this unset.
     var rendererReleaseIdentity: DoryRendererReleaseIdentityV1?
@@ -118,7 +265,8 @@ public struct HvProcessConfiguration: Sendable {
         logPath: String? = nil,
         restartPolicy: HvRestartPolicy = .none,
         runtimeLaunchEnvelope: RuntimeLaunchEnvelope? = nil,
-        inheritedFileDescriptors: [HvProcessInheritedFileDescriptor] = []
+        inheritedFileDescriptors: [HvProcessInheritedFileDescriptor] = [],
+        launchStyle: HvProcessLaunchStyle = .directExecutable
     ) {
         self.executablePath = executablePath
         self.arguments = arguments
@@ -127,11 +275,17 @@ public struct HvProcessConfiguration: Sendable {
         self.restartPolicy = restartPolicy
         self.runtimeLaunchEnvelope = runtimeLaunchEnvelope
         self.inheritedFileDescriptors = inheritedFileDescriptors
+        self.launchStyle = launchStyle
         rendererReleaseIdentity = nil
     }
 }
 
 public final class HvProcess: @unchecked Sendable {
+    static let applicationLaunchCleanupTimeoutSeconds: TimeInterval = 2
+    static let unpublishedChildCleanupTimeoutSeconds: TimeInterval = 0.25
+    static let forcedTerminationGraceSeconds: TimeInterval = 2
+    static let maximumInterruptedWaitAttempts = 8
+
     public enum ProcessError: Error, CustomStringConvertible {
         case alreadyRunning
         case executableMissing(String)
@@ -141,6 +295,7 @@ public final class HvProcess: @unchecked Sendable {
         case disallowedResolvedEnvironmentKey(String)
         case rendererRunnerIdentityRejected(String)
         case rendererRunnerResumeFailed(Int32)
+        case applicationRunnerLaunchFailed(String)
 
         public var description: String {
             switch self {
@@ -157,26 +312,41 @@ public final class HvProcess: @unchecked Sendable {
             case .disallowedResolvedEnvironmentKey(let key):
                 return "resolved helper environment key \(key) is not allowlisted"
             case .rendererRunnerIdentityRejected(let detail):
-                return "suspended renderer runner identity was rejected: \(detail)"
+                return "launch-gated renderer runner identity was rejected: \(detail)"
             case .rendererRunnerResumeFailed(let code):
                 return "validated renderer runner could not be resumed: \(String(cString: strerror(code)))"
+            case .applicationRunnerLaunchFailed(let detail):
+                return "Dory desktop helper application launch failed: \(detail)"
             }
         }
     }
 
     private final class SupervisedChild: @unchecked Sendable {
         let pid: pid_t
+        let applicationMonitor: DoryApplicationProcessMonitor?
+        /// Retains the exact LaunchServices process object for the complete supervision window.
+        /// The peer audit token, rather than this object's numeric PID, authorizes every signal.
+        let applicationLaunch: DoryWorkspaceApplicationLaunch?
+        let applicationAuditToken: audit_token_t?
         let terminationWaiter = DispatchGroup()
         private let lifecycleLock = NSLock()
         private var terminationObserved = false
 
-        init(pid: pid_t) {
+        init(
+            pid: pid_t,
+            applicationMonitor: DoryApplicationProcessMonitor? = nil,
+            applicationLaunch: DoryWorkspaceApplicationLaunch? = nil,
+            applicationAuditToken: audit_token_t? = nil
+        ) {
             self.pid = pid
+            self.applicationMonitor = applicationMonitor
+            self.applicationLaunch = applicationLaunch
+            self.applicationAuditToken = applicationAuditToken
             terminationWaiter.enter()
         }
 
-        /// Serializes every signal decision with the reaper's terminal observation. The reaper
-        /// uses waitid(WNOWAIT), so the PID remains a non-reusable zombie until this state is set.
+        /// Serializes every signal decision with terminal observation. Direct children remain
+        /// reserved by waitid(WNOWAIT); application helpers use their immutable audit token.
         func markTerminationObserved() {
             lifecycleLock.lock()
             terminationObserved = true
@@ -188,15 +358,126 @@ public final class HvProcess: @unchecked Sendable {
             lifecycleLock.lock()
             defer { lifecycleLock.unlock() }
             guard !terminationObserved else { return false }
-            return kill(pid, signal) == 0
+            if let applicationAuditToken {
+                switch DoryApplicationLaunchHandoffProtocol.signal(
+                    signal,
+                    auditToken: applicationAuditToken
+                ) {
+                case .delivered:
+                    return true
+                case .failed:
+                    return false
+                case .unavailable:
+                    // Early Sonoma lacks the audit-token signal syscall. AppKit termination is
+                    // still bound to this retained launch instance; other signals fail closed.
+                    switch signal {
+                    case SIGTERM:
+                        return applicationLaunch?.terminate() == true
+                    case SIGKILL:
+                        return applicationLaunch?.forceTerminate() == true
+                    default:
+                        return false
+                    }
+                }
+            }
+            return HvProcess.signalErrorWithBoundedRetries {
+                let result = kill(pid, signal)
+                return (result == 0, result == 0 ? 0 : errno)
+            } == nil
+        }
+    }
+
+    enum UnpublishedChildWaitObservation: Equatable {
+        case reaped
+        case running
+        case failed(Int32)
+    }
+
+    enum DirectChildTerminalObservation: Equatable {
+        case exited
+        case noChild
+    }
+
+    /// Retains the exact, still-unreaped direct child after bounded synchronous cleanup expires.
+    /// The child PID remains kernel-reserved until waitpid succeeds, and this private queue keeps
+    /// retrying SIGKILL plus nonblocking reap without holding the daemon launch or machine lock.
+    private final class UnpublishedChildTerminalRetirement: @unchecked Sendable {
+        private let pid: pid_t
+        private let retryDelay: TimeInterval
+        private let queue: DispatchQueue
+        private let onRetired: @Sendable () -> Void
+        private let completion = DispatchGroup()
+
+        private init(
+            pid: pid_t,
+            retryDelay: TimeInterval,
+            onRetired: @escaping @Sendable () -> Void
+        ) {
+            self.pid = pid
+            self.retryDelay = max(0.001, retryDelay)
+            queue = DispatchQueue(
+                label: "dev.dory.unpublished-child-terminal-retirement",
+                qos: .utility
+            )
+            self.onRetired = onRetired
+            completion.enter()
+        }
+
+        static func begin(
+            pid: pid_t,
+            retryDelay: TimeInterval = 0.05,
+            onRetired: @escaping @Sendable () -> Void
+        ) -> UnpublishedChildTerminalRetirement {
+            let retirement = UnpublishedChildTerminalRetirement(
+                pid: pid,
+                retryDelay: retryDelay,
+                onRetired: onRetired
+            )
+            retirement.queue.async { retirement.attempt() }
+            return retirement
+        }
+
+        func waitForTermination(timeout: TimeInterval) -> Bool {
+            completion.wait(timeout: .now() + max(0, timeout)) == .success
+        }
+
+        func waitForTermination() {
+            completion.wait()
+        }
+
+        private func attempt() {
+            _ = HvProcess.sendSignal(SIGKILL, to: pid)
+            var status: Int32 = 0
+            let observation = HvProcess.observeUnpublishedChild(pid: pid) {
+                let result = waitpid(pid, &status, WNOHANG)
+                return (result, result < 0 ? errno : 0)
+            }
+            switch observation {
+            case .reaped:
+                onRetired()
+                completion.leave()
+            case .running, .failed:
+                queue.asyncAfter(deadline: .now() + retryDelay) { [self] in
+                    attempt()
+                }
+            }
         }
     }
 
     private let configuration: HvProcessConfiguration
-    private let suspendedChildCodeValidator: any DorySuspendedChildCodeValidating
+    private let launchGatedChildCodeValidator: any DoryLaunchGatedChildCodeValidating
+    private let applicationLauncher: DoryWorkspaceApplicationLauncher
     private let unexpectedTerminationHandler: HvProcessUnexpectedTerminationHandler?
-    private let lock = NSLock()
+    private let lock = DoryProcessLifecycleMutex()
+    private let deferredStop = DoryDeferredProcessStopCoordinator(
+        label: "dev.dory.hv-process.deferred-stop"
+    )
     private var process: SupervisedChild?
+    /// A launch can fail after LaunchServices created the exact application but before it became a
+    /// published `SupervisedChild`. Keep that terminal cleanup represented in this supervisor so
+    /// callers cannot mistake an asynchronously retiring runner for a fully stopped generation.
+    private var terminalRetirement: DoryApplicationTerminalRetirement?
+    private var unpublishedChildRetirement: UnpublishedChildTerminalRetirement?
     private var logDescriptor: Int32?
     private var stopping = false
     private var hasStarted = false
@@ -207,13 +488,15 @@ public final class HvProcess: @unchecked Sendable {
     private var expectedExitPreviousRestartsEnabled: Bool?
     private var lastTerminationStatus: Int32?
     private var lastLaunchError: String?
+    private var postPublicationLifecycleGateForTesting: (@Sendable (Int32) -> Void)?
 
     public init(
         configuration: HvProcessConfiguration,
         unexpectedTerminationHandler: HvProcessUnexpectedTerminationHandler? = nil
     ) {
         self.configuration = configuration
-        suspendedChildCodeValidator = DorySecuritySuspendedChildCodeValidator()
+        launchGatedChildCodeValidator = DorySecurityLaunchGatedChildCodeValidator()
+        applicationLauncher = DoryWorkspaceApplicationLauncher()
         self.unexpectedTerminationHandler = unexpectedTerminationHandler
     }
 
@@ -221,11 +504,12 @@ public final class HvProcess: @unchecked Sendable {
     /// Security.framework-backed validator selected by the public initializer.
     init(
         configuration: HvProcessConfiguration,
-        suspendedChildCodeValidator: any DorySuspendedChildCodeValidating,
+        suspendedChildCodeValidator: any DoryLaunchGatedChildCodeValidating,
         unexpectedTerminationHandler: HvProcessUnexpectedTerminationHandler? = nil
     ) {
         self.configuration = configuration
-        self.suspendedChildCodeValidator = suspendedChildCodeValidator
+        launchGatedChildCodeValidator = suspendedChildCodeValidator
+        applicationLauncher = DoryWorkspaceApplicationLauncher()
         self.unexpectedTerminationHandler = unexpectedTerminationHandler
     }
 
@@ -239,6 +523,25 @@ public final class HvProcess: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return process != nil
+            || terminalRetirement != nil
+            || unpublishedChildRetirement != nil
+            || deferredStop.isPending
+    }
+
+    func lifecycleObservation(
+        until deadline: DispatchTime
+    ) -> DockerManagedProcessObservation? {
+        guard lock.lock(until: deadline) else { return nil }
+        let childPID = process?.pid
+        let ownsRuntimeAuthority = process != nil
+            || terminalRetirement != nil
+            || unpublishedChildRetirement != nil
+            || deferredStop.isPending
+        lock.unlock()
+        return DockerManagedProcessObservation(
+            pid: childPID,
+            isRunning: ownsRuntimeAuthority
+        )
     }
 
     /// True while a helper is running or a bounded restart has already been scheduled.
@@ -248,7 +551,10 @@ public final class HvProcess: @unchecked Sendable {
         defer { lock.unlock() }
         // Keep the launch active while the reaper is between observing child exit and deciding
         // whether a retry is permitted.
-        return (!stopping && process != nil) || (!stopping && restartsEnabled && restartPending)
+        return (!stopping && process != nil)
+            || (!stopping && terminalRetirement != nil)
+            || (!stopping && unpublishedChildRetirement != nil)
+            || (!stopping && restartsEnabled && restartPending)
     }
 
     public var terminationStatus: Int32? {
@@ -257,22 +563,63 @@ public final class HvProcess: @unchecked Sendable {
         return lastTerminationStatus
     }
 
+    /// Internal lifecycle seam used to prove that callers retain launch authority when an app was
+    /// created but failed before `SupervisedChild` publication. Production enters the identical
+    /// state through `beginTerminalRetirement(application:)` in the LaunchServices failure paths.
+    func installPrepublicationTerminalRetirement(
+        application: any DoryApplicationTerminationControlling,
+        retryDelay: TimeInterval = 0.01
+    ) {
+        lock.lock()
+        precondition(
+            process == nil
+                && terminalRetirement == nil
+                && unpublishedChildRetirement == nil
+        )
+        terminalRetirement = DoryApplicationTerminalRetirement.begin(
+            application: application,
+            retryDelay: retryDelay
+        ) { [self] in
+            lock.lock()
+            terminalRetirement = nil
+            lock.unlock()
+            closeInheritedDescriptors()
+        }
+        lock.unlock()
+    }
+
     public var launchError: String? {
         lock.lock()
         defer { lock.unlock() }
         return lastLaunchError
     }
 
+    /// Internal deterministic race seam. The callback runs with the lifecycle reservation held
+    /// after the exact child is published and before `start()` can return. Production never sets it.
+    func installPostPublicationLifecycleGateForTesting(
+        _ gate: @escaping @Sendable (Int32) -> Void
+    ) {
+        lock.lock()
+        precondition(!hasStarted && process == nil)
+        postPublicationLifecycleGateForTesting = gate
+        lock.unlock()
+    }
+
     public func start() throws {
         lock.lock()
         defer { lock.unlock() }
-        if process != nil {
+        if process != nil
+            || terminalRetirement != nil
+            || unpublishedChildRetirement != nil {
             throw ProcessError.alreadyRunning
         }
         // A DockerTier shutdown can publish and stop this newly-created process object just
         // before the startup thread enters start(). Do not erase that cancellation and spawn a
         // child after the shutdown caller has already returned.
         if stopping, !hasStarted {
+            throw ProcessError.startCancelled
+        }
+        if deferredStop.isPending {
             throw ProcessError.startCancelled
         }
         hasStarted = true
@@ -285,6 +632,12 @@ public final class HvProcess: @unchecked Sendable {
         lastTerminationStatus = nil
         lastLaunchError = nil
         try launchLocked()
+        // A bounded stop can lose the mutex race at the exact end of a long application handoff.
+        // Its independent coordinator already owns a deferred exact stop; never report that late
+        // launch as an accepted generation while the stop is pending.
+        if deferredStop.isPending {
+            throw ProcessError.startCancelled
+        }
     }
 
     private func launchLocked() throws {
@@ -303,89 +656,302 @@ public final class HvProcess: @unchecked Sendable {
         let outputDescriptor = log ?? STDERR_FILENO
         let errorDescriptor = log ?? STDERR_FILENO
         let (environment, inheritParentEnvironment) = try spawnEnvironment()
-        let expectedRunnerIdentity = configuration.rendererReleaseIdentity.map {
+        let exactRunnerIdentity = configuration.rendererReleaseIdentity.map {
             DoryLiveRunnerCodeIdentity(codeDirectoryHash: $0.runnerCodeDirectoryHash)
         }
-        let childPID: pid_t
-        do {
-            childPID = try InheritedDescriptorSpawner.spawn(
-                executablePath: configuration.executablePath,
-                arguments: configuration.arguments,
-                environment: environment,
-                inheritParentEnvironment: inheritParentEnvironment,
-                startSuspended: expectedRunnerIdentity != nil,
-                descriptorMappings: mappings,
-                standardInputDescriptor: standardInput,
-                standardOutputDescriptor: outputDescriptor,
-                standardErrorDescriptor: errorDescriptor
-            )
-        } catch {
-            if let log { Darwin.close(log) }
-            throw error
-        }
-        if let expectedRunnerIdentity {
+        let child: SupervisedChild
+        switch configuration.launchStyle {
+        case .directExecutable:
+            let childPID: pid_t
             do {
-                try suspendedChildCodeValidator.validateSuspendedChild(
-                    pid: childPID,
-                    expectedIdentity: expectedRunnerIdentity
+                childPID = try InheritedDescriptorSpawner.spawn(
+                    executablePath: configuration.executablePath,
+                    arguments: configuration.arguments,
+                    environment: environment,
+                    inheritParentEnvironment: inheritParentEnvironment,
+                    startSuspended: exactRunnerIdentity != nil,
+                    descriptorMappings: mappings,
+                    standardInputDescriptor: standardInput,
+                    standardOutputDescriptor: outputDescriptor,
+                    standardErrorDescriptor: errorDescriptor
                 )
             } catch {
-                Self.killAndReapUnpublishedChild(childPID)
                 if let log { Darwin.close(log) }
-                // Identity rejection is terminal for this supervised launch generation. In
-                // particular, a startup restart must not turn a rejected live image into a
-                // path-based retry loop.
+                throw error
+            }
+            if let exactRunnerIdentity {
+                do {
+                    try launchGatedChildCodeValidator.validateLaunchGatedChild(
+                        pid: childPID,
+                        expectedIdentity: exactRunnerIdentity
+                    )
+                } catch {
+                    killAndReapUnpublishedChild(childPID)
+                    if let log { Darwin.close(log) }
+                    throw terminalIdentityLaunchError(error)
+                }
+                if let resumeError = Self.sendSignal(SIGCONT, to: childPID) {
+                    killAndReapUnpublishedChild(childPID)
+                    if let log { Darwin.close(log) }
+                    restartsEnabled = false
+                    restartPending = false
+                    if unpublishedChildRetirement == nil {
+                        closeInheritedDescriptors()
+                    }
+                    let wrapped = ProcessError.rendererRunnerResumeFailed(resumeError)
+                    lastLaunchError = wrapped.description
+                    throw wrapped
+                }
+            }
+            child = SupervisedChild(pid: childPID)
+
+        case .applicationBundle:
+            let handoff: DoryApplicationLaunchHandoffServer
+            let bundle: DoryRunnerApplicationBundle
+            do {
+                bundle = try DoryRunnerApplicationBundle(
+                    executablePath: configuration.executablePath
+                )
+                handoff = try DoryApplicationLaunchHandoffServer()
+            } catch {
+                if let log { Darwin.close(log) }
+                throw ProcessError.applicationRunnerLaunchFailed("\(error)")
+            }
+            defer { handoff.cleanup() }
+            let expectedIdentity: DoryLiveRunnerCodeIdentity
+            switch bundle.kind {
+            case .rawHVRunner:
+                expectedIdentity = exactRunnerIdentity ?? bundle.kind.signedIdentity
+            case .virtualizationVMM:
+                guard exactRunnerIdentity == nil else {
+                    if let log { Darwin.close(log) }
+                    restartsEnabled = false
+                    restartPending = false
+                    closeInheritedDescriptors()
+                    throw ProcessError.applicationRunnerLaunchFailed(
+                        "renderer release identity cannot authorize DoryVMM"
+                    )
+                }
+                expectedIdentity = bundle.kind.signedIdentity
+            }
+            let launchArguments = configuration.arguments + [
+                DoryApplicationLaunchHandoffClient.socketArgument,
+                handoff.path,
+                DoryApplicationLaunchHandoffClient.tokenArgument,
+                handoff.token,
+            ]
+            let launchEnvironment = inheritParentEnvironment
+                ? ProcessInfo.processInfo.environment.merging(environment) { _, explicit in explicit }
+                : environment
+            let applicationLaunch: DoryWorkspaceApplicationLaunch
+            do {
+                applicationLaunch = try applicationLauncher.launch(
+                    bundle: bundle,
+                    arguments: launchArguments,
+                    environment: launchEnvironment
+                )
+            } catch {
+                if let log { Darwin.close(log) }
+                throw ProcessError.applicationRunnerLaunchFailed("\(error)")
+            }
+            let childPID = applicationLaunch.processIdentifier
+            let monitor: DoryApplicationProcessMonitor
+            do {
+                monitor = try DoryApplicationProcessMonitor(pid: childPID) {
+                    applicationLaunch.isTerminated
+                }
+            } catch {
+                _ = applicationLaunch.forceTerminate()
+                beginTerminalRetirement(application: applicationLaunch)
+                if let log { Darwin.close(log) }
+                throw ProcessError.applicationRunnerLaunchFailed("\(error)")
+            }
+            var launchMappings = mappings
+            launchMappings.append(InheritedDescriptorMapping(
+                parentDescriptor: standardInput,
+                childDescriptor: STDIN_FILENO
+            ))
+            launchMappings.append(InheritedDescriptorMapping(
+                parentDescriptor: outputDescriptor,
+                childDescriptor: STDOUT_FILENO
+            ))
+            launchMappings.append(InheritedDescriptorMapping(
+                parentDescriptor: errorDescriptor,
+                childDescriptor: STDERR_FILENO
+            ))
+            var identityFailure: Error?
+            let applicationAuditToken: audit_token_t
+            do {
+                applicationAuditToken = try handoff.transfer(
+                    toExpectedPID: childPID,
+                    mappings: launchMappings
+                ) {
+                    do {
+                        try launchGatedChildCodeValidator.validateLaunchGatedChild(
+                            pid: childPID,
+                            expectedIdentity: expectedIdentity
+                        )
+                    } catch {
+                        identityFailure = error
+                        throw error
+                    }
+                }
+            } catch {
+                _ = applicationLaunch.forceTerminate()
+                if monitor.waitForTermination(
+                    timeout: Self.applicationLaunchCleanupTimeoutSeconds
+                ) == nil {
+                    beginTerminalRetirement(application: applicationLaunch)
+                }
+                if let log { Darwin.close(log) }
+                if let identityFailure {
+                    throw terminalIdentityLaunchError(identityFailure)
+                }
                 restartsEnabled = false
                 restartPending = false
-                closeInheritedDescriptors()
-                let wrapped = ProcessError.rendererRunnerIdentityRejected("\(error)")
+                if terminalRetirement == nil {
+                    closeInheritedDescriptors()
+                }
+                let wrapped = ProcessError.applicationRunnerLaunchFailed("\(error)")
                 lastLaunchError = wrapped.description
                 throw wrapped
             }
-            if let resumeError = Self.sendSignal(SIGCONT, to: childPID) {
-                Self.killAndReapUnpublishedChild(childPID)
-                if let log { Darwin.close(log) }
-                restartsEnabled = false
-                restartPending = false
-                closeInheritedDescriptors()
-                let wrapped = ProcessError.rendererRunnerResumeFailed(resumeError)
-                lastLaunchError = wrapped.description
-                throw wrapped
-            }
+            child = SupervisedChild(
+                pid: childPID,
+                applicationMonitor: monitor,
+                applicationLaunch: applicationLaunch,
+                applicationAuditToken: applicationAuditToken
+            )
         }
 
-        // Do not publish the PID or start the supervised reaper until the exact live code object
-        // has passed validation and the same suspended child has been resumed successfully.
-        let child = SupervisedChild(pid: childPID)
+        // Do not publish the PID until the exact live code object has passed validation and the
+        // same direct child was resumed or the same application acknowledged descriptor install.
         process = child
         logDescriptor = log
-        DispatchQueue.global(qos: .utility).async { [weak self, child] in
+        postPublicationLifecycleGateForTesting?(child.pid)
+        // The reaper intentionally retains this supervisor until the exact process is terminal.
+        // A bounded stop may return while a kernel-stuck process is still alive; retaining `self`
+        // preserves its descriptors and application identity without holding a daemon request lock.
+        DispatchQueue.global(qos: .utility).async { [self, child] in
             let termination = Self.waitForTermination(of: child)
-            self?.handleTermination(child, termination: termination)
+            handleTermination(child, termination: termination)
             child.terminationWaiter.leave()
         }
     }
 
-    private static func sendSignal(_ signal: Int32, to pid: pid_t) -> Int32? {
-        while true {
-            if kill(pid, signal) == 0 { return nil }
-            let code = errno
-            if code == EINTR { continue }
-            return code
+    private func terminalIdentityLaunchError(_ error: Error) -> ProcessError {
+        // Identity rejection is terminal for this supervised launch generation. In particular,
+        // a startup restart must not turn a rejected live image into a path-based retry loop.
+        restartsEnabled = false
+        restartPending = false
+        if terminalRetirement == nil, unpublishedChildRetirement == nil {
+            closeInheritedDescriptors()
+        }
+        let wrapped = ProcessError.rendererRunnerIdentityRejected("\(error)")
+        lastLaunchError = wrapped.description
+        return wrapped
+    }
+
+    /// Called only while `lock` is already held by launchLocked(). The retirement callback retains
+    /// this supervisor until exact terminal observation, then releases its launch-failure authority.
+    private func beginTerminalRetirement(application: DoryWorkspaceApplicationLaunch) {
+        terminalRetirement = DoryApplicationTerminalRetirement.begin(
+            application: application
+        ) { [self] in
+            lock.lock()
+            terminalRetirement = nil
+            lock.unlock()
+            closeInheritedDescriptors()
         }
     }
 
-    /// Exact cleanup for a child that has not entered supervised state. `waitpid` is deliberate:
-    /// no asynchronous reaper exists before publication, and leaving this process as a zombie
-    /// would also leave its PID/code identity ambiguous to later launch attempts.
-    private static func killAndReapUnpublishedChild(_ pid: pid_t) {
-        _ = sendSignal(SIGKILL, to: pid)
-        var status: Int32 = 0
+    private static func sendSignal(_ signal: Int32, to pid: pid_t) -> Int32? {
+        signalErrorWithBoundedRetries {
+            let result = kill(pid, signal)
+            return (result == 0, result == 0 ? 0 : errno)
+        }
+    }
+
+    static func signalErrorWithBoundedRetries(
+        operation: () -> (succeeded: Bool, error: Int32)
+    ) -> Int32? {
+        for attempt in 1...8 {
+            let outcome = operation()
+            if outcome.succeeded { return nil }
+            if outcome.error != EINTR || attempt == 8 { return outcome.error }
+        }
+        return EINTR
+    }
+
+    /// Exact cleanup for a child that has not entered supervised state. The synchronous launch
+    /// path is hard-bounded; if SIGKILL cannot be reaped promptly, an exact retained retirement
+    /// owns the PID and inherited descriptors until background terminal observation.
+    private func killAndReapUnpublishedChild(_ pid: pid_t) {
+        _ = Self.sendSignal(SIGKILL, to: pid)
+        let reaped = Self.waitForUnpublishedChildTermination(
+            pid: pid,
+            timeout: Self.unpublishedChildCleanupTimeoutSeconds
+        )
+        guard !reaped else { return }
+        unpublishedChildRetirement = UnpublishedChildTerminalRetirement.begin(
+            pid: pid
+        ) { [self] in
+            lock.lock()
+            unpublishedChildRetirement = nil
+            lock.unlock()
+            closeInheritedDescriptors()
+        }
+    }
+
+    static func observeUnpublishedChild(
+        pid: pid_t,
+        wait: () -> (result: pid_t, error: Int32)
+    ) -> UnpublishedChildWaitObservation {
+        for attempt in 1...maximumInterruptedWaitAttempts {
+            let outcome = wait()
+            if outcome.result == pid { return .reaped }
+            if outcome.result == 0 { return .running }
+            if outcome.result < 0, outcome.error == ECHILD { return .reaped }
+            if outcome.result < 0,
+               outcome.error == EINTR,
+               attempt < maximumInterruptedWaitAttempts {
+                continue
+            }
+            return .failed(outcome.error == 0 ? EIO : outcome.error)
+        }
+        return .failed(EINTR)
+    }
+
+    static func waitForUnpublishedChildTermination(
+        pid: pid_t,
+        timeout: TimeInterval,
+        pollInterval: TimeInterval = 0.005,
+        monotonicNow: () -> UInt64 = { DispatchTime.now().uptimeNanoseconds },
+        pause: (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) },
+        wait: ((pid_t) -> UnpublishedChildWaitObservation)? = nil
+    ) -> Bool {
+        let started = monotonicNow()
+        let timeoutNanoseconds = UInt64(max(0, timeout) * 1_000_000_000)
+        let deadline = started.addingReportingOverflow(timeoutNanoseconds)
+        let deadlineNanoseconds = deadline.overflow ? UInt64.max : deadline.partialValue
         while true {
-            let result = waitpid(pid, &status, 0)
-            if result == pid { return }
-            if result < 0, errno == EINTR { continue }
-            return
+            let observation: UnpublishedChildWaitObservation
+            if let wait {
+                observation = wait(pid)
+            } else {
+                var status: Int32 = 0
+                observation = observeUnpublishedChild(pid: pid) {
+                    let result = waitpid(pid, &status, WNOHANG)
+                    return (result, result < 0 ? errno : 0)
+                }
+            }
+            switch observation {
+            case .reaped:
+                return true
+            case .running, .failed:
+                guard monotonicNow() < deadlineNanoseconds else { return false }
+                pause(max(0.001, pollInterval))
+            }
         }
     }
 
@@ -438,26 +1004,51 @@ public final class HvProcess: @unchecked Sendable {
     }
 
     private static func waitForTermination(of child: SupervisedChild) -> HvProcessTermination {
-        var terminalInfo = siginfo_t()
-        while true {
-            // Observe exit without reaping first. This keeps the PID reserved by the kernel while
-            // markTerminationObserved closes the signal/PID-reuse race for stop/suspend/resume.
-            let result = waitid(P_PID, id_t(child.pid), &terminalInfo, WEXITED | WNOWAIT)
-            if result == 0 {
-                if [CLD_EXITED, CLD_KILLED, CLD_DUMPED].contains(terminalInfo.si_code) {
-                    break
-                }
-                // Darwin can surface a pending stop/continue notification here even when only
-                // WEXITED was requested. Consume that nonterminal state change and keep waiting;
-                // marking it terminal would prevent stop() from resuming a suspended child.
-                var stateChange: Int32 = 0
-                while waitpid(child.pid, &stateChange, WUNTRACED | WCONTINUED) < 0,
-                      errno == EINTR {}
-                continue
-            }
-            if errno == EINTR { continue }
+        if let applicationMonitor = child.applicationMonitor {
+            let termination = applicationMonitor.waitForTermination()
             child.markTerminationObserved()
-            return HvProcessTermination(status: errno, wasUncaughtSignal: false)
+            return termination
+        }
+        var terminalInfo = siginfo_t()
+        let terminalObservation = waitForDirectChildTerminalObservation(
+            waitidOperation: {
+                let result = waitid(
+                    P_PID,
+                    id_t(child.pid),
+                    &terminalInfo,
+                    WEXITED | WNOWAIT
+                )
+                return (
+                    result,
+                    result < 0 ? errno : 0,
+                    terminalInfo.si_code
+                )
+            },
+            consumeNonterminalObservation: {
+                // Darwin can surface a pending stop/continue notification here even when only
+                // WEXITED was requested. Consume that state change without ever marking it as an
+                // exit; bounded EINTR attempts fall back to the outer retained retry.
+                var stateChange: Int32 = 0
+                for attempt in 1...maximumInterruptedWaitAttempts {
+                    let result = waitpid(
+                        child.pid,
+                        &stateChange,
+                        WUNTRACED | WCONTINUED
+                    )
+                    if result >= 0 { return }
+                    if errno != EINTR || attempt == maximumInterruptedWaitAttempts {
+                        return
+                    }
+                }
+            }
+        )
+        if terminalObservation == .noChild {
+            child.markTerminationObserved()
+            return HvProcessTermination(
+                status: ECHILD,
+                wasUncaughtSignal: false,
+                statusIsKnown: false
+            )
         }
         child.markTerminationObserved()
 
@@ -474,8 +1065,50 @@ public final class HvProcess: @unchecked Sendable {
                 }
                 return HvProcessTermination(status: signal, wasUncaughtSignal: true)
             }
-            if result < 0, errno == EINTR { continue }
-            return HvProcessTermination(status: errno, wasUncaughtSignal: false)
+            if result < 0, errno == ECHILD {
+                return HvProcessTermination(
+                    status: ECHILD,
+                    wasUncaughtSignal: false,
+                    statusIsKnown: false
+                )
+            }
+            // Exit was proven by waitid(WNOWAIT), but keep the exact child/reaper authority until
+            // the zombie is actually consumed. Persistent waitpid errors must not publish a
+            // terminal manager state or spin a utility thread hot.
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+    }
+
+    static func waitForDirectChildTerminalObservation(
+        retryDelay: TimeInterval = 0.01,
+        waitidOperation: () -> (result: Int32, error: Int32, code: Int32),
+        consumeNonterminalObservation: () -> Void,
+        pause: (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) }
+    ) -> DirectChildTerminalObservation {
+        var interruptedAttempts = 0
+        while true {
+            let outcome = waitidOperation()
+            if outcome.result == 0 {
+                interruptedAttempts = 0
+                if [CLD_EXITED, CLD_KILLED, CLD_DUMPED].contains(outcome.code) {
+                    return .exited
+                }
+                consumeNonterminalObservation()
+                pause(max(0.001, retryDelay))
+                continue
+            }
+            let code = outcome.error == 0 ? EIO : outcome.error
+            if code == ECHILD { return .noChild }
+            if code == EINTR {
+                interruptedAttempts += 1
+                if interruptedAttempts >= maximumInterruptedWaitAttempts {
+                    interruptedAttempts = 0
+                    pause(max(0.001, retryDelay))
+                }
+                continue
+            }
+            interruptedAttempts = 0
+            pause(max(0.001, retryDelay))
         }
     }
 
@@ -492,7 +1125,7 @@ public final class HvProcess: @unchecked Sendable {
             lock.unlock()
             return
         }
-        lastTerminationStatus = termination.status
+        lastTerminationStatus = termination.statusIsKnown ? termination.status : nil
         process = nil
         suspended = false
         oldLog = logDescriptor
@@ -545,12 +1178,14 @@ public final class HvProcess: @unchecked Sendable {
                 restartPending = true
             }
             let delay = configuration.restartPolicy.delay(forAttempt: restartCount)
+            let retainsTerminalAuthority = terminalRetirement != nil
+                || unpublishedChildRetirement != nil
             lock.unlock()
             if shouldRetry {
                 DispatchQueue.global().asyncAfter(deadline: .now() + delay) { [weak self] in
                     self?.restartAfterUnexpectedExit()
                 }
-            } else {
+            } else if !retainsTerminalAuthority {
                 closeInheritedDescriptors()
             }
         }
@@ -627,47 +1262,245 @@ public final class HvProcess: @unchecked Sendable {
         return true
     }
 
-    public func stop(signal: Int32 = SIGTERM, timeout: TimeInterval = 5) {
+    private struct StopClaim {
         let child: SupervisedChild?
+        let retirement: DoryApplicationTerminalRetirement?
+        let unpublishedRetirement: UnpublishedChildTerminalRetirement?
         let terminationWaiter: DispatchGroup?
         let oldLog: Int32?
         let wasSuspended: Bool
-        lock.lock()
+    }
+
+    /// Must be called with `lock` held. Claiming is deliberately small; all process signalling,
+    /// terminal waits, descriptor closes, and application retirement waits happen after unlock.
+    private func claimStopLocked() -> StopClaim {
         stopping = true
         restartsEnabled = false
         restartPending = false
-        child = process
-        terminationWaiter = child?.terminationWaiter
-        // Take-and-null the handle so exactly one of stop()/handleTermination closes it; a
-        // double close could otherwise land on a recycled fd.
-        oldLog = logDescriptor
+        let child = process
+        let claim = StopClaim(
+            child: child,
+            retirement: terminalRetirement,
+            unpublishedRetirement: unpublishedChildRetirement,
+            terminationWaiter: child?.terminationWaiter,
+            oldLog: logDescriptor,
+            wasSuspended: suspended
+        )
+        // Take-and-null the handle so exactly one of stop()/handleTermination closes it; a double
+        // close could otherwise land on a recycled descriptor.
         logDescriptor = nil
-        wasSuspended = suspended
         suspended = false
-        lock.unlock()
+        return claim
+    }
 
-        guard let child else {
-            if let oldLog { Darwin.close(oldLog) }
-            closeInheritedDescriptors()
-            return
+    private func completeStop(
+        _ claim: StopClaim,
+        signal: Int32,
+        deadline: DoryProcessStopDeadline
+    ) -> Bool {
+        guard let child = claim.child else {
+            let retired: Bool
+            if let retirement = claim.retirement {
+                retired = retirement.waitForTermination(
+                    timeout: Self.remainingTime(until: deadline.final)
+                )
+            } else if let retirement = claim.unpublishedRetirement {
+                retired = retirement.waitForTermination(
+                    timeout: Self.remainingTime(until: deadline.final)
+                )
+            } else {
+                retired = true
+            }
+            if let oldLog = claim.oldLog { Darwin.close(oldLog) }
+            if retired { closeInheritedDescriptors() }
+            return retired
         }
-        if wasSuspended {
-            child.send(SIGCONT)
+
+        if claim.wasSuspended {
+            _ = child.send(SIGCONT)
         }
-        // The child lifecycle lock suppresses this signal once waitid has observed a terminal
-        // state, while WNOWAIT keeps the PID reserved until the exact waitpid reap below.
-        child.send(signal)
+        // Direct children are PID-reserved by WNOWAIT. LaunchServices helpers are signalled by
+        // immutable audit token, so launchd reaping and PID reuse cannot redirect this request.
+        _ = child.send(signal)
 
         // Wait for the exact child's termination handler so a replacement cannot reuse VM disks
-        // or inherited authority early.
-        let deadline = DispatchTime.now() + max(0, timeout)
-        if terminationWaiter?.wait(timeout: deadline) == .timedOut {
-            child.send(SIGKILL)
-            terminationWaiter?.wait()
-        }
+        // or inherited authority early. If the forced phase cannot finish, the strongly retained
+        // background reaper keeps every authority until terminal observation.
+        let terminated = Self.waitForTermination(
+            waiter: claim.terminationWaiter,
+            deadline: deadline,
+            sendForcedTermination: { _ = child.send(SIGKILL) }
+        )
 
-        if let oldLog { Darwin.close(oldLog) }
-        closeInheritedDescriptors()
+        if let oldLog = claim.oldLog { Darwin.close(oldLog) }
+        if terminated { closeInheritedDescriptors() }
+        return terminated
+    }
+
+    private func scheduleDeferredStop(
+        signal: Int32,
+        gracefulTimeout: TimeInterval,
+        forcedTimeout: TimeInterval
+    ) {
+        deferredStop.schedule(
+            signal: signal,
+            gracefulTimeout: gracefulTimeout,
+            forcedTimeout: forcedTimeout
+        ) { [self] signal, gracefulTimeout, forcedTimeout in
+            // This utility worker is the retained authority after the public deadline. It may wait
+            // for a launch handoff's mutex, but no daemon request, tier lock, or XPC reply waits here.
+            lock.lock()
+            let claim = claimStopLocked()
+            lock.unlock()
+            _ = completeStop(
+                claim,
+                signal: signal,
+                deadline: DoryProcessStopDeadline(
+                    gracefulTimeout: gracefulTimeout,
+                    forcedTimeout: forcedTimeout
+                )
+            )
+        }
+    }
+
+    @discardableResult
+    public func stop(signal: Int32 = SIGTERM, timeout: TimeInterval = 5) -> Bool {
+        stop(
+            signal: signal,
+            timeout: timeout,
+            forcedTimeout: Self.forcedTerminationGraceSeconds
+        )
+    }
+
+    /// Internal timing seam for adversarial tests. Production uses the fixed forced grace above.
+    @discardableResult
+    func stopForTesting(
+        signal: Int32 = SIGTERM,
+        timeout: TimeInterval,
+        forcedTimeout: TimeInterval
+    ) -> Bool {
+        stop(signal: signal, timeout: timeout, forcedTimeout: forcedTimeout)
+    }
+
+    private func stop(
+        signal: Int32,
+        timeout: TimeInterval,
+        forcedTimeout: TimeInterval
+    ) -> Bool {
+        let deadline = DoryProcessStopDeadline(
+            gracefulTimeout: timeout,
+            forcedTimeout: forcedTimeout
+        )
+        guard lock.lock(until: deadline.final) else {
+            scheduleDeferredStop(
+                signal: signal,
+                gracefulTimeout: timeout,
+                forcedTimeout: forcedTimeout
+            )
+            return false
+        }
+        if deferredStop.isPending {
+            lock.unlock()
+            guard deferredStop.wait(until: deadline.final),
+                  let observation = lifecycleObservation(until: deadline.final) else {
+                return false
+            }
+            return !observation.isRunning
+        }
+        let claim = claimStopLocked()
+        lock.unlock()
+        return completeStop(claim, signal: signal, deadline: deadline)
+    }
+
+    /// Waits for the exact retained helper generation without creating a fresh termination or
+    /// signaling authority. The caller's monotonic budget includes lifecycle-lock acquisition.
+    public func waitForTermination(timeout: TimeInterval) -> Bool {
+        let deadline = DoryProcessStopDeadline(
+            gracefulTimeout: timeout,
+            forcedTimeout: 0
+        )
+        guard lock.lock(until: deadline.final) else { return false }
+        let waiter = process?.terminationWaiter
+        let retirement = terminalRetirement
+        let unpublishedRetirement = unpublishedChildRetirement
+        let deferredPending = deferredStop.isPending
+        lock.unlock()
+        if let waiter {
+            guard waiter.wait(timeout: deadline.final) == .success else { return false }
+        } else if let retirement {
+            guard retirement.waitForTermination(
+                timeout: Self.remainingTime(until: deadline.final)
+            ) else { return false }
+        } else if let unpublishedRetirement {
+            guard unpublishedRetirement.waitForTermination(
+                timeout: Self.remainingTime(until: deadline.final)
+            ) else { return false }
+        }
+        if deferredPending,
+           !deferredStop.wait(until: deadline.final) {
+            return false
+        }
+        return lifecycleObservation(until: deadline.final)?.isRunning == false
+    }
+
+    static func waitForTermination(
+        waiter: DispatchGroup?,
+        gracefulTimeout: TimeInterval,
+        forcedTimeout: TimeInterval,
+        sendForcedTermination: () -> Void
+    ) -> Bool {
+        waitForTermination(
+            waiter: waiter,
+            deadline: DoryProcessStopDeadline(
+                gracefulTimeout: gracefulTimeout,
+                forcedTimeout: forcedTimeout
+            ),
+            sendForcedTermination: sendForcedTermination
+        )
+    }
+
+    static func waitForTermination(
+        waiter: DispatchGroup?,
+        deadline: DoryProcessStopDeadline,
+        sendForcedTermination: () -> Void
+    ) -> Bool {
+        guard let waiter else { return true }
+        if waiter.wait(timeout: deadline.graceful) == .success {
+            return true
+        }
+        sendForcedTermination()
+        return waiter.wait(timeout: deadline.final) == .success
+    }
+
+    private static func remainingTime(until deadline: DispatchTime) -> TimeInterval {
+        let now = DispatchTime.now().uptimeNanoseconds
+        guard deadline.uptimeNanoseconds > now else { return 0 }
+        return Double(deadline.uptimeNanoseconds - now) / 1_000_000_000
+    }
+
+    /// Used only from a background retirement task after a bounded public stop returned false.
+    /// This is deliberately not called under a daemon request or workspace mutation lock.
+    func waitUntilTerminated() {
+        while true {
+            lock.lock()
+            let waiter = process?.terminationWaiter
+            let retirement = terminalRetirement
+            let unpublishedRetirement = unpublishedChildRetirement
+            lock.unlock()
+            if let waiter {
+                waiter.wait()
+                continue
+            }
+            if let retirement {
+                retirement.waitForTermination()
+                continue
+            }
+            if let unpublishedRetirement {
+                unpublishedRetirement.waitForTermination()
+                continue
+            }
+            return
+        }
     }
 
     private func closeInheritedDescriptors() {

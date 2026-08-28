@@ -3,7 +3,7 @@ From: Dory Kernel Port <dev@dory.local>
 Date: Fri, 10 Jul 2026 03:30:00 +0000
 Subject: [PATCH] virtiofs: quiesce and reclaim notification buffers
 
-Notification buffers stay posted for the lifetime of a virtio-fs device.  A
+Notification buffers stay posted for the lifetime of a virtio-fs device. A
 device reset must therefore detach every unused token before del_vqs()
 frees the vring, otherwise DMA API transports retain mappings to buffers
 that are later freed.

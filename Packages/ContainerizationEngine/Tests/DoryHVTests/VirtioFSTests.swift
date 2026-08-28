@@ -217,7 +217,7 @@ struct VirtioFSTests {
 
     @Test func highLevelInvalidationSuccessReleasesRetainedGateAndRedrainsRequests() async throws {
         let harness = try VirtioFSNotificationHarness(inlineRequests: false)
-        try harness.prepareCoherentCachingEligibility()
+        try await harness.prepareCoherentCachingEligibility()
 
         let fs = harness.fs
         let invalidation = Task {
@@ -681,7 +681,7 @@ struct VirtioFSTests {
 
     @Test func batchedHighLevelInvalidationKeepsRequestGateClosedAcrossEveryChunk() async throws {
         let harness = try VirtioFSNotificationHarness(notificationBacklogLimit: 1)
-        try harness.prepareCoherentCachingEligibility()
+        try await harness.prepareCoherentCachingEligibility()
         let fs = harness.fs
 
         let invalidation = Task {
@@ -740,14 +740,14 @@ struct VirtioFSTests {
         #expect(!fs.requestPublicationGateClosed)
     }
 
-    @Test func positiveCachingRemainsFailClosedWithHealthyNotifications() throws {
+    @Test func positiveCachingRemainsFailClosedWithHealthyNotifications() async throws {
         let harness = try VirtioFSNotificationHarness()
         let initial = harness.fs.cacheActivationEligibility
         #expect(!initial.isEligible)
         #expect(harness.fs.activateCoherentCaching() == .ineligible(initial))
         #expect(!harness.fs.coherentCachingActive)
 
-        try harness.prepareCoherentCachingEligibility()
+        try await harness.prepareCoherentCachingEligibility()
         let healthy = harness.fs.cacheActivationEligibility
         #expect(healthy.isEligible)
         #expect(harness.fs.activateCoherentCaching() == .ineligible(healthy))
@@ -768,9 +768,66 @@ struct VirtioFSTests {
         #expect(VirtioFS.maximumCoherentCacheValiditySeconds == 0)
     }
 
-    @Test func interruptSuppressionDoesNotRollBackPublishedGrants() throws {
+    @Test func cacheReadinessWaitsForCommittedFuseInitPublication() async throws {
         let harness = try VirtioFSNotificationHarness()
-        try harness.prepareCoherentCachingEligibility()
+        try harness.configureQueue(1)
+        try harness.configureQueue(2)
+        for index in 0..<VirtioFS.requiredStableNotificationBufferCountForCaching {
+            try harness.postWritableBuffer(
+                queue: 1,
+                descriptor: UInt16(index),
+                address: harness.bufferAddress(index),
+                slot: UInt16(index),
+                index: UInt16(index + 1)
+            )
+        }
+        harness.setDriverReady(notifications: true)
+        harness.fs.handleKick(queue: 1, transport: harness.transport)
+
+        let acknowledgementEntered = DispatchSemaphore(value: 0)
+        let releaseAcknowledgement = DispatchSemaphore(value: 0)
+        harness.workerChannel.beforePublicationAcknowledgementTestHook = { publication, committed in
+            guard publication.correlationID == 1, committed else { return }
+            acknowledgementEntered.signal()
+            releaseAcknowledgement.wait()
+        }
+        defer {
+            releaseAcknowledgement.signal()
+            harness.workerChannel.beforePublicationAcknowledgementTestHook = nil
+        }
+
+        let pending = try harness.enqueueFuseRequest(makeFuseInitRequest(), queue: 2)
+        #expect(await semaphoreSignals(acknowledgementEntered))
+
+        // The successful FUSE_INIT response is already guest-visible, but the broker acknowledgement
+        // is deliberately blocked. Advertising readiness here would let a failed acknowledgement
+        // enable caching for a frontend generation that is about to fail-stop.
+        let response = try harness.waitForFuseResponse(pending)
+        #expect(try FuseProtocol.decodeOutHeader(response).error == 0)
+        let awaitingCommit = harness.fs.cacheActivationEligibility
+        #expect(awaitingCommit.notificationFeatureNegotiated)
+        #expect(awaitingCommit.notificationQueueReady)
+        #expect(
+            awaitingCommit.stableNotificationBufferCount
+                == VirtioFS.requiredStableNotificationBufferCountForCaching
+        )
+        #expect(!awaitingCommit.fuseInitCompleted)
+        #expect(!awaitingCommit.isEligible)
+
+        let committedEligibility = Task {
+            try await harness.waitForCommittedCacheActivationEligibility()
+        }
+        releaseAcknowledgement.signal()
+
+        let eligible = try await committedEligibility.value
+        #expect(eligible.fuseInitCompleted)
+        #expect(eligible.isEligible)
+        #expect(await harness.broker.snapshot().pendingPublications == 0)
+    }
+
+    @Test func interruptSuppressionDoesNotRollBackPublishedGrants() async throws {
+        let harness = try VirtioFSNotificationHarness()
+        try await harness.prepareCoherentCachingEligibility()
         try harness.suppressUsedInterrupts(queue: 2)
 
         // Virtqueue.push publishes the response either way; its Bool only reports whether the
@@ -816,7 +873,7 @@ struct VirtioFSTests {
         harness.setDriverReady(notifications: true)
         harness.fs.handleKick(queue: 1, transport: harness.transport)
         _ = try harness.performFuseRequest(makeFuseInitRequest(), queue: 2)
-        let healthy = harness.fs.cacheActivationEligibility
+        let healthy = try await harness.waitForCommittedCacheActivationEligibility()
         #expect(healthy.isEligible)
         #expect(harness.fs.activateCoherentCaching() == .ineligible(healthy))
         #expect(!harness.fs.coherentCachingActive)
@@ -873,7 +930,7 @@ struct VirtioFSTests {
     @Test func invalidationFenceLetsLockHoldingLookupDrainBeforeDeleteAck() async throws {
         let harness = try VirtioFSNotificationHarness(requestQueueCount: 2, inlineRequests: false)
         try harness.write("present", to: "race.txt")
-        try harness.prepareCoherentCaching()
+        try await harness.prepareCoherentCaching()
 
         let primed = try harness.performFuseRequest(
             makeFuseRequest(opcode: .lookup, unique: 10, payload: Array("race.txt\0".utf8)),
@@ -929,7 +986,7 @@ struct VirtioFSTests {
     @Test func invalidationFenceLetsFolioHoldingReadDrainBeforeInodeAck() async throws {
         let harness = try VirtioFSNotificationHarness(requestQueueCount: 2, inlineRequests: false)
         try harness.write("old-data", to: "read-race.txt")
-        try harness.prepareCoherentCaching()
+        try await harness.prepareCoherentCaching()
 
         let lookup = try harness.performFuseRequest(
             makeFuseRequest(opcode: .lookup, unique: 20, payload: Array("read-race.txt\0".utf8)),
@@ -1867,8 +1924,8 @@ private final class VirtioFSNotificationHarness: @unchecked Sendable {
         try root.remove(relativePath)
     }
 
-    func prepareCoherentCaching() throws {
-        try prepareCoherentCachingEligibility()
+    func prepareCoherentCaching() async throws {
+        try await prepareCoherentCachingEligibility()
         let eligibility = fs.cacheActivationEligibility
         guard eligibility.isEligible,
               fs.activateCoherentCaching() == .ineligible(eligibility),
@@ -1877,7 +1934,7 @@ private final class VirtioFSNotificationHarness: @unchecked Sendable {
         }
     }
 
-    func prepareCoherentCachingEligibility() throws {
+    func prepareCoherentCachingEligibility() async throws {
         try configureQueue(1)
         for queue in 2..<(2 + fs.requestQueueCount) {
             try configureQueue(queue)
@@ -1894,13 +1951,27 @@ private final class VirtioFSNotificationHarness: @unchecked Sendable {
         setDriverReady(notifications: true)
         fs.handleKick(queue: 1, transport: transport)
         _ = try performFuseRequest(makeFuseInitRequest(), queue: 2)
-        let deadline = Date().addingTimeInterval(1)
-        while !fs.cacheActivationEligibility.fuseInitCompleted, Date() < deadline {
-            Thread.sleep(forTimeInterval: 0.0001)
+        _ = try await waitForCommittedCacheActivationEligibility()
+    }
+
+    /// A used-ring response is the guest-visible publication boundary, not the end of the host's
+    /// two-phase worker acknowledgement. Cache readiness intentionally becomes true only after the
+    /// broker has committed that publication. Await the exact predicate instead of assuming that
+    /// observing the response also joined the asynchronous frontend task.
+    func waitForCommittedCacheActivationEligibility(
+        timeout: Duration = .seconds(2)
+    ) async throws -> VirtioFSCacheActivationEligibility {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        while clock.now < deadline {
+            let eligibility = fs.cacheActivationEligibility
+            if eligibility.isEligible,
+               await broker.snapshot().pendingPublications == 0 {
+                return eligibility
+            }
+            await Task.yield()
         }
-        guard fs.cacheActivationEligibility.isEligible else {
-            throw VirtioFSHarnessError.cacheActivationFailed
-        }
+        throw VirtioFSHarnessError.cacheActivationFailed
     }
 
     func responseLength(_ pending: PendingFuseRequest) throws -> UInt32 {

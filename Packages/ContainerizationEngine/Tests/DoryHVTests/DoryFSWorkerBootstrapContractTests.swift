@@ -257,8 +257,8 @@ struct DoryFSWorkerBootstrapContractTests {
         let record = DoryFSWorkerBootstrapCodec.bootstrapHeaderByteCount
 
         var flags = encoded
-        writeUInt16(2, to: &flags, at: record + 4)
-        #expect(throws: DoryFSWorkerBootstrapError.invalidShareFlags(2)) {
+        writeUInt16(8, to: &flags, at: record + 4)
+        #expect(throws: DoryFSWorkerBootstrapError.invalidShareFlags(8)) {
             _ = try DoryFSWorkerBootstrapCodec.decode(flags)
         }
 

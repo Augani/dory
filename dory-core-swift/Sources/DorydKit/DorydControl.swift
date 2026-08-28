@@ -14,6 +14,7 @@ import Foundation
     func dockerAgentInfo(reply: @escaping (NSDictionary, String) -> Void)
     func dockerAgentPorts(reply: @escaping (NSDictionary, String) -> Void)
     func dockerAgentTelemetry(reply: @escaping (NSDictionary, String) -> Void)
+    func dockerGuestDataDiskUsage(reply: @escaping (NSDictionary, String) -> Void)
     func dockerAgentClockSync(reply: @escaping (NSDictionary, String) -> Void)
     func machineCreate(_ config: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineStart(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)

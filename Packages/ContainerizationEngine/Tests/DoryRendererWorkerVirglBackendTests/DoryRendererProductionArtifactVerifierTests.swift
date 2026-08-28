@@ -109,7 +109,7 @@ import Testing
             workspaceID: .random(),
             generation: DoryRendererWorkerGeneration(rawValue: 1),
             sourceTuple: .productionCandidate,
-            producerFenceContract: .managedLinux61230PrepareFBV1,
+            producerFenceContract: .managedLinux612106PrepareFBV1,
             requestedCapabilities: .productionAcceleration,
             artifacts: DoryRendererArtifactManifest(
                 candidateInventory: try Self.artifactDigest(inventoryBytes),
@@ -169,7 +169,7 @@ private final class RendererArtifactFixture {
             workspaceID: .random(),
             generation: DoryRendererWorkerGeneration(rawValue: 1),
             sourceTuple: .productionCandidate,
-            producerFenceContract: .managedLinux61230PrepareFBV1,
+            producerFenceContract: .managedLinux612106PrepareFBV1,
             requestedCapabilities: .productionAcceleration,
             artifacts: manifest
         )

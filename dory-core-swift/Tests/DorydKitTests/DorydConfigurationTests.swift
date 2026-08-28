@@ -1059,6 +1059,40 @@ final class DorydConfigurationTests: XCTestCase {
         XCTAssertTrue(config.requiresReadyHandoff)
     }
 
+    func testBundledMachineManagerPinsSignedDoryVMMApplication() throws {
+        let directory = "/tmp/doryd-machine-vmm-app-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let helpers = directory + "/Dory.app/Contents/Helpers"
+        try FileManager.default.createDirectory(atPath: helpers, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        let doryd = try executableFixture(at: helpers + "/doryd")
+        let nested = try executableFixture(
+            at: helpers + "/DoryVMM.app/Contents/MacOS/dory-vmm"
+        )
+        let flat = try executableFixture(at: helpers + "/dory-vmm")
+
+        let bundled = DorydEnvironment(
+            values: ["DORYD_MACHINE_STATE_DIR": directory + "/machines"],
+            home: directory + "/home",
+            cwd: directory,
+            executablePath: doryd
+        )
+        XCTAssertEqual(
+            try XCTUnwrap(bundled.machineManagerConfiguration()).vmmExecutablePath,
+            nested
+        )
+
+        let flatOverride = DorydEnvironment(
+            values: [
+                "DORYD_MACHINE_STATE_DIR": directory + "/machines",
+                "DORYD_VMM_HELPER": flat,
+            ],
+            home: directory + "/home",
+            cwd: directory,
+            executablePath: doryd
+        )
+        XCTAssertNil(flatOverride.machineManagerConfiguration())
+    }
+
     func testMachineManagerConfigurationSelectsRawHVOnlyForEligibleAcceleratedDesktops() throws {
         let directory = "/tmp/doryd-desktop-hv-config-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)

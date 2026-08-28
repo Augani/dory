@@ -4,7 +4,7 @@ Date: Sun, 20 Oct 2024 16:08:02 -0700
 Subject: [PATCH] drm/virtio: Use drm_gem_plane_helper_prepare_fb()
 
 Backport upstream commit 30f86b8f86ada845fbd0d853b3a3d238567ac2c2
-to Dory's pinned Linux 6.12.30 kernel.
+to Dory's pinned Linux 6.12.106 kernel.
 
 Use drm_gem_plane_helper_prepare_fb() for framebuffer synchronization.
 The helper attaches the framebuffer's producer fence to the plane state,

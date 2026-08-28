@@ -631,7 +631,7 @@ raw value 6 and requested `VIRGL_RENDERER_NO_VIRGL` is retired history, not the 
 contract.
 
 The renderer bootstrap currently accepts only the managed
-`managedLinux61230PrepareFBV1` producer-fence contract. That kernel contract makes a qualifying
+`managedLinux612106PrepareFBV1` producer-fence contract. That kernel contract makes a qualifying
 `RESOURCE_FLUSH` producer-complete before the host consumes the scanout. A stock or arbitrary EFI
 guest cannot claim the same ordering merely because it negotiates the same VirtIO GPU features.
 Consequently RawHV acceleration remains a managed exact-kernel capability, and a future generic-ISO

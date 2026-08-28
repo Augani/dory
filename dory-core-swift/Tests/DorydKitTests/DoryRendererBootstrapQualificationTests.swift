@@ -318,7 +318,7 @@ private struct RendererBootstrapQualificationFixture {
             "managedGuestKernelSHA256": String(repeating: "7", count: 64),
             "producerFenceContract": Int(
                 DoryRendererProducerFenceContract
-                    .managedLinux61230PrepareFBV1.rawValue
+                    .managedLinux612106PrepareFBV1.rawValue
             ),
             "qualificationIdentity": "dory-renderer-bootstrap:\(transcript)",
             "revocationKeyID": keyID,
@@ -348,7 +348,7 @@ private struct RendererBootstrapQualificationFixture {
             ),
             generation: DoryRendererWorkerGeneration(rawValue: 7),
             sourceTuple: .productionCandidate,
-            producerFenceContract: .managedLinux61230PrepareFBV1,
+            producerFenceContract: .managedLinux612106PrepareFBV1,
             requestedCapabilities: .productionAcceleration,
             artifacts: DoryRendererArtifactManifest(
                 candidateInventory: try digest("1"),

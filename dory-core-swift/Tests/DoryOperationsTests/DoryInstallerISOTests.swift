@@ -293,7 +293,7 @@ final class DoryInstallerISOTests: XCTestCase {
         let ubuntu24044 = DoryInstallerISOMediaIdentity(
             architecture: .arm64,
             sha256: DoryInstallerISORuntimeCatalog.ubuntu24044DesktopARM64SHA256,
-            byteCount: 3_556_515_840
+            byteCount: 3_540_299_776
         )
         let failingHost = DoryInstallerHostRuntime(
             architecture: "arm64",

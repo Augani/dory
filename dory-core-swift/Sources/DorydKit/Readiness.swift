@@ -143,6 +143,7 @@ public struct DoryReadinessSnapshot: Sendable, Equatable {
 
     public var overall: DoryReadinessState {
         let required = stages.filter(\.required)
+        guard !required.isEmpty else { return .inactive }
         if required.contains(where: { $0.state == .blocked }) { return .blocked }
         if required.contains(where: { $0.state == .waiting }) { return .waiting }
         if required.contains(where: { $0.state == .degraded || $0.state == .inactive }) { return .degraded }
@@ -165,9 +166,18 @@ public struct DoryReadinessSnapshot: Sendable, Equatable {
 /// Thread-safe startup/wake evidence owned by the Docker lifecycle, not reconstructed from UI state.
 /// Health surfaces can add the app, doryd, host-context, and optional Kubernetes stages around this
 /// engine-owned core without making `VM process == running` synonymous with Docker readiness.
+struct EngineReadinessCycleToken: Equatable, Sendable {
+    fileprivate let value: UUID
+
+    fileprivate init() {
+        value = UUID()
+    }
+}
+
 final class EngineReadinessTracker: @unchecked Sendable {
     private let lock = NSLock()
     private var cycleID = UUID().uuidString.lowercased()
+    private var cycleToken = EngineReadinessCycleToken()
     private var trigger = "not-started"
     private var stages: [DoryReadinessStageID: DoryReadinessStage] = [:]
     private var current: DoryReadinessStageID?
@@ -178,51 +188,110 @@ final class EngineReadinessTracker: @unchecked Sendable {
         }
     }
 
-    func beginCycle(trigger: String, at date: Date = Date()) {
+    func currentCycleToken() -> EngineReadinessCycleToken {
+        lock.lock()
+        defer { lock.unlock() }
+        return cycleToken
+    }
+
+    @discardableResult
+    func beginCycle(trigger: String, at date: Date = Date()) -> EngineReadinessCycleToken {
         lock.lock()
         cycleID = UUID().uuidString.lowercased()
+        cycleToken = EngineReadinessCycleToken()
+        let token = cycleToken
         self.trigger = trigger
-        current = nil
+        current = .vmProcess
         for id in Self.engineStageOrder {
             stages[id] = Self.waitingStage(id, code: "stage.queued", detail: "Waiting for the previous readiness stage")
         }
-        lock.unlock()
-        begin(.vmProcess, deadlineSeconds: 120, at: date)
-    }
-
-    func begin(_ id: DoryReadinessStageID, deadlineSeconds: TimeInterval, at date: Date = Date()) {
-        lock.lock()
-        current = id
-        stages[id] = DoryReadinessStage(
-            id: id,
-            state: .waiting,
-            reasonCode: "\(id.rawValue).starting",
-            detail: "Readiness probe is in progress",
-            startedAt: date,
-            deadlineAt: date.addingTimeInterval(max(1, deadlineSeconds)),
-            repair: Self.repair(for: id)
+        stages[.vmProcess] = Self.activeStage(
+            .vmProcess,
+            deadlineSeconds: 120,
+            at: date
         )
         lock.unlock()
+        return token
     }
 
-    func ready(_ id: DoryReadinessStageID, code: String, detail: String, at date: Date = Date()) {
-        finish(id, state: .ready, code: code, detail: detail, at: date)
-    }
-
-    func degraded(_ id: DoryReadinessStageID, code: String, detail: String, at date: Date = Date()) {
-        finish(id, state: .degraded, code: code, detail: detail, at: date)
-    }
-
-    func inactive(_ id: DoryReadinessStageID, code: String, detail: String, at date: Date = Date()) {
-        finish(id, state: .inactive, code: code, detail: detail, at: date)
-    }
-
-    func blocked(_ id: DoryReadinessStageID, code: String, detail: String, at date: Date = Date()) {
-        finish(id, state: .blocked, code: code, detail: detail, at: date)
-    }
-
-    func blockCurrent(code: String, detail: String, at date: Date = Date()) {
+    @discardableResult
+    func begin(
+        _ id: DoryReadinessStageID,
+        cycle token: EngineReadinessCycleToken,
+        deadlineSeconds: TimeInterval,
+        at date: Date = Date()
+    ) -> Bool {
         lock.lock()
+        guard cycleToken == token else {
+            lock.unlock()
+            return false
+        }
+        current = id
+        stages[id] = Self.activeStage(
+            id,
+            deadlineSeconds: deadlineSeconds,
+            at: date
+        )
+        lock.unlock()
+        return true
+    }
+
+    @discardableResult
+    func ready(
+        _ id: DoryReadinessStageID,
+        cycle token: EngineReadinessCycleToken,
+        code: String,
+        detail: String,
+        at date: Date = Date()
+    ) -> Bool {
+        finish(id, cycle: token, state: .ready, code: code, detail: detail, at: date)
+    }
+
+    @discardableResult
+    func degraded(
+        _ id: DoryReadinessStageID,
+        cycle token: EngineReadinessCycleToken,
+        code: String,
+        detail: String,
+        at date: Date = Date()
+    ) -> Bool {
+        finish(id, cycle: token, state: .degraded, code: code, detail: detail, at: date)
+    }
+
+    @discardableResult
+    func inactive(
+        _ id: DoryReadinessStageID,
+        cycle token: EngineReadinessCycleToken,
+        code: String,
+        detail: String,
+        at date: Date = Date()
+    ) -> Bool {
+        finish(id, cycle: token, state: .inactive, code: code, detail: detail, at: date)
+    }
+
+    @discardableResult
+    func blocked(
+        _ id: DoryReadinessStageID,
+        cycle token: EngineReadinessCycleToken,
+        code: String,
+        detail: String,
+        at date: Date = Date()
+    ) -> Bool {
+        finish(id, cycle: token, state: .blocked, code: code, detail: detail, at: date)
+    }
+
+    @discardableResult
+    func blockCurrent(
+        cycle token: EngineReadinessCycleToken,
+        code: String,
+        detail: String,
+        at date: Date = Date()
+    ) -> Bool {
+        lock.lock()
+        guard cycleToken == token else {
+            lock.unlock()
+            return false
+        }
         let id = current ?? .vmProcess
         let prior = stages[id]
         stages[id] = DoryReadinessStage(
@@ -237,16 +306,30 @@ final class EngineReadinessTracker: @unchecked Sendable {
         )
         current = nil
         lock.unlock()
+        return true
     }
 
-    func markStopped(detail: String, at date: Date = Date()) {
+    @discardableResult
+    func markStopped(
+        cycle token: EngineReadinessCycleToken,
+        detail: String,
+        at date: Date = Date()
+    ) -> Bool {
         lock.lock()
+        guard cycleToken == token else {
+            lock.unlock()
+            return false
+        }
+        // Stopping invalidates the lifecycle's mutation capability. Any completion already queued
+        // by that lifecycle will carry `token` and is therefore rejected after this boundary.
+        cycleToken = EngineReadinessCycleToken()
         trigger = "stopped"
         current = nil
         for id in Self.engineStageOrder {
             stages[id] = Self.inactiveStage(id, code: "engine.stopped", detail: detail, at: date)
         }
         lock.unlock()
+        return true
     }
 
     func snapshot(now: Date = Date()) -> DoryReadinessSnapshot {
@@ -263,12 +346,17 @@ final class EngineReadinessTracker: @unchecked Sendable {
 
     private func finish(
         _ id: DoryReadinessStageID,
+        cycle token: EngineReadinessCycleToken,
         state: DoryReadinessState,
         code: String,
         detail: String,
         at date: Date
-    ) {
+    ) -> Bool {
         lock.lock()
+        guard cycleToken == token else {
+            lock.unlock()
+            return false
+        }
         let prior = stages[id]
         stages[id] = DoryReadinessStage(
             id: id,
@@ -283,6 +371,7 @@ final class EngineReadinessTracker: @unchecked Sendable {
         )
         if current == id { current = nil }
         lock.unlock()
+        return true
     }
 
     static let engineStageOrder: [DoryReadinessStageID] = [
@@ -300,7 +389,7 @@ final class EngineReadinessTracker: @unchecked Sendable {
         case .guestAgent:
             DoryReadinessRepair(owner: "doryd", target: "guest-agent", mutation: "Drop the stale RPC channel and reconnect to the existing guest agent")
         case .mountsDataDisk:
-            DoryReadinessRepair(owner: "doryd", target: "data-drive", mutation: "Revalidate the selected drive identity and remount it without formatting")
+            DoryReadinessRepair(owner: "doryd", target: "data-drive", mutation: "Re-probe the selected drive identity and exact guest mount without formatting or replacing data")
         case .network:
             DoryReadinessRepair(owner: "doryd networking reconciler", target: "routes", mutation: "Re-derive and reapply only Dory-owned DNS routes and forwards")
         case .dockerd:
@@ -322,6 +411,22 @@ final class EngineReadinessTracker: @unchecked Sendable {
             state: .waiting,
             reasonCode: code,
             detail: detail,
+            repair: repair(for: id)
+        )
+    }
+
+    private static func activeStage(
+        _ id: DoryReadinessStageID,
+        deadlineSeconds: TimeInterval,
+        at date: Date
+    ) -> DoryReadinessStage {
+        DoryReadinessStage(
+            id: id,
+            state: .waiting,
+            reasonCode: "\(id.rawValue).starting",
+            detail: "Readiness probe is in progress",
+            startedAt: date,
+            deadlineAt: date.addingTimeInterval(max(1, deadlineSeconds)),
             repair: repair(for: id)
         )
     }

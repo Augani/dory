@@ -153,7 +153,7 @@ enum RendererBootstrapQualificationCommand {
             ),
             generation: DoryRendererWorkerGeneration(rawValue: 1),
             sourceTuple: .productionCandidate,
-            producerFenceContract: .managedLinux61230PrepareFBV1,
+            producerFenceContract: .managedLinux612106PrepareFBV1,
             requestedCapabilities: .productionAcceleration,
             artifacts: DoryRendererArtifactManifest(
                 candidateInventory: inventory.candidateInventory,

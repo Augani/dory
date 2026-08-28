@@ -836,6 +836,7 @@ private struct MachineCard: View {
         .buttonStyle(.plain)
         .disabled(store.isMachineBusy(machine.name))
         .help("Delete machine")
+        .accessibilityLabel("Delete \(machine.name)")
     }
 }
 

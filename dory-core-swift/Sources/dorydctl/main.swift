@@ -1,11 +1,12 @@
 import Darwin
 import DoryCore
 import DorydKit
+import DoryOperations
 import Foundation
 
 private let engineColdStartTimeout: TimeInterval = 240
 private let engineShutdownTimeout = DoryEngineShutdownTiming.hostTerminationSeconds + 5
-private let machineFileMutationTimeout: TimeInterval = 900
+private let machineFileMutationTimeout = DoryMachineControlTiming.fileMutationSeconds
 
 enum DorydCtlError: Error, CustomStringConvertible {
     case daemon(String)
@@ -1411,13 +1412,13 @@ func runMachine(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
     case "start":
         let name = try cursor.take("usage: dorydctl machine start NAME")
         let operationID = DoryOperationIdentity.canonical(UUID())
-        try emitJSON(try client.statusCommand {
+        try emitJSON(try client.withTimeout(atLeast: DoryMachineControlTiming.startSeconds).statusCommand {
             $0.machineStart(name, operationID: operationID, reply: $1)
         })
     case "stop":
         let name = try cursor.take("usage: dorydctl machine stop NAME")
         let operationID = DoryOperationIdentity.canonical(UUID())
-        try emitJSON(try client.withTimeout(atLeast: engineShutdownTimeout).statusCommand {
+        try emitJSON(try client.withTimeout(atLeast: DoryMachineControlTiming.stopSeconds).statusCommand {
             $0.machineStop(name, operationID: operationID, reply: $1)
         })
     case "pause":
@@ -1439,7 +1440,7 @@ func runMachine(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
         })
     case "restart":
         let name = try cursor.take("usage: dorydctl machine restart NAME")
-        try emitJSON(try client.withTimeout(atLeast: engineShutdownTimeout).statusCommand {
+        try emitJSON(try client.withTimeout(atLeast: DoryMachineControlTiming.restartSeconds).statusCommand {
             $0.machineRestart(name, reply: $1)
         })
     case "update":

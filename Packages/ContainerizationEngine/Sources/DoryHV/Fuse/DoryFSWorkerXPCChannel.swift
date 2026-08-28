@@ -9,6 +9,8 @@ public enum DoryFSWorkerWorkspaceClientError: Error, Equatable, Sendable {
     case receiptMismatch
     case unknownShare(DoryFSShareCapabilityID)
     case bootstrapTimedOut
+    case coherenceStatusTimedOut
+    case malformedCoherenceStatus
 }
 
 /// One authenticated connection to the runner-local signed filesystem service. The class unwraps
@@ -41,15 +43,58 @@ public final class DoryFSWorkerXPCChannel:
         }
     }
 
+    private final class CoherenceFailureRelay: @unchecked Sendable {
+        private let lock = NSLock()
+        private var handler: (@Sendable (DoryFSWorkerCoherenceSinkError) -> Void)?
+        private var pending: DoryFSWorkerCoherenceSinkError?
+
+        func install(
+            _ handler: @escaping @Sendable (DoryFSWorkerCoherenceSinkError) -> Void
+        ) {
+            let immediate = lock.withLock { () -> DoryFSWorkerCoherenceSinkError? in
+                self.handler = handler
+                defer { pending = nil }
+                return pending
+            }
+            if let immediate { handler(immediate) }
+        }
+
+        func report(_ error: DoryFSWorkerCoherenceSinkError) {
+            let callback = lock.withLock { () -> (@Sendable (
+                DoryFSWorkerCoherenceSinkError
+            ) -> Void)? in
+                guard pending == nil else { return nil }
+                pending = error
+                return handler
+            }
+            callback?(error)
+        }
+    }
+
     private let connection: NSXPCConnection
+    private let coherenceSink: DoryFSWorkerCoherenceXPCSink
+    private let coherenceFailureRelay: CoherenceFailureRelay
     private let stateLock = NSLock()
     private var state: State = .active
     private var lifecycleHandlers = [@Sendable (DoryFSWorkerChannelEvent) -> Void]()
 
-    public override init() {
+    init(
+        expectedGeneration: DoryFSWorkerGeneration,
+        capabilities: Set<DoryFSShareCapabilityID>
+    ) {
+        let failureRelay = CoherenceFailureRelay()
+        coherenceFailureRelay = failureRelay
+        coherenceSink = DoryFSWorkerCoherenceXPCSink(
+            expectedGeneration: expectedGeneration,
+            capabilities: capabilities,
+            onFailure: { failureRelay.report($0) }
+        )
         connection = NSXPCConnection(serviceName: DoryFSWorkerXPC.serviceName)
         super.init()
+        failureRelay.install { [weak self] _ in self?.invalidate() }
         connection.remoteObjectInterface = DoryFSWorkerXPCInterface.make()
+        connection.exportedInterface = DoryFSWorkerXPCInterface.makeCoherenceSink()
+        connection.exportedObject = coherenceSink
         connection.interruptionHandler = { [weak self] in
             self?.transition(to: .interrupted)
         }
@@ -58,6 +103,86 @@ public final class DoryFSWorkerXPCChannel:
         }
         connection.setCodeSigningRequirement(Self.workerCodeSigningRequirement)
         connection.resume()
+    }
+
+    @discardableResult
+    public func installCoherenceHandler(
+        _ handler: @escaping @Sendable (DoryFSWorkerCoherenceBatch) async throws -> Void
+    ) -> Bool {
+        coherenceSink.installHandler(handler)
+    }
+
+    public var coherenceStatistics: DoryFSWorkerCoherenceSinkStatistics {
+        coherenceSink.statistics
+    }
+
+    public func coherenceStatus(
+        timeout: TimeInterval = 1
+    ) throws -> DoryFSWorkerCoherenceStatus {
+        let state = BlockingCoherenceStatus()
+        guard let proxy = connection.remoteObjectProxyWithErrorHandler({ [weak self] _ in
+            state.resolve(nil)
+            self?.transition(to: .interrupted)
+        }) as? DoryFSWorkerXPCProtocol else {
+            throw DoryFSWorkerWorkspaceClientError.malformedCoherenceStatus
+        }
+        proxy.coherenceStatus { bytes in state.resolve(bytes) }
+        let result = state.condition.withLock { () -> (Bool, Data?) in
+            let deadline = Date(timeIntervalSinceNow: max(0, timeout))
+            while !state.completed, state.condition.wait(until: deadline) {}
+            return (state.completed, state.bytes)
+        }
+        guard result.0 else {
+            throw DoryFSWorkerWorkspaceClientError.coherenceStatusTimedOut
+        }
+        guard let bytes = result.1,
+              let status = try? DoryFSWorkerCoherenceStatusCodec.decode(bytes) else {
+            throw DoryFSWorkerWorkspaceClientError.malformedCoherenceStatus
+        }
+        return status
+    }
+
+    public func activateCoherence(
+        timeout: TimeInterval = 2
+    ) throws -> DoryFSWorkerCoherenceStatus {
+        let state = BlockingCoherenceStatus()
+        guard let proxy = connection.remoteObjectProxyWithErrorHandler({ [weak self] _ in
+            state.resolve(nil)
+            self?.transition(to: .interrupted)
+        }) as? DoryFSWorkerXPCProtocol else {
+            throw DoryFSWorkerWorkspaceClientError.malformedCoherenceStatus
+        }
+        proxy.activateCoherence { bytes in state.resolve(bytes) }
+        let result = state.condition.withLock { () -> (Bool, Data?) in
+            let deadline = Date(timeIntervalSinceNow: max(0, timeout))
+            while !state.completed, state.condition.wait(until: deadline) {}
+            return (state.completed, state.bytes)
+        }
+        guard result.0 else {
+            invalidate()
+            throw DoryFSWorkerWorkspaceClientError.coherenceStatusTimedOut
+        }
+        guard let bytes = result.1,
+              let status = try? DoryFSWorkerCoherenceStatusCodec.decode(bytes) else {
+            invalidate()
+            throw DoryFSWorkerWorkspaceClientError.malformedCoherenceStatus
+        }
+        return status
+    }
+
+    private final class BlockingCoherenceStatus: @unchecked Sendable {
+        let condition = NSCondition()
+        var completed = false
+        var bytes: Data?
+
+        func resolve(_ bytes: Data?) {
+            condition.withLock {
+                guard !completed else { return }
+                completed = true
+                self.bytes = bytes
+                condition.broadcast()
+            }
+        }
     }
 
     public func installLifecycleHandler(
@@ -241,7 +366,10 @@ public final class DoryFSWorkerWorkspaceClient: @unchecked Sendable {
         } catch let error as DoryFSWorkerBootstrapError {
             throw DoryFSWorkerWorkspaceClientError.invalidBootstrap(error)
         }
-        let channel = DoryFSWorkerXPCChannel()
+        let channel = DoryFSWorkerXPCChannel(
+            expectedGeneration: bootstrap.generation,
+            capabilities: Set(bootstrap.shares.map(\.capabilityID))
+        )
         let receiptBytes: Data = try await withCheckedThrowingContinuation { continuation in
             channel.bootstrap(
                 exactBytes: exactBootstrapBytes,
@@ -275,7 +403,10 @@ public final class DoryFSWorkerWorkspaceClient: @unchecked Sendable {
         } catch let error as DoryFSWorkerBootstrapError {
             throw DoryFSWorkerWorkspaceClientError.invalidBootstrap(error)
         }
-        let channel = DoryFSWorkerXPCChannel()
+        let channel = DoryFSWorkerXPCChannel(
+            expectedGeneration: bootstrap.generation,
+            capabilities: Set(bootstrap.shares.map(\.capabilityID))
+        )
         let blocking = BlockingBootstrap()
         channel.bootstrap(
             exactBytes: exactBootstrapBytes,
@@ -320,6 +451,40 @@ public final class DoryFSWorkerWorkspaceClient: @unchecked Sendable {
             admissionAuthority: admissionAuthority,
             channel: channel
         )
+    }
+
+    @discardableResult
+    public func installCoherenceHandler(
+        _ handler: @escaping @Sendable (DoryFSWorkerCoherenceBatch) async throws -> Void
+    ) -> Bool {
+        channel.installCoherenceHandler(handler)
+    }
+
+    public func installLifecycleHandler(
+        _ handler: @escaping @Sendable (DoryFSWorkerChannelEvent) -> Void
+    ) {
+        channel.installLifecycleHandler(handler)
+    }
+
+    public var coherenceStatistics: DoryFSWorkerCoherenceSinkStatistics {
+        channel.coherenceStatistics
+    }
+
+    public func coherenceStatus(
+        timeout: TimeInterval = 1
+    ) throws -> DoryFSWorkerCoherenceStatus {
+        try channel.coherenceStatus(timeout: timeout)
+    }
+
+    public func activateCoherence(timeout: TimeInterval = 2) throws {
+        let status = try channel.activateCoherence(timeout: timeout)
+        guard status.generation == bootstrap.generation,
+              status.running,
+              status.configuredShareCount == 0 || status.observationStreamCount > 0,
+              status.requiredObservationShareCount == status.observedRequiredShareCount else {
+            channel.invalidate()
+            throw DoryFSWorkerWorkspaceClientError.malformedCoherenceStatus
+        }
     }
 
     public func invalidate() {

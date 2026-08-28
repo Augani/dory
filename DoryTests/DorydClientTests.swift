@@ -716,6 +716,19 @@ struct DorydClientTests {
         #expect(try await client.engineSleep() == DorydCommandResult(ok: true, message: ""))
     }
 
+    @Test func machineStopAndDeleteOutliveTheDefaultControlTimeout() async throws {
+        let listener = NSXPCListener.anonymous()
+        let service = FakeDorydService(machineShutdownReplyDelay: 0.05)
+        let delegate = FakeDorydListenerDelegate(service: service)
+        listener.delegate = delegate
+        listener.resume()
+        defer { listener.invalidate() }
+
+        let client = DorydClient(endpoint: listener.endpoint, timeout: 0.01)
+        #expect(try await client.machineStop("dev").state == "stopped")
+        #expect(try await client.machineDelete("dev") == DorydCommandResult(ok: true, message: ""))
+    }
+
     @Test func machineListPrefersExactTypedSettingsAndRejectsMalformedClaims() async throws {
         let listener = NSXPCListener.anonymous()
         let service = FakeDorydService()
@@ -1433,6 +1446,55 @@ struct DorydClientTests {
     }
 
     @MainActor
+    @Test func dockerGuestDataDiskUsageRequiresExactVersionedFilesystemRecord() async throws {
+        let listener = NSXPCListener.anonymous()
+        let service = FakeDorydService(dockerGuestDataDiskUsageReplyDelay: 0.05)
+        let delegate = FakeDorydListenerDelegate(service: service)
+        listener.delegate = delegate
+        listener.resume()
+        defer { listener.invalidate() }
+
+        let client = DorydClient(endpoint: listener.endpoint, timeout: 0.01)
+        let dataDriveID = try #require(UUID(uuidString: FakeDorydService.dockerDataDriveID))
+        #expect(try await client.dockerGuestDataDiskUsage() == DorydDockerGuestDataDiskUsage(
+            engineSocketPath: service.socketPath,
+            dataDriveID: dataDriveID,
+            totalBytes: 128 * 1024 * 1024 * 1024,
+            usedBytes: 8 * 1024 * 1024 * 1024,
+            availableBytes: 120 * 1024 * 1024 * 1024
+        ))
+
+        let malformed: [NSDictionary] = [
+            [:],
+            FakeDorydService.dockerGuestDataDiskUsageRow().adding("schema", UInt16(2)),
+            FakeDorydService.dockerGuestDataDiskUsageRow().adding("usedBytes", true),
+            FakeDorydService.dockerGuestDataDiskUsageRow().adding("usedBytes", -1),
+            FakeDorydService.dockerGuestDataDiskUsageRow().adding("usedBytes", 1.5),
+            FakeDorydService.dockerGuestDataDiskUsageRow().adding("schema", "1"),
+            FakeDorydService.dockerGuestDataDiskUsageRow().adding("engineSocketPath", "relative.sock"),
+            FakeDorydService.dockerGuestDataDiskUsageRow().adding("dataDriveID", "not-a-uuid"),
+            FakeDorydService.dockerGuestDataDiskUsageRow().adding(
+                "dataDriveID",
+                dataDriveID.uuidString
+            ),
+            FakeDorydService.dockerGuestDataDiskUsageRow().adding("totalBytes", UInt64(0)),
+            FakeDorydService.dockerGuestDataDiskUsageRow().adding("usedBytes", UInt64.max),
+            FakeDorydService.dockerGuestDataDiskUsageRow().adding("availableBytes", UInt64.max),
+            FakeDorydService.dockerGuestDataDiskUsageRow().adding(
+                "availableBytes",
+                UInt64(127 * 1024 * 1024 * 1024)
+            ),
+            FakeDorydService.dockerGuestDataDiskUsageRow().adding("unexpected", true),
+        ]
+        for response in malformed {
+            service.setDockerGuestDataDiskUsage(response)
+            await #expect(throws: DorydClientError.self) {
+                _ = try await client.dockerGuestDataDiskUsage()
+            }
+        }
+    }
+
+    @MainActor
     @Test func readsDoctorJSONAndIncidentsOverXPC() async throws {
         let listener = NSXPCListener.anonymous()
         let service = FakeDorydService()
@@ -1451,6 +1513,7 @@ struct DorydClientTests {
         let dockerAgentInfo = try await client.dockerAgentInfo()
         let dockerAgentPorts = try await client.dockerAgentPorts()
         let dockerAgentTelemetry = try await client.dockerAgentTelemetry()
+        let dockerGuestDataDiskUsage = try await client.dockerGuestDataDiskUsage()
         let stopped = try await client.engineStop()
         let shareBookmark = Data([0x44, 0x4f, 0x52, 0x59])
         let createdMachine = try await client.machineCreate(DorydMachineConfiguration(
@@ -1643,6 +1706,7 @@ struct DorydClientTests {
         #expect(dockerAgentPorts.ports == [DorydListenPort(protocol: "tcp", port: 8080)])
         #expect(dockerAgentPorts.added == [DorydListenPort(protocol: "tcp", port: 8080)])
         #expect(dockerAgentTelemetry.memTotalKB == 2048)
+        #expect(dockerGuestDataDiskUsage.usedBytes == 8 * 1024 * 1024 * 1024)
         #expect(stopped == DorydCommandResult(ok: true, message: ""))
         #expect(
             service.latestMachineDesktopUpdateOperationID
@@ -2815,6 +2879,8 @@ struct DorydClientTests {
         let base = "/tmp/dam-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let socketPath = base + "/doryd.sock"
         defer { try? FileManager.default.removeItem(atPath: base) }
+        let desktopFixture = try makeManagedDesktopAssetFixture(prefix: "dory-lifecycle")
+        defer { try? FileManager.default.removeItem(atPath: desktopFixture.directoryPath) }
 
         let shim = DockerShim(runtime: MockRuntime())
         let dockerServer = ShimHTTPServer(socketPath: socketPath) { request in
@@ -2846,13 +2912,14 @@ struct DorydClientTests {
 
         let store = AppStore(
             dorydClient: DorydClient(endpoint: listener.endpoint),
-            useDorydEngine: true
+            useDorydEngine: true,
+            desktopMachineAssetPreparer: { _, _, _ in desktopFixture.assets }
         )
         store.routeDockerCLI = false
 
         await store.connectBackend()
         store.loadMachines()
-        try await waitUntil {
+        try await waitUntil("initial machine telemetry") {
             store.machines.contains {
                 $0.name == "dev" && $0.cpuPercent == 12.5 && $0.memoryDisplay == "1 GB / 2 GB"
             }
@@ -2953,7 +3020,7 @@ struct DorydClientTests {
         let cancellingTransfer = Task {
             await store.transferFiles([transferFile], to: machine)
         }
-        try await waitUntil {
+        try await waitUntil("file transfer cancellation state") {
             store.machineFileTransfer(for: machine.name)?.phase == .transferring
         }
         await store.cancelFileTransfer(to: machine)
@@ -3013,7 +3080,7 @@ struct DorydClientTests {
                 to: transferRoot.appendingPathComponent("cancelled-export")
             )
         }
-        try await waitUntil {
+        try await waitUntil("guest export cancellation state") {
             store.machineGuestFileExport(for: machine.name)?.phase == .transferring
         }
         await store.cancelGuestFileExport(from: machine)
@@ -3059,49 +3126,58 @@ struct DorydClientTests {
         #expect(currentSettings.env.isEmpty)
 
         store.toggleMachine(machine)
-        try await waitUntil {
+        try await waitUntil("machine stop") {
             store.machines.first { $0.name == "dev" }?.status == .stopped
         }
         #expect(service.machineStopCount == 1)
 
         machine = try #require(store.machines.first { $0.name == "dev" })
         store.toggleMachine(machine)
-        try await waitUntil {
+        try await waitUntil("machine start") {
             store.machines.first { $0.name == "dev" }?.status == .running
         }
         #expect(service.machineStartCount == 1)
 
         machine = try #require(store.machines.first { $0.name == "dev" })
         store.pauseMachine(machine)
-        try await waitUntil {
+        try await waitUntil("machine pause") {
             store.machines.first { $0.name == "dev" }?.status == .paused
         }
         #expect(service.machinePauseCount == 1)
 
         machine = try #require(store.machines.first { $0.name == "dev" })
         store.toggleMachine(machine)
-        try await waitUntil {
+        try await waitUntil("machine resume after pause") {
             store.machines.first { $0.name == "dev" }?.status == .running
         }
         #expect(service.machineResumeCount == 1)
 
         machine = try #require(store.machines.first { $0.name == "dev" })
         store.suspendMachine(machine)
-        try await waitUntil {
+        try await waitUntil("machine suspend") {
             store.machines.first { $0.name == "dev" }?.status == .suspended
         }
         #expect(service.machineSuspendCount == 1)
 
         machine = try #require(store.machines.first { $0.name == "dev" })
         store.toggleMachine(machine)
-        try await waitUntil {
+        try await waitUntil("machine resume after suspend") {
             store.machines.first { $0.name == "dev" }?.status == .running
         }
         #expect(service.machineResumeCount == 2)
 
         machine = try #require(store.machines.first { $0.name == "dev" })
         store.restartMachine(machine)
-        try await waitUntil { service.machineRestartCount == 1 }
+        try await waitUntil("managed desktop stop-refresh-start restart") {
+            service.machineStopCount == 2
+                && service.machineStartCount == 2
+                && !store.isMachineBusy("dev")
+        }
+        #expect(service.machineRestartCount == 0)
+        #expect(
+            service.latestManagedDesktopKernelRefreshRequest?["sourcePath"] as? String
+                == desktopFixture.assets.kernelPath
+        )
         #expect(store.machines.first { $0.name == "dev" }?.status == .running)
 
         machine = try #require(store.machines.first { $0.name == "dev" })
@@ -3126,7 +3202,7 @@ struct DorydClientTests {
             )
         )
         #expect(editResult == nil)
-        try await waitUntil {
+        try await waitUntil("machine settings update") {
             service.machineUpdateCount == 1
                 && store.machines.first { $0.name == "dev" }?.memoryDisplay == "2 GB / 4 GB"
         }
@@ -3165,7 +3241,7 @@ struct DorydClientTests {
         machine = try #require(store.machines.first { $0.name == "dev" })
         service.setMachineDeleteResult(ok: false, message: "fixture disk is busy")
         store.deleteMachine(machine)
-        try await waitUntil {
+        try await waitUntil("failed machine deletion completion") {
             service.machineDeleteCount == 1 && !store.isMachineBusy("dev")
         }
         #expect(store.machines.contains { $0.name == "dev" })
@@ -3173,7 +3249,7 @@ struct DorydClientTests {
 
         service.setMachineDeleteResult(ok: true)
         store.deleteMachine(machine)
-        try await waitUntil {
+        try await waitUntil("successful machine deletion completion") {
             service.machineDeleteCount == 2 && !store.machines.contains { $0.name == "dev" }
         }
         #expect(service.machineDeleteCount == 2)
@@ -4030,6 +4106,8 @@ struct DorydClientTests {
         let base = "/tmp/doryd-data-drive-maintenance-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let socketPath = base + "/doryd.sock"
         defer { try? FileManager.default.removeItem(atPath: base) }
+        let desktopFixture = try makeManagedDesktopAssetFixture(prefix: "dory-data-drive")
+        defer { try? FileManager.default.removeItem(atPath: desktopFixture.directoryPath) }
         let workloadRecorder = WorkloadStartRecorder()
         let shim = DockerShim(runtime: RecordingWorkloadRuntime(recorder: workloadRecorder))
         let dockerServer = ShimHTTPServer(socketPath: socketPath) { request in await shim.handle(request) }
@@ -4048,7 +4126,8 @@ struct DorydClientTests {
             dorydClient: DorydClient(endpoint: listener.endpoint),
             useDorydEngine: true,
             dorydLaunchAgentEnsurer: { configuration in launchAgent.ensure(configuration) },
-            dorydLaunchAgentBootout: { true }
+            dorydLaunchAgentBootout: { true },
+            desktopMachineAssetPreparer: { _, _, _ in desktopFixture.assets }
         )
         store.routeDockerCLI = false
         await store.connectBackend()
@@ -4571,8 +4650,11 @@ private enum AuthorizedNetworkingRemovalError: Error {
 }
 
 private final class FakeDorydService: NSObject, DorydControlXPC {
+    static let dockerDataDriveID = "01234567-89ab-4cde-8f01-23456789abcd"
     let socketPath: String
     let engineShutdownReplyDelay: TimeInterval
+    let machineShutdownReplyDelay: TimeInterval
+    let dockerGuestDataDiskUsageReplyDelay: TimeInterval
     private let lock = NSLock()
     private var _engineStartCount = 0
     private var _engineStopCount = 0
@@ -4580,6 +4662,7 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     private var _engineSleepCount = 0
     private var _engineDashboardSnapshotCount = 0
     private var _engineDashboardSnapshot: [String: Data]?
+    private var _dockerGuestDataDiskUsage: NSDictionary = [:]
     private var _engineState = "running"
     private var _engineDetail = "ok"
     private var _engineStartOK = true
@@ -5107,6 +5190,8 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     init(
         socketPath: String = "/tmp/doryd-test.sock",
         engineShutdownReplyDelay: TimeInterval = 0,
+        machineShutdownReplyDelay: TimeInterval = 0,
+        dockerGuestDataDiskUsageReplyDelay: TimeInterval = 0,
         runtimeIdentityOverride: NSDictionary? = nil,
         artifactEvidenceOverride: NSDictionary? = nil,
         installedDesktopPayloadReceiptOverride: NSDictionary? = nil,
@@ -5115,6 +5200,11 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     ) {
         self.socketPath = socketPath
         self.engineShutdownReplyDelay = engineShutdownReplyDelay
+        self.machineShutdownReplyDelay = machineShutdownReplyDelay
+        self.dockerGuestDataDiskUsageReplyDelay = dockerGuestDataDiskUsageReplyDelay
+        self._dockerGuestDataDiskUsage = Self.dockerGuestDataDiskUsageRow(
+            engineSocketPath: socketPath
+        )
         self.runtimeIdentityOverride = runtimeIdentityOverride
         self.artifactEvidenceOverride = artifactEvidenceOverride
         self.installedDesktopPayloadReceiptOverride = installedDesktopPayloadReceiptOverride
@@ -5176,6 +5266,12 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     func setDashboardSnapshot(_ snapshot: [String: Data]) {
         lock.lock()
         _engineDashboardSnapshot = snapshot
+        lock.unlock()
+    }
+
+    func setDockerGuestDataDiskUsage(_ usage: NSDictionary) {
+        lock.lock()
+        _dockerGuestDataDiskUsage = usage
         lock.unlock()
     }
 
@@ -5344,6 +5440,30 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         reply(dockerTelemetry(), "")
     }
 
+    func dockerGuestDataDiskUsage(reply: @escaping (NSDictionary, String) -> Void) {
+        if dockerGuestDataDiskUsageReplyDelay > 0 {
+            Thread.sleep(forTimeInterval: dockerGuestDataDiskUsageReplyDelay)
+        }
+        lock.lock()
+        let usage = _dockerGuestDataDiskUsage
+        lock.unlock()
+        reply(usage, "")
+    }
+
+    static func dockerGuestDataDiskUsageRow(
+        engineSocketPath: String = "/tmp/doryd-test.sock",
+        dataDriveID: String = dockerDataDriveID
+    ) -> NSDictionary {
+        [
+            "schema": UInt16(1),
+            "engineSocketPath": engineSocketPath,
+            "dataDriveID": dataDriveID,
+            "totalBytes": UInt64(128 * 1024 * 1024 * 1024),
+            "usedBytes": UInt64(8 * 1024 * 1024 * 1024),
+            "availableBytes": UInt64(120 * 1024 * 1024 * 1024),
+        ]
+    }
+
     func machineCreate(_ config: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void) {
         let id = config["id"] as? String ?? ""
         let row = Self.machineRow(
@@ -5398,6 +5518,9 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     }
 
     func machineStop(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void) {
+        if machineShutdownReplyDelay > 0 {
+            Thread.sleep(forTimeInterval: machineShutdownReplyDelay)
+        }
         lock.lock()
         let current = machines[machineID]
         let row = Self.machineRow(
@@ -5606,6 +5729,9 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     }
 
     func machineDelete(_ machineID: String, reply: @escaping (Bool, String) -> Void) {
+        if machineShutdownReplyDelay > 0 {
+            Thread.sleep(forTimeInterval: machineShutdownReplyDelay)
+        }
         lock.lock()
         _machineDeleteCount += 1
         let ok = _machineDeleteOK
@@ -6899,6 +7025,34 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     }
 }
 
+private func makeManagedDesktopAssetFixture(
+    prefix: String
+) throws -> (assets: DesktopMachineAssets, directoryPath: String) {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("\(prefix)-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(
+        at: directory,
+        withIntermediateDirectories: false,
+        attributes: [.posixPermissions: 0o700]
+    )
+    let kernel = directory.appendingPathComponent("dory-desktop-kernel-arm64")
+    let rootfs = directory.appendingPathComponent("dory-desktop-rootfs-arm64.ext4")
+    try Data("managed-desktop-kernel".utf8).write(to: kernel)
+    try Data("managed-desktop-rootfs".utf8).write(to: rootfs)
+    try FileManager.default.setAttributes(
+        [.posixPermissions: 0o600],
+        ofItemAtPath: kernel.path
+    )
+    try FileManager.default.setAttributes(
+        [.posixPermissions: 0o600],
+        ofItemAtPath: rootfs.path
+    )
+    return (
+        DesktopMachineAssets(kernelPath: kernel.path, rootfsPath: rootfs.path),
+        directory.path
+    )
+}
+
 private extension NSDictionary {
     func adding(_ key: String, _ value: Any) -> NSDictionary {
         var copy = stringKeyedCopy
@@ -6928,12 +7082,15 @@ private extension NSDictionary {
 }
 
 @MainActor
-private func waitUntil(_ condition: @escaping @MainActor () -> Bool) async throws {
+private func waitUntil(
+    _ label: String = "condition",
+    _ condition: @escaping @MainActor () -> Bool
+) async throws {
     for _ in 0..<80 {
         if condition() { return }
         try await Task.sleep(for: .milliseconds(50))
     }
-    #expect(condition())
+    #expect(condition(), "Timed out waiting for \(label)")
 }
 
 private final class FakeDorydListenerDelegate: NSObject, NSXPCListenerDelegate {

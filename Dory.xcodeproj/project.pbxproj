@@ -305,6 +305,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 3E705D0E2FE37C7B0094B33C /* Build configuration list for PBXNativeTarget "Dory" */;
 			buildPhases = (
+				D0E400000000000000000002 /* Verify Release Guest Kernels */,
 				3E705CEB2FE37C790094B33C /* Sources */,
 				3E705CEC2FE37C790094B33C /* Frameworks */,
 				3E705CED2FE37C790094B33C /* Resources */,
@@ -576,6 +577,28 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
+		D0E400000000000000000002 /* Verify Release Guest Kernels */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/guest/kernel/PINS",
+				"$(SRCROOT)/guest/kernel/verify-release-package.sh",
+				"$(SRCROOT)/guest/kernel/verify-build.sh",
+			);
+			name = "Verify Release Guest Kernels";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/bash;
+			shellScript = "exec /bin/bash \"$SRCROOT/guest/kernel/verify-release-package.sh\"\n";
+		};
 		D0E400000000000000000001 /* Package Exact Renderer Tuple */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;

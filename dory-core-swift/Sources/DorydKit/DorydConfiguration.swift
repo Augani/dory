@@ -313,7 +313,9 @@ public struct DorydEnvironment: Sendable {
     }
 
     public func machineManagerConfiguration() -> MachineManagerConfiguration? {
-        guard let helper = executablePath(firstOf: ["DORYD_VMM_HELPER", "DORY_VMM_HELPER"], fallbackCandidates: helperCandidates(named: "dory-vmm")) else {
+        guard let helper = machineVMMExecutablePath(
+            firstOf: ["DORYD_VMM_HELPER", "DORY_VMM_HELPER"]
+        ) else {
             return nil
         }
         let acceleratedDesktop = acceleratedDesktopHelperConfiguration()
@@ -719,6 +721,34 @@ public struct DorydEnvironment: Sendable {
         return standardizedPath(
             URL(fileURLWithPath: bundleHelpersDirectory)
                 .appendingPathComponent("DoryHVRunner.app/Contents/MacOS/dory-hv")
+                .path
+        )
+    }
+
+    /// A bundled daemon launches desktop VMMs from the signed nested application so macOS TCC
+    /// attributes microphone access to Dory Desktop. Flat helpers remain valid only for standalone
+    /// SwiftPM development and tests where there is no enclosing application bundle.
+    private func machineVMMExecutablePath(firstOf keys: [String]) -> String? {
+        if let bundled = bundledVMMExecutablePath {
+            if let explicit = path(firstOf: keys), standardizedPath(explicit) != bundled {
+                reportEngineConfigurationError(
+                    "the bundled daemon requires DoryVMM.app; flat dory-vmm overrides are not desktop launch authorities"
+                )
+                return nil
+            }
+            return FileManager.default.isExecutableFile(atPath: bundled) ? bundled : nil
+        }
+        return executablePath(
+            firstOf: keys,
+            fallbackCandidates: helperCandidates(named: "dory-vmm")
+        )
+    }
+
+    private var bundledVMMExecutablePath: String? {
+        guard let bundleHelpersDirectory else { return nil }
+        return standardizedPath(
+            URL(fileURLWithPath: bundleHelpersDirectory)
+                .appendingPathComponent("DoryVMM.app/Contents/MacOS/dory-vmm")
                 .path
         )
     }

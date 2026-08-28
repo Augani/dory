@@ -69,6 +69,77 @@ struct MigrationImportTransactionTests: StrictInventoryTestCase {
         #expect(fixture.target.snapshotValue.networks.isEmpty)
     }
 
+    @Test func authoritativeTargetDiskUsageDriftFailsBeforeTargetWrites() async throws {
+        let fixture = makeFixture()
+        let gibibyte: Int64 = 1_024 * 1_024 * 1_024
+        fixture.target.targetStorageUsageSequence = [
+            MigrationTargetStorageUsage(
+                totalBytes: 126 * gibibyte,
+                usedBytes: 8 * gibibyte,
+                availableBytes: 116 * gibibyte
+            ),
+            MigrationTargetStorageUsage(
+                totalBytes: 126 * gibibyte,
+                usedBytes: 8 * gibibyte + 4_096,
+                availableBytes: 116 * gibibyte - 4_096
+            ),
+        ]
+        let prepared = try await collect(fixture)
+        let home = try temporaryHome()
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        let store = try DoryOperationJournalStore(home: home)
+
+        await #expect(throws: MigrationImportTransactionError.planDrift) {
+            _ = try await MigrationImportTransaction.openStagingSession(
+                prepared: prepared,
+                environment: environment(fixture, store: store, home: home)
+            )
+        }
+
+        #expect(fixture.target.targetStorageUsageProbeCount == 2)
+        #expect(fixture.target.createdVolumes.isEmpty)
+        #expect(fixture.target.createdNetworkRequests.isEmpty)
+        #expect(fixture.target.createdContainers.isEmpty)
+        #expect(fixture.target.snapshotValue.images.isEmpty)
+        let record = try store.read(prepared.identity.id)
+        #expect(record.state.phase == .quiescing)
+        #expect(record.state.status == .failed)
+    }
+
+    @Test func reducedLiveGuestCeilingFailsRevalidationBeforeTargetWrites() async throws {
+        let fixture = makeFixture()
+        let gibibyte: Int64 = 1_024 * 1_024 * 1_024
+        fixture.target.targetStorageUsageSequence = [
+            MigrationTargetStorageUsage(
+                totalBytes: 126 * gibibyte,
+                usedBytes: 8 * gibibyte,
+                availableBytes: 116 * gibibyte
+            ),
+            MigrationTargetStorageUsage(
+                totalBytes: 126 * gibibyte,
+                usedBytes: 8 * gibibyte,
+                availableBytes: 111 * gibibyte
+            ),
+        ]
+        let prepared = try await collect(fixture)
+        let home = try temporaryHome()
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        let store = try DoryOperationJournalStore(home: home)
+
+        await #expect(throws: MigrationImportTransactionError.planDrift) {
+            _ = try await MigrationImportTransaction.openStagingSession(
+                prepared: prepared,
+                environment: environment(fixture, store: store, home: home)
+            )
+        }
+
+        #expect(fixture.target.targetStorageUsageProbeCount == 2)
+        #expect(fixture.target.createdVolumes.isEmpty)
+        #expect(fixture.target.createdNetworkRequests.isEmpty)
+        #expect(fixture.target.createdContainers.isEmpty)
+        #expect(fixture.target.snapshotValue.images.isEmpty)
+    }
+
     @Test func reducedHostCapacityFailsTerminallyBeforeTargetWrites() async throws {
         let fixture = makeFixture()
         let prepared = try await collect(fixture)

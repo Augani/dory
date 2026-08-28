@@ -1,3 +1,7 @@
+#[cfg(target_os = "linux")]
+use dory_runc_wrapper::{
+    clone_sealed_executable, real_runc_requires_sealed_handoff, sealed_executable_path,
+};
 use dory_runc_wrapper::{
     prepare_for_args, record_runc_error, FEX_SERVER_PATH, FEX_SERVER_SOCKET_PATH, REAL_RUNC_PATH,
 };
@@ -38,7 +42,30 @@ fn main() -> ExitCode {
         return ExitCode::from(125);
     }
 
-    let error = Command::new(REAL_RUNC_PATH).args(&arguments).exec();
+    #[cfg(target_os = "linux")]
+    let sealed_executable = match real_runc_requires_sealed_handoff() {
+        Ok(true) => match clone_sealed_executable(std::path::Path::new(REAL_RUNC_PATH)) {
+            Ok(executable) => Some(executable),
+            Err(error) => {
+                eprintln!("dory-runc: cannot prepare safe {REAL_RUNC_PATH}: {error}");
+                return ExitCode::from(125);
+            }
+        },
+        Ok(false) => None,
+        Err(error) => {
+            eprintln!("dory-runc: cannot classify {REAL_RUNC_PATH} handoff: {error}");
+            return ExitCode::from(125);
+        }
+    };
+    #[cfg(target_os = "linux")]
+    let executable = sealed_executable
+        .as_ref()
+        .map(sealed_executable_path)
+        .unwrap_or_else(|| std::path::PathBuf::from(REAL_RUNC_PATH));
+    #[cfg(not(target_os = "linux"))]
+    let executable = std::path::PathBuf::from(REAL_RUNC_PATH);
+
+    let error = Command::new(&executable).args(&arguments).exec();
     eprintln!("dory-runc: cannot exec {REAL_RUNC_PATH}: {error}");
     ExitCode::from(125)
 }

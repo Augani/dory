@@ -48,7 +48,7 @@ public struct DoryRendererWorkerBootstrap: Equatable, Sendable {
         guard sourceTuple == .productionCandidate else {
             throw DoryRendererWorkerContractError.unsupportedSourceTuple(sourceTuple.rawValue)
         }
-        guard producerFenceContract == .managedLinux61230PrepareFBV1 else {
+        guard producerFenceContract == .managedLinux612106PrepareFBV1 else {
             throw DoryRendererWorkerContractError.unsupportedProducerFenceContract(
                 producerFenceContract.rawValue
             )

@@ -516,7 +516,7 @@ optional Venus failure may retain an independently qualified VirGL tier, but no 
 `llvmpipe` under an accelerated label.
 
 The producer-complete scanout fence is the current portability boundary. Dory's managed Linux
-6.12.30 profile includes the exact virtio-gpu writer-fence-before-`RESOURCE_FLUSH` backport and
+6.12.106 profile includes the exact virtio-gpu writer-fence-before-`RESOURCE_FLUSH` backport and
 hardening needed to authorize shared-texture presentation. An arbitrary installed distro, unknown
 kernel, or distro update does not inherit that proof. Such media boots and runs ordinary
 applications on the VZ software baseline, but it is not hardware accelerated until a matching
@@ -735,7 +735,7 @@ Producer completion is established at the guest KMS boundary, not invented by th
 Linux commit `30f86b8f86ada845fbd0d853b3a3d238567ac2c2` makes virtio-gpu plane preparation call
 `drm_gem_plane_helper_prepare_fb()`. The DRM helper attaches the framebuffer writer fence to the
 plane state, and the atomic helper waits for it before the plane update emits `RESOURCE_FLUSH`.
-Dory's pinned Linux 6.12.30 predates that change, so the managed accelerated profile backports it as
+Dory's pinned Linux 6.12.106 does not contain that change, so the managed accelerated profile backports it as
 `0007-virtio-gpu-wait-for-scanout-producers.patch`; a following Dory hardening patch propagates
 fence-capture errors instead of emitting an unowned flush. Only an exact guest artifact that proves
 this contract may use `RESOURCE_FLUSH` as producer-complete presentation authority. Generic Linux,

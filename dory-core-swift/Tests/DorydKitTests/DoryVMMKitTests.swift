@@ -1695,6 +1695,46 @@ final class DoryVMMKitTests: XCTestCase {
         XCTAssertEqual(forcedExit.codes, [])
     }
 
+    func testDesktopApplicationTerminationRequestsCoordinatedGuestShutdown() {
+        var reasons: [String] = []
+
+        let reply = DoryVMMDesktopApplication.terminationReply {
+            reasons.append("requested")
+        }
+
+        XCTAssertEqual(reply, .terminateCancel)
+        XCTAssertEqual(reasons, ["requested"])
+    }
+
+    @MainActor
+    func testEarlyDesktopTerminationQueuesShutdownUntilRuntimeAttachment() {
+        let watchdog = ShutdownWatchdogRecorder()
+        let forcedExit = ForcedExitRecorder()
+        let coordinator = DoryVMMShutdownCoordinator(
+            watchdogSeconds: 25,
+            scheduleWatchdog: { watchdog.schedule(delay: $0, action: $1) },
+            forceExit: { forcedExit.record($0) }
+        )
+        let delegate = DoryVMMEarlyApplicationTerminationDelegate { reason in
+            coordinator.request(reason: reason)
+        }
+        let target = FakeVMMShutdownTarget()
+
+        XCTAssertEqual(
+            delegate.applicationShouldTerminate(NSApplication.shared),
+            .terminateCancel
+        )
+        XCTAssertEqual(target.requestCount, 0)
+
+        coordinator.attach(target)
+        XCTAssertTrue(target.waitForRequest())
+        XCTAssertEqual(target.requestCount, 1)
+        XCTAssertEqual(watchdog.delays, [25])
+        target.markStopped()
+        watchdog.fireAll()
+        XCTAssertEqual(forcedExit.codes, [])
+    }
+
     func testVMMShutdownWatchdogForcesExitWhenGuestNeverStops() {
         let watchdog = ShutdownWatchdogRecorder()
         let forcedExit = ForcedExitRecorder()

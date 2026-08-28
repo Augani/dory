@@ -6,6 +6,11 @@ import Foundation
 /// complete HostFS/FuseServer graph; callers can bootstrap, exchange exact frames, or send
 /// priority one-way control frames, but can never obtain a path, descriptor, or server object.
 public final class DoryFSWorkerService: @unchecked Sendable {
+    public typealias CoherenceExchange = @Sendable (Data) throws -> Data
+    public typealias CoherenceFailureHandler = @Sendable (
+        DoryFSWorkerHostCoherenceError
+    ) -> Void
+
     private enum Lifecycle {
         case awaitingBootstrap
         case active(Workspace)
@@ -16,15 +21,18 @@ public final class DoryFSWorkerService: @unchecked Sendable {
         let generation: DoryFSWorkerGeneration
         let limits: DoryFSWorkerLimits
         let shares: [DoryFSShareCapabilityID: Share]
+        let hostCoherence: DoryFSWorkerHostCoherence?
 
         init(
             generation: DoryFSWorkerGeneration,
             limits: DoryFSWorkerLimits,
-            shares: [DoryFSShareCapabilityID: Share]
+            shares: [DoryFSShareCapabilityID: Share],
+            hostCoherence: DoryFSWorkerHostCoherence?
         ) {
             self.generation = generation
             self.limits = limits
             self.shares = shares
+            self.hostCoherence = hostCoherence
         }
     }
 
@@ -52,6 +60,7 @@ public final class DoryFSWorkerService: @unchecked Sendable {
         let generation: DoryFSWorkerGeneration
         let workerLimits: DoryFSWorkerLimits
         let shareLimits: DoryFSShareResourceLimits
+        let hostFS: HostFS
         let server: FuseServer
 
         private let lock = NSLock()
@@ -68,12 +77,14 @@ public final class DoryFSWorkerService: @unchecked Sendable {
             authority: DoryFSShareBootstrapAuthority,
             generation: DoryFSWorkerGeneration,
             workerLimits: DoryFSWorkerLimits,
+            hostFS: HostFS,
             server: FuseServer
         ) {
             capabilityID = authority.capabilityID
             self.generation = generation
             self.workerLimits = workerLimits
             shareLimits = authority.resourceLimits
+            self.hostFS = hostFS
             self.server = server
         }
 
@@ -376,15 +387,33 @@ public final class DoryFSWorkerService: @unchecked Sendable {
     }
 
     private let rootAuthority: DoryFSWorkerRootAuthority
+    private let coherenceExchange: CoherenceExchange?
+    private let coherenceFailureHandler: CoherenceFailureHandler
     private let lifecycleLock = NSLock()
     private var lifecycle: Lifecycle = .awaitingBootstrap
 
     public init() {
         rootAuthority = DoryFSWorkerRootAuthority()
+        coherenceExchange = nil
+        coherenceFailureHandler = { _ in }
+    }
+
+    /// Production XPC adapter initializer. Host-change observation is deliberately opt-in at this
+    /// composition boundary so pure service-core fixtures cannot accidentally acquire FSEvents
+    /// authority. The signed worker always supplies both callbacks and exits on any failure.
+    public init(
+        coherenceExchange: @escaping CoherenceExchange,
+        onCoherenceFailure: @escaping CoherenceFailureHandler
+    ) {
+        rootAuthority = DoryFSWorkerRootAuthority()
+        self.coherenceExchange = coherenceExchange
+        coherenceFailureHandler = onCoherenceFailure
     }
 
     init(rootAuthority: DoryFSWorkerRootAuthority) {
         self.rootAuthority = rootAuthority
+        coherenceExchange = nil
+        coherenceFailureHandler = { _ in }
     }
 
     public func bootstrap(
@@ -402,6 +431,14 @@ public final class DoryFSWorkerService: @unchecked Sendable {
 
         do {
             let bootstrap = try DoryFSWorkerBootstrapCodec.decode(exactBytes)
+            guard coherenceExchange != nil || bootstrap.shares.allSatisfy({
+                $0.coherencePolicy == .disabled
+            }) else {
+                // A non-disabled policy is a correctness contract, not an advisory setting. Never
+                // accept the workspace unless this service composition can carry the worker's
+                // retained batches to the runner for invalidation and acknowledgement.
+                return encodeRPC(.failure(.bootstrapRejected))
+            }
             let receipt = try rootAuthority.bootstrap(
                 exactBytes: exactBytes,
                 rootDescriptors: rootDescriptors
@@ -410,7 +447,7 @@ public final class DoryFSWorkerService: @unchecked Sendable {
                 minimumCapacity: bootstrap.shares.count
             )
             for authority in bootstrap.shares {
-                let server = try rootAuthority.withBorrowedRootFileDescriptor(
+                let pair = try rootAuthority.withBorrowedRootFileDescriptor(
                     for: authority.capabilityID
                 ) { descriptor in
                     let hostFS = try HostFS(
@@ -422,19 +459,45 @@ public final class DoryFSWorkerService: @unchecked Sendable {
                         rootHiddenNames: Set(authority.rootHiddenComponents),
                         resourceLimits: FuseResourceLimits(authority.resourceLimits)
                     )
-                    return FuseServer(hostFS: hostFS)
+                    return (hostFS, FuseServer(hostFS: hostFS))
                 }
                 shares[authority.capabilityID] = Share(
                     authority: authority,
                     generation: bootstrap.generation,
                     workerLimits: bootstrap.workerLimits,
-                    server: server
+                    hostFS: pair.0,
+                    server: pair.1
                 )
+            }
+            let coherenceShares: [(
+                DoryFSShareCapabilityID,
+                HostFS,
+                DoryFSShareCoherencePolicy
+            )] = bootstrap.shares.compactMap { authority in
+                guard authority.coherencePolicy != .disabled else { return nil }
+                return shares[authority.capabilityID].map {
+                    (authority.capabilityID, $0.hostFS, authority.coherencePolicy)
+                }
+            }
+            let hostCoherence: DoryFSWorkerHostCoherence?
+            if let exchange = coherenceExchange, !coherenceShares.isEmpty {
+                hostCoherence = try DoryFSWorkerHostCoherence(
+                    generation: bootstrap.generation,
+                    shares: coherenceShares,
+                    exchange: exchange,
+                    onFailure: { [weak self] error in
+                        self?.lifecycleLock.withLock { self?.lifecycle = .failed }
+                        self?.coherenceFailureHandler(error)
+                    }
+                )
+            } else {
+                hostCoherence = nil
             }
             let workspace = Workspace(
                 generation: bootstrap.generation,
                 limits: bootstrap.workerLimits,
-                shares: shares
+                shares: shares,
+                hostCoherence: hostCoherence
             )
             lifecycleLock.withLock { lifecycle = .active(workspace) }
             return encodeRPC(.success(receipt))
@@ -501,6 +564,51 @@ public final class DoryFSWorkerService: @unchecked Sendable {
             )
         case .execute, .drain:
             break
+        }
+    }
+
+    public var hostCoherenceStatistics: DoryFSWorkerHostCoherenceStatistics? {
+        activeWorkspace()?.hostCoherence?.statistics
+    }
+
+    public func coherenceStatusExactBytes() -> Data {
+        guard let workspace = activeWorkspace() else { return Data() }
+        let statistics = workspace.hostCoherence?.statistics
+        let status = try! DoryFSWorkerCoherenceStatus(
+            generation: workspace.generation,
+            running: statistics?.running ?? true,
+            configuredShareCount: UInt32(statistics?.configuredShareCount ?? 0),
+            invalidationOnlyShareCount: UInt32(
+                statistics?.invalidationOnlyShareCount ?? 0
+            ),
+            watcherNudgeShareCount: UInt32(statistics?.watcherNudgeShareCount ?? 0),
+            requiredObservationShareCount: UInt32(
+                statistics?.requiredObservationShareCount ?? 0
+            ),
+            observedRequiredShareCount: UInt32(
+                statistics?.observedRequiredShareCount ?? 0
+            ),
+            observationStreamCount: UInt32(statistics?.observationStreamCount ?? 0),
+            pendingEventCount: UInt32(statistics?.pendingEventCount ?? 0),
+            pendingEventLimit: UInt32(
+                statistics?.pendingEventLimit ?? DoryFSWorkerHostCoherence.pendingEventLimit
+            ),
+            receivedEventCount: statistics?.receivedEventCount ?? 0,
+            deliveredBatchCount: statistics?.deliveredBatchCount ?? 0,
+            failedBatchCount: statistics?.failedBatchCount ?? 0,
+            eventLossCount: statistics?.eventLossCount ?? 0
+        )
+        return DoryFSWorkerCoherenceStatusCodec.encode(status)
+    }
+
+    public func activateCoherenceExactBytes() -> Data {
+        guard let workspace = activeWorkspace() else { return Data() }
+        do {
+            try workspace.hostCoherence?.activate()
+            return coherenceStatusExactBytes()
+        } catch {
+            lifecycleLock.withLock { lifecycle = .failed }
+            return Data()
         }
     }
 

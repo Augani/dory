@@ -5,6 +5,8 @@ use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+#[cfg(target_os = "linux")]
+use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::path::{Path, PathBuf};
 
 pub const FEX_BUNDLE_PATH: &str = "/usr/lib/dory/fex";
@@ -32,6 +34,14 @@ const FORCED_ENVIRONMENT: [(&str, &str); 5] = [
     ("FEX_APP_CONFIG_LOCATION", FEX_BUNDLE_PATH),
     ("FEX_SERVERSOCKETPATH", FEX_SERVER_SOCKET_PATH),
 ];
+
+#[cfg(target_os = "linux")]
+const MFD_EXEC: libc::c_uint = 0x0010;
+#[cfg(target_os = "linux")]
+const F_SEAL_EXEC: libc::c_int = 0x0020;
+#[cfg(target_os = "linux")]
+const REQUIRED_EXECUTABLE_SEALS: libc::c_int =
+    libc::F_SEAL_SEAL | libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_WRITE;
 
 #[derive(Debug)]
 pub enum WrapperError {
@@ -74,6 +84,134 @@ fn io_error(context: impl Into<String>, source: io::Error) -> WrapperError {
         context: context.into(),
         source,
     }
+}
+
+/// Copies an executable into a sealed executable memfd.
+///
+/// A nested runc must use its own `/proc/self/exe` as the container init. Newer runc releases try
+/// to create an overlayfs clone when `/proc/self/exe` is a regular file. That clone is not
+/// executable when the original binary entered the parent container through an OCI file bind
+/// mount. Starting runc from a sealed memfd is both the upstream-recognized safe-executable
+/// contract and avoids that invalid nested overlayfs path.
+#[cfg(target_os = "linux")]
+pub fn clone_sealed_executable(path: &Path) -> Result<File, WrapperError> {
+    let mut source = File::open(path)
+        .map_err(|error| io_error(format!("cannot open executable {}", path.display()), error))?;
+    let metadata = source.metadata().map_err(|error| {
+        io_error(
+            format!("cannot inspect executable {}", path.display()),
+            error,
+        )
+    })?;
+    if !metadata.is_file() || metadata.permissions().mode() & 0o111 == 0 {
+        return Err(WrapperError::InvalidArguments(format!(
+            "{} is not an executable regular file",
+            path.display()
+        )));
+    }
+
+    let name = b"dory-runc.real\0";
+    let flags = libc::MFD_ALLOW_SEALING | libc::MFD_CLOEXEC | MFD_EXEC;
+    let mut descriptor = unsafe { libc::memfd_create(name.as_ptr().cast(), flags) };
+    if descriptor == -1 && io::Error::last_os_error().raw_os_error() == Some(libc::EINVAL) {
+        // MFD_EXEC was introduced in Linux 6.3. Dory currently ships a newer kernel, while this
+        // retry keeps the wrapper valid for older Dory guests whose default memfd policy is exec.
+        descriptor = unsafe {
+            libc::memfd_create(
+                name.as_ptr().cast(),
+                libc::MFD_ALLOW_SEALING | libc::MFD_CLOEXEC,
+            )
+        };
+    }
+    if descriptor == -1 {
+        return Err(io_error(
+            format!(
+                "cannot create sealed executable clone of {}",
+                path.display()
+            ),
+            io::Error::last_os_error(),
+        ));
+    }
+    let mut cloned = unsafe { File::from_raw_fd(descriptor) };
+    let copied = io::copy(&mut source, &mut cloned).map_err(|error| {
+        io_error(
+            format!(
+                "cannot copy executable {} into sealed memory",
+                path.display()
+            ),
+            error,
+        )
+    })?;
+    if copied != metadata.len() {
+        return Err(WrapperError::InvalidArguments(format!(
+            "short copy while sealing {}: copied {copied} of {} bytes",
+            path.display(),
+            metadata.len()
+        )));
+    }
+    cloned
+        .set_permissions(fs::Permissions::from_mode(0o511))
+        .map_err(|error| io_error("cannot make sealed runc clone executable", error))?;
+
+    // Linux 6.3+ can additionally prevent executable-bit changes. The base seals are the exact
+    // contract runc's IsSelfExeCloned uses and must be applied after this optional seal.
+    unsafe {
+        libc::fcntl(cloned.as_raw_fd(), libc::F_ADD_SEALS, F_SEAL_EXEC);
+    }
+    if unsafe {
+        libc::fcntl(
+            cloned.as_raw_fd(),
+            libc::F_ADD_SEALS,
+            REQUIRED_EXECUTABLE_SEALS,
+        )
+    } == -1
+    {
+        return Err(io_error(
+            "cannot seal executable runc clone",
+            io::Error::last_os_error(),
+        ));
+    }
+    Ok(cloned)
+}
+
+#[cfg(target_os = "linux")]
+pub fn sealed_executable_path(executable: &File) -> PathBuf {
+    PathBuf::from(format!("/proc/self/fd/{}", executable.as_raw_fd()))
+}
+
+/// Returns whether `path` is an exact mount point in Linux mountinfo.
+///
+/// Dory injects the preserved nested runc as a file bind mount at `runc.real`. An ordinary engine
+/// guest keeps `runc.real` on its root filesystem, so this authoritative kernel record scopes the
+/// sealed-memfd handoff to nested runtimes without adding the copy cost to normal containers.
+pub fn mountinfo_has_exact_mountpoint(mountinfo: &str, path: &Path) -> Result<bool, WrapperError> {
+    let expected = path.to_str().ok_or_else(|| {
+        WrapperError::InvalidArguments(format!(
+            "mount point path is not valid UTF-8: {}",
+            path.display()
+        ))
+    })?;
+    for (index, line) in mountinfo.lines().enumerate() {
+        let fields: Vec<&str> = line.split_ascii_whitespace().collect();
+        let separator = fields.iter().position(|field| *field == "-");
+        if fields.len() < 10 || separator.is_none_or(|position| position < 6) {
+            return Err(WrapperError::InvalidArguments(format!(
+                "invalid /proc/self/mountinfo record on line {}",
+                index + 1
+            )));
+        }
+        if fields[4] == expected {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+#[cfg(target_os = "linux")]
+pub fn real_runc_requires_sealed_handoff() -> Result<bool, WrapperError> {
+    let mountinfo = fs::read_to_string("/proc/self/mountinfo")
+        .map_err(|error| io_error("cannot read /proc/self/mountinfo", error))?;
+    mountinfo_has_exact_mountpoint(&mountinfo, Path::new(REAL_RUNC_PATH))
 }
 
 /// Finds an OCI bundle only for runc operations that consume `config.json`. All other runc
@@ -1152,6 +1290,34 @@ mod tests {
     }
 
     #[test]
+    fn sealed_handoff_is_scoped_to_the_exact_injected_runc_mount() {
+        let ordinary_engine_mountinfo = concat!(
+            "21 1 8:1 / / rw,relatime - ext4 /dev/vda rw\n",
+            "22 21 0:5 / /proc rw,nosuid,nodev,noexec,relatime - proc proc rw\n"
+        );
+        assert!(!mountinfo_has_exact_mountpoint(
+            ordinary_engine_mountinfo,
+            Path::new(REAL_RUNC_PATH)
+        )
+        .unwrap());
+
+        let nested_runtime_mountinfo = concat!(
+            "21 1 8:1 / / rw,relatime - ext4 /dev/vda rw\n",
+            "42 21 8:1 /usr/local/sbin/runc /usr/local/bin/runc.real ro,nosuid,nodev,relatime - ext4 /dev/vda rw\n"
+        );
+        assert!(mountinfo_has_exact_mountpoint(
+            nested_runtime_mountinfo,
+            Path::new(REAL_RUNC_PATH)
+        )
+        .unwrap());
+        assert!(!mountinfo_has_exact_mountpoint(
+            nested_runtime_mountinfo,
+            Path::new("/usr/local/bin/runc")
+        )
+        .unwrap());
+    }
+
+    #[test]
     fn records_pre_runc_rejections_in_the_requested_json_log() {
         let directory = temporary_directory("runc-log");
         let log_path = directory.join("runc.json");
@@ -1168,5 +1334,23 @@ mod tests {
         assert_eq!(value["source"], "dory-runc");
 
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn sealed_executable_clone_is_recognizable_and_executable() {
+        use std::os::unix::io::AsRawFd;
+        use std::process::{Command, Stdio};
+
+        let executable = clone_sealed_executable(&std::env::current_exe().unwrap()).unwrap();
+        let seals = unsafe { libc::fcntl(executable.as_raw_fd(), libc::F_GET_SEALS) };
+        assert_ne!(seals, -1);
+        assert_eq!(seals & REQUIRED_EXECUTABLE_SEALS, REQUIRED_EXECUTABLE_SEALS);
+        assert!(Command::new(sealed_executable_path(&executable))
+            .arg("--list")
+            .stdout(Stdio::null())
+            .status()
+            .unwrap()
+            .success());
     }
 }

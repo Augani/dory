@@ -15,6 +15,7 @@ nonisolated protocol DorydControlXPC {
     func dockerAgentInfo(reply: @escaping (NSDictionary, String) -> Void)
     func dockerAgentPorts(reply: @escaping (NSDictionary, String) -> Void)
     func dockerAgentTelemetry(reply: @escaping (NSDictionary, String) -> Void)
+    func dockerGuestDataDiskUsage(reply: @escaping (NSDictionary, String) -> Void)
     func machineCreate(_ config: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineStart(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineStart(_ machineID: String, operationID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
@@ -1552,6 +1553,14 @@ nonisolated struct DorydTelemetry: Sendable, Equatable {
     var psiFullAvg10: Double
 }
 
+nonisolated struct DorydDockerGuestDataDiskUsage: Sendable, Equatable {
+    var engineSocketPath: String
+    var dataDriveID: UUID
+    var totalBytes: UInt64
+    var usedBytes: UInt64
+    var availableBytes: UInt64
+}
+
 nonisolated struct DorydListenPort: Sendable, Equatable, Hashable {
     var `protocol`: String
     var port: UInt32
@@ -1846,9 +1855,11 @@ nonisolated final class DorydClient: @unchecked Sendable {
     // The daemon owns a 240-second promotion deadline. Leave enough client-side margin for the
     // daemon to return its exact outcome instead of replacing it with a simultaneous UI timeout.
     private static let engineColdStartTimeout: TimeInterval = 250
-    // doryd gives dockerd and dory-hv up to 30 seconds to quiesce before its final fallback.
-    // Keep the UI connection alive past that bound so a safe stop is not reported as a timeout.
+    // Engine shutdown has no per-machine guest/helper acknowledgement path.
     private static let engineShutdownTimeout: TimeInterval = 45
+    // doryd allows the bounded in-guest resource probe three seconds. Keep transport overhead and
+    // scheduling pressure from replacing a valid daemon result with the default control timeout.
+    private static let dockerGuestResourceProbeTimeout: TimeInterval = 10
 
     private enum Target {
         case machService(String)
@@ -2007,8 +2018,56 @@ nonisolated final class DorydClient: @unchecked Sendable {
         }
     }
 
+    /// Capacity and usage of the Docker engine guest filesystem that contains `/var/lib/docker`.
+    ///
+    /// This is deliberately sourced from the guest filesystem rather than Docker's object-level
+    /// `/system/df` inventory, which can be unavailable even while the engine is healthy.
+    func dockerGuestDataDiskUsage() async throws -> DorydDockerGuestDataDiskUsage {
+        try await withTimeout(atLeast: Self.dockerGuestResourceProbeTimeout).dictionaryCall { proxy, reply in
+            proxy.dockerGuestDataDiskUsage(reply: reply)
+        } decode: { dictionary in
+            let expectedKeys: Set<String> = [
+                "schema",
+                "engineSocketPath",
+                "dataDriveID",
+                "totalBytes",
+                "usedBytes",
+                "availableBytes",
+            ]
+            let keys = Set(dictionary.allKeys.compactMap { $0 as? String })
+            guard keys.count == dictionary.count,
+                  keys == expectedKeys,
+                  Self.strictUInt64(dictionary["schema"]) == 1,
+                  let engineSocketPath = dictionary["engineSocketPath"] as? String,
+                  engineSocketPath.hasPrefix("/"),
+                  !engineSocketPath.contains("\0"),
+                  let encodedDataDriveID = dictionary["dataDriveID"] as? String,
+                  let dataDriveID = UUID(uuidString: encodedDataDriveID),
+                  encodedDataDriveID == dataDriveID.uuidString.lowercased(),
+                  let totalBytes = Self.strictUInt64(dictionary["totalBytes"]),
+                  totalBytes > 0,
+                  let usedBytes = Self.strictUInt64(dictionary["usedBytes"]),
+                  let availableBytes = Self.strictUInt64(dictionary["availableBytes"]),
+                  usedBytes <= totalBytes,
+                  availableBytes <= totalBytes else {
+                return nil
+            }
+            let accountedBytes = usedBytes.addingReportingOverflow(availableBytes)
+            guard !accountedBytes.overflow, accountedBytes.partialValue <= totalBytes else {
+                return nil
+            }
+            return DorydDockerGuestDataDiskUsage(
+                engineSocketPath: engineSocketPath,
+                dataDriveID: dataDriveID,
+                totalBytes: totalBytes,
+                usedBytes: usedBytes,
+                availableBytes: availableBytes
+            )
+        }
+    }
+
     func machineCreate(_ config: DorydMachineConfiguration) async throws -> DorydMachineStatus {
-        try await withTimeout(atLeast: 60).statusCommand { proxy, reply in
+        try await withTimeout(atLeast: DoryMachineControlTiming.fileMutationSeconds).statusCommand { proxy, reply in
             proxy.machineCreate(config.xpcDictionary, reply: reply)
         } decode: {
             Self.machineStatus(from: $0)
@@ -2019,7 +2078,7 @@ nonisolated final class DorydClient: @unchecked Sendable {
         _ machineID: String,
         operationID: UUID = UUID()
     ) async throws -> DorydMachineStatus {
-        try await withTimeout(atLeast: 120).statusCommand { proxy, reply in
+        try await withTimeout(atLeast: DoryMachineControlTiming.startSeconds).statusCommand { proxy, reply in
             proxy.machineStart(
                 machineID,
                 operationID: operationID.uuidString.lowercased(),
@@ -2034,7 +2093,7 @@ nonisolated final class DorydClient: @unchecked Sendable {
         _ machineID: String,
         operationID: UUID = UUID()
     ) async throws -> DorydMachineStatus {
-        try await withTimeout(atLeast: 30).statusCommand { proxy, reply in
+        try await withTimeout(atLeast: DoryMachineControlTiming.stopSeconds).statusCommand { proxy, reply in
             proxy.machineStop(
                 machineID,
                 operationID: operationID.uuidString.lowercased(),
@@ -2084,7 +2143,7 @@ nonisolated final class DorydClient: @unchecked Sendable {
     }
 
     func machineRestart(_ machineID: String) async throws -> DorydMachineStatus {
-        try await withTimeout(atLeast: 120).statusCommand { proxy, reply in
+        try await withTimeout(atLeast: DoryMachineControlTiming.restartSeconds).statusCommand { proxy, reply in
             proxy.machineRestart(machineID, reply: reply)
         } decode: {
             Self.machineStatus(from: $0)
@@ -2179,7 +2238,7 @@ nonisolated final class DorydClient: @unchecked Sendable {
     }
 
     func machineDelete(_ machineID: String) async throws -> DorydCommandResult {
-        try await command { proxy, reply in
+        try await withTimeout(atLeast: DoryMachineControlTiming.fileMutationSeconds).command { proxy, reply in
             proxy.machineDelete(machineID, reply: reply)
         }
     }

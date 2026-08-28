@@ -353,12 +353,22 @@ import Testing
             readFinished.signal()
         }
         let mmioWasResponsive = readFinished.wait(timeout: .now() + 1) == .success
-        release.signal()
+        var hostSendReleased = false
+        defer {
+            if !hostSendReleased {
+                release.signal()
+            }
+        }
         #expect(mmioWasResponsive)
         #expect(readResult.withLock { $0 } == UInt64(device.deviceID))
+        // Prove the queue is untouched while the injected host call is still blocked. Releasing
+        // it before these observations makes the assertion scheduler-dependent: the TX executor
+        // may legitimately complete a descriptor before the test thread samples the ring.
         #expect(try transport.queues[1].pendingCount() == 5)
         #expect(try memory.read(UInt16.self, at: layout.used + 2) == 0)
 
+        hostSendReleased = true
+        release.signal()
         #expect(waitUntil { (try? memory.read(UInt16.self, at: layout.used + 2)) == 5 })
         let statistics = device.statistics
         #expect(statistics.transmitPackets == 5)

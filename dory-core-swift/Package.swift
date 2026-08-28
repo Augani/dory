@@ -61,6 +61,7 @@ let package = Package(
                 "DoryVMContracts",
             ],
             linkerSettings: [
+                .linkedFramework("AppKit"),
                 .linkedFramework("IOKit"),
                 .linkedFramework("Network"),
                 .linkedFramework("Security"),
@@ -83,11 +84,11 @@ let package = Package(
         ),
         .executableTarget(
             name: "dorydctl",
-            dependencies: ["DorydKit", "DoryCore"]
+            dependencies: ["DorydKit", "DoryCore", "DoryOperations"]
         ),
         .executableTarget(
             name: "dory-vmm",
-            dependencies: ["DoryVMMKit"],
+            dependencies: ["DoryVMMKit", "DorydKit"],
             exclude: ["Info.plist", "dory-vmm.entitlements"],
             linkerSettings: [
                 .unsafeFlags([

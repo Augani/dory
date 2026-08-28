@@ -8,7 +8,7 @@ import Testing
         let client = StubAgentControlRPC()
         client.infoResult = DoryAgentInfo(
             protocolVersion: DoryCore.protocolVersion(),
-            kernel: "Linux 6.12.30-dory",
+            kernel: "Linux 6.12.106-dory",
             agentBuild: "dory-agent/0.1.0",
             uptimeSeconds: 42,
             capabilities: [DoryAgentCapability(id: "usb-vhci", version: 1)]
@@ -21,7 +21,7 @@ import Testing
 
         #expect(info == AgentInfo(
             protocolVersion: 1,
-            kernel: "Linux 6.12.30-dory",
+            kernel: "Linux 6.12.106-dory",
             agentBuild: "dory-agent/0.1.0",
             uptimeSeconds: 42,
             capabilities: [AgentCapability(id: "usb-vhci", version: 1)]
@@ -176,7 +176,7 @@ import Testing
     @Test func infoJSONUsesCurrentProtobufSurfaceNames() throws {
         let info = AgentInfo(
             protocolVersion: 1,
-            kernel: "Linux 6.12.30-dory",
+            kernel: "Linux 6.12.106-dory",
             agentBuild: "dory-agent/0.1.0",
             uptimeSeconds: 42
         )

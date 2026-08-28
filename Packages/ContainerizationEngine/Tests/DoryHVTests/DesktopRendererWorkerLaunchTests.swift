@@ -265,7 +265,7 @@ private func rendererLaunchBootstrap(
         ),
         generation: DoryRendererWorkerGeneration(rawValue: workerGeneration),
         sourceTuple: .productionCandidate,
-        producerFenceContract: .managedLinux61230PrepareFBV1,
+        producerFenceContract: .managedLinux612106PrepareFBV1,
         requestedCapabilities: .productionAcceleration,
         artifacts: DoryRendererArtifactManifest(
             candidateInventory: try rendererLaunchDigest(1),

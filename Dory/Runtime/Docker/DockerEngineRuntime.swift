@@ -424,12 +424,16 @@ struct DockerEngineRuntime: ContainerRuntime {
     let socketPath: String
     let displayName: String
     let operationIdleTimeout: TimeInterval?
+    private let migrationTargetStorageUsageProbe:
+        (@Sendable () async throws -> MigrationTargetStorageUsage)?
 
     nonisolated init(
         socketPath: String,
         kind: RuntimeKind = .docker,
         displayName: String? = nil,
-        operationIdleTimeout: TimeInterval? = nil
+        operationIdleTimeout: TimeInterval? = nil,
+        migrationTargetStorageUsageProbe:
+            (@Sendable () async throws -> MigrationTargetStorageUsage)? = nil
     ) {
         self.socketPath = socketPath
         self.kind = kind
@@ -437,6 +441,7 @@ struct DockerEngineRuntime: ContainerRuntime {
             ? DockerEngineSocketDiscovery.engineLabel(for: socketPath, home: NSHomeDirectory())
             : kind.displayName)
         self.operationIdleTimeout = operationIdleTimeout
+        self.migrationTargetStorageUsageProbe = migrationTargetStorageUsageProbe
     }
 
     var migrationSourceIdentifier: String {
@@ -457,8 +462,14 @@ struct DockerEngineRuntime: ContainerRuntime {
             socketPath: socketPath,
             kind: kind,
             displayName: displayName,
-            operationIdleTimeout: timeout
+            operationIdleTimeout: timeout,
+            migrationTargetStorageUsageProbe: migrationTargetStorageUsageProbe
         )
+    }
+
+    func migrationTargetStorageUsage() async throws -> MigrationTargetStorageUsage? {
+        guard let migrationTargetStorageUsageProbe else { return nil }
+        return try await migrationTargetStorageUsageProbe()
     }
 
     private var http: UnixSocketHTTP {

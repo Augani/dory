@@ -214,7 +214,14 @@ func runAgentPing(_ options: Options) {
     }
 }
 
-let arguments = Array(CommandLine.arguments.dropFirst())
+let arguments: [String]
+do {
+    arguments = try DoryApplicationLaunchHandoffClient.receiveIfRequested(
+        arguments: Array(CommandLine.arguments.dropFirst())
+    )
+} catch {
+    fail("application launch authority handoff failed: \(error)")
+}
 guard let command = arguments.first else {
     fail("usage: dory-hv <smoke|madvtest|desktop|agent-ping|engine|usb|renderer-qualify> [options]")
 }

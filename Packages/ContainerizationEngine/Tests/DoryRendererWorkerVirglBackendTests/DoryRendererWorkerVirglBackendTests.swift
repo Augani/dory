@@ -1680,7 +1680,7 @@ import Testing
             workspaceID: .random(),
             generation: DoryRendererWorkerGeneration(rawValue: 9),
             sourceTuple: .productionCandidate,
-            producerFenceContract: .managedLinux61230PrepareFBV1,
+            producerFenceContract: .managedLinux612106PrepareFBV1,
             requestedCapabilities: .productionAcceleration,
             artifacts: DoryRendererArtifactManifest(
                 candidateInventory: digest(1),

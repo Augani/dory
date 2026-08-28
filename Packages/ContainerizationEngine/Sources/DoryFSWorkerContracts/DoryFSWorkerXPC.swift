@@ -18,6 +18,19 @@ public protocol DoryFSWorkerXPCProtocol: NSObjectProtocol {
     )
     func exchange(_ frame: Data, withReply reply: @escaping (Data) -> Void)
     func sendOneWay(_ frame: Data)
+    func activateCoherence(withReply reply: @escaping (Data) -> Void)
+    func coherenceStatus(withReply reply: @escaping (Data) -> Void)
+}
+
+/// Reverse runner interface used only for worker-local host-edit coherence. The worker sends one
+/// exact generation/capability-scoped batch and retains those exact bytes until the runner replies
+/// with a matching acknowledgement. No Foundation path or object graph crosses this method.
+@objc(DoryFSWorkerCoherenceSinkXPCProtocol)
+public protocol DoryFSWorkerCoherenceSinkXPCProtocol: NSObjectProtocol {
+    func deliverCoherence(
+        _ frame: Data,
+        withReply reply: @escaping (Data) -> Void
+    )
 }
 
 /// Constructs the single transport interface used by both peers. The descriptor allowlist is
@@ -38,6 +51,11 @@ public enum DoryFSWorkerXPCInterface {
             ofReply: false
         )
         return interface
+    }
+
+
+    public static func makeCoherenceSink() -> NSXPCInterface {
+        NSXPCInterface(with: DoryFSWorkerCoherenceSinkXPCProtocol.self)
     }
 }
 

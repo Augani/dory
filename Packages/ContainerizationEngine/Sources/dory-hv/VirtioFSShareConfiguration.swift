@@ -194,20 +194,44 @@ struct DoryFilesystemWorkerLaunch: @unchecked Sendable {
     let capabilityByTag: [String: DoryFSShareCapabilityID]
 
     func broker(for share: VirtioFSShareConfiguration) throws -> DoryFSWorkerBroker {
+        let capability = try capability(for: share)
+        return try client.broker(for: capability)
+    }
+
+    func capability(
+        for share: VirtioFSShareConfiguration
+    ) throws -> DoryFSShareCapabilityID {
         guard let capability = capabilityByTag[share.tag] else {
             throw VMError.invalidConfiguration(
                 "filesystem worker has no capability for virtio-fs tag \(share.tag)"
             )
         }
-        return try client.broker(for: capability)
+        return capability
+    }
+
+    @discardableResult
+    func installCoherenceHandler(
+        _ handler: @escaping @Sendable (DoryFSWorkerCoherenceBatch) async throws -> Void
+    ) -> Bool {
+        client.installCoherenceHandler(handler)
+    }
+
+    func installLifecycleHandler(
+        _ handler: @escaping @Sendable (DoryFSWorkerChannelEvent) -> Void
+    ) {
+        client.installLifecycleHandler(handler)
     }
 }
 
 enum DoryFilesystemWorkerLauncher {
     static func start(
-        shares: [VirtioFSShareConfiguration]
+        shares: [VirtioFSShareConfiguration],
+        coherencePolicyByTag: [String: DoryFSShareCoherencePolicy] = [:]
     ) async throws -> DoryFilesystemWorkerLaunch {
-        let prepared = try prepare(shares: shares)
+        let prepared = try prepare(
+            shares: shares,
+            coherencePolicyByTag: coherencePolicyByTag
+        )
         let client = try await DoryFSWorkerWorkspaceClient.connect(
             exactBootstrapBytes: prepared.bytes,
             rootDescriptors: prepared.rootDescriptors
@@ -219,9 +243,13 @@ enum DoryFilesystemWorkerLauncher {
     }
 
     static func startBlocking(
-        shares: [VirtioFSShareConfiguration]
+        shares: [VirtioFSShareConfiguration],
+        coherencePolicyByTag: [String: DoryFSShareCoherencePolicy] = [:]
     ) throws -> DoryFilesystemWorkerLaunch {
-        let prepared = try prepare(shares: shares)
+        let prepared = try prepare(
+            shares: shares,
+            coherencePolicyByTag: coherencePolicyByTag
+        )
         let client = try DoryFSWorkerWorkspaceClient.connectBlocking(
             exactBootstrapBytes: prepared.bytes,
             rootDescriptors: prepared.rootDescriptors
@@ -233,7 +261,8 @@ enum DoryFilesystemWorkerLauncher {
     }
 
     static func prepare(
-        shares: [VirtioFSShareConfiguration]
+        shares: [VirtioFSShareConfiguration],
+        coherencePolicyByTag: [String: DoryFSShareCoherencePolicy] = [:]
     ) throws -> (
         bytes: Data,
         rootDescriptors: [FileHandle],
@@ -294,6 +323,7 @@ enum DoryFilesystemWorkerLauncher {
                     generation: UInt64(truncatingIfNeeded: status.st_gen)
                 ),
                 readOnly: share.readOnly,
+                coherencePolicy: coherencePolicyByTag[share.tag] ?? .disabled,
                 guestIdentity: DoryFSGuestIdentityPolicy(uid: getuid(), gid: getgid()),
                 resourceLimits: .production,
                 rootDescriptorIndex: rootDescriptorIndex,

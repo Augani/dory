@@ -655,7 +655,7 @@ import Testing
             workspaceID: DoryRendererWorkspaceID(rawValue: fixedUUID(1)),
             generation: DoryRendererWorkerGeneration(rawValue: 1),
             sourceTuple: .productionCandidate,
-            producerFenceContract: .managedLinux61230PrepareFBV1,
+            producerFenceContract: .managedLinux612106PrepareFBV1,
             requestedCapabilities: .productionAcceleration,
             artifacts: DoryRendererArtifactManifest(
                 candidateInventory: digest(1),

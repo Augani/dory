@@ -713,8 +713,22 @@ enum EngineMode {
         ), guestAgentPath: configuration.guestAgentPath)
         let guestLogShare = try guestLogShareConfiguration(stateDirectory: state)
         let filesystemShares = [bootConfigShare, guestLogShare] + configuration.shares
+        // `IgnoreSelf` is worker-process scoped, so validate internal and user mounts together.
+        // An overlapping writable disabled mount could otherwise hide its mutations from a
+        // coherence-enabled alias in the same worker.
+        try VirtioFSShareConfiguration.validateWritableTopology(filesystemShares)
+        var coherencePolicyByTag: [String: DoryFSShareCoherencePolicy] = [
+            bootConfigShare.tag: .disabled,
+            guestLogShare.tag: .disabled,
+        ]
+        for share in configuration.shares {
+            coherencePolicyByTag[share.tag] = share.readOnly
+                ? .invalidationOnly
+                : .invalidationAndWatcherNudge
+        }
         let filesystemWorker = try DoryFilesystemWorkerLauncher.startBlocking(
-            shares: filesystemShares
+            shares: filesystemShares,
+            coherencePolicyByTag: coherencePolicyByTag
         )
         defer { filesystemWorker.client.invalidate() }
 
@@ -759,16 +773,32 @@ enum EngineMode {
                 machine.requestStop(.crash(reason))
             }
         }
-        backends.append(try bootConfigShare.makeBackend(
+        let bootConfigBackend = try bootConfigShare.makeBackend(
             broker: filesystemWorker.broker(for: bootConfigShare),
             requestQueueCount: fuseRequestQueues,
             onWorkerLifecycle: workerLifecycle
-        ))
-        backends.append(try guestLogShare.makeBackend(
+        )
+        let guestLogBackend = try guestLogShare.makeBackend(
             broker: filesystemWorker.broker(for: guestLogShare),
             requestQueueCount: fuseRequestQueues,
             onWorkerLifecycle: workerLifecycle
-        ))
+        )
+        backends.append(bootConfigBackend)
+        backends.append(guestLogBackend)
+        var coherenceEndpoints = [
+            try DoryHostShareCoherenceEndpoint(
+                capabilityID: filesystemWorker.capability(for: bootConfigShare),
+                backend: bootConfigBackend,
+                guestRoot: "/mnt/dory-config",
+                policy: .disabled
+            ),
+            try DoryHostShareCoherenceEndpoint(
+                capabilityID: filesystemWorker.capability(for: guestLogShare),
+                backend: guestLogBackend,
+                guestRoot: "/mnt/dory-logs",
+                policy: .disabled
+            ),
+        ]
         for share in configuration.shares {
             let backend = try share.makeBackend(
                 broker: filesystemWorker.broker(for: share),
@@ -776,8 +806,39 @@ enum EngineMode {
                 onWorkerLifecycle: workerLifecycle
             )
             backends.append(backend)
+            coherenceEndpoints.append(try DoryHostShareCoherenceEndpoint(
+                capabilityID: filesystemWorker.capability(for: share),
+                backend: backend,
+                guestRoot: share.guestMountPoint ?? "/mnt/dory/\(share.tag)",
+                policy: coherencePolicyByTag[share.tag] ?? .disabled
+            ))
             note("sharing authorized capability as virtiofs tag \(share.tag)\(share.readOnly ? " (ro)" : "")")
         }
+        let hostShareCoherence = DoryHostShareCoherenceBridge(
+            endpoints: coherenceEndpoints,
+            guestEvents: GuestFSEventBridge(vsock: vsock)
+        ) { reason in
+            note(reason)
+            machine.requestStop(.crash(reason))
+        }
+        guard filesystemWorker.installCoherenceHandler({ batch in
+            try await hostShareCoherence.process(batch)
+        }) else {
+            throw VMError.invalidConfiguration(
+                "filesystem coherence handler was already installed"
+            )
+        }
+        filesystemWorker.installLifecycleHandler { [weak hostShareCoherence] event in
+            hostShareCoherence?.failStop("filesystem worker coherence channel \(event)")
+        }
+        try filesystemWorker.client.activateCoherence()
+        let fileServiceResources = FileServiceResourcePublisher(
+            stateDirectory: state,
+            worker: filesystemWorker,
+            frontends: coherenceEndpoints.map(\.backend)
+        )
+        fileServiceResources.start()
+        defer { fileServiceResources.stop() }
 
         let networkPaths = try GVProxyRuntimePaths(
             stateDirectory: state,

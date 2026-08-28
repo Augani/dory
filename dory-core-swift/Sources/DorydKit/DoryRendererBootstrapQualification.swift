@@ -431,7 +431,7 @@ public struct DoryVerifiedRendererBootstrapQualification: Equatable, Sendable {
                 == UInt64(capabilityReceiptProtocolVersion),
               exactUnsigned(root["producerFenceContract"])
                 == UInt64(DoryRendererProducerFenceContract
-                    .managedLinux61230PrepareFBV1.rawValue),
+                    .managedLinux612106PrepareFBV1.rawValue),
               let rawSourceTuple = exactUnsigned(root["sourceTuple"]),
               let sourceTupleValue = UInt16(exactly: rawSourceTuple),
               let sourceTuple = DoryRendererSourceTuple(rawValue: sourceTupleValue),

@@ -1,6 +1,7 @@
 import CryptoKit
 import Darwin
 import DoryCore
+import DoryOperations
 import Foundation
 
 public enum DockerTierState: String, Sendable {
@@ -11,24 +12,63 @@ public enum DockerTierState: String, Sendable {
     case failed
 }
 
+/// Exact identity of a committed tier lifecycle transition. Epoch correlation prevents delayed
+/// observer work from satisfying a request that belongs to a newer engine generation.
+struct DockerTierLifecycleEvent: Sendable, Equatable {
+    let epoch: UInt64
+    let state: DockerTierState
+}
+
 public struct DockerTierStatus: Sendable {
     public var state: DockerTierState
     public var socketPath: String
     public var hvPID: Int32?
     public var lastError: String?
+    /// True while endpoint and helper retirement is executing outside the tier lock. The existing
+    /// state enum remains source-compatible with service/UI consumers; callers that need exact
+    /// lifecycle truth can distinguish an in-progress stop from a terminal failure here.
+    public var isStopping: Bool
 }
 
 public struct DoryGuestResourceSnapshot: Sendable, Equatable {
+    /// The verified selected Dory drive whose ext4 image supplied this guest filesystem.
+    public var selectedDataDriveID: UUID
+    public var dataDiskFilesystemUUID: UUID
+    public var dataDiskMountSource: String
+    public var dataDiskFilesystemType: String
+    public var dataDiskDeviceMajorMinor: String
     public var memoryCeilingBytes: UInt64
     public var memoryUsedBytes: UInt64
     public var memoryCacheBytes: UInt64
-    public var memoryReclaimableBytes: UInt64
+    /// Linux's `MemAvailable`: the kernel's estimate of memory usable for new work without swap.
+    public var memoryAvailableBytes: UInt64
     public var memoryFreeBytes: UInt64
     public var dataDiskTotalBytes: UInt64
     public var dataDiskUsedBytes: UInt64
     public var dataDiskAvailableBytes: UInt64
+
+    /// Compatibility view of the memory the guest can reclaim beyond pages Linux reports as
+    /// immediately free. New callers should consume `memoryAvailableBytes` directly because it is
+    /// the kernel's `MemAvailable` estimate used by Dory's pressure policy.
+    @available(*, deprecated, message: "Use memoryAvailableBytes (Linux MemAvailable) instead")
+    public var memoryReclaimableBytes: UInt64 {
+        get {
+            memoryAvailableBytes.saturatingSubtracting(memoryFreeBytes)
+        }
+        set {
+            memoryAvailableBytes = min(
+                memoryCeilingBytes,
+                memoryFreeBytes.saturatingAdding(newValue)
+            )
+            memoryUsedBytes = memoryCeilingBytes.saturatingSubtracting(memoryAvailableBytes)
+        }
+    }
 }
 
+/// Legacy host-share telemetry contract retained for source and decoding compatibility. The
+/// file-service telemetry record supersedes it and exposes the bounded worker/coherence metrics
+/// used by current health policy.
+@available(*, deprecated, message: "Use DoryFileServiceResourceSnapshot instead")
 public struct DoryHostShareResourceSnapshot: Codable, Sendable, Equatable {
     public struct Batcher: Codable, Sendable, Equatable {
         public var pendingCount: Int
@@ -49,6 +89,144 @@ public struct DoryHostShareResourceSnapshot: Codable, Sendable, Equatable {
     public var flushScheduled: Bool
     public var consecutiveFailures: Int
     public var batcher: Batcher
+}
+
+/// Host-side identity of the exact selected ext4 image expected at `/dev/vdb` in the managed guest.
+public struct DockerGuestDataDiskAuthority: Sendable, Equatable {
+    public let dataDriveID: UUID
+    public let filesystemUUID: UUID
+    /// Canonical host path and stable descriptor identity of the selected ext4 image. These are
+    /// optional only for source compatibility with non-managed/test callers; managed launches
+    /// that perform guest disk attestation require the complete identity and fail closed otherwise.
+    public let diskImagePath: String?
+    public let diskImageDevice: UInt64?
+    public let diskImageInode: UInt64?
+
+    public init(dataDriveID: UUID, filesystemUUID: UUID) {
+        self.dataDriveID = dataDriveID
+        self.filesystemUUID = filesystemUUID
+        self.diskImagePath = nil
+        self.diskImageDevice = nil
+        self.diskImageInode = nil
+    }
+
+    public init(
+        dataDriveID: UUID,
+        filesystemUUID: UUID,
+        diskImagePath: String,
+        diskImageDevice: UInt64,
+        diskImageInode: UInt64
+    ) {
+        self.dataDriveID = dataDriveID
+        self.filesystemUUID = filesystemUUID
+        self.diskImagePath = diskImagePath
+        self.diskImageDevice = diskImageDevice
+        self.diskImageInode = diskImageInode
+    }
+
+    fileprivate var hasStableDiskImageIdentity: Bool {
+        diskImagePath?.hasPrefix("/") == true
+            && diskImageDevice != nil
+            && diskImageInode != nil
+    }
+}
+
+private struct DockerGuestDataDiskBinding: Sendable, Equatable {
+    let authority: DockerGuestDataDiskAuthority
+    let mountSource: String
+    let filesystemType: String
+    let deviceMajorMinor: String
+}
+
+private struct DockerGuestDataDiskLaunchAuthority: Sendable, Equatable {
+    let helperGeneration: UUID
+    let authority: DockerGuestDataDiskAuthority
+}
+
+private struct DockerGuestDataDiskVerifiedBinding: Sendable, Equatable {
+    let lifecycleEpoch: UInt64
+    let helperGeneration: UUID?
+    let binding: DockerGuestDataDiskBinding
+}
+
+/// One exact engine generation around a guest resource exec. The helper reference prevents a
+/// stopped generation's late reply from being accepted after a replacement helper is published.
+private struct DockerGuestResourceProbeLifecycle {
+    let epoch: UInt64
+    let state: DockerTierState
+    let helper: (any DockerManagedProcess)?
+    let helperGeneration: UUID?
+    let dataDiskLaunchAuthority: DockerGuestDataDiskLaunchAuthority?
+}
+
+public struct DoryFileServiceResourceSnapshot: Codable, Sendable, Equatable {
+    public var schema: String
+    public var version: Int
+    public var generatedAt: Date
+    public var running: Bool
+    public var cacheMode: String
+    public var maximumCacheValiditySeconds: Double
+    public var configuredShareCount: Int
+    public var invalidationOnlyShareCount: Int
+    public var watcherNudgeShareCount: Int
+    public var frontendCount: Int
+    public var requestQueueCount: Int
+    public var observationRequired: Bool
+    public var observationActive: Bool
+    public var requiredObservationShareCount: Int
+    public var observedRequiredShareCount: Int
+    public var observationStreamCount: Int
+    public var pendingEventCount: Int
+    public var pendingEventLimit: Int
+    public var receivedEventCount: UInt64
+    public var deliveredBatchCount: UInt64
+    public var failedBatchCount: UInt64
+    public var eventLossCount: UInt64
+    public var invalidationCount: UInt64
+    public var invalidationFailureCount: UInt64
+    public var invalidationFailureLatched: Bool
+    public var rejectedRequestCount: UInt64
+    public var executedRequestCount: UInt64
+    public var terminalQueueFaultCount: UInt64
+    public var completedRequestCount: UInt64
+    public var failedRequestCount: UInt64
+    public var inFlightRequestCount: UInt64
+    public var peakInFlightRequestCount: UInt64
+    public var requestPayloadBytes: UInt64
+    public var workerResponsePayloadBytes: UInt64
+    public var guestPublishedResponseBytes: UInt64
+    public var totalRequestLatencyNanoseconds: UInt64
+    public var maximumRequestLatencyNanoseconds: UInt64
+    public var coherenceReceivedBatchCount: UInt64
+    public var coherenceReplayedBatchCount: UInt64
+    public var coherenceInFlightBatchCount: Int
+    public var coherenceFailedBatchCount: UInt64
+    public var coherenceTotalLatencyNanoseconds: UInt64
+    public var coherenceMaximumLatencyNanoseconds: UInt64
+    public var coherenceRequestBytes: UInt64
+    public var coherenceAcknowledgementBytes: UInt64
+    public var coherenceTerminalFailureLatched: Bool
+
+    enum CodingKeys: String, CodingKey, CaseIterable {
+        case schema, version, generatedAt, running, cacheMode, maximumCacheValiditySeconds
+        case configuredShareCount, invalidationOnlyShareCount, watcherNudgeShareCount
+        case frontendCount, requestQueueCount, observationRequired, observationActive
+        case requiredObservationShareCount, observedRequiredShareCount, observationStreamCount
+        case pendingEventCount, pendingEventLimit, receivedEventCount, deliveredBatchCount
+        case failedBatchCount, eventLossCount, invalidationCount, invalidationFailureCount
+        case invalidationFailureLatched, rejectedRequestCount, executedRequestCount
+        case terminalQueueFaultCount, completedRequestCount, failedRequestCount
+        case inFlightRequestCount, peakInFlightRequestCount, requestPayloadBytes
+        case workerResponsePayloadBytes, guestPublishedResponseBytes
+        case totalRequestLatencyNanoseconds, maximumRequestLatencyNanoseconds
+        case coherenceReceivedBatchCount, coherenceReplayedBatchCount
+        case coherenceInFlightBatchCount, coherenceFailedBatchCount
+        case coherenceTotalLatencyNanoseconds, coherenceMaximumLatencyNanoseconds
+        case coherenceRequestBytes, coherenceAcknowledgementBytes
+        case coherenceTerminalFailureLatched
+    }
+
+    static let exactJSONKeys = Set(CodingKeys.allCases.map(\.rawValue))
 }
 
 public struct DockerTierConfiguration: Sendable {
@@ -99,23 +277,34 @@ public typealias DockerReadyWaiter = @Sendable (
     @escaping @Sendable () -> Bool
 ) -> Bool
 
-private protocol DockerManagedProcess: AnyObject, Sendable {
-    var pid: Int32? { get }
-    var isRunning: Bool { get }
+struct DockerManagedProcessObservation: Sendable, Equatable {
+    let pid: Int32?
+    /// `true` means the supervisor still owns a live generation or exact terminal-retirement
+    /// authority. `false` is published only after the supervisor can prove neither remains.
+    let isRunning: Bool
+}
+
+protocol DockerManagedProcess: AnyObject, Sendable {
     func start() throws
     func suspend() -> Bool
     func resume() -> Bool
-    func stop()
+    @discardableResult func stop() -> Bool
+    func waitForTermination(timeout: TimeInterval) -> Bool
+    /// One mutex-coherent process snapshot, bounded by the caller's absolute monotonic deadline.
+    /// `nil` is unknown/contended and must be treated as retained authority, never as stopped.
+    func lifecycleObservation(until deadline: DispatchTime) -> DockerManagedProcessObservation?
 }
 
 extension HvProcess: DockerManagedProcess {
-    public func stop() {
+    @discardableResult
+    public func stop() -> Bool {
         stop(signal: SIGTERM, timeout: DoryEngineShutdownTiming.hostTerminationSeconds)
     }
 }
 
 extension VmmDockerProcess: DockerManagedProcess {
-    public func stop() {
+    @discardableResult
+    public func stop() -> Bool {
         stop(signal: SIGTERM, timeout: DoryEngineShutdownTiming.hostTerminationSeconds)
     }
 }
@@ -128,6 +317,7 @@ public final class DockerTier: @unchecked Sendable {
         case resumeFailed(pid: Int32?)
         case readyTimeout
         case helperExited(String)
+        case helperTerminationPending
         case promotionTimeout
         case startCancelled
         case daemonShuttingDown
@@ -150,6 +340,8 @@ public final class DockerTier: @unchecked Sendable {
                 return "docker tier did not become ready after wake"
             case .helperExited(let detail):
                 return "docker tier helper \(detail)"
+            case .helperTerminationPending:
+                return "docker tier helper termination is still being verified"
             case .promotionTimeout:
                 return "docker tier did not reach running state before the promotion deadline"
             case .startCancelled:
@@ -175,11 +367,149 @@ public final class DockerTier: @unchecked Sendable {
     // a short window.
     private static let freshStartReadyTimeout: TimeInterval = 180
     private static let resumeReadyTimeout: TimeInterval = 10
+    /// Status and lifecycle reconciliation must never inherit a helper launch's 30-45 second
+    /// mutex hold. A contended observation fails closed after this small monotonic window.
+    private static let managedProcessObservationSeconds: TimeInterval = 0.025
+
+    /// One exact teardown generation. Claiming moves all endpoint/helper authority into this
+    /// object under `lock`; cleanup then runs without that lock, while concurrent stops join this
+    /// completion and lifecycle promotion remains excluded.
+    private final class TeardownOperation: @unchecked Sendable {
+        let epoch: UInt64
+        let dataplane: DoryDataplaneHandle?
+        let activityServer: DataplaneActivityServer?
+        let wakeTask: Task<Void, Never>?
+        let restartWorkItem: DispatchWorkItem?
+        let helpers: [any DockerManagedProcess]
+        let readinessCycle: EngineReadinessCycleToken
+        let markStopped: Bool
+        let publishStoppedIntent: Bool
+
+        private let completion = DispatchGroup()
+        private let resultLock = NSLock()
+        private var storedResult: Bool?
+
+        init(
+            epoch: UInt64,
+            dataplane: DoryDataplaneHandle?,
+            activityServer: DataplaneActivityServer?,
+            wakeTask: Task<Void, Never>?,
+            restartWorkItem: DispatchWorkItem?,
+            helpers: [any DockerManagedProcess],
+            readinessCycle: EngineReadinessCycleToken,
+            markStopped: Bool,
+            publishStoppedIntent: Bool
+        ) {
+            self.epoch = epoch
+            self.dataplane = dataplane
+            self.activityServer = activityServer
+            self.wakeTask = wakeTask
+            self.restartWorkItem = restartWorkItem
+            self.helpers = helpers
+            self.readinessCycle = readinessCycle
+            self.markStopped = markStopped
+            self.publishStoppedIntent = publishStoppedIntent
+            completion.enter()
+        }
+
+        func contains(_ helper: any DockerManagedProcess) -> Bool {
+            helpers.contains { $0 === helper }
+        }
+
+        func finish(result: Bool) {
+            resultLock.lock()
+            precondition(storedResult == nil, "teardown operation completed more than once")
+            storedResult = result
+            resultLock.unlock()
+            completion.leave()
+        }
+
+        func wait(until deadline: DispatchTime = .distantFuture) -> Bool? {
+            guard completion.wait(timeout: deadline) == .success else { return nil }
+            resultLock.lock()
+            let result = storedResult
+            resultLock.unlock()
+            return result
+        }
+    }
+
+    private final class RetainedHelperRecoveryPlan: @unchecked Sendable {
+        let token: UUID
+        let epoch: UInt64
+        let helpers: [any DockerManagedProcess]
+        let restart: DispatchWorkItem?
+        let restartDelay: TimeInterval
+        let terminalFailureDetail: String
+
+        init(
+            token: UUID,
+            epoch: UInt64,
+            helpers: [any DockerManagedProcess],
+            restart: DispatchWorkItem?,
+            restartDelay: TimeInterval,
+            terminalFailureDetail: String
+        ) {
+            self.token = token
+            self.epoch = epoch
+            self.helpers = helpers
+            self.restart = restart
+            self.restartDelay = restartDelay
+            self.terminalFailureDetail = terminalFailureDetail
+        }
+    }
+
+    /// Exact authority for one host-only dataplane replacement. The guest helper remains owned by
+    /// the tier, while the old and candidate host endpoints stay private to this operation until a
+    /// lifecycle-coherent commit. Stop/terminal shutdown supersede it by advancing the epoch; the
+    /// latch is released only after this operation has retired every socket it could have bound.
+    private final class HostDataplaneRepairOperation: @unchecked Sendable {
+        let epoch: UInt64
+        let helper: (any DockerManagedProcess)?
+        let helperGeneration: UUID?
+        let previousDataplane: DoryDataplaneHandle?
+        let previousActivityServer: DataplaneActivityServer?
+        let readinessCycle: EngineReadinessCycleToken
+
+        private let completion = DispatchGroup()
+        private let completionLock = NSLock()
+        private var didFinish = false
+
+        init(
+            epoch: UInt64,
+            helper: (any DockerManagedProcess)?,
+            helperGeneration: UUID?,
+            previousDataplane: DoryDataplaneHandle?,
+            previousActivityServer: DataplaneActivityServer?,
+            readinessCycle: EngineReadinessCycleToken
+        ) {
+            self.epoch = epoch
+            self.helper = helper
+            self.helperGeneration = helperGeneration
+            self.previousDataplane = previousDataplane
+            self.previousActivityServer = previousActivityServer
+            self.readinessCycle = readinessCycle
+            completion.enter()
+        }
+
+        func finish() {
+            completionLock.lock()
+            precondition(!didFinish, "host dataplane repair completed more than once")
+            didFinish = true
+            completionLock.unlock()
+            completion.leave()
+        }
+
+        func notify(on queue: DispatchQueue, execute work: @escaping @Sendable () -> Void) {
+            completion.notify(queue: queue, execute: work)
+        }
+    }
 
     private let configuration: DockerTierConfiguration
     private let containerActivityProbe: DockerContainerActivityProbe
     private let dockerReadyWaiter: DockerReadyWaiter
     private let beforeDataplaneStart: @Sendable () -> Void
+    private let guestDataDiskAuthorityProvider:
+        @Sendable (String) throws -> DockerGuestDataDiskAuthority
     private let socket: DorySocket
     private let idleController: IdleController?
     private let agentControl: AgentControl?
@@ -187,21 +517,45 @@ public final class DockerTier: @unchecked Sendable {
     private let publishedPortRepairClient: PublishedPortRepairClient
     private let readinessTracker = EngineReadinessTracker()
     private let supervisorQueue = DispatchQueue(label: "dev.dory.doryd.docker-tier-supervisor")
-    private let lock = NSLock()
+    private let lifecycleObserverQueue = DispatchQueue(
+        label: "dev.dory.doryd.docker-tier-lifecycle-observer"
+    )
+    private let lock = DoryProcessLifecycleMutex()
     private var dataplane: DoryDataplaneHandle?
     private var activityServer: DataplaneActivityServer?
     private var helperProcess: (any DockerManagedProcess)?
+    private var managedProcessFactory:
+        (@Sendable (UUID, HvProcessUnexpectedTerminationHandler?) -> (any DockerManagedProcess)?)?
+    /// Exact helpers whose bounded SIGKILL window expired. Retaining these objects prevents a new
+    /// engine generation from reusing its disk/socket authority until terminal observation.
+    private var retiringHelpers: [any DockerManagedProcess] = []
     private var state: DockerTierState = .stopped
     private var lastError: String?
     private var wakeTask: Task<Void, Never>?
     private var activeHelperGeneration: UUID?
+    private var activeGuestDataDiskLaunchAuthority: DockerGuestDataDiskLaunchAuthority?
     private var helperStartedAt: Date?
     private var unexpectedRestartCount = 0
     private var lifecycleEpoch: UInt64 = 0
     private var restartWorkItem: DispatchWorkItem?
     private var terminalShutdown = false
-    private var lifecycleStateObserver: @Sendable (DockerTierState) -> Void = { _ in }
+    private var lifecycleStateObserver: @Sendable (DockerTierLifecycleEvent) -> Void = { _ in }
     private var promotionWaiters: [UUID: DispatchSemaphore] = [:]
+    private var activeTeardown: TeardownOperation?
+    /// Serializes endpoint ownership without holding `lock` across handle shutdown, socket probes,
+    /// or replacement startup. A newer lifecycle cannot publish endpoints until cleanup finishes.
+    private var activeHostDataplaneRepair: HostDataplaneRepairOperation?
+    /// Exact unexpected-loss retirement being observed asynchronously. Explicit stop/shutdown
+    /// clears the token before claiming the retained helpers, so a late terminal callback cannot
+    /// resurrect recovery after a newer control decision.
+    private var retainedHelperRecoveryToken: UUID?
+    /// Exact lightweight-dataplane launch whose socket cleanup has not retired yet. Ordinary stop
+    /// may invalidate its lifecycle while `startDataplane()` is outside the tier lock; keeping this
+    /// authority latched until cleanup completes prevents a replacement bind from being unlinked.
+    private var activeSleepingDataplaneLaunchEpoch: UInt64?
+    /// Exact within-generation guest mount binding. A fresh helper boot may legitimately receive a
+    /// different Linux `dev_t`; the host image launch authority remains independently exact.
+    private var verifiedGuestDataDiskBinding: DockerGuestDataDiskVerifiedBinding?
 
     public init(
         configuration: DockerTierConfiguration,
@@ -235,13 +589,18 @@ public final class DockerTier: @unchecked Sendable {
             )
         },
         beforeDataplaneStart: @escaping @Sendable () -> Void = {},
-        publishedPortRepairClient: PublishedPortRepairClient = PublishedPortRepairClient()
+        publishedPortRepairClient: PublishedPortRepairClient = PublishedPortRepairClient(),
+        guestDataDiskAuthorityProvider:
+            (@Sendable (String) throws -> DockerGuestDataDiskAuthority)? = nil
     ) {
         self.configuration = configuration
         self.containerActivityProbe = containerActivityProbe
         self.dockerReadyWaiter = dockerReadyWaiter
         self.beforeDataplaneStart = beforeDataplaneStart
         self.publishedPortRepairClient = publishedPortRepairClient
+        self.guestDataDiskAuthorityProvider = guestDataDiskAuthorityProvider ?? { home in
+            try Self.selectedGuestDataDiskAuthority(home: home)
+        }
         self.idleController = idleController
         self.socket = DorySocket(home: configuration.home)
         if let injectedAgentControl {
@@ -257,13 +616,213 @@ public final class DockerTier: @unchecked Sendable {
         cleanupStaleHelpers()
     }
 
-    /// Called in lifecycle order while the tier lock is held. The observer must not call back into
-    /// DockerTier; doryd uses it only to persist the confirmed running/sleeping intent.
+    private static func selectedGuestDataDiskAuthority(
+        home: String
+    ) throws -> DockerGuestDataDiskAuthority {
+        let selectionStore: DoryDataDriveSelectionStore
+        do {
+            selectionStore = try DoryDataDriveSelectionStore(home: home)
+        } catch {
+            throw TierError.repairUnavailable(
+                "selected Docker data-drive authority is unavailable: \(error)"
+            )
+        }
+        let drive: DoryDataDrive
+        do {
+            guard let selected = try selectionStore.inspectSelection() else {
+                throw TierError.repairUnavailable("Dory has no verified selected data drive")
+            }
+            drive = selected
+        } catch let error as TierError {
+            throw error
+        } catch {
+            throw TierError.repairUnavailable(
+                "selected Docker data drive is unavailable: \(error)"
+            )
+        }
+        do {
+            let manifest = try drive.readManifest()
+            return try inspectGuestDataDiskAuthority(
+                dataDriveID: manifest.id,
+                at: drive.engineDataDiskPath
+            )
+        } catch let error as TierError {
+            throw error
+        } catch {
+            throw TierError.repairUnavailable(
+                "selected Docker data-disk identity is unavailable: \(error)"
+            )
+        }
+    }
+
+    /// Reads the ext4 identity from one no-follow descriptor. Geometry and ownership are checked
+    /// on that same descriptor so a replaced, truncated, linked, or foreign image cannot become
+    /// the authority for a guest capacity record.
+    static func inspectGuestDataDiskAuthority(
+        dataDriveID: UUID,
+        at path: String
+    ) throws -> DockerGuestDataDiskAuthority {
+        let descriptor = path.withCString { open($0, O_RDONLY | O_CLOEXEC | O_NOFOLLOW) }
+        guard descriptor >= 0 else {
+            throw TierError.repairUnavailable(
+                "could not open the selected Docker data disk: errno \(errno)"
+            )
+        }
+        defer { close(descriptor) }
+
+        var status = stat()
+        guard fstat(descriptor, &status) == 0,
+              status.st_mode & S_IFMT == S_IFREG,
+              status.st_uid == getuid(),
+              status.st_mode & 0o077 == 0,
+              status.st_nlink == 1 else {
+            throw TierError.repairUnavailable(
+                "selected Docker data disk is not a private owned regular file"
+            )
+        }
+
+        var superblock = [UInt8](repeating: 0, count: 1_024)
+        let readCount = superblock.withUnsafeMutableBytes {
+            pread(descriptor, $0.baseAddress, $0.count, off_t(1_024))
+        }
+        guard readCount == superblock.count,
+              superblock[0x38] == 0x53,
+              superblock[0x39] == 0xEF else {
+            throw TierError.repairUnavailable(
+                "selected Docker data disk does not contain a complete ext4 superblock"
+            )
+        }
+
+        func littleEndianUInt32(at offset: Int) -> UInt32 {
+            UInt32(superblock[offset])
+                | (UInt32(superblock[offset + 1]) << 8)
+                | (UInt32(superblock[offset + 2]) << 16)
+                | (UInt32(superblock[offset + 3]) << 24)
+        }
+        let logBlockSize = littleEndianUInt32(at: 0x18)
+        guard logBlockSize <= 6 else {
+            throw TierError.repairUnavailable("selected Docker ext4 block size is invalid")
+        }
+        let blockSize = UInt64(1_024) << UInt64(logBlockSize)
+        let featureIncompat = littleEndianUInt32(at: 0x60)
+        let blocksLow = UInt64(littleEndianUInt32(at: 0x04))
+        let blocksHigh = featureIncompat & 0x80 != 0
+            ? UInt64(littleEndianUInt32(at: 0x150))
+            : 0
+        let blocks = blocksLow | (blocksHigh << 32)
+        let requiredBytes = blocks.multipliedReportingOverflow(by: blockSize)
+        guard blocks > 0,
+              !requiredBytes.overflow,
+              requiredBytes.partialValue <= UInt64(Int64.max),
+              status.st_size >= 0,
+              UInt64(status.st_size) >= requiredBytes.partialValue else {
+            throw TierError.repairUnavailable("selected Docker ext4 image is truncated")
+        }
+
+        let uuidBytes = Array(superblock[0x68..<(0x68 + 16)])
+        guard uuidBytes.contains(where: { $0 != 0 }) else {
+            throw TierError.repairUnavailable("selected Docker ext4 UUID is missing")
+        }
+        let ranges = [0..<4, 4..<6, 6..<8, 8..<10, 10..<16]
+        let encoded = ranges.map { range in
+            uuidBytes[range].map { String(format: "%02x", Int($0)) }.joined()
+        }.joined(separator: "-")
+        guard let uuid = UUID(uuidString: encoded),
+              encoded == uuid.uuidString.lowercased() else {
+            throw TierError.repairUnavailable("selected Docker ext4 UUID is invalid")
+        }
+        return DockerGuestDataDiskAuthority(
+            dataDriveID: dataDriveID,
+            filesystemUUID: uuid,
+            diskImagePath: path,
+            diskImageDevice: UInt64(status.st_dev),
+            diskImageInode: UInt64(status.st_ino)
+        )
+    }
+
+    private func configuredGuestDataDiskImagePath() throws -> String {
+        let arguments = configuration.vmmProcess?.arguments
+            ?? configuration.hvProcess?.arguments
+            ?? []
+        var roots: [String] = []
+        for index in arguments.indices where arguments[index] == "--data-drive" {
+            guard arguments.indices.contains(index + 1) else {
+                throw TierError.repairUnavailable(
+                    "managed helper data-drive launch argument has no value"
+                )
+            }
+            roots.append(arguments[index + 1])
+        }
+        guard roots.count == 1,
+              let root = roots.first,
+              root.hasPrefix("/"),
+              root != "/",
+              !root.hasSuffix("/"),
+              !root.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7f }),
+              URL(fileURLWithPath: root).standardizedFileURL.path == root else {
+            throw TierError.repairUnavailable(
+                "managed helper does not have one canonical data-drive launch authority"
+            )
+        }
+        return root + "/engine/docker-data.ext4"
+    }
+
+    private func guestDataDiskLaunchAuthority(
+        helperGeneration: UUID
+    ) throws -> DockerGuestDataDiskLaunchAuthority? {
+        guard configuration.hasManagedHelper, agentControl != nil else { return nil }
+        let configuredPath = try configuredGuestDataDiskImagePath()
+        let authority = try guestDataDiskAuthorityProvider(configuration.home)
+        guard authority.hasStableDiskImageIdentity,
+              authority.diskImagePath == configuredPath else {
+            throw TierError.repairUnavailable(
+                "selected Docker data disk is not the exact image configured for this helper generation"
+            )
+        }
+        return DockerGuestDataDiskLaunchAuthority(
+            helperGeneration: helperGeneration,
+            authority: authority
+        )
+    }
+
+    /// Called in strict lifecycle commit order on a private serial queue after the committing code
+    /// releases the tier lock. Observers may safely call back into DockerTier.
     public func setLifecycleStateObserver(
         _ observer: @escaping @Sendable (DockerTierState) -> Void
     ) {
+        setLifecycleEventObserver { event in observer(event.state) }
+    }
+
+    /// Package-internal event observer used by doryd to bind durable desired-state writes to the
+    /// exact lifecycle generation that committed them.
+    func setLifecycleEventObserver(
+        _ observer: @escaping @Sendable (DockerTierLifecycleEvent) -> Void
+    ) {
         lock.lock()
         lifecycleStateObserver = observer
+        lock.unlock()
+    }
+
+    func currentLifecycleEvent() -> DockerTierLifecycleEvent {
+        lock.lock()
+        defer { lock.unlock() }
+        return DockerTierLifecycleEvent(epoch: lifecycleEpoch, state: state)
+    }
+
+    /// Internal dependency seam for deterministic supervisor lifecycle tests. Production always
+    /// leaves this unset and constructs the configured VMM/HV process below.
+    func installManagedProcessFactory(
+        _ factory: @escaping @Sendable (
+            UUID,
+            HvProcessUnexpectedTerminationHandler?
+        ) -> (any DockerManagedProcess)?
+    ) {
+        lock.lock()
+        precondition(
+            state == .stopped && helperProcess == nil && retiringHelpers.isEmpty,
+            "managed process factory must be installed before the tier starts"
+        )
+        managedProcessFactory = factory
         lock.unlock()
     }
 
@@ -271,27 +830,87 @@ public final class DockerTier: @unchecked Sendable {
         socket.path
     }
 
+    private static func managedProcessObservationDeadline() -> DispatchTime {
+        .now() + managedProcessObservationSeconds
+    }
+
+    private static func observeManagedProcess(
+        _ helper: (any DockerManagedProcess)?,
+        until deadline: DispatchTime
+    ) -> DockerManagedProcessObservation? {
+        helper?.lifecycleObservation(until: deadline)
+    }
+
+    private static func observeManagedProcess(
+        _ helper: (any DockerManagedProcess)?
+    ) -> DockerManagedProcessObservation? {
+        observeManagedProcess(helper, until: managedProcessObservationDeadline())
+    }
+
     public func status() -> DockerTierStatus {
-        reconcileManagedHelperLiveness()
-        lock.lock()
-        defer { lock.unlock() }
-        let helperPID = helperProcess?.pid
+        let statusDeadline = Self.managedProcessObservationDeadline()
+        reconcileManagedHelperLiveness(until: statusDeadline)
+        guard lock.lock(until: statusDeadline) else {
+            return DockerTierStatus(
+                state: .failed,
+                socketPath: socket.path,
+                hvPID: nil,
+                lastError: "docker tier lifecycle snapshot exceeded its bounded observation window",
+                isStopping: false
+            )
+        }
+        let teardown = activeTeardown
+        let currentHelper = helperProcess
+        let retainedHelpers = retiringHelpers
+        let currentState = state
+        let currentError = lastError
+        lock.unlock()
+
+        // Process accessors are deliberately outside the tier lock. A helper implementation may
+        // need to synchronize with its termination handler; status must remain responsive while
+        // teardown cleanup is blocked in another subsystem.
+        let observationDeadline = statusDeadline
+        let currentObservation = Self.observeManagedProcess(
+            currentHelper,
+            until: observationDeadline
+        )
+        let teardownObservations = teardown?.helpers.compactMap {
+            Self.observeManagedProcess($0, until: observationDeadline)
+        } ?? []
+        let retainedObservations = retainedHelpers.compactMap {
+            Self.observeManagedProcess($0, until: observationDeadline)
+        }
+        let helperPID = currentObservation?.pid
+            ?? teardownObservations.lazy.compactMap(\.pid).first
+            ?? retainedObservations.lazy.compactMap(\.pid).first
         let reportedState: DockerTierState
         let reportedError: String?
-        if state == .running, configuration.hasManagedHelper, helperPID == nil {
+        if teardown != nil {
+            reportedState = .failed
+            reportedError = "docker tier teardown is in progress"
+        } else if !retainedHelpers.isEmpty {
+            // A bounded stop exhausted its grace window. The exact helper remains authoritative
+            // until terminal observation; never collapse that state to stopped/sleeping merely
+            // because its PID became temporarily unavailable to the status snapshot.
+            reportedState = .failed
+            reportedError = currentError ?? TierError.helperTerminationPending.description
+        } else if currentState == .running,
+                  configuration.hasManagedHelper,
+                  currentObservation?.isRunning != true {
             // A child can cross the exit boundary between the liveness reconciliation above and
             // this snapshot. Never publish a logically impossible `running` + no-child status.
             reportedState = .failed
-            reportedError = lastError ?? "managed helper is no longer running"
+            reportedError = currentError ?? "managed helper is no longer running"
         } else {
-            reportedState = state
-            reportedError = lastError
+            reportedState = currentState
+            reportedError = currentError
         }
         return DockerTierStatus(
             state: reportedState,
             socketPath: socket.path,
             hvPID: helperPID,
-            lastError: reportedError
+            lastError: reportedError,
+            isStopping: teardown != nil
         )
     }
 
@@ -307,10 +926,19 @@ public final class DockerTier: @unchecked Sendable {
         idleController?.beginControlOperation()
         defer { idleController?.endControlOperation() }
 
+        reconcileRetiringHelpers()
         lock.lock()
         guard !terminalShutdown else {
             lock.unlock()
             throw TierError.daemonShuttingDown
+        }
+        guard activeTeardown == nil,
+              activeHostDataplaneRepair == nil,
+              activeSleepingDataplaneLaunchEpoch == nil,
+              retiringHelpers.isEmpty,
+              helperProcess == nil else {
+            lock.unlock()
+            throw TierError.helperTerminationPending
         }
         if dataplane != nil {
             if state == .stopped {
@@ -330,41 +958,62 @@ public final class DockerTier: @unchecked Sendable {
         restartWorkItem = nil
         lifecycleEpoch &+= 1
         let armEpoch = lifecycleEpoch
+        let readinessCycle = readinessTracker.currentCycleToken()
         unexpectedRestartCount = 0
         activeHelperGeneration = nil
+        activeGuestDataDiskLaunchAuthority = nil
         helperStartedAt = nil
+        activeSleepingDataplaneLaunchEpoch = armEpoch
         setStateLocked(.starting)
         lastError = nil
         lock.unlock()
 
+        try completeSleepingDataplaneArm(
+            epoch: armEpoch,
+            readinessCycle: readinessCycle
+        )
+    }
+
+    /// Completes an already-reserved sleeping dataplane launch. The caller owns
+    /// `activeSleepingDataplaneLaunchEpoch == epoch` before entering and that reservation remains
+    /// live across every cleanup/start operation, so a replacement lifecycle cannot bind a socket
+    /// that this operation may subsequently unlink.
+    private func completeSleepingDataplaneArm(
+        epoch armEpoch: UInt64,
+        readinessCycle: EngineReadinessCycleToken
+    ) throws {
         do {
             let resources = try startDataplane()
             lock.lock()
             guard !terminalShutdown,
                   lifecycleEpoch == armEpoch,
+                  activeSleepingDataplaneLaunchEpoch == armEpoch,
                   state == .starting else {
                 lock.unlock()
                 resources.handle.shutdown()
                 resources.activityServer?.stop()
-                // Terminal shutdown forbids any newer lifecycle, so it is safe and necessary to
-                // remove paths that this late dataplane bind may have recreated after tearDown.
-                removeRuntimeSockets()
                 throw TierError.startCancelled
             }
             dataplane = resources.handle
             activityServer = resources.activityServer
+            activeSleepingDataplaneLaunchEpoch = nil
             helperProcess = nil
             setStateLocked(.sleeping)
             wakeTask = nil
             activeHelperGeneration = nil
+            activeGuestDataDiskLaunchAuthority = nil
             helperStartedAt = nil
             lastError = nil
             idleController?.setSleeping(true)
             lock.unlock()
-            readinessTracker.markStopped(detail: "engine is idle-sleeping; host socket remains armed")
+            readinessTracker.markStopped(
+                cycle: readinessCycle,
+                detail: "engine is idle-sleeping; host socket remains armed"
+            )
         } catch {
             lock.lock()
             let terminallyCancelled = terminalShutdown
+            let ownsSocketCleanupAuthority = activeSleepingDataplaneLaunchEpoch == armEpoch
             let ownsLifecycle = !terminallyCancelled
                 && lifecycleEpoch == armEpoch
                 && state == .starting
@@ -373,8 +1022,13 @@ public final class DockerTier: @unchecked Sendable {
                 lastError = "\(error)"
             }
             lock.unlock()
-            if ownsLifecycle || terminallyCancelled {
+            if ownsSocketCleanupAuthority {
                 removeRuntimeSockets()
+                lock.lock()
+                if activeSleepingDataplaneLaunchEpoch == armEpoch {
+                    activeSleepingDataplaneLaunchEpoch = nil
+                }
+                lock.unlock()
             }
             if ownsLifecycle {
                 idleController?.setSleeping(false)
@@ -387,10 +1041,18 @@ public final class DockerTier: @unchecked Sendable {
         idleController?.beginControlOperation()
         defer { idleController?.endControlOperation() }
 
+        reconcileRetiringHelpers()
         lock.lock()
         guard !terminalShutdown else {
             lock.unlock()
             throw TierError.daemonShuttingDown
+        }
+        guard activeTeardown == nil,
+              activeHostDataplaneRepair == nil,
+              activeSleepingDataplaneLaunchEpoch == nil,
+              retiringHelpers.isEmpty else {
+            lock.unlock()
+            throw TierError.helperTerminationPending
         }
         if state == .starting {
             // A manual start during supervised backoff promotes the queued recovery to an
@@ -413,19 +1075,30 @@ public final class DockerTier: @unchecked Sendable {
             lock.unlock()
             throw TierError.alreadyRunning
         }
+        if let existingHelper = helperProcess {
+            guard Self.observeManagedProcess(existingHelper)?.isRunning == false else {
+                lock.unlock()
+                throw TierError.helperTerminationPending
+            }
+            helperProcess = nil
+            activeHelperGeneration = nil
+            activeGuestDataDiskLaunchAuthority = nil
+            helperStartedAt = nil
+        }
         restartWorkItem?.cancel()
         restartWorkItem = nil
         lifecycleEpoch &+= 1
         let startEpoch = lifecycleEpoch
         unexpectedRestartCount = 0
         activeHelperGeneration = nil
+        activeGuestDataDiskLaunchAuthority = nil
         helperStartedAt = nil
-        readinessTracker.beginCycle(trigger: "cold-start")
+        let readinessCycle = readinessTracker.beginCycle(trigger: "cold-start")
         setStateLocked(.starting)
         lastError = nil
         lock.unlock()
 
-        try launchFreshTier(epoch: startEpoch)
+        try launchFreshTier(epoch: startEpoch, readinessCycle: readinessCycle)
     }
 
     /// Promote every recoverable lifecycle shape to one confirmed running state.
@@ -477,6 +1150,120 @@ public final class DockerTier: @unchecked Sendable {
         for waiter in waiters { waiter.signal() }
     }
 
+    /// Enqueue while holding `lock`; the serial queue preserves the same total order as lifecycle
+    /// commits, while the callback itself cannot execute under the tier lock.
+    private func enqueueLifecycleStateObserverLocked(_ committedState: DockerTierState) {
+        let observer = lifecycleStateObserver
+        let event = DockerTierLifecycleEvent(epoch: lifecycleEpoch, state: committedState)
+        lifecycleObserverQueue.async {
+            observer(event)
+        }
+    }
+
+    /// Revalidate retained process authority without calling an external process implementation
+    /// under the tier lock. Identity and lifecycle epoch are checked again before removal.
+    private func reconcileRetiringHelpers() {
+        lock.lock()
+        guard activeTeardown == nil, !retiringHelpers.isEmpty else {
+            lock.unlock()
+            return
+        }
+        let epoch = lifecycleEpoch
+        let snapshot = retiringHelpers
+        lock.unlock()
+
+        let observationDeadline = Self.managedProcessObservationDeadline()
+        let terminalIdentities = Set(snapshot.compactMap { helper -> ObjectIdentifier? in
+            guard Self.observeManagedProcess(helper, until: observationDeadline)?.isRunning == false
+            else { return nil }
+            return ObjectIdentifier(helper)
+        })
+        guard !terminalIdentities.isEmpty else { return }
+
+        lock.lock()
+        guard activeTeardown == nil, lifecycleEpoch == epoch else {
+            lock.unlock()
+            return
+        }
+        retiringHelpers.removeAll { terminalIdentities.contains(ObjectIdentifier($0)) }
+        if retiringHelpers.isEmpty {
+            retainedHelperRecoveryToken = nil
+        }
+        lock.unlock()
+    }
+
+    /// Must be called with `lock` held. Preserve the exact supervisor when a bounded stop cannot
+    /// confirm exit, and make that uncertainty visible instead of publishing a stopped lifecycle.
+    private func retainUnconfirmedHelperLocked(
+        _ helper: any DockerManagedProcess,
+        context: String
+    ) {
+        if !retiringHelpers.contains(where: { $0 === helper }) {
+            retiringHelpers.append(helper)
+        }
+        restartWorkItem?.cancel()
+        restartWorkItem = nil
+        retainedHelperRecoveryToken = nil
+        activeHelperGeneration = nil
+        activeGuestDataDiskLaunchAuthority = nil
+        helperStartedAt = nil
+        setStateLocked(.failed)
+        lastError = "\(context): \(TierError.helperTerminationPending.description)"
+        idleController?.setSleeping(false)
+    }
+
+    /// Stop outside the tier lock, then atomically preserve an exact helper whose exit could not
+    /// be confirmed. Lifecycle guards keep replacement launches excluded during the stop window;
+    /// the retained authority closes the remaining window before a caller can observe success.
+    @discardableResult
+    private func stopManagedHelperAndRetainIfNeeded(
+        _ helper: (any DockerManagedProcess)?,
+        context: String
+    ) -> Bool {
+        guard let helper else { return true }
+
+        lock.lock()
+        if let teardown = activeTeardown, teardown.contains(helper) {
+            lock.unlock()
+            return teardown.wait() ?? false
+        }
+        let expectedEpoch = lifecycleEpoch
+        let expectedGeneration = helperProcess === helper ? activeHelperGeneration : nil
+        let wasCurrent = helperProcess === helper
+        let wasRetiring = retiringHelpers.contains { $0 === helper }
+        lock.unlock()
+
+        let reportedTerminated = helper.stop()
+        guard !reportedTerminated else { return true }
+        // The bounded stop result and terminal transition can cross. A separately bounded,
+        // mutex-coherent observation keeps stale false results from manufacturing retained
+        // authority without waiting behind the same long launch mutex a second time. Unknown is
+        // retained fail-closed and the deferred supervisor stop will resolve it asynchronously.
+        guard Self.observeManagedProcess(helper)?.isRunning != false else { return true }
+
+        lock.lock()
+        if let teardown = activeTeardown, teardown.contains(helper) {
+            lock.unlock()
+            return teardown.wait() ?? false
+        }
+        let isStillCurrent = wasCurrent
+            && lifecycleEpoch == expectedEpoch
+            && helperProcess === helper
+            && activeHelperGeneration == expectedGeneration
+        let isStillRetiring = wasRetiring && retiringHelpers.contains { $0 === helper }
+        guard isStillCurrent || isStillRetiring else {
+            lock.unlock()
+            return false
+        }
+        if isStillCurrent {
+            helperProcess = nil
+        }
+        retainUnconfirmedHelperLocked(helper, context: context)
+        wakeTask = nil
+        lock.unlock()
+        return false
+    }
+
     private func waitForPromotionStateChange(until deadline: Date) -> Bool {
         lock.lock()
         guard state == .starting else {
@@ -500,11 +1287,15 @@ public final class DockerTier: @unchecked Sendable {
         return true
     }
 
-    private func validateGuestPrerequisites(helper: (any DockerManagedProcess)?) throws {
+    private func validateGuestPrerequisites(
+        helper: (any DockerManagedProcess)?,
+        readinessCycle: EngineReadinessCycleToken
+    ) throws {
         guard configuration.hasManagedHelper else {
             for stage in [DoryReadinessStageID.guestAgent, .mountsDataDisk, .network] {
                 readinessTracker.inactive(
                     stage,
+                    cycle: readinessCycle,
                     code: "\(stage.rawValue).external_backend",
                     detail: "No managed guest is configured"
                 )
@@ -518,6 +1309,7 @@ public final class DockerTier: @unchecked Sendable {
             for stage in [DoryReadinessStageID.guestAgent, .mountsDataDisk, .network] {
                 readinessTracker.inactive(
                     stage,
+                    cycle: readinessCycle,
                     code: "\(stage.rawValue).probe_unconfigured",
                     detail: "Guest readiness probe endpoint is not configured"
                 )
@@ -525,17 +1317,22 @@ public final class DockerTier: @unchecked Sendable {
             return
         }
 
-        readinessTracker.begin(.guestAgent, deadlineSeconds: 30)
+        readinessTracker.begin(
+            .guestAgent,
+            cycle: readinessCycle,
+            deadlineSeconds: 30
+        )
         let agentDeadline = Date().addingTimeInterval(30)
         var lastAgentError = "guest agent did not answer"
         while Date() < agentDeadline {
-            guard helper?.isRunning != false else {
+            guard Self.observeManagedProcess(helper)?.isRunning == true else {
                 throw TierError.helperExited("exited before the guest agent became ready")
             }
             do {
                 let info = try agentControl.info()
                 readinessTracker.ready(
                     .guestAgent,
+                    cycle: readinessCycle,
                     code: "guestAgent.rpc_ready",
                     detail: "agent protocol \(info.protocolVersion), build \(info.agentBuild)"
                 )
@@ -551,28 +1348,37 @@ public final class DockerTier: @unchecked Sendable {
             throw TierError.readinessStageFailed(stage: .guestAgent, detail: lastAgentError)
         }
 
-        readinessTracker.begin(.mountsDataDisk, deadlineSeconds: 10)
-        let mounts = try agentControl.exec(
-            argv: [
-                "/bin/sh", "-eu", "-c",
-                "awk '$2 == \"/var/lib/docker\" { found=1 } END { exit(found ? 0 : 1) }' /proc/mounts && test -b /dev/vdb",
-            ],
-            timeoutMs: 10_000,
-            outputLimitBytes: 64 * 1024
+        readinessTracker.begin(
+            .mountsDataDisk,
+            cycle: readinessCycle,
+            deadlineSeconds: 10
         )
-        guard mounts.exitCode == 0 else {
+        let resourceSnapshot: DoryGuestResourceSnapshot
+        do {
+            resourceSnapshot = try verifiedGuestResourceSnapshot(
+                agentControl: agentControl,
+                timeoutMs: 10_000,
+                requiredState: .starting
+            )
+        } catch {
             throw TierError.readinessStageFailed(
                 stage: .mountsDataDisk,
-                detail: Self.execFailureDetail(mounts)
+                detail: "\(error)"
             )
         }
         readinessTracker.ready(
             .mountsDataDisk,
+            cycle: readinessCycle,
             code: "mounts.data_disk_ready",
-            detail: "verified /dev/vdb mounted at /var/lib/docker"
+            detail: "verified /dev/vdb ext4 \(resourceSnapshot.dataDiskFilesystemUUID.uuidString.lowercased()) "
+                + "at /var/lib/docker (\(resourceSnapshot.dataDiskDeviceMajorMinor))"
         )
 
-        readinessTracker.begin(.network, deadlineSeconds: 10)
+        readinessTracker.begin(
+            .network,
+            cycle: readinessCycle,
+            deadlineSeconds: 10
+        )
         let network = try agentControl.exec(
             argv: [
                 "/bin/sh", "-eu", "-c",
@@ -589,6 +1395,7 @@ public final class DockerTier: @unchecked Sendable {
         }
         readinessTracker.ready(
             .network,
+            cycle: readinessCycle,
             code: "network.route_resolver_ready",
             detail: "guest default route and resolver configuration are present"
         )
@@ -622,32 +1429,45 @@ public final class DockerTier: @unchecked Sendable {
     private func validateDockerBackend(
         helper: (any DockerManagedProcess)?,
         epoch: UInt64,
+        readinessCycle: EngineReadinessCycleToken,
         timeout: TimeInterval
     ) throws {
-        readinessTracker.begin(.dockerd, deadlineSeconds: timeout)
+        readinessTracker.begin(
+            .dockerd,
+            cycle: readinessCycle,
+            deadlineSeconds: timeout
+        )
         let ready = dockerReadyWaiter(configuration, timeout) {
             self.freshLaunchIsActive(epoch: epoch, helper: helper)
-                && helper?.isRunning == true
+                && Self.observeManagedProcess(helper)?.isRunning == true
         }
         guard freshLaunchIsActive(epoch: epoch, helper: helper) else {
             throw TierError.startCancelled
         }
-        guard helper?.isRunning == true else {
+        guard Self.observeManagedProcess(helper)?.isRunning == true else {
             throw TierError.helperExited("exited during Docker readiness")
         }
         guard ready else { throw TierError.readyTimeout }
         readinessTracker.ready(
             .dockerd,
+            cycle: readinessCycle,
             code: "dockerd.version_ready",
             detail: "Docker /version returned a Linux server response"
         )
     }
 
-    private func launchFreshTier(epoch: UInt64, publishFailure: Bool = true) throws {
+    private func launchFreshTier(
+        epoch: UInt64,
+        readinessCycle: EngineReadinessCycleToken,
+        publishFailure: Bool = true
+    ) throws {
         var startedHelper: (any DockerManagedProcess)?
         var startedResources: DataplaneResources?
         do {
             let helperGeneration = UUID()
+            let dataDiskLaunchAuthority = try guestDataDiskLaunchAuthority(
+                helperGeneration: helperGeneration
+            )
             let helper = makeManagedProcess(generation: helperGeneration)
             startedHelper = helper
 
@@ -662,6 +1482,7 @@ public final class DockerTier: @unchecked Sendable {
             }
             helperProcess = helper
             activeHelperGeneration = helper == nil ? nil : helperGeneration
+            activeGuestDataDiskLaunchAuthority = helper == nil ? nil : dataDiskLaunchAuthority
             lock.unlock()
 
             try helper?.start()
@@ -672,26 +1493,38 @@ public final class DockerTier: @unchecked Sendable {
 
             readinessTracker.ready(
                 .vmProcess,
+                cycle: readinessCycle,
                 code: "vm.process_ready",
-                detail: helper?.pid.map { "managed helper pid \($0) is running" } ?? "in-process backend is running"
+                detail: Self.observeManagedProcess(helper)?.pid
+                    .map { "managed helper pid \($0) is running" }
+                    ?? "in-process backend is running"
             )
-            try validateGuestPrerequisites(helper: helper)
+            try validateGuestPrerequisites(
+                helper: helper,
+                readinessCycle: readinessCycle
+            )
 
             if configuration.hasManagedHelper {
                 try validateDockerBackend(
                     helper: helper,
                     epoch: epoch,
+                    readinessCycle: readinessCycle,
                     timeout: Self.freshStartReadyTimeout
                 )
             } else {
                 readinessTracker.inactive(
                     .dockerd,
+                    cycle: readinessCycle,
                     code: "dockerd.external_backend",
                     detail: "No managed Docker helper is configured"
                 )
             }
 
-            readinessTracker.begin(.hostSocketContext, deadlineSeconds: 10)
+            readinessTracker.begin(
+                .hostSocketContext,
+                cycle: readinessCycle,
+                deadlineSeconds: 10
+            )
             let resources = try startDataplane()
             startedResources = resources
 
@@ -704,7 +1537,8 @@ public final class DockerTier: @unchecked Sendable {
                 lock.unlock()
                 throw TierError.startCancelled
             }
-            if configuration.hasManagedHelper, helper?.isRunning != true {
+            if configuration.hasManagedHelper,
+               Self.observeManagedProcess(helper)?.isRunning != true {
                 lock.unlock()
                 throw TierError.helperExited("exited while publishing the Docker socket")
             }
@@ -714,22 +1548,27 @@ public final class DockerTier: @unchecked Sendable {
             setStateLocked(.running)
             lastError = nil
             idleController?.setSleeping(false)
-            lifecycleStateObserver(.running)
+            enqueueLifecycleStateObserverLocked(.running)
             lock.unlock()
             readinessTracker.ready(
                 .hostSocketContext,
+                cycle: readinessCycle,
                 code: "socket.forwarder_ready",
                 detail: "Dory's same-user Docker socket is bound; host context is verified separately"
             )
             startedResources = nil
         } catch {
             readinessTracker.blockCurrent(
+                cycle: readinessCycle,
                 code: readinessReasonCode(for: error),
                 detail: "\(error)"
             )
             startedResources?.handle.shutdown()
             startedResources?.activityServer?.stop()
-            startedHelper?.stop()
+            let helperTerminated = stopManagedHelperAndRetainIfNeeded(
+                startedHelper,
+                context: "failed Docker tier launch could not confirm helper exit"
+            )
 
             let ownsLifecycle: Bool
             let terminallyCancelled: Bool
@@ -741,9 +1580,12 @@ public final class DockerTier: @unchecked Sendable {
                     helperProcess = nil
                 }
                 activeHelperGeneration = nil
+                activeGuestDataDiskLaunchAuthority = nil
                 helperStartedAt = nil
-                setStateLocked(publishFailure ? .failed : .starting)
-                lastError = "\(error)"
+                if helperTerminated {
+                    setStateLocked(publishFailure ? .failed : .starting)
+                    lastError = "\(error)"
+                }
             } else {
                 ownsLifecycle = false
             }
@@ -789,10 +1631,19 @@ public final class DockerTier: @unchecked Sendable {
         }
     }
 
-    public func stop() {
+    @discardableResult
+    public func stop() -> Bool {
         idleController?.beginControlOperation()
         defer { idleController?.endControlOperation() }
-        tearDown(markStopped: true, publishStoppedIntent: true)
+        return tearDown(markStopped: true, publishStoppedIntent: true)
+    }
+
+    /// Close the one-way launch gate without waiting for endpoint or process teardown. Daemon
+    /// shutdown uses this before moving the potentially blocking TERM/KILL phase to a bounded worker.
+    func latchTerminalShutdown() {
+        lock.lock()
+        terminalShutdown = true
+        lock.unlock()
     }
 
     /// Permanently close this tier for daemon process shutdown.
@@ -800,14 +1651,110 @@ public final class DockerTier: @unchecked Sendable {
     /// Unlike ordinary engineStop/stop(), this is a one-way latch. Any XPC request that was
     /// accepted before listener invalidation, or races cleanup afterward, is prevented from
     /// spawning/resuming a helper once terminal shutdown begins.
-    public func shutdown() {
+    @discardableResult
+    public func shutdown() -> Bool {
         idleController?.beginControlOperation()
         defer { idleController?.endControlOperation() }
+        return tearDown(markStopped: true, terminal: true)
+    }
 
-        lock.lock()
-        terminalShutdown = true
-        lock.unlock()
-        tearDown(markStopped: true)
+    /// Wait for exact helper retirement after a bounded stop could not prove terminal exit.
+    ///
+    /// This joins an in-flight teardown and performs bounded, lock-free liveness observations of
+    /// the exact retained helper objects. It never launches or substitutes a helper. `false`
+    /// preserves those objects as authoritative so daemon shutdown can retain ownership and retry.
+    @discardableResult
+    public func waitForTerminalRetirement(timeout: TimeInterval) -> Bool {
+        let boundedTimeout = timeout.isFinite ? max(0, timeout) : 0
+        let deadline = DispatchTime.now() + boundedTimeout
+
+        while true {
+            guard lock.lock(until: deadline) else { return false }
+            if let teardown = activeTeardown {
+                lock.unlock()
+                guard teardown.wait(until: deadline) != nil else { return false }
+                continue
+            }
+            let epoch = lifecycleEpoch
+            let readinessCycle = readinessTracker.currentCycleToken()
+            let currentHelperSnapshot = helperProcess
+            let currentGeneration = activeHelperGeneration
+            let retainedSnapshot = retiringHelpers
+            var helperSnapshot: [any DockerManagedProcess] = []
+            var seenHelpers: Set<ObjectIdentifier> = []
+            func appendExactHelper(_ helper: (any DockerManagedProcess)?) {
+                guard let helper else { return }
+                let identity = ObjectIdentifier(helper)
+                guard seenHelpers.insert(identity).inserted else { return }
+                helperSnapshot.append(helper)
+            }
+            appendExactHelper(currentHelperSnapshot)
+            for helper in retainedSnapshot { appendExactHelper(helper) }
+            guard !helperSnapshot.isEmpty else {
+                lock.unlock()
+                return true
+            }
+            lock.unlock()
+
+            var terminalIdentities: Set<ObjectIdentifier> = []
+            for helper in helperSnapshot {
+                let now = DispatchTime.now().uptimeNanoseconds
+                let remainingNanoseconds = deadline.uptimeNanoseconds > now
+                    ? deadline.uptimeNanoseconds - now
+                    : 0
+                let remaining = Double(remainingNanoseconds) / 1_000_000_000
+                guard helper.waitForTermination(timeout: remaining),
+                      helper.lifecycleObservation(until: deadline)?.isRunning == false else {
+                    return false
+                }
+                terminalIdentities.insert(ObjectIdentifier(helper))
+            }
+
+            guard lock.lock(until: deadline) else { return false }
+            let currentHelperStillExact: Bool
+            switch (currentHelperSnapshot, helperProcess) {
+            case (nil, nil):
+                currentHelperStillExact = true
+            case let (expected?, actual?):
+                currentHelperStillExact = expected === actual
+            default:
+                currentHelperStillExact = false
+            }
+            let stillExact = activeTeardown == nil
+                && lifecycleEpoch == epoch
+                && currentHelperStillExact
+                && activeHelperGeneration == currentGeneration
+                && Set(retiringHelpers.map(ObjectIdentifier.init))
+                    == Set(retainedSnapshot.map(ObjectIdentifier.init))
+            if stillExact,
+               let currentHelperSnapshot,
+               terminalIdentities.contains(ObjectIdentifier(currentHelperSnapshot)) {
+                helperProcess = nil
+                activeHelperGeneration = nil
+                activeGuestDataDiskLaunchAuthority = nil
+                helperStartedAt = nil
+            }
+            if stillExact, !terminalIdentities.isEmpty {
+                retiringHelpers.removeAll { terminalIdentities.contains(ObjectIdentifier($0)) }
+            }
+            let retired = stillExact && helperProcess == nil && retiringHelpers.isEmpty
+            if retired {
+                setStateLocked(.stopped)
+                lastError = nil
+                retainedHelperRecoveryToken = nil
+            }
+            lock.unlock()
+
+            if retired {
+                idleController?.setSleeping(false)
+                readinessTracker.markStopped(
+                    cycle: readinessCycle,
+                    detail: "engine helper retirement was confirmed"
+                )
+                return true
+            }
+            guard DispatchTime.now() < deadline else { return false }
+        }
     }
 
     @discardableResult
@@ -865,8 +1812,18 @@ public final class DockerTier: @unchecked Sendable {
     /// user's sleep decision by relaunching the VM moments later.
     private func sleepQueuedRecoveryIfPresent() -> Bool? {
         let queuedRestart: DispatchWorkItem
+        let armEpoch: UInt64
+        let readinessCycle: EngineReadinessCycleToken
         lock.lock()
-        guard state == .starting,
+        guard !terminalShutdown,
+              activeTeardown == nil,
+              activeHostDataplaneRepair == nil,
+              activeSleepingDataplaneLaunchEpoch == nil,
+              retiringHelpers.isEmpty,
+              idleController != nil,
+              configuration.activitySocketPath != nil,
+              configuration.hasManagedHelper,
+              state == .starting,
               helperProcess == nil,
               dataplane == nil,
               let queued = restartWorkItem else {
@@ -876,21 +1833,32 @@ public final class DockerTier: @unchecked Sendable {
         queuedRestart = queued
         restartWorkItem = nil
         lifecycleEpoch &+= 1
+        armEpoch = lifecycleEpoch
+        readinessCycle = readinessTracker.currentCycleToken()
+        unexpectedRestartCount = 0
         activeHelperGeneration = nil
+        activeGuestDataDiskLaunchAuthority = nil
         helperStartedAt = nil
-        setStateLocked(.stopped)
+        activeSleepingDataplaneLaunchEpoch = armEpoch
+        setStateLocked(.starting)
         lastError = nil
         lock.unlock()
 
         queuedRestart.cancel()
         removeRuntimeSockets()
         do {
-            try armSleeping()
+            try completeSleepingDataplaneArm(
+                epoch: armEpoch,
+                readinessCycle: readinessCycle
+            )
             return true
         } catch {
             lock.lock()
-            setStateLocked(.failed)
-            lastError = "could not arm sleeping tier after cancelling recovery: \(error)"
+            if !terminalShutdown,
+               lifecycleEpoch == armEpoch,
+               state == .failed {
+                lastError = "could not arm sleeping tier after cancelling recovery: \(error)"
+            }
             lock.unlock()
             return false
         }
@@ -917,7 +1885,9 @@ public final class DockerTier: @unchecked Sendable {
         }
 
         lock.lock()
-        guard state == .running, let currentHelper = helperProcess else {
+        guard activeHostDataplaneRepair == nil,
+              state == .running,
+              let currentHelper = helperProcess else {
             lock.unlock()
             idleController.setSleeping(false)
             return false
@@ -930,31 +1900,85 @@ public final class DockerTier: @unchecked Sendable {
             idleController.setSleeping(false)
             return false
         }
-        setStateLocked(.sleeping)
         wakeTask = nil
 
         switch activity {
         case .empty:
+            lifecycleEpoch &+= 1
+            let sleepEpoch = lifecycleEpoch
+            let readinessCycle = readinessTracker.currentCycleToken()
+            let operation = TeardownOperation(
+                epoch: sleepEpoch,
+                dataplane: nil,
+                activityServer: nil,
+                wakeTask: nil,
+                restartWorkItem: nil,
+                helpers: [currentHelper],
+                readinessCycle: readinessCycle,
+                markStopped: false,
+                publishStoppedIntent: false
+            )
+            activeTeardown = operation
             helperProcess = nil
             activeHelperGeneration = nil
+            activeGuestDataDiskLaunchAuthority = nil
             helperStartedAt = nil
-            lastError = nil
-            agentControl?.disconnect()
-            currentHelper.stop()
-            lifecycleStateObserver(.sleeping)
             lock.unlock()
+
+            agentControl?.disconnect()
+            let reportedTerminated = currentHelper.stop()
+            let helperTerminated = reportedTerminated
+                || Self.observeManagedProcess(currentHelper)?.isRunning == false
+
+            var failedDataplane: DoryDataplaneHandle?
+            var failedActivityServer: DataplaneActivityServer?
+            lock.lock()
+            guard activeTeardown === operation, lifecycleEpoch == sleepEpoch else {
+                lock.unlock()
+                operation.finish(result: false)
+                return false
+            }
+            activeTeardown = nil
+            if !helperTerminated {
+                failedDataplane = dataplane
+                failedActivityServer = activityServer
+                dataplane = nil
+                activityServer = nil
+                retainUnconfirmedHelperLocked(
+                    currentHelper,
+                    context: "idle sleep could not confirm helper exit"
+                )
+            } else {
+                setStateLocked(.sleeping)
+                lastError = nil
+                if !terminalShutdown {
+                    enqueueLifecycleStateObserverLocked(.sleeping)
+                }
+            }
+            lock.unlock()
+            operation.finish(result: helperTerminated)
+
+            if !helperTerminated {
+                removeRuntimeSockets()
+                failedDataplane?.shutdown()
+                failedActivityServer?.stop()
+                return false
+            }
             return true
         case .active, .unknown:
             agentControl?.disconnect()
             guard currentHelper.suspend() else {
                 setStateLocked(.running)
-                lastError = TierError.suspendFailed(pid: currentHelper.pid).description
+                lastError = TierError.suspendFailed(
+                    pid: Self.observeManagedProcess(currentHelper)?.pid
+                ).description
                 lock.unlock()
                 idleController.setSleeping(false)
                 return false
             }
+            setStateLocked(.sleeping)
             lastError = nil
-            lifecycleStateObserver(.sleeping)
+            enqueueLifecycleStateObserverLocked(.sleeping)
             lock.unlock()
             return true
         }
@@ -1015,10 +2039,11 @@ public final class DockerTier: @unchecked Sendable {
     public func repairPublishedPorts() throws -> PublishedPortReconcileReceipt {
         lock.lock()
         let currentState = state
-        let helperPID = helperProcess?.pid
+        let currentHelper = helperProcess
         let helperGeneration = activeHelperGeneration
         let supportsSignal = configuration.hvProcess != nil && configuration.vmmProcess == nil
         lock.unlock()
+        let helperPID = Self.observeManagedProcess(currentHelper)?.pid
         guard currentState == .running else {
             throw TierError.repairUnavailable("docker tier is \(currentState.rawValue)")
         }
@@ -1035,9 +2060,10 @@ public final class DockerTier: @unchecked Sendable {
                 self.lock.lock()
                 let current = self.state == .running
                     && self.activeHelperGeneration == helperGeneration
-                    && self.helperProcess?.pid == helperPID
+                    && self.helperProcess === currentHelper
                 self.lock.unlock()
                 return current
+                    && Self.observeManagedProcess(currentHelper)?.pid == helperPID
             }
             // Keep guest-agent-backed diagnostic surfaces fresh, but never describe that unrelated
             // cache diff as proof of gvproxy repair.
@@ -1126,15 +2152,24 @@ public final class DockerTier: @unchecked Sendable {
         }
         lock.lock()
         let currentState = state
+        let readinessCycle = readinessTracker.currentCycleToken()
         lock.unlock()
         guard currentState == .running else {
             throw TierError.repairUnavailable("docker tier is \(currentState.rawValue)")
         }
+        return try reconnectAgent(agentControl, readinessCycle: readinessCycle)
+    }
+
+    private func reconnectAgent(
+        _ agentControl: AgentControl,
+        readinessCycle: EngineReadinessCycleToken
+    ) throws -> DoryAgentInfo {
         agentControl.disconnect()
         do {
             let info = try agentControl.info()
             readinessTracker.ready(
                 .guestAgent,
+                cycle: readinessCycle,
                 code: "guestAgent.reconnected",
                 detail: "fresh RPC reached agent build \(info.agentBuild)"
             )
@@ -1142,6 +2177,7 @@ public final class DockerTier: @unchecked Sendable {
         } catch {
             readinessTracker.blocked(
                 .guestAgent,
+                cycle: readinessCycle,
                 code: "guestAgent.reconnect_failed",
                 detail: "\(error)"
             )
@@ -1157,50 +2193,167 @@ public final class DockerTier: @unchecked Sendable {
             return "Docker host socket is already healthy; no mutation applied"
         }
 
+        let operation: HostDataplaneRepairOperation
         lock.lock()
         guard state == .running else {
             let current = state
             lock.unlock()
             throw TierError.repairUnavailable("docker tier is \(current.rawValue)")
         }
-        let previousDataplane = dataplane
-        let previousActivityServer = activityServer
+        guard activeTeardown == nil,
+              activeHostDataplaneRepair == nil,
+              activeSleepingDataplaneLaunchEpoch == nil,
+              retiringHelpers.isEmpty else {
+            lock.unlock()
+            throw TierError.repairUnavailable("docker tier lifecycle transition is already in progress")
+        }
+        let currentHelper = helperProcess
+        guard !configuration.hasManagedHelper || currentHelper != nil else {
+            lock.unlock()
+            throw TierError.repairUnavailable("managed Docker helper authority is unavailable")
+        }
+        let readinessCycle = readinessTracker.currentCycleToken()
+        operation = HostDataplaneRepairOperation(
+            epoch: lifecycleEpoch,
+            helper: currentHelper,
+            helperGeneration: activeHelperGeneration,
+            previousDataplane: dataplane,
+            previousActivityServer: activityServer,
+            readinessCycle: readinessCycle
+        )
+        activeHostDataplaneRepair = operation
         dataplane = nil
         activityServer = nil
-        readinessTracker.begin(.hostSocketContext, deadlineSeconds: 10)
-        removeHostDataplaneSockets()
-        previousDataplane?.shutdown()
-        previousActivityServer?.stop()
+        lock.unlock()
+
+        readinessTracker.begin(
+            .hostSocketContext,
+            cycle: operation.readinessCycle,
+            deadlineSeconds: 10
+        )
+        var replacement: DataplaneResources?
+        var failureCode = "socket.forwarder_rebind_failed"
+        var failureDetail: String?
         do {
-            let replacement = try startDataplane()
-            dataplane = replacement.handle
-            activityServer = replacement.activityServer
+            // Handle shutdown, listener stop, socket mutation, endpoint startup, and probes are all
+            // external operations and must remain outside the tier lifecycle lock.
+            removeHostDataplaneSockets()
+            operation.previousDataplane?.shutdown()
+            operation.previousActivityServer?.stop()
+            guard hostDataplaneRepairIsCurrent(operation) else {
+                throw TierError.startCancelled
+            }
+            guard !configuration.hasManagedHelper
+                    || Self.observeManagedProcess(operation.helper)?.isRunning == true else {
+                throw TierError.repairUnavailable("managed Docker helper exited during socket repair")
+            }
+
+            let candidate = try startDataplane()
+            replacement = candidate
+            guard hostDataplaneRepairIsCurrent(operation) else {
+                throw TierError.startCancelled
+            }
+            guard DockerEngineProbe.waitUntilReady(
+                socketPath: socket.path,
+                timeout: 5,
+                pollInterval: 0.25
+            ) else {
+                failureCode = "socket.forwarder_probe_failed"
+                failureDetail = "replacement socket bound, but Docker /version did not pass"
+                throw TierError.repairUnavailable(
+                    "replacement Docker socket did not pass /version"
+                )
+            }
+            guard !configuration.hasManagedHelper
+                    || Self.observeManagedProcess(operation.helper)?.isRunning == true else {
+                throw TierError.repairUnavailable("managed Docker helper exited during socket repair")
+            }
+
+            lock.lock()
+            let helperStillExact = operation.helper.map { helperProcess === $0 }
+                ?? (helperProcess == nil)
+            let canCommit = activeHostDataplaneRepair === operation
+                && !terminalShutdown
+                && lifecycleEpoch == operation.epoch
+                && state == .running
+                && helperStillExact
+                && activeHelperGeneration == operation.helperGeneration
+                && dataplane == nil
+                && activityServer == nil
+            if canCommit {
+                dataplane = candidate.handle
+                activityServer = candidate.activityServer
+                activeHostDataplaneRepair = nil
+                lastError = nil
+            }
             lock.unlock()
+            guard canCommit else { throw TierError.startCancelled }
+
+            replacement = nil
+            operation.finish()
+            readinessTracker.ready(
+                .hostSocketContext,
+                cycle: operation.readinessCycle,
+                code: "socket.forwarder_replaced",
+                detail: "replaced only the host dataplane socket; VM and workloads were retained"
+            )
+            return "replaced the host Docker socket/forwarder without restarting the VM or dockerd"
         } catch {
-            lastError = "host socket forwarder repair failed: \(error)"
+            // Keep the exact repair latch while retiring every endpoint this operation could have
+            // published. Only after unlinking may a stop-followed-by-start bind a replacement.
+            replacement?.handle.shutdown()
+            replacement?.activityServer?.stop()
+            removeHostDataplaneSockets()
+
+            lock.lock()
+            let ownsRepair = activeHostDataplaneRepair === operation
+            let helperStillExact = operation.helper.map { helperProcess === $0 }
+                ?? (helperProcess == nil)
+            let ownsLifecycle = ownsRepair
+                && !terminalShutdown
+                && lifecycleEpoch == operation.epoch
+                && state == .running
+                && helperStillExact
+                && activeHelperGeneration == operation.helperGeneration
+            if ownsRepair {
+                activeHostDataplaneRepair = nil
+            }
+            if ownsLifecycle {
+                lastError = "host socket forwarder repair failed: \(error)"
+            }
             lock.unlock()
+            operation.finish()
             readinessTracker.blocked(
                 .hostSocketContext,
-                code: "socket.forwarder_rebind_failed",
-                detail: "\(error)"
+                cycle: operation.readinessCycle,
+                code: failureCode,
+                detail: failureDetail ?? "\(error)"
             )
+            if let tierError = error as? TierError,
+               case .startCancelled = tierError {
+                throw TierError.repairUnavailable(
+                    "host socket repair was superseded by a newer engine lifecycle"
+                )
+            }
             throw error
         }
+    }
 
-        guard DockerEngineProbe.waitUntilReady(socketPath: socket.path, timeout: 5, pollInterval: 0.25) else {
-            readinessTracker.blocked(
-                .hostSocketContext,
-                code: "socket.forwarder_probe_failed",
-                detail: "replacement socket bound, but Docker /version did not pass"
-            )
-            throw TierError.repairUnavailable("replacement Docker socket did not pass /version")
-        }
-        readinessTracker.ready(
-            .hostSocketContext,
-            code: "socket.forwarder_replaced",
-            detail: "replaced only the host dataplane socket; VM and workloads were retained"
-        )
-        return "replaced the host Docker socket/forwarder without restarting the VM or dockerd"
+    private func hostDataplaneRepairIsCurrent(
+        _ operation: HostDataplaneRepairOperation
+    ) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        let helperStillExact = operation.helper.map { helperProcess === $0 }
+            ?? (helperProcess == nil)
+        return activeHostDataplaneRepair === operation
+            && !terminalShutdown
+            && lifecycleEpoch == operation.epoch
+            && state == .running
+            && helperStillExact
+            && activeHelperGeneration == operation.helperGeneration
+            && dataplane == nil
+            && activityServer == nil
     }
 
     /// Restarts only a confirmed-dead dockerd using the root-only command captured during guest
@@ -1218,13 +2371,15 @@ public final class DockerTier: @unchecked Sendable {
         lock.lock()
         let currentState = state
         let currentHelper = helperProcess
+        let readinessCycle = readinessTracker.currentCycleToken()
         lock.unlock()
-        guard currentState == .running, currentHelper?.isRunning == true else {
+        guard currentState == .running,
+              Self.observeManagedProcess(currentHelper)?.isRunning == true else {
             throw TierError.repairUnavailable("VM helper is not running; dockerd-only repair is unavailable")
         }
 
-        readinessTracker.begin(.dockerd, deadlineSeconds: timeout)
-        _ = try reconnectAgent()
+        readinessTracker.begin(.dockerd, cycle: readinessCycle, deadlineSeconds: timeout)
+        _ = try reconnectAgent(agentControl, readinessCycle: readinessCycle)
         let restart = try agentControl.exec(
             argv: [
                 "/bin/sh", "-eu", "-c",
@@ -1235,7 +2390,12 @@ public final class DockerTier: @unchecked Sendable {
         )
         guard restart.exitCode == 0 else {
             let detail = Self.execFailureDetail(restart)
-            readinessTracker.blocked(.dockerd, code: "dockerd.restart_failed", detail: detail)
+            readinessTracker.blocked(
+                .dockerd,
+                cycle: readinessCycle,
+                code: "dockerd.restart_failed",
+                detail: detail
+            )
             throw TierError.repairUnavailable(detail)
         }
         let ready = dockerReadyWaiter(configuration, timeout) { [weak self] in
@@ -1243,11 +2403,12 @@ public final class DockerTier: @unchecked Sendable {
             self.lock.lock()
             let active = self.state == .running && self.helperProcess === currentHelper
             self.lock.unlock()
-            return active && currentHelper.isRunning
+            return active && Self.observeManagedProcess(currentHelper)?.isRunning == true
         }
         guard ready else {
             readinessTracker.blocked(
                 .dockerd,
+                cycle: readinessCycle,
                 code: "dockerd.restart_deadline_exceeded",
                 detail: "dockerd-only restart did not restore /version before \(Int(timeout)) seconds"
             )
@@ -1255,6 +2416,7 @@ public final class DockerTier: @unchecked Sendable {
         }
         readinessTracker.ready(
             .dockerd,
+            cycle: readinessCycle,
             code: "dockerd.restarted_in_place",
             detail: "dockerd restarted in the existing VM with the existing data mount"
         )
@@ -1284,8 +2446,10 @@ public final class DockerTier: @unchecked Sendable {
         lock.lock()
         let currentState = state
         let currentHelper = helperProcess
+        let readinessCycle = readinessTracker.currentCycleToken()
         lock.unlock()
-        guard currentState == .running, currentHelper?.isRunning == true else {
+        guard currentState == .running,
+              Self.observeManagedProcess(currentHelper)?.isRunning == true else {
             return CorporateGuestApplyResult(
                 state: "managed guest is \(currentState.rawValue); profile will reconcile on wake/start",
                 changed: false,
@@ -1321,17 +2485,18 @@ public final class DockerTier: @unchecked Sendable {
             )
         }
 
-        readinessTracker.begin(.dockerd, deadlineSeconds: timeout)
+        readinessTracker.begin(.dockerd, cycle: readinessCycle, deadlineSeconds: timeout)
         let ready = dockerReadyWaiter(configuration, timeout) { [weak self] in
             guard let self, let currentHelper else { return false }
             self.lock.lock()
             let active = self.state == .running && self.helperProcess === currentHelper
             self.lock.unlock()
-            return active && currentHelper.isRunning
+            return active && Self.observeManagedProcess(currentHelper)?.isRunning == true
         }
         guard ready else {
             readinessTracker.blocked(
                 .dockerd,
+                cycle: readinessCycle,
                 code: "dockerd.corporate_reconfigure_failed",
                 detail: "dockerd did not restore /version after corporate settings changed"
             )
@@ -1339,6 +2504,7 @@ public final class DockerTier: @unchecked Sendable {
         }
         readinessTracker.ready(
             .dockerd,
+            cycle: readinessCycle,
             code: "dockerd.corporate_reconfigured",
             detail: "applied a changed corporate proxy/registry/CA digest with live-restore"
         )
@@ -1485,8 +2651,9 @@ public final class DockerTier: @unchecked Sendable {
         return try agentControl.telemetry()
     }
 
-    /// Returns composition-level guest memory and data-disk facts from one bounded agent command.
-    /// These values are diagnostic only; balloon policy continues to use the versioned telemetry RPC.
+    /// Returns guest memory diagnostics and authoritative Docker data-filesystem capacity from one
+    /// bounded command. Disk values are published only after `/var/lib/docker` is proven to be the
+    /// selected ext4 image at `/dev/vdb`; balloon policy still uses the telemetry RPC.
     public func guestResourceSnapshot() throws -> DoryGuestResourceSnapshot? {
         guard let agentControl else { return nil }
         lock.lock()
@@ -1494,63 +2661,455 @@ public final class DockerTier: @unchecked Sendable {
         lock.unlock()
         guard currentState == .running else { return nil }
 
-        let script = #"""
-        awk '
-          /^MemTotal:/ { total=$2 }
-          /^MemAvailable:/ { available=$2 }
-          /^MemFree:/ { free=$2 }
-          /^Buffers:/ { buffers=$2 }
-          /^Cached:/ { cached=$2 }
-          /^SReclaimable:/ { sreclaimable=$2 }
-          /^Shmem:/ { shmem=$2 }
+        return try verifiedGuestResourceSnapshot(
+            agentControl: agentControl,
+            timeoutMs: 3_000,
+            requiredState: .running
+        )
+    }
+
+    /// Kept as one production fragment so tests execute the exact awk accepted by the guest,
+    /// including its syntax and duplicate-mount rejection, instead of fabricating probe stdout.
+    static let guestResourceMountInfoAWK = #"""
+          $5 == "/var/lib/docker" {
+            matches++
+            if ($4 != "/" || ("," $6 ",") !~ /,rw,/) {
+              invalid=1
+              next
+            }
+            separator=0
+            for (field_index=7; field_index<=NF; field_index++) {
+              if ($field_index == "-") { separator=field_index; break }
+            }
+            if (separator == 0 || $(separator + 1) != "ext4" || $(separator + 2) != "/dev/vdb" || ("," $(separator + 3) ",") !~ /,rw,/) {
+              invalid=1
+              next
+            }
+            mount_id=$1
+            major_minor=$3
+          }
           END {
-            printf "mem_total_kb=%d\nmem_available_kb=%d\nmem_free_kb=%d\nbuffers_kb=%d\ncached_kb=%d\nsreclaimable_kb=%d\nshmem_kb=%d\n", total, available, free, buffers, cached, sreclaimable, shmem
+            if (invalid) exit 74
+            if (matches != 1) exit 75
+            if (mount_id !~ /^[1-9][0-9]*$/ || major_minor !~ /^[0-9]+:[0-9]+$/) exit 79
+            print mount_id, major_minor
+          }
+        """#
+
+    /// Internal only so the test target can syntax-check the exact command sent to the guest.
+    static let guestResourceProbeScript = #"""
+        set -eu
+        export LC_ALL=C
+        awk '
+          /^MemTotal:/ { total=$2; have_total=1 }
+          /^MemAvailable:/ { available=$2; have_available=1 }
+          /^MemFree:/ { free=$2; have_free=1 }
+          /^Buffers:/ { buffers=$2; have_buffers=1 }
+          /^Cached:/ { cached=$2; have_cached=1 }
+          /^SReclaimable:/ { sreclaimable=$2; have_sreclaimable=1 }
+          /^Shmem:/ { shmem=$2; have_shmem=1 }
+          END {
+            if (!(have_total && have_available && have_free && have_buffers && have_cached && have_sreclaimable && have_shmem)) exit 73
+            printf "schema=dev.dory.guest-resources\nversion=2\nmem_total_kb=%.0f\nmem_available_kb=%.0f\nmem_free_kb=%.0f\nbuffers_kb=%.0f\ncached_kb=%.0f\nsreclaimable_kb=%.0f\nshmem_kb=%.0f\n", total, available, free, buffers, cached, sreclaimable, shmem
           }
         ' /proc/meminfo
-        df -Pk /var/lib/docker | awk 'NR == 2 { printf "disk_total_bytes=%.0f\ndisk_used_bytes=%.0f\ndisk_available_bytes=%.0f\n", $2 * 1024, $3 * 1024, $4 * 1024 }'
+
+        dory_block_device_major_minor() {
+          DORY_DEVICE_HEX_MAJOR_MINOR=$(stat -c '%t:%T' /dev/vdb)
+          DORY_DEVICE_HEX_MAJOR=${DORY_DEVICE_HEX_MAJOR_MINOR%%:*}
+          DORY_DEVICE_HEX_MINOR=${DORY_DEVICE_HEX_MAJOR_MINOR#*:}
+          case "$DORY_DEVICE_HEX_MAJOR" in ''|*[!0-9a-fA-F]*) exit 80 ;; esac
+          case "$DORY_DEVICE_HEX_MINOR" in ''|*[!0-9a-fA-F]*) exit 80 ;; esac
+          printf '%u:%u\n' "$((0x$DORY_DEVICE_HEX_MAJOR))" "$((0x$DORY_DEVICE_HEX_MINOR))"
+        }
+
+        DORY_MOUNT_IDENTITY=$(awk '
+        \#(guestResourceMountInfoAWK)
+        ' /proc/self/mountinfo)
+        set -- $DORY_MOUNT_IDENTITY
+        test "$#" -eq 2 || exit 79
+        DORY_MOUNT_ID=$1
+        DORY_MOUNT_MAJOR_MINOR=$2
+        test -b /dev/vdb
+        DORY_BLOCK_NODE_MAJOR_MINOR=$(dory_block_device_major_minor)
+        DORY_DEVICE_MAJOR_MINOR=$(cat /sys/class/block/vdb/dev)
+        test "$DORY_MOUNT_MAJOR_MINOR" = "$DORY_BLOCK_NODE_MAJOR_MINOR" || exit 76
+        test "$DORY_MOUNT_MAJOR_MINOR" = "$DORY_DEVICE_MAJOR_MINOR" || exit 76
+        DORY_FILESYSTEM_UUID=$(blkid -s UUID -o value /dev/vdb | tr 'A-F' 'a-f')
+        test -n "$DORY_FILESYSTEM_UUID" || exit 77
+        printf "disk_mount_source=/dev/vdb\ndisk_filesystem_type=ext4\ndisk_device_major_minor=%s\ndisk_filesystem_uuid=%s\n" "$DORY_DEVICE_MAJOR_MINOR" "$DORY_FILESYSTEM_UUID"
+        df -P -k /var/lib/docker | awk '
+          NR == 2 {
+            rows++
+            if ($1 != "/dev/vdb") exit 78
+            if ($2 !~ /^[0-9]+$/ || $3 !~ /^[0-9]+$/ || $4 !~ /^[0-9]+$/) exit 78
+            printf "disk_total_bytes=%.0f\ndisk_used_bytes=%.0f\ndisk_available_bytes=%.0f\n", $2 * 1024, $3 * 1024, $4 * 1024
+          }
+          END { if (rows != 1) exit 78 }
+        '
+
+        DORY_FINAL_MOUNT_IDENTITY=$(awk '
+        \#(guestResourceMountInfoAWK)
+        ' /proc/self/mountinfo)
+        test "$DORY_FINAL_MOUNT_IDENTITY" = "$DORY_MOUNT_ID $DORY_MOUNT_MAJOR_MINOR" || exit 81
+        test -b /dev/vdb
+        DORY_FINAL_BLOCK_NODE_MAJOR_MINOR=$(dory_block_device_major_minor)
+        DORY_FINAL_DEVICE_MAJOR_MINOR=$(cat /sys/class/block/vdb/dev)
+        test "$DORY_FINAL_BLOCK_NODE_MAJOR_MINOR" = "$DORY_DEVICE_MAJOR_MINOR" || exit 81
+        test "$DORY_FINAL_DEVICE_MAJOR_MINOR" = "$DORY_DEVICE_MAJOR_MINOR" || exit 81
+        DORY_FINAL_FILESYSTEM_UUID=$(blkid -s UUID -o value /dev/vdb | tr 'A-F' 'a-f')
+        test "$DORY_FINAL_FILESYSTEM_UUID" = "$DORY_FILESYSTEM_UUID" || exit 81
         """#
+
+    private func verifiedGuestResourceSnapshot(
+        agentControl: AgentControl,
+        timeoutMs: UInt64,
+        requiredState: DockerTierState
+    ) throws -> DoryGuestResourceSnapshot {
+        let lifecycle = try captureGuestResourceProbeLifecycle(requiredState: requiredState)
+        let authority = try currentGuestDataDiskAuthority()
+        if let launchAuthority = lifecycle.dataDiskLaunchAuthority {
+            guard launchAuthority.helperGeneration == lifecycle.helperGeneration,
+                  launchAuthority.authority == authority else {
+                throw TierError.repairUnavailable(
+                    "selected Docker data disk no longer matches this helper generation's launch authority"
+                )
+            }
+        }
         let result = try agentControl.exec(
-            argv: ["/bin/sh", "-c", script],
-            timeoutMs: 3_000,
+            argv: ["/bin/sh", "-c", Self.guestResourceProbeScript],
+            timeoutMs: timeoutMs,
             outputLimitBytes: 16 * 1024
         )
-        guard result.exitCode == 0 else {
+        guard result.exitCode == 0,
+              !result.timedOut,
+              !result.stdoutTruncated,
+              !result.stderrTruncated else {
             throw TierError.repairUnavailable("guest resource probe failed: \(Self.execFailureDetail(result))")
         }
-        let values = Self.parseUnsignedKeyValues(result.stdout)
-        guard let totalKB = values["mem_total_kb"],
-              let availableKB = values["mem_available_kb"],
-              let freeKB = values["mem_free_kb"],
-              let diskTotal = values["disk_total_bytes"],
-              let diskUsed = values["disk_used_bytes"],
-              let diskAvailable = values["disk_available_bytes"] else {
-            throw TierError.repairUnavailable("guest resource probe returned an incomplete record")
+        if lifecycle.dataDiskLaunchAuthority != nil {
+            let authorityAfterProbe = try currentGuestDataDiskAuthority()
+            guard authorityAfterProbe == authority else {
+                throw TierError.repairUnavailable(
+                    "selected Docker data disk changed during the guest resource probe"
+                )
+            }
         }
-        let buffersKB = values["buffers_kb"] ?? 0
-        let cachedKB = values["cached_kb"] ?? 0
-        let slabReclaimableKB = values["sreclaimable_kb"] ?? 0
-        let sharedKB = values["shmem_kb"] ?? 0
-        let cacheKB = buffersKB
-            .saturatingAdding(cachedKB)
-            .saturatingAdding(slabReclaimableKB)
-            .saturatingSubtracting(sharedKB)
-        let reclaimableKB = availableKB.saturatingSubtracting(freeKB)
+        let snapshot = try Self.decodeGuestResourceSnapshot(
+            result.stdout,
+            authority: authority
+        )
+        let binding = DockerGuestDataDiskBinding(
+            authority: authority,
+            mountSource: snapshot.dataDiskMountSource,
+            filesystemType: snapshot.dataDiskFilesystemType,
+            deviceMajorMinor: snapshot.dataDiskDeviceMajorMinor
+        )
+        if let helper = lifecycle.helper,
+           Self.observeManagedProcess(helper)?.isRunning != true {
+            throw TierError.repairUnavailable(
+                "guest resource probe crossed the managed helper termination boundary"
+            )
+        }
+        lock.lock()
+        defer { lock.unlock() }
+        let ownsHelper = lifecycle.helper.map { helperProcess === $0 } ?? (helperProcess == nil)
+        guard !terminalShutdown,
+              activeTeardown == nil,
+              lifecycleEpoch == lifecycle.epoch,
+              state == lifecycle.state,
+              state == requiredState,
+              ownsHelper,
+              activeHelperGeneration == lifecycle.helperGeneration,
+              activeGuestDataDiskLaunchAuthority == lifecycle.dataDiskLaunchAuthority else {
+            throw TierError.repairUnavailable(
+                "guest resource probe crossed the Docker tier lifecycle boundary"
+            )
+        }
+        let verifiedBinding = DockerGuestDataDiskVerifiedBinding(
+            lifecycleEpoch: lifecycle.epoch,
+            helperGeneration: lifecycle.helperGeneration,
+            binding: binding
+        )
+        let sameBindingScope = verifiedGuestDataDiskBinding.map { existing in
+            if let helperGeneration = lifecycle.helperGeneration {
+                return existing.helperGeneration == helperGeneration
+            }
+            return existing.helperGeneration == nil
+                && existing.lifecycleEpoch == lifecycle.epoch
+        } ?? false
+        if let existing = verifiedGuestDataDiskBinding,
+           sameBindingScope,
+           existing.binding != binding {
+            throw TierError.repairUnavailable(
+                "guest Docker data-filesystem identity changed within one helper generation"
+            )
+        }
+        verifiedGuestDataDiskBinding = verifiedBinding
+        return snapshot
+    }
+
+    private func currentGuestDataDiskAuthority() throws -> DockerGuestDataDiskAuthority {
+        do {
+            return try guestDataDiskAuthorityProvider(configuration.home)
+        } catch let error as TierError {
+            throw error
+        } catch {
+            throw TierError.repairUnavailable(
+                "selected Docker data-disk authority is unavailable: \(error)"
+            )
+        }
+    }
+
+    private func captureGuestResourceProbeLifecycle(
+        requiredState: DockerTierState
+    ) throws -> DockerGuestResourceProbeLifecycle {
+        lock.lock()
+        guard !terminalShutdown,
+              activeTeardown == nil,
+              state == requiredState else {
+            lock.unlock()
+            throw TierError.repairUnavailable(
+                "guest resource probe requires a stable \(requiredState.rawValue) Docker tier"
+            )
+        }
+        let lifecycle = DockerGuestResourceProbeLifecycle(
+            epoch: lifecycleEpoch,
+            state: state,
+            helper: helperProcess,
+            helperGeneration: activeHelperGeneration,
+            dataDiskLaunchAuthority: activeGuestDataDiskLaunchAuthority
+        )
+        if configuration.hasManagedHelper,
+           lifecycle.helper == nil || lifecycle.helperGeneration == nil {
+            lock.unlock()
+            throw TierError.repairUnavailable(
+                "guest resource probe has no exact managed helper generation"
+            )
+        }
+        if configuration.hasManagedHelper,
+           lifecycle.dataDiskLaunchAuthority == nil {
+            lock.unlock()
+            throw TierError.repairUnavailable(
+                "guest resource probe has no exact host data-disk launch authority"
+            )
+        }
+        lock.unlock()
+
+        if let helper = lifecycle.helper,
+           Self.observeManagedProcess(helper)?.isRunning != true {
+            throw TierError.repairUnavailable(
+                "guest resource probe helper is not running"
+            )
+        }
+        return lifecycle
+    }
+
+    static func decodeGuestResourceSnapshot(
+        _ data: Data,
+        authority: DockerGuestDataDiskAuthority
+    ) throws -> DoryGuestResourceSnapshot {
+        let invalid = TierError.repairUnavailable(
+            "guest resource probe returned an invalid versioned record"
+        )
+        let expectedKeys: Set<String> = [
+            "schema", "version", "mem_total_kb", "mem_available_kb", "mem_free_kb",
+            "buffers_kb", "cached_kb", "sreclaimable_kb", "shmem_kb",
+            "disk_mount_source", "disk_filesystem_type", "disk_device_major_minor",
+            "disk_filesystem_uuid",
+            "disk_total_bytes", "disk_used_bytes", "disk_available_bytes",
+        ]
+        guard !data.isEmpty,
+              data.count <= 16 * 1_024,
+              data.last == 0x0A,
+              !data.contains(0x0D),
+              let output = String(data: data, encoding: .utf8) else {
+            throw invalid
+        }
+        let body = output.dropLast()
+        let lines = body.split(separator: "\n", omittingEmptySubsequences: false)
+        guard lines.count == expectedKeys.count else { throw invalid }
+        var record = [String: String](minimumCapacity: expectedKeys.count)
+        for line in lines {
+            let fields = line.split(
+                separator: "=",
+                maxSplits: 1,
+                omittingEmptySubsequences: false
+            )
+            guard fields.count == 2 else { throw invalid }
+            let key = String(fields[0])
+            let value = String(fields[1])
+            guard expectedKeys.contains(key), record.updateValue(value, forKey: key) == nil else {
+                throw invalid
+            }
+        }
+        guard Set(record.keys) == expectedKeys,
+              record["schema"] == "dev.dory.guest-resources",
+              record["version"] == "2" else {
+            throw invalid
+        }
+        func unsigned(_ key: String) -> UInt64? {
+            guard let value = record[key], !value.isEmpty,
+                  value.utf8.allSatisfy({ (0x30...0x39).contains($0) }) else {
+                return nil
+            }
+            return UInt64(value)
+        }
+        func canonicalMajorMinor(_ key: String) -> String? {
+            guard let value = record[key] else { return nil }
+            let fields = value.split(
+                separator: ":",
+                maxSplits: 1,
+                omittingEmptySubsequences: false
+            )
+            guard fields.count == 2,
+                  fields.allSatisfy({
+                      !$0.isEmpty && $0.utf8.allSatisfy({ (0x30...0x39).contains($0) })
+                  }),
+                  let major = UInt32(fields[0]),
+                  let minor = UInt32(fields[1]),
+                  value == "\(major):\(minor)" else {
+                return nil
+            }
+            return value
+        }
+        guard record["disk_mount_source"] == "/dev/vdb",
+              record["disk_filesystem_type"] == "ext4",
+              let deviceMajorMinor = canonicalMajorMinor("disk_device_major_minor"),
+              let encodedFilesystemUUID = record["disk_filesystem_uuid"],
+              let filesystemUUID = UUID(uuidString: encodedFilesystemUUID),
+              encodedFilesystemUUID == filesystemUUID.uuidString.lowercased(),
+              filesystemUUID == authority.filesystemUUID,
+              let totalKB = unsigned("mem_total_kb"),
+              let availableKB = unsigned("mem_available_kb"),
+              let freeKB = unsigned("mem_free_kb"),
+              let buffersKB = unsigned("buffers_kb"),
+              let cachedKB = unsigned("cached_kb"),
+              let slabReclaimableKB = unsigned("sreclaimable_kb"),
+              let sharedKB = unsigned("shmem_kb"),
+              let diskTotal = unsigned("disk_total_bytes"),
+              let diskUsed = unsigned("disk_used_bytes"),
+              let diskAvailable = unsigned("disk_available_bytes"),
+              totalKB > 0,
+              totalKB <= UInt64.max / 1_024,
+              availableKB <= totalKB,
+              freeKB <= totalKB,
+              buffersKB <= totalKB,
+              cachedKB <= totalKB,
+              slabReclaimableKB <= totalKB,
+              sharedKB <= totalKB,
+              diskTotal > 0,
+              diskUsed <= diskTotal,
+              diskAvailable <= diskTotal else {
+            throw invalid
+        }
+        let (bufferedAndCachedKB, firstOverflow) = buffersKB.addingReportingOverflow(cachedKB)
+        let (accountedCacheKB, secondOverflow) = bufferedAndCachedKB.addingReportingOverflow(
+            slabReclaimableKB
+        )
+        let (accountedDiskBytes, diskOverflow) = diskUsed.addingReportingOverflow(diskAvailable)
+        guard !firstOverflow,
+              !secondOverflow,
+              !diskOverflow,
+              accountedDiskBytes > 0,
+              accountedDiskBytes <= diskTotal else {
+            throw invalid
+        }
+        let cacheKB = accountedCacheKB >= sharedKB ? accountedCacheKB - sharedKB : 0
+        guard cacheKB <= totalKB else { throw invalid }
+        let usedKB = totalKB - availableKB
         return DoryGuestResourceSnapshot(
-            memoryCeilingBytes: totalKB.saturatingMultiplying(by: 1024),
-            memoryUsedBytes: totalKB.saturatingSubtracting(availableKB).saturatingMultiplying(by: 1024),
-            memoryCacheBytes: cacheKB.saturatingMultiplying(by: 1024),
-            memoryReclaimableBytes: reclaimableKB.saturatingMultiplying(by: 1024),
-            memoryFreeBytes: freeKB.saturatingMultiplying(by: 1024),
+            selectedDataDriveID: authority.dataDriveID,
+            dataDiskFilesystemUUID: filesystemUUID,
+            dataDiskMountSource: "/dev/vdb",
+            dataDiskFilesystemType: "ext4",
+            dataDiskDeviceMajorMinor: deviceMajorMinor,
+            memoryCeilingBytes: totalKB * 1_024,
+            memoryUsedBytes: usedKB * 1_024,
+            memoryCacheBytes: cacheKB * 1_024,
+            memoryAvailableBytes: availableKB * 1_024,
+            memoryFreeBytes: freeKB * 1_024,
             dataDiskTotalBytes: diskTotal,
             dataDiskUsedBytes: diskUsed,
             dataDiskAvailableBytes: diskAvailable
         )
     }
 
+    public func fileServiceResourceSnapshot(now: Date = Date()) -> DoryFileServiceResourceSnapshot? {
+        guard let directory = managedHelperStateDirectory() else { return nil }
+        let url = URL(fileURLWithPath: directory).appendingPathComponent("file-service-resources.json")
+        guard let fileSize = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+              fileSize > 0,
+              fileSize <= 64 * 1_024,
+              let data = try? Data(contentsOf: url, options: [.mappedIfSafe]),
+              data.count == fileSize,
+              let object = try? JSONSerialization.jsonObject(with: data),
+              let record = object as? [String: Any],
+              Set(record.keys) == DoryFileServiceResourceSnapshot.exactJSONKeys else {
+            return nil
+        }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        guard let snapshot = try? decoder.decode(DoryFileServiceResourceSnapshot.self, from: data),
+              snapshot.schema == "dev.dory.file-service.resources",
+              snapshot.version == 1,
+              abs(now.timeIntervalSince(snapshot.generatedAt)) <= 15,
+              snapshot.cacheMode == "zero-validity",
+              snapshot.maximumCacheValiditySeconds == 0,
+              (0...64).contains(snapshot.configuredShareCount),
+              (0...64).contains(snapshot.invalidationOnlyShareCount),
+              (0...64).contains(snapshot.watcherNudgeShareCount),
+              snapshot.invalidationOnlyShareCount + snapshot.watcherNudgeShareCount
+                == snapshot.configuredShareCount,
+              snapshot.observationRequired == (snapshot.configuredShareCount > 0),
+              snapshot.requiredObservationShareCount >= 0,
+              snapshot.requiredObservationShareCount <= snapshot.configuredShareCount,
+              snapshot.observedRequiredShareCount >= 0,
+              snapshot.observedRequiredShareCount <= snapshot.requiredObservationShareCount,
+              snapshot.observationStreamCount >= snapshot.observedRequiredShareCount,
+              snapshot.observationStreamCount <= snapshot.configuredShareCount,
+              snapshot.frontendCount >= snapshot.configuredShareCount,
+              snapshot.frontendCount <= 66,
+              snapshot.requestQueueCount >= snapshot.frontendCount,
+              snapshot.requestQueueCount <= 4_224,
+              snapshot.pendingEventCount >= 0,
+              snapshot.pendingEventLimit == 65_536,
+              snapshot.pendingEventCount <= snapshot.pendingEventLimit,
+              snapshot.coherenceInFlightBatchCount >= 0,
+              snapshot.coherenceInFlightBatchCount <= 8,
+              snapshot.inFlightRequestCount <= snapshot.peakInFlightRequestCount,
+              snapshot.maximumRequestLatencyNanoseconds
+                <= snapshot.totalRequestLatencyNanoseconds,
+              !snapshot.running || (
+                  snapshot.observationActive
+                      && snapshot.requiredObservationShareCount
+                        == snapshot.configuredShareCount
+                      && snapshot.observedRequiredShareCount
+                        == snapshot.configuredShareCount
+                      && snapshot.observationStreamCount
+                        == snapshot.configuredShareCount
+                      && !snapshot.invalidationFailureLatched
+                      && !snapshot.coherenceTerminalFailureLatched
+              ) else {
+            return nil
+        }
+        return snapshot
+    }
+
+    /// Reads the legacy host-share telemetry file for callers that still consume the version-one
+    /// observer record. Current helpers publish `file-service-resources.json`; this method does not
+    /// translate or fabricate that richer record into the retired schema.
+    @available(*, deprecated, message: "Use fileServiceResourceSnapshot(now:) instead")
     public func hostShareResourceSnapshot(now: Date = Date()) -> DoryHostShareResourceSnapshot? {
         guard let directory = managedHelperStateDirectory() else { return nil }
         let url = URL(fileURLWithPath: directory).appendingPathComponent("host-share-resources.json")
-        guard let data = try? Data(contentsOf: url, options: [.mappedIfSafe]) else { return nil }
+        guard let fileSize = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+              fileSize > 0,
+              fileSize <= 64 * 1_024,
+              let data = try? Data(contentsOf: url, options: [.mappedIfSafe]),
+              data.count == fileSize else {
+            return nil
+        }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         guard let snapshot = try? decoder.decode(DoryHostShareResourceSnapshot.self, from: data),
@@ -1568,15 +3127,6 @@ public final class DockerTier: @unchecked Sendable {
               let index = arguments.firstIndex(of: "--state-dir"),
               arguments.indices.contains(index + 1) else { return nil }
         return arguments[index + 1]
-    }
-
-    private static func parseUnsignedKeyValues(_ data: Data) -> [String: UInt64] {
-        guard let output = String(data: data, encoding: .utf8) else { return [:] }
-        return output.split(whereSeparator: { $0.isNewline }).reduce(into: [:]) { values, line in
-            let fields = line.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
-            guard fields.count == 2, let value = UInt64(fields[1]) else { return }
-            values[String(fields[0])] = value
-        }
     }
 
     public func memorySnapshot(
@@ -1706,9 +3256,13 @@ public final class DockerTier: @unchecked Sendable {
             lock.unlock()
             return
         }
-        if state == .sleeping, let currentHelper = helperProcess, currentHelper.isRunning {
+        if state == .sleeping,
+           let currentHelper = helperProcess,
+           Self.observeManagedProcess(currentHelper)?.isRunning == true {
             guard currentHelper.resume() else {
-                lastError = TierError.resumeFailed(pid: currentHelper.pid).description
+                lastError = TierError.resumeFailed(
+                    pid: Self.observeManagedProcess(currentHelper)?.pid
+                ).description
                 wakeTask = nil
                 lock.unlock()
                 idleController?.setSleeping(true)
@@ -1716,7 +3270,7 @@ public final class DockerTier: @unchecked Sendable {
             }
             lifecycleEpoch &+= 1
             let resumeEpoch = lifecycleEpoch
-            readinessTracker.beginCycle(trigger: "resume")
+            let readinessCycle = readinessTracker.beginCycle(trigger: "resume")
             setStateLocked(.starting)
             lastError = nil
             lock.unlock()
@@ -1725,24 +3279,35 @@ public final class DockerTier: @unchecked Sendable {
             do {
                 readinessTracker.ready(
                     .vmProcess,
+                    cycle: readinessCycle,
                     code: "vm.process_resumed",
-                    detail: "resumed managed helper pid \(currentHelper.pid ?? 0)"
+                    detail: "resumed managed helper pid \(Self.observeManagedProcess(currentHelper)?.pid ?? 0)"
                 )
-                try validateGuestPrerequisites(helper: currentHelper)
+                try validateGuestPrerequisites(
+                    helper: currentHelper,
+                    readinessCycle: readinessCycle
+                )
                 try validateDockerBackend(
                     helper: currentHelper,
                     epoch: resumeEpoch,
+                    readinessCycle: readinessCycle,
                     timeout: Self.resumeReadyTimeout
                 )
-                readinessTracker.begin(.hostSocketContext, deadlineSeconds: 2)
+                readinessTracker.begin(
+                    .hostSocketContext,
+                    cycle: readinessCycle,
+                    deadlineSeconds: 2
+                )
                 readinessTracker.ready(
                     .hostSocketContext,
+                    cycle: readinessCycle,
                     code: "socket.forwarder_retained",
                     detail: "existing wake-on-demand Docker socket remained bound"
                 )
             } catch {
                 readinessFailure = error
                 readinessTracker.blockCurrent(
+                    cycle: readinessCycle,
                     code: readinessReasonCode(for: error),
                     detail: "\(error)"
                 )
@@ -1758,12 +3323,13 @@ public final class DockerTier: @unchecked Sendable {
                 lock.unlock()
                 return
             }
-            if readinessFailure == nil, currentHelper.isRunning {
+            let resumedObservation = Self.observeManagedProcess(currentHelper)
+            if readinessFailure == nil, resumedObservation?.isRunning == true {
                 setStateLocked(.running)
                 helperStartedAt = Date()
                 lastError = nil
                 wakeTask = nil
-                lifecycleStateObserver(.running)
+                enqueueLifecycleStateObserverLocked(.running)
                 lock.unlock()
                 idleController?.setSleeping(false)
                 idleController?.touch()
@@ -1776,9 +3342,10 @@ public final class DockerTier: @unchecked Sendable {
             lastError = readinessFailure.map(String.init(describing:))
                 ?? TierError.helperExited("exited while resuming").description
             setStateLocked(.sleeping)
-            if !currentHelper.isRunning {
+            if resumedObservation?.isRunning == false {
                 helperProcess = nil
                 activeHelperGeneration = nil
+                activeGuestDataDiskLaunchAuthority = nil
                 helperStartedAt = nil
             }
             wakeTask = nil
@@ -1793,48 +3360,72 @@ public final class DockerTier: @unchecked Sendable {
         }
         lifecycleEpoch &+= 1
         let wakeEpoch = lifecycleEpoch
-        readinessTracker.beginCycle(trigger: "cold-wake")
+        let readinessCycle = readinessTracker.beginCycle(trigger: "cold-wake")
         setStateLocked(.starting)
         lastError = nil
         lock.unlock()
 
-        let (helper, helperGeneration) = makeFreshManagedProcess()
+        var helper: (any DockerManagedProcess)?
         do {
+            let helperGeneration = UUID()
+            let dataDiskLaunchAuthority = try guestDataDiskLaunchAuthority(
+                helperGeneration: helperGeneration
+            )
+            helper = makeManagedProcess(generation: helperGeneration)
             lock.lock()
             guard !terminalShutdown,
                   lifecycleEpoch == wakeEpoch,
                   state == .starting else {
                 wakeTask = nil
                 lock.unlock()
-                helper?.stop()
+                stopManagedHelperAndRetainIfNeeded(
+                    helper,
+                    context: "cancelled cold wake could not confirm helper exit"
+                )
                 return
             }
             // Publish before start(): daemon shutdown must be able to cancel the exact window
             // between an accepted engineWake and the helper's blocking handoff/readiness wait.
             helperProcess = helper
             activeHelperGeneration = helper == nil ? nil : helperGeneration
+            activeGuestDataDiskLaunchAuthority = helper == nil ? nil : dataDiskLaunchAuthority
             lock.unlock()
 
             try helper?.start()
             guard freshLaunchIsActive(epoch: wakeEpoch, helper: helper) else {
-                helper?.stop()
+                stopManagedHelperAndRetainIfNeeded(
+                    helper,
+                    context: "superseded cold wake could not confirm helper exit"
+                )
                 return
             }
 
             readinessTracker.ready(
                 .vmProcess,
+                cycle: readinessCycle,
                 code: "vm.process_ready",
-                detail: helper?.pid.map { "managed helper pid \($0) is running" } ?? "in-process backend is running"
+                detail: Self.observeManagedProcess(helper)?.pid
+                    .map { "managed helper pid \($0) is running" }
+                    ?? "in-process backend is running"
             )
-            try validateGuestPrerequisites(helper: helper)
+            try validateGuestPrerequisites(
+                helper: helper,
+                readinessCycle: readinessCycle
+            )
             try validateDockerBackend(
                 helper: helper,
                 epoch: wakeEpoch,
+                readinessCycle: readinessCycle,
                 timeout: Self.freshStartReadyTimeout
             )
-            readinessTracker.begin(.hostSocketContext, deadlineSeconds: 2)
+            readinessTracker.begin(
+                .hostSocketContext,
+                cycle: readinessCycle,
+                deadlineSeconds: 2
+            )
             readinessTracker.ready(
                 .hostSocketContext,
+                cycle: readinessCycle,
                 code: "socket.forwarder_retained",
                 detail: "existing wake-on-demand Docker socket remained bound"
             )
@@ -1847,16 +3438,19 @@ public final class DockerTier: @unchecked Sendable {
                   ownsHelper else {
                 wakeTask = nil
                 lock.unlock()
-                helper?.stop()
+                stopManagedHelperAndRetainIfNeeded(
+                    helper,
+                    context: "cold wake publication could not confirm helper exit"
+                )
                 return
             }
-            if helper?.isRunning == true {
+            if Self.observeManagedProcess(helper)?.isRunning == true {
                 helperProcess = helper
                 setStateLocked(.running)
                 helperStartedAt = Date()
                 lastError = nil
                 wakeTask = nil
-                lifecycleStateObserver(.running)
+                enqueueLifecycleStateObserverLocked(.running)
                 lock.unlock()
                 idleController?.setSleeping(false)
                 idleController?.touch()
@@ -1870,19 +3464,24 @@ public final class DockerTier: @unchecked Sendable {
             }
         } catch {
             readinessTracker.blockCurrent(
+                cycle: readinessCycle,
                 code: readinessReasonCode(for: error),
                 detail: "\(error)"
             )
-            helper?.stop()
+            let helperTerminated = stopManagedHelperAndRetainIfNeeded(
+                helper,
+                context: "failed cold wake could not confirm helper exit"
+            )
             lock.lock()
             let ownsHelper = helper.map { helperProcess === $0 } ?? (helperProcess == nil)
             let ownsLifecycle = !terminalShutdown
                 && lifecycleEpoch == wakeEpoch
                 && state == .starting
                 && ownsHelper
-            if ownsLifecycle {
+            if ownsLifecycle, helperTerminated {
                 helperProcess = nil
                 activeHelperGeneration = nil
+                activeGuestDataDiskLaunchAuthority = nil
                 helperStartedAt = nil
                 setStateLocked(.sleeping)
                 lastError = "\(error)"
@@ -1905,15 +3504,12 @@ public final class DockerTier: @unchecked Sendable {
         return result
     }
 
-    private func makeFreshManagedProcess() -> ((any DockerManagedProcess)?, UUID) {
-        let generation = UUID()
-        let helper = makeManagedProcess(generation: generation)
-        return (helper, generation)
-    }
-
     private func makeManagedProcess(generation: UUID) -> (any DockerManagedProcess)? {
         let onUnexpectedTermination: HvProcessUnexpectedTerminationHandler = { [weak self] termination in
             self?.managedHelperExited(generation: generation, termination: termination)
+        }
+        if let managedProcessFactory {
+            return managedProcessFactory(generation, onUnexpectedTermination)
         }
         if let vmmConfiguration = configuration.vmmProcess {
             return VmmDockerProcess(
@@ -1939,11 +3535,11 @@ public final class DockerTier: @unchecked Sendable {
             ?? .none
     }
 
-    private func reconcileManagedHelperLiveness() {
+    private func reconcileManagedHelperLiveness(until deadline: DispatchTime) {
         guard configuration.hasManagedHelper else { return }
         let generation: UUID?
         let helper: (any DockerManagedProcess)?
-        lock.lock()
+        guard lock.lock(until: deadline) else { return }
         if state == .running {
             generation = activeHelperGeneration
             helper = helperProcess
@@ -1953,11 +3549,17 @@ public final class DockerTier: @unchecked Sendable {
         }
         lock.unlock()
 
-        guard let generation, helper?.isRunning != true else { return }
-        handleManagedHelperLoss(
-            generation: generation,
-            detail: "is no longer running"
-        )
+        guard let generation,
+              let observation = Self.observeManagedProcess(helper, until: deadline),
+              !observation.isRunning else { return }
+        // Status is an observation API, not a cleanup request. Queue the exact generation's
+        // teardown so endpoint/process retirement cannot extend the status budget.
+        supervisorQueue.async { [weak self] in
+            self?.handleManagedHelperLoss(
+                generation: generation,
+                detail: "is no longer running"
+            )
+        }
     }
 
     private func managedHelperExited(generation: UUID, termination: HvProcessTermination) {
@@ -1968,16 +3570,17 @@ public final class DockerTier: @unchecked Sendable {
     }
 
     private func handleManagedHelperLoss(generation: UUID, detail: String) {
-        let currentDataplane: DoryDataplaneHandle?
-        let currentHelper: (any DockerManagedProcess)?
-        let currentActivityServer: DataplaneActivityServer?
-        let inFlightWake: Task<Void, Never>?
+        let operation: TeardownOperation
         let restart: DispatchWorkItem?
         let restartDelay: TimeInterval
+        let terminalFailureDetail: String
+        var shouldScheduleRestart = false
+        var retainedRecovery: RetainedHelperRecoveryPlan?
 
         lock.lock()
         guard !terminalShutdown,
               state == .running,
+              activeTeardown == nil,
               activeHelperGeneration == generation else {
             lock.unlock()
             return
@@ -1995,16 +3598,28 @@ public final class DockerTier: @unchecked Sendable {
 
         lifecycleEpoch &+= 1
         let restartEpoch = lifecycleEpoch
-        restartWorkItem?.cancel()
-        currentDataplane = dataplane
-        currentHelper = helperProcess
-        currentActivityServer = activityServer
-        inFlightWake = wakeTask
+        let readinessCycle = readinessTracker.currentCycleToken()
+        let previousRestart = restartWorkItem
+        var helpers: [any DockerManagedProcess] = []
+        if let helperProcess { helpers.append(helperProcess) }
+        operation = TeardownOperation(
+            epoch: restartEpoch,
+            dataplane: dataplane,
+            activityServer: activityServer,
+            wakeTask: wakeTask,
+            restartWorkItem: previousRestart,
+            helpers: helpers,
+            readinessCycle: readinessCycle,
+            markStopped: false,
+            publishStoppedIntent: false
+        )
+        activeTeardown = operation
         dataplane = nil
         helperProcess = nil
         activityServer = nil
         wakeTask = nil
         activeHelperGeneration = nil
+        activeGuestDataDiskLaunchAuthority = nil
         helperStartedAt = nil
         idleController?.setSleeping(false)
 
@@ -2013,31 +3628,151 @@ public final class DockerTier: @unchecked Sendable {
                 self?.performScheduledRestart(epoch: restartEpoch)
             }
             restart = item
-            restartWorkItem = item
             restartDelay = policy.delay(forAttempt: attempt)
             setStateLocked(.starting)
             lastError = "managed helper \(detail); restart attempt \(attempt)/\(policy.maxRestarts) queued"
+            terminalFailureDetail = lastError ?? "managed helper restart cleanup failed"
         } else {
             restart = nil
-            restartWorkItem = nil
             restartDelay = 0
             setStateLocked(.failed)
             lastError = "managed helper \(detail); automatic restart limit (\(policy.maxRestarts)) exhausted"
+            terminalFailureDetail = lastError ?? "managed helper restart limit exhausted"
         }
-
-        // Tear down every endpoint that could still accept a client before publishing a retry.
-        // Keep the lifecycle lock through endpoint teardown so an explicit start cannot bind a new
-        // socket that an old server's cleanup subsequently removes.
-        inFlightWake?.cancel()
-        removeRuntimeSockets()
-        currentDataplane?.shutdown()
-        currentActivityServer?.stop()
-        agentControl?.disconnect()
-        currentHelper?.stop()
+        restartWorkItem = nil
         lock.unlock()
 
-        if let restart {
+        // The operation token excludes replacement launches while every potentially blocking
+        // endpoint/process call executes without the tier lock. Status and shutdown remain bounded
+        // and can join the exact cleanup generation.
+        operation.wakeTask?.cancel()
+        operation.restartWorkItem?.cancel()
+        removeRuntimeSockets()
+        operation.dataplane?.shutdown()
+        operation.activityServer?.stop()
+        agentControl?.disconnect()
+        var unconfirmedHelpers: [any DockerManagedProcess] = []
+        for helper in operation.helpers {
+            let reportedTerminated = helper.stop()
+            if !reportedTerminated,
+               Self.observeManagedProcess(helper)?.isRunning != false {
+                unconfirmedHelpers.append(helper)
+            }
+        }
+
+        lock.lock()
+        guard activeTeardown === operation, lifecycleEpoch == operation.epoch else {
+            lock.unlock()
+            operation.finish(result: false)
+            return
+        }
+        activeTeardown = nil
+        let helperTerminated = unconfirmedHelpers.isEmpty
+        if helperTerminated, let restart, !terminalShutdown {
+            restartWorkItem = restart
+            shouldScheduleRestart = true
+        } else if !helperTerminated, let helper = unconfirmedHelpers.first {
+            for retained in unconfirmedHelpers.dropFirst() {
+                if !retiringHelpers.contains(where: { $0 === retained }) {
+                    retiringHelpers.append(retained)
+                }
+            }
+            retainUnconfirmedHelperLocked(
+                helper,
+                context: "unexpected helper loss could not confirm terminal exit"
+            )
+            let token = UUID()
+            retainedHelperRecoveryToken = token
+            retainedRecovery = RetainedHelperRecoveryPlan(
+                token: token,
+                epoch: operation.epoch,
+                helpers: unconfirmedHelpers,
+                restart: restart,
+                restartDelay: restartDelay,
+                terminalFailureDetail: terminalFailureDetail
+            )
+        } else if terminalShutdown {
+            restartWorkItem = nil
+            setStateLocked(.failed)
+            lastError = "daemon shutdown superseded managed helper recovery"
+        } else {
+            restartWorkItem = nil
+            setStateLocked(.failed)
+            lastError = terminalFailureDetail
+        }
+        lock.unlock()
+        operation.finish(result: helperTerminated)
+
+        if helperTerminated, let restart, shouldScheduleRestart {
             supervisorQueue.asyncAfter(deadline: .now() + restartDelay, execute: restart)
+        } else if let retainedRecovery {
+            observeRetainedHelpersForRecovery(retainedRecovery)
+        }
+    }
+
+    /// A bounded wait is repeated only while the exact retained recovery token remains current.
+    /// `waitForTermination` is the process object's terminal event primitive; no status/control
+    /// request is needed to notice the eventual exit or to continue the budgeted recovery.
+    private func observeRetainedHelpersForRecovery(_ plan: RetainedHelperRecoveryPlan) {
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self else { return }
+            for helper in plan.helpers {
+                while self.retainedRecoveryIsActive(token: plan.token, epoch: plan.epoch) {
+                    _ = helper.waitForTermination(
+                        timeout: DoryEngineShutdownTiming.hostTerminationSeconds
+                    )
+                    if Self.observeManagedProcess(helper)?.isRunning == false {
+                        break
+                    }
+                }
+                guard self.retainedRecoveryIsActive(token: plan.token, epoch: plan.epoch) else {
+                    return
+                }
+            }
+            self.supervisorQueue.async { [weak self] in
+                self?.completeRetainedHelperRecovery(plan)
+            }
+        }
+    }
+
+    private func retainedRecoveryIsActive(token: UUID, epoch: UInt64) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return !terminalShutdown
+            && lifecycleEpoch == epoch
+            && retainedHelperRecoveryToken == token
+    }
+
+    private func completeRetainedHelperRecovery(_ plan: RetainedHelperRecoveryPlan) {
+        let expectedIdentities = Set(plan.helpers.map(ObjectIdentifier.init))
+        var shouldScheduleRestart = false
+
+        lock.lock()
+        guard !terminalShutdown,
+              lifecycleEpoch == plan.epoch,
+              activeTeardown == nil,
+              helperProcess == nil,
+              retainedHelperRecoveryToken == plan.token,
+              Set(retiringHelpers.map(ObjectIdentifier.init)) == expectedIdentities else {
+            lock.unlock()
+            return
+        }
+        retiringHelpers = []
+        retainedHelperRecoveryToken = nil
+        if let restart = plan.restart {
+            restartWorkItem = restart
+            setStateLocked(.starting)
+            lastError = "unexpected helper retirement was confirmed; automatic recovery queued"
+            shouldScheduleRestart = true
+        } else {
+            restartWorkItem = nil
+            setStateLocked(.failed)
+            lastError = plan.terminalFailureDetail
+        }
+        lock.unlock()
+
+        if let restart = plan.restart, shouldScheduleRestart {
+            supervisorQueue.asyncAfter(deadline: .now() + plan.restartDelay, execute: restart)
         }
     }
 
@@ -2045,13 +3780,27 @@ public final class DockerTier: @unchecked Sendable {
         idleController?.beginControlOperation()
         defer { idleController?.endControlOperation() }
 
+        reconcileRetiringHelpers()
         lock.lock()
         guard lifecycleEpoch == epoch,
               !terminalShutdown,
+              activeTeardown == nil,
+              activeSleepingDataplaneLaunchEpoch == nil,
               state == .starting,
               helperProcess == nil,
+              retiringHelpers.isEmpty,
               restartWorkItem != nil else {
             lock.unlock()
+            return
+        }
+        if let repair = activeHostDataplaneRepair {
+            lock.unlock()
+            // The scheduled item may reach its deadline while an older socket repair is still
+            // retiring endpoints. Register an exact completion continuation instead of polling or
+            // blocking the serial supervisor queue; lifecycle/epoch guards are rechecked there.
+            repair.notify(on: supervisorQueue) { [weak self] in
+                self?.performScheduledRestart(epoch: epoch)
+            }
             return
         }
         restartWorkItem = nil
@@ -2059,8 +3808,25 @@ public final class DockerTier: @unchecked Sendable {
 
         do {
             cleanupStaleHelpers()
-            readinessTracker.beginCycle(trigger: "automatic-recovery")
-            try launchFreshTier(epoch: epoch, publishFailure: false)
+            lock.lock()
+            guard lifecycleEpoch == epoch,
+                  !terminalShutdown,
+                  activeTeardown == nil,
+                  activeHostDataplaneRepair == nil,
+                  activeSleepingDataplaneLaunchEpoch == nil,
+                  state == .starting,
+                  helperProcess == nil,
+                  retiringHelpers.isEmpty else {
+                lock.unlock()
+                return
+            }
+            let readinessCycle = readinessTracker.beginCycle(trigger: "automatic-recovery")
+            lock.unlock()
+            try launchFreshTier(
+                epoch: epoch,
+                readinessCycle: readinessCycle,
+                publishFailure: false
+            )
         } catch TierError.startCancelled {
             return
         } catch {
@@ -2191,57 +3957,129 @@ public final class DockerTier: @unchecked Sendable {
         }
     }
 
+    @discardableResult
     private func tearDown(
         markStopped: Bool,
         publishStoppedIntent: Bool = false,
-        extraHelper: (any DockerManagedProcess)? = nil
-    ) {
-        let currentDataplane: DoryDataplaneHandle?
-        let currentHelper: (any DockerManagedProcess)?
-        let currentActivityServer: DataplaneActivityServer?
-        let inFlightWake: Task<Void, Never>?
-        let queuedRestart: DispatchWorkItem?
+        terminal: Bool = false
+    ) -> Bool {
+        let operation: TeardownOperation
+
         lock.lock()
+        if terminal {
+            terminalShutdown = true
+        }
+        if let existing = activeTeardown {
+            operation = existing
+            lock.unlock()
+            guard let joinedResult = operation.wait() else { return false }
+            // Unexpected-loss cleanup does not itself satisfy an explicit/terminal stop request.
+            // Join that exact cleanup, then claim a new stop generation so a queued restart cannot
+            // escape merely because the caller arrived while endpoint retirement was in flight.
+            if !operation.markStopped {
+                return tearDown(
+                    markStopped: markStopped,
+                    publishStoppedIntent: publishStoppedIntent,
+                    terminal: terminal
+                )
+            }
+            return joinedResult
+        }
+
+        var helpersToStop: [any DockerManagedProcess] = []
+        var seenHelpers: Set<ObjectIdentifier> = []
+        func appendHelper(_ helper: (any DockerManagedProcess)?) {
+            guard let helper else { return }
+            let identity = ObjectIdentifier(helper)
+            guard seenHelpers.insert(identity).inserted else { return }
+            helpersToStop.append(helper)
+        }
+
         lifecycleEpoch &+= 1
-        currentDataplane = dataplane
-        currentHelper = helperProcess ?? extraHelper
-        currentActivityServer = activityServer
-        inFlightWake = wakeTask
-        queuedRestart = restartWorkItem
+        let teardownEpoch = lifecycleEpoch
+        retainedHelperRecoveryToken = nil
+        let readinessCycle = readinessTracker.currentCycleToken()
+        appendHelper(helperProcess)
+        for helper in retiringHelpers { appendHelper(helper) }
+        operation = TeardownOperation(
+            epoch: teardownEpoch,
+            dataplane: dataplane,
+            activityServer: activityServer,
+            wakeTask: wakeTask,
+            restartWorkItem: restartWorkItem,
+            helpers: helpersToStop,
+            readinessCycle: readinessCycle,
+            markStopped: markStopped,
+            publishStoppedIntent: publishStoppedIntent
+        )
+        activeTeardown = operation
         dataplane = nil
         helperProcess = nil
+        retiringHelpers = []
         activityServer = nil
         wakeTask = nil
         restartWorkItem = nil
         activeHelperGeneration = nil
+        activeGuestDataDiskLaunchAuthority = nil
         helperStartedAt = nil
         if markStopped {
-            setStateLocked(.stopped)
-            unexpectedRestartCount = 0
-            lastError = nil
-            idleController?.setSleeping(false)
-            if publishStoppedIntent, !terminalShutdown {
-                lifecycleStateObserver(.stopped)
+            setStateLocked(.failed)
+            lastError = "docker tier teardown is in progress"
+        }
+        lock.unlock()
+
+        // Cancellation, endpoint shutdown, guest-agent disconnect, and process termination can
+        // all block or call back into DockerTier. The operation token excludes replacement
+        // lifecycles while every one of these calls runs without the tier lock.
+        operation.wakeTask?.cancel()
+        operation.restartWorkItem?.cancel()
+        removeRuntimeSockets()
+        operation.dataplane?.shutdown()
+        operation.activityServer?.stop()
+        agentControl?.disconnect()
+        var unconfirmedHelpers: [any DockerManagedProcess] = []
+        for helper in operation.helpers {
+            let reportedTerminated = helper.stop()
+            // A false result can become stale at the return boundary. Preserve authority only
+            // after a separate exact liveness observation confirms the same object is still live.
+            if !reportedTerminated,
+               Self.observeManagedProcess(helper)?.isRunning != false {
+                unconfirmedHelpers.append(helper)
             }
         }
 
-        // Cancel any in-flight wake so it stops resuming; it also re-checks state under
-        // the lock and discards a freshly started helper now that state != .sleeping.
-        inFlightWake?.cancel()
-        queuedRestart?.cancel()
-
-        // Keep lifecycle ownership until every old endpoint is gone. Releasing this lock after
-        // publishing `.stopped` would let a concurrent start bind replacement sockets that this
-        // older teardown could subsequently unlink.
-        removeRuntimeSockets()
-        currentDataplane?.shutdown()
-        currentActivityServer?.stop()
-        agentControl?.disconnect()
-        currentHelper?.stop()
-        lock.unlock()
-        if markStopped {
-            readinessTracker.markStopped(detail: "engine was explicitly stopped")
+        lock.lock()
+        guard activeTeardown === operation, lifecycleEpoch == operation.epoch else {
+            lock.unlock()
+            operation.finish(result: false)
+            return false
         }
+        retiringHelpers = unconfirmedHelpers
+        let allHelpersTerminated = unconfirmedHelpers.isEmpty
+        if operation.markStopped {
+            unexpectedRestartCount = 0
+            if allHelpersTerminated {
+                setStateLocked(.stopped)
+                lastError = nil
+                if operation.publishStoppedIntent, !terminalShutdown {
+                    enqueueLifecycleStateObserverLocked(.stopped)
+                }
+            } else {
+                setStateLocked(.failed)
+                lastError = "engine stop could not confirm helper exit: \(TierError.helperTerminationPending.description)"
+            }
+        }
+        activeTeardown = nil
+        lock.unlock()
+        operation.finish(result: allHelpersTerminated)
+        idleController?.setSleeping(false)
+        if operation.markStopped, allHelpersTerminated {
+            readinessTracker.markStopped(
+                cycle: operation.readinessCycle,
+                detail: "engine was explicitly stopped"
+            )
+        }
+        return allHelpersTerminated
     }
 
     deinit {

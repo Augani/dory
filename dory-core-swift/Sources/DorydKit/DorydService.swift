@@ -3,11 +3,227 @@ import DoryOperations
 import Foundation
 import ObjectiveC
 
+public enum DorydDockerTierShutdownOutcome: Equatable, Sendable {
+    case terminated
+    case authorityRetained(pid: Int32?, detail: String)
+
+    public var permitsDaemonExit: Bool {
+        if case .terminated = self { return true }
+        return false
+    }
+}
+
+public enum DorydDockerTierShutdownBoundary {
+    /// The helper TERM/KILL policy is itself bounded by `hostTerminationSeconds`. This additional
+    /// completion allowance prevents executor jitter from turning that policy into a false timeout.
+    public static let shutdownCompletionSeconds: TimeInterval =
+        DoryEngineShutdownTiming.hostTerminationSeconds + 1
+
+    /// After a completed TERM/KILL attempt reports an unconfirmed helper, this short monotonic
+    /// retirement window lets the exact retained process object publish its terminal observation.
+    /// A timeout deliberately returns retained authority to the caller; it never authorizes process
+    /// exit while a helper may still be alive.
+    public static let retirementObservationSeconds: TimeInterval = 2
+
+    public static func complete(
+        dockerTier: DockerTier?,
+        shutdownTimeout: TimeInterval = shutdownCompletionSeconds,
+        retirementTimeout: TimeInterval = retirementObservationSeconds
+    ) -> DorydDockerTierShutdownOutcome {
+        guard let dockerTier else { return .terminated }
+        let boundedShutdownTimeout = shutdownTimeout.isFinite
+            ? min(max(0, shutdownTimeout), shutdownCompletionSeconds)
+            : shutdownCompletionSeconds
+        let boundedTimeout = retirementTimeout.isFinite
+            ? min(max(0, retirementTimeout), retirementObservationSeconds)
+            : retirementObservationSeconds
+
+        // Close the launch gate synchronously. The potentially blocking TERM/KILL work then runs
+        // outside the shutdown coordinator so even a concurrently wedged teardown cannot defeat
+        // the daemon's monotonic completion bound.
+        dockerTier.latchTerminalShutdown()
+        let attempt = DockerTierShutdownAttempt()
+        DispatchQueue.global(qos: .userInitiated).async {
+            attempt.finish(dockerTier.shutdown())
+        }
+        guard let shutdownCompleted = attempt.wait(
+            until: .now() + boundedShutdownTimeout
+        ) else {
+            let status = dockerTier.status()
+            return .authorityRetained(
+                pid: status.hvPID,
+                detail: "Docker tier shutdown did not complete within its bounded TERM/KILL window"
+            )
+        }
+        if shutdownCompleted {
+            return .terminated
+        }
+        if dockerTier.waitForTerminalRetirement(timeout: boundedTimeout) {
+            return .terminated
+        }
+        let status = dockerTier.status()
+        return .authorityRetained(
+            pid: status.hvPID,
+            detail: status.lastError
+                ?? "Docker helper termination remains unconfirmed after the bounded retirement window"
+        )
+    }
+
+    /// Fail-safe terminal observer used only after `complete` returns retained authority. Every
+    /// individual wait is bounded and joins the exact teardown/helper event; the enclosing loop is
+    /// intentionally unbounded because daemon exit is unsafe until that same helper is proven
+    /// terminal. A terminal event that precedes registration is still observed immediately by the
+    /// process object's latched completion primitive.
+    @discardableResult
+    public static func awaitTerminalRetirement(
+        dockerTier: DockerTier,
+        observationWindow: TimeInterval = retirementObservationSeconds
+    ) -> Bool {
+        let boundedWindow = observationWindow.isFinite
+            ? min(max(0.01, observationWindow), retirementObservationSeconds)
+            : retirementObservationSeconds
+        while !dockerTier.waitForTerminalRetirement(timeout: boundedWindow) {}
+        return true
+    }
+}
+
+private final class DockerTierShutdownAttempt: @unchecked Sendable {
+    private let completion = DispatchGroup()
+    private let lock = NSLock()
+    private var result: Bool?
+
+    init() {
+        completion.enter()
+    }
+
+    func finish(_ value: Bool) {
+        lock.lock()
+        precondition(result == nil, "Docker tier shutdown attempt completed more than once")
+        result = value
+        lock.unlock()
+        completion.leave()
+    }
+
+    func wait(until deadline: DispatchTime) -> Bool? {
+        guard completion.wait(timeout: deadline) == .success else { return nil }
+        lock.lock()
+        defer { lock.unlock() }
+        return result
+    }
+}
+
+enum EngineDesiredStatePersistenceOutcome: Sendable {
+    case succeeded(state: String)
+    case failed(state: String, detail: String)
+}
+
+final class EngineDesiredStatePersistenceJournal: @unchecked Sendable {
+    private static let maximumObservationWaitSeconds: TimeInterval = 2
+    private static let retainedRecordLimit = 64
+
+    private struct Record {
+        let revision: UInt64
+        let event: DockerTierLifecycleEvent
+        let outcome: EngineDesiredStatePersistenceOutcome
+        let recordedAtUptimeNanoseconds: UInt64
+    }
+
+    private let lock = NSLock()
+    private var revision: UInt64 = 0
+    private var records: [Record] = []
+    private var waiters: [UUID: DispatchSemaphore] = [:]
+
+    func checkpoint() -> UInt64 {
+        lock.lock()
+        defer { lock.unlock() }
+        return revision
+    }
+
+    func record(
+        _ outcome: EngineDesiredStatePersistenceOutcome,
+        for event: DockerTierLifecycleEvent
+    ) {
+        let recordedAt = DispatchTime.now().uptimeNanoseconds
+        lock.lock()
+        revision &+= 1
+        records.append(Record(
+            revision: revision,
+            event: event,
+            outcome: outcome,
+            recordedAtUptimeNanoseconds: recordedAt
+        ))
+        if records.count > Self.retainedRecordLimit {
+            records.removeFirst(records.count - Self.retainedRecordLimit)
+        }
+        let pendingWaiters = Array(waiters.values)
+        lock.unlock()
+        for waiter in pendingWaiters { waiter.signal() }
+    }
+
+    func waitForOutcome(
+        after checkpoint: UInt64,
+        expectedEvent: DockerTierLifecycleEvent,
+        timeout: TimeInterval = maximumObservationWaitSeconds
+    ) -> EngineDesiredStatePersistenceOutcome? {
+        let boundedTimeout = timeout.isFinite
+            ? min(max(0, timeout), Self.maximumObservationWaitSeconds)
+            : Self.maximumObservationWaitSeconds
+        return waitForOutcome(
+            after: checkpoint,
+            expectedEvent: expectedEvent,
+            deadline: .now() + boundedTimeout
+        )
+    }
+
+    /// Absolute-deadline form keeps the acceptance rule testable: an outcome recorded after this
+    /// monotonic instant is late even if the waiting thread observes it before checking the clock.
+    func waitForOutcome(
+        after checkpoint: UInt64,
+        expectedEvent: DockerTierLifecycleEvent,
+        deadline: DispatchTime
+    ) -> EngineDesiredStatePersistenceOutcome? {
+        let deadlineNanoseconds = deadline.uptimeNanoseconds
+        let waiterID = UUID()
+        let waiter = DispatchSemaphore(value: 0)
+
+        lock.lock()
+        waiters[waiterID] = waiter
+        defer {
+            waiters.removeValue(forKey: waiterID)
+            lock.unlock()
+        }
+        while true {
+            if let matching = records.first(where: {
+                $0.revision > checkpoint
+                    && $0.event == expectedEvent
+                    && $0.recordedAtUptimeNanoseconds <= deadlineNanoseconds
+            }) {
+                return matching.outcome
+            }
+            guard DispatchTime.now().uptimeNanoseconds < deadlineNanoseconds else { return nil }
+            lock.unlock()
+            _ = waiter.wait(timeout: deadline)
+            lock.lock()
+        }
+    }
+
+    var currentFailure: String? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let latest = records.last else { return nil }
+        if case let .failed(state, detail) = latest.outcome {
+            return "could not persist engine desired state \(state): \(detail)"
+        }
+        return nil
+    }
+}
+
 /// The exported XPC object. Stateless beyond the socket path; every reply is total.
 public final class DorydService: NSObject, DorydControl {
     private let socketPath: String
     private let home: String
     private let dockerTier: DockerTier?
+    private let dockerDataDriveID: UUID?
     private let machineManager: MachineManager?
     private let productionPlanningController:
         (any DoryDaemonVirtualMachineProductionPlanningControlling)?
@@ -23,15 +239,18 @@ public final class DorydService: NSObject, DorydControl {
     private let balloonController: BalloonController
     private let idlePolicyStore: IdlePolicyStore
     private let idleSleepScheduler: IdleSleepScheduler?
+    private let engineDesiredStatePersistence: EngineDesiredStatePersistenceJournal?
     private let healthReporter: HealthReporter
     private let incidentWriter: IncidentWriter?
+    private let engineLifecycleOperationLock = NSLock()
     private let runtimeModeLock = NSLock()
     private let machineEventQueryLock = NSLock()
 
-    public init(
+    public convenience init(
         socketPath: String,
         home: String = NSHomeDirectory(),
         dockerTier: DockerTier? = nil,
+        dockerDataDriveID: UUID? = nil,
         machineManager: MachineManager? = nil,
         productionPlanningController:
             (any DoryDaemonVirtualMachineProductionPlanningControlling)? = nil,
@@ -49,9 +268,57 @@ public final class DorydService: NSObject, DorydControl {
         healthReporter: HealthReporter? = nil,
         incidentWriter: IncidentWriter? = nil
     ) {
+        self.init(
+            socketPath: socketPath,
+            home: home,
+            dockerTier: dockerTier,
+            dockerDataDriveID: dockerDataDriveID,
+            machineManager: machineManager,
+            productionPlanningController: productionPlanningController,
+            machineImportEnvironment: machineImportEnvironment,
+            machineBackupScheduler: machineBackupScheduler,
+            hostUSBDiscovery: hostUSBDiscovery,
+            remoteManager: remoteManager,
+            networkingController: networkingController,
+            networkRouteRepair: networkRouteRepair,
+            customDomainRouteStore: customDomainRouteStore,
+            corporateConnectivity: corporateConnectivity,
+            balloonController: balloonController,
+            idlePolicyStore: idlePolicyStore,
+            idleSleepScheduler: idleSleepScheduler,
+            healthReporter: healthReporter,
+            incidentWriter: incidentWriter,
+            engineDesiredStateWriter: nil
+        )
+    }
+
+    init(
+        socketPath: String,
+        home: String = NSHomeDirectory(),
+        dockerTier: DockerTier? = nil,
+        dockerDataDriveID: UUID? = nil,
+        machineManager: MachineManager? = nil,
+        productionPlanningController:
+            (any DoryDaemonVirtualMachineProductionPlanningControlling)? = nil,
+        machineImportEnvironment: DoryMachineImportEnvironment = .unverified,
+        machineBackupScheduler: MachineBackupScheduler? = nil,
+        hostUSBDiscovery: any DoryHostUSBDiscovering = IOKitDoryHostUSBDiscovery(),
+        remoteManager: RemoteMachineManager? = nil,
+        networkingController: NetworkingController? = nil,
+        networkRouteRepair: (@Sendable () -> Int)? = nil,
+        customDomainRouteStore: CustomDomainRouteStore? = nil,
+        corporateConnectivity: CorporateConnectivityReconciler? = nil,
+        balloonController: BalloonController? = nil,
+        idlePolicyStore: IdlePolicyStore? = nil,
+        idleSleepScheduler: IdleSleepScheduler? = nil,
+        healthReporter: HealthReporter? = nil,
+        incidentWriter: IncidentWriter? = nil,
+        engineDesiredStateWriter: (@Sendable (String) throws -> Void)?
+    ) {
         self.socketPath = socketPath
         self.home = home
         self.dockerTier = dockerTier
+        self.dockerDataDriveID = dockerDataDriveID
         self.machineManager = machineManager
         self.productionPlanningController = productionPlanningController
         self.machineImportEnvironment = machineImportEnvironment
@@ -71,8 +338,12 @@ public final class DorydService: NSObject, DorydControl {
         let resolvedIdlePolicyStore = idlePolicyStore ?? IdlePolicyStore(dockerContainers: {
             dockerTier?.containerSummariesForIdle() ?? .ok([])
         })
+        let desiredStatePersistence = idlePolicyStore.map { _ in
+            EngineDesiredStatePersistenceJournal()
+        }
         self.idlePolicyStore = resolvedIdlePolicyStore
         self.idleSleepScheduler = idleSleepScheduler
+        self.engineDesiredStatePersistence = desiredStatePersistence
         self.healthReporter = healthReporter ?? HealthReporter(
             socketPath: socketPath,
             dockerTier: dockerTier,
@@ -83,10 +354,13 @@ public final class DorydService: NSObject, DorydControl {
             home: home
         )
         self.incidentWriter = incidentWriter
-        if let idlePolicyStore {
-            dockerTier?.setLifecycleStateObserver { state in
+        if let idlePolicyStore, let desiredStatePersistence {
+            let desiredStateWriter = engineDesiredStateWriter ?? { desiredState in
+                try idlePolicyStore.setEngineDesiredState(desiredState)
+            }
+            dockerTier?.setLifecycleEventObserver { event in
                 let desiredState: String
-                switch state {
+                switch event.state {
                 case .running:
                     desiredState = "running"
                 case .sleeping, .stopped:
@@ -95,12 +369,20 @@ public final class DorydService: NSObject, DorydControl {
                     return
                 }
                 do {
-                    try idlePolicyStore.setEngineDesiredState(desiredState)
+                    try desiredStateWriter(desiredState)
+                    desiredStatePersistence.record(
+                        .succeeded(state: desiredState),
+                        for: event
+                    )
                     incidentWriter?.record(
                         type: "engine.lifecycle",
-                        detail: "docker tier \(state.rawValue)"
+                        detail: "docker tier \(event.state.rawValue)"
                     )
                 } catch {
+                    desiredStatePersistence.record(
+                        .failed(state: desiredState, detail: "\(error)"),
+                        for: event
+                    )
                     incidentWriter?.record(
                         type: "engine.desired_state_failed",
                         detail: "\(desiredState): \(error)"
@@ -124,7 +406,14 @@ public final class DorydService: NSObject, DorydControl {
             return
         }
         let status = dockerTier.status()
-        reply(status.state.rawValue, status.lastError ?? "")
+        let state = status.isStopping ? "stopping" : status.state.rawValue
+        let lifecycleDetail = status.isStopping
+            ? "docker endpoint and helper retirement is in progress"
+            : status.lastError
+        let detail = [lifecycleDetail, engineDesiredStatePersistence?.currentFailure]
+            .compactMap { $0 }
+            .joined(separator: "; ")
+        reply(state, detail)
     }
 
     public func engineDashboardSnapshot(reply: @escaping (NSDictionary, String) -> Void) {
@@ -149,9 +438,44 @@ public final class DorydService: NSObject, DorydControl {
             reply(false, "docker tier is not configured")
             return
         }
-        dockerTier.stop()
-        incidentWriter?.record(type: "engine.stop", detail: "docker tier stopped")
-        reply(true, "")
+        let outcome: (ok: Bool, detail: String) = engineLifecycleOperationLock.withLock {
+            let persistenceCheckpoint = engineDesiredStatePersistence?.checkpoint()
+            guard dockerTier.stop() else {
+                let error = dockerTier.status().lastError
+                    ?? DockerTier.TierError.helperTerminationPending.description
+                incidentWriter?.record(type: "engine.stop_failed", detail: error)
+                return (false, error)
+            }
+            let stoppedEvent = dockerTier.currentLifecycleEvent()
+            guard stoppedEvent.state == .stopped else {
+                let error = "docker tier stop was superseded by lifecycle epoch \(stoppedEvent.epoch) in state \(stoppedEvent.state.rawValue)"
+                incidentWriter?.record(type: "engine.stop_failed", detail: error)
+                return (false, error)
+            }
+            if let engineDesiredStatePersistence, let persistenceCheckpoint {
+                guard let persistence = engineDesiredStatePersistence.waitForOutcome(
+                    after: persistenceCheckpoint,
+                    expectedEvent: stoppedEvent
+                ) else {
+                    let error = "docker tier stopped, but its lifecycle observer did not confirm the persisted sleeping intent"
+                    incidentWriter?.record(type: "engine.stop_failed", detail: error)
+                    return (false, error)
+                }
+                if case let .failed(_, detail) = persistence {
+                    let error = "docker tier stopped, but engine desired-state persistence failed: \(detail)"
+                    incidentWriter?.record(type: "engine.stop_failed", detail: error)
+                    return (false, error)
+                }
+            }
+            guard dockerTier.currentLifecycleEvent() == stoppedEvent else {
+                let error = "docker tier stop lifecycle was superseded before desired-state persistence completed"
+                incidentWriter?.record(type: "engine.stop_failed", detail: error)
+                return (false, error)
+            }
+            incidentWriter?.record(type: "engine.stop", detail: "docker tier stopped")
+            return (true, "")
+        }
+        reply(outcome.ok, outcome.detail)
     }
 
     public func engineSleep(reply: @escaping (Bool, String) -> Void) {
@@ -159,22 +483,23 @@ public final class DorydService: NSObject, DorydControl {
             reply(false, "docker tier is not configured")
             return
         }
-        let status = dockerTier.status()
-        switch status.state {
-        case .sleeping:
-            reply(true, "docker tier is already sleeping")
-            return
-        case .stopped:
-            reply(true, "docker tier is already stopped")
-            return
-        case .starting, .running, .failed:
-            break
+        let outcome: (ok: Bool, detail: String) = engineLifecycleOperationLock.withLock {
+            let status = dockerTier.status()
+            switch status.state {
+            case .sleeping:
+                return (true, "docker tier is already sleeping")
+            case .stopped:
+                return (true, "docker tier is already stopped")
+            case .starting, .running, .failed:
+                break
+            }
+            let slept = dockerTier.sleepForIdle(idleAfter: 0)
+            if slept {
+                incidentWriter?.record(type: "engine.sleep", detail: "manual XPC sleep")
+            }
+            return (slept, slept ? "" : "docker tier is not idle-sleepable")
         }
-        let slept = dockerTier.sleepForIdle(idleAfter: 0)
-        if slept {
-            incidentWriter?.record(type: "engine.sleep", detail: "manual XPC sleep")
-        }
-        reply(slept, slept ? "" : "docker tier is not idle-sleepable")
+        reply(outcome.ok, outcome.detail)
     }
 
     public func engineWake(reply: @escaping (Bool, String) -> Void) {
@@ -227,6 +552,44 @@ public final class DorydService: NSObject, DorydControl {
             reply(telemetry.xpcDictionary, "")
         } catch {
             reply([:], "\(error)")
+        }
+    }
+
+    public func dockerGuestDataDiskUsage(reply: @escaping (NSDictionary, String) -> Void) {
+        guard let dockerTier else {
+            reply([:], "docker tier is not configured")
+            return
+        }
+        guard socketPath == dockerTier.socketPath else {
+            reply([:], "docker guest resource probe is not bound to the published engine socket")
+            return
+        }
+        guard let dockerDataDriveID else {
+            reply([:], "docker data-drive identity is unavailable")
+            return
+        }
+        do {
+            guard let snapshot = try dockerTier.guestResourceSnapshot() else {
+                reply([:], "docker guest resource snapshot is unavailable")
+                return
+            }
+            guard snapshot.selectedDataDriveID == dockerDataDriveID else {
+                reply([:], "docker guest filesystem is not bound to the selected data drive")
+                return
+            }
+            reply([
+                "schema": UInt16(1),
+                "engineSocketPath": socketPath,
+                // This ID comes from the host image authority that the guest UUID matched. The
+                // service-level value is only an equality constraint; it is never stamped onto an
+                // otherwise-unverified `df` response.
+                "dataDriveID": snapshot.selectedDataDriveID.uuidString.lowercased(),
+                "totalBytes": snapshot.dataDiskTotalBytes,
+                "usedBytes": snapshot.dataDiskUsedBytes,
+                "availableBytes": snapshot.dataDiskAvailableBytes,
+            ], "")
+        } catch {
+            reply([:], "docker guest resource probe failed: \(error)")
         }
     }
 
@@ -1615,15 +1978,33 @@ public final class DorydService: NSObject, DorydControl {
                 guard let dockerTier else { throw SubsystemRepairError.unavailable("docker tier is not configured") }
                 detail = try dockerTier.repairDockerDaemon()
             case "data-drive":
-                let store = try DoryDataDriveSelectionStore(home: home)
-                guard let drive = try store.inspectSelection() else {
-                    throw SubsystemRepairError.unavailable("no Dory data drive is selected")
+                guard let dockerTier else {
+                    throw SubsystemRepairError.unavailable("docker tier is not configured")
                 }
-                guard try drive.inspect() == .ready else {
-                    throw SubsystemRepairError.unavailable("selected data drive is not mounted at \(drive.root)")
+                guard socketPath == dockerTier.socketPath else {
+                    throw SubsystemRepairError.unavailable(
+                        "docker guest resource probe is not bound to the published engine socket"
+                    )
                 }
-                let manifest = try drive.readManifest()
-                detail = "revalidated selected drive \(manifest.id.uuidString.lowercased()) at \(drive.root); no data or selection was replaced"
+                guard let dockerDataDriveID else {
+                    throw SubsystemRepairError.unavailable(
+                        "docker data-drive identity is unavailable"
+                    )
+                }
+                guard let snapshot = try dockerTier.guestResourceSnapshot() else {
+                    throw SubsystemRepairError.unavailable(
+                        "docker tier is not running; the guest data mount cannot be proven"
+                    )
+                }
+                guard snapshot.selectedDataDriveID == dockerDataDriveID else {
+                    throw SubsystemRepairError.unavailable(
+                        "docker guest filesystem is not bound to the selected data drive"
+                    )
+                }
+                detail = "re-probed selected drive \(snapshot.selectedDataDriveID.uuidString.lowercased()); "
+                    + "guest /var/lib/docker is the exact \(snapshot.dataDiskFilesystemType) "
+                    + "\(snapshot.dataDiskMountSource) filesystem \(snapshot.dataDiskFilesystemUUID.uuidString.lowercased()) "
+                    + "at \(snapshot.dataDiskDeviceMajorMinor); no data or selection was replaced"
             case "corporate-connectivity":
                 guard let corporateConnectivity else {
                     throw SubsystemRepairError.unavailable("corporate connectivity is not configured")
@@ -1708,7 +2089,9 @@ public final class DorydService: NSObject, DorydControl {
                 guard let dockerTier else {
                     throw DockerTier.TierError.wakeFailed("docker tier is not configured")
                 }
-                try dockerTier.promoteToRunning()
+                try engineLifecycleOperationLock.withLock {
+                    try dockerTier.promoteToRunning()
+                }
             }
             let status = idleStatusSnapshot()
             incidentWriter?.record(type: "idle.mode", detail: appliedMode)
@@ -1838,15 +2221,23 @@ public final class DorydService: NSObject, DorydControl {
         let replyBox = EngineReply(reply)
         let incidentWriter = incidentWriter
         let corporateConnectivity = corporateConnectivity
+        let operationLock = engineLifecycleOperationLock
         Task.detached {
-            do {
-                try dockerTier.promoteToRunning()
+            let failure: String? = operationLock.withLock {
+                do {
+                    try dockerTier.promoteToRunning()
+                    return nil
+                } catch {
+                    return "\(error)"
+                }
+            }
+            if let failure {
+                incidentWriter?.record(type: "engine.\(event)_failed", detail: failure)
+                replyBox.reply(false, failure)
+            } else {
                 _ = corporateConnectivity?.reconcileCurrent(runProbes: false)
                 incidentWriter?.record(type: "engine.\(event)", detail: "docker tier running")
                 replyBox.reply(true, "")
-            } catch {
-                incidentWriter?.record(type: "engine.\(event)_failed", detail: "\(error)")
-                replyBox.reply(false, "\(error)")
             }
         }
     }

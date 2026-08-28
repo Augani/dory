@@ -88,6 +88,15 @@ public struct DoryFSGuestIdentityPolicy: Equatable, Sendable {
     }
 }
 
+/// Host-edit guarantees explicitly granted for one descriptor capability. Internal bootstrap/log
+/// mounts opt out; generic guests can request cache invalidation without claiming Linux watcher
+/// parity; only guests that prove the Dory event service receive watcher nudges.
+public enum DoryFSShareCoherencePolicy: UInt16, Equatable, Sendable {
+    case disabled = 0
+    case invalidationOnly = 1
+    case invalidationAndWatcherNudge = 2
+}
+
 /// Per-share ceilings enforced in addition to the workspace-wide worker limits. These values
 /// cover admission memory and every long-lived HostFS resource class, including descriptor
 /// headroom that must remain unavailable to guest work.
@@ -227,6 +236,7 @@ public struct DoryFSShareBootstrapAuthority: Equatable, Sendable {
     public let capabilityID: DoryFSShareCapabilityID
     public let expectedRootIdentity: DoryFSPinnedRootIdentity
     public let readOnly: Bool
+    public let coherencePolicy: DoryFSShareCoherencePolicy
     public let guestIdentity: DoryFSGuestIdentityPolicy
     public let resourceLimits: DoryFSShareResourceLimits
     public let rootDescriptorIndex: UInt16
@@ -237,6 +247,7 @@ public struct DoryFSShareBootstrapAuthority: Equatable, Sendable {
         capabilityID: DoryFSShareCapabilityID,
         expectedRootIdentity: DoryFSPinnedRootIdentity,
         readOnly: Bool,
+        coherencePolicy: DoryFSShareCoherencePolicy = .disabled,
         guestIdentity: DoryFSGuestIdentityPolicy,
         resourceLimits: DoryFSShareResourceLimits,
         rootDescriptorIndex: UInt16,
@@ -266,6 +277,7 @@ public struct DoryFSShareBootstrapAuthority: Equatable, Sendable {
         self.capabilityID = capabilityID
         self.expectedRootIdentity = expectedRootIdentity
         self.readOnly = readOnly
+        self.coherencePolicy = coherencePolicy
         self.guestIdentity = guestIdentity
         self.resourceLimits = resourceLimits
         self.rootDescriptorIndex = rootDescriptorIndex
@@ -426,12 +438,13 @@ public struct DoryFSWorkerBootstrapReceipt: Equatable, Sendable {
     }
 }
 
-/// Exact little-endian version-2 bootstrap and receipt codec. Version 2 replaces path/bookmark
-/// reopening with an index into the bounded FileHandle array transported by XPC. This remains
+/// Exact little-endian version-3 bootstrap and receipt codec. Version 3 makes each descriptor's
+/// host-edit guarantee explicit instead of silently treating every mount as watcher-capable.
+/// Descriptor-only authority introduced in version 2 remains unchanged. This remains
 /// intentionally independent
 /// of `Codable`, property lists, keyed archives, and Swift object layout.
 public enum DoryFSWorkerBootstrapCodec {
-    public static let version: UInt16 = 2
+    public static let version: UInt16 = 3
     public static let bootstrapHeaderByteCount = 88
     public static let shareRecordHeaderByteCount = 128
     public static let receiptByteCount = 40
@@ -690,7 +703,8 @@ public enum DoryFSWorkerBootstrapCodec {
     ) throws {
         let recordStart = writer.count
         writer.append(UInt32(0))
-        writer.append(UInt16(share.readOnly ? 1 : 0))
+        let flags = UInt16(share.readOnly ? 1 : 0) | (share.coherencePolicy.rawValue << 1)
+        writer.append(flags)
         writer.append(UInt16(0)) // reserved
         writer.append(share.capabilityID.rawValue)
         writer.append(share.expectedRootIdentity.device)
@@ -785,7 +799,9 @@ public enum DoryFSWorkerBootstrapCodec {
         reader.pushLimit(recordEnd)
         defer { reader.popLimit() }
         let flags = try reader.readUInt16(field: "share[\(index)].flags")
-        guard flags & ~UInt16(1) == 0 else {
+        guard flags & ~UInt16(0b111) == 0,
+              let coherencePolicy = DoryFSShareCoherencePolicy(rawValue: (flags >> 1) & 0b11)
+        else {
             throw DoryFSWorkerBootstrapError.invalidShareFlags(flags)
         }
         guard try reader.readUInt16(field: "share[\(index)].reserved") == 0 else {
@@ -859,6 +875,7 @@ public enum DoryFSWorkerBootstrapCodec {
             capabilityID: capability,
             expectedRootIdentity: root,
             readOnly: flags & 1 == 1,
+            coherencePolicy: coherencePolicy,
             guestIdentity: guest,
             resourceLimits: limits,
             rootDescriptorIndex: rootDescriptorIndex,

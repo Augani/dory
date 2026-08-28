@@ -7,8 +7,67 @@ import XPC
 /// The only Objective-C object exported by the filesystem worker. The adapter deliberately adds
 /// no object-model API of its own: every request and reply remains an exact bounded binary
 /// envelope validated independently by `DoryFSWorkerService`.
+private enum DoryFSWorkerReverseExchangeError: Error {
+    case unavailable
+    case timedOut
+}
+
+private final class DoryFSWorkerReverseExchange: @unchecked Sendable {
+    private final class ReplyState: @unchecked Sendable {
+        let condition = NSCondition()
+        var result: Result<Data, DoryFSWorkerReverseExchangeError>?
+
+        func resolve(_ value: Result<Data, DoryFSWorkerReverseExchangeError>) {
+            condition.withLock {
+                guard result == nil else { return }
+                result = value
+                condition.broadcast()
+            }
+        }
+    }
+
+    private let connection: NSXPCConnection
+
+    init(connection: NSXPCConnection) {
+        self.connection = connection
+    }
+
+    func exchange(_ exactFrame: Data) throws -> Data {
+        let state = ReplyState()
+        guard let sink = connection.remoteObjectProxyWithErrorHandler({ _ in
+            state.resolve(.failure(.unavailable))
+        }) as? DoryFSWorkerCoherenceSinkXPCProtocol else {
+            throw DoryFSWorkerReverseExchangeError.unavailable
+        }
+        sink.deliverCoherence(exactFrame) { reply in
+            state.resolve(.success(reply))
+        }
+        let result = state.condition.withLock {
+            let deadline = Date(timeIntervalSinceNow: 2)
+            while state.result == nil, state.condition.wait(until: deadline) {}
+            return state.result
+        }
+        guard let result else { throw DoryFSWorkerReverseExchangeError.timedOut }
+        return try result.get()
+    }
+}
+
 private final class DoryFSWorkerXPCAdapter: NSObject, DoryFSWorkerXPCProtocol {
-    private let service = DoryFSWorkerService()
+    private let service: DoryFSWorkerService
+
+    init(connection: NSXPCConnection) {
+        let reverseExchange = DoryFSWorkerReverseExchange(connection: connection)
+        service = DoryFSWorkerService(
+            coherenceExchange: { try reverseExchange.exchange($0) },
+            onCoherenceFailure: { error in
+                FileHandle.standardError.write(Data(
+                    "dory-fs-worker: host coherence failed: \(error)\n".utf8
+                ))
+                Darwin._exit(EXIT_FAILURE)
+            }
+        )
+        super.init()
+    }
 
     func bootstrap(
         _ request: Data,
@@ -28,6 +87,14 @@ private final class DoryFSWorkerXPCAdapter: NSObject, DoryFSWorkerXPCProtocol {
     func sendOneWay(_ frame: Data) {
         service.sendOneWay(exactFrame: frame)
     }
+
+    func coherenceStatus(withReply reply: @escaping (Data) -> Void) {
+        reply(service.coherenceStatusExactBytes())
+    }
+
+    func activateCoherence(withReply reply: @escaping (Data) -> Void) {
+        reply(service.activateCoherenceExactBytes())
+    }
 }
 
 /// Accepts one runner connection for the lifetime of this process. A disconnected worker exits
@@ -43,7 +110,7 @@ private final class DoryFSWorkerListenerDelegate:
         """
 
     private let admissionLock = NSLock()
-    private let adapter = DoryFSWorkerXPCAdapter()
+    private var adapter: DoryFSWorkerXPCAdapter?
     private var acceptedConnection = false
 
     func listener(
@@ -75,8 +142,11 @@ private final class DoryFSWorkerListenerDelegate:
         // fixed source literal; malformed dynamic requirement strings are intentionally impossible.
         connection.setCodeSigningRequirement(Self.runnerSigningRequirement)
 
+        let adapter = DoryFSWorkerXPCAdapter(connection: connection)
+        self.adapter = adapter
         connection.exportedInterface = DoryFSWorkerXPCInterface.make()
         connection.exportedObject = adapter
+        connection.remoteObjectInterface = DoryFSWorkerXPCInterface.makeCoherenceSink()
         connection.interruptionHandler = Self.terminateProcess
         connection.invalidationHandler = Self.terminateProcess
         connection.activate()

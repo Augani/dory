@@ -757,7 +757,7 @@ architecture and boots through EFI with VirtIO scanout, storage, networking, inp
 does not define a guest hardware-3D contract. Mesa's VirGL and Venus contracts add renderer,
 resource, host-visible-memory, and synchronization requirements that the VZ 2D baseline does not
 promise. Dory's current worker bootstrap is narrower still: it accepts only the managed
-`managedLinux61230PrepareFBV1` producer-complete fence contract. Therefore "distro-neutral" cannot
+`managedLinux612106PrepareFBV1` producer-complete fence contract. Therefore "distro-neutral" cannot
 mean silently claiming acceleration for every installer image. Dory installs native ARM64 media
 through VZ, but may select RawHV hardware 3D only for an authenticated managed kernel/guest tuple
 that satisfies the schema-3 dual VirGL2-plus-Venus contract. An arbitrary installed kernel does not

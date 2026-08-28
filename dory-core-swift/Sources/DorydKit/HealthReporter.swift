@@ -315,7 +315,7 @@ struct DoryResourceTrendSample: Sendable, Equatable {
     var openFileDescriptors: Int
     var threads: Int
     var physicalFootprintBytes: Int64
-    var watcherPending: Int
+    var fileServicePending: Int
 }
 
 struct DoryResourceTrendAssessment: Sendable, Equatable {
@@ -348,8 +348,8 @@ final class DoryResourceTrendTracker: @unchecked Sendable {
             if Self.rises(recent.map(\.threads), minimumDelta: 16) {
                 warnings.append("threads rose \(recent[0].threads)→\(recent[2].threads)")
             }
-            if Self.rises(recent.map(\.watcherPending), minimumDelta: 1_024) {
-                warnings.append("watcher backlog rose \(recent[0].watcherPending)→\(recent[2].watcherPending)")
+            if Self.rises(recent.map(\.fileServicePending), minimumDelta: 1_024) {
+                warnings.append("file-service backlog rose \(recent[0].fileServicePending)→\(recent[2].fileServicePending)")
             }
             if Self.rises(recent.map(\.physicalFootprintBytes), minimumDelta: 256 * 1_024 * 1_024) {
                 warnings.append("physical footprint rose \(recent[0].physicalFootprintBytes)→\(recent[2].physicalFootprintBytes) bytes")
@@ -675,7 +675,7 @@ public final class HealthReporter: @unchecked Sendable {
             managedHelperPID: dockerTier?.status().hvPID
         )
         let guestResources = try? dockerTier?.guestResourceSnapshot()
-        let hostShareResources = dockerTier?.hostShareResourceSnapshot(now: now)
+        let hostShareResources = dockerTier?.fileServiceResourceSnapshot(now: now)
         checks.append(memoryCheck(snapshot: processSnapshot))
         checks.append(processResourceCheck(snapshot: processSnapshot))
         checks.append(guestResourceCheck(snapshot: guestResources ?? nil))
@@ -1707,7 +1707,17 @@ public final class HealthReporter: @unchecked Sendable {
     }
 
     private func guestResourceCheck(snapshot: DoryGuestResourceSnapshot?) -> HealthCheck {
-        guard dockerTier?.status().state == .running else {
+        Self.guestResourceCheck(
+            snapshot: snapshot,
+            engineRunning: dockerTier?.status().state == .running
+        )
+    }
+
+    static func guestResourceCheck(
+        snapshot: DoryGuestResourceSnapshot?,
+        engineRunning: Bool
+    ) -> HealthCheck {
+        guard engineRunning else {
             return HealthCheck(
                 id: "resources.guest",
                 status: .skip,
@@ -1731,7 +1741,7 @@ public final class HealthReporter: @unchecked Sendable {
         let diskRatio = snapshot.dataDiskTotalBytes == 0 ? 0
             : Double(snapshot.dataDiskAvailableBytes) / Double(snapshot.dataDiskTotalBytes)
         let pressured = memoryRatio >= 0.9
-            && snapshot.memoryReclaimableBytes < snapshot.memoryCeilingBytes / 20
+            && snapshot.memoryAvailableBytes < snapshot.memoryCeilingBytes / 20
         let diskLow = snapshot.dataDiskTotalBytes > 0 && diskRatio < 0.1
         let status: HealthCheckStatus = pressured || diskLow ? .warn : .pass
         return HealthCheck(
@@ -1739,7 +1749,7 @@ public final class HealthReporter: @unchecked Sendable {
             status: status,
             code: pressured ? "resources.guest_memory_pressure" : (diskLow ? "resources.guest_disk_low" : "resources.guest_ok"),
             title: "Guest memory and disk",
-            detail: "memory used \(formatBytes(Int64(clamping: snapshot.memoryUsedBytes))), cache \(formatBytes(Int64(clamping: snapshot.memoryCacheBytes))), reclaimable \(formatBytes(Int64(clamping: snapshot.memoryReclaimableBytes))) of \(formatBytes(Int64(clamping: snapshot.memoryCeilingBytes))); data disk used \(formatBytes(Int64(clamping: snapshot.dataDiskUsedBytes))) of \(formatBytes(Int64(clamping: snapshot.dataDiskTotalBytes)))",
+            detail: "memory used \(formatBytes(Int64(clamping: snapshot.memoryUsedBytes))), cache \(formatBytes(Int64(clamping: snapshot.memoryCacheBytes))), available \(formatBytes(Int64(clamping: snapshot.memoryAvailableBytes))) of \(formatBytes(Int64(clamping: snapshot.memoryCeilingBytes))); data disk used \(formatBytes(Int64(clamping: snapshot.dataDiskUsedBytes))) of \(formatBytes(Int64(clamping: snapshot.dataDiskTotalBytes)))",
             action: pressured
                 ? "Inspect workload memory before changing the configured ceiling."
                 : (diskLow ? "Run `dory cleanup --json` to preview exact reclaimable objects before applying any prune." : nil),
@@ -1747,7 +1757,14 @@ public final class HealthReporter: @unchecked Sendable {
                 "memory_ceiling_bytes": String(snapshot.memoryCeilingBytes),
                 "memory_used_bytes": String(snapshot.memoryUsedBytes),
                 "memory_cache_bytes": String(snapshot.memoryCacheBytes),
-                "memory_reclaimable_bytes": String(snapshot.memoryReclaimableBytes),
+                "memory_available_bytes": String(snapshot.memoryAvailableBytes),
+                // Compatibility key: historically this meant MemAvailable - MemFree. Keep it
+                // derived from the authoritative kernel fields instead of maintaining two values.
+                "memory_reclaimable_bytes": String(
+                    snapshot.memoryAvailableBytes > snapshot.memoryFreeBytes
+                        ? snapshot.memoryAvailableBytes - snapshot.memoryFreeBytes
+                        : 0
+                ),
                 "memory_free_bytes": String(snapshot.memoryFreeBytes),
                 "data_disk_total_bytes": String(snapshot.dataDiskTotalBytes),
                 "data_disk_used_bytes": String(snapshot.dataDiskUsedBytes),
@@ -1756,14 +1773,24 @@ public final class HealthReporter: @unchecked Sendable {
         )
     }
 
-    private func hostShareResourceCheck(snapshot: DoryHostShareResourceSnapshot?) -> HealthCheck {
-        guard dockerTier?.status().state == .running else {
+    private func hostShareResourceCheck(snapshot: DoryFileServiceResourceSnapshot?) -> HealthCheck {
+        Self.fileServiceResourceCheck(
+            snapshot: snapshot,
+            engineRunning: dockerTier?.status().state == .running
+        )
+    }
+
+    static func fileServiceResourceCheck(
+        snapshot: DoryFileServiceResourceSnapshot?,
+        engineRunning: Bool
+    ) -> HealthCheck {
+        guard engineRunning else {
             return HealthCheck(
                 id: "resources.file_service",
                 status: .skip,
                 code: "resources.file_service_inactive",
                 title: "File-service resources",
-                detail: "The Docker engine is not running; watcher state is inactive."
+                detail: "The Docker engine is not running; file-service state is inactive."
             )
         }
         guard let snapshot else {
@@ -1772,45 +1799,58 @@ public final class HealthReporter: @unchecked Sendable {
                 status: .warn,
                 code: "resources.file_service_snapshot_unavailable",
                 title: "File-service resource snapshot unavailable",
-                detail: "The managed helper did not publish a fresh watcher/backpressure record.",
+                detail: "The managed helper did not publish a fresh bounded file-service record.",
                 action: "Refresh diagnostics; if mounts are also stale, collect a support bundle before repairing the failed layer."
             )
         }
-        let backlogHigh = snapshot.batcher.pendingCount >= max(1, snapshot.batcher.pendingLimit * 3 / 4)
-        let degraded = !snapshot.running
-            || snapshot.consecutiveFailures > 0
-            || snapshot.batcher.pendingRequiresRescan
-            || backlogHigh
-        let roots = snapshot.observationRoots.isEmpty
-            ? "none discovered yet"
-            : snapshot.observationRoots.joined(separator: ", ")
+        let backlogHigh = snapshot.pendingEventCount >= max(1, snapshot.pendingEventLimit * 3 / 4)
+        let failed = !snapshot.running
+            || snapshot.cacheMode != "zero-validity"
+            || snapshot.maximumCacheValiditySeconds != 0
+            || (snapshot.observationRequired && !snapshot.observationActive)
+            || snapshot.eventLossCount > 0
+            || snapshot.invalidationFailureLatched
+            || snapshot.terminalQueueFaultCount > 0
+            || snapshot.coherenceTerminalFailureLatched
+        let degraded = backlogHigh
+            || snapshot.failedBatchCount > 0
+            || snapshot.invalidationFailureCount > 0
+            || snapshot.coherenceFailedBatchCount > 0
         return HealthCheck(
             id: "resources.file_service",
-            status: degraded ? .warn : .pass,
-            code: degraded ? "resources.file_service_backpressure" : "resources.file_service_ok",
+            status: failed ? .fail : (degraded ? .warn : .pass),
+            code: failed
+                ? "resources.file_service_failed"
+                : (degraded ? "resources.file_service_backpressure" : "resources.file_service_ok"),
             title: "File-service resources",
-            detail: "\(snapshot.observationRoots.count) narrow watcher root(s); queue \(snapshot.batcher.pendingCount)/\(snapshot.batcher.pendingLimit), failed batches \(snapshot.batcher.failedBatchCount), rescan collapses \(snapshot.batcher.rescanCollapseCount)",
-            action: degraded
-                ? "Let the bounded queue drain; if the trend continues, collect a support bundle. Dory keeps zero-cache safety or requests a bounded VM recovery rather than serving stale files."
-                : nil,
+            detail: "zero-validity cache; \(snapshot.frontendCount) frontend(s)/\(snapshot.requestQueueCount) request queue(s); observation \(snapshot.observedRequiredShareCount)/\(snapshot.requiredObservationShareCount) required shares across \(snapshot.observationStreamCount) stream(s); event queue \(snapshot.pendingEventCount)/\(snapshot.pendingEventLimit); request failures \(snapshot.failedRequestCount), coherence failures \(snapshot.coherenceFailedBatchCount)",
+            action: failed
+                ? "The file-service coherence contract failed closed. Collect a support bundle and restart the affected managed VM; Dory will not serve stale shared files."
+                : (degraded
+                    ? "Let the bounded queue drain; if the trend continues, collect a support bundle. Dory keeps zero-cache safety or requests a bounded VM recovery rather than serving stale files."
+                    : nil),
             data: [
-                "configured_roots": snapshot.configuredRoots.joined(separator: ","),
-                "observation_roots": roots,
-                "pending_count": String(snapshot.batcher.pendingCount),
-                "pending_limit": String(snapshot.batcher.pendingLimit),
-                "pending_requires_rescan": snapshot.batcher.pendingRequiresRescan ? "true" : "false",
-                "received_events": String(snapshot.batcher.receivedEventCount),
-                "delivered_batches": String(snapshot.batcher.deliveredBatchCount),
-                "failed_batches": String(snapshot.batcher.failedBatchCount),
-                "rescan_collapses": String(snapshot.batcher.rescanCollapseCount),
-                "consecutive_failures": String(snapshot.consecutiveFailures),
+                "configured_shares": String(snapshot.configuredShareCount),
+                "invalidation_only_shares": String(snapshot.invalidationOnlyShareCount),
+                "watcher_nudge_shares": String(snapshot.watcherNudgeShareCount),
+                "observation_active": snapshot.observationActive ? "true" : "false",
+                "observation_streams": String(snapshot.observationStreamCount),
+                "pending_count": String(snapshot.pendingEventCount),
+                "pending_limit": String(snapshot.pendingEventLimit),
+                "received_events": String(snapshot.receivedEventCount),
+                "delivered_batches": String(snapshot.deliveredBatchCount),
+                "failed_batches": String(snapshot.failedBatchCount),
+                "event_losses": String(snapshot.eventLossCount),
+                "in_flight_requests": String(snapshot.inFlightRequestCount),
+                "request_payload_bytes": String(snapshot.requestPayloadBytes),
+                "response_payload_bytes": String(snapshot.guestPublishedResponseBytes),
             ]
         )
     }
 
     private func resourceTrendCheck(
         processSnapshot: DoryProcessMemorySnapshot,
-        hostShareSnapshot: DoryHostShareResourceSnapshot?,
+        hostShareSnapshot: DoryFileServiceResourceSnapshot?,
         now: Date
     ) -> HealthCheck {
         let assessment = resourceTrendTracker.record(DoryResourceTrendSample(
@@ -1818,7 +1858,7 @@ public final class HealthReporter: @unchecked Sendable {
             openFileDescriptors: processSnapshot.usages.compactMap(\.openFileDescriptorCount).reduce(0, +),
             threads: processSnapshot.usages.compactMap(\.threadCount).reduce(0, +),
             physicalFootprintBytes: saturatingSum(processSnapshot.usages.map(\.physicalFootprintBytes)),
-            watcherPending: hostShareSnapshot?.batcher.pendingCount ?? 0
+            fileServicePending: hostShareSnapshot?.pendingEventCount ?? 0
         ))
         guard assessment.sampleCount >= 3 else {
             return HealthCheck(

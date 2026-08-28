@@ -235,7 +235,7 @@ final class MigrationPreflightRuntime: ContainerRuntime {
         if useCurrentVolumeUsageShape {
             guard path == "/system/df?type=volume&verbose=1" else { return nil }
             return HTTPResponse(statusCode: 200, reason: "OK", headers: [:], body: Data(#"""
-            {"VolumeUsage":{"TotalSize":\#(reportedVolumeSize),"Items":[
+            {"VolumeUsage":{"ActiveCount":1,"TotalCount":1,"TotalSize":\#(reportedVolumeSize),"Items":[
               {"Name":"\#(reportedVolumeName)","UsageData":{"Size":\#(reportedVolumeSize),"RefCount":1}}
             ]}}
             """#.utf8))

@@ -4823,6 +4823,8 @@ final class MachineManagerTests: XCTestCase {
         let desktopHelper = base + "/dory-hv"
         let fallbackHelper = base + "/dory-vmm"
         let stateDirectory = base + "/machines"
+        let desktopCapturePartial = desktopCapture + ".partial"
+        let fallbackCapturePartial = fallbackCapture + ".partial"
         try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: base)
         try FileManager.default.createDirectory(
@@ -4833,12 +4835,12 @@ final class MachineManagerTests: XCTestCase {
             [.posixPermissions: 0o700],
             ofItemAtPath: stateDirectory
         )
-        try "#!/bin/sh\nprintf '%s\\n' \"$@\" > '\(desktopCapture)'\nsleep 30\n".write(
+        try "#!/bin/sh\nset -eu\nprintf '%s\\n' \"$@\" > '\(desktopCapturePartial)'\nmv '\(desktopCapturePartial)' '\(desktopCapture)'\nsleep 30\n".write(
             toFile: desktopHelper,
             atomically: true,
             encoding: .utf8
         )
-        try "#!/bin/sh\nprintf '%s\\n' \"$@\" > '\(fallbackCapture)'\nsleep 30\n".write(
+        try "#!/bin/sh\nset -eu\nprintf '%s\\n' \"$@\" > '\(fallbackCapturePartial)'\nmv '\(fallbackCapturePartial)' '\(fallbackCapture)'\nsleep 30\n".write(
             toFile: fallbackHelper,
             atomically: true,
             encoding: .utf8

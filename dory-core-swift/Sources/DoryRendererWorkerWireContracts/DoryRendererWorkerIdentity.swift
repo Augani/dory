@@ -209,13 +209,13 @@ public enum DoryRendererSourceTuple: UInt16, Sendable {
     /// insufficient once exact build policy, transitive sources, and compatibility patches are
     /// part of release identity.
     public static let productionDefinitionSHA256 =
-        "eb0a840980c4e1b843720de60bbf56f9fe9b89699fc23a675dc16704f191797a"
+        "6f537361d165cbe75b04e98ce56c6e878060119c2aca112fa88ceba936092bba"
 }
 
 /// Guest-side authority that makes RESOURCE_FLUSH producer-complete. Unknown kernels may not claim
 /// this proof merely because they negotiate the same virtio-gpu features.
 public enum DoryRendererProducerFenceContract: UInt16, Sendable {
-    case managedLinux61230PrepareFBV1 = 1
+    case managedLinux612106PrepareFBV1 = 1
 }
 
 public struct DoryRendererRequestedCapabilities: OptionSet, Sendable {

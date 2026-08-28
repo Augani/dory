@@ -22,7 +22,16 @@ extension StrictMigrationRuntime {
         guard method == "GET" else { return nil }
         if path == "/version" { return response(version) }
         if path == "/info" { return response(info) }
-        if path.hasPrefix("/system/df") { return response(systemDiskUsage) }
+        if path.hasPrefix("/system/df") {
+            systemDiskUsageRequestCount += 1
+            guard let response = response(systemDiskUsage) else { return nil }
+            return HTTPResponse(
+                statusCode: systemDiskUsageStatusCode,
+                reason: systemDiskUsageReason,
+                headers: response.headers,
+                body: response.body
+            )
+        }
         if path.hasPrefix("/containers/"), path.hasSuffix("/json") {
             let id = String(path.dropFirst("/containers/".count).dropLast("/json".count))
             return response(containerInspections[id])

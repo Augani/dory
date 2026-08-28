@@ -1,6 +1,7 @@
 import AppKit
 import Darwin
 import DoryCore
+import DoryFSWorkerContracts
 import DoryHV
 import DoryOperations
 import DoryVMContracts
@@ -864,12 +865,15 @@ enum DesktopGPUShutdownBoundary {
 /// published. Generic media must prove graphics first because it has no Dory-owned boot barrier;
 /// managed images must release their display-manager barrier first so a renderer-backed frame can
 /// exist. Any failure escapes before `publish`, preserving the fail-closed handoff contract.
+/// Optional host capabilities activate only after publication so a permission prompt or missing
+/// device cannot keep an otherwise healthy desktop out of the running state.
 enum DesktopGuestReadinessBoundary {
     static func complete<Prepared>(
         genericGuest: Bool,
         prepare: () throws -> Prepared,
         waitForSynchronizedPresentation: () throws -> Void,
-        publish: (Prepared) async throws -> Void
+        publish: (Prepared) async throws -> Void,
+        activateOptionalCapabilities: (Prepared) async -> Void = { _ in }
     ) async rethrows {
         let prepared: Prepared
         if genericGuest {
@@ -880,6 +884,7 @@ enum DesktopGuestReadinessBoundary {
             try waitForSynchronizedPresentation()
         }
         try await publish(prepared)
+        await activateOptionalCapabilities(prepared)
     }
 }
 
@@ -1240,6 +1245,7 @@ enum DesktopMode {
         private let lifecycleReceiptServer: VmmLifecycleReceiptServer
         private let graphicsSelection: DoryRuntimeGraphicsSelection?
         private var filesystemWorker: DoryFilesystemWorkerLaunch?
+        private var hostShareCoherence: DoryHostShareCoherenceBridge?
         private var signalSources = [DispatchSourceSignal]()
         private var stopError: Error?
         private var stopping = false
@@ -1652,9 +1658,22 @@ enum DesktopMode {
                         guestMountPoint: share.guestPath
                     )
                 }
+                try VirtioFSShareConfiguration.validateWritableTopology(rawShares)
+                let coherencePolicyByTag = Dictionary(uniqueKeysWithValues: rawShares.map {
+                    share in
+                    (
+                        share.tag,
+                        share.readOnly || configuration.genericGuest
+                            ? DoryFSShareCoherencePolicy.invalidationOnly
+                            : .invalidationAndWatcherNudge
+                    )
+                })
                 let filesystemWorker = rawShares.isEmpty
                     ? nil
-                    : try DoryFilesystemWorkerLauncher.startBlocking(shares: rawShares)
+                    : try DoryFilesystemWorkerLauncher.startBlocking(
+                        shares: rawShares,
+                        coherencePolicyByTag: coherencePolicyByTag
+                    )
                 self.filesystemWorker = filesystemWorker
                 if let filesystemWorker {
                     initializationRollback.register {
@@ -1663,6 +1682,7 @@ enum DesktopMode {
                 }
                 var shareBackends = [(share: DoryMachineShareConfiguration,
                                       backend: any VirtioDeviceBackend)]()
+                var coherenceEndpoints = [DoryHostShareCoherenceEndpoint]()
                 for (share, rawShare) in zip(attachedShares, rawShares) {
                     guard let filesystemWorker else {
                         throw VMError.invalidConfiguration(
@@ -1681,6 +1701,35 @@ enum DesktopMode {
                     )
                     backends.append(backend)
                     shareBackends.append((share, backend))
+                    coherenceEndpoints.append(try DoryHostShareCoherenceEndpoint(
+                        capabilityID: filesystemWorker.capability(for: rawShare),
+                        backend: backend,
+                        guestRoot: share.guestPath,
+                        policy: coherencePolicyByTag[share.tag] ?? .disabled
+                    ))
+                }
+                if let filesystemWorker {
+                    let hostShareCoherence = DoryHostShareCoherenceBridge(
+                        endpoints: coherenceEndpoints,
+                        guestEvents: GuestFSEventBridge(vsock: vsock)
+                    ) { [weak machine] reason in
+                        Self.log("dory-hv desktop: \(reason)")
+                        machine?.requestStop(.crash(reason))
+                    }
+                    guard filesystemWorker.installCoherenceHandler({ batch in
+                        try await hostShareCoherence.process(batch)
+                    }) else {
+                        throw VMError.invalidConfiguration(
+                            "desktop filesystem coherence handler was already installed"
+                        )
+                    }
+                    filesystemWorker.installLifecycleHandler { [weak hostShareCoherence] event in
+                        hostShareCoherence?.failStop(
+                            "filesystem worker coherence channel \(event)"
+                        )
+                    }
+                    try filesystemWorker.client.activateCoherence()
+                    self.hostShareCoherence = hostShareCoherence
                 }
                 if let network = networkRuntime.backend {
                     backends.append(network)
@@ -2188,7 +2237,6 @@ enum DesktopMode {
                             publish: { integration in
                                 switch integration {
                                 case let .tools(info, shareState):
-                                    let cameraResult = await cameraAttachment?.attachIfAvailable()
                                     DesktopAppRunLoop.perform { [weak self] in
                                         self?.clipboard?.markGuestReady()
                                     }
@@ -2209,12 +2257,9 @@ enum DesktopMode {
                                             controlSocketPath: configuration.controlSocketPath,
                                             graphicsSelection: self?.graphicsSelection,
                                             detail: "raw-HV generic Linux running with \(graphicsDisplayName) graphics and Dory Tools protocol \(info.protocolVersion)\(shareState.detailSuffix)"
-                                                + (cameraResult?.detailSuffix ?? "")
                                         )
                                     )
                                 case .unavailable:
-                                    let cameraResult = cameraAttachment?
-                                        .unavailableWithoutGuestTools()
                                     let shareState = GenericGuestShareReadiness
                                         .unavailableMissingTools(
                                             configuration.attachedShares.map(\.tag)
@@ -2232,9 +2277,16 @@ enum DesktopMode {
                                             controlSocketPath: configuration.controlSocketPath,
                                             graphicsSelection: self?.graphicsSelection,
                                             detail: "raw-HV generic Linux running with \(graphicsDisplayName) graphics; guest tools are not installed\(shareState.detailSuffix)"
-                                                + (cameraResult?.detailSuffix ?? "")
                                         )
                                     )
+                                }
+                            },
+                            activateOptionalCapabilities: { integration in
+                                switch integration {
+                                case .tools:
+                                    _ = await cameraAttachment?.attachIfAvailable()
+                                case .unavailable:
+                                    _ = cameraAttachment?.unavailableWithoutGuestTools()
                                 }
                             }
                         )
@@ -2259,7 +2311,6 @@ enum DesktopMode {
                             }
                         },
                         publish: { info in
-                            let cameraResult = await cameraAttachment?.attachIfAvailable()
                             DesktopAppRunLoop.perform { [weak self] in
                                 self?.clipboard?.markGuestReady()
                             }
@@ -2280,9 +2331,11 @@ enum DesktopMode {
                                     controlSocketPath: configuration.controlSocketPath,
                                     graphicsSelection: self?.graphicsSelection,
                                     detail: "raw-HV desktop running with \(graphicsDisplayName) graphics; dory-agent answered protocol \(info.protocolVersion)"
-                                        + (cameraResult?.detailSuffix ?? "")
                                 )
                             )
+                        },
+                        activateOptionalCapabilities: { _ in
+                            _ = await cameraAttachment?.attachIfAvailable()
                         }
                     )
                 } catch {
@@ -2494,6 +2547,7 @@ enum DesktopMode {
             }
             filesystemWorker?.client.invalidate()
             filesystemWorker = nil
+            hostShareCoherence = nil
             lifecycleReceiptServer.stop()
             #if arch(arm64)
             serialConsoleInput.stop()

@@ -216,6 +216,289 @@ final class HvProcessTests: XCTestCase {
         XCTAssertNil(process.pid)
     }
 
+    func testBlockedPublishedLaunchQueuesOneBoundedStopAndReapsExactGeneration() throws {
+        let launchPublished = DispatchSemaphore(value: 0)
+        let releaseLaunch = DispatchSemaphore(value: 0)
+        let startFinished = DispatchSemaphore(value: 0)
+        let launchedPID = LockedHvPIDBox()
+        let startError = LockedHvErrorBox()
+        let process = HvProcess(configuration: HvProcessConfiguration(
+            executablePath: "/bin/sleep",
+            arguments: ["30"]
+        ))
+        process.installPostPublicationLifecycleGateForTesting { pid in
+            launchedPID.set(pid)
+            launchPublished.signal()
+            releaseLaunch.wait()
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                try process.start()
+            } catch {
+                startError.set(error)
+            }
+            startFinished.signal()
+        }
+        XCTAssertEqual(launchPublished.wait(timeout: .now() + 1), .success)
+
+        let stopStartedAt = ProcessInfo.processInfo.systemUptime
+        XCTAssertFalse(process.stopForTesting(timeout: 0.015, forcedTimeout: 0.015))
+        XCTAssertLessThan(
+            ProcessInfo.processInfo.systemUptime - stopStartedAt,
+            0.15,
+            "a blocked launch mutex must not escape the caller's complete stop budget"
+        )
+
+        let observationStartedAt = ProcessInfo.processInfo.systemUptime
+        XCTAssertNil(process.lifecycleObservation(until: .now() + 0.02))
+        XCTAssertLessThan(
+            ProcessInfo.processInfo.systemUptime - observationStartedAt,
+            0.1,
+            "status observation must return unknown instead of waiting behind launch"
+        )
+
+        releaseLaunch.signal()
+        XCTAssertEqual(startFinished.wait(timeout: .now() + 2), .success)
+        XCTAssertTrue(
+            startError.value.map { "\($0)".contains("start was cancelled") } ?? false,
+            "\(String(describing: startError.value))"
+        )
+        XCTAssertTrue(process.waitForTermination(timeout: 2))
+        XCTAssertEqual(
+            process.lifecycleObservation(until: .now() + 0.1),
+            DockerManagedProcessObservation(pid: nil, isRunning: false)
+        )
+
+        let pid = try XCTUnwrap(launchedPID.value)
+        errno = 0
+        XCTAssertEqual(kill(pid, 0), -1)
+        XCTAssertEqual(errno, ESRCH, "the exact late-spawned generation must be reaped")
+    }
+
+    func testDeferredStopCoordinatorCoalescesAndJoinsOneOperation() {
+        let coordinator = DoryDeferredProcessStopCoordinator(
+            label: "dev.dory.tests.deferred-stop"
+        )
+        let operationEntered = DispatchSemaphore(value: 0)
+        let releaseOperation = DispatchSemaphore(value: 0)
+
+        XCTAssertTrue(coordinator.schedule(
+            signal: SIGTERM,
+            gracefulTimeout: 0.01,
+            forcedTimeout: 0.01
+        ) { signal, graceful, forced in
+            XCTAssertEqual(signal, SIGTERM)
+            XCTAssertEqual(graceful, 0.01)
+            XCTAssertEqual(forced, 0.01)
+            operationEntered.signal()
+            releaseOperation.wait()
+        })
+        XCTAssertEqual(operationEntered.wait(timeout: .now() + 1), .success)
+        XCTAssertFalse(coordinator.schedule(
+            signal: SIGKILL,
+            gracefulTimeout: 1,
+            forcedTimeout: 1
+        ) { _, _, _ in
+            XCTFail("a second deferred signal operation must not be queued")
+        })
+        XCTAssertFalse(coordinator.wait(until: .now() + 0.02))
+
+        releaseOperation.signal()
+        XCTAssertTrue(coordinator.wait(until: .now() + 1))
+        XCTAssertFalse(coordinator.isPending)
+    }
+
+    func testTerminationEscalationReturnsAfterBothBoundedWaitsExpire() {
+        let waiter = DispatchGroup()
+        waiter.enter()
+        defer { waiter.leave() }
+        var forced = false
+
+        let started = Date()
+        let terminated = HvProcess.waitForTermination(
+            waiter: waiter,
+            gracefulTimeout: 0.01,
+            forcedTimeout: 0.01,
+            sendForcedTermination: { forced = true }
+        )
+
+        XCTAssertFalse(terminated)
+        XCTAssertTrue(forced)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 0.25)
+    }
+
+    func testAbsoluteStopBudgetBeginsBeforeLifecycleMutexAcquisition() {
+        let lifecycleMutex = DoryProcessLifecycleMutex()
+        lifecycleMutex.lock()
+        let deadline = DoryProcessStopDeadline(
+            gracefulTimeout: 0.04,
+            forcedTimeout: 0.08
+        )
+        let waiter = DispatchGroup()
+        waiter.enter()
+        defer { waiter.leave() }
+        let mutexRelease = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.07) {
+            lifecycleMutex.unlock()
+            mutexRelease.signal()
+        }
+
+        let startedAt = ProcessInfo.processInfo.systemUptime
+        XCTAssertTrue(lifecycleMutex.lock(until: deadline.final))
+        lifecycleMutex.unlock()
+        var forced = false
+        let terminated = HvProcess.waitForTermination(
+            waiter: waiter,
+            deadline: deadline,
+            sendForcedTermination: { forced = true }
+        )
+        let elapsed = ProcessInfo.processInfo.systemUptime - startedAt
+
+        XCTAssertFalse(terminated)
+        XCTAssertTrue(forced)
+        XCTAssertEqual(mutexRelease.wait(timeout: .now() + 0.1), .success)
+        // The 80 ms forced phase ends 120 ms after API entry, not 80 ms after the mutex clears.
+        XCTAssertGreaterThanOrEqual(elapsed, 0.09)
+        XCTAssertLessThan(elapsed, 0.19)
+    }
+
+    func testLifecycleMutexAcquisitionCannotOutliveFinalStopDeadline() {
+        let lifecycleMutex = DoryProcessLifecycleMutex()
+        lifecycleMutex.lock()
+        defer { lifecycleMutex.unlock() }
+        let deadline = DoryProcessStopDeadline(
+            gracefulTimeout: 0.01,
+            forcedTimeout: 0.02
+        )
+
+        let startedAt = ProcessInfo.processInfo.systemUptime
+        XCTAssertFalse(lifecycleMutex.lock(until: deadline.final))
+        let elapsed = ProcessInfo.processInfo.systemUptime - startedAt
+
+        XCTAssertGreaterThanOrEqual(elapsed, 0.02)
+        XCTAssertLessThan(elapsed, 0.12)
+    }
+
+    func testExpiredAbsoluteStopBudgetCannotRestartAtEscalationPhase() {
+        let waiter = DispatchGroup()
+        waiter.enter()
+        defer { waiter.leave() }
+        let now = DispatchTime.now().uptimeNanoseconds
+        let startedAt = DispatchTime(
+            uptimeNanoseconds: now > 2_000_000_000 ? now - 2_000_000_000 : 0
+        )
+        let expiredDeadline = DoryProcessStopDeadline(
+            gracefulTimeout: 0.25,
+            forcedTimeout: 0.25,
+            startedAt: startedAt
+        )
+        var forced = false
+
+        let beganWaiting = ProcessInfo.processInfo.systemUptime
+        let terminated = HvProcess.waitForTermination(
+            waiter: waiter,
+            deadline: expiredDeadline,
+            sendForcedTermination: { forced = true }
+        )
+
+        XCTAssertFalse(terminated)
+        XCTAssertTrue(forced)
+        XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - beganWaiting, 0.05)
+    }
+
+    func testNonFiniteStopDurationsAreConvertedToFiniteBudgets() {
+        let startedAt = DispatchTime(uptimeNanoseconds: 1_000)
+        let deadline = DoryProcessStopDeadline(
+            gracefulTimeout: .infinity,
+            forcedTimeout: .nan,
+            startedAt: startedAt
+        )
+
+        XCTAssertEqual(deadline.graceful.uptimeNanoseconds, 5_000_001_000)
+        XCTAssertEqual(deadline.final.uptimeNanoseconds, 7_000_001_000)
+    }
+
+    func testDirectChildSignalBoundsRepeatedEINTR() {
+        var attempts = 0
+
+        let error = HvProcess.signalErrorWithBoundedRetries {
+            attempts += 1
+            return (false, EINTR)
+        }
+
+        XCTAssertEqual(error, EINTR)
+        XCTAssertEqual(attempts, 8)
+    }
+
+    func testDirectChildSignalRetriesEINTRBeforeSuccess() {
+        var attempts = 0
+
+        let error = HvProcess.signalErrorWithBoundedRetries {
+            attempts += 1
+            return attempts == 1 ? (false, EINTR) : (true, 0)
+        }
+
+        XCTAssertNil(error)
+        XCTAssertEqual(attempts, 2)
+    }
+
+    func testUnpublishedChildObservationBoundsRepeatedEINTR() {
+        var attempts = 0
+
+        let observation = HvProcess.observeUnpublishedChild(pid: 42) {
+            attempts += 1
+            return (-1, EINTR)
+        }
+
+        XCTAssertEqual(observation, .failed(EINTR))
+        XCTAssertEqual(attempts, HvProcess.maximumInterruptedWaitAttempts)
+    }
+
+    func testUnpublishedChildNonterminalWaitHonorsHardDeadline() {
+        var observations = 0
+        var clock: UInt64 = 1_000
+
+        let reaped = HvProcess.waitForUnpublishedChildTermination(
+            pid: 42,
+            timeout: 0.01,
+            pollInterval: 0.001,
+            monotonicNow: {
+                defer { clock += 20_000_000 }
+                return clock
+            },
+            pause: { _ in },
+            wait: { _ in
+                observations += 1
+                return .running
+            }
+        )
+
+        XCTAssertFalse(reaped)
+        XCTAssertEqual(observations, 1)
+    }
+
+    func testDirectChildWaitRetainsAuthorityAcrossFailureAndNonterminalObservation() {
+        var observations = [
+            (result: Int32(-1), error: Int32(EIO), code: Int32(0)),
+            (result: Int32(0), error: Int32(0), code: Int32(CLD_STOPPED)),
+            (result: Int32(0), error: Int32(0), code: Int32(CLD_EXITED)),
+        ]
+        var consumedNonterminal = 0
+        var pauses = 0
+
+        let terminal = HvProcess.waitForDirectChildTerminalObservation(
+            waitidOperation: { observations.removeFirst() },
+            consumeNonterminalObservation: { consumedNonterminal += 1 },
+            pause: { _ in pauses += 1 }
+        )
+
+        XCTAssertEqual(terminal, .exited)
+        XCTAssertEqual(consumedNonterminal, 1)
+        XCTAssertEqual(pauses, 2)
+        XCTAssertTrue(observations.isEmpty)
+    }
+
     func testLegacyLaunchDoesNotInvokeSuspendedCodeValidator() throws {
         let validator = RecordingSuspendedChildCodeValidator(decisions: [.reject])
         let process = HvProcess(
@@ -361,6 +644,40 @@ private final class LockedTermination: @unchecked Sendable {
     }
 }
 
+private final class LockedHvPIDBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: Int32?
+
+    var value: Int32? {
+        lock.lock()
+        defer { lock.unlock() }
+        return stored
+    }
+
+    func set(_ value: Int32) {
+        lock.lock()
+        stored = value
+        lock.unlock()
+    }
+}
+
+private final class LockedHvErrorBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: Error?
+
+    var value: Error? {
+        lock.lock()
+        defer { lock.unlock() }
+        return stored
+    }
+
+    func set(_ error: Error) {
+        lock.lock()
+        stored = error
+        lock.unlock()
+    }
+}
+
 private enum SuspendedChildValidationDecision {
     case accept
     case reject
@@ -377,7 +694,7 @@ private enum FixtureSuspendedChildValidationError: Error {
 }
 
 private final class RecordingSuspendedChildCodeValidator:
-    DorySuspendedChildCodeValidating,
+    DoryLaunchGatedChildCodeValidating,
     @unchecked Sendable
 {
     private let lock = NSLock()
@@ -402,7 +719,7 @@ private final class RecordingSuspendedChildCodeValidator:
         return storedObservations
     }
 
-    func validateSuspendedChild(
+    func validateLaunchGatedChild(
         pid: pid_t,
         expectedIdentity: DoryLiveRunnerCodeIdentity
     ) throws {

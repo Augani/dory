@@ -29,7 +29,132 @@ public struct VmmDockerProcessConfiguration: Sendable {
     }
 }
 
+/// Retains the kernel identity of one direct child until terminal observation and reap complete.
+/// `waitid(WNOWAIT)` prevents PID reuse before `markTerminationObserved`, while the lifecycle
+/// mutex serializes that observation with every signal decision.
+final class VmmSupervisedChild: @unchecked Sendable {
+    typealias SignalOperation = @Sendable (pid_t, Int32) -> Bool
+
+    let pid: pid_t
+    let terminationWaiter = DispatchGroup()
+    private let lifecycleLock = DoryProcessLifecycleMutex()
+    private let signalOperation: SignalOperation
+    private var terminationObserved = false
+
+    init(
+        pid: pid_t,
+        signalOperation: @escaping SignalOperation = VmmSupervisedChild.sendSystemSignal
+    ) {
+        self.pid = pid
+        self.signalOperation = signalOperation
+        terminationWaiter.enter()
+    }
+
+    var isTerminationObserved: Bool {
+        lifecycleLock.lock()
+        defer { lifecycleLock.unlock() }
+        return terminationObserved
+    }
+
+    @discardableResult
+    func send(_ signal: Int32) -> Bool {
+        lifecycleLock.lock()
+        defer { lifecycleLock.unlock() }
+        guard !terminationObserved else { return false }
+        return signalOperation(pid, signal)
+    }
+
+    /// Internal for deterministic authority tests; production calls it only after waitid has
+    /// proven terminal state while the direct-child PID remains reserved as an unreaped zombie.
+    func markTerminationObserved() {
+        lifecycleLock.lock()
+        terminationObserved = true
+        lifecycleLock.unlock()
+    }
+
+    func beginMonitoring(
+        onTermination: @escaping @Sendable (HvProcessTermination) -> Void
+    ) {
+        DispatchQueue.global(qos: .utility).async { [self] in
+            let termination = Self.waitForTermination(pid: pid) {
+                markTerminationObserved()
+            }
+            onTermination(termination)
+            terminationWaiter.leave()
+        }
+    }
+
+    private static func waitForTermination(
+        pid: pid_t,
+        markTerminationObserved: () -> Void
+    ) -> HvProcessTermination {
+        var terminalInfo = siginfo_t()
+        let observation = HvProcess.waitForDirectChildTerminalObservation(
+            waitidOperation: {
+                let result = waitid(P_PID, id_t(pid), &terminalInfo, WEXITED | WNOWAIT)
+                return (result, result < 0 ? errno : 0, terminalInfo.si_code)
+            },
+            consumeNonterminalObservation: {
+                var stateChange: Int32 = 0
+                for attempt in 1...HvProcess.maximumInterruptedWaitAttempts {
+                    let result = waitpid(pid, &stateChange, WUNTRACED | WCONTINUED)
+                    if result >= 0 { return }
+                    if errno != EINTR || attempt == HvProcess.maximumInterruptedWaitAttempts {
+                        return
+                    }
+                }
+            }
+        )
+        markTerminationObserved()
+        guard observation == .exited else {
+            return HvProcessTermination(
+                status: ECHILD,
+                wasUncaughtSignal: false,
+                statusIsKnown: false
+            )
+        }
+
+        var rawStatus: Int32 = 0
+        while true {
+            let result = waitpid(pid, &rawStatus, 0)
+            if result == pid {
+                let signal = rawStatus & 0x7f
+                if signal == 0 {
+                    return HvProcessTermination(
+                        status: (rawStatus >> 8) & 0xff,
+                        wasUncaughtSignal: false
+                    )
+                }
+                return HvProcessTermination(status: signal, wasUncaughtSignal: true)
+            }
+            if result < 0, errno == ECHILD {
+                return HvProcessTermination(
+                    status: ECHILD,
+                    wasUncaughtSignal: false,
+                    statusIsKnown: false
+                )
+            }
+            // Terminal state is already published to the exact target, so signals fail closed.
+            // Keep retrying the reap off-request without spinning if Darwin reports a transient
+            // non-EINTR failure.
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+    }
+
+    private static func sendSystemSignal(_ pid: pid_t, _ signal: Int32) -> Bool {
+        for attempt in 1...HvProcess.maximumInterruptedWaitAttempts {
+            if kill(pid, signal) == 0 { return true }
+            if errno != EINTR || attempt == HvProcess.maximumInterruptedWaitAttempts {
+                return false
+            }
+        }
+        return false
+    }
+}
+
 public final class VmmDockerProcess: @unchecked Sendable {
+    static let forcedTerminationGraceSeconds: TimeInterval = 2
+
     public enum ProcessError: Error, CustomStringConvertible {
         case alreadyRunning
         case executableMissing(String)
@@ -55,8 +180,11 @@ public final class VmmDockerProcess: @unchecked Sendable {
 
     private let configuration: VmmDockerProcessConfiguration
     private let unexpectedTerminationHandler: HvProcessUnexpectedTerminationHandler?
-    private let lock = NSLock()
-    private var process: Process?
+    private let lock = DoryProcessLifecycleMutex()
+    private let deferredStop = DoryDeferredProcessStopCoordinator(
+        label: "dev.dory.vmm-docker-process.deferred-stop"
+    )
+    private var process: VmmSupervisedChild?
     private var handoffServer: VmmHandoffServer?
     private var handoffWaiter: DispatchSemaphore?
     private var logHandle: FileHandle?
@@ -65,6 +193,7 @@ public final class VmmDockerProcess: @unchecked Sendable {
     private var stopping = false
     private var hasStarted = false
     private var lastReady: VmmReadyMessage?
+    private var postPublicationLifecycleGateForTesting: (@Sendable (Int32) -> Void)?
 
     public init(
         configuration: VmmDockerProcessConfiguration,
@@ -77,14 +206,27 @@ public final class VmmDockerProcess: @unchecked Sendable {
     public var pid: Int32? {
         lock.lock()
         defer { lock.unlock() }
-        guard let process, process.isRunning else { return nil }
-        return process.processIdentifier
+        return process?.pid
     }
 
     public var isRunning: Bool {
         lock.lock()
         defer { lock.unlock() }
-        return process?.isRunning == true
+        // Retain/publish the generation until its exact direct child is reaped and the termination
+        // callback has cleared it. A zombie in the narrow callback window is still owned authority.
+        return process != nil || starting || deferredStop.isPending
+    }
+
+    func lifecycleObservation(
+        until deadline: DispatchTime
+    ) -> DockerManagedProcessObservation? {
+        guard lock.lock(until: deadline) else { return nil }
+        let observation = DockerManagedProcessObservation(
+            pid: process?.pid,
+            isRunning: process != nil || starting || deferredStop.isPending
+        )
+        lock.unlock()
+        return observation
     }
 
     public var readyMessage: VmmReadyMessage? {
@@ -93,11 +235,22 @@ public final class VmmDockerProcess: @unchecked Sendable {
         return lastReady
     }
 
+    /// Internal deterministic race seam. The callback runs with the lifecycle reservation held
+    /// after the exact child is published and before startup waits for handoff.
+    func installPostPublicationLifecycleGateForTesting(
+        _ gate: @escaping @Sendable (Int32) -> Void
+    ) {
+        lock.lock()
+        precondition(!hasStarted && process == nil)
+        postPublicationLifecycleGateForTesting = gate
+        lock.unlock()
+    }
+
     public func start() throws {
         lock.lock()
         // Hold the reservation under the lock across check + spawn so two concurrent starts
         // can't both bind the handoff socket and double-launch the helper.
-        if process?.isRunning == true || starting {
+        if process != nil || starting {
             lock.unlock()
             throw ProcessError.alreadyRunning
         }
@@ -105,6 +258,10 @@ public final class VmmDockerProcess: @unchecked Sendable {
         // the VMM spawn after DockerTier.stop() had already completed, recreating the launchd
         // orphan window this class is responsible for closing.
         if stopping, !hasStarted {
+            lock.unlock()
+            throw ProcessError.startCancelled
+        }
+        if deferredStop.isPending {
             lock.unlock()
             throw ProcessError.startCancelled
         }
@@ -122,10 +279,9 @@ public final class VmmDockerProcess: @unchecked Sendable {
             throw error
         }
         lock.lock()
-        guard !stopping, process?.isRunning == true else {
+        guard !stopping, !deferredStop.isPending, process != nil else {
             starting = false
             lock.unlock()
-            stop(signal: SIGTERM, timeout: 5)
             throw ProcessError.startCancelled
         }
         starting = false
@@ -137,6 +293,11 @@ public final class VmmDockerProcess: @unchecked Sendable {
             throw ProcessError.executableMissing(configuration.executablePath)
         }
         try FileManager.default.createDirectory(atPath: configuration.stateDirectory, withIntermediateDirectories: true)
+        let standardInput = open("/dev/null", O_RDONLY | O_CLOEXEC)
+        guard standardInput >= 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        defer { Darwin.close(standardInput) }
 
         let semaphore = DispatchSemaphore(value: 0)
         let result = LockedResultBox<VmmHandoff>()
@@ -156,19 +317,12 @@ public final class VmmDockerProcess: @unchecked Sendable {
         handoffWaiter = semaphore
         lock.unlock()
 
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: configuration.executablePath)
-        task.arguments = configuration.arguments
         let log = Self.openAppendLog(configuration.logPath)
-        task.standardOutput = log ?? FileHandle.standardError
-        task.standardError = log ?? FileHandle.standardError
-        task.terminationHandler = { [weak self] task in
-            self?.handleTermination(task)
-        }
+        let outputDescriptor = log?.fileDescriptor ?? FileHandle.standardError.fileDescriptor
 
-        // Keep the process assignment atomic with run() relative to the termination callback. A
-        // helper that exits immediately must not leave a dead Process installed after its callback
-        // already observed `process == nil`.
+        // Spawn and publish under one lifecycle reservation. The retained direct-child target owns
+        // waitid(WNOWAIT) reaping, so Foundation cannot reap the PID between an isRunning probe and
+        // a suspend/resume/termination signal.
         lock.lock()
         guard starting, !stopping else {
             if handoffServer === server {
@@ -183,22 +337,37 @@ public final class VmmDockerProcess: @unchecked Sendable {
             throw ProcessError.startCancelled
         }
         logHandle = log
+        let childPID: pid_t
         do {
-            try task.run()
+            childPID = try InheritedDescriptorSpawner.spawn(
+                executablePath: configuration.executablePath,
+                arguments: configuration.arguments,
+                descriptorMappings: [],
+                standardInputDescriptor: standardInput,
+                standardOutputDescriptor: outputDescriptor,
+                standardErrorDescriptor: outputDescriptor
+            )
         } catch {
+            if handoffServer === server {
+                handoffServer = nil
+            }
+            if handoffWaiter === semaphore {
+                handoffWaiter = nil
+            }
+            logHandle = nil
             lock.unlock()
             server.stop()
             try? log?.close()
-            lock.lock()
-            handoffServer = nil
-            handoffWaiter = nil
-            logHandle = nil
-            lock.unlock()
             throw error
         }
-        process = task
+        let child = VmmSupervisedChild(pid: childPID)
+        process = child
         suspended = false
+        postPublicationLifecycleGateForTesting?(child.pid)
         lock.unlock()
+        child.beginMonitoring { [weak self, child] termination in
+            self?.handleTermination(child, termination: termination)
+        }
 
         let timeoutMilliseconds = Int(configuration.readyTimeoutSeconds * 1000)
         let deadline = DispatchTime.now() + .milliseconds(max(1, timeoutMilliseconds))
@@ -220,7 +389,10 @@ public final class VmmDockerProcess: @unchecked Sendable {
         switch result.value {
         case .success(let handoff)?:
             lock.lock()
-            guard !stopping, starting, process?.isRunning == true else {
+            guard !stopping,
+                  starting,
+                  process === child,
+                  !child.isTerminationObserved else {
                 lastReady = nil
                 let cancelled = stopping || !starting
                 lock.unlock()
@@ -241,17 +413,16 @@ public final class VmmDockerProcess: @unchecked Sendable {
         }
     }
 
-    private func handleTermination(_ task: Process) {
+    private func handleTermination(
+        _ child: VmmSupervisedChild,
+        termination: HvProcessTermination
+    ) {
         let oldLog: FileHandle?
         let server: VmmHandoffServer?
         let waiter: DispatchSemaphore?
         let wasUnexpected: Bool
-        let termination = HvProcessTermination(
-            status: task.terminationStatus,
-            wasUncaughtSignal: task.terminationReason == .uncaughtSignal
-        )
         lock.lock()
-        guard process === task else {
+        guard process === child else {
             lock.unlock()
             return
         }
@@ -278,9 +449,9 @@ public final class VmmDockerProcess: @unchecked Sendable {
     public func suspend() -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        guard let process, process.isRunning else { return false }
+        guard let process else { return false }
         if suspended { return true }
-        guard kill(process.processIdentifier, SIGSTOP) == 0 else { return false }
+        guard process.send(SIGSTOP) else { return false }
         suspended = true
         return true
     }
@@ -289,57 +460,158 @@ public final class VmmDockerProcess: @unchecked Sendable {
     public func resume() -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        guard let process, process.isRunning else { return false }
+        guard let process else { return false }
         if !suspended { return true }
-        guard kill(process.processIdentifier, SIGCONT) == 0 else { return false }
+        guard process.send(SIGCONT) else { return false }
         suspended = false
         return true
     }
 
-    public func stop(signal: Int32 = SIGTERM, timeout: TimeInterval = 5) {
-        let task: Process?
+    private struct StopClaim {
+        let child: VmmSupervisedChild?
         let server: VmmHandoffServer?
         let log: FileHandle?
         let wasSuspended: Bool
-        let waiter: DispatchSemaphore?
-        lock.lock()
+        let handoffWaiter: DispatchSemaphore?
+    }
+
+    /// Must be called with `lock` held. External server shutdown, descriptor close, signalling, and
+    /// exact child waits all occur after the claim releases the supervisor mutex.
+    private func claimStopLocked() -> StopClaim {
         stopping = true
-        task = process
-        process = nil
-        server = handoffServer
+        let claim = StopClaim(
+            child: process,
+            server: handoffServer,
+            log: logHandle,
+            wasSuspended: suspended,
+            handoffWaiter: handoffWaiter
+        )
         handoffServer = nil
-        waiter = handoffWaiter
         handoffWaiter = nil
-        log = logHandle
         logHandle = nil
-        wasSuspended = suspended
         suspended = false
         lastReady = nil
-        lock.unlock()
+        return claim
+    }
 
-        server?.stop()
-        waiter?.signal()
-        defer { try? log?.close() }
-        guard let task, task.isRunning else { return }
-        if wasSuspended {
-            kill(task.processIdentifier, SIGCONT)
+    private func completeStop(
+        _ claim: StopClaim,
+        signal: Int32,
+        deadline: DoryProcessStopDeadline
+    ) -> Bool {
+        claim.server?.stop()
+        claim.handoffWaiter?.signal()
+        defer { try? claim.log?.close() }
+        guard let child = claim.child else { return true }
+        if claim.wasSuspended {
+            _ = child.send(SIGCONT)
         }
-        kill(task.processIdentifier, signal)
-        let deadline = Date().addingTimeInterval(timeout)
-        while task.isRunning && Date() < deadline {
-            Thread.sleep(forTimeInterval: 0.02)
+        _ = child.send(signal)
+        if child.terminationWaiter.wait(timeout: deadline.graceful) == .success {
+            return true
         }
-        if task.isRunning {
-            kill(task.processIdentifier, SIGKILL)
-            task.waitUntilExit()
+        _ = child.send(SIGKILL)
+        return child.terminationWaiter.wait(timeout: deadline.final) == .success
+    }
+
+    private func scheduleDeferredStop(
+        signal: Int32,
+        gracefulTimeout: TimeInterval,
+        forcedTimeout: TimeInterval
+    ) {
+        deferredStop.schedule(
+            signal: signal,
+            gracefulTimeout: gracefulTimeout,
+            forcedTimeout: forcedTimeout
+        ) { [self] signal, gracefulTimeout, forcedTimeout in
+            lock.lock()
+            let claim = claimStopLocked()
+            lock.unlock()
+            _ = completeStop(
+                claim,
+                signal: signal,
+                deadline: DoryProcessStopDeadline(
+                    gracefulTimeout: gracefulTimeout,
+                    forcedTimeout: forcedTimeout
+                )
+            )
         }
+    }
+
+    @discardableResult
+    public func stop(signal: Int32 = SIGTERM, timeout: TimeInterval = 5) -> Bool {
+        stop(
+            signal: signal,
+            timeout: timeout,
+            forcedTimeout: Self.forcedTerminationGraceSeconds
+        )
+    }
+
+    /// Internal timing seam for adversarial tests. Production uses the fixed forced grace above.
+    @discardableResult
+    func stopForTesting(
+        signal: Int32 = SIGTERM,
+        timeout: TimeInterval,
+        forcedTimeout: TimeInterval
+    ) -> Bool {
+        stop(signal: signal, timeout: timeout, forcedTimeout: forcedTimeout)
+    }
+
+    private func stop(
+        signal: Int32,
+        timeout: TimeInterval,
+        forcedTimeout: TimeInterval
+    ) -> Bool {
+        let deadline = DoryProcessStopDeadline(
+            gracefulTimeout: timeout,
+            forcedTimeout: forcedTimeout
+        )
+        guard lock.lock(until: deadline.final) else {
+            scheduleDeferredStop(
+                signal: signal,
+                gracefulTimeout: timeout,
+                forcedTimeout: forcedTimeout
+            )
+            return false
+        }
+        if deferredStop.isPending {
+            lock.unlock()
+            guard deferredStop.wait(until: deadline.final),
+                  let observation = lifecycleObservation(until: deadline.final) else {
+                return false
+            }
+            return !observation.isRunning
+        }
+        let claim = claimStopLocked()
+        lock.unlock()
+        return completeStop(claim, signal: signal, deadline: deadline)
+    }
+
+    public func waitForTermination(timeout: TimeInterval) -> Bool {
+        let deadline = DoryProcessStopDeadline(
+            gracefulTimeout: timeout,
+            forcedTimeout: 0
+        )
+        guard lock.lock(until: deadline.final) else { return false }
+        let waiter = process?.terminationWaiter
+        let deferredPending = deferredStop.isPending
+        lock.unlock()
+        if let waiter,
+           waiter.wait(timeout: deadline.final) != .success {
+            return false
+        }
+        if deferredPending,
+           !deferredStop.wait(until: deadline.final) {
+            return false
+        }
+        return lifecycleObservation(until: deadline.final)?.isRunning == false
     }
 
     private static func openAppendLog(_ path: String?) -> FileHandle? {
         guard let path else { return nil }
         let directory = (path as NSString).deletingLastPathComponent
         try? FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
-        let fd = open(path, O_WRONLY | O_APPEND | O_CREAT, 0o600)
+        let fd = open(path, O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC, 0o600)
         guard fd >= 0 else { return nil }
         return FileHandle(fileDescriptor: fd, closeOnDealloc: true)
     }

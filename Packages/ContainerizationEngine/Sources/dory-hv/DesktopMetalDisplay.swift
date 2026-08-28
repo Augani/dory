@@ -1134,6 +1134,30 @@ struct DesktopKeyboardModifierState: Sendable {
     }
 }
 
+/// Owns the AppKit-to-evdev scroll boundary. Linux input stacks use the high-resolution wheel
+/// events for trackpad responsiveness and the matching discrete events for legacy applications.
+/// Both axes and both resolutions must cross this boundary together; filtering the frame here
+/// reduces precise trackpad gestures to occasional coarse mouse-wheel ticks.
+struct DesktopScrollEventState: Sendable {
+    private var accumulator = VirtioInputScrollAccumulator()
+
+    mutating func events(
+        horizontalDelta: Double,
+        verticalDelta: Double,
+        hasPreciseDeltas: Bool
+    ) -> [VirtioInputEvent] {
+        accumulator.events(
+            horizontalDelta: horizontalDelta,
+            verticalDelta: verticalDelta,
+            hasPreciseDeltas: hasPreciseDeltas
+        )
+    }
+
+    mutating func reset() {
+        accumulator = VirtioInputScrollAccumulator()
+    }
+}
+
 /// One AppKit surface owns keyboard, pointer, cursor, resize, and scanout geometry semantics for
 /// the qualified Metal display. Presentation subclasses implement only their resource boundary;
 /// they cannot silently substitute another renderer when their own validation or device fails.
@@ -1148,7 +1172,7 @@ class DesktopDisplayView: NSView {
     private var guestCursor = NSCursor.arrow
     private var guestCursorUpdate: VirtioGPUCursorUpdate?
     private var tracking: NSTrackingArea?
-    private var scrollAccumulator = VirtioInputScrollAccumulator()
+    private var scrollEventState = DesktopScrollEventState()
     private var pressedKeyboardInput = VirtioInputPressedState()
     private var pressedPointerInput = VirtioInputPressedState()
     private var keyboardModifierState = DesktopKeyboardModifierState()
@@ -1343,11 +1367,11 @@ class DesktopDisplayView: NSView {
     }
 
     override func scrollWheel(with event: NSEvent) {
-        let events = scrollAccumulator.events(
+        let events = scrollEventState.events(
             horizontalDelta: event.scrollingDeltaX,
             verticalDelta: event.scrollingDeltaY,
             hasPreciseDeltas: event.hasPreciseScrollingDeltas
-        ).filter { $0.type != 2 || $0.code == 8 }
+        )
         if !events.isEmpty { sendPointerTracked(events) }
     }
 
@@ -1380,7 +1404,7 @@ class DesktopDisplayView: NSView {
         let keyboardReleases = pressedKeyboardInput.releaseFrame()
         let pointerReleases = pressedPointerInput.releaseFrame()
         keyboardModifierState.reset()
-        scrollAccumulator = VirtioInputScrollAccumulator()
+        scrollEventState.reset()
         if !keyboardReleases.isEmpty { keyboardInput.send(frame: keyboardReleases) }
         if !pointerReleases.isEmpty { pointerInput.send(frame: pointerReleases) }
     }

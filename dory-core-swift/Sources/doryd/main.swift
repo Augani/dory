@@ -18,6 +18,7 @@ do {
 }
 let dataDriveSelectionAuthority: DoryDataDriveSelectionAuthority
 let dataDrive: DoryDataDrive
+let dataDriveID: UUID
 do {
     let requestedDrive = try dorydEnvironment.dataDriveConfiguration()
     let selectionStore = try DoryDataDriveSelectionStore(home: dorydEnvironment.home)
@@ -26,9 +27,9 @@ do {
         requestedRoot: requestedDrive.root,
         authority: dataDriveSelectionAuthority
     )
-    let driveID = try dataDrive.readManifest().id.uuidString.lowercased()
+    dataDriveID = try dataDrive.readManifest().id
     FileHandle.standardError.write(
-        Data("doryd: data drive \(driveID) ready at \(dataDrive.root)\n".utf8)
+        Data("doryd: data drive \(dataDriveID.uuidString.lowercased()) ready at \(dataDrive.root)\n".utf8)
     )
 } catch {
     FileHandle.standardError.write(Data("doryd: data drive unavailable: \(error)\n".utf8))
@@ -301,6 +302,7 @@ let service = DorydService(
     socketPath: socketPath,
     home: dorydEnvironment.home,
     dockerTier: dockerTier,
+    dockerDataDriveID: dataDriveID,
     machineManager: machineManager,
     productionPlanningController: productionPlanningController,
     machineImportEnvironment: machineImportEnvironment,
@@ -441,6 +443,7 @@ private final class DorydShutdownCoordinator {
     private enum State {
         case active
         case shuttingDown
+        case retainingDockerAuthority
         case finished
     }
     private var state: State = .active
@@ -500,7 +503,7 @@ private final class DorydShutdownCoordinator {
         // Set the one-way tier latch before listener invalidation. Already-accepted XPC work may
         // still be executing, but no engineStart/engineWake can spawn or resume a helper once this
         // call begins; ordinary engineStop continues to use the reversible stop() path.
-        dockerTier?.shutdown()
+        let dockerShutdown = DorydDockerTierShutdownBoundary.complete(dockerTier: dockerTier)
         listener.invalidate()
         hostCLIReconciler?.stop()
         idleSleepScheduler?.stop()
@@ -515,6 +518,31 @@ private final class DorydShutdownCoordinator {
         machineDeviceTelemetryMonitor?.stop()
         machineBackupScheduler?.stop()
         machineManager?.stopAll()
+
+        if case let .authorityRetained(pid, detail) = dockerShutdown {
+            let identity = pid.map { " PID \($0)" } ?? ""
+            FileHandle.standardError.write(Data(
+                "doryd: shutdown could not confirm Docker helper\(identity) termination: \(detail); retaining daemon ownership without serving new requests\n".utf8
+            ))
+            condition.lock()
+            finalExitCode = finalExitCode == 0 ? 1 : finalExitCode
+            state = .retainingDockerAuthority
+            condition.broadcast()
+            condition.unlock()
+
+            // Retain daemon ownership while waiting on the exact helper's latched terminal event.
+            // Late completion of the original shutdown worker and a helper that exits between the
+            // bounded attempt and observer registration are both revalidated by DockerTier before
+            // this returns; no additional signal/control request is required to finish shutdown.
+            if let dockerTier {
+                DorydDockerTierShutdownBoundary.awaitTerminalRetirement(
+                    dockerTier: dockerTier
+                )
+            }
+            FileHandle.standardError.write(Data(
+                "doryd: retained Docker helper authority is now terminal; completing shutdown\n".utf8
+            ))
+        }
         FileHandle.standardError.write(Data("doryd: shutdown complete\n".utf8))
 
         condition.lock()

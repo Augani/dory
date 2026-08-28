@@ -4,7 +4,7 @@ Date: Fri, 10 Jul 2026 00:55:52 +0000
 Subject: [PATCH] virtiofs: add notification queue for cache invalidation
 
 Port the notification-virtqueue design posted by Vivek Goyal in 2021 to
-Linux 6.12.30. The VIRTIO 1.2 notification feature is standardized but
+Linux 6.12.106. The VIRTIO 1.2 notification feature is standardized but
 still absent from the upstream Linux virtio-fs driver.
 
 Accept FUSE_NOTIFY_INVAL_INODE, FUSE_NOTIFY_INVAL_ENTRY, and

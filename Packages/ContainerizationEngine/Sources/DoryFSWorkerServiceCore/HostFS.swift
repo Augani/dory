@@ -108,6 +108,12 @@ public struct HostFSInvalidationSnapshot: Equatable, Sendable {
     }
 }
 
+struct HostFSEventPathIdentity: Equatable, Sendable {
+    let device: UInt64
+    let inode: UInt64
+    let generation: UInt64
+}
+
 public enum HostFSTimestampUpdate: Equatable, Sendable {
     case value(seconds: Int64, nanoseconds: UInt32)
     case now
@@ -220,6 +226,10 @@ final class HostFS: @unchecked Sendable {
     }
 
     private let rootPath: String
+    /// Worker-local diagnostic spelling derived from the pinned root descriptor. This never
+    /// crosses the worker contract; it exists only so the same process that performs guest FUSE
+    /// mutations can attach `IgnoreSelf` FSEvents streams with correct source attribution.
+    var eventRootPath: String { rootPath }
     /// Accept both the caller's standardized spelling and the canonical `realpath` spelling.
     /// FSEvents reports paths in the spelling used to create its stream, which can differ across
     /// macOS aliases such as `/var` and `/private/var`.
@@ -250,7 +260,7 @@ final class HostFS: @unchecked Sendable {
     private var knownChildNamesByParentPath: [String: Set<String>] = [:]
     /// Called after the guest resolves a real host path. Production uses this to subscribe
     /// FSEvents only to the accessed top-level project/volume instead of the entire export root.
-    private var eventObservationHandler: (@Sendable (String) -> Void)?
+    private var eventObservationHandler: (@Sendable (String) throws -> Void)?
     private let lock = NSLock()
 
     /// Deterministic test seam for the narrow unlinkat-to-index-update window.
@@ -438,18 +448,118 @@ final class HostFS: @unchecked Sendable {
         self.idsByRelativePath["", default: []].append(Self.rootNodeID)
     }
 
-    public func setEventObservationHandler(_ handler: (@Sendable (String) -> Void)?) {
+    public func setEventObservationHandler(_ handler: (@Sendable (String) throws -> Void)?) {
         lock.withLock { eventObservationHandler = handler }
+    }
+
+    /// Chooses a real directory root for FSEvents using descriptor-confined classification. A
+    /// positive top-level directory gets a narrow stream. A top-level file uses the pinned share
+    /// directory because FSEvents roots are directories; this is less selective but still bounded
+    /// to the single explicit capability.
+    func eventObservationRoot(forHostPath hostPath: String) throws -> String {
+        guard let relativePath = eventRelativePath(forHostPath: hostPath) else {
+            throw HostFSError.permissionDenied("invalid host-event observation path")
+        }
+        if relativePath.isEmpty { return rootPath }
+        guard let first = relativePath.split(
+                  separator: "/",
+                  omittingEmptySubsequences: true
+              ).first else {
+            throw HostFSError.permissionDenied("invalid host-event observation path")
+        }
+        let topLevel = String(first)
+        var status = stat()
+        let result = fstatat(rootFD, cPath(topLevel), &status, Self.containedStatFlags)
+        if result == 0, status.st_mode & mode_t(S_IFMT) == mode_t(S_IFDIR) {
+            return rootPath + "/" + topLevel
+        }
+        if result == 0 { return rootPath }
+        let savedErrno = errno
+        if savedErrno == ENOENT || savedErrno == ENOTDIR || savedErrno == ELOOP {
+            return rootPath
+        }
+        throw HostFSError.systemCall("classify host-event observation root", savedErrno)
+    }
+
+    /// Returns the descriptor-confined identity that an FSEvents root pathname must still name.
+    func eventObservationIdentity(forRootPath hostPath: String) throws -> HostFSEventPathIdentity {
+        guard let relativePath = eventRelativePath(forHostPath: hostPath) else {
+            throw HostFSError.permissionDenied("observation root outside pinned root")
+        }
+        var status = stat()
+        let result = relativePath.isEmpty
+            ? fstat(rootFD, &status)
+            : fstatat(rootFD, cPath(relativePath), &status, Self.containedStatFlags)
+        guard result == 0,
+              status.st_mode & mode_t(S_IFMT) == mode_t(S_IFDIR) else {
+            throw HostFSError.systemCall("inspect host-event observation root", errno)
+        }
+        return HostFSEventPathIdentity(
+            device: UInt64(truncatingIfNeeded: status.st_dev),
+            inode: UInt64(truncatingIfNeeded: status.st_ino),
+            generation: UInt64(truncatingIfNeeded: status.st_gen)
+        )
+    }
+
+    /// Classifies an FSEvents pathname using only the already-pinned root descriptor. The worker
+    /// must never turn an event string into ambient pathname authority with `lstat(2)`: a parent
+    /// can be renamed between lexical validation and lookup. Darwin's `AT_RESOLVE_BENEATH` keeps
+    /// the entire classification in the capability's directory tree in one VFS operation.
+    func eventPathIsMissing(forHostPath hostPath: String) throws -> Bool {
+        guard let relativePath = eventRelativePath(forHostPath: hostPath) else {
+            throw HostFSError.permissionDenied("event path outside pinned root")
+        }
+        var status = stat()
+        let result = relativePath.isEmpty
+            ? fstat(rootFD, &status)
+            : fstatat(rootFD, cPath(relativePath), &status, Self.containedStatFlags)
+        if result == 0 { return false }
+        let savedErrno = errno
+        if savedErrno == ENOENT || savedErrno == ENOTDIR || savedErrno == ELOOP {
+            return true
+        }
+        throw HostFSError.systemCall("classify host event", savedErrno)
+    }
+
+    /// Finds the closest existing regular file or directory for a watcher nudge without resolving
+    /// an absolute host pathname. Missing entries walk their already-validated relative parents,
+    /// never above this capability's pinned root and never through a symlink.
+    func nearestEventNudgeRelativePath(forHostPath hostPath: String) throws -> String? {
+        guard var relativePath = eventRelativePath(forHostPath: hostPath) else {
+            throw HostFSError.permissionDenied("event path outside pinned root")
+        }
+        while true {
+            var status = stat()
+            let result = relativePath.isEmpty
+                ? fstat(rootFD, &status)
+                : fstatat(rootFD, cPath(relativePath), &status, Self.containedStatFlags)
+            if result == 0 {
+                let kind = status.st_mode & mode_t(S_IFMT)
+                return kind == mode_t(S_IFREG) || kind == mode_t(S_IFDIR)
+                    ? relativePath
+                    : nil
+            }
+            let savedErrno = errno
+            guard savedErrno == ENOENT || savedErrno == ENOTDIR || savedErrno == ELOOP else {
+                throw HostFSError.systemCall("resolve host-event nudge", savedErrno)
+            }
+            guard !relativePath.isEmpty else { return nil }
+            if let separator = relativePath.lastIndex(of: "/") {
+                relativePath = String(relativePath[..<separator])
+            } else {
+                relativePath = ""
+            }
+        }
     }
 
     public var resourceSnapshot: FuseResourceSnapshot {
         resourceQuota.snapshot()
     }
 
-    private func notifyEventObservation(for relativePath: String) {
+    private func notifyEventObservation(for relativePath: String) throws {
         guard !relativePath.isEmpty else { return }
         let handler = lock.withLock { eventObservationHandler }
-        handler?(rootPath + "/" + relativePath)
+        try handler?(rootPath + "/" + relativePath)
     }
 
     deinit {
@@ -870,10 +980,6 @@ final class HostFS: @unchecked Sendable {
             throw HostFSError.notDirectory(parent)
         }
         let relative = join(parentNode.relativePath, name)
-        // Arm the narrow top-level observation root before the namespace stat becomes the lookup
-        // linearization point. A host replacement after this call is therefore observable before
-        // Linux can cache the positive result.
-        notifyEventObservation(for: relative)
         var st = stat()
         let result = fstatat(rootFD, cPath(relative), &st, Self.containedStatFlags)
         guard result == 0 else {
@@ -893,6 +999,11 @@ final class HostFS: @unchecked Sendable {
             detachLookupMiss(relativePath: relative)
             throw HostFSError.operationNotSupported("special host file: \(relative)")
         }
+
+        // Arm observation after proving this is a positive lookup but before returning or pinning
+        // the identity. A replacement after stream start is delivered; a replacement before the
+        // later pin is incorporated into the identity that Linux receives.
+        try notifyEventObservation(for: relative)
 
         // A real (non-synthetic) identity is already pinned for the common repeated-lookup case.
         // The contained fstatat above is the namespace linearization point: when its generation-
@@ -917,7 +1028,7 @@ final class HostFS: @unchecked Sendable {
             detachLookupMiss(relativePath: relative)
             return nil
         }
-        return register(
+        return try register(
             name: name,
             relativePath: relative,
             identity: identity,
@@ -1667,7 +1778,7 @@ final class HostFS: @unchecked Sendable {
             )
             if syntheticAttributes {
                 return (
-                    registerCreatedFile(
+                    try registerCreatedFile(
                         name: name,
                         relativePath: relative,
                         mode: mode,
@@ -1681,7 +1792,7 @@ final class HostFS: @unchecked Sendable {
                 )
             }
             return (
-                register(
+                try register(
                     name: name,
                     relativePath: relative,
                     identity: identity,
@@ -2677,7 +2788,7 @@ final class HostFS: @unchecked Sendable {
         retainOpenHandle: Bool = false,
         ownerUID: UInt32? = nil,
         ownerGID: UInt32? = nil
-    ) -> HostFSEntry {
+    ) throws -> HostFSEntry {
         let st = identity.status
         let key = FileKey(st)
         let result = lock.withLock { () -> (entry: HostFSEntry, retainedIdentityFD: Bool) in
@@ -2792,7 +2903,7 @@ final class HostFS: @unchecked Sendable {
         if !result.retainedIdentityFD {
             Darwin.close(identity.fd)
         }
-        notifyEventObservation(for: relativePath)
+        try notifyEventObservation(for: relativePath)
         return result.entry
     }
 
@@ -2805,8 +2916,8 @@ final class HostFS: @unchecked Sendable {
         retainOpenHandle: Bool = false,
         ownerUID: UInt32? = nil,
         ownerGID: UInt32? = nil
-    ) -> HostFSEntry {
-        return registerCreatedNode(
+    ) throws -> HostFSEntry {
+        return try registerCreatedNode(
             name: name,
             relativePath: relativePath,
             mode: mode,
@@ -2828,7 +2939,7 @@ final class HostFS: @unchecked Sendable {
         ownerGID: UInt32? = nil
     ) throws -> HostFSEntry {
         let identity = try pinIdentity(relativePath: relativePath, expectedMode: mode_t(S_IFDIR))
-        return registerCreatedNode(
+        return try registerCreatedNode(
             name: name,
             relativePath: relativePath,
             mode: mode,
@@ -2850,7 +2961,7 @@ final class HostFS: @unchecked Sendable {
         retainOpenHandle: Bool = false,
         ownerUID: UInt32? = nil,
         ownerGID: UInt32? = nil
-    ) -> HostFSEntry {
+    ) throws -> HostFSEntry {
         var ts = timespec()
         clock_gettime(CLOCK_REALTIME, &ts)
         let entry = lock.withLock {
@@ -2893,7 +3004,7 @@ final class HostFS: @unchecked Sendable {
             notePathKeyPresentLocked(relativePath)
             return HostFSEntry(name: name, nodeID: id, attributes: attrs)
         }
-        notifyEventObservation(for: relativePath)
+        try notifyEventObservation(for: relativePath)
         return entry
     }
 

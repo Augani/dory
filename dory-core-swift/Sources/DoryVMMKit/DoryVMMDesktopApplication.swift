@@ -3,6 +3,39 @@ import DoryOperations
 import Foundation
 @preconcurrency import Virtualization
 
+/// Owns AppKit's termination boundary while a LaunchServices-started desktop is still creating its
+/// virtual machine. On early Sonoma `NSRunningApplication.terminate()` is the exact-process
+/// fallback for SIGTERM, and it can arrive before the display controller exists. Keeping this
+/// delegate installed lets the shared shutdown coordinator remember that request and deliver it as
+/// soon as the runtime attaches.
+@MainActor
+final class DoryVMMEarlyApplicationTerminationDelegate: NSObject, NSApplicationDelegate {
+    private let requestGracefulShutdown: @Sendable (String) -> Void
+
+    init(requestGracefulShutdown: @escaping @Sendable (String) -> Void) {
+        self.requestGracefulShutdown = requestGracefulShutdown
+    }
+
+    func install(on application: NSApplication = .shared) {
+        application.delegate = self
+    }
+
+    /// Both delegates are main-actor isolated, so replacing the startup boundary with the display
+    /// controller is one serialized assignment with no interval in which AppKit has no delegate.
+    func handOff(
+        to desktopApplication: DoryVMMDesktopApplication,
+        on application: NSApplication
+    ) {
+        application.delegate = desktopApplication
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        DoryVMMDesktopApplication.terminationReply {
+            requestGracefulShutdown("NSApplication termination request during VM startup")
+        }
+    }
+}
+
 @MainActor
 final class DoryVMMDesktopApplication: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let application: NSApplication
@@ -10,6 +43,7 @@ final class DoryVMMDesktopApplication: NSObject, NSApplicationDelegate, NSWindow
     private let machineView: VZVirtualMachineView
     private let window: NSWindow
     private let clipboard: DoryDesktopClipboardCoordinator?
+    private let requestGracefulShutdown: @Sendable (String) -> Void
     private let dynamicDisplayEnabled: Bool
     private let backingScaleFactor: CGFloat
     private let displayAssignment: DoryGuestDisplayPresentationAssignment?
@@ -22,10 +56,12 @@ final class DoryVMMDesktopApplication: NSObject, NSApplicationDelegate, NSWindow
         machineID: String,
         environment: [String: String],
         resolvedDevices: DoryVirtualMachineDeviceCapabilityRequest?,
-        displayPresentation: DoryMachineDisplayPresentation
+        displayPresentation: DoryMachineDisplayPresentation,
+        requestGracefulShutdown: @escaping @Sendable (String) -> Void
     ) {
         self.application = NSApplication.shared
         self.runtime = runtime
+        self.requestGracefulShutdown = requestGracefulShutdown
         dynamicDisplayEnabled = resolvedDevices?.dynamicDisplay ?? true
 
         let display = resolvedDevices?.display ?? DoryVMMDisplayDefaults.capability
@@ -98,22 +134,29 @@ final class DoryVMMDesktopApplication: NSObject, NSApplicationDelegate, NSWindow
         machineID: String,
         environment: [String: String],
         resolvedDevices: DoryVirtualMachineDeviceCapabilityRequest? = nil,
-        displayPresentation: DoryMachineDisplayPresentation = .windowed
+        displayPresentation: DoryMachineDisplayPresentation = .windowed,
+        earlyApplicationTerminationDelegate: DoryVMMEarlyApplicationTerminationDelegate,
+        requestGracefulShutdown: @escaping @Sendable (String) -> Void
     ) throws {
         let controller = DoryVMMDesktopApplication(
             runtime: runtime,
             machineID: machineID,
             environment: environment,
             resolvedDevices: resolvedDevices,
-            displayPresentation: displayPresentation
+            displayPresentation: displayPresentation,
+            requestGracefulShutdown: requestGracefulShutdown
         )
-        try controller.runUntilStopped()
+        try controller.runUntilStopped(
+            earlyApplicationTerminationDelegate: earlyApplicationTerminationDelegate
+        )
     }
 
-    private func runUntilStopped() throws {
+    private func runUntilStopped(
+        earlyApplicationTerminationDelegate: DoryVMMEarlyApplicationTerminationDelegate
+    ) throws {
         DoryDesktopApplicationIdentity.install(on: application)
         application.setActivationPolicy(.regular)
-        application.delegate = self
+        earlyApplicationTerminationDelegate.handOff(to: self, on: application)
         clipboard?.start()
         clipboard?.markGuestReady()
         window.makeKeyAndOrderFront(nil)
@@ -201,6 +244,18 @@ final class DoryVMMDesktopApplication: NSObject, NSApplicationDelegate, NSWindow
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         window.orderOut(nil)
+        return Self.terminationReply {
+            requestGracefulShutdown("NSApplication termination request")
+        }
+    }
+
+    /// AppKit termination is only the request boundary. The VMM must remain alive while the
+    /// shared coordinator asks the guest to shut down, enforces its watchdog, and lets the runtime
+    /// waiter stop the application after disk and device teardown completes.
+    nonisolated static func terminationReply(
+        requestGracefulShutdown: () -> Void
+    ) -> NSApplication.TerminateReply {
+        requestGracefulShutdown()
         return .terminateCancel
     }
 

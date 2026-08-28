@@ -7,6 +7,7 @@ struct DesktopGuestReadinessBoundaryTests {
         case prepare
         case wait
         case publish
+        case activateOptionalCapability
     }
 
     private enum BoundaryFailure: Error, Equatable {
@@ -98,5 +99,29 @@ struct DesktopGuestReadinessBoundaryTests {
         }
 
         #expect(steps == [.wait])
+    }
+
+    @Test func optionalCapabilitiesActivateOnlyAfterReadinessPublication() async {
+        var steps = [Step]()
+
+        await DesktopGuestReadinessBoundary.complete(
+            genericGuest: false,
+            prepare: {
+                steps.append(.prepare)
+            },
+            waitForSynchronizedPresentation: {
+                steps.append(.wait)
+            },
+            publish: { _ in
+                #expect(steps == [.prepare, .wait])
+                steps.append(.publish)
+            },
+            activateOptionalCapabilities: { _ in
+                #expect(steps == [.prepare, .wait, .publish])
+                steps.append(.activateOptionalCapability)
+            }
+        )
+
+        #expect(steps == [.prepare, .wait, .publish, .activateOptionalCapability])
     }
 }

@@ -7,6 +7,71 @@ import Foundation
 import XCTest
 
 final class HealthReporterTests: XCTestCase {
+    func testGuestMemoryHealthKeepsLegacyReclaimableKeyDerivedFromMemAvailable() {
+        let snapshot = DoryGuestResourceSnapshot(
+            selectedDataDriveID: UUID(),
+            dataDiskFilesystemUUID: UUID(),
+            dataDiskMountSource: "/dev/vdb",
+            dataDiskFilesystemType: "ext4",
+            dataDiskDeviceMajorMinor: "254:16",
+            memoryCeilingBytes: 2_048,
+            memoryUsedBytes: 1_024,
+            memoryCacheBytes: 416,
+            memoryAvailableBytes: 1_024,
+            memoryFreeBytes: 512,
+            dataDiskTotalBytes: 4_096,
+            dataDiskUsedBytes: 1_024,
+            dataDiskAvailableBytes: 3_072
+        )
+
+        let check = HealthReporter.guestResourceCheck(
+            snapshot: snapshot,
+            engineRunning: true
+        )
+
+        XCTAssertEqual(check.data["memory_available_bytes"], "1024")
+        XCTAssertEqual(check.data["memory_reclaimable_bytes"], "512")
+    }
+
+    func testFileServiceHealthDistinguishesInactiveBackpressureAndFailStop() {
+        XCTAssertEqual(
+            HealthReporter.fileServiceResourceCheck(snapshot: nil, engineRunning: false).status,
+            .skip
+        )
+        XCTAssertEqual(
+            HealthReporter.fileServiceResourceCheck(snapshot: nil, engineRunning: true).code,
+            "resources.file_service_snapshot_unavailable"
+        )
+
+        let healthy = healthFileServiceSnapshot()
+        let healthyCheck = HealthReporter.fileServiceResourceCheck(
+            snapshot: healthy,
+            engineRunning: true
+        )
+        XCTAssertEqual(healthyCheck.status, .pass)
+        XCTAssertEqual(healthyCheck.code, "resources.file_service_ok")
+
+        var backpressured = healthy
+        backpressured.pendingEventCount = backpressured.pendingEventLimit * 3 / 4
+        let backpressureCheck = HealthReporter.fileServiceResourceCheck(
+            snapshot: backpressured,
+            engineRunning: true
+        )
+        XCTAssertEqual(backpressureCheck.status, .warn)
+        XCTAssertEqual(backpressureCheck.code, "resources.file_service_backpressure")
+
+        var failedClosed = healthy
+        failedClosed.eventLossCount = 1
+        failedClosed.coherenceTerminalFailureLatched = true
+        let failureCheck = HealthReporter.fileServiceResourceCheck(
+            snapshot: failedClosed,
+            engineRunning: true
+        )
+        XCTAssertEqual(failureCheck.status, .fail)
+        XCTAssertEqual(failureCheck.code, "resources.file_service_failed")
+        XCTAssertTrue(failureCheck.action?.contains("failed closed") == true)
+    }
+
     func testPublishedPortHealthRequiresRealTCPListeners() {
         let ports = [
             DoryListenPort(protocol: "tcp", port: 3_809),
@@ -921,25 +986,76 @@ final class HealthReporterTests: XCTestCase {
             openFileDescriptors: 100,
             threads: 20,
             physicalFootprintBytes: 1,
-            watcherPending: 0
+            fileServicePending: 0
         ))
         _ = tracker.record(DoryResourceTrendSample(
             at: base.addingTimeInterval(10),
             openFileDescriptors: 120,
             threads: 20,
             physicalFootprintBytes: 1,
-            watcherPending: 0
+            fileServicePending: 0
         ))
         let assessment = tracker.record(DoryResourceTrendSample(
             at: base.addingTimeInterval(20),
             openFileDescriptors: 140,
             threads: 20,
             physicalFootprintBytes: 1,
-            watcherPending: 0
+            fileServicePending: 0
         ))
         XCTAssertEqual(assessment.windowSeconds, 20)
         XCTAssertEqual(assessment.warnings, ["open file descriptors rose 100→140"])
     }
+}
+
+private func healthFileServiceSnapshot() -> DoryFileServiceResourceSnapshot {
+    DoryFileServiceResourceSnapshot(
+        schema: "dev.dory.file-service.resources",
+        version: 1,
+        generatedAt: Date(),
+        running: true,
+        cacheMode: "zero-validity",
+        maximumCacheValiditySeconds: 0,
+        configuredShareCount: 1,
+        invalidationOnlyShareCount: 0,
+        watcherNudgeShareCount: 1,
+        frontendCount: 3,
+        requestQueueCount: 3,
+        observationRequired: true,
+        observationActive: true,
+        requiredObservationShareCount: 1,
+        observedRequiredShareCount: 1,
+        observationStreamCount: 1,
+        pendingEventCount: 0,
+        pendingEventLimit: 65_536,
+        receivedEventCount: 1,
+        deliveredBatchCount: 1,
+        failedBatchCount: 0,
+        eventLossCount: 0,
+        invalidationCount: 1,
+        invalidationFailureCount: 0,
+        invalidationFailureLatched: false,
+        rejectedRequestCount: 0,
+        executedRequestCount: 1,
+        terminalQueueFaultCount: 0,
+        completedRequestCount: 1,
+        failedRequestCount: 0,
+        inFlightRequestCount: 0,
+        peakInFlightRequestCount: 1,
+        requestPayloadBytes: 64,
+        workerResponsePayloadBytes: 64,
+        guestPublishedResponseBytes: 64,
+        totalRequestLatencyNanoseconds: 1_000,
+        maximumRequestLatencyNanoseconds: 1_000,
+        coherenceReceivedBatchCount: 1,
+        coherenceReplayedBatchCount: 0,
+        coherenceInFlightBatchCount: 0,
+        coherenceFailedBatchCount: 0,
+        coherenceTotalLatencyNanoseconds: 1_000,
+        coherenceMaximumLatencyNanoseconds: 1_000,
+        coherenceRequestBytes: 128,
+        coherenceAcknowledgementBytes: 48,
+        coherenceTerminalFailureLatched: false
+    )
 }
 
 private enum HealthTestError: Error {

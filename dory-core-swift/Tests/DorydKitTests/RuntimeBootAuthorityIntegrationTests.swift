@@ -203,7 +203,7 @@ final class RuntimeBootAuthorityIntegrationTests: XCTestCase {
         XCTAssertEqual(bootstrap.sourceTuple, .productionCandidate)
         XCTAssertEqual(
             bootstrap.producerFenceContract,
-            .managedLinux61230PrepareFBV1
+            .managedLinux612106PrepareFBV1
         )
         XCTAssertEqual(
             bootstrap.requestedCapabilities,

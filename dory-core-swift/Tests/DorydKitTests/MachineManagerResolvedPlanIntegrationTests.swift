@@ -660,6 +660,104 @@ struct MachineManagerResolvedPlanIntegrationTests {
         }
     }
 
+    @Test("prepublication application retirement retains resolved launch authority")
+    func prepublicationApplicationRetirementRetainsResolvedAuthority() throws {
+        let application = ControlledApplicationTerminationController()
+        let stopper = ControlledMachineProcessStopper()
+        let starter = CountingProcessStarter { process in
+            process.installPrepublicationTerminalRetirement(
+                application: application,
+                retryDelay: 0.01
+            )
+            throw ResolvedLaunchLifecycleFixtureError.prepublicationFailure
+        }
+        try withHarness(
+            "prepublication-retirement",
+            useShortStatePath: true,
+            starter: starter,
+            processStopper: stopper.stop(_:)
+        ) { manager, starter, _ in
+            try installExactRawHVInfrastructure(manager)
+
+            #expect(throws: (any Error).self) {
+                _ = try manager.start(id: "dev")
+            }
+            let retained = try #require(manager.failedRuntimeAuthoritySnapshot(id: "dev"))
+            #expect(retained.hasProcess)
+            #expect(retained.processIsRunning)
+            #expect(retained.hasResolvedAdmissionAuthority)
+            #expect(retained.backend == .doryHypervisor)
+            #expect(manager.status(id: "dev")?.state == .failed)
+
+            #expect(throws: (any Error).self) {
+                _ = try manager.start(id: "dev")
+            }
+            #expect(starter.count == 1)
+
+            application.confirmTermination()
+            let retirementDeadline = Date().addingTimeInterval(2)
+            while Date() < retirementDeadline,
+                  manager.failedRuntimeAuthoritySnapshot(id: "dev")?.hasProcess == true {
+                Thread.sleep(forTimeInterval: 0.01)
+            }
+            let retired = try #require(manager.failedRuntimeAuthoritySnapshot(id: "dev"))
+            #expect(!retired.hasProcess)
+            #expect(!retired.processIsRunning)
+            #expect(!retired.hasResolvedAdmissionAuthority)
+            #expect(retired.backend == nil)
+        }
+    }
+
+    @Test("readiness rejection cannot release a live helper's resolved authority")
+    func readinessRejectionRetainsResolvedAuthorityUntilExactExit() throws {
+        let stopper = ControlledMachineProcessStopper()
+        try withHarness(
+            "readiness-retirement",
+            requiresReadyHandoff: true,
+            useShortStatePath: true,
+            processStopper: stopper.stop(_:)
+        ) { manager, starter, _ in
+            try installExactRawHVInfrastructure(manager)
+
+            let starting = try manager.start(id: "dev")
+            try sendVmmHandoff(
+                path: try #require(starting.handoffSocketPath),
+                ready: VmmReadyMessage(
+                    machineID: "dev",
+                    operationID: UUID().uuidString.lowercased(),
+                    agentBuild: "dory-agent/rejected-operation",
+                    controlSocketPath: "/run/dory-control.sock"
+                ),
+                fileDescriptors: []
+            )
+            let rejectionDeadline = Date().addingTimeInterval(2)
+            while Date() < rejectionDeadline,
+                  manager.status(id: "dev")?.state != .failed {
+                Thread.sleep(forTimeInterval: 0.01)
+            }
+
+            let retained = try #require(manager.failedRuntimeAuthoritySnapshot(id: "dev"))
+            #expect(retained.hasProcess)
+            #expect(retained.processIsRunning)
+            #expect(retained.hasResolvedAdmissionAuthority)
+            #expect(retained.backend == .doryHypervisor)
+            #expect(manager.status(id: "dev")?.state == .failed)
+
+            #expect(throws: (any Error).self) {
+                _ = try manager.start(id: "dev")
+            }
+            #expect(starter.count == 1)
+
+            stopper.allowTermination()
+            let stopped = try manager.stop(id: "dev")
+            #expect(stopped.state == .stopped)
+            let released = try #require(manager.failedRuntimeAuthoritySnapshot(id: "dev"))
+            #expect(!released.hasProcess)
+            #expect(!released.hasResolvedAdmissionAuthority)
+            #expect(released.backend == nil)
+        }
+    }
+
     @Test("resolved installed-Linux launch never materializes legacy boot paths")
     func resolvedInstalledLinuxUsesOnlyDescriptorBootAuthority() throws {
         let root = try makeState("resolved-installed-linux")
@@ -1946,6 +2044,10 @@ struct MachineManagerResolvedPlanIntegrationTests {
         agentConnector: @escaping MachineManager.AgentConnector = { socketPath in
             try LocalAgentControl.connect(socketPath: socketPath)
         },
+        starter: CountingProcessStarter = CountingProcessStarter(),
+        processStopper: @escaping MachineManager.ProcessStopper = { process in
+            process.stop(timeout: DoryEngineShutdownTiming.hostTerminationSeconds)
+        },
         _ body: (MachineManager, CountingProcessStarter, String) throws -> Void
     ) throws {
         let state = useShortStatePath
@@ -1960,7 +2062,6 @@ struct MachineManagerResolvedPlanIntegrationTests {
         let stateBroker = injectStateBroker
             ? try DoryMachineStateBroker(canonicalStateRootPath: state)
             : nil
-        let starter = CountingProcessStarter()
         let manager = MachineManager(
             configuration: MachineManagerConfiguration(
                 vmmExecutablePath: "/bin/sh",
@@ -1977,7 +2078,8 @@ struct MachineManagerResolvedPlanIntegrationTests {
             machineStateBroker: stateBroker,
             usbController: usbController,
             agentConnector: agentConnector,
-            processStarter: { process in try starter.start(process) }
+            processStarter: { process in try starter.start(process) },
+            processStopper: processStopper
         )
         defer {
             _ = try? manager.stop(id: "dev")
@@ -2356,14 +2458,57 @@ private final class ClosureLaunchResolver:
 }
 
 private final class CountingProcessStarter: @unchecked Sendable {
+    typealias Start = @Sendable (HvProcess) throws -> Void
+
     private let lock = NSLock()
     private var starts = 0
+    private let startImplementation: Start
+
+    init(startImplementation: @escaping Start = { process in try process.start() }) {
+        self.startImplementation = startImplementation
+    }
 
     var count: Int { lock.withLock { starts } }
 
     func start(_ process: HvProcess) throws {
         lock.withLock { starts += 1 }
-        try process.start()
+        try startImplementation(process)
+    }
+}
+
+private enum ResolvedLaunchLifecycleFixtureError: Error {
+    case prepublicationFailure
+}
+
+private final class ControlledApplicationTerminationController:
+    DoryApplicationTerminationControlling,
+    @unchecked Sendable
+{
+    private let lock = NSLock()
+    private var terminated = false
+
+    var isTerminated: Bool { lock.withLock { terminated } }
+
+    @discardableResult
+    func forceTerminate() -> Bool { true }
+
+    func confirmTermination() {
+        lock.withLock { terminated = true }
+    }
+}
+
+private final class ControlledMachineProcessStopper: @unchecked Sendable {
+    private let lock = NSLock()
+    private var permitsTermination = false
+
+    func stop(_ process: HvProcess) -> Bool {
+        let permitted = lock.withLock { permitsTermination }
+        guard permitted else { return false }
+        return process.stop(timeout: 0.25)
+    }
+
+    func allowTermination() {
+        lock.withLock { permitsTermination = true }
     }
 }
 

@@ -154,7 +154,7 @@
     {
       "id": "generic-iso-producer-complete-fence-contract",
       "status": "fail",
-      "evidence": "The current worker bootstrap accepts only managedLinux61230PrepareFBV1, whose patched managed kernel makes RESOURCE_FLUSH producer-complete. An arbitrary stock ARM64 EFI guest cannot inherit that ordering from ordinary virtio-gpu feature negotiation. No upstream-compatible producer contract and no exact generic-media proof exist for either VirGL2 or Venus presentation."
+      "evidence": "The current worker bootstrap accepts only managedLinux612106PrepareFBV1, whose patched managed kernel makes RESOURCE_FLUSH producer-complete. An arbitrary stock ARM64 EFI guest cannot inherit that ordering from ordinary virtio-gpu feature negotiation. No upstream-compatible producer contract and no exact generic-media proof exist for either VirGL2 or Venus presentation."
     },
     {
       "id": "zed-vulkan-and-whole-vm-performance",

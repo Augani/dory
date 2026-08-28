@@ -25,7 +25,7 @@ extension StrictInventoryTestCase {
         ]
     }
 
-    func makeFixture() -> StrictInventoryFixture {
+    func makeFixture(targetKind: RuntimeKind = .docker) -> StrictInventoryFixture {
         let source = StrictMigrationRuntime(
             identifier: "unix:///orbstack.sock",
             daemonID: "orbstack-daemon",
@@ -34,7 +34,8 @@ extension StrictInventoryTestCase {
         let target = StrictMigrationRuntime(
             identifier: "unix:///dory.sock",
             daemonID: "dory-daemon",
-            product: "Dory"
+            product: "Dory",
+            kind: targetKind
         )
         configureSource(source)
         target.snapshotValue = RuntimeSnapshot(engineVersion: "27.5.1")
@@ -187,6 +188,7 @@ extension StrictInventoryTestCase {
             "ImageUsage": ["TotalSize": images],
             "VolumeUsage": [
                 "TotalSize": volumes.values.reduce(Int64(0), +),
+                "TotalCount": volumeItems.count,
                 "Items": volumeItems
             ],
             "ContainerUsage": ["TotalSize": containers],
@@ -274,6 +276,13 @@ final class StrictMigrationRuntime: ContainerRuntime {
 
     var snapshotValue = RuntimeSnapshot(engineVersion: "27.5.1")
     var writableSizes: [String: Int64] = [:]
+    var targetStorageUsage: MigrationTargetStorageUsage?
+    var targetStorageUsageSequence: [MigrationTargetStorageUsage?] = []
+    var targetStorageUsageProbeCount = 0
+    var failTargetStorageUsage = false
+    var systemDiskUsageRequestCount = 0
+    var systemDiskUsageStatusCode = 200
+    var systemDiskUsageReason = "OK"
     var version: [String: Any]
     var info: [String: Any]
     var systemDiskUsage: [String: Any]?
@@ -328,6 +337,14 @@ final class StrictMigrationRuntime: ContainerRuntime {
     func snapshot() async throws -> RuntimeSnapshot { snapshotValue }
     func migrationSnapshot() async throws -> RuntimeSnapshot { snapshotValue }
     func migrationContainerWritableSizes() async throws -> [String: Int64] { writableSizes }
+    func migrationTargetStorageUsage() async throws -> MigrationTargetStorageUsage? {
+        targetStorageUsageProbeCount += 1
+        if failTargetStorageUsage { throw TestMutationFailure.targetStorageUsage }
+        if !targetStorageUsageSequence.isEmpty {
+            return targetStorageUsageSequence.removeFirst()
+        }
+        return targetStorageUsage
+    }
     func stop(containerID: String) async throws {}
     func restart(containerID: String) async throws {}
     func logs(containerID: String) async throws -> [LogLine] { [] }
@@ -414,5 +431,9 @@ final class StrictMigrationRuntime: ContainerRuntime {
         snapshotValue.images[index].additionalReferences = Array(references.dropFirst())
     }
 
-    enum TestMutationFailure: Error { case injected, imageReferenced }
+    enum TestMutationFailure: Error {
+        case injected
+        case imageReferenced
+        case targetStorageUsage
+    }
 }

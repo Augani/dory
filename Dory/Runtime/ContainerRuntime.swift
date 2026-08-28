@@ -242,6 +242,18 @@ enum RuntimeFeatureError: Error, Sendable, Equatable, CustomStringConvertible {
     }
 }
 
+/// Authoritative target-filesystem usage used by migration capacity admission.
+///
+/// Docker's `/system/df` describes Docker objects, but Dory owns a dedicated ext4 data disk and
+/// can measure the filesystem itself through its guest agent. Keeping the capability on the target
+/// runtime binds that measurement to the same runtime whose Docker authority and inventory are
+/// re-read immediately before migration staging.
+nonisolated struct MigrationTargetStorageUsage: Sendable, Equatable {
+    let totalBytes: Int64
+    let usedBytes: Int64
+    let availableBytes: Int64
+}
+
 protocol ContainerRuntime: Sendable {
     var kind: RuntimeKind { get }
     /// Stable identity for resumable migration ownership. `kind` alone is not enough because
@@ -255,6 +267,10 @@ protocol ContainerRuntime: Sendable {
     /// created outside named volumes are not silently lost. Created containers may report no size
     /// and are normalized to zero by Docker backends; every other omission fails closed.
     func migrationContainerWritableSizes() async throws -> [String: Int64]
+    /// Returns a target-owned filesystem measurement when the runtime can prove one. `nil` means
+    /// the runtime has no stronger source than Docker's `/system/df`; an error means an advertised
+    /// authoritative source failed and must never be silently downgraded to the Docker estimate.
+    func migrationTargetStorageUsage() async throws -> MigrationTargetStorageUsage?
     func start(containerID: String) async throws
     func stop(containerID: String) async throws
     func restart(containerID: String) async throws
@@ -343,6 +359,7 @@ extension ContainerRuntime {
         let snapshot = try await migrationSnapshot()
         return Dictionary(uniqueKeysWithValues: snapshot.containers.map { ($0.id, 0) })
     }
+    func migrationTargetStorageUsage() async throws -> MigrationTargetStorageUsage? { nil }
     func pull(image: String, registryAuth: String?) async throws {}
     func pull(image: String) async throws { try await pull(image: image, registryAuth: nil) }
     func kill(containerID: String, signal: String?) async throws {

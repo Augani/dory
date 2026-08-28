@@ -28,11 +28,11 @@ schema into replan/migration input; no compatibility path may also authorize a n
 Current immutable guest precursor proof, which is build evidence rather than physical
 qualification:
 
-- the accelerated ARM64 Linux 6.12.30 kernel was rebuilt from the exact pinned source with all
+- the accelerated ARM64 Linux 6.12.106 kernel was rebuilt from the exact pinned source with all
   eight zero-fuzz patches and independently reverified against input fingerprint
-  `20f6a7d7d009e7c25c34c2d0cbc799865eb4459b92aec25f6875e0733b0a981a`; `Image-desktop` is
-  `83da654cedbc88e262fea86d4a1a65f4d4edb9e252902b8d8310694fca215170` and its zstd artifact is
-  `10e931e3d3da82e30fd93d3e8a8aeb1ec5033ccf2741a189e63d7f92b94cd72b`;
+  `53f9eec131736cf44bd2c4caae9d150f26fba86e0b63d170fd8398db4291f998`; `Image-desktop` is
+  `d60981a8d87287fff2ee111264080f0c3a009394001df64e7851059a4d7c2eb1` and its zstd artifact is
+  `f5082b6d66751fc8041465dfe649b303f1758c4a6c5e9caa1e132b2bf3484b98`;
 - the Ubuntu ARM64 managed-desktop rootfs passed its exact package, graphics-pack, and update-bundle
   verifier; the ext4 image is
   `c0dfd7c9c0f7d57a13e1d05e4f2608c5fd22c7b1e36b7b8668a77aa57460223b` and its zstd artifact is
@@ -56,7 +56,7 @@ finalization binds the same bytes.
 | P0 | Normal schema-1 catalog activation permits legacy path/environment launch authority | New machines fail closed; legacy authority is an explicit, audited existing-machine migration only |
 | Closed P1 foundation | Optional RawHV devices previously renumbered later MMIO/IRQ addresses | Durable append-only ABI-v1 roles, schema-5 topology reconciliation, explicit sparse launch slots, fingerprints, and golden/property fixtures now preserve holes and survivors; retain this as a compatibility invariant |
 | P1 | Generic RawHV Linux does not boot the installed disk's EFI path | Keep generic ISO/UEFI on VZ or implement qualified UEFI/NVRAM; narrow managed-image claim |
-| P1 | Shared-texture graphics has typed lease/release ownership, but Dory's pinned Linux 6.12.30 did not wait for the framebuffer writer fence before `RESOURCE_FLUSH` | The upstream producer-wait backport is now in the managed accelerated kernel profile; retain acceleration fail-closed until the signed renderer worker consumes that exact boundary and passes reorder/destruction/device-loss evidence |
+| P1 | Shared-texture graphics has typed lease/release ownership, but Dory's pinned Linux 6.12.106 does not include the framebuffer writer-fence change before `RESOURCE_FLUSH` | The upstream producer-wait backport is now in the managed accelerated kernel profile; retain acceleration fail-closed until the signed renderer worker consumes that exact boundary and passes reorder/destruction/device-loss evidence |
 | P1 | The accepted host architecture is one sandboxed, one-shot XPC worker with a dual VirGL2-plus-Venus contract. Schema-3 tuple `dory-dual-metal-20260826` binds capsets `[2,4]`, the statically linked virglrenderer/libepoxy/MoltenVK closure, the XPC-local ANGLE Metal pair, and exact runner/worker identities. The worker has no ambient Homebrew, Vulkan Loader/ICD, renderer-path, sync-path, or environment authority; independent Mach-O, zero-rpath, entitlement, CDHash, inventory, and deep-signature checks are structural evidence | Pass the first producer-fence-waited synchronized Metal frame, installed production-signed launch, physical Mesa VirGL desktop and Venus/Zed cells, reset/device-loss recovery, 10,000-frame integrity, and whole-VM performance gates. Structural packaging remains evidence, not GPU qualification |
 | P1 | USB/IP requires Dory Tools, rejects isochronous transfers, and has incomplete compensation/deadlines | Daemon USB broker; honest tools-only preview; xHCI or final VZ physical-USB qualification |
 | Closed P1 foundation | MachineManager used one process-wide operation lock and singular pending-start state | A reference-counted per-workspace coordinator now serializes same-workspace mutation while independent workspaces progress; canonical multi-workspace acquisition, exact compare-and-commit, 100 MachineManager tests, and the focused coordinator/launch/lifecycle/planning/resolved gates pass. Daemon-wide shutdown admission remains separate work |
@@ -267,7 +267,7 @@ Decision gate:
   guest ABI preflight, exact guest/host renderer tuple, one candidate boot, and a VZ EFI rollback;
 - keep arbitrary installed ISOs on the software VZ baseline until their exact kernel/direct-boot
   bundle proves the producer-complete framebuffer fence before `RESOURCE_FLUSH`; the managed Linux
-  6.12.30 backport is not permission to project hardware acceleration onto an unknown distro;
+  6.12.106 backport is not permission to project hardware acceleration onto an unknown distro;
 - publish ABI-keyed, relocatable guest graphics packs from the signed catalog: build against an
   explicit oldest-supported libc sysroot, use a relative Vulkan ICD manifest and origin-relative
   non-libc DSO closure, and prove every symbol version, loader interface, soname, window-system,

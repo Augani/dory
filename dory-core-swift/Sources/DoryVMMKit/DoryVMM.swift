@@ -1113,6 +1113,8 @@ public enum DoryVMMMain {
 
         var shutdownCoordinator: DoryVMMShutdownCoordinator?
         defer { shutdownCoordinator?.cancelSignalHandlers() }
+        var earlyApplicationTerminationDelegate: DoryVMMEarlyApplicationTerminationDelegate?
+        defer { withExtendedLifetime(earlyApplicationTerminationDelegate) {} }
         var runtime: DoryVMMRuntime?
         switch arguments.bootMode {
         case .immediateHandoff:
@@ -1151,17 +1153,6 @@ public enum DoryVMMMain {
             guard let rootfsPath = arguments.rootfsPath else {
                 throw DoryVMMArgumentError.missingRootfs
             }
-            if arguments.displayMode == .desktop,
-               arguments.resolvedDevices?.audioInput != false {
-                guard Thread.isMainThread else {
-                    throw DoryVZMachineError.validation(
-                        "desktop microphone authorization must run on the dory-vmm main thread"
-                    )
-                }
-                try MainActor.assumeIsolated {
-                    try DoryVMMHostMicrophoneAccess.requireAuthorization()
-                }
-            }
             let gracefulShutdownAuthorized = arguments.resolvedDevices?
                 .gracefulShutdown ?? true
             let coordinator = DoryVMMShutdownCoordinator(
@@ -1169,6 +1160,26 @@ public enum DoryVMMMain {
             )
             coordinator.installSignalHandlers()
             shutdownCoordinator = coordinator
+            if arguments.displayMode == .desktop {
+                guard Thread.isMainThread else {
+                    throw DoryVZMachineError.validation(
+                        "desktop application lifecycle must run on the dory-vmm main thread"
+                    )
+                }
+                earlyApplicationTerminationDelegate = MainActor.assumeIsolated {
+                    let delegate = DoryVMMEarlyApplicationTerminationDelegate { reason in
+                        coordinator.request(reason: reason)
+                    }
+                    delegate.install()
+                    return delegate
+                }
+            }
+            if arguments.displayMode == .desktop,
+               arguments.resolvedDevices?.audioInput != false {
+                try MainActor.assumeIsolated {
+                    try DoryVMMHostMicrophoneAccess.requireAuthorization()
+                }
+            }
             runtime = try runVirtualMachine(
                 machineID: machineID,
                 operationID: operationID,
@@ -1212,7 +1223,12 @@ public enum DoryVMMMain {
             return
         }
         if let runtime {
-            try withExtendedLifetime(shutdownCoordinator) {
+            guard let activeShutdownCoordinator = shutdownCoordinator else {
+                throw DoryVZMachineError.validation(
+                    "virtual machine runtime is missing its shutdown coordinator"
+                )
+            }
+            try withExtendedLifetime(activeShutdownCoordinator) {
                 if arguments.displayMode == .desktop {
                     guard Thread.isMainThread else {
                         throw DoryVZMachineError.validation(
@@ -1220,12 +1236,22 @@ public enum DoryVMMMain {
                         )
                     }
                     try MainActor.assumeIsolated {
+                        guard let earlyApplicationTerminationDelegate else {
+                            throw DoryVZMachineError.validation(
+                                "desktop display is missing its startup termination delegate"
+                            )
+                        }
                         try DoryVMMDesktopApplication.run(
                             runtime: runtime,
                             machineID: machineID,
                             environment: arguments.environment,
                             resolvedDevices: arguments.resolvedDevices,
-                            displayPresentation: arguments.displayPresentation
+                            displayPresentation: arguments.displayPresentation,
+                            earlyApplicationTerminationDelegate:
+                                earlyApplicationTerminationDelegate,
+                            requestGracefulShutdown: { reason in
+                                activeShutdownCoordinator.request(reason: reason)
+                            }
                         )
                     }
                 } else {

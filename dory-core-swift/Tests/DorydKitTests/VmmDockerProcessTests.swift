@@ -108,6 +108,124 @@ final class VmmDockerProcessTests: XCTestCase {
         XCTAssertNil(process.pid)
         XCTAssertFalse(FileManager.default.fileExists(atPath: handoffPath))
     }
+
+    func testBlockedPublishedLaunchQueuesOneBoundedStopAndReapsExactGeneration() throws {
+        let base = "/tmp/dory-vmm-process-deferred-stop-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let launchPublished = DispatchSemaphore(value: 0)
+        let releaseLaunch = DispatchSemaphore(value: 0)
+        let startFinished = DispatchSemaphore(value: 0)
+        let launchedPID = LockedVmmPIDBox()
+        let startError = LockedVmmErrorBox()
+        let process = VmmDockerProcess(configuration: VmmDockerProcessConfiguration(
+            executablePath: "/bin/sleep",
+            arguments: ["30"],
+            stateDirectory: base + "/state",
+            handoffSocketPath: base + "/state/handoff.sock",
+            readyTimeoutSeconds: 30
+        ))
+        process.installPostPublicationLifecycleGateForTesting { pid in
+            launchedPID.set(pid)
+            launchPublished.signal()
+            releaseLaunch.wait()
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                try process.start()
+            } catch {
+                startError.set(error)
+            }
+            startFinished.signal()
+        }
+        XCTAssertEqual(launchPublished.wait(timeout: .now() + 1), .success)
+
+        let stopStartedAt = ProcessInfo.processInfo.systemUptime
+        XCTAssertFalse(process.stopForTesting(timeout: 0.015, forcedTimeout: 0.015))
+        XCTAssertLessThan(
+            ProcessInfo.processInfo.systemUptime - stopStartedAt,
+            0.15,
+            "a blocked spawn reservation must not escape the caller's stop budget"
+        )
+        let observationStartedAt = ProcessInfo.processInfo.systemUptime
+        XCTAssertNil(process.lifecycleObservation(until: .now() + 0.02))
+        XCTAssertLessThan(
+            ProcessInfo.processInfo.systemUptime - observationStartedAt,
+            0.1,
+            "status observation must remain bounded while launch owns the mutex"
+        )
+
+        releaseLaunch.signal()
+        XCTAssertEqual(startFinished.wait(timeout: .now() + 2), .success)
+        XCTAssertTrue(
+            startError.value.map { "\($0)".contains("start was cancelled") } ?? false,
+            "\(String(describing: startError.value))"
+        )
+        XCTAssertTrue(process.waitForTermination(timeout: 2))
+        XCTAssertEqual(
+            process.lifecycleObservation(until: .now() + 0.1),
+            DockerManagedProcessObservation(pid: nil, isRunning: false)
+        )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: base + "/state/handoff.sock"))
+
+        let pid = try XCTUnwrap(launchedPID.value)
+        errno = 0
+        XCTAssertEqual(kill(pid, 0), -1)
+        XCTAssertEqual(errno, ESRCH, "the exact late-spawned generation must be reaped")
+    }
+
+    func testRetainedTargetRefusesToSignalAfterExactTerminalObservation() {
+        let signals = LockedVmmSignalBox()
+        let child = VmmSupervisedChild(pid: 41) { pid, signal in
+            signals.append(pid: pid, signal: signal)
+            return true
+        }
+
+        XCTAssertTrue(child.send(SIGSTOP))
+        child.markTerminationObserved()
+
+        // Even if PID 41 has since been recycled, no system signal operation is reached once the
+        // retained generation has recorded terminal observation.
+        XCTAssertFalse(child.send(SIGCONT))
+        XCTAssertEqual(signals.value.map(\.pid), [41])
+        XCTAssertEqual(signals.value.map(\.signal), [SIGSTOP])
+    }
+
+    func testTerminalObservationSerializesWithInFlightExactTargetSignal() {
+        let signalEntered = DispatchSemaphore(value: 0)
+        let releaseSignal = DispatchSemaphore(value: 0)
+        let signalFinished = DispatchSemaphore(value: 0)
+        let observationAttempting = DispatchSemaphore(value: 0)
+        let observationFinished = DispatchSemaphore(value: 0)
+        let signals = LockedVmmSignalBox()
+        let child = VmmSupervisedChild(pid: 73) { pid, signal in
+            signals.append(pid: pid, signal: signal)
+            signalEntered.signal()
+            releaseSignal.wait()
+            return true
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            _ = child.send(SIGTERM)
+            signalFinished.signal()
+        }
+        XCTAssertEqual(signalEntered.wait(timeout: .now() + 1), .success)
+        DispatchQueue.global(qos: .userInitiated).async {
+            observationAttempting.signal()
+            child.markTerminationObserved()
+            observationFinished.signal()
+        }
+
+        XCTAssertEqual(observationAttempting.wait(timeout: .now() + 1), .success)
+        XCTAssertEqual(observationFinished.wait(timeout: .now() + 0.03), .timedOut)
+        releaseSignal.signal()
+        XCTAssertEqual(signalFinished.wait(timeout: .now() + 1), .success)
+        XCTAssertEqual(observationFinished.wait(timeout: .now() + 1), .success)
+        XCTAssertFalse(child.send(SIGKILL))
+        XCTAssertEqual(signals.value.count, 1)
+    }
 }
 
 private final class LockedVmmErrorBox: @unchecked Sendable {
@@ -123,6 +241,45 @@ private final class LockedVmmErrorBox: @unchecked Sendable {
     func set(_ error: Error) {
         lock.lock()
         stored = error
+        lock.unlock()
+    }
+}
+
+private final class LockedVmmPIDBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: Int32?
+
+    var value: Int32? {
+        lock.lock()
+        defer { lock.unlock() }
+        return stored
+    }
+
+    func set(_ value: Int32) {
+        lock.lock()
+        stored = value
+        lock.unlock()
+    }
+}
+
+private final class LockedVmmSignalBox: @unchecked Sendable {
+    struct Observation: Equatable {
+        let pid: pid_t
+        let signal: Int32
+    }
+
+    private let lock = NSLock()
+    private var stored: [Observation] = []
+
+    var value: [Observation] {
+        lock.lock()
+        defer { lock.unlock() }
+        return stored
+    }
+
+    func append(pid: pid_t, signal: Int32) {
+        lock.lock()
+        stored.append(Observation(pid: pid, signal: signal))
         lock.unlock()
     }
 }

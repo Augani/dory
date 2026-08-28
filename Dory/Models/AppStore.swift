@@ -919,7 +919,20 @@ final class AppStore {
             let (status, socketPath) = try await waitForDorydBackend()
             daemonSocketPath = socketPath
             runtimeOwnedByDoryd = true
-            let dockerRuntime = DockerEngineRuntime(socketPath: socketPath, kind: .sharedVM)
+            let client = dorydClient
+            let home = environment["HOME"] ?? NSHomeDirectory()
+            let dockerRuntime = DockerEngineRuntime(
+                socketPath: socketPath,
+                kind: .sharedVM,
+                migrationTargetStorageUsageProbe: {
+                    let usage = try await client.dockerGuestDataDiskUsage()
+                    return try Self.verifiedMigrationTargetStorageUsage(
+                        usage,
+                        expectedSocketPath: socketPath,
+                        selectedDataDriveHome: home
+                    )
+                }
+            )
             runtime = dockerRuntime
 
             if status.state != "running" {
@@ -964,6 +977,62 @@ final class AppStore {
             runtime = DisconnectedRuntime()
             return false
         }
+    }
+
+    /// Binds a daemon-owned guest measurement to both authorities used by migration: the exact
+    /// Docker socket and the currently verified selected data drive. Capacity similarity is not an
+    /// identity proof; two different drives commonly have the same default 128 GiB ceiling.
+    nonisolated static func verifiedMigrationTargetStorageUsage(
+        _ usage: DorydDockerGuestDataDiskUsage,
+        expectedSocketPath: String,
+        selectedDataDriveHome home: String
+    ) throws -> MigrationTargetStorageUsage {
+        guard usage.engineSocketPath == expectedSocketPath else {
+            throw MigrationStrictInventoryError.incomplete(
+                "doryd measured a different engine socket than the migration target"
+            )
+        }
+
+        let selectedDriveID: UUID
+        do {
+            let store = try DoryDataDriveSelectionStore(home: home)
+            guard let selection = try store.read(), selection.phase == .ready,
+                  let drive = try store.inspectSelection() else {
+                throw MigrationStrictInventoryError.incomplete(
+                    "Dory has no verified selected data drive"
+                )
+            }
+            let manifest = try drive.readManifest()
+            guard manifest.id == selection.driveID else {
+                throw MigrationStrictInventoryError.incomplete(
+                    "Dory's selected data-drive record changed during verification"
+                )
+            }
+            selectedDriveID = selection.driveID
+        } catch let error as MigrationStrictInventoryError {
+            throw error
+        } catch {
+            throw MigrationStrictInventoryError.incomplete(
+                "Dory's selected data-drive identity could not be verified: \(error)"
+            )
+        }
+        guard usage.dataDriveID == selectedDriveID else {
+            throw MigrationStrictInventoryError.incomplete(
+                "doryd measured a different data drive than the migration target"
+            )
+        }
+        guard let totalBytes = Int64(exactly: usage.totalBytes),
+              let usedBytes = Int64(exactly: usage.usedBytes),
+              let availableBytes = Int64(exactly: usage.availableBytes) else {
+            throw MigrationStrictInventoryError.incomplete(
+                "Dory guest data-disk usage exceeds the supported signed byte range"
+            )
+        }
+        return MigrationTargetStorageUsage(
+            totalBytes: totalBytes,
+            usedBytes: usedBytes,
+            availableBytes: availableBytes
+        )
     }
 
     /// `engineStart` confirms doryd's lifecycle promotion, but attaching clients can still race the
