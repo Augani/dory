@@ -753,15 +753,15 @@ def validate_definition(value: dict[str, Any]) -> dict[str, Any]:
         {"failClosedPatch", "kernelVersion", "prepareFramebufferPatch"},
         "producerFence",
     )
-    if producer["kernelVersion"] != "6.12.30":
+    if producer["kernelVersion"] != "6.12.106":
         fail("producerFence kernel version is unsupported")
     expected_producer_patches = {
         "prepareFramebufferPatch": {
-            "path": "guest/kernel/patches/6.12.30/0007-virtio-gpu-wait-for-scanout-producers.patch",
-            "sha256": "fce10edac1be12b24f480141bf5fa5f0df139dec86e5bd3c798f245f48ed5f82",
+            "path": "guest/kernel/patches/6.12.106/0007-virtio-gpu-wait-for-scanout-producers.patch",
+            "sha256": "b899d2981d192828ebcbba02a3f8f3409dd27663bf8ca3059bdc95da55090f42",
         },
         "failClosedPatch": {
-            "path": "guest/kernel/patches/6.12.30/0008-virtio-gpu-fail-closed-on-producer-fence-error.patch",
+            "path": "guest/kernel/patches/6.12.106/0008-virtio-gpu-fail-closed-on-producer-fence-error.patch",
             "sha256": "53f0db7b102f53c6d3aee13dc43cf45dbfedd5dabd0c04026b0b0c709c13953d",
         },
     }
