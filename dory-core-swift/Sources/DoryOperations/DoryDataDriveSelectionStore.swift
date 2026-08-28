@@ -159,6 +159,19 @@ public struct DoryDataDriveSelectionStore: Sendable, Equatable {
         }
     }
 
+    /// Proves that a process-lifetime authority was acquired for this exact selection store. The
+    /// daemon injects its already-held authority into subsystems; reopening and flocking the same
+    /// lock file would self-conflict on Darwin and must never be used as an ownership test.
+    public func validateAuthority(
+        _ authority: DoryDataDriveSelectionAuthority
+    ) throws {
+        guard authority.storePath == path else {
+            throw DoryDataDriveSelectionError.filesystem(
+                "selected-drive authority belongs to another selection store"
+            )
+        }
+    }
+
     public func read(fileManager: FileManager = .default) throws -> DoryDataDriveSelection? {
         let data: Data
         do {

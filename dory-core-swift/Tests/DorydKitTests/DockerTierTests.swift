@@ -1,5 +1,6 @@
 import Darwin
 import DoryCore
+import DoryOperations
 @testable import DorydKit
 import Foundation
 import XCTest
@@ -2135,6 +2136,289 @@ final class DockerTierTests: XCTestCase {
         XCTAssertTrue(tier.stop())
     }
 
+    func testManagedFreshSelectedDriveFormatsPreparedSparseDiskInPlaceBeforeReadiness() throws {
+        let base = "/Users/Shared/dory-test-tier-fresh-data-drive-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let home = base + "/home"
+        try FileManager.default.createDirectory(atPath: home, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let selectionStore = try DoryDataDriveSelectionStore(home: home)
+        let selectionAuthority = try selectionStore.acquireAuthority()
+        let drive = try selectionStore.prepareSelection(authority: selectionAuthority)
+        let trustedDriveRoot = try DoryTrustedDirectoryRoot(
+            canonicalAbsolutePath: drive.root
+        )
+        let diskImagePath = drive.engineDataDiskPath
+        let filesystemUUID = UUID(uuidString: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")!
+        XCTAssertFalse(FileManager.default.fileExists(atPath: diskImagePath))
+
+        let formatting = LockedDiskFormattingObservation()
+        let helper = ReadyDockerManagedProcess(pid: 44_006) {
+            let before = try diskImageFileIdentity(at: diskImagePath)
+            try writeMinimalExt4SuperblockInPlace(
+                at: diskImagePath,
+                filesystemUUID: filesystemUUID
+            )
+            formatting.set(before: before, after: try diskImageFileIdentity(at: diskImagePath))
+        }
+        let client = GuestResourceProbeAgentClient(records: [
+            .success(guestResourceRecord(filesystemUUID: filesystemUUID)),
+            .success(guestResourceRecord(filesystemUUID: filesystemUUID)),
+        ])
+        let agent = AgentControl(
+            configuration: AgentControlConfiguration(forwardSocketPath: base + "/agent.sock")
+        ) { _ in client }
+        let tier = DockerTier(
+            configuration: DockerTierConfiguration(
+                home: home,
+                forwardSocketPath: base + "/forward.sock",
+                hvProcess: HvProcessConfiguration(
+                    executablePath: "/bin/false",
+                    arguments: ["--data-drive", drive.root]
+                )
+            ),
+            agentControl: agent,
+            dockerReadyWaiter: { _, _, _ in true },
+            dataDriveSelectionAuthority: selectionAuthority,
+            dataDriveTrustedRoot: trustedDriveRoot,
+            newGuestDataDiskFilesystemUUID: { filesystemUUID }
+        )
+        tier.installManagedProcessFactory { _, _ in helper }
+        defer { tier.stop() }
+
+        try tier.start()
+
+        let observation = try XCTUnwrap(formatting.value)
+        XCTAssertEqual(observation.before.device, observation.after.device)
+        XCTAssertEqual(observation.before.inode, observation.after.inode)
+        XCTAssertEqual(observation.before.logicalBytes, DockerDataDisk.blankDiskBytes)
+        XCTAssertEqual(observation.after.logicalBytes, DockerDataDisk.blankDiskBytes)
+        XCTAssertEqual(observation.before.allocatedBlocks, 0)
+        XCTAssertGreaterThan(observation.after.allocatedBlocks, 0)
+        XCTAssertEqual(tier.status().state, .running)
+
+        let manifest = try drive.readManifest()
+        let authority = try DockerTier.inspectGuestDataDiskAuthority(
+            dataDriveID: manifest.id,
+            at: diskImagePath
+        )
+        XCTAssertEqual(authority.filesystemUUID, filesystemUUID)
+        XCTAssertEqual(authority.diskImageInode, observation.before.inode)
+        let snapshot = try XCTUnwrap(tier.guestResourceSnapshot())
+        XCTAssertEqual(snapshot.selectedDataDriveID, manifest.id)
+        XCTAssertEqual(snapshot.dataDiskFilesystemUUID, filesystemUUID)
+        XCTAssertEqual(client.resourceProbeCount, 2)
+    }
+
+    func testPinnedSelectedDriveRejectsSameIdentityCloneBeforeHelperOrDiskMutation() throws {
+        let base = "/Users/Shared/dory-test-tier-pinned-drive-swap-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let home = base + "/home"
+        try FileManager.default.createDirectory(atPath: home, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let selectionStore = try DoryDataDriveSelectionStore(home: home)
+        let selectionAuthority = try selectionStore.acquireAuthority()
+        let drive = try selectionStore.prepareSelection(authority: selectionAuthority)
+        let pinnedRoot = try DoryTrustedDirectoryRoot(canonicalAbsolutePath: drive.root)
+        let originalManifest = try drive.readManifest()
+        let displacedRoot = drive.root + ".pinned-original"
+        let displacedDisk = displacedRoot + "/engine/docker-data.ext4"
+        let replacementDisk = drive.engineDataDiskPath
+        XCTAssertFalse(FileManager.default.fileExists(atPath: replacementDisk))
+
+        try FileManager.default.moveItem(atPath: drive.root, toPath: displacedRoot)
+        try FileManager.default.copyItem(atPath: displacedRoot, toPath: drive.root)
+        let replacementDrive = try DoryDataDrive(home: home, overrideRoot: drive.root)
+        XCTAssertEqual(try replacementDrive.readManifest().id, originalManifest.id)
+
+        let helperStarts = LockedInt()
+        let helper = ReadyDockerManagedProcess(pid: 44_008) {
+            helperStarts.increment()
+            try Data("helper touched replacement\n".utf8).write(
+                to: URL(fileURLWithPath: replacementDisk)
+            )
+        }
+        let tier = DockerTier(
+            configuration: DockerTierConfiguration(
+                home: home,
+                forwardSocketPath: base + "/forward.sock",
+                hvProcess: HvProcessConfiguration(
+                    executablePath: "/bin/false",
+                    arguments: ["--data-drive", drive.root]
+                )
+            ),
+            dockerReadyWaiter: { _, _, _ in true },
+            dataDriveSelectionAuthority: selectionAuthority,
+            dataDriveTrustedRoot: pinnedRoot
+        )
+        tier.installManagedProcessFactory { _, _ in helper }
+        defer { tier.stop() }
+
+        XCTAssertThrowsError(try tier.start()) { error in
+            let detail = "\(error)"
+            XCTAssertTrue(
+                detail.contains("quarantined") || detail.contains("identity"),
+                detail
+            )
+        }
+        XCTAssertEqual(helperStarts.value, 0)
+        XCTAssertEqual(helper.startEntered.wait(timeout: .now()), .timedOut)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: replacementDisk))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: displacedDisk))
+        XCTAssertEqual(tier.status().state, .failed)
+        XCTAssertNil(tier.status().hvPID)
+    }
+
+    func testManagedFreshSelectedDriveRejectsSameUUIDPathReplacementDuringHelperStart() throws {
+        let base = "/Users/Shared/dory-test-tier-fresh-data-drive-swap-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let home = base + "/home"
+        try FileManager.default.createDirectory(atPath: home, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let selectionStore = try DoryDataDriveSelectionStore(home: home)
+        let selectionAuthority = try selectionStore.acquireAuthority()
+        let drive = try selectionStore.prepareSelection(authority: selectionAuthority)
+        let trustedDriveRoot = try DoryTrustedDirectoryRoot(
+            canonicalAbsolutePath: drive.root
+        )
+        let manifest = try drive.readManifest()
+        let diskImagePath = drive.engineDataDiskPath
+        let displacedPath = diskImagePath + ".displaced"
+        let filesystemUUID = UUID(uuidString: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")!
+        XCTAssertFalse(FileManager.default.fileExists(atPath: diskImagePath))
+
+        let swap = LockedDiskFormattingObservation()
+        let helper = ReadyDockerManagedProcess(pid: 44_007) {
+            try writeMinimalExt4SuperblockInPlace(
+                at: diskImagePath,
+                filesystemUUID: filesystemUUID
+            )
+            let displaced = try diskImageFileIdentity(at: diskImagePath)
+            try FileManager.default.moveItem(atPath: diskImagePath, toPath: displacedPath)
+            try writeMinimalExt4Image(to: diskImagePath, filesystemUUID: filesystemUUID)
+            swap.set(before: displaced, after: try diskImageFileIdentity(at: diskImagePath))
+        }
+        let client = GuestResourceProbeAgentClient(records: [
+            .success(guestResourceRecord(filesystemUUID: filesystemUUID)),
+        ])
+        let agent = AgentControl(
+            configuration: AgentControlConfiguration(forwardSocketPath: base + "/agent.sock")
+        ) { _ in client }
+        let tier = DockerTier(
+            configuration: DockerTierConfiguration(
+                home: home,
+                forwardSocketPath: base + "/forward.sock",
+                hvProcess: HvProcessConfiguration(
+                    executablePath: "/bin/false",
+                    arguments: ["--data-drive", drive.root]
+                )
+            ),
+            agentControl: agent,
+            dockerReadyWaiter: { _, _, _ in true },
+            dataDriveSelectionAuthority: selectionAuthority,
+            dataDriveTrustedRoot: trustedDriveRoot,
+            newGuestDataDiskFilesystemUUID: { filesystemUUID }
+        )
+        tier.installManagedProcessFactory { _, _ in helper }
+        defer { tier.stop() }
+
+        XCTAssertThrowsError(try tier.start()) { error in
+            XCTAssertTrue("\(error)".contains("launch authority"), "\(error)")
+        }
+
+        let observation = try XCTUnwrap(swap.value)
+        XCTAssertNotEqual(observation.before.inode, observation.after.inode)
+        let displacedAuthority = try DockerTier.inspectGuestDataDiskAuthority(
+            dataDriveID: manifest.id,
+            at: displacedPath
+        )
+        let replacementAuthority = try DockerTier.inspectGuestDataDiskAuthority(
+            dataDriveID: manifest.id,
+            at: diskImagePath
+        )
+        XCTAssertEqual(displacedAuthority.filesystemUUID, replacementAuthority.filesystemUUID)
+        XCTAssertNotEqual(displacedAuthority.diskImageInode, replacementAuthority.diskImageInode)
+        XCTAssertEqual(client.resourceProbeCount, 0)
+        XCTAssertEqual(tier.status().state, .failed)
+        XCTAssertNil(tier.status().hvPID)
+    }
+
+    func testUnconfirmedSelectedDriveHelperRetainsLocksAndUnlinkedDiskUntilExactTerminal() throws {
+        let base = "/Users/Shared/dory-test-tier-retained-disk-authority-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let home = base + "/home"
+        try FileManager.default.createDirectory(atPath: home, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let selectionStore = try DoryDataDriveSelectionStore(home: home)
+        let drive = try selectionStore.prepareSelection()
+        let pinnedRoot = try DoryTrustedDirectoryRoot(canonicalAbsolutePath: drive.root)
+        let helper = UnconfirmedStopDockerProcess(pid: 44_009)
+        let tier = DockerTier(
+            configuration: DockerTierConfiguration(
+                home: home,
+                forwardSocketPath: base + "/forward.sock",
+                hvProcess: HvProcessConfiguration(
+                    executablePath: "/bin/false",
+                    arguments: ["--data-drive", drive.root]
+                )
+            ),
+            dockerReadyWaiter: { _, _, _ in true },
+            dataDriveTrustedRoot: pinnedRoot
+        )
+        tier.installManagedProcessFactory { _, _ in helper }
+        defer { tier.stop() }
+
+        try tier.start()
+        let diskIdentity = try diskImageFileIdentity(at: drive.engineDataDiskPath)
+        XCTAssertTrue(
+            processHasOpenFile(
+                device: diskIdentity.device,
+                inode: diskIdentity.inode
+            )
+        )
+        XCTAssertThrowsError(try selectionStore.acquireAuthority())
+        XCTAssertThrowsError(
+            try EngineStateDirectoryLock(
+                stateDirectory: drive.root,
+                lockFileName: "drive.lock"
+            )
+        )
+
+        try FileManager.default.removeItem(atPath: drive.engineDataDiskPath)
+        XCTAssertFalse(tier.stop())
+        XCTAssertEqual(tier.status().state, .failed)
+        XCTAssertTrue(
+            processHasOpenFile(
+                device: diskIdentity.device,
+                inode: diskIdentity.inode
+            ),
+            "an unconfirmed helper must retain the exact unlinked disk descriptor"
+        )
+        XCTAssertThrowsError(try selectionStore.acquireAuthority())
+        XCTAssertThrowsError(
+            try EngineStateDirectoryLock(
+                stateDirectory: drive.root,
+                lockFileName: "drive.lock"
+            )
+        )
+
+        helper.confirmExit()
+        XCTAssertTrue(tier.stop())
+        XCTAssertFalse(
+            processHasOpenFile(
+                device: diskIdentity.device,
+                inode: diskIdentity.inode
+            ),
+            "the exact terminal transition must release the admitted disk descriptor"
+        )
+        let releasedSelection = try selectionStore.acquireAuthority()
+        let releasedDriveLock = try EngineStateDirectoryLock(
+            stateDirectory: drive.root,
+            lockFileName: "drive.lock"
+        )
+        withExtendedLifetime((releasedSelection, releasedDriveLock)) {}
+    }
+
     func testManagedGuestRejectsAClonedUUIDFromTheWrongConfiguredHostDrive() throws {
         let base = "/tmp/dory-tier-cloned-uuid-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let selectedRoot = base + "/selected.dorydrive"
@@ -2436,7 +2720,9 @@ final class DockerTierTests: XCTestCase {
     }
 }
 
-private func guestResourceRecord() -> Data {
+private func guestResourceRecord(
+    filesystemUUID: UUID = UUID(uuidString: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")!
+) -> Data {
     Data("""
     schema=dev.dory.guest-resources
     version=2
@@ -2450,7 +2736,7 @@ private func guestResourceRecord() -> Data {
     disk_mount_source=/dev/vdb
     disk_filesystem_type=ext4
     disk_device_major_minor=254:16
-    disk_filesystem_uuid=aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee
+    disk_filesystem_uuid=\(filesystemUUID.uuidString.lowercased())
     disk_total_bytes=137438953472
     disk_used_bytes=8589934592
     disk_available_bytes=128849018880
@@ -2473,6 +2759,69 @@ private func writeMinimalExt4Image(to path: String, filesystemUUID: UUID) throws
     )
     try image.write(to: URL(fileURLWithPath: path), options: .atomic)
     guard chmod(path, 0o600) == 0 else {
+        throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+    }
+}
+
+private struct DiskImageFileIdentity: Sendable, Equatable {
+    let device: UInt64
+    let inode: UInt64
+    let logicalBytes: Int64
+    let allocatedBlocks: Int64
+}
+
+private func diskImageFileIdentity(at path: String) throws -> DiskImageFileIdentity {
+    let descriptor = path.withCString { open($0, O_RDONLY | O_CLOEXEC | O_NOFOLLOW) }
+    guard descriptor >= 0 else {
+        throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+    }
+    defer { close(descriptor) }
+    var status = stat()
+    guard fstat(descriptor, &status) == 0 else {
+        throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+    }
+    return DiskImageFileIdentity(
+        device: UInt64(status.st_dev),
+        inode: UInt64(status.st_ino),
+        logicalBytes: Int64(status.st_size),
+        allocatedBlocks: Int64(status.st_blocks)
+    )
+}
+
+private func processHasOpenFile(device: UInt64, inode: UInt64) -> Bool {
+    for descriptor in 0..<getdtablesize() {
+        var status = stat()
+        guard fstat(descriptor, &status) == 0 else { continue }
+        if UInt64(truncatingIfNeeded: status.st_dev) == device,
+           UInt64(status.st_ino) == inode {
+            return true
+        }
+    }
+    return false
+}
+
+private func writeMinimalExt4SuperblockInPlace(
+    at path: String,
+    filesystemUUID: UUID
+) throws {
+    let descriptor = path.withCString { open($0, O_RDWR | O_CLOEXEC | O_NOFOLLOW) }
+    guard descriptor >= 0 else {
+        throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+    }
+    defer { close(descriptor) }
+
+    var superblock = [UInt8](repeating: 0, count: 1_024)
+    // Two 1 KiB blocks fit within the already-prepared sparse image's logical capacity.
+    superblock[0x04] = 2
+    superblock[0x38] = 0x53
+    superblock[0x39] = 0xef
+    var rawUUID = filesystemUUID.uuid
+    let uuidBytes = withUnsafeBytes(of: &rawUUID) { Array($0) }
+    superblock.replaceSubrange(0x68..<(0x68 + uuidBytes.count), with: uuidBytes)
+    let written = superblock.withUnsafeBytes {
+        pwrite(descriptor, $0.baseAddress, $0.count, off_t(1_024))
+    }
+    guard written == superblock.count, fsync(descriptor) == 0 else {
         throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
     }
 }
@@ -2693,17 +3042,40 @@ private final class GuestDataDiskAuthoritySequence: @unchecked Sendable {
     }
 }
 
+private final class LockedDiskFormattingObservation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedValue: (before: DiskImageFileIdentity, after: DiskImageFileIdentity)?
+
+    var value: (before: DiskImageFileIdentity, after: DiskImageFileIdentity)? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedValue
+    }
+
+    func set(before: DiskImageFileIdentity, after: DiskImageFileIdentity) {
+        lock.lock()
+        storedValue = (before, after)
+        lock.unlock()
+    }
+}
+
 private final class ReadyDockerManagedProcess: DockerManagedProcess, @unchecked Sendable {
     let startEntered = DispatchSemaphore(value: 0)
     private let lock = NSLock()
     private let processID: Int32
+    private let startAction: @Sendable () throws -> Void
     private var running = false
 
-    init(pid: Int32) {
+    init(
+        pid: Int32,
+        startAction: @escaping @Sendable () throws -> Void = {}
+    ) {
         processID = pid
+        self.startAction = startAction
     }
 
     func start() throws {
+        try startAction()
         lock.lock()
         running = true
         lock.unlock()

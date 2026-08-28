@@ -1,6 +1,7 @@
 import AppKit
 import Darwin
 import DoryCore
+import DoryOperations
 import DorydKit
 @testable import DoryVMMKit
 import Virtualization
@@ -697,6 +698,67 @@ final class DoryVMMKitTests: XCTestCase {
         arguments.handoffSocketPath = "/tmp/handoff.sock"
         XCTAssertThrowsError(try DoryVMMMain.run(arguments)) { error in
             XCTAssertEqual(error as? DoryVMMArgumentError, .missingOperationID)
+        }
+    }
+
+    func testParsesExactDockerDataDiskDescriptorContract() throws {
+        XCTAssertEqual(DockerDataDiskLaunchContract.childFileDescriptor, 19)
+        XCTAssertEqual(
+            VmmDockerProcessConfiguration.dockerDataDiskChildDescriptor,
+            DockerDataDiskLaunchContract.childFileDescriptor
+        )
+        XCTAssertEqual(
+            DockerDataDiskLaunchContract.fileDescriptorArgument,
+            "--docker-data-disk-fd"
+        )
+        XCTAssertEqual(
+            DockerDataDiskLaunchContract.filesystemUUIDArgument,
+            "--docker-data-disk-uuid"
+        )
+
+        let arguments = try parseDoryVMMArguments([
+            DockerDataDiskLaunchContract.fileDescriptorArgument,
+            String(DockerDataDiskLaunchContract.childFileDescriptor),
+            DockerDataDiskLaunchContract.filesystemUUIDArgument,
+            "01234567-89ab-4cde-8f01-23456789abcd",
+        ])
+
+        XCTAssertEqual(
+            arguments.dockerDataDiskFileDescriptor,
+            DockerDataDiskLaunchContract.childFileDescriptor
+        )
+        XCTAssertEqual(
+            arguments.dockerDataDiskFilesystemUUID,
+            UUID(uuidString: "01234567-89ab-4cde-8f01-23456789abcd")
+        )
+        XCTAssertThrowsError(try parseDoryVMMArguments([
+            "--docker-data-disk-fd", "-1",
+        ])) { error in
+            XCTAssertEqual(
+                error as? DoryVMMArgumentError,
+                .invalidDockerDataDiskFileDescriptor("-1")
+            )
+        }
+        XCTAssertThrowsError(try parseDoryVMMArguments([
+            "--docker-data-disk-uuid", "01234567-89AB-4CDE-8F01-23456789ABCD",
+        ])) { error in
+            XCTAssertEqual(
+                error as? DoryVMMArgumentError,
+                .invalidDockerDataDiskFilesystemUUID(
+                    "01234567-89AB-4CDE-8F01-23456789ABCD"
+                )
+            )
+        }
+        XCTAssertThrowsError(try parseDoryVMMArguments([
+            DockerDataDiskLaunchContract.fileDescriptorArgument,
+            String(DockerDataDiskLaunchContract.childFileDescriptor),
+            DockerDataDiskLaunchContract.fileDescriptorArgument,
+            "20",
+        ])) { error in
+            XCTAssertEqual(
+                error as? DoryVMMArgumentError,
+                .duplicateArgument(DockerDataDiskLaunchContract.fileDescriptorArgument)
+            )
         }
     }
 
@@ -1427,6 +1489,9 @@ final class DoryVMMKitTests: XCTestCase {
         FileManager.default.createFile(atPath: kernel, contents: Data([0x7f, 0x45, 0x4c, 0x46]))
         FileManager.default.createFile(atPath: rootfs, contents: nil)
         XCTAssertEqual(truncate(rootfs, 1024 * 1024), 0)
+        let dataDiskDescriptor = try createPrivateSparseDockerDisk(at: driveDisk)
+        defer { close(dataDiskDescriptor) }
+        let filesystemUUID = UUID(uuidString: "01234567-89ab-4cde-8f01-23456789abcd")!
 
         let configuration = try DoryVZConfigurationBuilder.makeConfiguration(
             spec: DoryVZMachineSpec(
@@ -1436,7 +1501,9 @@ final class DoryVMMKitTests: XCTestCase {
                 rootfsPath: rootfs,
                 memoryMB: 2048,
                 cpuCount: 2,
-                dockerDataDiskPath: driveDisk
+                dockerDataDiskPath: driveDisk,
+                dockerDataDiskFileDescriptor: dataDiskDescriptor,
+                dockerDataDiskFilesystemUUID: filesystemUUID
             ),
             serialOutput: nil
         )
@@ -1447,9 +1514,89 @@ final class DoryVMMKitTests: XCTestCase {
         let bootScript = try String(contentsOfFile: "\(base)/dorycfg/boot.sh", encoding: .utf8)
         XCTAssertTrue(bootScript.contains("DORY_ALLOW_DATA_FORMAT=1"))
         XCTAssertTrue(bootScript.contains("FORMAT-PROVEN-BLANK"))
+        XCTAssertTrue(bootScript.contains(
+            "DORY_DATA_EXPECTED_UUID='01234567-89ab-4cde-8f01-23456789abcd'"
+        ))
+        XCTAssertEqual(
+            bootScript.components(separatedBy: "mkfs.ext4 -F -U").count - 1,
+            2,
+            "both the fast-commit and compatibility formatter must set the exact UUID"
+        )
+        XCTAssertTrue(bootScript.contains("UUID-MISMATCH-AFTER-FORMAT"))
         try assertShellSyntax("\(base)/dorycfg/boot.sh")
         let dataDevice = try XCTUnwrap(configuration.storageDevices.last as? VZVirtioBlockDeviceConfiguration)
         XCTAssertEqual(dataDevice.blockDeviceIdentifier, "dory-data")
+        let attachment = try XCTUnwrap(
+            dataDevice.attachment as? VZDiskImageStorageDeviceAttachment
+        )
+        XCTAssertEqual(attachment.url.path, "/dev/fd/\(dataDiskDescriptor)")
+    }
+
+    func testDockerVZBootScriptRequiresExactDataMountBeforeDockerdStarts() throws {
+        let base = "/tmp/dory-vmm-docker-boot-contract-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let kernel = "\(base)/vmlinux"
+        let rootfs = "\(base)/rootfs.raw"
+        let driveDisk = "\(base)/Dory.dorydrive/engine/docker-data.ext4"
+        FileManager.default.createFile(
+            atPath: kernel,
+            contents: Data([0x7f, 0x45, 0x4c, 0x46])
+        )
+        FileManager.default.createFile(atPath: rootfs, contents: nil)
+        XCTAssertEqual(truncate(rootfs, 1024 * 1024), 0)
+        let dataDiskDescriptor = try createPrivateSparseDockerDisk(at: driveDisk)
+        defer { close(dataDiskDescriptor) }
+
+        _ = try DoryVZConfigurationBuilder.makeConfiguration(
+            spec: DoryVZMachineSpec(
+                machineID: "docker",
+                stateDirectory: base,
+                kernelPath: kernel,
+                rootfsPath: rootfs,
+                memoryMB: 2_048,
+                cpuCount: 2,
+                dockerDataDiskPath: driveDisk,
+                dockerDataDiskFileDescriptor: dataDiskDescriptor,
+                dockerDataDiskFilesystemUUID: UUID(
+                    uuidString: "01234567-89ab-4cde-8f01-23456789abcd"
+                )!
+            ),
+            serialOutput: nil
+        )
+
+        let bootScriptPath = "\(base)/dorycfg/boot.sh"
+        let bootScript = try String(contentsOfFile: bootScriptPath, encoding: .utf8)
+        let missingDeviceGuard = try XCTUnwrap(bootScript.range(of:
+            "if [ ! -b /dev/vdb ]; then echo DORY-DATA-DISK-BLOCK-DEVICE-MISSING; " +
+            "sync; poweroff -f; exit 1; fi"
+        ))
+        let dataDiskWork = try XCTUnwrap(bootScript.range(of: "if [ -b /dev/vdb ]; then"))
+        let mountIdentityRead = try XCTUnwrap(bootScript.range(of:
+            "DORY_DATA_MOUNT_IDENTITY=$(awk '$2==\"/var/lib/docker\"" +
+            "{print $1 \" \" $3}' /proc/mounts | tail -n 1)"
+        ))
+        let mountIdentityGuard = try XCTUnwrap(bootScript.range(of:
+            "if [ \"$DORY_DATA_MOUNT_IDENTITY\" != \"/dev/vdb ext4\" ]; then " +
+            "echo DORY-DATA-DISK-MOUNT-IDENTITY-MISMATCH; sync; poweroff -f; exit 1; fi"
+        ))
+        let dockerdGate = try XCTUnwrap(
+            bootScript.range(of: "if [ -x /usr/local/bin/dockerd ]; then")
+        )
+        let dockerdExec = try XCTUnwrap(
+            bootScript.range(of: "exec /usr/local/bin/dockerd")
+        )
+        let dockerdStart = try XCTUnwrap(
+            bootScript.range(of: "/run/dory-restart-dockerd >/var/log/dockerd.log 2>&1 &")
+        )
+
+        XCTAssertLessThan(missingDeviceGuard.lowerBound, dataDiskWork.lowerBound)
+        XCTAssertLessThan(dataDiskWork.lowerBound, mountIdentityRead.lowerBound)
+        XCTAssertLessThan(mountIdentityRead.lowerBound, mountIdentityGuard.lowerBound)
+        XCTAssertLessThan(mountIdentityGuard.lowerBound, dockerdGate.lowerBound)
+        XCTAssertLessThan(mountIdentityGuard.lowerBound, dockerdExec.lowerBound)
+        XCTAssertLessThan(mountIdentityGuard.lowerBound, dockerdStart.lowerBound)
+        try assertShellSyntax(bootScriptPath)
     }
 
     func testVZFileHandleNetworkWritesNativeIPv6BootContract() throws {
@@ -1547,6 +1694,13 @@ final class DoryVMMKitTests: XCTestCase {
         ext4[1024 + 0x39] = 0xEF
         try ext4.write(to: URL(fileURLWithPath: dataDisk))
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: dataDisk)
+        XCTAssertEqual(truncate(dataDisk, 128 * 1024 * 1024 * 1024), 0)
+        let dataDiskDescriptor = open(dataDisk, O_RDWR | O_CLOEXEC)
+        guard dataDiskDescriptor >= 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        defer { close(dataDiskDescriptor) }
+        let filesystemUUID = UUID(uuidString: "fedcba98-7654-4321-8fed-cba987654321")!
 
         _ = try DoryVZConfigurationBuilder.makeConfiguration(
             spec: DoryVZMachineSpec(
@@ -1555,7 +1709,10 @@ final class DoryVMMKitTests: XCTestCase {
                 kernelPath: kernel,
                 rootfsPath: rootfs,
                 memoryMB: 2048,
-                cpuCount: 2
+                cpuCount: 2,
+                dockerDataDiskPath: dataDisk,
+                dockerDataDiskFileDescriptor: dataDiskDescriptor,
+                dockerDataDiskFilesystemUUID: filesystemUUID
             ),
             serialOutput: nil
         )
@@ -1564,7 +1721,100 @@ final class DoryVMMKitTests: XCTestCase {
         let bootScript = try String(contentsOfFile: bootPath, encoding: .utf8)
         XCTAssertTrue(bootScript.contains("DORY_ALLOW_DATA_FORMAT=0"))
         XCTAssertTrue(bootScript.contains("MOUNT-FAILED-EXISTING-EXT4"))
+        XCTAssertTrue(bootScript.contains("DORY-DATA-DISK-UUID-MISMATCH"))
+        let uuidCheck = try XCTUnwrap(bootScript.range(of: "DORY-DATA-DISK-UUID-MISMATCH"))
+        let firstMount = try XCTUnwrap(bootScript.range(of: "mount -t ext4 -o"))
+        XCTAssertLessThan(uuidCheck.lowerBound, firstMount.lowerBound)
         try assertShellSyntax(bootPath)
+    }
+
+    func testDockerVZConfigurationRejectsMissingMismatchedAndReadOnlyDescriptors() throws {
+        let base = "/tmp/dory-vmm-disk-reject-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let kernel = "\(base)/vmlinux"
+        let rootfs = "\(base)/rootfs.raw"
+        let disk = "\(base)/docker-data.ext4"
+        let replacement = "\(base)/replacement.ext4"
+        FileManager.default.createFile(atPath: kernel, contents: Data([0x7f, 0x45, 0x4c, 0x46]))
+        FileManager.default.createFile(atPath: rootfs, contents: nil)
+        XCTAssertEqual(truncate(rootfs, 1024 * 1024), 0)
+        let descriptor = try createPrivateSparseDockerDisk(at: disk)
+        defer { close(descriptor) }
+        let uuid = UUID(uuidString: "01234567-89ab-4cde-8f01-23456789abcd")!
+
+        func spec(
+            path: String? = disk,
+            descriptor: Int32? = descriptor,
+            uuid: UUID? = uuid
+        ) -> DoryVZMachineSpec {
+            DoryVZMachineSpec(
+                machineID: "docker",
+                stateDirectory: base,
+                kernelPath: kernel,
+                rootfsPath: rootfs,
+                memoryMB: 2_048,
+                cpuCount: 2,
+                dockerDataDiskPath: path,
+                dockerDataDiskFileDescriptor: descriptor,
+                dockerDataDiskFilesystemUUID: uuid
+            )
+        }
+
+        XCTAssertThrowsError(try DoryVZConfigurationBuilder.makeConfiguration(
+            spec: spec(descriptor: nil),
+            serialOutput: nil
+        )) { error in
+            XCTAssertTrue("\(error)".contains("inherited data-disk descriptor"), "\(error)")
+        }
+        XCTAssertThrowsError(try DoryVZConfigurationBuilder.makeConfiguration(
+            spec: spec(uuid: nil),
+            serialOutput: nil
+        )) { error in
+            XCTAssertTrue("\(error)".contains("filesystem UUID"), "\(error)")
+        }
+
+        let readOnlyDescriptor = open(disk, O_RDONLY | O_CLOEXEC)
+        guard readOnlyDescriptor >= 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        defer { close(readOnlyDescriptor) }
+        XCTAssertThrowsError(try DoryVZConfigurationBuilder.makeConfiguration(
+            spec: spec(descriptor: readOnlyDescriptor),
+            serialOutput: nil
+        )) { error in
+            XCTAssertTrue("\(error)".contains("Docker data disk"), "\(error)")
+        }
+
+        let replacementDescriptor = try createPrivateSparseDockerDisk(at: replacement)
+        defer { close(replacementDescriptor) }
+        XCTAssertThrowsError(try DoryVZConfigurationBuilder.makeConfiguration(
+            spec: spec(descriptor: replacementDescriptor),
+            serialOutput: nil
+        )) { error in
+            XCTAssertTrue("\(error)".contains("does not name the inherited descriptor"), "\(error)")
+        }
+    }
+
+    private func createPrivateSparseDockerDisk(at path: String) throws -> Int32 {
+        try FileManager.default.createDirectory(
+            atPath: (path as NSString).deletingLastPathComponent,
+            withIntermediateDirectories: true
+        )
+        let descriptor = open(
+            path,
+            O_CREAT | O_EXCL | O_RDWR | O_CLOEXEC | O_NOFOLLOW,
+            mode_t(0o600)
+        )
+        guard descriptor >= 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        guard ftruncate(descriptor, 128 * 1024 * 1024 * 1024) == 0 else {
+            let code = errno
+            close(descriptor)
+            throw POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO)
+        }
+        return descriptor
     }
 
     private func assertShellSyntax(

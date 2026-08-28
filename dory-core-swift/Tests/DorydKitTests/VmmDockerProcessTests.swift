@@ -176,6 +176,117 @@ final class VmmDockerProcessTests: XCTestCase {
         XCTAssertEqual(errno, ESRCH, "the exact late-spawned generation must be reaped")
     }
 
+    func testDockerDiskLaunchUsesPrivateDuplicateAcrossAuthorityCloseAndFDReuse() throws {
+        let base = "/tmp/dory-vmm-disk-fd-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let trustedPath = base + "/trusted.img"
+        let sentinelPath = base + "/sentinel.img"
+        let observedPath = base + "/observed.txt"
+        let argumentsPath = base + "/arguments.txt"
+        try Data("trusted-authority".utf8).write(to: URL(fileURLWithPath: trustedPath))
+        try Data("reused-sentinel".utf8).write(to: URL(fileURLWithPath: sentinelPath))
+        let sourceDescriptor = open(trustedPath, O_RDWR | O_CLOEXEC)
+        XCTAssertGreaterThanOrEqual(sourceDescriptor, 0)
+        let authority = HvProcessInheritedFileDescriptor(
+            name: "dockerDataDisk",
+            takingOwnershipOf: sourceDescriptor,
+            childDescriptor: VmmDockerProcessConfiguration.dockerDataDiskChildDescriptor
+        )
+
+        let helper = base + "/inspect.sh"
+        let script = """
+        #!/bin/sh
+        /usr/bin/head -c 17 /dev/fd/19 > \(observedPath)
+        printf '%s\n' "$@" > \(argumentsPath)
+        exit 0
+        """
+        try script.write(toFile: helper, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: helper)
+        let filesystemUUID = UUID(uuidString: "01234567-89ab-4cde-8f01-23456789abcd")!
+        let process = VmmDockerProcess(configuration: VmmDockerProcessConfiguration(
+            executablePath: helper,
+            arguments: ["base-argument"],
+            stateDirectory: base + "/state",
+            handoffSocketPath: base + "/state/handoff.sock",
+            readyTimeoutSeconds: 10,
+            inheritedDockerDataDisk: authority,
+            dockerDataDiskFilesystemUUID: filesystemUUID
+        ))
+
+        let reusedDescriptor = LockedVmmPIDBox()
+        process.installPostDescriptorDuplicationGateForTesting {
+            authority.close()
+            reusedDescriptor.set(open(sentinelPath, O_RDONLY | O_CLOEXEC))
+        }
+        defer {
+            if let descriptor = reusedDescriptor.value, descriptor >= 0 { close(descriptor) }
+        }
+
+        XCTAssertThrowsError(try process.start())
+        XCTAssertEqual(
+            reusedDescriptor.value,
+            sourceDescriptor,
+            "the test must force exact FD reuse"
+        )
+        XCTAssertEqual(
+            try String(contentsOfFile: observedPath, encoding: .utf8),
+            "trusted-authority"
+        )
+        XCTAssertEqual(
+            try String(contentsOfFile: argumentsPath, encoding: .utf8)
+                .split(separator: "\n")
+                .map(String.init),
+            [
+                "base-argument",
+                "--docker-data-disk-fd",
+                "19",
+                "--docker-data-disk-uuid",
+                "01234567-89ab-4cde-8f01-23456789abcd",
+            ]
+        )
+    }
+
+    func testDockerDiskSupervisorRejectsShadowArgumentsAndIncompleteAuthority() throws {
+        let base = "/tmp/dory-vmm-disk-contract-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let disk = base + "/disk.img"
+        XCTAssertTrue(FileManager.default.createFile(atPath: disk, contents: nil))
+        let descriptor = open(disk, O_RDWR | O_CLOEXEC)
+        XCTAssertGreaterThanOrEqual(descriptor, 0)
+        let authority = HvProcessInheritedFileDescriptor(
+            name: "dockerDataDisk",
+            takingOwnershipOf: descriptor,
+            childDescriptor: VmmDockerProcessConfiguration.dockerDataDiskChildDescriptor
+        )
+        defer { authority.close() }
+
+        let shadowed = VmmDockerProcess(configuration: VmmDockerProcessConfiguration(
+            executablePath: "/bin/false",
+            arguments: ["--docker-data-disk-fd", "7"],
+            stateDirectory: base + "/shadowed",
+            handoffSocketPath: base + "/shadowed/handoff.sock",
+            inheritedDockerDataDisk: authority,
+            dockerDataDiskFilesystemUUID: UUID()
+        ))
+        XCTAssertThrowsError(try shadowed.start()) { error in
+            XCTAssertTrue("\(error)".contains("supervisor-owned"), "\(error)")
+        }
+
+        let missingUUID = VmmDockerProcess(configuration: VmmDockerProcessConfiguration(
+            executablePath: "/bin/false",
+            arguments: [],
+            stateDirectory: base + "/missing-uuid",
+            handoffSocketPath: base + "/missing-uuid/handoff.sock",
+            inheritedDockerDataDisk: authority
+        ))
+        XCTAssertThrowsError(try missingUUID.start()) { error in
+            XCTAssertTrue("\(error)".contains("without a filesystem UUID"), "\(error)")
+        }
+    }
+
     func testRetainedTargetRefusesToSignalAfterExactTerminalObservation() {
         let signals = LockedVmmSignalBox()
         let child = VmmSupervisedChild(pid: 41) { pid, signal in

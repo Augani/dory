@@ -12,8 +12,8 @@ public struct MachineManagerConfiguration: Sendable, Equatable {
     public var acceleratedDesktopExecutablePath: String?
     public var stateDirectory: String
     public var runtimeDirectory: String
-    /// Durable mutation authority kept outside individual machine directories so interrupted
-    /// deletion can recover without deleting its own journal.
+    /// Home used to derive durable mutation authority. The daemon supplies the Dory user home so
+    /// this remains outside the managed data drive; isolated callers may supply their own home.
     public var lifecycleJournalHome: String
     public var baseArguments: [String]
     public var acceleratedDesktopBaseArguments: [String]
@@ -1274,6 +1274,10 @@ public final class MachineManager: @unchecked Sendable {
     private let allowsQualificationBootstrapLaunches: Bool
     private var storageCapacityProvider: @Sendable (String) throws -> UInt64
     private let lifecycleJournalStore: DoryOperationJournalStore?
+    /// Upgrade bridge for unfinished journals written when the configured journal directory was
+    /// incorrectly passed to `DoryOperationJournalStore` as a user home. New operations never use
+    /// this store; it remains available only until its nonterminal records have been recovered.
+    private let legacyLifecycleJournalStore: DoryOperationJournalStore?
     private let lifecycleJournalInitializationError: String?
     private let mutationCoordinator = MachineWorkspaceMutationCoordinator()
     /// Protects short-lived manager-global configuration and keyed coordination dictionaries.
@@ -1380,10 +1384,24 @@ public final class MachineManager: @unchecked Sendable {
                 home: configuration.lifecycleJournalHome
             )
             try store.prepare()
+            let legacyStore = try DoryOperationJournalStore(
+                home: "\(configuration.stateDirectory)/.lifecycle-journal"
+            )
+            let unfinishedLegacyRecords: [DoryOperationRecord]
+            if legacyStore == store {
+                unfinishedLegacyRecords = []
+            } else {
+                unfinishedLegacyRecords = try legacyStore.list().filter {
+                    Self.isWorkspaceLifecycleJournalKind($0.plan.kind)
+                        && $0.state.status != .completed && $0.state.status != .failed
+                }
+            }
             lifecycleJournalStore = store
+            legacyLifecycleJournalStore = unfinishedLegacyRecords.isEmpty ? nil : legacyStore
             lifecycleJournalInitializationError = nil
         } catch {
             lifecycleJournalStore = nil
+            legacyLifecycleJournalStore = nil
             lifecycleJournalInitializationError = String(describing: error)
         }
         _ = HelperProcessJanitor.terminateStaleHelpers(
@@ -1400,10 +1418,20 @@ public final class MachineManager: @unchecked Sendable {
             )
         }
         DoryMachineFileTransferStager.removeAbandonedDaemonStages()
-        let lifecycleRecoveryDiagnostics = Self.recoverInterruptedLifecycleOperations(
+        var lifecycleRecoveryDiagnostics = Self.recoverInterruptedLifecycleOperations(
             store: lifecycleJournalStore,
             configuration: configuration
         )
+        let legacyLifecycleRecoveryDiagnostics = Self.recoverInterruptedLifecycleOperations(
+            store: legacyLifecycleJournalStore,
+            configuration: configuration
+        )
+        for (machineID, diagnostic) in legacyLifecycleRecoveryDiagnostics {
+            lifecycleRecoveryDiagnostics[machineID] = [
+                lifecycleRecoveryDiagnostics[machineID],
+                diagnostic,
+            ].compactMap { $0 }.joined(separator: "; ")
+        }
         Self.removeStaleDeletionQuarantines(stateDirectory: configuration.stateDirectory)
         Self.removeStaleMachineMetadataArtifacts(stateDirectory: configuration.stateDirectory)
         Self.removeStaleSnapshotArtifacts(stateDirectory: configuration.stateDirectory)
@@ -13727,10 +13755,7 @@ public final class MachineManager: @unchecked Sendable {
                 "machine \(machine.id) mutation authority is busy: \(error)"
             )
         }
-        if let unfinished = try store.list().first(where: {
-            $0.state.status != .completed && $0.state.status != .failed
-                && ($0.plan.source.id == machine.id || $0.plan.target.id == machine.id)
-        }) {
+        if let unfinished = try unfinishedPersistedLifecycleOperation(machineID: machine.id) {
             throw MachineManagerError.persistence(
                 "machine \(machine.id) lifecycle operation "
                     + unfinished.plan.id.uuidString.lowercased() + " requires recovery"
@@ -13925,6 +13950,21 @@ public final class MachineManager: @unchecked Sendable {
         managerStateLock.withLock { activeLifecycleOperations[machineID] }
     }
 
+    private func unfinishedPersistedLifecycleOperation(
+        machineID: String
+    ) throws -> DoryOperationRecord? {
+        for store in [lifecycleJournalStore, legacyLifecycleJournalStore].compactMap({ $0 }) {
+            if let record = try store.list().first(where: {
+                Self.isWorkspaceLifecycleJournalKind($0.plan.kind)
+                    && $0.state.status != .completed && $0.state.status != .failed
+                    && ($0.plan.source.id == machineID || $0.plan.target.id == machineID)
+            }) {
+                return record
+            }
+        }
+        return nil
+    }
+
     private func removeActiveLifecycleOperation(
         _ context: MachineLifecycleJournalContext
     ) {
@@ -13955,10 +13995,7 @@ public final class MachineManager: @unchecked Sendable {
                 "machine \(id) mutation authority is busy: \(error)"
             )
         }
-        if let unfinished = try store.list().first(where: {
-            $0.state.status != .completed && $0.state.status != .failed
-                && ($0.plan.source.id == id || $0.plan.target.id == id)
-        }) {
+        if let unfinished = try unfinishedPersistedLifecycleOperation(machineID: id) {
             throw MachineManagerError.persistence(
                 "machine \(id) lifecycle operation "
                     + unfinished.plan.id.uuidString.lowercased() + " requires recovery"
@@ -14372,6 +14409,12 @@ public final class MachineManager: @unchecked Sendable {
         guard let store = lifecycleJournalStore else {
             throw MachineManagerError.persistence(
                 "lifecycle journal is unavailable: \(lifecycleJournalInitializationError ?? "unknown error")"
+            )
+        }
+        if let unfinished = try unfinishedPersistedLifecycleOperation(machineID: machineID) {
+            throw MachineManagerError.persistence(
+                "machine \(machineID) lifecycle operation "
+                    + unfinished.plan.id.uuidString.lowercased() + " requires recovery"
             )
         }
         let now = Date()
@@ -14841,7 +14884,8 @@ public final class MachineManager: @unchecked Sendable {
     ) -> [String: String] {
         guard let store, let records = try? store.list() else { return [:] }
         var diagnostics: [String: String] = [:]
-        for record in records where record.state.status != .completed
+        for record in records where isWorkspaceLifecycleJournalKind(record.plan.kind)
+            && record.state.status != .completed
             && record.state.status != .failed {
             var lease: DoryOperationLease?
             do {
@@ -15036,13 +15080,27 @@ public final class MachineManager: @unchecked Sendable {
                     diagnostics[id] = "unsupported interrupted lifecycle mutation requires repair"
                 }
             } catch {
-                if let id = try? lease?.readWorkspaceLifecycleOperation().source.workspaceID {
+                let id = (try? lease?.readWorkspaceLifecycleOperation().source.workspaceID)
+                    ?? record.plan.source.id
+                if Self.isValidID(id) {
                     diagnostics[id] = "lifecycle recovery failed closed: \(error)"
                 }
             }
             lease = nil
         }
         return diagnostics
+    }
+
+    private static func isWorkspaceLifecycleJournalKind(_ kind: DoryOperationKind) -> Bool {
+        switch kind {
+        case .workspaceImport, .workspaceProvision, .workspaceResolve, .workspaceStart,
+             .workspaceStop, .workspacePause, .workspaceResume, .workspaceSuspend,
+             .workspaceRestore, .workspaceSnapshot, .workspaceClone, .workspaceUpdate,
+             .workspaceRepair, .workspaceDelete:
+            true
+        case .competitorImport, .driveBackup, .driveRestore, .driveRelocation, .driveUpgrade:
+            false
+        }
     }
 
     private static func recoveredSavedState(

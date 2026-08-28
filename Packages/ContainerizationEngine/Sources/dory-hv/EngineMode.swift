@@ -106,6 +106,157 @@ package final class EngineVsockBridgeLifetime: @unchecked Sendable {
 /// boot so system state can never rot; DOCKER STATE lives on a separate journaled ext4 mounted
 /// at /var/lib/docker, so images, containers, and volumes survive restarts and unclean exits.
 enum EngineMode {
+    static let inheritedDockerDataDiskFileDescriptor: Int32 =
+        DockerDataDiskLaunchContract.childFileDescriptor
+
+    enum DockerDataDiskAuthority: Equatable, Sendable {
+        /// Production authority inherited from doryd. The helper must use this exact descriptor and
+        /// must not resolve the metadata pathname as a fallback.
+        case inherited(fileDescriptor: Int32, expectedFilesystemUUID: UUID)
+        /// Explicit developer compatibility for launching dory-hv without the daemon's descriptor
+        /// handoff. This is deliberately reachable only through the legacy --data-disk argument.
+        case standalonePath(String)
+    }
+
+    enum DockerDataDiskLaunchSelection: Equatable, Sendable {
+        case inherited(
+            fileDescriptor: Int32,
+            expectedFilesystemUUID: UUID,
+            dataDriveArgument: String
+        )
+        case standaloneDataDrive(String)
+        case standalonePath(String)
+    }
+
+    enum DockerDataDiskArgumentError: Error, Equatable, CustomStringConvertible {
+        case duplicate(String)
+        case invalidLegacyPath
+        case invalidDataDrive
+        case invalidFileDescriptor(String)
+        case invalidFilesystemUUID(String)
+        case conflictingAuthorities
+        case missingFileDescriptor
+        case missingFilesystemUUID
+        case missingDataDrive
+        case missingAuthority
+
+        var description: String {
+            switch self {
+            case .duplicate(let argument):
+                "\(argument) may only be specified once"
+            case .invalidLegacyPath:
+                "--data-disk requires a non-empty absolute path"
+            case .invalidDataDrive:
+                "--data-drive requires a non-empty absolute .dorydrive path"
+            case .invalidFileDescriptor(let value):
+                "--docker-data-disk-fd requires inherited supervisor descriptor \(EngineMode.inheritedDockerDataDiskFileDescriptor), got \(value)"
+            case .invalidFilesystemUUID(let value):
+                "--docker-data-disk-uuid requires a canonical lowercase UUID, got \(value)"
+            case .conflictingAuthorities:
+                "--data-disk cannot be combined with --data-drive or inherited Docker data-disk authority"
+            case .missingFileDescriptor:
+                "--docker-data-disk-uuid requires --docker-data-disk-fd"
+            case .missingFilesystemUUID:
+                "--docker-data-disk-fd requires --docker-data-disk-uuid"
+            case .missingDataDrive:
+                "inherited Docker data-disk authority requires exactly one --data-drive"
+            case .missingAuthority:
+                "engine requires inherited Docker data-disk authority with --data-drive, or explicit standalone --data-drive/--data-disk"
+            }
+        }
+    }
+
+    struct DockerDataDiskArguments {
+        private(set) var legacyPath: String?
+        private(set) var dataDriveArgument: String?
+        private(set) var inheritedFileDescriptor: Int32?
+        private(set) var expectedFilesystemUUID: UUID?
+
+        mutating func setLegacyPath(_ value: String) throws {
+            guard legacyPath == nil else {
+                throw DockerDataDiskArgumentError.duplicate("--data-disk")
+            }
+            guard !value.isEmpty, value.hasPrefix("/") else {
+                throw DockerDataDiskArgumentError.invalidLegacyPath
+            }
+            legacyPath = value
+        }
+
+        mutating func setDataDrive(_ value: String) throws {
+            guard dataDriveArgument == nil else {
+                throw DockerDataDiskArgumentError.duplicate("--data-drive")
+            }
+            guard !value.isEmpty, value.hasPrefix("/") else {
+                throw DockerDataDiskArgumentError.invalidDataDrive
+            }
+            dataDriveArgument = value
+        }
+
+        mutating func setInheritedFileDescriptor(_ value: String) throws {
+            guard inheritedFileDescriptor == nil else {
+                throw DockerDataDiskArgumentError.duplicate(
+                    DockerDataDiskLaunchContract.fileDescriptorArgument
+                )
+            }
+            guard let descriptor = Int32(value),
+                  descriptor == EngineMode.inheritedDockerDataDiskFileDescriptor else {
+                throw DockerDataDiskArgumentError.invalidFileDescriptor(value)
+            }
+            inheritedFileDescriptor = descriptor
+        }
+
+        mutating func setExpectedFilesystemUUID(_ value: String) throws {
+            guard expectedFilesystemUUID == nil else {
+                throw DockerDataDiskArgumentError.duplicate(
+                    DockerDataDiskLaunchContract.filesystemUUIDArgument
+                )
+            }
+            guard value.utf8.count == 36,
+                  value == value.lowercased(),
+                  let identifier = UUID(uuidString: value),
+                  identifier.uuidString.lowercased() == value else {
+                throw DockerDataDiskArgumentError.invalidFilesystemUUID(value)
+            }
+            expectedFilesystemUUID = identifier
+        }
+
+        func resolvedSelection() throws -> DockerDataDiskLaunchSelection {
+            if legacyPath != nil,
+               dataDriveArgument != nil
+                    || inheritedFileDescriptor != nil
+                    || expectedFilesystemUUID != nil {
+                throw DockerDataDiskArgumentError.conflictingAuthorities
+            }
+            switch (
+                inheritedFileDescriptor,
+                expectedFilesystemUUID,
+                dataDriveArgument,
+                legacyPath
+            ) {
+            case let (.some(descriptor), .some(identifier), .some(dataDrive), nil):
+                return .inherited(
+                    fileDescriptor: descriptor,
+                    expectedFilesystemUUID: identifier,
+                    dataDriveArgument: dataDrive
+                )
+            case (.none, .some, _, nil):
+                throw DockerDataDiskArgumentError.missingFileDescriptor
+            case (.some, .none, _, nil):
+                throw DockerDataDiskArgumentError.missingFilesystemUUID
+            case (.some, .some, .none, nil):
+                throw DockerDataDiskArgumentError.missingDataDrive
+            case let (.none, .none, .some(dataDrive), nil):
+                return .standaloneDataDrive(dataDrive)
+            case let (.none, .none, .none, .some(path)):
+                return .standalonePath(path)
+            case (.none, .none, .none, .none):
+                throw DockerDataDiskArgumentError.missingAuthority
+            default:
+                throw DockerDataDiskArgumentError.conflictingAuthorities
+            }
+        }
+    }
+
     struct Configuration {
         var engineSocket: String
         var kernelPath: String
@@ -113,10 +264,13 @@ enum EngineMode {
         var memoryMB: UInt64
         var cpus: Int
         var stateDirectory: String
-        /// Durable user-data drive path. Runtime sockets/rootfs clones stay in stateDirectory.
-        var dockerDataDiskPath: String?
-        /// Canonical root of the managed data drive, when one owns dockerDataDiskPath.
+        /// Exact production descriptor authority or an explicit standalone developer path.
+        var dockerDataDiskAuthority: DockerDataDiskAuthority
+        /// Canonical root of the managed data drive, when one owns the inherited descriptor.
         var dataDriveRoot: String?
+        /// The drive's Docker disk path is metadata only in production descriptor mode. It may be
+        /// compared with an explicit legacy path, but must never be opened as a descriptor fallback.
+        var dataDriveDiskPath: String?
         /// Offline builds pass a decompressed engine rootfs here so first launch needs no network;
         /// online builds leave it nil and the engine fetches the image once.
         var bundledRootfs: String?
@@ -652,21 +806,96 @@ enum EngineMode {
 
         let pristineRootfs = state + "/rootfs-pristine.ext4"
         let bootRootfs = state + "/rootfs-boot.ext4"
-        let dataDisk = URL(fileURLWithPath: configuration.dockerDataDiskPath ?? (state + "/docker-data.ext4"))
-            .standardizedFileURL.path
-        let dataDiskDirectory = URL(fileURLWithPath: dataDisk).deletingLastPathComponent().path
+        let standaloneDataDiskPath: String?
+        switch configuration.dockerDataDiskAuthority {
+        case .inherited:
+            standaloneDataDiskPath = nil
+        case .standalonePath(let path):
+            standaloneDataDiskPath = URL(fileURLWithPath: path).standardizedFileURL.path
+        }
         let dataDriveLock: EngineStateDirectoryLock?
-        if let dataDriveRoot = configuration.dataDriveRoot {
+        if case .inherited = configuration.dockerDataDiskAuthority {
+            guard configuration.dataDriveRoot != nil,
+                  configuration.dataDriveDiskPath != nil else {
+                throw VMError.invalidConfiguration(
+                    "inherited Docker data-disk authority requires managed data-drive metadata"
+                )
+            }
+            // doryd retains drive.lock across the complete managed helper generation. Reacquiring
+            // it here would deadlock the launch and would add no authority to the inherited FD.
+            dataDriveLock = nil
+        } else if let dataDriveRoot = configuration.dataDriveRoot {
+            guard let dataDriveDiskPath = configuration.dataDriveDiskPath,
+                  dataDriveDiskPath == standaloneDataDiskPath else {
+                throw VMError.invalidConfiguration(
+                    "standalone data-drive metadata does not match its Docker data-disk path"
+                )
+            }
             dataDriveLock = try EngineStateDirectoryLock(
                 stateDirectory: dataDriveRoot,
                 lockFileName: "drive.lock"
             )
-        } else if dataDiskDirectory != state {
-            dataDriveLock = try EngineStateDirectoryLock(stateDirectory: dataDiskDirectory)
         } else {
-            dataDriveLock = nil
+            guard configuration.dataDriveDiskPath == nil,
+                  let standaloneDataDiskPath else {
+                throw VMError.invalidConfiguration(
+                    "standalone Docker data-disk authority has inconsistent data-drive metadata"
+                )
+            }
+            let dataDiskDirectory = URL(fileURLWithPath: standaloneDataDiskPath)
+                .deletingLastPathComponent().path
+            dataDriveLock = dataDiskDirectory == state
+                ? nil
+                : try EngineStateDirectoryLock(stateDirectory: dataDiskDirectory)
         }
         defer { withExtendedLifetime(dataDriveLock) {} }
+
+        let dataDiskBackend: VirtioBlk
+        let dataDiskState: DockerDataDiskAdmittedState
+        let expectedDockerDataDiskUUID: UUID?
+        switch configuration.dockerDataDiskAuthority {
+        case let .inherited(fileDescriptor, expectedFilesystemUUID):
+            dataDiskState = try DockerDataDisk.admittedState(
+                ofFileDescriptor: fileDescriptor,
+                description: "inherited Docker data disk descriptor \(fileDescriptor)",
+                minimumBytes: DockerDataDisk.blankDiskBytes,
+                maximumBytes: Int64(DockerDataDisk.maximumCapacityGiB)
+                    * DockerDataDisk.bytesPerGiB
+            )
+            dataDiskBackend = try VirtioBlk(
+                fileDescriptor: fileDescriptor,
+                identity: "dory-data"
+            )
+            expectedDockerDataDiskUUID = expectedFilesystemUUID
+        case .standalonePath:
+            guard let standaloneDataDiskPath else {
+                throw VMError.invalidConfiguration(
+                    "standalone Docker data-disk path was not resolved"
+                )
+            }
+            let preparation = try DockerDataDisk.prepare(destination: standaloneDataDiskPath)
+            switch preparation {
+            case .alreadyPresent:
+                break
+            case .createdBlank:
+                note("first run: created standalone docker data disk")
+            }
+            switch preparation {
+            case .createdBlank:
+                dataDiskState = .sparseBlank
+            case .alreadyPresent:
+                // Path-based compatibility remains deliberately isolated from production launch.
+                dataDiskState = try DockerDataDisk.isExt4Image(at: standaloneDataDiskPath)
+                    ? .ext4
+                    : .sparseBlank
+            }
+            dataDiskBackend = try VirtioBlk(
+                path: standaloneDataDiskPath,
+                identity: "dory-data"
+            )
+            expectedDockerDataDiskUUID = nil
+        }
+        let allowDockerDataFormat = dataDiskState == .sparseBlank
 
         // Both one-time artifacts are built at a temp path and atomically renamed into place, so an
         // interrupted first run leaves no half-written file that the fileExists guard would then
@@ -685,23 +914,6 @@ enum EngineMode {
         try? FileManager.default.removeItem(atPath: bootRootfs)
         try FileManager.default.copyItem(atPath: pristineRootfs, toPath: bootRootfs)
 
-        let dataDiskPreparation = try DockerDataDisk.prepare(destination: dataDisk)
-        switch dataDiskPreparation {
-        case .alreadyPresent:
-            break
-        case .createdBlank:
-            note("first run: created docker data disk")
-        }
-        let allowDockerDataFormat: Bool
-        switch dataDiskPreparation {
-        case .createdBlank:
-            allowDockerDataFormat = true
-        case .alreadyPresent:
-            // Host validation admits a non-ext4 existing file only when it has zero allocated
-            // blocks, which is a first-boot sparse blank left by an interrupted earlier launch.
-            allowDockerDataFormat = try !DockerDataDisk.isExt4Image(at: dataDisk)
-        }
-
         let bootConfigShare = try writeBootConfiguration(stateDirectory: state, script: guestBootScript(
             shares: configuration.shares,
             reclaimPolicy: configuration.reclaimPolicy,
@@ -709,7 +921,8 @@ enum EngineMode {
             nativeIPv6: nativeIPv6,
             bridgeNetwork: bridgeNetwork,
             sourcePreservingLAN: sourcePreservingLAN,
-            allowDockerDataFormat: allowDockerDataFormat
+            allowDockerDataFormat: allowDockerDataFormat,
+            expectedDockerDataDiskUUID: expectedDockerDataDiskUUID
         ), guestAgentPath: configuration.guestAgentPath)
         let guestLogShare = try guestLogShareConfiguration(stateDirectory: state)
         let filesystemShares = [bootConfigShare, guestLogShare] + configuration.shares
@@ -751,7 +964,7 @@ enum EngineMode {
 
         var backends: [VirtioDeviceBackend] = []
         backends.append(try VirtioBlk(path: bootRootfs, identity: "dory-rootfs"))
-        backends.append(try VirtioBlk(path: dataDisk, identity: "dory-data"))
+        backends.append(dataDiskBackend)
         backends.append(VirtioRng())
         backends.append(VirtioBalloon(memory: machine.memory) { note($0) })
         let vsock = VirtioVsock(guestCID: 3)
@@ -1153,15 +1366,20 @@ enum EngineMode {
     /// 2377 (any connection triggers sync + poweroff, giving the host a clean-unmount path), and a light
     /// workload-aware page-cache cap so free page reporting (which handles free pages automatically
     /// at 16 KiB granularity) has cold pages to hand back when the engine is idle.
-    private static func guestBootScript(
+    static func guestBootScript(
         shares: [VirtioFSShareConfiguration] = [],
         reclaimPolicy: ReclaimPolicy = .dropCaches,
         amd64Emulation: Bool = false,
         nativeIPv6: NativeIPv6NetworkPlan? = nil,
         bridgeNetwork: DoryIPv4BridgeNetwork = try! DoryIPv4BridgeNetwork(),
         sourcePreservingLAN: Bool = false,
-        allowDockerDataFormat: Bool = false
+        allowDockerDataFormat: Bool = false,
+        expectedDockerDataDiskUUID: UUID? = nil
     ) -> String {
+        let dockerDataDiskUUID = expectedDockerDataDiskUUID?.uuidString.lowercased() ?? ""
+        let dockerDataDiskUUIDArgument = expectedDockerDataDiskUUID == nil
+            ? ""
+            : " -U \"$DORY_DOCKER_DATA_UUID\""
         var script = [
             "export PATH=/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin",
             "mount -t proc proc /proc",
@@ -1179,13 +1397,16 @@ enum EngineMode {
             "  ( while [ ! -e /var/log/dory-agent.log ]; do sleep 0.2; done; tail -n +1 -f /var/log/dory-agent.log >/mnt/dory-logs/dory-agent.log 2>&1 ) & true",
             "fi",
             "mkdir -p /var/lib/docker",
+            "[ -b /dev/vdb ] || { echo DATA-DISK-BLOCK-DEVICE-MISSING; sync; poweroff -f; exit 1; }",
             // First boot receives a sparse blank disk from the host. Format it inside the guest so
             // the macOS 14 helper does not need Apple's macOS 15-only EXT4 formatter.
             "DORY_DOCKER_MOUNT_OPTS=noatime,lazytime,commit=30",
             "DORY_DOCKER_MOUNT_FALLBACK_OPTS=noatime,commit=30",
             "DORY_ALLOW_DATA_FORMAT=\(allowDockerDataFormat ? 1 : 0)",
+            "DORY_DOCKER_DATA_UUID='\(dockerDataDiskUUID)'",
             "dory_mount_docker_data() { mount -t ext4 -o \"$DORY_DOCKER_MOUNT_OPTS\" /dev/vdb /var/lib/docker || mount -t ext4 -o \"$DORY_DOCKER_MOUNT_FALLBACK_OPTS\" /dev/vdb /var/lib/docker || mount -t ext4 /dev/vdb /var/lib/docker; }",
-            "dory_format_docker_data() { mkfs.ext4 -F -O fast_commit /dev/vdb >/var/log/dory-data-mkfs.log 2>&1 || mkfs.ext4 -F /dev/vdb >>/var/log/dory-data-mkfs.log 2>&1; }",
+            "dory_verify_docker_data_uuid() { [ -z \"$DORY_DOCKER_DATA_UUID\" ] || [ \"$(blkid -s UUID -o value /dev/vdb 2>/dev/null | tr '[:upper:]' '[:lower:]')\" = \"$DORY_DOCKER_DATA_UUID\" ]; }",
+            "dory_format_docker_data() { mkfs.ext4\(dockerDataDiskUUIDArgument) -F -O fast_commit /dev/vdb >/var/log/dory-data-mkfs.log 2>&1 || mkfs.ext4\(dockerDataDiskUUIDArgument) -F /dev/vdb >>/var/log/dory-data-mkfs.log 2>&1; }",
             "dory_grow_docker_data() {",
             "  DORY_DATA_DEVICE_BYTES=$(blockdev --getsize64 /dev/vdb 2>/dev/null || true)",
             "  DORY_DATA_GEOMETRY=$(dumpe2fs -h /dev/vdb 2>/dev/null | awk '/^Block count:/{blocks=$3} /^Block size:/{size=$3} END{if(blocks && size) print blocks, size}')",
@@ -1205,12 +1426,13 @@ enum EngineMode {
             "  resize2fs /dev/vdb >>/var/log/dory-data-resize.log 2>&1",
             "}",
             "if blkid /dev/vdb 2>/dev/null | grep -q 'TYPE=\"ext4\"'; then",
+            "  dory_verify_docker_data_uuid || { echo DATA-DISK-UUID-MISMATCH; sync; poweroff -f; exit 1; }",
             "  dory_grow_docker_data || { echo DATA-DISK-RESIZE-FAILED; cat /var/log/dory-data-resize.log 2>/dev/null; sync; poweroff -f; exit 1; }",
             "  cp /var/log/dory-data-resize.log /mnt/dory-logs/data-resize.log 2>/dev/null || true",
             "  dory_mount_docker_data || { echo DATA-DISK-MOUNT-FAILED-EXISTING-EXT4; sync; poweroff -f; exit 1; }",
             "elif [ \"$DORY_ALLOW_DATA_FORMAT\" -eq 1 ]; then",
             "  echo DATA-DISK-FORMAT-PROVEN-BLANK",
-            "  dory_format_docker_data && dory_mount_docker_data || { echo DATA-DISK-FORMAT-OR-MOUNT-FAILED; sync; poweroff -f; exit 1; }",
+            "  dory_format_docker_data && dory_verify_docker_data_uuid && dory_mount_docker_data || { echo DATA-DISK-FORMAT-IDENTITY-OR-MOUNT-FAILED; sync; poweroff -f; exit 1; }",
             "else",
             "  echo DATA-DISK-UNKNOWN-FILESYSTEM-REFUSING-FORMAT",
             "  sync; poweroff -f; exit 1",
@@ -1220,6 +1442,8 @@ enum EngineMode {
             // not remain physically full even though ext4 reports substantial free space.
             "fstrim -v /var/lib/docker >/var/log/dory-data-trim.log 2>&1 || true",
             "cp /var/log/dory-data-trim.log /mnt/dory-logs/data-trim.log 2>/dev/null || true",
+            "DORY_DATA_MOUNT_IDENTITY=$(awk '$2==\"/var/lib/docker\"{print $1 \" \" $3}' /proc/mounts | tail -n 1)",
+            "[ \"$DORY_DATA_MOUNT_IDENTITY\" = \"/dev/vdb ext4\" ] || { echo DATA-DISK-MOUNT-IDENTITY-MISMATCH; sync; poweroff -f; exit 1; }",
             "awk '$2==\"/var/lib/docker\"{print $4}' /proc/mounts >/var/log/dory-data-mount-options.log 2>&1 || true",
             "ip link set lo up",
             "ip link set eth0 up",

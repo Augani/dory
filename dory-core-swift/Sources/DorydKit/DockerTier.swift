@@ -138,9 +138,59 @@ private struct DockerGuestDataDiskBinding: Sendable, Equatable {
     let deviceMajorMinor: String
 }
 
-private struct DockerGuestDataDiskLaunchAuthority: Sendable, Equatable {
+/// Host identity captured before a managed helper may open the selected Docker image. A brand-new
+/// sparse image legitimately has no filesystem UUID until the guest formats it, but its selected
+/// drive, canonical path, device, and inode are already stable authority and must not change across
+/// that first boot.
+private struct DockerGuestDataDiskHostIdentity: Sendable, Equatable {
+    let dataDriveID: UUID
+    let filesystemUUID: UUID?
+    let diskImagePath: String
+    let diskImageDevice: UInt64
+    let diskImageInode: UInt64
+
+    func permits(
+        _ authority: DockerGuestDataDiskAuthority,
+        expectedFilesystemUUID: UUID
+    ) -> Bool {
+        dataDriveID == authority.dataDriveID
+            && diskImagePath == authority.diskImagePath
+            && diskImageDevice == authority.diskImageDevice
+            && diskImageInode == authority.diskImageInode
+            && authority.filesystemUUID == expectedFilesystemUUID
+            && (filesystemUUID == nil || filesystemUUID == expectedFilesystemUUID)
+    }
+}
+
+private final class DockerGuestDataDiskLaunchAuthority: @unchecked Sendable {
     let helperGeneration: UUID
-    let authority: DockerGuestDataDiskAuthority
+    let hostIdentity: DockerGuestDataDiskHostIdentity
+    let expectedFilesystemUUID: UUID
+    let diskFile: DockerDataDiskFileAuthority?
+    let trustedDataDriveRoot: DoryTrustedDirectoryRoot?
+    let engineDirectory: DoryTrustedDirectoryHandle?
+    let dataDriveLock: EngineStateDirectoryLock?
+    let dataDriveSelectionAuthority: DoryDataDriveSelectionAuthority?
+
+    init(
+        helperGeneration: UUID,
+        hostIdentity: DockerGuestDataDiskHostIdentity,
+        expectedFilesystemUUID: UUID,
+        diskFile: DockerDataDiskFileAuthority?,
+        trustedDataDriveRoot: DoryTrustedDirectoryRoot?,
+        engineDirectory: DoryTrustedDirectoryHandle?,
+        dataDriveLock: EngineStateDirectoryLock?,
+        dataDriveSelectionAuthority: DoryDataDriveSelectionAuthority?
+    ) {
+        self.helperGeneration = helperGeneration
+        self.hostIdentity = hostIdentity
+        self.expectedFilesystemUUID = expectedFilesystemUUID
+        self.diskFile = diskFile
+        self.trustedDataDriveRoot = trustedDataDriveRoot
+        self.engineDirectory = engineDirectory
+        self.dataDriveLock = dataDriveLock
+        self.dataDriveSelectionAuthority = dataDriveSelectionAuthority
+    }
 }
 
 private struct DockerGuestDataDiskVerifiedBinding: Sendable, Equatable {
@@ -306,6 +356,36 @@ extension VmmDockerProcess: DockerManagedProcess {
     @discardableResult
     public func stop() -> Bool {
         stop(signal: SIGTERM, timeout: DoryEngineShutdownTiming.hostTerminationSeconds)
+    }
+}
+
+/// Couples one exact helper object to the daemon-side resources admitted for that generation.
+/// Every existing active/teardown/retiring lifecycle collection already retains the helper, so
+/// this wrapper also keeps the selected-drive lock and original disk descriptor alive until exact
+/// terminal observation—without a second, independently drifting authority collection.
+private final class DockerManagedProcessGeneration: DockerManagedProcess, @unchecked Sendable {
+    private let process: any DockerManagedProcess
+    private let dataDiskLaunchAuthority: DockerGuestDataDiskLaunchAuthority
+
+    init(
+        process: any DockerManagedProcess,
+        dataDiskLaunchAuthority: DockerGuestDataDiskLaunchAuthority
+    ) {
+        self.process = process
+        self.dataDiskLaunchAuthority = dataDiskLaunchAuthority
+    }
+
+    func start() throws { try process.start() }
+    func suspend() -> Bool { process.suspend() }
+    func resume() -> Bool { process.resume() }
+    func stop() -> Bool { process.stop() }
+    func waitForTermination(timeout: TimeInterval) -> Bool {
+        process.waitForTermination(timeout: timeout)
+    }
+    func lifecycleObservation(
+        until deadline: DispatchTime
+    ) -> DockerManagedProcessObservation? {
+        process.lifecycleObservation(until: deadline)
     }
 }
 
@@ -510,6 +590,8 @@ public final class DockerTier: @unchecked Sendable {
     private let beforeDataplaneStart: @Sendable () -> Void
     private let guestDataDiskAuthorityProvider:
         @Sendable (String) throws -> DockerGuestDataDiskAuthority
+    private let guestDataDiskLaunchAuthorityProvider:
+        @Sendable (String, String, UUID) throws -> DockerGuestDataDiskLaunchAuthority
     private let socket: DorySocket
     private let idleController: IdleController?
     private let agentControl: AgentControl?
@@ -590,6 +672,9 @@ public final class DockerTier: @unchecked Sendable {
         },
         beforeDataplaneStart: @escaping @Sendable () -> Void = {},
         publishedPortRepairClient: PublishedPortRepairClient = PublishedPortRepairClient(),
+        dataDriveSelectionAuthority: DoryDataDriveSelectionAuthority? = nil,
+        dataDriveTrustedRoot: DoryTrustedDirectoryRoot? = nil,
+        newGuestDataDiskFilesystemUUID: @escaping @Sendable () -> UUID = { UUID() },
         guestDataDiskAuthorityProvider:
             (@Sendable (String) throws -> DockerGuestDataDiskAuthority)? = nil
     ) {
@@ -598,8 +683,40 @@ public final class DockerTier: @unchecked Sendable {
         self.dockerReadyWaiter = dockerReadyWaiter
         self.beforeDataplaneStart = beforeDataplaneStart
         self.publishedPortRepairClient = publishedPortRepairClient
-        self.guestDataDiskAuthorityProvider = guestDataDiskAuthorityProvider ?? { home in
-            try Self.selectedGuestDataDiskAuthority(home: home)
+        if let guestDataDiskAuthorityProvider {
+            self.guestDataDiskAuthorityProvider = guestDataDiskAuthorityProvider
+            self.guestDataDiskLaunchAuthorityProvider = { home, _, helperGeneration in
+                let authority = try guestDataDiskAuthorityProvider(home)
+                return DockerGuestDataDiskLaunchAuthority(
+                    helperGeneration: helperGeneration,
+                    hostIdentity: try Self.hostIdentity(
+                        from: authority
+                    ),
+                    expectedFilesystemUUID: authority.filesystemUUID,
+                    diskFile: nil,
+                    trustedDataDriveRoot: nil,
+                    engineDirectory: nil,
+                    dataDriveLock: nil,
+                    dataDriveSelectionAuthority: nil
+                )
+            }
+        } else {
+            self.guestDataDiskAuthorityProvider = { home in
+                try Self.selectedGuestDataDiskAuthority(
+                    home: home,
+                    dataDriveTrustedRoot: dataDriveTrustedRoot
+                )
+            }
+            self.guestDataDiskLaunchAuthorityProvider = { home, configuredPath, helperGeneration in
+                try Self.prepareSelectedGuestDataDiskLaunchAuthority(
+                    home: home,
+                    configuredPath: configuredPath,
+                    helperGeneration: helperGeneration,
+                    dataDriveSelectionAuthority: dataDriveSelectionAuthority,
+                    dataDriveTrustedRoot: dataDriveTrustedRoot,
+                    newFilesystemUUID: newGuestDataDiskFilesystemUUID
+                )
+            }
         }
         self.idleController = idleController
         self.socket = DorySocket(home: configuration.home)
@@ -617,7 +734,8 @@ public final class DockerTier: @unchecked Sendable {
     }
 
     private static func selectedGuestDataDiskAuthority(
-        home: String
+        home: String,
+        dataDriveTrustedRoot: DoryTrustedDirectoryRoot?
     ) throws -> DockerGuestDataDiskAuthority {
         let selectionStore: DoryDataDriveSelectionStore
         do {
@@ -627,12 +745,17 @@ public final class DockerTier: @unchecked Sendable {
                 "selected Docker data-drive authority is unavailable: \(error)"
             )
         }
-        let drive: DoryDataDrive
+        let pinned: (
+            selection: DoryDataDriveSelection,
+            drive: DoryDataDrive,
+            root: DoryTrustedDirectoryRoot,
+            manifest: DoryDataDriveManifest
+        )
         do {
-            guard let selected = try selectionStore.inspectSelection() else {
-                throw TierError.repairUnavailable("Dory has no verified selected data drive")
-            }
-            drive = selected
+            pinned = try pinnedSelectedDataDrive(
+                selectionStore: selectionStore,
+                dataDriveTrustedRoot: dataDriveTrustedRoot
+            )
         } catch let error as TierError {
             throw error
         } catch {
@@ -641,10 +764,33 @@ public final class DockerTier: @unchecked Sendable {
             )
         }
         do {
-            let manifest = try drive.readManifest()
-            return try inspectGuestDataDiskAuthority(
-                dataDriveID: manifest.id,
-                at: drive.engineDataDiskPath
+            let engineDirectory = try pinned.root.openPrivateChildDirectory(
+                try DoryTrustedPathComponent(validating: "engine")
+            )
+            let diskFile = try DockerDataDisk.openAdmittedFile(
+                in: engineDirectory,
+                fileName: "docker-data.ext4",
+                minimumBytes: DockerDataDisk.blankDiskBytes
+            )
+            let identity = try diskFile.withBorrowedDescriptor { descriptor in
+                try inspectGuestDataDiskHostIdentity(
+                    dataDriveID: pinned.manifest.id,
+                    descriptor: descriptor,
+                    path: pinned.drive.engineDataDiskPath,
+                    allowUninitializedSparseBlank: false
+                )
+            }
+            guard let filesystemUUID = identity.filesystemUUID else {
+                throw TierError.repairUnavailable(
+                    "selected Docker data disk does not contain a complete ext4 superblock"
+                )
+            }
+            return DockerGuestDataDiskAuthority(
+                dataDriveID: identity.dataDriveID,
+                filesystemUUID: filesystemUUID,
+                diskImagePath: identity.diskImagePath,
+                diskImageDevice: identity.diskImageDevice,
+                diskImageInode: identity.diskImageInode
             )
         } catch let error as TierError {
             throw error
@@ -655,6 +801,158 @@ public final class DockerTier: @unchecked Sendable {
         }
     }
 
+    /// Materializes only the private sparse host file before a managed helper starts. Formatting
+    /// remains guest-owned, but the exact selected path/device/inode is pinned before the helper
+    /// can touch it and is reconciled with the resulting ext4 UUID before readiness is published.
+    private static func prepareSelectedGuestDataDiskLaunchAuthority(
+        home: String,
+        configuredPath: String,
+        helperGeneration: UUID,
+        dataDriveSelectionAuthority injectedSelectionAuthority:
+            DoryDataDriveSelectionAuthority?,
+        dataDriveTrustedRoot: DoryTrustedDirectoryRoot?,
+        newFilesystemUUID: @Sendable () -> UUID
+    ) throws -> DockerGuestDataDiskLaunchAuthority {
+        let selectionStore: DoryDataDriveSelectionStore
+        do {
+            selectionStore = try DoryDataDriveSelectionStore(home: home)
+        } catch {
+            throw TierError.repairUnavailable(
+                "selected Docker data-drive authority is unavailable: \(error)"
+            )
+        }
+        let drive: DoryDataDrive
+        let trustedRoot: DoryTrustedDirectoryRoot
+        let manifest: DoryDataDriveManifest
+        let selectionAuthority: DoryDataDriveSelectionAuthority
+        do {
+            if let injectedSelectionAuthority {
+                try selectionStore.validateAuthority(injectedSelectionAuthority)
+                selectionAuthority = injectedSelectionAuthority
+            } else {
+                selectionAuthority = try selectionStore.acquireAuthority()
+            }
+            let pinned = try pinnedSelectedDataDrive(
+                selectionStore: selectionStore,
+                dataDriveTrustedRoot: dataDriveTrustedRoot
+            )
+            drive = pinned.drive
+            trustedRoot = pinned.root
+            manifest = pinned.manifest
+        } catch let error as TierError {
+            throw error
+        } catch {
+            throw TierError.repairUnavailable(
+                "selected Docker data drive is unavailable: \(error)"
+            )
+        }
+        guard drive.engineDataDiskPath == configuredPath else {
+            throw TierError.repairUnavailable(
+                "selected Docker data disk differs from the managed helper launch path"
+            )
+        }
+        do {
+            let driveLock = try EngineStateDirectoryLock(
+                trustedDirectoryRoot: trustedRoot,
+                lockFileName: "drive.lock"
+            )
+            let engineDirectory = try trustedRoot.openPrivateChildDirectory(
+                try DoryTrustedPathComponent(validating: "engine")
+            )
+            let diskFile = try DockerDataDisk.prepareAdmittedFile(
+                in: engineDirectory,
+                fileName: "docker-data.ext4"
+            )
+            let identity = try diskFile.withBorrowedDescriptor { descriptor in
+                try inspectGuestDataDiskHostIdentity(
+                    dataDriveID: manifest.id,
+                    descriptor: descriptor,
+                    path: configuredPath,
+                    allowUninitializedSparseBlank: true
+                )
+            }
+            let expectedFilesystemUUID = identity.filesystemUUID ?? newFilesystemUUID()
+            return DockerGuestDataDiskLaunchAuthority(
+                helperGeneration: helperGeneration,
+                hostIdentity: identity,
+                expectedFilesystemUUID: expectedFilesystemUUID,
+                diskFile: diskFile,
+                trustedDataDriveRoot: trustedRoot,
+                engineDirectory: engineDirectory,
+                dataDriveLock: driveLock,
+                dataDriveSelectionAuthority: selectionAuthority
+            )
+        } catch {
+            throw TierError.repairUnavailable(
+                "could not prepare the selected Docker data disk before launch: \(error)"
+            )
+        }
+    }
+
+    /// Resolves the selected namespace once, pins it with a no-follow directory walk, then validates
+    /// both the APFS placement and manifest identity while that exact root remains current. All
+    /// later descendants are opened from the retained descriptor rather than reopening the path.
+    private static func pinnedSelectedDataDrive(
+        selectionStore: DoryDataDriveSelectionStore,
+        dataDriveTrustedRoot: DoryTrustedDirectoryRoot?
+    ) throws -> (
+        selection: DoryDataDriveSelection,
+        drive: DoryDataDrive,
+        root: DoryTrustedDirectoryRoot,
+        manifest: DoryDataDriveManifest
+    ) {
+        guard let selection = try selectionStore.read(),
+              selection.phase == .ready,
+              let selectedPath = try selectionStore.selectedPath() else {
+            throw TierError.repairUnavailable("Dory has no verified selected data drive")
+        }
+        let drive = try DoryDataDrive(home: selectionStore.home, overrideRoot: selectedPath)
+        let root: DoryTrustedDirectoryRoot
+        if let dataDriveTrustedRoot {
+            guard dataDriveTrustedRoot.canonicalPath == drive.root else {
+                throw TierError.repairUnavailable(
+                    "selected Docker data drive differs from the daemon's pinned drive root"
+                )
+            }
+            _ = try dataDriveTrustedRoot.revalidateRootPathname()
+            root = dataDriveTrustedRoot
+        } else {
+            root = try DoryTrustedDirectoryRoot(canonicalAbsolutePath: drive.root)
+        }
+        guard try drive.inspect() == .ready else {
+            throw TierError.repairUnavailable("selected Docker data drive is unavailable")
+        }
+        _ = try root.revalidateRootPathname()
+        let manifest = try drive.readManifest(in: root)
+        guard manifest.id == selection.driveID,
+              manifest.volume?.uuid == selection.volumeUUID else {
+            throw TierError.repairUnavailable(
+                "selected Docker data-drive manifest changed during descriptor admission"
+            )
+        }
+        return (selection, drive, root, manifest)
+    }
+
+    private static func hostIdentity(
+        from authority: DockerGuestDataDiskAuthority
+    ) throws -> DockerGuestDataDiskHostIdentity {
+        guard authority.hasStableDiskImageIdentity,
+              let diskImagePath = authority.diskImagePath,
+              let diskImageDevice = authority.diskImageDevice,
+              let diskImageInode = authority.diskImageInode else {
+            throw TierError.repairUnavailable(
+                "selected Docker data disk has no stable host-file identity"
+            )
+        }
+        return DockerGuestDataDiskHostIdentity(
+            dataDriveID: authority.dataDriveID,
+            filesystemUUID: authority.filesystemUUID,
+            diskImagePath: diskImagePath,
+            diskImageDevice: diskImageDevice,
+            diskImageInode: diskImageInode
+        )
+    }
+
     /// Reads the ext4 identity from one no-follow descriptor. Geometry and ownership are checked
     /// on that same descriptor so a replaced, truncated, linked, or foreign image cannot become
     /// the authority for a guest capacity record.
@@ -662,6 +960,30 @@ public final class DockerTier: @unchecked Sendable {
         dataDriveID: UUID,
         at path: String
     ) throws -> DockerGuestDataDiskAuthority {
+        let identity = try inspectGuestDataDiskHostIdentity(
+            dataDriveID: dataDriveID,
+            at: path,
+            allowUninitializedSparseBlank: false
+        )
+        guard let filesystemUUID = identity.filesystemUUID else {
+            throw TierError.repairUnavailable(
+                "selected Docker data disk does not contain a complete ext4 superblock"
+            )
+        }
+        return DockerGuestDataDiskAuthority(
+            dataDriveID: identity.dataDriveID,
+            filesystemUUID: filesystemUUID,
+            diskImagePath: identity.diskImagePath,
+            diskImageDevice: identity.diskImageDevice,
+            diskImageInode: identity.diskImageInode
+        )
+    }
+
+    private static func inspectGuestDataDiskHostIdentity(
+        dataDriveID: UUID,
+        at path: String,
+        allowUninitializedSparseBlank: Bool
+    ) throws -> DockerGuestDataDiskHostIdentity {
         let descriptor = path.withCString { open($0, O_RDONLY | O_CLOEXEC | O_NOFOLLOW) }
         guard descriptor >= 0 else {
             throw TierError.repairUnavailable(
@@ -670,6 +992,20 @@ public final class DockerTier: @unchecked Sendable {
         }
         defer { close(descriptor) }
 
+        return try inspectGuestDataDiskHostIdentity(
+            dataDriveID: dataDriveID,
+            descriptor: descriptor,
+            path: path,
+            allowUninitializedSparseBlank: allowUninitializedSparseBlank
+        )
+    }
+
+    private static func inspectGuestDataDiskHostIdentity(
+        dataDriveID: UUID,
+        descriptor: Int32,
+        path: String,
+        allowUninitializedSparseBlank: Bool
+    ) throws -> DockerGuestDataDiskHostIdentity {
         var status = stat()
         guard fstat(descriptor, &status) == 0,
               status.st_mode & S_IFMT == S_IFREG,
@@ -685,11 +1021,25 @@ public final class DockerTier: @unchecked Sendable {
         let readCount = superblock.withUnsafeMutableBytes {
             pread(descriptor, $0.baseAddress, $0.count, off_t(1_024))
         }
-        guard readCount == superblock.count,
-              superblock[0x38] == 0x53,
-              superblock[0x39] == 0xEF else {
+        guard readCount == superblock.count else {
             throw TierError.repairUnavailable(
                 "selected Docker data disk does not contain a complete ext4 superblock"
+            )
+        }
+        if superblock[0x38] != 0x53 || superblock[0x39] != 0xEF {
+            guard allowUninitializedSparseBlank,
+                  status.st_blocks == 0,
+                  status.st_size >= DockerDataDisk.blankDiskBytes else {
+                throw TierError.repairUnavailable(
+                    "selected Docker data disk does not contain a complete ext4 superblock"
+                )
+            }
+            return DockerGuestDataDiskHostIdentity(
+                dataDriveID: dataDriveID,
+                filesystemUUID: nil,
+                diskImagePath: path,
+                diskImageDevice: UInt64(status.st_dev),
+                diskImageInode: UInt64(status.st_ino)
             )
         }
 
@@ -731,7 +1081,7 @@ public final class DockerTier: @unchecked Sendable {
               encoded == uuid.uuidString.lowercased() else {
             throw TierError.repairUnavailable("selected Docker ext4 UUID is invalid")
         }
-        return DockerGuestDataDiskAuthority(
+        return DockerGuestDataDiskHostIdentity(
             dataDriveID: dataDriveID,
             filesystemUUID: uuid,
             diskImagePath: path,
@@ -770,19 +1120,34 @@ public final class DockerTier: @unchecked Sendable {
     private func guestDataDiskLaunchAuthority(
         helperGeneration: UUID
     ) throws -> DockerGuestDataDiskLaunchAuthority? {
-        guard configuration.hasManagedHelper, agentControl != nil else { return nil }
+        guard configuration.hasManagedHelper else { return nil }
+        let arguments = configuration.vmmProcess?.arguments
+            ?? configuration.hvProcess?.arguments
+            ?? []
+        guard arguments.contains("--data-drive") else {
+            // Generic injected/development helpers without the Docker disk contract remain valid.
+            // A guest-agent-backed Docker helper, however, cannot publish resource readiness
+            // without one exact selected disk.
+            guard agentControl == nil else {
+                throw TierError.repairUnavailable(
+                    "managed Docker helper has no data-drive launch authority"
+                )
+            }
+            return nil
+        }
         let configuredPath = try configuredGuestDataDiskImagePath()
-        let authority = try guestDataDiskAuthorityProvider(configuration.home)
-        guard authority.hasStableDiskImageIdentity,
-              authority.diskImagePath == configuredPath else {
+        let authority = try guestDataDiskLaunchAuthorityProvider(
+            configuration.home,
+            configuredPath,
+            helperGeneration
+        )
+        guard authority.helperGeneration == helperGeneration,
+              authority.hostIdentity.diskImagePath == configuredPath else {
             throw TierError.repairUnavailable(
                 "selected Docker data disk is not the exact image configured for this helper generation"
             )
         }
-        return DockerGuestDataDiskLaunchAuthority(
-            helperGeneration: helperGeneration,
-            authority: authority
-        )
+        return authority
     }
 
     /// Called in strict lifecycle commit order on a private serial queue after the committing code
@@ -1468,7 +1833,10 @@ public final class DockerTier: @unchecked Sendable {
             let dataDiskLaunchAuthority = try guestDataDiskLaunchAuthority(
                 helperGeneration: helperGeneration
             )
-            let helper = makeManagedProcess(generation: helperGeneration)
+            let helper = try makeManagedProcess(
+                generation: helperGeneration,
+                dataDiskLaunchAuthority: dataDiskLaunchAuthority
+            )
             startedHelper = helper
 
             // Publish the in-flight helper before start(), because VMM startup can block waiting
@@ -2767,15 +3135,10 @@ public final class DockerTier: @unchecked Sendable {
         requiredState: DockerTierState
     ) throws -> DoryGuestResourceSnapshot {
         let lifecycle = try captureGuestResourceProbeLifecycle(requiredState: requiredState)
-        let authority = try currentGuestDataDiskAuthority()
-        if let launchAuthority = lifecycle.dataDiskLaunchAuthority {
-            guard launchAuthority.helperGeneration == lifecycle.helperGeneration,
-                  launchAuthority.authority == authority else {
-                throw TierError.repairUnavailable(
-                    "selected Docker data disk no longer matches this helper generation's launch authority"
-                )
-            }
-        }
+        let authority = try finalizedGuestDataDiskAuthority(
+            launchAuthority: lifecycle.dataDiskLaunchAuthority,
+            helperGeneration: lifecycle.helperGeneration
+        )
         let result = try agentControl.exec(
             argv: ["/bin/sh", "-c", Self.guestResourceProbeScript],
             timeoutMs: timeoutMs,
@@ -2788,7 +3151,10 @@ public final class DockerTier: @unchecked Sendable {
             throw TierError.repairUnavailable("guest resource probe failed: \(Self.execFailureDetail(result))")
         }
         if lifecycle.dataDiskLaunchAuthority != nil {
-            let authorityAfterProbe = try currentGuestDataDiskAuthority()
+            let authorityAfterProbe = try finalizedGuestDataDiskAuthority(
+                launchAuthority: lifecycle.dataDiskLaunchAuthority,
+                helperGeneration: lifecycle.helperGeneration
+            )
             guard authorityAfterProbe == authority else {
                 throw TierError.repairUnavailable(
                     "selected Docker data disk changed during the guest resource probe"
@@ -2814,6 +3180,15 @@ public final class DockerTier: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         let ownsHelper = lifecycle.helper.map { helperProcess === $0 } ?? (helperProcess == nil)
+        let ownsLaunchAuthority: Bool
+        switch (activeGuestDataDiskLaunchAuthority, lifecycle.dataDiskLaunchAuthority) {
+        case (nil, nil):
+            ownsLaunchAuthority = true
+        case (let active?, let captured?):
+            ownsLaunchAuthority = active === captured
+        default:
+            ownsLaunchAuthority = false
+        }
         guard !terminalShutdown,
               activeTeardown == nil,
               lifecycleEpoch == lifecycle.epoch,
@@ -2821,7 +3196,7 @@ public final class DockerTier: @unchecked Sendable {
               state == requiredState,
               ownsHelper,
               activeHelperGeneration == lifecycle.helperGeneration,
-              activeGuestDataDiskLaunchAuthority == lifecycle.dataDiskLaunchAuthority else {
+              ownsLaunchAuthority else {
             throw TierError.repairUnavailable(
                 "guest resource probe crossed the Docker tier lifecycle boundary"
             )
@@ -2847,6 +3222,92 @@ public final class DockerTier: @unchecked Sendable {
         }
         verifiedGuestDataDiskBinding = verifiedBinding
         return snapshot
+    }
+
+    /// Completes a managed launch's two-phase disk authority after the helper has formatted or
+    /// reopened the image. The retained descriptor proves the same pre-launch inode became ext4;
+    /// reopening the configured path proves that inode is still the selected drive's live entry.
+    private func finalizedGuestDataDiskAuthority(
+        launchAuthority: DockerGuestDataDiskLaunchAuthority?,
+        helperGeneration: UUID?
+    ) throws -> DockerGuestDataDiskAuthority {
+        guard let launchAuthority else {
+            return try currentGuestDataDiskAuthority()
+        }
+        guard launchAuthority.helperGeneration == helperGeneration else {
+            throw TierError.repairUnavailable(
+                "selected Docker data disk no longer matches this helper generation's launch authority"
+            )
+        }
+        if let trustedRoot = launchAuthority.trustedDataDriveRoot {
+            _ = try trustedRoot.revalidateRootPathname()
+        }
+        guard let diskFile = launchAuthority.diskFile else {
+            // Injected test/development authorities already represent a complete ext4 identity.
+            let pathAuthority: DockerGuestDataDiskAuthority
+            do {
+                pathAuthority = try currentGuestDataDiskAuthority()
+            } catch {
+                throw TierError.repairUnavailable(
+                    "selected Docker data disk no longer matches this helper generation's launch authority: \(error)"
+                )
+            }
+            guard launchAuthority.hostIdentity.permits(
+                pathAuthority,
+                expectedFilesystemUUID: launchAuthority.expectedFilesystemUUID
+            ) else {
+                throw TierError.repairUnavailable(
+                    "selected Docker data disk no longer matches this helper generation's launch authority"
+                )
+            }
+            return pathAuthority
+        }
+        let retainedIdentity = try diskFile.withBorrowedDescriptor { descriptor in
+            try Self.inspectGuestDataDiskHostIdentity(
+                dataDriveID: launchAuthority.hostIdentity.dataDriveID,
+                descriptor: descriptor,
+                path: launchAuthority.hostIdentity.diskImagePath,
+                allowUninitializedSparseBlank: false
+            )
+        }
+        guard let filesystemUUID = retainedIdentity.filesystemUUID else {
+            throw TierError.repairUnavailable(
+                "selected Docker data disk did not finish ext4 initialization"
+            )
+        }
+        let retainedAuthority = DockerGuestDataDiskAuthority(
+            dataDriveID: retainedIdentity.dataDriveID,
+            filesystemUUID: filesystemUUID,
+            diskImagePath: retainedIdentity.diskImagePath,
+            diskImageDevice: retainedIdentity.diskImageDevice,
+            diskImageInode: retainedIdentity.diskImageInode
+        )
+        guard launchAuthority.hostIdentity.permits(
+                retainedAuthority,
+                expectedFilesystemUUID: launchAuthority.expectedFilesystemUUID
+              ) else {
+            throw TierError.repairUnavailable(
+                "selected Docker data disk changed from this helper generation's launch authority while it initialized"
+            )
+        }
+        let pathAuthority: DockerGuestDataDiskAuthority
+        do {
+            pathAuthority = try currentGuestDataDiskAuthority()
+        } catch {
+            throw TierError.repairUnavailable(
+                "selected Docker data disk no longer matches this helper generation's launch authority: \(error)"
+            )
+        }
+        guard launchAuthority.hostIdentity.permits(
+                pathAuthority,
+                expectedFilesystemUUID: launchAuthority.expectedFilesystemUUID
+              ),
+              retainedAuthority == pathAuthority else {
+            throw TierError.repairUnavailable(
+                "selected Docker data disk changed from this helper generation's launch authority while it initialized"
+            )
+        }
+        return retainedAuthority
     }
 
     private func currentGuestDataDiskAuthority() throws -> DockerGuestDataDiskAuthority {
@@ -3371,7 +3832,10 @@ public final class DockerTier: @unchecked Sendable {
             let dataDiskLaunchAuthority = try guestDataDiskLaunchAuthority(
                 helperGeneration: helperGeneration
             )
-            helper = makeManagedProcess(generation: helperGeneration)
+            helper = try makeManagedProcess(
+                generation: helperGeneration,
+                dataDiskLaunchAuthority: dataDiskLaunchAuthority
+            )
             lock.lock()
             guard !terminalShutdown,
                   lifecycleEpoch == wakeEpoch,
@@ -3504,29 +3968,113 @@ public final class DockerTier: @unchecked Sendable {
         return result
     }
 
-    private func makeManagedProcess(generation: UUID) -> (any DockerManagedProcess)? {
+    private func makeManagedProcess(
+        generation: UUID,
+        dataDiskLaunchAuthority: DockerGuestDataDiskLaunchAuthority?
+    ) throws -> (any DockerManagedProcess)? {
         let onUnexpectedTermination: HvProcessUnexpectedTerminationHandler = { [weak self] termination in
             self?.managedHelperExited(generation: generation, termination: termination)
         }
+        let process: (any DockerManagedProcess)?
         if let managedProcessFactory {
-            return managedProcessFactory(generation, onUnexpectedTermination)
-        }
-        if let vmmConfiguration = configuration.vmmProcess {
-            return VmmDockerProcess(
+            process = managedProcessFactory(generation, onUnexpectedTermination)
+        } else if var vmmConfiguration = configuration.vmmProcess {
+            try configureInheritedDockerDataDisk(
+                launchAuthority: dataDiskLaunchAuthority,
+                vmmConfiguration: &vmmConfiguration
+            )
+            process = VmmDockerProcess(
                 configuration: vmmConfiguration,
                 unexpectedTerminationHandler: onUnexpectedTermination
             )
-        }
-        if var hvConfiguration = configuration.hvProcess {
+        } else if var hvConfiguration = configuration.hvProcess {
             // The tier must rebuild the full helper + dataplane graph after a VM exit. Disable
             // HvProcess's local child-only retry so it cannot resurrect behind stale proxies.
             hvConfiguration.restartPolicy = .none
-            return HvProcess(
+            try configureInheritedDockerDataDisk(
+                launchAuthority: dataDiskLaunchAuthority,
+                hvConfiguration: &hvConfiguration
+            )
+            process = HvProcess(
                 configuration: hvConfiguration,
                 unexpectedTerminationHandler: onUnexpectedTermination
             )
+        } else {
+            process = nil
         }
-        return nil
+        guard let process, let dataDiskLaunchAuthority else { return process }
+        return DockerManagedProcessGeneration(
+            process: process,
+            dataDiskLaunchAuthority: dataDiskLaunchAuthority
+        )
+    }
+
+    private func configureInheritedDockerDataDisk(
+        launchAuthority: DockerGuestDataDiskLaunchAuthority?,
+        vmmConfiguration: inout VmmDockerProcessConfiguration
+    ) throws {
+        guard let launchAuthority else { return }
+        guard let diskFile = launchAuthority.diskFile else {
+            throw TierError.repairUnavailable(
+                "managed VMM Docker data-disk authority has no admitted file descriptor"
+            )
+        }
+        guard vmmConfiguration.inheritedDockerDataDisk == nil,
+              vmmConfiguration.dockerDataDiskFilesystemUUID == nil else {
+            throw TierError.repairUnavailable(
+                "managed VMM already contains Docker data-disk launch authority"
+            )
+        }
+        let duplicate = try diskFile.duplicate()
+        vmmConfiguration.inheritedDockerDataDisk = HvProcessInheritedFileDescriptor(
+            name: DockerDataDiskLaunchContract.authorityName,
+            takingOwnershipOf: duplicate,
+            childDescriptor: DockerDataDiskLaunchContract.childFileDescriptor
+        )
+        vmmConfiguration.dockerDataDiskFilesystemUUID = launchAuthority.expectedFilesystemUUID
+    }
+
+    private func configureInheritedDockerDataDisk(
+        launchAuthority: DockerGuestDataDiskLaunchAuthority?,
+        hvConfiguration: inout HvProcessConfiguration
+    ) throws {
+        guard let launchAuthority else { return }
+        guard let diskFile = launchAuthority.diskFile else {
+            throw TierError.repairUnavailable(
+                "managed RawHV Docker data-disk authority has no admitted file descriptor"
+            )
+        }
+        let descriptorFlag = DockerDataDiskLaunchContract.fileDescriptorArgument
+        let uuidFlag = DockerDataDiskLaunchContract.filesystemUUIDArgument
+        guard !hvConfiguration.arguments.contains(where: {
+                  $0 == descriptorFlag || $0.hasPrefix(descriptorFlag + "=")
+              }),
+              !hvConfiguration.arguments.contains(where: {
+                  $0 == uuidFlag || $0.hasPrefix(uuidFlag + "=")
+              }),
+              !hvConfiguration.inheritedFileDescriptors.contains(where: {
+                  $0.name == DockerDataDiskLaunchContract.authorityName
+                      || $0.childDescriptor
+                          == DockerDataDiskLaunchContract.childFileDescriptor
+              }) else {
+            throw TierError.repairUnavailable(
+                "managed RawHV helper already contains Docker data-disk launch authority"
+            )
+        }
+        let duplicate = try diskFile.duplicate()
+        hvConfiguration.inheritedFileDescriptors.append(
+            HvProcessInheritedFileDescriptor(
+                name: DockerDataDiskLaunchContract.authorityName,
+                takingOwnershipOf: duplicate,
+                childDescriptor: DockerDataDiskLaunchContract.childFileDescriptor
+            )
+        )
+        hvConfiguration.arguments += [
+            descriptorFlag,
+            String(DockerDataDiskLaunchContract.childFileDescriptor),
+            uuidFlag,
+            launchAuthority.expectedFilesystemUUID.uuidString.lowercased(),
+        ]
     }
 
     private var managedRestartPolicy: HvRestartPolicy {

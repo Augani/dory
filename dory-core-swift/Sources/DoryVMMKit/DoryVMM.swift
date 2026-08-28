@@ -26,6 +26,8 @@ public struct DoryVMMArguments: Sendable, Equatable {
     public var operationID: UUID?
     public var stateDirectory: String?
     public var dataDriveRoot: String?
+    public var dockerDataDiskFileDescriptor: Int32?
+    public var dockerDataDiskFilesystemUUID: UUID?
     public var kernelPath: String?
     public var rootfsPath: String?
     public var machineBootMode: DoryMachineBootMode = .linuxKernel
@@ -74,6 +76,9 @@ public enum DoryVMMArgumentError: Error, Sendable, Equatable, CustomStringConver
     case missingOperationID
     case missingHandoffSocket
     case missingStateDirectory
+    case missingDataDrive
+    case missingDockerDataDiskFileDescriptor
+    case missingDockerDataDiskFilesystemUUID
     case missingKernel
     case missingRootfs
     case missingGVProxy
@@ -86,6 +91,9 @@ public enum DoryVMMArgumentError: Error, Sendable, Equatable, CustomStringConver
     case invalidResolvedPortForwards(String)
     case invalidDisplayPresentation(String)
     case invalidOperationID(String)
+    case invalidDockerDataDiskFileDescriptor(String)
+    case invalidDockerDataDiskFilesystemUUID(String)
+    case duplicateArgument(String)
 
     public var description: String {
         switch self {
@@ -101,6 +109,12 @@ public enum DoryVMMArgumentError: Error, Sendable, Equatable, CustomStringConver
             return "missing --handoff-sock"
         case .missingStateDirectory:
             return "missing --state-dir"
+        case .missingDataDrive:
+            return "Docker VZ launch requires --data-drive"
+        case .missingDockerDataDiskFileDescriptor:
+            return "Docker VZ launch requires --docker-data-disk-fd"
+        case .missingDockerDataDiskFilesystemUUID:
+            return "Docker VZ launch requires --docker-data-disk-uuid"
         case .missingKernel:
             return "missing --kernel"
         case .missingRootfs:
@@ -125,6 +139,12 @@ public enum DoryVMMArgumentError: Error, Sendable, Equatable, CustomStringConver
             return "invalid --display-presentation value: \(value)"
         case let .invalidOperationID(value):
             return "invalid --operation-id value: \(value)"
+        case let .invalidDockerDataDiskFileDescriptor(value):
+            return "invalid --docker-data-disk-fd value: \(value)"
+        case let .invalidDockerDataDiskFilesystemUUID(value):
+            return "invalid --docker-data-disk-uuid value: \(value)"
+        case let .duplicateArgument(flag):
+            return "duplicate argument: \(flag)"
         }
     }
 }
@@ -147,7 +167,29 @@ public func parseDoryVMMArguments(_ raw: [String]) throws -> DoryVMMArguments {
         case "--state-dir":
             parsed.stateDirectory = try value(after: argument, from: raw, index: &index)
         case "--data-drive":
+            guard parsed.dataDriveRoot == nil else {
+                throw DoryVMMArgumentError.duplicateArgument(argument)
+            }
             parsed.dataDriveRoot = try value(after: argument, from: raw, index: &index)
+        case DockerDataDiskLaunchContract.fileDescriptorArgument:
+            guard parsed.dockerDataDiskFileDescriptor == nil else {
+                throw DoryVMMArgumentError.duplicateArgument(argument)
+            }
+            let rawValue = try value(after: argument, from: raw, index: &index)
+            guard let descriptor = Int32(rawValue), descriptor >= 0 else {
+                throw DoryVMMArgumentError.invalidDockerDataDiskFileDescriptor(rawValue)
+            }
+            parsed.dockerDataDiskFileDescriptor = descriptor
+        case DockerDataDiskLaunchContract.filesystemUUIDArgument:
+            guard parsed.dockerDataDiskFilesystemUUID == nil else {
+                throw DoryVMMArgumentError.duplicateArgument(argument)
+            }
+            let rawValue = try value(after: argument, from: raw, index: &index)
+            guard let filesystemUUID = UUID(uuidString: rawValue),
+                  filesystemUUID.uuidString.lowercased() == rawValue else {
+                throw DoryVMMArgumentError.invalidDockerDataDiskFilesystemUUID(rawValue)
+            }
+            parsed.dockerDataDiskFilesystemUUID = filesystemUUID
         case "--kernel":
             parsed.kernelPath = try value(after: argument, from: raw, index: &index)
         case "--rootfs":
@@ -307,6 +349,8 @@ public struct DoryVZMachineSpec: Sendable, Equatable {
     public var resolvedGraphics: DoryGraphicsAccelerationLevel?
     public var resolvedDevices: DoryVirtualMachineDeviceCapabilityRequest?
     public var dockerDataDiskPath: String?
+    public var dockerDataDiskFileDescriptor: Int32?
+    public var dockerDataDiskFilesystemUUID: UUID?
     public var nativeIPv6: Bool
     public var sourcePreservingLAN: Bool
     public var bridgeSubnetCIDR: String
@@ -328,6 +372,8 @@ public struct DoryVZMachineSpec: Sendable, Equatable {
         resolvedGraphics: DoryGraphicsAccelerationLevel? = nil,
         resolvedDevices: DoryVirtualMachineDeviceCapabilityRequest? = nil,
         dockerDataDiskPath: String? = nil,
+        dockerDataDiskFileDescriptor: Int32? = nil,
+        dockerDataDiskFilesystemUUID: UUID? = nil,
         nativeIPv6: Bool = false,
         sourcePreservingLAN: Bool = false,
         bridgeSubnetCIDR: String = DoryIPv4BridgeNetwork.defaultCIDR
@@ -348,6 +394,8 @@ public struct DoryVZMachineSpec: Sendable, Equatable {
         self.resolvedGraphics = resolvedGraphics
         self.resolvedDevices = resolvedDevices
         self.dockerDataDiskPath = dockerDataDiskPath
+        self.dockerDataDiskFileDescriptor = dockerDataDiskFileDescriptor
+        self.dockerDataDiskFilesystemUUID = dockerDataDiskFilesystemUUID
         self.nativeIPv6 = nativeIPv6
         self.sourcePreservingLAN = sourcePreservingLAN
         self.bridgeSubnetCIDR = bridgeSubnetCIDR
@@ -671,23 +719,48 @@ public enum DoryVZConfigurationBuilder {
             }
         }
 
-        var dockerDataDiskPath: String?
+        var dockerDataDiskAttachmentURL: URL?
         var allowDockerDataFormat = false
         if spec.machineID == "docker" {
-            let dataDisk = spec.dockerDataDiskPath ?? (spec.stateDirectory + "/docker-data.ext4")
-            let preparation: DockerDataDiskPreparation
+            guard let dataDiskPath = spec.dockerDataDiskPath,
+                  !dataDiskPath.isEmpty else {
+                throw DoryVZMachineError.validation(
+                    "Docker requires selected data-drive path metadata"
+                )
+            }
+            guard let dataDiskDescriptor = spec.dockerDataDiskFileDescriptor else {
+                throw DoryVZMachineError.validation(
+                    "Docker requires an inherited data-disk descriptor"
+                )
+            }
+            guard spec.dockerDataDiskFilesystemUUID != nil else {
+                throw DoryVZMachineError.validation(
+                    "Docker requires an expected data-disk filesystem UUID"
+                )
+            }
             do {
-                preparation = try DockerDataDisk.prepare(destination: dataDisk)
+                try validateDockerDataDiskPathIdentity(
+                    descriptor: dataDiskDescriptor,
+                    path: dataDiskPath
+                )
+                let admittedState = try DockerDataDisk.admittedState(
+                    ofFileDescriptor: dataDiskDescriptor,
+                    description: "inherited Docker data disk",
+                    minimumBytes: DockerDataDisk.blankDiskBytes
+                )
+                allowDockerDataFormat = admittedState == .sparseBlank
             } catch {
                 throw DoryVZMachineError.storageAttachment("Docker data disk: \(error)")
             }
-            switch preparation {
-            case .createdBlank:
-                allowDockerDataFormat = true
-            case .alreadyPresent:
-                allowDockerDataFormat = try !DockerDataDisk.isExt4Image(at: dataDisk)
-            }
-            dockerDataDiskPath = dataDisk
+            dockerDataDiskAttachmentURL = URL(
+                fileURLWithPath: "/dev/fd/\(dataDiskDescriptor)"
+            )
+        } else if spec.dockerDataDiskPath != nil
+                    || spec.dockerDataDiskFileDescriptor != nil
+                    || spec.dockerDataDiskFilesystemUUID != nil {
+            throw DoryVZMachineError.validation(
+                "Docker data-disk authority cannot be attached to a non-Docker machine"
+            )
         }
 
         let directoryShares: [DoryMachineShareConfiguration]
@@ -797,10 +870,10 @@ public enum DoryVZConfigurationBuilder {
             throw DoryVZMachineError.storageAttachment("\(error)")
         }
 
-        if let dataDisk = dockerDataDiskPath {
+        if let dataDiskURL = dockerDataDiskAttachmentURL {
             do {
                 let attachment = try VZDiskImageStorageDeviceAttachment(
-                    url: URL(fileURLWithPath: dataDisk),
+                    url: dataDiskURL,
                     readOnly: false
                 )
                 let block = VZVirtioBlockDeviceConfiguration(attachment: attachment)
@@ -821,6 +894,34 @@ public enum DoryVZConfigurationBuilder {
         }
 
         return configuration
+    }
+
+    /// The pathname remains the selected-drive metadata and lock identity, but it is never opened
+    /// here. The VZ attachment consumes `/dev/fd/N`, so replacement after this check cannot redirect
+    /// guest I/O away from the descriptor admitted by doryd.
+    private static func validateDockerDataDiskPathIdentity(
+        descriptor: Int32,
+        path: String
+    ) throws {
+        guard descriptor >= 0 else {
+            throw DoryVZMachineError.validation("Docker data-disk descriptor is negative")
+        }
+        var descriptorStatus = stat()
+        guard fstat(descriptor, &descriptorStatus) == 0 else {
+            throw DoryVZMachineError.syscall("fstat inherited Docker data disk", errno)
+        }
+        var pathStatus = stat()
+        let pathResult = path.withCString { lstat($0, &pathStatus) }
+        guard pathResult == 0 else {
+            throw DoryVZMachineError.syscall("lstat Docker data-disk metadata path", errno)
+        }
+        guard pathStatus.st_mode & S_IFMT == S_IFREG,
+              descriptorStatus.st_dev == pathStatus.st_dev,
+              descriptorStatus.st_ino == pathStatus.st_ino else {
+            throw DoryVZMachineError.validation(
+                "Docker data-disk metadata path does not name the inherited descriptor"
+            )
+        }
     }
 
     private static func installedIntelApplicationTranslationShare() throws -> VZDirectoryShare {
@@ -903,6 +1004,7 @@ public enum DoryVZConfigurationBuilder {
             environment: spec.environment,
             operationID: spec.operationID,
             allowDockerDataFormat: allowDockerDataFormat,
+            dockerDataDiskFilesystemUUID: spec.dockerDataDiskFilesystemUUID,
             nativeIPv6: spec.nativeIPv6,
             sourcePreservingLAN: spec.sourcePreservingLAN,
             bridgeNetwork: try DoryIPv4BridgeNetwork(spec.bridgeSubnetCIDR)
@@ -925,6 +1027,7 @@ public enum DoryVZConfigurationBuilder {
         environment: [String: String],
         operationID: UUID?,
         allowDockerDataFormat: Bool,
+        dockerDataDiskFilesystemUUID: UUID?,
         nativeIPv6: Bool,
         sourcePreservingLAN: Bool,
         bridgeNetwork: DoryIPv4BridgeNetwork
@@ -1001,9 +1104,14 @@ public enum DoryVZConfigurationBuilder {
         lines += [
             "fi",
             "",
+            "if [ ! -b /dev/vdb ]; then echo DORY-DATA-DISK-BLOCK-DEVICE-MISSING; sync; poweroff -f; exit 1; fi",
             "if [ -b /dev/vdb ]; then",
             "  DORY_ALLOW_DATA_FORMAT=\(allowDockerDataFormat ? 1 : 0)",
+            "  DORY_DATA_EXPECTED_UUID=\(shellQuote(dockerDataDiskFilesystemUUID?.uuidString.lowercased() ?? ""))",
+            "  if [ -z \"$DORY_DATA_EXPECTED_UUID\" ]; then echo DORY-DATA-DISK-UUID-MISSING; sync; poweroff -f; exit 1; fi",
             "  if blkid /dev/vdb 2>/dev/null | grep -q 'TYPE=\"ext4\"'; then",
+            "    DORY_DATA_ACTUAL_UUID=$(blkid -s UUID -o value /dev/vdb 2>/dev/null | tr 'A-F' 'a-f')",
+            "    if [ \"$DORY_DATA_ACTUAL_UUID\" != \"$DORY_DATA_EXPECTED_UUID\" ]; then echo DORY-DATA-DISK-UUID-MISMATCH; sync; poweroff -f; exit 1; fi",
             "    DORY_DATA_DEVICE_BYTES=$(blockdev --getsize64 /dev/vdb 2>/dev/null || true)",
             "    DORY_DATA_GEOMETRY=$(dumpe2fs -h /dev/vdb 2>/dev/null | awk '/^Block count:/{blocks=$3} /^Block size:/{size=$3} END{if(blocks && size) print blocks, size}')",
             "    set -- $DORY_DATA_GEOMETRY",
@@ -1044,13 +1152,21 @@ public enum DoryVZConfigurationBuilder {
             "    mount -t ext4 -o \"$DORY_DOCKER_MOUNT_OPTS\" /dev/vdb /var/lib/docker || mount -t ext4 -o \"$DORY_DOCKER_MOUNT_FALLBACK_OPTS\" /dev/vdb /var/lib/docker || mount -t ext4 /dev/vdb /var/lib/docker || { echo DORY-DATA-DISK-MOUNT-FAILED-EXISTING-EXT4; sync; poweroff -f; exit 1; }",
             "  elif [ \"$DORY_ALLOW_DATA_FORMAT\" -eq 1 ]; then",
             "    echo DORY-DATA-DISK-FORMAT-PROVEN-BLANK",
-            "    (mkfs.ext4 -F -O fast_commit /dev/vdb >/var/log/dory-data-mkfs.log 2>&1 || mkfs.ext4 -F /dev/vdb >>/var/log/dory-data-mkfs.log 2>&1) && mount -t ext4 /dev/vdb /var/lib/docker || { echo DORY-DATA-DISK-FORMAT-OR-MOUNT-FAILED; sync; poweroff -f; exit 1; }",
+            "    if mkfs.ext4 -F -U \"$DORY_DATA_EXPECTED_UUID\" -O fast_commit /dev/vdb >/var/log/dory-data-mkfs.log 2>&1 || mkfs.ext4 -F -U \"$DORY_DATA_EXPECTED_UUID\" /dev/vdb >>/var/log/dory-data-mkfs.log 2>&1; then",
+            "      DORY_DATA_ACTUAL_UUID=$(blkid -s UUID -o value /dev/vdb 2>/dev/null | tr 'A-F' 'a-f')",
+            "      if [ \"$DORY_DATA_ACTUAL_UUID\" != \"$DORY_DATA_EXPECTED_UUID\" ]; then echo DORY-DATA-DISK-UUID-MISMATCH-AFTER-FORMAT; sync; poweroff -f; exit 1; fi",
+            "      mount -t ext4 /dev/vdb /var/lib/docker || { echo DORY-DATA-DISK-MOUNT-FAILED-AFTER-FORMAT; sync; poweroff -f; exit 1; }",
+            "    else",
+            "      echo DORY-DATA-DISK-FORMAT-FAILED; sync; poweroff -f; exit 1",
+            "    fi",
             "  else",
             "    echo DORY-DATA-DISK-UNKNOWN-FILESYSTEM-REFUSING-FORMAT",
             "    sync; poweroff -f; exit 1",
             "  fi",
             "  fstrim -v /var/lib/docker >/var/log/dory-data-trim.log 2>&1 || true",
             "fi",
+            "DORY_DATA_MOUNT_IDENTITY=$(awk '$2==\"/var/lib/docker\"{print $1 \" \" $3}' /proc/mounts | tail -n 1)",
+            "if [ \"$DORY_DATA_MOUNT_IDENTITY\" != \"/dev/vdb ext4\" ]; then echo DORY-DATA-DISK-MOUNT-IDENTITY-MISMATCH; sync; poweroff -f; exit 1; fi",
             "",
             "if [ -x /usr/local/bin/dockerd ]; then",
             "  \(GuestBuildCacheGCCommand.configureDaemon())",
@@ -1135,18 +1251,35 @@ public enum DoryVMMMain {
             }
             let stateDirectoryLock = try EngineStateDirectoryLock(stateDirectory: stateDirectory)
             defer { withExtendedLifetime(stateDirectoryLock) {} }
-            let dataDriveLock: EngineStateDirectoryLock?
-            if let dataDriveRoot = arguments.dataDriveRoot, machineID == "docker" {
-                let drive = try DoryDataDrive(overrideRoot: dataDriveRoot)
-                try drive.prepare()
-                dataDriveLock = try EngineStateDirectoryLock(
-                    stateDirectory: drive.root,
-                    lockFileName: "drive.lock"
-                )
+            if machineID == "docker" {
+                guard let dataDriveRoot = arguments.dataDriveRoot else {
+                    throw DoryVMMArgumentError.missingDataDrive
+                }
+                guard let dataDiskDescriptor = arguments.dockerDataDiskFileDescriptor else {
+                    throw DoryVMMArgumentError.missingDockerDataDiskFileDescriptor
+                }
+                guard dataDiskDescriptor == DockerDataDiskLaunchContract
+                        .childFileDescriptor else {
+                    throw DoryVMMArgumentError.invalidDockerDataDiskFileDescriptor(
+                        String(dataDiskDescriptor)
+                    )
+                }
+                guard arguments.dockerDataDiskFilesystemUUID != nil else {
+                    throw DoryVMMArgumentError.missingDockerDataDiskFilesystemUUID
+                }
+                // doryd retains the selected drive's mutation/lock authority for the complete
+                // helper generation. The VMM only canonicalizes inert path metadata here; it must
+                // neither prepare the drive nor contend for a second drive.lock.
+                _ = try DoryDataDrive(overrideRoot: dataDriveRoot)
             } else {
-                dataDriveLock = nil
+                guard arguments.dataDriveRoot == nil,
+                      arguments.dockerDataDiskFileDescriptor == nil,
+                      arguments.dockerDataDiskFilesystemUUID == nil else {
+                    throw DoryVZMachineError.validation(
+                        "Docker data-disk launch arguments require machine ID 'docker'"
+                    )
+                }
             }
-            defer { withExtendedLifetime(dataDriveLock) {} }
             guard let kernelPath = arguments.kernelPath else {
                 throw DoryVMMArgumentError.missingKernel
             }
@@ -1208,6 +1341,8 @@ public enum DoryVMMMain {
                 publishHost: arguments.publishHost,
                 bridgeSubnetCIDR: arguments.bridgeSubnetCIDR,
                 dataDriveRoot: arguments.dataDriveRoot,
+                dockerDataDiskFileDescriptor: arguments.dockerDataDiskFileDescriptor,
+                dockerDataDiskFilesystemUUID: arguments.dockerDataDiskFilesystemUUID,
                 restoreStatePath: arguments.restoreStatePath,
                 onRuntimeCreated: { coordinator.attach($0) }
             )
@@ -1323,6 +1458,8 @@ public enum DoryVMMMain {
         publishHost: String,
         bridgeSubnetCIDR: String,
         dataDriveRoot: String?,
+        dockerDataDiskFileDescriptor: Int32?,
+        dockerDataDiskFilesystemUUID: UUID?,
         restoreStatePath: String?,
         onRuntimeCreated: (DoryVMMRuntime) -> Void
     ) throws -> DoryVMMRuntime {
@@ -1353,7 +1490,6 @@ public enum DoryVMMMain {
         let dataDrive: DoryDataDrive?
         if let dataDriveRoot, machineID == "docker" {
             dataDrive = try DoryDataDrive(overrideRoot: dataDriveRoot)
-            try dataDrive?.prepare()
         } else {
             dataDrive = nil
         }
@@ -1457,6 +1593,8 @@ public enum DoryVMMMain {
             resolvedGraphics: resolvedGraphics,
             resolvedDevices: resolvedDevices,
             dockerDataDiskPath: dataDrive?.engineDataDiskPath,
+            dockerDataDiskFileDescriptor: dockerDataDiskFileDescriptor,
+            dockerDataDiskFilesystemUUID: dockerDataDiskFilesystemUUID,
             nativeIPv6: gvproxyNetwork != nil,
             sourcePreservingLAN: sourcePreservingLANClient != nil,
             bridgeSubnetCIDR: bridgeNetwork.cidr

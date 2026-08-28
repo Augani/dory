@@ -4,6 +4,10 @@ import Testing
 @testable import dory_hv
 
 struct EngineRuntimePolicyTests {
+    private let dockerDataDiskUUID = UUID(
+        uuidString: "12345678-90ab-4cde-8fab-1234567890ab"
+    )!
+
     @Test func engineMemoryPolicyRejectsAnUnrepresentableGuestMappingBeforeBoot() throws {
         try EngineMode.validateMemoryMB(62 * 1_024)
 
@@ -36,6 +40,187 @@ struct EngineRuntimePolicyTests {
         #expect(throws: (any Error).self) {
             _ = try EngineMode.FuseRequestQueuePolicy(fixedCount: 9)
         }
+    }
+
+    @Test func inheritedDockerDataDiskArgumentsRequireTheExactSupervisorTuple() throws {
+        var arguments = EngineMode.DockerDataDiskArguments()
+        try arguments.setDataDrive("/Volumes/Test/Dory.dorydrive")
+        try arguments.setInheritedFileDescriptor("19")
+        try arguments.setExpectedFilesystemUUID(
+            dockerDataDiskUUID.uuidString.lowercased()
+        )
+
+        #expect(
+            try arguments.resolvedSelection() == .inherited(
+                fileDescriptor: 19,
+                expectedFilesystemUUID: dockerDataDiskUUID,
+                dataDriveArgument: "/Volumes/Test/Dory.dorydrive"
+            )
+        )
+
+        var wrongDescriptor = EngineMode.DockerDataDiskArguments()
+        #expect(
+            throws: EngineMode.DockerDataDiskArgumentError.invalidFileDescriptor("18")
+        ) {
+            try wrongDescriptor.setInheritedFileDescriptor("18")
+        }
+
+        var noncanonicalUUID = EngineMode.DockerDataDiskArguments()
+        #expect(
+            throws: EngineMode.DockerDataDiskArgumentError.invalidFilesystemUUID(
+                dockerDataDiskUUID.uuidString
+            )
+        ) {
+            try noncanonicalUUID.setExpectedFilesystemUUID(
+                dockerDataDiskUUID.uuidString
+            )
+        }
+    }
+
+    @Test func dockerDataDiskArgumentsRejectDuplicatesMixesAndIncompletePairs() throws {
+        var duplicateDrive = EngineMode.DockerDataDiskArguments()
+        try duplicateDrive.setDataDrive("/Volumes/One/Dory.dorydrive")
+        #expect(throws: EngineMode.DockerDataDiskArgumentError.duplicate("--data-drive")) {
+            try duplicateDrive.setDataDrive("/Volumes/Two/Dory.dorydrive")
+        }
+
+        var duplicateDescriptor = EngineMode.DockerDataDiskArguments()
+        try duplicateDescriptor.setInheritedFileDescriptor("19")
+        #expect(
+            throws: EngineMode.DockerDataDiskArgumentError.duplicate(
+                "--docker-data-disk-fd"
+            )
+        ) {
+            try duplicateDescriptor.setInheritedFileDescriptor("19")
+        }
+
+        var duplicateUUID = EngineMode.DockerDataDiskArguments()
+        try duplicateUUID.setExpectedFilesystemUUID(
+            dockerDataDiskUUID.uuidString.lowercased()
+        )
+        #expect(
+            throws: EngineMode.DockerDataDiskArgumentError.duplicate(
+                "--docker-data-disk-uuid"
+            )
+        ) {
+            try duplicateUUID.setExpectedFilesystemUUID(
+                dockerDataDiskUUID.uuidString.lowercased()
+            )
+        }
+
+        var duplicateLegacyPath = EngineMode.DockerDataDiskArguments()
+        try duplicateLegacyPath.setLegacyPath("/tmp/one.ext4")
+        #expect(throws: EngineMode.DockerDataDiskArgumentError.duplicate("--data-disk")) {
+            try duplicateLegacyPath.setLegacyPath("/tmp/two.ext4")
+        }
+
+        var mixed = EngineMode.DockerDataDiskArguments()
+        try mixed.setDataDrive("/Volumes/Test/Dory.dorydrive")
+        try mixed.setLegacyPath("/tmp/docker.ext4")
+        #expect(throws: EngineMode.DockerDataDiskArgumentError.conflictingAuthorities) {
+            _ = try mixed.resolvedSelection()
+        }
+
+        var legacyWithInheritedDescriptor = EngineMode.DockerDataDiskArguments()
+        try legacyWithInheritedDescriptor.setLegacyPath("/tmp/docker.ext4")
+        try legacyWithInheritedDescriptor.setInheritedFileDescriptor("19")
+        #expect(throws: EngineMode.DockerDataDiskArgumentError.conflictingAuthorities) {
+            _ = try legacyWithInheritedDescriptor.resolvedSelection()
+        }
+
+        var legacyWithInheritedUUID = EngineMode.DockerDataDiskArguments()
+        try legacyWithInheritedUUID.setLegacyPath("/tmp/docker.ext4")
+        try legacyWithInheritedUUID.setExpectedFilesystemUUID(
+            dockerDataDiskUUID.uuidString.lowercased()
+        )
+        #expect(throws: EngineMode.DockerDataDiskArgumentError.conflictingAuthorities) {
+            _ = try legacyWithInheritedUUID.resolvedSelection()
+        }
+
+        var missingDescriptor = EngineMode.DockerDataDiskArguments()
+        try missingDescriptor.setDataDrive("/Volumes/Test/Dory.dorydrive")
+        try missingDescriptor.setExpectedFilesystemUUID(
+            dockerDataDiskUUID.uuidString.lowercased()
+        )
+        #expect(throws: EngineMode.DockerDataDiskArgumentError.missingFileDescriptor) {
+            _ = try missingDescriptor.resolvedSelection()
+        }
+
+        var missingUUID = EngineMode.DockerDataDiskArguments()
+        try missingUUID.setDataDrive("/Volumes/Test/Dory.dorydrive")
+        try missingUUID.setInheritedFileDescriptor("19")
+        #expect(throws: EngineMode.DockerDataDiskArgumentError.missingFilesystemUUID) {
+            _ = try missingUUID.resolvedSelection()
+        }
+
+        var missingDrive = EngineMode.DockerDataDiskArguments()
+        try missingDrive.setInheritedFileDescriptor("19")
+        try missingDrive.setExpectedFilesystemUUID(
+            dockerDataDiskUUID.uuidString.lowercased()
+        )
+        #expect(throws: EngineMode.DockerDataDiskArgumentError.missingDataDrive) {
+            _ = try missingDrive.resolvedSelection()
+        }
+    }
+
+    @Test func explicitStandaloneDockerDataDiskArgumentsRemainAvailable() throws {
+        var managedDrive = EngineMode.DockerDataDiskArguments()
+        try managedDrive.setDataDrive("/Volumes/Test/Dory.dorydrive")
+        #expect(
+            try managedDrive.resolvedSelection()
+                == .standaloneDataDrive("/Volumes/Test/Dory.dorydrive")
+        )
+
+        var developerPath = EngineMode.DockerDataDiskArguments()
+        try developerPath.setLegacyPath("/tmp/docker-data.ext4")
+        #expect(
+            try developerPath.resolvedSelection()
+                == .standalonePath("/tmp/docker-data.ext4")
+        )
+
+        let empty = EngineMode.DockerDataDiskArguments()
+        #expect(throws: EngineMode.DockerDataDiskArgumentError.missingAuthority) {
+            _ = try empty.resolvedSelection()
+        }
+    }
+
+    @Test func inheritedDockerDataDiskUUIDIsFormattedAndVerifiedBeforeMutation() {
+        let script = EngineMode.guestBootScript(
+            allowDockerDataFormat: true,
+            expectedDockerDataDiskUUID: dockerDataDiskUUID
+        )
+        let canonicalUUID = dockerDataDiskUUID.uuidString.lowercased()
+        #expect(script.contains("DORY_DOCKER_DATA_UUID='\(canonicalUUID)'"))
+        let formatPrefix = #"mkfs.ext4 -U "$DORY_DOCKER_DATA_UUID""#
+        #expect(script.components(separatedBy: formatPrefix).count - 1 == 2)
+
+        let lines = script.split(separator: "\n").map(String.init)
+        let existingMarker = lines.firstIndex(
+            of: #"if blkid /dev/vdb 2>/dev/null | grep -q 'TYPE="ext4"'; then"#
+        )
+        let verifyExisting = lines.firstIndex(
+            of: "  dory_verify_docker_data_uuid || { echo DATA-DISK-UUID-MISMATCH; sync; poweroff -f; exit 1; }"
+        )
+        let growExisting = lines.firstIndex {
+            $0.hasPrefix("  dory_grow_docker_data ||")
+        }
+        let mountExisting = lines.firstIndex {
+            $0.hasPrefix("  dory_mount_docker_data ||")
+        }
+        #expect(existingMarker != nil)
+        #expect(verifyExisting != nil)
+        #expect(growExisting != nil)
+        #expect(mountExisting != nil)
+        if let existingMarker, let verifyExisting, let growExisting, let mountExisting {
+            #expect(existingMarker < verifyExisting)
+            #expect(verifyExisting < growExisting)
+            #expect(growExisting < mountExisting)
+        }
+        #expect(
+            script.contains(
+                "dory_format_docker_data && dory_verify_docker_data_uuid && dory_mount_docker_data"
+            )
+        )
     }
 
     @Test func engineStateDirectoryIsOwnerPrivateAndDoesNotFollowFinalSymlinks() throws {

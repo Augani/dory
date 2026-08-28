@@ -18,6 +18,7 @@ do {
 }
 let dataDriveSelectionAuthority: DoryDataDriveSelectionAuthority
 let dataDrive: DoryDataDrive
+let dataDriveTrustedRoot: DoryTrustedDirectoryRoot
 let dataDriveID: UUID
 do {
     let requestedDrive = try dorydEnvironment.dataDriveConfiguration()
@@ -27,7 +28,10 @@ do {
         requestedRoot: requestedDrive.root,
         authority: dataDriveSelectionAuthority
     )
-    dataDriveID = try dataDrive.readManifest().id
+    dataDriveTrustedRoot = try DoryTrustedDirectoryRoot(
+        canonicalAbsolutePath: dataDrive.root
+    )
+    dataDriveID = try dataDrive.readManifest(in: dataDriveTrustedRoot).id
     FileHandle.standardError.write(
         Data("doryd: data drive \(dataDriveID.uuidString.lowercased()) ready at \(dataDrive.root)\n".utf8)
     )
@@ -66,7 +70,12 @@ if dorydEnvironment.hostCLIEnabled {
 }
 let idleController = IdleController()
 let dockerTier = dorydEnvironment.dockerTierConfiguration().map {
-    DockerTier(configuration: $0, idleController: idleController)
+    DockerTier(
+        configuration: $0,
+        idleController: idleController,
+        dataDriveSelectionAuthority: dataDriveSelectionAuthority,
+        dataDriveTrustedRoot: dataDriveTrustedRoot
+    )
 }
 let desktopUpdateArtifactResolver = DoryComponentStoreDesktopUpdateArtifactResolver(
     store: DoryComponentStore(drive: dataDrive)

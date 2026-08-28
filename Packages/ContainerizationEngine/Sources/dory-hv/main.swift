@@ -546,8 +546,7 @@ case "engine":
     var cpus = 4
     var rootfs: String?
     var stateDirectory: String?
-    var dockerDataDisk: String?
-    var dataDriveRoot: String?
+    var dockerDataDiskArguments = EngineMode.DockerDataDiskArguments()
     var shares: [VirtioFSShareConfiguration] = []
     var directIPRequested = false
     var directIPSubnet: String?
@@ -582,20 +581,37 @@ case "engine":
             guard let value = iterator.next(), !value.isEmpty else {
                 fail("engine --data-disk requires a non-empty absolute path")
             }
-            guard value.hasPrefix("/") else { fail("engine --data-disk requires an absolute path") }
-            dockerDataDisk = value
+            do {
+                try dockerDataDiskArguments.setLegacyPath(value)
+            } catch {
+                fail("engine \(error)")
+            }
         case "--data-drive":
             guard let value = iterator.next(), !value.isEmpty else {
                 fail("engine --data-drive requires a non-empty absolute .dorydrive path")
             }
             do {
-                let environmentHome = DoryDataDrive.processHome()
-                let drive = try DoryDataDrive(home: environmentHome, overrideRoot: value)
-                try drive.prepare()
-                dockerDataDisk = drive.engineDataDiskPath
-                dataDriveRoot = drive.root
+                try dockerDataDiskArguments.setDataDrive(value)
             } catch {
-                fail("invalid Dory data drive: \(error)")
+                fail("engine \(error)")
+            }
+        case DockerDataDiskLaunchContract.fileDescriptorArgument:
+            guard let value = iterator.next() else {
+                fail("engine --docker-data-disk-fd requires a file descriptor")
+            }
+            do {
+                try dockerDataDiskArguments.setInheritedFileDescriptor(value)
+            } catch {
+                fail("engine \(error)")
+            }
+        case DockerDataDiskLaunchContract.filesystemUUIDArgument:
+            guard let value = iterator.next() else {
+                fail("engine --docker-data-disk-uuid requires a canonical lowercase UUID")
+            }
+            do {
+                try dockerDataDiskArguments.setExpectedFilesystemUUID(value)
+            } catch {
+                fail("engine \(error)")
             }
         case "--mem-mb": memoryMB = iterator.next().flatMap(UInt64.init) ?? memoryMB
         case "--cpus": cpus = iterator.next().flatMap(Int.init) ?? cpus
@@ -655,6 +671,42 @@ case "engine":
     guard let stateDirectory else {
         fail("engine requires explicit --state-dir; refusing to select persistent Docker state implicitly")
     }
+    let dockerDataDiskAuthority: EngineMode.DockerDataDiskAuthority
+    let dataDriveRoot: String?
+    let dataDriveDiskPath: String?
+    do {
+        switch try dockerDataDiskArguments.resolvedSelection() {
+        case let .inherited(fileDescriptor, expectedFilesystemUUID, dataDriveArgument):
+            let drive = try DoryDataDrive(
+                home: DoryDataDrive.processHome(),
+                overrideRoot: dataDriveArgument
+            )
+            // The daemon owns disk creation and drive.lock in production. Only validate and retain
+            // the managed namespace metadata here; the disk pathname is never attachment authority.
+            try drive.validateManifest()
+            dockerDataDiskAuthority = .inherited(
+                fileDescriptor: fileDescriptor,
+                expectedFilesystemUUID: expectedFilesystemUUID
+            )
+            dataDriveRoot = drive.root
+            dataDriveDiskPath = drive.engineDataDiskPath
+        case .standaloneDataDrive(let dataDriveArgument):
+            let drive = try DoryDataDrive(
+                home: DoryDataDrive.processHome(),
+                overrideRoot: dataDriveArgument
+            )
+            try drive.prepare()
+            dockerDataDiskAuthority = .standalonePath(drive.engineDataDiskPath)
+            dataDriveRoot = drive.root
+            dataDriveDiskPath = drive.engineDataDiskPath
+        case .standalonePath(let path):
+            dockerDataDiskAuthority = .standalonePath(path)
+            dataDriveRoot = nil
+            dataDriveDiskPath = nil
+        }
+    } catch {
+        fail("invalid engine Docker data-disk authority: \(error)")
+    }
     let configuration = EngineMode.Configuration(
         engineSocket: engineSocket,
         kernelPath: kernel,
@@ -662,8 +714,9 @@ case "engine":
         memoryMB: memoryMB,
         cpus: cpus,
         stateDirectory: stateDirectory,
-        dockerDataDiskPath: dockerDataDisk,
+        dockerDataDiskAuthority: dockerDataDiskAuthority,
         dataDriveRoot: dataDriveRoot,
+        dataDriveDiskPath: dataDriveDiskPath,
         bundledRootfs: rootfs,
         shares: shares,
         directIP: directIPSubnet.map { subnet in

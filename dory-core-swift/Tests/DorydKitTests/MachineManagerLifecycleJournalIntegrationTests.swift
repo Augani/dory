@@ -668,6 +668,70 @@ final class MachineManagerLifecycleJournalIntegrationTests: XCTestCase {
         ))
         _ = try waitForJournal(fixture, kind: .workspaceDelete, status: .failed)
     }
+
+    func testLegacyNestedNonterminalJournalIsRecoveredFromTheDoryHomeStore() throws {
+        let fixture = try LifecycleFixture(name: #function)
+        defer { fixture.cleanup() }
+        let legacyHome = fixture.state + "/.lifecycle-journal"
+        let legacyStore = try DoryOperationJournalStore(home: legacyHome)
+        var manager: MachineManager? = fixture.makeManager(
+            lifecycleJournalHome: legacyHome
+        )
+        _ = try fixture.createMachine(try XCTUnwrap(manager))
+        try XCTUnwrap(manager).installLifecycleFaultInjectorForTesting { point in
+            if point == .deleteAfterQuarantine { throw MachineLifecycleInjectedCrash() }
+        }
+
+        XCTAssertThrowsError(try XCTUnwrap(manager).delete(id: fixture.machineID)) { error in
+            XCTAssertTrue(error is MachineLifecycleInjectedCrash)
+        }
+        XCTAssertTrue(try legacyStore.list().contains {
+            $0.plan.kind == .workspaceDelete
+                && $0.state.status != .completed
+                && $0.state.status != .failed
+        })
+        manager = nil
+
+        let recovered = fixture.makeManager()
+        let status = try XCTUnwrap(recovered.status(id: fixture.machineID))
+        XCTAssertEqual(status.state, .stopped)
+        XCTAssertTrue(status.lastError?.contains("interrupted deletion") == true)
+        let legacyDelete = try XCTUnwrap(try legacyStore.list().last(where: {
+            $0.plan.kind == .workspaceDelete
+        }))
+        XCTAssertEqual(legacyDelete.state.status, .failed)
+        XCTAssertFalse(try fixture.records().contains {
+            $0.plan.kind == .workspaceDelete
+        })
+    }
+
+    func testSharedDoryHomeStoreLeavesNonLifecycleOperationsForTheirOwner() throws {
+        let fixture = try LifecycleFixture(name: #function)
+        defer { fixture.cleanup() }
+        let digest = String(repeating: "a", count: 64)
+        let plan = DoryOperationPlan(
+            kind: .driveBackup,
+            source: DoryOperationAuthority(
+                kind: .dataDrive,
+                id: fixture.machineID,
+                fingerprint: digest
+            ),
+            target: DoryOperationAuthority(
+                kind: .backupArchive,
+                id: fixture.machineID,
+                fingerprint: digest
+            ),
+            selectionDigest: digest,
+            dependencyClosureDigest: digest,
+            successCriteriaDigest: digest
+        )
+        _ = try fixture.store.begin(plan)
+
+        let manager = fixture.makeManager()
+
+        XCTAssertNil(manager.status(id: fixture.machineID))
+        XCTAssertEqual(try fixture.store.read(plan.id).state.status, .running)
+    }
 }
 
 private final class LifecycleFixture {
@@ -708,8 +772,12 @@ private final class LifecycleFixture {
         store = try DoryOperationJournalStore(home: journal)
     }
 
-    func makeManager() -> MachineManager {
-        MachineManager(configuration: configuration)
+    func makeManager(lifecycleJournalHome: String? = nil) -> MachineManager {
+        var configuration = configuration
+        if let lifecycleJournalHome {
+            configuration.lifecycleJournalHome = lifecycleJournalHome
+        }
+        return MachineManager(configuration: configuration)
     }
 
     @discardableResult

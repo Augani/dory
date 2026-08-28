@@ -339,8 +339,10 @@ public struct DorydEnvironment: Sendable {
             acceleratedDesktopExecutablePath: acceleratedDesktop?.executablePath,
             stateDirectory: stateDirectory,
             runtimeDirectory: string("DORYD_MACHINE_RUNTIME_DIR") ?? "\(home)/.dory/machines",
+            // The journal store derives `Library/Application Support/Dory/operations` from a
+            // user home. Passing a journal directory here would append that hierarchy twice.
             lifecycleJournalHome: string("DORYD_MACHINE_LIFECYCLE_JOURNAL_DIR")
-                ?? "\(stateDirectory)/.lifecycle-journal",
+                ?? home,
             baseArguments: baseArguments,
             acceleratedDesktopBaseArguments: acceleratedDesktop?.arguments ?? [],
             passMachineArguments: bool("DORYD_VMM_PASS_MACHINE_ARGS", default: true),

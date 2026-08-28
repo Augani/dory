@@ -1027,7 +1027,7 @@ final class DorydConfigurationTests: XCTestCase {
             vmmExecutablePath: helper,
             stateDirectory: directory + "/machines",
             runtimeDirectory: directory + "/home/.dory/machines",
-            lifecycleJournalHome: directory + "/machines/.lifecycle-journal",
+            lifecycleJournalHome: directory + "/home",
             baseArguments: ["--foreground", "--verbose"],
             passMachineArguments: false,
             logDirectory: directory + "/logs",
@@ -1051,10 +1051,13 @@ final class DorydConfigurationTests: XCTestCase {
             + "/home/Library/Application Support/Dory/Dory.dorydrive/machines"
         XCTAssertEqual(config.vmmExecutablePath, helper)
         XCTAssertEqual(config.runtimeDirectory, directory + "/home/.dory/machines")
+        XCTAssertEqual(config.lifecycleJournalHome, directory + "/home")
+        let journal = try DoryOperationJournalStore(home: config.lifecycleJournalHome)
         XCTAssertEqual(
-            config.lifecycleJournalHome,
-            canonicalMachineState + "/.lifecycle-journal"
+            journal.root,
+            canonicalDirectory + "/home/Library/Application Support/Dory/operations"
         )
+        XCTAssertFalse(journal.root.hasPrefix(canonicalMachineState + "/"))
         XCTAssertEqual(config.stateDirectory, canonicalMachineState)
         XCTAssertTrue(config.requiresReadyHandoff)
     }

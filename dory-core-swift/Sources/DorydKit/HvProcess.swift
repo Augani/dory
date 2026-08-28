@@ -956,18 +956,83 @@ public final class HvProcess: @unchecked Sendable {
     }
 
     private func validateDescriptorEnvelope(mappings: [InheritedDescriptorMapping]) throws {
+        let dockerDiskIndex = try validatedDockerDataDiskDescriptorIndex(mappings: mappings)
         guard let envelope = configuration.runtimeLaunchEnvelope else {
-            guard mappings.isEmpty else { throw ProcessError.descriptorEnvelopeMismatch }
+            guard mappings.count == (dockerDiskIndex == nil ? 0 : 1) else {
+                throw ProcessError.descriptorEnvelopeMismatch
+            }
             return
         }
         let slots = envelope.inheritedFileDescriptors
-        guard slots.count == configuration.inheritedFileDescriptors.count,
-              zip(slots, configuration.inheritedFileDescriptors).allSatisfy({ slot, authority in
+        let envelopeAuthorities = configuration.inheritedFileDescriptors.enumerated().compactMap {
+            index, authority in
+            index == dockerDiskIndex ? nil : authority
+        }
+        guard slots.count == envelopeAuthorities.count,
+              zip(slots, envelopeAuthorities).allSatisfy({ slot, authority in
                   slot.name == authority.name && slot.descriptor == authority.childDescriptor
               }) else {
             throw ProcessError.descriptorEnvelopeMismatch
         }
         _ = try envelope.validatedResolvedRawHVResources()
+    }
+
+    /// The Docker engine disk is a daemon-admitted supplemental resource, not part of the signed
+    /// renderer payload envelope. It is accepted only at one fixed child slot with one canonical
+    /// UUID argument; every partial, duplicated, renamed, or argument-shadowed shape fails closed.
+    private func validatedDockerDataDiskDescriptorIndex(
+        mappings: [InheritedDescriptorMapping]
+    ) throws -> Int? {
+        let name = DockerDataDiskLaunchContract.authorityName
+        let childDescriptor = DockerDataDiskLaunchContract.childFileDescriptor
+        let descriptorFlag = DockerDataDiskLaunchContract.fileDescriptorArgument
+        let uuidFlag = DockerDataDiskLaunchContract.filesystemUUIDArgument
+        let candidates = configuration.inheritedFileDescriptors.indices.filter { index in
+            let authority = configuration.inheritedFileDescriptors[index]
+            return authority.name == name || authority.childDescriptor == childDescriptor
+        }
+        let hasDiskArgument = configuration.arguments.contains { argument in
+            argument == descriptorFlag
+                || argument.hasPrefix(descriptorFlag + "=")
+                || argument == uuidFlag
+                || argument.hasPrefix(uuidFlag + "=")
+        }
+        guard !candidates.isEmpty || hasDiskArgument else { return nil }
+        guard candidates.count == 1,
+              let index = candidates.first,
+              mappings.indices.contains(index) else {
+            throw ProcessError.descriptorEnvelopeMismatch
+        }
+        let authority = configuration.inheritedFileDescriptors[index]
+        guard authority.name == name,
+              authority.childDescriptor == childDescriptor,
+              mappings[index].childDescriptor == childDescriptor else {
+            throw ProcessError.descriptorEnvelopeMismatch
+        }
+
+        func exactArgumentValue(_ flag: String) throws -> String {
+            guard !configuration.arguments.contains(where: { $0.hasPrefix(flag + "=") }) else {
+                throw ProcessError.descriptorEnvelopeMismatch
+            }
+            let indices = configuration.arguments.indices.filter {
+                configuration.arguments[$0] == flag
+            }
+            guard indices.count == 1,
+                  let index = indices.first,
+                  configuration.arguments.indices.contains(index + 1) else {
+                throw ProcessError.descriptorEnvelopeMismatch
+            }
+            return configuration.arguments[index + 1]
+        }
+
+        let descriptorValue = try exactArgumentValue(descriptorFlag)
+        let uuidValue = try exactArgumentValue(uuidFlag)
+        guard descriptorValue == String(childDescriptor),
+              let uuid = UUID(uuidString: uuidValue),
+              uuidValue == uuid.uuidString.lowercased() else {
+            throw ProcessError.descriptorEnvelopeMismatch
+        }
+        return index
     }
 
     private func spawnEnvironment() throws -> ([String: String], Bool) {

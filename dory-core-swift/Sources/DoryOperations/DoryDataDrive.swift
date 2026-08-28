@@ -351,6 +351,33 @@ public struct DoryDataDrive: Sendable, Equatable {
         return manifest
     }
 
+    /// Reads the manifest from the exact already-admitted drive root. Launch authorization must
+    /// not reopen `drive.json` through a replaceable pathname after pinning the selected bundle.
+    public func readManifest(
+        in trustedRoot: DoryTrustedDirectoryRoot
+    ) throws -> DoryDataDriveManifest {
+        guard trustedRoot.canonicalPath == root else {
+            throw DoryDataDriveError.invalidManifest(manifestPath)
+        }
+        let data: Data
+        do {
+            data = try trustedRoot.withBorrowedDescriptor { rootDescriptor in
+                try PrivateRecordFile.read(
+                    in: rootDescriptor,
+                    fileName: "drive.json",
+                    maximumBytes: 64 * 1024
+                )
+            }
+        } catch {
+            throw DoryDataDriveError.invalidManifest(manifestPath)
+        }
+        guard let manifest = try? JSONDecoder().decode(DoryDataDriveManifest.self, from: data),
+              manifest.isValid else {
+            throw DoryDataDriveError.invalidManifest(manifestPath)
+        }
+        return manifest
+    }
+
     /// Rebinds a restored drive to the APFS volume that will contain it while preserving the
     /// drive's durable identity. A copied external-volume UUID must never make intact restored
     /// data appear corrupt merely because the user restored it to another supported disk.

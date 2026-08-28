@@ -1,7 +1,14 @@
 import Darwin
+import DoryOperations
 import Foundation
 
 public struct VmmDockerProcessConfiguration: Sendable {
+    /// The Docker data disk is always inherited into the VMM helper at one non-ambient slot.
+    /// Keeping the slot fixed lets the child reject an argument that attempts to redirect its
+    /// storage attachment to some unrelated descriptor inherited from its launch environment.
+    public static let dockerDataDiskChildDescriptor: Int32 =
+        DockerDataDiskLaunchContract.childFileDescriptor
+
     public var executablePath: String
     public var arguments: [String]
     public var stateDirectory: String
@@ -9,6 +16,8 @@ public struct VmmDockerProcessConfiguration: Sendable {
     public var logPath: String?
     public var readyTimeoutSeconds: TimeInterval
     public var restartPolicy: HvRestartPolicy
+    public var inheritedDockerDataDisk: HvProcessInheritedFileDescriptor?
+    public var dockerDataDiskFilesystemUUID: UUID?
 
     public init(
         executablePath: String,
@@ -17,7 +26,9 @@ public struct VmmDockerProcessConfiguration: Sendable {
         handoffSocketPath: String,
         logPath: String? = nil,
         readyTimeoutSeconds: TimeInterval = 90,
-        restartPolicy: HvRestartPolicy = HvRestartPolicy(maxRestarts: 3, delaySeconds: 0.5)
+        restartPolicy: HvRestartPolicy = HvRestartPolicy(maxRestarts: 3, delaySeconds: 0.5),
+        inheritedDockerDataDisk: HvProcessInheritedFileDescriptor? = nil,
+        dockerDataDiskFilesystemUUID: UUID? = nil
     ) {
         self.executablePath = executablePath
         self.arguments = arguments
@@ -26,6 +37,8 @@ public struct VmmDockerProcessConfiguration: Sendable {
         self.logPath = logPath
         self.readyTimeoutSeconds = readyTimeoutSeconds
         self.restartPolicy = restartPolicy
+        self.inheritedDockerDataDisk = inheritedDockerDataDisk
+        self.dockerDataDiskFilesystemUUID = dockerDataDiskFilesystemUUID
     }
 }
 
@@ -161,6 +174,8 @@ public final class VmmDockerProcess: @unchecked Sendable {
         case startCancelled
         case handoffTimeout
         case handoffFailed(String)
+        case invalidDockerDataDiskContract(String)
+        case conflictingDockerDataDiskArgument(String)
 
         public var description: String {
             switch self {
@@ -174,6 +189,10 @@ public final class VmmDockerProcess: @unchecked Sendable {
                 return "dory-vmm docker helper did not become ready before timeout"
             case .handoffFailed(let message):
                 return "dory-vmm docker handoff failed: \(message)"
+            case .invalidDockerDataDiskContract(let message):
+                return "invalid dory-vmm Docker data-disk descriptor contract: \(message)"
+            case .conflictingDockerDataDiskArgument(let flag):
+                return "dory-vmm Docker data-disk argument is supervisor-owned: \(flag)"
             }
         }
     }
@@ -193,6 +212,7 @@ public final class VmmDockerProcess: @unchecked Sendable {
     private var stopping = false
     private var hasStarted = false
     private var lastReady: VmmReadyMessage?
+    private var postDescriptorDuplicationGateForTesting: (@Sendable () -> Void)?
     private var postPublicationLifecycleGateForTesting: (@Sendable (Int32) -> Void)?
 
     public init(
@@ -246,6 +266,17 @@ public final class VmmDockerProcess: @unchecked Sendable {
         lock.unlock()
     }
 
+    /// Internal deterministic race seam. The callback runs after the launch owns a private
+    /// duplicate of the disk authority and before the spawner consumes that duplicate.
+    func installPostDescriptorDuplicationGateForTesting(
+        _ gate: @escaping @Sendable () -> Void
+    ) {
+        lock.lock()
+        precondition(!hasStarted && process == nil)
+        postDescriptorDuplicationGateForTesting = gate
+        lock.unlock()
+    }
+
     public func start() throws {
         lock.lock()
         // Hold the reservation under the lock across check + spawn so two concurrent starts
@@ -289,6 +320,13 @@ public final class VmmDockerProcess: @unchecked Sendable {
     }
 
     private func launch() throws {
+        let descriptorContract = try dockerDataDiskDescriptorContract()
+        defer {
+            for descriptor in descriptorContract.ownedParentDescriptors {
+                Darwin.close(descriptor)
+            }
+        }
+        postDescriptorDuplicationGateForTesting?()
         guard FileManager.default.isExecutableFile(atPath: configuration.executablePath) else {
             throw ProcessError.executableMissing(configuration.executablePath)
         }
@@ -341,8 +379,8 @@ public final class VmmDockerProcess: @unchecked Sendable {
         do {
             childPID = try InheritedDescriptorSpawner.spawn(
                 executablePath: configuration.executablePath,
-                arguments: configuration.arguments,
-                descriptorMappings: [],
+                arguments: descriptorContract.arguments,
+                descriptorMappings: descriptorContract.mappings,
                 standardInputDescriptor: standardInput,
                 standardOutputDescriptor: outputDescriptor,
                 standardErrorDescriptor: outputDescriptor
@@ -440,6 +478,7 @@ public final class VmmDockerProcess: @unchecked Sendable {
         server?.stop()
         waiter?.signal()
         try? oldLog?.close()
+        configuration.inheritedDockerDataDisk?.close()
         if wasUnexpected {
             unexpectedTerminationHandler?(termination)
         }
@@ -502,7 +541,10 @@ public final class VmmDockerProcess: @unchecked Sendable {
         claim.server?.stop()
         claim.handoffWaiter?.signal()
         defer { try? claim.log?.close() }
-        guard let child = claim.child else { return true }
+        guard let child = claim.child else {
+            configuration.inheritedDockerDataDisk?.close()
+            return true
+        }
         if claim.wasSuspended {
             _ = child.send(SIGCONT)
         }
@@ -614,6 +656,65 @@ public final class VmmDockerProcess: @unchecked Sendable {
         let fd = open(path, O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC, 0o600)
         guard fd >= 0 else { return nil }
         return FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+    }
+
+    private func dockerDataDiskDescriptorContract() throws -> (
+        arguments: [String],
+        mappings: [InheritedDescriptorMapping],
+        ownedParentDescriptors: [Int32]
+    ) {
+        let descriptorFlag = DockerDataDiskLaunchContract.fileDescriptorArgument
+        let uuidFlag = DockerDataDiskLaunchContract.filesystemUUIDArgument
+        for flag in [descriptorFlag, uuidFlag] {
+            if configuration.arguments.contains(where: {
+                $0 == flag || $0.hasPrefix(flag + "=")
+            }) {
+                throw ProcessError.conflictingDockerDataDiskArgument(flag)
+            }
+        }
+
+        switch (
+            configuration.inheritedDockerDataDisk,
+            configuration.dockerDataDiskFilesystemUUID
+        ) {
+        case (nil, nil):
+            return (configuration.arguments, [], [])
+        case let (authority?, filesystemUUID?):
+            let expectedDescriptor = VmmDockerProcessConfiguration
+                .dockerDataDiskChildDescriptor
+            guard authority.childDescriptor == expectedDescriptor else {
+                throw ProcessError.invalidDockerDataDiskContract(
+                    "expected child descriptor \(expectedDescriptor), got \(authority.childDescriptor)"
+                )
+            }
+            let launchDescriptor = try authority.withBorrowedDescriptor { descriptor in
+                let duplicate = fcntl(descriptor, F_DUPFD_CLOEXEC, 3)
+                guard duplicate >= 0 else {
+                    throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+                }
+                return duplicate
+            }
+            let mapping = InheritedDescriptorMapping(
+                parentDescriptor: launchDescriptor,
+                childDescriptor: expectedDescriptor
+            )
+            return (
+                configuration.arguments + [
+                    descriptorFlag, String(expectedDescriptor),
+                    uuidFlag, filesystemUUID.uuidString.lowercased(),
+                ],
+                [mapping],
+                [launchDescriptor]
+            )
+        case (nil, _?):
+            throw ProcessError.invalidDockerDataDiskContract(
+                "filesystem UUID was supplied without an inherited descriptor"
+            )
+        case (_?, nil):
+            throw ProcessError.invalidDockerDataDiskContract(
+                "inherited descriptor was supplied without a filesystem UUID"
+            )
+        }
     }
 
     deinit {
