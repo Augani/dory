@@ -15,7 +15,7 @@ Dory ships one Docker Core app. A signed catalog adds removable Kubernetes, Linu
 - [Compatibility contract](https://augani.github.io/dory/docs/compatibility.md): Supported, preview, and unavailable behavior
 - [Production architecture](https://augani.github.io/dory/docs/architecture.md): Process ownership, Docker path, storage, updates, trust boundaries, and capability status
 - [Performance evidence](https://augani.github.io/dory/docs/performance.md): Exact-candidate methodology, raw performance and reliability assets, statistics, and unqualified-claim policy
-- [Human website](https://augani.github.io/dory/): Product overview and installation
+- [Human website](https://usedory.dev/): Product overview and installation
 - [Source repository](https://github.com/Augani/dory): Source, README, releases, changelog, and issues
 - [Latest release](https://github.com/Augani/dory/releases/latest): Signed and notarized Apple Silicon build
 

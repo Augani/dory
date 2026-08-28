@@ -317,7 +317,7 @@ mDNS/multicast relay or general L2 bridging, and a general third-party MCP gatew
 
 ## Canonical links
 
-- Website: https://augani.github.io/dory/
+- Website: https://usedory.dev/
 - Source: https://github.com/Augani/dory
 - Release: https://github.com/Augani/dory/releases/latest
 - Issues: https://github.com/Augani/dory/issues

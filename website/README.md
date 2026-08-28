@@ -1,6 +1,12 @@
-# Dory website
+# Dory operational website
 
-This Vite and React project builds the public Dory site for GitHub Pages. It serves both the human product page and static agent documentation.
+This Vite and React project builds Dory's GitHub Pages trust surface at
+`https://augani.github.io/dory/`. It publishes the signed Sparkle feed,
+component catalog, and static agent/operations documentation. The canonical
+human product site is `https://usedory.dev/`; changing that domain does not
+move the update or component trust endpoints used by installed Dory builds.
+The marketing-site source and deployment state are maintained separately and
+are intentionally excluded from this public repository.
 
 ```sh
 npm ci

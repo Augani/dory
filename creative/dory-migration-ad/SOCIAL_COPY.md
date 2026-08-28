@@ -8,7 +8,7 @@ Dory preflights Docker Desktop, OrbStack, Colima + compatible sockets before wri
 
 More than containers: your complete local Linux workspace for Mac.
 
-https://augani.github.io/dory/
+https://usedory.dev/
 
 ## LinkedIn
 
@@ -22,7 +22,7 @@ Migration is one doorway into Dory: Docker, Compose, Kubernetes, full Linux desk
 
 Bring the work. Leave the lock behind.
 
-https://augani.github.io/dory/
+https://usedory.dev/
 
 #Docker #macOS #DeveloperTools #OpenSource
 

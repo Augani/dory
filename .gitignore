@@ -131,6 +131,9 @@ website/.cache/
 # Private cloud backend — separate repo, never in the public Dory repo
 cloud/
 
+# Private usedory.dev marketing site — maintained outside the public Dory repository
+/usedory-site/
+
 # Claude Code session artifacts
 .claude-tasks.md
 .claude/
