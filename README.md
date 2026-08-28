@@ -5,9 +5,9 @@
 <h1 align="center">Dory</h1>
 
 <p align="center">
-  <strong>Your complete local Linux workspace, built for Mac.</strong><br>
-  Docker, Compose, Kubernetes, full Linux desktops, persistent servers, migration, recovery, and agent automation<br>
-  in one native, open-source app.
+  <strong>One Mac. Your whole development world.</strong><br>
+  Docker, Compose, Kubernetes, Linux virtual machines, and policy-bound agent sandboxes<br>
+  in one native, open-source local development system.
 </p>
 
 <p align="center">
