@@ -3,7 +3,10 @@ set -euo pipefail
 
 mkdir -p /var/lib/dory
 if [ ! -s /var/lib/dory/username ]; then
-  printf 'dory\n' > /var/lib/dory/username
+  username_temporary="/var/lib/dory/.username.$$"
+  printf 'dory\n' > "$username_temporary"
+  chmod 0644 "$username_temporary"
+  mv -f "$username_temporary" /var/lib/dory/username
 fi
 if [ ! -s /etc/machine-id ]; then
   systemd-machine-id-setup
@@ -30,3 +33,4 @@ elif [ "$device_bytes" -lt "$filesystem_bytes" ]; then
   exit 1
 fi
 touch /var/lib/dory/first-boot-complete
+sync -f /var/lib/dory/first-boot-complete

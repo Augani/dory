@@ -1067,6 +1067,73 @@ struct DesktopCPUFramePresentationResult {
     var uploadedByteCount: UInt64
 }
 
+/// Tracks the evdev modifier keys already published to Linux. Physical keyboards normally emit
+/// AppKit `flagsChanged` events, but accessibility and remote-input sources may encode a modifier
+/// only in the following key event. Reconcile both forms so shifted characters never arrive as
+/// their unmodified key while avoiding duplicate modifier presses for ordinary hardware input.
+struct DesktopKeyboardModifierState: Sendable {
+    enum Modifier: CaseIterable, Hashable, Sendable {
+        case command
+        case shift
+        case capsLock
+        case option
+        case control
+
+        var canonicalLinuxCode: UInt16 {
+            switch self {
+            case .command: 125
+            case .shift: 42
+            case .capsLock: 58
+            case .option: 56
+            case .control: 29
+            }
+        }
+    }
+
+    private var activeCodes: [Modifier: Set<UInt16>] = [:]
+
+    mutating func reconcile(activeModifiers: Set<Modifier>) -> [VirtioInputEvent] {
+        var events = [VirtioInputEvent]()
+        for modifier in Modifier.allCases {
+            let codes = activeCodes[modifier] ?? []
+            if activeModifiers.contains(modifier) {
+                guard codes.isEmpty else { continue }
+                let code = modifier.canonicalLinuxCode
+                activeCodes[modifier] = [code]
+                events.append(VirtioInputEvent(type: 1, code: code, value: 1))
+            } else {
+                guard !codes.isEmpty else { continue }
+                activeCodes[modifier] = nil
+                events.append(contentsOf: codes.sorted().map {
+                    VirtioInputEvent(type: 1, code: $0, value: 0)
+                })
+            }
+        }
+        return events
+    }
+
+    mutating func update(
+        modifier: Modifier,
+        linuxCode: UInt16,
+        pressed: Bool
+    ) -> [VirtioInputEvent] {
+        var codes = activeCodes[modifier] ?? []
+        let changed: Bool
+        if pressed {
+            changed = codes.insert(linuxCode).inserted
+        } else {
+            changed = codes.remove(linuxCode) != nil
+        }
+        activeCodes[modifier] = codes.isEmpty ? nil : codes
+        guard changed else { return [] }
+        return [VirtioInputEvent(type: 1, code: linuxCode, value: pressed ? 1 : 0)]
+    }
+
+    mutating func reset() {
+        activeCodes.removeAll(keepingCapacity: true)
+    }
+}
+
 /// One AppKit surface owns keyboard, pointer, cursor, resize, and scanout geometry semantics for
 /// the qualified Metal display. Presentation subclasses implement only their resource boundary;
 /// they cannot silently substitute another renderer when their own validation or device fails.
@@ -1084,6 +1151,7 @@ class DesktopDisplayView: NSView {
     private var scrollAccumulator = VirtioInputScrollAccumulator()
     private var pressedKeyboardInput = VirtioInputPressedState()
     private var pressedPointerInput = VirtioInputPressedState()
+    private var keyboardModifierState = DesktopKeyboardModifierState()
     private var resizeGeneration: UInt64 = 0
     var onDrawableSizeChange: ((UInt32, UInt32) -> Void)?
     var onMacShortcut: ((NSEvent) -> Bool)?
@@ -1212,7 +1280,10 @@ class DesktopDisplayView: NSView {
             super.keyDown(with: event)
             return
         }
-        sendKeyboardTracked([
+        let modifiers = keyboardModifierState.reconcile(
+            activeModifiers: Self.activeModifiers(event.modifierFlags)
+        )
+        sendKeyboardTracked(modifiers + [
             VirtioInputEvent(type: 1, code: code, value: event.isARepeat ? 2 : 1)
         ])
     }
@@ -1223,17 +1294,25 @@ class DesktopDisplayView: NSView {
             return
         }
         sendKeyboardTracked([VirtioInputEvent(type: 1, code: code, value: 0)])
+        let modifiers = keyboardModifierState.reconcile(
+            activeModifiers: Self.activeModifiers(event.modifierFlags)
+        )
+        if !modifiers.isEmpty { sendKeyboardTracked(modifiers) }
     }
 
     override func flagsChanged(with event: NSEvent) {
         guard let code = Self.linuxKeyCode(macKeyCode: event.keyCode),
-              let flag = Self.modifierFlag(macKeyCode: event.keyCode) else {
+              let modifier = Self.modifier(macKeyCode: event.keyCode),
+              let flag = Self.modifierFlag(modifier) else {
             super.flagsChanged(with: event)
             return
         }
-        sendKeyboardTracked([
-            VirtioInputEvent(type: 1, code: code, value: event.modifierFlags.contains(flag) ? 1 : 0)
-        ])
+        let events = keyboardModifierState.update(
+            modifier: modifier,
+            linuxCode: code,
+            pressed: event.modifierFlags.contains(flag)
+        )
+        if !events.isEmpty { sendKeyboardTracked(events) }
     }
 
     override func mouseMoved(with event: NSEvent) { sendPointer(event: event) }
@@ -1300,6 +1379,7 @@ class DesktopDisplayView: NSView {
     func releasePressedInput() {
         let keyboardReleases = pressedKeyboardInput.releaseFrame()
         let pointerReleases = pressedPointerInput.releaseFrame()
+        keyboardModifierState.reset()
         scrollAccumulator = VirtioInputScrollAccumulator()
         if !keyboardReleases.isEmpty { keyboardInput.send(frame: keyboardReleases) }
         if !pointerReleases.isEmpty { pointerInput.send(frame: pointerReleases) }
@@ -1391,7 +1471,7 @@ class DesktopDisplayView: NSView {
         )
     }
 
-    private static func modifierFlag(macKeyCode: UInt16) -> NSEvent.ModifierFlags? {
+    private static func modifier(macKeyCode: UInt16) -> DesktopKeyboardModifierState.Modifier? {
         switch macKeyCode {
         case 54, 55: .command
         case 56, 60: .shift
@@ -1400,6 +1480,27 @@ class DesktopDisplayView: NSView {
         case 59, 62: .control
         default: nil
         }
+    }
+
+    private static func modifierFlag(
+        _ modifier: DesktopKeyboardModifierState.Modifier
+    ) -> NSEvent.ModifierFlags? {
+        switch modifier {
+        case .command: .command
+        case .shift: .shift
+        case .capsLock: .capsLock
+        case .option: .option
+        case .control: .control
+        }
+    }
+
+    private static func activeModifiers(
+        _ flags: NSEvent.ModifierFlags
+    ) -> Set<DesktopKeyboardModifierState.Modifier> {
+        Set(DesktopKeyboardModifierState.Modifier.allCases.filter {
+            guard let flag = modifierFlag($0) else { return false }
+            return flags.contains(flag)
+        })
     }
 
     private static func linuxKeyCode(macKeyCode: UInt16) -> UInt16? { keyMap[macKeyCode] }

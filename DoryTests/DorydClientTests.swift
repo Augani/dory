@@ -1930,6 +1930,47 @@ struct DorydClientTests {
         #expect(incompatibleHandshake.runtimeEvidence.last?.label == "Tools incompatible")
     }
 
+    @MainActor
+    @Test func qualificationBootstrapGraphicsReceiptDoesNotInvalidateLegacyMachineList() async throws {
+        let listener = NSXPCListener.anonymous()
+        let service = FakeDorydService()
+        let delegate = FakeDorydListenerDelegate(service: service)
+        listener.delegate = delegate
+        listener.resume()
+        defer { listener.invalidate() }
+
+        let selection: NSDictionary = [
+            "schemaVersion": UInt16(1),
+            "operationID": "01234567-89ab-4cde-8f01-23456789abcd",
+            "resolvedPlanSHA256": String(repeating: "a", count: 64),
+            "planRevision": UInt64(1),
+            "accelerationLevel": "hardware-accelerated-3d",
+            "backend": "virgl-venus",
+            "rendererGeneration": UInt64(1),
+            "rendererWorkerReceiptSHA256": String(repeating: "7", count: 64),
+            "guestProducerFenceProofSHA256": String(repeating: "8", count: 64),
+        ]
+        service.setMachineRuntimeGraphicsSelection("dev", selection)
+
+        let status = try #require(
+            (try await DorydClient(endpoint: listener.endpoint).machineList()).first
+        )
+        #expect(status.runtimeIdentity.mode == "legacy-compatibility")
+        #expect(status.runtimeGraphicsSelection?.backend == "virgl-venus")
+
+        let machine = AppStore.machine(fromDoryd: status)
+        #expect(machine.runtimeEvidence.first { $0.id == "authority" }?.label
+            == "Compatibility")
+        #expect(machine.runtimeEvidence.contains { $0.id == "graphics" } == false)
+
+        let malformed = NSMutableDictionary(dictionary: selection)
+        malformed.removeObject(forKey: "guestProducerFenceProofSHA256")
+        service.setMachineRuntimeGraphicsSelection("dev", malformed)
+        await #expect(throws: DorydClientError.self) {
+            _ = try await DorydClient(endpoint: listener.endpoint).machineList()
+        }
+    }
+
     @Test func portableVZSoftwarePlanIsAcceptedWithoutAccelerationQualification() async throws {
         let listener = NSXPCListener.anonymous()
         let service = FakeDorydService(

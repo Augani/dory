@@ -3999,8 +3999,11 @@ nonisolated final class DorydClient: @unchecked Sendable {
     }
 
     /// The plan describes what may launch; this receipt describes what the active RawHV helper
-    /// actually selected. A running resolved RawHV machine without an exact matching receipt is
-    /// rejected instead of inheriting the plan's acceleration label.
+    /// actually selected. Resolved-plan receipts must bind exactly to their durable plan. A
+    /// qualification-bootstrap launch intentionally retains legacy compatibility authority, so
+    /// its self-valid live receipt is observable but never promoted to resolved-plan authority.
+    /// A running resolved RawHV machine without an exact matching receipt is rejected instead of
+    /// inheriting the plan's acceleration label.
     nonisolated private static func machineRuntimeGraphicsSelection(
         from encoded: Any?,
         state: String,
@@ -4015,8 +4018,6 @@ nonisolated final class DorydClient: @unchecked Sendable {
             return OptionalRuntimeGraphicsSelection(value: nil)
         }
         guard ["starting", "running", "paused"].contains(state),
-              runtimeIdentity.mode == "resolved-plan",
-              runtimeIdentity.backend == DoryVirtualizationBackendIdentity.doryHypervisor.rawValue,
               let dictionary = encoded as? NSDictionary,
               let keys = dictionary.allKeys as? [String],
               keys.count == Set(keys).count,
@@ -4046,10 +4047,19 @@ nonisolated final class DorydClient: @unchecked Sendable {
             guestProducerFenceProofSHA256:
                 dictionary["guestProducerFenceProofSHA256"] as? String
         )
-        guard selection.isValid,
-              selection.resolvedPlanSHA256 == runtimeIdentity.planSHA256,
-              selection.planRevision == runtimeIdentity.planRevision,
-              selection.accelerationLevel == runtimeIdentity.graphics else {
+        guard selection.isValid else { return nil }
+        switch runtimeIdentity.mode {
+        case "legacy-compatibility":
+            break
+        case "resolved-plan":
+            guard runtimeIdentity.backend
+                    == DoryVirtualizationBackendIdentity.doryHypervisor.rawValue,
+                  selection.resolvedPlanSHA256 == runtimeIdentity.planSHA256,
+                  selection.planRevision == runtimeIdentity.planRevision,
+                  selection.accelerationLevel == runtimeIdentity.graphics else {
+                return nil
+            }
+        default:
             return nil
         }
         return OptionalRuntimeGraphicsSelection(value: selection)

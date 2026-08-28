@@ -9,6 +9,20 @@ import DoryVMMKit
 import Foundation
 
 private final class DoryDesktopCameraAttachment: @unchecked Sendable {
+    enum Result: Sendable, Equatable {
+        case attached
+        case unavailable(String)
+
+        var detailSuffix: String {
+            switch self {
+            case .attached:
+                return "; Dory UVC Camera attached"
+            case .unavailable(let detail):
+                return "; camera unavailable: \(detail)"
+            }
+        }
+    }
+
     private let backend: DoryMacCameraBackend
     private let handler: UsbControlHandler
     private let log: @Sendable (String) -> Void
@@ -23,13 +37,17 @@ private final class DoryDesktopCameraAttachment: @unchecked Sendable {
         self.log = log
     }
 
-    func attach() async throws {
+    /// Camera access is an optional host capability. A denied TCC grant, disconnected device, or
+    /// failed UVC attach must be reported without tearing down an otherwise healthy desktop.
+    func attachIfAvailable() async -> Result {
         log("dory-hv desktop: preparing Mac camera for Linux attachment")
         do {
             try backend.prepareAndAuthorize()
         } catch {
             backend.stop()
-            throw error
+            let detail = String(describing: error)
+            log("dory-hv desktop: camera unavailable: \(detail)")
+            return .unavailable(detail)
         }
         do {
             let attachment = try await handler.attach(busID: DoryVirtualUVCCamera.busID)
@@ -37,10 +55,20 @@ private final class DoryDesktopCameraAttachment: @unchecked Sendable {
                 "dory-hv desktop: Dory UVC Camera attached on Linux VHCI port "
                     + "\(attachment.port)"
             )
+            return .attached
         } catch {
             backend.stop()
-            throw error
+            let detail = String(describing: error)
+            log("dory-hv desktop: camera unavailable: \(detail)")
+            return .unavailable(detail)
         }
+    }
+
+    func unavailableWithoutGuestTools() -> Result {
+        let detail = "Dory Tools usb-vhci@1 is not installed in this Linux guest"
+        backend.stop()
+        log("dory-hv desktop: camera unavailable: \(detail)")
+        return .unavailable(detail)
     }
 }
 
@@ -2160,7 +2188,7 @@ enum DesktopMode {
                             publish: { integration in
                                 switch integration {
                                 case let .tools(info, shareState):
-                                    try await cameraAttachment?.attach()
+                                    let cameraResult = await cameraAttachment?.attachIfAvailable()
                                     DesktopAppRunLoop.perform { [weak self] in
                                         self?.clipboard?.markGuestReady()
                                     }
@@ -2181,14 +2209,12 @@ enum DesktopMode {
                                             controlSocketPath: configuration.controlSocketPath,
                                             graphicsSelection: self?.graphicsSelection,
                                             detail: "raw-HV generic Linux running with \(graphicsDisplayName) graphics and Dory Tools protocol \(info.protocolVersion)\(shareState.detailSuffix)"
+                                                + (cameraResult?.detailSuffix ?? "")
                                         )
                                     )
                                 case .unavailable:
-                                    if cameraAttachment != nil {
-                                        throw VMError.bootFailure(
-                                            "Camera sharing requires Dory Tools with usb-vhci@1 in this Linux guest"
-                                        )
-                                    }
+                                    let cameraResult = cameraAttachment?
+                                        .unavailableWithoutGuestTools()
                                     let shareState = GenericGuestShareReadiness
                                         .unavailableMissingTools(
                                             configuration.attachedShares.map(\.tag)
@@ -2206,6 +2232,7 @@ enum DesktopMode {
                                             controlSocketPath: configuration.controlSocketPath,
                                             graphicsSelection: self?.graphicsSelection,
                                             detail: "raw-HV generic Linux running with \(graphicsDisplayName) graphics; guest tools are not installed\(shareState.detailSuffix)"
+                                                + (cameraResult?.detailSuffix ?? "")
                                         )
                                     )
                                 }
@@ -2232,7 +2259,7 @@ enum DesktopMode {
                             }
                         },
                         publish: { info in
-                            try await cameraAttachment?.attach()
+                            let cameraResult = await cameraAttachment?.attachIfAvailable()
                             DesktopAppRunLoop.perform { [weak self] in
                                 self?.clipboard?.markGuestReady()
                             }
@@ -2253,6 +2280,7 @@ enum DesktopMode {
                                     controlSocketPath: configuration.controlSocketPath,
                                     graphicsSelection: self?.graphicsSelection,
                                     detail: "raw-HV desktop running with \(graphicsDisplayName) graphics; dory-agent answered protocol \(info.protocolVersion)"
+                                        + (cameraResult?.detailSuffix ?? "")
                                 )
                             )
                         }
