@@ -33,6 +33,8 @@ jobs:
           echo "DEVELOPER_DIR=$newest/Contents/Developer" >> "$GITHUB_ENV"
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - name: Install Protocol Buffers compiler
+        run: brew install protobuf
       - name: Build shared Rust guest-control client
         run: scripts/build-dory-ffi-xcframework.sh --if-needed
       - name: Dory CLI machine create
@@ -101,8 +103,6 @@ jobs:
           python3 .github/scripts/test-endurance-reliability-soak.py
           python3 .github/scripts/test-release-candidate-qualifier.py
           python3 .github/scripts/test-release-qualification-verifier.py
-      - name: Install Protocol Buffers compiler
-        run: brew install protobuf
       - name: Install Go toolchain
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:

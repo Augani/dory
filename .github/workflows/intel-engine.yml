@@ -67,6 +67,9 @@ jobs:
           test "$(sysctl -in hw.optional.arm64 2>/dev/null || printf 0)" != 1
           case "$(sysctl -n hw.model)" in VirtualMac*) exit 1 ;; esac
 
+      - name: Install Protocol Buffers compiler
+        run: brew install protobuf
+
       - name: Build shared Rust guest-control client
         run: scripts/build-dory-ffi-xcframework.sh
 

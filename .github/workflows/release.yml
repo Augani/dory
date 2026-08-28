@@ -333,6 +333,8 @@ jobs:
           echo "DEVELOPER_DIR=$newest/Contents/Developer" >> "$GITHUB_ENV"
       - name: Download Metal toolchain (Xcode 26 ships without it)
         run: xcodebuild -downloadComponent MetalToolchain || true
+      - name: Install Protocol Buffers compiler
+        run: brew install protobuf
       - name: Build shared Rust guest-control client
         run: scripts/build-dory-ffi-xcframework.sh --if-needed
       - name: Signed release metadata contract
