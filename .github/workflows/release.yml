@@ -321,7 +321,14 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
       - name: Install guest build prerequisites
-        run: sudo apt-get update && sudo apt-get install -y binutils e2fsprogs file patchelf zstd
+        run: sudo apt-get update && sudo apt-get install -y binutils-aarch64-linux-gnu e2fsprogs file patchelf protobuf-compiler zstd
+      - name: Prove guest verification prerequisites before the long build
+        run: |
+          set -euo pipefail
+          command -v protoc
+          command -v aarch64-linux-gnu-readelf
+          DORY_AARCH64_READELF="$(command -v aarch64-linux-gnu-readelf)" \
+            bash -n guest/mesa/verify-build.sh
       - name: Expose rust-lld for the static Linux guest agent
         run: |
           rust_lld="$(find "$(rustc --print sysroot)/lib/rustlib" -type f -name rust-lld | head -1)"
@@ -338,6 +345,8 @@ jobs:
           DORY_EXPERIMENTAL_GPU=1 guest/kernel/verify-build.sh arm64
           guest/initfs/verify-build.sh arm64
       - name: Build and verify every Linux desktop payload from this commit
+        env:
+          DORY_AARCH64_READELF: /usr/bin/aarch64-linux-gnu-readelf
         run: |
           DORY_KERNEL_PROFILE=accelerated-desktop guest/kernel/build.sh arm64
           for distro in debian ubuntu kali; do

@@ -128,6 +128,23 @@ for job in ("rust-workspace", "guest-assets-arm64", "prepublication-quality"):
         raise SystemExit(f"release workflow contract: missing job {job}")
     section = match.group(1)
     require(section, "release-metadata", f"{job} can start before release identity validation")
+guest_job = re.search(
+    r"(?ms)^  guest-assets-arm64:\n(.*?)(?=^  [A-Za-z0-9_-]+:\n|\Z)", workflow
+)
+if guest_job is None:
+    raise SystemExit("release workflow contract: missing guest-assets-arm64 job")
+for prerequisite in (
+    "binutils-aarch64-linux-gnu",
+    "protobuf-compiler",
+    "command -v protoc",
+    "command -v aarch64-linux-gnu-readelf",
+    "DORY_AARCH64_READELF: /usr/bin/aarch64-linux-gnu-readelf",
+):
+    require(
+        guest_job.group(1),
+        prerequisite,
+        f"guest build does not fail fast on required toolchain prerequisite {prerequisite}",
+    )
 require(workflow, 'scripts/release.sh "${{ inputs.version }}" "${{ inputs.build }}"', "release build does not use validated dispatch metadata")
 require(workflow, 'BUILD: ${{ inputs.build }}', "downstream evidence is not bound to the dispatch build")
 if "releases/latest/download/appcast.xml" in workflow:

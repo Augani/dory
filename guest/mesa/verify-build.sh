@@ -41,8 +41,17 @@ stamp_value() { sed -n "s/^$1=//p" "$STAMP"; }
 
 ZSTD="${DORY_ZSTD:-$(command -v zstd 2>/dev/null || true)}"
 [ -n "$ZSTD" ] || fail "zstd is required"
-READELF="${DORY_AARCH64_READELF:-$(command -v aarch64-elf-readelf 2>/dev/null || true)}"
-[ -n "$READELF" ] || fail "aarch64-elf-readelf is required for exact ELF verification"
+READELF="${DORY_AARCH64_READELF:-}"
+if [ -z "$READELF" ]; then
+  for candidate in aarch64-elf-readelf aarch64-linux-gnu-readelf; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+      READELF="$(command -v "$candidate")"
+      break
+    fi
+  done
+fi
+[ -n "$READELF" ] || fail "an AArch64 GNU readelf is required for exact ELF verification"
+[ -x "$READELF" ] || fail "AArch64 GNU readelf is not executable: $READELF"
 "$ZSTD" -q -t "$RUNTIME" || fail "runtime archive is corrupt"
 
 EXTRACT="$(mktemp -d "${TMPDIR:-/tmp}/dory-mesa-verify.XXXXXX")"
