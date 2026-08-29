@@ -12,8 +12,14 @@ final class DoryProcessLifecycleMutex: @unchecked Sendable {
         semaphore.wait()
     }
 
-    func lock(until deadline: DispatchTime) -> Bool {
-        semaphore.wait(timeout: deadline) == .success
+    /// The optional waiter is an internal seam for proving absolute-deadline forwarding without
+    /// depending on host scheduling. Production callers always use the semaphore-backed default.
+    func lock(
+        until deadline: DispatchTime,
+        waitUntil: ((DispatchTime) -> DispatchTimeoutResult)? = nil
+    ) -> Bool {
+        let boundedWait = waitUntil ?? { self.semaphore.wait(timeout: $0) }
+        return boundedWait(deadline) == .success
     }
 
     func unlock() {

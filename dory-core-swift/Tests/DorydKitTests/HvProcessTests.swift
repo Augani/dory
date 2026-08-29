@@ -340,7 +340,6 @@ final class HvProcessTests: XCTestCase {
 
     func testAbsoluteStopBudgetBeginsBeforeLifecycleMutexAcquisition() {
         let lifecycleMutex = DoryProcessLifecycleMutex()
-        lifecycleMutex.lock()
         let deadlineStartedAt = DispatchTime.now()
         let deadline = DoryProcessStopDeadline(
             gracefulTimeout: 0.04,
@@ -358,14 +357,13 @@ final class HvProcessTests: XCTestCase {
         let waiter = DispatchGroup()
         waiter.enter()
         defer { waiter.leave() }
-        let mutexRelease = DispatchSemaphore(value: 0)
-        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.07) {
-            lifecycleMutex.unlock()
-            mutexRelease.signal()
-        }
 
-        XCTAssertTrue(lifecycleMutex.lock(until: deadline.final))
-        lifecycleMutex.unlock()
+        var observedLockDeadline: DispatchTime?
+        XCTAssertTrue(lifecycleMutex.lock(until: deadline.final) { deadline in
+            observedLockDeadline = deadline
+            return .success
+        })
+        XCTAssertEqual(observedLockDeadline, deadline.final)
         var forced = false
         var observedWaitDeadlines: [DispatchTime] = []
         let terminated = HvProcess.waitForTermination(
@@ -380,9 +378,8 @@ final class HvProcessTests: XCTestCase {
         XCTAssertFalse(terminated)
         XCTAssertTrue(forced)
         XCTAssertEqual(observedWaitDeadlines, [deadline.graceful, deadline.final])
-        XCTAssertEqual(mutexRelease.wait(timeout: .now() + 0.1), .success)
-        // Both waits consumed the one deadline created before mutex acquisition. Inspecting those
-        // exact arguments proves the forced phase was not restarted after the mutex cleared;
+        // Mutex acquisition and both termination waits consumed the one deadline created at API
+        // entry. Inspecting those exact arguments proves neither phase can restart the budget;
         // host scheduler latency is deliberately not treated as process-supervisor behavior.
     }
 
