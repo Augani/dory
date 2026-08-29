@@ -1527,14 +1527,16 @@ public final class HvProcess: @unchecked Sendable {
     static func waitForTermination(
         waiter: DispatchGroup?,
         deadline: DoryProcessStopDeadline,
+        waitUntil: ((DispatchTime) -> DispatchTimeoutResult)? = nil,
         sendForcedTermination: () -> Void
     ) -> Bool {
         guard let waiter else { return true }
-        if waiter.wait(timeout: deadline.graceful) == .success {
+        let boundedWait = waitUntil ?? { waiter.wait(timeout: $0) }
+        if boundedWait(deadline.graceful) == .success {
             return true
         }
         sendForcedTermination()
-        return waiter.wait(timeout: deadline.final) == .success
+        return boundedWait(deadline.final) == .success
     }
 
     private static func remainingTime(until deadline: DispatchTime) -> TimeInterval {

@@ -549,11 +549,11 @@ public final class VmmDockerProcess: @unchecked Sendable {
             _ = child.send(SIGCONT)
         }
         _ = child.send(signal)
-        if child.terminationWaiter.wait(timeout: deadline.graceful) == .success {
-            return true
-        }
-        _ = child.send(SIGKILL)
-        return child.terminationWaiter.wait(timeout: deadline.final) == .success
+        return HvProcess.waitForTermination(
+            waiter: child.terminationWaiter,
+            deadline: deadline,
+            sendForcedTermination: { _ = child.send(SIGKILL) }
+        )
     }
 
     private func scheduleDeferredStop(

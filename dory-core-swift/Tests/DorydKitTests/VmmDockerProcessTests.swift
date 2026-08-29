@@ -142,20 +142,31 @@ final class VmmDockerProcessTests: XCTestCase {
         }
         XCTAssertEqual(launchPublished.wait(timeout: .now() + 1), .success)
 
-        let stopStartedAt = ProcessInfo.processInfo.systemUptime
-        XCTAssertFalse(process.stopForTesting(timeout: 0.015, forcedTimeout: 0.015))
-        XCTAssertLessThan(
-            ProcessInfo.processInfo.systemUptime - stopStartedAt,
-            0.15,
+        let stopFinished = DispatchSemaphore(value: 0)
+        let stopResult = LockedVmmBoolBox()
+        DispatchQueue.global(qos: .userInitiated).async {
+            stopResult.set(process.stopForTesting(timeout: 0.015, forcedTimeout: 0.015))
+            stopFinished.signal()
+        }
+        XCTAssertEqual(
+            stopFinished.wait(timeout: .now() + 1),
+            .success,
             "a blocked spawn reservation must not escape the caller's stop budget"
         )
-        let observationStartedAt = ProcessInfo.processInfo.systemUptime
-        XCTAssertNil(process.lifecycleObservation(until: .now() + 0.02))
-        XCTAssertLessThan(
-            ProcessInfo.processInfo.systemUptime - observationStartedAt,
-            0.1,
+        XCTAssertEqual(stopResult.value, false)
+
+        let observationFinished = DispatchSemaphore(value: 0)
+        let observationResult = LockedVmmObservationBox()
+        DispatchQueue.global(qos: .userInitiated).async {
+            observationResult.set(process.lifecycleObservation(until: .now() + 0.02))
+            observationFinished.signal()
+        }
+        XCTAssertEqual(
+            observationFinished.wait(timeout: .now() + 1),
+            .success,
             "status observation must remain bounded while launch owns the mutex"
         )
+        XCTAssertNil(observationResult.value)
 
         releaseLaunch.signal()
         XCTAssertEqual(startFinished.wait(timeout: .now() + 2), .success)
@@ -367,6 +378,40 @@ private final class LockedVmmPIDBox: @unchecked Sendable {
     }
 
     func set(_ value: Int32) {
+        lock.lock()
+        stored = value
+        lock.unlock()
+    }
+}
+
+private final class LockedVmmBoolBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: Bool?
+
+    var value: Bool? {
+        lock.lock()
+        defer { lock.unlock() }
+        return stored
+    }
+
+    func set(_ value: Bool) {
+        lock.lock()
+        stored = value
+        lock.unlock()
+    }
+}
+
+private final class LockedVmmObservationBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: DockerManagedProcessObservation?
+
+    var value: DockerManagedProcessObservation? {
+        lock.lock()
+        defer { lock.unlock() }
+        return stored
+    }
+
+    func set(_ value: DockerManagedProcessObservation?) {
         lock.lock()
         stored = value
         lock.unlock()

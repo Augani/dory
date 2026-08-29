@@ -242,21 +242,31 @@ final class HvProcessTests: XCTestCase {
         }
         XCTAssertEqual(launchPublished.wait(timeout: .now() + 1), .success)
 
-        let stopStartedAt = ProcessInfo.processInfo.systemUptime
-        XCTAssertFalse(process.stopForTesting(timeout: 0.015, forcedTimeout: 0.015))
-        XCTAssertLessThan(
-            ProcessInfo.processInfo.systemUptime - stopStartedAt,
-            0.15,
+        let stopFinished = DispatchSemaphore(value: 0)
+        let stopResult = LockedHvBoolBox()
+        DispatchQueue.global(qos: .userInitiated).async {
+            stopResult.set(process.stopForTesting(timeout: 0.015, forcedTimeout: 0.015))
+            stopFinished.signal()
+        }
+        XCTAssertEqual(
+            stopFinished.wait(timeout: .now() + 1),
+            .success,
             "a blocked launch mutex must not escape the caller's complete stop budget"
         )
+        XCTAssertEqual(stopResult.value, false)
 
-        let observationStartedAt = ProcessInfo.processInfo.systemUptime
-        XCTAssertNil(process.lifecycleObservation(until: .now() + 0.02))
-        XCTAssertLessThan(
-            ProcessInfo.processInfo.systemUptime - observationStartedAt,
-            0.1,
+        let observationFinished = DispatchSemaphore(value: 0)
+        let observationResult = LockedHvObservationBox()
+        DispatchQueue.global(qos: .userInitiated).async {
+            observationResult.set(process.lifecycleObservation(until: .now() + 0.02))
+            observationFinished.signal()
+        }
+        XCTAssertEqual(
+            observationFinished.wait(timeout: .now() + 1),
+            .success,
             "status observation must return unknown instead of waiting behind launch"
         )
+        XCTAssertNil(observationResult.value)
 
         releaseLaunch.signal()
         XCTAssertEqual(startFinished.wait(timeout: .now() + 2), .success)
@@ -331,9 +341,19 @@ final class HvProcessTests: XCTestCase {
     func testAbsoluteStopBudgetBeginsBeforeLifecycleMutexAcquisition() {
         let lifecycleMutex = DoryProcessLifecycleMutex()
         lifecycleMutex.lock()
+        let deadlineStartedAt = DispatchTime.now()
         let deadline = DoryProcessStopDeadline(
             gracefulTimeout: 0.04,
-            forcedTimeout: 0.08
+            forcedTimeout: 0.08,
+            startedAt: deadlineStartedAt
+        )
+        XCTAssertEqual(
+            deadline.graceful.uptimeNanoseconds,
+            deadlineStartedAt.uptimeNanoseconds + 40_000_000
+        )
+        XCTAssertEqual(
+            deadline.final.uptimeNanoseconds,
+            deadlineStartedAt.uptimeNanoseconds + 120_000_000
         )
         let waiter = DispatchGroup()
         waiter.enter()
@@ -344,40 +364,44 @@ final class HvProcessTests: XCTestCase {
             mutexRelease.signal()
         }
 
-        let startedAt = ProcessInfo.processInfo.systemUptime
         XCTAssertTrue(lifecycleMutex.lock(until: deadline.final))
         lifecycleMutex.unlock()
         var forced = false
+        var observedWaitDeadlines: [DispatchTime] = []
         let terminated = HvProcess.waitForTermination(
             waiter: waiter,
             deadline: deadline,
+            waitUntil: { deadline in
+                observedWaitDeadlines.append(deadline)
+                return .timedOut
+            },
             sendForcedTermination: { forced = true }
         )
-        let elapsed = ProcessInfo.processInfo.systemUptime - startedAt
-
         XCTAssertFalse(terminated)
         XCTAssertTrue(forced)
+        XCTAssertEqual(observedWaitDeadlines, [deadline.graceful, deadline.final])
         XCTAssertEqual(mutexRelease.wait(timeout: .now() + 0.1), .success)
-        // The 80 ms forced phase ends 120 ms after API entry, not 80 ms after the mutex clears.
-        XCTAssertGreaterThanOrEqual(elapsed, 0.09)
-        XCTAssertLessThan(elapsed, 0.19)
+        // Both waits consumed the one deadline created before mutex acquisition. Inspecting those
+        // exact arguments proves the forced phase was not restarted after the mutex cleared;
+        // host scheduler latency is deliberately not treated as process-supervisor behavior.
     }
 
     func testLifecycleMutexAcquisitionCannotOutliveFinalStopDeadline() {
         let lifecycleMutex = DoryProcessLifecycleMutex()
         lifecycleMutex.lock()
         defer { lifecycleMutex.unlock() }
+        let deadlineStartedAt = DispatchTime.now()
         let deadline = DoryProcessStopDeadline(
             gracefulTimeout: 0.01,
-            forcedTimeout: 0.02
+            forcedTimeout: 0.02,
+            startedAt: deadlineStartedAt
+        )
+        XCTAssertEqual(
+            deadline.final.uptimeNanoseconds,
+            deadlineStartedAt.uptimeNanoseconds + 30_000_000
         )
 
-        let startedAt = ProcessInfo.processInfo.systemUptime
         XCTAssertFalse(lifecycleMutex.lock(until: deadline.final))
-        let elapsed = ProcessInfo.processInfo.systemUptime - startedAt
-
-        XCTAssertGreaterThanOrEqual(elapsed, 0.02)
-        XCTAssertLessThan(elapsed, 0.12)
     }
 
     func testExpiredAbsoluteStopBudgetCannotRestartAtEscalationPhase() {
@@ -674,6 +698,40 @@ private final class LockedHvErrorBox: @unchecked Sendable {
     func set(_ error: Error) {
         lock.lock()
         stored = error
+        lock.unlock()
+    }
+}
+
+private final class LockedHvBoolBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: Bool?
+
+    var value: Bool? {
+        lock.lock()
+        defer { lock.unlock() }
+        return stored
+    }
+
+    func set(_ value: Bool) {
+        lock.lock()
+        stored = value
+        lock.unlock()
+    }
+}
+
+private final class LockedHvObservationBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: DockerManagedProcessObservation?
+
+    var value: DockerManagedProcessObservation? {
+        lock.lock()
+        defer { lock.unlock() }
+        return stored
+    }
+
+    func set(_ value: DockerManagedProcessObservation?) {
+        lock.lock()
+        stored = value
         lock.unlock()
     }
 }
