@@ -25,6 +25,13 @@ public struct DoryOperationJournalStore: Sendable, Equatable {
         root + "/" + id.uuidString.lowercased() + ".doryop"
     }
 
+    /// Creates and validates the private journal root before a later mutation needs to publish.
+    /// Daemons use this during startup so a transiently read-only managed-data directory cannot
+    /// strand an otherwise recoverable operation before its journal is written.
+    public func prepare(fileManager: FileManager = .default) throws {
+        try prepareRoot(fileManager: fileManager)
+    }
+
     public func begin(
         _ plan: DoryOperationPlan,
         at date: Date = Date(),
@@ -43,13 +50,45 @@ public struct DoryOperationJournalStore: Sendable, Equatable {
         _ id: UUID,
         fileManager: FileManager = .default
     ) throws -> DoryOperationLease {
+        try acquireVerified(id, requestedMutationScope: nil, fileManager: fileManager)
+    }
+
+    /// Reacquires a scoped operation only when the caller's expectation matches the scope
+    /// authenticated by the immutable journal plan. This overload is useful for callers that
+    /// already know which workspace they are recovering; it cannot select a different lock.
+    public func acquire(
+        _ id: UUID,
+        mutationScope: String,
+        fileManager: FileManager = .default
+    ) throws -> DoryOperationLease {
+        try acquireVerified(
+            id,
+            requestedMutationScope: mutationScope,
+            fileManager: fileManager
+        )
+    }
+
+    private func acquireVerified(
+        _ id: UUID,
+        requestedMutationScope: String?,
+        fileManager: FileManager
+    ) throws -> DoryOperationLease {
         guard Self.pathEntryExists(root) else {
             throw DoryOperationJournalError.operationNotFound(id)
         }
         try validateRoot()
-        let lock = try acquireMutationLock()
+        let before = try readRecord(id)
+        let authenticatedScope = authenticatedMutationScope(for: before.plan)
+        if let requestedMutationScope, requestedMutationScope != authenticatedScope {
+            throw DoryOperationJournalError.invalidPlan("mutation scope mismatch")
+        }
+        let lock = try acquireMutationLock(scope: authenticatedScope)
         let lease = DoryOperationLease(store: self, operationID: id, lock: lock)
-        _ = try lease.read()
+        let after = try lease.read()
+        guard after.plan == before.plan,
+              authenticatedMutationScope(for: after.plan) == authenticatedScope else {
+            throw DoryOperationJournalError.invalidRecord(operationDirectory(for: id))
+        }
         try lease.reconcileAuditLog()
         return lease
     }
@@ -75,7 +114,9 @@ public struct DoryOperationJournalStore: Sendable, Equatable {
         }
         var records: [DoryOperationRecord] = []
         for entry in entries.sorted() {
-            if entry == ".mutation.lock" || Self.isUnpublishedPartial(entry) { continue }
+            if entry == ".mutation.lock"
+                || (entry.hasPrefix(".mutation.") && entry.hasSuffix(".lock"))
+                || Self.isUnpublishedPartial(entry) { continue }
             guard entry.hasSuffix(".doryop"),
                   let id = UUID(uuidString: String(entry.dropLast(".doryop".count))) else {
                 throw DoryOperationJournalError.invalidRecord(root + "/" + entry)
@@ -137,11 +178,14 @@ public struct DoryOperationJournalStore: Sendable, Equatable {
         }
     }
 
-    func acquireMutationLock() throws -> EngineStateDirectoryLock {
+    func acquireMutationLock(scope: String? = nil) throws -> EngineStateDirectoryLock {
+        if let scope, !Self.isToken(scope) {
+            throw DoryOperationJournalError.invalidPlan("mutation scope")
+        }
         do {
             return try EngineStateDirectoryLock(
                 stateDirectory: root,
-                lockFileName: ".mutation.lock"
+                lockFileName: scope.map { ".mutation.\($0).lock" } ?? ".mutation.lock"
             )
         } catch let error as EngineStateDirectoryLockError {
             switch error {
@@ -150,6 +194,31 @@ public struct DoryOperationJournalStore: Sendable, Equatable {
             case .cannotOpen:
                 throw DoryOperationJournalError.filesystem(error.description)
             }
+        }
+    }
+
+    /// A same-workspace lifecycle journal has one deterministic lock scope. Multi-workspace
+    /// operations (currently clone) retain the established global mutation fence.
+    func authenticatedMutationScope(for plan: DoryOperationPlan) -> String? {
+        guard Self.isWorkspaceLifecycleKind(plan.kind),
+              plan.source.kind == .workspace,
+              plan.target.kind == .workspace,
+              plan.source.id == plan.target.id,
+              Self.isToken(plan.source.id) else {
+            return nil
+        }
+        return plan.source.id
+    }
+
+    private static func isWorkspaceLifecycleKind(_ kind: DoryOperationKind) -> Bool {
+        switch kind {
+        case .workspaceImport, .workspaceProvision, .workspaceResolve, .workspaceStart,
+             .workspaceStop, .workspacePause, .workspaceResume, .workspaceSuspend,
+             .workspaceRestore, .workspaceSnapshot, .workspaceClone, .workspaceUpdate,
+             .workspaceRepair, .workspaceDelete:
+            true
+        case .competitorImport, .driveBackup, .driveRestore, .driveRelocation, .driveUpgrade:
+            false
         }
     }
 

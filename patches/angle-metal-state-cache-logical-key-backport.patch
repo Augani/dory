@@ -1,0 +1,296 @@
+diff --git a/Source/ThirdParty/ANGLE/src/libANGLE/renderer/metal/mtl_state_cache.mm b/Source/ThirdParty/ANGLE/src/libANGLE/renderer/metal/mtl_state_cache.mm
+index 7b2e9926b2..8ab57b5fd5 100644
+--- a/Source/ThirdParty/ANGLE/src/libANGLE/renderer/metal/mtl_state_cache.mm
++++ b/Source/ThirdParty/ANGLE/src/libANGLE/renderer/metal/mtl_state_cache.mm
+@@ -253,22 +253,25 @@ void StencilDesc::reset()
+ }
+ 
+ // DepthStencilDesc implementation
++// Descriptor identity must be derived from logical members, never object representation. Bitfields
++// and alignment padding are not stable inputs to copy, equality, or hashing.
+ DepthStencilDesc::DepthStencilDesc()
+-{
+-    memset(this, 0, sizeof(*this));
+-}
++    : backFaceStencil{}, frontFaceStencil{}, depthCompareFunction(0), depthWriteEnabled(false)
++{}
+ DepthStencilDesc::DepthStencilDesc(const DepthStencilDesc &src)
+-{
+-    memcpy(this, &src, sizeof(*this));
+-}
+-DepthStencilDesc::DepthStencilDesc(DepthStencilDesc &&src)
+-{
+-    memcpy(this, &src, sizeof(*this));
+-}
++    : backFaceStencil(src.backFaceStencil),
++      frontFaceStencil(src.frontFaceStencil),
++      depthCompareFunction(src.depthCompareFunction),
++      depthWriteEnabled(src.depthWriteEnabled)
++{}
++DepthStencilDesc::DepthStencilDesc(DepthStencilDesc &&src) : DepthStencilDesc(src) {}
+ 
+ DepthStencilDesc &DepthStencilDesc::operator=(const DepthStencilDesc &src)
+ {
+-    memcpy(this, &src, sizeof(*this));
++    backFaceStencil      = src.backFaceStencil;
++    frontFaceStencil     = src.frontFaceStencil;
++    depthCompareFunction = src.depthCompareFunction;
++    depthWriteEnabled    = src.depthWriteEnabled;
+     return *this;
+ }
+ 
+@@ -406,22 +409,44 @@ void DepthStencilDesc::updateStencilBackWriteMask(const gl::DepthStencilState &d
+ 
+ size_t DepthStencilDesc::hash() const
+ {
+-    return angle::ComputeGenericHash(*this);
++    return angle::HashMultiple(static_cast<uint8_t>(backFaceStencil.stencilFailureOperation),
++                               static_cast<uint8_t>(backFaceStencil.depthFailureOperation),
++                               static_cast<uint8_t>(backFaceStencil.depthStencilPassOperation),
++                               static_cast<uint8_t>(backFaceStencil.stencilCompareFunction),
++                               static_cast<uint8_t>(backFaceStencil.readMask),
++                               static_cast<uint8_t>(backFaceStencil.writeMask),
++                               static_cast<uint8_t>(frontFaceStencil.stencilFailureOperation),
++                               static_cast<uint8_t>(frontFaceStencil.depthFailureOperation),
++                               static_cast<uint8_t>(frontFaceStencil.depthStencilPassOperation),
++                               static_cast<uint8_t>(frontFaceStencil.stencilCompareFunction),
++                               static_cast<uint8_t>(frontFaceStencil.readMask),
++                               static_cast<uint8_t>(frontFaceStencil.writeMask),
++                               static_cast<uint8_t>(depthCompareFunction),
++                               static_cast<bool>(depthWriteEnabled));
+ }
+ 
+ // SamplerDesc implementation
+ SamplerDesc::SamplerDesc()
+-{
+-    memset(this, 0, sizeof(*this));
+-}
++    : rAddressMode(0),
++      sAddressMode(0),
++      tAddressMode(0),
++      minFilter(0),
++      magFilter(0),
++      mipFilter(0),
++      maxAnisotropy(0),
++      compareFunction(0)
++{}
+ SamplerDesc::SamplerDesc(const SamplerDesc &src)
+-{
+-    memcpy(this, &src, sizeof(*this));
+-}
+-SamplerDesc::SamplerDesc(SamplerDesc &&src)
+-{
+-    memcpy(this, &src, sizeof(*this));
+-}
++    : rAddressMode(src.rAddressMode),
++      sAddressMode(src.sAddressMode),
++      tAddressMode(src.tAddressMode),
++      minFilter(src.minFilter),
++      magFilter(src.magFilter),
++      mipFilter(src.mipFilter),
++      maxAnisotropy(src.maxAnisotropy),
++      compareFunction(src.compareFunction)
++{}
++SamplerDesc::SamplerDesc(SamplerDesc &&src) : SamplerDesc(src) {}
+ 
+ SamplerDesc::SamplerDesc(const gl::SamplerState &glState) : SamplerDesc()
+ {
+@@ -440,7 +465,14 @@ SamplerDesc::SamplerDesc(const gl::SamplerState &glState) : SamplerDesc()
+ 
+ SamplerDesc &SamplerDesc::operator=(const SamplerDesc &src)
+ {
+-    memcpy(this, &src, sizeof(*this));
++    rAddressMode    = src.rAddressMode;
++    sAddressMode    = src.sAddressMode;
++    tAddressMode    = src.tAddressMode;
++    minFilter       = src.minFilter;
++    magFilter       = src.magFilter;
++    mipFilter       = src.mipFilter;
++    maxAnisotropy   = src.maxAnisotropy;
++    compareFunction = src.compareFunction;
+     return *this;
+ }
+ 
+@@ -474,7 +506,11 @@ bool SamplerDesc::operator==(const SamplerDesc &rhs) const
+ 
+ size_t SamplerDesc::hash() const
+ {
+-    return angle::ComputeGenericHash(*this);
++    return angle::HashMultiple(
++        static_cast<uint8_t>(rAddressMode), static_cast<uint8_t>(sAddressMode),
++        static_cast<uint8_t>(tAddressMode), static_cast<bool>(minFilter),
++        static_cast<bool>(magFilter), static_cast<uint8_t>(mipFilter),
++        static_cast<uint8_t>(maxAnisotropy), static_cast<uint8_t>(compareFunction));
+ }
+ 
+ // BlendDesc implementation
+@@ -600,7 +636,8 @@ bool RenderPipelineOutputDesc::operator==(const RenderPipelineOutputDesc &rhs) c
+     }
+ 
+     return ANGLE_PROP_EQ(*this, rhs, depthAttachmentPixelFormat) &&
+-           ANGLE_PROP_EQ(*this, rhs, stencilAttachmentPixelFormat);
++           ANGLE_PROP_EQ(*this, rhs, stencilAttachmentPixelFormat) &&
++           ANGLE_PROP_EQ(*this, rhs, sampleCount);
+ }
+ 
+ void RenderPipelineOutputDesc::updateEnabledDrawBuffers(gl::DrawBufferMask enabledBuffers)
+@@ -616,39 +653,86 @@ void RenderPipelineOutputDesc::updateEnabledDrawBuffers(gl::DrawBufferMask enabl
+ 
+ // RenderPipelineDesc implementation
+ RenderPipelineDesc::RenderPipelineDesc()
++    : vertexDescriptor{},
++      outputDescriptor{},
++      inputPrimitiveTopology(0),
++      alphaToCoverageEnabled(false),
++      rasterizationType(RenderPipelineRasterization::Enabled)
+ {
+-    memset(this, 0, sizeof(*this));
+     outputDescriptor.sampleCount = 1;
+-    rasterizationType            = RenderPipelineRasterization::Enabled;
+ }
+ 
+ RenderPipelineDesc::RenderPipelineDesc(const RenderPipelineDesc &src)
++    : vertexDescriptor(src.vertexDescriptor),
++      outputDescriptor{},
++      inputPrimitiveTopology(src.inputPrimitiveTopology),
++      alphaToCoverageEnabled(src.alphaToCoverageEnabled),
++      rasterizationType(src.rasterizationType)
+ {
+-    memcpy(this, &src, sizeof(*this));
++    // Assigning the aggregate preserves UTM's existing BlendDesc copy-assignment contract without
++    // relying on the deprecated implicit BlendDesc copy constructor diagnosed by Xcode 26.
++    outputDescriptor = src.outputDescriptor;
+ }
+ 
+-RenderPipelineDesc::RenderPipelineDesc(RenderPipelineDesc &&src)
+-{
+-    memcpy(this, &src, sizeof(*this));
+-}
++RenderPipelineDesc::RenderPipelineDesc(RenderPipelineDesc &&src) : RenderPipelineDesc(src) {}
+ 
+ RenderPipelineDesc &RenderPipelineDesc::operator=(const RenderPipelineDesc &src)
+ {
+-    memcpy(this, &src, sizeof(*this));
++    vertexDescriptor       = src.vertexDescriptor;
++    outputDescriptor       = src.outputDescriptor;
++    inputPrimitiveTopology = src.inputPrimitiveTopology;
++    alphaToCoverageEnabled = src.alphaToCoverageEnabled;
++    rasterizationType      = src.rasterizationType;
+     return *this;
+ }
+ 
+ bool RenderPipelineDesc::operator==(const RenderPipelineDesc &rhs) const
+ {
+-    // NOTE(hqle): Use a faster way to compare, i.e take into account
+-    // the number of active vertex attributes & render targets.
+-    // If that way is used, hash() method must be changed also.
+-    return memcmp(this, &rhs, sizeof(*this)) == 0;
++    return vertexDescriptor == rhs.vertexDescriptor && outputDescriptor == rhs.outputDescriptor &&
++           inputPrimitiveTopology == rhs.inputPrimitiveTopology &&
++           alphaToCoverageEnabled == rhs.alphaToCoverageEnabled &&
++           rasterizationType == rhs.rasterizationType;
+ }
+ 
+ size_t RenderPipelineDesc::hash() const
+ {
+-    return angle::ComputeGenericHash(*this);
++    size_t hash = 0;
++    angle::HashCombine(hash, vertexDescriptor.numAttribs, vertexDescriptor.numBufferLayouts);
++    for (uint8_t index = 0; index < vertexDescriptor.numAttribs; ++index)
++    {
++        const VertexAttributeDesc &attribute = vertexDescriptor.attributes[index];
++        angle::HashCombine(hash, static_cast<uint8_t>(attribute.format),
++                           static_cast<uint8_t>(attribute.offset),
++                           static_cast<uint8_t>(attribute.bufferIndex));
++    }
++    for (uint8_t index = 0; index < vertexDescriptor.numBufferLayouts; ++index)
++    {
++        const VertexBufferLayoutDesc &layout = vertexDescriptor.layouts[index];
++        angle::HashCombine(hash, layout.stepRate, layout.stride,
++                           static_cast<uint8_t>(layout.stepFunction));
++    }
++
++    angle::HashCombine(hash, outputDescriptor.numColorAttachments);
++    for (uint8_t index = 0; index < outputDescriptor.numColorAttachments; ++index)
++    {
++        const RenderPipelineColorAttachmentDesc &attachment =
++            outputDescriptor.colorAttachments[index];
++        angle::HashCombine(hash, static_cast<uint8_t>(attachment.writeMask),
++                           static_cast<uint8_t>(attachment.alphaBlendOperation),
++                           static_cast<uint8_t>(attachment.rgbBlendOperation),
++                           static_cast<uint8_t>(attachment.destinationAlphaBlendFactor),
++                           static_cast<uint8_t>(attachment.destinationRGBBlendFactor),
++                           static_cast<uint8_t>(attachment.sourceAlphaBlendFactor),
++                           static_cast<uint8_t>(attachment.sourceRGBBlendFactor),
++                           static_cast<bool>(attachment.blendingEnabled),
++                           static_cast<uint16_t>(attachment.pixelFormat));
++    }
++    angle::HashCombine(hash, static_cast<uint16_t>(outputDescriptor.depthAttachmentPixelFormat),
++                       static_cast<uint16_t>(outputDescriptor.stencilAttachmentPixelFormat),
++                       outputDescriptor.sampleCount, static_cast<uint8_t>(inputPrimitiveTopology),
++                       static_cast<bool>(alphaToCoverageEnabled),
++                       static_cast<uint8_t>(rasterizationType));
++    return hash;
+ }
+ 
+ bool RenderPipelineDesc::rasterizationEnabled() const
+@@ -898,29 +982,37 @@ void RenderPassDesc::convertToMetalDesc(MTLRenderPassDescriptor *objCDesc,
+ 
+ // ProvokingVertexPipelineDesc
+ ProvokingVertexComputePipelineDesc::ProvokingVertexComputePipelineDesc()
+-{
+-    memset(this, 0, sizeof(*this));
+-}
++    : primitiveMode(gl::PrimitiveMode::Points),
++      elementType(0),
++      primitiveRestartEnabled(false),
++      generateIndices(false)
++{}
+ ProvokingVertexComputePipelineDesc::ProvokingVertexComputePipelineDesc(
+     const ProvokingVertexComputePipelineDesc &src)
+-{
+-    memcpy(this, &src, sizeof(*this));
+-}
++    : primitiveMode(src.primitiveMode),
++      elementType(src.elementType),
++      primitiveRestartEnabled(src.primitiveRestartEnabled),
++      generateIndices(src.generateIndices)
++{}
+ ProvokingVertexComputePipelineDesc::ProvokingVertexComputePipelineDesc(
+     ProvokingVertexComputePipelineDesc &&src)
+-{
+-    memcpy(this, &src, sizeof(*this));
+-}
++    : ProvokingVertexComputePipelineDesc(src)
++{}
+ ProvokingVertexComputePipelineDesc &ProvokingVertexComputePipelineDesc::operator=(
+     const ProvokingVertexComputePipelineDesc &src)
+ {
+-    memcpy(this, &src, sizeof(*this));
++    primitiveMode           = src.primitiveMode;
++    elementType             = src.elementType;
++    primitiveRestartEnabled = src.primitiveRestartEnabled;
++    generateIndices         = src.generateIndices;
+     return *this;
+ }
+ bool ProvokingVertexComputePipelineDesc::operator==(
+     const ProvokingVertexComputePipelineDesc &rhs) const
+ {
+-    return memcmp(this, &rhs, sizeof(*this)) == 0;
++    return primitiveMode == rhs.primitiveMode && elementType == rhs.elementType &&
++           primitiveRestartEnabled == rhs.primitiveRestartEnabled &&
++           generateIndices == rhs.generateIndices;
+ }
+ bool ProvokingVertexComputePipelineDesc::operator!=(
+     const ProvokingVertexComputePipelineDesc &rhs) const
+@@ -929,7 +1021,9 @@ bool ProvokingVertexComputePipelineDesc::operator!=(
+ }
+ size_t ProvokingVertexComputePipelineDesc::hash() const
+ {
+-    return angle::ComputeGenericHash(*this);
++    return angle::HashMultiple(static_cast<uint8_t>(primitiveMode), elementType,
++                               static_cast<bool>(primitiveRestartEnabled),
++                               static_cast<bool>(generateIndices));
+ }
+ 
+ // StateCache implementation

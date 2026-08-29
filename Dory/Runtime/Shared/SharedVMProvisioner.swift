@@ -1,4 +1,5 @@
 import Darwin
+import DoryOperations
 import Foundation
 
 /// Brings up Dory's single shared Linux VM — `dory-hv`, our own VMM on Hypervisor.framework — which
@@ -204,9 +205,11 @@ nonisolated enum SharedVMProvisioner {
         ) -> Config {
             let info = ProcessInfo.processInfo
             let cpus = max(4, info.activeProcessorCount - 2)
-            let hostMB = Int(info.physicalMemory / (1024 * 1024))
             let floorMB = rosettaX86 ? amd64EmulationMemoryMB : SharedVMProvisioner.defaultEngineMemoryMB
-            let engineMB = max(floorMB, min(hostMB / 2, hostMB - 4096))
+            let engineMB = DoryEngineMemoryPolicy.hostScaledMemoryMB(
+                physicalMemory: info.physicalMemory,
+                minimumMemoryMB: floorMB
+            )
             return Config(cpus: cpus, memory: "\(engineMB)M", rosettaX86: rosettaX86, gpuVenus: gpuVenus)
         }
     }
@@ -283,13 +286,16 @@ nonisolated enum SharedVMProvisioner {
         guard icdCandidates.contains(where: { fileManager.fileExists(atPath: $0) }) else { return false }
         // The Venus path exposes host-visible blobs by hv_vm_mapping the pointer virglrenderer returns
         // from virgl_renderer_resource_map (the libkrun/krunkit model), so probe the renderer actually
-        // exports a blob-map entrypoint before enabling the toggle.
+        // exports a blob-map entrypoint and Dory's async macOS fence fix before enabling the
+        // toggle. A stock or older renderer can appear usable but stall Vulkan applications.
         for path in rendererCandidates where fileManager.fileExists(atPath: path) {
             guard let handle = dlopen(path, RTLD_LAZY | RTLD_LOCAL) else { continue }
             let hasBlobMap = dlsym(handle, "virgl_renderer_resource_map") != nil
                 || dlsym(handle, "virgl_renderer_resource_get_map_ptr") != nil
+            let hasDoryFenceFix = dlsym(handle, "dory_virglrenderer_macos_venus_fence_fix") != nil
+            let hasDoryMoltenVKFix = dlsym(handle, "dory_moltenvk_spirv_native_array_fix") != nil
             dlclose(handle)
-            if hasBlobMap { return true }
+            if hasBlobMap && hasDoryFenceFix && hasDoryMoltenVKFix { return true }
         }
         return false
     }
@@ -654,18 +660,25 @@ nonisolated enum SharedVMProvisioner {
     }
 
     private static func hvHelperBinary() -> String? {
+        if Bundle.main.bundleURL.pathExtension == "app" {
+            let runner = bundledHVRunnerExecutable(in: Bundle.main.bundleURL)
+            return FileManager.default.isExecutableFile(atPath: runner) ? runner : nil
+        }
         let environment = ProcessInfo.processInfo.environment
         if let override = environment["DORY_HV_HELPER"],
            !override.isEmpty,
            FileManager.default.isExecutableFile(atPath: override) {
             return override
         }
-        if let helper = bundledHelperPath(named: "dory-hv"),
-           FileManager.default.isExecutableFile(atPath: helper) {
-            return helper
-        }
         let cwd = FileManager.default.currentDirectoryPath
         return helperDevCandidates(named: "dory-hv", cwd: cwd).first { FileManager.default.isExecutableFile(atPath: $0) }
+    }
+
+    nonisolated static func bundledHVRunnerExecutable(in applicationURL: URL) -> String {
+        applicationURL
+            .appendingPathComponent("Contents/Helpers/DoryHVRunner.app/Contents/MacOS/dory-hv")
+            .standardizedFileURL
+            .path
     }
 
     nonisolated static func helperDevCandidates(

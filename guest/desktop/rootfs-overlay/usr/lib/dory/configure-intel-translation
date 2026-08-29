@@ -1,0 +1,40 @@
+#!/bin/bash
+set -euo pipefail
+
+mountpoint=/run/dory/rosetta
+status=/run/dory/intel-application-translation-status
+runtime=$mountpoint/rosetta
+magic='\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x3e\x00'
+mask='\xff\xff\xff\xff\xff\xfe\xfe\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff'
+
+install -d -m0755 /run/dory "$mountpoint"
+
+# This unit is present in every managed image, while the host exposes the reserved share only
+# when an exact resolved plan authorizes translation. An absent tag is therefore a clean no-op.
+if ! mountpoint -q "$mountpoint"; then
+  if ! mount -t virtiofs -o ro rosetta "$mountpoint" 2>/dev/null; then
+    printf 'unavailable\n' > "$status"
+    chmod 0644 "$status"
+    exit 0
+  fi
+fi
+
+if [ ! -x "$runtime" ]; then
+  printf 'invalid-runtime\n' > "$status"
+  chmod 0644 "$status"
+  echo "Dory: the resolved Rosetta share does not contain an executable runtime" >&2
+  exit 1
+fi
+
+# Re-register on each boot after the ephemeral VirtioFS mount exists. update-binfmts keeps a
+# durable description, but systemd-binfmt may run before this host-provided share is mountable.
+if /usr/sbin/update-binfmts --display rosetta >/dev/null 2>&1; then
+  /usr/sbin/update-binfmts --remove rosetta "$runtime" >/dev/null 2>&1 || true
+fi
+/usr/sbin/update-binfmts --install rosetta "$runtime" \
+  --magic "$magic" \
+  --mask "$mask" \
+  --credentials yes --preserve yes --fix-binary yes
+
+printf 'ready\n' > "$status"
+chmod 0644 "$status"

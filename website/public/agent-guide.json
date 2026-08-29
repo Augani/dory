@@ -2,7 +2,7 @@
   "schema": "dev.dory.agent.guide",
   "version": 1,
   "summary": "Machine-readable Dory CLI capability map for non-interactive coding agents.",
-  "release": "0.4.5",
+  "release": "0.4.6",
   "defaults": {
     "nonInteractive": true,
     "preferJSON": true,
@@ -194,7 +194,7 @@
       "safeForAutomation": true,
       "json": true,
       "destructiveRequires": ["delete requires --confirm NAME", "restore requires --confirm NAME and creates a retained pre-restore snapshot", "delete-snapshot requires --confirm SNAPSHOT_ID"],
-      "notes": "Requires dorydctl and Dory's daemon-managed VM machine runtime; use `dory machine exec NAME --json -- CMD` for schema dev.dory.machine.exec v1. Managed Debian, Ubuntu, and Kali Xfce machines require their matching desktop component; Alpine headless machines require linux-machines. Set DORY_LEGACY_DOCKER_MACHINES=1 only for old container-backed machine inspection."
+      "notes": "Requires dorydctl and Dory's daemon-managed VM machine runtime; use `dory machine exec NAME --json -- CMD` for schema dev.dory.machine.exec v1. Managed Ubuntu GNOME and Debian/Kali Xfce machines require their matching desktop component; Alpine headless machines require linux-machines. Set DORY_LEGACY_DOCKER_MACHINES=1 only for old container-backed machine inspection."
     },
     {
       "id": "machine-backup",

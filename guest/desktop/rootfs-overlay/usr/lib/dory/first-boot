@@ -3,12 +3,34 @@ set -euo pipefail
 
 mkdir -p /var/lib/dory
 if [ ! -s /var/lib/dory/username ]; then
-  printf 'dory\n' > /var/lib/dory/username
+  username_temporary="/var/lib/dory/.username.$$"
+  printf 'dory\n' > "$username_temporary"
+  chmod 0644 "$username_temporary"
+  mv -f "$username_temporary" /var/lib/dory/username
 fi
 if [ ! -s /etc/machine-id ]; then
   systemd-machine-id-setup
 fi
 rm -f /etc/ssh/ssh_host_*
 ssh-keygen -A
-resize2fs /dev/vda
+
+# Published component images already fill their virtual disk. Installed machines may extend that
+# disk before first boot; grow only in that case. An unconditional resize can be rounded down by
+# the kernel and rejected as an online shrink when the two capacities are already equal.
+device_bytes="$(blockdev --getsize64 /dev/vda)"
+filesystem_blocks="$(LC_ALL=C dumpe2fs -h /dev/vda 2>/dev/null \
+  | awk -F: '/^Block count:/{gsub(/[[:space:]]/, "", $2); print $2; exit}')"
+filesystem_block_size="$(LC_ALL=C dumpe2fs -h /dev/vda 2>/dev/null \
+  | awk -F: '/^Block size:/{gsub(/[[:space:]]/, "", $2); print $2; exit}')"
+case "$device_bytes:$filesystem_blocks:$filesystem_block_size" in
+  *[!0-9:]*|:*|*::*|*:) echo "could not determine root filesystem capacity" >&2; exit 1 ;;
+esac
+filesystem_bytes="$((filesystem_blocks * filesystem_block_size))"
+if [ "$device_bytes" -gt "$filesystem_bytes" ]; then
+  resize2fs /dev/vda
+elif [ "$device_bytes" -lt "$filesystem_bytes" ]; then
+  echo "root device is smaller than its filesystem ($device_bytes < $filesystem_bytes)" >&2
+  exit 1
+fi
 touch /var/lib/dory/first-boot-complete
+sync -f /var/lib/dory/first-boot-complete

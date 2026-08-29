@@ -6,12 +6,17 @@
 //! The driver is generic over [`SyncTarget`] so its chunking/resume logic is unit-tested against a
 //! fake, while [`crate::AgentClient`] is the production target over the real transport.
 
+use std::io::SeekFrom;
 use std::path::Path;
 
 use dory_pb::agent::{
-    SyncDeleteRequest, SyncFileStatusRequest, SyncManifestRequest, SyncPutChunkRequest,
+    SyncDeleteRequest, SyncDirectoryEntry, SyncFileStatusRequest, SyncManifestRequest,
+    SyncPutChunkRequest, SyncTreeRequest,
 };
-use dory_sync::{plan, walk_manifest, Hash, Manifest, CHUNK_BYTES, HASH_LEN};
+use dory_sync::{
+    plan, walk_tree, DirectoryEntry, Hash, Manifest, TreeSnapshot, CHUNK_BYTES, HASH_LEN,
+};
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
 use crate::agent_client::AgentClient;
 use crate::error::RemoteError;
@@ -26,6 +31,58 @@ pub struct PushStats {
     pub files_sent: u64,
     pub bytes_sent: u64,
     pub files_deleted: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PushPhase {
+    Preparing,
+    Transferring,
+    Finalizing,
+    Completed,
+    Cancelled,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PushProgress {
+    pub phase: PushPhase,
+    pub files_total: u64,
+    pub files_completed: u64,
+    pub bytes_total: u64,
+    pub bytes_completed: u64,
+    pub current_path: Option<String>,
+}
+
+impl Default for PushProgress {
+    fn default() -> Self {
+        Self {
+            phase: PushPhase::Preparing,
+            files_total: 0,
+            files_completed: 0,
+            bytes_total: 0,
+            bytes_completed: 0,
+            current_path: None,
+        }
+    }
+}
+
+/// A control-plane observer for a push. Implementations must return quickly: callbacks execute on
+/// the transfer task between bounded data-plane operations. Progress is absolute (not a delta), so
+/// polling consumers can safely coalesce updates. Cancellation is cooperative and checked before
+/// and after every remote mutation and every file chunk.
+pub trait PushObserver: Send + Sync {
+    fn update(&self, progress: &PushProgress);
+    fn is_cancelled(&self) -> bool;
+}
+
+struct IgnorePushProgress;
+
+impl PushObserver for IgnorePushProgress {
+    fn update(&self, _progress: &PushProgress) {}
+
+    fn is_cancelled(&self) -> bool {
+        false
+    }
 }
 
 /// The remote endpoint of a push. Modeled as a trait so the driver is testable without a transport.
@@ -54,6 +111,15 @@ pub trait SyncTarget {
         root: &str,
         paths: &[String],
     ) -> impl std::future::Future<Output = Result<u32, RemoteError>> + Send;
+    /// Reconcile complete directory topology. `Ok(false)` means the peer only implements the v1
+    /// file protocol; callers may retain v1 behavior only when no empty directory would be lost.
+    fn reconcile_tree(
+        &self,
+        root: &str,
+        files: &[String],
+        directories: &[DirectoryEntry],
+        finalize: bool,
+    ) -> impl std::future::Future<Output = Result<bool, RemoteError>> + Send;
 }
 
 pub async fn push<T: SyncTarget>(
@@ -61,33 +127,91 @@ pub async fn push<T: SyncTarget>(
     remote_root: &str,
     target: &T,
 ) -> Result<PushStats, RemoteError> {
+    push_observed(local_root, remote_root, target, &IgnorePushProgress).await
+}
+
+pub async fn push_observed<T: SyncTarget, O: PushObserver>(
+    local_root: &Path,
+    remote_root: &str,
+    target: &T,
+    observer: &O,
+) -> Result<PushStats, RemoteError> {
+    let mut progress = PushProgress::default();
+    observer.update(&progress);
+    let result =
+        push_observed_inner(local_root, remote_root, target, observer, &mut progress).await;
+    if result.is_err() && progress.phase != PushPhase::Cancelled {
+        progress.phase = PushPhase::Failed;
+        progress.current_path = None;
+        observer.update(&progress);
+    }
+    result
+}
+
+async fn push_observed_inner<T: SyncTarget, O: PushObserver>(
+    local_root: &Path,
+    remote_root: &str,
+    target: &T,
+    observer: &O,
+    progress: &mut PushProgress,
+) -> Result<PushStats, RemoteError> {
+    require_not_cancelled(observer, progress)?;
     let root = local_root.to_path_buf();
-    let local = tokio::task::spawn_blocking(move || walk_manifest(&root))
+    let local = tokio::task::spawn_blocking(move || walk_tree(&root))
         .await
         .map_err(|e| RemoteError::Io(std::io::Error::other(e)))??;
+    require_not_cancelled(observer, progress)?;
     let remote = target.remote_manifest(remote_root).await?;
-    let plan = plan(&local, &remote);
+    require_not_cancelled(observer, progress)?;
+    let plan = plan(&local.manifest, &remote);
+    progress.files_total = u64::try_from(plan.transfer.len()).map_err(|_| RemoteError::Decode)?;
+    progress.bytes_total = plan.transfer.iter().try_fold(0u64, |total, path| {
+        let size = local.manifest.get(path).ok_or(RemoteError::Decode)?.size;
+        total.checked_add(size).ok_or(RemoteError::Decode)
+    })?;
+    progress.phase = PushPhase::Transferring;
+    observer.update(progress);
+    let file_paths = local
+        .manifest
+        .entries
+        .iter()
+        .map(|entry| entry.path.clone())
+        .collect::<Vec<_>>();
+    let directory_protocol = target
+        .reconcile_tree(remote_root, &file_paths, &local.directories, false)
+        .await?;
+    require_not_cancelled(observer, progress)?;
+    if !directory_protocol && has_empty_directory(&local) {
+        return Err(RemoteError::CapabilityUnavailable("sync-push@2"));
+    }
 
     let mut stats = PushStats::default();
+    let mut completed_file_bytes = 0u64;
     for rel in &plan.transfer {
+        require_not_cancelled(observer, progress)?;
         let entry = local
+            .manifest
             .get(rel)
             .expect("transfer paths are drawn from the local manifest");
-        let bytes = tokio::fs::read(local_root.join(rel)).await?;
+        let mut file = tokio::fs::File::open(local_root.join(rel)).await?;
 
         // Resume: pick up where the remote left off, unless its staged size is past our file (stale).
         let staged = target.staged_bytes(remote_root, rel, &entry.hash).await?;
-        let mut offset: usize = if staged <= bytes.len() as u64 {
-            staged as usize
-        } else {
-            0
-        };
+        let mut offset = if staged <= entry.size { staged } else { 0 };
         let mut conflict_recoveries = 0usize;
+        progress.current_path = Some(rel.clone());
+        progress.bytes_completed = completed_file_bytes + offset;
+        observer.update(progress);
 
         loop {
-            let end = (offset + CHUNK_BYTES).min(bytes.len());
-            let chunk = bytes[offset..end].to_vec();
-            let last = end == bytes.len();
+            require_not_cancelled(observer, progress)?;
+            file.seek(SeekFrom::Start(offset)).await?;
+            let remaining = entry.size.checked_sub(offset).ok_or(RemoteError::Decode)?;
+            let chunk_len = remaining.min(CHUNK_BYTES as u64) as usize;
+            let mut chunk = vec![0u8; chunk_len];
+            file.read_exact(&mut chunk).await?;
+            let end = offset + chunk_len as u64;
+            let last = end == entry.size;
             let sent = chunk.len() as u64;
             // The peer's returned next_offset is NOT trusted for indexing: a buggy/hostile agent
             // could return an out-of-bounds value and panic the slice below (panic=abort => doryd
@@ -97,13 +221,14 @@ pub async fn push<T: SyncTarget>(
                     root: remote_root.to_string(),
                     path: rel.clone(),
                     hash: entry.hash.to_vec(),
-                    offset: offset as u64,
+                    offset,
                     data: chunk,
                     last,
                     mode: entry.mode,
                     mtime_ns: entry.mtime_ns,
                 })
                 .await;
+            require_not_cancelled(observer, progress)?;
             let (next_offset, committed) = match outcome {
                 Ok(outcome) => outcome,
                 Err(RemoteError::Rpc { code: 409, .. })
@@ -111,22 +236,22 @@ pub async fn push<T: SyncTarget>(
                 {
                     conflict_recoveries += 1;
                     let staged = target.staged_bytes(remote_root, rel, &entry.hash).await?;
-                    offset = if staged <= bytes.len() as u64 {
-                        staged as usize
-                    } else {
-                        0
-                    };
+                    offset = if staged <= entry.size { staged } else { 0 };
+                    progress.bytes_completed = completed_file_bytes + offset;
+                    observer.update(progress);
                     continue;
                 }
                 Err(error) => return Err(error),
             };
             stats.bytes_sent += sent;
             offset = end;
+            progress.bytes_completed = completed_file_bytes + offset;
+            observer.update(progress);
             // We never use the peer's offset as a local slice index. A committed response is the
             // one exception where it affects control flow, so require proof that the peer claims
             // the complete local length. The final request must likewise be acknowledged as a
             // complete commit; inconsistent responses are protocol decode failures, not success.
-            if committed && next_offset != bytes.len() as u64 {
+            if committed && next_offset != entry.size {
                 return Err(RemoteError::Decode);
             }
             if last && !committed {
@@ -137,12 +262,74 @@ pub async fn push<T: SyncTarget>(
             }
         }
         stats.files_sent += 1;
+        completed_file_bytes = completed_file_bytes
+            .checked_add(entry.size)
+            .ok_or(RemoteError::Decode)?;
+        progress.files_completed = stats.files_sent;
+        progress.bytes_completed = completed_file_bytes;
+        progress.current_path = None;
+        observer.update(progress);
     }
 
-    if !plan.delete.is_empty() {
+    progress.phase = PushPhase::Finalizing;
+    progress.current_path = None;
+    observer.update(progress);
+    require_not_cancelled(observer, progress)?;
+    if directory_protocol {
+        stats.files_deleted = plan.delete.len() as u64;
+        let finalized = target
+            .reconcile_tree(remote_root, &file_paths, &local.directories, true)
+            .await?;
+        require_not_cancelled(observer, progress)?;
+        if !finalized {
+            return Err(RemoteError::CapabilityUnavailable("sync-push@2"));
+        }
+    } else if !plan.delete.is_empty() {
         stats.files_deleted += target.delete(remote_root, &plan.delete).await? as u64;
+        require_not_cancelled(observer, progress)?;
     }
+
+    // The manifest is a point-in-time source authority. Re-read it after all remote mutations so a
+    // concurrently changed, truncated, or appended source cannot be reported as an exact replica.
+    // Retrying is safe: the protocol is content-addressed and resumable.
+    let root = local_root.to_path_buf();
+    let final_local = tokio::task::spawn_blocking(move || walk_tree(&root))
+        .await
+        .map_err(|e| RemoteError::Io(std::io::Error::other(e)))??;
+    if final_local != local {
+        return Err(RemoteError::SourceChanged);
+    }
+    require_not_cancelled(observer, progress)?;
+    progress.phase = PushPhase::Completed;
+    progress.files_completed = progress.files_total;
+    progress.bytes_completed = progress.bytes_total;
+    progress.current_path = None;
+    observer.update(progress);
     Ok(stats)
+}
+
+fn require_not_cancelled<O: PushObserver>(
+    observer: &O,
+    progress: &mut PushProgress,
+) -> Result<(), RemoteError> {
+    if !observer.is_cancelled() {
+        return Ok(());
+    }
+    progress.phase = PushPhase::Cancelled;
+    progress.current_path = None;
+    observer.update(progress);
+    Err(RemoteError::Cancelled)
+}
+
+fn has_empty_directory(snapshot: &TreeSnapshot) -> bool {
+    snapshot.directories.iter().any(|directory| {
+        let prefix = format!("{}/", directory.path);
+        !snapshot
+            .manifest
+            .entries
+            .iter()
+            .any(|file| file.path.starts_with(&prefix))
+    })
 }
 
 impl SyncTarget for AgentClient {
@@ -195,6 +382,40 @@ impl SyncTarget for AgentClient {
             .await?;
         Ok(resp.deleted)
     }
+
+    async fn reconcile_tree(
+        &self,
+        root: &str,
+        files: &[String],
+        directories: &[DirectoryEntry],
+        finalize: bool,
+    ) -> Result<bool, RemoteError> {
+        let info = self.info().await?;
+        let supported = info
+            .capabilities
+            .iter()
+            .any(|capability| capability.id == "sync-push" && capability.version >= 2);
+        if !supported {
+            return Ok(false);
+        }
+        AgentClient::sync_tree(
+            self,
+            SyncTreeRequest {
+                root: root.to_string(),
+                files: files.to_vec(),
+                directories: directories
+                    .iter()
+                    .map(|directory| SyncDirectoryEntry {
+                        path: directory.path.clone(),
+                        mode: directory.mode,
+                    })
+                    .collect(),
+                finalize,
+            },
+        )
+        .await?;
+        Ok(true)
+    }
 }
 
 const _: () = assert!(HASH_LEN == 32);
@@ -222,6 +443,9 @@ mod tests {
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
             std::fs::write(p, contents).unwrap();
         }
+        fn mkdir(&self, rel: &str) {
+            std::fs::create_dir_all(self.root.join(rel)).unwrap();
+        }
     }
     impl Drop for TempTree {
         fn drop(&mut self) {
@@ -233,6 +457,7 @@ mod tests {
     struct Recorded {
         chunks: Vec<SyncPutChunkRequest>,
         deleted: Vec<String>,
+        tree_calls: Vec<(Vec<String>, Vec<DirectoryEntry>, bool)>,
     }
 
     /// A fake remote that records everything, returns a preset manifest, and can pretend a file is
@@ -247,6 +472,9 @@ mod tests {
         suppress_final_commit: bool,
         conflict_once_at_offset: Option<u64>,
         conflict_fired: Mutex<bool>,
+        mutate_source_after_first_chunk: Option<(std::path::PathBuf, Vec<u8>)>,
+        source_mutation_fired: Mutex<bool>,
+        directory_protocol: bool,
         rec: Mutex<Recorded>,
     }
     impl FakeTarget {
@@ -260,6 +488,9 @@ mod tests {
                 suppress_final_commit: false,
                 conflict_once_at_offset: None,
                 conflict_fired: Mutex::new(false),
+                mutate_source_after_first_chunk: None,
+                source_mutation_fired: Mutex::new(false),
+                directory_protocol: true,
                 rec: Mutex::new(Recorded::default()),
             }
         }
@@ -290,6 +521,13 @@ mod tests {
             Ok(self.preset_staged.get(path).copied().unwrap_or(0))
         }
         async fn put_chunk(&self, req: SyncPutChunkRequest) -> Result<(u64, bool), RemoteError> {
+            if let Some((path, replacement)) = &self.mutate_source_after_first_chunk {
+                let mut fired = self.source_mutation_fired.lock().unwrap();
+                if !*fired {
+                    std::fs::write(path, replacement).unwrap();
+                    *fired = true;
+                }
+            }
             if self.conflict_once_at_offset == Some(req.offset) {
                 let mut fired = self.conflict_fired.lock().unwrap();
                 if !*fired {
@@ -317,6 +555,105 @@ mod tests {
             self.rec.lock().unwrap().deleted.extend_from_slice(paths);
             Ok(paths.len() as u32)
         }
+        async fn reconcile_tree(
+            &self,
+            _root: &str,
+            files: &[String],
+            directories: &[DirectoryEntry],
+            finalize: bool,
+        ) -> Result<bool, RemoteError> {
+            if self.directory_protocol {
+                self.rec.lock().unwrap().tree_calls.push((
+                    files.to_vec(),
+                    directories.to_vec(),
+                    finalize,
+                ));
+            }
+            Ok(self.directory_protocol)
+        }
+    }
+
+    struct RecordingObserver {
+        updates: Mutex<Vec<PushProgress>>,
+        cancel_after_bytes: Option<u64>,
+    }
+
+    impl RecordingObserver {
+        fn new(cancel_after_bytes: Option<u64>) -> Self {
+            Self {
+                updates: Mutex::new(Vec::new()),
+                cancel_after_bytes,
+            }
+        }
+    }
+
+    impl PushObserver for RecordingObserver {
+        fn update(&self, progress: &PushProgress) {
+            self.updates.lock().unwrap().push(progress.clone());
+        }
+
+        fn is_cancelled(&self) -> bool {
+            let Some(limit) = self.cancel_after_bytes else {
+                return false;
+            };
+            self.updates
+                .lock()
+                .unwrap()
+                .last()
+                .is_some_and(|progress| progress.bytes_completed >= limit)
+        }
+    }
+
+    #[tokio::test]
+    async fn push_binds_empty_directories_in_prepare_and_finalize_passes() {
+        let t = TempTree::new("empty-directories");
+        t.mkdir("project/empty/deep");
+        t.write("project/src/main.rs", b"fn main() {}");
+
+        let target = FakeTarget::new(Manifest::default());
+        let stats = push(&t.root, "/remote", &target).await.unwrap();
+        assert_eq!(stats.files_sent, 1);
+        let calls = &target.rec.lock().unwrap().tree_calls;
+        assert_eq!(calls.len(), 2);
+        assert!(!calls[0].2);
+        assert!(calls[1].2);
+        assert_eq!(calls[0].0, vec!["project/src/main.rs"]);
+        assert_eq!(
+            calls[0]
+                .1
+                .iter()
+                .map(|entry| entry.path.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "project",
+                "project/empty",
+                "project/empty/deep",
+                "project/src"
+            ]
+        );
+        assert_eq!(calls[0].0, calls[1].0);
+        assert_eq!(calls[0].1, calls[1].1);
+    }
+
+    #[tokio::test]
+    async fn v1_peer_rejects_empty_directories_but_keeps_file_only_compatibility() {
+        let with_empty = TempTree::new("v1-empty");
+        with_empty.mkdir("empty");
+        let mut target = FakeTarget::new(Manifest::default());
+        target.directory_protocol = false;
+        let error = push(&with_empty.root, "/remote", &target)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            RemoteError::CapabilityUnavailable("sync-push@2")
+        ));
+
+        let files_only = TempTree::new("v1-files");
+        files_only.write("nested/file.txt", b"compatible");
+        let stats = push(&files_only.root, "/remote", &target).await.unwrap();
+        assert_eq!(stats.files_sent, 1);
+        assert_eq!(target.assembled("nested/file.txt"), b"compatible");
     }
 
     #[tokio::test]
@@ -339,10 +676,93 @@ mod tests {
         assert!(
             rec.chunks
                 .iter()
+                .all(|chunk| chunk.data.len() <= CHUNK_BYTES),
+            "the push driver must never allocate a whole-file transport buffer"
+        );
+        assert!(
+            rec.chunks
+                .iter()
                 .rfind(|c| c.path == "dir/b.bin")
                 .unwrap()
                 .last
         );
+    }
+
+    #[tokio::test]
+    async fn observed_push_reports_absolute_bounded_progress() {
+        let t = TempTree::new("progress");
+        let big = vec![7u8; CHUNK_BYTES + 123];
+        t.write("a.txt", b"hello");
+        t.write("dir/b.bin", &big);
+
+        let target = FakeTarget::new(Manifest::default());
+        let observer = RecordingObserver::new(None);
+        let stats = push_observed(&t.root, "/remote", &target, &observer)
+            .await
+            .unwrap();
+
+        assert_eq!(stats.files_sent, 2);
+        let updates = observer.updates.lock().unwrap();
+        assert_eq!(updates.first().unwrap().phase, PushPhase::Preparing);
+        assert_eq!(updates.last().unwrap().phase, PushPhase::Completed);
+        assert_eq!(updates.last().unwrap().files_total, 2);
+        assert_eq!(updates.last().unwrap().files_completed, 2);
+        assert_eq!(updates.last().unwrap().bytes_total, (5 + big.len()) as u64);
+        assert_eq!(
+            updates.last().unwrap().bytes_completed,
+            (5 + big.len()) as u64
+        );
+        assert!(updates.iter().all(|progress| {
+            progress.files_completed <= progress.files_total
+                && progress.bytes_completed <= progress.bytes_total
+        }));
+        assert!(updates.windows(2).all(|window| {
+            window[0].files_completed <= window[1].files_completed
+                && window[0].bytes_completed <= window[1].bytes_completed
+        }));
+        assert!(updates
+            .iter()
+            .any(|progress| progress.current_path.as_deref() == Some("dir/b.bin")));
+    }
+
+    #[tokio::test]
+    async fn observed_push_cancels_between_chunks_before_finalization() {
+        let t = TempTree::new("cancel");
+        t.write("large.bin", &vec![3u8; CHUNK_BYTES * 2 + 1]);
+        let target = FakeTarget::new(Manifest::default());
+        let observer = RecordingObserver::new(Some(CHUNK_BYTES as u64));
+
+        let error = push_observed(&t.root, "/remote", &target, &observer)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, RemoteError::Cancelled));
+        assert_eq!(target.rec.lock().unwrap().chunks.len(), 1);
+        let updates = observer.updates.lock().unwrap();
+        let final_progress = updates.last().unwrap();
+        assert_eq!(final_progress.phase, PushPhase::Cancelled);
+        assert_eq!(final_progress.files_completed, 0);
+        assert_eq!(final_progress.bytes_completed, CHUNK_BYTES as u64);
+        assert_eq!(final_progress.bytes_total, (CHUNK_BYTES * 2 + 1) as u64);
+    }
+
+    #[tokio::test]
+    async fn observed_push_reports_a_terminal_protocol_failure() {
+        let t = TempTree::new("failed-progress");
+        t.write("file", b"contents");
+        let mut target = FakeTarget::new(Manifest::default());
+        target.suppress_final_commit = true;
+        let observer = RecordingObserver::new(None);
+
+        let error = push_observed(&t.root, "/remote", &target, &observer)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, RemoteError::Decode));
+        let updates = observer.updates.lock().unwrap();
+        assert_eq!(updates.last().unwrap().phase, PushPhase::Failed);
+        assert_eq!(updates.last().unwrap().current_path, None);
+        assert_eq!(updates.last().unwrap().files_completed, 0);
     }
 
     #[tokio::test]
@@ -407,7 +827,11 @@ mod tests {
             rec.chunks.iter().all(|c| c.path == "changed.txt"),
             "same.txt must not be re-sent"
         );
-        assert_eq!(rec.deleted, vec!["gone.txt".to_string()]);
+        assert!(rec.deleted.is_empty(), "v2 topology pass owns deletion");
+        assert_eq!(
+            &rec.tree_calls[0].0,
+            &["changed.txt".to_string(), "same.txt".to_string()]
+        );
     }
 
     #[tokio::test]
@@ -488,5 +912,20 @@ mod tests {
         let chunks: Vec<_> = rec.chunks.iter().filter(|c| c.path == "empty").collect();
         assert_eq!(chunks.len(), 1, "empty file is one last chunk");
         assert!(chunks[0].last && chunks[0].data.is_empty());
+    }
+
+    #[tokio::test]
+    async fn push_fails_closed_when_the_local_source_changes_mid_transfer() {
+        let t = TempTree::new("source-drift");
+        let original = vec![0x11; CHUNK_BYTES + 50];
+        let replacement = vec![0x22; CHUNK_BYTES + 50];
+        t.write("f", &original);
+
+        let mut target = FakeTarget::new(Manifest::default());
+        target.mutate_source_after_first_chunk = Some((t.root.join("f"), replacement));
+
+        let error = push(&t.root, "/remote", &target).await.unwrap_err();
+        assert!(matches!(error, RemoteError::SourceChanged));
+        assert!(*target.source_mutation_fired.lock().unwrap());
     }
 }

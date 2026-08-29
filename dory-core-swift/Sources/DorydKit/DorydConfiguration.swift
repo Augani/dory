@@ -1,7 +1,19 @@
 import CryptoKit
 import Darwin
 import DoryCore
+import DoryOperations
 import Foundation
+
+public enum DorydEnvironmentError: Error, Equatable, Sendable, CustomStringConvertible {
+    case invalidMachServiceName(String)
+
+    public var description: String {
+        switch self {
+        case let .invalidMachServiceName(value):
+            "DORYD_MACH_SERVICE is not a valid launchd Mach service name: \(value)"
+        }
+    }
+}
 
 struct DorydHostPlatform: Sendable, Equatable {
     enum Architecture: Sendable, Equatable {
@@ -64,6 +76,8 @@ struct DorydHostPlatform: Sendable, Equatable {
 }
 
 public struct DorydEnvironment: Sendable {
+    public static let defaultMachServiceName = "dev.dory.doryd"
+
     public var values: [String: String]
     public var home: String
     public var cwd: String
@@ -97,6 +111,33 @@ public struct DorydEnvironment: Sendable {
         self.cwd = cwd
         self.executablePath = executablePath
         self.hostPlatform = hostPlatform
+    }
+
+    /// Resolves the launchd endpoint independently of the daemon's state roots. A bounded,
+    /// explicit override lets physical qualification run beside the installed daemon instead of
+    /// booting production out of the user's login session.
+    public func machServiceName() throws -> String {
+        let name = values["DORYD_MACH_SERVICE"] ?? Self.defaultMachServiceName
+        let bytes = Array(name.utf8)
+        let isAlphaNumeric: (UInt8) -> Bool = { byte in
+            (UInt8(ascii: "0")...UInt8(ascii: "9")).contains(byte)
+                || (UInt8(ascii: "A")...UInt8(ascii: "Z")).contains(byte)
+                || (UInt8(ascii: "a")...UInt8(ascii: "z")).contains(byte)
+        }
+        guard !bytes.isEmpty,
+              bytes.count <= 255,
+              isAlphaNumeric(bytes[0]),
+              isAlphaNumeric(bytes[bytes.count - 1]),
+              bytes.allSatisfy({ byte in
+                  isAlphaNumeric(byte)
+                      || byte == UInt8(ascii: ".")
+                      || byte == UInt8(ascii: "-")
+                      || byte == UInt8(ascii: "_")
+              }),
+              !name.contains("..") else {
+            throw DorydEnvironmentError.invalidMachServiceName(name)
+        }
+        return name
     }
 
     public func dockerTierConfiguration() -> DockerTierConfiguration? {
@@ -225,6 +266,14 @@ public struct DorydEnvironment: Sendable {
         bool("DORYD_HOST_CLI", default: true)
     }
 
+    /// Allows an exact local candidate to create compatibility-labeled machines while live
+    /// qualification is collected for the first schema-2 catalog. This never upgrades those
+    /// machines to production authority, is off unless explicitly configured, and must not be
+    /// enabled by public release builds.
+    public var vmQualificationBootstrapEnabled: Bool {
+        bool("DORYD_VM_QUALIFICATION_BOOTSTRAP", default: false)
+    }
+
     public var hostCLIReconcileIntervalSeconds: TimeInterval {
         max(30, double("DORYD_HOST_CLI_RECONCILE_SECONDS") ?? 300)
     }
@@ -264,9 +313,12 @@ public struct DorydEnvironment: Sendable {
     }
 
     public func machineManagerConfiguration() -> MachineManagerConfiguration? {
-        guard let helper = executablePath(firstOf: ["DORYD_VMM_HELPER", "DORY_VMM_HELPER"], fallbackCandidates: helperCandidates(named: "dory-vmm")) else {
+        guard let helper = machineVMMExecutablePath(
+            firstOf: ["DORYD_VMM_HELPER", "DORY_VMM_HELPER"]
+        ) else {
             return nil
         }
+        let acceleratedDesktop = acceleratedDesktopHelperConfiguration()
         let stateDirectory: String
         if let explicit = string("DORYD_MACHINE_STATE_DIR") {
             stateDirectory = explicit
@@ -274,11 +326,25 @@ public struct DorydEnvironment: Sendable {
             guard let drive = dataDrive() else { return nil }
             stateDirectory = drive.machinesDirectory
         }
+        var baseArguments = splitArguments(string("DORYD_VMM_ARGS") ?? "")
+        if !baseArguments.contains("--gvproxy"),
+           let gvproxy = executablePath(
+            firstOf: ["DORYD_GVPROXY", "DORY_GVPROXY"],
+            fallbackCandidates: gvproxyCandidates()
+           ) {
+            baseArguments.append(contentsOf: ["--gvproxy", gvproxy])
+        }
         return MachineManagerConfiguration(
             vmmExecutablePath: helper,
+            acceleratedDesktopExecutablePath: acceleratedDesktop?.executablePath,
             stateDirectory: stateDirectory,
             runtimeDirectory: string("DORYD_MACHINE_RUNTIME_DIR") ?? "\(home)/.dory/machines",
-            baseArguments: splitArguments(string("DORYD_VMM_ARGS") ?? ""),
+            // The journal store derives `Library/Application Support/Dory/operations` from a
+            // user home. Passing a journal directory here would append that hierarchy twice.
+            lifecycleJournalHome: string("DORYD_MACHINE_LIFECYCLE_JOURNAL_DIR")
+                ?? home,
+            baseArguments: baseArguments,
+            acceleratedDesktopBaseArguments: acceleratedDesktop?.arguments ?? [],
             passMachineArguments: bool("DORYD_VMM_PASS_MACHINE_ARGS", default: true),
             logDirectory: string("DORYD_MACHINE_LOG_DIR") ?? "\(stateDirectory)/logs",
             requiresReadyHandoff: bool("DORYD_VMM_READY_HANDOFF", default: true),
@@ -287,11 +353,47 @@ public struct DorydEnvironment: Sendable {
         )
     }
 
+    private func acceleratedDesktopHelperConfiguration() -> (
+        executablePath: String,
+        arguments: [String]
+    )? {
+        guard rawHVSupported,
+              hostGuestArch == "arm64",
+              bool("DORYD_ACCELERATED_DESKTOP", default: true),
+              let helper = rawHVExecutablePath(
+                firstOf: ["DORYD_DESKTOP_HV_HELPER", "DORYD_HV_HELPER", "DORY_HV_HELPER"]
+              ),
+              let gvproxy = executablePath(
+                firstOf: ["DORYD_GVPROXY", "DORY_GVPROXY"],
+                fallbackCandidates: gvproxyCandidates()
+              ) else {
+            return nil
+        }
+        let arguments = ["desktop", "--gvproxy", gvproxy]
+            + splitArguments(string("DORYD_DESKTOP_HV_ARGS") ?? "")
+        return (helper, arguments)
+    }
+
     public func dataDriveConfiguration() throws -> DoryDataDrive {
         let explicit = string("DORYD_DATA_DRIVE") ?? string("DORY_DATA_DRIVE")
-        let selected = explicit == nil
-            ? try DoryDataDriveSelectionStore(home: home).selectedPath()
-            : nil
+        let selected: String?
+        if explicit == nil {
+            do {
+                selected = try DoryDataDriveSelectionStore(home: home).selectedPath()
+            } catch let error as DoryDataDriveSelectionError {
+                switch error {
+                case .provisioningIncomplete(let path, _):
+                    // doryd is the selected-drive lifecycle owner. Passing the recorded path into
+                    // prepareSelection lets its UUID-bound transaction finish after an interrupted
+                    // first launch; every other selection failure remains fail-closed.
+                    selected = path
+                default:
+                    throw error
+                }
+            }
+        } else {
+            selected = nil
+        }
         return try DoryDataDrive(
             home: home,
             overrideRoot: explicit ?? selected
@@ -302,13 +404,32 @@ public struct DorydEnvironment: Sendable {
         stateDirectory: String,
         forwardSocket: String
     ) -> HvProcessConfiguration? {
-        guard let helper = executablePath(firstOf: ["DORYD_HV_HELPER", "DORY_HV_HELPER"], fallbackCandidates: helperCandidates(named: "dory-hv")),
+        guard let helper = rawHVExecutablePath(firstOf: ["DORYD_HV_HELPER", "DORY_HV_HELPER"]),
               let kernel = hvKernelPath(stateDirectory: stateDirectory),
               let gvproxy = executablePath(firstOf: ["DORYD_GVPROXY", "DORY_GVPROXY"], fallbackCandidates: gvproxyCandidates()) else {
             return nil
         }
 
         let legacyEngineSocket = string("DORYD_HV_ENGINE_SOCK") ?? "\(stateDirectory)/engine.sock"
+        let reclaimPolicy = string("DORYD_ENGINE_RECLAIM_POLICY") ?? "drop-caches"
+        guard reclaimPolicy == "drop-caches" || reclaimPolicy == "senpai" else {
+            reportEngineConfigurationError(
+                "DORYD_ENGINE_RECLAIM_POLICY must be drop-caches or senpai"
+            )
+            return nil
+        }
+        let fuseRequestQueues: Int
+        if let rawFuseRequestQueues = string("DORYD_FUSE_REQUEST_QUEUES") {
+            guard let parsed = Int(rawFuseRequestQueues), (1...8).contains(parsed) else {
+                reportEngineConfigurationError(
+                    "DORYD_FUSE_REQUEST_QUEUES must be an integer from 1 through 8"
+                )
+                return nil
+            }
+            fuseRequestQueues = parsed
+        } else {
+            fuseRequestQueues = min(8, max(1, clampedCPUs()))
+        }
         var arguments = [
             "engine",
             "--engine-sock", legacyEngineSocket,
@@ -318,6 +439,8 @@ public struct DorydEnvironment: Sendable {
             "--state-dir", stateDirectory,
             "--mem-mb", String(clampedMemoryMB()),
             "--cpus", String(clampedCPUs()),
+            "--memory-reclaim", reclaimPolicy,
+            "--fuse-request-queues", String(fuseRequestQueues),
         ]
         guard let drive = dataDrive() else { return nil }
         arguments.append(contentsOf: ["--data-drive", drive.root])
@@ -407,7 +530,7 @@ public struct DorydEnvironment: Sendable {
         }
 
         let handoffSocket = "\(stateDirectory)/dory-vmm-docker-handoff.sock"
-        let cmdline = "console=hvc0 root=/dev/vda rw rootwait panic=1 dory.machine_id=docker dory.home=\(home)"
+        let cmdline = "console=hvc0 root=/dev/vda rw rootwait panic=1 dory.config=required dory.machine_id=docker dory.home=\(home)"
         var arguments = [
             "--machine-id", "docker",
             "--state-dir", stateDirectory,
@@ -424,7 +547,7 @@ public struct DorydEnvironment: Sendable {
         if let sshAuthSock = string("DORYD_SSH_AUTH_SOCK"), sshAuthSock.hasPrefix("/") {
             arguments.append(contentsOf: ["--ssh-agent-socket", sshAuthSock])
         }
-        if bool("DORYD_SHARE_HOME", default: true) {
+        if bool("DORYD_SHARE_HOME", default: false) {
             let homeShare = DoryMachineShareConfiguration(
                 tag: "home",
                 hostPath: home,
@@ -478,7 +601,7 @@ public struct DorydEnvironment: Sendable {
         // Mounted drives are part of the default Docker bind-mount contract even when sharing the
         // user's home has been disabled explicitly.
         var shares = ["volumes=/Volumes:rw:at=/Volumes:safe"]
-        if bool("DORYD_SHARE_HOME", default: true) {
+        if bool("DORYD_SHARE_HOME", default: false) {
             shares.insert("home=\(home):rw:at=\(home):safe", at: 0)
         }
         return shares
@@ -576,6 +699,66 @@ public struct DorydEnvironment: Sendable {
         ].compactMap { $0 }
     }
 
+    /// A bundled daemon has exactly one raw-HV launch authority: the executable sealed inside the
+    /// nested runner application. Environment overrides remain available to standalone developer
+    /// and headless-runtime launches, but can neither replace nor bypass the signed app graph.
+    private func rawHVExecutablePath(firstOf keys: [String]) -> String? {
+        if let bundled = bundledHVRunnerExecutablePath {
+            if let explicit = path(firstOf: keys), standardizedPath(explicit) != bundled {
+                reportEngineConfigurationError(
+                    "the bundled daemon requires DoryHVRunner.app; raw dory-hv overrides are not launch authorities"
+                )
+                return nil
+            }
+            return FileManager.default.isExecutableFile(atPath: bundled) ? bundled : nil
+        }
+        return executablePath(
+            firstOf: keys,
+            fallbackCandidates: helperCandidates(named: "dory-hv")
+        )
+    }
+
+    private var bundledHVRunnerExecutablePath: String? {
+        guard let bundleHelpersDirectory else { return nil }
+        return standardizedPath(
+            URL(fileURLWithPath: bundleHelpersDirectory)
+                .appendingPathComponent("DoryHVRunner.app/Contents/MacOS/dory-hv")
+                .path
+        )
+    }
+
+    /// A bundled daemon launches desktop VMMs from the signed nested application so macOS TCC
+    /// attributes microphone access to Dory Desktop. Flat helpers remain valid only for standalone
+    /// SwiftPM development and tests where there is no enclosing application bundle.
+    private func machineVMMExecutablePath(firstOf keys: [String]) -> String? {
+        if let bundled = bundledVMMExecutablePath {
+            if let explicit = path(firstOf: keys), standardizedPath(explicit) != bundled {
+                reportEngineConfigurationError(
+                    "the bundled daemon requires DoryVMM.app; flat dory-vmm overrides are not desktop launch authorities"
+                )
+                return nil
+            }
+            return FileManager.default.isExecutableFile(atPath: bundled) ? bundled : nil
+        }
+        return executablePath(
+            firstOf: keys,
+            fallbackCandidates: helperCandidates(named: "dory-vmm")
+        )
+    }
+
+    private var bundledVMMExecutablePath: String? {
+        guard let bundleHelpersDirectory else { return nil }
+        return standardizedPath(
+            URL(fileURLWithPath: bundleHelpersDirectory)
+                .appendingPathComponent("DoryVMM.app/Contents/MacOS/dory-vmm")
+                .path
+        )
+    }
+
+    private func standardizedPath(_ path: String) -> String {
+        URL(fileURLWithPath: path).standardizedFileURL.path
+    }
+
     private func gvproxyCandidates() -> [String] {
         [
             bundleHelpersDirectory.map { "\($0)/gvproxy" },
@@ -631,13 +814,18 @@ public struct DorydEnvironment: Sendable {
     private var bundleContentsDirectory: String? {
         guard !executablePath.isEmpty else { return nil }
         let executableURL = URL(fileURLWithPath: executablePath)
-        let contentsURL = executableURL
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
+        let helpersURL = executableURL.deletingLastPathComponent()
+        let contentsURL = helpersURL.deletingLastPathComponent()
+        let applicationURL = contentsURL.deletingLastPathComponent()
+        guard helpersURL.lastPathComponent == "Helpers",
+              contentsURL.lastPathComponent == "Contents",
+              applicationURL.pathExtension == "app" else {
+            return nil
+        }
         guard FileManager.default.fileExists(atPath: contentsURL.path) else {
             return nil
         }
-        return contentsURL.path
+        return contentsURL.standardizedFileURL.path
     }
 
     private var bundleResourcesDirectory: String? {
@@ -661,7 +849,9 @@ public struct DorydEnvironment: Sendable {
     }
 
     private func clampedMemoryMB() -> Int {
-        max(256, int("DORYD_MEMORY_MB") ?? Self.hostScaledMemoryMB())
+        DoryEngineMemoryPolicy.clampedMemoryMB(
+            int("DORYD_MEMORY_MB") ?? Self.hostScaledMemoryMB()
+        )
     }
 
     /// Keep standalone doryd launches on the same elastic host-scaled defaults as Dory.app's
@@ -677,8 +867,7 @@ public struct DorydEnvironment: Sendable {
     }
 
     public static func hostScaledMemoryMB(physicalMemory: UInt64 = ProcessInfo.processInfo.physicalMemory) -> Int {
-        let hostMB = Int(clamping: physicalMemory / (1024 * 1024))
-        return max(2048, min(hostMB / 2, hostMB - 4096))
+        DoryEngineMemoryPolicy.hostScaledMemoryMB(physicalMemory: physicalMemory)
     }
 
     private func clampedDockerPort() -> UInt32 {

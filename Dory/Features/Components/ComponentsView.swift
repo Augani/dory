@@ -10,6 +10,7 @@ struct ComponentsView: View {
     @State private var catalogData = Data()
     @State private var statuses: [DoryComponentStatus] = []
     @State private var progress: [DoryComponentID: DoryComponentProgress] = [:]
+    @State private var activeOperationIDs: [DoryComponentID: UUID] = [:]
     @State private var busy: Set<DoryComponentID> = []
     @State private var pendingRemoval: DoryComponentID?
     @State private var errorMessage: String?
@@ -70,7 +71,11 @@ struct ComponentsView: View {
             }
             dataSafetyPanel
         }
-        .frame(maxWidth: 820, alignment: .leading)
+        .frame(
+            maxWidth: embedded ? 820 : DoryPageGrid.componentContentMaximumWidth,
+            alignment: .leading
+        )
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var header: some View {
@@ -99,9 +104,12 @@ struct ComponentsView: View {
 
     private var componentGrid: some View {
         LazyVGrid(
-            columns: [GridItem(.adaptive(minimum: embedded ? 300 : 340, maximum: 410), spacing: 12)],
+            columns: DoryPageGrid.columns(
+                minimum: embedded ? 300 : DoryPageGrid.componentCardMinimumWidth,
+                maximum: embedded ? 410 : DoryPageGrid.componentCardMaximumWidth
+            ),
             alignment: .leading,
-            spacing: 12
+            spacing: DoryPageGrid.spacing
         ) {
             ForEach(statuses) { status in
                 componentCard(status)
@@ -223,6 +231,8 @@ struct ComponentsView: View {
                     .tint(p.accent)
                     Text("\(currentProgress.phase.rawValue.capitalized) · \(formatted(currentProgress.completedBytes)) of \(formatted(currentProgress.totalBytes))")
                         .font(.system(size: 10.5)).foregroundStyle(p.text3)
+                    Text("Operation \(currentProgress.operationID.uuidString.lowercased().prefix(8))…")
+                        .font(.system(size: 9.5, design: .monospaced)).foregroundStyle(p.text3)
                 }
             }
 
@@ -263,6 +273,11 @@ struct ComponentsView: View {
             Spacer(minLength: 0)
             Text(status.installedVersion.map { "v\($0)" } ?? "v\(status.availableVersion)")
                 .font(.system(size: 10.5, weight: .medium)).foregroundStyle(p.text3)
+            if let operationID = status.installationOperationID {
+                Text("op \(operationID.prefix(8))…")
+                    .font(.system(size: 9.5, design: .monospaced)).foregroundStyle(p.text3)
+                    .help("Installed by component operation \(operationID)")
+            }
         }
     }
 
@@ -300,7 +315,7 @@ struct ComponentsView: View {
         case .notInstalled: p.text3
         }
         let label: String = switch state {
-        case .bundled: "Core"
+        case .bundled: "Included"
         case .installed: "Installed"
         case .updateAvailable: "Update"
         case .invalid: "Repair"
@@ -399,7 +414,9 @@ struct ComponentsView: View {
             catalogData = loadedData
             statuses = store.list(
                 catalog: loadedCatalog,
-                catalogDigest: DoryComponentCatalogVerifier.digest(loadedData)
+                catalogDigest: DoryComponentCatalogVerifier.digest(loadedData),
+                bundledComponents: AppInfo.bundledComponents,
+                bundledVersion: AppInfo.version
             )
             usingCachedCatalog = cached
             errorMessage = nil
@@ -410,20 +427,27 @@ struct ComponentsView: View {
 
     @MainActor @discardableResult
     private func install(_ id: DoryComponentID, showSuccess: Bool = true) async -> Bool {
+        if AppInfo.bundledComponents.contains(id) { return true }
         guard let catalog, !catalogData.isEmpty else { return false }
-        var operationIDs: Set<DoryComponentID> = [id]
+        let operationID = UUID()
+        var affectedComponents: Set<DoryComponentID> = [id]
         busy.insert(id)
+        activeOperationIDs[id] = operationID
         errorMessage = nil
         defer {
-            for operationID in operationIDs {
-                busy.remove(operationID)
-                progress[operationID] = nil
+            for componentID in affectedComponents {
+                busy.remove(componentID)
+                if activeOperationIDs[componentID] == operationID {
+                    activeOperationIDs[componentID] = nil
+                    progress[componentID] = nil
+                }
             }
         }
         do {
             let store = try DoryComponentStore.selected()
             let installer = DoryComponentInstaller(store: store)
             let digest = DoryComponentCatalogVerifier.digest(catalogData)
+            var activatedComponents: Set<DoryComponentID> = [id]
             for release in try installationOrder(id, catalog: catalog) {
                 if let current = try store.installedComponent(release.id),
                    current.version == release.version,
@@ -431,17 +455,44 @@ struct ComponentsView: View {
                    (try? store.verify(release.id)) != nil {
                     continue
                 }
-                operationIDs.insert(release.id)
+                affectedComponents.insert(release.id)
                 busy.insert(release.id)
-                _ = try await installer.install(release, catalogData: catalogData) { update in
-                    Task { @MainActor in self.progress[release.id] = update }
+                activeOperationIDs[release.id] = operationID
+                _ = try await installer.install(
+                    release,
+                    catalogData: catalogData,
+                    operationID: operationID
+                ) { update in
+                    Task { @MainActor in
+                        guard self.activeOperationIDs[release.id] == update.operationID else {
+                            return
+                        }
+                        self.progress[release.id] = update
+                    }
                 }
+                activatedComponents.insert(release.id)
                 busy.remove(release.id)
             }
-            statuses = store.list(catalog: catalog, catalogDigest: digest)
+            let desktopUpdates = try await appStore.updateManagedDesktops(
+                affectedBy: activatedComponents,
+                operationID: operationID
+            )
+            statuses = store.list(
+                catalog: catalog,
+                catalogDigest: digest,
+                bundledComponents: AppInfo.bundledComponents,
+                bundledVersion: AppInfo.version
+            )
             HostDockerCLI.reconcileOptionalTools(enabled: appStore.routeDockerCLI)
             if showSuccess {
-                appStore.showSettingsSuccess("\(displayName(id)) is installed and verified.")
+                let updated = desktopUpdates.isEmpty
+                    ? ""
+                    : " Updated " + String(desktopUpdates.count) + " existing desktop"
+                        + (desktopUpdates.count == 1 ? "." : "s.")
+                appStore.showSettingsSuccess(
+                    "\(displayName(id)) is installed and verified (operation "
+                        + "\(operationID.uuidString.lowercased().prefix(8))…)." + updated
+                )
             }
             return true
         } catch {
@@ -471,7 +522,9 @@ struct ComponentsView: View {
             if let catalog {
                 statuses = store.list(
                     catalog: catalog,
-                    catalogDigest: DoryComponentCatalogVerifier.digest(catalogData)
+                    catalogDigest: DoryComponentCatalogVerifier.digest(catalogData),
+                    bundledComponents: AppInfo.bundledComponents,
+                    bundledVersion: AppInfo.version
                 )
             }
             appStore.showSettingsSuccess("\(displayName(id)) passed verification.")
@@ -489,7 +542,9 @@ struct ComponentsView: View {
             try store.remove(id, catalog: catalog)
             statuses = store.list(
                 catalog: catalog,
-                catalogDigest: DoryComponentCatalogVerifier.digest(catalogData)
+                catalogDigest: DoryComponentCatalogVerifier.digest(catalogData),
+                bundledComponents: AppInfo.bundledComponents,
+                bundledVersion: AppInfo.version
             )
             HostDockerCLI.reconcileOptionalTools(enabled: appStore.routeDockerCLI)
             appStore.showSettingsSuccess("Removed \(displayName(id)). Your workload data was preserved.")
@@ -505,7 +560,9 @@ struct ComponentsView: View {
         var visited: Set<DoryComponentID> = []
         var ordered: [DoryComponentRelease] = []
         func append(_ current: DoryComponentID) throws {
-            guard current != .dockerCore, !visited.contains(current) else { return }
+            guard !AppInfo.bundledComponents.contains(current), !visited.contains(current) else {
+                return
+            }
             guard let release = catalog.component(current) else {
                 throw DoryComponentError.unknownComponent(current.rawValue)
             }

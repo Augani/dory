@@ -6,8 +6,8 @@
 public enum GuestMemoryReclaimBootCommand {
     private static let quietGate = "set -- $(awk '/^cpu /{t=0; for(i=2;i<=NF;i++) t+=$i; print t,$5; exit}' /proc/stat); total=${1:-0}; idle=${2:-0}; quiet=0; if [ ${prev_total:-0} -gt 0 ]; then dt=$((total-prev_total)); di=$((idle-prev_idle)); [ $dt -gt 0 ] && [ $((100 - (di * 100 / dt))) -le 8 ] && quiet=1; fi; prev_total=$total; prev_idle=$idle; running=$(docker -H unix:///var/run/docker.sock ps -q 2>/dev/null | wc -l | tr -d ' '); if [ ${running:-0} -gt 0 ] && [ $quiet -eq 1 ]; then quiet_running_ticks=$((quiet_running_ticks+1)); else quiet_running_ticks=0; fi"
 
-    /// Emits the idle-reclaim daemon. `experimentalSenpai` must only be true for the explicit
-    /// `DORY_ENGINE_RECLAIM_MODE=senpai` opt-in; false preserves the established drop-caches path.
+    /// Emits the idle-reclaim daemon. `experimentalSenpai` must only be true for the typed
+    /// `senpai` launch policy; false preserves the established drop-caches path.
     public static func idleLoop(
         experimentalSenpai: Bool,
         pressureMemoryPath: String = "/proc/pressure/memory"

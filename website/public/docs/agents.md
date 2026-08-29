@@ -40,6 +40,10 @@ servers and should not be described as an MCP catalog or gateway.
 | `dory.engine_status` | Inspect engine state | Available |
 | `dory.machine_list` | List persistent Linux machines | Available |
 | `dory.machine_exec` | Execute a structured command in a machine | Blocked |
+| `dory.sandbox_capabilities` | Query headless Sandbox profiles, batteries, packages, and prepared state | Available |
+| `dory.sandbox_templates` | List or inspect reusable Agent Sandbox templates | Available |
+| `dory.sandbox_current` | Inspect the remembered Agent Sandbox | Available |
+| `dory.sandbox_use` | Remember a retained Agent Sandbox for future work | Blocked |
 | `dory.sandbox_run` | Run a bounded command in a disposable or retained VM | Blocked |
 | `dory.sandbox_create` | Create an Agent-ready named sandbox | Blocked |
 | `dory.sandbox_exec` | Run a command in a named sandbox | Blocked |
@@ -65,7 +69,7 @@ servers and should not be described as an MCP catalog or gateway.
 dory machine exec dev --json -- /bin/sh -lc 'uname -a'
 ```
 
-The result uses `dev.dory.machine.exec v1` and includes command status and bounded output. Inspect each machine before choosing commands: desktop machines use the selected Debian, Ubuntu, or Kali profile with systemd, Xfce, Bash, and a configured user, while headless machines use Alpine with an initial root `/bin/sh` login.
+The result uses `dev.dory.machine.exec v1` and includes command status and bounded output. Inspect each machine before choosing commands: Ubuntu desktop machines use GNOME, Debian and Kali desktop machines use Xfce, and all three use systemd, Bash, and a configured user; headless machines use Alpine with an initial root `/bin/sh` login.
 
 Agents may inspect verified local backup schedules without changing them:
 
@@ -77,6 +81,12 @@ Scheduling, run-now, and removal mutate daemon-owned backup state and require ex
 These are local verified recovery bundles, not managed offsite/S3 backups.
 
 ## Supported sandbox runs
+
+Dory deliberately separates three Linux products:
+
+- **Linux Desktops** are interactive graphical VMs for GUI applications.
+- **Linux Servers** are general-purpose, user-managed headless VMs for terminals and services.
+- **Agent Sandboxes** are policy-enforced headless VMs for coding agents and Linux CLI applications. They have no desktop or display.
 
 ```sh
 dory sandbox run --json --network none --rollback -- /bin/sh -lc 'uname -a'
@@ -117,9 +127,33 @@ dory sandbox kill my-project
 ```
 
 Creation installs a core toolkit with Bash, build tools, Git, curl, jq, ripgrep, Python, SSH tools,
-and common archive utilities. When `--workspace` is present and no `--tool` is supplied, Dory
+tmux, and common archive utilities. Query the exact installed contract instead of guessing:
+
+```sh
+dory sandbox capabilities --json
+dory sandbox capabilities my-project --json
+```
+
+When `--workspace` is present and neither a profile nor `--tool` is supplied, Dory
 detects Node, Python, Go, Rust, Java, and Ruby project files. Repeat `--tool` to choose toolchains
-explicitly. Other supported profiles are `devops`, `docker-host`, and `k8s-lab`.
+explicitly, or select `core`, `web`, `data`, `systems`, `jvm`, `ruby`, `devops`, or `polyglot` with
+`--profile`.
+
+Agents can inspect and author strict `dev.dory.sandbox.template v1` JSON files. Templates may select
+a profile, tool recipes, scoped mounts, network grants, SSH-agent access, TTL, and resource limits;
+they cannot contain secret values or inline shell commands:
+
+```sh
+dory sandbox template list --json
+dory sandbox template show coding-agent --json
+dory sandbox template validate ./my-agent.json --json
+dory sandbox create my-project --template ./my-agent.json --workspace .
+```
+
+Use `--setup FILE` for a one-time UTF-8 provisioning script. Dory validates it, applies the Sandbox
+network and mount policy first, runs it as the non-root workload identity, and then captures the
+reset baseline. Only the filename and SHA-256 execution receipt persist; script contents and secret
+values do not enter the manifest.
 
 The workspace is the only automatic host share and is mounted read-write at `/workspace`. Tools,
 package caches, and other guest changes persist between `sandbox exec` calls. Network, secrets,
@@ -129,6 +163,23 @@ inherits the sandbox's last network policy unless the call supplies another poli
 `sandbox reset` restores the prepared tools and clean guest state. It does not roll back or modify
 the mounted host workspace. Agent-ready root filesystems have 8 GB of sparse logical capacity and
 consume Mac storage only as blocks are written.
+
+## Persistent agent terminals
+
+Named Agent Sandboxes remember terminal state through tmux inside the VM:
+
+```sh
+dory sandbox use my-project
+dory sandbox current --json
+dory sandbox attach
+# detach or disconnect; processes keep running in the Sandbox
+dory sandbox switch another-project
+```
+
+`attach` starts a stopped Sandbox if needed, reapplies and verifies its persisted policy and mounts,
+then enters the tmux session as the non-root Sandbox identity. Disconnecting Dory's host PTY only
+disconnects the tmux client; the in-VM tmux server and the agent's work continue. The remembered
+selection survives new terminal sessions. Set `DORY_SANDBOX_NAME` for a per-process override.
 
 Run `dory sandbox --help` to see every CLI option. Local agents can discover the same contract with
 `dory agent guide --json` and use every lifecycle operation through `dory mcp serve`.

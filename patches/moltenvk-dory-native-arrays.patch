@@ -1,0 +1,10 @@
+diff --git a/MoltenVKShaderConverter/MoltenVKShaderConverter/SPIRVToMSLConverter.cpp b/MoltenVKShaderConverter/MoltenVKShaderConverter/SPIRVToMSLConverter.cpp
+index b52730b2..59915f75 100644
+--- a/MoltenVKShaderConverter/MoltenVKShaderConverter/SPIRVToMSLConverter.cpp
++++ b/MoltenVKShaderConverter/MoltenVKShaderConverter/SPIRVToMSLConverter.cpp
+@@ -91,2 +91,5 @@ MVK_PUBLIC_SYMBOL SPIRVToMSLConversionOptions::SPIRVToMSLConversionOptions() {
+ 	mslOptions.pad_fragment_output_components = true;
++	// Preserve fixed-size SPIR-V array types across structure extraction and helper calls.
++	// Templated wrapper arrays can otherwise produce a wrapper/native-array type mismatch in MSL.
++	mslOptions.force_native_arrays = true;
+ }

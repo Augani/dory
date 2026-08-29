@@ -11,10 +11,13 @@ use std::time::Duration;
 
 use dory_pb::agent::{
     self, agent_request::Method, agent_response::Result as Res, AgentRequest, AgentResponse,
-    ClockSyncRequest, ExecEnv, ExecRequest, ExecResponse, InfoRequest, PortsWatchRequest,
+    ClockSyncRequest, ExecEnv, ExecRequest, ExecResponse, InfoRequest, LifecycleReceiptRequest,
+    LifecycleReceiptResponse, PortsWatchRequest, SnapshotQuiesceRequest, SnapshotQuiesceResponse,
     SyncDeleteRequest, SyncDeleteResponse, SyncFileStatusRequest, SyncFileStatusResponse,
-    SyncManifestRequest, SyncManifestResponse, SyncPutChunkRequest, SyncPutChunkResponse,
-    TelemetryRequest, TelemetryResponse,
+    SyncGetChunkRequest, SyncGetChunkResponse, SyncManifestRequest, SyncManifestResponse,
+    SyncPutChunkRequest, SyncPutChunkResponse, SyncReadTreeRequest, SyncReadTreeResponse,
+    TelemetryRequest, TelemetryResponse, UsbVhciAttachRequest, UsbVhciAttachResponse,
+    UsbVhciDetachRequest, UsbVhciDetachResponse, VirtiofsMountRequest, VirtiofsMountResponse,
 };
 use dory_proto::handshake::{handshake, Hello};
 use dory_proto::mux::Mux;
@@ -126,6 +129,70 @@ impl AgentClient {
         }
     }
 
+    pub async fn snapshot_quiesce(
+        &self,
+        action: agent::snapshot_quiesce_request::Action,
+        receipt_id: String,
+    ) -> Result<SnapshotQuiesceResponse, RemoteError> {
+        match self
+            .call(Method::SnapshotQuiesce(SnapshotQuiesceRequest {
+                action: action as i32,
+                receipt_id,
+            }))
+            .await?
+        {
+            Res::SnapshotQuiesce(r) => Ok(r),
+            _ => Err(RemoteError::UnexpectedVariant),
+        }
+    }
+
+    pub async fn lifecycle_receipt(
+        &self,
+        action: agent::lifecycle_receipt_request::Action,
+        operation_id: String,
+    ) -> Result<LifecycleReceiptResponse, RemoteError> {
+        match self
+            .call(Method::LifecycleReceipt(LifecycleReceiptRequest {
+                action: action as i32,
+                operation_id,
+            }))
+            .await?
+        {
+            Res::LifecycleReceipt(receipt) => Ok(receipt),
+            _ => Err(RemoteError::UnexpectedVariant),
+        }
+    }
+
+    pub async fn usb_vhci_attach(
+        &self,
+        request: UsbVhciAttachRequest,
+    ) -> Result<UsbVhciAttachResponse, RemoteError> {
+        match self.call(Method::UsbVhciAttach(request)).await? {
+            Res::UsbVhciAttach(response) => Ok(response),
+            _ => Err(RemoteError::UnexpectedVariant),
+        }
+    }
+
+    pub async fn usb_vhci_detach(
+        &self,
+        request: UsbVhciDetachRequest,
+    ) -> Result<UsbVhciDetachResponse, RemoteError> {
+        match self.call(Method::UsbVhciDetach(request)).await? {
+            Res::UsbVhciDetach(response) => Ok(response),
+            _ => Err(RemoteError::UnexpectedVariant),
+        }
+    }
+
+    pub async fn virtiofs_mount(
+        &self,
+        request: VirtiofsMountRequest,
+    ) -> Result<VirtiofsMountResponse, RemoteError> {
+        match self.call(Method::VirtiofsMount(request)).await? {
+            Res::VirtiofsMount(response) => Ok(response),
+            _ => Err(RemoteError::UnexpectedVariant),
+        }
+    }
+
     pub async fn exec(
         &self,
         argv: Vec<String>,
@@ -133,6 +200,19 @@ impl AgentClient {
         env: Vec<(String, String)>,
         timeout_ms: u64,
         output_limit_bytes: u64,
+    ) -> Result<ExecResponse, RemoteError> {
+        self.exec_with_input(argv, cwd, env, timeout_ms, output_limit_bytes, Vec::new())
+            .await
+    }
+
+    pub async fn exec_with_input(
+        &self,
+        argv: Vec<String>,
+        cwd: String,
+        env: Vec<(String, String)>,
+        timeout_ms: u64,
+        output_limit_bytes: u64,
+        stdin: Vec<u8>,
     ) -> Result<ExecResponse, RemoteError> {
         let env = env
             .into_iter()
@@ -152,6 +232,7 @@ impl AgentClient {
                     env,
                     timeout_ms,
                     output_limit_bytes,
+                    stdin,
                 }),
                 server_timeout + EXEC_GRACE,
             )
@@ -214,6 +295,45 @@ impl AgentClient {
             _ => Err(RemoteError::UnexpectedVariant),
         }
     }
+
+    pub async fn sync_tree(
+        &self,
+        req: dory_pb::agent::SyncTreeRequest,
+    ) -> Result<dory_pb::agent::SyncTreeResponse, RemoteError> {
+        match self
+            .call_with_deadline(Method::SyncTree(req), SYNC_IO_DEADLINE)
+            .await?
+        {
+            Res::SyncTree(r) => Ok(r),
+            _ => Err(RemoteError::UnexpectedVariant),
+        }
+    }
+
+    pub async fn sync_read_tree(
+        &self,
+        req: SyncReadTreeRequest,
+    ) -> Result<SyncReadTreeResponse, RemoteError> {
+        match self
+            .call_with_deadline(Method::SyncReadTree(req), SYNC_MANIFEST_DEADLINE)
+            .await?
+        {
+            Res::SyncReadTree(response) => Ok(response),
+            _ => Err(RemoteError::UnexpectedVariant),
+        }
+    }
+
+    pub async fn sync_get_chunk(
+        &self,
+        req: SyncGetChunkRequest,
+    ) -> Result<SyncGetChunkResponse, RemoteError> {
+        match self
+            .call_with_deadline(Method::SyncGetChunk(req), SYNC_IO_DEADLINE)
+            .await?
+        {
+            Res::SyncGetChunk(response) => Ok(response),
+            _ => Err(RemoteError::UnexpectedVariant),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -252,6 +372,10 @@ mod tests {
                 kernel: "Linux fake 6.12".into(),
                 agent_build: "fake-agent".into(),
                 uptime_secs: 42,
+                capabilities: vec![agent::AgentCapability {
+                    id: "exec".into(),
+                    version: 1,
+                }],
             }),
             Some(Method::ClockSync(_)) => Res::ClockSync(agent::ClockSyncResponse { synced: true }),
             Some(Method::PortsWatch(_)) => Res::PortsWatch(agent::PortsWatchResponse::default()),
@@ -263,6 +387,61 @@ mod tests {
                 stdout_truncated: false,
                 stderr_truncated: false,
             }),
+            Some(Method::LifecycleReceipt(request)) => {
+                Res::LifecycleReceipt(agent::LifecycleReceiptResponse {
+                    acknowledged: true,
+                    action: request.action,
+                    operation_id: request.operation_id,
+                })
+            }
+            Some(Method::UsbVhciAttach(request)) => {
+                Res::UsbVhciAttach(agent::UsbVhciAttachResponse {
+                    attached: true,
+                    bus_id: request.bus_id,
+                    port: request.port,
+                    device_id: request.device_id,
+                })
+            }
+            Some(Method::UsbVhciDetach(request)) => {
+                Res::UsbVhciDetach(agent::UsbVhciDetachResponse {
+                    detached: true,
+                    bus_id: request.bus_id,
+                    port: request.port,
+                })
+            }
+            Some(Method::VirtiofsMount(request)) => {
+                Res::VirtiofsMount(agent::VirtiofsMountResponse {
+                    mounted: true,
+                    already_mounted: false,
+                    tag: request.tag,
+                    mount_path: request.mount_path,
+                    read_only: request.read_only,
+                    mount_id: 77,
+                })
+            }
+            Some(Method::SyncReadTree(_)) => Res::SyncReadTree(agent::SyncReadTreeResponse {
+                files: vec![agent::SyncFileEntry {
+                    path: "report.txt".into(),
+                    size: 6,
+                    mtime_ns: 1,
+                    mode: 0o644,
+                    hash: vec![7; dory_sync::HASH_LEN],
+                }],
+                directories: vec![agent::SyncDirectoryEntry {
+                    path: "empty".into(),
+                    mode: 0o755,
+                }],
+            }),
+            Some(Method::SyncGetChunk(request)) => {
+                let data = b"report";
+                let start = request.offset as usize;
+                let end = (start + request.max_bytes as usize).min(data.len());
+                Res::SyncGetChunk(agent::SyncGetChunkResponse {
+                    data: data[start..end].to_vec(),
+                    next_offset: end as u64,
+                    eof: end == data.len(),
+                })
+            }
             _ => Res::Error(agent::RpcError {
                 code: 400,
                 message: "unsupported in this fake".into(),
@@ -285,6 +464,9 @@ mod tests {
         let info = client.info().await.unwrap();
         assert_eq!(info.proto_version, dory_proto::handshake::PROTO_VERSION);
         assert_eq!(info.agent_build, "fake-agent");
+        assert_eq!(info.capabilities.len(), 1);
+        assert_eq!(info.capabilities[0].id, "exec");
+        assert_eq!(info.capabilities[0].version, 1);
         assert_eq!(info.uptime_secs, 42);
 
         let clock = client.clock_sync(1_700_000_000_000_000_000).await.unwrap();
@@ -302,6 +484,87 @@ mod tests {
             .unwrap();
         assert_eq!(exec.exit_code, 0);
         assert_eq!(exec.stdout, b"exec-ok");
+
+        let operation_id = "12345678-1234-4234-8234-123456789abc";
+        let receipt = client
+            .lifecycle_receipt(
+                agent::lifecycle_receipt_request::Action::PrepareStop,
+                operation_id.into(),
+            )
+            .await
+            .unwrap();
+        assert!(receipt.acknowledged);
+        assert_eq!(
+            receipt.action,
+            agent::lifecycle_receipt_request::Action::PrepareStop as i32
+        );
+        assert_eq!(receipt.operation_id, operation_id);
+
+        let attached = client
+            .usb_vhci_attach(UsbVhciAttachRequest {
+                bus_id: "3-2".into(),
+                port: 1,
+                vsock_port: dory_proto::channels::PORT_USBIP,
+                device_id: (3 << 16) | 2,
+                speed: 3,
+            })
+            .await
+            .unwrap();
+        assert!(attached.attached);
+        assert_eq!(attached.bus_id, "3-2");
+        assert_eq!(attached.device_id, (3 << 16) | 2);
+
+        let detached = client
+            .usb_vhci_detach(UsbVhciDetachRequest {
+                bus_id: "3-2".into(),
+                port: 1,
+            })
+            .await
+            .unwrap();
+        assert!(detached.detached);
+        assert_eq!(detached.bus_id, "3-2");
+
+        let mounted = client
+            .virtiofs_mount(VirtiofsMountRequest {
+                tag: "workspace".into(),
+                mount_path: "/mnt/dory/workspace".into(),
+                read_only: true,
+            })
+            .await
+            .unwrap();
+        assert!(mounted.mounted);
+        assert!(!mounted.already_mounted);
+        assert_eq!(mounted.tag, "workspace");
+        assert_eq!(mounted.mount_path, "/mnt/dory/workspace");
+        assert!(mounted.read_only);
+        assert_eq!(mounted.mount_id, 77);
+
+        let tree = client
+            .sync_read_tree(SyncReadTreeRequest {
+                root: "/home/dory/Downloads".into(),
+                max_files: 10,
+                max_directories: 10,
+                max_bytes: 1024,
+            })
+            .await
+            .unwrap();
+        assert_eq!(tree.files.len(), 1);
+        assert_eq!(tree.files[0].path, "report.txt");
+        assert_eq!(tree.directories[0].path, "empty");
+
+        let chunk = client
+            .sync_get_chunk(SyncGetChunkRequest {
+                root: "/home/dory/Downloads".into(),
+                path: "report.txt".into(),
+                offset: 2,
+                max_bytes: 2,
+                expected_size: 6,
+            })
+            .await
+            .unwrap();
+        assert_eq!(chunk.data, b"po");
+        assert_eq!(chunk.next_offset, 4);
+        assert!(!chunk.eof);
     }
 
     #[tokio::test]

@@ -1,0 +1,624 @@
+{
+  "architecture": "arm64",
+  "artifactProfiles": {
+    "rendererBundle": {
+      "angleMetal": [
+        "XPCServices/DoryRendererWorker.xpc/Contents/Frameworks/libEGL.dylib",
+        "XPCServices/DoryRendererWorker.xpc/Contents/Frameworks/libGLESv2.dylib"
+      ],
+      "rendererWorker": [
+        "XPCServices/DoryRendererWorker.xpc/Contents/MacOS/DoryRendererWorker"
+      ]
+    },
+    "rendererQualificationEvidence": {
+      "qualification": [
+        "Resources/renderer-bootstrap-qualification.json"
+      ]
+    },
+    "rendererReleaseQualificationEvidence": {
+      "qualification": [
+        "Resources/renderer-bootstrap-qualification.json"
+      ],
+      "releaseSignature": [
+        "Resources/renderer-bootstrap-qualification.json.sig"
+      ]
+    },
+    "staticDependencies": {
+      "angleHeaders": [
+        "include/ANGLE/EGL/egl.h",
+        "include/ANGLE/EGL/eglext.h",
+        "include/ANGLE/EGL/eglplatform.h",
+        "include/ANGLE/KHR/khrplatform.h"
+      ],
+      "angleMetal": [
+        "Frameworks/libEGL.dylib",
+        "Frameworks/libGLESv2.dylib"
+      ],
+      "libepoxy": [
+        "include/epoxy/common.h",
+        "include/epoxy/egl.h",
+        "include/epoxy/egl_angle_ext_generated.h",
+        "include/epoxy/egl_generated.h",
+        "include/epoxy/gl.h",
+        "include/epoxy/gl_generated.h",
+        "lib/libepoxy.a"
+      ],
+      "moltenVK": [
+        "lib/libMoltenVK.a"
+      ]
+    },
+    "staticLinkClosure": {
+      "angleHeaders": [
+        "include/ANGLE/EGL/egl.h",
+        "include/ANGLE/EGL/eglext.h",
+        "include/ANGLE/EGL/eglplatform.h",
+        "include/ANGLE/KHR/khrplatform.h"
+      ],
+      "linkContract": [
+        "renderer-static-link.json"
+      ],
+      "angleMetal": [
+        "Frameworks/libEGL.dylib",
+        "Frameworks/libGLESv2.dylib"
+      ],
+      "libepoxy": [
+        "lib/libepoxy.a"
+      ],
+      "libepoxyHeaders": [
+        "include/epoxy/common.h",
+        "include/epoxy/egl.h",
+        "include/epoxy/egl_angle_ext_generated.h",
+        "include/epoxy/egl_generated.h",
+        "include/epoxy/gl.h",
+        "include/epoxy/gl_generated.h"
+      ],
+      "moltenVK": [
+        "lib/libMoltenVK.a"
+      ],
+      "virglrenderer": [
+        "lib/libvirglrenderer.a"
+      ]
+    }
+  },
+  "dependencyBuildPolicy": {
+    "compatibilityPatches": [
+      {
+        "path": "patches/angle-shaderlang-trivial-copy-contract-backport.patch",
+        "resultBlob": "c2b52771aa71976133988ea026990357567733ca",
+        "sha256": "cf8b52e104dbc931efb064994c3b41df362b02e7921fb2cba32f48b450b2d4e2",
+        "source": "angle",
+        "sourceBlob": "5740d2f8bdd1e3a8aa25888d64e33d1daf9152c8",
+        "targetPath": "Source/ThirdParty/ANGLE/include/GLSLANG/ShaderLang.h",
+        "upstreamRepository": "https://github.com/utmapp/WebKit.git",
+        "upstreamRevision": "6a7f464047e2f6f2b65fe315aaad5d1ff3229cb7"
+      },
+      {
+        "path": "patches/angle-shift-count-overflow-backport.patch",
+        "resultBlob": "2f8c007fdf19b55881de0e6b1be753527a406053",
+        "sha256": "3d8f6b819e8dbb509adbb35c9774664dc125ff0247c835cf1550748a95313ca4",
+        "source": "angle",
+        "sourceBlob": "e9592d7f74221bd940ef0dc7df2ade4092c9a959",
+        "targetPath": "Source/ThirdParty/ANGLE/src/common/bitset_utils.h",
+        "upstreamRepository": "https://github.com/utmapp/WebKit.git",
+        "upstreamRevision": "6a7f464047e2f6f2b65fe315aaad5d1ff3229cb7"
+      },
+      {
+        "path": "patches/angle-shaderlang-trivial-copy-implementation-backport.patch",
+        "resultBlob": "f14f3c263c58a86501370909bbb5f8340949689a",
+        "sha256": "1e6a8e5b758ecec0bc1f8de26168a5782c60b764df41526910689cc510b43d43",
+        "source": "angle",
+        "sourceBlob": "44290593b5f88f4a0543e5aa117ca99075b7d805",
+        "targetPath": "Source/ThirdParty/ANGLE/src/compiler/translator/ShaderLang.cpp",
+        "upstreamRepository": "https://github.com/utmapp/WebKit.git",
+        "upstreamRevision": "6a7f464047e2f6f2b65fe315aaad5d1ff3229cb7"
+      },
+      {
+        "path": "patches/angle-final-virtual-destructor-backport.patch",
+        "resultBlob": "ed0ae84953bf570359500ddc6fcc14ad0741885d",
+        "sha256": "bdf2aa8ef0df46f78e4b7fbc10f33de96883cee8b86b346609fee2df762ece73",
+        "source": "angle",
+        "sourceBlob": "5939bfb19cbb5682db11edefb3f8bd519b4343f0",
+        "targetPath": "Source/ThirdParty/ANGLE/src/libANGLE/Fence.h",
+        "upstreamRepository": "https://github.com/utmapp/WebKit.git",
+        "upstreamRevision": "6a7f464047e2f6f2b65fe315aaad5d1ff3229cb7"
+      },
+      {
+        "path": "patches/angle-gles1-shader-state-logical-key-backport.patch",
+        "resultBlob": "a01628a1ec67aaa0a03770b9beed85d830067827",
+        "sha256": "6ab78c828ae72a7a7360f56e00259097c7c436b61dc2885823264bdf5a3180fc",
+        "source": "angle",
+        "sourceBlob": "6514bb7256cb5d703f239400441e19c6761aced3",
+        "targetPath": "Source/ThirdParty/ANGLE/src/libANGLE/GLES1Renderer.cpp",
+        "upstreamRepository": "https://github.com/utmapp/WebKit.git",
+        "upstreamRevision": "6a7f464047e2f6f2b65fe315aaad5d1ff3229cb7"
+      },
+      {
+        "path": "patches/angle-gles1-shader-state-copy-contract-backport.patch",
+        "resultBlob": "dbaedb48811456372ec58886a62146ea4610d0c6",
+        "sha256": "43c2f3015a4afc15332385ed8054c96d3cbc8b8a7d13c4198e166909d0a87054",
+        "source": "angle",
+        "sourceBlob": "98c7894ad52c14c3fe9e09b8d662f32775ee4bfe",
+        "targetPath": "Source/ThirdParty/ANGLE/src/libANGLE/GLES1Renderer.h",
+        "upstreamRepository": "https://github.com/utmapp/WebKit.git",
+        "upstreamRevision": "6a7f464047e2f6f2b65fe315aaad5d1ff3229cb7"
+      },
+      {
+        "path": "patches/angle-logical-state-copy-backport.patch",
+        "resultBlob": "d379d6a6e6b1a172a3806bc25b6ebe9152db0685",
+        "sha256": "0220a77647e8563ced7be7b7bf461642b2301d75dd2fc7a91148f2a149b52e19",
+        "source": "angle",
+        "sourceBlob": "7f9f56de4a38303b45240b38c14f7733da5dc14b",
+        "targetPath": "Source/ThirdParty/ANGLE/src/libANGLE/angletypes.cpp",
+        "upstreamRepository": "https://github.com/utmapp/WebKit.git",
+        "upstreamRevision": "6a7f464047e2f6f2b65fe315aaad5d1ff3229cb7"
+      },
+      {
+        "path": "patches/angle-logical-state-constructor-contract-backport.patch",
+        "resultBlob": "d9d7d51a332b23b369cb1b168e09add62031d349",
+        "sha256": "33904c0a00c1bac9b4b72043338d37f7640e47684e226d569766b3bbb4fab3ed",
+        "source": "angle",
+        "sourceBlob": "af30688ebebb614d622e1acb88ddc80068bc1a29",
+        "targetPath": "Source/ThirdParty/ANGLE/src/libANGLE/angletypes.h",
+        "upstreamRepository": "https://github.com/utmapp/WebKit.git",
+        "upstreamRevision": "6a7f464047e2f6f2b65fe315aaad5d1ff3229cb7"
+      },
+      {
+        "path": "patches/angle-sampler-state-logical-equality-backport.patch",
+        "resultBlob": "36f9e9497f142d8993591935c32b6956e1ca81e4",
+        "sha256": "8b91ad5dd79eeabbb66ce0c70b5dd0c78096fa1dc7d7adf7b42d02432cc4a720",
+        "source": "angle",
+        "sourceBlob": "862a3214a13a47150c29ffd72577bc7b11fe7a04",
+        "targetPath": "Source/ThirdParty/ANGLE/src/libANGLE/angletypes.inc",
+        "upstreamRepository": "https://github.com/utmapp/WebKit.git",
+        "upstreamRevision": "6a7f464047e2f6f2b65fe315aaad5d1ff3229cb7"
+      },
+      {
+        "path": "patches/angle-metal-blit-logical-base-copy-backport.patch",
+        "resultBlob": "1e628af0e9364b4ac9714a4fdb0ed4178921742c",
+        "sha256": "7729a2a31ab493b5f5de3d4351728636a537e2d87bb0675dce42ecbad21ce5f2",
+        "source": "angle",
+        "sourceBlob": "860f798cf68bb4fad87bee1ea9cd507d95767fd1",
+        "targetPath": "Source/ThirdParty/ANGLE/src/libANGLE/renderer/metal/FrameBufferMtl.mm",
+        "upstreamRepository": "https://github.com/utmapp/WebKit.git",
+        "upstreamRevision": "6a7f464047e2f6f2b65fe315aaad5d1ff3229cb7"
+      },
+      {
+        "path": "patches/angle-metal-state-cache-logical-key-backport.patch",
+        "resultBlob": "8ab57b5fd510d6ce647d3da645a216609533a608",
+        "sha256": "6fdb6ef913707c8ae91526bacdd4be9d0b003e76a598d3730f4e76dd9f3b9ecd",
+        "source": "angle",
+        "sourceBlob": "7b2e9926b29407d7870b0da20a6591d0982146e7",
+        "targetPath": "Source/ThirdParty/ANGLE/src/libANGLE/renderer/metal/mtl_state_cache.mm",
+        "upstreamRepository": "https://github.com/utmapp/WebKit.git",
+        "upstreamRevision": "6a7f464047e2f6f2b65fe315aaad5d1ff3229cb7"
+      },
+      {
+        "path": "patches/libepoxy-dory-angle-rpath.patch",
+        "resultBlob": "b61354a4cfd12478c9a7d73a05c465cb7bed7ff9",
+        "sha256": "63a6efddab3c20ef014a8d29b434c60d7f18609700edc7b30806d0ec8e584da0",
+        "source": "libepoxy",
+        "sourceBlob": "770563c9cb70dc0a6f960968752c747bf5865ea6",
+        "targetPath": "src/dispatch_common.c",
+        "upstreamRepository": "https://github.com/utmapp/libepoxy.git",
+        "upstreamRevision": "15d904dcb1d5a8d626ffe11e8f3339499d6f7b09"
+      },
+      {
+        "path": "patches/moltenvk-fail-closed-robustness2.patch",
+        "resultBlob": "110c542637a68618e797e5d8b83cf95f2ee6bb39",
+        "sha256": "7c90f042dadd6fcb805843faa7b78fef835b16283a744652a2b9ead3e8b0d609",
+        "source": "moltenVK",
+        "sourceBlob": "612a527083ab6059c5349414457cd52e439f3cd7",
+        "targetPath": "MoltenVK/MoltenVK/GPUObjects/MVKDevice.mm",
+        "upstreamRepository": "https://github.com/utmapp/MoltenVK.git",
+        "upstreamRevision": "ef1c5461774f5fbd224ddcfd91fd2c0ea23f0384"
+      },
+      {
+        "path": "patches/moltenvk-hidden-vulkan-alias.patch",
+        "resultBlob": "878e5ca82468bd1e827c5b28d198ff3be1e12dc5",
+        "sha256": "be4aec6b7fc08fadc785c1b10bc66439d8882b9a025c0106d7adfac9cefaf646",
+        "source": "moltenVK",
+        "sourceBlob": "3071c3f89e9eca8b1020ec2ba38dd30f02b0bb87",
+        "targetPath": "MoltenVK/MoltenVK/GPUObjects/MVKInstance.mm",
+        "upstreamRepository": "https://github.com/utmapp/MoltenVK.git",
+        "upstreamRevision": "ef1c5461774f5fbd224ddcfd91fd2c0ea23f0384"
+      },
+      {
+        "path": "patches/moltenvk-sync-fd-binary-consumption.patch",
+        "resultBlob": "51752fd183ae00c55c92bbdd97a4ccab03f0960c",
+        "sha256": "588504b0474eb2130d273cc2bfb31dc9672fbb9cdc3ad4cdbb621b4cc08274d7",
+        "source": "moltenVK",
+        "sourceBlob": "34022876aaa3d333b043049f48db81403f85fc73",
+        "targetPath": "MoltenVK/MoltenVK/GPUObjects/MVKSync.mm",
+        "upstreamRepository": "https://github.com/utmapp/MoltenVK.git",
+        "upstreamRevision": "ef1c5461774f5fbd224ddcfd91fd2c0ea23f0384"
+      },
+      {
+        "path": "patches/moltenvk-hidden-vulkan-icd-entrypoints.patch",
+        "resultBlob": "588a5fb8b44f8e7b5b258051f2e819acb80a8bec",
+        "sha256": "feb558dfc75622bd6ebb5e89b5d4ab5d21bd14b26d442ec8eae791228189de69",
+        "source": "moltenVK",
+        "sourceBlob": "198b8473c6bdd9977b805c5a8854cfd1bcd0849c",
+        "targetPath": "MoltenVK/MoltenVK/Vulkan/vulkan.mm",
+        "upstreamRepository": "https://github.com/utmapp/MoltenVK.git",
+        "upstreamRevision": "ef1c5461774f5fbd224ddcfd91fd2c0ea23f0384"
+      },
+      {
+        "path": "patches/moltenvk-dory-native-arrays.patch",
+        "resultBlob": "59915f75a5294d5f54647cb5e02c87aa162b6045",
+        "sha256": "1485bc300e1b8969121b90a34011f53f8c3b1a1c49a2da521b72cc040d2f4877",
+        "source": "moltenVK",
+        "sourceBlob": "b52730b2afc1ce97d886fc9a782d10e1bfef6e8d",
+        "targetPath": "MoltenVKShaderConverter/MoltenVKShaderConverter/SPIRVToMSLConverter.cpp",
+        "upstreamRepository": "https://github.com/utmapp/MoltenVK.git",
+        "upstreamRevision": "ef1c5461774f5fbd224ddcfd91fd2c0ea23f0384"
+      }
+    ],
+    "angleMetalProduct": {
+      "archiveScheme": "ANGLE",
+      "eglInstallName": "@loader_path/libEGL.dylib",
+      "glesInstallName": "@loader_path/libGLESv2.dylib",
+      "runtimePaths": [
+        "Frameworks/libEGL.dylib",
+        "Frameworks/libGLESv2.dylib"
+      ]
+    },
+    "libcxxHardeningMode": "extensive",
+    "libepoxyStaticProduct": {
+      "archivePath": "lib/libepoxy.a",
+      "eglResolver": "@loader_path/../Frameworks/libEGL.dylib",
+      "glesResolver": "@loader_path/../Frameworks/libGLESv2.dylib"
+    },
+    "maximumConcurrentBuildJobs": 3,
+    "moltenVKStaticProduct": {
+      "archivePath": "lib/libMoltenVK.a",
+      "hideVulkanSymbols": true,
+      "requiredEntrypoint": "vkGetInstanceProcAddr"
+    },
+    "moltenVKSemaphoreQualification": {
+      "importExportCycles": 2,
+      "path": "scripts/renderer-moltenvk-semaphore-probe.m",
+      "sha256": "156a9ffc2e1b435872866e2f2ae381fea32b922c9830c53c0b8256f382ddbd16",
+      "signalExportCycles": 2,
+      "style": "mtlEvent"
+    },
+    "moltenVKScanoutCopyQualification": {
+      "destinationTiling": "linear",
+      "directLinearColorAttachment": false,
+      "formats": [
+        "bgra8-unorm",
+        "rgba8-unorm"
+      ],
+      "path": "scripts/renderer-moltenvk-scanout-copy-probe.m",
+      "readback": "mapped-host-visible",
+      "renderTiling": "optimal",
+      "sha256": "d9affc819971f5aee4a7140862283126aaae8cc69c2f8f36a2dfe63bf971a61e",
+      "transfer": "vkCmdCopyImage"
+    },
+    "warningSuppression": false,
+    "zeroFuzzPatchApplication": true
+  },
+  "dependencySources": {
+    "moltenVK": {
+      "cereal": {
+        "repository": "https://github.com/USCiLab/cereal.git",
+        "revision": "a56bad8bbb770ee266e930c95d37fff2a5be7fea",
+        "tree": "31169d00742fa22795e582f47bce5a0eeafecdad"
+      },
+      "spirvCross": {
+        "repository": "https://github.com/utmapp/SPIRV-Cross.git",
+        "revision": "939b40b33a44443c404c4078823c406e3c94866f",
+        "tree": "09cb57c85e770936a6390ed3f891363075a0b67a"
+      },
+      "spirvHeaders": {
+        "repository": "https://github.com/KhronosGroup/SPIRV-Headers.git",
+        "revision": "b824a462d4256d720bebb40e78b9eb8f78bbb305",
+        "tree": "4f5ba6304fde3759b6e42e94f36499802c6f3bdb"
+      },
+      "spirvTools": {
+        "repository": "https://github.com/KhronosGroup/SPIRV-Tools.git",
+        "revision": "262bdab48146c937467f826699a40da0fdfc0f1a",
+        "tree": "0252479f729a6f5f2064a36d89044c5326171566"
+      },
+      "volk": {
+        "repository": "https://github.com/zeux/Volk.git",
+        "revision": "59660878571aa99e3c9a366bb1d19fdcd701f0e7",
+        "tree": "ba6a6ea0d7b581d637a3c8822a71ffb743c0c007"
+      },
+      "vulkanHeaders": {
+        "repository": "https://github.com/KhronosGroup/Vulkan-Headers.git",
+        "revision": "6aefb8eb95c8e170d0805fd0f2d02832ec1e099a",
+        "tree": "b6a7d1d42b0439ba90a2927d94ed098c9111cc2d"
+      },
+      "vulkanTools": {
+        "repository": "https://github.com/KhronosGroup/Vulkan-Tools.git",
+        "revision": "013058f74e2356347f8d9317233bc769816c9dfb",
+        "tree": "9e704d67ff5461b87f360dc194c09b67c805b594"
+      }
+    }
+  },
+  "guestMesaBuildPolicy": {
+    "applicationReadiness": {
+      "application": "zed",
+      "applicationRevision": "eb8e1c8b5502b7007465fbbc465f4a736fa39210",
+      "applicationTag": "v1.16.1",
+      "atlasFormats": [
+        "bgra8-unorm",
+        "rgba8-unorm"
+      ],
+      "atlasUsages": [
+        "copy-destination",
+        "texture-binding"
+      ],
+      "backend": "vulkan",
+      "minimumVulkanAPI": "1.3",
+      "presentMode": "fifo",
+      "sourceRepository": "https://github.com/zed-industries/zed.git",
+      "surfaceExtent": "64x64",
+      "surfaceFormatPolicy": "first-capability-format",
+      "wgpuRevision": "e99f5305ded96ff7006f0714d043a7f735bd45c2",
+      "wgpuVersion": "29.0.4"
+    },
+    "builderImage": "debian:bullseye-slim@sha256:f313b4bd62667092a59b3a664d7d3ab8b5e65f41675f48e81455a15dc5abe792",
+    "builderSnapshot": "20260713T000000Z",
+    "compositorProbeNeededSONAMEs": [
+      "libc.so.6",
+      "libvulkan.so.1"
+    ],
+    "compositorProfile": "native-vulkan-optimal-copy-compositor-v2",
+    "compositorProfileSourceCommit": "329a88e72424486180ff3339440fa9f8f711af02",
+    "compositorProfileSourceTree": "ef4676a2279bd364c645f31cd0e1e1cb238e0e0c",
+    "glibcSymbolCeiling": "GLIBC_2.31",
+    "hiddenQueueSubmission": false,
+    "icdNeededSONAMEs": [
+      "libX11-xcb.so.1",
+      "libc.so.6",
+      "libdl.so.2",
+      "libm.so.6",
+      "libpthread.so.0",
+      "libwayland-client.so.0",
+      "libxcb-dri3.so.0",
+      "libxcb-keysyms.so.1",
+      "libxcb-present.so.0",
+      "libxcb-randr.so.0",
+      "libxcb-shm.so.0",
+      "libxcb-sync.so.1",
+      "libxcb-xfixes.so.0",
+      "libxcb.so.1",
+      "libxshmfence.so.1",
+      "libz.so.1",
+      "libzstd.so.1"
+    ],
+    "inputSHA256": "19a55684e03b26053f504982ebbbd85f31d198bcaeb307239689fd11189f17e9",
+    "libcFamily": "glibc",
+    "libdrmLinkage": "static-hidden",
+    "manifestLibraryPath": "../../../lib/libvulkan_virtio.so",
+    "maxGLIBCSymbol": "GLIBC_2.29",
+    "mesonVersion": "1.10.0",
+    "mesonWheelSHA256": "4b27aafce281e652dcb437b28007457411245d975c48b5db3a797d3e93ae1585",
+    "packLayout": "single-tree",
+    "patches": [],
+    "probeNeededSONAMEs": [
+      "libc.so.6",
+      "libvulkan.so.1",
+      "libwayland-client.so.0",
+      "libxcb.so.1"
+    ],
+    "requiredDeviceExtensions": [
+      "VK_KHR_external_semaphore_fd",
+      "VK_KHR_swapchain"
+    ],
+    "requiredInstanceExtensions": [
+      "VK_KHR_surface",
+      "VK_KHR_wayland_surface",
+      "VK_KHR_xcb_surface"
+    ],
+    "requiredVulkan13Features": [
+      "dynamicRendering",
+      "maintenance4",
+      "synchronization2"
+    ],
+    "runtimeArtifactPath": "guest/out/dory-mesa-venus-arm64.tar.zst",
+    "runtimeDigestContract": "DoryRendererArtifactManifest.guestMesa",
+    "runtimeManifestSchema": 6,
+    "runtimeSHA256": "fa12e2bef9855dd382c3cd7f1dcd434f65302fc13471ae06367179f1ad37124c",
+    "sourceDateEpoch": 1767751301,
+    "standardWSISemaphorePath": "sync-fd-minus-one",
+    "vulkanAPI": "1.3",
+    "waylandProtocolsVersion": "1.41",
+    "waylandVersion": "1.20.0",
+    "wsi": [
+      "x11",
+      "wayland"
+    ],
+    "wsiSurfaceGate": [
+      "xcb",
+      "wayland"
+    ]
+  },
+  "kind": "dev.dory.renderer-production-tuple",
+  "platform": "macos",
+  "producerFence": {
+    "failClosedPatch": {
+      "path": "guest/kernel/patches/6.12.106/0008-virtio-gpu-fail-closed-on-producer-fence-error.patch",
+      "sha256": "53f0db7b102f53c6d3aee13dc43cf45dbfedd5dabd0c04026b0b0c709c13953d"
+    },
+    "kernelVersion": "6.12.106",
+    "prepareFramebufferPatch": {
+      "path": "guest/kernel/patches/6.12.106/0007-virtio-gpu-wait-for-scanout-producers.patch",
+      "sha256": "b899d2981d192828ebcbba02a3f8f3409dd27663bf8ca3059bdc95da55090f42"
+    }
+  },
+  "schemaVersion": 3,
+  "sourceTuple": "dory-dual-metal-20260826",
+  "sources": {
+    "angle": {
+      "repository": "https://github.com/utmapp/WebKit.git",
+      "revision": "6a7f464047e2f6f2b65fe315aaad5d1ff3229cb7",
+      "subdirectory": "Source/ThirdParty/ANGLE",
+      "tree": "6ff242f54d40a2aaf08ed74b6a4bfe65a8bf447f"
+    },
+    "libepoxy": {
+      "repository": "https://github.com/utmapp/libepoxy.git",
+      "revision": "15d904dcb1d5a8d626ffe11e8f3339499d6f7b09",
+      "tree": "86af2dd5a68cb45140eef8a1165cd5bfd23a03e8"
+    },
+    "mesa": {
+      "repository": "https://gitlab.freedesktop.org/osy/mesa.git",
+      "revision": "79bc850d884a1307356ff61c017e58901b90c7e2",
+      "tree": "585b6604e6ef58585cfc44f7b4d5eab172ddfbbd"
+    },
+    "moltenVK": {
+      "repository": "https://github.com/utmapp/MoltenVK.git",
+      "revision": "ef1c5461774f5fbd224ddcfd91fd2c0ea23f0384",
+      "tree": "14f470cffb6b74c5e72647925a0c7f83ba64abb8"
+    },
+    "virglrenderer": {
+      "repository": "https://github.com/utmapp/virglrenderer.git",
+      "revision": "65cc14eb896f121ffc5130ce04815a923a03c41d",
+      "tree": "94dc34ffde98cf70f0c11fe921bec10a09d3907f"
+    }
+  },
+  "toolchain": {
+    "appleClang": "Apple clang version 21.0.0 (clang-2100.1.1.101)",
+    "cmake": "4.2.3",
+    "meson": "1.12.0",
+    "ninja": "1.13.2",
+    "pkgConfig": "2.5.1",
+    "xcodeBuild": "17F109",
+    "xcodeVersion": "26.6"
+  },
+  "virglBuildPolicy": {
+    "checkGLErrors": false,
+    "classicRenderer": "virgl2-angle-metal",
+    "defaultLibrary": "static",
+    "drmRenderers": [],
+    "fuzzer": false,
+    "minimumMacOS": "15.0",
+    "metalSharedTextureQualification": {
+      "allocation": "newSharedTextureWithDescriptor",
+      "crossProcessHandle": true,
+      "path": "scripts/renderer-virgl-metal-shared-texture-probe.m",
+      "renderImportReadback": true,
+      "sha256": "1b939c36c82fa29eb17a6b3c2405f3b4cb1e42ad6196eb5815fbcec66fe7d622",
+      "storageMode": "private"
+    },
+    "minigbmAllocation": false,
+    "neptune": false,
+    "platforms": [
+      "egl"
+    ],
+    "renderServerMode": "thread",
+    "renderServerWorker": "thread",
+    "requiredCapsets": [
+      2,
+      4
+    ],
+    "sourcePatches": [
+      {
+        "path": "patches/virglrenderer-venus-only-static.patch",
+        "sha256": "e067deb5086f70d4781bd4877c1df94cfb95f2f7c4f62c72570996b5dc4c736a",
+        "targets": {
+          "config.h.meson": {
+            "resultBlob": "fc7d181899b2f4ca14ca8672e30f32659084a831",
+            "sourceBlob": "99ead1ab20f15ebf01eeb3549659334c2b6abc08"
+          },
+          "meson.build": {
+            "resultBlob": "7ed632df5fa6ed61f433c631d30df8208774cb25",
+            "sourceBlob": "b863eccba1acff2ffaa5ee9160640721e58043ab"
+          },
+          "meson_options.txt": {
+            "resultBlob": "d1dbd265391de867e7c35b8c7de0df83f0fa8d6f",
+            "sourceBlob": "1862ee50f0230d00ec672ac70d175a27c4ff4bcf"
+          },
+          "server/render_protocol.h": {
+            "resultBlob": "821dca2db428ca2e47f3a0cadaeb31a23d50e783",
+            "sourceBlob": "9dd4c48f3a6f68b628e6b4eefc1fb0cf8e2d7dab"
+          },
+          "src/gallium/meson.build": {
+            "resultBlob": "e9a1487dcc51a9f28c6e682d0e095e124eb4d3eb",
+            "sourceBlob": "ac8f8be23edf640329dd6b9c0e7c1c5392259bb8"
+          },
+          "src/meson.build": {
+            "resultBlob": "78434d835650c1267d6a65a20dccb354213b56e8",
+            "sourceBlob": "e6e48ca5bdb157c8ce7a4a8939dc792246e90aa7"
+          },
+          "src/proxy/proxy_context.c": {
+            "resultBlob": "736b013aa603083c0d76ed338284431aabffcfdf",
+            "sourceBlob": "9b334532803bd294505dbbfd28afae977b19edbb"
+          },
+          "src/proxy/proxy_context.h": {
+            "resultBlob": "662fcaac39c98353050d3f047a04c7c03fb40482",
+            "sourceBlob": "ce29ecaea7fa06f4e6cc8d6d1646099489423aa7"
+          },
+          "src/virglrenderer.c": {
+            "resultBlob": "96992b73af8f1c39cedf5fcc3626edb2247152e7",
+            "sourceBlob": "71076727dbafd4a4f9432a3af03cf439ebd7907e"
+          }
+        }
+      },
+      {
+        "path": "patches/virglrenderer-dory-submit-failure-offset.patch",
+        "sha256": "ee4ba95725e2fd505ee823610cd227a45812389f3611c6fbe93385151bd488a6",
+        "targets": {
+          "src/vrend/vrend_decode.c": {
+            "resultBlob": "bdba09859231455ea0a77c96c87e3d6302418a57",
+            "sourceBlob": "7774a253bc4532f95edeb92874a8987bc2e3ddd9"
+          }
+        }
+      },
+      {
+        "path": "patches/virglrenderer-linear-modifier-contract.patch",
+        "sha256": "03e2c23c43e38c080291ba0d5aaf61c03f85bf9702fed7cf0e5324374034639c",
+        "targets": {
+          "src/venus/vkr_physical_device.c": {
+            "resultBlob": "a7a3d3c6710723f232466f36eda84ee1a750a0ff",
+            "sourceBlob": "e8558156a7b674c78b13b0714120f247a1946739"
+          }
+        }
+      },
+      {
+        "path": "patches/virglrenderer-metal-shm-external-memory.patch",
+        "sha256": "ec642b18929c9ee66e4b0ab073ebe0b86754bdbcca781f26dea485cbca10a497",
+        "targets": {
+          "src/venus/vkr_context.c": {
+            "resultBlob": "5c79451cab9d6509d2a20d2c3e5e42222e97d010",
+            "sourceBlob": "2ea589881710405f68819469f455133558b6f9e2"
+          },
+          "src/venus/vkr_context.h": {
+            "resultBlob": "e765a177f86613a5e6ccc026bbb17057f265329a",
+            "sourceBlob": "12541a72d2e948b2ebf106702ae403c1a8cc073f"
+          },
+          "src/venus/vkr_device_memory.c": {
+            "resultBlob": "d65e979dc4875a63c9bb05e81c0eeffab6684e73",
+            "sourceBlob": "b2e606f738591ecd7561f44750bb921c14f316ef"
+          },
+          "src/venus/vkr_metal_helpers.h": {
+            "resultBlob": "a92ff8a1f9357655b45714ee438affd3fc58cafc",
+            "sourceBlob": "4f5208bd1720210c6d89ce4177a45b6887687b77"
+          },
+          "src/venus/vkr_metal_helpers.m": {
+            "resultBlob": "7cab45751332bdf26bd67176cf43edf2292c1ff7",
+            "sourceBlob": "f0373ed10bf23bc0a8dde6e9a6a542325b93a4aa"
+          }
+        }
+      },
+      {
+        "path": "patches/virglrenderer-metal-shareable-scanout.patch",
+        "sha256": "2f7505d21a29361c0cce47a986a678f79823bd22214fcdacf947451aeb9ee658",
+        "targets": {
+          "src/vrend/vrend_metal.m": {
+            "resultBlob": "750a2b44848833bcf2fd668eef969c920979bbe7",
+            "sourceBlob": "e8ded745d272cecd5b54b6e59ee7739e543c2194"
+          }
+        }
+      }
+    ],
+    "tests": false,
+    "unstableAPIs": true,
+    "venus": true,
+    "venusOnly": false,
+    "video": false,
+    "vtest": false,
+    "vulkanDynamicLoad": false
+  }
+}

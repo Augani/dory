@@ -83,7 +83,12 @@ cutover; the Rust path stayed healthy throughout.
 - **Remote workspace product UX** — the protocol, SSH transport, pinned host-key policy, Keychain key
   lookup, and host-authoritative push exist. Persistent reconnect, offline/conflict UX, and a full
   remote-workspace threat model remain preview work, not gaps in the local Docker dataplane.
-- **USB passthrough** — host discovery and bridge scaffolding exist. The guest vhci attach/detach RPC
-  is intentionally unavailable, so public app and CLI surfaces expose discovery only.
+- **USB passthrough** — the Rust agent now exposes a capability-gated `usb-vhci@1` attach/detach RPC,
+  validates the exact USB/IP import descriptor, and hands the dedicated host vsock stream to Linux
+  `vhci_hcd`; the raw-HV engine consumes that path with pre-claim and pre-mutation capability checks.
+  Raw-HV desktop machines now receive a private, launch-pinned control route, and signed resolved
+  plans carry an exact removable-USB authorization bit through helper construction. Resolved-only
+  app and `dorydctl` attach/detach controls are wired and fail closed unless that bit is present;
+  current catalogs carry no signed physical-device qualification. Automatic replay remains disabled.
 - **GPU** — Venus/Vulkan remains an opt-in preview on the arm64 raw-HV tier. It is not a stable 0.4
   cross-host GPU API.

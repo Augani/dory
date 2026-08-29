@@ -1,0 +1,130 @@
+diff --git a/src/vrend/vrend_decode.c b/src/vrend/vrend_decode.c
+index 7774a25..bdba098 100644
+--- a/src/vrend/vrend_decode.c
++++ b/src/vrend/vrend_decode.c
+@@ -647,12 +647,32 @@ static int vrend_decode_create_rasterizer(struct vrend_context *ctx, const uint3
+    return 0;
+ }
+ 
++enum dory_surface_failure_reason {
++   DORY_SURFACE_FAILURE_NONE = 0,
++   DORY_SURFACE_FAILURE_CREATE_PAYLOAD_TOO_SHORT = 1,
++   DORY_SURFACE_FAILURE_CREATE_HANDLE_ZERO = 2,
++   DORY_SURFACE_FAILURE_PAYLOAD_LENGTH = 3,
++   DORY_SURFACE_FAILURE_RESOURCE_MISSING = 4,
++   DORY_SURFACE_FAILURE_RESOURCE_GL_OBJECT_MISSING = 5,
++   DORY_SURFACE_FAILURE_FORMAT_OUT_OF_RANGE = 6,
++   DORY_SURFACE_FAILURE_LAYER_RANGE = 7,
++};
++
++/* One decoder invocation owns this closed, payload-free failure category on its pthread. */
++static _Thread_local unsigned dory_surface_failure_reason;
++
+ static int vrend_decode_create_surface_common(struct vrend_context *ctx, const uint32_t *buf, uint32_t handle, uint32_t sample_count)
+ {
+    uint32_t res_handle = get_buf_entry(buf, VIRGL_OBJ_SURFACE_RES_HANDLE);
+ 
+    struct vrend_resource *res = vrend_renderer_ctx_res_lookup(ctx, res_handle);
+-   if (!res || !res->gl_id) {
++   if (!res) {
++      dory_surface_failure_reason = DORY_SURFACE_FAILURE_RESOURCE_MISSING;
++      vrend_report_context_error(ctx, VIRGL_ERROR_CTX_ILLEGAL_RESOURCE, res_handle);
++      return EINVAL;
++   }
++   if (!res->gl_id) {
++      dory_surface_failure_reason = DORY_SURFACE_FAILURE_RESOURCE_GL_OBJECT_MISSING;
+       vrend_report_context_error(ctx, VIRGL_ERROR_CTX_ILLEGAL_RESOURCE, res_handle);
+       return EINVAL;
+    }
+@@ -660,6 +680,7 @@ static int vrend_decode_create_surface_common(struct vrend_context *ctx, const u
+    enum virgl_formats format = get_buf_entry(buf, VIRGL_OBJ_SURFACE_FORMAT);
+ 
+    if (format >= PIPE_FORMAT_COUNT) {
++      dory_surface_failure_reason = DORY_SURFACE_FAILURE_FORMAT_OUT_OF_RANGE;
+       vrend_report_context_error(ctx, VIRGL_ERROR_CTX_ILLEGAL_FORMAT, format);
+       return EINVAL;
+    }
+@@ -674,6 +695,7 @@ static int vrend_decode_create_surface_common(struct vrend_context *ctx, const u
+    int num_layers = last_layer - first_layer + 1;
+ 
+    if (num_layers <= 0) {
++      dory_surface_failure_reason = DORY_SURFACE_FAILURE_LAYER_RANGE;
+       virgl_error("%s: Invalid number of layers (%d) requested\n", __func__, num_layers);
+       return EINVAL;
+    }
+@@ -683,8 +705,10 @@ static int vrend_decode_create_surface_common(struct vrend_context *ctx, const u
+ 
+ static int vrend_decode_create_surface(struct vrend_context *ctx, const uint32_t *buf, uint32_t handle, uint16_t length)
+ {
+-   if (length != VIRGL_OBJ_SURFACE_SIZE)
++   if (length != VIRGL_OBJ_SURFACE_SIZE) {
++      dory_surface_failure_reason = DORY_SURFACE_FAILURE_PAYLOAD_LENGTH;
+       return EINVAL;
++   }
+ 
+    return vrend_decode_create_surface_common(ctx, buf, handle, 0);
+ }
+@@ -834,16 +858,23 @@ static int vrend_decode_create_query(struct vrend_context *ctx, const uint32_t *
+ 
+ static int vrend_decode_create_object(struct vrend_context *ctx, const uint32_t *buf, uint32_t length)
+ {
+-   if (length < 1)
++   uint32_t header = get_buf_entry(buf, VIRGL_OBJ_CREATE_HEADER);
++   uint8_t obj_type = (header >> 8) & 0xff;
++
++   if (length < 1) {
++      if (obj_type == VIRGL_OBJECT_SURFACE)
++         dory_surface_failure_reason = DORY_SURFACE_FAILURE_CREATE_PAYLOAD_TOO_SHORT;
+       return EINVAL;
++   }
+ 
+-   uint32_t header = get_buf_entry(buf, VIRGL_OBJ_CREATE_HEADER);
+    uint32_t handle = get_buf_entry(buf, VIRGL_OBJ_CREATE_HANDLE);
+-   uint8_t obj_type = (header >> 8) & 0xff;
+    int ret = 0;
+ 
+-   if (handle == 0)
++   if (handle == 0) {
++      if (obj_type == VIRGL_OBJECT_SURFACE)
++         dory_surface_failure_reason = DORY_SURFACE_FAILURE_CREATE_HANDLE_ZERO;
+       return EINVAL;
++   }
+ 
+    VREND_DEBUG(dbg_object, ctx,"  CREATE %-18s handle:0x%x len:%d\n",
+                vrend_get_object_type_name(obj_type), handle, length);
+@@ -2071,6 +2102,8 @@ static int vrend_decode_ctx_submit_cmd(struct virgl_context *ctx,
+    const uint32_t *typed_buf = (const uint32_t *)buffer;
+    const uint32_t buf_total = (uint32_t)(size / sizeof(uint32_t));
+    uint32_t buf_offset = 0;
++   /* Zero-based ordinal is emitted only on decoder failure for Dory's closed correlation. */
++   unsigned command_ordinal = 0;
+ 
+    while (buf_offset < buf_total) {
+       const uint32_t cur_offset = buf_offset;
+@@ -2084,6 +2117,7 @@ static int vrend_decode_ctx_submit_cmd(struct virgl_context *ctx,
+       buf_offset += len + 1;
+ 
+       ret = 0;
++      dory_surface_failure_reason = DORY_SURFACE_FAILURE_NONE;
+       /* check if the guest is doing something bad */
+       if (buf_offset > buf_total) {
+          vrend_report_buffer_error(gdctx->grctx, 0);
+@@ -2099,12 +2133,18 @@ static int vrend_decode_ctx_submit_cmd(struct virgl_context *ctx,
+       if (!vrend_check_no_error(gdctx->grctx) && !ret)
+          ret = EINVAL;
+       if (ret) {
++         virgl_error(
++               "vrend-dispatch-error context=%u command=%u dword-offset=%u "
++               "command-ordinal=%u status=%d surface-reason=%u\n",
++               (unsigned)gdctx->base.ctx_id, (unsigned)cmd, (unsigned)cur_offset,
++               command_ordinal, ret, dory_surface_failure_reason);
+          virgl_error("context %d failed to dispatch %s: %d\n",
+                gdctx->base.ctx_id, vrend_get_comand_name(cmd), ret);
+          if (ret == EINVAL)
+             vrend_report_buffer_error(gdctx->grctx, *buf);
+          return ret;
+       }
++      command_ordinal++;
+    }
+    return 0;
+ }

@@ -34,9 +34,19 @@ final class DoryDataDriveTests: XCTestCase {
         let requested = privateHome + "/Library/Application Support/Dory/Dory.dorydrive"
         let drive = try DoryDataDrive(home: privateHome, overrideRoot: requested)
 
-        XCTAssertEqual(drive.home, privateHome.replacingOccurrences(of: "/private/tmp/", with: "/tmp/"))
+        XCTAssertEqual(drive.home, privateHome)
         XCTAssertEqual(drive.root, drive.home + "/Library/Application Support/Dory/Dory.dorydrive")
         XCTAssertNoThrow(try drive.prepare())
+        XCTAssertNoThrow(try DoryTrustedDirectoryRoot(canonicalAbsolutePath: drive.root))
+    }
+
+    func testCanonicalPathRejectsControlCharactersBeforePOSIXResolution() {
+        XCTAssertThrowsError(try DoryDataDrive.canonicalPath("/private/tmp/safe\0foreign")) {
+            XCTAssertEqual(
+                $0 as? DoryDataDriveError,
+                .invalidRoot("/private/tmp/safe\0foreign")
+            )
+        }
     }
 
     func testSymlinkedHomeAndOverrideResolveToPhysicalApplicationSupportRoot() throws {
@@ -59,13 +69,11 @@ final class DoryDataDriveTests: XCTestCase {
             ).path
         )
 
-        XCTAssertEqual(drive.home, physicalHome.path)
+        let canonicalPhysicalHome = try DoryDataDrive.canonicalPath(physicalHome.path)
+        XCTAssertEqual(drive.home, canonicalPhysicalHome)
         XCTAssertEqual(
             drive.root,
-            physicalHome.appendingPathComponent(
-                "Library/Application Support/Dory/Dory.dorydrive",
-                isDirectory: true
-            ).path
+            canonicalPhysicalHome + "/Library/Application Support/Dory/Dory.dorydrive"
         )
     }
 
@@ -316,7 +324,7 @@ final class DoryDataDriveTests: XCTestCase {
         let drive = try DoryDataDrive(home: base.path, overrideRoot: root.path)
 
         XCTAssertThrowsError(try drive.prepare()) { error in
-            XCTAssertEqual(error as? DoryDataDriveError, .populatedUnmarkedBundle(root.path))
+            XCTAssertEqual(error as? DoryDataDriveError, .populatedUnmarkedBundle(drive.root))
         }
     }
 

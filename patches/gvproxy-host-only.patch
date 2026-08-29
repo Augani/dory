@@ -1,0 +1,223 @@
+diff --git a/cmd/gvproxy/config.go b/cmd/gvproxy/config.go
+index 710edc2..35488a7 100644
+--- a/cmd/gvproxy/config.go
++++ b/cmd/gvproxy/config.go
+@@ -189,0 +190,5 @@ func GvproxyConfigure(config *GvproxyConfig, args *GvproxyArgs, version string)
++	switch config.Stack.Connectivity {
++	case "", types.NATConnectivity, types.HostOnlyConnectivity:
++	default:
++		return config, fmt.Errorf("unsupported stack connectivity mode %q", config.Stack.Connectivity)
++	}
+diff --git a/cmd/gvproxy/config_test.go b/cmd/gvproxy/config_test.go
+index 43b54fc..b308ad9 100644
+--- a/cmd/gvproxy/config_test.go
++++ b/cmd/gvproxy/config_test.go
+@@ -9,0 +10 @@ import (
++	"github.com/containers/gvisor-tap-vsock/pkg/types"
+@@ -71,0 +73,14 @@ func TestConfigInit(t *testing.T) {
++func TestConnectivityModeValidation(t *testing.T) {
++	for _, mode := range []string{"", "nat", "host-only"} {
++		config := GvproxyConfig{}
++		config.Stack.Connectivity = types.ConnectivityMode(mode)
++		_, err := GvproxyConfigure(&config, &GvproxyArgs{sshPort: -1}, "testing")
++		require.NoError(t, err)
++	}
++
++	config := GvproxyConfig{}
++	config.Stack.Connectivity = "untrusted"
++	_, err := GvproxyConfigure(&config, &GvproxyArgs{sshPort: -1}, "testing")
++	require.ErrorContains(t, err, "unsupported stack connectivity mode")
++}
++
+diff --git a/pkg/services/dns/dns.go b/pkg/services/dns/dns.go
+index 4656baf..265fee7 100644
+--- a/pkg/services/dns/dns.go
++++ b/pkg/services/dns/dns.go
+@@ -31,0 +32 @@ type dnsHandler struct {
++	allowExternal bool
+@@ -183,0 +185,4 @@ func (h *dnsHandler) addAnswers(m *dns.Msg) {
++		if !h.allowExternal {
++			m.Rcode = dns.RcodeNameError
++			return
++		}
+@@ -333,0 +339,4 @@ func New(udpConn net.PacketConn, tcpLn net.Listener, zones []types.Zone) (*Serve
++	return NewWithExternalResolution(udpConn, tcpLn, zones, true)
++}
++
++func NewWithExternalResolution(udpConn net.PacketConn, tcpLn net.Listener, zones []types.Zone, allowExternal bool) (*Server, error) {
+@@ -337 +346 @@ func New(udpConn net.PacketConn, tcpLn net.Listener, zones []types.Zone) (*Serve
+-	return newWithUpstreamResolver(udpConn, tcpLn, zones, upstream, cacheIPv6Availability(routableIPv6Available))
++	return newWithUpstreamResolver(udpConn, tcpLn, zones, upstream, cacheIPv6Availability(routableIPv6Available), allowExternal)
+@@ -341 +350 @@ func NewWithUpstreamResolver(udpConn net.PacketConn, tcpLn net.Listener, zones [
+-	return newWithUpstreamResolver(udpConn, tcpLn, zones, upstream, func() bool { return true })
++	return newWithUpstreamResolver(udpConn, tcpLn, zones, upstream, func() bool { return true }, true)
+@@ -344,2 +353,2 @@ func NewWithUpstreamResolver(udpConn net.PacketConn, tcpLn net.Listener, zones [
+-func newWithUpstreamResolver(udpConn net.PacketConn, tcpLn net.Listener, zones []types.Zone, upstream upstreamResolver, ipv6Available func() bool) (*Server, error) {
+-	handler := &dnsHandler{zones: zones, upstream: upstream, ipv6Available: ipv6Available}
++func newWithUpstreamResolver(udpConn net.PacketConn, tcpLn net.Listener, zones []types.Zone, upstream upstreamResolver, ipv6Available func() bool, allowExternal bool) (*Server, error) {
++	handler := &dnsHandler{zones: zones, upstream: upstream, ipv6Available: ipv6Available, allowExternal: allowExternal}
+diff --git a/pkg/services/dns/dns_test.go b/pkg/services/dns/dns_test.go
+index 745be98..d1b8a08 100644
+--- a/pkg/services/dns/dns_test.go
++++ b/pkg/services/dns/dns_test.go
+@@ -402,0 +403,20 @@ func TestAAAAAnswersAreInhibitedWithoutRoutableHostIPv6(t *testing.T) {
++func TestHostOnlyDNSAnswersLocalZonesWithoutConsultingUpstream(t *testing.T) {
++	server, err := NewWithExternalResolution(nil, nil, []types.Zone{{
++		Name:    "internal.",
++		Records: []types.Record{{Name: "host", IP: net.ParseIP("192.168.127.254")}},
++	}}, false)
++	require.NoError(t, err)
++
++	local := new(dns.Msg)
++	local.SetQuestion("host.internal.", dns.TypeA)
++	server.handler.addAnswers(local)
++	require.Len(t, local.Answer, 1)
++	require.Equal(t, "192.168.127.254", local.Answer[0].(*dns.A).A.String())
++
++	external := new(dns.Msg)
++	external.SetQuestion("example.com.", dns.TypeA)
++	server.handler.addAnswers(external)
++	require.Equal(t, dns.RcodeNameError, external.Rcode)
++	require.Empty(t, external.Answer)
++}
++
+diff --git a/pkg/services/forwarder/connectivity.go b/pkg/services/forwarder/connectivity.go
+new file mode 100644
+index 0000000..95d113c
+--- /dev/null
++++ b/pkg/services/forwarder/connectivity.go
+@@ -0,0 +1,25 @@
++package forwarder
++
++import (
++	"sync"
++
++	"gvisor.dev/gvisor/pkg/tcpip"
++)
++
++// resolveDestination is the single outbound policy boundary for both TCP and UDP. Host-only
++// traffic must match an explicit virtual-host NAT mapping; arbitrary guest destinations are
++// rejected before Go's host network APIs are invoked.
++func resolveDestination(
++	destination tcpip.Address,
++	nat map[tcpip.Address]tcpip.Address,
++	natLock *sync.Mutex,
++	allowExternal bool,
++) (tcpip.Address, bool) {
++	natLock.Lock()
++	replacement, hostMapping := nat[destination]
++	natLock.Unlock()
++	if hostMapping {
++		return replacement, true
++	}
++	return destination, allowExternal
++}
+diff --git a/pkg/services/forwarder/connectivity_test.go b/pkg/services/forwarder/connectivity_test.go
+new file mode 100644
+index 0000000..3c7ab17
+--- /dev/null
++++ b/pkg/services/forwarder/connectivity_test.go
+@@ -0,0 +1,29 @@
++package forwarder
++
++import (
++	"sync"
++	"testing"
++
++	"github.com/stretchr/testify/require"
++	"gvisor.dev/gvisor/pkg/tcpip"
++)
++
++func TestHostOnlyConnectivityPermitsOnlyExplicitHostMappings(t *testing.T) {
++	hostAlias := tcpip.AddrFrom4([4]byte{192, 168, 127, 254})
++	hostLoopback := tcpip.AddrFrom4([4]byte{127, 0, 0, 1})
++	external := tcpip.AddrFrom4([4]byte{203, 0, 113, 10})
++	nat := map[tcpip.Address]tcpip.Address{hostAlias: hostLoopback}
++	var lock sync.Mutex
++
++	resolved, allowed := resolveDestination(hostAlias, nat, &lock, false)
++	require.True(t, allowed)
++	require.Equal(t, hostLoopback, resolved)
++
++	resolved, allowed = resolveDestination(external, nat, &lock, false)
++	require.False(t, allowed)
++	require.Equal(t, external, resolved)
++
++	resolved, allowed = resolveDestination(external, nat, &lock, true)
++	require.True(t, allowed)
++	require.Equal(t, external, resolved)
++}
+diff --git a/pkg/services/forwarder/tcp.go b/pkg/services/forwarder/tcp.go
+index ae18ada..f023ef1 100644
+--- a/pkg/services/forwarder/tcp.go
++++ b/pkg/services/forwarder/tcp.go
+@@ -20 +20 @@ const linkLocalSubnet = "169.254.0.0/16"
+-func TCP(s *stack.Stack, nat map[tcpip.Address]tcpip.Address, natLock *sync.Mutex, ec2MetadataAccess bool) *tcp.Forwarder {
++func TCP(s *stack.Stack, nat map[tcpip.Address]tcpip.Address, natLock *sync.Mutex, ec2MetadataAccess bool, allowExternal bool) *tcp.Forwarder {
+@@ -29,3 +29,4 @@ func TCP(s *stack.Stack, nat map[tcpip.Address]tcpip.Address, natLock *sync.Mute
+-		natLock.Lock()
+-		if replaced, ok := nat[localAddress]; ok {
+-			localAddress = replaced
++		localAddress, allowed := resolveDestination(localAddress, nat, natLock, allowExternal)
++		if !allowed {
++			r.Complete(true)
++			return
+@@ -33 +33,0 @@ func TCP(s *stack.Stack, nat map[tcpip.Address]tcpip.Address, natLock *sync.Mute
+-		natLock.Unlock()
+diff --git a/pkg/services/forwarder/udp.go b/pkg/services/forwarder/udp.go
+index 7b00312..5094963 100644
+--- a/pkg/services/forwarder/udp.go
++++ b/pkg/services/forwarder/udp.go
+@@ -17 +17 @@ import (
+-func UDP(s *stack.Stack, nat map[tcpip.Address]tcpip.Address, natLock *sync.Mutex, ec2MetadataAccess bool) *udp.Forwarder {
++func UDP(s *stack.Stack, nat map[tcpip.Address]tcpip.Address, natLock *sync.Mutex, ec2MetadataAccess bool, allowExternal bool) *udp.Forwarder {
+@@ -25,3 +25,3 @@ func UDP(s *stack.Stack, nat map[tcpip.Address]tcpip.Address, natLock *sync.Mute
+-		natLock.Lock()
+-		if replaced, ok := nat[localAddress]; ok {
+-			localAddress = replaced
++		localAddress, allowed := resolveDestination(localAddress, nat, natLock, allowExternal)
++		if !allowed {
++			return
+@@ -29 +28,0 @@ func UDP(s *stack.Stack, nat map[tcpip.Address]tcpip.Address, natLock *sync.Mute
+-		natLock.Unlock()
+diff --git a/pkg/types/configuration.go b/pkg/types/configuration.go
+index 1e9eb42..c6c241c 100644
+--- a/pkg/types/configuration.go
++++ b/pkg/types/configuration.go
+@@ -29,0 +30,5 @@ type Configuration struct {
++	// Connectivity controls whether guest-originated traffic may leave the virtual host network.
++	// Empty and "nat" preserve upstream behavior. "host-only" permits only explicit NAT mappings
++	// back to the host and host-to-guest forwards; it never opens an external socket or resolver.
++	Connectivity ConnectivityMode `yaml:"connectivity,omitempty"`
++
+@@ -62,0 +68,11 @@ type Configuration struct {
++type ConnectivityMode string
++
++const (
++	NATConnectivity      ConnectivityMode = "nat"
++	HostOnlyConnectivity ConnectivityMode = "host-only"
++)
++
++func (c Configuration) AllowsExternalConnectivity() bool {
++	return c.Connectivity != HostOnlyConnectivity
++}
++
+diff --git a/pkg/virtualnetwork/services.go b/pkg/virtualnetwork/services.go
+index 5319d96..3f3728b 100644
+--- a/pkg/virtualnetwork/services.go
++++ b/pkg/virtualnetwork/services.go
+@@ -27 +27,2 @@ func addServices(configuration *types.Configuration, s *stack.Stack, ipPool *tap
+-	tcpForwarder := forwarder.TCP(s, translation, &natLock, configuration.Ec2MetadataAccess)
++	allowExternal := configuration.AllowsExternalConnectivity()
++	tcpForwarder := forwarder.TCP(s, translation, &natLock, configuration.Ec2MetadataAccess, allowExternal)
+@@ -29 +30 @@ func addServices(configuration *types.Configuration, s *stack.Stack, ipPool *tap
+-	udpForwarder := forwarder.UDP(s, translation, &natLock, configuration.Ec2MetadataAccess)
++	udpForwarder := forwarder.UDP(s, translation, &natLock, configuration.Ec2MetadataAccess, allowExternal)
+@@ -89 +90,6 @@ func dnsServer(configuration *types.Configuration, s *stack.Stack) (http.Handler
+-	server, err := dns.New(udpConn, tcpLn, configuration.DNS)
++	server, err := dns.NewWithExternalResolution(
++		udpConn,
++		tcpLn,
++		configuration.DNS,
++		configuration.AllowsExternalConnectivity(),
++	)

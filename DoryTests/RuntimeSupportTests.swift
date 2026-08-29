@@ -400,6 +400,14 @@ struct RuntimeSupportTests {
         #expect(!amd64.contains("/repo/Packages/ContainerizationEngine/.build/arm64-apple-macosx/debug/dory-hv"))
     }
 
+    @Test func bundledRawHVUsesNestedRunnerApplication() {
+        let application = URL(fileURLWithPath: "/Applications/Dory.app", isDirectory: true)
+        #expect(
+            SharedVMProvisioner.bundledHVRunnerExecutable(in: application)
+                == "/Applications/Dory.app/Contents/Helpers/DoryHVRunner.app/Contents/MacOS/dory-hv"
+        )
+    }
+
     @Test func sharedVMEmulationInstallerTargetsRequestedArch() throws {
         let arm64 = try JSONSerialization.jsonObject(with: SharedVMProvisioner.binfmtInstallBody(for: .arm64)) as? [String: Any]
         let amd64 = try JSONSerialization.jsonObject(with: SharedVMProvisioner.binfmtInstallBody(for: .amd64)) as? [String: Any]

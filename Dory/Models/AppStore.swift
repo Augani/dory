@@ -16,6 +16,47 @@ struct SettingsNotice: Identifiable, Equatable, Sendable {
     var message: String
 }
 
+private enum DoryMachineFileTransferUIError: LocalizedError {
+    case authorityChanged
+    case invalidCompletion
+    case remoteFailure(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .authorityChanged:
+            "The file transfer identity changed unexpectedly."
+        case .invalidCompletion:
+            "The guest returned incomplete file transfer evidence."
+        case .remoteFailure(let message):
+            message
+        }
+    }
+}
+
+private enum DorydBackendReadinessError: LocalizedError, CustomStringConvertible {
+    case engineUnavailable(state: String, detail: String)
+    case dockerTimedOut(socketPath: String, detail: String)
+
+    var errorDescription: String? {
+        switch self {
+        case let .engineUnavailable(state, detail):
+            if detail.isEmpty {
+                "Dory's engine became \(state) before Docker was ready."
+            } else {
+                "Dory's engine became \(state): \(detail)"
+            }
+        case let .dockerTimedOut(socketPath, detail):
+            if detail.isEmpty {
+                "Dory's engine is running, but Docker did not answer at \(socketPath)."
+            } else {
+                "Dory's engine is running, but Docker did not answer at \(socketPath): \(detail)"
+            }
+        }
+    }
+
+    var description: String { errorDescription ?? "Dory's engine did not become ready." }
+}
+
 enum ContainerFilter: String, CaseIterable, Sendable {
     case running, all, stopped
     var label: String {
@@ -80,7 +121,9 @@ final class AppStore {
     var showMenuBarIcon = true
     var routeDockerCLI = true
     var keepDorydRunningAfterQuit = false
-    var machineEnvAllowList: [String] = MachineEnvImport.defaultNames
+    /// Retained as an empty v1 managed-settings compatibility field. Host environment import is
+    /// disabled: credentials belong in scoped secret grants, never persisted machine environment.
+    var machineEnvAllowList: [String] = []
     var openLoginsOnMac = true
     var externalTerminalPreference = ExternalTerminalPreference(terminal: .terminal, customApplicationPath: nil)
     var dockerHostConflict: DockerHostConflict.Conflict?
@@ -191,7 +234,6 @@ final class AppStore {
     @ObservationIgnored private let authorizedNetworkingRemover: @Sendable () async throws -> Void
     @ObservationIgnored private let localCATrustManager: any LocalCATrustManaging
     @ObservationIgnored private let environment: [String: String]
-    @ObservationIgnored private let machineEnvResolver: @Sendable ([String]) async -> [String: String]
     @ObservationIgnored private let desktopMachineAssetPreparer: @Sendable (
         _ home: String,
         _ environment: [String: String],
@@ -199,6 +241,7 @@ final class AppStore {
     ) async throws -> DesktopMachineAssets
     @ObservationIgnored private let composeCommandRunner: any ToolCommandRunning
     @ObservationIgnored private let buildCommandRunner: any ToolCommandRunning
+    @ObservationIgnored private let userFacingDoryCommandResolver: @MainActor @Sendable () -> String?
     @ObservationIgnored private let finderStorageLocation = DoryFinderStorageLocation()
     @ObservationIgnored private var lastFinderStorageRefresh = Date.distantPast
     @ObservationIgnored private var lastFinderStorageGroups: [DoryStorageInventoryGroup]?
@@ -219,8 +262,8 @@ final class AppStore {
         environment: [String: String] = ProcessInfo.processInfo.environment,
         composeCommandRunner: any ToolCommandRunning = BoundedToolProcessRunner(),
         buildCommandRunner: any ToolCommandRunning = BoundedToolProcessRunner(),
-        machineEnvResolver: @escaping @Sendable ([String]) async -> [String: String] = { names in
-            await MachineEnvImport.resolve(names: names)
+        userFacingDoryCommandResolver: @escaping @MainActor @Sendable () -> String? = {
+            HostTools.userFacingDoryCommand()
         },
         desktopMachineAssetPreparer: @escaping @Sendable (
             _ home: String,
@@ -241,7 +284,7 @@ final class AppStore {
         self.environment = env
         self.composeCommandRunner = composeCommandRunner
         self.buildCommandRunner = buildCommandRunner
-        self.machineEnvResolver = machineEnvResolver
+        self.userFacingDoryCommandResolver = userFacingDoryCommandResolver
         self.desktopMachineAssetPreparer = desktopMachineAssetPreparer
         self.dorydClient = dorydClient
         self.dorydEngineEnabled = dorydFlags.enabled
@@ -259,9 +302,10 @@ final class AppStore {
         }
         self.localCATrustManager = localCATrustManager
         let networkHelperMaintenance = DoryAppDelegate.isNetworkHelperMaintenance()
-        let realLaunch = !networkHelperMaintenance
+        let realLaunch = !networkHelperMaintenance && !DoryAppDelegate.isTestHost
             && env["DORY_SECTION"] == nil && env["DORY_APPEARANCE"] == nil
-            && env["XCTestConfigurationFilePath"] == nil && env["DORY_UI_TEST"] != "1"
+            && env["XCTestConfigurationFilePath"] == nil
+            && env["XCTestSessionIdentifier"] == nil && env["DORY_UI_TEST"] != "1"
         // Every launch starts disconnected (empty, engine-off) until a real engine connects: the app
         // ships no demo data. Tests inject their own fixture runtime through the parameter.
         self.runtime = runtime ?? DisconnectedRuntime()
@@ -278,9 +322,10 @@ final class AppStore {
             _ = DoryUpdater.shared
             if let v = UserDefaults.standard.object(forKey: Self.routeDockerKey) as? Bool { routeDockerCLI = v }
             keepDorydRunningAfterQuit = Self.resolvedKeepDorydRunningAfterQuit(defaults: .standard)
-            if let raw = UserDefaults.standard.string(forKey: Self.machineEnvAllowListKey) {
-                machineEnvAllowList = MachineEnvImport.parse(raw)
-            }
+            // Earlier builds stored environment *names* here and copied their values into new VM
+            // definitions. Clear that opt-in permanently; legacy VM records remain launchable but
+            // no new machine inherits host credentials.
+            UserDefaults.standard.removeObject(forKey: Self.machineEnvAllowListKey)
             if let v = UserDefaults.standard.object(forKey: Self.openLoginsOnMacKey) as? Bool { openLoginsOnMac = v }
             externalTerminalPreference = ExternalTerminalPreferenceStore.load()
             if let saved = UserDefaults.standard.string(forKey: Self.kubernetesVersionKey) {
@@ -467,7 +512,7 @@ final class AppStore {
         if MacHostPlatform.current().isAppleSilicon {
             "Dory can still run on this Mac by proxying a local Docker-compatible engine such as Docker Desktop, Colima, Rancher Desktop, Podman, or OrbStack."
         } else {
-            "Dory's built-in Intel engine needs bundled engine assets and Hypervisor.framework support. This install can still proxy a local Docker-compatible engine such as Colima, Docker Desktop, Rancher Desktop, Podman, or OrbStack."
+            "Dory does not ship a built-in Intel engine. This install can proxy a local Docker-compatible engine such as Colima, Docker Desktop, Rancher Desktop, Podman, or OrbStack."
         }
     }
 
@@ -525,6 +570,12 @@ final class AppStore {
     nonisolated static func dorydEngineEnabled(environment: [String: String]) -> Bool {
         dorydEngineFlags(environment: environment).enabled
     }
+
+    /// A clean installed app can spend tens of seconds registering and validating its signed
+    /// LaunchAgent before doryd publishes the Mach service. Keep the app in its truthful starting
+    /// state for that whole first-launch window instead of converting a still-progressing launch
+    /// into a sticky engine error. Docker readiness has its own subsequent bounded wait.
+    nonisolated static let dorydBackendAttachTimeout: TimeInterval = 60
 
     private nonisolated static func dorydEngineFlags(environment: [String: String]) -> (enabled: Bool, required: Bool, explicit: Bool) {
         // Dory 0.4 has one production local-engine owner. Keep the positive flags only as an
@@ -638,7 +689,8 @@ final class AppStore {
 
     private var isAutomationContext: Bool {
         let env = environment
-        return env["XCTestConfigurationFilePath"] != nil || env["XCTestSessionIdentifier"] != nil
+        return DoryAppDelegate.isTestHost
+            || env["XCTestConfigurationFilePath"] != nil || env["XCTestSessionIdentifier"] != nil
             || env["DORY_UI_TEST"] == "1"
             || env["DORY_SECTION"] != nil || env["DORY_SHEET"] != nil || env["DORY_DETAIL_TAB"] != nil
             || env["DORY_APPEARANCE"] != nil || env["DORY_ONBOARDING"] != nil
@@ -697,13 +749,10 @@ final class AppStore {
         showSettingsSuccess(showMenuBarIcon ? "Menu bar icon enabled." : "Menu bar icon hidden.")
     }
 
-    func setMachineEnvAllowList(_ names: [String]) {
-        let normalized = MachineEnvImport.normalize(names)
-        machineEnvAllowList = normalized
-        UserDefaults.standard.set(MachineEnvImport.serialize(normalized), forKey: Self.machineEnvAllowListKey)
-        showSettingsSuccess(normalized.isEmpty
-            ? "New machines will not copy host environment variables."
-            : "New machines will copy \(normalized.count) allowed environment variable\(normalized.count == 1 ? "" : "s") when present.")
+    func setMachineEnvAllowList(_: [String]) {
+        machineEnvAllowList = []
+        UserDefaults.standard.removeObject(forKey: Self.machineEnvAllowListKey)
+        showSettingsSuccess("Host environment import is disabled for new machines.")
     }
 
     func completeOnboarding() {
@@ -737,8 +786,9 @@ final class AppStore {
     private var shimServer: ShimHTTPServer?
     var shimSocketPath: String { daemonSocketPath ?? DockerShim.defaultSocketPath }
     private(set) var shimRunning = false
-    /// Apple Silicon FEX translation for linux/amd64 images. Enabled on new installations and still
-    /// user-disableable; Rosetta remains a separate one-off `dory vm --rosetta` path.
+    /// Apple Silicon FEX translation for x86_64 Linux applications inside Dory's ARM64 container
+    /// VM. Enabled on new installations and still user-disableable. This does not boot an Intel
+    /// distro or ISO; Rosetta likewise translates applications inside an eligible ARM64 Linux VM.
     var rosettaX86Enabled = false
     /// Opt-in experimental GPU acceleration (virtio-gpu/Venus → virglrenderer → MoltenVK → Metal) for
     /// Vulkan and AI compute inside containers. Applied transactionally at engine restart; missing
@@ -874,13 +924,29 @@ final class AppStore {
             let (status, socketPath) = try await waitForDorydBackend()
             daemonSocketPath = socketPath
             runtimeOwnedByDoryd = true
-            runtime = DockerEngineRuntime(socketPath: socketPath, kind: .sharedVM)
+            let client = dorydClient
+            let home = environment["HOME"] ?? NSHomeDirectory()
+            let dockerRuntime = DockerEngineRuntime(
+                socketPath: socketPath,
+                kind: .sharedVM,
+                migrationTargetStorageUsageProbe: {
+                    let usage = try await client.dockerGuestDataDiskUsage()
+                    return try Self.verifiedMigrationTargetStorageUsage(
+                        usage,
+                        expectedSocketPath: socketPath,
+                        selectedDataDriveHome: home
+                    )
+                }
+            )
+            runtime = dockerRuntime
 
             if status.state != "running" {
                 // Opening Dory is an explicit "I want the engine" signal. doryd may arm a sleeping
                 // socket at login or after Auto-Idle, but the app should promote it to a live engine
                 // on attach; idle policy decides only whether it may sleep again later.
                 await refreshDorydRuntimeMode()
+                loadState = .connecting
+                sharedVMStatus = "Starting Dory's engine… The first launch can take a minute."
                 let started = try await dorydClient.engineStart()
                 guard started.ok else {
                     sharedVMStatus = started.message.isEmpty ? "doryd could not start the engine." : started.message
@@ -894,28 +960,136 @@ final class AppStore {
 
             engineSleeping = false
             engineActivity.setSleeping(false)
+            loadState = .connecting
+            sharedVMStatus = "Dory's engine is running; connecting to Docker…"
+            let snapshot = try await waitForDorydDockerReadiness(
+                runtime: dockerRuntime,
+                socketPath: socketPath
+            )
+            await applyRuntimeSnapshot(snapshot, synchronizeFinderStorage: true)
             sharedVMStatus = "Running through doryd"
-            await reload()
-            if loadState == .engineOff {
-                sharedVMStatus = "doryd started, but Docker did not answer at \(socketPath)."
-                _ = try? await dorydClient.engineStop()
-                runtimeOwnedByDoryd = false
-                daemonSocketPath = nil
-                runtime = DisconnectedRuntime()
-                return false
-            }
             await loadCustomDomainRoutes()
             return true
         } catch {
             runtimeOwnedByDoryd = false
             daemonSocketPath = nil
-            sharedVMStatus = "doryd is unavailable: \(error)"
+            if let readinessError = error as? DorydBackendReadinessError {
+                sharedVMStatus = readinessError.description
+            } else {
+                sharedVMStatus = "doryd is unavailable: \(error)"
+            }
             loadState = .engineOff
+            runtime = DisconnectedRuntime()
             return false
         }
     }
 
-    private func waitForDorydBackend(timeout: TimeInterval = 8) async throws -> (DorydEngineStatus, String) {
+    /// Binds a daemon-owned guest measurement to both authorities used by migration: the exact
+    /// Docker socket and the currently verified selected data drive. Capacity similarity is not an
+    /// identity proof; two different drives commonly have the same default 128 GiB ceiling.
+    nonisolated static func verifiedMigrationTargetStorageUsage(
+        _ usage: DorydDockerGuestDataDiskUsage,
+        expectedSocketPath: String,
+        selectedDataDriveHome home: String
+    ) throws -> MigrationTargetStorageUsage {
+        guard usage.engineSocketPath == expectedSocketPath else {
+            throw MigrationStrictInventoryError.incomplete(
+                "doryd measured a different engine socket than the migration target"
+            )
+        }
+
+        let selectedDriveID: UUID
+        do {
+            let store = try DoryDataDriveSelectionStore(home: home)
+            guard let selection = try store.read(), selection.phase == .ready,
+                  let drive = try store.inspectSelection() else {
+                throw MigrationStrictInventoryError.incomplete(
+                    "Dory has no verified selected data drive"
+                )
+            }
+            let manifest = try drive.readManifest()
+            guard manifest.id == selection.driveID else {
+                throw MigrationStrictInventoryError.incomplete(
+                    "Dory's selected data-drive record changed during verification"
+                )
+            }
+            selectedDriveID = selection.driveID
+        } catch let error as MigrationStrictInventoryError {
+            throw error
+        } catch {
+            throw MigrationStrictInventoryError.incomplete(
+                "Dory's selected data-drive identity could not be verified: \(error)"
+            )
+        }
+        guard usage.dataDriveID == selectedDriveID else {
+            throw MigrationStrictInventoryError.incomplete(
+                "doryd measured a different data drive than the migration target"
+            )
+        }
+        guard let totalBytes = Int64(exactly: usage.totalBytes),
+              let usedBytes = Int64(exactly: usage.usedBytes),
+              let availableBytes = Int64(exactly: usage.availableBytes) else {
+            throw MigrationStrictInventoryError.incomplete(
+                "Dory guest data-disk usage exceeds the supported signed byte range"
+            )
+        }
+        return MigrationTargetStorageUsage(
+            totalBytes: totalBytes,
+            usedBytes: usedBytes,
+            availableBytes: availableBytes
+        )
+    }
+
+    /// `engineStart` confirms doryd's lifecycle promotion, but attaching clients can still race the
+    /// publication of the forwarded Unix socket or the first complete Docker inventory response.
+    /// Keep the UI in a truthful connecting state and retry that narrow handoff. A failed probe must
+    /// never stop daemon-owned work that is still becoming ready.
+    private func waitForDorydDockerReadiness(
+        runtime: DockerEngineRuntime,
+        socketPath: String,
+        timeout: TimeInterval = 30
+    ) async throws -> RuntimeSnapshot {
+        let deadline = Date().addingTimeInterval(timeout)
+        var lastRuntimeError = ""
+
+        repeat {
+            do {
+                return try await runtime.snapshot()
+            } catch {
+                lastRuntimeError = error.localizedDescription
+            }
+
+            if let status = try? await dorydClient.engineStatus() {
+                switch status.state {
+                case "failed", "stopped", "unconfigured":
+                    throw DorydBackendReadinessError.engineUnavailable(
+                        state: status.state,
+                        detail: status.detail
+                    )
+                case "starting":
+                    sharedVMStatus = "Starting Dory's engine… The first launch can take a minute."
+                case "running":
+                    sharedVMStatus = "Dory's engine is running; connecting to Docker…"
+                case "sleeping":
+                    sharedVMStatus = "Waking Dory's engine…"
+                default:
+                    sharedVMStatus = "Waiting for Dory's engine…"
+                }
+            }
+
+            try Task.checkCancellation()
+            try await Task.sleep(for: .milliseconds(250))
+        } while Date() < deadline
+
+        throw DorydBackendReadinessError.dockerTimedOut(
+            socketPath: socketPath,
+            detail: lastRuntimeError
+        )
+    }
+
+    private func waitForDorydBackend(
+        timeout: TimeInterval = AppStore.dorydBackendAttachTimeout
+    ) async throws -> (DorydEngineStatus, String) {
         let deadline = Date().addingTimeInterval(timeout)
         var lastError: Error?
         repeat {
@@ -972,10 +1146,12 @@ final class AppStore {
     func connectBackend() async {
         // Automation launches (UI tests, screenshot harnesses) never boot the real engine: they
         // exercise the app against the honest disconnected state unless they opt into a backend
-        // with an explicit DORY_RUNTIME.
+        // with an explicit runtime, daemon flag, or injected non-Mach-service endpoint.
         let runtimeOverride = environment["DORY_RUNTIME"]
-        if isAutomationContext, runtimeOverride == nil,
-           !(dorydEngineExplicitlyRequested && dorydEngineEnabled && enginePreference == .dory) {
+        let explicitlyAuthorizedBackend = runtimeOverride != nil
+            || !dorydClient.usesMachService
+            || (dorydEngineExplicitlyRequested && dorydEngineEnabled && enginePreference == .dory)
+        if isAutomationContext, !explicitlyAuthorizedBackend {
             loadState = .engineOff
             return
         }
@@ -1031,9 +1207,9 @@ final class AppStore {
         await connectBackend()
     }
 
-    /// Stops and re-provisions the shared engine so engine-level settings (GPU, amd64 emulation,
-    /// memory) or a newly installed Venus runtime take effect. The daemon-owned path captures the
-    /// exact running-container set and explicitly starts only those containers after reconnecting.
+    /// Stops and re-provisions the shared engine so engine-level settings (GPU, x86_64 application
+    /// compatibility, memory) or a newly installed Venus runtime take effect. The daemon-owned path
+    /// captures the exact running-container set and explicitly starts only those containers after reconnecting.
     func restartEngine() async {
         guard runtimeKind == .sharedVM || runtimeKind == .disconnected, !isConnecting else { return }
         sharedVMStatus = "Restarting the engine…"
@@ -1618,7 +1794,9 @@ final class AppStore {
         var checks: [DoryUpgradeSmokeCheck] = []
         if Bundle.main.object(forInfoDictionaryKey: "DoryUpgradeGateForceSmokeFailure") as? Bool == true {
             do {
-                let component = try await applyReleaseGateComponentUpdate()
+                let component = try await applyReleaseGateComponentUpdate(
+                    operationID: record.id
+                )
                 checks.append(.init(
                     id: "release-gate.component-update",
                     passed: true,
@@ -1701,7 +1879,9 @@ final class AppStore {
         return checks
     }
 
-    private func applyReleaseGateComponentUpdate() async throws -> DoryInstalledComponent {
+    private func applyReleaseGateComponentUpdate(
+        operationID: UUID
+    ) async throws -> DoryInstalledComponent {
         guard let rawURL = Bundle.main.object(forInfoDictionaryKey: "DoryUpgradeGateComponentCatalogURL") as? String,
               let url = URL(string: rawURL), url.scheme?.lowercased() == "https",
               ["127.0.0.1", "::1"].contains(url.host ?? ""),
@@ -1730,7 +1910,8 @@ final class AppStore {
         }
         return try await DoryComponentInstaller(store: store).install(
             release,
-            catalogData: fetched.data
+            catalogData: fetched.data,
+            operationID: operationID
         ) { _ in }
     }
 
@@ -1799,11 +1980,12 @@ final class AppStore {
         return getsockopt(descriptor, SOL_SOCKET, SO_ERROR, &socketError, &length) == 0 && socketError == 0
     }
 
-    /// Toggles the FEX x86/amd64 path and restarts the shared engine so the new mode takes effect.
+    /// Toggles FEX for x86_64 Linux applications inside the ARM64 container VM and restarts the
+    /// shared engine. It never exposes an x86_64 guest OS or installer path.
     func setRosettaX86(_ on: Bool) async {
         guard on != rosettaX86Enabled else { return }
         guard !on || MacHostPlatform.current().isAppleSilicon else {
-            showSettingsFailure("x86/amd64 emulation is an Apple-silicon-only option; amd64 is native on Intel Macs.")
+            showSettingsFailure("x86_64 Linux application compatibility is available only inside Dory's ARM64 engine on Apple Silicon; Dory does not ship an Intel engine.")
             return
         }
         guard !engineSettingChangeInFlight else {
@@ -1828,18 +2010,18 @@ final class AppStore {
                 UserDefaults.standard.set(value, forKey: SharedVMProvisioner.Config.rosettaX86Key)
                 UserDefaults.standard.set(previousGPU, forKey: SharedVMProvisioner.Config.gpuVenusKey)
             },
-            applyingMessage: on ? "Enabling x86/amd64 emulation…" : "Disabling x86/amd64 emulation…",
+            applyingMessage: on ? "Enabling x86_64 application compatibility…" : "Disabling x86_64 application compatibility…",
             successMessage: on && previousGPU
-                ? "x86/amd64 emulation enabled. GPU acceleration was disabled to keep the required 4 KiB page size."
-                : (on ? "x86/amd64 emulation enabled." : "x86/amd64 emulation disabled.")
+                ? "x86_64 application compatibility enabled. GPU acceleration was disabled to keep the required 4 KiB page size."
+                : (on ? "x86_64 application compatibility enabled." : "x86_64 application compatibility disabled.")
         ) {
             return
         }
         guard runtimeKind == .sharedVM || runtimeKind == .disconnected, !isConnecting else { return }
-        sharedVMStatus = on ? "Enabling x86/amd64 emulation…" : "Disabling x86/amd64 emulation…"
+        sharedVMStatus = on ? "Enabling x86_64 application compatibility…" : "Disabling x86_64 application compatibility…"
         await SharedVMProvisioner.stopEngine()
         await connectBackend()
-        showSettingsSuccess(on ? "x86/amd64 emulation enabled." : "x86/amd64 emulation disabled.")
+        showSettingsSuccess(on ? "x86_64 application compatibility enabled." : "x86_64 application compatibility disabled.")
     }
 
     /// Toggles experimental GPU acceleration (virtio-gpu/Venus) and restarts the shared engine so the
@@ -1856,7 +2038,7 @@ final class AppStore {
             return
         }
         guard !on || !rosettaX86Enabled else {
-            showSettingsFailure("GPU acceleration cannot be enabled while x86/amd64 emulation is on. FEX requires Dory's 4 KiB guest kernel.")
+            showSettingsFailure("GPU acceleration cannot be enabled while x86_64 application compatibility is on. FEX requires Dory's 4 KiB ARM64 guest kernel.")
             return
         }
         engineSettingChangeInFlight = true
@@ -1892,8 +2074,9 @@ final class AppStore {
         physicalMemory: UInt64 = ProcessInfo.processInfo.physicalMemory
     ) -> EngineResourceLimits {
         let maximumCPUCount = max(1, min(activeProcessorCount, Int(UInt16.max)))
-        let hostMemoryMB = Int(clamping: physicalMemory / (1024 * 1024))
-        let maximumMemoryMB = max(2048, min(hostMemoryMB - 4096, Int(UInt32.max)))
+        let maximumMemoryMB = DoryEngineMemoryPolicy.maximumConfigurableMemoryMB(
+            physicalMemory: physicalMemory
+        )
         return EngineResourceLimits(
             maximumCPUCount: maximumCPUCount,
             maximumMemoryMB: maximumMemoryMB
@@ -1959,7 +2142,8 @@ final class AppStore {
     /// long shutdown timeout, let launchd replace doryd with the new explicit environment, then
     /// reconnect and explicitly restart the exact containers that were running before the stop.
     /// Any failure restores the persisted value and makes one recovery attempt with the prior
-    /// configuration so a rejected GPU/amd64 choice cannot strand the engine or user workloads.
+    /// configuration so a rejected GPU/x86_64-application choice cannot strand the engine or user
+    /// workloads.
     private func applyDorydOwnedEngineSetting<Value>(
         previousValue: Value,
         restore: @MainActor (Value) -> Void,
@@ -2145,6 +2329,7 @@ final class AppStore {
         var failures: [String] = []
         for machineID in machineIDs {
             do {
+                try await refreshManagedDesktopKernelBeforeStart(machineID)
                 _ = try await dorydClient.machineStart(machineID)
             } catch {
                 failures.append("\(machineID) (\(error.localizedDescription))")
@@ -2152,6 +2337,45 @@ final class AppStore {
         }
         loadMachines()
         return failures
+    }
+
+    /// Existing managed desktops retain their root disk across app/component upgrades. Refresh
+    /// only Dory's copied direct-boot kernel before launch so renderer qualification is bound to
+    /// the current verified runtime without touching the guest filesystem or user data.
+    private func refreshManagedDesktopKernelBeforeStart(_ machineID: String) async throws {
+        guard let status = try await dorydClient.machineList().first(where: {
+            $0.id == machineID
+        }) else {
+            throw DesktopMachineAssetError.filesystem(
+                "machine \(machineID) is unavailable"
+            )
+        }
+        guard status.bootMode == .linuxKernel,
+              status.displayMode == .desktop else {
+            return
+        }
+        let typedSettings = status.typedSettings ?? DorydMachineTypedSettings(
+            legacyEnvironment: status.environment,
+            displayMode: status.displayMode
+        )
+        let distro = DesktopMachineDistro.resolve(
+            typedSettings.guestIdentityIntent.desktop?.distributionIdentifier
+        )
+        let home = environment["HOME"] ?? NSHomeDirectory()
+        let assets = try await desktopMachineAssetPreparer(
+            home,
+            Self.desktopAssetEnvironment(processEnvironment: environment, distro: distro),
+            Bundle.main.resourcePath
+        )
+        let kernelPath = assets.kernelPath
+        let kernelSHA256 = try await Task.detached(priority: .userInitiated) {
+            try DesktopMachineAssetProvisioner.preparedKernelSHA256(at: kernelPath)
+        }.value
+        _ = try await dorydClient.machineRefreshManagedDesktopKernel(
+            machineID,
+            sourcePath: kernelPath,
+            sourceSHA256: kernelSHA256
+        )
     }
 
     private nonisolated static func workloadFailureSummary(_ failures: [String]) -> String {
@@ -2187,8 +2411,6 @@ final class AppStore {
         enabled: openLoginsOnMac,
         open: { url in DispatchQueue.main.async { NSWorkspace.shared.open(url) } }
     )
-    @ObservationIgnored private let usbAttachments = UsbAttachmentStore()
-    @ObservationIgnored private var usbReplayedMachines: Set<String> = []
     private let domainTable = DomainTable()
     @ObservationIgnored private var dns = DoryDNS()
     @ObservationIgnored private let reverseProxy: DoryReverseProxy
@@ -2441,6 +2663,7 @@ final class AppStore {
             httpProxyPort: httpProxyPort,
             httpsProxyPort: httpsProxyPort,
             hostCLIEnabled: routeDockerCLI,
+            vmQualificationBootstrapEnabled: AppInfo.vmQualificationBootstrapEnabled,
             amd64EmulationEnabled: rosettaX86Enabled && MacHostPlatform.current().isAppleSilicon,
             gpuVenusEnabled: gpuVenusEnabled,
             cpuCount: UInt16(clamping: engineCPUCount),
@@ -2619,26 +2842,11 @@ final class AppStore {
     func registerMachineBridge(_ name: String) {
         try? FileManager.default.createDirectory(atPath: MachineService.bridgeHostDir(for: name), withIntermediateDirectories: true)
         hostBridge.startWatching(machine: name)
-        replayRememberedUSB(machine: name)
     }
 
     func unregisterMachineBridge(_ name: String) {
         hostBridge.stopWatching(machine: name)
         portForwarder.teardownLoopback(forMachine: name)
-        usbReplayedMachines.remove(name)
-    }
-
-    private func replayRememberedUSB(machine: String) {
-        guard UsbPassthroughAvailability.attachSupported else { return }
-        guard !usbReplayedMachines.contains(machine) else { return }
-        let commands = usbAttachments.reattachCommands(for: machine)
-        usbReplayedMachines.insert(machine)
-        guard !commands.isEmpty else { return }
-        Task.detached(priority: .utility) {
-            for arguments in commands {
-                _ = await UsbDevicesView.runDory(arguments)
-            }
-        }
     }
 
     /// `<name>.dory.local` → the published host port that reaches the container. Containers without a
@@ -3450,6 +3658,22 @@ final class AppStore {
             try? await syncFinderStorageLocation(force: true)
             return
         }
+        await applyRuntimeSnapshot(snap, synchronizeFinderStorage: true)
+    }
+
+    private func reloadWithoutExtendingEngineIdle() async {
+        guard runtimeOwnedByDoryd, let docker = runtime as? DockerEngineRuntime,
+              let payload = try? await dorydClient.engineDashboardSnapshot(),
+              let snapshot = try? docker.dashboardSnapshot(from: payload) else {
+            return
+        }
+        await applyRuntimeSnapshot(snapshot, synchronizeFinderStorage: false)
+    }
+
+    private func applyRuntimeSnapshot(
+        _ snap: RuntimeSnapshot,
+        synchronizeFinderStorage: Bool
+    ) async {
         if containers != snap.containers { containers = snap.containers; syncMachineStats(); noteEngineActivity() }
         if images != snap.images { images = snap.images; noteEngineActivity() }
         if volumes != snap.volumes { volumes = snap.volumes }
@@ -3465,7 +3689,9 @@ final class AppStore {
         cpuHistory = cpuHistory.filter { liveIDs.contains($0.key) }
         let newState: LoadState = snap.engineRunning ? .ready : .engineOff
         if loadState != newState { loadState = newState }
-        try? await syncFinderStorageLocation()
+        if synchronizeFinderStorage {
+            try? await syncFinderStorageLocation()
+        }
     }
 
     var canBrowseDoryStorage: Bool {
@@ -3488,6 +3714,10 @@ final class AppStore {
     }
 
     private func syncFinderStorageLocation(force: Bool = false) async throws {
+        // An injected test environment can intentionally omit XCTest's variables while exercising
+        // a real-shaped runtime. The host-process classification is authoritative: tests must
+        // never register, hide, materialize, or publish into the user's live File Provider domain.
+        guard !isAutomationContext else { return }
         guard canBrowseDoryStorage, let docker = runtime as? DockerEngineRuntime else {
             await finderStorageLocation.hide()
             finderStorageLocationActive = false
@@ -3538,7 +3768,11 @@ final class AppStore {
         // or an external docker request wakes it through doryd's data plane.
         if engineSleeping { return }
         capEngineLogIfDue()
-        await reload()
+        if runtimeOwnedByDoryd {
+            await reloadWithoutExtendingEngineIdle()
+        } else {
+            await reload()
+        }
         loadMachines()
         if runtimeKind == .sharedVM { await loadKubernetes() }
         await evaluateIdleSleep()
@@ -3552,7 +3786,11 @@ final class AppStore {
         loadMachines()
         if await syncDorydEngineStateBeforeDockerPoll() { return }
         if engineSleeping { return }
-        await reload()
+        if runtimeOwnedByDoryd {
+            await reloadWithoutExtendingEngineIdle()
+        } else {
+            await reload()
+        }
         if runtimeKind == .sharedVM { await loadKubernetes() }
     }
 
@@ -3576,6 +3814,13 @@ final class AppStore {
             engineActivity.touch()
             sharedVMStatus = status.detail.isEmpty ? "Running through doryd" : status.detail
             return false
+        case "starting":
+            engineSleeping = false
+            engineActivity.setSleeping(false)
+            engineRunning = false
+            loadState = .connecting
+            sharedVMStatus = status.detail.isEmpty ? "Starting the engine…" : status.detail
+            return true
         case "stopped", "failed", "unconfigured":
             engineSleeping = false
             engineActivity.setSleeping(false)
@@ -5083,9 +5328,16 @@ final class AppStore {
                 cpus: status.cpuCount,
                 memoryMB: status.memoryMB.flatMap { Int(exactly: $0) },
                 mounts: status.shares.map(Self.mountPair(fromDoryd:)),
-                env: status.environment,
+                env: [:],
+                virtualMachineSettings: status.typedSettings
+                    ?? DorydMachineTypedSettings(
+                        legacyEnvironment: status.environment,
+                        displayMode: status.displayMode
+                    ),
+                displayPresentation: status.displayPresentation,
                 address: status.configuredAddress,
-                displayMode: status.displayMode
+                displayMode: status.displayMode,
+                bootMode: status.bootMode
             )
         } catch {
             actionError = "Could not load doryd machine settings: \(error)"
@@ -5094,8 +5346,23 @@ final class AppStore {
     }
 
     private(set) var busyMachines: Set<String> = []
+    @ObservationIgnored private var machineEventSequence: UInt64 = 0
+    private(set) var machineFileTransfers: [String: DorydMachineFileTransferOperation] = [:]
+    private(set) var machineGuestFileExports: [String: DorydMachineGuestFileExportOperation] = [:]
+    private var recoveringMachineFileTransfers: Set<String> = []
+    private var recoveringMachineGuestFileExports: Set<String> = []
+    private var machineGuestFileExportSuggestedNames: [String: String] = [:]
     var machineBusy: Bool { !busyMachines.isEmpty }
     func isMachineBusy(_ name: String) -> Bool { busyMachines.contains(name) }
+    func machineFileTransfer(for name: String) -> DorydMachineFileTransferOperation? {
+        machineFileTransfers[name]
+    }
+    func machineGuestFileExport(for name: String) -> DorydMachineGuestFileExportOperation? {
+        machineGuestFileExports[name]
+    }
+    func suggestedGuestFileExportName(for name: String) -> String {
+        machineGuestFileExportSuggestedNames[name] ?? "\(name)-export"
+    }
     static let importBusyKey = "__dory_import__"
     var machineCreationTitle = ""
     var machineCreationLog = ""
@@ -5103,20 +5370,54 @@ final class AppStore {
     var machineCreated: Machine?
 
     func loadMachines() {
-        guard runtimeOwnedByDoryd else { machines = []; return }
-        Task { await refreshMachines() }
+        guard runtimeOwnedByDoryd else {
+            machineEventSequence = 0
+            machines = []
+            return
+        }
+        Task { await refreshMachines(useEventCursor: true) }
     }
 
     @discardableResult
-    private func refreshMachines() async -> [Machine] {
+    private func refreshMachines(useEventCursor: Bool = false) async -> [Machine] {
         guard runtimeOwnedByDoryd else {
+            machineEventSequence = 0
             machines = []
             dns.replaceHostIPs([:])
             return []
         }
+        var eventBatch: DorydMachineEventBatch?
+        var requiresMachineSnapshot = true
+        let requestedEventSequence = machineEventSequence
+        if useEventCursor {
+            eventBatch = try? await dorydClient.machineEvents(
+                afterSequence: requestedEventSequence
+            )
+            if let eventBatch {
+                requiresMachineSnapshot = eventBatch.snapshotRequired
+                    || !eventBatch.events.isEmpty
+                if !requiresMachineSnapshot {
+                    advanceMachineEventSequence(
+                        eventBatch.headSequence,
+                        requestedSequence: requestedEventSequence
+                    )
+                }
+            }
+        }
         do {
-            machines = try await dorydClient.machineList().map {
-                Self.machine(fromDoryd: $0, domainSuffix: domainSuffix)
+            if requiresMachineSnapshot {
+                machines = try await dorydClient.machineList().map {
+                    Self.machine(fromDoryd: $0, domainSuffix: domainSuffix)
+                }
+                if actionError?.hasPrefix("doryd machine list failed:") == true {
+                    actionError = nil
+                }
+                if let eventBatch {
+                    advanceMachineEventSequence(
+                        eventBatch.headSequence,
+                        requestedSequence: requestedEventSequence
+                    )
+                }
             }
             for machine in machines where machine.status == .running {
                 Task { [weak self] in
@@ -5127,12 +5428,27 @@ final class AppStore {
                     self.machines[index].cpuPercent = stats.cpuPercent
                     self.machines[index].memoryDisplay = Self.machineMemoryDisplay(stats)
                 }
+                recoverActiveFileTransfer(for: machine)
+                recoverGuestFileExport(for: machine)
             }
             return machines
         } catch {
             actionError = "doryd machine list failed: \(error)"
             machines = []
             return []
+        }
+    }
+
+    private func advanceMachineEventSequence(
+        _ headSequence: UInt64,
+        requestedSequence: UInt64
+    ) {
+        // Async refreshes can overlap at suspension points. Never let an older response move a
+        // newer cursor backwards; allow a daemon-reset snapshot to lower only the cursor that made
+        // that exact request.
+        if machineEventSequence == requestedSequence
+            || headSequence > machineEventSequence {
+            machineEventSequence = headSequence
         }
     }
 
@@ -5151,8 +5467,10 @@ final class AppStore {
         switch status.state {
         case "running":
             runState = .running
-        case "starting":
+        case "paused", "starting":
             runState = .paused
+        case "suspended":
+            runState = .suspended
         default:
             runState = .stopped
         }
@@ -5160,26 +5478,51 @@ final class AppStore {
             .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
             .first { !$0.isEmpty } ?? status.state
         let isDesktop = status.displayMode == .desktop
-        let desktopDistro = DesktopMachineDistro.resolve(status.environment["DORY_DESKTOP_DISTRO"])
-        let guestUsername = status.environment["DORY_GUEST_USER"] ?? (isDesktop ? "dory" : "root")
+        let isCustomLinux = status.bootMode == .efi
+        let typedSettings = status.typedSettings ?? DorydMachineTypedSettings(
+            legacyEnvironment: status.environment,
+            displayMode: status.displayMode
+        )
+        let desktopDistro = DesktopMachineDistro.resolve(
+            typedSettings.guestIdentityIntent.desktop?.distributionIdentifier
+        )
+        let guestUsername = typedSettings.guestIdentityIntent.account?.username
+            ?? (isCustomLinux ? "installer" : (isDesktop ? "dory" : "root"))
+        let fileTransferPolicy = status.runtimeIdentity.mode == "legacy-compatibility"
+            ? DoryVMClipboardDirection.bidirectional
+            : typedSettings.clipboardPolicy?.files ?? .off
         return Machine(
             name: status.id,
-            distro: isDesktop ? desktopDistro.displayName : "Dory Linux",
-            version: isDesktop ? "\(desktopDistro.version) · \(desktopDistro.desktopName)" : detail,
+            distro: isCustomLinux ? "Custom Linux" : (isDesktop ? desktopDistro.displayName : "Dory Linux"),
+            version: isCustomLinux ? "EFI · arm64" : (isDesktop ? "\(desktopDistro.version) · \(desktopDistro.desktopName)" : detail),
             status: runState,
             cpuPercent: 0,
             memoryDisplay: "—",
             ip: status.address ?? Self.machineDNSName(name: status.id, suffix: domainSuffix),
-            letter: isDesktop ? String(desktopDistro.displayName.prefix(1)) : "D",
-            badgeHex: isDesktop ? desktopDistro.badgeHex : 0x3B82F6,
+            letter: isCustomLinux ? "L" : (isDesktop ? String(desktopDistro.displayName.prefix(1)) : "D"),
+            badgeHex: isCustomLinux ? 0x7C3AED : (isDesktop ? desktopDistro.badgeHex : 0x3B82F6),
             containerID: "",
             arch: "",
             recipe: "doryd",
             username: guestUsername,
-            loginShell: isDesktop ? "/bin/bash" : "/bin/sh",
+            loginShell: isCustomLinux ? "" : (isDesktop ? "/bin/bash" : "/bin/sh"),
             shellSocketPath: status.shellSocketPath ?? "",
             processID: status.pid,
+            failure: status.failure,
+            activeOperation: status.activeOperation,
+            flightRecorderHeadSequence: status.flightRecorderHeadSequence,
+            flightRecorderAvailable: status.flightRecorderAvailable,
             displayMode: status.displayMode,
+            bootMode: status.bootMode,
+            installerMediaAttached: status.installerMediaAttached,
+            runtimeIdentity: status.runtimeIdentity,
+            runtimeGraphicsSelection: status.runtimeGraphicsSelection,
+            cloneReceipt: status.cloneReceipt,
+            agentBuild: status.agentBuild,
+            agentProtocolVersion: status.agentProtocolVersion,
+            agentCapabilities: status.agentCapabilities,
+            integrationHealth: status.integrationHealth,
+            fileTransferPolicy: fileTransferPolicy,
             mounts: status.shares.map(Self.mountPair(fromDoryd:))
         )
     }
@@ -5191,32 +5534,85 @@ final class AppStore {
     }
 
     nonisolated private static func mountPair(fromDoryd share: DorydMachineShareConfiguration) -> MountPair {
-        MountPair(host: share.hostPath, guest: share.guestPath, readOnly: share.readOnly)
+        MountPair(
+            host: share.hostPath,
+            guest: share.guestPath,
+            readOnly: share.readOnly,
+            shareTag: share.tag
+        )
     }
 
-    nonisolated private static func dorydShares(from mounts: [MountPair]) -> [DorydMachineShareConfiguration] {
-        mounts.enumerated().compactMap { index, mount in
+    nonisolated static func dorydShares(from mounts: [MountPair]) -> [DorydMachineShareConfiguration] {
+        var usedTags = Set(mounts.compactMap { mount -> String? in
+            let tag = mount.shareTag?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return tag?.isEmpty == false ? tag : nil
+        })
+        var nextGeneratedTag = 0
+        var shares: [DorydMachineShareConfiguration] = []
+
+        for mount in mounts {
             let host = mount.host.trimmingCharacters(in: .whitespacesAndNewlines)
             let guest = mount.guest.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !host.isEmpty, !guest.isEmpty else { return nil }
-            return DorydMachineShareConfiguration(
-                tag: "doryapp\(index)",
+            guard !host.isEmpty, !guest.isEmpty else { continue }
+            let explicitTag = mount.shareTag?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let tag: String
+            if let explicitTag, !explicitTag.isEmpty {
+                tag = explicitTag
+            } else {
+                while usedTags.contains("doryapp\(nextGeneratedTag)") {
+                    nextGeneratedTag += 1
+                }
+                tag = "doryapp\(nextGeneratedTag)"
+                nextGeneratedTag += 1
+                usedTags.insert(tag)
+            }
+            let bookmark = try? URL(fileURLWithPath: host).bookmarkData(
+                options: [.minimalBookmark],
+                includingResourceValuesForKeys: [.fileResourceIdentifierKey, .volumeIdentifierKey],
+                relativeTo: nil
+            )
+            shares.append(DorydMachineShareConfiguration(
+                tag: tag,
                 hostPath: host,
                 guestPath: guest,
-                readOnly: mount.readOnly
-            )
+                readOnly: mount.readOnly,
+                authorizationBookmark: bookmark
+            ))
         }
+        return shares
     }
 
     func machineTerminalCommand(_ machine: Machine) -> String? {
-        guard runtimeOwnedByDoryd else { return nil }
+        guard canOpenMachineTerminal(machine) else { return nil }
         return TerminalLauncher.userFacingMachineShellCommand(target: UserFacingMachineShellTarget(
             machineID: machine.name
         ))
     }
 
     func canOpenMachineTerminal(_ machine: Machine) -> Bool {
-        runtimeOwnedByDoryd && !machine.shellSocketPath.isEmpty && HostTools.userFacingDoryCommand() != nil
+        runtimeOwnedByDoryd && !machine.shellSocketPath.isEmpty && userFacingDoryCommandResolver() != nil
+    }
+
+    func readMachineSerialConsole(
+        _ machine: Machine,
+        cursor: DorydMachineSerialConsoleCursor,
+        limit: UInt32 = 64 * 1_024
+    ) async throws -> DorydMachineSerialConsoleBatch {
+        guard runtimeOwnedByDoryd else {
+            throw DorydClientError.daemon(Self.dorydMachineManagerRequired("machine serial console"))
+        }
+        return try await dorydClient.machineSerialConsole(
+            machineID: machine.name,
+            cursor: cursor,
+            limit: limit
+        )
+    }
+
+    func writeMachineSerialConsole(_ machine: Machine, data: Data) async throws {
+        guard runtimeOwnedByDoryd else {
+            throw DorydClientError.daemon(Self.dorydMachineManagerRequired("machine serial console"))
+        }
+        _ = try await dorydClient.writeMachineSerialConsole(machineID: machine.name, data: data)
     }
 
     func canOpenMachineDesktop(_ machine: Machine) -> Bool {
@@ -5232,7 +5628,10 @@ final class AppStore {
             actionError = "The Desktop Linux display is not available yet. Start the machine and try again."
             return
         }
-        guard application.activate(options: [.activateAllWindows]) else {
+        if application.activate(options: [.activateAllWindows]) { return }
+        // Raw-HV desktops run in an unbundled helper, which LaunchServices can discover by PID but
+        // does not always activate. The helper handles SIGUSR1 by raising its own display window.
+        guard Darwin.kill(processID, SIGUSR1) == 0 else {
             actionError = "Dory could not bring \(machine.name)'s desktop window forward."
             return
         }
@@ -5240,6 +5639,588 @@ final class AppStore {
 
     func canUseMachineArtifacts(_ machine: Machine) -> Bool {
         runtimeOwnedByDoryd
+    }
+
+    func canTransferFiles(to machine: Machine) -> Bool {
+        guard runtimeOwnedByDoryd,
+              machine.status == .running,
+              machine.fileTransferPolicy.allowsHostToGuest,
+              machine.agentProtocolVersion == 1 else {
+            return false
+        }
+        func supports(_ id: String) -> Bool {
+            machine.agentCapabilities.contains { $0.id == id && $0.version >= 1 }
+        }
+        return supports("exec") && supports("sync-push")
+    }
+
+    func canTransferFolders(to machine: Machine) -> Bool {
+        canTransferFiles(to: machine)
+            && machine.agentCapabilities.contains {
+                $0.id == "sync-push" && $0.version >= 2
+            }
+    }
+
+    func canExportGuestFiles(from machine: Machine) -> Bool {
+        runtimeOwnedByDoryd
+            && machine.status == .running
+            && machine.fileTransferPolicy.allowsGuestToHost
+            && machine.agentProtocolVersion == 1
+            && machine.username != "root"
+            && machine.agentCapabilities.contains {
+                $0.id == "sync-pull" && $0.version >= 1
+            }
+    }
+
+    func canRepairMachineTools(_ machine: Machine) -> Bool {
+        runtimeOwnedByDoryd
+            && machine.displayMode == .desktop
+            && machine.bootMode == .linuxKernel
+    }
+
+    func repairMachineTools(_ machine: Machine) {
+        guard canRepairMachineTools(machine), !busyMachines.contains(machine.name) else { return }
+        Task {
+            do {
+                let updates = try await updateManagedDesktops(
+                    affectedBy: [
+                        .linuxDesktop,
+                        .desktopDebian,
+                        .desktopUbuntu,
+                        .desktopKali,
+                    ],
+                    force: true,
+                    machineID: machine.name
+                )
+                guard let update = updates.first, updates.count == 1 else {
+                    throw DesktopMachineAssetError.missingAsset(
+                        "a verified Dory Tools update for \(machine.name)"
+                    )
+                }
+                showSettingsSuccess(
+                    "Repaired Dory Tools in \(machine.name) and verified \(update.version)."
+                )
+            } catch {
+                actionError = "Could not repair Dory Tools in \(machine.name): \(Self.userFacingError(error))"
+            }
+        }
+    }
+
+    func cancelFileTransfer(to machine: Machine) async {
+        guard let operation = machineFileTransfers[machine.name],
+              !operation.phase.isTerminal else {
+            return
+        }
+        do {
+            let updated = try await dorydClient.machineTransferCancel(
+                machine.name,
+                operationID: operation.operationID
+            )
+            guard machineFileTransfers[machine.name]?.operationID == operation.operationID else {
+                return
+            }
+            machineFileTransfers[machine.name] = updated
+        } catch {
+            actionError = "Could not cancel the file transfer to \(machine.name): \(Self.userFacingError(error))"
+        }
+    }
+
+    func cancelGuestFileExport(from machine: Machine) async {
+        guard let operation = machineGuestFileExports[machine.name],
+              !operation.phase.isTerminal else {
+            return
+        }
+        do {
+            let updated = try await dorydClient.machineGuestExportCancel(
+                machine.name,
+                operationID: operation.operationID
+            )
+            guard machineGuestFileExports[machine.name]?.operationID
+                    == operation.operationID else {
+                return
+            }
+            machineGuestFileExports[machine.name] = updated
+        } catch {
+            actionError = "Could not cancel the file export from \(machine.name): \(Self.userFacingError(error))"
+        }
+    }
+
+    func discardGuestFileExport(from machine: Machine) async {
+        guard let operation = machineGuestFileExports[machine.name],
+              operation.phase == .completed else {
+            return
+        }
+        do {
+            let discarded = try await dorydClient.machineGuestExportDiscard(
+                machine.name,
+                operationID: operation.operationID
+            )
+            guard discarded.ok,
+                  machineGuestFileExports[machine.name]?.operationID
+                    == operation.operationID else {
+                throw DoryMachineFileTransferUIError.authorityChanged
+            }
+            machineGuestFileExports.removeValue(forKey: machine.name)
+            machineGuestFileExportSuggestedNames.removeValue(forKey: machine.name)
+            showSettingsSuccess("Discarded the pending file export from \(machine.name).")
+        } catch {
+            actionError = "Could not discard the file export from \(machine.name): \(Self.userFacingError(error))"
+        }
+    }
+
+    private func recoverActiveFileTransfer(for machine: Machine) {
+        guard machineFileTransfers[machine.name] == nil,
+              !busyMachines.contains(machine.name),
+              recoveringMachineFileTransfers.insert(machine.name).inserted else {
+            return
+        }
+        Task { [weak self] in
+            await self?.recoverActiveFileTransfer(machineID: machine.name)
+        }
+    }
+
+    private func recoverActiveFileTransfer(machineID: String) async {
+        defer { recoveringMachineFileTransfers.remove(machineID) }
+        let discovered: DorydMachineFileTransferOperation?
+        do {
+            discovered = try await dorydClient.machineTransferCurrent(machineID)
+        } catch {
+            return
+        }
+        guard let operation = discovered,
+              !operation.phase.isTerminal,
+              machineFileTransfers[machineID] == nil,
+              !busyMachines.contains(machineID) else {
+            return
+        }
+
+        let operationID = operation.operationID
+        busyMachines.insert(machineID)
+        machineFileTransfers[machineID] = operation
+        defer {
+            if machineFileTransfers[machineID]?.operationID == operationID {
+                machineFileTransfers.removeValue(forKey: machineID)
+                busyMachines.remove(machineID)
+            }
+        }
+
+        do {
+            var current = operation
+            while !current.phase.isTerminal {
+                try await Task.sleep(for: .milliseconds(150))
+                current = try await dorydClient.machineTransferStatus(
+                    machineID,
+                    operationID: operationID
+                )
+                guard current.operationID == operationID,
+                      machineFileTransfers[machineID]?.operationID == operationID else {
+                    throw DoryMachineFileTransferUIError.authorityChanged
+                }
+                machineFileTransfers[machineID] = current
+            }
+
+            switch current.phase {
+            case .completed:
+                guard let result = current.result else {
+                    throw DoryMachineFileTransferUIError.invalidCompletion
+                }
+                let fileLabel = result.filesSent == 1 ? "file" : "files"
+                let bytes = ByteCountFormatter.string(
+                    fromByteCount: Int64(clamping: result.bytesSent),
+                    countStyle: .file
+                )
+                showSettingsSuccess(
+                    "Sent \(result.filesSent) \(fileLabel) (\(bytes)) to \(result.guestDestination)."
+                )
+            case .cancelled:
+                showSettingsSuccess("Cancelled the file transfer to \(machineID).")
+            case .failed:
+                let message = current.failure?.message ?? "The daemon reported a failed transfer."
+                throw DoryMachineFileTransferUIError.remoteFailure(message)
+            case .preparing, .transferring, .finalizing, .cancelling:
+                throw DoryMachineFileTransferUIError.invalidCompletion
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            actionError = "Could not restore the file transfer to \(machineID): \(Self.userFacingError(error))"
+        }
+    }
+
+    private func recoverGuestFileExport(for machine: Machine) {
+        guard machineGuestFileExports[machine.name] == nil,
+              recoveringMachineGuestFileExports.insert(machine.name).inserted else {
+            return
+        }
+        Task { [weak self] in
+            await self?.recoverGuestFileExport(machineID: machine.name)
+        }
+    }
+
+    private func recoverGuestFileExport(machineID: String) async {
+        defer { recoveringMachineGuestFileExports.remove(machineID) }
+        let discovered: DorydMachineGuestFileExportOperation?
+        do {
+            discovered = try await dorydClient.machineGuestExportCurrent(machineID)
+        } catch {
+            return
+        }
+        guard var operation = discovered,
+              machineGuestFileExports[machineID] == nil,
+              machineFileTransfers[machineID] == nil else {
+            return
+        }
+
+        let operationID = operation.operationID
+        machineGuestFileExportSuggestedNames[machineID] = "\(machineID)-export"
+        machineGuestFileExports[machineID] = operation
+        if operation.phase == .completed {
+            showSettingsSuccess("Files from \(machineID) are ready to save.")
+            return
+        }
+        guard !operation.phase.isTerminal, !busyMachines.contains(machineID) else {
+            machineGuestFileExports.removeValue(forKey: machineID)
+            machineGuestFileExportSuggestedNames.removeValue(forKey: machineID)
+            return
+        }
+
+        busyMachines.insert(machineID)
+        defer { busyMachines.remove(machineID) }
+        do {
+            operation = try await awaitGuestFileExport(
+                machineID: machineID,
+                operationID: operationID,
+                initial: operation
+            )
+            switch operation.phase {
+            case .completed:
+                showSettingsSuccess("Files from \(machineID) are ready to save.")
+            case .cancelled:
+                machineGuestFileExports.removeValue(forKey: machineID)
+                machineGuestFileExportSuggestedNames.removeValue(forKey: machineID)
+                showSettingsSuccess("Cancelled the file export from \(machineID).")
+            case .failed:
+                machineGuestFileExports.removeValue(forKey: machineID)
+                machineGuestFileExportSuggestedNames.removeValue(forKey: machineID)
+                let message = operation.failure?.message
+                    ?? "The daemon reported a failed file export."
+                throw DoryMachineFileTransferUIError.remoteFailure(message)
+            case .preparing, .transferring, .finalizing, .cancelling:
+                throw DoryMachineFileTransferUIError.invalidCompletion
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            actionError = "Could not restore the file export from \(machineID): \(Self.userFacingError(error))"
+        }
+    }
+
+    @discardableResult
+    func exportGuestFiles(
+        _ guestSource: String,
+        from machine: Machine,
+        to destinationURL: URL
+    ) async -> URL? {
+        guard canExportGuestFiles(from: machine) else {
+            actionError = "Start \(machine.name) and update Dory Tools before receiving files."
+            return nil
+        }
+        guard !busyMachines.contains(machine.name),
+              !recoveringMachineGuestFileExports.contains(machine.name),
+              machineGuestFileExports[machine.name] == nil else {
+            return nil
+        }
+        let suggestedName = destinationURL.lastPathComponent
+        guard !suggestedName.isEmpty else {
+            actionError = "Choose a name for the received files."
+            return nil
+        }
+
+        busyMachines.insert(machine.name)
+        defer { busyMachines.remove(machine.name) }
+        actionError = nil
+        var operationID: String?
+        do {
+            var operation = try await dorydClient.machineGuestExportStart(
+                machine.name,
+                guestSource: guestSource
+            )
+            operationID = operation.operationID
+            machineGuestFileExportSuggestedNames[machine.name] = suggestedName
+            machineGuestFileExports[machine.name] = operation
+            operation = try await awaitGuestFileExport(
+                machineID: machine.name,
+                operationID: operation.operationID,
+                initial: operation
+            )
+
+            switch operation.phase {
+            case .completed:
+                return await saveCompletedGuestFileExport(
+                    from: machine,
+                    operation: operation,
+                    to: destinationURL
+                )
+            case .cancelled:
+                machineGuestFileExports.removeValue(forKey: machine.name)
+                machineGuestFileExportSuggestedNames.removeValue(forKey: machine.name)
+                showSettingsSuccess("Cancelled the file export from \(machine.name).")
+                return nil
+            case .failed:
+                machineGuestFileExports.removeValue(forKey: machine.name)
+                machineGuestFileExportSuggestedNames.removeValue(forKey: machine.name)
+                let message = operation.failure?.message
+                    ?? "The daemon reported a failed file export."
+                throw DoryMachineFileTransferUIError.remoteFailure(message)
+            case .preparing, .transferring, .finalizing, .cancelling:
+                throw DoryMachineFileTransferUIError.invalidCompletion
+            }
+        } catch is CancellationError {
+            if let operationID {
+                _ = try? await dorydClient.machineGuestExportCancel(
+                    machine.name,
+                    operationID: operationID
+                )
+            }
+            machineGuestFileExports.removeValue(forKey: machine.name)
+            machineGuestFileExportSuggestedNames.removeValue(forKey: machine.name)
+            return nil
+        } catch {
+            if let operationID,
+               machineGuestFileExports[machine.name]?.phase.isTerminal == false {
+                _ = try? await dorydClient.machineGuestExportCancel(
+                    machine.name,
+                    operationID: operationID
+                )
+                machineGuestFileExports.removeValue(forKey: machine.name)
+                machineGuestFileExportSuggestedNames.removeValue(forKey: machine.name)
+            }
+            actionError = "Could not receive files from \(machine.name): \(Self.userFacingError(error))"
+            return nil
+        }
+    }
+
+    @discardableResult
+    func saveGuestFileExport(
+        from machine: Machine,
+        to destinationURL: URL
+    ) async -> URL? {
+        guard let operation = machineGuestFileExports[machine.name],
+              operation.phase == .completed else {
+            return nil
+        }
+        actionError = nil
+        return await saveCompletedGuestFileExport(
+            from: machine,
+            operation: operation,
+            to: destinationURL
+        )
+    }
+
+    private func awaitGuestFileExport(
+        machineID: String,
+        operationID: String,
+        initial: DorydMachineGuestFileExportOperation
+    ) async throws -> DorydMachineGuestFileExportOperation {
+        var operation = initial
+        while !operation.phase.isTerminal {
+            try await Task.sleep(for: .milliseconds(150))
+            operation = try await dorydClient.machineGuestExportStatus(
+                machineID,
+                operationID: operationID
+            )
+            guard operation.operationID == operationID,
+                  machineGuestFileExports[machineID]?.operationID == operationID else {
+                throw DoryMachineFileTransferUIError.authorityChanged
+            }
+            machineGuestFileExports[machineID] = operation
+        }
+        return operation
+    }
+
+    private func saveCompletedGuestFileExport(
+        from machine: Machine,
+        operation: DorydMachineGuestFileExportOperation,
+        to destinationURL: URL
+    ) async -> URL? {
+        guard machineGuestFileExports[machine.name]?.operationID == operation.operationID,
+              operation.phase == .completed,
+              let result = operation.result,
+              result.exportID == operation.operationID else {
+            actionError = "Could not save files from \(machine.name): The completed export evidence is invalid."
+            return nil
+        }
+        do {
+            let materialized = try await Task.detached(priority: .userInitiated) {
+                try DoryMachineFileTransferStager.materializeGuestExport(
+                    privateStagingRoot: result.privateStagingRoot,
+                    exportID: result.exportID,
+                    expectedFileCount: result.filesReceived,
+                    expectedDirectoryCount: result.directoriesReceived,
+                    expectedByteCount: result.bytesReceived,
+                    destinationDirectory: destinationURL.deletingLastPathComponent(),
+                    destinationName: destinationURL.lastPathComponent
+                )
+            }.value
+            do {
+                let discarded = try await dorydClient.machineGuestExportDiscard(
+                    machine.name,
+                    operationID: operation.operationID
+                )
+                guard discarded.ok,
+                      machineGuestFileExports[machine.name]?.operationID
+                        == operation.operationID else {
+                    throw DoryMachineFileTransferUIError.authorityChanged
+                }
+                machineGuestFileExports.removeValue(forKey: machine.name)
+                machineGuestFileExportSuggestedNames.removeValue(forKey: machine.name)
+            } catch {
+                actionError = "Saved files from \(machine.name) to \(materialized.rootURL.path), but Dory could not remove its private staging copy."
+                return materialized.rootURL
+            }
+            let fileLabel = result.filesReceived == 1 ? "file" : "files"
+            let folderLabel = result.directoriesReceived == 1 ? "folder" : "folders"
+            let itemSummary = result.directoriesReceived == 0
+                ? "\(result.filesReceived) \(fileLabel)"
+                : "\(result.filesReceived) \(fileLabel) and \(result.directoriesReceived) \(folderLabel)"
+            let bytes = ByteCountFormatter.string(
+                fromByteCount: Int64(clamping: result.bytesReceived),
+                countStyle: .file
+            )
+            showSettingsSuccess(
+                "Saved \(itemSummary) (\(bytes)) from \(machine.name) to \(materialized.rootURL.path)."
+            )
+            return materialized.rootURL
+        } catch {
+            actionError = "Could not save files from \(machine.name): \(Self.userFacingError(error))"
+            return nil
+        }
+    }
+
+    @discardableResult
+    func transferFiles(
+        _ fileURLs: [URL],
+        to machine: Machine
+    ) async -> DorydMachineFileTransferResult? {
+        guard canTransferFiles(to: machine) else {
+            actionError = "Start \(machine.name) and update Dory Tools before sending files."
+            return nil
+        }
+        guard !busyMachines.contains(machine.name),
+              !recoveringMachineFileTransfers.contains(machine.name) else {
+            return nil
+        }
+        busyMachines.insert(machine.name)
+        defer {
+            busyMachines.remove(machine.name)
+            machineFileTransfers.removeValue(forKey: machine.name)
+        }
+        actionError = nil
+
+        var staged: DoryStagedMachineFileTransfer?
+        var operationID: String?
+        do {
+            staged = try await Task.detached(priority: .userInitiated) {
+                try DoryMachineFileTransferStager.stage(fileURLs: fileURLs)
+            }.value
+            guard let preparedStage = staged else { return nil }
+            guard preparedStage.directoryCount == 0 || canTransferFolders(to: machine) else {
+                do {
+                    try await Task.detached(priority: .utility) {
+                        try preparedStage.remove()
+                    }.value
+                    staged = nil
+                } catch {
+                    actionError = "Dory could not remove its private staging copy."
+                    return nil
+                }
+                actionError = "Update Dory Tools in \(machine.name) before sending folders."
+                return nil
+            }
+            var operation = try await dorydClient.machineTransferStart(
+                machine.name,
+                staged: preparedStage
+            )
+            operationID = operation.operationID
+            machineFileTransfers[machine.name] = operation
+            while !operation.phase.isTerminal {
+                try await Task.sleep(for: .milliseconds(150))
+                operation = try await dorydClient.machineTransferStatus(
+                    machine.name,
+                    operationID: operation.operationID
+                )
+                guard operationID == operation.operationID else {
+                    throw DoryMachineFileTransferUIError.authorityChanged
+                }
+                machineFileTransfers[machine.name] = operation
+            }
+
+            guard operation.phase == .completed,
+                  let result = operation.result else {
+                if operation.phase == .failed, let failure = operation.failure {
+                    throw DoryMachineFileTransferUIError.remoteFailure(failure.message)
+                }
+                if operation.phase == .cancelled {
+                    showSettingsSuccess("Cancelled the file transfer to \(machine.name).")
+                    if let staged {
+                        try? await Task.detached(priority: .utility) { try staged.remove() }.value
+                    }
+                    return nil
+                }
+                throw DoryMachineFileTransferUIError.invalidCompletion
+            }
+            guard result.filesSent == preparedStage.fileCount,
+                  result.bytesSent == preparedStage.byteCount else {
+                throw DoryMachineFileTransferUIError.invalidCompletion
+            }
+            let fileLabel = result.filesSent == 1 ? "file" : "files"
+            let folderLabel = preparedStage.directoryCount == 1 ? "folder" : "folders"
+            let bytes = ByteCountFormatter.string(
+                fromByteCount: Int64(clamping: result.bytesSent),
+                countStyle: .file
+            )
+            do {
+                try await Task.detached(priority: .utility) {
+                    try preparedStage.remove()
+                }.value
+            } catch {
+                actionError = "Files reached \(machine.name), but Dory could not remove its private staging copy."
+                return result
+            }
+            let transferredItems = preparedStage.directoryCount == 0
+                ? "\(result.filesSent) \(fileLabel)"
+                : "\(result.filesSent) \(fileLabel) and \(preparedStage.directoryCount) \(folderLabel)"
+            showSettingsSuccess("Sent \(transferredItems) (\(bytes)) to \(result.guestDestination).")
+            return result
+        } catch is CancellationError {
+            if let operationID {
+                _ = try? await dorydClient.machineTransferCancel(
+                    machine.name,
+                    operationID: operationID
+                )
+            }
+            if let staged {
+                try? await Task.detached(priority: .utility) {
+                    try staged.remove()
+                }.value
+            }
+            return nil
+        } catch {
+            if let operationID,
+               machineFileTransfers[machine.name]?.phase.isTerminal == false {
+                _ = try? await dorydClient.machineTransferCancel(
+                    machine.name,
+                    operationID: operationID
+                )
+            }
+            if let staged {
+                try? await Task.detached(priority: .utility) {
+                    try staged.remove()
+                }.value
+            }
+            actionError = "Could not send files to \(machine.name): \(Self.userFacingError(error))"
+            return nil
+        }
     }
 
     func syncMachineStats() {
@@ -5345,19 +6326,105 @@ final class AppStore {
     func toggleMachine(_ machine: Machine) {
         guard requireDorydMachines() else { return }
         guard let idx = machines.firstIndex(where: { $0.id == machine.id }) else { return }
-        let wasRunning = machines[idx].status == .running
+        let previousState = machines[idx].status
         let name = machine.name
         busyMachines.insert(name)
         Task {
             defer { busyMachines.remove(name) }
             do {
-                if wasRunning {
+                switch previousState {
+                case .running:
                     _ = try await dorydClient.machineStop(name)
-                } else {
+                case .paused:
+                    _ = try await dorydClient.machineResume(name)
+                case .suspended:
+                    _ = try await dorydClient.machineResume(name)
+                case .stopped:
+                    try await refreshManagedDesktopKernelBeforeStart(name)
                     _ = try await dorydClient.machineStart(name)
                 }
             } catch {
-                actionError = "Could not \(wasRunning ? "stop" : "start") \(name): \(error)"
+                let action = switch previousState {
+                case .running: "stop"
+                case .paused: "resume"
+                case .suspended: "restore"
+                case .stopped: "start"
+                }
+                actionError = "Could not \(action) \(name): \(error)"
+            }
+            await refreshMachines()
+        }
+    }
+
+    func pauseMachine(_ machine: Machine) {
+        guard requireDorydMachines(), machine.status == .running else { return }
+        guard !busyMachines.contains(machine.name) else { return }
+        busyMachines.insert(machine.name)
+        Task {
+            defer { busyMachines.remove(machine.name) }
+            do {
+                _ = try await dorydClient.machinePause(machine.name)
+            } catch {
+                actionError = "Could not pause \(machine.name): \(error)"
+            }
+            await refreshMachines()
+        }
+    }
+
+    func suspendMachine(_ machine: Machine) {
+        guard requireDorydMachines(), machine.status == .running || machine.status == .paused else {
+            return
+        }
+        guard !busyMachines.contains(machine.name) else { return }
+        busyMachines.insert(machine.name)
+        Task {
+            defer { busyMachines.remove(machine.name) }
+            do {
+                _ = try await dorydClient.machineSuspend(machine.name)
+            } catch {
+                actionError = "Could not suspend \(machine.name): \(error)"
+            }
+            await refreshMachines()
+        }
+    }
+
+    func restartMachine(_ machine: Machine) {
+        guard requireDorydMachines(), machine.status == .running || machine.status == .paused else {
+            return
+        }
+        guard !busyMachines.contains(machine.name) else { return }
+        busyMachines.insert(machine.name)
+        Task {
+            defer { busyMachines.remove(machine.name) }
+            do {
+                if machine.bootMode == .linuxKernel,
+                   machine.displayMode == .desktop {
+                    _ = try await dorydClient.machineStop(machine.name)
+                    try await refreshManagedDesktopKernelBeforeStart(machine.name)
+                    _ = try await dorydClient.machineStart(machine.name)
+                } else {
+                    _ = try await dorydClient.machineRestart(machine.name)
+                }
+            } catch {
+                actionError = "Could not restart \(machine.name): \(error)"
+            }
+            await refreshMachines()
+        }
+    }
+
+    func setMachineInstallerMedia(_ machine: Machine, attached: Bool) {
+        guard requireDorydMachines(), machine.bootMode == .efi else { return }
+        guard !busyMachines.contains(machine.name) else { return }
+        busyMachines.insert(machine.name)
+        Task {
+            defer { busyMachines.remove(machine.name) }
+            do {
+                _ = try await dorydClient.machineUpdate(
+                    machine.name,
+                    installerMediaAttached: attached
+                )
+            } catch {
+                actionError = "Could not \(attached ? "attach" : "eject") the installer ISO for \(machine.name): \(error)"
             }
             await refreshMachines()
         }
@@ -5384,15 +6451,6 @@ final class AppStore {
         return Int(UInt16(bigEndian: result.sin_port))
     }
 
-    nonisolated static func mergingEnv(_ settings: MachineSettings, resolved: [String: String]) -> MachineSettings {
-        guard !resolved.isEmpty else { return settings }
-        var copy = settings
-        for (key, value) in resolved where copy.env[key] == nil && !value.isEmpty {
-            copy.env[key] = value
-        }
-        return copy
-    }
-
     nonisolated static func desktopAssetEnvironment(
         processEnvironment: [String: String],
         distro: DesktopMachineDistro
@@ -5402,9 +6460,181 @@ final class AppStore {
         return result
     }
 
+    /// Temporary compatibility projection until these fields move into native WorkspaceSpec
+    /// properties. New app-created machines never persist arbitrary environment values.
+    nonisolated static func sanitizedNewMachineEnvironment(
+        _ environment: [String: String]
+    ) -> [String: String] {
+        let allowed: Set<String> = [
+            "DORY_CLIPBOARD_POLICY",
+            "DORY_CUSTOM_LINUX",
+            "DORY_DESKTOP_DISTRO",
+            "DORY_DESKTOP_ENVIRONMENT",
+            "DORY_DESKTOP_GRAPHICS",
+            "DORY_DESKTOP_NAME",
+            "DORY_DESKTOP_VERSION",
+            "DORY_DESKTOP_VMM",
+            "DORY_GUEST_UID",
+            "DORY_GUEST_USER",
+        ]
+        return environment.filter { allowed.contains($0.key) }
+    }
+
+    /// Brings persistent desktop machines forward after a signed desktop component activation.
+    /// The daemon preserves each guest's disk, applications, accounts, and settings; it owns the
+    /// last-good snapshot, reboot qualification, and automatic rollback transaction.
+    func updateManagedDesktops(
+        affectedBy components: Set<DoryComponentID>,
+        operationID: UUID = UUID(),
+        force: Bool = false,
+        machineID: String? = nil
+    ) async throws -> [DorydDesktopUpdateResult] {
+        let statuses = try await dorydClient.machineList()
+        let desktopStatuses = statuses.filter {
+            $0.displayMode == .desktop && (machineID == nil || $0.id == machineID)
+        }
+        guard !desktopStatuses.isEmpty else { return [] }
+
+        let runtimeChanged = components.contains(.linuxDesktop)
+        let store = try DoryComponentStore.selected()
+        guard let runtimeRelease = try store.installedComponent(.linuxDesktop) else {
+            throw DesktopMachineAssetError.missingAsset("runtime update")
+        }
+        _ = try store.verify(.linuxDesktop)
+        var results: [DorydDesktopUpdateResult] = []
+
+        for status in desktopStatuses {
+            // EFI machines are user-provided installer workspaces. Boot mode is authoritative;
+            // do not depend on the legacy DORY_CUSTOM_LINUX compatibility marker.
+            guard status.bootMode != .efi else { continue }
+            let typedSettings = status.typedSettings ?? DorydMachineTypedSettings(
+                legacyEnvironment: status.environment,
+                displayMode: status.displayMode
+            )
+            let distro = DesktopMachineDistro.resolve(
+                Self.managedDesktopDistributionIdentifier(
+                    configuredIdentifier:
+                        typedSettings.guestIdentityIntent.desktop?.distributionIdentifier,
+                    receipt: status.installedDesktopPayloadReceipt
+                )
+            )
+            guard runtimeChanged || components.contains(distro.componentID) else { continue }
+            guard let distroRelease = try store.installedComponent(distro.componentID) else {
+                if components.contains(distro.componentID) {
+                    throw DesktopMachineAssetError.missingAsset(distro.displayName + " update")
+                }
+                // Removing a component intentionally preserves its machine disks. A runtime-only
+                // update cannot update that distro until the user reinstalls its signed payload.
+                continue
+            }
+            _ = try store.verify(distro.componentID)
+            let targetVersion = distroRelease.version + "+runtime." + runtimeRelease.version
+            let bundleAssetIdentifier = "dory-desktop-" + distro.rawValue
+                + "-update-arm64.tar"
+            let kernelAssetIdentifier = "dory-desktop-kernel-arm64.lzfse"
+            guard let bundleAsset = distroRelease.assets.first(where: {
+                $0.path == bundleAssetIdentifier
+            }),
+            let kernelAsset = runtimeRelease.assets.first(where: {
+                $0.path == kernelAssetIdentifier
+            }) else {
+                throw DesktopMachineAssetError.missingAsset(distro.displayName + " in-place update")
+            }
+            if !force && Self.desktopReceiptMatchesActiveComponents(
+                status.installedDesktopPayloadReceipt,
+                distributionIdentifier: distro.rawValue,
+                releaseVersion: targetVersion,
+                distributionComponentIdentifier: distro.componentID.rawValue,
+                distributionInstallationName: distroRelease.installationName,
+                distributionCatalogSHA256: distroRelease.catalogDigest,
+                bundleAssetIdentifier: bundleAsset.path,
+                bundleSHA256: bundleAsset.installedSHA256,
+                runtimeInstallationName: runtimeRelease.installationName,
+                runtimeCatalogSHA256: runtimeRelease.catalogDigest,
+                kernelAssetIdentifier: kernelAsset.path,
+                kernelSHA256: kernelAsset.installedSHA256
+            ) {
+                continue
+            }
+
+            guard !busyMachines.contains(status.id) else {
+                throw DesktopMachineAssetError.filesystem(
+                    "\(status.id) is busy with another machine operation"
+                )
+            }
+            busyMachines.insert(status.id)
+            defer { busyMachines.remove(status.id) }
+            do {
+                let result = try await dorydClient.machineDesktopUpdate(
+                    status.id,
+                    operationID: operationID,
+                    distro: distro.rawValue,
+                    version: targetVersion,
+                    distributionInstallationName: distroRelease.installationName,
+                    runtimeInstallationName: runtimeRelease.installationName
+                )
+                results.append(result)
+            } catch {
+                throw DesktopMachineAssetError.filesystem(
+                    "Could not update " + status.id + ". Dory restored its last-good snapshot. "
+                        + String(describing: error)
+                )
+            }
+        }
+        if !results.isEmpty {
+            _ = await refreshMachines()
+        }
+        return results
+    }
+
+    /// Portable snapshots intentionally omit raw environment. Preserve an explicit typed guest
+    /// identity when one exists; otherwise use the validated installed-payload observation.
+    nonisolated static func managedDesktopDistributionIdentifier(
+        configuredIdentifier: String?,
+        receipt: DorydInstalledDesktopPayloadReceipt?
+    ) -> String? {
+        configuredIdentifier ?? (receipt?.isValid == true ? receipt?.distributionIdentifier : nil)
+    }
+
+    nonisolated static func desktopReceiptMatchesActiveComponents(
+        _ receipt: DorydInstalledDesktopPayloadReceipt?,
+        distributionIdentifier: String,
+        releaseVersion: String,
+        distributionComponentIdentifier: String,
+        distributionInstallationName: String,
+        distributionCatalogSHA256: String,
+        bundleAssetIdentifier: String,
+        bundleSHA256: String,
+        runtimeInstallationName: String,
+        runtimeCatalogSHA256: String,
+        kernelAssetIdentifier: String,
+        kernelSHA256: String
+    ) -> Bool {
+        guard let receipt, receipt.isValid else { return false }
+        return receipt.provenance == "verified-update-bundle"
+            && receipt.distributionIdentifier == distributionIdentifier
+            && receipt.releaseVersion == releaseVersion
+            && receipt.distributionComponentIdentifier == distributionComponentIdentifier
+            && receipt.distributionInstallationName == distributionInstallationName
+            && receipt.distributionCatalogSHA256 == distributionCatalogSHA256.lowercased()
+            && receipt.bundleAssetIdentifier == bundleAssetIdentifier
+            && receipt.bundleSHA256 == bundleSHA256.lowercased()
+            && receipt.runtimeComponentIdentifier == DoryComponentID.linuxDesktop.rawValue
+            && receipt.runtimeInstallationName == runtimeInstallationName
+            && receipt.runtimeCatalogSHA256 == runtimeCatalogSHA256.lowercased()
+            && receipt.kernelAssetIdentifier == kernelAssetIdentifier
+            && receipt.kernelSHA256 == kernelSHA256.lowercased()
+    }
+
     nonisolated static func preservingHiddenMachineSettings(_ settings: MachineSettings, existing: MachineSettings) -> MachineSettings {
         var copy = settings
         if copy.env.isEmpty { copy.env = existing.env }
+        if copy.virtualMachineSettings == nil {
+            copy.virtualMachineSettings = existing.virtualMachineSettings
+        }
+        if copy.displayPresentation == nil {
+            copy.displayPresentation = existing.displayPresentation
+        }
         if copy.identity == nil { copy.identity = existing.identity }
         if copy.address == nil { copy.address = existing.address }
         return copy
@@ -5445,23 +6675,31 @@ final class AppStore {
     ) -> DorydMachineConfiguration? {
         let useBundledAssets = environment["DORYD_DISABLE_BUNDLED_MACHINE_ASSETS"] != "1"
         let arch = hostMachineAssetArch
-        let kernel = assets?.kernelPath
-            ?? firstMachinePath(["DORYD_MACHINE_KERNEL", "DORYD_GUEST_KERNEL"], environment: environment)
-            ?? installedMachinePath(["dory-hv-kernel-\(arch)", "dory-hv-kernel"])
-            ?? (useBundledAssets ? bundledMachinePath(["dory-hv-kernel-\(arch)", "dory-hv-kernel"]) : nil)
-        let rootfs = assets?.rootfsPath
-            ?? firstMachinePath(["DORYD_MACHINE_ROOTFS", "DORYD_GUEST_ROOTFS"], environment: environment)
-            ?? installedMachinePath([
-                "dory-machine-rootfs-\(arch).ext4",
-                "dory-machine-rootfs.ext4",
-            ])
-            ?? (useBundledAssets ? bundledMachinePath([
-                "dory-machine-rootfs-\(arch).ext4",
-                "dory-machine-rootfs.ext4",
-                "initfs-\(arch).ext4",
-            ]) : nil)
-        guard let kernel, let rootfs else {
-            return nil
+        let kernel: String
+        let rootfs: String
+        if settings.bootMode == .efi {
+            kernel = ""
+            rootfs = ""
+        } else {
+            guard let resolvedKernel = assets?.kernelPath
+                ?? firstMachinePath(["DORYD_MACHINE_KERNEL", "DORYD_GUEST_KERNEL"], environment: environment)
+                ?? installedMachinePath(["dory-hv-kernel-\(arch)", "dory-hv-kernel"])
+                ?? (useBundledAssets ? bundledMachinePath(["dory-hv-kernel-\(arch)", "dory-hv-kernel"]) : nil),
+                  let resolvedRootfs = assets?.rootfsPath
+                ?? firstMachinePath(["DORYD_MACHINE_ROOTFS", "DORYD_GUEST_ROOTFS"], environment: environment)
+                ?? installedMachinePath([
+                    "dory-machine-rootfs-\(arch).ext4",
+                    "dory-machine-rootfs.ext4",
+                ])
+                ?? (useBundledAssets ? bundledMachinePath([
+                    "dory-machine-rootfs-\(arch).ext4",
+                    "dory-machine-rootfs.ext4",
+                    "initfs-\(arch).ext4",
+                ]) : nil) else {
+                return nil
+            }
+            kernel = resolvedKernel
+            rootfs = resolvedRootfs
         }
         let memoryMB: UInt64
         if let rawMemory = environment["DORYD_MACHINE_MEMORY_MB"] {
@@ -5481,12 +6719,23 @@ final class AppStore {
             id: name,
             kernelPath: kernel,
             rootfsPath: rootfs,
+            bootMode: settings.bootMode,
+            installerISOPath: settings.installerISOPath,
+            diskSizeBytes: settings.diskSizeGB.flatMap { UInt64(exactly: $0) }.map {
+                $0 * 1024 * 1024 * 1024
+            },
             memoryMB: memoryMB,
             cpuCount: cpuCount,
             address: address,
             displayMode: settings.displayMode,
             shares: dorydShares(from: settings.mounts),
-            environment: settings.env
+            typedSettings: settings.virtualMachineSettings
+                ?? (settings.bootMode == .efi
+                    ? DorydMachineTypedSettings()
+                    : DorydMachineTypedSettings(
+                        legacyEnvironment: sanitizedNewMachineEnvironment(settings.env),
+                        displayMode: settings.displayMode
+                    ))
         )
     }
 
@@ -5501,8 +6750,19 @@ final class AppStore {
             actionError = "Invalid machine name: use letters, digits, and _ . - (must start alphanumeric)"
             return "Invalid machine name"
         }
-        if settings.displayMode == .desktop {
-            let distro = DesktopMachineDistro.resolve(settings.env["DORY_DESKTOP_DISTRO"])
+        if settings.bootMode == .efi {
+            guard settings.displayMode == .desktop,
+                  let installerISOPath = settings.installerISOPath,
+                  FileManager.default.fileExists(atPath: installerISOPath) else {
+                let message = "Choose a readable Linux installer ISO before creating the VM."
+                actionError = message
+                return message
+            }
+        } else if settings.displayMode == .desktop {
+            let distro = DesktopMachineDistro.resolve(
+                settings.virtualMachineSettings?.guestIdentityIntent.desktop?
+                    .distributionIdentifier ?? settings.env["DORY_DESKTOP_DISTRO"]
+            )
             guard AppInfo.componentAvailable(.linuxDesktop),
                   AppInfo.componentAvailable(distro.componentID) else {
                 let message = "Install the Linux Desktop runtime and \(distro.displayName) in Components first."
@@ -5517,9 +6777,7 @@ final class AppStore {
             return message
         }
         guard requireDorydMachines() else { return actionError }
-        let resolvedEnv = await machineEnvResolver(machineEnvAllowList)
-        let effectiveSettings = Self.mergingEnv(settings, resolved: resolvedEnv)
-        return await createDorydMachine(name: trimmedName, settings: effectiveSettings, recipe: recipe)
+        return await createDorydMachine(name: trimmedName, settings: settings, recipe: recipe)
     }
 
     nonisolated static func dorydRecipeID(for recipe: DevRecipe) -> String? {
@@ -5534,6 +6792,7 @@ final class AppStore {
     }
 
     private func createDorydMachine(name: String, settings: MachineSettings, recipe: DevRecipe?) async -> String? {
+        var settings = settings
         let address = Self.trimmedNonEmpty(settings.address)
         let provisioningRecipe: String?
         if let recipe {
@@ -5555,11 +6814,45 @@ final class AppStore {
         activeSheet = .creatingMachine
         defer { busyMachines.remove(name) }
 
+        var stagedInstallerISOPath: String?
+        defer {
+            if let stagedInstallerISOPath {
+                try? FileManager.default.removeItem(atPath: stagedInstallerISOPath)
+            }
+        }
+
         var createdDefinition = false
         do {
+            if settings.bootMode == .efi, let installerISOPath = settings.installerISOPath {
+                let sourceURL = URL(fileURLWithPath: installerISOPath)
+                let hasSecurityScope = sourceURL.startAccessingSecurityScopedResource()
+                defer {
+                    if hasSecurityScope { sourceURL.stopAccessingSecurityScopedResource() }
+                }
+                appendMachineCreationLog("Checking the selected installer's EFI architecture…")
+                let staged = try DoryInstallerISOStager.stage(atPath: installerISOPath)
+                if staged.architecture == .unknown {
+                    appendMachineCreationLog("The EFI architecture is non-standard; continuing as a custom image.")
+                } else {
+                    appendMachineCreationLog("\(staged.architecture.rawValue) EFI architecture confirmed.")
+                }
+                appendMachineCreationLog("Media SHA-256: \(staged.sha256)")
+                if case .unqualified = staged.runtimeQualification {
+                    appendMachineCreationLog("This exact installer/host combination is not yet runtime-qualified by Dory.")
+                }
+                appendMachineCreationLog("Installer media is staged for the VM service.")
+                stagedInstallerISOPath = staged.path
+                settings.installerISOPath = staged.path
+            }
             let desktopAssets: DesktopMachineAssets?
-            if settings.displayMode == .desktop {
-                let distro = DesktopMachineDistro.resolve(settings.env["DORY_DESKTOP_DISTRO"])
+            if settings.bootMode == .efi {
+                appendMachineCreationLog("Importing the installer ISO and creating a thin-provisioned virtual disk…")
+                desktopAssets = nil
+            } else if settings.displayMode == .desktop {
+                let distro = DesktopMachineDistro.resolve(
+                    settings.virtualMachineSettings?.guestIdentityIntent.desktop?
+                        .distributionIdentifier ?? settings.env["DORY_DESKTOP_DISTRO"]
+                )
                 appendMachineCreationLog("Preparing \(distro.displayName) \(distro.version) Desktop in the selected Dory data drive…")
                 let home = environment["HOME"] ?? NSHomeDirectory()
                 let resourceDirectory = Bundle.main.resourcePath
@@ -5583,6 +6876,12 @@ final class AppStore {
             }
             _ = try await dorydClient.machineCreate(config)
             createdDefinition = true
+            if let displayPresentation = settings.displayPresentation {
+                _ = try await dorydClient.machineDisplayPresentationSet(
+                    name,
+                    presentation: displayPresentation
+                )
+            }
             appendMachineCreationLog("Definition written. Booting VM…")
             _ = try await dorydClient.machineStart(name)
             if let recipe, let provisioningRecipe {
@@ -5595,7 +6894,13 @@ final class AppStore {
                     appendMachineCreationLog("Provisioned \(result.recipeID): \(verify)")
                 }
             }
-            appendMachineCreationLog("Machine created and started.")
+            if settings.bootMode == .efi {
+                appendMachineCreationLog(
+                    "VM and display started. Complete Linux setup in the desktop window."
+                )
+            } else {
+                appendMachineCreationLog("Machine created and started.")
+            }
             let refreshed = await refreshMachines()
             machineCreated = refreshed.first { $0.name == name }
             if machineCreated == nil {
@@ -5650,22 +6955,58 @@ final class AppStore {
                 memoryMB: current?.memoryMB.flatMap { Int(exactly: $0) },
                 mounts: current?.shares.map(Self.mountPair(fromDoryd:)) ?? [],
                 env: current?.environment ?? [:],
+                virtualMachineSettings: current.map {
+                    $0.typedSettings ?? DorydMachineTypedSettings(
+                        legacyEnvironment: $0.environment,
+                        displayMode: $0.displayMode
+                    )
+                },
+                displayPresentation: current?.displayPresentation,
                 address: current?.configuredAddress,
-                displayMode: current?.displayMode ?? machine.displayMode
+                displayMode: current?.displayMode ?? machine.displayMode,
+                bootMode: current?.bootMode ?? machine.bootMode
             )
             let effectiveSettings = Self.preservingHiddenMachineSettings(settings, existing: currentSettings)
+            let baselineTypedSettings = currentSettings.virtualMachineSettings
+                ?? DorydMachineTypedSettings()
+            let desiredTypedSettings = effectiveSettings.virtualMachineSettings
+                ?? baselineTypedSettings
             let memory = effectiveSettings.memoryMB.flatMap { UInt64(exactly: $0) } ?? current?.memoryMB
             let cpus = effectiveSettings.cpus ?? current?.cpuCount
             let address = Self.trimmedNonEmpty(effectiveSettings.address)
-            _ = try await dorydClient.machineUpdate(
-                machine.name,
-                memoryMB: memory,
-                cpuCount: cpus,
-                address: address,
-                updatesAddress: true,
-                shares: Self.dorydShares(from: effectiveSettings.mounts),
-                environment: effectiveSettings.env
-            )
+            let desiredPresentation = effectiveSettings.displayPresentation
+                ?? currentSettings.displayPresentation
+                ?? .windowed
+            let previousPresentation = currentSettings.displayPresentation ?? .windowed
+            let presentationChanged = desiredPresentation != previousPresentation
+            if presentationChanged {
+                _ = try await dorydClient.machineDisplayPresentationSet(
+                    machine.name,
+                    presentation: desiredPresentation
+                )
+            }
+            do {
+                _ = try await dorydClient.machineUpdate(
+                    machine.name,
+                    memoryMB: memory,
+                    cpuCount: cpus,
+                    address: address,
+                    updatesAddress: true,
+                    shares: Self.dorydShares(from: effectiveSettings.mounts),
+                    typedSettingsPatch: DorydMachineTypedSettingsPatch(
+                        baseline: baselineTypedSettings,
+                        desired: desiredTypedSettings
+                    )
+                )
+            } catch {
+                if presentationChanged {
+                    _ = try? await dorydClient.machineDisplayPresentationSet(
+                        machine.name,
+                        presentation: previousPresentation
+                    )
+                }
+                throw error
+            }
             appendMachineCreationLog("Settings applied to doryd VM definition.")
             activeSheet = nil
             await refreshMachines()
@@ -5848,7 +7189,11 @@ final class AppStore {
             version: "disk",
             arch: snapshot.architecture,
             boot: "vz",
-            recipe: "doryd"
+            recipe: "doryd",
+            runtimeIdentity: snapshot.runtimeIdentity,
+            artifactEvidence: snapshot.artifactEvidence,
+            consistency: snapshot.consistency,
+            guestQuiesceReceipt: snapshot.guestQuiesceReceipt
         )
     }
 
@@ -6068,7 +7413,47 @@ final class AppStore {
         Task {
             defer { busyMachines.remove(Self.importBusyKey) }
             do {
-                let snapshot = try await dorydClient.machineImportSnapshot(from: url.path)
+                let assessment = try await dorydClient.machineAssessSnapshotImport(
+                    from: url.path
+                )
+                appendMachineCreationLog(
+                    "Verified complete archive \(assessment.contentID.prefix(12))… "
+                        + "(\(assessment.architecture), ABI "
+                        + "\(assessment.virtualHardwareABIVersion))."
+                )
+                appendMachineCreationLog(
+                    "Portability: \(assessment.disposition.rawValue)."
+                )
+                let unavailableComponents = assessment.components.filter {
+                    $0.availability != .available
+                }
+                if !unavailableComponents.isEmpty {
+                    appendMachineCreationLog(
+                        "Required components: " + unavailableComponents.map {
+                            "\($0.componentIdentifier)@\($0.buildIdentifier) "
+                                + "(\($0.availability.rawValue))"
+                        }.joined(separator: ", ")
+                    )
+                }
+                switch assessment.disposition {
+                case .ready, .requiresReplanning:
+                    break
+                case .requiresComponents:
+                    throw DorydClientError.daemon(
+                        "Import requires unavailable or different Dory components: "
+                            + unavailableComponents.map(\.componentIdentifier)
+                                .joined(separator: ", ")
+                    )
+                case .unavailable:
+                    throw DorydClientError.daemon(
+                        "This archive is not portable to the current host ("
+                            + assessment.issues.joined(separator: ", ") + ")."
+                    )
+                }
+                let snapshot = try await dorydClient.machineImportSnapshot(
+                    from: url.path,
+                    expectedContentID: assessment.contentID
+                )
                 appendMachineCreationLog("Verified snapshot \(snapshot.id).")
                 let newName: String
                 do {
@@ -6232,7 +7617,7 @@ final class AppStore {
         let home = machine.username == "root" ? "/root" : "/Users/\(machine.username)"
         let family = MachineDistro.all.first { $0.display == machine.distro }?.family
         let machineShell = runtimeOwnedByDoryd
-            ? HostTools.userFacingDoryCommand().map { _ in MachineShellTarget(machineID: machine.name) }
+            ? userFacingDoryCommandResolver().map { _ in MachineShellTarget(machineID: machine.name) }
             : nil
         let sessionID = runtimeOwnedByDoryd ? "machine:\(machine.name)" : "machine:\(machine.containerID)"
         return TerminalSession(id: sessionID, title: machine.name,

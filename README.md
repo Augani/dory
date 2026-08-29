@@ -31,7 +31,7 @@
 > Dory is built and qualified for Apple Silicon. Intel Mac support will follow after dedicated
 > hardware validation. Current downloads and the Homebrew cask do not include an Intel build.
 
-> Dory 0.4.5 is one smaller Docker Core app with optional, signed Kubernetes, Linux Machines,
+> Dory 0.4.6 is one smaller Docker Core app with optional, signed Kubernetes, Linux Machines,
 > Linux Desktop, Debian, Ubuntu, and Kali components. The website shows the exact total before
 > download, carries that choice into Dory for confirmation, and can remove optional payloads later
 > without deleting containers, volumes, cluster state, machine disks, snapshots, or exports.
@@ -54,7 +54,7 @@ or commercial-use tier. Dory is GPL-3.0 software and stores workload data on you
 |---|---|
 | Docker | Docker 29 API and CLI, Buildx, BuildKit, Compose v2, registries, bind mounts, volumes, and custom networks |
 | Native app | Containers, images, volumes, networks, Compose projects, Kubernetes, Linux machines, health, migration, and settings |
-| Linux machines | Full Debian 13, Ubuntu 24.04 LTS, and Kali rolling Xfce desktops plus lightweight Alpine headless VMs, with configurable resources, scoped mounts, networking, recipes, snapshots, clone, import, and export |
+| Linux machines | Full Ubuntu 24.04 LTS GNOME, Debian 13 Xfce, and Kali rolling Xfce desktops plus lightweight Alpine headless VMs, with configurable resources, scoped mounts, networking, recipes, snapshots, clone, import, and export |
 | Kubernetes | One-click k3s with selectable v1.34, v1.35, and v1.36 presets plus a native resource browser |
 | Migration | Transactional full or exact-selection import from Docker Desktop, OrbStack, Colima, Rancher Desktop, Podman, or another Docker-compatible socket, with a selected/verified/omitted completeness report |
 | Storage | One managed `.dorydrive`, external APFS drive support, sparse growth, verified backup, restore, and safe selection |
@@ -71,6 +71,16 @@ or commercial-use tier. Dory is GPL-3.0 software and stores workload data on you
   configurable, and free guest pages can be returned to macOS.
 - **Linux machines beside containers.** Machines are separate VMs with their own disk, address,
   resources, shell, shares, and snapshots. They are not disguised containers.
+- **Install custom arm64 Linux.** Choose an installer ISO and virtual-disk size in the desktop
+  creation flow. Dory fingerprints the exact media, reports architecture compatibility separately
+  from runtime qualification, and privately imports accepted bytes. It preserves the VM's EFI
+  identity and NVRAM; eject or reattach the ISO from the machine menu after installation. A private
+  bidirectional serial console supplies durable boot diagnostics and recovery input. Snapshots
+  preserve the disk and EFI firmware state together, including across export/import.
+- **Desktops update without recreation.** Signed Debian, Ubuntu, Kali, and graphical-kernel
+  component updates are applied to existing persistent guests. Dory creates a last-good snapshot,
+  preserves installed applications and user data, reboots and qualifies the desktop, and restores
+  the snapshot automatically if installation, boot, or qualification fails.
 - **Every important setting is in the app.** Engine resources, storage, migration, automatic and custom domains,
   low ports, LAN access, Auto-Idle, machine environment policy, USB, and managed defaults all have a
   graphical path.
@@ -96,8 +106,8 @@ component adds `kubectl`. Docker Desktop and a separate Docker CLI install are n
 
 ### Direct download
 
-Start with the one Apple Silicon [Dory 0.4.5 Docker Core
-DMG](https://github.com/Augani/dory/releases/download/v0.4.5/Dory-0.4.5-arm64.dmg). The signed
+Start with the one Apple Silicon [Dory 0.4.6 Docker Core
+DMG](https://github.com/Augani/dory/releases/download/v0.4.6/Dory-0.4.6-arm64.dmg). The signed
 catalog shows its exact download and installed sizes. Drag Dory to Applications, open it, then add
 only the components you want. The website's component selector can open the same selection in Dory
 after installation. Dory shows the signed sizes again and waits for explicit confirmation before
@@ -114,7 +124,7 @@ migration, diagnostics, and recovery. The signed component catalog offers:
 | Linux Machines | Headless VPS-style Linux guests | Docker Core |
 | Linux Desktop Runtime | Shared graphical VM kernel | Docker Core |
 | Debian 13 Desktop | Debian 13 Xfce image | Linux Desktop Runtime |
-| Ubuntu 24.04 LTS Desktop | Ubuntu Xfce image | Linux Desktop Runtime |
+| Ubuntu 24.04 LTS Desktop | Canonical Ubuntu GNOME image | Linux Desktop Runtime |
 | Kali Linux Desktop | Kali rolling Xfce image | Linux Desktop Runtime |
 
 Component download and installed sizes come from the signed release catalog, not estimates. Dory
@@ -136,7 +146,7 @@ aliases, so compatibility does not make users download duplicate VM payloads.
 | `dory-engine-x.y.z-arm64.tar.gz` | Headless Dory engine bundle |
 | `release-manifest.json` | Artifact names, hashes, and release provenance |
 | `Dory-x.y.z.cdx.json` | CycloneDX software bill of materials for Docker Core |
-| `Dory-x.y.z-performance-evidence.zip` | Exact-candidate raw benchmark, correctness, provenance, and cleanup evidence |
+| `Dory-x.y.z-container-engine-performance-evidence.zip` | Exact-candidate container-engine benchmark, correctness, provenance, and cleanup evidence; not Linux VM qualification |
 | `Dory-x.y.z-reliability-evidence.zip` | Exact-candidate eight-hour resource/file/API and 25-hour unchanged-connection evidence |
 | `components/arm64/catalog.json` | Signed component assets, dependencies, hashes, and exact sizes |
 
@@ -237,6 +247,12 @@ Buildx and BuildKit are bundled. Dory supports build contexts, secrets, SSH moun
 export, registry authentication, cancellation, and common multi-stage builds. Native arm64 images
 are fastest. Common `linux/amd64` images and build workloads run on Apple Silicon through Dory's
 built-in FEX path, which is enabled by default on new installs and can be changed in Settings.
+This translates x86_64 Linux applications inside Dory's ARM64 container VM; it does not boot an
+Intel guest OS or installer. Rosetta has the same application-only boundary when used inside an
+eligible ARM64 Linux VM. Dory exposes no partial x86 VM mode. Future whole-system x86 support
+requires a complete packaged QEMU TCG backend with independently qualified firmware, devices,
+lifecycle, security, recovery, and performance; see the
+[x86 whole-machine emulation contract](docs/x86-linux-whole-machine-emulation.md).
 
 The Build Activity screen keeps durable status, logs, cache use, and cancellation controls for
 builds launched by Dory. Builds started by another Docker client remain that client's responsibility;
@@ -286,9 +302,9 @@ store, so push a built image to a registry or import it into the cluster before 
 Install Linux Machines for headless guests. Graphical guests additionally need the Linux Desktop
 Runtime and the selected Debian, Ubuntu, or Kali distribution component.
 
-Dory Linux machines are persistent, separate VMs rather than containers. The app offers full Xfce
-desktops based on Debian 13, Ubuntu 24.04 LTS, or Kali Linux rolling for graphical and command-line
-applications. A lightweight Alpine-based headless profile remains available for services,
+Dory Linux machines are persistent, separate VMs rather than containers. The app offers Canonical's
+Ubuntu 24.04 LTS GNOME desktop plus Debian 13 and Kali Linux rolling Xfce desktops for graphical and
+command-line applications. A lightweight Alpine-based headless profile remains available for services,
 terminals, test environments, and agent work. Each machine has its own disk, address, resources,
 shares, and snapshots.
 
@@ -297,7 +313,7 @@ From the app or CLI you can:
 - create, start, stop, delete, and inspect machines;
 - choose Desktop Linux or Headless Linux when creating a machine in the app;
 - choose 1 to 8 CPUs and 1 to 16 GiB of memory per machine;
-- configure the desktop Linux username, then use its Xfce session, embedded terminal, or an external
+- configure the desktop Linux username, then use its GNOME or Xfce session, embedded terminal, or an external
   terminal selected in Settings;
 - use a root shell for lightweight headless machines or `dory machine shell NAME`;
 - execute structured commands with `dory machine exec NAME --json -- COMMAND`;
@@ -336,12 +352,24 @@ deletes only scheduler-owned archives and snapshots; manual snapshots are never 
 local backup contract, not an S3 or managed offsite service, so copy important verified archives to
 independent storage as part of your normal backup policy.
 
-Desktop machines use native arm64 Debian 13, Ubuntu 24.04 LTS, or Kali rolling with systemd, Xfce,
-Bash, a configurable login user, and a 64 GiB thin-provisioned disk stored in the selected
+Desktop machines use native arm64 Ubuntu 24.04 LTS with GNOME or Debian 13 and Kali rolling with
+Xfce, plus systemd, Bash, a configurable login user, and a 64 GiB thin-provisioned disk stored in the selected
 `.dorydrive`. Their window follows the Mac display at a true 2x framebuffer, resizes dynamically,
-and configures Xfce for Retina-sharp text and controls. They run normal graphical and command-line
+and configures the selected desktop for Retina-sharp text and controls. They run normal graphical and command-line
 Linux applications and can mount the Mac home at `~/Mac` only when the user enables that share.
+Installing a newer desktop component updates matching existing guests in place; their automatic
+last-good snapshot remains available in the normal snapshot list for manual rollback.
 Headless machines retain the smaller Alpine, `root`, and `/bin/sh` contract.
+
+The custom ISO path accepts arm64 Linux installation media on Apple Silicon. It verifies the media
+architecture before allocation, computes an SHA-256 identity, and evaluates exact media/host
+runtime evidence separately; a known-unstable tuple is blocked while unknown media is clearly
+reported as unqualified. It uses native EFI and an NVMe root disk with fsync semantics, plus VirtIO
+display, network, audio, pointer, keyboard, clipboard, and memory-balloon devices; the distribution must include drivers for the
+devices it needs. Desktop ISO machines default to four vCPUs and 4 GB of memory as balanced resource
+defaults, not as compatibility claims. This path remains preview until the real-installer
+physical-Mac release matrix passes. Intel/x86_64 ISOs are rejected before allocation; Rosetta and
+FEX cannot boot them.
 
 ### Machine secrets and host access
 
@@ -490,8 +518,8 @@ dory network --lan-visible on
 ## Runtime modes and resource control
 
 Settings > Engine & Daemon controls the engine backend, CPU count, memory ceiling, common amd64
-support, and preview Venus GPU acceleration. Applying CPU or memory changes restarts the engine
-and restores the containers that were running.
+container-application support, and preview dual VirGL2/Venus GPU acceleration. Applying CPU or
+memory changes restarts the engine and restores the containers that were running.
 
 Dory has four availability modes:
 
@@ -567,6 +595,10 @@ The stdio MCP server implements protocol version `2025-11-25` and exposes:
 - `dory.engine_status`
 - `dory.machine_list`
 - `dory.machine_exec`
+- `dory.sandbox_capabilities`
+- `dory.sandbox_templates`
+- `dory.sandbox_current`
+- `dory.sandbox_use`
 - `dory.sandbox_run`
 - `dory.sandbox_create`
 - `dory.sandbox_exec`
@@ -580,7 +612,9 @@ The stdio MCP server implements protocol version `2025-11-25` and exposes:
 Launch with `--read-only` to block machine execution and sandbox writes. Agents should inspect first,
 prefer JSON, run dry-run commands before writes, and use the narrowest repair target.
 
-The supported sandbox command creates a dedicated Dory Linux VM, shares no host files by default,
+Agent Sandboxes are dedicated headless VMs for coding agents and Linux CLI applications; they are
+distinct from interactive Linux Desktop VMs and general-purpose user-managed Linux Server VMs.
+The supported sandbox command shares no host files by default,
 runs non-root, defaults mounts to read-only, and enforces `none`, allowlisted `outbound`, or explicit
 `full` network policy. It also provides bounded scratch disk/process/wall limits, ephemeral secret
 and SSH-agent grants, rollback, inspectable manifests, a kill switch, named reuse, and daemon-owned
@@ -596,15 +630,22 @@ For repeated local development or testing, create an Agent-ready named sandbox o
 
 ```sh
 dory sandbox create my-project --workspace .
+dory sandbox capabilities my-project --json
+dory sandbox use my-project
+dory sandbox attach
 dory sandbox exec my-project -- go test ./...
 dory sandbox inspect my-project --json
 dory sandbox reset my-project --json
 dory sandbox kill my-project
 ```
 
-The core profile includes Bash, build tools, Git, curl, jq, ripgrep, Python, SSH tools, and common
-archive utilities. Dory detects Node, Python, Go, Rust, Java, and Ruby projects from the workspace,
-or you can repeat `--tool` to choose explicitly. Tools and caches stay warm between commands.
+The core profile includes Bash, build tools, Git, curl, jq, ripgrep, Python, SSH tools, tmux, and
+common archive utilities. Reusable `dev.dory.sandbox.template v1` JSON files select profiles,
+toolchains, policies, mounts, and limits; `--setup FILE` runs once as the non-root Sandbox identity
+before the reset baseline is captured. Dory detects Node, Python, Go, Rust, Java, and Ruby projects
+from the workspace, or you can choose a profile or repeat `--tool`. Tools and caches stay warm
+between commands. `use/current/attach/switch` remember a Sandbox and reconnect to its in-VM tmux
+session so agent processes survive host-terminal disconnects.
 `reset` restores the prepared baseline without changing the mounted host workspace. The sandbox
 root filesystem is sparse, so its 8 GB logical capacity consumes Mac storage only as data is
 written.
@@ -631,7 +672,7 @@ Everything below is available without using the command line:
 | General | Launch at login, menu bar, background daemon, terminal tools, preferred external terminal (system default, Terminal, iTerm2, Ghostty, Warp, WezTerm, Alacritty, Kitty, or a custom app), browser login bridge, Docker host conflict repair, light or dark appearance |
 | Updates | Signed candidate/preflight state, active transaction, next-launch smoke result, rollback, and recovery export |
 | Components | Signed optional payload selection, install/update/verify/remove, current generation, and rollback-safe prior generation |
-| Engine & Daemon | Dory, detected external, or custom socket backend; restart; CPU; memory; amd64 support; preview GPU; local daemon status |
+| Engine & Daemon | Dory, detected external, or custom socket backend; restart; CPU; memory; amd64 container-application support; preview GPU; local daemon status |
 | Resources | Data drive, reveal, backup, verify, restore, select, grow, per-process memory, Mac capacity |
 | Machines | Host environment allow-list and the file-sharing boundary for persistent and sandbox machines |
 | Auto-Idle | Availability mode, delay, blockers, and wake notifications |
@@ -686,11 +727,22 @@ docker run --rm \
 
 - **Unavailable — Intel hosts:** Apple Silicon is the only qualified host architecture. Intel support is planned for a later
   release after dedicated hardware validation.
-- **Supported — Desktop Linux:** managed Debian 13, Ubuntu 24.04 LTS, and Kali rolling Xfce arm64 profiles.
+- **Unavailable — Intel Linux guests:** x86_64 installer ISOs do not boot through Dory's ARM64
+  hardware-virtualization paths. Rosetta/FEX translate applications inside ARM64 guests, not a
+  complete Intel guest OS; a future full implementation requires a packaged QEMU TCG backend.
+- **Recovery baseline — Desktop Linux:** managed Ubuntu 24.04 LTS GNOME plus Debian 13 and Kali
+  rolling Xfce arm64 profiles must boot and launch ordinary applications with software graphics.
+  The exact release remains unqualified until the physical managed-desktop gate passes.
 - **Supported — Headless Linux:** Alpine-based arm64 guests with an initial root `/bin/sh` login.
-- **Preview — Venus/Vulkan:** opt-in on the Apple-silicon raw-HV path. Host AI services work without it.
-- **Supported discovery / unavailable passthrough — USB:** host discovery is available. Attach, detach, and remembered replay are disabled
-  until the engine has a complete guest USB/IP RPC and verified guest-kernel support.
+- **Unqualified for public release — Desktop GPU acceleration:** the repaired dual VirGL2/Venus
+  tuple passed a 15-minute physical Developer-ID calibration with sustained VirGL, Venus Vulkan
+  WSI, Zed, Firefox, and ordinary GNOME applications, with no rejected resource flush or device
+  loss. Dory still makes no public acceleration claim until that exact tuple is release-signed,
+  notarized, and passes the complete release matrix; software display remains the recovery path.
+- **Qualified-only USB passthrough:** host discovery and explicit app/CLI attach/detach controls are
+  wired. They enable only for a running raw-HV machine whose exact signed resolved plan authorizes
+  removable USB; current production catalogs do not yet carry that qualification. Remembered replay
+  remains disabled.
 - **Unavailable — audio passthrough:** not part of the current release.
 - **Supported — agent sandboxes:** grants and residual risks are documented in the [agent guide](https://augani.github.io/dory/docs/agents.md).
 - Specialized Docker extensions may depend on another product's private paths. Use `dory compat`

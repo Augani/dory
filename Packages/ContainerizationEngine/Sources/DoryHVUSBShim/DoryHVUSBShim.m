@@ -14,6 +14,20 @@ BOOL DoryIOUSBHostSendDeviceRequest(IOUSBHostObject *object,
                                error:error];
 }
 
+BOOL DoryIOUSBHostEnqueueDeviceRequest(IOUSBHostObject *object,
+                                       IOUSBDeviceRequest request,
+                                       NSMutableData *data,
+                                       NSTimeInterval timeout,
+                                       NSError **error,
+                                       DoryIOUSBHostCompletionHandler completionHandler)
+{
+    return [object enqueueDeviceRequest:request
+                                   data:data
+                      completionTimeout:timeout
+                                  error:error
+                      completionHandler:completionHandler];
+}
+
 BOOL DoryIOUSBHostAbortDeviceRequests(IOUSBHostObject *object,
                                       IOUSBHostAbortOption option,
                                       NSError **error)

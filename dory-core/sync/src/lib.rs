@@ -7,8 +7,11 @@ mod hash;
 mod manifest;
 mod plan;
 
-pub use hash::{hash_bytes, Hash, HASH_LEN};
-pub use manifest::{walk_manifest, walk_manifest_excluding, FileEntry, Manifest};
+pub use hash::{hash_bytes, hash_file, Hash, HASH_LEN};
+pub use manifest::{
+    walk_manifest, walk_manifest_excluding, walk_tree, walk_tree_excluding,
+    walk_tree_excluding_bounded, DirectoryEntry, FileEntry, Manifest, TreeLimits, TreeSnapshot,
+};
 pub use plan::{plan, SyncPlan};
 
 /// Chunk size for streamed file transfer. A create/build body is tiny; source trees are many small

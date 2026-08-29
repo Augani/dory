@@ -1,10 +1,12 @@
 #!/bin/bash
-# Pinned supply-chain metadata for the clean-Mac Docker, Buildx, Compose, and kubectl payloads.
+# Pinned supply-chain metadata for the clean-Mac Docker, credential-helper, Buildx, Compose,
+# and kubectl payloads.
 
 DORY_KUBECTL_DEFAULT_VERSION="v1.36.1"
 DORY_DOCKER_CLI_DEFAULT_VERSION="29.0.1"
 DORY_BUILDX_DEFAULT_VERSION="v0.34.1"
 DORY_COMPOSE_DEFAULT_VERSION="v2.39.2"
+DORY_DOCKER_CREDENTIAL_HELPER_DEFAULT_VERSION="v0.9.8"
 
 dory_host_cli_default_sha256() {
   case "$1:$2" in
@@ -16,6 +18,8 @@ dory_host_cli_default_sha256() {
     docker-buildx:x86_64) printf '%s\n' a4a74ff86e70706a0ae24330052ab52989da9f2090dc8fc478e398813de7b550 ;;
     docker-compose:arm64) printf '%s\n' 44ea135a29b176d959aed927d61d3483b3f0e7b4a2025ab7812aa00086916f13 ;;
     docker-compose:x86_64) printf '%s\n' fb72c16602af3fe9331e198b7f0534fd194b157a68eb6c293641c1ebbe7eac8b ;;
+    docker-credential-osxkeychain:arm64) printf '%s\n' 6fae515ffbc74f395af1b51c6f079ddb57895ed9e428e0bea3f6aff64e916b22 ;;
+    docker-credential-osxkeychain:x86_64) printf '%s\n' 0575a404c4ead8b5135a2482ece4dd142bde3cbd319433697e212bbea0afb100 ;;
     *) echo "error: no default host CLI digest for $1 $2" >&2; return 1 ;;
   esac
 }
@@ -26,6 +30,7 @@ dory_host_cli_default_version() {
     docker) printf '%s\n' "$DORY_DOCKER_CLI_DEFAULT_VERSION" ;;
     docker-buildx) printf '%s\n' "$DORY_BUILDX_DEFAULT_VERSION" ;;
     docker-compose) printf '%s\n' "$DORY_COMPOSE_DEFAULT_VERSION" ;;
+    docker-credential-osxkeychain) printf '%s\n' "$DORY_DOCKER_CREDENTIAL_HELPER_DEFAULT_VERSION" ;;
     *) echo "error: unknown host CLI '$1'" >&2; return 1 ;;
   esac
 }
@@ -36,6 +41,7 @@ dory_host_cli_version_override() {
     docker) printf '%s' "${DORY_DOCKER_CLI_VERSION:-}" ;;
     docker-buildx) printf '%s' "${DORY_BUILDX_VERSION:-}" ;;
     docker-compose) printf '%s' "${DORY_DOCKER_COMPOSE_VERSION:-${DORY_COMPOSE_VERSION:-}}" ;;
+    docker-credential-osxkeychain) printf '%s' "${DORY_DOCKER_CREDENTIAL_HELPER_VERSION:-}" ;;
     *) return 1 ;;
   esac
 }
@@ -57,6 +63,8 @@ dory_host_cli_sha_override() {
     docker-buildx:x86_64) variable=DORY_BUILDX_SHA256_X86_64 ;;
     docker-compose:arm64) variable=DORY_DOCKER_COMPOSE_SHA256_ARM64 ;;
     docker-compose:x86_64) variable=DORY_DOCKER_COMPOSE_SHA256_X86_64 ;;
+    docker-credential-osxkeychain:arm64) variable=DORY_DOCKER_CREDENTIAL_HELPER_SHA256_ARM64 ;;
+    docker-credential-osxkeychain:x86_64) variable=DORY_DOCKER_CREDENTIAL_HELPER_SHA256_X86_64 ;;
     *) return 1 ;;
   esac
   printf '%s' "${!variable:-}"
@@ -71,7 +79,7 @@ dory_host_cli_expected_sha256() {
 
 dory_host_cli_validate_metadata() {
   local name version_override sha_arm sha_x86 value
-  for name in kubectl docker docker-buildx docker-compose; do
+  for name in kubectl docker docker-buildx docker-compose docker-credential-osxkeychain; do
     version_override="$(dory_host_cli_version_override "$name")"
     sha_arm="$(dory_host_cli_sha_override "$name" arm64)"
     sha_x86="$(dory_host_cli_sha_override "$name" x86_64)"

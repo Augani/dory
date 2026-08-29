@@ -1,11 +1,31 @@
 import DoryCore
+import Foundation
 import XCTest
 @testable import DorydKit
 
 final class MachineRecipeProvisionerTests: XCTestCase {
+    func testCapabilityCatalogIsStableCompleteAndBackedByProvisioningRecipes() throws {
+        let catalog = MachineRecipeProvisioner.catalog
+
+        XCTAssertEqual(
+            catalog.map(\.id),
+            ["agent-core", "node", "python-ml", "go", "rust", "java", "ruby", "docker-host", "k8s-lab", "devops"]
+        )
+        XCTAssertEqual(Set(catalog.map(\.id)).count, catalog.count)
+        for capability in catalog {
+            let recipe = try MachineRecipeProvisioner.recipe(id: capability.id)
+            XCTAssertEqual(recipe.capability, capability)
+            XCTAssertFalse(capability.summary.isEmpty, capability.id)
+            XCTAssertFalse(capability.executables.isEmpty, capability.id)
+            XCTAssertFalse(capability.packages["alpine", default: []].isEmpty, capability.id)
+            XCTAssertFalse(capability.packages["debian", default: []].isEmpty, capability.id)
+            XCTAssertEqual(recipe.verifyCommand, capability.versionCommand)
+        }
+    }
+
     func testBuiltInRecipeAliasesResolveToAlpineAndDebianRecipes() throws {
         let cases: [(String, String, String, String)] = [
-            ("agent-ready", "agent-core", "rg --version", "bash build-essential ca-certificates coreutils curl fd-find file findutils git jq less openssh-client patch python3 python3-pip ripgrep tar unzip zip"),
+            ("agent-ready", "agent-core", "rg --version", "bash build-essential ca-certificates coreutils curl fd-find file findutils git jq less openssh-client patch python3 python3-pip ripgrep tar tmux unzip util-linux zip"),
             ("node", "node", "node --version", "nodejs npm build-essential"),
             ("python", "python-ml", "python3 --version", "python3 python3-pip python3-numpy python3-venv"),
             ("go", "go", "go version", "golang-go"),
@@ -29,6 +49,36 @@ final class MachineRecipeProvisionerTests: XCTestCase {
                 XCTAssertTrue(recipe.installScript.contains("/usr/local/bin/fd"), input)
                 XCTAssertTrue(recipe.verifyCommand.contains("fd --version"), input)
             }
+        }
+    }
+
+    func testAgentCoreInstallScriptDoesNotJoinFiIntoTheFdShim() throws {
+        let script = try MachineRecipeProvisioner.recipe(id: "agent-core").installScript
+        XCTAssertFalse(script.contains("fiif"), script)
+        XCTAssertTrue(script.contains("fi\nif ! command -v fd"), script)
+        XCTAssertTrue(script.contains("exit 69\nfi\n"), script)
+    }
+
+    func testEveryBuiltInInstallRecipeIsValidPOSIXShell() throws {
+        for capability in MachineRecipeProvisioner.catalog {
+            let recipe = try MachineRecipeProvisioner.recipe(id: capability.id)
+            let shell = Process()
+            let input = Pipe()
+            let errors = Pipe()
+            shell.executableURL = URL(fileURLWithPath: "/bin/sh")
+            shell.arguments = ["-n"]
+            shell.standardInput = input
+            shell.standardError = errors
+            try shell.run()
+            input.fileHandleForWriting.write(Data(recipe.installScript.utf8))
+            try input.fileHandleForWriting.close()
+            shell.waitUntilExit()
+
+            let error = String(
+                decoding: errors.fileHandleForReading.readDataToEndOfFile(),
+                as: UTF8.self
+            )
+            XCTAssertEqual(shell.terminationStatus, 0, "\(capability.id): \(error)")
         }
     }
 

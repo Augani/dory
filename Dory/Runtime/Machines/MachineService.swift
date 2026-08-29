@@ -1,10 +1,22 @@
 import Foundation
+import DoryOperations
 
-nonisolated struct MountPair: Sendable, Hashable { var host: String; var guest: String; var readOnly: Bool = false }
+nonisolated struct MountPair: Sendable, Hashable {
+    var host: String
+    var guest: String
+    var readOnly: Bool = false
+    /// Stable daemon-owned VirtioFS share identity. New mounts leave this nil until their
+    /// first write assigns a collision-free tag; subsequent reads and edits preserve it.
+    var shareTag: String? = nil
+}
 nonisolated struct PortPair: Sendable, Hashable { var host: Int; var guest: Int }
 nonisolated enum MachineDisplayMode: String, Sendable, Hashable, CaseIterable {
     case headless
     case desktop
+}
+nonisolated enum MachineBootMode: String, Sendable, Hashable, CaseIterable {
+    case linuxKernel = "linux-kernel"
+    case efi
 }
 nonisolated struct MachineSettings: Sendable, Hashable {
     var cpus: Int?
@@ -13,8 +25,15 @@ nonisolated struct MachineSettings: Sendable, Hashable {
     var ports: [PortPair] = []
     var identity: MacIdentity? = nil
     var env: [String: String] = [:]
+    /// Closed, non-secret VM intent used by new doryd writes. `env` remains only so older
+    /// machine.json records and container recipes can be read without data loss.
+    var virtualMachineSettings: DorydMachineTypedSettings? = nil
+    var displayPresentation: DoryMachineDisplayPresentation? = nil
     var address: String? = nil
     var displayMode: MachineDisplayMode = .headless
+    var bootMode: MachineBootMode = .linuxKernel
+    var installerISOPath: String? = nil
+    var diskSizeGB: Int? = nil
     nonisolated static let `default` = MachineSettings(cpus: nil, memoryMB: nil)
 }
 

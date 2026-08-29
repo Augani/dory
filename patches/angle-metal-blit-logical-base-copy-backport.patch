@@ -1,0 +1,26 @@
+diff --git a/Source/ThirdParty/ANGLE/src/libANGLE/renderer/metal/FrameBufferMtl.mm b/Source/ThirdParty/ANGLE/src/libANGLE/renderer/metal/FrameBufferMtl.mm
+index 860f798cf6..1e628af0e9 100644
+--- a/Source/ThirdParty/ANGLE/src/libANGLE/renderer/metal/FrameBufferMtl.mm
++++ b/Source/ThirdParty/ANGLE/src/libANGLE/renderer/metal/FrameBufferMtl.mm
+@@ -471,9 +471,9 @@ angle::Result FramebufferMtl::blitWithDraw(const gl::Context *context,
+     if (blitDepthBuffer || blitStencilBuffer)
+     {
+         mtl::DepthStencilBlitParams dsBlitParams;
+-        memcpy(&dsBlitParams, &baseParams, sizeof(baseParams));
+-        RenderTargetMtl *srcDepthRt   = srcFrameBuffer->getDepthRenderTarget();
+-        RenderTargetMtl *srcStencilRt = srcFrameBuffer->getStencilRenderTarget();
++        static_cast<mtl::BlitParams &>(dsBlitParams) = baseParams;
++        RenderTargetMtl *srcDepthRt                  = srcFrameBuffer->getDepthRenderTarget();
++        RenderTargetMtl *srcStencilRt                = srcFrameBuffer->getStencilRenderTarget();
+ 
+         if (blitDepthBuffer)
+         {
+@@ -522,7 +522,7 @@ angle::Result FramebufferMtl::blitWithDraw(const gl::Context *context,
+     if (blitColorBuffer)
+     {
+         mtl::ColorBlitParams colorBlitParams;
+-        memcpy(&colorBlitParams, &baseParams, sizeof(baseParams));
++        static_cast<mtl::BlitParams &>(colorBlitParams) = baseParams;
+ 
+         RenderTargetMtl *srcColorRt = srcFrameBuffer->getColorReadRenderTarget(context);
+         ASSERT(srcColorRt);

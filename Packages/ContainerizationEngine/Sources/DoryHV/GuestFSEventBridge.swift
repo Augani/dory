@@ -1,3 +1,4 @@
+import DoryFSWorkerContracts
 import Foundation
 
 public struct GuestFSEventBatchResult: Equatable, Sendable {
@@ -27,8 +28,12 @@ public enum GuestFSEventBridgeError: Error, Equatable {
     case operationIDConflict
     case dedupeCapacityExhausted
     case guestExecutionFailed
+    case watcherNotReady
     case timedOut
     case connectionClosed
+    case serviceAdmissionFailed(VirtioVsockServiceAdmissionError)
+    case connectionAdmissionFailed(VirtioVsockConnectionAdmissionError)
+    case outboundBackpressure
 }
 
 public enum GuestFSEventBatchCodec {
@@ -152,26 +157,67 @@ public extension GuestFSEventSending {
 /// be reached through Dory's remote-machine control surface.
 public final class GuestFSEventBridge: GuestFSEventSending, @unchecked Sendable {
     private let vsock: VirtioVsock
-    private let timeoutNanoseconds: UInt64
+    private let readinessGate: GuestFSEventReadinessGate
 
-    public init(vsock: VirtioVsock, timeoutNanoseconds: UInt64 = 2_000_000_000) {
+    public init(
+        vsock: VirtioVsock,
+        timeoutNanoseconds: UInt64 = DoryFSWorkerCoherenceTiming
+            .guestWatcherAttemptNanoseconds,
+        startupGraceNanoseconds: UInt64 = DoryFSWorkerCoherenceTiming
+            .guestWatcherStartupGraceNanoseconds,
+        startupRetryDelayNanoseconds: UInt64 = DoryFSWorkerCoherenceTiming
+            .guestWatcherRetryDelayNanoseconds,
+        startupMaximumRetryDelayNanoseconds: UInt64 = DoryFSWorkerCoherenceTiming
+            .guestWatcherMaximumRetryDelayNanoseconds
+    ) {
         self.vsock = vsock
-        self.timeoutNanoseconds = timeoutNanoseconds
+        readinessGate = GuestFSEventReadinessGate(
+            attemptTimeoutNanoseconds: timeoutNanoseconds,
+            startupGraceNanoseconds: startupGraceNanoseconds,
+            retryDelayNanoseconds: startupRetryDelayNanoseconds,
+            maximumRetryDelayNanoseconds: startupMaximumRetryDelayNanoseconds
+        )
     }
 
     public func send(operationID: UInt64, paths: [String]) async throws -> GuestFSEventBatchResult {
         let frame = try GuestFSEventBatchCodec.encodeRequest(operationID: operationID, paths: paths)
+        return try await transact(
+            frame: frame,
+            operationID: operationID,
+            pathCount: paths.count,
+            readinessProbe: false
+        )
+    }
+
+    private func transact(
+        frame: [UInt8],
+        operationID: UInt64,
+        pathCount: Int,
+        readinessProbe: Bool
+    ) async throws -> GuestFSEventBatchResult {
         let cancellation = GuestFSEventCancellation()
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 DispatchQueue.global(qos: .userInitiated).async { [self] in
                     do {
-                        let result = try send(
-                            frame: frame,
-                            operationID: operationID,
-                            pathCount: paths.count,
-                            cancellation: cancellation
-                        )
+                        let result = if readinessProbe {
+                            try readinessGate.establish { maximumAttemptNanoseconds in
+                                try send(
+                                    frame: frame,
+                                    operationID: operationID,
+                                    pathCount: pathCount,
+                                    cancellation: cancellation,
+                                    timeoutNanoseconds: maximumAttemptNanoseconds
+                                )
+                            }
+                        } else {
+                            try deliver(
+                                frame: frame,
+                                operationID: operationID,
+                                pathCount: pathCount,
+                                cancellation: cancellation
+                            )
+                        }
                         continuation.resume(returning: result)
                     } catch {
                         continuation.resume(throwing: error)
@@ -183,15 +229,71 @@ public final class GuestFSEventBridge: GuestFSEventSending, @unchecked Sendable 
         }
     }
 
-    private func send(
+    /// A zero-path transaction proves that the guest listener has bound port 1028 and can decode,
+    /// execute, and acknowledge the complete protocol. It changes no guest filesystem state.
+    public func establishReadiness() async throws {
+        let frame = try GuestFSEventBatchCodec.encodeRequest(operationID: 0, paths: [])
+        _ = try await transact(
+            frame: frame,
+            operationID: 0,
+            pathCount: 0,
+            readinessProbe: true
+        )
+    }
+
+    /// Engine mode is a synchronous composition root. It starts the VM on its dedicated owner
+    /// thread, then uses this barrier before accepting a long-running engine generation.
+    public func establishReadinessBlocking() throws {
+        let frame = try GuestFSEventBatchCodec.encodeRequest(operationID: 0, paths: [])
+        let cancellation = GuestFSEventCancellation()
+        _ = try readinessGate.establish { maximumAttemptNanoseconds in
+            try send(
+                frame: frame,
+                operationID: 0,
+                pathCount: 0,
+                cancellation: cancellation,
+                timeoutNanoseconds: maximumAttemptNanoseconds
+            )
+        }
+    }
+
+    private func deliver(
         frame: [UInt8],
         operationID: UInt64,
         pathCount: Int,
         cancellation: GuestFSEventCancellation
     ) throws -> GuestFSEventBatchResult {
+        try readinessGate.perform { maximumAttemptNanoseconds in
+            try send(
+                frame: frame,
+                operationID: operationID,
+                pathCount: pathCount,
+                cancellation: cancellation,
+                timeoutNanoseconds: maximumAttemptNanoseconds
+            )
+        }
+    }
+
+    private func send(
+        frame: [UInt8],
+        operationID: UInt64,
+        pathCount: Int,
+        cancellation: GuestFSEventCancellation,
+        timeoutNanoseconds: UInt64
+    ) throws -> GuestFSEventBatchResult {
         let deadline = ProcessInfo.processInfo.systemUptime
             + Double(timeoutNanoseconds) / 1_000_000_000
-        let connection = vsock.connect(port: VsockPorts.fsevents)
+        let connection: VsockConnection
+        do {
+            connection = try vsock.connectForServiceIfCapacity(
+                port: VsockPorts.fsevents,
+                service: .fileEvents
+            )
+        } catch let error as VirtioVsockServiceAdmissionError {
+            throw GuestFSEventBridgeError.serviceAdmissionFailed(error)
+        } catch let error as VirtioVsockConnectionAdmissionError {
+            throw GuestFSEventBridgeError.connectionAdmissionFailed(error)
+        }
         try cancellation.install(connection)
         defer { connection.close() }
         do {
@@ -200,6 +302,8 @@ public final class GuestFSEventBridge: GuestFSEventSending, @unchecked Sendable 
             throw GuestFSEventBridgeError.timedOut
         } catch VsockConnectionWriteError.connectionClosed {
             throw GuestFSEventBridgeError.connectionClosed
+        } catch VsockConnectionWriteError.outboundQueueFull {
+            throw GuestFSEventBridgeError.outboundBackpressure
         }
         connection.shutdownSend()
         let prefix = try readExactly(4, from: connection, deadline: deadline)
@@ -244,6 +348,144 @@ public final class GuestFSEventBridge: GuestFSEventSending, @unchecked Sendable 
 
     private func remainingNanoseconds(until deadline: TimeInterval) -> UInt64 {
         UInt64(max(0, deadline - ProcessInfo.processInfo.systemUptime) * 1_000_000_000)
+    }
+}
+
+/// Serializes watcher transactions. Only the explicit zero-path readiness probe owns the bounded
+/// startup retry window; real batches are rejected until that probe succeeds, preventing a long
+/// retry transaction from nesting inside worker XPC activation. Once ready, any transport loss
+/// immediately reaches the existing fail-stop coherence boundary.
+final class GuestFSEventReadinessGate: @unchecked Sendable {
+    typealias Uptime = @Sendable () -> TimeInterval
+    typealias Sleeper = @Sendable (UInt64) -> Void
+
+    private let deliveryLock = NSLock()
+    private let stateLock = NSLock()
+    private let attemptTimeoutNanoseconds: UInt64
+    private let startupGraceNanoseconds: UInt64
+    private let retryDelayNanoseconds: UInt64
+    private let maximumRetryDelayNanoseconds: UInt64
+    private let uptime: Uptime
+    private let sleep: Sleeper
+    private var ready = false
+
+    init(
+        attemptTimeoutNanoseconds: UInt64,
+        startupGraceNanoseconds: UInt64,
+        retryDelayNanoseconds: UInt64,
+        maximumRetryDelayNanoseconds: UInt64 = DoryFSWorkerCoherenceTiming
+            .guestWatcherMaximumRetryDelayNanoseconds,
+        uptime: @escaping Uptime = { ProcessInfo.processInfo.systemUptime },
+        sleep: @escaping Sleeper = { nanoseconds in
+            Thread.sleep(forTimeInterval: Double(nanoseconds) / 1_000_000_000)
+        }
+    ) {
+        precondition(attemptTimeoutNanoseconds > 0)
+        precondition(maximumRetryDelayNanoseconds >= retryDelayNanoseconds)
+        self.attemptTimeoutNanoseconds = attemptTimeoutNanoseconds
+        self.startupGraceNanoseconds = startupGraceNanoseconds
+        self.retryDelayNanoseconds = retryDelayNanoseconds
+        self.maximumRetryDelayNanoseconds = maximumRetryDelayNanoseconds
+        self.uptime = uptime
+        self.sleep = sleep
+    }
+
+    var isReady: Bool { stateLock.withLock { ready } }
+
+    func establish<Result>(
+        _ attempt: (_ maximumAttemptNanoseconds: UInt64) throws -> Result
+    ) throws -> Result {
+        deliveryLock.lock()
+        defer { deliveryLock.unlock() }
+
+        if stateLock.withLock({ ready }) {
+            return try attempt(attemptTimeoutNanoseconds)
+        }
+        let startedAt = uptime()
+        let startupDeadline = startedAt
+            + Double(startupGraceNanoseconds) / 1_000_000_000
+        var nextRetryDelayNanoseconds = retryDelayNanoseconds
+
+        while true {
+            let maximumAttemptNanoseconds = min(
+                attemptTimeoutNanoseconds,
+                Self.remainingNanoseconds(until: startupDeadline, now: uptime())
+            )
+
+            do {
+                let result = try attempt(max(1, maximumAttemptNanoseconds))
+                stateLock.withLock { ready = true }
+                return result
+            } catch {
+                let now = uptime()
+                guard !stateLock.withLock({ ready }),
+                      GuestFSEventBridgeError.isRetryableBeforeReadiness(error),
+                      now < startupDeadline else {
+                    throw error
+                }
+                let remaining = Self.remainingNanoseconds(
+                    until: startupDeadline,
+                    now: now
+                )
+                sleep(min(nextRetryDelayNanoseconds, remaining))
+                nextRetryDelayNanoseconds = min(
+                    maximumRetryDelayNanoseconds,
+                    Self.saturatingDouble(nextRetryDelayNanoseconds)
+                )
+            }
+        }
+    }
+
+    func perform<Result>(
+        _ attempt: (_ maximumAttemptNanoseconds: UInt64) throws -> Result
+    ) throws -> Result {
+        deliveryLock.lock()
+        defer { deliveryLock.unlock() }
+        guard stateLock.withLock({ ready }) else {
+            throw GuestFSEventBridgeError.watcherNotReady
+        }
+        return try attempt(attemptTimeoutNanoseconds)
+    }
+
+    private static func remainingNanoseconds(
+        until deadline: TimeInterval,
+        now: TimeInterval
+    ) -> UInt64 {
+        UInt64(max(0, deadline - now) * 1_000_000_000)
+    }
+
+    private static func saturatingDouble(_ value: UInt64) -> UInt64 {
+        let (doubled, overflow) = value.multipliedReportingOverflow(by: 2)
+        return overflow ? UInt64.max : doubled
+    }
+}
+
+private extension GuestFSEventBridgeError {
+    static func isRetryableBeforeReadiness(_ error: any Error) -> Bool {
+        guard let error = error as? GuestFSEventBridgeError else { return false }
+        switch error {
+        case .timedOut, .connectionClosed, .outboundBackpressure:
+            return true
+        case .serviceAdmissionFailed(let failure):
+            switch failure {
+            case .serviceCapacityReached, .aggregateCapacityReached, .deviceResetting:
+                return true
+            case .deviceQuiesced, .lifecycleRevoked:
+                return false
+            }
+        case .connectionAdmissionFailed(let failure):
+            switch failure {
+            case .connectionCapacityReached, .hostPortRangeExhausted,
+                 .outboundQueueCapacityReached:
+                return true
+            case .deviceQuiesced:
+                return false
+            }
+        case .tooManyPaths, .invalidOperationID, .invalidPath, .oversizedFrame,
+             .invalidResponse, .operationIDConflict, .dedupeCapacityExhausted,
+             .guestExecutionFailed, .watcherNotReady:
+            return false
+        }
     }
 }
 

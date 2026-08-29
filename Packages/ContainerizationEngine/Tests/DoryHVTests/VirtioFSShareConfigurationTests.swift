@@ -1,6 +1,10 @@
+import Darwin
+import DoryFSWorkerContracts
 import Foundation
 import Testing
+@testable import DoryFSWorkerServiceCore
 @testable import DoryHV
+@testable import dory_hv
 
 struct VirtioFSShareConfigurationTests {
     @Test func parsesReadWriteShareArgument() throws {
@@ -141,11 +145,13 @@ struct VirtioFSShareConfigurationTests {
         }
     }
 
-    @Test func makeBackendWithoutDaxHasNoDaxConfiguration() throws {
+    @Test func makeBackendUsesRequiredWorkerBroker() throws {
         let dir = FileManager.default.temporaryDirectory.path
         let share = try VirtioFSShareConfiguration(argument: "t=\(dir)")
-        let device = try share.makeBackend(daxGuestBase: GuestLayout.daxWindowBase, requestQueueCount: 3)
-        #expect(device.daxConfiguration == nil)
+        let device = try share.makeBackend(
+            broker: try broker(rootPath: dir),
+            requestQueueCount: 3
+        )
         #expect(device.requestQueueCount == 3)
     }
 
@@ -154,11 +160,61 @@ struct VirtioFSShareConfigurationTests {
         var share = try VirtioFSShareConfiguration(argument: "t=\(dir)")
         share.dax = true
         do {
-            _ = try share.makeBackend(daxGuestBase: GuestLayout.daxWindowBase)
+            _ = try share.makeBackend(broker: try broker(rootPath: dir))
             Issue.record("mutating a validated configuration unexpectedly enabled DAX")
         } catch {
             #expect(String(describing: error).contains("DAX host shares are disabled"))
         }
+    }
+
+    @Test func launcherPinsAndBindsExactRootDescriptorsWithoutBookmarks() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "dory-fs-launcher-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        let firstURL = root.appendingPathComponent("first", isDirectory: true)
+        let secondURL = root.appendingPathComponent("second", isDirectory: true)
+        try FileManager.default.createDirectory(at: firstURL, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: secondURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let first = try VirtioFSShareConfiguration(tag: "first", path: firstURL.path)
+        let second = try VirtioFSShareConfiguration(tag: "second", path: secondURL.path)
+
+        let prepared = try DoryFilesystemWorkerLauncher.prepare(shares: [first, second])
+        let bootstrap = try DoryFSWorkerBootstrapCodec.decode(prepared.bytes)
+
+        #expect(prepared.rootDescriptors.count == 2)
+        #expect(prepared.capabilities.count == 2)
+        for (configuration, expectedOrdinal) in [(first, 0), (second, 1)] {
+            let capability = try #require(prepared.capabilities[configuration.tag])
+            let authority = try #require(
+                bootstrap.shares.first(where: { $0.capabilityID == capability })
+            )
+            #expect(authority.rootDescriptorIndex == UInt16(expectedOrdinal))
+            var descriptorStatus = stat()
+            var pathStatus = stat()
+            #expect(fstat(
+                prepared.rootDescriptors[expectedOrdinal].fileDescriptor,
+                &descriptorStatus
+            ) == 0)
+            #expect(lstat(configuration.path, &pathStatus) == 0)
+            #expect(descriptorStatus.st_dev == pathStatus.st_dev)
+            #expect(descriptorStatus.st_ino == pathStatus.st_ino)
+            #expect(descriptorStatus.st_gen == pathStatus.st_gen)
+            #expect(fcntl(
+                prepared.rootDescriptors[expectedOrdinal].fileDescriptor,
+                F_GETFD
+            ) & FD_CLOEXEC != 0)
+        }
+    }
+
+    private func broker(rootPath: String) throws -> DoryFSWorkerBroker {
+        let channel = DoryFSWorkerTestChannel(hostFS: try HostFS(rootPath: rootPath))
+        return DoryFSWorkerBroker(
+            shareCapabilityID: DoryFSWorkerTestChannel.capabilityID,
+            generation: DoryFSWorkerTestChannel.generation,
+            channel: channel
+        )
     }
 
     @Test func writableShareTopologyRejectsAliasesAndNestedRoots() throws {

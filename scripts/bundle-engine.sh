@@ -9,14 +9,15 @@
 #   * Contents/Helpers/DoryVMM.app — Retina-capable per-machine Virtualization.framework helper.
 #   * Contents/Helpers/dory-vmm  — CLI-compatible copy used by macOS 14 engine fallback and tooling.
 #   * Contents/Helpers/dory-network-helper — local networking helper for doryd-owned domains/routes.
-#   * Contents/Helpers/dory-hv    — Dory's own Hypervisor.framework VMM (elastic memory via free-page
-#                                   reporting, SMP, journaled data disk), signed with
-#                                   com.apple.security.hypervisor. Preferred where available.
+#   * Contents/Helpers/DoryHVRunner.app — Dory's Hypervisor.framework VMM as one nested signed
+#                                   application graph. Its executable is Contents/MacOS/dory-hv.
 #   * Contents/Helpers/gvproxy    — userspace networking (Apache-2.0) for the dory-hv engine.
 #   * Contents/Helpers/docker, docker-buildx, docker-compose — Docker Core host CLIs.
 #   * kubectl is exported as the independently installable Kubernetes component in Core builds.
-#   * Contents/Frameworks/libvirglrenderer.dylib, libMoltenVK.dylib — optional experimental
-#                                   Venus/Vulkan renderer payload for in-guest GPU acceleration.
+#   * Contents/Helpers/DoryHVRunner.app/Contents/XPCServices/DoryRendererWorker.xpc — the pinned,
+#                                   statically linked dual VirGL2 + Venus renderer worker; no
+#                                   ambient renderer dylib
+#                                   or ambient Vulkan loader is shipped at runtime.
 #   * Contents/Resources/dory-hv-kernel-<arch>             — legacy raw kernel payload.
 #   * Contents/Resources/dory-machine-rootfs-<arch>.ext4   — legacy raw machine payload.
 #   * Contents/Resources/dory-hv-kernel-<arch>.lzfse       — LZFSE PVH/Image kernel for dory-hv.
@@ -57,6 +58,13 @@ source scripts/host-cli-payload.sh
 RESOURCES="$APP/Contents/Resources"
 HELPERS="$APP/Contents/Helpers"
 FRAMEWORKS="$APP/Contents/Frameworks"
+HV_RUNNER_APP="$HELPERS/DoryHVRunner.app"
+HV_RUNNER_EXECUTABLE="$HV_RUNNER_APP/Contents/MacOS/dory-hv"
+FS_WORKER_XPC="$HV_RUNNER_APP/Contents/XPCServices/DoryFSWorker.xpc"
+FS_WORKER_EXECUTABLE="$FS_WORKER_XPC/Contents/MacOS/DoryFSWorker"
+RENDERER_WORKER_XPC="$HV_RUNNER_APP/Contents/XPCServices/DoryRendererWorker.xpc"
+RENDERER_WORKER_EXECUTABLE="$RENDERER_WORKER_XPC/Contents/MacOS/DoryRendererWorker"
+DORYD_EXECUTABLE="$HELPERS/doryd"
 SUPPORT="$HOME/Library/Application Support/com.apple.container"
 
 [ -d "$APP" ] || { echo "no such app bundle: $APP"; exit 1; }
@@ -64,8 +72,8 @@ mkdir -p "$RESOURCES" "$HELPERS" "$FRAMEWORKS"
 
 DESKTOP_BUNDLE_MODE="${DORY_DESKTOP_BUNDLE_MODE:-none}"
 case "$DESKTOP_BUNDLE_MODE" in
-  none|all) ;;
-  *) echo "DORY_DESKTOP_BUNDLE_MODE must be 'none' or 'all'" >&2; exit 64 ;;
+  none|debian|ubuntu|kali|all) ;;
+  *) echo "DORY_DESKTOP_BUNDLE_MODE must be 'none', 'debian', 'ubuntu', 'kali', or 'all'" >&2; exit 64 ;;
 esac
 COMPONENT_BUNDLE_MODE="${DORY_COMPONENT_BUNDLE_MODE:-legacy}"
 case "$COMPONENT_BUNDLE_MODE" in
@@ -132,9 +140,9 @@ codesign_helper() {
     return
   fi
 
-  local attempt err
+  local _attempt err
   err="$(mktemp "${TMPDIR:-/tmp}/dory-codesign.XXXXXX")"
-  for attempt in 1 2 3; do
+  for _attempt in 1 2 3; do
     if codesign "${base[@]}" -s "$id" "$path" 2>"$err"; then
       rm -f "$err"
       return 0
@@ -152,6 +160,23 @@ codesign_helper() {
   fi
   echo "    A Developer ID identity is present but signing failed; refusing to ship an ad-hoc helper. Set DORY_ALLOW_ADHOC_SIGN=1 only for a throwaway local build." >&2
   return 1
+}
+
+validate_xpc_worker_bundle() {
+  local bundle="$1" expected_identifier="$2" executable="$3" label="$4"
+  local executable_path="$bundle/Contents/MacOS/$executable"
+  [ -d "$bundle" ] && [ ! -L "$bundle" ] \
+    || { echo "    ERROR: $label XPC service is missing or indirect" >&2; return 1; }
+  [ -x "$executable_path" ] && [ ! -L "$executable_path" ] \
+    || { echo "    ERROR: $label XPC service has no direct executable" >&2; return 1; }
+  [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$bundle/Contents/Info.plist" 2>/dev/null)" = "$executable" ] \
+    || { echo "    ERROR: $label XPC service has the wrong executable" >&2; return 1; }
+  [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$bundle/Contents/Info.plist" 2>/dev/null)" = "$expected_identifier" ] \
+    || { echo "    ERROR: $label XPC service has the wrong bundle identifier" >&2; return 1; }
+  [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundlePackageType' "$bundle/Contents/Info.plist" 2>/dev/null)" = 'XPC!' ] \
+    || { echo "    ERROR: $label XPC service has the wrong package type" >&2; return 1; }
+  [ "$(/usr/libexec/PlistBuddy -c 'Print :XPCService:ServiceType' "$bundle/Contents/Info.plist" 2>/dev/null)" = Application ] \
+    || { echo "    ERROR: $label XPC service has the wrong service type" >&2; return 1; }
 }
 
 sign_runtime_payload() {
@@ -248,8 +273,8 @@ build_swiftpm_product_for_arch() {
   printf '%s/%s\n' "$bin_path" "$product"
 }
 
-bundle_swiftpm_executable() {
-  local package="$1" configuration="$2" product="$3" destination="$4" entitlements="${5:-}"
+assemble_swiftpm_executable() {
+  local package="$1" configuration="$2" product="$3" destination="$4"
   local arch bin arches arch_info
   local built=()
 
@@ -268,13 +293,26 @@ bundle_swiftpm_executable() {
     chmod 0755 "$destination"
   fi
 
+  arch_info="$(lipo -archs "$destination" 2>/dev/null || true)"
+  echo "    assembled Helpers/$(basename "$destination")${arch_info:+ ($arch_info)}"
+}
+
+bundle_swiftpm_executable() {
+  local package="$1" configuration="$2" product="$3" destination="$4" entitlements="${5:-}"
+
+  assemble_swiftpm_executable "$package" "$configuration" "$product" "$destination"
+
   if [ -n "$entitlements" ]; then
     sign_runtime_payload_with_entitlements "$destination" "$entitlements"
   else
     sign_runtime_payload "$destination"
   fi
-  arch_info="$(lipo -archs "$destination" 2>/dev/null || true)"
-  echo "    bundled Helpers/$(basename "$destination")${arch_info:+ ($arch_info)}"
+  echo "    signed Helpers/$(basename "$destination")"
+}
+
+assemble_doryd_for_release_identity() {
+  assemble_swiftpm_executable "$1" "$2" doryd "$DORYD_EXECUTABLE"
+  echo "    deferred Helpers/doryd final signature until the immutable renderer graph is verified"
 }
 
 fetch_url() {
@@ -287,145 +325,6 @@ fetch_url() {
     "$url" -o "$out"
 }
 
-fetch_url_stdout() {
-  local url="$1"
-  curl -fsSL \
-    --retry "${DORY_CURL_RETRIES:-2}" \
-    --retry-delay "${DORY_CURL_RETRY_DELAY:-2}" \
-    --connect-timeout "${DORY_CURL_CONNECT_TIMEOUT:-15}" \
-    --max-time "${DORY_CURL_MAX_TIME:-240}" \
-    "$url"
-}
-
-dylib_has_symbol() {
-  local dylib="$1" symbol="$2"
-  [ -f "$dylib" ] || return 1
-  nm -gU "$dylib" 2>/dev/null | grep -q "_$symbol"
-}
-
-find_compatible_virglrenderer() {
-  local cand
-  for cand in "${DORY_VIRGLRENDERER_PATH:-}" \
-              "${DORY_VIRGLRENDERER:-}" \
-              "$FRAMEWORKS/libvirglrenderer.dylib" \
-              /opt/homebrew/lib/libvirglrenderer.dylib \
-              /opt/homebrew/opt/virglrenderer/lib/libvirglrenderer.dylib \
-              /opt/homebrew/opt/virglrenderer/lib/libvirglrenderer.1.dylib \
-              /usr/local/lib/libvirglrenderer.dylib \
-              /usr/local/opt/virglrenderer/lib/libvirglrenderer.dylib \
-              /usr/local/opt/virglrenderer/lib/libvirglrenderer.1.dylib; do
-    [ -n "$cand" ] && [ -f "$cand" ] || continue
-    # The Venus path maps host-visible blobs via virgl_renderer_resource_get_map_ptr (the
-    # libkrun/krunkit model); the slp/krunkit build exports it. resource_map is the fallback.
-    if dylib_has_symbol "$cand" virgl_renderer_resource_get_map_ptr \
-       || dylib_has_symbol "$cand" virgl_renderer_resource_map; then
-      printf '%s\n' "$cand"
-      return 0
-    fi
-    echo "    WARNING: $cand exports no virgl_renderer_resource_get_map_ptr/resource_map; skipping for Venus GPU bundling" >&2
-  done
-  return 1
-}
-
-find_moltenvk_icd() {
-  local cand old_ifs
-  if [ -n "${DORY_MOLTENVK_ICD:-}" ] && [ -f "$DORY_MOLTENVK_ICD" ]; then
-    printf '%s\n' "$DORY_MOLTENVK_ICD"
-    return 0
-  fi
-  if [ -n "${VK_ICD_FILENAMES:-}" ]; then
-    old_ifs="$IFS"
-    IFS=':'
-    for cand in $VK_ICD_FILENAMES; do
-      IFS="$old_ifs"
-      [ -n "$cand" ] && [ -f "$cand" ] && { printf '%s\n' "$cand"; return 0; }
-      IFS=':'
-    done
-    IFS="$old_ifs"
-  fi
-  for cand in "$RESOURCES/vulkan/icd.d/MoltenVK_icd.json" \
-              /opt/homebrew/etc/vulkan/icd.d/MoltenVK_icd.json \
-              /opt/homebrew/share/vulkan/icd.d/MoltenVK_icd.json \
-              /usr/local/etc/vulkan/icd.d/MoltenVK_icd.json \
-              /usr/local/share/vulkan/icd.d/MoltenVK_icd.json; do
-    [ -n "$cand" ] && [ -f "$cand" ] && { printf '%s\n' "$cand"; return 0; }
-  done
-  return 1
-}
-
-find_moltenvk_dylib() {
-  local icd="${1:-}" library_path cand base_dir relative_dir
-  if [ -n "${DORY_MOLTENVK_DYLIB:-}" ] && [ -f "$DORY_MOLTENVK_DYLIB" ]; then
-    printf '%s\n' "$DORY_MOLTENVK_DYLIB"
-    return 0
-  fi
-  if [ -n "$icd" ] && [ -f "$icd" ]; then
-    library_path="$(sed -nE 's/.*"library_path"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' "$icd" | head -1)"
-    if [ -n "$library_path" ]; then
-      if [ "${library_path#/}" != "$library_path" ] && [ -f "$library_path" ]; then
-        printf '%s\n' "$library_path"
-        return 0
-      fi
-      base_dir="$(cd "$(dirname "$icd")" && pwd)"
-      relative_dir="$(dirname "$library_path")"
-      cand="$(cd "$base_dir/$relative_dir" 2>/dev/null && pwd)/$(basename "$library_path")"
-      [ -f "$cand" ] && { printf '%s\n' "$cand"; return 0; }
-    fi
-  fi
-  for cand in "$FRAMEWORKS/libMoltenVK.dylib" \
-              /opt/homebrew/lib/libMoltenVK.dylib \
-              /opt/homebrew/opt/molten-vk/lib/libMoltenVK.dylib \
-              /usr/local/lib/libMoltenVK.dylib \
-              /usr/local/opt/molten-vk/lib/libMoltenVK.dylib; do
-    [ -n "$cand" ] && [ -f "$cand" ] && { printf '%s\n' "$cand"; return 0; }
-  done
-  return 1
-}
-
-is_bundle_dependency() {
-  case "$1" in
-    /System/*|/usr/lib/*|@rpath/*|@loader_path/*|@executable_path/*) return 1 ;;
-    /opt/homebrew/*|/usr/local/*|/opt/local/*|/Library/Frameworks/*) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
-BUNDLED_DYLIBS=""
-copy_dylib_dependency_closure() {
-  local src="$1" dest_name="${2:-}" dest dep dep_base deps
-  [ -f "$src" ] || return 0
-  [ -n "$dest_name" ] || dest_name="$(basename "$src")"
-  case "|$BUNDLED_DYLIBS|" in
-    *"|$dest_name|"*) return 0 ;;
-  esac
-  BUNDLED_DYLIBS="${BUNDLED_DYLIBS}|$dest_name"
-  dest="$FRAMEWORKS/$dest_name"
-  cp "$src" "$dest"
-  chmod 0755 "$dest"
-  install_name_tool -id "@rpath/$dest_name" "$dest" 2>/dev/null || true
-  # @loader_path lets each bundled dylib resolve its @rpath siblings (all in Contents/Frameworks)
-  # without depending on the loading executable carrying an rpath to Frameworks — fully self-contained.
-  install_name_tool -add_rpath @loader_path "$dest" 2>/dev/null || true
-
-  deps="$(otool -L "$dest" 2>/dev/null | awk 'NR > 1 {print $1}')"
-  for dep in $deps; do
-    is_bundle_dependency "$dep" || continue
-    [ -f "$dep" ] || { echo "    WARNING: dependency $dep is referenced by $dest_name but was not found"; continue; }
-    dep_base="$(basename "$dep")"
-    copy_dylib_dependency_closure "$dep" "$dep_base"
-    install_name_tool -change "$dep" "@rpath/$dep_base" "$dest" 2>/dev/null || true
-  done
-}
-
-warn_or_fail_optional_venus() {
-  local message="$1"
-  if [ "${DORY_BUNDLE_VENUS_REQUIRED:-0}" = "1" ]; then
-    echo "    ERROR: $message" >&2
-    exit 1
-  fi
-  echo "    WARNING: $message"
-}
-
 warn_or_fail_missing_bundle_asset() {
   local message="$1"
   if [ "${DORY_REQUIRE_BUNDLE_ASSETS:-0}" = "1" ]; then
@@ -436,58 +335,115 @@ warn_or_fail_missing_bundle_asset() {
 }
 
 bundle_venus_renderer() {
-  local virgl icd molten bundled_icd dylib
-  echo "==> Bundling experimental Venus GPU renderer (virglrenderer + MoltenVK)…"
-  if ! virgl="$(find_compatible_virglrenderer)"; then
-    warn_or_fail_optional_venus "no compatible libvirglrenderer.dylib found; install the slp/krunkit tap (brew install slp/krunkit/virglrenderer molten-vk libepoxy) or set DORY_VIRGLRENDERER_PATH to a Venus build that exports virgl_renderer_resource_get_map_ptr"
+  local expected_team managed_kernel
+  local adhoc_arguments=()
+  local release_arguments=()
+  expected_team="${DORY_RENDERER_EXPECTED_TEAM:-864H636QW4}"
+  managed_kernel="${DORY_RENDERER_MANAGED_KERNEL:-${DORY_DESKTOP_KERNEL_ARM64:-${DORY_DESKTOP_KERNEL:-$REPO_ROOT/guest/out/Image-desktop}}}"
+  [ -f "$managed_kernel" ] && [ ! -L "$managed_kernel" ] || {
+    echo "renderer verification requires the exact managed desktop kernel: $managed_kernel" >&2
+    exit 1
+  }
+  if [ "${DORY_SIGN_ID:-Developer ID Application}" = "-" ]; then
+    expected_team=-
+    if [ "${DORY_RENDERER_ALLOW_ADHOC_TEST:-0}" != 1 ]; then
+      echo "ad-hoc renderer verification requires DORY_RENDERER_ALLOW_ADHOC_TEST=1" >&2
+      exit 1
+    fi
+    adhoc_arguments+=(--allow-adhoc-test)
+  fi
+  [ "${DORY_PUBLIC_RELEASE:-0}" != 1 ] || release_arguments+=(--require-release-signature)
+  echo "==> Verifying the Xcode-sealed exact static dual VirGL2 + Venus renderer tuple…"
+  python3 "$REPO_ROOT/scripts/package-renderer-production-bundle.py" verify \
+    --runner-app "$HV_RUNNER_APP" \
+    --expected-team "$expected_team" \
+    --managed-kernel "$managed_kernel" \
+    "${adhoc_arguments[@]+"${adhoc_arguments[@]}"}" \
+    "${release_arguments[@]+"${release_arguments[@]}"}"
+  echo "    accepted the immutable Xcode renderer bundle; no post-signing mutation was performed"
+}
+
+renderer_release_identity_mode() {
+  local mode="${DORY_RENDERER_RELEASE_IDENTITY_MODE:-}"
+  if [ -z "$mode" ]; then
+    if [ "${DORY_PUBLIC_RELEASE:-0}" = 1 ]; then
+      mode=production
+    else
+      mode=disabled
+    fi
+  fi
+  case "$mode" in
+    production|disabled) ;;
+    *)
+      echo "DORY_RENDERER_RELEASE_IDENTITY_MODE must be 'production' or 'disabled'" >&2
+      return 64
+      ;;
+  esac
+  if [ "${DORY_PUBLIC_RELEASE:-0}" = 1 ] && [ "$mode" != production ]; then
+    echo "public releases require DORY_RENDERER_RELEASE_IDENTITY_MODE=production" >&2
+    return 1
+  fi
+  printf '%s\n' "$mode"
+}
+
+codesign_production_release_identity() {
+  local path="$1" entitlements="$2" id="${DORY_SIGN_ID:-Developer ID Application}"
+  local _attempt error_file
+  [ "$id" != - ] \
+    || { echo "    ERROR: production renderer release identity cannot use ad-hoc signing" >&2; return 1; }
+  error_file="$(mktemp "${TMPDIR:-/tmp}/dory-release-identity-codesign.XXXXXX")"
+  for _attempt in 1 2 3; do
+    if /usr/bin/codesign --force --options runtime --timestamp --identifier doryd \
+        --entitlements "$entitlements" --sign "$id" "$path" 2>"$error_file"; then
+      rm -f "$error_file"
+      return 0
+    fi
+    sleep 2
+  done
+  echo "    ERROR: final production doryd signing failed (identity: $id):" >&2
+  sed 's/^/      /' "$error_file" >&2
+  rm -f "$error_file"
+  return 1
+}
+
+finalize_doryd_signature() {
+  local mode expected_team temporary entitlements
+  [ "${DORY_BUNDLE_DORYD:-1}" = 1 ] || return 0
+  [ -x "$DORYD_EXECUTABLE" ] && [ ! -L "$DORYD_EXECUTABLE" ] \
+    || { echo "    ERROR: deferred doryd executable is missing or indirect" >&2; return 1; }
+  mode="$(renderer_release_identity_mode)"
+  if [ "$mode" = disabled ]; then
+    echo "==> Signing doryd without renderer release identity (RawHV hardware 3D fails closed)…"
+    sign_runtime_payload "$DORYD_EXECUTABLE"
+    python3 "$REPO_ROOT/scripts/renderer-release-identity.py" verify-absent \
+      --doryd "$DORYD_EXECUTABLE"
     return 0
   fi
-  if ! icd="$(find_moltenvk_icd)"; then
-    warn_or_fail_optional_venus "MoltenVK_icd.json not found; install/provide MoltenVK or set DORY_MOLTENVK_ICD"
-    return 0
-  fi
-  if ! molten="$(find_moltenvk_dylib "$icd")"; then
-    warn_or_fail_optional_venus "libMoltenVK.dylib not found; install/provide MoltenVK or set DORY_MOLTENVK_DYLIB"
-    return 0
-  fi
 
-  mkdir -p "$FRAMEWORKS" "$RESOURCES/vulkan/icd.d"
-  BUNDLED_DYLIBS=""
-  copy_dylib_dependency_closure "$virgl" libvirglrenderer.dylib
-  copy_dylib_dependency_closure "$molten" libMoltenVK.dylib
+  [ "${DORY_BUNDLE_VENUS:-1}" = 1 ] \
+    || { echo "    ERROR: production renderer release identity requires the dual renderer worker" >&2; return 1; }
+  [ "${DORY_RENDERER_ALLOW_ADHOC_TEST:-0}" != 1 ] \
+    || { echo "    ERROR: production renderer release identity forbids ad-hoc renderer test mode" >&2; return 1; }
+  expected_team="${DORY_RENDERER_EXPECTED_TEAM:-864H636QW4}"
+  [ "$expected_team" = 864H636QW4 ] \
+    || { echo "    ERROR: production renderer release identity requires Dory team 864H636QW4" >&2; return 1; }
 
-  if ! dylib_has_symbol "$FRAMEWORKS/libvirglrenderer.dylib" virgl_renderer_resource_get_map_ptr \
-     && ! dylib_has_symbol "$FRAMEWORKS/libvirglrenderer.dylib" virgl_renderer_resource_map; then
-    warn_or_fail_optional_venus "bundled libvirglrenderer.dylib exports no virgl_renderer_resource_get_map_ptr/resource_map"
-    return 0
-  fi
-
-  bundled_icd="$RESOURCES/vulkan/icd.d/MoltenVK_icd.json"
-  if grep -q '"library_path"' "$icd"; then
-    sed -E 's#"library_path"[[:space:]]*:[[:space:]]*"[^"]+"#"library_path": "@executable_path/../Frameworks/libMoltenVK.dylib"#' "$icd" > "$bundled_icd"
-  else
-    cp "$icd" "$bundled_icd"
-    echo "    WARNING: bundled MoltenVK ICD has no library_path entry to rewrite"
-  fi
-
-  while IFS= read -r dylib; do
-    [ -n "$dylib" ] || continue
-    # Belt-and-suspenders self-containment: rewrite any remaining absolute homebrew/local dep to
-    # @rpath and guarantee a @loader_path rpath, so the bundled runtime never needs those libs on the
-    # user's Mac. Then (re-)sign, since the edits invalidate the signature.
-    for dep in $(otool -L "$dylib" | awk 'NR>1{print $1}'); do
-      case "$dep" in
-        /opt/homebrew/*|/usr/local/*)
-          install_name_tool -change "$dep" "@rpath/$(basename "$dep")" "$dylib" 2>/dev/null || true ;;
-      esac
-    done
-    otool -l "$dylib" | grep -q "path @loader_path " || install_name_tool -add_rpath @loader_path "$dylib" 2>/dev/null || true
-    sign_runtime_payload "$dylib"
-  done < <(find "$FRAMEWORKS" -maxdepth 1 -type f -name '*.dylib' -print)
-
-  echo "    bundled Frameworks/libvirglrenderer.dylib (from $virgl)"
-  echo "    bundled Frameworks/libMoltenVK.dylib (from $molten)"
-  echo "    bundled Resources/vulkan/icd.d/MoltenVK_icd.json"
+  echo "==> Binding final Runner + Worker Code Directory hashes into doryd…"
+  temporary="$(mktemp -d "${TMPDIR:-/tmp}/dory-renderer-release-identity.XXXXXX")"
+  entitlements="$temporary/doryd-renderer-release-identity.entitlements"
+  (
+    trap 'rm -f "$entitlements"; rmdir "$temporary" 2>/dev/null || true' EXIT
+    python3 "$REPO_ROOT/scripts/renderer-release-identity.py" create-entitlements \
+      --runner-app "$HV_RUNNER_APP" \
+      --expected-team "$expected_team" \
+      --output "$entitlements"
+    codesign_production_release_identity "$DORYD_EXECUTABLE" "$entitlements"
+    python3 "$REPO_ROOT/scripts/renderer-release-identity.py" verify \
+      --runner-app "$HV_RUNNER_APP" \
+      --doryd "$DORYD_EXECUTABLE" \
+      --expected-team "$expected_team"
+  )
+  echo "    sealed Helpers/doryd after the immutable runner graph"
 }
 
 find_debugfs() {
@@ -593,7 +549,7 @@ write_doryd_launch_agent() {
   if [ -x "$HELPERS/DoryVMM.app/Contents/MacOS/dory-vmm" ]; then
     vmm="$HELPERS/DoryVMM.app/Contents/MacOS/dory-vmm"
   fi
-  hv="$HELPERS/dory-hv"
+  hv="$HV_RUNNER_EXECUTABLE"
   gvproxy="$HELPERS/gvproxy"
   log_dir="$HOME/.dory"
   log_path="$log_dir/doryd.log"
@@ -668,10 +624,12 @@ bundle_doryd_helpers() {
 
   entitlements="$REPO_ROOT/dory-core-swift/Sources/dory-vmm/dory-vmm.entitlements"
 
-  echo "==> Building + signing doryd launchd helpers ($configuration, arches: $(swiftpm_helper_arches))…"
+  echo "==> Building doryd launchd helpers ($configuration, arches: $(swiftpm_helper_arches)); final doryd signing is deferred…"
   for product in doryd dorydctl dory-vmm dory-network-helper dory-dataplane-proxy; do
     helper="$HELPERS/$product"
-    if [ "$product" = "dory-vmm" ]; then
+    if [ "$product" = doryd ]; then
+      assemble_doryd_for_release_identity "dory-core-swift" "$configuration"
+    elif [ "$product" = "dory-vmm" ]; then
       bundle_swiftpm_executable "dory-core-swift" "$configuration" "$product" "$helper" "$entitlements"
     else
       bundle_swiftpm_executable "dory-core-swift" "$configuration" "$product" "$helper"
@@ -739,22 +697,41 @@ inject_debug_toolbox_into_initfs() {
 
 bundle_doryd_helpers
 
-PKG="$(dirname "$0")/../Packages/ContainerizationEngine"
-
-echo "==> Building + signing the Hypervisor.framework VM engine (dory-hv)…"
-# dory-hv is Dory's own VMM: elastic memory via free-page reporting, SMP, journaled data disk.
-# It needs only the unrestricted com.apple.security.hypervisor entitlement (no vm.networking).
-# The provisioner prefers it when DORY_HV_ENGINE=1 and it is present in Helpers.
-if [ -d "$PKG" ]; then
-  DORY_HV_ENTITLEMENTS="$(mktemp "${TMPDIR:-/tmp}/dory-hv-entitlements.XXXXXX")"
-  cat > "$DORY_HV_ENTITLEMENTS" <<'PLIST'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict><key>com.apple.security.hypervisor</key><true/></dict></plist>
-PLIST
-  bundle_swiftpm_executable "$PKG" release dory-hv "$HELPERS/dory-hv" "$DORY_HV_ENTITLEMENTS"
-  rm -f "$DORY_HV_ENTITLEMENTS"
-fi
+echo "==> Verifying the Xcode-sealed Hypervisor.framework runner application…"
+# The Dory target builds and embeds this exact application. Release assembly must never replace it
+# with an independently built SwiftPM executable, because that would create a second launch and
+# qualification authority outside the Xcode product graph.
+rm -f "$HELPERS/dory-hv"
+[ -d "$HV_RUNNER_APP" ] && [ ! -L "$HV_RUNNER_APP" ] \
+  || { echo "    ERROR: Xcode-built DoryHVRunner.app is missing or indirect" >&2; exit 1; }
+[ -x "$HV_RUNNER_EXECUTABLE" ] && [ ! -L "$HV_RUNNER_EXECUTABLE" ] \
+  || { echo "    ERROR: DoryHVRunner.app has no direct executable" >&2; exit 1; }
+[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$HV_RUNNER_APP/Contents/Info.plist" 2>/dev/null)" = dory-hv ] \
+  || { echo "    ERROR: DoryHVRunner.app CFBundleExecutable is not dory-hv" >&2; exit 1; }
+[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$HV_RUNNER_APP/Contents/Info.plist" 2>/dev/null)" = com.pythonxi.Dory.HVRunner ] \
+  || { echo "    ERROR: DoryHVRunner.app has the wrong bundle identifier" >&2; exit 1; }
+macho_has_arches "$HV_RUNNER_EXECUTABLE" "$(swiftpm_helper_arches)" \
+  || { echo "    ERROR: DoryHVRunner.app does not contain every requested helper architecture" >&2; exit 1; }
+validate_xpc_worker_bundle \
+  "$FS_WORKER_XPC" \
+  com.pythonxi.Dory.HVRunner.FSWorker \
+  DoryFSWorker \
+  'filesystem worker'
+validate_xpc_worker_bundle \
+  "$RENDERER_WORKER_XPC" \
+  com.pythonxi.Dory.HVRunner.RendererWorker \
+  DoryRendererWorker \
+  'renderer worker'
+macho_has_arches "$FS_WORKER_EXECUTABLE" "$(swiftpm_helper_arches)" \
+  || { echo "    ERROR: filesystem worker does not contain every requested helper architecture" >&2; exit 1; }
+macho_has_arches "$RENDERER_WORKER_EXECUTABLE" "$(swiftpm_helper_arches)" \
+  || { echo "    ERROR: renderer worker does not contain every requested helper architecture" >&2; exit 1; }
+# Xcode owns this nested signature graph.  Mutating or repairing it here would split packaging
+# authority from the Release target and make the archived candidate differ from its renderer
+# inventory.  The final outer Dory.app is signed later after bundle-engine adds outer helpers.
+codesign --verify --strict --verbose=2 "$FS_WORKER_XPC"
+codesign --verify --strict --verbose=2 "$RENDERER_WORKER_XPC"
+codesign --verify --deep --strict --verbose=2 "$HV_RUNNER_APP"
 
 echo "==> Bundling gvproxy (userspace networking for the dory-hv engine)…"
 # gvproxy (gvisor-tap-vsock, Apache-2.0) gives the HV engine NAT/DNS with no restricted
@@ -819,8 +796,9 @@ fi
 if [ "${DORY_BUNDLE_VENUS:-1}" = "1" ]; then
   bundle_venus_renderer
 else
-  echo "==> DORY_BUNDLE_VENUS=0: skipping experimental Venus GPU renderer bundling"
+  echo "==> DORY_BUNDLE_VENUS=0: renderer release identity is unavailable"
 fi
+finalize_doryd_signature
 
 echo "==> Bundling the host kubectl + docker CLIs (so k8s and the docker CLI need no separate install)…"
 # Host-side CLIs Dory shells out to: kubectl (Kubernetes browser/apply/scale/exec) and docker (the
@@ -861,6 +839,13 @@ download_host_cli_for_arch() {
     docker-buildx)
       darch="$(darwin_download_arch "$arch")"
       url="https://github.com/docker/buildx/releases/download/${BUILDX_VER}/buildx-${BUILDX_VER}.darwin-${darch}"
+      fetch_url "$url" "$out" || return 1
+      dory_verify_host_cli_payload "$out" "$expected_sha" || return 1
+      chmod 0755 "$out" || return 1
+      ;;
+    docker-credential-osxkeychain)
+      darch="$(darwin_download_arch "$arch")"
+      url="https://github.com/docker/docker-credential-helpers/releases/download/${DOCKER_CREDENTIAL_HELPER_VERSION}/docker-credential-osxkeychain-${DOCKER_CREDENTIAL_HELPER_VERSION}.darwin-${darch}"
       fetch_url "$url" "$out" || return 1
       dory_verify_host_cli_payload "$out" "$expected_sha" || return 1
       chmod 0755 "$out" || return 1
@@ -913,6 +898,7 @@ KVER="$(dory_host_cli_version kubectl)"
 DOCKER_CLI_VERSION="$(dory_host_cli_version docker)"
 BUILDX_VER="$(dory_host_cli_version docker-buildx)"
 COMPOSE_VER="$(dory_host_cli_version docker-compose)"
+DOCKER_CREDENTIAL_HELPER_VERSION="$(dory_host_cli_version docker-credential-osxkeychain)"
 HOST_CLI_PROVENANCE="$RESOURCES/host-cli-provenance.txt"
 # Homebrew's ZIP unpacker normalizes ordinary readable resource files to 0644. Keep this public
 # provenance inventory at that canonical mode so a cask install remains byte-for-byte and
@@ -945,6 +931,7 @@ else
   bundle_universal_host_cli kubectl
 fi
 bundle_universal_host_cli docker
+bundle_universal_host_cli docker-credential-osxkeychain
 bundle_universal_host_cli docker-buildx
 bundle_universal_host_cli docker-compose
 LC_ALL=C sort -o "$HOST_CLI_PROVENANCE" "$HOST_CLI_PROVENANCE"
@@ -1142,22 +1129,15 @@ lzfse_helper_path() {
   fi
 
   host_arch="$(host_darwin_arch)"
-  helper="$HELPERS/dory-hv"
+  helper="$HV_RUNNER_EXECUTABLE"
   if macho_has_arches "$helper" "$host_arch"; then
     printf '%s\n' "$helper"
     return 0
   fi
 
-  if [ -n "${LZFSE_HELPER_CACHE:-}" ] && [ -x "$LZFSE_HELPER_CACHE" ]; then
-    printf '%s\n' "$LZFSE_HELPER_CACHE"
-    return 0
-  fi
-
-  [ -d "$PKG" ] || { echo "    ERROR: $PKG missing; cannot build a host dory-hv compressor" >&2; exit 1; }
-  echo "    building host-arch dory-hv for asset compression ($host_arch)" >&2
-  LZFSE_HELPER_CACHE="$(build_swiftpm_product_for_arch "$PKG" release dory-hv "$host_arch")"
-  [ -x "$LZFSE_HELPER_CACHE" ] || { echo "    ERROR: host dory-hv compressor was not produced" >&2; exit 1; }
-  printf '%s\n' "$LZFSE_HELPER_CACHE"
+  echo "    ERROR: embedded DoryHVRunner.app has no $host_arch slice for asset compression" >&2
+  echo "    Rebuild the Xcode runner for the host architecture or set DORY_LZFSE_HELPER to an explicit build tool." >&2
+  exit 1
 }
 
 compress_asset() {  # raw_src  out.lzfse
@@ -1306,21 +1286,26 @@ link_core_vmm_assets_for_arch() {
 }
 
 bundle_desktop_assets_for_arch() {
-  local arch="$1" kernel_src kernel_out distro rootfs_src rootfs_out metadata
-  [ "$DESKTOP_BUNDLE_MODE" = all ] || return 0
+  local arch="$1" kernel_src kernel_out distro distros rootfs_src rootfs_out metadata
+  [ "$DESKTOP_BUNDLE_MODE" != none ] || return 0
   [ "$arch" = "arm64" ] || return 0
+  case "$DESKTOP_BUNDLE_MODE" in
+    all) distros="debian ubuntu kali" ;;
+    *) distros="$DESKTOP_BUNDLE_MODE" ;;
+  esac
   kernel_src="$(desktop_kernel_source_for_arch "$arch" || true)"
   if [ -z "$kernel_src" ]; then
     echo "    ERROR: all-inclusive build is missing the verified Apple Silicon desktop kernel" >&2
     return 1
   fi
   if [ "$kernel_src" = "$REPO_ROOT/guest/out/Image-desktop" ]; then
-    "$REPO_ROOT/guest/kernel/verify-build.sh" arm64 desktop >/dev/null
+    DORY_KERNEL_PROFILE=accelerated-desktop \
+      "$REPO_ROOT/guest/kernel/verify-build.sh" arm64 >/dev/null
   fi
   kernel_out="$RESOURCES/dory-desktop-kernel-arm64.lzfse"
   compress_asset "$kernel_src" "$kernel_out"
   echo "    bundled Resources/$(basename "$kernel_out") ($(du -h "$kernel_out" | awk '{print $1}'))"
-  for distro in debian ubuntu kali; do
+  for distro in $distros; do
     rootfs_src="$(desktop_rootfs_source_for_arch "$arch" "$distro" || true)"
     if [ -z "$rootfs_src" ]; then
       echo "    ERROR: all-inclusive build is missing the verified $distro desktop image" >&2
@@ -1338,9 +1323,8 @@ bundle_desktop_assets_for_arch() {
       [ -s "$metadata" ] && install -m0644 "$metadata" "$RESOURCES/$(basename "$metadata")"
     done
   done
-  for metadata in "$REPO_ROOT/guest/out/kernel-build-arm64-desktop.stamp"; do
-    [ -s "$metadata" ] && install -m0644 "$metadata" "$RESOURCES/$(basename "$metadata")"
-  done
+  metadata="$REPO_ROOT/guest/out/kernel-build-arm64-desktop.stamp"
+  [ -s "$metadata" ] && install -m0644 "$metadata" "$RESOURCES/$(basename "$metadata")"
 }
 
 echo "==> Bundling VM kernel + initfs assets, compressed (so the engine needs no container install)…"
@@ -1408,11 +1392,18 @@ write_doryd_launch_agent
 /usr/libexec/PlistBuddy -c 'Delete :DoryBundledComponents' "$APP/Contents/Info.plist" >/dev/null 2>&1 || true
 /usr/libexec/PlistBuddy -c 'Add :DoryBundledComponents array' "$APP/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c 'Add :DoryBundledComponents:0 string docker-core' "$APP/Contents/Info.plist"
-if [ "$DESKTOP_BUNDLE_MODE" = all ]; then
+if [ "$DESKTOP_BUNDLE_MODE" != none ]; then
   /usr/libexec/PlistBuddy -c 'Add :DoryIncludesDesktopLinux bool true' "$APP/Contents/Info.plist"
   /usr/libexec/PlistBuddy -c "Set :SUFeedURL $DESKTOP_APPCAST_URL" "$APP/Contents/Info.plist"
-  for component in kubernetes linux-machines linux-desktop desktop-debian desktop-ubuntu desktop-kali; do
+  for component in kubernetes linux-machines linux-desktop; do
     /usr/libexec/PlistBuddy -c "Add :DoryBundledComponents: string $component" "$APP/Contents/Info.plist"
+  done
+  case "$DESKTOP_BUNDLE_MODE" in
+    all) desktop_distros="debian ubuntu kali" ;;
+    *) desktop_distros="$DESKTOP_BUNDLE_MODE" ;;
+  esac
+  for component in $desktop_distros; do
+    /usr/libexec/PlistBuddy -c "Add :DoryBundledComponents: string desktop-$component" "$APP/Contents/Info.plist"
   done
 else
   /usr/libexec/PlistBuddy -c 'Add :DoryIncludesDesktopLinux bool false' "$APP/Contents/Info.plist"
@@ -1454,5 +1445,5 @@ echo "    bundled Resources/dory-payload-sha256.txt"
 
 echo "==> Payload injected into $APP"
 echo "    Component profile: $COMPONENT_BUNDLE_MODE"
-echo "    Engine payload ≈ $(du -ch "$RESOURCES"/dory-hv-*.lzfse "$RESOURCES"/dory-vm-*.lzfse "$RESOURCES"/dory-engine-rootfs-*.ext4.lzfse "$RESOURCES"/dory-desktop-*.lzfse "$HELPERS"/dory-hv "$HELPERS"/docker "$HELPERS"/docker-buildx "$HELPERS"/docker-compose "$HELPERS"/kubectl "$FRAMEWORKS"/*.dylib 2>/dev/null | tail -1 | awk '{print $1}') on disk"
+echo "    Engine payload ≈ $(du -ch "$RESOURCES"/dory-hv-*.lzfse "$RESOURCES"/dory-vm-*.lzfse "$RESOURCES"/dory-engine-rootfs-*.ext4.lzfse "$RESOURCES"/dory-desktop-*.lzfse "$HV_RUNNER_APP" "$HELPERS"/docker "$HELPERS"/docker-buildx "$HELPERS"/docker-compose "$HELPERS"/kubectl "$FRAMEWORKS"/*.dylib 2>/dev/null | tail -1 | awk '{print $1}') on disk"
 echo "    Re-sign the app bundle before notarization so the payload is sealed."

@@ -19,6 +19,12 @@ pub enum RemoteError {
     Rpc { code: i32, message: String },
     #[error("agent returned an unexpected response variant")]
     UnexpectedVariant,
+    #[error("local source changed while the transfer was in progress")]
+    SourceChanged,
+    #[error("file transfer cancelled")]
+    Cancelled,
+    #[error("remote agent capability unavailable: {0}")]
+    CapabilityUnavailable(&'static str),
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }

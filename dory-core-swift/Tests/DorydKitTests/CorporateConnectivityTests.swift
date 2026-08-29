@@ -302,6 +302,99 @@ final class CorporateConnectivityTests: XCTestCase {
         XCTAssertEqual(restored?["httpProxy"] as? String, "http://before.test:3128")
     }
 
+    func testDynamicStoreChangeTriggersImmediateVPNReconciliation() throws {
+        let home = try temporaryHome("dynamic-vpn")
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        let runner = MutableCorporateCommandRunner(outputs: systemCommandOutputs(
+            interfaces: "lo0 en0\n",
+            dns: "",
+            route: "gateway: 10.0.0.1\ninterface: en0\n"
+        ))
+        let monitor = RecordingCorporateSystemChangeMonitor()
+        let reconciler = CorporateConnectivityReconciler(
+            home: home,
+            inspector: CorporateConnectivitySystemInspector(runner: runner),
+            prober: CorporateConnectivityProber(runner: runner),
+            systemChangeMonitor: monitor,
+            interval: 30
+        )
+        defer { reconciler.stop() }
+
+        let applied = reconciler.apply(validProfile(), runProbes: false)
+        XCTAssertTrue(applied.valid, applied.validationErrors.joined(separator: "; "))
+        XCTAssertTrue(applied.system.tunnelInterfaces.isEmpty)
+        reconciler.start()
+
+        runner.replace(outputs: systemCommandOutputs(
+            interfaces: "lo0 en0 utun7\n",
+            dns: """
+            resolver #1
+              nameserver[0] : 10.20.0.53
+              if_index : 18 (utun7)
+              flags : Scoped
+              order : 100
+            """,
+            route: "gateway: 10.20.0.1\ninterface: utun7\n"
+        ))
+        monitor.fire()
+
+        let deadline = Date().addingTimeInterval(1.5)
+        var recovered: CorporateConnectivityStatus?
+        while Date() < deadline {
+            if let status = reconciler.cachedStatus(),
+               status.system.tunnelInterfaces == ["utun7"] {
+                recovered = status
+                break
+            }
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        XCTAssertEqual(recovered?.system.defaultInterface, "utun7")
+        XCTAssertEqual(recovered?.system.dnsResolvers.first?.interface, "utun7")
+        XCTAssertTrue(recovered?.applied == true)
+    }
+
+    func testSystemChangeMonitorStartAndStopAreIdempotent() throws {
+        let monitor = SystemCorporateConnectivityChangeMonitor()
+        try monitor.start(onChange: {})
+        try monitor.start(onChange: {})
+        monitor.stop()
+        monitor.stop()
+    }
+
+    private func systemCommandOutputs(
+        interfaces: String,
+        dns: String,
+        route: String
+    ) -> [String: HealthCommandOutput] {
+        [
+            "/usr/sbin/scutil --proxy": HealthCommandOutput(
+                exitCode: 0,
+                stdout: "<dictionary> {\n}",
+                stderr: ""
+            ),
+            "/usr/sbin/scutil --dns": HealthCommandOutput(
+                exitCode: 0,
+                stdout: dns,
+                stderr: ""
+            ),
+            "/sbin/route -n get default": HealthCommandOutput(
+                exitCode: 0,
+                stdout: route,
+                stderr: ""
+            ),
+            "/sbin/ifconfig -l": HealthCommandOutput(
+                exitCode: 0,
+                stdout: interfaces,
+                stderr: ""
+            ),
+            "/usr/sbin/netstat -rn -f inet": HealthCommandOutput(
+                exitCode: 0,
+                stdout: "",
+                stderr: ""
+            ),
+        ]
+    }
+
     private func validProfile() -> CorporateConnectivityProfile {
         CorporateConnectivityProfile(
             enabled: true,
@@ -387,5 +480,58 @@ private final class FixtureCommandRunner: HealthCommandRunning, @unchecked Senda
     ) -> HealthCommandOutput {
         outputs[([executablePath] + arguments).joined(separator: " ")]
             ?? HealthCommandOutput(exitCode: 127, stdout: "", stderr: "missing fixture")
+    }
+}
+
+private final class MutableCorporateCommandRunner: HealthCommandRunning, @unchecked Sendable {
+    private let lock = NSLock()
+    private var outputs: [String: HealthCommandOutput]
+
+    init(outputs: [String: HealthCommandOutput]) {
+        self.outputs = outputs
+    }
+
+    func replace(outputs: [String: HealthCommandOutput]) {
+        lock.lock()
+        self.outputs = outputs
+        lock.unlock()
+    }
+
+    func run(
+        executablePath: String,
+        arguments: [String],
+        environment _: [String: String],
+        timeout _: TimeInterval
+    ) -> HealthCommandOutput {
+        lock.lock()
+        defer { lock.unlock() }
+        return outputs[([executablePath] + arguments).joined(separator: " ")]
+            ?? HealthCommandOutput(exitCode: 127, stdout: "", stderr: "missing fixture")
+    }
+}
+
+private final class RecordingCorporateSystemChangeMonitor:
+    CorporateConnectivitySystemChangeMonitoring, @unchecked Sendable
+{
+    private let lock = NSLock()
+    private var callback: (@Sendable () -> Void)?
+
+    func start(onChange: @escaping @Sendable () -> Void) throws {
+        lock.lock()
+        callback = onChange
+        lock.unlock()
+    }
+
+    func stop() {
+        lock.lock()
+        callback = nil
+        lock.unlock()
+    }
+
+    func fire() {
+        lock.lock()
+        let current = callback
+        lock.unlock()
+        current?()
     }
 }

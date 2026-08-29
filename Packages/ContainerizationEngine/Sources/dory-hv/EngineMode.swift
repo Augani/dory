@@ -1,5 +1,8 @@
+import Darwin
 import DoryCore
+import DoryFSWorkerContracts
 import DoryHV
+import DoryOperations
 import Foundation
 import Synchronization
 
@@ -57,6 +60,44 @@ package final class PortReconcileSignalRegistration: @unchecked Sendable {
     }
 }
 
+/// Owns both host-to-vsock listeners for the complete engine run. These bridges remove their Unix
+/// sockets in `deinit`; constructing either as an attach-only temporary silently retires the
+/// Docker inventory path while the separate doryd dataplane remains healthy.
+package final class EngineVsockBridgeLifetime: @unchecked Sendable {
+    private let dockerBridge: DockerSocketBridge
+    private let agentBridge: AgentVsockForward?
+
+    package init(
+        dockerSocketPath: String,
+        agentSocketPath: String?,
+        guestCID: UInt32 = 3,
+        log: @escaping @Sendable (String) -> Void = { _ in }
+    ) {
+        dockerBridge = DockerSocketBridge(socketPath: dockerSocketPath, log: log)
+        agentBridge = agentSocketPath.map {
+            AgentVsockForward(
+                socketPath: $0,
+                guestCID: guestCID,
+                log: log
+            )
+        }
+    }
+
+    package func attach(to vsock: VirtioVsock) throws {
+        try agentBridge?.attach(to: vsock)
+        try dockerBridge.attach(to: vsock)
+    }
+
+    package func stop() {
+        dockerBridge.stop()
+        agentBridge?.stop()
+    }
+
+    deinit {
+        stop()
+    }
+}
+
 /// `dory-hv engine`: the production mode SharedVMProvisioner spawns. Owns the full lifecycle:
 /// pulls docker:dind once, boots the VMM with networking, and publishes the Docker API at the
 /// unix socket the app already consumes.
@@ -65,6 +106,157 @@ package final class PortReconcileSignalRegistration: @unchecked Sendable {
 /// boot so system state can never rot; DOCKER STATE lives on a separate journaled ext4 mounted
 /// at /var/lib/docker, so images, containers, and volumes survive restarts and unclean exits.
 enum EngineMode {
+    static let inheritedDockerDataDiskFileDescriptor: Int32 =
+        DockerDataDiskLaunchContract.childFileDescriptor
+
+    enum DockerDataDiskAuthority: Equatable, Sendable {
+        /// Production authority inherited from doryd. The helper must use this exact descriptor and
+        /// must not resolve the metadata pathname as a fallback.
+        case inherited(fileDescriptor: Int32, expectedFilesystemUUID: UUID)
+        /// Explicit developer compatibility for launching dory-hv without the daemon's descriptor
+        /// handoff. This is deliberately reachable only through the legacy --data-disk argument.
+        case standalonePath(String)
+    }
+
+    enum DockerDataDiskLaunchSelection: Equatable, Sendable {
+        case inherited(
+            fileDescriptor: Int32,
+            expectedFilesystemUUID: UUID,
+            dataDriveArgument: String
+        )
+        case standaloneDataDrive(String)
+        case standalonePath(String)
+    }
+
+    enum DockerDataDiskArgumentError: Error, Equatable, CustomStringConvertible {
+        case duplicate(String)
+        case invalidLegacyPath
+        case invalidDataDrive
+        case invalidFileDescriptor(String)
+        case invalidFilesystemUUID(String)
+        case conflictingAuthorities
+        case missingFileDescriptor
+        case missingFilesystemUUID
+        case missingDataDrive
+        case missingAuthority
+
+        var description: String {
+            switch self {
+            case .duplicate(let argument):
+                "\(argument) may only be specified once"
+            case .invalidLegacyPath:
+                "--data-disk requires a non-empty absolute path"
+            case .invalidDataDrive:
+                "--data-drive requires a non-empty absolute .dorydrive path"
+            case .invalidFileDescriptor(let value):
+                "--docker-data-disk-fd requires inherited supervisor descriptor \(EngineMode.inheritedDockerDataDiskFileDescriptor), got \(value)"
+            case .invalidFilesystemUUID(let value):
+                "--docker-data-disk-uuid requires a canonical lowercase UUID, got \(value)"
+            case .conflictingAuthorities:
+                "--data-disk cannot be combined with --data-drive or inherited Docker data-disk authority"
+            case .missingFileDescriptor:
+                "--docker-data-disk-uuid requires --docker-data-disk-fd"
+            case .missingFilesystemUUID:
+                "--docker-data-disk-fd requires --docker-data-disk-uuid"
+            case .missingDataDrive:
+                "inherited Docker data-disk authority requires exactly one --data-drive"
+            case .missingAuthority:
+                "engine requires inherited Docker data-disk authority with --data-drive, or explicit standalone --data-drive/--data-disk"
+            }
+        }
+    }
+
+    struct DockerDataDiskArguments {
+        private(set) var legacyPath: String?
+        private(set) var dataDriveArgument: String?
+        private(set) var inheritedFileDescriptor: Int32?
+        private(set) var expectedFilesystemUUID: UUID?
+
+        mutating func setLegacyPath(_ value: String) throws {
+            guard legacyPath == nil else {
+                throw DockerDataDiskArgumentError.duplicate("--data-disk")
+            }
+            guard !value.isEmpty, value.hasPrefix("/") else {
+                throw DockerDataDiskArgumentError.invalidLegacyPath
+            }
+            legacyPath = value
+        }
+
+        mutating func setDataDrive(_ value: String) throws {
+            guard dataDriveArgument == nil else {
+                throw DockerDataDiskArgumentError.duplicate("--data-drive")
+            }
+            guard !value.isEmpty, value.hasPrefix("/") else {
+                throw DockerDataDiskArgumentError.invalidDataDrive
+            }
+            dataDriveArgument = value
+        }
+
+        mutating func setInheritedFileDescriptor(_ value: String) throws {
+            guard inheritedFileDescriptor == nil else {
+                throw DockerDataDiskArgumentError.duplicate(
+                    DockerDataDiskLaunchContract.fileDescriptorArgument
+                )
+            }
+            guard let descriptor = Int32(value),
+                  descriptor == EngineMode.inheritedDockerDataDiskFileDescriptor else {
+                throw DockerDataDiskArgumentError.invalidFileDescriptor(value)
+            }
+            inheritedFileDescriptor = descriptor
+        }
+
+        mutating func setExpectedFilesystemUUID(_ value: String) throws {
+            guard expectedFilesystemUUID == nil else {
+                throw DockerDataDiskArgumentError.duplicate(
+                    DockerDataDiskLaunchContract.filesystemUUIDArgument
+                )
+            }
+            guard value.utf8.count == 36,
+                  value == value.lowercased(),
+                  let identifier = UUID(uuidString: value),
+                  identifier.uuidString.lowercased() == value else {
+                throw DockerDataDiskArgumentError.invalidFilesystemUUID(value)
+            }
+            expectedFilesystemUUID = identifier
+        }
+
+        func resolvedSelection() throws -> DockerDataDiskLaunchSelection {
+            if legacyPath != nil,
+               dataDriveArgument != nil
+                    || inheritedFileDescriptor != nil
+                    || expectedFilesystemUUID != nil {
+                throw DockerDataDiskArgumentError.conflictingAuthorities
+            }
+            switch (
+                inheritedFileDescriptor,
+                expectedFilesystemUUID,
+                dataDriveArgument,
+                legacyPath
+            ) {
+            case let (.some(descriptor), .some(identifier), .some(dataDrive), nil):
+                return .inherited(
+                    fileDescriptor: descriptor,
+                    expectedFilesystemUUID: identifier,
+                    dataDriveArgument: dataDrive
+                )
+            case (.none, .some, _, nil):
+                throw DockerDataDiskArgumentError.missingFileDescriptor
+            case (.some, .none, _, nil):
+                throw DockerDataDiskArgumentError.missingFilesystemUUID
+            case (.some, .some, .none, nil):
+                throw DockerDataDiskArgumentError.missingDataDrive
+            case let (.none, .none, .some(dataDrive), nil):
+                return .standaloneDataDrive(dataDrive)
+            case let (.none, .none, .none, .some(path)):
+                return .standalonePath(path)
+            case (.none, .none, .none, .none):
+                throw DockerDataDiskArgumentError.missingAuthority
+            default:
+                throw DockerDataDiskArgumentError.conflictingAuthorities
+            }
+        }
+    }
+
     struct Configuration {
         var engineSocket: String
         var kernelPath: String
@@ -72,16 +264,25 @@ enum EngineMode {
         var memoryMB: UInt64
         var cpus: Int
         var stateDirectory: String
-        /// Durable user-data drive path. Runtime sockets/rootfs clones stay in stateDirectory.
-        var dockerDataDiskPath: String?
-        /// Canonical root of the managed data drive, when one owns dockerDataDiskPath.
+        /// Exact production descriptor authority or an explicit standalone developer path.
+        var dockerDataDiskAuthority: DockerDataDiskAuthority
+        /// Canonical root of the managed data drive, when one owns the inherited descriptor.
         var dataDriveRoot: String?
+        /// The drive's Docker disk path is metadata only in production descriptor mode. It may be
+        /// compared with an explicit legacy path, but must never be opened as a descriptor fallback.
+        var dataDriveDiskPath: String?
         /// Offline builds pass a decompressed engine rootfs here so first launch needs no network;
         /// online builds leave it nil and the engine fetches the image once.
         var bundledRootfs: String?
         var shares: [VirtioFSShareConfiguration] = []
         var directIP: DirectIPBridgeConfiguration?
         var gpuMode: GPUAccelerationMode = .off
+        /// Launch-plan policy. The helper never reads ambient process environment to select guest
+        /// reclaim behavior.
+        var reclaimPolicy: ReclaimPolicy = .dropCaches
+        /// Explicit queue policy supplied by the daemon. Automatic derives a bounded value from
+        /// the admitted vCPU count; fixed values are validated when the command line is parsed.
+        var fuseRequestQueuePolicy: FuseRequestQueuePolicy = .automatic
         /// Register FEX's seccomp-correct binfmt handler and Dory OCI runtime so
         /// `--platform linux/amd64` images run on the arm64 engine.
         var amd64Emulation: Bool = false
@@ -97,9 +298,50 @@ enum EngineMode {
         var guestAgentPath: String?
     }
 
+    static func validateMemoryMB(_ memoryMB: UInt64) throws {
+        guard memoryMB <= UInt64(DoryEngineMemoryPolicy.maximumMemoryMB) else {
+            throw VMError.invalidConfiguration(
+                "engine RAM must not exceed \(DoryEngineMemoryPolicy.maximumMemoryMB) MiB: "
+                    + "ARM guest RAM begins at 2 GiB and must end within the 64-GiB "
+                    + "Hypervisor.framework guest-physical aperture"
+            )
+        }
+    }
+
     enum GPUAccelerationMode: String {
         case off
         case venus
+    }
+
+    enum ReclaimPolicy: String, Equatable, Sendable {
+        case dropCaches = "drop-caches"
+        case senpai
+    }
+
+    enum FuseRequestQueuePolicy: Equatable, Sendable {
+        case automatic
+        case fixed(Int)
+
+        static let maximum = 8
+
+        init(fixedCount: Int) throws {
+            guard (1...Self.maximum).contains(fixedCount) else {
+                throw VMError.invalidConfiguration(
+                    "VirtioFS request queue count must be between 1 and \(Self.maximum)"
+                )
+            }
+            self = .fixed(fixedCount)
+        }
+
+        func resolved(cpuCount: Int) -> Int {
+            switch self {
+            case .automatic:
+                return min(Self.maximum, max(1, cpuCount))
+            case .fixed(let count):
+                precondition((1...Self.maximum).contains(count))
+                return count
+            }
+        }
     }
 
     /// gvproxy is launched and stopped under the same lock so a shutdown signal cannot race the
@@ -160,10 +402,6 @@ enum EngineMode {
             source.resume()
             signalSources.append(source)
         }
-    }
-
-    static var reclaimModeIsSenpai: Bool {
-        (ProcessInfo.processInfo.environment["DORY_ENGINE_RECLAIM_MODE"]?.lowercased() ?? "dropcaches") == "senpai"
     }
 
     // P1.2 host-pressure tier: when macOS reports memory pressure, ping the guest's reclaim listener so
@@ -263,10 +501,13 @@ enum EngineMode {
         reason: String,
         now: @escaping @Sendable () -> Date = Date.init
     ) async {
-        let connection = vsock.connect(port: VsockPorts.agent)
-        let channel = AgentChannel(connection: connection)
         let hostEpochNanoseconds = Int64((now().timeIntervalSince1970 * 1_000_000_000).rounded())
         do {
+            let connection = try vsock.connectForServiceIfCapacity(
+                port: VsockPorts.agent,
+                service: .agentRPC
+            )
+            let channel = AgentChannel(connection: connection)
             let result = try await channel.syncClock(hostEpochNanoseconds: hostEpochNanoseconds)
             note("clock sync \(reason): \(result.synced ? "ok" : "agent declined")")
         } catch {
@@ -319,6 +560,7 @@ enum EngineMode {
 
             var guardState = GVProxyDatapathGuard(failureThreshold: 3)
             var reportedInconclusive = false
+            var reportedAwaitingReadiness = false
             while !Task.isCancelled {
                 let canaryResponse = UnixSocketHTTPClient.get(
                     socketPath: healthSocket,
@@ -346,8 +588,16 @@ enum EngineMode {
                     gvproxyCanaryReachable: canaryReachable,
                     dockerAPIReachable: dockerReachable
                 ) {
-                case .healthy, .restartAlreadyRequested:
+                case .healthy:
+                    // A previous engine invocation may have left a failure receipt in this durable
+                    // state directory. Once this invocation proves the canary, that receipt no
+                    // longer describes the live engine.
+                    try? FileManager.default.removeItem(atPath: diagnosticPath)
                     reportedInconclusive = false
+                    reportedAwaitingReadiness = false
+                case .restartAlreadyRequested:
+                    reportedInconclusive = false
+                    reportedAwaitingReadiness = false
                 case .recovered(let previousFailures):
                     persistGVProxyDiagnostic(
                         path: diagnosticPath,
@@ -359,6 +609,25 @@ enum EngineMode {
                     )
                     note("gvproxy datapath canary recovered after \(previousFailures) failed probe(s)")
                     reportedInconclusive = false
+                    reportedAwaitingReadiness = false
+                case .awaitingReadiness:
+                    // A canary that has never answered cannot prove that a previously working
+                    // datapath stopped forwarding. Treat that as a startup/configuration fault,
+                    // preserve the healthy Docker VM, and let the required dorycfg boot contract
+                    // surface the underlying guest setup failure instead of entering a restart loop.
+                    if !reportedAwaitingReadiness {
+                        persistGVProxyDiagnostic(
+                            path: diagnosticPath,
+                            reason: "awaiting-canary-readiness",
+                            consecutiveFailures: 0,
+                            gvproxyPID: gvproxyPID,
+                            apiSocket: apiSocket,
+                            statistics: network.statistics
+                        )
+                        note("gvproxy datapath canary has not completed its initial readiness probe; restart suppressed")
+                        reportedAwaitingReadiness = true
+                    }
+                    reportedInconclusive = false
                 case .inconclusive:
                     // Do not blame gvproxy when the independent guest witness is unavailable. Log
                     // once per inconclusive run and leave VM lifecycle to the Docker supervisor.
@@ -366,8 +635,10 @@ enum EngineMode {
                         note("gvproxy datapath probe inconclusive: Docker witness is unavailable; no restart requested")
                         reportedInconclusive = true
                     }
+                    reportedAwaitingReadiness = false
                 case .suspected(let failures):
                     reportedInconclusive = false
+                    reportedAwaitingReadiness = false
                     persistGVProxyDiagnostic(
                         path: diagnosticPath,
                         reason: "suspected",
@@ -452,7 +723,70 @@ enum EngineMode {
         var gvproxyStats: String?
     }
 
-    static func run(_ configuration: Configuration) async throws {
+    /// Runtime sockets share this directory with disposable boot state, so creating it with the
+    /// process umask is not sufficient: a normal 022 umask produces 0755 and the USB control
+    /// listener correctly refuses that boundary. Acquire the directory without following a final
+    /// symlink, verify ownership, and enforce the same 0700 invariant expected by every socket
+    /// publisher before any engine artifact or sidecar is created.
+    static func prepareStateDirectory(_ rawPath: String) throws -> String {
+        let path = URL(fileURLWithPath: rawPath).standardizedFileURL.path
+        if mkdir(path, mode_t(0o700)) != 0, errno != EEXIST {
+            let code = errno
+            throw VMError.invalidConfiguration(
+                "cannot create owner-private engine state directory \(path): errno \(code)"
+            )
+        }
+
+        let descriptor = open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
+        guard descriptor >= 0 else {
+            let code = errno
+            throw VMError.invalidConfiguration(
+                "cannot open owner-private engine state directory \(path): errno \(code)"
+            )
+        }
+        defer { close(descriptor) }
+
+        var opened = stat()
+        guard fstat(descriptor, &opened) == 0,
+              opened.st_mode & mode_t(S_IFMT) == mode_t(S_IFDIR),
+              opened.st_uid == geteuid() else {
+            throw VMError.invalidConfiguration(
+                "engine state directory is not owned by the current user: \(path)"
+            )
+        }
+        guard fchmod(descriptor, mode_t(0o700)) == 0 else {
+            let code = errno
+            throw VMError.invalidConfiguration(
+                "cannot secure engine state directory \(path): errno \(code)"
+            )
+        }
+
+        var secured = stat()
+        var linked = stat()
+        guard fstat(descriptor, &secured) == 0,
+              lstat(path, &linked) == 0,
+              secured.st_dev == opened.st_dev,
+              secured.st_ino == opened.st_ino,
+              linked.st_dev == secured.st_dev,
+              linked.st_ino == secured.st_ino,
+              linked.st_mode & mode_t(S_IFMT) == mode_t(S_IFDIR),
+              linked.st_uid == geteuid(),
+              linked.st_mode & mode_t(0o7777) == mode_t(0o700) else {
+            throw VMError.invalidConfiguration(
+                "engine state directory did not retain owner-private identity: \(path)"
+            )
+        }
+        return path
+    }
+
+    static func run(_ configuration: Configuration) throws {
+        try validateMemoryMB(configuration.memoryMB)
+        guard configuration.gpuMode == .off else {
+            throw VMError.invalidConfiguration(
+                "container-engine GPU acceleration is unavailable; the retired in-process "
+                    + "VirGL loader is not a fallback for the isolated Linux desktop worker"
+            )
+        }
         try DockerSocketBridge.validateSocketPath(configuration.engineSocket)
         if let forwardSocket = configuration.agentVsockForward {
             try AgentVsockForward.validateSocketPath(forwardSocket)
@@ -466,28 +800,102 @@ enum EngineMode {
             configuration.directIP?.subnetCIDR ?? DoryIPv4BridgeNetwork.defaultCIDR
         )
         let sourcePreservingLAN = configuration.publishHost == "0.0.0.0"
-        let state = URL(fileURLWithPath: configuration.stateDirectory).standardizedFileURL.path
-        try FileManager.default.createDirectory(atPath: state, withIntermediateDirectories: true)
+        let state = try prepareStateDirectory(configuration.stateDirectory)
         let stateDirectoryLock = try EngineStateDirectoryLock(stateDirectory: state)
         defer { withExtendedLifetime(stateDirectoryLock) {} }
 
         let pristineRootfs = state + "/rootfs-pristine.ext4"
         let bootRootfs = state + "/rootfs-boot.ext4"
-        let dataDisk = URL(fileURLWithPath: configuration.dockerDataDiskPath ?? (state + "/docker-data.ext4"))
-            .standardizedFileURL.path
-        let dataDiskDirectory = URL(fileURLWithPath: dataDisk).deletingLastPathComponent().path
+        let standaloneDataDiskPath: String?
+        switch configuration.dockerDataDiskAuthority {
+        case .inherited:
+            standaloneDataDiskPath = nil
+        case .standalonePath(let path):
+            standaloneDataDiskPath = URL(fileURLWithPath: path).standardizedFileURL.path
+        }
         let dataDriveLock: EngineStateDirectoryLock?
-        if let dataDriveRoot = configuration.dataDriveRoot {
+        if case .inherited = configuration.dockerDataDiskAuthority {
+            guard configuration.dataDriveRoot != nil,
+                  configuration.dataDriveDiskPath != nil else {
+                throw VMError.invalidConfiguration(
+                    "inherited Docker data-disk authority requires managed data-drive metadata"
+                )
+            }
+            // doryd retains drive.lock across the complete managed helper generation. Reacquiring
+            // it here would deadlock the launch and would add no authority to the inherited FD.
+            dataDriveLock = nil
+        } else if let dataDriveRoot = configuration.dataDriveRoot {
+            guard let dataDriveDiskPath = configuration.dataDriveDiskPath,
+                  dataDriveDiskPath == standaloneDataDiskPath else {
+                throw VMError.invalidConfiguration(
+                    "standalone data-drive metadata does not match its Docker data-disk path"
+                )
+            }
             dataDriveLock = try EngineStateDirectoryLock(
                 stateDirectory: dataDriveRoot,
                 lockFileName: "drive.lock"
             )
-        } else if dataDiskDirectory != state {
-            dataDriveLock = try EngineStateDirectoryLock(stateDirectory: dataDiskDirectory)
         } else {
-            dataDriveLock = nil
+            guard configuration.dataDriveDiskPath == nil,
+                  let standaloneDataDiskPath else {
+                throw VMError.invalidConfiguration(
+                    "standalone Docker data-disk authority has inconsistent data-drive metadata"
+                )
+            }
+            let dataDiskDirectory = URL(fileURLWithPath: standaloneDataDiskPath)
+                .deletingLastPathComponent().path
+            dataDriveLock = dataDiskDirectory == state
+                ? nil
+                : try EngineStateDirectoryLock(stateDirectory: dataDiskDirectory)
         }
         defer { withExtendedLifetime(dataDriveLock) {} }
+
+        let dataDiskBackend: VirtioBlk
+        let dataDiskState: DockerDataDiskAdmittedState
+        let expectedDockerDataDiskUUID: UUID?
+        switch configuration.dockerDataDiskAuthority {
+        case let .inherited(fileDescriptor, expectedFilesystemUUID):
+            dataDiskState = try DockerDataDisk.admittedState(
+                ofFileDescriptor: fileDescriptor,
+                description: "inherited Docker data disk descriptor \(fileDescriptor)",
+                minimumBytes: DockerDataDisk.blankDiskBytes,
+                maximumBytes: Int64(DockerDataDisk.maximumCapacityGiB)
+                    * DockerDataDisk.bytesPerGiB
+            )
+            dataDiskBackend = try VirtioBlk(
+                fileDescriptor: fileDescriptor,
+                identity: "dory-data"
+            )
+            expectedDockerDataDiskUUID = expectedFilesystemUUID
+        case .standalonePath:
+            guard let standaloneDataDiskPath else {
+                throw VMError.invalidConfiguration(
+                    "standalone Docker data-disk path was not resolved"
+                )
+            }
+            let preparation = try DockerDataDisk.prepare(destination: standaloneDataDiskPath)
+            switch preparation {
+            case .alreadyPresent:
+                break
+            case .createdBlank:
+                note("first run: created standalone docker data disk")
+            }
+            switch preparation {
+            case .createdBlank:
+                dataDiskState = .sparseBlank
+            case .alreadyPresent:
+                // Path-based compatibility remains deliberately isolated from production launch.
+                dataDiskState = try DockerDataDisk.isExt4Image(at: standaloneDataDiskPath)
+                    ? .ext4
+                    : .sparseBlank
+            }
+            dataDiskBackend = try VirtioBlk(
+                path: standaloneDataDiskPath,
+                identity: "dory-data"
+            )
+            expectedDockerDataDiskUUID = nil
+        }
+        let allowDockerDataFormat = dataDiskState == .sparseBlank
 
         // Both one-time artifacts are built at a temp path and atomically renamed into place, so an
         // interrupted first run leaves no half-written file that the fileExists guard would then
@@ -506,33 +914,36 @@ enum EngineMode {
         try? FileManager.default.removeItem(atPath: bootRootfs)
         try FileManager.default.copyItem(atPath: pristineRootfs, toPath: bootRootfs)
 
-        let dataDiskPreparation = try DockerDataDisk.prepare(destination: dataDisk)
-        switch dataDiskPreparation {
-        case .alreadyPresent:
-            break
-        case .createdBlank:
-            note("first run: created docker data disk")
-        }
-        let allowDockerDataFormat: Bool
-        switch dataDiskPreparation {
-        case .createdBlank:
-            allowDockerDataFormat = true
-        case .alreadyPresent:
-            // Host validation admits a non-ext4 existing file only when it has zero allocated
-            // blocks, which is a first-boot sparse blank left by an interrupted earlier launch.
-            allowDockerDataFormat = try !DockerDataDisk.isExt4Image(at: dataDisk)
-        }
-
         let bootConfigShare = try writeBootConfiguration(stateDirectory: state, script: guestBootScript(
             shares: configuration.shares,
-            gpuMode: configuration.gpuMode,
+            reclaimPolicy: configuration.reclaimPolicy,
             amd64Emulation: configuration.amd64Emulation,
             nativeIPv6: nativeIPv6,
             bridgeNetwork: bridgeNetwork,
             sourcePreservingLAN: sourcePreservingLAN,
-            allowDockerDataFormat: allowDockerDataFormat
+            allowDockerDataFormat: allowDockerDataFormat,
+            expectedDockerDataDiskUUID: expectedDockerDataDiskUUID
         ), guestAgentPath: configuration.guestAgentPath)
         let guestLogShare = try guestLogShareConfiguration(stateDirectory: state)
+        let filesystemShares = [bootConfigShare, guestLogShare] + configuration.shares
+        // `IgnoreSelf` is worker-process scoped, so validate internal and user mounts together.
+        // An overlapping writable disabled mount could otherwise hide its mutations from a
+        // coherence-enabled alias in the same worker.
+        try VirtioFSShareConfiguration.validateWritableTopology(filesystemShares)
+        var coherencePolicyByTag: [String: DoryFSShareCoherencePolicy] = [
+            bootConfigShare.tag: .disabled,
+            guestLogShare.tag: .disabled,
+        ]
+        for share in configuration.shares {
+            coherencePolicyByTag[share.tag] = share.readOnly
+                ? .invalidationOnly
+                : .invalidationAndWatcherNudge
+        }
+        let filesystemWorker = try DoryFilesystemWorkerLauncher.startBlocking(
+            shares: filesystemShares,
+            coherencePolicyByTag: coherencePolicyByTag
+        )
+        defer { filesystemWorker.client.close() }
 
         let machine = try Machine(configuration: MachineConfiguration(
             kernelPath: configuration.kernelPath,
@@ -540,62 +951,108 @@ enum EngineMode {
             memoryBytes: configuration.memoryMB << 20,
             cpuCount: configuration.cpus
         ))
-        attachPlatformDevices(to: machine)
+        let serialOutput = try BoundedSerialConsolePublisher(destinations: [
+            .init(fileHandle: FileHandle.standardOutput),
+        ])
+        defer {
+            let receipt = serialOutput.stop()
+            if !receipt.isClean {
+                note("serial publisher retired with faults: \(receipt.diagnosticSummary)")
+            }
+        }
+        attachPlatformDevices(to: machine, serialOutput: serialOutput)
 
         var backends: [VirtioDeviceBackend] = []
         backends.append(try VirtioBlk(path: bootRootfs, identity: "dory-rootfs"))
-        backends.append(try VirtioBlk(path: dataDisk, identity: "dory-data"))
+        backends.append(dataDiskBackend)
         backends.append(VirtioRng())
         backends.append(VirtioBalloon(memory: machine.memory) { note($0) })
-        var daxSlot: UInt64 = 0
-        if configuration.gpuMode == .venus {
-            let renderer = try VenusModeRequirement.require {
-                try VirglRenderer.discover()
-            }
-            let hostMemoryBase = GuestLayout.daxWindowBase + daxSlot * DaxWindow.defaultSize
-            let hostVisibleMemory = try VirtioGPUHostVisibleMemory(guestBase: hostMemoryBase)
-            daxSlot += 1
-            backends.append(VirtioGPU(
-                hostMemoryBase: hostMemoryBase,
-                renderer: renderer,
-                hostVisibleMemory: hostVisibleMemory
-            ))
-            note(
-                "experimental gpu=venus: attached virtio-gpu with virglrenderer "
-                    + "\(renderer.libraryPath) and MoltenVK ICD \(renderer.moltenVKICDPath)"
-            )
-        }
         let vsock = VirtioVsock(guestCID: 3)
+        defer { _ = vsock.quiesce() }
         backends.append(vsock)
-        HostAIBridge(log: { note($0) }).attach(to: vsock)
-        sshAgentBridge?.attach(to: vsock)
-        let requestedFuseQueues = ProcessInfo.processInfo.environment["DORY_FUSE_QUEUES"]
-            .flatMap(Int.init) ?? configuration.cpus
-        let fuseRequestQueues = min(8, max(1, requestedFuseQueues))
-        backends.append(try bootConfigShare.makeBackend(requestQueueCount: fuseRequestQueues))
-        backends.append(try guestLogShare.makeBackend(requestQueueCount: fuseRequestQueues))
-        var coherenceEndpoints = [HostShareCoherenceEndpoint]()
+        let hostAIBridge = HostAIBridge(log: { note($0) })
+        defer {
+            sshAgentBridge?.stop()
+            hostAIBridge.stop()
+        }
+        try hostAIBridge.attach(to: vsock)
+        try sshAgentBridge?.attach(to: vsock)
+        let fuseRequestQueues = configuration.fuseRequestQueuePolicy.resolved(
+            cpuCount: configuration.cpus
+        )
+        let workerLifecycle: @Sendable (VirtioFSWorkerLifecycleEvent) -> Void = { event in
+            note(event.diagnostic)
+            if case .failure(let reason) = event {
+                machine.requestStop(.crash(reason))
+            }
+        }
+        let bootConfigBackend = try bootConfigShare.makeBackend(
+            broker: filesystemWorker.broker(for: bootConfigShare),
+            requestQueueCount: fuseRequestQueues,
+            onWorkerLifecycle: workerLifecycle
+        )
+        let guestLogBackend = try guestLogShare.makeBackend(
+            broker: filesystemWorker.broker(for: guestLogShare),
+            requestQueueCount: fuseRequestQueues,
+            onWorkerLifecycle: workerLifecycle
+        )
+        backends.append(bootConfigBackend)
+        backends.append(guestLogBackend)
+        var coherenceEndpoints = [
+            try DoryHostShareCoherenceEndpoint(
+                capabilityID: filesystemWorker.capability(for: bootConfigShare),
+                backend: bootConfigBackend,
+                guestRoot: "/mnt/dory-config",
+                policy: .disabled
+            ),
+            try DoryHostShareCoherenceEndpoint(
+                capabilityID: filesystemWorker.capability(for: guestLogShare),
+                backend: guestLogBackend,
+                guestRoot: "/mnt/dory-logs",
+                policy: .disabled
+            ),
+        ]
         for share in configuration.shares {
-            let daxBase = share.dax ? GuestLayout.daxWindowBase + daxSlot * DaxWindow.defaultSize : nil
-            if share.dax { daxSlot += 1 }
             let backend = try share.makeBackend(
-                daxGuestBase: daxBase,
-                requestQueueCount: fuseRequestQueues
+                broker: filesystemWorker.broker(for: share),
+                requestQueueCount: fuseRequestQueues,
+                onWorkerLifecycle: workerLifecycle
             )
             backends.append(backend)
-            // Read-only shares cannot accept the same-mode watcher nudge, but they still need host
-            // reverse invalidation so open-file page cache cannot stay stale. Keep metadata caching
-            // disabled and skip only the fsnotify approximation for those endpoints.
-            coherenceEndpoints.append(HostShareCoherenceEndpoint(
-                share: HostFSEventShare(
-                    hostRoot: share.path,
-                    guestRoot: share.guestMountPoint ?? "/mnt/dory/\(share.tag)"
-                ),
+            coherenceEndpoints.append(try DoryHostShareCoherenceEndpoint(
+                capabilityID: filesystemWorker.capability(for: share),
                 backend: backend,
-                watcherNudgesEnabled: !share.readOnly
+                guestRoot: share.guestMountPoint ?? "/mnt/dory/\(share.tag)",
+                policy: coherencePolicyByTag[share.tag] ?? .disabled
             ))
-            note("sharing \(share.path) as virtiofs tag \(share.tag)\(share.readOnly ? " (ro)" : "")\(share.dax ? " (dax)" : "")")
+            note("sharing authorized capability as virtiofs tag \(share.tag)\(share.readOnly ? " (ro)" : "")")
         }
+        let guestFSEventBridge = GuestFSEventBridge(vsock: vsock)
+        let hostShareCoherence = DoryHostShareCoherenceBridge(
+            endpoints: coherenceEndpoints,
+            guestEvents: guestFSEventBridge
+        ) { reason in
+            note(reason)
+            machine.requestStop(.crash(reason))
+        }
+        guard filesystemWorker.installCoherenceHandler({ batch in
+            try await hostShareCoherence.process(batch)
+        }) else {
+            throw VMError.invalidConfiguration(
+                "filesystem coherence handler was already installed"
+            )
+        }
+        filesystemWorker.installLifecycleHandler { [weak hostShareCoherence] event in
+            hostShareCoherence?.failStop("filesystem worker coherence channel \(event)")
+        }
+        try filesystemWorker.client.prepareCoherence()
+        let fileServiceResources = FileServiceResourcePublisher(
+            stateDirectory: state,
+            worker: filesystemWorker,
+            frontends: coherenceEndpoints.map(\.backend)
+        )
+        fileServiceResources.start()
+        defer { fileServiceResources.stop() }
 
         let networkPaths = try GVProxyRuntimePaths(
             stateDirectory: state,
@@ -615,10 +1072,11 @@ enum EngineMode {
         // Install before spawning gvproxy. A signal arriving during the remaining VM setup must use
         // the watchdog cleanup path rather than taking the default signal action and orphaning it.
         installGracefulShutdown(shutdownSocket: shutdownSocket)
+        let networkMTU = DoryNetworkMTU.resolved()
         let gvproxy = Process()
         gvproxy.executableURL = URL(fileURLWithPath: configuration.gvproxyPath)
         gvproxy.arguments = [
-            "-mtu", String(DoryNetworkMTU.resolved()),
+            "-mtu", String(networkMTU),
             "-listen-vfkit", "unixgram://\(datapathSocket)",
             "-listen", "unix://\(apiSocket)",
         ]
@@ -663,7 +1121,11 @@ enum EngineMode {
             if primaryReady && lanReady { break }
             usleep(50_000)
         }
-        let virtioNet = try VirtioNet(socketPath: networkPaths.vmSocket, remotePath: datapathSocket)
+        let virtioNet = try VirtioNet(
+            socketPath: networkPaths.vmSocket,
+            remotePath: datapathSocket,
+            maximumTransmissionUnit: UInt16(networkMTU)
+        )
         backends.append(virtioNet)
         var sourcePreservingLANClient: SourcePreservingLANPrivilegedClient?
         var sourcePreservingLANSessionID: String?
@@ -701,7 +1163,7 @@ enum EngineMode {
             ) { [weak machine] in
                 machine?.raiseGSI(spi)
             }
-            machine.attachVirtioSlot(transport)
+            try machine.attachVirtioSlot(transport, at: slot)
         }
 
         try machine.loadBootPayload()
@@ -713,12 +1175,15 @@ enum EngineMode {
         // The Rust dataplane cannot establish its authoritative agent channel without this forward.
         // Bind it before publishing engine.sock and propagate any listener error out of run(), so a
         // configured-but-impossible path terminates dory-hv instead of advertising a half-alive VM.
-        if let forwardSocket = configuration.agentVsockForward {
-            try AgentVsockForward(socketPath: forwardSocket, guestCID: 3, log: { note($0) }).attach(to: vsock)
-        }
         // engine.sock is the sole Docker API endpoint, so its listener is just as required as the
         // dataplane forward. Propagate bind/listen/chmod failures before entering machine.run().
-        try DockerSocketBridge(socketPath: configuration.engineSocket, log: { note($0) }).attach(to: vsock)
+        let engineBridges = EngineVsockBridgeLifetime(
+            dockerSocketPath: configuration.engineSocket,
+            agentSocketPath: configuration.agentVsockForward,
+            log: { note($0) }
+        )
+        try engineBridges.attach(to: vsock)
+        defer { engineBridges.stop() }
         publishForward(local: shutdownSocket, guestPort: 2377, apiSocket: apiSocket, label: "shutdown channel")
         publishForward(
             local: gvproxyHealthSocket,
@@ -727,7 +1192,7 @@ enum EngineMode {
             label: "gvproxy datapath canary"
         )
         installClockSyncSignal(vsock: vsock)
-        if reclaimModeIsSenpai {
+        if configuration.reclaimPolicy == .senpai {
             let reclaimSocket = networkPaths.reclaimSocket
             publishForward(local: reclaimSocket, guestPort: 2378, apiSocket: apiSocket, label: "host-pressure reclaim channel")
             installHostPressureReclaim(reclaimSocket: reclaimSocket)
@@ -767,20 +1232,66 @@ enum EngineMode {
         defer { gvproxyDatapathTask.cancel() }
         note("engine starting: \(configuration.memoryMB)MiB ceiling, \(configuration.cpus) cpus, socket \(configuration.engineSocket)")
 
-        // The host usbip bridge exists, but attach/detach is deliberately unavailable until the
-        // authoritative protobuf agent protocol has a real guest vhci RPC. The capability gate runs
-        // before HostUsbDeviceFactory.open, so commands fail closed without claiming host hardware.
-        let usbipManager = UsbipManager()
-        usbipManager.attachListener(to: vsock)
+        // USB/IP device data stays on its dedicated vsock connection. Attach/detach authority runs
+        // over a fresh shared agent-protocol channel for every operation, so an agent restart does
+        // not strand a long-lived control client and capability is revalidated before hardware is
+        // claimed and again immediately before the guest vhci mutation.
+        let usbipManager = UsbipManager(log: { note($0) })
+        try usbipManager.attachListener(to: vsock)
+        defer {
+            // This scope cannot unwind while Machine.run() is executing: either startup failed
+            // before guest execution or run() returned and the guest can no longer retain vhci
+            // state. That terminal boundary safely resolves outcome-unknown guest attachments.
+            switch usbipManager.stopAfterGuestExecutionEnded() {
+            case .completed:
+                break
+            case .authorityRetained(let busIDs):
+                let detail = busIDs.isEmpty
+                    ? "pending listener, bridge, or device drain"
+                    : "claims: \(busIDs.joined(separator: ", "))"
+                note("USB/IP terminal retirement retained authority asynchronously (\(detail))")
+            }
+        }
         let usbControlHandler = UsbControlHandler(
             manager: usbipManager,
-            ensureSupported: { throw UsbControlError.guestAgentRPCUnavailable },
+            allowedOpenModes: [.userAuthorized],
+            ensureSupported: {
+                let channel = AgentChannel(
+                    connection: try vsock.connectForServiceIfCapacity(
+                        port: VsockPorts.agent,
+                        service: .agentRPC
+                    )
+                )
+                try await channel.requireCapability("usb-vhci", version: 1)
+            },
             openDevice: { busID, mode in try HostUsbDeviceFactory.open(busID: busID, mode: mode) },
-            notifyAttach: { _ in throw UsbControlError.guestAgentRPCUnavailable },
-            notifyDetach: { _ in throw UsbControlError.guestAgentRPCUnavailable }
+            notifyAttach: { request in
+                let channel = AgentChannel(
+                    connection: try vsock.connectForServiceIfCapacity(
+                        port: VsockPorts.agent,
+                        service: .agentRPC
+                    )
+                )
+                try await channel.requireCapability("usb-vhci", version: 1)
+                try await channel.usbVhciAttach(request)
+            },
+            notifyDetach: { request in
+                let channel = AgentChannel(
+                    connection: try vsock.connectForServiceIfCapacity(
+                        port: VsockPorts.agent,
+                        service: .agentRPC
+                    )
+                )
+                try await channel.requireCapability("usb-vhci", version: 1)
+                try await channel.usbVhciDetach(request)
+            }
         )
-        let usbControlServer = UsbControlServer(path: configuration.stateDirectory + "/usb-control.sock", handler: usbControlHandler)
-        do { try usbControlServer.start() } catch { note("usb control server unavailable: \(error)") }
+        let usbControlServer = UsbControlServer(
+            path: state + "/usb-control.sock",
+            handler: usbControlHandler
+        )
+        try usbControlServer.start()
+        defer { usbControlServer.stop() }
 
         let memory = machine.memory
         let gauge = DispatchSource.makeTimerSource(queue: .global())
@@ -793,104 +1304,29 @@ enum EngineMode {
             note("network gauge: tx \(network.transmitPackets)p/\(network.transmitBytes)B drops=\(network.transmitDrops), rx \(network.receivePackets)p/\(network.receiveBytes)B deferred=\(network.receiveDeferred) drops=\(network.receiveDrops) truncated=\(network.receiveTruncations)")
         }
         gauge.resume()
+        defer { gauge.cancel() }
 
-        var hostFSEventRelay: HostFSEventRelay?
-        var cacheReadinessTask: Task<Void, Never>?
-        var hostFSEventDiagnosticsTimer: (any DispatchSourceTimer)?
-        if !coherenceEndpoints.isEmpty {
-            let activeEndpoints = coherenceEndpoints
-            let coordinator = HostShareCoherenceCoordinator(
-                endpoints: activeEndpoints,
-                guestEvents: GuestFSEventBridge(vsock: vsock),
-                onDegraded: { note($0) },
-                onRecovered: { note($0) },
-                onFatalRecoveryRequired: { reason in
-                    note("host-share coherence requires VM restart: \(reason)")
-                    machine.requestStop(.crash(reason))
-                }
-            )
-            let relay = HostFSEventRelay(
-                shares: activeEndpoints.map(\.share),
-                observeRootsOnDemand: true,
-                send: { changes in
-                    try await coordinator.process(changes)
-                    coordinator.relayDeliverySucceeded()
-                },
-                onFailure: { error in
-                    let message = String(describing: error)
-                    // This updates the readiness generation and drops response TTLs synchronously;
-                    // actor bookkeeping cannot race cache activation back on for a failed batch.
-                    coordinator.relayDeliveryFailed("host-share event relay failed: \(message)")
-                    note("host-share event relay: \(message)")
-                }
-            )
-            let relayStarted = relay.start()
-            try HostShareCoherenceStartupPolicy.requireEventRelay(
-                started: relayStarted,
-                productionShareCount: activeEndpoints.count
-            )
-            for endpoint in activeEndpoints {
-                endpoint.backend.hostFS.setEventObservationHandler { hostPath in
-                    guard relay.observe(hostPath: hostPath) else {
-                        let reason = "failed to start narrow host-share observation for \(hostPath)"
-                        coordinator.relayDeliveryFailed(reason)
-                        note(reason)
-                        machine.requestStop(.crash(reason))
-                        return
-                    }
-                }
+        let machineRunner = RawHVMachineRunner(
+            machine: machine,
+            threadName: "dory-hv.engine.vcpu0"
+        )
+        try machineRunner.start()
+        do {
+            if coherenceEndpoints.contains(where: {
+                $0.policy == .invalidationAndWatcherNudge
+            }) {
+                try guestFSEventBridge.establishReadinessBlocking()
+                note("host-share watcher bridge ready on guest vsock:\(VsockPorts.fsevents)")
             }
-            hostFSEventRelay = relay
-            writeHostShareResourceDiagnostics(relay.diagnostics, stateDirectory: state)
-            let diagnosticsTimer = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
-            diagnosticsTimer.schedule(deadline: .now() + 5, repeating: 5)
-            diagnosticsTimer.setEventHandler {
-                writeHostShareResourceDiagnostics(relay.diagnostics, stateDirectory: state)
-            }
-            diagnosticsTimer.resume()
-            hostFSEventDiagnosticsTimer = diagnosticsTimer
-            let watcherCount = activeEndpoints.filter(\.watcherNudgesEnabled).count
-            note("host-share invalidation relay active for \(activeEndpoints.count) share(s), watcher nudges on \(watcherCount)")
-            // The VM has not entered its run loop yet, so FUSE INIT, the 16 stable notify
-            // buffers, and the guest agent arrive asynchronously. Poll only the fail-closed
-            // readiness predicate; no environment flag can bypass these gates.
-            if activeEndpoints.contains(where: \.watcherNudgesEnabled) {
-                cacheReadinessTask = Task.detached(priority: .userInitiated) {
-                    var lastError: String?
-                    let deadline = ProcessInfo.processInfo.systemUptime + 120
-                    while ProcessInfo.processInfo.systemUptime < deadline {
-                        guard !Task.isCancelled else { return }
-                        do {
-                            if try await coordinator.activateCachingIfReady() {
-                                note("host-share coherent metadata cache active (\(VirtioFS.maximumCoherentCacheValiditySeconds)s bounded TTL)")
-                                return
-                            }
-                        } catch {
-                            lastError = String(describing: error)
-                        }
-                        do {
-                            try await Task.sleep(nanoseconds: 100_000_000)
-                        } catch {
-                            return
-                        }
-                    }
-                    let detail = lastError.map { ": \($0)" } ?? ""
-                    note("host-share cache readiness timed out; zero-cache safety retained\(detail)")
-                }
-            }
+            try filesystemWorker.client.activateCoherence()
+            note("host-share coherence delivery active")
+        } catch {
+            let reason = "host-share coherence did not become ready: \(error)"
+            machine.requestStop(.crash(reason))
+            _ = try? machineRunner.wait()
+            throw VMError.bootFailure(reason)
         }
-        defer {
-            cacheReadinessTask?.cancel()
-            hostFSEventDiagnosticsTimer?.cancel()
-            for endpoint in coherenceEndpoints {
-                endpoint.backend.hostFS.setEventObservationHandler(nil)
-            }
-            hostFSEventRelay?.stop()
-            try? FileManager.default.removeItem(atPath: state + "/host-share-resources.json")
-        }
-
-        let stop = try machine.run()
-        gauge.cancel()
+        let stop = try machineRunner.wait()
         note("engine stopped: \(stop)")
     }
 
@@ -943,19 +1379,24 @@ enum EngineMode {
     }
 
     /// Guest boot: mounts (docker state on the journaled /dev/vdb), DHCP through gvproxy,
-    /// dockerd on its private Unix socket, an inert HTTP datapath canary, a shutdown listener on tcp
+    /// dockerd on its private Unix socket, an agent-owned inert HTTP datapath canary, a shutdown listener on tcp
     /// 2377 (any connection triggers sync + poweroff, giving the host a clean-unmount path), and a light
     /// workload-aware page-cache cap so free page reporting (which handles free pages automatically
     /// at 16 KiB granularity) has cold pages to hand back when the engine is idle.
-    private static func guestBootScript(
+    static func guestBootScript(
         shares: [VirtioFSShareConfiguration] = [],
-        gpuMode: GPUAccelerationMode = .off,
+        reclaimPolicy: ReclaimPolicy = .dropCaches,
         amd64Emulation: Bool = false,
         nativeIPv6: NativeIPv6NetworkPlan? = nil,
         bridgeNetwork: DoryIPv4BridgeNetwork = try! DoryIPv4BridgeNetwork(),
         sourcePreservingLAN: Bool = false,
-        allowDockerDataFormat: Bool = false
+        allowDockerDataFormat: Bool = false,
+        expectedDockerDataDiskUUID: UUID? = nil
     ) -> String {
+        let dockerDataDiskUUID = expectedDockerDataDiskUUID?.uuidString.lowercased() ?? ""
+        let dockerDataDiskUUIDArgument = expectedDockerDataDiskUUID == nil
+            ? ""
+            : " -U \"$DORY_DOCKER_DATA_UUID\""
         var script = [
             "export PATH=/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin",
             "mount -t proc proc /proc",
@@ -973,13 +1414,17 @@ enum EngineMode {
             "  ( while [ ! -e /var/log/dory-agent.log ]; do sleep 0.2; done; tail -n +1 -f /var/log/dory-agent.log >/mnt/dory-logs/dory-agent.log 2>&1 ) & true",
             "fi",
             "mkdir -p /var/lib/docker",
+            "[ -b /dev/vdb ] || { echo DATA-DISK-BLOCK-DEVICE-MISSING; sync; poweroff -f; exit 1; }",
             // First boot receives a sparse blank disk from the host. Format it inside the guest so
             // the macOS 14 helper does not need Apple's macOS 15-only EXT4 formatter.
             "DORY_DOCKER_MOUNT_OPTS=noatime,lazytime,commit=30",
             "DORY_DOCKER_MOUNT_FALLBACK_OPTS=noatime,commit=30",
             "DORY_ALLOW_DATA_FORMAT=\(allowDockerDataFormat ? 1 : 0)",
+            "DORY_DOCKER_DATA_UUID='\(dockerDataDiskUUID)'",
+            DockerDataDiskLaunchContract.guestFilesystemUUIDShellFunction,
             "dory_mount_docker_data() { mount -t ext4 -o \"$DORY_DOCKER_MOUNT_OPTS\" /dev/vdb /var/lib/docker || mount -t ext4 -o \"$DORY_DOCKER_MOUNT_FALLBACK_OPTS\" /dev/vdb /var/lib/docker || mount -t ext4 /dev/vdb /var/lib/docker; }",
-            "dory_format_docker_data() { mkfs.ext4 -F -O fast_commit /dev/vdb >/var/log/dory-data-mkfs.log 2>&1 || mkfs.ext4 -F /dev/vdb >>/var/log/dory-data-mkfs.log 2>&1; }",
+            "dory_verify_docker_data_uuid() { [ -z \"$DORY_DOCKER_DATA_UUID\" ] || [ \"$(\(DockerDataDiskLaunchContract.guestFilesystemUUIDShellCommand))\" = \"$DORY_DOCKER_DATA_UUID\" ]; }",
+            "dory_format_docker_data() { mkfs.ext4\(dockerDataDiskUUIDArgument) -F -O fast_commit /dev/vdb >/var/log/dory-data-mkfs.log 2>&1 || mkfs.ext4\(dockerDataDiskUUIDArgument) -F /dev/vdb >>/var/log/dory-data-mkfs.log 2>&1; }",
             "dory_grow_docker_data() {",
             "  DORY_DATA_DEVICE_BYTES=$(blockdev --getsize64 /dev/vdb 2>/dev/null || true)",
             "  DORY_DATA_GEOMETRY=$(dumpe2fs -h /dev/vdb 2>/dev/null | awk '/^Block count:/{blocks=$3} /^Block size:/{size=$3} END{if(blocks && size) print blocks, size}')",
@@ -999,12 +1444,13 @@ enum EngineMode {
             "  resize2fs /dev/vdb >>/var/log/dory-data-resize.log 2>&1",
             "}",
             "if blkid /dev/vdb 2>/dev/null | grep -q 'TYPE=\"ext4\"'; then",
+            "  dory_verify_docker_data_uuid || { echo DATA-DISK-UUID-MISMATCH; sync; poweroff -f; exit 1; }",
             "  dory_grow_docker_data || { echo DATA-DISK-RESIZE-FAILED; cat /var/log/dory-data-resize.log 2>/dev/null; sync; poweroff -f; exit 1; }",
             "  cp /var/log/dory-data-resize.log /mnt/dory-logs/data-resize.log 2>/dev/null || true",
             "  dory_mount_docker_data || { echo DATA-DISK-MOUNT-FAILED-EXISTING-EXT4; sync; poweroff -f; exit 1; }",
             "elif [ \"$DORY_ALLOW_DATA_FORMAT\" -eq 1 ]; then",
             "  echo DATA-DISK-FORMAT-PROVEN-BLANK",
-            "  dory_format_docker_data && dory_mount_docker_data || { echo DATA-DISK-FORMAT-OR-MOUNT-FAILED; sync; poweroff -f; exit 1; }",
+            "  dory_format_docker_data && dory_verify_docker_data_uuid && dory_mount_docker_data || { echo DATA-DISK-FORMAT-IDENTITY-OR-MOUNT-FAILED; sync; poweroff -f; exit 1; }",
             "else",
             "  echo DATA-DISK-UNKNOWN-FILESYSTEM-REFUSING-FORMAT",
             "  sync; poweroff -f; exit 1",
@@ -1014,6 +1460,8 @@ enum EngineMode {
             // not remain physically full even though ext4 reports substantial free space.
             "fstrim -v /var/lib/docker >/var/log/dory-data-trim.log 2>&1 || true",
             "cp /var/log/dory-data-trim.log /mnt/dory-logs/data-trim.log 2>/dev/null || true",
+            "DORY_DATA_MOUNT_IDENTITY=$(awk '$2==\"/var/lib/docker\"{print $1 \" \" $3}' /proc/mounts | tail -n 1)",
+            "[ \"$DORY_DATA_MOUNT_IDENTITY\" = \"/dev/vdb ext4\" ] || { echo DATA-DISK-MOUNT-IDENTITY-MISMATCH; sync; poweroff -f; exit 1; }",
             "awk '$2==\"/var/lib/docker\"{print $4}' /proc/mounts >/var/log/dory-data-mount-options.log 2>&1 || true",
             "ip link set lo up",
             "ip link set eth0 up",
@@ -1041,13 +1489,6 @@ enum EngineMode {
             "echo 100 > /proc/sys/vm/vfs_cache_pressure 2>/dev/null",
             "echo 262144 > /proc/sys/vm/min_free_kbytes 2>/dev/null",
         ]
-        if gpuMode == .venus {
-            script += [
-                "export DORY_GPU=venus",
-                "for n in $(seq 1 80); do [ -d /dev/dri ] && break; sleep 0.1; done",
-                "[ -d /dev/dri ] && chmod a+rw /dev/dri/renderD* /dev/dri/card* 2>/dev/null || echo DORY-GPU-NO-DRI",
-            ]
-        }
         if amd64Emulation {
             script += BinfmtRegistration.bootCommands()
             script.append("DORY_AMD64_RUNTIME_ARGS='--add-runtime dory-runc=/usr/local/bin/dory-runc --default-runtime dory-runc'")
@@ -1078,35 +1519,30 @@ enum EngineMode {
         )
         script += [
             GuestStorageReclaimCommand.periodicLoop(),
-            GuestDatapathCanary.listener(),
             GuestShutdownCommand.listener(),
             GuestMemoryReclaimBootCommand.hostPressureListener(
-                experimentalSenpai: reclaimModeIsSenpai
+                experimentalSenpai: reclaimPolicy == .senpai
             ),
             // Idle memory reclaim. Default is a gentle pagecache-only drop_caches when the guest is
             // quiet (no compaction — it re-faults the pages free-page reporting already handed back;
-            // no root memory.reclaim — write-rejected on the root cgroup). DORY_ENGINE_RECLAIM_MODE=senpai
-            // swaps in a coldest-first, working-set-protected feeder (MGLRU min_ttl_ms + DAMON_RECLAIM,
-            // memory.reclaim fallback) per the research §5. Kept opt-in until the memory A/B lands.
+            // no root memory.reclaim — write-rejected on the root cgroup). The explicit `senpai`
+            // launch policy swaps in a coldest-first, working-set-protected feeder (MGLRU
+            // min_ttl_ms + DAMON_RECLAIM, memory.reclaim fallback) per the research §5. Kept
+            // opt-in until the memory A/B lands.
             GuestMemoryReclaimBootCommand.idleLoop(
-                experimentalSenpai: reclaimModeIsSenpai
+                experimentalSenpai: reclaimPolicy == .senpai
             ),
-            // Hand PID 1 to tini (docker-init, shipped in docker:dind) as a reaping init. exec
-            // replaces the boot shell in place, so tini keeps PID 1 while dockerd and the loops
-            // above continue as its children. Container shims double-fork and orphan their exited
-            // children onto PID 1; tini reaps them, so they never pile up as zombies until PID
-            // exhaustion. If tini is ever missing, fall back to an idle shell (accepting zombies
-            // over a failed boot).
-            "[ -x /usr/local/bin/docker-init ] && exec /usr/local/bin/docker-init -s -- sleep 2147483647",
-            "while true; do sleep 2147483647; done",
+            // The Rust guest agent owns PID 1, child reaping, the control plane, and the inert
+            // gvproxy witness. Keeping these lifecycles together prevents a detached boot-shell
+            // listener from disappearing while Docker remains healthy.
+            guestAgentExecCommand(),
         ]
         return script.joined(separator: "\n") + "\n"
     }
 
     private static func guestAgentStartCommand(shares: [VirtioFSShareConfiguration]) -> String {
-        // The share copy comes first: the app refreshes ~/.dory/bin/dory-agent-* from its bundle on
-        // every launch, so preferring it over the rootfs-baked /usr/bin/dory-agent means agent fixes
-        // ship with app updates instead of waiting for a re-bundled engine rootfs.
+        // Stage exactly one agent before starting services. The app-bundled copy comes first, so
+        // agent fixes ship with app updates instead of waiting for a re-bundled engine rootfs.
         var paths = [String]()
         paths.append("/mnt/dory-config/dory-agent")
         for share in shares {
@@ -1116,8 +1552,12 @@ enum EngineMode {
         }
         paths.append("/usr/bin/dory-agent")
         let quotedPaths = paths.map(shellQuote).joined(separator: " ")
-        let ports = HostAIBridge.defaultPorts.map(String.init).joined(separator: ",")
-        return "( for i in $(seq 1 100); do if pgrep -x dory-agent >/dev/null 2>&1; then exit 0; fi; for p in \(quotedPaths); do if [ -r \"$p\" ]; then cp \"$p\" /run/dory-agent && chmod 0755 /run/dory-agent && DORY_HOST_AI_BRIDGE_PORTS=\(shellQuote(ports)) /run/dory-agent >/var/log/dory-agent.log 2>&1 & exit 0; fi; done; sleep 0.2; done; echo 'dory-agent not found after waiting: \(quotedPaths)' >/var/log/dory-agent.log ) & true"
+        return "DORY_AGENT_STAGED=0; for i in $(seq 1 100); do for p in \(quotedPaths); do if [ -r \"$p\" ]; then cp \"$p\" /run/dory-agent && chmod 0755 /run/dory-agent && DORY_AGENT_STAGED=1 && break 2; fi; done; sleep 0.2; done; [ \"$DORY_AGENT_STAGED\" -eq 1 ] || { echo 'dory-agent not found after waiting: \(quotedPaths)' >/var/log/dory-agent.log; sync; poweroff -f; exit 1; }"
+    }
+
+    private static func guestAgentExecCommand() -> String {
+        let bridgePorts = HostAIBridge.defaultPorts.map(String.init).joined(separator: ",")
+        return "DORY_HOST_AI_BRIDGE_PORTS=\(shellQuote(bridgePorts)) \(GuestDatapathCanary.agentEnvironmentAssignment()) exec /run/dory-agent >>/var/log/dory-agent.log 2>&1"
     }
 
     /// The full boot script lives on a dedicated ext4 disk (vdc), so the kernel command line stays
@@ -1129,18 +1569,21 @@ enum EngineMode {
         #else
         let console = "console=ttyS0 earlyprintk=serial,ttyS0,115200"
         #endif
-        return "\(console) root=/dev/vda rw panic=0 init=/sbin/init"
+        return "\(console) root=/dev/vda rw panic=0 init=/sbin/init \(GuestDatapathCanary.requiredBootConfigurationKernelArgument)"
     }
 
-    private static func attachPlatformDevices(to machine: Machine) {
+    private static func attachPlatformDevices(
+        to machine: Machine,
+        serialOutput: BoundedSerialConsolePublisher
+    ) {
         #if arch(arm64)
         machine.bus.attach(PL031(baseAddress: GuestLayout.rtcBase))
         machine.attachConsole(PL011(baseAddress: GuestLayout.uartBase) { byte in
-            FileHandle.standardOutput.write(Data([byte]))
+            serialOutput.enqueue(byte)
         })
         #else
         machine.attachConsole(UART16550(basePort: UInt16(truncatingIfNeeded: GuestLayout.uartBase)) { byte in
-            FileHandle.standardOutput.write(Data([byte]))
+            serialOutput.enqueue(byte)
         })
         machine.attachRTC(CMOSRTC(basePort: UInt16(truncatingIfNeeded: GuestLayout.rtcBase)))
         machine.attachResetController(I8042 { [weak machine] in
@@ -1152,27 +1595,6 @@ enum EngineMode {
 
     private static func shellQuote(_ value: String) -> String {
         "'\(value.replacingOccurrences(of: "'", with: "'\"'\"'"))'"
-    }
-
-    private static func writeHostShareResourceDiagnostics(
-        _ diagnostics: HostFSEventRelayDiagnostics,
-        stateDirectory: String
-    ) {
-        let destination = URL(fileURLWithPath: stateDirectory)
-            .appendingPathComponent("host-share-resources.json")
-        let temporary = destination.appendingPathExtension("tmp-(getpid())")
-        do {
-            let encoder = JSONEncoder()
-            encoder.dateEncodingStrategy = .iso8601
-            encoder.outputFormatting = [.sortedKeys]
-            let data = try encoder.encode(diagnostics)
-            try data.write(to: temporary, options: [.atomic])
-            _ = chmod(temporary.path, S_IRUSR | S_IWUSR)
-            _ = rename(temporary.path, destination.path)
-        } catch {
-            try? FileManager.default.removeItem(at: temporary)
-            note("host-share resource diagnostics unavailable: (error)")
-        }
     }
 
     /// Asks gvproxy to serve a guest TCP port as a host unix socket, retrying until the listener

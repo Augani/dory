@@ -1,5 +1,6 @@
 import Darwin
 import DoryCore
+import DoryOperations
 import DorydKit
 import Foundation
 @preconcurrency import Virtualization
@@ -13,14 +14,24 @@ public enum DoryVMMDisplayDefaults {
     /// A 2x backing surface for the default 1280x800-point desktop window.
     public static let widthInPixels = 2_560
     public static let heightInPixels = 1_600
+
+    public static let capability = DoryVirtualMachineDisplayCapabilityRequest(
+        widthPixels: UInt32(widthInPixels),
+        heightPixels: UInt32(heightInPixels)
+    )
 }
 
 public struct DoryVMMArguments: Sendable, Equatable {
     public var machineID: String?
+    public var operationID: UUID?
     public var stateDirectory: String?
     public var dataDriveRoot: String?
+    public var dockerDataDiskFileDescriptor: Int32?
+    public var dockerDataDiskFilesystemUUID: UUID?
     public var kernelPath: String?
     public var rootfsPath: String?
+    public var machineBootMode: DoryMachineBootMode = .linuxKernel
+    public var installerISOPath: String?
     public var gvproxyPath: String?
     public var sshAgentSocketPath: String?
     public var publishHost = "127.0.0.1"
@@ -30,6 +41,7 @@ public struct DoryVMMArguments: Sendable, Equatable {
     public var agentSocketPath: String?
     public var shellSocketPath: String?
     public var controlSocketPath: String?
+    public var restoreStatePath: String?
     public var agentBuild = "dory-vmm/handoff-shim"
     public var detail = "helper handoff ready"
     public var memoryMB: UInt64 = 2048
@@ -42,6 +54,10 @@ public struct DoryVMMArguments: Sendable, Equatable {
     public var holdSeconds: UInt32?
     public var shares: [DoryMachineShareConfiguration] = []
     public var environment: [String: String] = [:]
+    public var resolvedGraphics: DoryGraphicsAccelerationLevel?
+    public var resolvedDevices: DoryVirtualMachineDeviceCapabilityRequest?
+    public var resolvedPortForwards: [DoryVMPortForward]?
+    public var displayPresentation: DoryMachineDisplayPresentation = .windowed
 
     public init() {}
 
@@ -57,14 +73,27 @@ public enum DoryVMMArgumentError: Error, Sendable, Equatable, CustomStringConver
     case missingValue(String)
     case invalidInteger(String, String)
     case missingMachineID
+    case missingOperationID
     case missingHandoffSocket
     case missingStateDirectory
+    case missingDataDrive
+    case missingDockerDataDiskFileDescriptor
+    case missingDockerDataDiskFilesystemUUID
     case missingKernel
     case missingRootfs
     case missingGVProxy
     case invalidPublishHost(String)
     case invalidDisplayMode(String)
+    case invalidMachineBootMode(String)
     case invalidEnvironment(String)
+    case invalidResolvedGraphics(String)
+    case invalidResolvedDevices(String)
+    case invalidResolvedPortForwards(String)
+    case invalidDisplayPresentation(String)
+    case invalidOperationID(String)
+    case invalidDockerDataDiskFileDescriptor(String)
+    case invalidDockerDataDiskFilesystemUUID(String)
+    case duplicateArgument(String)
 
     public var description: String {
         switch self {
@@ -74,10 +103,18 @@ public enum DoryVMMArgumentError: Error, Sendable, Equatable, CustomStringConver
             return "invalid integer for \(flag): \(value)"
         case .missingMachineID:
             return "missing --machine-id"
+        case .missingOperationID:
+            return "missing --operation-id"
         case .missingHandoffSocket:
             return "missing --handoff-sock"
         case .missingStateDirectory:
             return "missing --state-dir"
+        case .missingDataDrive:
+            return "Docker VZ launch requires --data-drive"
+        case .missingDockerDataDiskFileDescriptor:
+            return "Docker VZ launch requires --docker-data-disk-fd"
+        case .missingDockerDataDiskFilesystemUUID:
+            return "Docker VZ launch requires --docker-data-disk-uuid"
         case .missingKernel:
             return "missing --kernel"
         case .missingRootfs:
@@ -88,8 +125,26 @@ public enum DoryVMMArgumentError: Error, Sendable, Equatable, CustomStringConver
             return "invalid --publish-host (expected 127.0.0.1 or 0.0.0.0): \(host)"
         case let .invalidDisplayMode(mode):
             return "invalid --display-mode (expected headless or desktop): \(mode)"
+        case let .invalidMachineBootMode(mode):
+            return "invalid --boot-mode (expected linux-kernel or efi): \(mode)"
         case let .invalidEnvironment(value):
             return "invalid --env value: \(value)"
+        case let .invalidResolvedGraphics(value):
+            return "invalid --resolved-graphics value: \(value)"
+        case let .invalidResolvedDevices(value):
+            return "invalid --resolved-devices value: \(value)"
+        case let .invalidResolvedPortForwards(value):
+            return "invalid --resolved-port-forwards value: \(value)"
+        case let .invalidDisplayPresentation(value):
+            return "invalid --display-presentation value: \(value)"
+        case let .invalidOperationID(value):
+            return "invalid --operation-id value: \(value)"
+        case let .invalidDockerDataDiskFileDescriptor(value):
+            return "invalid --docker-data-disk-fd value: \(value)"
+        case let .invalidDockerDataDiskFilesystemUUID(value):
+            return "invalid --docker-data-disk-uuid value: \(value)"
+        case let .duplicateArgument(flag):
+            return "duplicate argument: \(flag)"
         }
     }
 }
@@ -103,14 +158,50 @@ public func parseDoryVMMArguments(_ raw: [String]) throws -> DoryVMMArguments {
         switch argument {
         case "--machine-id":
             parsed.machineID = try value(after: argument, from: raw, index: &index)
+        case "--operation-id":
+            let rawValue = try value(after: argument, from: raw, index: &index)
+            guard let operationID = DoryOperationIdentity.parseCanonical(rawValue) else {
+                throw DoryVMMArgumentError.invalidOperationID(rawValue)
+            }
+            parsed.operationID = operationID
         case "--state-dir":
             parsed.stateDirectory = try value(after: argument, from: raw, index: &index)
         case "--data-drive":
+            guard parsed.dataDriveRoot == nil else {
+                throw DoryVMMArgumentError.duplicateArgument(argument)
+            }
             parsed.dataDriveRoot = try value(after: argument, from: raw, index: &index)
+        case DockerDataDiskLaunchContract.fileDescriptorArgument:
+            guard parsed.dockerDataDiskFileDescriptor == nil else {
+                throw DoryVMMArgumentError.duplicateArgument(argument)
+            }
+            let rawValue = try value(after: argument, from: raw, index: &index)
+            guard let descriptor = Int32(rawValue), descriptor >= 0 else {
+                throw DoryVMMArgumentError.invalidDockerDataDiskFileDescriptor(rawValue)
+            }
+            parsed.dockerDataDiskFileDescriptor = descriptor
+        case DockerDataDiskLaunchContract.filesystemUUIDArgument:
+            guard parsed.dockerDataDiskFilesystemUUID == nil else {
+                throw DoryVMMArgumentError.duplicateArgument(argument)
+            }
+            let rawValue = try value(after: argument, from: raw, index: &index)
+            guard let filesystemUUID = UUID(uuidString: rawValue),
+                  filesystemUUID.uuidString.lowercased() == rawValue else {
+                throw DoryVMMArgumentError.invalidDockerDataDiskFilesystemUUID(rawValue)
+            }
+            parsed.dockerDataDiskFilesystemUUID = filesystemUUID
         case "--kernel":
             parsed.kernelPath = try value(after: argument, from: raw, index: &index)
         case "--rootfs":
             parsed.rootfsPath = try value(after: argument, from: raw, index: &index)
+        case "--boot-mode":
+            let value = try value(after: argument, from: raw, index: &index)
+            guard let mode = DoryMachineBootMode(rawValue: value) else {
+                throw DoryVMMArgumentError.invalidMachineBootMode(value)
+            }
+            parsed.machineBootMode = mode
+        case "--installer-iso":
+            parsed.installerISOPath = try value(after: argument, from: raw, index: &index)
         case "--gvproxy":
             parsed.gvproxyPath = try value(after: argument, from: raw, index: &index)
         case "--ssh-agent-socket":
@@ -141,6 +232,8 @@ public func parseDoryVMMArguments(_ raw: [String]) throws -> DoryVMMArguments {
             parsed.shellSocketPath = try value(after: argument, from: raw, index: &index)
         case "--control-sock":
             parsed.controlSocketPath = try value(after: argument, from: raw, index: &index)
+        case "--restore-state":
+            parsed.restoreStatePath = try value(after: argument, from: raw, index: &index)
         case "--agent-build":
             parsed.agentBuild = try value(after: argument, from: raw, index: &index)
         case "--detail":
@@ -161,6 +254,48 @@ public func parseDoryVMMArguments(_ raw: [String]) throws -> DoryVMMArguments {
                 throw DoryVMMArgumentError.invalidEnvironment(key)
             }
             parsed.environment[key] = String(rawValue[rawValue.index(after: equals)...])
+        case "--resolved-graphics":
+            let rawValue = try value(after: argument, from: raw, index: &index)
+            guard let graphics = DoryGraphicsAccelerationLevel(rawValue: rawValue) else {
+                throw DoryVMMArgumentError.invalidResolvedGraphics(rawValue)
+            }
+            parsed.resolvedGraphics = graphics
+        case "--resolved-devices":
+            let rawValue = try value(after: argument, from: raw, index: &index)
+            do {
+                parsed.resolvedDevices = try JSONDecoder().decode(
+                    DoryVirtualMachineDeviceCapabilityRequest.self,
+                    from: Data(rawValue.utf8)
+                )
+            } catch {
+                throw DoryVMMArgumentError.invalidResolvedDevices(rawValue)
+            }
+        case "--resolved-port-forwards":
+            let rawValue = try value(after: argument, from: raw, index: &index)
+            do {
+                parsed.resolvedPortForwards = try JSONDecoder().decode(
+                    [DoryVMPortForward].self,
+                    from: Data(rawValue.utf8)
+                )
+            } catch {
+                throw DoryVMMArgumentError.invalidResolvedPortForwards(rawValue)
+            }
+        case "--display-presentation":
+            let rawValue = try value(after: argument, from: raw, index: &index)
+            do {
+                let presentation = try JSONDecoder().decode(
+                    DoryMachineDisplayPresentation.self,
+                    from: Data(rawValue.utf8)
+                )
+                guard presentation.isValid else {
+                    throw DoryVMMArgumentError.invalidDisplayPresentation(rawValue)
+                }
+                parsed.displayPresentation = presentation.canonicalized
+            } catch let error as DoryVMMArgumentError {
+                throw error
+            } catch {
+                throw DoryVMMArgumentError.invalidDisplayPresentation(rawValue)
+            }
         case "--exit-after-handoff":
             parsed.exitAfterHandoff = true
         case "--handoff-only":
@@ -199,50 +334,101 @@ private func intValue(after flag: String, from raw: [String], index: inout Array
 
 public struct DoryVZMachineSpec: Sendable, Equatable {
     public var machineID: String
+    public var operationID: UUID?
     public var stateDirectory: String
     public var kernelPath: String
     public var rootfsPath: String
+    public var bootMode: DoryMachineBootMode
+    public var installerISOPath: String?
     public var memoryMB: UInt64
     public var cpuCount: Int
     public var displayMode: DoryMachineDisplayMode
     public var kernelCommandLine: String?
     public var shares: [DoryMachineShareConfiguration]
     public var environment: [String: String]
+    public var resolvedGraphics: DoryGraphicsAccelerationLevel?
+    public var resolvedDevices: DoryVirtualMachineDeviceCapabilityRequest?
     public var dockerDataDiskPath: String?
+    public var dockerDataDiskFileDescriptor: Int32?
+    public var dockerDataDiskFilesystemUUID: UUID?
     public var nativeIPv6: Bool
     public var sourcePreservingLAN: Bool
     public var bridgeSubnetCIDR: String
 
     public init(
         machineID: String,
+        operationID: UUID? = nil,
         stateDirectory: String,
         kernelPath: String,
         rootfsPath: String,
+        bootMode: DoryMachineBootMode = .linuxKernel,
+        installerISOPath: String? = nil,
         memoryMB: UInt64,
         cpuCount: Int,
         displayMode: DoryMachineDisplayMode = .headless,
         kernelCommandLine: String? = nil,
         shares: [DoryMachineShareConfiguration] = [],
         environment: [String: String] = [:],
+        resolvedGraphics: DoryGraphicsAccelerationLevel? = nil,
+        resolvedDevices: DoryVirtualMachineDeviceCapabilityRequest? = nil,
         dockerDataDiskPath: String? = nil,
+        dockerDataDiskFileDescriptor: Int32? = nil,
+        dockerDataDiskFilesystemUUID: UUID? = nil,
         nativeIPv6: Bool = false,
         sourcePreservingLAN: Bool = false,
         bridgeSubnetCIDR: String = DoryIPv4BridgeNetwork.defaultCIDR
     ) {
         self.machineID = machineID
+        self.operationID = operationID
         self.stateDirectory = stateDirectory
         self.kernelPath = kernelPath
         self.rootfsPath = rootfsPath
+        self.bootMode = bootMode
+        self.installerISOPath = installerISOPath
         self.memoryMB = memoryMB
         self.cpuCount = cpuCount
         self.displayMode = displayMode
         self.kernelCommandLine = kernelCommandLine
         self.shares = shares
         self.environment = environment
+        self.resolvedGraphics = resolvedGraphics
+        self.resolvedDevices = resolvedDevices
         self.dockerDataDiskPath = dockerDataDiskPath
+        self.dockerDataDiskFileDescriptor = dockerDataDiskFileDescriptor
+        self.dockerDataDiskFilesystemUUID = dockerDataDiskFilesystemUUID
         self.nativeIPv6 = nativeIPv6
         self.sourcePreservingLAN = sourcePreservingLAN
         self.bridgeSubnetCIDR = bridgeSubnetCIDR
+    }
+}
+
+enum DoryVZHostService: Sendable, Equatable {
+    case docker
+    case agent
+    case shell
+}
+
+/// Exact host-side service boundary for one VZ launch. EFI guests publish readiness before Dory
+/// Tools exists, so they expose only the control server. Direct-kernel guests expose their agent
+/// and shell proxies, while Docker discovery remains exclusive to the engine VM that advertises
+/// the Docker socket in its handoff receipt.
+struct DoryVZHostServicePlan: Sendable, Equatable {
+    let proxies: [DoryVZHostService]
+    let discoversDynamicDockerPorts: Bool
+
+    init(machineID: String, bootMode: DoryMachineBootMode) {
+        guard bootMode == .linuxKernel else {
+            proxies = []
+            discoversDynamicDockerPorts = false
+            return
+        }
+        if machineID == "docker" {
+            proxies = [.docker, .agent, .shell]
+            discoversDynamicDockerPorts = true
+        } else {
+            proxies = [.agent, .shell]
+            discoversDynamicDockerPorts = false
+        }
     }
 }
 
@@ -284,11 +470,31 @@ public enum DoryVZMachineError: Error, Sendable, CustomStringConvertible {
 public enum DoryVZConfigurationBuilder {
     private static let bootConfigTag = "dorycfg"
     private static let bootConfigGuestPath = "/mnt/dory-config"
+    private static let intelApplicationTranslationTag = "rosetta"
 
     public static func makeConfiguration(
         spec: DoryVZMachineSpec,
         serialOutput: FileHandle?,
+        serialInput: FileHandle? = nil,
         networkAttachment: VZNetworkDeviceAttachment? = nil
+    ) throws -> VZVirtualMachineConfiguration {
+        try makeConfigurationForTesting(
+            spec: spec,
+            serialOutput: serialOutput,
+            serialInput: serialInput,
+            networkAttachment: networkAttachment,
+            intelApplicationTranslationShareProvider: nil
+        )
+    }
+
+    /// Internal-only injection point for deterministic framework-independent tests. Production
+    /// callers cannot substitute the resolved Rosetta share.
+    static func makeConfigurationForTesting(
+        spec: DoryVZMachineSpec,
+        serialOutput: FileHandle?,
+        serialInput: FileHandle?,
+        networkAttachment: VZNetworkDeviceAttachment?,
+        intelApplicationTranslationShareProvider: (() throws -> VZDirectoryShare)?
     ) throws -> VZVirtualMachineConfiguration {
         let fileManager = FileManager.default
         let (memorySize, memoryOverflow) = spec.memoryMB.multipliedReportingOverflow(by: 1024 * 1024)
@@ -308,71 +514,253 @@ public enum DoryVZConfigurationBuilder {
                 "native IPv6 requires the gvproxy file-handle network attachment"
             )
         }
-        guard fileManager.fileExists(atPath: spec.kernelPath) else {
-            throw DoryVZMachineError.missingFile(spec.kernelPath)
+        if let fileHandleAttachment = networkAttachment
+                as? VZFileHandleNetworkDeviceAttachment,
+           fileHandleAttachment.maximumTransmissionUnit
+                < Int(DoryVirtualMachineNetworkInterfaceCapabilityRequest
+                    .vzFileHandleMinimumMTU) {
+            throw DoryVZMachineError.validation(
+                "VZ file-handle network MTU must be at least "
+                    + "\(DoryVirtualMachineNetworkInterfaceCapabilityRequest.vzFileHandleMinimumMTU)"
+            )
         }
         guard fileManager.fileExists(atPath: spec.rootfsPath) else {
             throw DoryVZMachineError.missingFile(spec.rootfsPath)
         }
 
-        let bootLoader = VZLinuxBootLoader(kernelURL: URL(fileURLWithPath: spec.kernelPath))
-        bootLoader.commandLine = spec.kernelCommandLine ?? defaultKernelCommandLine(machineID: spec.machineID)
+        if let graphics = spec.resolvedGraphics {
+            let representable = spec.displayMode == .desktop
+                ? graphics == .hostAcceleratedDisplay || graphics == .software
+                : graphics == .none
+            // VZ's VirtIO graphics device is also the display controller for a guest that renders
+            // 3D in software. `software` therefore does not mean "no display"; it means that Dory
+            // must not publish a guest-3D acceleration claim for this otherwise normal 2D desktop.
+            guard representable else {
+                throw DoryVZMachineError.validation(
+                    "resolved graphics \(graphics.rawValue) cannot be represented by this VZ launch"
+                )
+            }
+        }
+        if let devices = spec.resolvedDevices {
+            if let networkInterface = devices.networkInterface,
+               !networkInterface.isValid {
+                throw DoryVZMachineError.validation(
+                    "resolved network interface identity or MTU is invalid"
+                )
+            }
+            guard devices.networkAttachment == .sharedNAT
+                    || devices.networkAttachment == .isolated
+                    || devices.networkAttachment == .disconnected else {
+                throw DoryVZMachineError.validation(
+                    "resolved device contract contains a device not implemented by this VZ launch"
+                )
+            }
+            if devices.networkAttachment != .disconnected,
+               let networkInterface = devices.networkInterface {
+                guard let fileHandleAttachment = networkAttachment
+                        as? VZFileHandleNetworkDeviceAttachment else {
+                    throw DoryVZMachineError.validation(
+                        "a connected exact VZ network interface requires the gvproxy file-handle attachment"
+                    )
+                }
+                guard fileHandleAttachment.maximumTransmissionUnit
+                        == Int(networkInterface.maximumTransmissionUnit) else {
+                    throw DoryVZMachineError.validation(
+                        "VZ file-handle network MTU does not match the resolved interface contract"
+                    )
+                }
+            }
+            if devices.networkAttachment == .disconnected,
+               networkAttachment != nil || spec.nativeIPv6 {
+                throw DoryVZMachineError.validation(
+                    "disconnected networking cannot attach a host network backend"
+                )
+            }
+            if devices.networkAttachment == .isolated,
+               !(networkAttachment is VZFileHandleNetworkDeviceAttachment) || !spec.nativeIPv6 {
+                throw DoryVZMachineError.validation(
+                    "host-only networking requires the restricted gvproxy attachment"
+                )
+            }
+            guard devices.directorySharing == !spec.shares.isEmpty else {
+                throw DoryVZMachineError.validation(
+                    "resolved directory-sharing contract does not match the launch shares"
+                )
+            }
+            if let clipboardPolicy = devices.clipboardPolicy {
+                guard devices.clipboard == clipboardPolicy.isEnabled else {
+                    throw DoryVZMachineError.validation(
+                        "resolved clipboard device and directional policy disagree"
+                    )
+                }
+                // File directions are enforced by doryd's authenticated Dory Tools transfer
+                // boundary. This VZ-local clipboard device represents text and images only.
+            }
+            if spec.displayMode != .desktop,
+               devices.display != nil || devices.audioInput || devices.audioOutput || devices.keyboard
+                    || devices.pointer || devices.clipboard {
+                throw DoryVZMachineError.validation(
+                    "resolved desktop devices cannot be attached to a headless VZ launch"
+                )
+            }
+        }
 
         let configuration = VZVirtualMachineConfiguration()
-        configuration.bootLoader = bootLoader
+        switch spec.bootMode {
+        case .linuxKernel:
+            guard fileManager.fileExists(atPath: spec.kernelPath) else {
+                throw DoryVZMachineError.missingFile(spec.kernelPath)
+            }
+            let bootLoader = VZLinuxBootLoader(kernelURL: URL(fileURLWithPath: spec.kernelPath))
+            bootLoader.commandLine = spec.kernelCommandLine ?? defaultKernelCommandLine(
+                machineID: spec.machineID,
+                operationID: spec.operationID
+            )
+            configuration.bootLoader = bootLoader
+        case .efi:
+            guard spec.displayMode == .desktop else {
+                throw DoryVZMachineError.validation("EFI boot requires desktop display mode")
+            }
+            let platform = VZGenericPlatformConfiguration()
+            platform.machineIdentifier = try persistentMachineIdentifier(
+                at: spec.stateDirectory + "/MachineIdentifier"
+            )
+            let bootLoader = VZEFIBootLoader()
+            // Keep installation/recovery firmware state separate from the installed system.
+            // UEFI remembers the disk as its first boot target after an OS installation, and
+            // merely reconnecting a USB ISO does not override that persisted BootOrder. A
+            // dedicated installer variable store gives attached media a stable CD-first boot
+            // profile while preserving the installed disk's firmware entries for normal boots.
+            let variableStoreName = spec.installerISOPath == nil ? "NVRAM" : "NVRAM.installer"
+            bootLoader.variableStore = try persistentEFIVariableStore(
+                at: spec.stateDirectory + "/\(variableStoreName)"
+            )
+            configuration.platform = platform
+            configuration.bootLoader = bootLoader
+        }
         configuration.cpuCount = spec.cpuCount
         configuration.memorySize = memorySize
         configuration.entropyDevices = [VZVirtioEntropyDeviceConfiguration()]
         configuration.memoryBalloonDevices = [VZVirtioTraditionalMemoryBalloonDeviceConfiguration()]
         configuration.socketDevices = [VZVirtioSocketDeviceConfiguration()]
         let network = VZVirtioNetworkDeviceConfiguration()
-        network.attachment = networkAttachment ?? VZNATNetworkDeviceAttachment()
-        if networkAttachment != nil, let macAddress = VZMACAddress(string: DoryVMMNativeIPv6Plan.guestMAC) {
-            network.macAddress = macAddress
+        if spec.resolvedDevices?.networkAttachment != .disconnected {
+            network.attachment = networkAttachment ?? VZNATNetworkDeviceAttachment()
         }
+        let macAddressString = spec.resolvedDevices?.networkInterface?.macAddress
+            ?? (networkAttachment != nil
+                ? DoryVMMNativeIPv6Plan.guestMAC
+                : stableNetworkMACAddress(machineID: spec.machineID))
+        guard let macAddress = VZMACAddress(string: macAddressString) else {
+            throw DoryVZMachineError.validation("could not derive stable network identity")
+        }
+        network.macAddress = macAddress
         configuration.networkDevices = [network]
 
         if spec.displayMode == .desktop {
+            let devices = spec.resolvedDevices
+            if let devices, devices.displays.count != 1 {
+                throw DoryVZMachineError.validation(
+                    "Apple Virtualization.framework requires exactly one resolved display"
+                )
+            }
+            let display = devices?.displays[0] ?? DoryVMMDisplayDefaults.capability
+            guard display.isValid else {
+                throw DoryVZMachineError.validation(
+                    "resolved display geometry is outside the supported pixel bounds"
+                )
+            }
             let graphics = VZVirtioGraphicsDeviceConfiguration()
             graphics.scanouts = [VZVirtioGraphicsScanoutConfiguration(
-                widthInPixels: DoryVMMDisplayDefaults.widthInPixels,
-                heightInPixels: DoryVMMDisplayDefaults.heightInPixels
+                widthInPixels: Int(display.widthPixels),
+                heightInPixels: Int(display.heightPixels)
             )]
             configuration.graphicsDevices = [graphics]
-            configuration.keyboards = [VZUSBKeyboardConfiguration()]
-            configuration.pointingDevices = [VZUSBScreenCoordinatePointingDeviceConfiguration()]
+            if devices?.keyboard != false {
+                configuration.keyboards = [VZUSBKeyboardConfiguration()]
+            }
+            if devices?.pointer != false {
+                configuration.pointingDevices = [VZUSBScreenCoordinatePointingDeviceConfiguration()]
+            }
 
-            let output = VZVirtioSoundDeviceOutputStreamConfiguration()
-            output.sink = VZHostAudioOutputStreamSink()
-            let sound = VZVirtioSoundDeviceConfiguration()
-            sound.streams = [output]
-            configuration.audioDevices = [sound]
+            var audioDevices = [VZVirtioSoundDeviceConfiguration]()
+            if devices?.audioOutput != false {
+                let output = VZVirtioSoundDeviceOutputStreamConfiguration()
+                output.sink = VZHostAudioOutputStreamSink()
+                let outputSound = VZVirtioSoundDeviceConfiguration()
+                outputSound.streams = [output]
+                audioDevices.append(outputSound)
+            }
+            if devices?.audioInput != false {
+                let input = VZVirtioSoundDeviceInputStreamConfiguration()
+                input.source = VZHostAudioInputStreamSource()
+                let inputSound = VZVirtioSoundDeviceConfiguration()
+                inputSound.streams = [input]
+                audioDevices.append(inputSound)
+            }
+            configuration.audioDevices = audioDevices
 
-            let console = VZVirtioConsoleDeviceConfiguration()
-            let spiceAgent = VZVirtioConsolePortConfiguration()
-            spiceAgent.name = VZSpiceAgentPortAttachment.spiceAgentPortName
-            spiceAgent.attachment = VZSpiceAgentPortAttachment()
-            console.ports[0] = spiceAgent
-            configuration.consoleDevices = [console]
+            if devices?.clipboard != false {
+                let clipboardPolicy = devices?.clipboardPolicy
+                    ?? DoryDesktopClipboardPolicy(
+                        environment: spec.environment
+                    ).virtualMachinePolicy
+                let console = VZVirtioConsoleDeviceConfiguration()
+                let spiceAgent = VZVirtioConsolePortConfiguration()
+                spiceAgent.name = VZSpiceAgentPortAttachment.spiceAgentPortName
+                let spiceAttachment = VZSpiceAgentPortAttachment()
+                // The native SPICE bridge has only an all-or-nothing switch. Keep it for the efficient
+                // bidirectional default; directional policies use Dory's agent-backed bridge instead.
+                spiceAttachment.sharesClipboard = clipboardPolicy.text == .bidirectional
+                    && clipboardPolicy.image == .bidirectional
+                spiceAgent.attachment = spiceAttachment
+                console.ports[0] = spiceAgent
+                configuration.consoleDevices = [console]
+            }
         }
 
-        var dockerDataDiskPath: String?
+        var dockerDataDiskAttachmentURL: URL?
         var allowDockerDataFormat = false
         if spec.machineID == "docker" {
-            let dataDisk = spec.dockerDataDiskPath ?? (spec.stateDirectory + "/docker-data.ext4")
-            let preparation: DockerDataDiskPreparation
+            guard let dataDiskPath = spec.dockerDataDiskPath,
+                  !dataDiskPath.isEmpty else {
+                throw DoryVZMachineError.validation(
+                    "Docker requires selected data-drive path metadata"
+                )
+            }
+            guard let dataDiskDescriptor = spec.dockerDataDiskFileDescriptor else {
+                throw DoryVZMachineError.validation(
+                    "Docker requires an inherited data-disk descriptor"
+                )
+            }
+            guard spec.dockerDataDiskFilesystemUUID != nil else {
+                throw DoryVZMachineError.validation(
+                    "Docker requires an expected data-disk filesystem UUID"
+                )
+            }
             do {
-                preparation = try DockerDataDisk.prepare(destination: dataDisk)
+                try validateDockerDataDiskPathIdentity(
+                    descriptor: dataDiskDescriptor,
+                    path: dataDiskPath
+                )
+                let admittedState = try DockerDataDisk.admittedState(
+                    ofFileDescriptor: dataDiskDescriptor,
+                    description: "inherited Docker data disk",
+                    minimumBytes: DockerDataDisk.blankDiskBytes
+                )
+                allowDockerDataFormat = admittedState == .sparseBlank
             } catch {
                 throw DoryVZMachineError.storageAttachment("Docker data disk: \(error)")
             }
-            switch preparation {
-            case .createdBlank:
-                allowDockerDataFormat = true
-            case .alreadyPresent:
-                allowDockerDataFormat = try !DockerDataDisk.isExt4Image(at: dataDisk)
-            }
-            dockerDataDiskPath = dataDisk
+            dockerDataDiskAttachmentURL = URL(
+                fileURLWithPath: "/dev/fd/\(dataDiskDescriptor)"
+            )
+        } else if spec.dockerDataDiskPath != nil
+                    || spec.dockerDataDiskFileDescriptor != nil
+                    || spec.dockerDataDiskFilesystemUUID != nil {
+            throw DoryVZMachineError.validation(
+                "Docker data-disk authority cannot be attached to a non-Docker machine"
+            )
         }
 
         let directoryShares: [DoryMachineShareConfiguration]
@@ -388,7 +776,10 @@ public enum DoryVZConfigurationBuilder {
             )
             directoryShares = [bootConfigShare] + spec.shares
         }
-        configuration.directorySharingDevices = try directoryShares.map { share in
+        let attachedDirectoryShares = spec.resolvedDevices?.directorySharing == false
+            ? directoryShares.filter { $0.tag == bootConfigTag }
+            : directoryShares
+        var fileSystemDevices = try attachedDirectoryShares.map { share in
             try share.validate()
             var isDirectory: ObjCBool = false
             guard fileManager.fileExists(atPath: share.hostPath, isDirectory: &isDirectory),
@@ -409,23 +800,80 @@ public enum DoryVZConfigurationBuilder {
             device.share = shareConfig
             return device
         }
+        if spec.resolvedDevices?.intelApplicationTranslation == true {
+            guard !directoryShares.contains(where: {
+                $0.tag == intelApplicationTranslationTag
+            }) else {
+                throw DoryVZMachineError.validation(
+                    "machine share tag '\(intelApplicationTranslationTag)' is reserved"
+                )
+            }
+            let provider = intelApplicationTranslationShareProvider
+                ?? installedIntelApplicationTranslationShare
+            let device = VZVirtioFileSystemDeviceConfiguration(
+                tag: intelApplicationTranslationTag
+            )
+            do {
+                device.share = try provider()
+            } catch {
+                throw DoryVZMachineError.validation(
+                    "Intel Linux application translation is unavailable: \(error)"
+                )
+            }
+            fileSystemDevices.append(device)
+        }
+        configuration.directorySharingDevices = fileSystemDevices
 
         do {
-            let attachment = try VZDiskImageStorageDeviceAttachment(
-                url: URL(fileURLWithPath: spec.rootfsPath),
-                readOnly: false
-            )
-            let block = VZVirtioBlockDeviceConfiguration(attachment: attachment)
-            block.blockDeviceIdentifier = "dory-rootfs"
-            configuration.storageDevices = [block]
+            let rootURL = URL(fileURLWithPath: spec.rootfsPath)
+            if spec.bootMode == .efi {
+                // EFI installers exercise long, flush-heavy writes before Dory guest tools exist.
+                // Apple's native NVMe model avoids tying that workload to the VirtIO-block path
+                // used by Dory-owned direct-kernel guests. Cached host I/O with fsync semantics
+                // matches a normal virtual disk while retaining crash-consistent guest flushes.
+                let attachment = try VZDiskImageStorageDeviceAttachment(
+                    url: rootURL,
+                    readOnly: false,
+                    cachingMode: .cached,
+                    synchronizationMode: .fsync
+                )
+                configuration.storageDevices = [
+                    VZNVMExpressControllerDeviceConfiguration(attachment: attachment),
+                ]
+            } else {
+                let attachment = try VZDiskImageStorageDeviceAttachment(
+                    url: rootURL,
+                    readOnly: false
+                )
+                let block = VZVirtioBlockDeviceConfiguration(attachment: attachment)
+                block.blockDeviceIdentifier = "dory-rootfs"
+                configuration.storageDevices = [block]
+            }
+            if let installerISOPath = spec.installerISOPath {
+                guard spec.bootMode == .efi else {
+                    throw DoryVZMachineError.validation("installer ISO requires EFI boot mode")
+                }
+                guard fileManager.fileExists(atPath: installerISOPath) else {
+                    throw DoryVZMachineError.missingFile(installerISOPath)
+                }
+                let installerAttachment = try VZDiskImageStorageDeviceAttachment(
+                    url: URL(fileURLWithPath: installerISOPath),
+                    readOnly: true
+                )
+                configuration.storageDevices.insert(
+                    VZUSBMassStorageDeviceConfiguration(attachment: installerAttachment),
+                    at: 0
+                )
+            }
         } catch {
+            if let error = error as? DoryVZMachineError { throw error }
             throw DoryVZMachineError.storageAttachment("\(error)")
         }
 
-        if let dataDisk = dockerDataDiskPath {
+        if let dataDiskURL = dockerDataDiskAttachmentURL {
             do {
                 let attachment = try VZDiskImageStorageDeviceAttachment(
-                    url: URL(fileURLWithPath: dataDisk),
+                    url: dataDiskURL,
                     readOnly: false
                 )
                 let block = VZVirtioBlockDeviceConfiguration(attachment: attachment)
@@ -439,7 +887,7 @@ public enum DoryVZConfigurationBuilder {
         if let serialOutput {
             let serial = VZVirtioConsoleDeviceSerialPortConfiguration()
             serial.attachment = VZFileHandleSerialPortAttachment(
-                fileHandleForReading: nil,
+                fileHandleForReading: serialInput,
                 fileHandleForWriting: serialOutput
             )
             configuration.serialPorts = [serial]
@@ -448,8 +896,98 @@ public enum DoryVZConfigurationBuilder {
         return configuration
     }
 
-    public static func defaultKernelCommandLine(machineID: String) -> String {
-        "console=hvc0 root=/dev/vda rw rootwait panic=1 dory.machine_id=\(machineID)"
+    /// The pathname remains the selected-drive metadata and lock identity, but it is never opened
+    /// here. The VZ attachment consumes `/dev/fd/N`, so replacement after this check cannot redirect
+    /// guest I/O away from the descriptor admitted by doryd.
+    private static func validateDockerDataDiskPathIdentity(
+        descriptor: Int32,
+        path: String
+    ) throws {
+        guard descriptor >= 0 else {
+            throw DoryVZMachineError.validation("Docker data-disk descriptor is negative")
+        }
+        var descriptorStatus = stat()
+        guard fstat(descriptor, &descriptorStatus) == 0 else {
+            throw DoryVZMachineError.syscall("fstat inherited Docker data disk", errno)
+        }
+        var pathStatus = stat()
+        let pathResult = path.withCString { lstat($0, &pathStatus) }
+        guard pathResult == 0 else {
+            throw DoryVZMachineError.syscall("lstat Docker data-disk metadata path", errno)
+        }
+        guard pathStatus.st_mode & S_IFMT == S_IFREG,
+              descriptorStatus.st_dev == pathStatus.st_dev,
+              descriptorStatus.st_ino == pathStatus.st_ino else {
+            throw DoryVZMachineError.validation(
+                "Docker data-disk metadata path does not name the inherited descriptor"
+            )
+        }
+    }
+
+    private static func installedIntelApplicationTranslationShare() throws -> VZDirectoryShare {
+        guard VZLinuxRosettaDirectoryShare.availability == .installed else {
+            throw DoryVZMachineError.validation(
+                "Rosetta support for Linux is not installed on this host"
+            )
+        }
+        return try VZLinuxRosettaDirectoryShare()
+    }
+
+    static func stableNetworkMACAddress(machineID: String) -> String {
+        // FNV-1a provides a deterministic identity without introducing a cryptographic trust
+        // claim. Set the locally administered bit and clear multicast.
+        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+        for byte in machineID.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 0x0000_0100_0000_01B3
+        }
+        var bytes = (0..<6).map { UInt8(truncatingIfNeeded: hash >> UInt64($0 * 8)) }
+        bytes[0] = (bytes[0] | 0x02) & 0xFE
+        return bytes.map { String(format: "%02x", $0) }.joined(separator: ":")
+    }
+
+    private static func persistentMachineIdentifier(at path: String) throws -> VZGenericMachineIdentifier {
+        let url = URL(fileURLWithPath: path)
+        if FileManager.default.fileExists(atPath: path) {
+            let data = try Data(contentsOf: url)
+            guard let identifier = VZGenericMachineIdentifier(dataRepresentation: data) else {
+                throw DoryVZMachineError.validation("stored EFI machine identifier is invalid")
+            }
+            return identifier
+        }
+        let identifier = VZGenericMachineIdentifier()
+        try identifier.dataRepresentation.write(to: url, options: [.atomic])
+        guard chmod(path, mode_t(0o600)) == 0 else {
+            throw DoryVZMachineError.syscall("chmod MachineIdentifier", errno)
+        }
+        return identifier
+    }
+
+    private static func persistentEFIVariableStore(at path: String) throws -> VZEFIVariableStore {
+        let url = URL(fileURLWithPath: path)
+        if FileManager.default.fileExists(atPath: path) {
+            return VZEFIVariableStore(url: url)
+        }
+        let store = try VZEFIVariableStore(creatingVariableStoreAt: url)
+        guard chmod(path, mode_t(0o600)) == 0 else {
+            throw DoryVZMachineError.syscall("chmod NVRAM", errno)
+        }
+        return store
+    }
+
+    public static func defaultKernelCommandLine(
+        machineID: String,
+        operationID: UUID? = nil
+    ) -> String {
+        var arguments = [
+            "console=hvc0", "root=/dev/vda", "rw", "rootwait", "panic=1",
+            "dory.config=required",
+            "dory.machine_id=\(machineID)",
+        ]
+        if let operationID {
+            arguments.append("dory.operation_id=\(DoryOperationIdentity.canonical(operationID))")
+        }
+        return arguments.joined(separator: " ")
     }
 
     private static func prepareBootConfigShare(
@@ -464,7 +1002,9 @@ public enum DoryVZConfigurationBuilder {
         let script = guestBootScript(
             shares: spec.shares,
             environment: spec.environment,
+            operationID: spec.operationID,
             allowDockerDataFormat: allowDockerDataFormat,
+            dockerDataDiskFilesystemUUID: spec.dockerDataDiskFilesystemUUID,
             nativeIPv6: spec.nativeIPv6,
             sourcePreservingLAN: spec.sourcePreservingLAN,
             bridgeNetwork: try DoryIPv4BridgeNetwork(spec.bridgeSubnetCIDR)
@@ -485,7 +1025,9 @@ public enum DoryVZConfigurationBuilder {
     private static func guestBootScript(
         shares: [DoryMachineShareConfiguration],
         environment: [String: String],
+        operationID: UUID?,
         allowDockerDataFormat: Bool,
+        dockerDataDiskFilesystemUUID: UUID?,
         nativeIPv6: Bool,
         sourcePreservingLAN: Bool,
         bridgeNetwork: DoryIPv4BridgeNetwork
@@ -511,6 +1053,17 @@ public enum DoryVZConfigurationBuilder {
             "",
             ": > /var/log/dory-mounts.log",
         ]
+        if let operationID {
+            let token = DoryOperationIdentity.canonical(operationID)
+            lines += [
+                "mkdir -p /run/dory",
+                "chmod 700 /run/dory",
+                "printf '%s\\n' \(shellQuote(token)) > /run/dory/operation-id",
+                "chmod 600 /run/dory/operation-id",
+                "export DORY_OPERATION_ID=\(shellQuote(token))",
+                "",
+            ]
+        }
         for (key, value) in environment.sorted(by: { $0.key < $1.key }) {
             guard key.wholeMatch(of: /[A-Za-z_][A-Za-z0-9_]*/) != nil else { continue }
             lines.append("export \(key)=\(shellQuote(value))")
@@ -551,9 +1104,15 @@ public enum DoryVZConfigurationBuilder {
         lines += [
             "fi",
             "",
+            "if [ ! -b /dev/vdb ]; then echo DORY-DATA-DISK-BLOCK-DEVICE-MISSING; sync; poweroff -f; exit 1; fi",
             "if [ -b /dev/vdb ]; then",
             "  DORY_ALLOW_DATA_FORMAT=\(allowDockerDataFormat ? 1 : 0)",
+            "  DORY_DATA_EXPECTED_UUID=\(shellQuote(dockerDataDiskFilesystemUUID?.uuidString.lowercased() ?? ""))",
+            "  if [ -z \"$DORY_DATA_EXPECTED_UUID\" ]; then echo DORY-DATA-DISK-UUID-MISSING; sync; poweroff -f; exit 1; fi",
+            DockerDataDiskLaunchContract.guestFilesystemUUIDShellFunction,
             "  if blkid /dev/vdb 2>/dev/null | grep -q 'TYPE=\"ext4\"'; then",
+            "    DORY_DATA_ACTUAL_UUID=$(\(DockerDataDiskLaunchContract.guestFilesystemUUIDShellCommand)) || { echo DORY-DATA-DISK-UUID-UNREADABLE; sync; poweroff -f; exit 1; }",
+            "    if [ \"$DORY_DATA_ACTUAL_UUID\" != \"$DORY_DATA_EXPECTED_UUID\" ]; then echo DORY-DATA-DISK-UUID-MISMATCH; sync; poweroff -f; exit 1; fi",
             "    DORY_DATA_DEVICE_BYTES=$(blockdev --getsize64 /dev/vdb 2>/dev/null || true)",
             "    DORY_DATA_GEOMETRY=$(dumpe2fs -h /dev/vdb 2>/dev/null | awk '/^Block count:/{blocks=$3} /^Block size:/{size=$3} END{if(blocks && size) print blocks, size}')",
             "    set -- $DORY_DATA_GEOMETRY",
@@ -594,13 +1153,21 @@ public enum DoryVZConfigurationBuilder {
             "    mount -t ext4 -o \"$DORY_DOCKER_MOUNT_OPTS\" /dev/vdb /var/lib/docker || mount -t ext4 -o \"$DORY_DOCKER_MOUNT_FALLBACK_OPTS\" /dev/vdb /var/lib/docker || mount -t ext4 /dev/vdb /var/lib/docker || { echo DORY-DATA-DISK-MOUNT-FAILED-EXISTING-EXT4; sync; poweroff -f; exit 1; }",
             "  elif [ \"$DORY_ALLOW_DATA_FORMAT\" -eq 1 ]; then",
             "    echo DORY-DATA-DISK-FORMAT-PROVEN-BLANK",
-            "    (mkfs.ext4 -F -O fast_commit /dev/vdb >/var/log/dory-data-mkfs.log 2>&1 || mkfs.ext4 -F /dev/vdb >>/var/log/dory-data-mkfs.log 2>&1) && mount -t ext4 /dev/vdb /var/lib/docker || { echo DORY-DATA-DISK-FORMAT-OR-MOUNT-FAILED; sync; poweroff -f; exit 1; }",
+            "    if mkfs.ext4 -F -U \"$DORY_DATA_EXPECTED_UUID\" -O fast_commit /dev/vdb >/var/log/dory-data-mkfs.log 2>&1 || mkfs.ext4 -F -U \"$DORY_DATA_EXPECTED_UUID\" /dev/vdb >>/var/log/dory-data-mkfs.log 2>&1; then",
+            "      DORY_DATA_ACTUAL_UUID=$(\(DockerDataDiskLaunchContract.guestFilesystemUUIDShellCommand)) || { echo DORY-DATA-DISK-UUID-UNREADABLE-AFTER-FORMAT; sync; poweroff -f; exit 1; }",
+            "      if [ \"$DORY_DATA_ACTUAL_UUID\" != \"$DORY_DATA_EXPECTED_UUID\" ]; then echo DORY-DATA-DISK-UUID-MISMATCH-AFTER-FORMAT; sync; poweroff -f; exit 1; fi",
+            "      mount -t ext4 /dev/vdb /var/lib/docker || { echo DORY-DATA-DISK-MOUNT-FAILED-AFTER-FORMAT; sync; poweroff -f; exit 1; }",
+            "    else",
+            "      echo DORY-DATA-DISK-FORMAT-FAILED; sync; poweroff -f; exit 1",
+            "    fi",
             "  else",
             "    echo DORY-DATA-DISK-UNKNOWN-FILESYSTEM-REFUSING-FORMAT",
             "    sync; poweroff -f; exit 1",
             "  fi",
             "  fstrim -v /var/lib/docker >/var/log/dory-data-trim.log 2>&1 || true",
             "fi",
+            "DORY_DATA_MOUNT_IDENTITY=$(awk '$2==\"/var/lib/docker\"{print $1 \" \" $3}' /proc/mounts | tail -n 1)",
+            "if [ \"$DORY_DATA_MOUNT_IDENTITY\" != \"/dev/vdb ext4\" ]; then echo DORY-DATA-DISK-MOUNT-IDENTITY-MISMATCH; sync; poweroff -f; exit 1; fi",
             "",
             "if [ -x /usr/local/bin/dockerd ]; then",
             "  \(GuestBuildCacheGCCommand.configureDaemon())",
@@ -654,17 +1221,23 @@ public enum DoryVMMMain {
         guard let machineID = arguments.machineID else {
             throw DoryVMMArgumentError.missingMachineID
         }
+        guard let operationID = arguments.operationID else {
+            throw DoryVMMArgumentError.missingOperationID
+        }
         guard let handoffSocketPath = arguments.handoffSocketPath else {
             throw DoryVMMArgumentError.missingHandoffSocket
         }
 
         var shutdownCoordinator: DoryVMMShutdownCoordinator?
         defer { shutdownCoordinator?.cancelSignalHandlers() }
+        var earlyApplicationTerminationDelegate: DoryVMMEarlyApplicationTerminationDelegate?
+        defer { withExtendedLifetime(earlyApplicationTerminationDelegate) {} }
         var runtime: DoryVMMRuntime?
         switch arguments.bootMode {
         case .immediateHandoff:
             try sendHandoff(
                 machineID: machineID,
+                operationID: operationID,
                 handoffSocketPath: handoffSocketPath,
                 agentBuild: arguments.agentBuild,
                 agentSocketPath: arguments.agentSocketPath,
@@ -679,32 +1252,76 @@ public enum DoryVMMMain {
             }
             let stateDirectoryLock = try EngineStateDirectoryLock(stateDirectory: stateDirectory)
             defer { withExtendedLifetime(stateDirectoryLock) {} }
-            let dataDriveLock: EngineStateDirectoryLock?
-            if let dataDriveRoot = arguments.dataDriveRoot, machineID == "docker" {
-                let drive = try DoryDataDrive(overrideRoot: dataDriveRoot)
-                try drive.prepare()
-                dataDriveLock = try EngineStateDirectoryLock(
-                    stateDirectory: drive.root,
-                    lockFileName: "drive.lock"
-                )
+            if machineID == "docker" {
+                guard let dataDriveRoot = arguments.dataDriveRoot else {
+                    throw DoryVMMArgumentError.missingDataDrive
+                }
+                guard let dataDiskDescriptor = arguments.dockerDataDiskFileDescriptor else {
+                    throw DoryVMMArgumentError.missingDockerDataDiskFileDescriptor
+                }
+                guard dataDiskDescriptor == DockerDataDiskLaunchContract
+                        .childFileDescriptor else {
+                    throw DoryVMMArgumentError.invalidDockerDataDiskFileDescriptor(
+                        String(dataDiskDescriptor)
+                    )
+                }
+                guard arguments.dockerDataDiskFilesystemUUID != nil else {
+                    throw DoryVMMArgumentError.missingDockerDataDiskFilesystemUUID
+                }
+                // doryd retains the selected drive's mutation/lock authority for the complete
+                // helper generation. The VMM only canonicalizes inert path metadata here; it must
+                // neither prepare the drive nor contend for a second drive.lock.
+                _ = try DoryDataDrive(overrideRoot: dataDriveRoot)
             } else {
-                dataDriveLock = nil
+                guard arguments.dataDriveRoot == nil,
+                      arguments.dockerDataDiskFileDescriptor == nil,
+                      arguments.dockerDataDiskFilesystemUUID == nil else {
+                    throw DoryVZMachineError.validation(
+                        "Docker data-disk launch arguments require machine ID 'docker'"
+                    )
+                }
             }
-            defer { withExtendedLifetime(dataDriveLock) {} }
             guard let kernelPath = arguments.kernelPath else {
                 throw DoryVMMArgumentError.missingKernel
             }
             guard let rootfsPath = arguments.rootfsPath else {
                 throw DoryVMMArgumentError.missingRootfs
             }
-            let coordinator = DoryVMMShutdownCoordinator()
+            let gracefulShutdownAuthorized = arguments.resolvedDevices?
+                .gracefulShutdown ?? true
+            let coordinator = DoryVMMShutdownCoordinator(
+                guestShutdownAuthorized: gracefulShutdownAuthorized
+            )
             coordinator.installSignalHandlers()
             shutdownCoordinator = coordinator
+            if arguments.displayMode == .desktop {
+                guard Thread.isMainThread else {
+                    throw DoryVZMachineError.validation(
+                        "desktop application lifecycle must run on the dory-vmm main thread"
+                    )
+                }
+                earlyApplicationTerminationDelegate = MainActor.assumeIsolated {
+                    let delegate = DoryVMMEarlyApplicationTerminationDelegate { reason in
+                        coordinator.request(reason: reason)
+                    }
+                    delegate.install()
+                    return delegate
+                }
+            }
+            if arguments.displayMode == .desktop,
+               arguments.resolvedDevices?.audioInput != false {
+                try MainActor.assumeIsolated {
+                    try DoryVMMHostMicrophoneAccess.requireAuthorization()
+                }
+            }
             runtime = try runVirtualMachine(
                 machineID: machineID,
+                operationID: operationID,
                 stateDirectory: stateDirectory,
                 kernelPath: kernelPath,
                 rootfsPath: rootfsPath,
+                bootMode: arguments.machineBootMode,
+                installerISOPath: arguments.installerISOPath,
                 handoffSocketPath: handoffSocketPath,
                 dockerdSocketPath: arguments.dockerdSocketPath ?? "\(stateDirectory)/dockerd.sock",
                 agentSocketPath: arguments.agentSocketPath ?? "\(stateDirectory)/agent.sock",
@@ -717,11 +1334,17 @@ public enum DoryVMMMain {
                 readyTimeoutSeconds: arguments.readyTimeoutSeconds,
                 shares: arguments.shares,
                 environment: arguments.environment,
+                resolvedGraphics: arguments.resolvedGraphics,
+                resolvedDevices: arguments.resolvedDevices,
+                resolvedPortForwards: arguments.resolvedPortForwards,
                 gvproxyPath: arguments.gvproxyPath,
                 sshAgentSocketPath: arguments.sshAgentSocketPath,
                 publishHost: arguments.publishHost,
                 bridgeSubnetCIDR: arguments.bridgeSubnetCIDR,
                 dataDriveRoot: arguments.dataDriveRoot,
+                dockerDataDiskFileDescriptor: arguments.dockerDataDiskFileDescriptor,
+                dockerDataDiskFilesystemUUID: arguments.dockerDataDiskFilesystemUUID,
+                restoreStatePath: arguments.restoreStatePath,
                 onRuntimeCreated: { coordinator.attach($0) }
             )
         }
@@ -736,7 +1359,12 @@ public enum DoryVMMMain {
             return
         }
         if let runtime {
-            try withExtendedLifetime(shutdownCoordinator) {
+            guard let activeShutdownCoordinator = shutdownCoordinator else {
+                throw DoryVZMachineError.validation(
+                    "virtual machine runtime is missing its shutdown coordinator"
+                )
+            }
+            try withExtendedLifetime(activeShutdownCoordinator) {
                 if arguments.displayMode == .desktop {
                     guard Thread.isMainThread else {
                         throw DoryVZMachineError.validation(
@@ -744,9 +1372,22 @@ public enum DoryVMMMain {
                         )
                     }
                     try MainActor.assumeIsolated {
+                        guard let earlyApplicationTerminationDelegate else {
+                            throw DoryVZMachineError.validation(
+                                "desktop display is missing its startup termination delegate"
+                            )
+                        }
                         try DoryVMMDesktopApplication.run(
                             runtime: runtime,
-                            machineID: machineID
+                            machineID: machineID,
+                            environment: arguments.environment,
+                            resolvedDevices: arguments.resolvedDevices,
+                            displayPresentation: arguments.displayPresentation,
+                            earlyApplicationTerminationDelegate:
+                                earlyApplicationTerminationDelegate,
+                            requestGracefulShutdown: { reason in
+                                activeShutdownCoordinator.request(reason: reason)
+                            }
                         )
                     }
                 } else {
@@ -762,8 +1403,11 @@ public enum DoryVMMMain {
 
     private static func sendHandoff(
         machineID: String,
+        operationID: UUID,
         handoffSocketPath: String,
         agentBuild: String?,
+        agentProtocolVersion: UInt32? = nil,
+        agentCapabilities: [DoryAgentCapability] = [],
         agentSocketPath: String?,
         dockerdSocketPath: String?,
         shellSocketPath: String?,
@@ -774,7 +1418,10 @@ public enum DoryVMMMain {
             path: handoffSocketPath,
             ready: VmmReadyMessage(
                 machineID: machineID,
+                operationID: DoryOperationIdentity.canonical(operationID),
                 agentBuild: agentBuild,
+                agentProtocolVersion: agentProtocolVersion,
+                agentCapabilities: agentCapabilities,
                 agentSocketPath: agentSocketPath,
                 dockerdSocketPath: dockerdSocketPath,
                 shellSocketPath: shellSocketPath,
@@ -786,9 +1433,12 @@ public enum DoryVMMMain {
 
     private static func runVirtualMachine(
         machineID: String,
+        operationID: UUID,
         stateDirectory: String,
         kernelPath: String,
         rootfsPath: String,
+        bootMode: DoryMachineBootMode,
+        installerISOPath: String?,
         handoffSocketPath: String,
         dockerdSocketPath: String,
         agentSocketPath: String,
@@ -801,11 +1451,17 @@ public enum DoryVMMMain {
         readyTimeoutSeconds: TimeInterval,
         shares: [DoryMachineShareConfiguration],
         environment: [String: String],
+        resolvedGraphics: DoryGraphicsAccelerationLevel?,
+        resolvedDevices: DoryVirtualMachineDeviceCapabilityRequest?,
+        resolvedPortForwards: [DoryVMPortForward]? = nil,
         gvproxyPath: String?,
         sshAgentSocketPath: String?,
         publishHost: String,
         bridgeSubnetCIDR: String,
         dataDriveRoot: String?,
+        dockerDataDiskFileDescriptor: Int32?,
+        dockerDataDiskFilesystemUUID: UUID?,
+        restoreStatePath: String?,
         onRuntimeCreated: (DoryVMMRuntime) -> Void
     ) throws -> DoryVMMRuntime {
         try FileManager.default.createDirectory(atPath: stateDirectory, withIntermediateDirectories: true)
@@ -816,23 +1472,77 @@ public enum DoryVMMMain {
             )
         }
         let serialLog = try openAppendLog("\(stateDirectory)/serial.log")
+        try appendBootSessionMarker(
+            to: serialLog,
+            machineID: machineID,
+            operationID: operationID,
+            bootMode: bootMode,
+            cpuCount: cpuCount,
+            memoryMB: memoryMB,
+            runtimeProfile: bootMode == .efi
+                ? DoryInstallerRuntimeProfile.current.rawValue
+                : "linux-kernel-virtio-blk"
+        )
+        let runtimeSocketDirectory = (controlSocketPath as NSString).deletingLastPathComponent
+        let serialConsole = try DoryVMMSerialConsole(
+            socketPath: "\(runtimeSocketDirectory)/console.sock",
+            log: serialLog
+        )
         let dataDrive: DoryDataDrive?
         if let dataDriveRoot, machineID == "docker" {
             dataDrive = try DoryDataDrive(overrideRoot: dataDriveRoot)
-            try dataDrive?.prepare()
         } else {
             dataDrive = nil
         }
+        let requestedNetwork = resolvedDevices?.networkAttachment ?? .sharedNAT
+        let portForwards = resolvedPortForwards ?? []
+        guard resolvedPortForwards == nil || resolvedDevices?.networkInterface != nil else {
+            throw DoryVZMachineError.validation(
+                "resolved port forwards require an exact resolved network device contract"
+            )
+        }
+        guard let exactPortForwards = PublishedPortForwardPlan.resolvedForwards(
+            portForwards,
+            guestIP: "192.168.127.2"
+        ) else {
+            throw DoryVZMachineError.validation("resolved port-forward contract is invalid")
+        }
+        if !portForwards.isEmpty,
+           requestedNetwork != .sharedNAT,
+           requestedNetwork != .isolated {
+            throw DoryVZMachineError.validation(
+                "resolved network attachment cannot publish host ports"
+            )
+        }
+        if requestedNetwork != .sharedNAT,
+           portForwards.contains(where: { $0.exposure == .lan }) {
+            throw DoryVZMachineError.validation(
+                "LAN port exposure requires shared NAT"
+            )
+        }
+        // An exact NIC contract uses the same gvproxy datapath on every supported attachment so
+        // the backend can enforce both its MAC lease and MTU rather than delegating them to VZ NAT.
+        let usesGVProxy = machineID == "docker"
+            || requestedNetwork == .isolated
+            || resolvedDevices?.networkInterface != nil
         let gvproxyNetwork: DoryVMMGVProxyNetwork?
-        if machineID == "docker" {
+        if usesGVProxy, requestedNetwork != .disconnected {
             guard let gvproxyPath else { throw DoryVMMArgumentError.missingGVProxy }
             guard publishHost == "127.0.0.1" || publishHost == "0.0.0.0" else {
                 throw DoryVMMArgumentError.invalidPublishHost(publishHost)
             }
+            if requestedNetwork == .isolated, publishHost != "127.0.0.1" {
+                throw DoryVZMachineError.validation(
+                    "host-only networking cannot publish a source-preserving LAN route"
+                )
+            }
             gvproxyNetwork = try DoryVMMGVProxyNetwork(
                 gvproxyPath: gvproxyPath,
                 stateDirectory: stateDirectory,
-                sourcePreservingLAN: publishHost == "0.0.0.0"
+                networkAttachment: requestedNetwork,
+                networkInterface: resolvedDevices?.networkInterface,
+                sourcePreservingLAN: requestedNetwork == .sharedNAT && publishHost == "0.0.0.0",
+                resolvedPortForwards: exactPortForwards
             )
         } else {
             gvproxyNetwork = nil
@@ -849,7 +1559,10 @@ public enum DoryVMMMain {
                     operation: .activate,
                     sessionID: sessionID,
                     gvproxySocketPath: lanDatapathSocketPath,
-                    bridgeSubnetCIDR: bridgeNetwork.cidr
+                    mtu: gvproxyNetwork.effectiveMTU,
+                    bridgeSubnetCIDR: bridgeNetwork.cidr,
+                    guestMACAddress: resolvedDevices?.networkInterface?.macAddress
+                        ?? SourcePreservingLANPlan.defaultGuestMAC
                 ))
                 guard response.status == "active" else {
                     throw DoryVZMachineError.validation("source-preserving LAN helper did not activate")
@@ -866,28 +1579,40 @@ public enum DoryVMMMain {
         }
         let spec = DoryVZMachineSpec(
             machineID: machineID,
+            operationID: operationID,
             stateDirectory: stateDirectory,
             kernelPath: kernelPath,
             rootfsPath: rootfsPath,
+            bootMode: bootMode,
+            installerISOPath: installerISOPath,
             memoryMB: memoryMB,
             cpuCount: cpuCount,
             displayMode: displayMode,
             kernelCommandLine: kernelCommandLine,
             shares: shares,
             environment: environment,
+            resolvedGraphics: resolvedGraphics,
+            resolvedDevices: resolvedDevices,
             dockerDataDiskPath: dataDrive?.engineDataDiskPath,
+            dockerDataDiskFileDescriptor: dockerDataDiskFileDescriptor,
+            dockerDataDiskFilesystemUUID: dockerDataDiskFilesystemUUID,
             nativeIPv6: gvproxyNetwork != nil,
             sourcePreservingLAN: sourcePreservingLANClient != nil,
             bridgeSubnetCIDR: bridgeNetwork.cidr
         )
         let configuration = try DoryVZConfigurationBuilder.makeConfiguration(
             spec: spec,
-            serialOutput: serialLog,
+            serialOutput: serialConsole.guestOutput,
+            serialInput: serialConsole.guestInput,
             networkAttachment: gvproxyNetwork?.attachment
         )
         try validate(configuration: configuration)
         let machine = DoryVZMachine(configuration: configuration, label: machineID)
-        try machine.start()
+        if let restoreStatePath {
+            try machine.restoreMachineState(from: restoreStatePath)
+        } else {
+            try machine.start()
+        }
         let sshAgentBridge: DoryVZHostSSHAgentBridge?
         let sandboxSSHAgentDenied = environment["DORY_SANDBOX"] == "1"
             && environment["DORY_SANDBOX_SSH_AGENT"] != "1"
@@ -903,45 +1628,64 @@ public enum DoryVMMMain {
             sshAgentBridge = nil
         }
 
-        let controlServer = try DoryVMMControlServer(machine: machine, localSocketPath: controlSocketPath)
-        let dockerdProxy = try DoryVZPortUnixProxy(
+        let controlServer = try DoryVMMControlServer(
             machine: machine,
-            guestPort: DoryGuestPorts.docker,
-            localSocketPath: dockerdSocketPath
+            machineID: machineID,
+            operationID: operationID,
+            localSocketPath: controlSocketPath,
+            stateDirectory: stateDirectory,
+            resolvedPortForwardHealthProvider: {
+                gvproxyNetwork?.resolvedPortForwardHealth
+            }
         )
-        let agentProxy = try DoryVZPortUnixProxy(
-            machine: machine,
-            guestPort: DoryGuestPorts.control,
-            localSocketPath: agentSocketPath
+        let hostServicePlan = DoryVZHostServicePlan(
+            machineID: machineID,
+            bootMode: bootMode
         )
-        let shellProxy = try DoryVZPortUnixProxy(
-            machine: machine,
-            guestPort: DoryGuestPorts.shell,
-            localSocketPath: shellSocketPath
-        )
+        let proxies = try hostServicePlan.proxies.map { service in
+            switch service {
+            case .docker:
+                return try DoryVZPortUnixProxy(
+                    machine: machine,
+                    guestPort: DoryGuestPorts.docker,
+                    localSocketPath: dockerdSocketPath
+                )
+            case .agent:
+                return try DoryVZPortUnixProxy(
+                    machine: machine,
+                    guestPort: DoryGuestPorts.control,
+                    localSocketPath: agentSocketPath
+                )
+            case .shell:
+                return try DoryVZPortUnixProxy(
+                    machine: machine,
+                    guestPort: DoryGuestPorts.shell,
+                    localSocketPath: shellSocketPath
+                )
+            }
+        }
         do {
             try controlServer.start()
-            try dockerdProxy.start()
-            try agentProxy.start()
-            try shellProxy.start()
+            for proxy in proxies {
+                try proxy.start()
+            }
         } catch {
             controlServer.stop()
-            dockerdProxy.stop()
-            agentProxy.stop()
-            shellProxy.stop()
+            proxies.forEach { $0.stop() }
             throw error
         }
 
         let runtime = DoryVMMRuntime(
             machine: machine,
             controlServer: controlServer,
-            proxies: [dockerdProxy, agentProxy, shellProxy],
+            proxies: proxies,
             serialLog: serialLog,
+            serialConsole: serialConsole,
             gvproxyNetwork: gvproxyNetwork,
             sourcePreservingLANClient: sourcePreservingLANClient,
             sourcePreservingLANSessionID: sourcePreservingLANSessionID,
             sshAgentBridge: sshAgentBridge,
-            portForwarder: gvproxyNetwork.map {
+            portForwarder: hostServicePlan.discoversDynamicDockerPorts ? gvproxyNetwork.map {
                 DoryVMMPortForwarder(
                     dockerSocketPath: dockerdSocketPath,
                     gvproxyAPISocketPath: $0.apiSocketPath,
@@ -950,28 +1694,57 @@ public enum DoryVMMMain {
                     sourcePreservingLANSessionID: sourcePreservingLANSessionID,
                     sourcePreservingLANGVProxySocketPath: sourcePreservingLANClient == nil
                         ? nil : $0.lanDatapathSocketPath,
-                    bridgeSubnetCIDR: bridgeNetwork.cidr
+                    bridgeSubnetCIDR: bridgeNetwork.cidr,
+                    guestMACAddress: resolvedDevices?.networkInterface?.macAddress
+                        ?? SourcePreservingLANPlan.defaultGuestMAC
                 )
-            }
+            } : nil
         )
         runtime.portForwarder?.start()
         onRuntimeCreated(runtime)
+
+        if restoreStatePath != nil {
+            try machine.resume()
+        }
+
+        if bootMode == .efi {
+            try sendHandoff(
+                machineID: machineID,
+                operationID: operationID,
+                handoffSocketPath: handoffSocketPath,
+                agentBuild: "dory-vmm/efi",
+                agentSocketPath: nil,
+                dockerdSocketPath: nil,
+                shellSocketPath: nil,
+                controlSocketPath: controlSocketPath,
+                detail: installerISOPath == nil
+                    ? "EFI machine running from its installed disk"
+                    : "EFI machine running with read-only installer media attached"
+            )
+            return runtime
+        }
 
         let agentConnection = try machine.waitForConnection(toPort: DoryGuestPorts.control, timeout: readyTimeoutSeconds)
         defer { agentConnection.close() }
         let agentInfo = try prepareAgent(
             from: agentConnection,
+            operationID: operationID,
             displayMode: displayMode,
             environment: environment,
-            shares: shares
+            shares: shares,
+            resolvedDevices: resolvedDevices,
+            restoringSavedState: restoreStatePath != nil
         )
         // For the Docker VM, this handoff means VM + guest-agent readiness. doryd owns the next
         // ordered stages (data mount, route/resolver, dockerd /version, and host socket), so a VMM
         // process can never collapse all of them into one misleading "running" bit.
         try sendHandoff(
             machineID: machineID,
+            operationID: operationID,
             handoffSocketPath: handoffSocketPath,
             agentBuild: agentInfo.agentBuild,
+            agentProtocolVersion: agentInfo.protocolVersion,
+            agentCapabilities: agentInfo.capabilities,
             agentSocketPath: agentSocketPath,
             dockerdSocketPath: machineID == "docker" ? dockerdSocketPath : nil,
             shellSocketPath: shellSocketPath,
@@ -985,9 +1758,12 @@ public enum DoryVMMMain {
 
     private static func prepareAgent(
         from connection: VZVirtioSocketConnection,
+        operationID: UUID,
         displayMode: DoryMachineDisplayMode,
         environment: [String: String],
-        shares: [DoryMachineShareConfiguration]
+        shares: [DoryMachineShareConfiguration],
+        resolvedDevices: DoryVirtualMachineDeviceCapabilityRequest?,
+        restoringSavedState: Bool
     ) throws -> DoryAgentInfo {
         let fd = dup(connection.fileDescriptor)
         guard fd >= 0 else {
@@ -996,11 +1772,39 @@ public enum DoryVMMMain {
         let control = try DoryCore.connectAgentControlOverFD(fd)
         defer { control.close() }
         let info = try control.info()
+        let operationToken = DoryOperationIdentity.canonical(operationID)
+        try requireSuccessfulDesktopExec(control.exec(
+            argv: [
+                "/bin/sh", "-c",
+                "mkdir -p /run/dory && chmod 700 /run/dory && umask 077 && printf '%s\\n' \"$DORY_OPERATION_ID\" > /run/dory/operation-id",
+            ],
+            env: [DoryExecEnvironment(key: "DORY_OPERATION_ID", value: operationToken)],
+            timeoutMs: 10_000,
+            outputLimitBytes: 16 * 1_024
+        ), operation: "bind lifecycle operation")
+        if restoringSavedState { return info }
         guard displayMode == .desktop else { return info }
 
+        if let display = resolvedDevices?.display {
+            guard let command = DoryVMMGuestDisplayScale.persistenceCommand(
+                scaleFactor: display.guestUIScaleFactor
+            ) else {
+                throw DoryVZMachineError.validation(
+                    "resolved guest UI scale is not supported by Dory Tools"
+                )
+            }
+            try requireSuccessfulDesktopExec(control.exec(
+                argv: command,
+                timeoutMs: 10_000,
+                outputLimitBytes: 64 * 1_024
+            ), operation: "persist guest UI scale")
+        }
+
+        var guestEnvironment = environment
+        guestEnvironment["DORY_OPERATION_ID"] = operationToken
         try requireSuccessfulDesktopExec(control.exec(
             argv: ["/usr/lib/dory/configure-machine"],
-            env: environment.sorted(by: { $0.key < $1.key }).map {
+            env: guestEnvironment.sorted(by: { $0.key < $1.key }).map {
                 DoryExecEnvironment(key: $0.key, value: $0.value)
             },
             timeoutMs: 30_000,
@@ -1058,6 +1862,21 @@ public enum DoryVMMMain {
         return FileHandle(fileDescriptor: fd, closeOnDealloc: true)
     }
 
+    private static func appendBootSessionMarker(
+        to log: FileHandle,
+        machineID: String,
+        operationID: UUID,
+        bootMode: DoryMachineBootMode,
+        cpuCount: Int,
+        memoryMB: UInt64,
+        runtimeProfile: String
+    ) throws {
+        let timestamp = Date().formatted(.iso8601)
+        let marker = "\n--- DORY BOOT \(timestamp) machine=\(machineID) operation=\(DoryOperationIdentity.canonical(operationID)) mode=\(bootMode.rawValue) cpus=\(cpuCount) memoryMB=\(memoryMB) runtime=\(runtimeProfile) ---\n"
+        try log.write(contentsOf: Data(marker.utf8))
+        try log.synchronize()
+    }
+
     private static func validate(configuration: VZVirtualMachineConfiguration) throws {
         do {
             try configuration.validate()
@@ -1092,6 +1911,7 @@ final class DoryVMMShutdownCoordinator: @unchecked Sendable {
     private let lock = NSLock()
     private let worker = DispatchQueue(label: "dev.dory.dory-vmm.shutdown", qos: .userInitiated)
     private let watchdogSeconds: TimeInterval
+    private let guestShutdownAuthorized: Bool
     private let scheduleWatchdog: WatchdogScheduler
     private let forceExit: ForceExit
     private var target: (any DoryVMMGuestShutdownHandling)?
@@ -1102,12 +1922,14 @@ final class DoryVMMShutdownCoordinator: @unchecked Sendable {
 
     init(
         watchdogSeconds: TimeInterval = DoryEngineShutdownTiming.helperWatchdogSeconds,
+        guestShutdownAuthorized: Bool = true,
         scheduleWatchdog: @escaping WatchdogScheduler = { delay, action in
             DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + delay, execute: action)
         },
         forceExit: @escaping ForceExit = { code in exit(code) }
     ) {
         self.watchdogSeconds = watchdogSeconds
+        self.guestShutdownAuthorized = guestShutdownAuthorized
         self.scheduleWatchdog = scheduleWatchdog
         self.forceExit = forceExit
     }
@@ -1167,13 +1989,21 @@ final class DoryVMMShutdownCoordinator: @unchecked Sendable {
         if target != nil { begun = true }
         lock.unlock()
 
-        FileHandle.standardError.write(Data("dory-vmm: graceful shutdown requested (\(reason))\n".utf8))
+        let detail = guestShutdownAuthorized
+            ? "graceful shutdown requested"
+            : "immediate host shutdown requested"
+        FileHandle.standardError.write(Data("dory-vmm: \(detail) (\(reason))\n".utf8))
         if let target {
             beginShutdown(target)
         }
     }
 
     private func beginShutdown(_ target: any DoryVMMGuestShutdownHandling) {
+        guard guestShutdownAuthorized else {
+            target.forceCleanup()
+            forceExit(0)
+            return
+        }
         scheduleWatchdog(watchdogSeconds) { [weak self, weak target] in
             guard let self, let target, !target.isStopped else { return }
             FileHandle.standardError.write(Data(
@@ -1199,6 +2029,7 @@ final class DoryVMMRuntime: DoryVMMGuestShutdownHandling, @unchecked Sendable {
     private let controlServer: DoryVMMControlServer
     private let proxies: [DoryVZPortUnixProxy]
     private let serialLog: FileHandle
+    private let serialConsole: DoryVMMSerialConsole
     private let gvproxyNetwork: DoryVMMGVProxyNetwork?
     private let sourcePreservingLANClient: SourcePreservingLANPrivilegedClient?
     private let sourcePreservingLANSessionID: String?
@@ -1210,6 +2041,7 @@ final class DoryVMMRuntime: DoryVMMGuestShutdownHandling, @unchecked Sendable {
         controlServer: DoryVMMControlServer,
         proxies: [DoryVZPortUnixProxy],
         serialLog: FileHandle,
+        serialConsole: DoryVMMSerialConsole,
         gvproxyNetwork: DoryVMMGVProxyNetwork?,
         sourcePreservingLANClient: SourcePreservingLANPrivilegedClient?,
         sourcePreservingLANSessionID: String?,
@@ -1220,6 +2052,7 @@ final class DoryVMMRuntime: DoryVMMGuestShutdownHandling, @unchecked Sendable {
         self.controlServer = controlServer
         self.proxies = proxies
         self.serialLog = serialLog
+        self.serialConsole = serialConsole
         self.gvproxyNetwork = gvproxyNetwork
         self.sourcePreservingLANClient = sourcePreservingLANClient
         self.sourcePreservingLANSessionID = sourcePreservingLANSessionID
@@ -1231,6 +2064,26 @@ final class DoryVMMRuntime: DoryVMMGuestShutdownHandling, @unchecked Sendable {
         machine.isStopped
     }
 
+    func executeDesktopIntegration(
+        argv: [String],
+        stdin: Data,
+        timeoutMs: UInt64,
+        outputLimitBytes: UInt64
+    ) throws -> DoryExecResult {
+        let connection = try machine.connect(toPort: DoryGuestPorts.control)
+        defer { connection.close() }
+        let fd = dup(connection.fileDescriptor)
+        guard fd >= 0 else { throw DoryVZMachineError.syscall("dup", errno) }
+        let control = try DoryCore.connectAgentControlOverFD(fd)
+        defer { control.close() }
+        return try control.execWithInput(
+            argv: argv,
+            stdin: stdin,
+            timeoutMs: timeoutMs,
+            outputLimitBytes: outputLimitBytes
+        )
+    }
+
     func requestGuestShutdown() throws {
         do {
             try requestGuestShutdownThroughAgent()
@@ -1240,9 +2093,28 @@ final class DoryVMMRuntime: DoryVMMGuestShutdownHandling, @unchecked Sendable {
                 "dory-vmm: agent shutdown request failed, trying transport fallback: \(error)\n".utf8
             ))
         }
-        if let gvproxyNetwork {
-            try gvproxyNetwork.requestGuestShutdown()
+        // An arbitrary EFI distro is not required to run Dory's agent or listen on Dory's
+        // shutdown port. VZ's virtual power button is the only integration-free request with OS
+        // semantics, so it must precede unacknowledged transport fallbacks. Treating a successful
+        // connect to gvproxy as a completed shutdown request can otherwise suppress ACPI and end
+        // in the helper watchdog forcibly cutting power to a writable installer disk.
+        do {
+            try machine.requestGuestStop()
             return
+        } catch {
+            FileHandle.standardError.write(Data(
+                "dory-vmm: virtual power-button shutdown request failed, trying transport fallback: \(error)\n".utf8
+            ))
+        }
+        if let gvproxyNetwork {
+            do {
+                try gvproxyNetwork.requestGuestShutdown()
+                return
+            } catch {
+                FileHandle.standardError.write(Data(
+                    "dory-vmm: gvproxy shutdown fallback failed, trying guest socket: \(error)\n".utf8
+                ))
+            }
         }
         let deadline = Date().addingTimeInterval(5)
         var lastError: Error?
@@ -1301,6 +2173,7 @@ final class DoryVMMRuntime: DoryVMMGuestShutdownHandling, @unchecked Sendable {
             ))
         }
         gvproxyNetwork?.stop()
+        serialConsole.stop()
         try? serialLog.close()
     }
 }
@@ -1346,12 +2219,16 @@ private final class DoryVZMachineStopObserver: NSObject, VZVirtualMachineDelegat
 }
 
 public final class DoryVZMachine: @unchecked Sendable {
+    private static let reservedBootConfigurationShareTag = "dorycfg"
+
     private let queue: DispatchQueue
+    private let configuration: VZVirtualMachineConfiguration
     private let virtualMachine: VZVirtualMachine
     private let stopObserver: DoryVZMachineStopObserver
 
     public init(configuration: VZVirtualMachineConfiguration, label: String) {
         self.queue = DispatchQueue(label: "dev.dory.dory-vmm.\(label)")
+        self.configuration = configuration
         self.stopObserver = DoryVZMachineStopObserver()
         self.virtualMachine = VZVirtualMachine(configuration: configuration, queue: queue)
         self.queue.sync {
@@ -1364,6 +2241,115 @@ public final class DoryVZMachine: @unchecked Sendable {
         queue.async { [self] in
             self.virtualMachine.start { result in
                 box.complete(result.map { _ in () })
+            }
+        }
+        try box.wait()
+    }
+
+    public func pause() throws {
+        let box = BlockingResultBox<Void>()
+        queue.async { [self] in
+            guard virtualMachine.state == .running else {
+                box.complete(.failure(DoryVZMachineError.validation(
+                    "virtual machine is not running"
+                )))
+                return
+            }
+            virtualMachine.pause { box.complete($0) }
+        }
+        try box.wait()
+    }
+
+    public func resume() throws {
+        let box = BlockingResultBox<Void>()
+        queue.async { [self] in
+            guard virtualMachine.state == .paused else {
+                box.complete(.failure(DoryVZMachineError.validation(
+                    "virtual machine is not paused"
+                )))
+                return
+            }
+            virtualMachine.resume { box.complete($0) }
+        }
+        try box.wait()
+    }
+
+    /// Saves the current VZ execution state and reports whether this call temporarily paused a
+    /// running machine. The control server uses that fact to restore the original power state if
+    /// it cannot deliver the successful response to doryd.
+    @discardableResult
+    public func saveMachineState(to path: String) throws -> Bool {
+        let url = URL(fileURLWithPath: path)
+        let box = BlockingResultBox<Bool>()
+        queue.async { [self] in
+            do {
+                try configuration.validateSaveRestoreSupport()
+            } catch {
+                box.complete(.failure(error))
+                return
+            }
+            let save = { (resumeOnFailure: Bool) in
+                self.virtualMachine.saveMachineStateTo(url: url) { error in
+                    guard let error else {
+                        box.complete(.success(resumeOnFailure))
+                        return
+                    }
+                    guard resumeOnFailure else {
+                        box.complete(.failure(error))
+                        return
+                    }
+                    // Saving a running machine requires an internal pause. If persistence fails,
+                    // undo that pause so the daemon's still-running lifecycle state remains true.
+                    self.virtualMachine.resume { resumeResult in
+                        switch resumeResult {
+                        case .success:
+                            box.complete(.failure(error))
+                        case .failure(let resumeError):
+                            box.complete(.failure(DoryVZMachineError.validation(
+                                "saved-state write failed (\(error)); virtual machine resume also failed (\(resumeError))"
+                            )))
+                        }
+                    }
+                }
+            }
+            switch virtualMachine.state {
+            case .paused:
+                save(false)
+            case .running:
+                virtualMachine.pause { result in
+                    switch result {
+                    case .success: save(true)
+                    case .failure(let error): box.complete(.failure(error))
+                    }
+                }
+            default:
+                box.complete(.failure(DoryVZMachineError.validation(
+                    "virtual machine must be running or paused before saving state"
+                )))
+            }
+        }
+        return try box.wait()
+    }
+
+    public func restoreMachineState(from path: String) throws {
+        let url = URL(fileURLWithPath: path)
+        let box = BlockingResultBox<Void>()
+        queue.async { [self] in
+            do {
+                try configuration.validateSaveRestoreSupport()
+            } catch {
+                box.complete(.failure(error))
+                return
+            }
+            guard virtualMachine.state == .stopped else {
+                box.complete(.failure(DoryVZMachineError.validation(
+                    "virtual machine must be stopped before restoring state"
+                )))
+                return
+            }
+            virtualMachine.restoreMachineStateFrom(url: url) { error in
+                if let error { box.complete(.failure(error)) }
+                else { box.complete(.success(())) }
             }
         }
         try box.wait()
@@ -1408,6 +2394,20 @@ public final class DoryVZMachine: @unchecked Sendable {
 
     public func waitUntilStopped() throws {
         try stopObserver.waitUntilStopped()
+    }
+
+    /// Ask the guest firmware/OS to shut down as if its virtual power button were pressed.
+    /// This is the integration-free shutdown path for arbitrary EFI guests that do not run
+    /// Dory's agent yet; it gives Linux a chance to flush filesystems before the VMM exits.
+    public func requestGuestStop() throws {
+        try queue.sync {
+            guard virtualMachine.canRequestStop else {
+                throw DoryVZMachineError.validation(
+                    "virtual machine is not in a state that accepts a guest stop request"
+                )
+            }
+            try virtualMachine.requestStop()
+        }
     }
 
     public func connect(toPort port: UInt32) throws -> VZVirtioSocketConnection {
@@ -1459,6 +2459,81 @@ public final class DoryVZMachine: @unchecked Sendable {
             box.complete(.success(balloon.targetVirtualMachineMemorySize / 1024 / 1024))
         }
         return try box.wait()
+    }
+
+    /// Replaces the backing directories of the existing user-visible VirtioFS devices without
+    /// changing their guest-visible tag/device identity. Virtualization.framework exposes this
+    /// mutation directly on VZVirtioFileSystemDevice; add/remove/retag is intentionally rejected
+    /// because the live device graph itself is immutable.
+    public func replaceDirectoryShares(
+        _ replacements: [VmmDirectoryShareReplacement]
+    ) throws {
+        guard replacements.count <= VmmDirectoryShareReplacement.maximumCount,
+              replacements.allSatisfy(\.isValid),
+              Set(replacements.map(\.tag)).count == replacements.count,
+              !replacements.contains(where: {
+                  $0.tag == Self.reservedBootConfigurationShareTag
+              }) else {
+            throw DoryVZMachineError.validation(
+                "invalid runtime directory-share replacement"
+            )
+        }
+
+        try queue.sync { [self] in
+            guard virtualMachine.state == .running || virtualMachine.state == .paused else {
+                throw DoryVZMachineError.validation(
+                    "virtual machine is not running or paused"
+                )
+            }
+            let devices = virtualMachine.directorySharingDevices.compactMap {
+                $0 as? VZVirtioFileSystemDevice
+            }
+            guard devices.count == virtualMachine.directorySharingDevices.count else {
+                throw DoryVZMachineError.validation(
+                    "virtual machine has an unsupported directory-sharing device"
+                )
+            }
+            let userDevices = devices.filter {
+                $0.tag != Self.reservedBootConfigurationShareTag
+            }
+            let deviceTags = Set(userDevices.map(\.tag))
+            let replacementTags = Set(replacements.map(\.tag))
+            guard deviceTags == replacementTags,
+                  userDevices.count == replacements.count else {
+                throw DoryVZMachineError.validation(
+                    "runtime directory-share device set changed"
+                )
+            }
+
+            var prepared: [String: VZSingleDirectoryShare] = [:]
+            for replacement in replacements {
+                var info = stat()
+                guard lstat(replacement.hostPath, &info) == 0,
+                      (info.st_mode & S_IFMT) == S_IFDIR else {
+                    throw DoryVZMachineError.missingFile(replacement.hostPath)
+                }
+                do {
+                    try VZVirtioFileSystemDeviceConfiguration.validateTag(replacement.tag)
+                } catch {
+                    throw DoryVZMachineError.validation("\(error)")
+                }
+                let directory = VZSharedDirectory(
+                    url: URL(
+                        fileURLWithPath: replacement.hostPath,
+                        isDirectory: true
+                    ),
+                    readOnly: replacement.readOnly
+                )
+                prepared[replacement.tag] = VZSingleDirectoryShare(directory: directory)
+            }
+
+            // All validation and VZ share construction is complete before the first mutation.
+            // These property assignments are synchronous and non-throwing for VZ directory
+            // shares, so another operation on the VM queue cannot observe a partial set.
+            for device in userDevices {
+                device.share = prepared[device.tag]
+            }
+        }
     }
 
     private func firstSocketDeviceOnQueue() throws -> VZVirtioSocketDevice {
@@ -1605,15 +2680,38 @@ final class DoryVZHostSSHAgentBridge: NSObject, VZVirtioSocketListenerDelegate, 
 
 private final class DoryVMMControlServer: @unchecked Sendable {
     private let machine: DoryVZMachine
+    private let machineID: String
+    private let operationID: String
     private let localSocketPath: String
+    private let stateDirectory: String
+    private let resolvedPortForwardHealthProvider:
+        @Sendable () -> ResolvedPortForwardHealthSnapshot?
     private let queue: DispatchQueue
     private let lock = NSLock()
     private var listenerFD: Int32 = -1
     private var running = false
+    private var telemetrySampleSequence: UInt64 = 0
+    private var telemetryEventSequence: UInt64 = 0
+    private var telemetryEventHistory = [DoryDeviceTelemetryEvent]()
+    private var previousResolvedPortForwardHealth: Bool?
 
-    init(machine: DoryVZMachine, localSocketPath: String) throws {
+    private static let maximumTelemetryEventHistory = 256
+
+    init(
+        machine: DoryVZMachine,
+        machineID: String,
+        operationID: UUID,
+        localSocketPath: String,
+        stateDirectory: String,
+        resolvedPortForwardHealthProvider:
+            @escaping @Sendable () -> ResolvedPortForwardHealthSnapshot? = { nil }
+    ) throws {
         self.machine = machine
+        self.machineID = machineID
+        self.operationID = DoryOperationIdentity.canonical(operationID)
         self.localSocketPath = localSocketPath
+        self.stateDirectory = URL(fileURLWithPath: stateDirectory).standardizedFileURL.path
+        self.resolvedPortForwardHealthProvider = resolvedPortForwardHealthProvider
         self.queue = DispatchQueue(label: "dev.dory.dory-vmm.control")
     }
 
@@ -1682,9 +2780,14 @@ private final class DoryVMMControlServer: @unchecked Sendable {
     private func handle(clientFD: Int32) {
         defer { close(clientFD) }
         let response: VmmControlResponse
+        var exitAfterResponse = false
+        var resumeAfterResponseFailure = false
         do {
             let request = try readRequest(from: clientFD)
-            response = try handle(request: request)
+            let handled = try handle(request: request)
+            response = handled.response
+            exitAfterResponse = handled.exitAfterResponse
+            resumeAfterResponseFailure = handled.resumeAfterResponseFailure
         } catch {
             response = VmmControlResponse(ok: false, message: "\(error)")
         }
@@ -1692,20 +2795,260 @@ private final class DoryVMMControlServer: @unchecked Sendable {
             try writeResponse(response, to: clientFD)
         } catch {
             FileHandle.standardError.write(Data("dory-vmm: control response failed: \(error)\n".utf8))
+            if resumeAfterResponseFailure {
+                do {
+                    try machine.resume()
+                } catch {
+                    FileHandle.standardError.write(Data(
+                        "dory-vmm: failed to resume after saved-state response failure: \(error)\n".utf8
+                    ))
+                    // The daemon cannot safely continue to advertise this helper as running when
+                    // the internally-paused VZ machine could not be resumed.
+                    exit(1)
+                }
+            }
+            return
+        }
+        if exitAfterResponse {
+            // The caller marks this helper exit as expected before issuing the command. Delay
+            // until the accepted response has reached the socket buffer, then tear down the VZ
+            // process; the daemon verifies, fsyncs, hashes, and publishes the completed file.
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.05) {
+                exit(0)
+            }
         }
     }
 
-    private func handle(request: VmmControlRequest) throws -> VmmControlResponse {
+    private struct HandledControlResponse {
+        var response: VmmControlResponse
+        var exitAfterResponse = false
+        var resumeAfterResponseFailure = false
+    }
+
+    private func handle(request: VmmControlRequest) throws -> HandledControlResponse {
         switch request.command {
+        case "deviceTelemetry":
+            guard request.targetMB == nil,
+                  request.statePath == nil,
+                  request.lifecycleAction == nil,
+                  request.operationID == nil,
+                  request.directoryShares == nil else {
+                return HandledControlResponse(response: VmmControlResponse(
+                    ok: false,
+                    message: "invalid VMM device telemetry request"
+                ))
+            }
+            return HandledControlResponse(
+                response: VmmControlResponse(
+                    ok: true,
+                    deviceTelemetry: deviceTelemetrySnapshot()
+                )
+            )
         case "setBalloonTarget":
-            guard let targetMB = request.targetMB, targetMB > 0 else {
-                return VmmControlResponse(ok: false, message: "missing positive targetMB")
+            guard let targetMB = request.targetMB, targetMB > 0,
+                  request.statePath == nil,
+                  request.lifecycleAction == nil,
+                  request.operationID == nil,
+                  request.directoryShares == nil else {
+                return HandledControlResponse(
+                    response: VmmControlResponse(ok: false, message: "missing positive targetMB")
+                )
             }
             let appliedMB = try machine.setBalloonTarget(memoryMB: targetMB)
-            return VmmControlResponse(ok: true, targetMB: appliedMB)
+            return HandledControlResponse(
+                response: VmmControlResponse(ok: true, targetMB: appliedMB)
+            )
+        case "replaceDirectoryShares":
+            guard request.targetMB == nil,
+                  request.statePath == nil,
+                  request.lifecycleAction == nil,
+                  request.operationID == nil,
+                  let replacements = request.directoryShares else {
+                return HandledControlResponse(response: VmmControlResponse(
+                    ok: false,
+                    message: "invalid runtime directory-share request"
+                ))
+            }
+            try machine.replaceDirectoryShares(replacements)
+            return HandledControlResponse(response: VmmControlResponse(ok: true))
+        case "pauseMachine":
+            guard request.targetMB == nil,
+                  request.statePath == nil,
+                  request.directoryShares == nil else {
+                return HandledControlResponse(response: VmmControlResponse(
+                    ok: false,
+                    message: "invalid pause request"
+                ))
+            }
+            let receipt = try lifecycleReceipt(
+                request,
+                expectedAction: .preparePause
+            )
+            try machine.pause()
+            return HandledControlResponse(response: receipt)
+        case "resumeMachine":
+            guard request.targetMB == nil,
+                  request.statePath == nil,
+                  request.directoryShares == nil else {
+                return HandledControlResponse(response: VmmControlResponse(
+                    ok: false,
+                    message: "invalid resume request"
+                ))
+            }
+            let receipt = try lifecycleReceipt(request, expectedAction: .resumed)
+            try machine.resume()
+            return HandledControlResponse(response: receipt)
+        case "acknowledgeLifecycle":
+            guard request.targetMB == nil,
+                  request.statePath == nil,
+                  request.directoryShares == nil,
+                  let action = request.lifecycleAction else {
+                return HandledControlResponse(response: VmmControlResponse(
+                    ok: false,
+                    message: "missing lifecycle action"
+                ))
+            }
+            return HandledControlResponse(response: try lifecycleReceipt(
+                request,
+                expectedAction: action
+            ))
+        case "saveMachineState":
+            guard request.targetMB == nil,
+                  request.lifecycleAction == nil,
+                  request.operationID == nil,
+                  request.directoryShares == nil,
+                  let path = request.statePath,
+                  let accepted = acceptedSavedStatePath(path) else {
+                return HandledControlResponse(
+                    response: VmmControlResponse(
+                        ok: false,
+                        message: "saved-state path is outside the private machine state directory"
+                    )
+                )
+            }
+            let pausedRunningMachine = try machine.saveMachineState(to: accepted)
+            return HandledControlResponse(
+                response: VmmControlResponse(ok: true),
+                exitAfterResponse: true,
+                resumeAfterResponseFailure: pausedRunningMachine
+            )
         default:
-            return VmmControlResponse(ok: false, message: "unknown VMM control command: \(request.command)")
+            return HandledControlResponse(
+                response: VmmControlResponse(
+                    ok: false,
+                    message: "unknown VMM control command: \(request.command)"
+                )
+            )
         }
+    }
+
+    private func deviceTelemetrySnapshot() -> DoryDeviceTelemetrySnapshot {
+        let monotonicNanoseconds = DispatchTime.now().uptimeNanoseconds
+        let portForwardHealth = resolvedPortForwardHealthProvider()
+        lock.lock()
+        telemetrySampleSequence &+= 1
+        let sequence = telemetrySampleSequence
+        if let health = portForwardHealth, health.isValid {
+            let transition: DoryDeviceTelemetryEventKind?
+            if let previous = previousResolvedPortForwardHealth,
+               previous != health.healthy {
+                transition = health.healthy
+                    ? .portForwardRecovered : .portForwardUnavailable
+            } else if previousResolvedPortForwardHealth == nil, !health.healthy {
+                transition = .portForwardUnavailable
+            } else {
+                transition = nil
+            }
+            previousResolvedPortForwardHealth = health.healthy
+            if let transition, telemetryEventSequence < UInt64.max {
+                telemetryEventSequence += 1
+                telemetryEventHistory.append(DoryDeviceTelemetryEvent(
+                    sequence: telemetryEventSequence,
+                    monotonicNanoseconds: monotonicNanoseconds,
+                    deviceID: "resolved-port-forwards",
+                    kind: transition
+                ))
+                if telemetryEventHistory.count > Self.maximumTelemetryEventHistory {
+                    telemetryEventHistory.removeFirst(
+                        telemetryEventHistory.count - Self.maximumTelemetryEventHistory
+                    )
+                }
+            }
+        }
+        let events = telemetryEventHistory
+        lock.unlock()
+        let unavailableReason = "Virtualization.framework does not expose stable per-device counters"
+        let metrics = DoryDeviceTelemetryMetricKind.allCases.map { kind in
+            return DoryDeviceTelemetryMetric.unavailable(
+                kind,
+                unit: kind.expectedUnit,
+                reason: unavailableReason
+            )
+        }
+        var devices = [
+            DoryDeviceTelemetryDevice(
+                id: "virtualization-framework",
+                kind: .platform,
+                health: .unavailable,
+                metrics: metrics
+            ),
+        ]
+        if let health = portForwardHealth, health.isValid {
+            devices.append(DoryDeviceTelemetryDevice(
+                id: "resolved-port-forwards",
+                kind: .network,
+                health: health.healthy ? .healthy : .degraded,
+                metrics: [
+                    .measured(.configuredPortForwards, value: health.configuredForwards),
+                    .measured(.activePortForwards, value: health.activeForwards),
+                    .measured(
+                        .portForwardReconciliationFailures,
+                        value: health.failedReconciliations
+                    ),
+                ]
+            ))
+        }
+        return DoryDeviceTelemetrySnapshot(
+            machineID: machineID,
+            operationID: operationID,
+            backend: .appleVirtualizationFramework,
+            sampleSequence: sequence,
+            sampledAtUnixMilliseconds: UInt64(Date().timeIntervalSince1970 * 1_000),
+            monotonicNanoseconds: monotonicNanoseconds,
+            devices: devices,
+            events: events
+        )
+    }
+
+    private func lifecycleReceipt(
+        _ request: VmmControlRequest,
+        expectedAction: DoryLifecycleReceiptAction
+    ) throws -> VmmControlResponse {
+        guard request.lifecycleAction == expectedAction,
+              let operationID = request.operationID,
+              DoryOperationIdentity.parseCanonical(operationID) != nil,
+              operationID != "00000000-0000-0000-0000-000000000000" else {
+            return VmmControlResponse(
+                ok: false,
+                message: "invalid VMM lifecycle operation authority"
+            )
+        }
+        return VmmControlResponse(
+            ok: true,
+            lifecycleAction: expectedAction,
+            operationID: operationID
+        )
+    }
+
+    private func acceptedSavedStatePath(_ path: String) -> String? {
+        guard path.hasPrefix("/"), !path.contains("\0") else { return nil }
+        let canonical = URL(fileURLWithPath: path).standardizedFileURL.path
+        let allowedDirectory = stateDirectory + "/saved-state-v1"
+        guard (canonical as NSString).deletingLastPathComponent == allowedDirectory,
+              (canonical as NSString).lastPathComponent.hasPrefix("state.tmp-") else {
+            return nil
+        }
+        return canonical
     }
 
     private func isRunning(listenerFD: Int32) -> Bool {

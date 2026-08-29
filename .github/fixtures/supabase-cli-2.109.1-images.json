@@ -1,0 +1,105 @@
+{
+  "schemaVersion": 1,
+  "cliVersion": "2.109.1",
+  "registry": "public.ecr.aws",
+  "services": [
+    {
+      "service": "db",
+      "source": "supabase/postgres:17.6.1.143",
+      "runtime": "public.ecr.aws/supabase/postgres:17.6.1.143",
+      "digest": "sha256:80d7b27c3e8d77cfa7226eee9508671796da214781ff15a35b3670d7ad5ee453",
+      "enabledByDefault": true
+    },
+    {
+      "service": "gateway",
+      "source": "library/kong:2.8.1",
+      "runtime": "public.ecr.aws/supabase/kong:2.8.1",
+      "digest": "sha256:1b53405d8680a09d6f44494b7990bf7da2ea43f84a258c59717d4539abf09f6d",
+      "enabledByDefault": true
+    },
+    {
+      "service": "mailpit",
+      "source": "axllent/mailpit:v1.30.2",
+      "runtime": "public.ecr.aws/supabase/mailpit:v1.30.2",
+      "digest": "sha256:37a38e48e9338cd7e89dfeb487f37b02ebfcd9cb23111bed2d345e79d37d6dd6",
+      "enabledByDefault": true
+    },
+    {
+      "service": "api",
+      "source": "postgrest/postgrest:v14.14",
+      "runtime": "public.ecr.aws/supabase/postgrest:v14.14",
+      "digest": "sha256:d2009b5c9deffc210c8a5592698472fede14fd9f6ca89823c8474ca54d58c012",
+      "enabledByDefault": true
+    },
+    {
+      "service": "pgmeta",
+      "source": "supabase/postgres-meta:v0.96.6",
+      "runtime": "public.ecr.aws/supabase/postgres-meta:v0.96.6",
+      "digest": "sha256:a84cc713585eea7b401e4a2561ec4a1e48c87083d1c7ecb4502f204bb4391300",
+      "enabledByDefault": true
+    },
+    {
+      "service": "studio",
+      "source": "supabase/studio:2026.07.06-sha-66cf431",
+      "runtime": "public.ecr.aws/supabase/studio:2026.07.06-sha-66cf431",
+      "digest": "sha256:4a5163e33578b346e6eab1352034d29140cf84b6d9989aab6fcf4b39edb3b13c",
+      "enabledByDefault": true
+    },
+    {
+      "service": "imgproxy",
+      "source": "darthsim/imgproxy:v3.8.0",
+      "runtime": "public.ecr.aws/supabase/imgproxy:v3.8.0",
+      "digest": "sha256:0facd355d50f3be665ebe674486f2b2e9cdaebd3f74404acd9b7fece2f661435",
+      "enabledByDefault": true
+    },
+    {
+      "service": "edgeRuntime",
+      "source": "supabase/edge-runtime:v1.74.2",
+      "runtime": "public.ecr.aws/supabase/edge-runtime:v1.74.2",
+      "digest": "sha256:a82676277615aee03c4f288cbbbf68dedb5ba8693073e567ab8dbfdd11ba5d45",
+      "enabledByDefault": true
+    },
+    {
+      "service": "vector",
+      "source": "timberio/vector:0.53.0-alpine",
+      "runtime": "public.ecr.aws/supabase/vector:0.53.0-alpine",
+      "digest": "sha256:ca92d617e905953c3f852e7e88061f7039460e733522e3f0c21bc6ae946b2558",
+      "enabledByDefault": true
+    },
+    {
+      "service": "pooler",
+      "source": "supabase/supavisor:2.9.7",
+      "runtime": "public.ecr.aws/supabase/supavisor:2.9.7",
+      "digest": "sha256:be033cf4746a438fa7bfb6a7e589c9a4c950cc7fafea1ea8ec1a15952aa851e6",
+      "enabledByDefault": false
+    },
+    {
+      "service": "auth",
+      "source": "supabase/gotrue:v2.192.0",
+      "runtime": "public.ecr.aws/supabase/gotrue:v2.192.0",
+      "digest": "sha256:b252efb680be37d4a8bf77c210cf0439c19b63a4b51929233a65dd101d25bdab",
+      "enabledByDefault": true
+    },
+    {
+      "service": "realtime",
+      "source": "supabase/realtime:v2.112.6",
+      "runtime": "public.ecr.aws/supabase/realtime:v2.112.6",
+      "digest": "sha256:7b56da34216fd568042be043900d15cdd33c2c48c2116c9a333f9465255da80d",
+      "enabledByDefault": true
+    },
+    {
+      "service": "storage",
+      "source": "supabase/storage-api:v1.62.5",
+      "runtime": "public.ecr.aws/supabase/storage-api:v1.62.5",
+      "digest": "sha256:1dbe962d9862ef12e20357f9d7ba5431989c1daf4a556d6cb20ee4efd1c57320",
+      "enabledByDefault": true
+    },
+    {
+      "service": "analytics",
+      "source": "supabase/logflare:1.46.0",
+      "runtime": "public.ecr.aws/supabase/logflare:1.46.0",
+      "digest": "sha256:f3c7a387ab7bb94af001b907c08df14258bd255f29d4cdb8bf6b393707558bf2",
+      "enabledByDefault": true
+    }
+  ]
+}

@@ -1,4 +1,5 @@
 import Darwin
+import CryptoKit
 import DoryOperations
 import Foundation
 
@@ -25,12 +26,17 @@ nonisolated enum DesktopMachineDistro: String, CaseIterable, Identifiable, Senda
         }
     }
 
-    var desktopName: String { "Xfce" }
+    var desktopName: String {
+        switch self {
+        case .ubuntu: "GNOME"
+        case .debian, .kali: "Xfce"
+        }
+    }
 
     var summary: String {
         switch self {
         case .debian: "Stable, clean desktop for everyday Linux and development"
-        case .ubuntu: "Familiar Ubuntu base with long-term support packages"
+        case .ubuntu: "Canonical's Ubuntu GNOME desktop with long-term support"
         case .kali: "Security lab desktop with Kali's official rolling repository"
         }
     }
@@ -152,6 +158,45 @@ nonisolated enum DesktopMachineAssetProvisioner {
             arch: arch,
             distro: distro
         )
+    }
+
+    /// Hashes the prepared, uncompressed kernel that doryd will reopen. The descriptor and its
+    /// identity are checked before and after reading so an asset-cache replacement cannot be
+    /// mistaken for the bytes the app actually approved.
+    static func preparedKernelSHA256(at path: String) throws -> String {
+        let descriptor = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+        guard descriptor >= 0 else {
+            throw DesktopMachineAssetError.invalidAsset(path)
+        }
+        defer { close(descriptor) }
+        var before = stat()
+        guard fstat(descriptor, &before) == 0,
+              (before.st_mode & S_IFMT) == S_IFREG,
+              before.st_uid == getuid(),
+              before.st_nlink == 1,
+              before.st_size > 0,
+              (before.st_mode & 0o077) == 0 else {
+            throw DesktopMachineAssetError.unsafeAsset(path)
+        }
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
+        var hasher = SHA256()
+        while true {
+            let chunk = try handle.read(upToCount: 4 * 1024 * 1024) ?? Data()
+            if chunk.isEmpty { break }
+            hasher.update(data: chunk)
+        }
+        var after = stat()
+        guard fstat(descriptor, &after) == 0,
+              before.st_dev == after.st_dev,
+              before.st_ino == after.st_ino,
+              before.st_size == after.st_size,
+              before.st_mtimespec.tv_sec == after.st_mtimespec.tv_sec,
+              before.st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec,
+              before.st_ctimespec.tv_sec == after.st_ctimespec.tv_sec,
+              before.st_ctimespec.tv_nsec == after.st_ctimespec.tv_nsec else {
+            throw DesktopMachineAssetError.invalidAsset(path)
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
     static func prepare(

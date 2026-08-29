@@ -1,0 +1,35 @@
+diff --git a/src/vrend/vrend_metal.m b/src/vrend/vrend_metal.m
+index e8ded74..b6003ff 100644
+--- a/src/vrend/vrend_metal.m
++++ b/src/vrend/vrend_metal.m
+@@ -110,15 +110,25 @@ bool virgl_metal_create_texture(MTLDevice_id device,
+                                 const struct vrend_metal_texture_description *desc,
+                                 MTLTexture_id *tex)
+ {
++   if (!tex)
++      return false;
++   *tex = nil;
+    id<MTLDevice> mtl_device = (id<MTLDevice>)device;
+    MTLTextureDescriptor *descriptor = new_descriptor(desc);
+-   if (descriptor) {
+-      *tex = [mtl_device newTextureWithDescriptor:descriptor];
++   if (mtl_device && descriptor) {
++      if (desc->bind & VIRGL_RES_BIND_SCANOUT) {
++         /* VirGL2 presents the texture itself across XPC. A copy would not preserve guest
++          * render completion or resource identity, so allocate the original scanout from
++          * Metal's cross-process shareable texture pool. Shared handles require private
++          * storage and the guest never CPU-maps this native scanout path. */
++         descriptor.resourceOptions = MTLResourceStorageModePrivate;
++         *tex = [mtl_device newSharedTextureWithDescriptor:descriptor];
++      } else {
++         *tex = [mtl_device newTextureWithDescriptor:descriptor];
++      }
+       [descriptor release];
+-      return true;
+    }
+-
+-   return false;
++   return !!*tex;
+ }
+ 
+ bool virgl_metal_create_texture_from_shm(MTLDevice_id device,

@@ -62,9 +62,11 @@ struct LSUIElementBuildSettingTests {
     @Test func appBuildPrunesStaleBundledHelpersBeforeSigning() throws {
         let text = try pbxproj()
         #expect(text.contains("Prune Stale Bundled Helpers"))
-        #expect(text.contains("find \\\"$HELPERS\\\" -maxdepth 1 -type f -exec rm -f {} +"))
+        #expect(text.contains("find \\\"$HELPERS\\\" -depth -delete"))
+        #expect(text.contains("refusing to prune unexpected helper path"))
         #expect(text.contains("$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/Contents/Helpers"))
         #expect(!text.contains("$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/Contents/Helpers/dory-vm"))
+        #expect(text.components(separatedBy: "ENABLE_USER_SCRIPT_SANDBOXING = NO;").count - 1 >= 2)
     }
 
     @Test func buildAndPublicTestRunnerScrubTransientXcodeProducts() throws {

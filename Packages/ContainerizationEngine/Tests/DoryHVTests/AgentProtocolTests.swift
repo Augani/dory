@@ -8,9 +8,10 @@ import Testing
         let client = StubAgentControlRPC()
         client.infoResult = DoryAgentInfo(
             protocolVersion: DoryCore.protocolVersion(),
-            kernel: "Linux 6.12.30-dory",
+            kernel: "Linux 6.12.106-dory",
             agentBuild: "dory-agent/0.1.0",
-            uptimeSeconds: 42
+            uptimeSeconds: 42,
+            capabilities: [DoryAgentCapability(id: "usb-vhci", version: 1)]
         )
         client.clockSyncResult = true
         let channel = AgentChannel(client: client)
@@ -20,9 +21,10 @@ import Testing
 
         #expect(info == AgentInfo(
             protocolVersion: 1,
-            kernel: "Linux 6.12.30-dory",
+            kernel: "Linux 6.12.106-dory",
             agentBuild: "dory-agent/0.1.0",
-            uptimeSeconds: 42
+            uptimeSeconds: 42,
+            capabilities: [AgentCapability(id: "usb-vhci", version: 1)]
         ))
         #expect(clock.synced)
         #expect(client.clockSyncInputs == [1_725_000_000_123_456_789])
@@ -60,10 +62,121 @@ import Testing
         }
     }
 
+    @Test func channelRequiresAndForwardsExactUsbVhciAuthority() async throws {
+        let client = StubAgentControlRPC()
+        client.infoResult = DoryAgentInfo(
+            protocolVersion: 1,
+            kernel: "Linux test",
+            agentBuild: "dory-agent/test",
+            uptimeSeconds: 1,
+            capabilities: [DoryAgentCapability(id: "usb-vhci", version: 1)]
+        )
+        let channel = AgentChannel(client: client)
+        let attach = UsbAgentAttachRequest(
+            busid: "3-2",
+            port: 4,
+            vsock_port: VsockPorts.usbip,
+            device_id: (3 << 16) | 2,
+            speed: 3
+        )
+
+        try await channel.requireCapability("usb-vhci", version: 1)
+        try await channel.usbVhciAttach(attach)
+        try await channel.usbVhciDetach(UsbAgentDetachRequest(busid: "3-2", port: 4))
+
+        #expect(client.usbAttachCalls == [attach])
+        #expect(client.usbDetachCalls == [UsbAgentDetachRequest(busid: "3-2", port: 4)])
+    }
+
+    @Test func channelRejectsMissingUsbCapabilityAndInvalidPort() async throws {
+        let channel = AgentChannel(client: StubAgentControlRPC())
+        await #expect(throws: AgentProtocolError.capabilityUnavailable("usb-vhci", 1)) {
+            try await channel.requireCapability("usb-vhci", version: 1)
+        }
+        await #expect(throws: AgentProtocolError.invalidVhciPort(-1)) {
+            try await channel.usbVhciAttach(UsbAgentAttachRequest(
+                busid: "3-2",
+                port: -1,
+                vsock_port: VsockPorts.usbip,
+                device_id: (3 << 16) | 2,
+                speed: 3
+            ))
+        }
+    }
+
+    @Test func channelCapabilityGatesVirtioFSMountAndForwardsKernelProof() async throws {
+        let missingClient = StubAgentControlRPC()
+        let missingChannel = AgentChannel(client: missingClient)
+        await #expect(throws: AgentProtocolError.capabilityUnavailable("virtiofs-mount", 1)) {
+            _ = try await missingChannel.mountVirtioFS(VirtioFSMountRequest(
+                tag: "workspace",
+                mountPath: "/mnt/dory/workspace",
+                readOnly: true
+            ))
+        }
+        #expect(missingClient.virtioFSMountCalls.isEmpty)
+
+        let client = StubAgentControlRPC()
+        client.infoResult = DoryAgentInfo(
+            protocolVersion: 1,
+            kernel: "Linux test",
+            agentBuild: "dory-agent/test",
+            uptimeSeconds: 1,
+            capabilities: [DoryAgentCapability(id: "virtiofs-mount", version: 1)]
+        )
+        client.virtioFSMountResult = DoryVirtioFSMountReceipt(
+            tag: "workspace",
+            mountPath: "/mnt/dory/workspace",
+            readOnly: true,
+            alreadyMounted: false,
+            mountID: 91
+        )
+        let channel = AgentChannel(client: client)
+
+        let receipt = try await channel.mountVirtioFS(VirtioFSMountRequest(
+            tag: "workspace",
+            mountPath: "/mnt/dory/workspace",
+            readOnly: true
+        ))
+
+        #expect(receipt == VirtioFSMountReceipt(
+            tag: "workspace",
+            mountPath: "/mnt/dory/workspace",
+            readOnly: true,
+            alreadyMounted: false,
+            mountID: 91
+        ))
+        #expect(client.virtioFSMountCalls == [
+            VirtioFSMountRequest(
+                tag: "workspace",
+                mountPath: "/mnt/dory/workspace",
+                readOnly: true
+            ),
+        ])
+    }
+
+    @Test func channelRejectsNoncanonicalCapabilityInventory() async {
+        let client = StubAgentControlRPC()
+        client.infoResult = DoryAgentInfo(
+            protocolVersion: 1,
+            kernel: "Linux test",
+            agentBuild: "dory-agent/test",
+            uptimeSeconds: 1,
+            capabilities: [
+                DoryAgentCapability(id: "usb-vhci", version: 1),
+                DoryAgentCapability(id: "clock-sync", version: 1),
+            ]
+        )
+
+        await #expect(throws: AgentProtocolError.invalidCapabilityInventory) {
+            _ = try await AgentChannel(client: client).info()
+        }
+    }
+
     @Test func infoJSONUsesCurrentProtobufSurfaceNames() throws {
         let info = AgentInfo(
             protocolVersion: 1,
-            kernel: "Linux 6.12.30-dory",
+            kernel: "Linux 6.12.106-dory",
             agentBuild: "dory-agent/0.1.0",
             uptimeSeconds: 42
         )
@@ -126,10 +239,32 @@ final class StubAgentControlRPC: AgentControlRPC, @unchecked Sendable {
     var infoResult = DoryAgentInfo(protocolVersion: 1, kernel: "", agentBuild: "", uptimeSeconds: 0)
     var clockSyncResult = false
     var portsResult = DoryPortsSnapshot(ports: [], added: [], removed: [])
+    var virtioFSMountResult = DoryVirtioFSMountReceipt(
+        tag: "",
+        mountPath: "",
+        readOnly: false,
+        alreadyMounted: false,
+        mountID: 0
+    )
     private var storedClockSyncInputs: [Int64] = []
+    private var storedUsbAttachCalls: [UsbAgentAttachRequest] = []
+    private var storedUsbDetachCalls: [UsbAgentDetachRequest] = []
+    private var storedVirtioFSMountCalls: [VirtioFSMountRequest] = []
 
     var clockSyncInputs: [Int64] {
         lock.withLock { storedClockSyncInputs }
+    }
+
+    var usbAttachCalls: [UsbAgentAttachRequest] {
+        lock.withLock { storedUsbAttachCalls }
+    }
+
+    var usbDetachCalls: [UsbAgentDetachRequest] {
+        lock.withLock { storedUsbDetachCalls }
+    }
+
+    var virtioFSMountCalls: [VirtioFSMountRequest] {
+        lock.withLock { storedVirtioFSMountCalls }
     }
 
     func info() throws -> DoryAgentInfo { infoResult }
@@ -140,6 +275,40 @@ final class StubAgentControlRPC: AgentControlRPC, @unchecked Sendable {
     }
 
     func portsWatch() throws -> DoryPortsSnapshot { portsResult }
+
+    func virtioFSMount(
+        tag: String,
+        mountPath: String,
+        readOnly: Bool
+    ) throws -> DoryVirtioFSMountReceipt {
+        lock.withLock {
+            storedVirtioFSMountCalls.append(VirtioFSMountRequest(
+                tag: tag,
+                mountPath: mountPath,
+                readOnly: readOnly
+            ))
+        }
+        return virtioFSMountResult
+    }
+
+    func usbVhciAttach(busID: String, port: UInt32, vsockPort: UInt32, deviceID: UInt32, speed: UInt32) throws {
+        lock.withLock {
+            storedUsbAttachCalls.append(UsbAgentAttachRequest(
+                busid: busID,
+                port: Int(port),
+                vsock_port: vsockPort,
+                device_id: deviceID,
+                speed: speed
+            ))
+        }
+    }
+
+    func usbVhciDetach(busID: String, port: UInt32) throws {
+        lock.withLock {
+            storedUsbDetachCalls.append(UsbAgentDetachRequest(busid: busID, port: Int(port)))
+        }
+    }
+
     func close() {}
 }
 

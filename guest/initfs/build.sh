@@ -204,8 +204,8 @@ install_fex() {
 
   bundle="$dest/usr/lib/dory/fex"
   mkdir -p "$bundle/share" "$bundle/licenses" "$bundle/provenance"
-  require_file_hash "$fex_root/usr/bin/FEX" 1acee202ec3a90bcba6b458504218fca201fbc8bc3cfaee372cc2c4be38a6fc1
-  require_file_hash "$fex_root/usr/bin/FEXServer" b50bcd67b893f68f6963aba16fd89ba0df3d5b9126be09786fcd61d621708698
+  require_file_hash "$fex_root/usr/bin/FEX" 44613470cddb8e898fc7de9508b0baea88c9fd5c08cd2e2a450c099df0ceb146
+  require_file_hash "$fex_root/usr/bin/FEXServer" 9175c1ea4ed24135182a66f83d8e40f30f8ffd8d6fc7dc4d31331877d34e1777
   require_file_hash "$vendor/FEX" 01921fa471efc53c955b1d6263f7df4ad0f08f082669a3a7adb6f1e1d5ac0c28
   require_file_hash "$vendor/FEXServer" bbe8a34fc2ba4e606acd7e5b11d9b51da283835f40d2851e2ed39d35d28f2597
   require_file_hash "$vendor/BUILD_PACKAGES.txt" ad3b0e4ab4e53ac328b0209f592a6f86100f5ca2c17715f2b40ee9b130b0f0b1
@@ -239,7 +239,7 @@ install_fex() {
     echo "Build SOURCE_DATE_EPOCH=1783039651 (upstream source commit timestamp)"
     echo "Build package inventory /usr/lib/dory/fex/provenance/BUILD_PACKAGES.txt"
     echo "FEX and FEXServer are static PIE executables so binfmt execution survives nested chroot boundaries without fixed-address guest VMA collisions"
-    echo "FEX data/notices package fex-emu-armv8.0_2607-1~n_arm64.deb"
+    echo "FEX data/notices package fex-emu-armv8.0_2607-1~q_arm64.deb"
     echo "Ubuntu Noble libc6/gcc runtime licensing notices are retained with the static binaries"
     echo "FEX_SHA256=$fex_hash"
     echo "FEXSERVER_SHA256=$server_hash"

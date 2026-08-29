@@ -14,7 +14,7 @@ struct MachineCreationSheet: View {
                 statusIcon
                 VStack(alignment: .leading, spacing: 1) {
                     Text(store.machineCreationTitle).font(.system(size: 15, weight: .bold)).foregroundStyle(p.text)
-                    Text(failed ? "Creation failed" : (succeeded ? "Ready" : "Setting up your Linux machine…"))
+                    Text(statusSubtitle)
                         .font(.system(size: 11.5)).foregroundStyle(failed ? p.red : (succeeded ? p.green : p.text3))
                 }
                 Spacer()
@@ -78,14 +78,27 @@ struct MachineCreationSheet: View {
                             .background(p.bgInput, in: RoundedRectangle(cornerRadius: 8))
                             .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(p.border))
                     }.buttonStyle(.plain)
-                    Button {
-                        openWindow(value: store.terminalSession(for: machine))
-                        dismissSuccess()
-                    } label: {
-                        Text("Open Terminal").font(.system(size: 13, weight: .semibold)).foregroundStyle(.white)
-                            .padding(.horizontal, 18).padding(.vertical, 8)
-                            .background(p.accent, in: RoundedRectangle(cornerRadius: 8))
-                    }.buttonStyle(.plain)
+                    if machine.bootMode == .efi, machine.displayMode == .desktop {
+                        Button {
+                            store.openMachineDesktop(machine)
+                            dismissSuccess()
+                        } label: {
+                            Text("Open Desktop").font(.system(size: 13, weight: .semibold)).foregroundStyle(.white)
+                                .padding(.horizontal, 18).padding(.vertical, 8)
+                                .background(p.accent, in: RoundedRectangle(cornerRadius: 8))
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(!store.canOpenMachineDesktop(machine))
+                    } else if store.canOpenMachineTerminal(machine) {
+                        Button {
+                            openWindow(value: store.terminalSession(for: machine))
+                            dismissSuccess()
+                        } label: {
+                            Text("Open Terminal").font(.system(size: 13, weight: .semibold)).foregroundStyle(.white)
+                                .padding(.horizontal, 18).padding(.vertical, 8)
+                                .background(p.accent, in: RoundedRectangle(cornerRadius: 8))
+                        }.buttonStyle(.plain)
+                    }
                 }
             }
         }
@@ -97,6 +110,15 @@ struct MachineCreationSheet: View {
     private func dismissSuccess() {
         store.activeSheet = nil
         store.machineCreated = nil
+    }
+
+    private var statusSubtitle: String {
+        if failed { return "Creation failed" }
+        guard succeeded else { return "Setting up your Linux machine…" }
+        if store.machineCreated?.bootMode == .efi {
+            return "VM and display started"
+        }
+        return "Ready"
     }
 
     @ViewBuilder private var statusIcon: some View {

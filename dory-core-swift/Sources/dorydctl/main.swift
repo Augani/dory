@@ -1,10 +1,12 @@
 import Darwin
 import DoryCore
 import DorydKit
+import DoryOperations
 import Foundation
 
 private let engineColdStartTimeout: TimeInterval = 240
 private let engineShutdownTimeout = DoryEngineShutdownTiming.hostTerminationSeconds + 5
+private let machineFileMutationTimeout = DoryMachineControlTiming.fileMutationSeconds
 
 enum DorydCtlError: Error, CustomStringConvertible {
     case daemon(String)
@@ -24,6 +26,33 @@ enum DorydCtlError: Error, CustomStringConvertible {
             message
         }
     }
+}
+
+private func machineShareXPCDictionary(
+    _ share: DoryMachineShareConfiguration
+) throws -> NSDictionary {
+    let bookmark: Data
+    do {
+        bookmark = try URL(fileURLWithPath: share.hostPath).bookmarkData(
+            options: [.minimalBookmark],
+            includingResourceValuesForKeys: [
+                .fileResourceIdentifierKey,
+                .volumeIdentifierKey,
+            ],
+            relativeTo: nil
+        )
+    } catch {
+        throw DorydCtlError.usage(
+            "cannot authorize host share \(share.hostPath): \(error)"
+        )
+    }
+    return [
+        "tag": share.tag,
+        "hostPath": share.hostPath,
+        "guestPath": share.guestPath,
+        "readOnly": share.readOnly,
+        "authorizationBookmark": bookmark as NSData,
+    ]
 }
 
 final class ReplyBox<T>: @unchecked Sendable {
@@ -163,18 +192,26 @@ func usage(exitCode: Int32 = 2) -> Never {
           dorydctl [global] machine list
           dorydctl [global] machine status NAME
           dorydctl [global] machine stats NAME
-          dorydctl [global] machine create NAME --kernel PATH --rootfs PATH [--memory-mb N] [--cpus N] [--display-mode headless|desktop] [--dns-target IPv4] [--share TAG=HOST:GUEST[:ro|rw] | JSON] [--env KEY=VALUE]
-          dorydctl [global] machine update NAME [--memory-mb N] [--cpus N] [--dns-target IPv4 | --clear-dns-target] [--share TAG=HOST:GUEST[:ro|rw] | JSON ... | --clear-shares] [--env KEY=VALUE ... | --clear-env]
-          dorydctl [global] machine start|stop|delete NAME
+          dorydctl [global] machine device-telemetry NAME
+          dorydctl [global] machine flight-recorder NAME [--after SEQUENCE]
+          dorydctl [global] machine console NAME [--generation SHA256 --after OFFSET] [--limit BYTES] [--input TEXT]
+          dorydctl [global] machine create NAME (--kernel PATH --rootfs PATH | --installer-iso PATH [--disk-size-gb N]) [--memory-mb N] [--cpus N] [--display-mode headless|desktop] [--dns-target IPv4] [--share TAG=HOST:GUEST[:ro|rw] | JSON] [--guest-user NAME] [--guest-uid N] [--desktop-distro ID] [--desktop-name NAME] [--desktop-version VERSION] [--desktop-environment NAME] [--clipboard off|host-to-guest|guest-to-host|bidirectional] [--runtime auto|accelerated|compatible] [--graphics auto|virgl|virgl-venus|software] [--network shared-nat|host-only|disconnected|bridged] [--forward ID:tcp|udp:HOST_PORT:GUEST_PORT:loopback|lan ...] [--audio-input on|off] [--audio-output on|off] [--intel-application-translation on|off] [--sandbox [--sandbox-expires-at UNIX_SECONDS] [--sandbox-ssh-agent denied|granted] [--sandbox-profile standard|agent-ready] [--sandbox-tool TOOL ...] [--sandbox-baseline ID]]
+          dorydctl [global] machine update NAME [--memory-mb N] [--cpus N] [--dns-target IPv4 | --clear-dns-target] [--share TAG=HOST:GUEST[:ro|rw] | JSON ... | --clear-shares] [typed create options | --clear-guest-account | --clear-desktop-identity | --clear-clipboard | --clear-runtime | --clear-graphics | --clear-network | --clear-forwards | --clear-audio | --clear-intel-application-translation] [--attach-installer | --eject-installer]
+          dorydctl [global] machine start|stop|pause|suspend|resume|restart|delete NAME
+          dorydctl [global] machine usb-attach NAME BUS_ID
+          dorydctl [global] machine usb-detach NAME BUS_ID
           dorydctl [global] machine exec NAME [--json] [--cwd PATH] [--env KEY=VALUE] [--env-json-stdin] [--timeout-ms N] [--output-limit-bytes N] -- COMMAND [ARG...]
-          dorydctl [global] machine shell NAME
+          dorydctl [global] machine shell NAME [--uid N --gid N --cwd PATH --session NAME]
+          dorydctl [global] machine recipes
           dorydctl [global] machine provision NAME --recipe RECIPE
+          dorydctl [global] machine desktop-update NAME --distro debian|ubuntu|kali --version VERSION --distribution-installation ID --runtime-installation ID
           dorydctl [global] machine snapshots [NAME]
           dorydctl [global] machine snapshot NAME [--note NOTE] [--id ID]
           dorydctl [global] machine clone-snapshot NAME SNAPSHOT_ID NEW_NAME
           dorydctl [global] machine restore-snapshot NAME SNAPSHOT_ID
           dorydctl [global] machine delete-snapshot NAME SNAPSHOT_ID
           dorydctl [global] machine export-snapshot NAME SNAPSHOT_ID PATH
+          dorydctl [global] machine inspect-import PATH
           dorydctl [global] machine import-snapshot PATH
           dorydctl [global] machine backup status [NAME]
           dorydctl [global] machine backup schedule NAME [--frequency hourly|daily|weekly] [--keep N] [--verify-every N]
@@ -182,6 +219,7 @@ func usage(exitCode: Int32 = 2) -> Never {
           dorydctl [global] machine backup remove NAME
           dorydctl [global] component list [--json] [--offline]
           dorydctl [global] component install|update ID [--json]
+          dorydctl [global] component install-candidate ID --candidate-dir PATH [--json]
           dorydctl [global] component verify [ID|all] [--json] [--offline]
           dorydctl [global] component remove ID [--json] [--offline]
           dorydctl [global] remote connect NAME --host HOST --user USER --private-key-id ID --remote-root PATH (--host-key KEY | --known-hosts PATH) [--port N] [--endpoint-unix PATH | --endpoint-tcp HOST:PORT]
@@ -242,6 +280,37 @@ private func componentAppVersion() -> String {
         return version
     }
     return Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0-dev"
+}
+
+private func componentBundledComponents() -> Set<DoryComponentID> {
+    if let override = ProcessInfo.processInfo.environment["DORY_COMPONENT_BUNDLED_COMPONENTS"] {
+        return Set(
+            override.split(separator: ",")
+                .compactMap { DoryComponentID(rawValue: String($0)) }
+        ).union([.dockerCore])
+    }
+    let executable = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
+    let infoPath = executable.deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("Info.plist").path
+    if let info = NSDictionary(contentsOfFile: infoPath),
+       let raw = info["DoryBundledComponents"] as? [String] {
+        return Set(raw.compactMap(DoryComponentID.init(rawValue:))).union([.dockerCore])
+    }
+    return [.dockerCore]
+}
+
+private func componentStatuses(
+    store: DoryComponentStore,
+    catalog: ComponentCatalogBundle,
+    digest: String
+) -> [DoryComponentStatus] {
+    store.list(
+        catalog: catalog.catalog,
+        catalogDigest: digest,
+        bundledComponents: componentBundledComponents(),
+        bundledVersion: componentAppVersion()
+    )
 }
 
 private func componentCatalogURL() -> URL {
@@ -327,6 +396,7 @@ private func componentStatusJSON(_ status: DoryComponentStatus) -> NSDictionary 
         "state": status.state.rawValue,
         "availableVersion": status.availableVersion,
         "installedVersion": status.installedVersion ?? NSNull(),
+        "installationOperationID": status.installationOperationID ?? NSNull(),
         "downloadBytes": NSNumber(value: status.downloadBytes),
         "installedBytes": NSNumber(value: status.installedBytes),
         "dependencies": status.dependencies.map(\.rawValue),
@@ -336,12 +406,14 @@ private func componentStatusJSON(_ status: DoryComponentStatus) -> NSDictionary 
 private func componentResultJSON(
     action: String,
     catalog: ComponentCatalogBundle,
-    statuses: [DoryComponentStatus]
+    statuses: [DoryComponentStatus],
+    operationID: UUID? = nil
 ) -> NSDictionary {
     [
         "schema": "dev.dory.components",
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "action": action,
+        "operationID": operationID?.uuidString.lowercased() ?? NSNull(),
         "catalogVersion": catalog.catalog.releaseVersion,
         "catalogDigest": DoryComponentCatalogVerifier.digest(catalog.data),
         "architecture": catalog.catalog.architecture,
@@ -389,6 +461,46 @@ private func runComponent(cursor: inout ArgumentCursor) throws {
         print(path)
         return
     }
+    if subcommand == "install-candidate" {
+        let rawID = try cursor.take(
+            "usage: dorydctl component install-candidate ID --candidate-dir PATH [--json]"
+        )
+        let candidateDirectory = try requiredOption(
+            "--candidate-dir",
+            cursor: &cursor,
+            usage: "usage: dorydctl component install-candidate ID --candidate-dir PATH [--json]"
+        )
+        guard cursor.values.isEmpty, let id = DoryComponentID(rawValue: rawID), id.isRemovable else {
+            throw DoryComponentError.unknownComponent(rawID)
+        }
+        let importer = DorySignedComponentCandidateImporter(
+            store: store,
+            appVersion: componentAppVersion()
+        )
+        let operationID = UUID()
+        let result = try importer.install(
+            id,
+            from: candidateDirectory,
+            operationID: operationID
+        )
+        if json {
+            try emitJSON([
+                "schema": "dev.dory.component-candidate-import",
+                "schemaVersion": 2,
+                "operationID": result.operationID.uuidString.lowercased(),
+                "catalogDigest": result.catalogDigest,
+                "installations": Dictionary(uniqueKeysWithValues: result.installed.map {
+                    ($0.id.rawValue, $0.installationName)
+                }),
+            ] as NSDictionary)
+        } else {
+            print("operation\t\(result.operationID.uuidString.lowercased())")
+            for component in result.installed {
+                print("\(component.id.rawValue)\t\(component.installationName)")
+            }
+        }
+        return
+    }
     let catalog = try loadComponentCatalog(store: store, offline: offline)
     let digest = DoryComponentCatalogVerifier.digest(catalog.data)
 
@@ -397,7 +509,7 @@ private func runComponent(cursor: inout ArgumentCursor) throws {
         guard cursor.values.isEmpty else {
             throw DorydCtlError.usage("usage: dorydctl component list [--json] [--offline]")
         }
-        let statuses = store.list(catalog: catalog.catalog, catalogDigest: digest)
+        let statuses = componentStatuses(store: store, catalog: catalog, digest: digest)
         if json {
             try emitJSON(componentResultJSON(action: "list", catalog: catalog, statuses: statuses))
         } else {
@@ -414,6 +526,7 @@ private func runComponent(cursor: inout ArgumentCursor) throws {
         }
         guard id.isRemovable else { throw DoryComponentError.coreCannotBeChanged }
         let installer = DoryComponentInstaller(store: store)
+        let operationID = UUID()
         for release in try componentInstallationOrder(id, catalog: catalog.catalog) {
             let current = try store.installedComponent(release.id)
             if current?.version == release.version, current?.catalogDigest == digest,
@@ -422,7 +535,12 @@ private func runComponent(cursor: inout ArgumentCursor) throws {
             }
             let showProgress = !json
             _ = try awaitComponentOperation {
-                try await installer.install(release, catalogData: catalog.data) { update in
+                try await installer.install(
+                    release,
+                    catalogData: catalog.data,
+                    operationID: operationID
+                ) { update in
+                    guard update.operationID == operationID else { return }
                     guard showProgress else { return }
                     let message = "\r\(release.displayName): \(update.phase.rawValue) "
                         + "\(componentBytes(update.completedBytes)) / \(componentBytes(update.totalBytes))"
@@ -431,11 +549,16 @@ private func runComponent(cursor: inout ArgumentCursor) throws {
             }
             if !json { FileHandle.standardError.write(Data("\n".utf8)) }
         }
-        let statuses = store.list(catalog: catalog.catalog, catalogDigest: digest)
+        let statuses = componentStatuses(store: store, catalog: catalog, digest: digest)
         if json {
-            try emitJSON(componentResultJSON(action: subcommand, catalog: catalog, statuses: statuses))
+            try emitJSON(componentResultJSON(
+                action: subcommand,
+                catalog: catalog,
+                statuses: statuses,
+                operationID: operationID
+            ))
         } else {
-            print("\(rawID) is installed and verified.")
+            print("\(rawID) is installed and verified (operation \(operationID.uuidString.lowercased())).")
         }
     case "verify":
         let rawID = cursor.values.isEmpty ? "all" : try cursor.take("usage: dorydctl component verify [ID|all] [--json] [--offline]")
@@ -451,7 +574,7 @@ private func runComponent(cursor: inout ArgumentCursor) throws {
             throw DoryComponentError.unknownComponent(rawID)
         }
         for id in ids { _ = try store.verify(id) }
-        let statuses = store.list(catalog: catalog.catalog, catalogDigest: digest)
+        let statuses = componentStatuses(store: store, catalog: catalog, digest: digest)
         if json {
             try emitJSON(componentResultJSON(action: "verify", catalog: catalog, statuses: statuses))
         } else {
@@ -463,7 +586,7 @@ private func runComponent(cursor: inout ArgumentCursor) throws {
             throw DoryComponentError.unknownComponent(rawID)
         }
         try store.remove(id, catalog: catalog.catalog)
-        let statuses = store.list(catalog: catalog.catalog, catalogDigest: digest)
+        let statuses = componentStatuses(store: store, catalog: catalog, digest: digest)
         if json {
             try emitJSON(componentResultJSON(action: "remove", catalog: catalog, statuses: statuses))
         } else {
@@ -502,20 +625,6 @@ func nonNegativeUInt64(_ raw: String, option: String) throws -> UInt64 {
     return value
 }
 
-func parseEnvironmentRow(_ raw: String) throws -> NSDictionary {
-    guard let equals = raw.firstIndex(of: "="), equals != raw.startIndex else {
-        throw DorydCtlError.usage("--env must be KEY=VALUE")
-    }
-    let key = String(raw[..<equals])
-    guard key.wholeMatch(of: /[A-Za-z_][A-Za-z0-9_]*/) != nil else {
-        throw DorydCtlError.usage("--env key must match [A-Za-z_][A-Za-z0-9_]*")
-    }
-    return [
-        "key": key,
-        "value": String(raw[raw.index(after: equals)...]),
-    ] as NSDictionary
-}
-
 func readEnvironmentJSONFromStandardInput() throws -> [NSDictionary] {
     let data = FileHandle.standardInput.readDataToEndOfFile()
     guard !data.isEmpty,
@@ -528,6 +637,43 @@ func readEnvironmentJSONFromStandardInput() throws -> [NSDictionary] {
             throw DorydCtlError.usage("--env-json-stdin keys must be environment names and values must be strings")
         }
         return ["key": key, "value": value] as NSDictionary
+    }
+}
+
+func parseMachineTypedSettings(
+    cursor: inout ArgumentCursor,
+    allowsClears: Bool
+) throws -> DoryMachineTypedSettingsPatch {
+    do {
+        return try DoryMachineTypedSettingsPatch.consumeCLIArguments(
+            &cursor.values,
+            allowsClears: allowsClears
+        )
+    } catch {
+        throw DorydCtlError.usage("\(error)")
+    }
+}
+
+func mergeMachineTypedSettings(
+    _ patch: DoryMachineTypedSettingsPatch,
+    into configuration: inout [String: Any]
+) {
+    for (rawKey, value) in patch.xpcDictionary {
+        guard let key = rawKey as? String else { continue }
+        configuration[key] = value
+    }
+}
+
+func parseMachineSandboxPolicyDictionary(
+    cursor: inout ArgumentCursor
+) throws -> NSDictionary? {
+    do {
+        guard let policy = try DoryMachineSandboxPolicyWriteAuthority.consumeCLIArguments(
+            &cursor.values
+        ) else { return nil }
+        return try DoryMachineSandboxPolicyWriteAuthority.xpcDictionary(policy)
+    } catch {
+        throw DorydCtlError.usage("\(error)")
     }
 }
 
@@ -932,7 +1078,14 @@ func runNetwork(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
               cursor.values.isEmpty else {
             throw DorydCtlError.usage("usage: dorydctl network repair socket|dns|domains|routes|ports|guest-agent|docker-api|data-drive")
         }
-        let repairClient = target == "ports" ? client.withTimeout(atLeast: 10) : client
+        let repairTimeout: TimeInterval
+        switch target {
+        case "docker-api": repairTimeout = 75
+        case "ports": repairTimeout = 25
+        case "guest-agent": repairTimeout = 20
+        default: repairTimeout = 15
+        }
+        let repairClient = client.withTimeout(atLeast: repairTimeout)
         try emitCommandResult(try repairClient.command { proxy, reply in
             proxy.repairSubsystem(target, reply: reply)
         })
@@ -1038,18 +1191,30 @@ func runBalloon(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
 }
 
 func runMachine(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
-    let subcommand = try cursor.take("usage: dorydctl machine list|status|create|update|start|stop|delete|exec|shell|provision|snapshots|snapshot|backup")
+    let subcommand = try cursor.take("usage: dorydctl machine list|status|stats|device-telemetry|flight-recorder|console|create|update|desktop-update|start|stop|pause|suspend|resume|restart|delete|usb-attach|usb-detach|exec|shell|recipes|provision|snapshots|snapshot|backup")
     switch subcommand {
+    case "recipes":
+        guard cursor.values.isEmpty else {
+            throw DorydCtlError.usage("usage: dorydctl machine recipes")
+        }
+        let payload = MachineRecipeCatalogPayload(
+            schema: "dev.dory.machine.recipe-catalog",
+            version: 1,
+            recipes: MachineRecipeProvisioner.catalog
+        )
+        let data = try JSONEncoder().encode(payload)
+        try emitJSON(JSONSerialization.jsonObject(with: data))
     case "list":
         let rows: NSArray = try client.call { proxy, finish in
             proxy.machineList { body, message in
                 message.isEmpty ? finish(.success(body)) : finish(.failure(DorydCtlError.daemon(message)))
             }
         }
-        try emitJSON(rows)
+        try emitJSON(DoryMachineDiagnosticsProjection.supportSafeMachineList(rows))
     case "status":
         let name = try cursor.take("usage: dorydctl machine status NAME")
-        try emitJSON(try machineDictionary(name: name, client: client))
+        let status = try machineDictionary(name: name, client: client)
+        try emitJSON(DoryMachineDiagnosticsProjection.supportSafeMachineStatus(status))
     case "stats":
         let name = try cursor.take("usage: dorydctl machine stats NAME")
         guard cursor.values.isEmpty else {
@@ -1059,65 +1224,268 @@ func runMachine(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
             proxy.machineStats(name, reply: reply)
         }
         try emitJSON(stats)
-    case "create":
-        let name = try cursor.take("usage: dorydctl machine create NAME --kernel PATH --rootfs PATH")
-        guard let kernel = try cursor.optionValue("--kernel"),
-              let rootfs = try cursor.optionValue("--rootfs") else {
-            throw DorydCtlError.usage("usage: dorydctl machine create NAME --kernel PATH --rootfs PATH")
+    case "device-telemetry":
+        let name = try cursor.take("usage: dorydctl machine device-telemetry NAME")
+        guard cursor.values.isEmpty else {
+            throw DorydCtlError.usage(
+                "unexpected machine device-telemetry argument: \(cursor.values[0])"
+            )
         }
-        let memoryMB = try cursor.optionValue("--memory-mb").map { try positiveUInt64($0, option: "--memory-mb") } ?? 2048
-        let cpuCount = try cursor.optionValue("--cpus").map { try positiveInt($0, option: "--cpus") } ?? 2
-        let displayMode = try cursor.optionValue("--display-mode") ?? DoryMachineDisplayMode.headless.rawValue
+        let telemetry: NSDictionary = try client.withTimeout(atLeast: 10)
+            .statusCommand { proxy, reply in
+                proxy.machineDeviceTelemetry(name, reply: reply)
+            }
+        try emitJSON(telemetry)
+    case "flight-recorder":
+        let name = try cursor.take(
+            "usage: dorydctl machine flight-recorder NAME [--after SEQUENCE]"
+        )
+        let after: UInt64
+        if let raw = try cursor.optionValue("--after") {
+            guard let value = UInt64(raw) else {
+                throw DorydCtlError.usage("--after must be an unsigned integer")
+            }
+            after = value
+        } else {
+            after = 0
+        }
+        guard cursor.values.isEmpty else {
+            throw DorydCtlError.usage(
+                "unexpected machine flight-recorder argument: \(cursor.values[0])"
+            )
+        }
+        let batch: NSDictionary = try client.statusCommand { proxy, reply in
+            proxy.machineFlightRecorder(name, afterSequence: after, reply: reply)
+        }
+        try emitJSON(batch)
+    case "console":
+        let name = try cursor.take(
+            "usage: dorydctl machine console NAME [--generation SHA256 --after OFFSET] [--limit BYTES] [--input TEXT]"
+        )
+        let input = try cursor.optionValue("--input")
+        let generation = try cursor.optionValue("--generation")
+        let rawAfter = try cursor.optionValue("--after")
+        let rawLimit = try cursor.optionValue("--limit")
+        guard cursor.values.isEmpty else {
+            throw DorydCtlError.usage(
+                "unexpected machine console argument: \(cursor.values[0])"
+            )
+        }
+        if let input {
+            guard generation == nil, rawAfter == nil, rawLimit == nil else {
+                throw DorydCtlError.usage(
+                    "--input cannot be combined with cursor or limit options"
+                )
+            }
+            let data = Data(input.utf8)
+            guard !data.isEmpty, data.count <= 4 * 1_024 else {
+                throw DorydCtlError.usage("--input must contain 1...4096 UTF-8 bytes")
+            }
+            let result: NSDictionary = try client.command { proxy, reply in
+                proxy.machineSerialConsoleWrite(name, data: data as NSData, reply: reply)
+            }
+            try emitJSON(result)
+            return
+        }
+        let after: UInt64
+        if let rawAfter {
+            guard let value = UInt64(rawAfter) else {
+                throw DorydCtlError.usage("--after must be an unsigned integer")
+            }
+            after = value
+        } else {
+            after = 0
+        }
+        guard (generation == nil) == (rawAfter == nil) else {
+            throw DorydCtlError.usage(
+                "--generation and --after must be supplied together"
+            )
+        }
+        if let generation {
+            guard generation.utf8.count == 64,
+                  generation.utf8.allSatisfy({ byte in
+                      (48...57).contains(byte) || (97...102).contains(byte)
+                  }) else {
+                throw DorydCtlError.usage("--generation must be a lowercase SHA-256 digest")
+            }
+        }
+        let limit: UInt32
+        if let rawLimit {
+            guard let value = UInt32(rawLimit), (1...(64 * 1_024)).contains(value) else {
+                throw DorydCtlError.usage("--limit must be between 1 and 65536 bytes")
+            }
+            limit = value
+        } else {
+            limit = 64 * 1_024
+        }
+        var cursorDictionary: [String: Any] = [
+            "schemaVersion": UInt16(1),
+            "offset": after,
+        ]
+        if let generation { cursorDictionary["generation"] = generation }
+        let batch: NSDictionary = try client.statusCommand { proxy, reply in
+            proxy.machineSerialConsoleRead(
+                name,
+                cursor: cursorDictionary as NSDictionary,
+                limit: limit,
+                reply: reply
+            )
+        }
+        try emitJSON(batch)
+    case "create":
+        let name = try cursor.take("usage: dorydctl machine create NAME (--kernel PATH --rootfs PATH | --installer-iso PATH [--disk-size-gb N])")
+        let installerISO = try cursor.optionValue("--installer-iso")
+        let kernel = try cursor.optionValue("--kernel")
+        let rootfs = try cursor.optionValue("--rootfs")
+        let diskSizeGB = try cursor.optionValue("--disk-size-gb").map {
+            try positiveUInt64($0, option: "--disk-size-gb")
+        } ?? 64
+        guard installerISO != nil || (kernel != nil && rootfs != nil) else {
+            throw DorydCtlError.usage("provide --kernel and --rootfs, or --installer-iso")
+        }
+        let defaultMemoryMB: UInt64 = installerISO == nil
+            ? 2_048
+            : DoryInstallerMachinePolicy.defaultMemoryMB
+        let memoryMB = try cursor.optionValue("--memory-mb").map {
+            try positiveUInt64($0, option: "--memory-mb")
+        } ?? defaultMemoryMB
+        let cpuCount = try cursor.optionValue("--cpus").map {
+            try positiveInt($0, option: "--cpus")
+        } ?? DoryInstallerMachinePolicy.defaultCPUCount
+        let defaultDisplayMode = installerISO == nil
+            ? DoryMachineDisplayMode.headless.rawValue
+            : DoryMachineDisplayMode.desktop.rawValue
+        let displayMode = try cursor.optionValue("--display-mode") ?? defaultDisplayMode
         guard DoryMachineDisplayMode(rawValue: displayMode) != nil else {
             throw DorydCtlError.usage("--display-mode must be headless or desktop")
         }
         let shares = try cursor.optionValues("--share").map { try DoryMachineShareConfiguration(argument: $0) }
-        let env = try cursor.optionValues("--env").map(parseEnvironmentRow)
+        let typedSettings = try parseMachineTypedSettings(cursor: &cursor, allowsClears: false)
+        let sandboxPolicy = try parseMachineSandboxPolicyDictionary(cursor: &cursor)
+        let address = try cursor.optionValue("--dns-target")
+        guard cursor.values.isEmpty else {
+            throw DorydCtlError.usage("unexpected machine create argument: \(cursor.values[0])")
+        }
+        var stagedInstallerISOPath: String?
+        defer {
+            if let stagedInstallerISOPath {
+                try? FileManager.default.removeItem(atPath: stagedInstallerISOPath)
+            }
+        }
+        if let installerISO {
+            let staged = try DoryInstallerISOStager.stage(atPath: installerISO)
+            stagedInstallerISOPath = staged.path
+        }
         var config: [String: Any] = [
             "id": name,
-            "kernelPath": kernel,
-            "rootfsPath": rootfs,
+            "kernelPath": kernel ?? "",
+            "rootfsPath": rootfs ?? "",
+            "bootMode": installerISO == nil ? DoryMachineBootMode.linuxKernel.rawValue : DoryMachineBootMode.efi.rawValue,
             "memoryMB": memoryMB,
             "cpuCount": cpuCount,
             "displayMode": displayMode,
         ]
-        if let address = try cursor.optionValue("--dns-target") {
+        if let stagedInstallerISOPath {
+            guard diskSizeGB <= UInt64.max / (1024 * 1024 * 1024) else {
+                throw DorydCtlError.usage("--disk-size-gb is too large")
+            }
+            config["installerISOPath"] = stagedInstallerISOPath
+            config["diskSizeBytes"] = diskSizeGB * 1024 * 1024 * 1024
+        }
+        if let address {
             config["address"] = address
         }
         if !shares.isEmpty {
-            config["shares"] = shares.map { share in
-                [
-                    "tag": share.tag,
-                    "hostPath": share.hostPath,
-                    "guestPath": share.guestPath,
-                    "readOnly": share.readOnly,
-                ] as NSDictionary
-            }
+            config["shares"] = try shares.map(machineShareXPCDictionary)
         }
-        if !env.isEmpty {
-            config["env"] = env
+        mergeMachineTypedSettings(typedSettings, into: &config)
+        if let sandboxPolicy {
+            config[DoryMachineSandboxPolicyWriteAuthority.xpcKey] = sandboxPolicy
         }
-        let status = try client.statusCommand { proxy, reply in
+        // Creating a machine can copy a multi-gigabyte root disk or installer ISO.
+        // Keep the request alive long enough for that transactional mutation to
+        // finish so the CLI cannot report a timeout after the daemon has succeeded.
+        let status = try client.withTimeout(atLeast: machineFileMutationTimeout).statusCommand { proxy, reply in
             proxy.machineCreate(config as NSDictionary, reply: reply)
         }
         try emitJSON(status)
     case "start":
         let name = try cursor.take("usage: dorydctl machine start NAME")
-        try emitJSON(try client.statusCommand { $0.machineStart(name, reply: $1) })
+        let operationID = DoryOperationIdentity.canonical(UUID())
+        try emitJSON(try client.withTimeout(atLeast: DoryMachineControlTiming.startSeconds).statusCommand {
+            $0.machineStart(name, operationID: operationID, reply: $1)
+        })
     case "stop":
         let name = try cursor.take("usage: dorydctl machine stop NAME")
-        try emitJSON(try client.statusCommand { $0.machineStop(name, reply: $1) })
+        let operationID = DoryOperationIdentity.canonical(UUID())
+        try emitJSON(try client.withTimeout(atLeast: DoryMachineControlTiming.stopSeconds).statusCommand {
+            $0.machineStop(name, operationID: operationID, reply: $1)
+        })
+    case "pause":
+        let name = try cursor.take("usage: dorydctl machine pause NAME")
+        let operationID = DoryOperationIdentity.canonical(UUID())
+        try emitJSON(try client.statusCommand {
+            $0.machinePause(name, operationID: operationID, reply: $1)
+        })
+    case "suspend":
+        let name = try cursor.take("usage: dorydctl machine suspend NAME")
+        try emitJSON(try client.withTimeout(atLeast: machineFileMutationTimeout).statusCommand {
+            $0.machineSuspend(name, reply: $1)
+        })
+    case "resume":
+        let name = try cursor.take("usage: dorydctl machine resume NAME")
+        let operationID = DoryOperationIdentity.canonical(UUID())
+        try emitJSON(try client.statusCommand {
+            $0.machineResume(name, operationID: operationID, reply: $1)
+        })
+    case "restart":
+        let name = try cursor.take("usage: dorydctl machine restart NAME")
+        try emitJSON(try client.withTimeout(atLeast: DoryMachineControlTiming.restartSeconds).statusCommand {
+            $0.machineRestart(name, reply: $1)
+        })
     case "update":
         try runMachineUpdate(cursor: &cursor, client: client)
     case "delete", "rm":
         let name = try cursor.take("usage: dorydctl machine delete NAME")
-        try emitCommandResult(try client.command { $0.machineDelete(name, reply: $1) })
+        try emitCommandResult(try client.withTimeout(atLeast: machineFileMutationTimeout).command {
+            $0.machineDelete(name, reply: $1)
+        })
+    case "usb-attach":
+        let name = try cursor.take(
+            "usage: dorydctl machine usb-attach NAME BUS_ID"
+        )
+        let busID = try cursor.take(
+            "usage: dorydctl machine usb-attach NAME BUS_ID"
+        )
+        guard cursor.values.isEmpty else {
+            throw DorydCtlError.usage(
+                "unexpected machine usb-attach argument: \(cursor.values[0])"
+            )
+        }
+        let attachment = try client.statusCommand { proxy, reply in
+            proxy.machineUSBAttach(name, busID: busID, reply: reply)
+        }
+        try emitJSON(attachment)
+    case "usb-detach":
+        let name = try cursor.take("usage: dorydctl machine usb-detach NAME BUS_ID")
+        let busID = try cursor.take("usage: dorydctl machine usb-detach NAME BUS_ID")
+        guard cursor.values.isEmpty else {
+            throw DorydCtlError.usage(
+                "unexpected machine usb-detach argument: \(cursor.values[0])"
+            )
+        }
+        let detached = try client.statusCommand { proxy, reply in
+            proxy.machineUSBDetach(name, busID: busID, reply: reply)
+        }
+        try emitJSON(detached)
     case "exec":
         try runMachineExec(cursor: &cursor, client: client)
     case "shell":
         try runMachineShell(cursor: &cursor, client: client)
     case "provision":
         try runMachineProvision(cursor: &cursor, client: client)
+    case "desktop-update":
+        try runMachineDesktopUpdate(cursor: &cursor, client: client)
     case "snapshots":
         let name = cursor.values.isEmpty ? "" : try cursor.take("usage: dorydctl machine snapshots [NAME]")
         guard cursor.values.isEmpty else {
@@ -1138,7 +1506,7 @@ func runMachine(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
         guard cursor.values.isEmpty else {
             throw DorydCtlError.usage("unexpected clone-snapshot argument: \(cursor.values[0])")
         }
-        try emitJSON(try client.statusCommand { proxy, reply in
+        try emitJSON(try client.withTimeout(atLeast: machineFileMutationTimeout).statusCommand { proxy, reply in
             proxy.machineCloneSnapshot(name, snapshotID: snapshotID, newID: newName, reply: reply)
         })
     case "restore-snapshot":
@@ -1147,7 +1515,7 @@ func runMachine(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
         guard cursor.values.isEmpty else {
             throw DorydCtlError.usage("unexpected restore-snapshot argument: \(cursor.values[0])")
         }
-        try emitJSON(try client.statusCommand { proxy, reply in
+        try emitJSON(try client.withTimeout(atLeast: machineFileMutationTimeout).statusCommand { proxy, reply in
             proxy.machineRestoreSnapshot(name, snapshotID: snapshotID, reply: reply)
         })
     case "delete-snapshot":
@@ -1156,7 +1524,7 @@ func runMachine(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
         guard cursor.values.isEmpty else {
             throw DorydCtlError.usage("unexpected delete-snapshot argument: \(cursor.values[0])")
         }
-        try emitCommandResult(try client.command { proxy, reply in
+        try emitCommandResult(try client.withTimeout(atLeast: machineFileMutationTimeout).command { proxy, reply in
             proxy.machineDeleteSnapshot(name, snapshotID: snapshotID, reply: reply)
         })
     case "export-snapshot":
@@ -1166,16 +1534,38 @@ func runMachine(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
         guard cursor.values.isEmpty else {
             throw DorydCtlError.usage("unexpected export-snapshot argument: \(cursor.values[0])")
         }
-        try emitCommandResult(try client.command { proxy, reply in
+        try emitCommandResult(try client.withTimeout(atLeast: machineFileMutationTimeout).command { proxy, reply in
             proxy.machineExportSnapshot(name, snapshotID: snapshotID, path: path, reply: reply)
         })
+    case "inspect-import":
+        let path = try cursor.take("usage: dorydctl machine inspect-import PATH")
+        guard cursor.values.isEmpty else {
+            throw DorydCtlError.usage("unexpected inspect-import argument: \(cursor.values[0])")
+        }
+        let assessment = try client.withTimeout(atLeast: machineFileMutationTimeout)
+            .statusCommand { proxy, reply in
+                proxy.machineAssessSnapshotImport(path, reply: reply)
+            }
+        try emitJSON(assessment)
     case "import-snapshot":
         let path = try cursor.take("usage: dorydctl machine import-snapshot PATH")
         guard cursor.values.isEmpty else {
             throw DorydCtlError.usage("unexpected import-snapshot argument: \(cursor.values[0])")
         }
-        let imported = try client.statusCommand { proxy, reply in
-            proxy.machineImportSnapshot(path, reply: reply)
+        let assessment = try client.withTimeout(atLeast: machineFileMutationTimeout)
+            .statusCommand { proxy, reply in
+                proxy.machineAssessSnapshotImport(path, reply: reply)
+            }
+        guard let disposition = assessment["disposition"] as? String,
+              let contentID = assessment["contentID"] as? String else {
+            throw DorydCtlError.daemon("invalid machine import assessment")
+        }
+        guard disposition == "ready" || disposition == "requires-replanning" else {
+            let issues = (assessment["issues"] as? [String])?.joined(separator: ", ") ?? disposition
+            throw DorydCtlError.daemon("machine import preflight rejected: \(issues)")
+        }
+        let imported = try client.withTimeout(atLeast: machineFileMutationTimeout).statusCommand { proxy, reply in
+            proxy.machineImportSnapshot(path, expectedContentID: contentID, reply: reply)
         }
         try emitJSON(imported)
     case "backup":
@@ -1240,7 +1630,7 @@ func runMachineBackup(cursor: inout ArgumentCursor, client: DorydCtlClient) thro
     case "run":
         let name = try cursor.take(usage)
         guard cursor.values.isEmpty else { throw DorydCtlError.usage(usage) }
-        let status = try client.withTimeout(atLeast: 900).statusCommand { proxy, reply in
+        let status = try client.withTimeout(atLeast: machineFileMutationTimeout).statusCommand { proxy, reply in
             proxy.machineBackupRun(name, reply: reply)
         }
         try emitJSON(status)
@@ -1256,7 +1646,7 @@ func runMachineBackup(cursor: inout ArgumentCursor, client: DorydCtlClient) thro
 }
 
 func runMachineUpdate(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
-    let usage = "usage: dorydctl machine update NAME [--memory-mb N] [--cpus N] [--dns-target IPv4 | --clear-dns-target] [--share TAG=HOST:GUEST[:ro|rw] | JSON ... | --clear-shares] [--env KEY=VALUE ... | --clear-env]"
+    let usage = "usage: dorydctl machine update NAME [resource/network options] [typed guest/desktop/clipboard options] [--attach-installer | --eject-installer]"
     let name = try cursor.take(usage)
     var config: [String: Any] = [:]
     if let memory = try cursor.optionValue("--memory-mb") {
@@ -1281,14 +1671,7 @@ func runMachineUpdate(cursor: inout ArgumentCursor, client: DorydCtlClient) thro
     let shareValues = try cursor.optionValues("--share")
     if !shareValues.isEmpty {
         let shares = try shareValues.map { try DoryMachineShareConfiguration(argument: $0) }
-        config["shares"] = shares.map { share in
-            [
-                "tag": share.tag,
-                "hostPath": share.hostPath,
-                "guestPath": share.guestPath,
-                "readOnly": share.readOnly,
-            ] as NSDictionary
-        }
+        config["shares"] = try shares.map(machineShareXPCDictionary)
     }
     if cursor.values.contains("--clear-shares") {
         guard config["shares"] == nil else {
@@ -1297,16 +1680,16 @@ func runMachineUpdate(cursor: inout ArgumentCursor, client: DorydCtlClient) thro
         cursor.values.removeAll { $0 == "--clear-shares" }
         config["shares"] = [] as [NSDictionary]
     }
-    let envValues = try cursor.optionValues("--env")
-    if !envValues.isEmpty {
-        config["env"] = try envValues.map(parseEnvironmentRow)
+    let typedSettings = try parseMachineTypedSettings(cursor: &cursor, allowsClears: true)
+    mergeMachineTypedSettings(typedSettings, into: &config)
+    let attachInstaller = cursor.values.contains("--attach-installer")
+    let ejectInstaller = cursor.values.contains("--eject-installer")
+    guard !attachInstaller || !ejectInstaller else {
+        throw DorydCtlError.usage("use either --attach-installer or --eject-installer, not both")
     }
-    if cursor.values.contains("--clear-env") {
-        guard config["env"] == nil else {
-            throw DorydCtlError.usage("use either --env or --clear-env, not both")
-        }
-        cursor.values.removeAll { $0 == "--clear-env" }
-        config["env"] = [] as [NSDictionary]
+    if attachInstaller || ejectInstaller {
+        cursor.values.removeAll { $0 == "--attach-installer" || $0 == "--eject-installer" }
+        config["installerMediaAttached"] = attachInstaller
     }
     guard !config.isEmpty else {
         throw DorydCtlError.usage(usage)
@@ -1334,10 +1717,16 @@ func runMachineSnapshot(cursor: inout ArgumentCursor, client: DorydCtlClient) th
     guard cursor.values.isEmpty else {
         throw DorydCtlError.usage("unexpected machine snapshot argument: \(cursor.values[0])")
     }
-    let snapshot = try client.statusCommand { proxy, reply in
+    let snapshot = try client.withTimeout(atLeast: machineFileMutationTimeout).statusCommand { proxy, reply in
         proxy.machineSnapshot(name, request: request as NSDictionary, reply: reply)
     }
     try emitJSON(snapshot)
+}
+
+private struct MachineRecipeCatalogPayload: Encodable {
+    var schema: String
+    var version: Int
+    var recipes: [MachineRecipeCapability]
 }
 
 func runMachineProvision(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
@@ -1354,10 +1743,63 @@ func runMachineProvision(cursor: inout ArgumentCursor, client: DorydCtlClient) t
     try emitJSON(result)
 }
 
+func runMachineDesktopUpdate(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
+    let usage = "usage: dorydctl machine desktop-update NAME --distro debian|ubuntu|kali --version VERSION --distribution-installation ID --runtime-installation ID"
+    let name = try cursor.take(usage)
+    let distro = try requiredOption("--distro", cursor: &cursor, usage: usage)
+    guard ["debian", "ubuntu", "kali"].contains(distro) else {
+        throw DorydCtlError.usage("--distro must be debian, ubuntu, or kali")
+    }
+    let version = try requiredOption("--version", cursor: &cursor, usage: usage)
+    let distributionInstallationName = try requiredOption(
+        "--distribution-installation", cursor: &cursor, usage: usage
+    )
+    let runtimeInstallationName = try requiredOption(
+        "--runtime-installation", cursor: &cursor, usage: usage
+    )
+    guard cursor.values.isEmpty else {
+        throw DorydCtlError.usage("unexpected machine desktop-update argument: " + cursor.values[0])
+    }
+    let operationID = UUID()
+    let request: NSDictionary = [
+        "operationID": operationID.uuidString.lowercased(),
+        "distro": distro,
+        "version": version,
+        "distributionInstallationName": distributionInstallationName,
+        "runtimeInstallationName": runtimeInstallationName,
+    ]
+    let result = try client.withTimeout(atLeast: 3_900).statusCommand { proxy, reply in
+        proxy.machineDesktopUpdate(name, request: request, reply: reply)
+    }
+    try emitJSON(result)
+}
+
 func runMachineShell(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
-    let name = try cursor.take("usage: dorydctl machine shell NAME")
+    let usage = "usage: dorydctl machine shell NAME [--uid N --gid N --cwd PATH --session NAME]"
+    let name = try cursor.take(usage)
+    let uid = try cursor.optionValue("--uid").map { try nonNegativeUInt64($0, option: "--uid") }
+    let gid = try cursor.optionValue("--gid").map { try nonNegativeUInt64($0, option: "--gid") }
+    let cwd = try cursor.optionValue("--cwd")
+    let session = try cursor.optionValue("--session")
+    var initialInput: String?
     guard cursor.values.isEmpty else {
         throw DorydCtlError.usage("unexpected machine shell argument: \(cursor.values[0])")
+    }
+    guard uid == nil || uid! <= UInt32.max, gid == nil || gid! <= UInt32.max else {
+        throw DorydCtlError.usage("--uid and --gid must fit an unsigned 32-bit Linux identity")
+    }
+    let requestsPersistentSession = uid != nil || gid != nil || cwd != nil || session != nil
+    if requestsPersistentSession {
+        guard let uid, let gid, let cwd, let session else {
+            throw DorydCtlError.usage("--uid, --gid, --cwd, and --session must be supplied together")
+        }
+        guard cwd.hasPrefix("/"), !cwd.contains("\n"), !cwd.contains("\r") else {
+            throw DorydCtlError.usage("--cwd must be an absolute path without control lines")
+        }
+        guard session.wholeMatch(of: /[A-Za-z0-9_][A-Za-z0-9_-]{0,63}/) != nil else {
+            throw DorydCtlError.usage("--session must be 1...64 letters, digits, underscores, or dashes")
+        }
+        initialInput = persistentSandboxShellCommand(uid: uid, gid: gid, cwd: cwd, session: session)
     }
     let status = try machineDictionary(name: name, client: client)
     guard status["state"] as? String == "running" else {
@@ -1366,7 +1808,20 @@ func runMachineShell(cursor: inout ArgumentCursor, client: DorydCtlClient) throw
     guard let shellSocketPath = status["shellSocketPath"] as? String, !shellSocketPath.isEmpty else {
         throw DorydCtlError.daemon("machine shell is unavailable: \(name)")
     }
-    try bridgeUnixSocket(path: shellSocketPath)
+    try bridgeUnixSocket(path: shellSocketPath, initialInput: initialInput)
+}
+
+func persistentSandboxShellCommand(uid: UInt64, gid: UInt64, cwd: String, session: String) -> String {
+    let arguments = [
+        "exec", "env", "HOME=/dory-sandbox/.home", "TMPDIR=/dory-sandbox/.tmp",
+        "DORY_SCRATCH=/dory-sandbox", "setpriv", "--reuid", String(uid), "--regid", String(gid),
+        "--clear-groups", "--no-new-privs", "tmux", "new-session", "-A", "-s", session, "-c", cwd,
+    ]
+    return arguments.map(shellArgument).joined(separator: " ")
+}
+
+func shellArgument(_ value: String) -> String {
+    "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
 }
 
 func runMachineExec(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
@@ -1497,18 +1952,38 @@ final class RawTerminalMode {
     }
 }
 
-func bridgeUnixSocket(path: String) throws {
+func bridgeUnixSocket(path: String, initialInput: String? = nil) throws {
     signal(SIGPIPE, SIG_IGN)
     let socketFD = try connectUnixSocket(path: path)
     defer { close(socketFD) }
     let rawMode = RawTerminalMode(fd: STDIN_FILENO)
     defer { withExtendedLifetime(rawMode) {} }
 
+    if let initialInput {
+        let bytes = Array((initialInput + "\n").utf8)
+        try writeAll(bytes, to: socketFD)
+    }
+
     DispatchQueue.global(qos: .userInitiated).async {
         pump(from: STDIN_FILENO, to: socketFD)
         shutdown(socketFD, SHUT_WR)
     }
     pump(from: socketFD, to: STDOUT_FILENO)
+}
+
+func writeAll(_ bytes: [UInt8], to outputFD: Int32) throws {
+    var offset = 0
+    while offset < bytes.count {
+        let wrote = bytes.withUnsafeBytes { raw -> Int in
+            let base = raw.baseAddress!.advanced(by: offset)
+            return write(outputFD, base, bytes.count - offset)
+        }
+        if wrote < 0, errno == EINTR { continue }
+        guard wrote > 0 else {
+            throw DorydCtlError.daemon("write: \(String(cString: strerror(errno)))")
+        }
+        offset += wrote
+    }
 }
 
 func connectUnixSocket(path: String) throws -> Int32 {

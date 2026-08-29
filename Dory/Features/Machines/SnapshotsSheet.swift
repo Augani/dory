@@ -238,6 +238,15 @@ struct SnapshotsSheet: View {
                         Text(relativeTime(snapshot.createdISO)).font(.system(size: 11)).foregroundStyle(p.text3)
                         Text("·").font(.system(size: 11)).foregroundStyle(p.text3)
                         Text(DockerFormat.bytes(snapshot.sizeBytes)).font(.mono(11)).foregroundStyle(p.text3)
+                        if let consistency = snapshot.consistency {
+                            Text("·").font(.system(size: 11)).foregroundStyle(p.text3)
+                            Text(consistency == .guestQuiesced ? "Guest quiesced" : "Cold stopped")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(consistency == .guestQuiesced ? p.green : p.text3)
+                                .help(snapshot.guestQuiesceReceipt.map {
+                                    "Quiesced by \($0.agentBuild) using snapshot-quiesce@\($0.capabilityVersion)"
+                                } ?? "The machine was stopped before its disks were copied")
+                        }
                     }
                 }
                 Spacer(minLength: 8)

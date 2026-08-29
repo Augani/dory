@@ -7,7 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use dory_remote::{push, AgentClient};
-use dory_sync::{plan, walk_manifest};
+use dory_sync::{plan, walk_manifest, walk_tree, walk_tree_excluding};
 use tokio::net::{TcpListener, TcpStream};
 
 struct Tmp {
@@ -37,7 +37,19 @@ fn converged(local: &Path, remote: &Path) -> bool {
     let l = walk_manifest(local).unwrap();
     let r = walk_manifest(remote).unwrap();
     let p = plan(&l, &r);
-    p.transfer.is_empty() && p.delete.is_empty()
+    let local_directories = walk_tree(local)
+        .unwrap()
+        .directories
+        .into_iter()
+        .map(|entry| entry.path)
+        .collect::<Vec<_>>();
+    let remote_directories = walk_tree_excluding(remote, &[".dory-sync-tmp"])
+        .unwrap()
+        .directories
+        .into_iter()
+        .map(|entry| entry.path)
+        .collect::<Vec<_>>();
+    p.transfer.is_empty() && p.delete.is_empty() && local_directories == remote_directories
 }
 
 async fn connect_agent() -> AgentClient {
@@ -61,10 +73,18 @@ async fn push_makes_the_remote_a_byte_exact_replica_and_converges_on_edits() {
     local.write("README.md", b"# project");
     local.write("src/main.rs", b"fn main() { println!(\"hi\"); }");
     local.write("assets/big.bin", &vec![42u8; 700 * 1024]);
+    fs::create_dir_all(local.path.join("docs/empty/deep")).unwrap();
+    // Exercise both namespace type-conflict directions and an extra empty remote directory.
+    remote.write("assets", b"file where a directory belongs");
+    remote.write("README.md/old", b"directory where a file belongs");
+    fs::create_dir_all(remote.path.join("obsolete-empty")).unwrap();
 
     let stats = push(&local.path, &remote_root, &client).await.unwrap();
     assert_eq!(stats.files_sent, 3);
-    assert_eq!(stats.files_deleted, 0);
+    assert_eq!(
+        stats.files_deleted, 2,
+        "removed both type-conflicting remote files"
+    );
     assert!(
         converged(&local.path, &remote.path),
         "remote must be an exact replica"
@@ -73,6 +93,8 @@ async fn push_makes_the_remote_a_byte_exact_replica_and_converges_on_edits() {
         fs::read(remote.path.join("assets/big.bin")).unwrap(),
         vec![42u8; 700 * 1024]
     );
+    assert!(remote.path.join("docs/empty/deep").is_dir());
+    assert!(!remote.path.join("obsolete-empty").exists());
 
     // Re-push with no changes: nothing sent or deleted.
     let noop = push(&local.path, &remote_root, &client).await.unwrap();
@@ -204,7 +226,9 @@ async fn manifest_waits_for_a_staggered_concurrent_delete_and_update() {
     let remote_root = remote.path.to_string_lossy().into_owned();
 
     // The first push updates one multi-chunk file, then removes a large obsolete tree. Start the
-    // second push only after the delete has demonstrably begun but before its tail is removed.
+    // second push only after the delete has demonstrably begun. The topology RPC may finish the
+    // whole removal between scheduler polls; either way its write lock must serialize the second
+    // manifest with the namespace mutation.
     let updated = vec![0xA5; 700 * 1024];
     local.write("current.bin", &updated);
     remote.write("current.bin", b"old");
@@ -212,7 +236,6 @@ async fn manifest_waits_for_a_staggered_concurrent_delete_and_update() {
         remote.write(&format!("obsolete/{i:05}.txt"), b"x");
     }
     let first_deleted = remote.path.join("obsolete/00000.txt");
-    let last_deleted = remote.path.join("obsolete/19999.txt");
 
     let first = push(&local.path, &remote_root, &client);
     let second = async {
@@ -221,10 +244,6 @@ async fn manifest_waits_for_a_staggered_concurrent_delete_and_update() {
             assert!(tokio::time::Instant::now() < deadline, "delete never began");
             tokio::time::sleep(std::time::Duration::from_millis(1)).await;
         }
-        assert!(
-            last_deleted.exists(),
-            "the stagger must observe deletion in progress, not after completion"
-        );
         push(&local.path, &remote_root, &client).await
     };
 

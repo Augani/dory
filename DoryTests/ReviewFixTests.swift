@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import DoryOperations
 @testable import Dory
 
 @MainActor
@@ -25,12 +26,70 @@ struct ReviewFixTests {
         #expect(!first.migrationSourceIdentifier.contains("/Users/example"))
     }
 
-    @Test func dockerRuntimeClonePreservesConfiguredMigrationIdleTimeout() {
-        let runtime = DockerEngineRuntime(socketPath: "/tmp/dory-timeout-source.sock")
+    @Test func dockerRuntimeClonePreservesConfiguredMigrationControls() async throws {
+        let expectedUsage = MigrationTargetStorageUsage(
+            totalBytes: 126,
+            usedBytes: 8,
+            availableBytes: 116
+        )
+        let runtime = DockerEngineRuntime(
+            socketPath: "/tmp/dory-timeout-source.sock",
+            migrationTargetStorageUsageProbe: { expectedUsage }
+        )
             .withOperationIdleTimeout(42)
 
         #expect(runtime.operationIdleTimeout == 42)
         #expect(runtime.socketPath == "/tmp/dory-timeout-source.sock")
+        #expect(try await runtime.migrationTargetStorageUsage() == expectedUsage)
+    }
+
+    @Test func doryMigrationDiskProbeBindsSocketAndSelectedDriveIdentity() throws {
+        let home = "/tmp/dory-migration-drive-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        let store = try DoryDataDriveSelectionStore(home: home)
+        let drive = try store.prepareSelection()
+        let driveID = try drive.readManifest().id
+        let socketPath = home + "/dory.sock"
+        let usage = DorydDockerGuestDataDiskUsage(
+            engineSocketPath: socketPath,
+            dataDriveID: driveID,
+            totalBytes: 126,
+            usedBytes: 8,
+            availableBytes: 116
+        )
+
+        #expect(try AppStore.verifiedMigrationTargetStorageUsage(
+            usage,
+            expectedSocketPath: socketPath,
+            selectedDataDriveHome: home
+        ) == MigrationTargetStorageUsage(totalBytes: 126, usedBytes: 8, availableBytes: 116))
+
+        #expect(throws: MigrationStrictInventoryError.incomplete(
+            "doryd measured a different engine socket than the migration target"
+        )) {
+            try AppStore.verifiedMigrationTargetStorageUsage(
+                usage,
+                expectedSocketPath: socketPath + ".other",
+                selectedDataDriveHome: home
+            )
+        }
+
+        let staleDrive = DorydDockerGuestDataDiskUsage(
+            engineSocketPath: socketPath,
+            dataDriveID: UUID(),
+            totalBytes: 126,
+            usedBytes: 8,
+            availableBytes: 116
+        )
+        #expect(throws: MigrationStrictInventoryError.incomplete(
+            "doryd measured a different data drive than the migration target"
+        )) {
+            try AppStore.verifiedMigrationTargetStorageUsage(
+                staleDrive,
+                expectedSocketPath: socketPath,
+                selectedDataDriveHome: home
+            )
+        }
     }
 
     // #1 + #2: shim create + lifecycle must not deadlock and must round-trip.

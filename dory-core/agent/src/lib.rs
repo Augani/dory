@@ -10,14 +10,18 @@
 //! - `vsock_server` (Linux only) — the guest PID-1 control + docker byte-stream server.
 
 pub mod daemon;
+pub mod datapath_canary;
 pub mod dispatch;
 pub mod exec;
 pub mod fsevents;
 pub mod handler;
 pub mod proc_net;
 pub mod reaper;
+pub mod snapshot_quiesce;
 pub mod sync_apply;
 pub mod telemetry;
+pub mod usb_vhci;
+pub mod virtiofs_mount;
 
 #[cfg(target_os = "linux")]
 pub mod terminal;

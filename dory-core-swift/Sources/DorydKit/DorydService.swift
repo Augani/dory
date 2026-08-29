@@ -1,14 +1,236 @@
 import DoryCore
+import DoryOperations
 import Foundation
 import ObjectiveC
+
+public enum DorydDockerTierShutdownOutcome: Equatable, Sendable {
+    case terminated
+    case authorityRetained(pid: Int32?, detail: String)
+
+    public var permitsDaemonExit: Bool {
+        if case .terminated = self { return true }
+        return false
+    }
+}
+
+public enum DorydDockerTierShutdownBoundary {
+    /// The helper TERM/KILL policy is itself bounded by `hostTerminationSeconds`. This additional
+    /// completion allowance prevents executor jitter from turning that policy into a false timeout.
+    public static let shutdownCompletionSeconds: TimeInterval =
+        DoryEngineShutdownTiming.hostTerminationSeconds + 1
+
+    /// After a completed TERM/KILL attempt reports an unconfirmed helper, this short monotonic
+    /// retirement window lets the exact retained process object publish its terminal observation.
+    /// A timeout deliberately returns retained authority to the caller; it never authorizes process
+    /// exit while a helper may still be alive.
+    public static let retirementObservationSeconds: TimeInterval = 2
+
+    public static func complete(
+        dockerTier: DockerTier?,
+        shutdownTimeout: TimeInterval = shutdownCompletionSeconds,
+        retirementTimeout: TimeInterval = retirementObservationSeconds
+    ) -> DorydDockerTierShutdownOutcome {
+        guard let dockerTier else { return .terminated }
+        let boundedShutdownTimeout = shutdownTimeout.isFinite
+            ? min(max(0, shutdownTimeout), shutdownCompletionSeconds)
+            : shutdownCompletionSeconds
+        let boundedTimeout = retirementTimeout.isFinite
+            ? min(max(0, retirementTimeout), retirementObservationSeconds)
+            : retirementObservationSeconds
+
+        // Close the launch gate synchronously. The potentially blocking TERM/KILL work then runs
+        // outside the shutdown coordinator so even a concurrently wedged teardown cannot defeat
+        // the daemon's monotonic completion bound.
+        dockerTier.latchTerminalShutdown()
+        let attempt = DockerTierShutdownAttempt()
+        DispatchQueue.global(qos: .userInitiated).async {
+            attempt.finish(dockerTier.shutdown())
+        }
+        guard let shutdownCompleted = attempt.wait(
+            until: .now() + boundedShutdownTimeout
+        ) else {
+            let status = dockerTier.status()
+            return .authorityRetained(
+                pid: status.hvPID,
+                detail: "Docker tier shutdown did not complete within its bounded TERM/KILL window"
+            )
+        }
+        if shutdownCompleted {
+            return .terminated
+        }
+        if dockerTier.waitForTerminalRetirement(timeout: boundedTimeout) {
+            return .terminated
+        }
+        let status = dockerTier.status()
+        return .authorityRetained(
+            pid: status.hvPID,
+            detail: status.lastError
+                ?? "Docker helper termination remains unconfirmed after the bounded retirement window"
+        )
+    }
+
+    /// Fail-safe terminal observer used only after `complete` returns retained authority. Every
+    /// individual wait is bounded and joins the exact teardown/helper event; the enclosing loop is
+    /// intentionally unbounded because daemon exit is unsafe until that same helper is proven
+    /// terminal. A terminal event that precedes registration is still observed immediately by the
+    /// process object's latched completion primitive.
+    @discardableResult
+    public static func awaitTerminalRetirement(
+        dockerTier: DockerTier,
+        observationWindow: TimeInterval = retirementObservationSeconds
+    ) -> Bool {
+        let boundedWindow = observationWindow.isFinite
+            ? min(max(0.01, observationWindow), retirementObservationSeconds)
+            : retirementObservationSeconds
+        while !dockerTier.waitForTerminalRetirement(timeout: boundedWindow) {}
+        return true
+    }
+}
+
+private final class DockerTierShutdownAttempt: @unchecked Sendable {
+    private let completion = DispatchGroup()
+    private let lock = NSLock()
+    private var result: Bool?
+
+    init() {
+        completion.enter()
+    }
+
+    func finish(_ value: Bool) {
+        lock.lock()
+        precondition(result == nil, "Docker tier shutdown attempt completed more than once")
+        result = value
+        lock.unlock()
+        completion.leave()
+    }
+
+    func wait(until deadline: DispatchTime) -> Bool? {
+        guard completion.wait(timeout: deadline) == .success else { return nil }
+        lock.lock()
+        defer { lock.unlock() }
+        return result
+    }
+}
+
+enum EngineDesiredStatePersistenceOutcome: Sendable {
+    case succeeded(state: String)
+    case failed(state: String, detail: String)
+}
+
+final class EngineDesiredStatePersistenceJournal: @unchecked Sendable {
+    private static let maximumObservationWaitSeconds: TimeInterval = 2
+    private static let retainedRecordLimit = 64
+
+    private struct Record {
+        let revision: UInt64
+        let event: DockerTierLifecycleEvent
+        let outcome: EngineDesiredStatePersistenceOutcome
+        let recordedAtUptimeNanoseconds: UInt64
+    }
+
+    private let lock = NSLock()
+    private var revision: UInt64 = 0
+    private var records: [Record] = []
+    private var waiters: [UUID: DispatchSemaphore] = [:]
+
+    func checkpoint() -> UInt64 {
+        lock.lock()
+        defer { lock.unlock() }
+        return revision
+    }
+
+    func record(
+        _ outcome: EngineDesiredStatePersistenceOutcome,
+        for event: DockerTierLifecycleEvent
+    ) {
+        let recordedAt = DispatchTime.now().uptimeNanoseconds
+        lock.lock()
+        revision &+= 1
+        records.append(Record(
+            revision: revision,
+            event: event,
+            outcome: outcome,
+            recordedAtUptimeNanoseconds: recordedAt
+        ))
+        if records.count > Self.retainedRecordLimit {
+            records.removeFirst(records.count - Self.retainedRecordLimit)
+        }
+        let pendingWaiters = Array(waiters.values)
+        lock.unlock()
+        for waiter in pendingWaiters { waiter.signal() }
+    }
+
+    func waitForOutcome(
+        after checkpoint: UInt64,
+        expectedEvent: DockerTierLifecycleEvent,
+        timeout: TimeInterval = maximumObservationWaitSeconds
+    ) -> EngineDesiredStatePersistenceOutcome? {
+        let boundedTimeout = timeout.isFinite
+            ? min(max(0, timeout), Self.maximumObservationWaitSeconds)
+            : Self.maximumObservationWaitSeconds
+        return waitForOutcome(
+            after: checkpoint,
+            expectedEvent: expectedEvent,
+            deadline: .now() + boundedTimeout
+        )
+    }
+
+    /// Absolute-deadline form keeps the acceptance rule testable: an outcome recorded after this
+    /// monotonic instant is late even if the waiting thread observes it before checking the clock.
+    func waitForOutcome(
+        after checkpoint: UInt64,
+        expectedEvent: DockerTierLifecycleEvent,
+        deadline: DispatchTime
+    ) -> EngineDesiredStatePersistenceOutcome? {
+        let deadlineNanoseconds = deadline.uptimeNanoseconds
+        let waiterID = UUID()
+        let waiter = DispatchSemaphore(value: 0)
+
+        lock.lock()
+        waiters[waiterID] = waiter
+        defer {
+            waiters.removeValue(forKey: waiterID)
+            lock.unlock()
+        }
+        while true {
+            if let matching = records.first(where: {
+                $0.revision > checkpoint
+                    && $0.event == expectedEvent
+                    && $0.recordedAtUptimeNanoseconds <= deadlineNanoseconds
+            }) {
+                return matching.outcome
+            }
+            guard DispatchTime.now().uptimeNanoseconds < deadlineNanoseconds else { return nil }
+            lock.unlock()
+            _ = waiter.wait(timeout: deadline)
+            lock.lock()
+        }
+    }
+
+    var currentFailure: String? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let latest = records.last else { return nil }
+        if case let .failed(state, detail) = latest.outcome {
+            return "could not persist engine desired state \(state): \(detail)"
+        }
+        return nil
+    }
+}
 
 /// The exported XPC object. Stateless beyond the socket path; every reply is total.
 public final class DorydService: NSObject, DorydControl {
     private let socketPath: String
     private let home: String
     private let dockerTier: DockerTier?
+    private let dockerDataDriveID: UUID?
     private let machineManager: MachineManager?
+    private let productionPlanningController:
+        (any DoryDaemonVirtualMachineProductionPlanningControlling)?
+    private let machineImportEnvironment: DoryMachineImportEnvironment
+    private let machineEventStore: DoryMachineEventStore?
     private let machineBackupScheduler: MachineBackupScheduler?
+    private let hostUSBDiscovery: any DoryHostUSBDiscovering
     private let remoteManager: RemoteMachineManager?
     private let networkingController: NetworkingController?
     private let networkRouteRepair: (@Sendable () -> Int)?
@@ -17,16 +239,24 @@ public final class DorydService: NSObject, DorydControl {
     private let balloonController: BalloonController
     private let idlePolicyStore: IdlePolicyStore
     private let idleSleepScheduler: IdleSleepScheduler?
+    private let engineDesiredStatePersistence: EngineDesiredStatePersistenceJournal?
     private let healthReporter: HealthReporter
     private let incidentWriter: IncidentWriter?
+    private let engineLifecycleOperationLock = NSLock()
     private let runtimeModeLock = NSLock()
+    private let machineEventQueryLock = NSLock()
 
-    public init(
+    public convenience init(
         socketPath: String,
         home: String = NSHomeDirectory(),
         dockerTier: DockerTier? = nil,
+        dockerDataDriveID: UUID? = nil,
         machineManager: MachineManager? = nil,
+        productionPlanningController:
+            (any DoryDaemonVirtualMachineProductionPlanningControlling)? = nil,
+        machineImportEnvironment: DoryMachineImportEnvironment = .unverified,
         machineBackupScheduler: MachineBackupScheduler? = nil,
+        hostUSBDiscovery: any DoryHostUSBDiscovering = IOKitDoryHostUSBDiscovery(),
         remoteManager: RemoteMachineManager? = nil,
         networkingController: NetworkingController? = nil,
         networkRouteRepair: (@Sendable () -> Int)? = nil,
@@ -38,11 +268,65 @@ public final class DorydService: NSObject, DorydControl {
         healthReporter: HealthReporter? = nil,
         incidentWriter: IncidentWriter? = nil
     ) {
+        self.init(
+            socketPath: socketPath,
+            home: home,
+            dockerTier: dockerTier,
+            dockerDataDriveID: dockerDataDriveID,
+            machineManager: machineManager,
+            productionPlanningController: productionPlanningController,
+            machineImportEnvironment: machineImportEnvironment,
+            machineBackupScheduler: machineBackupScheduler,
+            hostUSBDiscovery: hostUSBDiscovery,
+            remoteManager: remoteManager,
+            networkingController: networkingController,
+            networkRouteRepair: networkRouteRepair,
+            customDomainRouteStore: customDomainRouteStore,
+            corporateConnectivity: corporateConnectivity,
+            balloonController: balloonController,
+            idlePolicyStore: idlePolicyStore,
+            idleSleepScheduler: idleSleepScheduler,
+            healthReporter: healthReporter,
+            incidentWriter: incidentWriter,
+            engineDesiredStateWriter: nil
+        )
+    }
+
+    init(
+        socketPath: String,
+        home: String = NSHomeDirectory(),
+        dockerTier: DockerTier? = nil,
+        dockerDataDriveID: UUID? = nil,
+        machineManager: MachineManager? = nil,
+        productionPlanningController:
+            (any DoryDaemonVirtualMachineProductionPlanningControlling)? = nil,
+        machineImportEnvironment: DoryMachineImportEnvironment = .unverified,
+        machineBackupScheduler: MachineBackupScheduler? = nil,
+        hostUSBDiscovery: any DoryHostUSBDiscovering = IOKitDoryHostUSBDiscovery(),
+        remoteManager: RemoteMachineManager? = nil,
+        networkingController: NetworkingController? = nil,
+        networkRouteRepair: (@Sendable () -> Int)? = nil,
+        customDomainRouteStore: CustomDomainRouteStore? = nil,
+        corporateConnectivity: CorporateConnectivityReconciler? = nil,
+        balloonController: BalloonController? = nil,
+        idlePolicyStore: IdlePolicyStore? = nil,
+        idleSleepScheduler: IdleSleepScheduler? = nil,
+        healthReporter: HealthReporter? = nil,
+        incidentWriter: IncidentWriter? = nil,
+        engineDesiredStateWriter: (@Sendable (String) throws -> Void)?
+    ) {
         self.socketPath = socketPath
         self.home = home
         self.dockerTier = dockerTier
+        self.dockerDataDriveID = dockerDataDriveID
         self.machineManager = machineManager
+        self.productionPlanningController = productionPlanningController
+        self.machineImportEnvironment = machineImportEnvironment
+        self.machineEventStore = machineManager.map {
+            DoryMachineEventStore(root: $0.managedStateDirectory)
+        }
         self.machineBackupScheduler = machineBackupScheduler
+        self.hostUSBDiscovery = hostUSBDiscovery
         self.remoteManager = remoteManager
         self.networkingController = networkingController
         self.networkRouteRepair = networkRouteRepair
@@ -54,8 +338,12 @@ public final class DorydService: NSObject, DorydControl {
         let resolvedIdlePolicyStore = idlePolicyStore ?? IdlePolicyStore(dockerContainers: {
             dockerTier?.containerSummariesForIdle() ?? .ok([])
         })
+        let desiredStatePersistence = idlePolicyStore.map { _ in
+            EngineDesiredStatePersistenceJournal()
+        }
         self.idlePolicyStore = resolvedIdlePolicyStore
         self.idleSleepScheduler = idleSleepScheduler
+        self.engineDesiredStatePersistence = desiredStatePersistence
         self.healthReporter = healthReporter ?? HealthReporter(
             socketPath: socketPath,
             dockerTier: dockerTier,
@@ -66,24 +354,39 @@ public final class DorydService: NSObject, DorydControl {
             home: home
         )
         self.incidentWriter = incidentWriter
-        if let idlePolicyStore {
-            dockerTier?.setLifecycleStateObserver { state in
+        if let idlePolicyStore, let desiredStatePersistence {
+            let desiredStateWriter = engineDesiredStateWriter ?? { desiredState in
+                try idlePolicyStore.setEngineDesiredState(desiredState)
+            }
+            dockerTier?.setLifecycleEventObserver { event in
                 let desiredState: String
-                switch state {
+                switch event.state {
                 case .running:
                     desiredState = "running"
                 case .sleeping, .stopped:
                     desiredState = "sleeping"
                 case .starting, .failed:
+                    incidentWriter?.record(
+                        type: "engine.lifecycle",
+                        detail: "docker tier \(event.state.rawValue)"
+                    )
                     return
                 }
                 do {
-                    try idlePolicyStore.setEngineDesiredState(desiredState)
+                    try desiredStateWriter(desiredState)
+                    desiredStatePersistence.record(
+                        .succeeded(state: desiredState),
+                        for: event
+                    )
                     incidentWriter?.record(
                         type: "engine.lifecycle",
-                        detail: "docker tier \(state.rawValue)"
+                        detail: "docker tier \(event.state.rawValue)"
                     )
                 } catch {
+                    desiredStatePersistence.record(
+                        .failed(state: desiredState, detail: "\(error)"),
+                        for: event
+                    )
                     incidentWriter?.record(
                         type: "engine.desired_state_failed",
                         detail: "\(desiredState): \(error)"
@@ -107,7 +410,27 @@ public final class DorydService: NSObject, DorydControl {
             return
         }
         let status = dockerTier.status()
-        reply(status.state.rawValue, status.lastError ?? "")
+        let state = status.isStopping ? "stopping" : status.state.rawValue
+        let lifecycleDetail = status.isStopping
+            ? "docker endpoint and helper retirement is in progress"
+            : status.lastError
+        let detail = [lifecycleDetail, engineDesiredStatePersistence?.currentFailure]
+            .compactMap { $0 }
+            .joined(separator: "; ")
+        reply(state, detail)
+    }
+
+    public func engineDashboardSnapshot(reply: @escaping (NSDictionary, String) -> Void) {
+        guard let dockerTier else {
+            reply([:], "docker tier is not configured")
+            return
+        }
+        do {
+            let snapshot = try dockerTier.dashboardSnapshot()
+            reply(snapshot.mapValues { $0 as NSData } as NSDictionary, "")
+        } catch {
+            reply([:], "dashboard observation failed: \(error)")
+        }
     }
 
     public func engineStart(reply: @escaping (Bool, String) -> Void) {
@@ -119,9 +442,44 @@ public final class DorydService: NSObject, DorydControl {
             reply(false, "docker tier is not configured")
             return
         }
-        dockerTier.stop()
-        incidentWriter?.record(type: "engine.stop", detail: "docker tier stopped")
-        reply(true, "")
+        let outcome: (ok: Bool, detail: String) = engineLifecycleOperationLock.withLock {
+            let persistenceCheckpoint = engineDesiredStatePersistence?.checkpoint()
+            guard dockerTier.stop() else {
+                let error = dockerTier.status().lastError
+                    ?? DockerTier.TierError.helperTerminationPending.description
+                incidentWriter?.record(type: "engine.stop_failed", detail: error)
+                return (false, error)
+            }
+            let stoppedEvent = dockerTier.currentLifecycleEvent()
+            guard stoppedEvent.state == .stopped else {
+                let error = "docker tier stop was superseded by lifecycle epoch \(stoppedEvent.epoch) in state \(stoppedEvent.state.rawValue)"
+                incidentWriter?.record(type: "engine.stop_failed", detail: error)
+                return (false, error)
+            }
+            if let engineDesiredStatePersistence, let persistenceCheckpoint {
+                guard let persistence = engineDesiredStatePersistence.waitForOutcome(
+                    after: persistenceCheckpoint,
+                    expectedEvent: stoppedEvent
+                ) else {
+                    let error = "docker tier stopped, but its lifecycle observer did not confirm the persisted sleeping intent"
+                    incidentWriter?.record(type: "engine.stop_failed", detail: error)
+                    return (false, error)
+                }
+                if case let .failed(_, detail) = persistence {
+                    let error = "docker tier stopped, but engine desired-state persistence failed: \(detail)"
+                    incidentWriter?.record(type: "engine.stop_failed", detail: error)
+                    return (false, error)
+                }
+            }
+            guard dockerTier.currentLifecycleEvent() == stoppedEvent else {
+                let error = "docker tier stop lifecycle was superseded before desired-state persistence completed"
+                incidentWriter?.record(type: "engine.stop_failed", detail: error)
+                return (false, error)
+            }
+            incidentWriter?.record(type: "engine.stop", detail: "docker tier stopped")
+            return (true, "")
+        }
+        reply(outcome.ok, outcome.detail)
     }
 
     public func engineSleep(reply: @escaping (Bool, String) -> Void) {
@@ -129,22 +487,23 @@ public final class DorydService: NSObject, DorydControl {
             reply(false, "docker tier is not configured")
             return
         }
-        let status = dockerTier.status()
-        switch status.state {
-        case .sleeping:
-            reply(true, "docker tier is already sleeping")
-            return
-        case .stopped:
-            reply(true, "docker tier is already stopped")
-            return
-        case .starting, .running, .failed:
-            break
+        let outcome: (ok: Bool, detail: String) = engineLifecycleOperationLock.withLock {
+            let status = dockerTier.status()
+            switch status.state {
+            case .sleeping:
+                return (true, "docker tier is already sleeping")
+            case .stopped:
+                return (true, "docker tier is already stopped")
+            case .starting, .running, .failed:
+                break
+            }
+            let slept = dockerTier.sleepForIdle(idleAfter: 0)
+            if slept {
+                incidentWriter?.record(type: "engine.sleep", detail: "manual XPC sleep")
+            }
+            return (slept, slept ? "" : "docker tier is not idle-sleepable")
         }
-        let slept = dockerTier.sleepForIdle(idleAfter: 0)
-        if slept {
-            incidentWriter?.record(type: "engine.sleep", detail: "manual XPC sleep")
-        }
-        reply(slept, slept ? "" : "docker tier is not idle-sleepable")
+        reply(outcome.ok, outcome.detail)
     }
 
     public func engineWake(reply: @escaping (Bool, String) -> Void) {
@@ -200,6 +559,44 @@ public final class DorydService: NSObject, DorydControl {
         }
     }
 
+    public func dockerGuestDataDiskUsage(reply: @escaping (NSDictionary, String) -> Void) {
+        guard let dockerTier else {
+            reply([:], "docker tier is not configured")
+            return
+        }
+        guard socketPath == dockerTier.socketPath else {
+            reply([:], "docker guest resource probe is not bound to the published engine socket")
+            return
+        }
+        guard let dockerDataDriveID else {
+            reply([:], "docker data-drive identity is unavailable")
+            return
+        }
+        do {
+            guard let snapshot = try dockerTier.guestResourceSnapshot() else {
+                reply([:], "docker guest resource snapshot is unavailable")
+                return
+            }
+            guard snapshot.selectedDataDriveID == dockerDataDriveID else {
+                reply([:], "docker guest filesystem is not bound to the selected data drive")
+                return
+            }
+            reply([
+                "schema": UInt16(1),
+                "engineSocketPath": socketPath,
+                // This ID comes from the host image authority that the guest UUID matched. The
+                // service-level value is only an equality constraint; it is never stamped onto an
+                // otherwise-unverified `df` response.
+                "dataDriveID": snapshot.selectedDataDriveID.uuidString.lowercased(),
+                "totalBytes": snapshot.dataDiskTotalBytes,
+                "usedBytes": snapshot.dataDiskUsedBytes,
+                "availableBytes": snapshot.dataDiskAvailableBytes,
+            ], "")
+        } catch {
+            reply([:], "docker guest resource probe failed: \(error)")
+        }
+    }
+
     public func dockerAgentClockSync(reply: @escaping (NSDictionary, String) -> Void) {
         guard let dockerTier else {
             reply([:], "docker tier is not configured")
@@ -231,14 +628,65 @@ public final class DorydService: NSObject, DorydControl {
             reply(false, [:], "machine manager is not configured")
             return
         }
+        var createdMachineID: String?
         do {
+            let typedSettings = try DoryMachineTypedSettingsPatch(
+                xpcDictionary: config,
+                allowsClears: false
+            )
+            let sandboxPolicy = try DoryMachineSandboxPolicyWriteAuthority.decodeXPC(
+                config
+            )
             let machine = try DoryMachineConfiguration(xpcDictionary: config)
-            let status = try machineManager.create(machine)
+            if machine.bootMode == .efi, let installerISOPath = machine.installerISOPath {
+                do {
+                    _ = try DoryQualifiedBootMediaInspector
+                        .inspectPortableLinuxARM64InstallerISO(atPath: installerISOPath)
+                } catch {
+                    throw MachineManagerError.persistence(
+                        "The selected installer is not a portable ARM64 EFI Linux ISO. "
+                            + "Choose media with a standard EFI/BOOT/BOOTAA64.EFI loader."
+                    )
+                }
+            }
+            var status = try machineManager.create(
+                machine,
+                typedSettings: typedSettings.isEmpty ? nil : typedSettings,
+                sandboxPolicy: sandboxPolicy
+            )
+            createdMachineID = machine.id
+            if machineManager.configuredLaunchPolicy == .perWorkspaceAuthority {
+                guard let productionPlanningController else {
+                    throw MachineManagerError.persistence(
+                        "production planning controller is not configured"
+                    )
+                }
+                status = try machineManager.resolveAndPublishProductionPlan(
+                    id: machine.id,
+                    controller: productionPlanningController
+                )
+            }
             incidentWriter?.record(type: "machine.create", detail: machine.id)
             reply(true, status.xpcDictionary, "")
         } catch {
-            incidentWriter?.record(type: "machine.create_failed", detail: "\(error)")
-            reply(false, [:], "\(error)")
+            var message = "\(error)"
+            if let createdMachineID {
+                do {
+                    try machineManager.delete(id: createdMachineID)
+                    incidentWriter?.record(
+                        type: "machine.create_rolled_back",
+                        detail: createdMachineID
+                    )
+                } catch let rollbackError {
+                    message += "; failed to remove the incomplete machine: \(rollbackError)"
+                    incidentWriter?.record(
+                        type: "machine.create_rollback_failed",
+                        detail: "\(createdMachineID): \(rollbackError)"
+                    )
+                }
+            }
+            incidentWriter?.record(type: "machine.create_failed", detail: message)
+            reply(false, [:], message)
         }
     }
 
@@ -246,8 +694,24 @@ public final class DorydService: NSObject, DorydControl {
         _ machineID: String,
         reply: @escaping (Bool, NSDictionary, String) -> Void
     ) {
+        machineStart(
+            machineID,
+            operationID: DoryOperationIdentity.canonical(UUID()),
+            reply: reply
+        )
+    }
+
+    public func machineStart(
+        _ machineID: String,
+        operationID: String,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        guard let parsedOperationID = DoryOperationIdentity.parseCanonical(operationID) else {
+            reply(false, [:], "machine start requires a canonical operation ID")
+            return
+        }
         machineControl(machineID, action: "start", reply: reply) { manager, id in
-            try manager.start(id: id)
+            try manager.start(id: id, operationID: parsedOperationID)
         }
     }
 
@@ -255,8 +719,92 @@ public final class DorydService: NSObject, DorydControl {
         _ machineID: String,
         reply: @escaping (Bool, NSDictionary, String) -> Void
     ) {
+        machineStop(
+            machineID,
+            operationID: DoryOperationIdentity.canonical(UUID()),
+            reply: reply
+        )
+    }
+
+    public func machineStop(
+        _ machineID: String,
+        operationID: String,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        guard let parsedOperationID = DoryOperationIdentity.parseCanonical(operationID) else {
+            reply(false, [:], "machine stop requires a canonical operation ID")
+            return
+        }
         machineControl(machineID, action: "stop", reply: reply) { manager, id in
-            try manager.stop(id: id)
+            try manager.stop(id: id, operationID: parsedOperationID)
+        }
+    }
+
+    public func machinePause(
+        _ machineID: String,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        machinePause(
+            machineID,
+            operationID: DoryOperationIdentity.canonical(UUID()),
+            reply: reply
+        )
+    }
+
+    public func machinePause(
+        _ machineID: String,
+        operationID: String,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        guard let parsedOperationID = DoryOperationIdentity.parseCanonical(operationID) else {
+            reply(false, [:], "machine pause requires a canonical operation ID")
+            return
+        }
+        machineControl(machineID, action: "pause", reply: reply) { manager, id in
+            try manager.pause(id: id, operationID: parsedOperationID)
+        }
+    }
+
+    public func machineSuspend(
+        _ machineID: String,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        machineControl(machineID, action: "suspend", reply: reply) { manager, id in
+            try manager.suspend(id: id)
+        }
+    }
+
+    public func machineResume(
+        _ machineID: String,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        machineResume(
+            machineID,
+            operationID: DoryOperationIdentity.canonical(UUID()),
+            reply: reply
+        )
+    }
+
+    public func machineResume(
+        _ machineID: String,
+        operationID: String,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        guard let parsedOperationID = DoryOperationIdentity.parseCanonical(operationID) else {
+            reply(false, [:], "machine resume requires a canonical operation ID")
+            return
+        }
+        machineControl(machineID, action: "resume", reply: reply) { manager, id in
+            try manager.resume(id: id, operationID: parsedOperationID)
+        }
+    }
+
+    public func machineRestart(
+        _ machineID: String,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        machineControl(machineID, action: "restart", reply: reply) { manager, id in
+            try manager.restart(id: id)
         }
     }
 
@@ -271,7 +819,10 @@ public final class DorydService: NSObject, DorydControl {
         }
         do {
             let update = try MachineUpdateRequest(xpcDictionary: config)
-            let status = try machineManager.update(
+            let previousState = machineManager.status(id: machineID)?.state
+            let restoresActiveInstallerSession = update.installerMediaAttached != nil
+                && (previousState == .running || previousState == .paused)
+            var status = try machineManager.update(
                 id: machineID,
                 memoryMB: update.memoryMB,
                 cpuCount: update.cpuCount,
@@ -279,13 +830,50 @@ public final class DorydService: NSObject, DorydControl {
                 updatesAddress: update.updatesAddress,
                 shares: update.shares,
                 updatesShares: update.updatesShares,
-                environment: update.environment,
-                updatesEnvironment: update.updatesEnvironment
+                typedSettingsPatch: update.typedSettings.isEmpty ? nil : update.typedSettings,
+                installerMediaAttached: update.installerMediaAttached
             )
+            if machineManager.configuredLaunchPolicy == .perWorkspaceAuthority {
+                guard let productionPlanningController else {
+                    throw MachineManagerError.persistence(
+                        "production planning controller is not configured"
+                    )
+                }
+                status = try machineManager.resolveAndPublishProductionPlan(
+                    id: machineID,
+                    controller: productionPlanningController
+                )
+                if restoresActiveInstallerSession {
+                    status = try machineManager.start(id: machineID)
+                }
+            }
             incidentWriter?.record(type: "machine.update", detail: machineID)
             reply(true, status.xpcDictionary, "")
         } catch {
             incidentWriter?.record(type: "machine.update_failed", detail: "\(machineID): \(error)")
+            reply(false, [:], "\(error)")
+        }
+    }
+
+    public func machineDisplayPresentationSet(
+        _ machineID: String,
+        presentation: NSDictionary,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        guard let machineManager else {
+            reply(false, [:], "machine manager is not configured")
+            return
+        }
+        do {
+            let decoded = try DoryMachineDisplayPresentation(
+                xpcDictionary: presentation
+            )
+            let status = try machineManager.setDisplayPresentation(
+                id: machineID,
+                presentation: decoded
+            )
+            reply(true, status.xpcDictionary, "")
+        } catch {
             reply(false, [:], "\(error)")
         }
     }
@@ -313,6 +901,97 @@ public final class DorydService: NSObject, DorydControl {
         reply(machineManager.list().map(\.xpcDictionary) as NSArray, "")
     }
 
+    public func machineEvents(
+        _ afterSequence: UInt64,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        guard let machineManager, let machineEventStore else {
+            reply(false, [:], "machine event stream is not configured")
+            return
+        }
+        machineEventQueryLock.lock()
+        defer { machineEventQueryLock.unlock() }
+        do {
+            let batch = try machineEventStore.reconcile(
+                statuses: machineManager.list(),
+                afterSequence: afterSequence
+            )
+            reply(true, batch.xpcDictionary, "")
+        } catch {
+            reply(false, [:], "machine event stream is unavailable: \(error)")
+        }
+    }
+
+    public func machineFlightRecorder(
+        _ machineID: String,
+        afterSequence: UInt64,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        guard let machineManager else {
+            reply(false, [:], "machine flight recorder is not configured")
+            return
+        }
+        do {
+            let batch = try machineManager.flightRecorder(
+                id: machineID,
+                afterSequence: afterSequence
+            )
+            reply(true, batch.xpcDictionary, "")
+        } catch {
+            reply(false, [:], "machine flight recorder is unavailable: \(error)")
+        }
+    }
+
+    public func machineSerialConsoleRead(
+        _ machineID: String,
+        cursor: NSDictionary,
+        limit: UInt32,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        guard let machineManager else {
+            reply(false, [:], "machine serial console is not configured")
+            return
+        }
+        do {
+            let request = try MachineSerialConsoleCursorRequest(xpcDictionary: cursor)
+            guard limit > 0,
+                  limit <= UInt32(DoryMachineSerialConsoleAuthority.maximumReadBytes) else {
+                throw XPCRemoteConfigError.invalid("machineSerialConsole.limit")
+            }
+            let batch = try machineManager.serialConsole(
+                id: machineID,
+                cursor: request.cursor,
+                limit: Int(limit)
+            )
+            reply(true, batch.xpcDictionary, "")
+        } catch {
+            reply(false, [:], "machine serial console is unavailable: \(error)")
+        }
+    }
+
+    public func machineSerialConsoleWrite(
+        _ machineID: String,
+        data: NSData,
+        reply: @escaping (Bool, String) -> Void
+    ) {
+        guard let machineManager else {
+            reply(false, "machine serial console is not configured")
+            return
+        }
+        let bytes = data as Data
+        guard !bytes.isEmpty,
+              bytes.count <= DoryMachineSerialConsoleAuthority.maximumWriteBytes else {
+            reply(false, "machine serial console input is invalid")
+            return
+        }
+        do {
+            try machineManager.writeSerialConsole(id: machineID, data: bytes)
+            reply(true, "")
+        } catch {
+            reply(false, "machine serial console input is unavailable: \(error)")
+        }
+    }
+
     public func machineStats(
         _ machineID: String,
         reply: @escaping (Bool, NSDictionary, String) -> Void
@@ -324,6 +1003,70 @@ public final class DorydService: NSObject, DorydControl {
         do {
             let stats = try machineManager.stats(id: machineID)
             reply(true, stats.xpcDictionary, "")
+        } catch {
+            reply(false, [:], "\(error)")
+        }
+    }
+
+    public func machineDeviceTelemetry(
+        _ machineID: String,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        guard let machineManager else {
+            reply(false, [:], "machine manager is not configured")
+            return
+        }
+        do {
+            let snapshot = try machineManager.deviceTelemetry(id: machineID)
+            reply(true, snapshot.xpcDictionary, "")
+        } catch {
+            reply(false, [:], "\(error)")
+        }
+    }
+
+    public func hostUSBDevices(reply: @escaping (Bool, NSArray, String) -> Void) {
+        do {
+            let devices = try DoryHostUSBProjection.validated(hostUSBDiscovery.devices())
+            let rows = devices.map(\.xpcDictionary) as NSArray
+            reply(true, rows, "")
+        } catch {
+            reply(false, [], "\(error)")
+        }
+    }
+
+    public func machineUSBAttach(
+        _ machineID: String,
+        busID: String,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        guard let machineManager else {
+            reply(false, [:], "machine manager is not configured")
+            return
+        }
+        do {
+            let attachment = try machineManager.attachResolvedUSBDevice(
+                id: machineID,
+                busID: busID,
+                mode: .userAuthorized
+            )
+            reply(true, attachment.xpcDictionary, "")
+        } catch {
+            reply(false, [:], "\(error)")
+        }
+    }
+
+    public func machineUSBDetach(
+        _ machineID: String,
+        busID: String,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        guard let machineManager else {
+            reply(false, [:], "machine manager is not configured")
+            return
+        }
+        do {
+            try machineManager.detachResolvedUSBDevice(id: machineID, busID: busID)
+            reply(true, ["machineID": machineID, "busID": busID], "")
         } catch {
             reply(false, [:], "\(error)")
         }
@@ -356,6 +1099,279 @@ public final class DorydService: NSObject, DorydControl {
         }
     }
 
+    public func machineTransfer(
+        _ machineID: String,
+        request: NSDictionary,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        guard let machineManager else {
+            reply(false, [:], "machine manager is not configured")
+            return
+        }
+        let parsedRequest: MachineTransferRequest
+        do {
+            parsedRequest = try MachineTransferRequest(xpcDictionary: request)
+        } catch {
+            reply(false, [:], String(describing: error))
+            return
+        }
+        let reply = StatusReply(reply)
+        DispatchQueue.global(qos: .utility).async { [incidentWriter] in
+            do {
+                let result = try machineManager.transferStagedFiles(
+                    id: machineID,
+                    privateStagingRoot: parsedRequest.privateStagingRoot
+                )
+                incidentWriter?.record(
+                    type: "machine.file_transfer",
+                    detail: "\(machineID) \(result.transferID) files=\(result.filesSent) bytes=\(result.bytesSent)"
+                )
+                reply.reply(true, result.xpcDictionary, "")
+            } catch {
+                incidentWriter?.record(
+                    type: "machine.file_transfer_failed",
+                    detail: "\(machineID): \(error)"
+                )
+                reply.reply(false, [:], String(describing: error))
+            }
+        }
+    }
+
+    public func machineTransferStart(
+        _ machineID: String,
+        request: NSDictionary,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        guard let machineManager else {
+            reply(false, [:], "machine manager is not configured")
+            return
+        }
+        do {
+            let parsedRequest = try MachineTransferRequest(
+                xpcDictionary: request,
+                expectedSchema: 2
+            )
+            let status = try machineManager.beginStagedFileTransfer(
+                id: machineID,
+                privateStagingRoot: parsedRequest.privateStagingRoot
+            )
+            incidentWriter?.record(
+                type: "machine.file_transfer_started",
+                detail: "\(machineID) \(status.operationID)"
+            )
+            reply(true, status.xpcDictionary, "")
+        } catch {
+            incidentWriter?.record(
+                type: "machine.file_transfer_start_failed",
+                detail: "\(machineID): \(error)"
+            )
+            reply(false, [:], String(describing: error))
+        }
+    }
+
+    public func machineTransferStatus(
+        _ machineID: String,
+        operationID: String,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        guard let machineManager else {
+            reply(false, [:], "machine manager is not configured")
+            return
+        }
+        guard MachineTransferRequest.isValidOperationID(operationID) else {
+            reply(false, [:], "invalid machine transfer operation identifier")
+            return
+        }
+        do {
+            let status = try machineManager.stagedFileTransferStatus(
+                id: machineID,
+                operationID: operationID
+            )
+            reply(true, status.xpcDictionary, "")
+        } catch {
+            reply(false, [:], String(describing: error))
+        }
+    }
+
+    public func machineTransferCurrent(
+        _ machineID: String,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        guard let machineManager else {
+            reply(false, [:], "machine manager is not configured")
+            return
+        }
+        let operation = machineManager.currentStagedFileTransferStatus(id: machineID)
+        var body: [String: Any] = [
+            "schema": UInt16(1),
+            "active": operation != nil,
+        ]
+        if let operation {
+            body["operation"] = operation.xpcDictionary
+        }
+        reply(true, body as NSDictionary, "")
+    }
+
+    public func machineTransferCancel(
+        _ machineID: String,
+        operationID: String,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        guard let machineManager else {
+            reply(false, [:], "machine manager is not configured")
+            return
+        }
+        guard MachineTransferRequest.isValidOperationID(operationID) else {
+            reply(false, [:], "invalid machine transfer operation identifier")
+            return
+        }
+        do {
+            let status = try machineManager.cancelStagedFileTransfer(
+                id: machineID,
+                operationID: operationID
+            )
+            incidentWriter?.record(
+                type: "machine.file_transfer_cancel",
+                detail: "\(machineID) \(operationID)"
+            )
+            reply(true, status.xpcDictionary, "")
+        } catch {
+            reply(false, [:], String(describing: error))
+        }
+    }
+
+    public func machineGuestExportStart(
+        _ machineID: String,
+        request: NSDictionary,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        guard let machineManager else {
+            reply(false, [:], "machine manager is not configured")
+            return
+        }
+        do {
+            let parsedRequest = try MachineGuestExportRequest(xpcDictionary: request)
+            let status = try machineManager.beginGuestFileExport(
+                id: machineID,
+                guestSource: parsedRequest.guestSource
+            )
+            incidentWriter?.record(
+                type: "machine.guest_file_export_started",
+                detail: "\(machineID) \(status.operationID)"
+            )
+            reply(
+                true,
+                status.xpcDictionary(exposesCompletedResult: false),
+                ""
+            )
+        } catch {
+            incidentWriter?.record(
+                type: "machine.guest_file_export_start_failed",
+                detail: "\(machineID): \(error)"
+            )
+            reply(false, [:], String(describing: error))
+        }
+    }
+
+    public func machineGuestExportStatus(
+        _ machineID: String,
+        operationID: String,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        guard let machineManager else {
+            reply(false, [:], "machine manager is not configured")
+            return
+        }
+        guard MachineTransferRequest.isValidOperationID(operationID) else {
+            reply(false, [:], "invalid guest file export operation identifier")
+            return
+        }
+        do {
+            let status = try machineManager.guestFileExportStatus(
+                id: machineID,
+                operationID: operationID
+            )
+            reply(true, status.xpcDictionary, "")
+        } catch {
+            reply(false, [:], String(describing: error))
+        }
+    }
+
+    public func machineGuestExportCurrent(
+        _ machineID: String,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        guard let machineManager else {
+            reply(false, [:], "machine manager is not configured")
+            return
+        }
+        let operation = machineManager.currentGuestFileExportStatus(id: machineID)
+        var body: [String: Any] = [
+            "schema": UInt16(1),
+            "active": operation != nil,
+        ]
+        if let operation {
+            body["operation"] = operation.xpcDictionary
+        }
+        reply(true, body as NSDictionary, "")
+    }
+
+    public func machineGuestExportCancel(
+        _ machineID: String,
+        operationID: String,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        guard let machineManager else {
+            reply(false, [:], "machine manager is not configured")
+            return
+        }
+        guard MachineTransferRequest.isValidOperationID(operationID) else {
+            reply(false, [:], "invalid guest file export operation identifier")
+            return
+        }
+        do {
+            let status = try machineManager.cancelGuestFileExport(
+                id: machineID,
+                operationID: operationID
+            )
+            incidentWriter?.record(
+                type: "machine.guest_file_export_cancel",
+                detail: "\(machineID) \(operationID)"
+            )
+            reply(true, status.xpcDictionary, "")
+        } catch {
+            reply(false, [:], String(describing: error))
+        }
+    }
+
+    public func machineGuestExportDiscard(
+        _ machineID: String,
+        operationID: String,
+        reply: @escaping (Bool, String) -> Void
+    ) {
+        guard let machineManager else {
+            reply(false, "machine manager is not configured")
+            return
+        }
+        guard MachineTransferRequest.isValidOperationID(operationID) else {
+            reply(false, "invalid guest file export operation identifier")
+            return
+        }
+        do {
+            try machineManager.discardGuestFileExport(
+                id: machineID,
+                operationID: operationID
+            )
+            incidentWriter?.record(
+                type: "machine.guest_file_export_discard",
+                detail: "\(machineID) \(operationID)"
+            )
+            reply(true, "")
+        } catch {
+            reply(false, String(describing: error))
+        }
+    }
+
     public func machineProvision(
         _ machineID: String,
         request: NSDictionary,
@@ -367,6 +1383,7 @@ public final class DorydService: NSObject, DorydControl {
         }
         do {
             let provisionRequest = try MachineProvisionRequest(xpcDictionary: request)
+            _ = try machineManager.waitUntilAgentReady(id: machineID)
             let result = try MachineRecipeProvisioner.provision(
                 machineID: machineID,
                 recipeID: provisionRequest.recipeID,
@@ -377,6 +1394,87 @@ public final class DorydService: NSObject, DorydControl {
         } catch {
             incidentWriter?.record(type: "machine.provision_failed", detail: "\(machineID): \(error)")
             reply(false, [:], "\(error)")
+        }
+    }
+
+    public func machineDesktopUpdate(
+        _ machineID: String,
+        request: NSDictionary,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        guard let machineManager else {
+            reply(false, [:], "machine manager is not configured")
+            return
+        }
+        let parsedRequest: DoryDesktopUpdateRequest
+        do {
+            parsedRequest = try DoryDesktopUpdateRequest(xpcDictionary: request)
+        } catch {
+            reply(false, [:], String(describing: error))
+            return
+        }
+        let reply = StatusReply(reply)
+        DispatchQueue.global(qos: .utility).async { [incidentWriter] in
+            do {
+                let result = try machineManager.updateDesktop(id: machineID, request: parsedRequest)
+                incidentWriter?.record(
+                    type: "machine.desktop_update",
+                    detail: machineID + " " + result.distro + " " + result.version
+                        + " operation=" + result.operationID + " snapshot=" + result.snapshotID
+                )
+                reply.reply(true, result.xpcDictionary, "")
+            } catch {
+                incidentWriter?.record(
+                    type: "machine.desktop_update_failed",
+                    detail: machineID + " operation="
+                        + parsedRequest.operationID.uuidString.lowercased()
+                        + ": " + String(describing: error)
+                )
+                reply.reply(false, [:], String(describing: error))
+            }
+        }
+    }
+
+    public func machineRefreshManagedDesktopKernel(
+        _ machineID: String,
+        request: NSDictionary,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        guard let machineManager else {
+            reply(false, [:], "machine manager is not configured")
+            return
+        }
+        do {
+            let refresh = try MachineManagedDesktopKernelRefreshRequest(
+                xpcDictionary: request
+            )
+            var status = try machineManager.refreshManagedDesktopKernel(
+                id: machineID,
+                sourcePath: refresh.sourcePath,
+                sourceSHA256: refresh.sourceSHA256
+            )
+            if machineManager.configuredLaunchPolicy == .perWorkspaceAuthority {
+                guard let productionPlanningController else {
+                    throw MachineManagerError.persistence(
+                        "production planning controller is not configured"
+                    )
+                }
+                status = try machineManager.resolveAndPublishProductionPlan(
+                    id: machineID,
+                    controller: productionPlanningController
+                )
+            }
+            incidentWriter?.record(
+                type: "machine.managed_desktop_kernel_refresh",
+                detail: machineID + " sha256=" + refresh.sourceSHA256
+            )
+            reply(true, status.xpcDictionary, "")
+        } catch {
+            incidentWriter?.record(
+                type: "machine.managed_desktop_kernel_refresh_failed",
+                detail: machineID + ": " + String(describing: error)
+            )
+            reply(false, [:], String(describing: error))
         }
     }
 
@@ -435,7 +1533,29 @@ public final class DorydService: NSObject, DorydControl {
         reply: @escaping (Bool, NSDictionary, String) -> Void
     ) {
         machineControl("\(machineID)/\(snapshotID)", action: "restore_snapshot", reply: reply) { manager, _ in
-            try manager.restoreSnapshot(machineID: machineID, snapshotID: snapshotID)
+            guard let source = manager.status(id: machineID) else {
+                throw MachineManagerError.unknownMachine(machineID)
+            }
+            let shouldRestart = source.state == .starting || source.state == .running
+            var status = try manager.restoreSnapshot(
+                machineID: machineID,
+                snapshotID: snapshotID
+            )
+            if manager.configuredLaunchPolicy == .perWorkspaceAuthority {
+                guard let productionPlanningController else {
+                    throw MachineManagerError.persistence(
+                        "production planning controller is not configured"
+                    )
+                }
+                status = try manager.resolveAndPublishProductionPlan(
+                    id: machineID,
+                    controller: productionPlanningController
+                )
+                if shouldRestart {
+                    status = try manager.start(id: machineID)
+                }
+            }
+            return status
         }
     }
 
@@ -474,6 +1594,25 @@ public final class DorydService: NSObject, DorydControl {
         }
     }
 
+    public func machineAssessSnapshotImport(
+        _ path: String,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        guard let machineManager else {
+            reply(false, [:], "machine manager is not configured")
+            return
+        }
+        do {
+            let assessment = try machineManager.assessSnapshotImport(
+                fromPath: path,
+                environment: machineImportEnvironment
+            )
+            reply(true, assessment.xpcDictionary, "")
+        } catch {
+            reply(false, [:], "\(error)")
+        }
+    }
+
     public func machineImportSnapshot(
         _ path: String,
         reply: @escaping (Bool, NSDictionary, String) -> Void
@@ -483,8 +1622,65 @@ public final class DorydService: NSObject, DorydControl {
             return
         }
         do {
-            let snapshot = try machineManager.importSnapshot(fromPath: path)
+            let assessment = try machineManager.assessSnapshotImport(
+                fromPath: path,
+                environment: machineImportEnvironment
+            )
+            guard assessment.disposition == .ready
+                    || assessment.disposition == .requiresReplanning else {
+                throw MachineManagerError.persistence(
+                    "machine import preflight rejected: \(assessment.issues.map(\.rawValue).joined(separator: ", "))"
+                )
+            }
+            let snapshot = try machineManager.importSnapshot(
+                fromPath: path,
+                expectedContentID: assessment.contentID
+            )
             incidentWriter?.record(type: "machine.import_snapshot", detail: "\(snapshot.machineID) \(snapshot.id)")
+            reply(true, snapshot.xpcDictionary, "")
+        } catch {
+            incidentWriter?.record(type: "machine.import_snapshot_failed", detail: "\(error)")
+            reply(false, [:], "\(error)")
+        }
+    }
+
+    public func machineImportSnapshot(
+        _ path: String,
+        expectedContentID: String,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        guard let machineManager else {
+            reply(false, [:], "machine manager is not configured")
+            return
+        }
+        do {
+            guard expectedContentID.count == 64,
+                  expectedContentID.allSatisfy({ $0.isHexDigit && !$0.isUppercase }) else {
+                throw MachineManagerError.persistence("invalid machine import content identifier")
+            }
+            let assessment = try machineManager.assessSnapshotImport(
+                fromPath: path,
+                environment: machineImportEnvironment
+            )
+            guard assessment.contentID == expectedContentID else {
+                throw MachineManagerError.persistence(
+                    "machine bundle changed after import assessment"
+                )
+            }
+            guard assessment.disposition == .ready
+                    || assessment.disposition == .requiresReplanning else {
+                throw MachineManagerError.persistence(
+                    "machine import preflight rejected: \(assessment.issues.map(\.rawValue).joined(separator: ", "))"
+                )
+            }
+            let snapshot = try machineManager.importSnapshot(
+                fromPath: path,
+                expectedContentID: expectedContentID
+            )
+            incidentWriter?.record(
+                type: "machine.import_snapshot",
+                detail: "\(snapshot.machineID) \(snapshot.id) \(expectedContentID)"
+            )
             reply(true, snapshot.xpcDictionary, "")
         } catch {
             incidentWriter?.record(type: "machine.import_snapshot_failed", detail: "\(error)")
@@ -786,15 +1982,33 @@ public final class DorydService: NSObject, DorydControl {
                 guard let dockerTier else { throw SubsystemRepairError.unavailable("docker tier is not configured") }
                 detail = try dockerTier.repairDockerDaemon()
             case "data-drive":
-                let store = try DoryDataDriveSelectionStore(home: home)
-                guard let drive = try store.inspectSelection() else {
-                    throw SubsystemRepairError.unavailable("no Dory data drive is selected")
+                guard let dockerTier else {
+                    throw SubsystemRepairError.unavailable("docker tier is not configured")
                 }
-                guard try drive.inspect() == .ready else {
-                    throw SubsystemRepairError.unavailable("selected data drive is not mounted at \(drive.root)")
+                guard socketPath == dockerTier.socketPath else {
+                    throw SubsystemRepairError.unavailable(
+                        "docker guest resource probe is not bound to the published engine socket"
+                    )
                 }
-                let manifest = try drive.readManifest()
-                detail = "revalidated selected drive \(manifest.id.uuidString.lowercased()) at \(drive.root); no data or selection was replaced"
+                guard let dockerDataDriveID else {
+                    throw SubsystemRepairError.unavailable(
+                        "docker data-drive identity is unavailable"
+                    )
+                }
+                guard let snapshot = try dockerTier.guestResourceSnapshot() else {
+                    throw SubsystemRepairError.unavailable(
+                        "docker tier is not running; the guest data mount cannot be proven"
+                    )
+                }
+                guard snapshot.selectedDataDriveID == dockerDataDriveID else {
+                    throw SubsystemRepairError.unavailable(
+                        "docker guest filesystem is not bound to the selected data drive"
+                    )
+                }
+                detail = "re-probed selected drive \(snapshot.selectedDataDriveID.uuidString.lowercased()); "
+                    + "guest /var/lib/docker is the exact \(snapshot.dataDiskFilesystemType) "
+                    + "\(snapshot.dataDiskMountSource) filesystem \(snapshot.dataDiskFilesystemUUID.uuidString.lowercased()) "
+                    + "at \(snapshot.dataDiskDeviceMajorMinor); no data or selection was replaced"
             case "corporate-connectivity":
                 guard let corporateConnectivity else {
                     throw SubsystemRepairError.unavailable("corporate connectivity is not configured")
@@ -879,7 +2093,9 @@ public final class DorydService: NSObject, DorydControl {
                 guard let dockerTier else {
                     throw DockerTier.TierError.wakeFailed("docker tier is not configured")
                 }
-                try dockerTier.promoteToRunning()
+                try engineLifecycleOperationLock.withLock {
+                    try dockerTier.promoteToRunning()
+                }
             }
             let status = idleStatusSnapshot()
             incidentWriter?.record(type: "idle.mode", detail: appliedMode)
@@ -1009,15 +2225,42 @@ public final class DorydService: NSObject, DorydControl {
         let replyBox = EngineReply(reply)
         let incidentWriter = incidentWriter
         let corporateConnectivity = corporateConnectivity
+        let operationLock = engineLifecycleOperationLock
         Task.detached {
-            do {
-                try dockerTier.promoteToRunning()
-                _ = corporateConnectivity?.reconcileCurrent(runProbes: false)
+            let outcome: (ok: Bool, detail: String) = operationLock.withLock {
+                do {
+                    let admittedEvent = try dockerTier.promoteToRunningEvent()
+                    _ = corporateConnectivity?.reconcileCurrent(runProbes: false)
+
+                    // A running state by itself is not enough: supervised recovery may already
+                    // have replaced the generation that this request admitted. Conversely, an
+                    // unchanged event alone is not enough because a dead helper can be observed
+                    // before its termination callback commits the next lifecycle. Require both
+                    // bounded live status and the exact admitted epoch immediately before success.
+                    let finalStatus = dockerTier.status()
+                    let currentEvent = dockerTier.currentLifecycleEvent()
+                    guard !finalStatus.isStopping,
+                          finalStatus.state == .running,
+                          currentEvent == admittedEvent else {
+                        let boundedState = finalStatus.isStopping
+                            ? "stopping"
+                            : finalStatus.state.rawValue
+                        return (
+                            false,
+                            "docker tier \(event) promotion was superseded after admitting running lifecycle epoch \(admittedEvent.epoch); current lifecycle epoch \(currentEvent.epoch) is \(currentEvent.state.rawValue), bounded status is \(boundedState)"
+                        )
+                    }
+                    return (true, "")
+                } catch {
+                    return (false, "\(error)")
+                }
+            }
+            if outcome.ok {
                 incidentWriter?.record(type: "engine.\(event)", detail: "docker tier running")
                 replyBox.reply(true, "")
-            } catch {
-                incidentWriter?.record(type: "engine.\(event)_failed", detail: "\(error)")
-                replyBox.reply(false, "\(error)")
+            } else {
+                incidentWriter?.record(type: "engine.\(event)_failed", detail: outcome.detail)
+                replyBox.reply(false, outcome.detail)
             }
         }
     }
@@ -1135,6 +2378,92 @@ private struct MachineExecRequest {
     }
 }
 
+private struct MachineSerialConsoleCursorRequest {
+    var cursor: DoryMachineSerialConsoleCursor
+
+    init(xpcDictionary dictionary: NSDictionary) throws {
+        let required: Set<String> = ["schemaVersion", "offset"]
+        let optional: Set<String> = ["generation"]
+        guard let rawKeys = dictionary.allKeys as? [String] else {
+            throw XPCRemoteConfigError.invalid("machineSerialConsole.cursor")
+        }
+        let keys = Set(rawKeys)
+        guard rawKeys.count == keys.count,
+              required.isSubset(of: keys),
+              keys.subtracting(required).isSubset(of: optional),
+              let schema = Self.strictUInt64(dictionary["schemaVersion"]), schema == 1,
+              let offset = Self.strictUInt64(dictionary["offset"]),
+              dictionary["generation"] == nil
+                || dictionary["generation"] is String else {
+            throw XPCRemoteConfigError.invalid("machineSerialConsole.cursor")
+        }
+        cursor = DoryMachineSerialConsoleCursor(
+            generation: dictionary["generation"] as? String,
+            offset: offset
+        )
+        guard cursor.isValid else {
+            throw XPCRemoteConfigError.invalid("machineSerialConsole.cursor")
+        }
+    }
+
+    private static func strictUInt64(_ value: Any?) -> UInt64? {
+        guard let number = value as? NSNumber,
+              CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
+        let type = String(cString: number.objCType)
+        guard ["c", "C", "s", "S", "i", "I", "l", "L", "q", "Q"]
+            .contains(type) else { return nil }
+        return UInt64(number.stringValue)
+    }
+}
+
+private struct MachineTransferRequest: Sendable {
+    var privateStagingRoot: String
+
+    init(
+        xpcDictionary dictionary: NSDictionary,
+        expectedSchema: UInt16 = 1
+    ) throws {
+        guard let keys = dictionary.allKeys as? [String],
+              Set(keys) == ["schema", "privateStagingRoot"],
+              let schema = dictionary["schema"] as? NSNumber,
+              CFGetTypeID(schema) != CFBooleanGetTypeID(),
+              schema.uint16Value == expectedSchema,
+              schema.doubleValue == Double(expectedSchema),
+              let root = dictionary["privateStagingRoot"] as? String,
+              root.hasPrefix("/"),
+              !root.contains("\0") else {
+            throw XPCRemoteConfigError.invalid("machineTransfer")
+        }
+        privateStagingRoot = root
+    }
+
+    static func isValidOperationID(_ value: String) -> Bool {
+        value.utf8.count == 32 && value.utf8.allSatisfy { byte in
+            (byte >= 48 && byte <= 57) || (byte >= 97 && byte <= 102)
+        }
+    }
+}
+
+private struct MachineGuestExportRequest: Sendable {
+    var guestSource: String
+
+    init(xpcDictionary dictionary: NSDictionary) throws {
+        guard let keys = dictionary.allKeys as? [String],
+              Set(keys) == ["schema", "guestSource"],
+              let schema = dictionary["schema"] as? NSNumber,
+              CFGetTypeID(schema) != CFBooleanGetTypeID(),
+              schema.uint16Value == 1,
+              schema.doubleValue == 1,
+              let source = dictionary["guestSource"] as? String,
+              source.hasPrefix("/"),
+              source.utf8.count <= 4_096,
+              !source.contains("\0") else {
+            throw XPCRemoteConfigError.invalid("machineGuestExport")
+        }
+        guestSource = source
+    }
+}
+
 private struct MachineProvisionRequest {
     var recipeID: String
 
@@ -1146,6 +2475,63 @@ private struct MachineProvisionRequest {
     }
 }
 
+private struct MachineManagedDesktopKernelRefreshRequest {
+    var sourcePath: String
+    var sourceSHA256: String
+
+    init(xpcDictionary dictionary: NSDictionary) throws {
+        guard let keys = dictionary.allKeys as? [String],
+              Set(keys) == ["sourcePath", "sourceSHA256"],
+              let sourcePath = dictionary["sourcePath"] as? String,
+              sourcePath.hasPrefix("/"),
+              sourcePath.utf8.count <= 4_096,
+              !sourcePath.contains("\0"),
+              let sourceSHA256 = dictionary["sourceSHA256"] as? String,
+              sourceSHA256.wholeMatch(of: /[0-9a-f]{64}/) != nil else {
+            throw XPCRemoteConfigError.invalid("managedDesktopKernelRefresh")
+        }
+        self.sourcePath = sourcePath
+        self.sourceSHA256 = sourceSHA256
+    }
+}
+
+private extension DoryDesktopUpdateRequest {
+    init(xpcDictionary dictionary: NSDictionary) throws {
+        let legacyKeys: Set<String> = [
+            "distro", "version", "distributionInstallationName", "runtimeInstallationName",
+        ]
+        let currentKeys = legacyKeys.union(["operationID"])
+        guard let keys = dictionary.allKeys as? [String],
+              Set(keys) == legacyKeys || Set(keys) == currentKeys else {
+            throw XPCRemoteConfigError.invalid("desktopUpdateAuthority")
+        }
+        let operationID: UUID
+        if let rawOperationID = dictionary["operationID"] as? String {
+            guard let parsed = DoryOperationIdentity.parseCanonical(rawOperationID) else {
+                throw XPCRemoteConfigError.invalid("desktopUpdateAuthority.operationID")
+            }
+            operationID = parsed
+        } else {
+            operationID = UUID()
+        }
+        self.init(
+            operationID: operationID,
+            distro: try dictionary.requiredString("distro"),
+            version: try dictionary.requiredString("version"),
+            distributionInstallationName: try dictionary.requiredString(
+                "distributionInstallationName"
+            ),
+            runtimeInstallationName: try dictionary.requiredString("runtimeInstallationName")
+        )
+        guard ["debian", "kali", "ubuntu"].contains(distro),
+              version.wholeMatch(of: /[A-Za-z0-9][A-Za-z0-9._+-]{0,127}/) != nil,
+              distributionInstallationName.wholeMatch(of: /[A-Za-z0-9][A-Za-z0-9._+-]{0,254}/) != nil,
+              runtimeInstallationName.wholeMatch(of: /[A-Za-z0-9][A-Za-z0-9._+-]{0,254}/) != nil else {
+            throw XPCRemoteConfigError.invalid("desktopUpdateAuthority")
+        }
+    }
+}
+
 private struct MachineUpdateRequest {
     var memoryMB: UInt64?
     var cpuCount: Int?
@@ -1153,10 +2539,15 @@ private struct MachineUpdateRequest {
     var updatesAddress: Bool
     var shares: [DoryMachineShareConfiguration]?
     var updatesShares: Bool
-    var environment: [String: String]?
-    var updatesEnvironment: Bool
+    var typedSettings: DoryMachineTypedSettingsPatch
+    var installerMediaAttached: Bool?
 
     init(xpcDictionary dictionary: NSDictionary) throws {
+        guard dictionary[DoryMachineSandboxPolicyWriteAuthority.xpcKey] == nil else {
+            throw XPCRemoteConfigError.invalid(
+                DoryMachineSandboxPolicyWriteAuthority.xpcKey
+            )
+        }
         self.memoryMB = try dictionary.optionalUInt64("memoryMB")
         self.cpuCount = try dictionary.optionalInt("cpuCount")
         self.updatesAddress = dictionary["address"] != nil
@@ -1168,9 +2559,13 @@ private struct MachineUpdateRequest {
         }
         self.shares = dictionary["shares"] == nil ? nil : try dictionary.optionalMachineShares("shares")
         self.updatesShares = dictionary["shares"] != nil
-        self.environment = dictionary["env"] == nil ? nil : try dictionary.optionalEnvironmentDictionary("env")
-        self.updatesEnvironment = dictionary["env"] != nil
-        if memoryMB == nil, cpuCount == nil, !updatesAddress, !updatesShares, !updatesEnvironment {
+        self.typedSettings = try DoryMachineTypedSettingsPatch(
+            xpcDictionary: dictionary,
+            allowsClears: true
+        )
+        self.installerMediaAttached = dictionary.optionalBool("installerMediaAttached")
+        if memoryMB == nil, cpuCount == nil, !updatesAddress, !updatesShares, typedSettings.isEmpty,
+           installerMediaAttached == nil {
             throw XPCRemoteConfigError.invalid("config")
         }
     }
@@ -1222,17 +2617,114 @@ private extension DoryMachineConfiguration {
         guard let displayMode = DoryMachineDisplayMode(rawValue: rawDisplayMode) else {
             throw MachineManagerError.persistence("unsupported machine display mode: \(rawDisplayMode)")
         }
+        let rawBootMode = dictionary.optionalString("bootMode") ?? DoryMachineBootMode.linuxKernel.rawValue
+        guard let bootMode = DoryMachineBootMode(rawValue: rawBootMode) else {
+            throw MachineManagerError.persistence("unsupported machine boot mode: \(rawBootMode)")
+        }
         self.init(
             id: try dictionary.requiredString("id"),
-            kernelPath: try dictionary.requiredString("kernelPath"),
-            rootfsPath: try dictionary.requiredString("rootfsPath"),
+            kernelPath: dictionary.optionalString("kernelPath") ?? "",
+            rootfsPath: dictionary.optionalString("rootfsPath") ?? "",
+            bootMode: bootMode,
+            installerISOPath: dictionary.optionalString("installerISOPath"),
+            diskSizeBytes: try dictionary.optionalUInt64("diskSizeBytes"),
             memoryMB: try dictionary.optionalUInt64("memoryMB") ?? 2048,
             cpuCount: try dictionary.optionalInt("cpuCount") ?? 2,
             address: dictionary.optionalString("address"),
             displayMode: displayMode,
             shares: try dictionary.optionalMachineShares("shares"),
-            environment: try dictionary.optionalEnvironmentDictionary("env")
+            environment: [:]
         )
+    }
+}
+
+private extension DoryMachineFileTransferResult {
+    var xpcDictionary: NSDictionary {
+        [
+            "schema": UInt16(1),
+            "transferID": transferID,
+            "guestDestination": guestDestination,
+            "filesSent": filesSent,
+            "bytesSent": bytesSent,
+        ]
+    }
+}
+
+private extension DoryMachineFileTransferOperationStatus {
+    var xpcDictionary: NSDictionary {
+        var dictionary: [String: Any] = [
+            "schema": UInt16(1),
+            "operationID": operationID,
+            "machineID": machineID,
+            "phase": phase.rawValue,
+            "filesTotal": filesTotal,
+            "filesCompleted": filesCompleted,
+            "bytesTotal": bytesTotal,
+            "bytesCompleted": bytesCompleted,
+        ]
+        if let currentPath {
+            dictionary["currentPath"] = currentPath
+        }
+        if let guestDestination {
+            dictionary["guestDestination"] = guestDestination
+        }
+        if let result {
+            dictionary["result"] = result.xpcDictionary
+        }
+        if let failure {
+            dictionary["failure"] = [
+                "schema": UInt16(1),
+                "code": failure.code.rawValue,
+                "message": failure.message,
+            ] as NSDictionary
+        }
+        return dictionary as NSDictionary
+    }
+}
+
+private extension DoryMachineGuestFileExportResult {
+    var xpcDictionary: NSDictionary {
+        [
+            "schema": UInt16(1),
+            "exportID": exportID,
+            "privateStagingRoot": privateStagingRoot,
+            "filesReceived": filesReceived,
+            "directoriesReceived": directoriesReceived,
+            "bytesReceived": bytesReceived,
+        ]
+    }
+}
+
+private extension DoryMachineGuestFileExportOperationStatus {
+    var xpcDictionary: NSDictionary {
+        xpcDictionary(exposesCompletedResult: true)
+    }
+
+    func xpcDictionary(exposesCompletedResult: Bool) -> NSDictionary {
+        var dictionary: [String: Any] = [
+            "schema": UInt16(1),
+            "operationID": operationID,
+            "machineID": machineID,
+            "phase": phase.rawValue,
+            "filesTotal": filesTotal,
+            "filesCompleted": filesCompleted,
+            "bytesTotal": bytesTotal,
+            "bytesCompleted": bytesCompleted,
+        ]
+        if let currentPath {
+            dictionary["currentPath"] = currentPath
+        }
+        if exposesCompletedResult, let result {
+            dictionary["result"] = result.xpcDictionary
+        }
+        if let failure {
+            dictionary["failure"] = [
+                "schema": UInt16(1),
+                "code": failure.code.rawValue,
+                "message": failure.message,
+            ] as NSDictionary
+        }
+        return dictionary as NSDictionary
     }
 }
 
@@ -1368,35 +2860,38 @@ private extension NSDictionary {
                 tag: try row.requiredString("tag"),
                 hostPath: try row.requiredString("hostPath"),
                 guestPath: try row.requiredString("guestPath"),
-                readOnly: row.optionalBool("readOnly") ?? false
+                readOnly: row.optionalBool("readOnly") ?? false,
+                authorizationBookmark: try row.optionalData(
+                    "authorizationBookmark",
+                    maximumBytes: 1_048_576
+                )
             )
+            guard share.authorizationBookmark != nil else {
+                throw XPCRemoteConfigError.invalid("authorizationBookmark")
+            }
             try share.validate()
             return share
         }
     }
 
-    func optionalEnvironmentDictionary(_ key: String) throws -> [String: String] {
-        guard let raw = self[key] else { return [:] }
-        guard let rows = raw as? [NSDictionary] else {
-            throw XPCRemoteConfigError.invalid(key)
-        }
-        var result: [String: String] = [:]
-        for row in rows {
-            let key = try row.requiredString("key")
-            guard key.wholeMatch(of: /[A-Za-z_][A-Za-z0-9_]*/) != nil else {
-                throw XPCRemoteConfigError.invalid("env")
-            }
-            let value = row.optionalString("value") ?? ""
-            guard !value.contains("\0") else {
-                throw XPCRemoteConfigError.invalid("env")
-            }
-            result[key] = value
-        }
-        return result
-    }
-
     func optionalString(_ key: String) -> String? {
         self[key] as? String
+    }
+
+    func optionalData(_ key: String, maximumBytes: Int) throws -> Data? {
+        guard let value = self[key] else { return nil }
+        let data: Data
+        if let swiftData = value as? Data {
+            data = swiftData
+        } else if let nsData = value as? NSData {
+            data = nsData as Data
+        } else {
+            throw XPCRemoteConfigError.invalid(key)
+        }
+        guard !data.isEmpty, data.count <= maximumBytes else {
+            throw XPCRemoteConfigError.invalid(key)
+        }
+        return data
     }
 
     func optionalBool(_ key: String) -> Bool? {
@@ -1503,12 +2998,34 @@ private extension DoryMachineStatus {
         if let pid {
             dictionary["pid"] = pid
         }
+        if let failure, failure.isValid {
+            dictionary["failure"] = failure.xpcDictionary
+        }
+        if let activeOperationID, let activeOperationKind {
+            dictionary["activeOperation"] = [
+                "operationID": activeOperationID,
+                "kind": activeOperationKind,
+            ] as NSDictionary
+        }
+        dictionary["flightRecorder"] = [
+            "headSequence": flightRecorderHeadSequence,
+            "available": flightRecorderAvailable,
+        ] as NSDictionary
         if let handoffSocketPath {
             dictionary["handoffSocketPath"] = handoffSocketPath
         }
         if let agentBuild {
             dictionary["agentBuild"] = agentBuild
         }
+        if let agentProtocolVersion {
+            dictionary["agentProtocolVersion"] = agentProtocolVersion
+        }
+        if !agentCapabilities.isEmpty {
+            dictionary["agentCapabilities"] = agentCapabilities.map {
+                ["id": $0.id, "version": $0.version] as NSDictionary
+            }
+        }
+        dictionary["integrationHealth"] = integrationHealth.xpcDictionary
         if let agentSocketPath {
             dictionary["agentSocketPath"] = agentSocketPath
         }
@@ -1531,18 +3048,469 @@ private extension DoryMachineStatus {
             dictionary["runtimeAddress"] = runtimeAddress
         }
         dictionary["shares"] = shares.map(\.xpcDictionary)
-        dictionary["env"] = environment.sorted(by: { $0.key < $1.key }).map { key, value in
-            [
-                "key": key,
-                "value": value,
-            ] as NSDictionary
-        }
         dictionary["handoffFDCount"] = handoffFDCount
         dictionary["memoryMB"] = memoryMB
         dictionary["currentBalloonTargetMB"] = currentBalloonTargetMB
         dictionary["cpuCount"] = cpuCount
         dictionary["displayMode"] = displayMode.rawValue
+        dictionary["bootMode"] = bootMode.rawValue
+        dictionary["installerMediaAttached"] = installerMediaAttached
+        if let typedSettings {
+            dictionary["typedSettings"] = typedSettings.xpcDictionary
+        }
+        if let sandboxPolicy,
+           let encoded = try? DoryMachineSandboxPolicyWriteAuthority.xpcDictionary(
+               sandboxPolicy
+           ) {
+            dictionary[DoryMachineSandboxPolicyWriteAuthority.xpcKey] = encoded
+        }
+        if !diagnosticOverrides.isEmpty {
+            dictionary["diagnosticOverrides"] = diagnosticOverrides.map(\.rawValue)
+        }
+        dictionary["displayPresentation"] = displayPresentation.xpcDictionary
+        dictionary["runtimeIdentity"] = runtimeIdentity.xpcDictionary
+        if let runtimeGraphicsSelection, runtimeGraphicsSelection.isValid {
+            dictionary["runtimeGraphicsSelection"] = runtimeGraphicsSelection.xpcDictionary
+        }
+        if let installedDesktopPayloadReceipt {
+            dictionary["installedDesktopPayloadReceipt"] =
+                installedDesktopPayloadReceipt.xpcDictionary
+        }
+        if let cloneReceipt, cloneReceipt.isValid {
+            dictionary["cloneReceipt"] = [
+                "schemaVersion": cloneReceipt.schemaVersion,
+                "sourceMachineID": cloneReceipt.sourceMachineID,
+                "sourceSnapshotID": cloneReceipt.sourceSnapshotID,
+                "sourceRootfsSHA256": cloneReceipt.sourceRootfsSHA256,
+                "sourceRootfsByteCount": cloneReceipt.sourceRootfsByteCount,
+                "storageMode": cloneReceipt.storageMode.rawValue,
+                "createdAtUnixMilliseconds": cloneReceipt.createdAtUnixMilliseconds,
+            ] as NSDictionary
+        }
+        if let savedState {
+            dictionary["savedState"] = [
+                "schemaVersion": savedState.schemaVersion,
+                "backend": savedState.backend.rawValue,
+                "stateFileSHA256": savedState.stateFileSHA256,
+                "stateFileByteCount": savedState.stateFileByteCount,
+                "hostHardwareModel": savedState.hostHardwareModel,
+                "hostOperatingSystemBuild": savedState.hostOperatingSystemBuild,
+                "createdAtUnixMilliseconds": savedState.createdAtUnixMilliseconds,
+                "portable": false,
+            ] as NSDictionary
+        }
         return dictionary as NSDictionary
+    }
+}
+
+private extension DoryRuntimeGraphicsSelection {
+    var xpcDictionary: NSDictionary {
+        var dictionary: [String: Any] = [
+            "schemaVersion": schemaVersion,
+            "operationID": operationID,
+            "resolvedPlanSHA256": resolvedPlanSHA256,
+            "planRevision": planRevision,
+            "accelerationLevel": accelerationLevel.rawValue,
+            "backend": backend.rawValue,
+        ]
+        if let rendererGeneration {
+            dictionary["rendererGeneration"] = rendererGeneration
+        }
+        if let rendererWorkerReceiptSHA256 {
+            dictionary["rendererWorkerReceiptSHA256"] = rendererWorkerReceiptSHA256
+        }
+        if let guestProducerFenceProofSHA256 {
+            dictionary["guestProducerFenceProofSHA256"] = guestProducerFenceProofSHA256
+        }
+        return dictionary as NSDictionary
+    }
+}
+
+private extension DoryMachineFailure {
+    var xpcDictionary: NSDictionary {
+        var dictionary: [String: Any] = [
+            "schemaVersion": schemaVersion,
+            "code": code.rawValue,
+            "occurredAtUnixMilliseconds": occurredAtUnixMilliseconds,
+            "causalChain": causalChain.map(\.rawValue),
+            "recoveryDisposition": recoveryDisposition.rawValue,
+            "evidenceReferences": evidenceReferences.map { reference in
+                [
+                    "kind": reference.kind.rawValue,
+                    "identifier": reference.identifier,
+                ] as NSDictionary
+            },
+        ]
+        if let operationID { dictionary["operationID"] = operationID }
+        return dictionary as NSDictionary
+    }
+}
+
+private extension DoryMachineImportAssessment {
+    var xpcDictionary: NSDictionary {
+        var dictionary: [String: Any] = [
+            "schemaVersion": schemaVersion,
+            "contentID": contentID,
+            "sourceMachineID": sourceMachineID,
+            "sourceSnapshotID": sourceSnapshotID,
+            "architecture": architecture,
+            "bootMode": bootMode.rawValue,
+            "diskSizeBytes": diskSizeBytes,
+            "virtualHardwareABIVersion": virtualHardwareABIVersion,
+            "sourceRuntimeMode": sourceRuntimeMode.rawValue,
+            "portable": portable,
+            "disposition": disposition.rawValue,
+            "issues": issues.map(\.rawValue),
+            "components": components.map { component in
+                [
+                    "componentIdentifier": component.componentIdentifier,
+                    "buildIdentifier": component.buildIdentifier,
+                    "artifactSHA256": component.artifactSHA256,
+                    "availability": component.availability.rawValue,
+                ] as NSDictionary
+            },
+        ]
+        if let sourceBackend { dictionary["sourceBackend"] = sourceBackend.rawValue }
+        return dictionary as NSDictionary
+    }
+}
+
+private extension DoryMachineEventBatch {
+    var xpcDictionary: NSDictionary {
+        [
+            "schemaVersion": schemaVersion,
+            "headSequence": headSequence,
+            "snapshotRequired": snapshotRequired,
+            "events": events.map(\.xpcDictionary),
+        ]
+    }
+}
+
+private extension DoryMachineFlightRecorderBatch {
+    var xpcDictionary: NSDictionary {
+        [
+            "schemaVersion": schemaVersion,
+            "machineID": machineID,
+            "headSequence": headSequence,
+            "snapshotRequired": snapshotRequired,
+            "events": events.map(\.xpcDictionary),
+        ]
+    }
+}
+
+private extension DoryMachineSerialConsoleBatch {
+    var xpcDictionary: NSDictionary {
+        var dictionary: [String: Any] = [
+            "schemaVersion": schemaVersion,
+            "machineID": machineID,
+            "startOffset": startOffset,
+            "nextOffset": nextOffset,
+            "totalBytes": totalBytes,
+            "snapshotRequired": snapshotRequired,
+            "inputAvailable": inputAvailable,
+            "bytesBase64": bytes.base64EncodedString(),
+        ]
+        if let generation { dictionary["generation"] = generation }
+        return dictionary as NSDictionary
+    }
+}
+
+private extension DoryMachineFlightEvent {
+    var xpcDictionary: NSDictionary {
+        var dictionary: [String: Any] = [
+            "schemaVersion": schemaVersion,
+            "sequence": sequence,
+            "occurredAtUnixMilliseconds": occurredAtUnixMilliseconds,
+            "machineID": machineID,
+            "kind": kind.rawValue,
+            "evidenceReferences": evidenceReferences.map {
+                ["kind": $0.kind.rawValue, "identifier": $0.identifier] as NSDictionary
+            },
+        ]
+        if let operationID { dictionary["operationID"] = operationID }
+        if let operationKind { dictionary["operationKind"] = operationKind }
+        if let phase { dictionary["phase"] = phase }
+        if let machineState { dictionary["machineState"] = machineState }
+        if let failureCode { dictionary["failureCode"] = failureCode.rawValue }
+        if let recoveryDisposition {
+            dictionary["recoveryDisposition"] = recoveryDisposition.rawValue
+        }
+        if let backend { dictionary["backend"] = backend.rawValue }
+        if let virtualHardwareABIVersion {
+            dictionary["virtualHardwareABIVersion"] = virtualHardwareABIVersion
+        }
+        if let planSHA256 { dictionary["planSHA256"] = planSHA256 }
+        if let durationMilliseconds {
+            dictionary["durationMilliseconds"] = durationMilliseconds
+        }
+        if let deadlineUnixMilliseconds {
+            dictionary["deadlineUnixMilliseconds"] = deadlineUnixMilliseconds
+        }
+        if let deviceID { dictionary["deviceID"] = deviceID }
+        if let deviceEventKind { dictionary["deviceEventKind"] = deviceEventKind.rawValue }
+        if let deviceEventSequence { dictionary["deviceEventSequence"] = deviceEventSequence }
+        if let deviceEventOccurrences {
+            dictionary["deviceEventOccurrences"] = deviceEventOccurrences
+        }
+        return dictionary as NSDictionary
+    }
+}
+
+private extension DoryDeviceTelemetrySnapshot {
+    var xpcDictionary: NSDictionary {
+        [
+            "schemaVersion": schemaVersion,
+            "machineID": machineID,
+            "operationID": operationID,
+            "backend": backend.rawValue,
+            "sampleSequence": sampleSequence,
+            "sampledAtUnixMilliseconds": sampledAtUnixMilliseconds,
+            "monotonicNanoseconds": monotonicNanoseconds,
+            "devices": devices.map(\.xpcDictionary),
+            "events": events.map(\.xpcDictionary),
+        ]
+    }
+}
+
+private extension DoryDeviceTelemetryDevice {
+    var xpcDictionary: NSDictionary {
+        [
+            "id": id,
+            "kind": kind.rawValue,
+            "health": health.rawValue,
+            "metrics": metrics.map(\.xpcDictionary),
+        ]
+    }
+}
+
+private extension DoryDeviceTelemetryMetric {
+    var xpcDictionary: NSDictionary {
+        var dictionary: [String: Any] = [
+            "kind": kind.rawValue,
+            "unit": unit.rawValue,
+            "availability": availability.rawValue,
+        ]
+        if let value { dictionary["value"] = value }
+        if let unavailableReason { dictionary["unavailableReason"] = unavailableReason }
+        return dictionary as NSDictionary
+    }
+}
+
+private extension DoryDeviceTelemetryEvent {
+    var xpcDictionary: NSDictionary {
+        [
+            "sequence": sequence,
+            "monotonicNanoseconds": monotonicNanoseconds,
+            "deviceID": deviceID,
+            "kind": kind.rawValue,
+            "occurrences": occurrences,
+        ]
+    }
+}
+
+private extension DoryMachineEvent {
+    var xpcDictionary: NSDictionary {
+        var dictionary: [String: Any] = [
+            "schemaVersion": schemaVersion,
+            "sequence": sequence,
+            "observedAtUnixMilliseconds": observedAtUnixMilliseconds,
+            "machineID": machineID,
+            "kind": kind.rawValue,
+        ]
+        if let status { dictionary["status"] = status.xpcDictionary }
+        return dictionary as NSDictionary
+    }
+}
+
+private extension DoryMachineEventStatus {
+    var xpcDictionary: NSDictionary {
+        var dictionary: [String: Any] = [
+            "schemaVersion": schemaVersion,
+            "machineID": machineID,
+            "configurationRevision": configurationRevision,
+            "observedRevision": observedRevision,
+            "state": state,
+            "hasFailure": hasFailure,
+            "memoryMB": memoryMB,
+            "cpuCount": cpuCount,
+            "displayMode": displayMode,
+            "bootMode": bootMode,
+            "installerMediaAttached": installerMediaAttached,
+            "shareCount": shareCount,
+            "integrationHealth": integrationHealth,
+            "runtimeMode": runtimeMode,
+            "virtualHardwareABIVersion": virtualHardwareABIVersion,
+        ]
+        if let failureCode { dictionary["failureCode"] = failureCode }
+        if let recoveryDisposition {
+            dictionary["recoveryDisposition"] = recoveryDisposition
+        }
+        if let operationID { dictionary["operationID"] = operationID }
+        if let operationKind { dictionary["operationKind"] = operationKind }
+        if let planRevision { dictionary["planRevision"] = planRevision }
+        if let planSHA256 { dictionary["planSHA256"] = planSHA256 }
+        if let backend { dictionary["backend"] = backend }
+        if let savedStateSHA256 { dictionary["savedStateSHA256"] = savedStateSHA256 }
+        return dictionary as NSDictionary
+    }
+}
+
+private extension DoryInstalledDesktopPayloadReceipt {
+    var xpcDictionary: NSDictionary {
+        var dictionary: [String: Any] = [
+            "schemaVersion": schemaVersion,
+            "provenance": provenance.rawValue,
+            "distributionIdentifier": distributionIdentifier,
+            "releaseVersion": releaseVersion,
+            "inputSHA256": inputSHA256,
+        ]
+        if let bundleSHA256 {
+            dictionary["bundleSHA256"] = bundleSHA256
+        }
+        if let distributionComponentIdentifier {
+            dictionary["distributionComponentIdentifier"] = distributionComponentIdentifier
+        }
+        if let distributionInstallationName {
+            dictionary["distributionInstallationName"] = distributionInstallationName
+        }
+        if let distributionCatalogSHA256 {
+            dictionary["distributionCatalogSHA256"] = distributionCatalogSHA256
+        }
+        if let bundleAssetIdentifier {
+            dictionary["bundleAssetIdentifier"] = bundleAssetIdentifier
+        }
+        if let runtimeComponentIdentifier {
+            dictionary["runtimeComponentIdentifier"] = runtimeComponentIdentifier
+        }
+        if let runtimeInstallationName {
+            dictionary["runtimeInstallationName"] = runtimeInstallationName
+        }
+        if let runtimeCatalogSHA256 {
+            dictionary["runtimeCatalogSHA256"] = runtimeCatalogSHA256
+        }
+        if let kernelAssetIdentifier {
+            dictionary["kernelAssetIdentifier"] = kernelAssetIdentifier
+        }
+        if let kernelSHA256 {
+            dictionary["kernelSHA256"] = kernelSHA256
+        }
+        return dictionary as NSDictionary
+    }
+}
+
+private extension DoryMachineRuntimeIdentity {
+    var xpcDictionary: NSDictionary {
+        var dictionary: [String: Any] = [
+            "schemaVersion": schemaVersion,
+            "mode": mode.rawValue,
+            "virtualHardwareABIVersion": virtualHardwareABIVersion,
+        ]
+        if let invalidationReason {
+            dictionary["invalidationReason"] = invalidationReason.rawValue
+        }
+        guard let plan = resolvedPlan, let resolvedPlanSHA256 else {
+            return dictionary as NSDictionary
+        }
+        dictionary["definitionRevision"] = plan.definitionRevision
+        if let definitionSHA256 = plan.definitionSHA256 {
+            dictionary["definitionSHA256"] = definitionSHA256
+        }
+        dictionary["planRevision"] = plan.planRevision
+        dictionary["planSHA256"] = resolvedPlanSHA256
+        dictionary["backend"] = plan.backend.rawValue
+        dictionary["backendImplementationIdentifier"] = plan.backendImplementationIdentifier
+        dictionary["backendRuntimeBuildIdentifier"] = plan.backendRuntimeBuildIdentifier
+        dictionary["supportTier"] = plan.supportTier.rawValue
+        dictionary["graphics"] = plan.graphics.rawValue
+        dictionary["removableUSBHotplug"] = plan.devices.removableUSBHotplug
+        if let selectionDisposition = plan.selectionEvidence?.disposition {
+            dictionary["selectionDisposition"] = selectionDisposition.rawValue
+        }
+        if let fallback = plan.selectionEvidence?.fallbackAuthorization {
+            dictionary["fallbackAuthorizationIdentity"] = fallback.authorizationIdentity
+        }
+        if let experimental = plan.experimentalAuthorization {
+            dictionary["experimentalAuthorizationIdentity"] = experimental.authorizationIdentity
+        }
+        if let graphics = plan.qualificationEvidence.graphics {
+            dictionary["graphicsQualification"] = [
+                "manifestIdentity": graphics.manifestIdentity,
+                "artifactSHA256": graphics.artifactSHA256,
+                "manifestSHA256": graphics.manifestSHA256,
+                "signingKeyID": graphics.signingKeyID,
+            ] as NSDictionary
+        }
+        if let runtime = plan.qualificationEvidence.runtime {
+            dictionary["runtimeQualification"] = [
+                "qualificationIdentity": runtime.qualificationIdentity,
+                "qualificationReportSHA256": runtime.qualificationReportSHA256,
+                "signingKeyID": runtime.signingKeyID,
+            ] as NSDictionary
+        }
+        if let host = plan.hostQualification {
+            dictionary["hostQualification"] = [
+                "qualificationIdentity": host.qualificationIdentity,
+                "qualificationReportSHA256": host.qualificationReportSHA256,
+                "qualifierIdentifier": host.qualifierIdentifier,
+            ] as NSDictionary
+        }
+        dictionary["components"] = plan.components.map { component in
+            [
+                "componentIdentifier": component.componentIdentifier,
+                "buildIdentifier": component.buildIdentifier,
+                "artifactSHA256": component.artifactSHA256,
+            ] as NSDictionary
+        }
+        var media: [String: Any] = [
+            "kind": plan.bootMedia.media.kind.rawValue,
+            "source": plan.bootMedia.media.source.rawValue,
+        ]
+        if let digest = plan.bootMedia.media.artifactSHA256 {
+            media["artifactSHA256"] = digest
+        }
+        if let reference = plan.bootMedia.resolverReference {
+            media["resolverNamespace"] = reference.namespace
+            media["resolverIdentifier"] = reference.identifier
+        }
+        if let inspection = plan.bootMedia.inspectionEvidence {
+            media["inspectionIdentity"] = inspection.inspectionIdentity
+            media["inspectionReportSHA256"] = inspection.inspectionReportSHA256
+        }
+        if let provenance = plan.bootMedia.mutableProvenanceEvidence {
+            media["provenanceReceiptIdentity"] = provenance.receiptIdentity
+            media["provenanceReceiptSHA256"] = provenance.receiptSHA256
+            media["provenanceRevision"] = provenance.provenance.revision
+        }
+        dictionary["bootMedia"] = media as NSDictionary
+        return dictionary as NSDictionary
+    }
+}
+
+private extension DoryMachineSnapshotArtifactEvidence {
+    var xpcDictionary: NSDictionary {
+        func artifact(_ value: DoryMachineSnapshotArtifact) -> NSDictionary {
+            ["byteCount": value.byteCount, "sha256": value.sha256]
+        }
+        var dictionary: [String: Any] = [
+            "schemaVersion": schemaVersion,
+            "rootfs": artifact(rootfs),
+            "kernel": artifact(kernel),
+        ]
+        if let machineIdentifier { dictionary["machineIdentifier"] = artifact(machineIdentifier) }
+        if let nvram { dictionary["nvram"] = artifact(nvram) }
+        return dictionary as NSDictionary
+    }
+}
+
+private extension DoryMachineSnapshotQuiesceReceipt {
+    var xpcDictionary: NSDictionary {
+        [
+            "schemaVersion": schemaVersion,
+            "receiptID": receiptID,
+            "agentBuild": agentBuild,
+            "agentProtocolVersion": agentProtocolVersion,
+            "capabilityVersion": capabilityVersion,
+        ]
     }
 }
 
@@ -1565,7 +3533,40 @@ private extension DoryAgentInfo {
             "kernel": kernel,
             "agentBuild": agentBuild,
             "uptimeSeconds": uptimeSeconds,
+            "capabilities": capabilities.map {
+                ["id": $0.id, "version": $0.version] as NSDictionary
+            },
         ]
+    }
+}
+
+private extension DoryGuestIntegrationHealth {
+    var xpcDictionary: NSDictionary {
+        var dictionary: [String: Any] = [
+            "schemaVersion": schemaVersion,
+            "state": state.rawValue,
+            "runtimeAuthority": runtimeAuthority.rawValue,
+            "features": features.map(\.xpcDictionary),
+        ]
+        if let agentBuild { dictionary["agentBuild"] = agentBuild }
+        if let agentProtocolVersion {
+            dictionary["agentProtocolVersion"] = agentProtocolVersion
+        }
+        return dictionary as NSDictionary
+    }
+}
+
+private extension DoryGuestIntegrationFeatureHealth {
+    var xpcDictionary: NSDictionary {
+        var dictionary: [String: Any] = [
+            "id": id.rawValue,
+            "provider": provider.rawValue,
+            "required": required,
+            "state": state.rawValue,
+        ]
+        if let minimumVersion { dictionary["minimumVersion"] = minimumVersion }
+        if let negotiatedVersion { dictionary["negotiatedVersion"] = negotiatedVersion }
+        return dictionary as NSDictionary
     }
 }
 
@@ -1624,7 +3625,7 @@ private extension MachineRecipeProvisionResult {
 
 private extension DoryMachineSnapshot {
     var xpcDictionary: NSDictionary {
-        [
+        var dictionary: [String: Any] = [
             "id": id,
             "machineID": machineID,
             "note": note,
@@ -1636,6 +3637,36 @@ private extension DoryMachineSnapshot {
             "memoryMB": memoryMB,
             "cpuCount": cpuCount,
             "displayMode": displayMode.rawValue,
+            "consistency": consistency.rawValue,
+            "runtimeIdentity": runtimeIdentity.xpcDictionary,
+        ]
+        if let artifactEvidence {
+            dictionary["artifactEvidence"] = artifactEvidence.xpcDictionary
+        }
+        if let guestQuiesceReceipt {
+            dictionary["guestQuiesceReceipt"] = guestQuiesceReceipt.xpcDictionary
+        }
+        let receipt = installedDesktopPayloadReceipt
+            ?? DoryInstalledDesktopPayloadReceipt.legacyEnvironment(environment)
+        if let receipt {
+            dictionary["installedDesktopPayloadReceipt"] = receipt.xpcDictionary
+        }
+        return dictionary as NSDictionary
+    }
+}
+
+private extension DoryDesktopUpdateResult {
+    var xpcDictionary: NSDictionary {
+        [
+            "operationID": operationID,
+            "machineID": machineID,
+            "distro": distro,
+            "version": version,
+            "inputSHA256": inputSHA256,
+            "bundleSHA256": bundleSHA256,
+            "snapshotID": snapshotID,
+            "status": status.xpcDictionary,
+            "restoredRunningState": restoredRunningState,
         ]
     }
 }

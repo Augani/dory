@@ -17,7 +17,74 @@ CONFIG_USB_XHCI_HCD=y
 CONFIG_USB_XHCI_PLATFORM=y
 CONFIG_USB_HID=y
 
+# Dory's host camera is exported as a standards-compliant USB Video Class 1.1 bulk device over
+# USB/IP/VHCI. Keep the upstream UVC/V4L2 path built in so the camera appears as /dev/video* before
+# the desktop session starts; Dory kernels intentionally do not depend on loadable modules.
+CONFIG_MEDIA_SUPPORT=y
+CONFIG_MEDIA_SUPPORT_FILTER=y
+# CONFIG_MEDIA_SUBDRV_AUTOSELECT is not set
+CONFIG_MEDIA_CAMERA_SUPPORT=y
+# CONFIG_MEDIA_ANALOG_TV_SUPPORT is not set
+# CONFIG_MEDIA_DIGITAL_TV_SUPPORT is not set
+# CONFIG_MEDIA_RADIO_SUPPORT is not set
+# CONFIG_MEDIA_SDR_SUPPORT is not set
+# CONFIG_MEDIA_PLATFORM_SUPPORT is not set
+# CONFIG_MEDIA_TEST_SUPPORT is not set
+# arm64 defconfig enables these non-UVC media families as modules. Dory kernels intentionally
+# disable modules, which would otherwise promote that unrelated hardware support into the image
+# when MEDIA_SUPPORT becomes built-in.
+# CONFIG_RC_CORE is not set
+# CONFIG_MEDIA_CEC_SUPPORT is not set
+# CONFIG_VIDEO_CAMERA_SENSOR is not set
+# CONFIG_VIDEO_MAX96712 is not set
+# CONFIG_VIDEO_MESON_VDEC is not set
+CONFIG_VIDEO_DEV=y
+# Mainline V4L2 enables the controller core for camera-class devices. Retain that small common core
+# while excluding every hardware-specific media family below.
+CONFIG_MEDIA_CONTROLLER=y
+CONFIG_MEDIA_USB_SUPPORT=y
+# CONFIG_MEDIA_PCI_SUPPORT is not set
+CONFIG_USB_VIDEO_CLASS=y
+CONFIG_USB_VIDEO_CLASS_INPUT_EVDEV=y
+
+# Give full desktop guests compressed swap without consuming another host-backed disk. Browsers
+# and GNOME otherwise run out of reclaimable memory abruptly at the VM memory ceiling.
+CONFIG_ZSMALLOC=y
+CONFIG_ZRAM=y
+
+# Ubuntu and other mainstream desktop distributions ship core applications as SquashFS images.
+# Their current packages use both XZ and LZO; without these decompressors Firefox, the app store,
+# and other snaps are present but cannot mount or launch under Dory's managed kernel. Preserve
+# package capabilities and security metadata instead of silently discarding their xattrs.
+CONFIG_SQUASHFS_XATTR=y
+CONFIG_SQUASHFS_XZ=y
+CONFIG_SQUASHFS_LZO=y
+
+# Ubuntu confines desktop snaps with AppArmor and builds each application's content-provider
+# namespace under that security model.  Falling back to snapd's unconfined devmode is not a
+# desktop compatibility mode: GPU-provider command chains can remain disconnected and apps then
+# spin forever without reaching their own entry point.  Match the security stack expected by a
+# stock Ubuntu desktop kernel so snapped and native applications share the same launch semantics.
+CONFIG_SECURITY_NETWORK=y
+CONFIG_SECURITY_PATH=y
+CONFIG_SECURITY_YAMA=y
+CONFIG_SECURITY_SAFESETID=y
+CONFIG_SECURITY_LOCKDOWN_LSM=y
+CONFIG_SECURITY_LOCKDOWN_LSM_EARLY=y
+CONFIG_SECURITY_LANDLOCK=y
+CONFIG_SECURITY_APPARMOR=y
+CONFIG_SECURITY_APPARMOR_INTROSPECT_POLICY=y
+CONFIG_SECURITY_APPARMOR_HASH=y
+CONFIG_SECURITY_APPARMOR_HASH_DEFAULT=y
+CONFIG_SECURITY_APPARMOR_EXPORT_BINARY=y
+CONFIG_DEFAULT_SECURITY_APPARMOR=y
+CONFIG_LSM="landlock,lockdown,yama,integrity,apparmor"
+
 # VZVirtioSoundDeviceConfiguration output stream.
 CONFIG_SOUND=y
 CONFIG_SND=y
 CONFIG_SND_VIRTIO=y
+# The generic ALSA loopback card otherwise enumerates before virtio-snd and desktop audio policy
+# can select it as the default sink/source even though it has no Mac speaker or microphone behind
+# it. Dory's two real directions are supplied by virtio-snd, so the phantom device must be absent.
+CONFIG_SND_ALOOP=n

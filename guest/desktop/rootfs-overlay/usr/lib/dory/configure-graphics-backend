@@ -1,0 +1,116 @@
+#!/bin/bash
+set -euo pipefail
+
+environment_file=/etc/environment.d/70-dory-graphics.conf
+session_environment=/etc/X11/Xsession.d/70dory-graphics
+requested_file=/run/dory/graphics-requested-backend
+effective_file=/run/dory/graphics-backend
+graphics_status=/run/dory/graphics-status
+venus_icd=/opt/dory/mesa/share/vulkan/icd.d/virtio_icd.aarch64.json
+venus_preflight=/usr/lib/dory/preflight-graphics-pack
+backend_resolver=/usr/lib/dory/resolve-graphics-backend
+kernel_cmdline_file=/proc/cmdline
+
+fail() {
+  message=$1
+  rm -f "$environment_file" "$session_environment" "$effective_file"
+  status_temp=$(mktemp "${graphics_status%/*}/.graphics-status.XXXXXX")
+  printf 'activation-failed: %s\n' "$message" > "$status_temp"
+  chmod 0644 "$status_temp"
+  mv -f "$status_temp" "$graphics_status"
+  echo "Dory graphics activation failed: $message" >&2
+  exit 1
+}
+
+# Acceleration is optional; the desktop is not. Publish one internally consistent effective
+# backend and its session environment, then expose the effective marker last. A failed Venus
+# preflight falls back only to the VirGL2 half of the host's dual-capset contract. It must never
+# prevent the display manager from reaching the recovery desktop.
+publish_backend() {
+  local effective=$1
+  local status_line=$2
+  local venus_enabled=$3
+  local environment_temp=""
+  local session_temp=""
+  local status_temp
+  local effective_temp
+
+  status_temp=$(mktemp "${graphics_status%/*}/.graphics-status.XXXXXX")
+  effective_temp=$(mktemp "${effective_file%/*}/.graphics-effective.XXXXXX")
+  # This is managed-image compatibility policy, independent of acceleration. GTK4's newer
+  # renderer was one of the original application-visibility regressions; keep the qualified GL
+  # renderer on the llvmpipe recovery path as well as VirGL. Stock ISO guests never run this hook.
+  environment_temp=$(mktemp "${environment_file%/*}/.70-dory-graphics.XXXXXX")
+  session_temp=$(mktemp "${session_environment%/*}/.70dory-graphics.XXXXXX")
+  printf '%s\n' \
+    '# Dory managed-desktop compatibility policy.' \
+    'GSK_RENDERER=gl' > "$environment_temp"
+  printf '%s\n' \
+    '# Dory managed-desktop compatibility policy.' \
+    'export GSK_RENDERER=gl' > "$session_temp"
+  if [ "$venus_enabled" = 1 ]; then
+    printf '%s\n' \
+      "VK_DRIVER_FILES=$venus_icd" \
+      "VK_ICD_FILENAMES=$venus_icd" >> "$environment_temp"
+    printf '%s\n' \
+      "export VK_DRIVER_FILES=$venus_icd" \
+      "export VK_ICD_FILENAMES=$venus_icd" >> "$session_temp"
+  fi
+
+  cleanup() {
+    [ -z "$environment_temp" ] || rm -f "$environment_temp"
+    [ -z "$session_temp" ] || rm -f "$session_temp"
+    rm -f "$status_temp" "$effective_temp"
+    if [ "${activation_committed:-0}" -ne 1 ]; then
+      rm -f "$environment_file" "$session_environment" "$effective_file"
+    fi
+  }
+  trap cleanup EXIT
+
+  printf '%s\n' "$status_line" > "$status_temp"
+  printf '%s\n' "$effective" > "$effective_temp"
+  chmod 0644 "$status_temp" "$effective_temp"
+  chmod 0644 "$environment_temp" "$session_temp"
+  mv -f "$environment_temp" "$environment_file"
+  mv -f "$session_temp" "$session_environment"
+  mv -f "$status_temp" "$graphics_status"
+  mv -f "$effective_temp" "$effective_file"
+  activation_committed=1
+  trap - EXIT
+}
+
+install -d -m0755 "${requested_file%/*}" "${environment_file%/*}" \
+  "${session_environment%/*}"
+rm -f "$environment_file" "$session_environment" "$requested_file" \
+  "$effective_file" "$graphics_status"
+
+[ -x "$backend_resolver" ] || fail "graphics backend resolver is missing"
+if ! requested="$($backend_resolver "$(cat "$kernel_cmdline_file")" 2>&1)"; then
+  fail "$requested"
+fi
+
+requested_temp=$(mktemp "${requested_file%/*}/.graphics-requested.XXXXXX")
+printf '%s\n' "$requested" > "$requested_temp"
+chmod 0644 "$requested_temp"
+mv -f "$requested_temp" "$requested_file"
+
+if [ "$requested" = virgl2+venus ]; then
+  if [ ! -x "$venus_preflight" ]; then
+    publish_backend virgl2 \
+      'venus-unavailable: Dory Venus preflight is missing; fallback=virgl2' 0
+    exit 0
+  fi
+  if [ ! -r "$venus_icd" ]; then
+    publish_backend virgl2 \
+      'venus-unavailable: Dory Venus ICD is missing; fallback=virgl2' 0
+    exit 0
+  fi
+  if ! probe_output="$("$venus_preflight" 2>&1)"; then
+    publish_backend virgl2 \
+      "venus-unavailable: $probe_output; fallback=virgl2" 0
+    exit 0
+  fi
+  publish_backend "$requested" "venus-ready: $probe_output" 1
+else
+  publish_backend "$requested" "$requested-ready" 0
+fi

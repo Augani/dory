@@ -122,7 +122,7 @@ run_gvproxy() {
       "$(dory_gvproxy_version)" \
       "$(dory_gvproxy_expected_sha256)"
     grep -qx \
-      'features=native-ipv6-v2,host-route-aware-aaaa-v1,source-preserving-lan-qemu-v1' \
+      'features=native-ipv6-v2,host-route-aware-aaaa-v1,source-preserving-lan-qemu-v1,host-only-connectivity-v1' \
       "$tmp/gvproxy-provenance.txt"
   )
 }
@@ -135,7 +135,11 @@ prepare_swift() {
 run_swift() {
   prepare_swift
   swift test --no-parallel --package-path dory-core-swift
-  swift test --no-parallel --package-path Packages/ContainerizationEngine
+  # SwiftPM's --no-parallel serializes XCTest workers, but Swift Testing still schedules suites
+  # concurrently inside the test process. The DoryHV package has bounded concurrency fixtures whose
+  # one-second safety deadlines must not be consumed by hundreds of unrelated runnable tests.
+  SWT_EXPERIMENTAL_MAXIMUM_PARALLELIZATION_WIDTH=1 \
+    swift test --no-parallel --package-path Packages/ContainerizationEngine
 }
 
 run_app_xcodebuild() {

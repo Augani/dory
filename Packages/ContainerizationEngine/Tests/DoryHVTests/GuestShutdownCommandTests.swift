@@ -143,4 +143,24 @@ struct GuestShutdownCommandTests {
 
         #expect(process.terminationStatus == 0)
     }
+
+    @Test func detachedDesktopRequestUsesGracefulSystemShutdown() throws {
+        let command = GuestShutdownCommand.detachedDesktopRequest()
+
+        #expect(command.contains("systemd-run"))
+        #expect(command.contains("--on-active=1s"))
+        #expect(command.contains("systemctl poweroff"))
+        #expect(!command.contains("poweroff -f"))
+        #expect(!command.hasSuffix("&"))
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-n", "-c", command]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        process.waitUntilExit()
+
+        #expect(process.terminationStatus == 0)
+    }
 }

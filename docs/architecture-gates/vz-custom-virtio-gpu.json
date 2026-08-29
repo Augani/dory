@@ -1,0 +1,241 @@
+{
+  "schemaVersion": 1,
+  "gate": "vz-custom-virtio-gpu-consolidation",
+  "qualificationState": "blocked",
+  "decision": "research-only-not-selected",
+  "evaluatedAt": "2026-08-26",
+  "scope": "A standards-compatible dual-capset virtio-gpu device inside a generic ARM64 Linux Virtualization.framework VM, reusing Dory's schema-3 isolated VirGL2-plus-Venus renderer worker and Metal presentation contracts.",
+  "immediateInstalledRendererToZedImpact": "none",
+  "currentBlocker": "The macOS 27 API is beta and unavailable in the selected Xcode 26.6 public SDK. Its documented surface can represent the static virtio-gpu identity, queues, features, guest mappings and host-visible shared-memory region, but it exposes no guest device-configuration write callback, no exportable guest-RAM authority for Dory's isolated worker, and no custom scanout or input-injection surface. Dory also cannot serialize its renderer state for VZ saved-state restore, and arbitrary stock Linux kernels do not supply Dory's managed producer-complete RESOURCE_FLUSH fence contract. Physical macOS 27 and stock-Linux evidence is absent.",
+  "hostAvailability": {
+    "minimumCustomVirtioMacOS": "27.0",
+    "apiState": "beta",
+    "selectedDeveloperDirectory": "/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer",
+    "selectedSDK": "MacOSX26.5.sdk",
+    "selectedSDKHasPublicCustomVirtioDeclarations": false,
+    "selectedSDKTBDContainsPrivateNamedSymbols": true,
+    "prototypeToolchainRequirement": "Xcode 27 SDK and macOS 27 runtime",
+    "releaseRequirement": "Final macOS 27 and final Xcode 27 exact-candidate build, signing, notarization and physical qualification"
+  },
+  "standardVirtioGPUContract": {
+    "deviceID": 16,
+    "pciClassID": 3,
+    "pciSubclassID": 128,
+    "virtioQueueCount": 2,
+    "queue0": "controlq",
+    "queue1": "cursorq",
+    "staticConfigurationByteCount": 16,
+    "staticConfigurationFields": [
+      "events_read",
+      "events_clear",
+      "num_scanouts",
+      "num_capsets"
+    ],
+    "offeredDeviceFeatureBits": {
+      "VIRTIO_GPU_F_VIRGL": 0,
+      "VIRTIO_GPU_F_RESOURCE_UUID": 2,
+      "VIRTIO_GPU_F_RESOURCE_BLOB": 3,
+      "VIRTIO_GPU_F_CONTEXT_INIT": 4
+    },
+    "hostVisibleSharedMemoryRegionID": 1,
+    "productionCapsetPolicy": "Exactly two ordered, attested capsets are production-admissible: VirGL2 ID 2 followed by Venus ID 4. A Venus-only or VirGL2-only receipt fails closed."
+  },
+  "gateResults": [
+    {
+      "id": "api-public-in-selected-sdk",
+      "status": "fail",
+      "evidence": "MacOSX26.5.sdk exports no VZCustomVirtio public header or Swift declaration. The APIs are documented as macOS 27 beta."
+    },
+    {
+      "id": "standard-gpu-pci-identity-configurable",
+      "status": "pass",
+      "evidence": "Apple exposes UInt16 deviceID plus UInt8 PCI class/subclass fields. OASIS assigns GPU device ID 16; upstream QEMU uses PCI_CLASS_DISPLAY_OTHER (0x0380) for virtio-gpu-pci."
+    },
+    {
+      "id": "static-device-configuration-representable",
+      "status": "pass",
+      "evidence": "VZVirtioDeviceSpecificConfiguration accepts serialized configuration bytes and fixed-size runtime replacement. Dory's advertised feature set does not include VIRTIO_GPU_F_BLOB_ALIGNMENT, so the four-field 16-byte configuration is the applicable OASIS layout."
+    },
+    {
+      "id": "guest-device-configuration-writes-observable",
+      "status": "fail",
+      "evidence": "The documented custom-device and delegate APIs contain host configuration update, queue notification and lifecycle callbacks, but no callback or mutable view for guest writes to device-specific configuration. Exact events_clear write-to-clear behavior and virtio-input select/subsel queries therefore have no documented implementation path."
+    },
+    {
+      "id": "device-feature-offer-and-negotiation",
+      "status": "pass",
+      "evidence": "VZVirtioFeatureSet exposes feature words 0 through 63 and VZNegotiatedVirtioFeatureSet is available after DRIVER_OK. The four Dory GPU device bits fit in word 0."
+    },
+    {
+      "id": "framework-added-common-feature-set-exactness",
+      "status": "unknown",
+      "evidence": "Apple documents VIRTIO_F_VERSION_1 as mandatory and says additional optional performance features are internally offered, but does not enumerate the latter. A stock-Linux negotiation trace is required."
+    },
+    {
+      "id": "two-standard-queues-representable",
+      "status": "pass",
+      "evidence": "The configuration accepts a UInt16 queue count. VZVirtioQueue provides queue index, size and nextElement; elements provide bounded read/write access and returnToQueue."
+    },
+    {
+      "id": "asynchronous-element-retention-and-reset-revocation",
+      "status": "unknown",
+      "evidence": "Dory defers fenced GPU completions across renderer work. Apple does not document how long an unreturned VZVirtioQueueElement may be retained, or its exact behavior across reset, pause and queue reconfiguration."
+    },
+    {
+      "id": "in-process-guest-memory-mapping",
+      "status": "pass",
+      "evidence": "VZCustomVirtioDevice returns a VZGuestMemoryMapping with a host pointer for a valid guest physical range."
+    },
+    {
+      "id": "cross-process-guest-memory-authority",
+      "status": "fail",
+      "evidence": "The documented VZ guest mapping is only an in-process pointer. It exposes no file descriptor or memory object that Dory can grant to its sandboxed renderer worker. Dory's current retained renderer backing contract requires descriptor-backed shared mappings."
+    },
+    {
+      "id": "host-visible-region-primitives",
+      "status": "pass",
+      "evidence": "A custom device may configure shared-memory region ID 1 and map or unmap host pointers at region-relative offsets, matching the OASIS host-visible virtio-gpu mechanism at the API-shape level."
+    },
+    {
+      "id": "worker-exported-blob-map-unmap",
+      "status": "unknown",
+      "evidence": "Dory can mmap the worker-exported blob descriptor in the VMM and pass that host pointer to VZVirtioSharedMemoryRegion.mapMemory. Alignment, overlap, cache/coherence, reset and unmap lifetime must be proved on macOS 27 before this is authority."
+    },
+    {
+      "id": "existing-gpu-frontend-direct-reuse",
+      "status": "fail",
+      "evidence": "VirtioGPU currently depends on VirtioMMIOTransport, VirtqueueChain and RawHV guest-memory descriptor methods. A VZ queue element must not be disguised as a RawHV chain; a transport-neutral semantic core is required."
+    },
+    {
+      "id": "renderer-worker-wire-contract-reuse",
+      "status": "pass",
+      "evidence": "The authenticated renderer broker, schema-3 dual-capset capability receipt, bounded classic and blob operation envelopes, VirGL shared-texture and Venus descriptor-backed scanout leases, and producer-fence descriptors do not import Hypervisor.framework or Virtualization.framework."
+    },
+    {
+      "id": "custom-scanout-presentation",
+      "status": "unknown",
+      "evidence": "VirGL shared-texture or Venus SHM lease plus producer-fence handoff to Metal is transport-independent, but Virtualization.framework exposes no presentation object for a custom GPU. Dory's Metal display currently lives in dory-hv and must be extracted behind a reusable presentation sink and physically tested beside VZ."
+    },
+    {
+      "id": "custom-virtio-input",
+      "status": "fail",
+      "evidence": "Standard virtio-input requires guest writes to select and subsel before each capability read. The documented custom-device API has no guest configuration-write callback."
+    },
+    {
+      "id": "vz-built-in-input-with-custom-scanout",
+      "status": "unknown",
+      "evidence": "VZVirtualMachineView forwards events through configured built-in keyboard and pointing devices, but Apple does not document input forwarding when the VM has no built-in graphics display or when a custom Metal surface covers the view. A dual-GPU workaround is not accepted as architecture."
+    },
+    {
+      "id": "reset-lifecycle-primitives",
+      "status": "pass",
+      "evidence": "The API reports DRIVER_OK and reset, and lets the host request DEVICE_NEEDS_RESET."
+    },
+    {
+      "id": "renderer-generation-reset-recovery",
+      "status": "unknown",
+      "evidence": "The reset delegate has no asynchronous completion. Dory must prove that queue admission, retained elements, blob mappings, scanout releases and the renderer worker can reach one successor generation without blocking the serial device queue."
+    },
+    {
+      "id": "pause-resume-lifecycle-primitives",
+      "status": "pass",
+      "evidence": "The custom-device delegate receives pause, resume and stop lifecycle calls."
+    },
+    {
+      "id": "saved-state-with-accelerated-renderer",
+      "status": "fail",
+      "evidence": "Dory has no complete serializable representation of guest GPU resources, renderer contexts, fences, scanout leases and host-visible mappings. The candidate must set supportsSaveRestore to false and resolver-reject saved-state requirements until a complete versioned snapshot contract exists."
+    },
+    {
+      "id": "stock-linux-efi-and-driver-binding",
+      "status": "unknown",
+      "evidence": "No exact ARM64 EFI ISO has enumerated this custom PCI device, bound upstream virtio_gpu, installed through firmware, or recovered with the built-in display removed."
+    },
+    {
+      "id": "generic-iso-producer-complete-fence-contract",
+      "status": "fail",
+      "evidence": "The current worker bootstrap accepts only managedLinux612106PrepareFBV1, whose patched managed kernel makes RESOURCE_FLUSH producer-complete. An arbitrary stock ARM64 EFI guest cannot inherit that ordering from ordinary virtio-gpu feature negotiation. No upstream-compatible producer contract and no exact generic-media proof exist for either VirGL2 or Venus presentation."
+    },
+    {
+      "id": "zed-vulkan-and-whole-vm-performance",
+      "status": "unknown",
+      "evidence": "There is no booted candidate, synchronized Metal frame, vulkaninfo, Zed run, frame-integrity campaign or whole-VM performance evidence for this transport."
+    }
+  ],
+  "recommendedTransportAdapterSeam": {
+    "rule": "Extract one backend-neutral virtio-gpu semantic core; do not fork command semantics, renderer protocol or resource state into DoryVMMKit.",
+    "interfaces": [
+      "VirtioGPUQueueElement: one-shot bounded readable views, writable capacity, sequential write, deferred finish or revoke",
+      "VirtioGPUTransportSession: negotiated features, DRIVER_OK/reset generation, configuration update notification and queue scheduling",
+      "VirtioGPUGuestMemoryAuthority: process-local mapping plus an explicit retainedBacking capability of descriptorBacked or processLocalOnly",
+      "VirtioGPUHostVisibleRegion: asynchronous map and unmap by region-relative offset with generation-bound completion",
+      "VirtioGPUScanoutSink and VirtioGPUCursorSink: transport-independent copied or descriptor-backed presentation leases"
+    ],
+    "rawHVAdapter": "Owns split-ring/MMIO, IRQ, guest-RAM descriptor export and synchronous Hypervisor host-visible mappings.",
+    "vzAdapter": "Owns VZVirtioQueueElement one-shot access, VZ configuration updates, in-process guest mappings and asynchronous VZ shared-region operations on the serial device queue.",
+    "failClosedRule": "A processLocalOnly VZ guest mapping cannot satisfy a renderer command that retains guest backing. The adapter may investigate device-owned Venus blobs and VirGL shared-texture handles only with explicit cross-process authority, but it must reject any unsupported command path and cannot advertise the schema-3 production capsets [2,4] from a single-capset subset."
+  },
+  "boundedPrototypePlan": [
+    {
+      "step": 1,
+      "objective": "With Xcode 27 and macOS 27, validate one harmless custom Virtio device, exact PCI enumeration, feature negotiation, queue completion, deferred-element lifetime and reset behavior.",
+      "stopCondition": "Stop if a stock Linux driver cannot bind or a retained element cannot be deterministically revoked."
+    },
+    {
+      "step": 2,
+      "objective": "Run the extracted GPU core in 2D-only mode with one fixed scanout and Dory Metal software presentation against exact native ARM64 EFI media.",
+      "stopCondition": "Stop if firmware/install visibility requires an unqualified dual-GPU topology or guest configuration writes cannot be made conformant."
+    },
+    {
+      "step": 3,
+      "objective": "Configure shared-memory region ID 1 and prove page alignment, overlap rejection, bidirectional coherence, map/unmap, reset, sleep/wake and worker-exported blob lifetime.",
+      "stopCondition": "Stop if VZ cannot map worker SHM without copying or cannot revoke it deterministically."
+    },
+    {
+      "step": 4,
+      "objective": "Attach the exact schema-3 signed dual VirGL2-plus-Venus renderer worker, prove synchronized Metal frames for both scanout lease types, then run an exact direct-rendering VirGL desktop workload plus guest vulkaninfo and Zed without software substitution.",
+      "stopCondition": "Stop on any retained guest-backing requirement that lacks descriptor or shared-texture authority, any missing producer-complete guest fence, copy fallback, single-capset receipt, or renderer generation ambiguity."
+    },
+    {
+      "step": 5,
+      "objective": "Prove input, resize, pause/resume, reset, worker crash, visual integrity and whole-VM budgets across exact qualified native ARM64 media cells. Saved state remains resolver-rejected.",
+      "stopCondition": "Do not select this backend until every requested capability has exact physical evidence on final macOS 27 APIs."
+    }
+  ],
+  "notAccepted": [
+    "Shipping beta-only API code",
+    "Moving renderer code back into the VMM process",
+    "Copying retained guest GPU backing into an unversioned shadow buffer",
+    "Treating a second built-in GPU as a silent display or input workaround",
+    "Claiming dynamic resize without exact events_clear behavior",
+    "Claiming saved-state support by serializing an empty device payload",
+    "Projecting the managed guest's producer-complete fence contract onto an arbitrary stock ISO",
+    "Claiming GPU or Zed support from source-level API availability"
+  ],
+  "primarySources": [
+    "https://developer.apple.com/documentation/virtualization/vzcustomvirtiodevice",
+    "https://developer.apple.com/documentation/virtualization/vzcustomvirtiodeviceconfiguration",
+    "https://developer.apple.com/documentation/virtualization/vzvirtiodevicespecificconfiguration",
+    "https://developer.apple.com/documentation/virtualization/vzvirtioqueueelement",
+    "https://developer.apple.com/documentation/virtualization/vzvirtiosharedmemoryregion",
+    "https://developer.apple.com/documentation/virtualization/vzguestmemorymapping",
+    "https://developer.apple.com/videos/play/wwdc2026/224/",
+    "https://docs.oasis-open.org/virtio/virtio/v1.4/virtio-v1.4.html",
+    "https://gitlab.com/qemu-project/qemu/-/blob/master/hw/display/virtio-gpu-pci.c",
+    "https://github.com/torvalds/linux/blob/master/include/uapi/linux/virtio_gpu.h",
+    "https://github.com/torvalds/linux/blob/master/include/uapi/linux/virtio_input.h"
+  ],
+  "localEvidence": [
+    "dory-core-swift/Sources/DoryRendererWorkerWireContracts/DoryRendererProductionInventory.swift",
+    "dory-core-swift/Sources/DoryRendererWorkerWireContracts/DoryRendererCapabilityReceipt.swift",
+    "dory-core-swift/Sources/DoryRendererWorkerWireContracts/DoryRendererWorkerIdentity.swift",
+    "Packages/ContainerizationEngine/Sources/DoryRendererWorkerVirglBackend/DoryRendererWorkerVirglBackend.swift",
+    "Packages/ContainerizationEngine/Sources/DoryHV/VirtioGPU.swift",
+    "Packages/ContainerizationEngine/Sources/DoryHV/VirtioMMIO.swift",
+    "Packages/ContainerizationEngine/Sources/DoryHV/DoryRendererWorkerSharedMemory.swift",
+    "Packages/ContainerizationEngine/Sources/DoryHV/DoryRendererWorkerVirtioCommandLane.swift",
+    "Packages/ContainerizationEngine/Sources/dory-hv/DesktopMetalDisplay.swift",
+    "dory-core-swift/Sources/DoryVMMKit/DoryVMM.swift",
+    "dory-core-swift/Sources/DoryVMMKit/DoryVMMDesktopApplication.swift"
+  ]
+}

@@ -4,6 +4,10 @@ cd "$(dirname "$0")"
 source ./config-policy.sh
 source ./profile.sh
 
+[ "$#" -le 1 ] || {
+  echo "usage: $0 [arm64|amd64]" >&2
+  exit 64
+}
 ARCH="${1:-arm64}"
 OUT="${DORY_KERNEL_OUT_DIR:-../out}"
 PROFILE="$(dory_kernel_resolve_profile)"
@@ -29,8 +33,8 @@ case "$ARCH" in
     exit 64
     ;;
 esac
-if [ "$PROFILE" = "desktop" ] && [ "$ARCH" != "arm64" ]; then
-  echo "the desktop kernel profile currently supports arm64 only" >&2
+if { [ "$PROFILE" = "desktop" ] || [ "$PROFILE" = "accelerated-desktop" ]; } && [ "$ARCH" != "arm64" ]; then
+  echo "desktop kernel profiles currently support arm64 only" >&2
   exit 64
 fi
 
@@ -88,6 +92,7 @@ case "$PROFILE" in
   headless) CONFIG_FRAGMENTS+=(dory-headless.fragment) ;;
   venus) CONFIG_FRAGMENTS+=(dory-virtual-display.fragment dory-gpu.fragment) ;;
   desktop) CONFIG_FRAGMENTS+=(dory-virtual-display.fragment dory-desktop.fragment) ;;
+  accelerated-desktop) CONFIG_FRAGMENTS+=(dory-virtual-display.fragment dory-gpu.fragment dory-desktop.fragment dory-accelerated-desktop.fragment) ;;
 esac
 
 REQUIRED_POLICIES="$({
@@ -116,5 +121,27 @@ while IFS= read -r expected; do
   dory_kernel_config_honors_policy "$CONFIG" "$symbol" "$value" \
     || fail "$CONFIG does not honor required policy $expected"
 done <<< "$REQUIRED_POLICIES"
+
+# Desktop camera support must not reactivate arm64 defconfig's unrelated media modules. Since Dory
+# builds a monolithic kernel, those modules would otherwise be promoted into the release image.
+if [ "$PROFILE" = desktop ] || [ "$PROFILE" = accelerated-desktop ]; then
+  for forbidden_media_symbol in \
+    MEDIA_SUBDRV_AUTOSELECT \
+    MEDIA_ANALOG_TV_SUPPORT \
+    MEDIA_DIGITAL_TV_SUPPORT \
+    MEDIA_RADIO_SUPPORT \
+    MEDIA_SDR_SUPPORT \
+    MEDIA_PLATFORM_SUPPORT \
+    MEDIA_TEST_SUPPORT \
+    MEDIA_PCI_SUPPORT \
+    MEDIA_CEC_SUPPORT \
+    RC_CORE \
+    VIDEO_CAMERA_SENSOR \
+    VIDEO_MAX96712 \
+    VIDEO_MESON_VDEC; do
+    dory_kernel_config_honors_policy "$CONFIG" "$forbidden_media_symbol" n \
+      || fail "$CONFIG unexpectedly enables $forbidden_media_symbol"
+  done
+fi
 
 echo "verified $ARCH kernel input fingerprint $EXPECTED_INPUT"

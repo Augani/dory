@@ -20,7 +20,7 @@ docker_arm64 https://download.docker.com/linux/static/stable/aarch64/docker-29.6
 docker_amd64 https://download.docker.com/linux/static/stable/x86_64/docker-29.6.1.tgz b0df4a43a98d7ecb708acbdb5a34a3416e13b6e39bcbbdf296f51f0f3442b29f
 crun_arm64 https://github.com/containers/crun/releases/download/1.28/crun-1.28-linux-arm64 cc1e8ec89aef1422e0741be196f9ed099e2e09d2f48f30f27cd44a22ef1f0342
 crun_amd64 https://github.com/containers/crun/releases/download/1.28/crun-1.28-linux-amd64 2aa6b7024a9c9f153895c0d11ae233d3758f54844011c3a039e3e89048d01d42
-fex_arm64 https://ppa.launchpadcontent.net/fex-emu/fex/ubuntu/pool/main/f/fex-emu-armv8.0/fex-emu-armv8.0_2607-1~n_arm64.deb 145247dfbde97bd845d8418c6cafd866a769aaf0906379b546944d6b7f10466b
+fex_arm64 https://ppa.launchpadcontent.net/fex-emu/fex/ubuntu/pool/main/f/fex-emu-armv8.0/fex-emu-armv8.0_2607-1~q_arm64.deb 70b64540936f6d056404ac995564cdf391b444a11c20fe7e7a0c4fa15781bd27
 fex_libc6_arm64 https://ports.ubuntu.com/ubuntu-ports/pool/main/g/glibc/libc6_2.39-0ubuntu8_arm64.deb 04d7cb73e608b41713b63ef915577f7f5d75e95b1b33174e82e05687fdb6cfaf
 fex_gcc_base_arm64 https://ports.ubuntu.com/ubuntu-ports/pool/main/g/gcc-14/gcc-14-base_14-20240412-0ubuntu1_arm64.deb a473987e9704cbfa2c795b7c94b57f38ed2b27f7068c8338e1deed9bbf279877
 libeconf_arm64 https://dl-cdn.alpinelinux.org/alpine/v3.21/main/aarch64/libeconf-0.6.3-r0.apk db25f8abaf1ec61f5dcc0ff9b55271a3f6e43037e430b0c126ac000483e17dad

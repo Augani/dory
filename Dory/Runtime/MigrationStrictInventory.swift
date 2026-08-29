@@ -269,7 +269,14 @@ private extension MigrationStrictInventoryCollector {
             expected: selectedVolumeNames,
             runtime: sourceRuntime
         )
-        let targetDockerBytes = try await dockerUsage(runtime: targetRuntime)
+        let targetUsage = try await targetStorageUsage(
+            runtime: targetRuntime,
+            engineCapacity: engineCapacity
+        )
+        let effectiveEngineCapacity = MigrationEngineCapacity(
+            logicalBytes: engineCapacity.logicalBytes,
+            usableBytes: targetUsage.effectiveUsableBytes
+        )
         let selectedImageIDs = Set(selectedKeys.compactMap {
             $0.kind == .image ? $0.sourceID : nil
         })
@@ -294,9 +301,9 @@ private extension MigrationStrictInventoryCollector {
             target: base.targetSnapshot,
             volumeBytes: volumeBytes,
             writableSizes: selectedWritableSizes,
-            targetDockerBytes: targetDockerBytes,
+            targetDockerBytes: targetUsage.usedBytes,
             availableHostBytes: availableHostBytes,
-            engineCapacity: engineCapacity
+            engineCapacity: effectiveEngineCapacity
         ))
         return MigrationStrictStorageInventory(volumeBytes: volumeBytes, capacity: capacity)
     }

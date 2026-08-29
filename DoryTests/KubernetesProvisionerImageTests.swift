@@ -24,17 +24,15 @@ struct KubernetesProvisionerImageTests {
         #expect(labels[KubernetesProvisioner.imageLabel] == image)
     }
 
-    @Test func fexCreateRequestMountsOnlyTheReadOnlyWrapper() throws {
+    @Test func fexCreateRequestDelegatesNestedRuntimeMountsToEngineAdmission() throws {
         let image = KubeVersionCatalog.latest.image
         let root = try jsonObject(image: image, amd64Emulation: true)
         let host = try #require(root["HostConfig"] as? [String: Any])
         let labels = try #require(root["Labels"] as? [String: String])
         let entrypoint = try #require(root["Entrypoint"] as? [String])
-        let binds = try #require(host["Binds"] as? [String])
 
         #expect(entrypoint == ["/bin/sh", "-ec"])
-        #expect(binds == ["/usr/local/bin/dory-runc:/usr/local/bin/dory-runc:ro"])
-        #expect(!binds.joined().contains("runc.real"))
+        #expect(host["Binds"] == nil)
         #expect(labels[KubernetesProvisioner.emulationLabel] == "fex")
     }
 
@@ -45,8 +43,8 @@ struct KubernetesProvisionerImageTests {
 
         #expect(script.contains("test -x /usr/lib/dory/fex/FEX"))
         #expect(script.contains("test -x /usr/lib/dory/fex/FEXServer"))
-        #expect(script.contains("install -m 0755 /bin/runc /usr/local/bin/runc.real"))
-        #expect(script.contains("cmp -s /bin/runc /usr/local/bin/runc.real"))
+        #expect(script.contains("test -x /usr/local/bin/runc.real"))
+        #expect(!script.contains("install -m 0755 /bin/runc"))
         #expect(script.contains("BinaryName = \"/usr/local/bin/dory-runc\""))
         #expect(!script.contains("platforms = ["))
         #expect(script.contains("runtime_config_tmp="))

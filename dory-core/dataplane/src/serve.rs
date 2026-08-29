@@ -4,11 +4,13 @@
 //! GPU gate entirely.
 //!
 //! The shape per connection: one backend connection (dialed lazily on the first request), a blind
-//! response pump backend→client (responses are never parsed), and a request loop client→backend
-//! that tracks request boundaries (content-length framed). A `create` body is rewritten in place;
-//! a hijack/upgrade request (attach/exec/build/load) drops the rest of the connection into a raw
-//! splice; everything else streams through verbatim. Half-close is preserved in both directions:
-//! client EOF becomes backend `SHUT_WR`, backend EOF becomes client `SHUT_WR`.
+//! response pump backend→client for ordinary requests, and a request loop client→backend that
+//! tracks request boundaries (content-length framed). A `create` body is rewritten in place;
+//! container inspect uses a bounded one-response side connection so the public response can report
+//! the effective host endpoint; a hijack/upgrade request (attach/exec/build/load) drops the rest of
+//! the connection into a raw splice; everything else streams through verbatim. Half-close is
+//! preserved in both directions: client EOF becomes backend `SHUT_WR`, backend EOF becomes client
+//! `SHUT_WR`.
 //!
 //! Docker clients never pipeline (a request is only sent after the previous response), which is
 //! what makes the blind response pump and the direct 501 write safe.
@@ -35,6 +37,7 @@ use tokio::time::timeout;
 use crate::classify::{classify, Disposition};
 use crate::create_rewrite::{rewrite_create_body, RewriteOpts};
 use crate::http_head::{head_end, parse_head, MAX_HEAD_BYTES};
+use crate::inspect_rewrite::rewrite_container_inspect_body;
 
 pub const ACTIVITY_ACK_TIMEOUT: Duration = Duration::from_secs(210);
 
@@ -202,112 +205,17 @@ async fn inspect_container_for_start<B: Backend>(
         .ok_or_else(|| {
             std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid start path")
         })?;
-    let mut stream = backend.connect().await?;
-    stream
-        .write_all(
-            format!(
-                "GET /containers/{container}/json HTTP/1.1\r\nHost: d\r\nConnection: close\r\n\r\n"
-            )
-            .as_bytes(),
-        )
-        .await?;
-    let mut response = Vec::new();
-    let mut chunk = [0u8; 16 * 1024];
-    let head_len = loop {
-        if let Some(length) = head_end(&response) {
-            break length;
-        }
-        if response.len() > MAX_HEAD_BYTES {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "container inspect response head is too large",
-            ));
-        }
-        let count = stream.read(&mut chunk).await?;
-        if count == 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
-                "container inspect ended before its response head",
-            ));
-        }
-        response.extend_from_slice(&chunk[..count]);
-    };
-    let head = std::str::from_utf8(&response[..head_len]).map_err(|_| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "container inspect response head is not UTF-8",
-        )
-    })?;
-    if !head.starts_with("HTTP/1.1 200 ") && !head.starts_with("HTTP/1.0 200 ") {
+    let request = format!(
+        "GET /containers/{container}/json HTTP/1.1\r\nHost: d\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n"
+    );
+    let response = buffered_docker_round_trip(backend, request.as_bytes()).await?;
+    if response_status(&response.head) != Some(200) {
         return Err(std::io::Error::new(
             std::io::ErrorKind::NotFound,
             "container inspect did not return 200",
         ));
     }
-    if is_chunked(head) {
-        loop {
-            match decode_chunked_body(&response[head_len..], MAX_INSPECT_BODY) {
-                ChunkedBody::Complete { body, .. } => return Ok(body),
-                ChunkedBody::NeedMore => {
-                    if response.len().saturating_sub(head_len) > MAX_INSPECT_BODY + MAX_HEAD_BYTES {
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            "chunked container inspect response exceeded its bound",
-                        ));
-                    }
-                    let count = stream.read(&mut chunk).await?;
-                    if count == 0 {
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::UnexpectedEof,
-                            "chunked container inspect response is incomplete",
-                        ));
-                    }
-                    response.extend_from_slice(&chunk[..count]);
-                }
-                ChunkedBody::TooLarge => {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        "chunked container inspect response body is too large",
-                    ));
-                }
-                ChunkedBody::Malformed => {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        "chunked container inspect response is malformed",
-                    ));
-                }
-            }
-        }
-    }
-    let body_length = content_length(head).ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "container inspect response has no content length",
-        )
-    })?;
-    if body_length > MAX_INSPECT_BODY {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "container inspect response body is too large",
-        ));
-    }
-    while response.len() < head_len + body_length {
-        let count = stream.read(&mut chunk).await?;
-        if count == 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
-                "container inspect response body is incomplete",
-            ));
-        }
-        response.extend_from_slice(&chunk[..count]);
-        if response.len() > head_len + MAX_INSPECT_BODY {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "container inspect response exceeded its bound",
-            ));
-        }
-    }
-    Ok(response[head_len..head_len + body_length].to_vec())
+    Ok(response.body)
 }
 
 async fn preflight_container_start<B: Backend>(backend: &B, start_path: &str) -> Option<String> {
@@ -345,6 +253,250 @@ async fn preflight_container_start<B: Backend>(backend: &B, start_path: &str) ->
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     last_error
+}
+
+struct BufferedDockerResponse {
+    head: String,
+    body: Vec<u8>,
+}
+
+/// Run one bounded container-inspect request on its own backend connection. The normal response
+/// pump is intentionally byte-transparent; a side connection lets this one Docker object be
+/// corrected without turning every streamed Docker response into a buffering proxy. The request
+/// asks dockerd for identity encoding and connection close so one complete response has an exact,
+/// bounded framing edge.
+async fn rewritten_container_inspect_response<B: Backend>(
+    backend: &B,
+    request: &[u8],
+    client_wants_close: bool,
+) -> std::io::Result<Vec<u8>> {
+    let request = one_shot_inspect_request(request)?;
+    let response = buffered_docker_round_trip(backend, &request).await?;
+    let rewritten = rewrite_container_inspect_body(&response.body);
+    let body_was_rewritten = rewritten.is_some();
+    let body = rewritten.unwrap_or(response.body);
+    let mut framed = rebuild_buffered_response_head(
+        &response.head,
+        body.len(),
+        body_was_rewritten,
+        client_wants_close,
+    );
+    framed.extend_from_slice(&body);
+    Ok(framed)
+}
+
+fn one_shot_inspect_request(request: &[u8]) -> std::io::Result<Vec<u8>> {
+    let head_len = head_end(request).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "container inspect request has no complete head",
+        )
+    })?;
+    let head = std::str::from_utf8(&request[..head_len]).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "container inspect request head is not UTF-8",
+        )
+    })?;
+    let block = head.trim_end_matches("\r\n\r\n");
+    let mut lines = Vec::new();
+    for (index, line) in block.split("\r\n").enumerate() {
+        if index > 0
+            && line.split_once(':').is_some_and(|(name, _)| {
+                let name = name.trim();
+                name.eq_ignore_ascii_case("accept-encoding")
+                    || name.eq_ignore_ascii_case("connection")
+                    || name.eq_ignore_ascii_case("proxy-connection")
+            })
+        {
+            continue;
+        }
+        lines.push(line.to_string());
+    }
+    lines.push("Accept-Encoding: identity".into());
+    lines.push("Connection: close".into());
+    let mut out = lines.join("\r\n").into_bytes();
+    out.extend_from_slice(b"\r\n\r\n");
+    out.extend_from_slice(&request[head_len..]);
+    Ok(out)
+}
+
+async fn buffered_docker_round_trip<B: Backend>(
+    backend: &B,
+    request: &[u8],
+) -> std::io::Result<BufferedDockerResponse> {
+    let mut stream = backend.connect().await?;
+    stream.write_all(request).await?;
+
+    let mut response = Vec::new();
+    let mut chunk = [0u8; 16 * 1024];
+    let head_len = loop {
+        if let Some(length) = head_end(&response) {
+            break length;
+        }
+        if response.len() > MAX_HEAD_BYTES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "container inspect response head is too large",
+            ));
+        }
+        let count = stream.read(&mut chunk).await?;
+        if count == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "container inspect ended before its response head",
+            ));
+        }
+        response.extend_from_slice(&chunk[..count]);
+    };
+    let head = std::str::from_utf8(&response[..head_len])
+        .map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "container inspect response head is not UTF-8",
+            )
+        })?
+        .to_string();
+
+    let body = if response_has_no_body(&head) {
+        Vec::new()
+    } else if is_chunked(&head) {
+        loop {
+            match decode_chunked_body(&response[head_len..], MAX_INSPECT_BODY) {
+                ChunkedBody::Complete { body, .. } => break body,
+                ChunkedBody::NeedMore => {
+                    if response.len().saturating_sub(head_len) > MAX_INSPECT_BODY + MAX_HEAD_BYTES {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "chunked container inspect response exceeded its bound",
+                        ));
+                    }
+                    let count = stream.read(&mut chunk).await?;
+                    if count == 0 {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::UnexpectedEof,
+                            "chunked container inspect response is incomplete",
+                        ));
+                    }
+                    response.extend_from_slice(&chunk[..count]);
+                }
+                ChunkedBody::TooLarge => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "chunked container inspect response body is too large",
+                    ));
+                }
+                ChunkedBody::Malformed => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "chunked container inspect response is malformed",
+                    ));
+                }
+            }
+        }
+    } else if let Some(body_length) = content_length(&head) {
+        if body_length > MAX_INSPECT_BODY {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "container inspect response body is too large",
+            ));
+        }
+        let response_end = head_len.checked_add(body_length).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "container inspect response length overflow",
+            )
+        })?;
+        while response.len() < response_end {
+            let count = stream.read(&mut chunk).await?;
+            if count == 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "container inspect response body is incomplete",
+                ));
+            }
+            response.extend_from_slice(&chunk[..count]);
+        }
+        response[head_len..response_end].to_vec()
+    } else {
+        // HTTP/1.0 and a few error paths can use close-delimited bodies. The one-shot request asks
+        // the daemon to close, so EOF is an exact boundary and remains subject to the same cap.
+        while response.len().saturating_sub(head_len) <= MAX_INSPECT_BODY {
+            let count = stream.read(&mut chunk).await?;
+            if count == 0 {
+                break;
+            }
+            response.extend_from_slice(&chunk[..count]);
+        }
+        if response.len().saturating_sub(head_len) > MAX_INSPECT_BODY {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "close-delimited container inspect response body is too large",
+            ));
+        }
+        response[head_len..].to_vec()
+    };
+
+    Ok(BufferedDockerResponse { head, body })
+}
+
+fn response_status(head: &str) -> Option<u16> {
+    head.lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|value| value.parse::<u16>().ok())
+}
+
+fn response_has_no_body(head: &str) -> bool {
+    response_status(head)
+        .is_some_and(|status| (100..200).contains(&status) || status == 204 || status == 304)
+}
+
+fn rebuild_buffered_response_head(
+    head: &str,
+    content_length: usize,
+    body_was_rewritten: bool,
+    client_wants_close: bool,
+) -> Vec<u8> {
+    let block = head.trim_end_matches("\r\n\r\n");
+    let mut lines = Vec::new();
+    for (index, line) in block.split("\r\n").enumerate() {
+        if index > 0
+            && line.split_once(':').is_some_and(|(name, _)| {
+                let name = name.trim();
+                name.eq_ignore_ascii_case("content-length")
+                    || name.eq_ignore_ascii_case("transfer-encoding")
+                    || name.eq_ignore_ascii_case("trailer")
+                    || name.eq_ignore_ascii_case("connection")
+                    || (body_was_rewritten
+                        && (name.eq_ignore_ascii_case("content-encoding")
+                            || name.eq_ignore_ascii_case("content-md5")
+                            || name.eq_ignore_ascii_case("digest")
+                            || name.eq_ignore_ascii_case("etag")))
+            })
+        {
+            continue;
+        }
+        lines.push(line.to_string());
+    }
+    lines.push(format!("Content-Length: {content_length}"));
+    if client_wants_close {
+        lines.push("Connection: close".into());
+    }
+    let mut out = lines.join("\r\n");
+    out.push_str("\r\n\r\n");
+    out.into_bytes()
+}
+
+fn connection_wants_close(head: &str) -> bool {
+    head.split("\r\n").any(|line| {
+        line.split_once(':').is_some_and(|(name, value)| {
+            name.trim().eq_ignore_ascii_case("connection")
+                && value
+                    .split(',')
+                    .any(|token| token.trim().eq_ignore_ascii_case("close"))
+        })
+    })
 }
 
 /// Supplies a fresh connection to the guest `dockerd` per client. In production `Stream` is the
@@ -700,6 +852,48 @@ impl<B: Backend> Proxy<B> {
                     }
                     buf.drain(..body_end);
                 }
+                Disposition::ContainerInspectRewrite => {
+                    // Only the canonical bodyless Docker inspect request enters the bounded side-
+                    // connection rewrite. A nonzero, duplicate, malformed, or transfer-encoded
+                    // body is not a Docker inspect shape we can safely buffer. Degrade the complete
+                    // connection to the byte-transparent streaming tail immediately, preserving
+                    // the pre-rewrite behavior without allowing an attacker-controlled
+                    // Content-Length to grow `buf` without bound.
+                    if !is_canonical_bodyless_inspect_request(&head_text) {
+                        let upstream_write = self.upstream().await?;
+                        upstream_write.write_all(&buf).await?;
+                        let _ = tokio::io::copy(&mut client_read, upstream_write).await;
+                        return Ok(());
+                    }
+                    let request_end = head_len;
+                    let client_wants_close = connection_wants_close(&head_text);
+                    let response = rewritten_container_inspect_response(
+                        self.backend.as_ref(),
+                        &buf[..request_end],
+                        client_wants_close,
+                    )
+                    .await;
+                    match response {
+                        Ok(response) => {
+                            let mut writer = self.client_write.lock().await;
+                            writer.write_all(&response).await?;
+                            if client_wants_close {
+                                let _ = writer.shutdown().await;
+                            }
+                        }
+                        Err(_) => {
+                            // Preserve Docker compatibility if the bounded rewrite path cannot
+                            // parse an unusual or oversized daemon response. Inspect is a safe GET;
+                            // repeat it through the ordinary byte-transparent connection.
+                            let upstream_write = self.upstream().await?;
+                            upstream_write.write_all(&buf[..request_end]).await?;
+                        }
+                    }
+                    buf.drain(..request_end);
+                    if client_wants_close {
+                        return Ok(());
+                    }
+                }
                 disposition @ (Disposition::ContainerStartPreflight | Disposition::Passthrough) => {
                     if disposition == Disposition::ContainerStartPreflight {
                         if let Some(error) =
@@ -765,6 +959,29 @@ fn content_length(head_text: &str) -> Option<usize> {
         }
     }
     None
+}
+
+/// The rewrite path is deliberately narrower than general HTTP parsing: Docker's container-
+/// inspect GET has no body. Admitting only an absent Content-Length or one exact zero prevents
+/// ambiguous framing and keeps every attacker-controlled request body on the streaming path.
+fn is_canonical_bodyless_inspect_request(head_text: &str) -> bool {
+    let mut content_length_seen = false;
+    for line in head_text.split("\r\n").skip(1) {
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        let name = name.trim();
+        if name.eq_ignore_ascii_case("transfer-encoding") {
+            return false;
+        }
+        if name.eq_ignore_ascii_case("content-length") {
+            if content_length_seen || value.trim() != "0" {
+                return false;
+            }
+            content_length_seen = true;
+        }
+    }
+    true
 }
 
 fn is_chunked(head_text: &str) -> bool {
@@ -921,6 +1138,31 @@ mod tests {
         }
         assert!(ping_response("GET").ends_with("\r\n\r\nOK"));
         assert!(ping_response("HEAD").ends_with("\r\n\r\n"));
+    }
+
+    #[test]
+    fn inspect_rewrite_admits_only_one_unambiguous_zero_length_body() {
+        for head in [
+            "GET /containers/demo/json HTTP/1.1\r\nHost: d\r\n\r\n",
+            "GET /containers/demo/json HTTP/1.1\r\nHost: d\r\nContent-Length: 0\r\n\r\n",
+        ] {
+            assert!(is_canonical_bodyless_inspect_request(head), "got: {head:?}");
+        }
+
+        for head in [
+            "GET /containers/demo/json HTTP/1.1\r\nHost: d\r\nContent-Length: 1\r\n\r\n",
+            "GET /containers/demo/json HTTP/1.1\r\nHost: d\r\nContent-Length: +0\r\n\r\n",
+            "GET /containers/demo/json HTTP/1.1\r\nHost: d\r\nContent-Length: 00\r\n\r\n",
+            "GET /containers/demo/json HTTP/1.1\r\nHost: d\r\nContent-Length: invalid\r\n\r\n",
+            "GET /containers/demo/json HTTP/1.1\r\nContent-Length: 0\r\nContent-Length: 0\r\n\r\n",
+            "GET /containers/demo/json HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n",
+            "GET /containers/demo/json HTTP/1.1\r\nTransfer-Encoding: gzip\r\n\r\n",
+        ] {
+            assert!(
+                !is_canonical_bodyless_inspect_request(head),
+                "got: {head:?}"
+            );
+        }
     }
 
     /// A keep-alive-faithful fake dockerd: serves any number of requests per connection, parsing
@@ -1080,10 +1322,15 @@ mod tests {
                             _ => return,
                         }
                     }
-                    assert!(
-                        String::from_utf8_lossy(&request).starts_with("GET /containers/demo/json "),
-                        "unexpected inspect request: {}",
-                        String::from_utf8_lossy(&request)
+                    let request_text = String::from_utf8_lossy(&request);
+                    let parsed = parse_head(&request).expect("parse inspect fixture request");
+                    assert_eq!(
+                        parsed.method, "GET",
+                        "unexpected inspect request: {request_text}"
+                    );
+                    assert_eq!(
+                        parsed.path, "/containers/demo/json",
+                        "unexpected inspect request: {request_text}"
                     );
                     let response = if chunked {
                         format!(
@@ -1261,6 +1508,105 @@ mod tests {
             String::from_utf8_lossy(&resp).starts_with("HTTP/1.1 201"),
             "201 relayed back"
         );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn public_container_inspect_restores_effective_loopback_and_keeps_connection_reusable() {
+        let intent = serde_json::json!({"6443/tcp": {"": "ipv4"}}).to_string();
+        let body = serde_json::json!({
+            "Config": {"Labels": {
+                crate::create_rewrite::LOOPBACK_PORT_INTENT_LABEL: intent
+            }},
+            "HostConfig": {"PortBindings": {"6443/tcp": [{
+                "HostIp": "0.0.0.0", "HostPort": "49173"
+            }]}},
+            "NetworkSettings": {"Ports": {"6443/tcp": [{
+                "HostIp": "0.0.0.0", "HostPort": "49173"
+            }]}}
+        })
+        .to_string();
+        let backend = Arc::new(StaticInspectBackend {
+            body,
+            chunked: true,
+        });
+        let (listener, path) = bind_temp_listener().await;
+        tokio::spawn(serve(
+            listener,
+            backend,
+            Arc::new(ServeOpts {
+                gpu_supported: false,
+                activity: None,
+            }),
+        ));
+
+        let mut client = UnixStream::connect(&path).await.unwrap();
+        for target in [
+            "/v1.47/containers/demo/json?size=1",
+            "/containers/demo/json",
+        ] {
+            client
+                .write_all(format!("GET {target} HTTP/1.1\r\nHost: d\r\n\r\n").as_bytes())
+                .await
+                .unwrap();
+            let response = read_response(&mut client).await;
+            assert!(response.starts_with("HTTP/1.1 200"), "got: {response}");
+            assert!(
+                !response.to_ascii_lowercase().contains("transfer-encoding"),
+                "rewritten response is content-length framed: {response}"
+            );
+            let body_start = response.find("\r\n\r\n").unwrap() + 4;
+            let inspect: serde_json::Value = serde_json::from_str(&response[body_start..]).unwrap();
+            assert_eq!(
+                inspect["NetworkSettings"]["Ports"]["6443/tcp"][0]["HostIp"],
+                "127.0.0.1"
+            );
+            assert_eq!(
+                inspect["NetworkSettings"]["Ports"]["6443/tcp"][0]["HostPort"],
+                "49173"
+            );
+        }
+        client.shutdown().await.unwrap();
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// An inspect-shaped GET with a body must leave the bounded rewrite path before that body is
+    /// complete. The backend observing this prefix while the client remains open proves the proxy
+    /// streams it instead of allocating toward the attacker-controlled Content-Length.
+    #[tokio::test]
+    async fn noncanonical_inspect_body_streams_without_waiting_for_declared_length() {
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let backend = Arc::new(RawSink {
+            captured: captured.clone(),
+        });
+        let (listener, path) = bind_temp_listener().await;
+        tokio::spawn(serve(
+            listener,
+            backend,
+            Arc::new(ServeOpts {
+                gpu_supported: false,
+                activity: None,
+            }),
+        ));
+
+        let prefix = b"GET /v1.47/containers/demo/json HTTP/1.1\r\nHost: d\r\nContent-Length: 1000000000\r\n\r\nsmall-prefix";
+        let mut client = UnixStream::connect(&path).await.unwrap();
+        client.write_all(prefix).await.unwrap();
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if captured.lock().unwrap().len() >= prefix.len() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("inspect prefix should reach the backend before its declared body completes");
+        assert_eq!(captured.lock().unwrap().as_slice(), prefix);
+
+        client.shutdown().await.unwrap();
         let _ = std::fs::remove_file(&path);
     }
 

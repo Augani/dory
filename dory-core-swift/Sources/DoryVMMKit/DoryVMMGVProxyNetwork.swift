@@ -1,5 +1,6 @@
 import Darwin
 import DoryCore
+import DoryOperations
 import Foundation
 @preconcurrency import Virtualization
 
@@ -13,11 +14,17 @@ struct DoryVMMNativeIPv6Plan: Sendable, Equatable {
     static let hostGateway = "fd7d:6f72:7900::1"
     static let guestMAC = "5a:94:ef:e4:0c:ee"
 
+    var hostOnly = false
+    var guestMAC = Self.guestMAC
+
     var gvproxyYAML: String {
-        """
+        let connectivity = hostOnly ? "  connectivity: host-only\n" : ""
+        return """
         stack:
-          ipv6Subnet: \(Self.virtualNetwork)
+        \(connectivity)  ipv6Subnet: \(Self.virtualNetwork)
           ipv6GatewayIP: \(Self.hostGateway)
+          dhcpStaticLeases:
+            192.168.127.2: \(guestMAC)
           nat:
             "192.168.127.254": "127.0.0.1"
             "\(Self.hostGateway)": "::1"
@@ -46,6 +53,8 @@ final class DoryVMMGVProxyNetwork: @unchecked Sendable {
     let apiSocketPath: String
     let shutdownSocketPath: String
     let lanDatapathSocketPath: String?
+    /// Exact MTU shared by gvproxy, VZ, and the optional source-preserving LAN bridge.
+    let effectiveMTU: Int
 
     private let process: Process
     private let fileHandle: FileHandle
@@ -54,11 +63,25 @@ final class DoryVMMGVProxyNetwork: @unchecked Sendable {
     private let configurationPath: String
     private let lock = NSLock()
     private var stopped = false
+    private var resolvedPortForwardReconciler: ResolvedPortForwardReconciler?
 
-    init(gvproxyPath: String, stateDirectory: String, sourcePreservingLAN: Bool = false) throws {
+    init(
+        gvproxyPath: String,
+        stateDirectory: String,
+        networkAttachment: DoryVirtualMachineNetworkAttachmentMode = .sharedNAT,
+        networkInterface: DoryVirtualMachineNetworkInterfaceCapabilityRequest? = nil,
+        sourcePreservingLAN: Bool = false,
+        resolvedPortForwards: Set<PublishedPortForward> = []
+    ) throws {
         guard FileManager.default.isExecutableFile(atPath: gvproxyPath) else {
             throw DoryVZMachineError.missingFile(gvproxyPath)
         }
+        guard networkAttachment == .sharedNAT || networkAttachment == .isolated else {
+            throw DoryVZMachineError.validation(
+                "gvproxy implements only shared-NAT and host-only network attachments"
+            )
+        }
+        effectiveMTU = try Self.resolveEffectiveMTU(networkInterface)
         try FileManager.default.createDirectory(atPath: stateDirectory, withIntermediateDirectories: true)
 
         localSocketPath = stateDirectory + "/vmm-net.sock"
@@ -71,7 +94,12 @@ final class DoryVMMGVProxyNetwork: @unchecked Sendable {
             try Self.validateUnixPath(path)
             unlink(path)
         }
-        try DoryVMMNativeIPv6Plan().gvproxyYAML.write(
+        let guestMAC = networkInterface?.macAddress ?? DoryVMMNativeIPv6Plan.guestMAC
+        let mtu = effectiveMTU
+        try DoryVMMNativeIPv6Plan(
+            hostOnly: networkAttachment == .isolated,
+            guestMAC: guestMAC
+        ).gvproxyYAML.write(
             toFile: configurationPath,
             atomically: true,
             encoding: .utf8
@@ -80,7 +108,7 @@ final class DoryVMMGVProxyNetwork: @unchecked Sendable {
         let child = Process()
         child.executableURL = URL(fileURLWithPath: gvproxyPath)
         child.arguments = [
-            "-mtu", String(DoryNetworkMTU.resolved()),
+            "-mtu", String(mtu),
             "-listen-vfkit", "unixgram://\(datapathSocketPath)",
             "-listen", "unix://\(apiSocketPath)",
             "-config", configurationPath,
@@ -125,13 +153,32 @@ final class DoryVMMGVProxyNetwork: @unchecked Sendable {
             let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
             fileHandle = handle
             let networkAttachment = VZFileHandleNetworkDeviceAttachment(fileHandle: handle)
-            networkAttachment.maximumTransmissionUnit = 1500
+            networkAttachment.maximumTransmissionUnit = Int(mtu)
             attachment = networkAttachment
             try Self.publishUnixForward(
                 localPath: shutdownSocketPath,
                 guestPort: 2377,
                 apiSocketPath: apiSocketPath
             )
+            for forward in resolvedPortForwards.sorted(by: Self.portForwardOrder) {
+                try Self.publishIPForward(forward, apiSocketPath: apiSocketPath)
+            }
+            if !resolvedPortForwards.isEmpty {
+                let reconciler = ResolvedPortForwardReconciler(
+                    desired: resolvedPortForwards,
+                    apiSocketPath: apiSocketPath,
+                    log: { message in
+                        FileHandle.standardError.write(Data("dory-vmm: \(message)\n".utf8))
+                    }
+                )
+                resolvedPortForwardReconciler = reconciler
+                guard reconciler.reconcileNow() else {
+                    throw DoryVZMachineError.validation(
+                        "could not verify the resolved gvproxy port-forward registry"
+                    )
+                }
+                reconciler.start()
+            }
         } catch {
             if child.isRunning {
                 child.terminate()
@@ -146,6 +193,10 @@ final class DoryVMMGVProxyNetwork: @unchecked Sendable {
         stop()
     }
 
+    var resolvedPortForwardHealth: ResolvedPortForwardHealthSnapshot? {
+        resolvedPortForwardReconciler?.healthSnapshot()
+    }
+
     func stop() {
         lock.lock()
         guard !stopped else {
@@ -155,6 +206,7 @@ final class DoryVMMGVProxyNetwork: @unchecked Sendable {
         stopped = true
         lock.unlock()
 
+        resolvedPortForwardReconciler?.stop()
         try? fileHandle.close()
         if process.isRunning {
             process.terminate()
@@ -246,6 +298,7 @@ final class DoryVMMGVProxyNetwork: @unchecked Sendable {
             curl.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
             curl.arguments = [
                 "--fail", "--silent", "--show-error",
+                "--connect-timeout", "1", "--max-time", "1",
                 "--unix-socket", apiSocketPath,
                 "--request", "POST",
                 "--data-binary", body,
@@ -263,6 +316,76 @@ final class DoryVMMGVProxyNetwork: @unchecked Sendable {
             usleep(20_000)
         }
         throw DoryVZMachineError.validation("gvproxy did not publish the guest shutdown channel")
+    }
+
+    private static func publishIPForward(
+        _ forward: PublishedPortForward,
+        apiSocketPath: String
+    ) throws {
+        let bodyData = try JSONSerialization.data(withJSONObject: [
+            "local": forward.localEndpoint,
+            "remote": forward.remoteEndpoint,
+            "protocol": forward.protocol.rawValue,
+        ])
+        guard let body = String(data: bodyData, encoding: .utf8) else {
+            throw DoryVZMachineError.validation("could not encode resolved gvproxy forward")
+        }
+        for _ in 0..<100 {
+            let curl = Process()
+            curl.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
+            curl.arguments = [
+                "--fail", "--silent", "--show-error",
+                "--connect-timeout", "1", "--max-time", "1",
+                "--unix-socket", apiSocketPath,
+                "--request", "POST",
+                "--data-binary", body,
+                "http://gvproxy/services/forwarder/expose",
+            ]
+            curl.standardOutput = FileHandle.nullDevice
+            curl.standardError = FileHandle.nullDevice
+            if (try? curl.run()) != nil {
+                curl.waitUntilExit()
+                if curl.terminationStatus == 0 { return }
+            }
+            usleep(20_000)
+        }
+        throw DoryVZMachineError.validation(
+            "gvproxy could not publish \(forward.localEndpoint)/\(forward.protocol.rawValue)"
+        )
+    }
+
+    private static func portForwardOrder(
+        _ lhs: PublishedPortForward,
+        _ rhs: PublishedPortForward
+    ) -> Bool {
+        if lhs.protocol != rhs.protocol {
+            return lhs.protocol.rawValue < rhs.protocol.rawValue
+        }
+        if lhs.localHost != rhs.localHost { return lhs.localHost < rhs.localHost }
+        return lhs.localPort < rhs.localPort
+    }
+
+    static func resolveEffectiveMTU(
+        _ networkInterface: DoryVirtualMachineNetworkInterfaceCapabilityRequest?
+    ) throws -> Int {
+        guard let networkInterface else {
+            return Int(DoryVirtualMachineNetworkInterfaceCapabilityRequest
+                .vzFileHandleMinimumMTU)
+        }
+        guard networkInterface.isValid else {
+            throw DoryVZMachineError.validation(
+                "resolved network interface identity or MTU is invalid"
+            )
+        }
+        guard networkInterface.maximumTransmissionUnit
+                >= DoryVirtualMachineNetworkInterfaceCapabilityRequest
+                    .vzFileHandleMinimumMTU else {
+            throw DoryVZMachineError.validation(
+                "resolved VZ file-handle network MTU must be at least "
+                    + "\(DoryVirtualMachineNetworkInterfaceCapabilityRequest.vzFileHandleMinimumMTU)"
+            )
+        }
+        return Int(networkInterface.maximumTransmissionUnit)
     }
 
     private static func validateUnixPath(_ path: String) throws {

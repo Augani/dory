@@ -9,12 +9,10 @@ public protocol SandboxMachineManaging: Sendable {
 
 extension MachineManager: SandboxMachineManaging {}
 
-/// Daemon-owned expiry for sandbox machines. Expiration lives in persisted machine metadata, so a
-/// CLI crash, logout, sleep, or doryd restart cannot orphan a temporary VM indefinitely.
+/// Daemon-owned expiry for sandbox machines. Expiration lives in typed workspace authority, so a
+/// CLI crash, logout, sleep, or doryd restart cannot orphan a temporary VM indefinitely. Legacy
+/// environment records are decoded by MachineManager into the same bounded status projection.
 public final class SandboxTTLReconciler: @unchecked Sendable {
-    public static let sandboxMarkerKey = "DORY_SANDBOX"
-    public static let expiresAtKey = "DORY_SANDBOX_EXPIRES_AT"
-
     private let machines: any SandboxMachineManaging
     private let interval: TimeInterval
     private let manifestDirectory: String?
@@ -42,10 +40,9 @@ public final class SandboxTTLReconciler: @unchecked Sendable {
     public func reconcileNow() -> [String] {
         let epoch = UInt64(max(0, now().timeIntervalSince1970.rounded(.down)))
         let expired = machines.list().filter { status in
-            guard status.environment[Self.sandboxMarkerKey] == "1",
-                  let raw = status.environment[Self.expiresAtKey],
-                  let expiration = UInt64(raw),
-                  expiration > 0 else {
+            guard let policy = status.sandboxPolicy,
+                  policy.isValidForPersistence,
+                  let expiration = policy.expiresAtUnixSeconds else {
                 return false
             }
             return expiration <= epoch

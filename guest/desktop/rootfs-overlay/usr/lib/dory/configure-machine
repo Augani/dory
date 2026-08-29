@@ -21,8 +21,20 @@ case "$requested_uid" in
         || { echo "DORY_GUEST_UID must be between 100 and 60000" >&2; exit 64; } ;;
 esac
 
-current="$(cat /var/lib/dory/username 2>/dev/null || printf 'dory\n')"
-id "$current" >/dev/null 2>&1 || { echo "the managed Dory account is missing" >&2; exit 1; }
+current="$(cat /var/lib/dory/username 2>/dev/null || true)"
+[ -n "$current" ] || current="dory"
+if ! id "$current" >/dev/null 2>&1; then
+  # A host-side failure can terminate the VM immediately after usermod but before the durable
+  # receipt is published. Recover that exact interrupted transition when the requested account
+  # already exists instead of leaving the desktop permanently unbootable.
+  if id "$requested" >/dev/null 2>&1; then
+    current="$requested"
+  else
+    echo "the managed Dory account is missing" >&2
+    exit 1
+  fi
+fi
+current_group="$(id -gn "$current")"
 if [ "$requested" != "$current" ] && id "$requested" >/dev/null 2>&1; then
   echo "DORY_GUEST_USER already belongs to another account" >&2
   exit 64
@@ -34,7 +46,8 @@ if [ -n "$requested_uid" ]; then
     exit 64
   fi
   gid_owner="$(getent group "$requested_uid" 2>/dev/null | cut -d: -f1 || true)"
-  if [ -n "$gid_owner" ] && [ "$gid_owner" != "$current" ]; then
+  if [ -n "$gid_owner" ] && [ "$gid_owner" != "$current" ] \
+       && [ "$gid_owner" != "$current_group" ]; then
     echo "DORY_GUEST_UID already belongs to another group" >&2
     exit 64
   fi
@@ -49,20 +62,35 @@ if [ -n "$requested_uid" ] && [ "$(id -u "$current")" != "$requested_uid" ]; the
 fi
 if [ "${#usermod_args[@]}" -gt 0 ]; then
   usermod "${usermod_args[@]}" "$current"
+  current="$requested"
 fi
-if getent group "$current" >/dev/null 2>&1; then
+current_group="$(id -gn "$current")"
+if getent group "$current_group" >/dev/null 2>&1; then
   groupmod_args=()
-  [ "$requested" = "$current" ] || groupmod_args+=(--new-name "$requested")
-  if [ -n "$requested_uid" ] && [ "$(getent group "$current" | cut -d: -f3)" != "$requested_uid" ]; then
+  [ "$requested" = "$current_group" ] || groupmod_args+=(--new-name "$requested")
+  if [ -n "$requested_uid" ] && [ "$(getent group "$current_group" | cut -d: -f3)" != "$requested_uid" ]; then
     groupmod_args+=(--gid "$requested_uid")
   fi
   if [ "${#groupmod_args[@]}" -gt 0 ]; then
-    groupmod "${groupmod_args[@]}" "$current"
+    groupmod "${groupmod_args[@]}" "$current_group"
   fi
 fi
-if [ "$requested" != "$current" ]; then
-  sed -i "s/^$current /$requested /" /etc/sudoers.d/dory
+sudoers_temporary="/etc/sudoers.d/.dory.$$"
+printf '%s ALL=(ALL:ALL) NOPASSWD: ALL\n' "$requested" > "$sudoers_temporary"
+chmod 0440 "$sudoers_temporary"
+mv -f "$sudoers_temporary" /etc/sudoers.d/dory
+if [ -f /etc/lightdm/lightdm.conf.d/50-dory.conf ]; then
+  sed -i "s/^autologin-user=.*/autologin-user=$requested/" \
+    /etc/lightdm/lightdm.conf.d/50-dory.conf
 fi
-sed -i "s/^autologin-user=.*/autologin-user=$requested/" \
-  /etc/lightdm/lightdm.conf.d/50-dory.conf
-printf '%s\n' "$requested" > /var/lib/dory/username
+if [ -f /etc/gdm3/custom.conf ]; then
+  sed -i "s/^AutomaticLogin=.*/AutomaticLogin=$requested/" /etc/gdm3/custom.conf
+fi
+install -d -m0755 /var/lib/dory
+username_temporary="/var/lib/dory/.username.$$"
+printf '%s\n' "$requested" > "$username_temporary"
+chmod 0644 "$username_temporary"
+mv -f "$username_temporary" /var/lib/dory/username
+# The runner may be terminated immediately by a later optional-device failure. Sync the whole
+# backing filesystem so the account rename and its identity receipt can never diverge on retry.
+sync -f /var/lib/dory/username

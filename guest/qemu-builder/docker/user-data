@@ -1,0 +1,23 @@
+#cloud-config
+package_update: true
+package_upgrade: false
+ssh_pwauth: false
+users:
+  - default
+  - name: dorybuilder
+    gecos: Dory isolated guest builder
+    groups: [adm, sudo]
+    shell: /bin/bash
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    lock_passwd: true
+    ssh_authorized_keys:
+      - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJiKQ0TxDo8jJgkI6mbh9IjzsKQvq6VaPA9tr685T4xG dory-qemu-builder
+packages:
+  - docker.io
+runcmd:
+  - [systemctl, enable, --now, docker.service]
+  - [usermod, -aG, docker, dorybuilder]
+  - [install, -d, -m, '0755', /var/lib/dory-builder]
+  - [sh, -c, 'docker version > /var/lib/dory-builder/docker-version.txt']
+  - [sh, -c, 'touch /var/lib/dory-builder/ready']
+final_message: DORY_QEMU_DOCKER_BUILDER_READY

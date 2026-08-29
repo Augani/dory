@@ -1,0 +1,18 @@
+diff --git a/Source/ThirdParty/ANGLE/src/libANGLE/angletypes.inc b/Source/ThirdParty/ANGLE/src/libANGLE/angletypes.inc
+index 862a3214a1..36f9e9497f 100644
+--- a/Source/ThirdParty/ANGLE/src/libANGLE/angletypes.inc
++++ b/Source/ThirdParty/ANGLE/src/libANGLE/angletypes.inc
+@@ -24,7 +24,12 @@ inline bool operator!=(const Rectangle &a, const Rectangle &b)
+ 
+ inline bool operator==(const SamplerState &a, const SamplerState &b)
+ {
+-    return memcmp(&a, &b, sizeof(SamplerState)) == 0;
++    return a.getMinFilter() == b.getMinFilter() && a.getMagFilter() == b.getMagFilter() &&
++           a.getWrapS() == b.getWrapS() && a.getWrapT() == b.getWrapT() &&
++           a.getWrapR() == b.getWrapR() && a.getMaxAnisotropy() == b.getMaxAnisotropy() &&
++           a.getMinLod() == b.getMinLod() && a.getMaxLod() == b.getMaxLod() &&
++           a.getCompareMode() == b.getCompareMode() && a.getCompareFunc() == b.getCompareFunc() &&
++           a.getSRGBDecode() == b.getSRGBDecode() && a.getBorderColor() == b.getBorderColor();
+ }
+ 
+ inline bool operator!=(const SamplerState &a, const SamplerState &b)

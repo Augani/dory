@@ -1,12 +1,13 @@
 //! `dory-ffi` — seam 2: the UniFFI staticlib the Swift `doryd`/`dory-vmm` link.
 //!
-//! The iron rule: this boundary carries **configuration, file descriptors, and stats — never
-//! data-plane bytes**. Swift hands the Rust engine an fd and a compiled config; from then on bytes
-//! flow socket-to-socket entirely inside Rust ([`dory_proto::half_close`]), zero per-packet
-//! crossings. Panic contract: the release profile builds with `panic = "abort"`, so a panic here
-//! kills the embedding process — it does NOT surface as a Swift error. Exported entries therefore
-//! avoid panicking on any input; the one deliberate exception is tokio runtime construction, whose
-//! failure (thread/fd exhaustion) is treated as fatal.
+//! The iron rule: hot-path data-plane bytes never cross this boundary. Swift hands the Rust engine
+//! an fd and a compiled config; from then on bytes flow socket-to-socket entirely inside Rust
+//! ([`dory_proto::half_close`]), zero per-packet crossings. The sole byte-buffer exception is the
+//! bounded, boot-time decompression of an immutable Linux kernel artifact. Panic contract: the
+//! release profile builds with `panic = "abort"`, so a panic here kills the embedding process — it
+//! does NOT surface as a Swift error. Exported entries therefore avoid panicking on any input; the
+//! one deliberate exception is tokio runtime construction, whose failure (thread/fd exhaustion) is
+//! treated as fatal.
 //!
 //! This slice exposes the small control surface that is ready: the protocol version and the
 //! create-body rewrite. The `serve(listen_fd, config) -> Handle` entry that hands Rust the captive
@@ -51,6 +52,80 @@ pub fn rewrite_create_body(body: Vec<u8>, gpu_supported: bool) -> RewriteResult 
             error: e.to_string(),
         },
     }
+}
+
+const MAXIMUM_ZSTD_OUTPUT_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Result of bounded boot-artifact decompression. This record keeps malformed or oversized
+/// untrusted media on the ordinary Swift error path instead of allowing an FFI panic.
+#[derive(uniffi::Record)]
+pub struct BoundedDecompressionResult {
+    pub ok: bool,
+    pub body: Vec<u8>,
+    pub error: String,
+}
+
+/// Decompress one Zstandard frame (or a standards-compliant concatenated frame stream) while
+/// enforcing both a caller-selected output bound and Dory's immutable 256 MiB kernel ceiling.
+/// The decoder window is capped to the same ceiling so a hostile frame cannot demand unbounded
+/// history before producing output.
+#[uniffi::export]
+pub fn decompress_zstd_bounded(
+    body: Vec<u8>,
+    maximum_output_bytes: u64,
+) -> BoundedDecompressionResult {
+    match decompress_zstd_bounded_inner(&body, maximum_output_bytes) {
+        Ok(output) => BoundedDecompressionResult {
+            ok: true,
+            body: output,
+            error: String::new(),
+        },
+        Err(error) => BoundedDecompressionResult {
+            ok: false,
+            body: Vec::new(),
+            error,
+        },
+    }
+}
+
+fn decompress_zstd_bounded_inner(
+    body: &[u8],
+    maximum_output_bytes: u64,
+) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+
+    if body.is_empty() {
+        return Err("compressed payload is empty".to_string());
+    }
+    if maximum_output_bytes == 0 || maximum_output_bytes > MAXIMUM_ZSTD_OUTPUT_BYTES {
+        return Err(format!(
+            "maximum output must be between 1 and {MAXIMUM_ZSTD_OUTPUT_BYTES} bytes"
+        ));
+    }
+
+    let cursor = std::io::Cursor::new(body);
+    let mut decoder = zstd::stream::read::Decoder::new(cursor)
+        .map_err(|error| format!("invalid zstd frame: {error}"))?;
+    decoder
+        .window_log_max(28)
+        .map_err(|error| format!("invalid zstd window: {error}"))?;
+
+    let mut limited = decoder.take(maximum_output_bytes + 1);
+    let initial_capacity = usize::try_from(maximum_output_bytes.min(16 * 1024 * 1024))
+        .map_err(|_| "maximum output does not fit this platform".to_string())?;
+    let mut output = Vec::with_capacity(initial_capacity);
+    limited
+        .read_to_end(&mut output)
+        .map_err(|error| format!("invalid or truncated zstd payload: {error}"))?;
+    if output.len() as u64 > maximum_output_bytes {
+        return Err(format!(
+            "decompressed payload exceeds {maximum_output_bytes} bytes"
+        ));
+    }
+    if output.is_empty() {
+        return Err("decompressed payload is empty".to_string());
+    }
+    Ok(output)
 }
 
 /// A running docker dataplane, owned by the embedding VMM/doryd process. This is the real seam-2
@@ -219,6 +294,38 @@ mod tests {
         let r = rewrite_create_body(body, false);
         assert!(!r.ok);
         assert!(r.error.contains("GPU"));
+    }
+
+    #[test]
+    fn zstd_decompression_is_exact_and_bounded() {
+        let input = vec![0x5a; 2 * 1024 * 1024];
+        let compressed = zstd::stream::encode_all(input.as_slice(), 3).unwrap();
+
+        let result = decompress_zstd_bounded(compressed.clone(), input.len() as u64);
+        assert!(result.ok, "{}", result.error);
+        assert_eq!(result.body, input);
+
+        let oversized = decompress_zstd_bounded(compressed, (input.len() - 1) as u64);
+        assert!(!oversized.ok);
+        assert!(oversized.body.is_empty());
+        assert!(oversized.error.contains("exceeds"));
+    }
+
+    #[test]
+    fn zstd_decompression_rejects_truncation_and_invalid_bounds() {
+        let input = vec![0x41; 64 * 1024];
+        let mut compressed = zstd::stream::encode_all(input.as_slice(), 1).unwrap();
+        compressed.truncate(compressed.len() / 2);
+
+        let truncated = decompress_zstd_bounded(compressed, 128 * 1024);
+        assert!(!truncated.ok);
+        assert!(truncated.body.is_empty());
+
+        let zero = decompress_zstd_bounded(vec![1, 2, 3], 0);
+        assert!(!zero.ok);
+        let above_hard_limit =
+            decompress_zstd_bounded(vec![1, 2, 3], MAXIMUM_ZSTD_OUTPUT_BYTES + 1);
+        assert!(!above_hard_limit.ok);
     }
 
     #[test]

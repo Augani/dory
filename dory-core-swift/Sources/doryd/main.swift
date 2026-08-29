@@ -3,28 +3,37 @@ import DorydKit
 import Darwin
 import Foundation
 
-// doryd: bind ~/.dory/dory.sock (0600), serve the control XPC MachService,
-// and run forever under launchd. Bind failure is fatal; launchd owns restart.
-let machServiceName = "dev.dory.doryd"
-
 // Docker clients routinely close request/attach streams as soon as they have enough response data.
 // Treat those as ordinary EPIPEs in the Rust dataplane instead of letting SIGPIPE terminate doryd.
 _ = signal(SIGPIPE, SIG_IGN)
 
 let env = ProcessInfo.processInfo.environment
 let dorydEnvironment = DorydEnvironment(values: env)
+let machServiceName: String
+do {
+    machServiceName = try dorydEnvironment.machServiceName()
+} catch {
+    FileHandle.standardError.write(Data("doryd: invalid XPC service configuration: \(error)\n".utf8))
+    exit(1)
+}
 let dataDriveSelectionAuthority: DoryDataDriveSelectionAuthority
+let dataDrive: DoryDataDrive
+let dataDriveTrustedRoot: DoryTrustedDirectoryRoot
+let dataDriveID: UUID
 do {
     let requestedDrive = try dorydEnvironment.dataDriveConfiguration()
     let selectionStore = try DoryDataDriveSelectionStore(home: dorydEnvironment.home)
     dataDriveSelectionAuthority = try selectionStore.acquireAuthority()
-    let drive = try selectionStore.prepareSelection(
+    dataDrive = try selectionStore.prepareSelection(
         requestedRoot: requestedDrive.root,
         authority: dataDriveSelectionAuthority
     )
-    let driveID = try drive.readManifest().id.uuidString.lowercased()
+    dataDriveTrustedRoot = try DoryTrustedDirectoryRoot(
+        canonicalAbsolutePath: dataDrive.root
+    )
+    dataDriveID = try dataDrive.readManifest(in: dataDriveTrustedRoot).id
     FileHandle.standardError.write(
-        Data("doryd: data drive \(driveID) ready at \(drive.root)\n".utf8)
+        Data("doryd: data drive \(dataDriveID.uuidString.lowercased()) ready at \(dataDrive.root)\n".utf8)
     )
 } catch {
     FileHandle.standardError.write(Data("doryd: data drive unavailable: \(error)\n".utf8))
@@ -61,9 +70,84 @@ if dorydEnvironment.hostCLIEnabled {
 }
 let idleController = IdleController()
 let dockerTier = dorydEnvironment.dockerTierConfiguration().map {
-    DockerTier(configuration: $0, idleController: idleController)
+    DockerTier(
+        configuration: $0,
+        idleController: idleController,
+        dataDriveSelectionAuthority: dataDriveSelectionAuthority,
+        dataDriveTrustedRoot: dataDriveTrustedRoot
+    )
 }
-let machineManager = dorydEnvironment.machineManagerConfiguration().map { MachineManager(configuration: $0) }
+let desktopUpdateArtifactResolver = DoryComponentStoreDesktopUpdateArtifactResolver(
+    store: DoryComponentStore(drive: dataDrive)
+)
+var productionPlanningController:
+    (any DoryDaemonVirtualMachineProductionPlanningControlling)?
+var machineImportEnvironment = DoryMachineImportEnvironment.unverified
+let machineManager = dorydEnvironment.machineManagerConfiguration().flatMap { configuration -> MachineManager? in
+    let readiness = DoryDaemonVirtualMachineProductionTrustFactory().activate(
+        store: DoryComponentStore(drive: dataDrive),
+        machineConfiguration: configuration
+    )
+    switch readiness {
+    case let .activated(context):
+        FileHandle.standardError.write(Data(
+            "doryd: VM launch policy perWorkspaceAuthority "
+                .appending("(production planning recovered and activated)\n").utf8
+        ))
+        productionPlanningController = context.planningController
+        machineImportEnvironment = context.machineImportEnvironment
+        context.machineManager.installDesktopUpdateArtifactResolver(desktopUpdateArtifactResolver)
+        return context.machineManager
+    case let .unavailable(failure):
+        guard let trustFailure = failure.trustFailure,
+              trustFailure.permitsLegacyCompatibilityMigration else {
+            // Integrity and runtime verification failures disable VM launch. Falling through to
+            // legacy here would execute the same helper that production trust just rejected.
+            FileHandle.standardError.write(Data(
+                "doryd: VM launch unavailable "
+                    .appending("(\(failure.code.rawValue): \(failure.message))\n").utf8
+            ))
+            return nil
+        }
+        // Explicit migration window: no catalog or a signature-verified schema-v1 catalog has no
+        // qualification authority yet. Existing machines retain their labeled compatibility path,
+        // but new machines cannot be created without schema-2 evidence.
+        FileHandle.standardError.write(Data(
+            "doryd: VM launch policy legacyCompatibilityMigrationOnly "
+                .appending("(\(trustFailure.code.rawValue): \(trustFailure.message))\n").utf8
+        ))
+        if dorydEnvironment.vmQualificationBootstrapEnabled {
+            FileHandle.standardError.write(Data(
+                "doryd: VM qualification bootstrap enabled; new machines remain explicitly "
+                    .appending("legacy-compatible and cannot acquire production support authority\n").utf8
+            ))
+        }
+        let bootstrapStateBroker: DoryMachineStateBroker?
+        do {
+            bootstrapStateBroker = dorydEnvironment.vmQualificationBootstrapEnabled
+                ? try DoryMachineStateBroker(
+                    canonicalStateRootPath: configuration.stateDirectory
+                )
+                : nil
+        } catch {
+            FileHandle.standardError.write(Data(
+                "doryd: VM qualification bootstrap state authority unavailable: \(error)\n".utf8
+            ))
+            return nil
+        }
+        let manager = MachineManager(
+            configuration: configuration,
+            launchPolicy: .legacyCompatibility,
+            allowsNewMachinesInLegacyCompatibility:
+                dorydEnvironment.vmQualificationBootstrapEnabled,
+            allowsQualificationBootstrapLaunches:
+                dorydEnvironment.vmQualificationBootstrapEnabled,
+            machineStateBroker: bootstrapStateBroker
+        )
+        manager.installDesktopUpdateArtifactResolver(desktopUpdateArtifactResolver)
+        return manager
+    }
+}
 let sandboxTTLReconciler = machineManager.map { manager in
     SandboxTTLReconciler(
         machines: manager,
@@ -83,6 +167,22 @@ let kubernetesRouteProvider = networkingController.map { _ in
 }
 let incidentPath = env["DORY_INCIDENTS"] ?? "\(dorydEnvironment.home)/.dory/incidents.jsonl"
 let incidentWriter = IncidentWriter(path: incidentPath)
+let machineDeviceTelemetryMonitor = machineManager.map { manager in
+    DoryMachineDeviceTelemetryMonitor(machines: manager) { event in
+        switch event {
+        case let .samplingFailed(machineID):
+            incidentWriter.record(
+                type: "machine.device_telemetry_unavailable",
+                detail: machineID
+            )
+        case let .samplingRecovered(machineID):
+            incidentWriter.record(
+                type: "machine.device_telemetry_recovered",
+                detail: machineID
+            )
+        }
+    }
+}
 let machineBackupScheduler: MachineBackupScheduler?
 if let machineManager {
     do {
@@ -157,6 +257,7 @@ let idlePolicyStore = IdlePolicyStore(home: dorydEnvironment.home, environment: 
     dockerTier?.containerSummariesForIdle() ?? .ok([])
 }
 var sleepHandlers: [HostSleepHandling] = []
+var wakeHandlers: [HostWakeHandling] = []
 var clockSyncers: [WakeClockSyncing] = []
 if let dockerTier {
     sleepHandlers.append(PolicyAwareHostSleepHandler(
@@ -169,10 +270,14 @@ if let dockerTier {
     clockSyncers.append(dockerTier)
 }
 if let machineManager {
+    let machinePowerController = MachineHostPowerController(manager: machineManager)
+    sleepHandlers.append(machinePowerController)
+    wakeHandlers.append(machinePowerController)
     clockSyncers.append(machineManager)
 }
 let wakeCoordinator = HostWakeCoordinator(
     sleepHandlers: sleepHandlers,
+    wakeHandlers: wakeHandlers,
     clockSyncers: clockSyncers,
     dnsProbe: SystemDNSProbe(targets: dnsTargets),
     networkReconcilers: [corporateConnectivity],
@@ -206,7 +311,10 @@ let service = DorydService(
     socketPath: socketPath,
     home: dorydEnvironment.home,
     dockerTier: dockerTier,
+    dockerDataDriveID: dataDriveID,
     machineManager: machineManager,
+    productionPlanningController: productionPlanningController,
+    machineImportEnvironment: machineImportEnvironment,
     machineBackupScheduler: machineBackupScheduler,
     remoteManager: remoteManager,
     networkingController: networkingController,
@@ -233,6 +341,7 @@ private let shutdownCoordinator = DorydShutdownCoordinator(
     networkingController: networkingController,
     dockerTier: dockerTier,
     machineManager: machineManager,
+    machineDeviceTelemetryMonitor: machineDeviceTelemetryMonitor,
     machineBackupScheduler: machineBackupScheduler,
     sandboxTTLReconciler: sandboxTTLReconciler,
     remoteManager: remoteManager,
@@ -284,6 +393,7 @@ shutdownCoordinator.exitIfRequested()
 listener.resume()
 FileHandle.standardError.write(Data("doryd: serving XPC \(machServiceName)\n".utf8))
 sandboxTTLReconciler?.start()
+machineDeviceTelemetryMonitor?.start()
 machineBackupScheduler?.start()
 corporateConnectivity.start()
 
@@ -333,6 +443,7 @@ private final class DorydShutdownCoordinator {
     private let networkingController: NetworkingController?
     private let dockerTier: DockerTier?
     private let machineManager: MachineManager?
+    private let machineDeviceTelemetryMonitor: DoryMachineDeviceTelemetryMonitor?
     private let machineBackupScheduler: MachineBackupScheduler?
     private let sandboxTTLReconciler: SandboxTTLReconciler?
     private let remoteManager: RemoteMachineManager
@@ -341,6 +452,7 @@ private final class DorydShutdownCoordinator {
     private enum State {
         case active
         case shuttingDown
+        case retainingDockerAuthority
         case finished
     }
     private var state: State = .active
@@ -358,6 +470,7 @@ private final class DorydShutdownCoordinator {
         networkingController: NetworkingController?,
         dockerTier: DockerTier?,
         machineManager: MachineManager?,
+        machineDeviceTelemetryMonitor: DoryMachineDeviceTelemetryMonitor?,
         machineBackupScheduler: MachineBackupScheduler?,
         sandboxTTLReconciler: SandboxTTLReconciler?,
         remoteManager: RemoteMachineManager,
@@ -374,6 +487,7 @@ private final class DorydShutdownCoordinator {
         self.networkingController = networkingController
         self.dockerTier = dockerTier
         self.machineManager = machineManager
+        self.machineDeviceTelemetryMonitor = machineDeviceTelemetryMonitor
         self.machineBackupScheduler = machineBackupScheduler
         self.sandboxTTLReconciler = sandboxTTLReconciler
         self.remoteManager = remoteManager
@@ -398,7 +512,7 @@ private final class DorydShutdownCoordinator {
         // Set the one-way tier latch before listener invalidation. Already-accepted XPC work may
         // still be executing, but no engineStart/engineWake can spawn or resume a helper once this
         // call begins; ordinary engineStop continues to use the reversible stop() path.
-        dockerTier?.shutdown()
+        let dockerShutdown = DorydDockerTierShutdownBoundary.complete(dockerTier: dockerTier)
         listener.invalidate()
         hostCLIReconciler?.stop()
         idleSleepScheduler?.stop()
@@ -410,8 +524,34 @@ private final class DorydShutdownCoordinator {
         networkingController?.stop()
         remoteManager.disconnectAll()
         sandboxTTLReconciler?.stop()
+        machineDeviceTelemetryMonitor?.stop()
         machineBackupScheduler?.stop()
         machineManager?.stopAll()
+
+        if case let .authorityRetained(pid, detail) = dockerShutdown {
+            let identity = pid.map { " PID \($0)" } ?? ""
+            FileHandle.standardError.write(Data(
+                "doryd: shutdown could not confirm Docker helper\(identity) termination: \(detail); retaining daemon ownership without serving new requests\n".utf8
+            ))
+            condition.lock()
+            finalExitCode = finalExitCode == 0 ? 1 : finalExitCode
+            state = .retainingDockerAuthority
+            condition.broadcast()
+            condition.unlock()
+
+            // Retain daemon ownership while waiting on the exact helper's latched terminal event.
+            // Late completion of the original shutdown worker and a helper that exits between the
+            // bounded attempt and observer registration are both revalidated by DockerTier before
+            // this returns; no additional signal/control request is required to finish shutdown.
+            if let dockerTier {
+                DorydDockerTierShutdownBoundary.awaitTerminalRetirement(
+                    dockerTier: dockerTier
+                )
+            }
+            FileHandle.standardError.write(Data(
+                "doryd: retained Docker helper authority is now terminal; completing shutdown\n".utf8
+            ))
+        }
         FileHandle.standardError.write(Data("doryd: shutdown complete\n".utf8))
 
         condition.lock()

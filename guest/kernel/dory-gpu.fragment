@@ -1,5 +1,6 @@
-# Apple Silicon hosts use a 16 KiB hypervisor granule; the guest must use 16 KiB pages so
-# virtio-gpu host-visible blob offsets are hv_vm_map-aligned (Venus maps fail otherwise).
+# The legacy compute-only Venus profile uses 16 KiB guest pages to match Apple Silicon's
+# Hypervisor.framework mapping granule. The accelerated-desktop profile deliberately overrides this
+# to 4 KiB for its userspace ABI; patch 0006 independently aligns its host-visible GPU aperture.
 CONFIG_ARM64_16K_PAGES=y
 
 # Experimental Venus renderer support layered on dory-virtual-display.fragment.

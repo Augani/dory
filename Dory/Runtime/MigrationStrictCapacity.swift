@@ -62,6 +62,16 @@ struct MigrationCapacityInput {
     let engineCapacity: MigrationEngineCapacity
 }
 
+/// Target usage together with the live guest-filesystem ceiling that admission may rely on.
+///
+/// The configured ext4 ceiling remains an upper bound, but the guest can expose less usable space
+/// through reserved blocks or a changed filesystem. Keeping the effective value beside the usage
+/// makes it part of the immutable capacity contract and therefore part of staging revalidation.
+struct MigrationTargetCapacityUsage: Sendable, Equatable {
+    let usedBytes: Int64
+    let effectiveUsableBytes: Int64
+}
+
 extension MigrationStrictInventoryCollector {
     static func namedVolumeSizes(
         expected names: [String],
@@ -96,18 +106,71 @@ extension MigrationStrictInventoryCollector {
     }
 
     static func dockerUsage(runtime: any ContainerRuntime) async throws -> Int64 {
+        try Task.checkCancellation()
         guard let response = await runtime.proxyRequest(
             method: "GET",
             path: "/system/df",
             headers: [(name: "Accept", value: "application/json")],
             body: Data()
-        ), response.isSuccess,
-              let usage = try? DockerDiskUsageParser.totalDockerBytes(from: response.body) else {
+        ) else {
             throw MigrationStrictInventoryError.incomplete(
-                "target Docker storage usage is unavailable"
+                "target Docker storage usage request did not return a response"
             )
         }
-        return usage
+        try Task.checkCancellation()
+        guard response.isSuccess else {
+            throw MigrationStrictInventoryError.incomplete(
+                "target Docker storage usage request returned HTTP \(response.statusCode)"
+            )
+        }
+        do {
+            return try DockerDiskUsageParser.totalDockerBytes(from: response.body)
+        } catch let error as DockerDiskUsageParserError {
+            throw MigrationStrictInventoryError.incomplete(
+                "target Docker storage usage response is invalid: \(error)"
+            )
+        } catch {
+            throw MigrationStrictInventoryError.incomplete(
+                "target Docker storage usage response could not be decoded: \(error)"
+            )
+        }
+    }
+
+    static func targetStorageUsage(
+        runtime: any ContainerRuntime,
+        engineCapacity: MigrationEngineCapacity
+    ) async throws -> MigrationTargetCapacityUsage {
+        try Task.checkCancellation()
+        let authoritative: MigrationTargetStorageUsage?
+        do {
+            authoritative = try await runtime.migrationTargetStorageUsage()
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            throw MigrationStrictInventoryError.incomplete(
+                "authoritative target data-disk usage is unavailable: \(error)"
+            )
+        }
+        try Task.checkCancellation()
+        guard let authoritative else {
+            guard runtime.kind != .sharedVM else {
+                throw MigrationStrictInventoryError.incomplete(
+                    "Dory's shared-VM target did not provide authoritative guest data-disk usage"
+                )
+            }
+            return MigrationTargetCapacityUsage(
+                usedBytes: try await dockerUsage(runtime: runtime),
+                effectiveUsableBytes: engineCapacity.usableBytes
+            )
+        }
+        let liveUsableBytes = try validateTargetStorageUsage(
+            authoritative,
+            engineCapacity: engineCapacity
+        )
+        return MigrationTargetCapacityUsage(
+            usedBytes: authoritative.usedBytes,
+            effectiveUsableBytes: min(engineCapacity.usableBytes, liveUsableBytes)
+        )
     }
 
     static func capacityContract(
@@ -173,6 +236,32 @@ extension MigrationStrictInventoryCollector {
 }
 
 private extension MigrationStrictInventoryCollector {
+    static func validateTargetStorageUsage(
+        _ usage: MigrationTargetStorageUsage,
+        engineCapacity: MigrationEngineCapacity
+    ) throws -> Int64 {
+        let accounted = usage.usedBytes.addingReportingOverflow(usage.availableBytes)
+        guard usage.totalBytes > 0,
+              usage.usedBytes >= 0,
+              usage.availableBytes >= 0,
+              usage.usedBytes <= usage.totalBytes,
+              usage.availableBytes <= usage.totalBytes,
+              !accounted.overflow,
+              accounted.partialValue > 0,
+              accounted.partialValue <= usage.totalBytes else {
+            throw MigrationStrictInventoryError.incomplete(
+                "authoritative target data-disk usage is internally inconsistent"
+            )
+        }
+        guard usage.totalBytes >= engineCapacity.usableBytes,
+              usage.totalBytes <= engineCapacity.logicalBytes else {
+            throw MigrationStrictInventoryError.incomplete(
+                "authoritative target data-disk capacity does not match Dory's selected disk"
+            )
+        }
+        return accounted.partialValue
+    }
+
     static func requiredBytes(used: Int64, field: String) throws -> Int64 {
         guard used > 0 else { return 0 }
         return try sum([used, max(safetyFloorBytes, used / 5)], field: field)

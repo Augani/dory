@@ -35,6 +35,7 @@ TestResults/
 
 # Swift Package Manager
 .build/
+.build-*/
 .swiftpm/
 # Package.resolved is committed (app) so CI + contributors pin the same dependency versions.
 
@@ -59,6 +60,9 @@ secrets*
 ExportOptions.plist
 
 # Release pipeline output
+# Exact-candidate release gates are source, even when a checkout's private exclude file hides
+# untracked scripts by default.
+!/scripts/desktop-linux-live-gate.sh
 release-build*/
 /release/
 /dist/
@@ -144,11 +148,53 @@ docs-build/
 # Go build artifact (build.sh writes the real output to guest/out/)
 guest/agent/agent
 
-# Built GitHub Pages site (CI builds website/ and deploys the output directly) plus
-# local-only planning notes. Nothing under docs/ is tracked.
+# Built GitHub Pages site (CI builds website/ and deploys the output directly) plus local-only
+# planning notes. Keep the source platform ADR and its Linux execution contracts under docs/.
 docs/
+!/docs/
+/docs/*
+!/docs/virtual-workspace-platform.md
+!/docs/linux-virtual-workspace-architecture.md
+!/docs/linux-virtual-workspace-delivery-plan.md
+!/docs/linux-capability-and-qualification-matrix.md
+!/docs/linux-vm-performance-contract.md
+!/docs/linux-iso-and-gpu-recovery-review.md
+!/docs/container-engine-performance-qualification.md
+!/docs/architecture-gates/
+/docs/architecture-gates/*
+!/docs/architecture-gates/virtiofs-worker-xpc.json
+!/docs/architecture-gates/vz-custom-virtio-gpu.json
+!/docs/architecture-gates/vulkan-13-application-readiness.md
 !website/public/docs/
 !website/public/docs/**
+
+# Source-level renderer build and ABI verification are release inputs, not local scripts.
+!/scripts/build-renderer-production-dependencies.sh
+!/scripts/build-virglrenderer.sh
+!/scripts/assemble-renderer-production-worker.sh
+!/scripts/renderer-release-identity.py
+!/scripts/renderer-production-tuple.py
+!/scripts/renderer-build-tools/
+/scripts/renderer-build-tools/*
+!/scripts/renderer-build-tools/xcodebuild
+!/scripts/verify-virgl-resource-info-abi.c
+
+# Candidate-bound physical Linux developer smoke (fail-closed; never release qualification).
+!/scripts/linux-local-runtime-smoke.sh
+
+# Canonical Linux VM performance evidence validation, signed-bundle verification, and their
+# public-key-only adversarial fixtures are release source. Private collector output and signing
+# keys remain excluded.
+!/scripts/qualify-container-engine-performance.sh
+!/scripts/validate-linux-vm-performance-evidence.py
+!/scripts/verify-linux-vm-performance-bundle.py
+!/scripts/test-linux-vm-performance-bundle.py
+!/scripts/fixtures/
+/scripts/fixtures/*
+!/scripts/fixtures/linux-vm-performance-bundle-schema1/
+!/scripts/fixtures/linux-vm-performance-bundle-schema1/**
+!/scripts/fixtures/hostshare_guest_probe.py
+!/scripts/fixtures/hostshare_nonping_probe.py
 
 # Internal engine notes (not published)
 Packages/ContainerizationEngine/Docs/
@@ -176,7 +222,5 @@ scripts/__pycache__/
 /DESTRUCTIVE_ACTIONS.md
 /DORY_V0.4_RESEARCH_REPORT.md
 /MACHINE_IMAGE_CONTRACT.md
-/PERFORMANCE_QUALIFICATION.md
 /POST_V0.4_PRODUCT_DESIGNS.md
 /RELEASE_READINESS.md
-/SANDBOX_THREAT_MODEL.md

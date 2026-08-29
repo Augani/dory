@@ -1,8 +1,86 @@
 import DoryCore
 @testable import DorydKit
+import CryptoKit
+import DoryOperations
 import XCTest
 
 final class DorydServiceTests: XCTestCase {
+    func testHostUSBDiscoveryPublishesOnlyTheBoundedTypedProjection() throws {
+        let service = DorydService(
+            socketPath: "/tmp/doryd-test.sock",
+            hostUSBDiscovery: StaticHostUSBDiscovery(devices: [
+                DoryHostUSBDevice(
+                    busID: "3-2",
+                    vendorID: 0x05ac,
+                    productID: 0x12a8,
+                    vendorName: "Example Vendor",
+                    productName: "Example Device",
+                    deviceClass: 3,
+                    speed: 4
+                ),
+            ])
+        )
+        let listener = makeAnonymousListener(service: service)
+        listener.resume()
+        defer { listener.invalidate() }
+        let connection = NSXPCConnection(listenerEndpoint: listener.endpoint)
+        connection.remoteObjectInterface = NSXPCInterface(with: DorydControl.self)
+        connection.resume()
+        defer { connection.invalidate() }
+        let proxy = try XCTUnwrap(connection.remoteObjectProxy as? DorydControl)
+
+        let discovered = expectation(description: "typed host USB projection")
+        proxy.hostUSBDevices { ok, rows, message in
+            XCTAssertTrue(ok)
+            XCTAssertEqual(message, "")
+            XCTAssertEqual(rows.count, 1)
+            let row = rows.firstObject as? NSDictionary
+            XCTAssertEqual(
+                Set(row?.allKeys.compactMap { $0 as? String } ?? []),
+                ["busID", "vendorID", "productID", "vendorName", "productName", "deviceClass", "speed"]
+            )
+            XCTAssertEqual(row?["busID"] as? String, "3-2")
+            discovered.fulfill()
+        }
+        wait(for: [discovered], timeout: 5)
+    }
+
+    func testMachineUSBXPCIsResolvedOnly() throws {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("doryd-usb-xpc-\(UUID().uuidString)").path
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: base,
+            passMachineArguments: false,
+            requiresReadyHandoff: false
+        ))
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let service = DorydService(
+            socketPath: "/tmp/doryd-test.sock",
+            machineManager: manager
+        )
+        let listener = makeAnonymousListener(service: service)
+        listener.resume()
+        defer { listener.invalidate() }
+        let connection = NSXPCConnection(listenerEndpoint: listener.endpoint)
+        connection.remoteObjectInterface = NSXPCInterface(with: DorydControl.self)
+        connection.resume()
+        defer { connection.invalidate() }
+        let proxy = try XCTUnwrap(connection.remoteObjectProxy as? DorydControl)
+
+        let unavailable = expectation(description: "resolved USB authority required")
+        proxy.machineUSBAttach(
+            "missing",
+            busID: "3-2"
+        ) { ok, body, message in
+            XCTAssertFalse(ok)
+            XCTAssertEqual(body.count, 0)
+            XCTAssertTrue(message.contains("machine USB passthrough is unavailable"))
+            unavailable.fulfill()
+        }
+        wait(for: [unavailable], timeout: 5)
+    }
+
     func testPublishedPortRepairDetailUsesValidatedGvproxyReceiptCounts() {
         let startedAt = Date()
         let receipt = PublishedPortReconcileReceipt(
@@ -198,6 +276,14 @@ final class DorydServiceTests: XCTestCase {
             stopped.fulfill()
         }
         wait(for: [stopped], timeout: 5)
+
+        let diskUsage = expectation(description: "dockerGuestDataDiskUsage unconfigured reply")
+        proxy.dockerGuestDataDiskUsage { body, detail in
+            XCTAssertEqual(body.count, 0)
+            XCTAssertTrue(detail.contains("not configured"))
+            diskUsage.fulfill()
+        }
+        wait(for: [diskUsage], timeout: 5)
     }
 
     func testEngineStartAndStopOverXPCDriveDockerTier() throws {
@@ -271,6 +357,621 @@ final class DorydServiceTests: XCTestCase {
         XCTAssertTrue(wakeOK, wakeMessage)
         XCTAssertEqual(tier.status().state, .running)
         XCTAssertEqual(idlePolicyStore.currentEngineDesiredState(), "running")
+    }
+
+    func testEngineStartRejectsReplacementRunningGenerationAfterPromotion() throws {
+        let home = "/tmp/doryd-service-stale-start-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: home, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        try persistServiceCorporateProfile(home: home)
+
+        let reconcileGate = ServiceCorporateReconcileGate()
+        let corporateConnectivity = serviceCorporateConnectivity(
+            home: home,
+            gate: reconcileGate
+        )
+        let first = ServiceUnexpectedTerminationDockerProcess(pid: 53_101)
+        let replacement = ServiceUnexpectedTerminationDockerProcess(pid: 53_102)
+        let processes = ServiceManagedProcessSequence([first, replacement])
+        let tier = DockerTier(
+            configuration: DockerTierConfiguration(
+                home: home,
+                forwardSocketPath: home + "/forward.sock",
+                hvProcess: HvProcessConfiguration(
+                    executablePath: "/bin/false",
+                    restartPolicy: HvRestartPolicy(
+                        maxRestarts: 1,
+                        delaySeconds: 0,
+                        maximumDelaySeconds: 0
+                    )
+                )
+            ),
+            dockerReadyWaiter: { _, _, _ in true }
+        )
+        tier.installManagedProcessFactory { _, terminationHandler in
+            processes.next(terminationHandler: terminationHandler)
+        }
+        let incidents = IncidentWriter(path: home + "/incidents.jsonl")
+        let service = DorydService(
+            socketPath: tier.socketPath,
+            dockerTier: tier,
+            corporateConnectivity: corporateConnectivity,
+            incidentWriter: incidents
+        )
+        let reply = ServiceEnginePromotionReply()
+        defer {
+            reconcileGate.release()
+            _ = tier.stop()
+        }
+
+        service.engineStart { ok, detail in reply.record(ok: ok, detail: detail) }
+        XCTAssertTrue(reconcileGate.waitUntilEntered(timeout: 2))
+
+        first.reportUnexpectedTermination()
+        XCTAssertTrue(waitUntilServiceCondition(timeout: 2) {
+            let status = tier.status()
+            return status.state == .running && status.hvPID == 53_102
+        })
+        reconcileGate.release()
+
+        let result = try XCTUnwrap(reply.wait(timeout: 2))
+        XCTAssertFalse(result.ok)
+        XCTAssertTrue(result.detail.contains("superseded"), result.detail)
+        XCTAssertTrue(result.detail.contains("admitting running lifecycle epoch"), result.detail)
+        XCTAssertTrue(result.detail.contains("bounded status is running"), result.detail)
+        let operationIncidents = incidents.read(
+            limit: 10,
+            matchingTypes: ["engine.start", "engine.start_failed"]
+        )
+        XCTAssertEqual(operationIncidents.map(\.type), ["engine.start_failed"])
+    }
+
+    func testEngineWakeRejectsDeadAdmittedHelperBeforeTerminationCallback() throws {
+        let home = "/tmp/doryd-service-stale-wake-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: home, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        try persistServiceCorporateProfile(home: home)
+
+        let reconcileGate = ServiceCorporateReconcileGate()
+        let corporateConnectivity = serviceCorporateConnectivity(
+            home: home,
+            gate: reconcileGate
+        )
+        let helper = ServiceUnexpectedTerminationDockerProcess(pid: 53_201)
+        let tier = DockerTier(
+            configuration: DockerTierConfiguration(
+                home: home,
+                forwardSocketPath: home + "/forward.sock",
+                hvProcess: HvProcessConfiguration(
+                    executablePath: "/bin/false",
+                    restartPolicy: .none
+                )
+            ),
+            dockerReadyWaiter: { _, _, _ in true }
+        )
+        tier.installManagedProcessFactory { _, terminationHandler in
+            helper.setUnexpectedTerminationHandler(terminationHandler)
+            return helper
+        }
+        let incidents = IncidentWriter(path: home + "/incidents.jsonl")
+        let service = DorydService(
+            socketPath: tier.socketPath,
+            dockerTier: tier,
+            corporateConnectivity: corporateConnectivity,
+            incidentWriter: incidents
+        )
+        let reply = ServiceEnginePromotionReply()
+        defer {
+            reconcileGate.release()
+            _ = tier.stop()
+        }
+
+        service.engineWake { ok, detail in reply.record(ok: ok, detail: detail) }
+        XCTAssertTrue(reconcileGate.waitUntilEntered(timeout: 2))
+
+        helper.markExitedWithoutNotifying()
+        XCTAssertEqual(
+            tier.currentLifecycleEvent().state,
+            .running,
+            "the adversary must expose the pre-callback liveness window"
+        )
+        reconcileGate.release()
+
+        let result = try XCTUnwrap(reply.wait(timeout: 2))
+        XCTAssertFalse(result.ok)
+        XCTAssertTrue(result.detail.contains("superseded"), result.detail)
+        XCTAssertTrue(result.detail.contains("bounded status is failed"), result.detail)
+        let operationIncidents = incidents.read(
+            limit: 10,
+            matchingTypes: ["engine.wake", "engine.wake_failed"]
+        )
+        XCTAssertEqual(operationIncidents.map(\.type), ["engine.wake_failed"])
+    }
+
+    func testUnexpectedHelperRecoveryRecordsIncidentsWithoutOverwritingRunningIntent() throws {
+        let home = "/tmp/doryd-service-recovery-incidents-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        defer { try? FileManager.default.removeItem(atPath: home) }
+
+        let first = ServiceUnexpectedTerminationDockerProcess(pid: 53_001)
+        let replacement = ServiceUnexpectedTerminationDockerProcess(pid: 53_002)
+        let processes = ServiceManagedProcessSequence([first, replacement])
+        let tier = DockerTier(
+            configuration: DockerTierConfiguration(
+                home: home,
+                forwardSocketPath: home + "/forward.sock",
+                hvProcess: HvProcessConfiguration(
+                    executablePath: "/bin/false",
+                    restartPolicy: HvRestartPolicy(
+                        maxRestarts: 1,
+                        delaySeconds: 0,
+                        maximumDelaySeconds: 0
+                    )
+                )
+            ),
+            dockerReadyWaiter: { _, _, _ in true }
+        )
+        tier.installManagedProcessFactory { _, terminationHandler in
+            processes.next(terminationHandler: terminationHandler)
+        }
+
+        let store = IdlePolicyStore(home: home, environment: [:])
+        let incidents = IncidentWriter(path: home + "/incidents.jsonl")
+        let desiredStates = ServiceDesiredStateRecorder()
+        let service = DorydService(
+            socketPath: tier.socketPath,
+            dockerTier: tier,
+            idlePolicyStore: store,
+            incidentWriter: incidents,
+            engineDesiredStateWriter: { state in
+                desiredStates.append(state)
+                try store.setEngineDesiredState(state)
+            }
+        )
+        defer { _ = tier.stop() }
+
+        try tier.start()
+        XCTAssertTrue(desiredStates.waitUntilCount(1, timeout: 1))
+        first.reportUnexpectedTermination()
+        XCTAssertTrue(waitUntilServiceCondition(timeout: 1) {
+            let status = tier.status()
+            return status.state == .running && status.hvPID == 53_002
+        })
+        XCTAssertTrue(desiredStates.waitUntilCount(2, timeout: 1))
+
+        replacement.reportUnexpectedTermination()
+        XCTAssertTrue(waitUntilServiceCondition(timeout: 1) {
+            tier.status().state == .failed
+        })
+        XCTAssertTrue(waitUntilServiceCondition(timeout: 1) {
+            incidents.read(limit: 10, matchingTypes: ["engine.lifecycle"]).count == 4
+        })
+
+        let lifecycleDetails = incidents
+            .read(limit: 10, matchingTypes: ["engine.lifecycle"])
+            .reversed()
+            .compactMap(\.detail)
+        XCTAssertEqual(
+            lifecycleDetails,
+            [
+                "docker tier running",
+                "docker tier starting",
+                "docker tier running",
+                "docker tier failed",
+            ]
+        )
+        XCTAssertEqual(desiredStates.values, ["running", "running"])
+        XCTAssertEqual(store.currentEngineDesiredState(), "running")
+        withExtendedLifetime(service) {}
+    }
+
+    func testEngineStopReportsUnconfirmedHelperAndPreservesRunningIntent() throws {
+        let home = "/tmp/doryd-service-unconfirmed-stop-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        defer { try? FileManager.default.removeItem(atPath: home) }
+
+        let helper = UnconfirmedStopDockerProcess(pid: 51_515)
+        let tier = DockerTier(
+            configuration: DockerTierConfiguration(
+                home: home,
+                forwardSocketPath: home + "/forward.sock",
+                hvProcess: HvProcessConfiguration(
+                    executablePath: "/bin/false",
+                    arguments: []
+                )
+            ),
+            dockerReadyWaiter: { _, _, _ in true }
+        )
+        tier.installManagedProcessFactory { _, _ in helper }
+        let idlePolicyStore = IdlePolicyStore(home: home, environment: [:])
+        let service = DorydService(
+            socketPath: tier.socketPath,
+            dockerTier: tier,
+            idlePolicyStore: idlePolicyStore
+        )
+        defer {
+            helper.confirmExit()
+            tier.stop()
+        }
+
+        try tier.start()
+        XCTAssertEqual(idlePolicyStore.currentEngineDesiredState(), "running")
+
+        let reply = expectation(description: "engineStop unconfirmed helper reply")
+        var stopped = true
+        var detail = ""
+        service.engineStop { ok, message in
+            stopped = ok
+            detail = message
+            reply.fulfill()
+        }
+        wait(for: [reply], timeout: 2)
+
+        XCTAssertFalse(stopped)
+        XCTAssertTrue(detail.contains("termination is still being verified"), detail)
+        XCTAssertEqual(tier.status().state, .failed)
+        XCTAssertEqual(tier.status().hvPID, 51_515)
+        XCTAssertEqual(
+            idlePolicyStore.currentEngineDesiredState(),
+            "running",
+            "an unconfirmed exit must not persist a stopped/sleeping intent"
+        )
+    }
+
+    func testEngineStopReportsDesiredStatePersistenceFailureInsteadOfFakeSuccess() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "doryd-service-persistence-failure-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        // A directory at the exact config-file path is a deterministic write failure that does
+        // not depend on the test user's privileges.
+        let blockedConfig = root.appendingPathComponent("config.json", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: blockedConfig,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let store = IdlePolicyStore(environment: ["DORY_CONFIG": blockedConfig.path])
+        let tier = DockerTier(configuration: DockerTierConfiguration(
+            home: root.path,
+            forwardSocketPath: root.appendingPathComponent("forward.sock").path
+        ))
+        let service = DorydService(
+            socketPath: tier.socketPath,
+            dockerTier: tier,
+            idlePolicyStore: store
+        )
+
+        var stopped = true
+        var stopDetail = ""
+        service.engineStop { ok, detail in
+            stopped = ok
+            stopDetail = detail
+        }
+
+        XCTAssertFalse(stopped)
+        XCTAssertTrue(stopDetail.contains("desired-state persistence failed"), stopDetail)
+        XCTAssertEqual(tier.status().state, .stopped)
+        XCTAssertEqual(
+            store.currentEngineDesiredState(),
+            "running",
+            "failed persistence must not pretend that restart intent changed"
+        )
+
+        var statusDetail = ""
+        service.engineStatus { state, detail in
+            XCTAssertEqual(state, DockerTierState.stopped.rawValue)
+            statusDetail = detail
+        }
+        XCTAssertTrue(statusDetail.contains("could not persist engine desired state sleeping"))
+    }
+
+    func testEngineStopRejectsBackloggedSleepingPersistenceFromAnOlderLifecycleEpoch() throws {
+        let root = URL(
+            fileURLWithPath: "/tmp/doryd-service-stale-stop-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))",
+            isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = IdlePolicyStore(home: root.path, environment: [:])
+        let writer = BlockingDesiredStateWriter(
+            store: store,
+            failingCallIndex: 3
+        )
+        let tier = DockerTier(
+            configuration: DockerTierConfiguration(
+                home: root.path,
+                forwardSocketPath: root.appendingPathComponent("forward.sock").path
+            ),
+            dockerReadyWaiter: { _, _, _ in true }
+        )
+        let service = DorydService(
+            socketPath: tier.socketPath,
+            dockerTier: tier,
+            idlePolicyStore: store,
+            engineDesiredStateWriter: { try writer.write($0) }
+        )
+        defer {
+            writer.releaseFirstCall()
+            _ = tier.stop()
+        }
+
+        try tier.start()
+        XCTAssertTrue(writer.waitUntilFirstCallEntered(timeout: 2))
+        XCTAssertTrue(tier.stop())
+        try tier.start()
+
+        let stopObserved = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .userInitiated).async {
+            let deadline = Date().addingTimeInterval(2)
+            while tier.currentLifecycleEvent().state != .stopped, Date() < deadline {
+                Thread.sleep(forTimeInterval: 0.005)
+            }
+            stopObserved.signal()
+            writer.releaseFirstCall()
+        }
+
+        // Release this deterministic observer backlog in commit order:
+        // old running, old stopped, replacement running, exact requested stop. Only the fourth
+        // callback is allowed to satisfy this engineStop, and it intentionally fails persistence.
+        var stopped = true
+        var detail = ""
+        service.engineStop { ok, message in
+            stopped = ok
+            detail = message
+        }
+        XCTAssertEqual(stopObserved.wait(timeout: .now()), .success)
+        XCTAssertTrue(writer.waitUntilCallCount(4, timeout: 2))
+
+        XCTAssertFalse(stopped)
+        XCTAssertTrue(detail.contains("desired-state persistence failed"), detail)
+        XCTAssertEqual(writer.states, ["running", "sleeping", "running", "sleeping"])
+        XCTAssertEqual(
+            store.currentEngineDesiredState(),
+            "running",
+            "the exact failed stop write must not be masked by an older sleeping callback"
+        )
+    }
+
+    func testDesiredStateJournalRejectsAnOutcomeRecordedAfterItsMonotonicDeadline() {
+        let journal = EngineDesiredStatePersistenceJournal()
+        let event = DockerTierLifecycleEvent(epoch: 41, state: .stopped)
+        let checkpoint = journal.checkpoint()
+        let deadline = DispatchTime.now()
+        Thread.sleep(forTimeInterval: 0.001)
+        journal.record(.succeeded(state: "sleeping"), for: event)
+
+        let startedAt = ProcessInfo.processInfo.systemUptime
+        let outcome = journal.waitForOutcome(
+            after: checkpoint,
+            expectedEvent: event,
+            deadline: deadline
+        )
+        let elapsed = ProcessInfo.processInfo.systemUptime - startedAt
+
+        XCTAssertNil(outcome)
+        XCTAssertLessThan(elapsed, 0.01)
+    }
+
+    func testEngineStatusPublishesTruthfulStoppingStateDuringHelperRetirement() throws {
+        let home = "/tmp/doryd-service-stopping-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        defer { try? FileManager.default.removeItem(atPath: home) }
+
+        let helper = ServiceBlockingStopDockerProcess(pid: 52_005)
+        let tier = DockerTier(
+            configuration: DockerTierConfiguration(
+                home: home,
+                forwardSocketPath: home + "/forward.sock",
+                hvProcess: HvProcessConfiguration(
+                    executablePath: "/bin/false",
+                    arguments: []
+                )
+            ),
+            dockerReadyWaiter: { _, _, _ in true }
+        )
+        tier.installManagedProcessFactory { _, _ in helper }
+        let service = DorydService(socketPath: tier.socketPath, dockerTier: tier)
+        try tier.start()
+
+        let stopFinished = DispatchSemaphore(value: 0)
+        defer {
+            helper.finishStop()
+            _ = tier.stop()
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+            _ = tier.stop()
+            stopFinished.signal()
+        }
+        XCTAssertTrue(helper.waitUntilStopEntered(timeout: 2))
+
+        var reportedState = ""
+        var reportedDetail = ""
+        service.engineStatus { state, detail in
+            reportedState = state
+            reportedDetail = detail
+        }
+
+        XCTAssertEqual(reportedState, "stopping")
+        XCTAssertEqual(reportedDetail, "docker endpoint and helper retirement is in progress")
+        XCTAssertNotEqual(reportedState, DockerTierState.failed.rawValue)
+
+        helper.finishStop()
+        XCTAssertEqual(stopFinished.wait(timeout: .now() + 2), .success)
+        XCTAssertEqual(tier.status().state, .stopped)
+    }
+
+    func testDaemonShutdownBoundaryReapsRetainedHelperWithinBound() throws {
+        let home = "/tmp/doryd-shutdown-retirement-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        let helper = UnconfirmedStopDockerProcess(pid: 52_525)
+        let tier = DockerTier(
+            configuration: DockerTierConfiguration(
+                home: home,
+                forwardSocketPath: home + "/forward.sock",
+                hvProcess: HvProcessConfiguration(
+                    executablePath: "/bin/false",
+                    arguments: []
+                )
+            ),
+            dockerReadyWaiter: { _, _, _ in true }
+        )
+        tier.installManagedProcessFactory { _, _ in helper }
+        try tier.start()
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.05) {
+            helper.confirmExit()
+        }
+
+        let startedAt = ProcessInfo.processInfo.systemUptime
+        let outcome = DorydDockerTierShutdownBoundary.complete(
+            dockerTier: tier,
+            retirementTimeout: 1
+        )
+        let elapsed = ProcessInfo.processInfo.systemUptime - startedAt
+
+        XCTAssertEqual(outcome, .terminated)
+        XCTAssertTrue(outcome.permitsDaemonExit)
+        XCTAssertLessThan(elapsed, 1.25)
+        XCTAssertFalse(helper.isRunning)
+        XCTAssertNil(tier.status().hvPID)
+    }
+
+    func testDaemonShutdownBoundaryRetainsAuthorityAfterStrictTimeout() throws {
+        let home = "/tmp/doryd-shutdown-retained-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        let helper = UnconfirmedStopDockerProcess(pid: 53_535)
+        let tier = DockerTier(
+            configuration: DockerTierConfiguration(
+                home: home,
+                forwardSocketPath: home + "/forward.sock",
+                hvProcess: HvProcessConfiguration(
+                    executablePath: "/bin/false",
+                    arguments: []
+                )
+            ),
+            dockerReadyWaiter: { _, _, _ in true }
+        )
+        tier.installManagedProcessFactory { _, _ in helper }
+        try tier.start()
+        defer {
+            helper.confirmExit()
+            _ = tier.waitForTerminalRetirement(timeout: 1)
+        }
+
+        let startedAt = ProcessInfo.processInfo.systemUptime
+        let outcome = DorydDockerTierShutdownBoundary.complete(
+            dockerTier: tier,
+            retirementTimeout: 0.02
+        )
+        let elapsed = ProcessInfo.processInfo.systemUptime - startedAt
+
+        guard case let .authorityRetained(pid, detail) = outcome else {
+            return XCTFail("expected retained shutdown authority, got \(outcome)")
+        }
+        XCTAssertEqual(pid, 53_535)
+        XCTAssertTrue(detail.contains("termination is still being verified"), detail)
+        XCTAssertFalse(outcome.permitsDaemonExit)
+        XCTAssertTrue(helper.isRunning)
+        XCTAssertLessThan(elapsed, 0.5)
+    }
+
+    func testDaemonShutdownRetirementObserverFinishesAfterLateTerminalEvent() throws {
+        let home = "/tmp/doryd-shutdown-observer-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        let helper = UnconfirmedStopDockerProcess(pid: 53_536)
+        let tier = DockerTier(
+            configuration: DockerTierConfiguration(
+                home: home,
+                forwardSocketPath: home + "/forward.sock",
+                hvProcess: HvProcessConfiguration(executablePath: "/bin/false", arguments: [])
+            ),
+            dockerReadyWaiter: { _, _, _ in true }
+        )
+        tier.installManagedProcessFactory { _, _ in helper }
+        try tier.start()
+
+        let outcome = DorydDockerTierShutdownBoundary.complete(
+            dockerTier: tier,
+            retirementTimeout: 0.02
+        )
+        guard case .authorityRetained = outcome else {
+            return XCTFail("expected retained shutdown authority, got \(outcome)")
+        }
+
+        let observerFinished = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .userInitiated).async {
+            _ = DorydDockerTierShutdownBoundary.awaitTerminalRetirement(
+                dockerTier: tier,
+                observationWindow: 0.05
+            )
+            observerFinished.signal()
+        }
+        XCTAssertEqual(observerFinished.wait(timeout: .now() + 0.03), .timedOut)
+
+        helper.confirmExit()
+        XCTAssertEqual(observerFinished.wait(timeout: .now() + 1), .success)
+        XCTAssertEqual(tier.status().state, .stopped)
+        XCTAssertNil(tier.status().hvPID)
+    }
+
+    func testDaemonShutdownBoundaryDoesNotJoinABlockedConcurrentStopWithoutBound() throws {
+        let home = "/tmp/doryd-shutdown-join-bound-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        let helper = ServiceBlockingStopDockerProcess(pid: 54_545)
+        let tier = DockerTier(
+            configuration: DockerTierConfiguration(
+                home: home,
+                forwardSocketPath: home + "/forward.sock",
+                hvProcess: HvProcessConfiguration(executablePath: "/bin/false", arguments: [])
+            ),
+            dockerReadyWaiter: { _, _, _ in true }
+        )
+        tier.installManagedProcessFactory { _, _ in helper }
+        try tier.start()
+
+        let stopFinished = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .userInitiated).async {
+            _ = tier.stop()
+            stopFinished.signal()
+        }
+        XCTAssertTrue(helper.waitUntilStopEntered(timeout: 2))
+
+        let startedAt = ProcessInfo.processInfo.systemUptime
+        let outcome = DorydDockerTierShutdownBoundary.complete(
+            dockerTier: tier,
+            shutdownTimeout: 0.03,
+            retirementTimeout: 0.03
+        )
+        let elapsed = ProcessInfo.processInfo.systemUptime - startedAt
+
+        guard case let .authorityRetained(pid, detail) = outcome else {
+            helper.finishStop()
+            return XCTFail("expected retained authority, got \(outcome)")
+        }
+        XCTAssertEqual(pid, 54_545)
+        XCTAssertTrue(detail.contains("bounded TERM/KILL window"), detail)
+        XCTAssertLessThan(elapsed, 0.25)
+        XCTAssertThrowsError(try tier.start()) { error in
+            XCTAssertEqual("\(error)", DockerTier.TierError.daemonShuttingDown.description)
+        }
+
+        let observerFinished = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .userInitiated).async {
+            _ = DorydDockerTierShutdownBoundary.awaitTerminalRetirement(
+                dockerTier: tier,
+                observationWindow: 0.02
+            )
+            observerFinished.signal()
+        }
+        XCTAssertEqual(observerFinished.wait(timeout: .now() + 0.03), .timedOut)
+
+        helper.finishStop()
+        XCTAssertEqual(stopFinished.wait(timeout: .now() + 2), .success)
+        XCTAssertEqual(observerFinished.wait(timeout: .now() + 1), .success)
+        XCTAssertNil(tier.status().hvPID)
     }
 
     func testKeepAwakeModePromotesSleepingEngineBeforeReportingApplied() throws {
@@ -415,17 +1116,33 @@ final class DorydServiceTests: XCTestCase {
     func testDockerAgentInfoPortsAndTelemetryOverXPC() throws {
         let home = "/tmp/doryd-service-agent-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         defer { try? FileManager.default.removeItem(atPath: home) }
+        let dataDriveID = try XCTUnwrap(UUID(
+            uuidString: "01234567-89ab-4cde-8f01-23456789abcd"
+        ))
+        let filesystemUUID = try XCTUnwrap(UUID(
+            uuidString: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+        ))
         let agent = AgentControl(configuration: AgentControlConfiguration(forwardSocketPath: home + "/agent.sock")) { _ in
             ServiceFakeAgentControlClient()
         }
         let tier = DockerTier(
             configuration: DockerTierConfiguration(home: home, forwardSocketPath: home + "/forward.sock"),
-            agentControl: agent
+            agentControl: agent,
+            guestDataDiskAuthorityProvider: { _ in
+                DockerGuestDataDiskAuthority(
+                    dataDriveID: dataDriveID,
+                    filesystemUUID: filesystemUUID
+                )
+            }
         )
         try tier.start()
         defer { tier.stop() }
 
-        let service = DorydService(socketPath: tier.socketPath, dockerTier: tier)
+        let service = DorydService(
+            socketPath: tier.socketPath,
+            dockerTier: tier,
+            dockerDataDriveID: dataDriveID
+        )
         let listener = makeAnonymousListener(service: service)
         listener.resume()
         defer { listener.invalidate() }
@@ -442,6 +1159,10 @@ final class DorydServiceTests: XCTestCase {
             XCTAssertEqual(message, "")
             XCTAssertEqual(body["agentBuild"] as? String, "docker-agent")
             XCTAssertEqual(body["protocolVersion"] as? UInt32, 1)
+            XCTAssertEqual(
+                (body["capabilities"] as? [NSDictionary])?.compactMap { $0["id"] as? String },
+                ["clock-sync", "exec", "exec-stdin", "ports-watch", "telemetry"]
+            )
             infoReply.fulfill()
         }
         wait(for: [infoReply], timeout: 5)
@@ -467,6 +1188,23 @@ final class DorydServiceTests: XCTestCase {
         }
         wait(for: [telemetryReply], timeout: 5)
 
+        let diskUsageReply = expectation(description: "dockerGuestDataDiskUsage reply")
+        proxy.dockerGuestDataDiskUsage { body, message in
+            XCTAssertEqual(message, "")
+            XCTAssertEqual(Set(body.allKeys.compactMap { $0 as? String }), [
+                "schema", "engineSocketPath", "dataDriveID", "totalBytes", "usedBytes",
+                "availableBytes",
+            ])
+            XCTAssertEqual(body["schema"] as? UInt16, 1)
+            XCTAssertEqual(body["engineSocketPath"] as? String, tier.socketPath)
+            XCTAssertEqual(body["dataDriveID"] as? String, dataDriveID.uuidString.lowercased())
+            XCTAssertEqual(body["totalBytes"] as? UInt64, 128 * 1024 * 1024 * 1024)
+            XCTAssertEqual(body["usedBytes"] as? UInt64, 8 * 1024 * 1024 * 1024)
+            XCTAssertEqual(body["availableBytes"] as? UInt64, 120 * 1024 * 1024 * 1024)
+            diskUsageReply.fulfill()
+        }
+        wait(for: [diskUsageReply], timeout: 5)
+
         let clockReply = expectation(description: "dockerAgentClockSync reply")
         proxy.dockerAgentClockSync { body, message in
             XCTAssertEqual(message, "")
@@ -479,6 +1217,14 @@ final class DorydServiceTests: XCTestCase {
         wait(for: [clockReply], timeout: 5)
 
         tier.stop()
+        let stoppedDiskUsageReply = expectation(description: "stopped dockerGuestDataDiskUsage reply")
+        proxy.dockerGuestDataDiskUsage { body, message in
+            XCTAssertEqual(body.count, 0)
+            XCTAssertTrue(message.contains("unavailable"), message)
+            stoppedDiskUsageReply.fulfill()
+        }
+        wait(for: [stoppedDiskUsageReply], timeout: 5)
+
         let stoppedClockReply = expectation(description: "stopped dockerAgentClockSync reply")
         proxy.dockerAgentClockSync { body, message in
             XCTAssertEqual(body["attempted"] as? Bool, false)
@@ -487,6 +1233,198 @@ final class DorydServiceTests: XCTestCase {
             stoppedClockReply.fulfill()
         }
         wait(for: [stoppedClockReply], timeout: 5)
+    }
+
+    func testDockerGuestDataDiskUsageFailsClosedWithoutExactRuntimeIdentity() throws {
+        let home = "/tmp/doryd-service-disk-identity-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        let guestDriveID = try XCTUnwrap(UUID(
+            uuidString: "aaaaaaaa-1111-4222-8333-bbbbbbbbbbbb"
+        ))
+        let filesystemUUID = try XCTUnwrap(UUID(
+            uuidString: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+        ))
+        let agent = AgentControl(
+            configuration: AgentControlConfiguration(forwardSocketPath: home + "/agent.sock")
+        ) { _ in
+            ServiceFakeAgentControlClient()
+        }
+        let tier = DockerTier(
+            configuration: DockerTierConfiguration(
+                home: home,
+                forwardSocketPath: home + "/forward.sock"
+            ),
+            agentControl: agent,
+            guestDataDiskAuthorityProvider: { _ in
+                DockerGuestDataDiskAuthority(
+                    dataDriveID: guestDriveID,
+                    filesystemUUID: filesystemUUID
+                )
+            }
+        )
+        try tier.start()
+        defer { tier.stop() }
+
+        let missingIdentity = DorydService(socketPath: tier.socketPath, dockerTier: tier)
+        let missingReply = expectation(description: "missing data-drive identity")
+        missingIdentity.dockerGuestDataDiskUsage { body, message in
+            XCTAssertEqual(body.count, 0)
+            XCTAssertTrue(message.contains("identity is unavailable"), message)
+            missingReply.fulfill()
+        }
+
+        let driveID = try XCTUnwrap(UUID(
+            uuidString: "01234567-89ab-4cde-8f01-23456789abcd"
+        ))
+        let mismatchedSocket = DorydService(
+            socketPath: tier.socketPath + ".other",
+            dockerTier: tier,
+            dockerDataDriveID: driveID
+        )
+        let socketReply = expectation(description: "mismatched Docker socket")
+        mismatchedSocket.dockerGuestDataDiskUsage { body, message in
+            XCTAssertEqual(body.count, 0)
+            XCTAssertTrue(message.contains("not bound"), message)
+            socketReply.fulfill()
+        }
+
+        let mismatchedDrive = DorydService(
+            socketPath: tier.socketPath,
+            dockerTier: tier,
+            dockerDataDriveID: driveID
+        )
+        let driveReply = expectation(description: "mismatched selected data drive")
+        mismatchedDrive.dockerGuestDataDiskUsage { body, message in
+            XCTAssertEqual(body.count, 0)
+            XCTAssertTrue(message.contains("not bound to the selected data drive"), message)
+            driveReply.fulfill()
+        }
+
+        wait(for: [missingReply, socketReply, driveReply], timeout: 5)
+    }
+
+    func testDataDriveRepairReprobesRunningGuestAndRejectsWrongOrStoppedIdentity() throws {
+        let home = "/tmp/doryd-service-data-drive-repair-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        let dataDriveID = try XCTUnwrap(UUID(
+            uuidString: "01234567-89ab-4cde-8f01-23456789abcd"
+        ))
+        let wrongDataDriveID = try XCTUnwrap(UUID(
+            uuidString: "11111111-2222-4333-8444-555555555555"
+        ))
+        let filesystemUUID = try XCTUnwrap(UUID(
+            uuidString: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+        ))
+        let client = ServiceFakeAgentControlClient()
+        let agent = AgentControl(
+            configuration: AgentControlConfiguration(forwardSocketPath: home + "/agent.sock")
+        ) { _ in client }
+        let tier = DockerTier(
+            configuration: DockerTierConfiguration(
+                home: home,
+                forwardSocketPath: home + "/forward.sock"
+            ),
+            agentControl: agent,
+            guestDataDiskAuthorityProvider: { _ in
+                DockerGuestDataDiskAuthority(
+                    dataDriveID: dataDriveID,
+                    filesystemUUID: filesystemUUID
+                )
+            }
+        )
+        try tier.start()
+        defer { _ = tier.stop() }
+
+        let service = DorydService(
+            socketPath: tier.socketPath,
+            home: home,
+            dockerTier: tier,
+            dockerDataDriveID: dataDriveID
+        )
+        var repaired = false
+        var repairDetail = ""
+        service.repairSubsystem("data-drive") { ok, detail in
+            repaired = ok
+            repairDetail = detail
+        }
+        XCTAssertTrue(repaired, repairDetail)
+        XCTAssertTrue(repairDetail.contains("re-probed selected drive"), repairDetail)
+        XCTAssertTrue(repairDetail.contains("/dev/vdb"), repairDetail)
+        XCTAssertTrue(repairDetail.contains(filesystemUUID.uuidString.lowercased()), repairDetail)
+
+        let wrongService = DorydService(
+            socketPath: tier.socketPath,
+            home: home,
+            dockerTier: tier,
+            dockerDataDriveID: wrongDataDriveID
+        )
+        var wrongRepaired = true
+        var wrongDetail = ""
+        wrongService.repairSubsystem("data-drive") { ok, detail in
+            wrongRepaired = ok
+            wrongDetail = detail
+        }
+        XCTAssertFalse(wrongRepaired)
+        XCTAssertTrue(wrongDetail.contains("not bound to the selected data drive"), wrongDetail)
+
+        XCTAssertTrue(tier.stop())
+        var stoppedRepaired = true
+        var stoppedDetail = ""
+        service.repairSubsystem("data-drive") { ok, detail in
+            stoppedRepaired = ok
+            stoppedDetail = detail
+        }
+        XCTAssertFalse(stoppedRepaired)
+        XCTAssertTrue(stoppedDetail.contains("not running"), stoppedDetail)
+    }
+
+    func testDataDriveRepairRejectsRootfsProbeInsteadOfClaimingHostManifestSuccess() throws {
+        let home = "/tmp/doryd-service-data-drive-rootfs-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        let dataDriveID = try XCTUnwrap(UUID(
+            uuidString: "01234567-89ab-4cde-8f01-23456789abcd"
+        ))
+        let filesystemUUID = try XCTUnwrap(UUID(
+            uuidString: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+        ))
+        let rootfsRecord = serviceGuestResourceRecord().replacingOccurrences(
+            of: "disk_mount_source=/dev/vdb\ndisk_filesystem_type=ext4",
+            with: "disk_mount_source=/dev/vda\ndisk_filesystem_type=ext4"
+        )
+        let client = ServiceFakeAgentControlClient(guestResourceOutput: rootfsRecord)
+        let agent = AgentControl(
+            configuration: AgentControlConfiguration(forwardSocketPath: home + "/agent.sock")
+        ) { _ in client }
+        let tier = DockerTier(
+            configuration: DockerTierConfiguration(
+                home: home,
+                forwardSocketPath: home + "/forward.sock"
+            ),
+            agentControl: agent,
+            guestDataDiskAuthorityProvider: { _ in
+                DockerGuestDataDiskAuthority(
+                    dataDriveID: dataDriveID,
+                    filesystemUUID: filesystemUUID
+                )
+            }
+        )
+        try tier.start()
+        defer { _ = tier.stop() }
+        let service = DorydService(
+            socketPath: tier.socketPath,
+            home: home,
+            dockerTier: tier,
+            dockerDataDriveID: dataDriveID
+        )
+
+        var repaired = true
+        var detail = ""
+        service.repairSubsystem("data-drive") { ok, message in
+            repaired = ok
+            detail = message
+        }
+        XCTAssertFalse(repaired)
+        XCTAssertTrue(detail.contains("invalid versioned record"), detail)
     }
 
     func testRemoteConnectPushAndStatusOverXPC() throws {
@@ -535,6 +1473,10 @@ final class DorydServiceTests: XCTestCase {
         wait(for: [connect], timeout: 5)
         XCTAssertTrue(connectOK, connectMessage)
         XCTAssertEqual(info["agentBuild"] as? String, "remote-agent")
+        XCTAssertEqual(
+            (info["capabilities"] as? [NSDictionary])?.compactMap { $0["id"] as? String },
+            ["exec", "sync-push", "telemetry"]
+        )
         XCTAssertEqual(captured.value?.opensshPrivateKey, "PRIVATE")
 
         let push = expectation(description: "remotePush reply")
@@ -720,7 +1662,13 @@ final class DorydServiceTests: XCTestCase {
             path: try XCTUnwrap(starting.handoffSocketPath),
             ready: VmmReadyMessage(
                 machineID: "dev",
+                operationID: try XCTUnwrap(starting.activeOperationID),
                 agentBuild: "dory-agent/test",
+                agentProtocolVersion: DoryCore.protocolVersion(),
+                agentCapabilities: [
+                    DoryAgentCapability(id: "exec", version: 1),
+                    DoryAgentCapability(id: "telemetry", version: 1),
+                ],
                 agentSocketPath: "/run/agent.sock",
                 dockerdSocketPath: "/run/docker.sock",
                 controlSocketPath: "/run/control.sock"
@@ -739,6 +1687,37 @@ final class DorydServiceTests: XCTestCase {
                 pressure: .critical
             )))
         )
+        let machineStatus = expectation(description: "versioned machine tools status")
+        service.machineList { rows, message in
+            XCTAssertEqual(message, "")
+            let status = (rows as? [NSDictionary])?.first
+            XCTAssertEqual(
+                (status?["agentProtocolVersion"] as? NSNumber)?.uint32Value,
+                DoryCore.protocolVersion()
+            )
+            let capabilities = status?["agentCapabilities"] as? [NSDictionary]
+            XCTAssertEqual(capabilities?.first?["id"] as? String, "exec")
+            XCTAssertEqual((capabilities?.first?["version"] as? NSNumber)?.uint32Value, 1)
+            let health = status?["integrationHealth"] as? NSDictionary
+            XCTAssertEqual((health?["schemaVersion"] as? NSNumber)?.uint16Value, 1)
+            XCTAssertEqual(health?["state"] as? String, "degraded")
+            XCTAssertEqual(health?["runtimeAuthority"] as? String, "legacy-compatibility")
+            let features = health?["features"] as? [NSDictionary]
+            XCTAssertEqual(
+                features?.compactMap { $0["id"] as? String },
+                features?.compactMap { $0["id"] as? String }.sorted()
+            )
+            XCTAssertEqual(
+                features?.first { $0["id"] as? String == "telemetry" }?["state"] as? String,
+                "active"
+            )
+            XCTAssertEqual(
+                features?.first { $0["id"] as? String == "clock-sync" }?["state"] as? String,
+                "unavailable"
+            )
+            machineStatus.fulfill()
+        }
+        wait(for: [machineStatus], timeout: 5)
         let listener = makeAnonymousListener(service: service)
         listener.resume()
         defer { listener.invalidate() }
@@ -794,7 +1773,13 @@ final class DorydServiceTests: XCTestCase {
             path: try XCTUnwrap(starting.handoffSocketPath),
             ready: VmmReadyMessage(
                 machineID: "dev",
+                operationID: try XCTUnwrap(starting.activeOperationID),
                 agentBuild: "dory-agent/test",
+                agentProtocolVersion: DoryCore.protocolVersion(),
+                agentCapabilities: [
+                    DoryAgentCapability(id: "exec", version: 1),
+                    DoryAgentCapability(id: "telemetry", version: 1),
+                ],
                 agentSocketPath: "/run/agent.sock",
                 dockerdSocketPath: "/run/docker.sock",
                 controlSocketPath: "/run/control.sock"
@@ -1038,10 +2023,436 @@ final class DorydServiceTests: XCTestCase {
         wait(for: [statusReply], timeout: 5)
     }
 
+    func testMachineEventsOverXPCAreOrderedDurableAndSecretFree() throws {
+        let base = "/tmp/doryd-service-events-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: base,
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: false
+        ))
+        defer {
+            try? manager.delete(id: "dev")
+            try? FileManager.default.removeItem(atPath: base)
+        }
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "dev",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath,
+            environment: ["TOKEN": "opaque-secret"]
+        ))
+        let service = DorydService(
+            socketPath: "/tmp/doryd-test.sock",
+            machineManager: manager
+        )
+        let listener = makeAnonymousListener(service: service)
+        listener.resume()
+        defer { listener.invalidate() }
+        let connection = NSXPCConnection(listenerEndpoint: listener.endpoint)
+        connection.remoteObjectInterface = NSXPCInterface(with: DorydControl.self)
+        connection.resume()
+        defer { connection.invalidate() }
+        let proxy = try XCTUnwrap(connection.remoteObjectProxy as? DorydControl)
+
+        var head: UInt64 = 0
+        let initial = expectation(description: "initial machineEvents reply")
+        proxy.machineEvents(0) { ok, body, message in
+            XCTAssertTrue(ok, message)
+            XCTAssertEqual(body["schemaVersion"] as? Int, 1)
+            XCTAssertEqual(body["snapshotRequired"] as? Bool, true)
+            XCTAssertEqual((body["events"] as? NSArray)?.count, 0)
+            head = (body["headSequence"] as? NSNumber)?.uint64Value ?? 0
+            XCTAssertEqual(head, 1)
+            initial.fulfill()
+        }
+        wait(for: [initial], timeout: 5)
+
+        _ = try manager.start(id: "dev")
+        let running = expectation(description: "running machineEvents reply")
+        proxy.machineEvents(head) { ok, body, message in
+            XCTAssertTrue(ok, message)
+            XCTAssertEqual(body["snapshotRequired"] as? Bool, false)
+            let rows = body["events"] as? [NSDictionary]
+            XCTAssertEqual(rows?.count, 1)
+            XCTAssertEqual(rows?.first?["sequence"] as? Int, 2)
+            XCTAssertEqual(rows?.first?["kind"] as? String, "updated")
+            XCTAssertEqual(rows?.first?["machineID"] as? String, "dev")
+            let status = rows?.first?["status"] as? NSDictionary
+            XCTAssertEqual(status?["state"] as? String, "running")
+            XCTAssertNil(status?["environment"])
+            XCTAssertNil(status?["pid"])
+            XCTAssertFalse(body.description.contains("opaque-secret"))
+            head = (body["headSequence"] as? NSNumber)?.uint64Value ?? 0
+            running.fulfill()
+        }
+        wait(for: [running], timeout: 5)
+
+        var flightHead: UInt64 = 0
+        let flight = expectation(description: "machineFlightRecorder reply")
+        proxy.machineFlightRecorder("dev", afterSequence: 0) { ok, body, message in
+            XCTAssertTrue(ok, message)
+            XCTAssertEqual(body["schemaVersion"] as? Int, 1)
+            XCTAssertEqual(body["machineID"] as? String, "dev")
+            XCTAssertEqual(body["snapshotRequired"] as? Bool, false)
+            let rows = body["events"] as? [NSDictionary]
+            XCTAssertTrue(rows?.contains { $0["kind"] as? String == "workspace-created" } == true)
+            XCTAssertTrue(rows?.contains { $0["kind"] as? String == "backend-spawned" } == true)
+            XCTAssertFalse(body.description.contains("opaque-secret"))
+            XCTAssertFalse(body.description.contains(base))
+            flightHead = (body["headSequence"] as? NSNumber)?.uint64Value ?? 0
+            XCTAssertGreaterThan(flightHead, 0)
+            flight.fulfill()
+        }
+        wait(for: [flight], timeout: 5)
+
+        _ = try manager.stop(id: "dev")
+        try manager.delete(id: "dev")
+        let removed = expectation(description: "removed machineEvents reply")
+        proxy.machineEvents(head) { ok, body, message in
+            XCTAssertTrue(ok, message)
+            let rows = body["events"] as? [NSDictionary]
+            XCTAssertEqual(rows?.count, 1)
+            XCTAssertEqual(rows?.first?["kind"] as? String, "removed")
+            XCTAssertNil(rows?.first?["status"])
+            removed.fulfill()
+        }
+        wait(for: [removed], timeout: 5)
+
+        let deletedFlight = expectation(description: "deleted machine flight recorder reply")
+        proxy.machineFlightRecorder("dev", afterSequence: flightHead) { ok, body, message in
+            XCTAssertTrue(ok, message)
+            let rows = body["events"] as? [NSDictionary]
+            XCTAssertTrue(rows?.contains { $0["kind"] as? String == "workspace-deleted" } == true)
+            deletedFlight.fulfill()
+        }
+        wait(for: [deletedFlight], timeout: 5)
+    }
+
+    func testMachineDeviceTelemetryOverXPCIsExactAndLaunchBound() throws {
+        let base = "/tmp/doryd-service-device-telemetry-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let telemetry = ServiceRecordingMachineDeviceTelemetryController()
+        let manager = MachineManager(
+            configuration: MachineManagerConfiguration(
+                vmmExecutablePath: "/bin/sleep",
+                stateDirectory: base,
+                baseArguments: ["30"],
+                passMachineArguments: false,
+                requiresReadyHandoff: true
+            ),
+            deviceTelemetryController: telemetry
+        )
+        defer {
+            _ = try? manager.stop(id: "dev")
+            try? manager.delete(id: "dev")
+            try? FileManager.default.removeItem(atPath: base)
+        }
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "dev",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath
+        ))
+        let starting = try manager.start(id: "dev")
+        let operationID = try XCTUnwrap(starting.activeOperationID)
+        try sendVmmHandoff(
+            path: try XCTUnwrap(starting.handoffSocketPath),
+            ready: VmmReadyMessage(
+                machineID: "dev",
+                operationID: operationID,
+                agentBuild: "dory-agent/test",
+                agentProtocolVersion: DoryCore.protocolVersion(),
+                agentSocketPath: "/run/agent.sock",
+                controlSocketPath: "/run/control.sock"
+            ),
+            fileDescriptors: []
+        )
+        _ = try waitForServiceMachineState(manager, id: "dev", state: .running)
+
+        telemetry.value = DoryDeviceTelemetrySnapshot(
+            machineID: "dev",
+            operationID: operationID,
+            backend: .appleVirtualizationFramework,
+            sampleSequence: 1,
+            sampledAtUnixMilliseconds: 10,
+            monotonicNanoseconds: 20,
+            devices: [
+                DoryDeviceTelemetryDevice(
+                    id: "virtio-network-7",
+                    kind: .network,
+                    health: .degraded,
+                    metrics: [
+                        .measured(.receivedFrames, value: 12),
+                        .unavailable(
+                            .receiveTruncations,
+                            reason: "backend does not expose truncation counters"
+                        ),
+                    ]
+                ),
+            ],
+            events: [
+                DoryDeviceTelemetryEvent(
+                    sequence: 1,
+                    monotonicNanoseconds: 20,
+                    deviceID: "virtio-network-7",
+                    kind: .queueStall,
+                    occurrences: 2
+                ),
+            ]
+        )
+
+        let service = DorydService(
+            socketPath: "/tmp/doryd-test.sock",
+            machineManager: manager
+        )
+        let listener = makeAnonymousListener(service: service)
+        listener.resume()
+        defer { listener.invalidate() }
+        let connection = NSXPCConnection(listenerEndpoint: listener.endpoint)
+        connection.remoteObjectInterface = NSXPCInterface(with: DorydControl.self)
+        connection.resume()
+        defer { connection.invalidate() }
+        let proxy = try XCTUnwrap(connection.remoteObjectProxy as? DorydControl)
+
+        let valid = expectation(description: "machine device telemetry reply")
+        proxy.machineDeviceTelemetry("dev") { ok, body, message in
+            XCTAssertTrue(ok, message)
+            XCTAssertEqual(
+                Set(body.allKeys.compactMap { $0 as? String }),
+                [
+                    "schemaVersion", "machineID", "operationID", "backend",
+                    "sampleSequence", "sampledAtUnixMilliseconds",
+                    "monotonicNanoseconds", "devices", "events",
+                ]
+            )
+            XCTAssertEqual(body["machineID"] as? String, "dev")
+            XCTAssertEqual(body["operationID"] as? String, operationID)
+            XCTAssertEqual(body["backend"] as? String, "apple-virtualization-framework")
+            XCTAssertEqual((body["sampleSequence"] as? NSNumber)?.uint64Value, 1)
+            let devices = body["devices"] as? [NSDictionary]
+            XCTAssertEqual(devices?.count, 1)
+            XCTAssertEqual(devices?.first?["id"] as? String, "virtio-network-7")
+            let metrics = devices?.first?["metrics"] as? [NSDictionary]
+            XCTAssertEqual(metrics?.count, 2)
+            XCTAssertEqual(metrics?.first?["availability"] as? String, "measured")
+            XCTAssertNil(metrics?.first?["unavailableReason"])
+            XCTAssertEqual(metrics?.last?["availability"] as? String, "unavailable")
+            XCTAssertNil(metrics?.last?["value"])
+            let events = body["events"] as? [NSDictionary]
+            XCTAssertEqual(events?.first?["kind"] as? String, "queue-stall")
+            XCTAssertEqual((events?.first?["occurrences"] as? NSNumber)?.uint64Value, 2)
+            valid.fulfill()
+        }
+        wait(for: [valid], timeout: 5)
+        XCTAssertEqual(telemetry.socketPaths, ["/run/control.sock"])
+
+        let recorded = expectation(description: "device event flight recorder projection")
+        proxy.machineFlightRecorder("dev", afterSequence: 0) { ok, body, message in
+            XCTAssertTrue(ok, message)
+            let events = body["events"] as? [NSDictionary]
+            let event = events?.last { $0["kind"] as? String == "device-health-event" }
+            XCTAssertEqual(event?["operationID"] as? String, operationID)
+            XCTAssertEqual(event?["operationKind"] as? String, "starting")
+            XCTAssertEqual(event?["deviceID"] as? String, "virtio-network-7")
+            XCTAssertEqual(event?["deviceEventKind"] as? String, "queue-stall")
+            XCTAssertEqual(
+                (event?["deviceEventSequence"] as? NSNumber)?.uint64Value,
+                1
+            )
+            XCTAssertEqual(
+                (event?["deviceEventOccurrences"] as? NSNumber)?.uint64Value,
+                2
+            )
+            recorded.fulfill()
+        }
+        wait(for: [recorded], timeout: 5)
+
+        telemetry.value?.sampleSequence = 2
+        telemetry.value?.operationID = "87654321-4321-4321-8321-cba987654321"
+        let rejected = expectation(description: "machine device telemetry rejects stale authority")
+        proxy.machineDeviceTelemetry("dev") { ok, body, message in
+            XCTAssertFalse(ok)
+            XCTAssertEqual(body.count, 0)
+            XCTAssertTrue(message.contains("does not match the live launch authority"))
+            rejected.fulfill()
+        }
+        wait(for: [rejected], timeout: 5)
+    }
+
+    func testMachineSerialConsoleOverXPCIsBoundedCursorBasedAndExactShape() throws {
+        let base = "/tmp/doryd-service-console-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: base,
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: false
+        ))
+        defer {
+            try? manager.delete(id: "dev")
+            try? FileManager.default.removeItem(atPath: base)
+        }
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "dev",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath
+        ))
+        let logPath = base + "/dev/serial.log"
+        FileManager.default.createFile(
+            atPath: logPath,
+            contents: Data("firmware\nboot\n".utf8),
+            attributes: [.posixPermissions: 0o600]
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: logPath
+        )
+
+        let service = DorydService(
+            socketPath: "/tmp/doryd-test.sock",
+            machineManager: manager
+        )
+        let listener = makeAnonymousListener(service: service)
+        listener.resume()
+        defer { listener.invalidate() }
+        let connection = NSXPCConnection(listenerEndpoint: listener.endpoint)
+        connection.remoteObjectInterface = NSXPCInterface(with: DorydControl.self)
+        connection.resume()
+        defer { connection.invalidate() }
+        let proxy = try XCTUnwrap(connection.remoteObjectProxy as? DorydControl)
+
+        var generation = ""
+        var nextOffset: UInt64 = 0
+        let initial = expectation(description: "machine serial console initial reply")
+        proxy.machineSerialConsoleRead(
+            "dev",
+            cursor: ["schemaVersion": UInt16(1), "offset": UInt64(0)],
+            limit: 5
+        ) { ok, body, message in
+            XCTAssertTrue(ok, message)
+            XCTAssertEqual(body["schemaVersion"] as? Int, 1)
+            XCTAssertEqual(body["machineID"] as? String, "dev")
+            XCTAssertEqual(body["snapshotRequired"] as? Bool, true)
+            XCTAssertEqual(body["inputAvailable"] as? Bool, false)
+            let encoded = body["bytesBase64"] as? String
+            XCTAssertEqual(encoded.flatMap { Data(base64Encoded: $0) }, Data("boot\n".utf8))
+            generation = body["generation"] as? String ?? ""
+            nextOffset = (body["nextOffset"] as? NSNumber)?.uint64Value ?? 0
+            XCTAssertFalse(body.description.contains(base))
+            initial.fulfill()
+        }
+        wait(for: [initial], timeout: 5)
+        XCTAssertEqual(generation.count, 64)
+
+        let handle = try FileHandle(forWritingTo: URL(fileURLWithPath: logPath))
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data("ready\n".utf8))
+        try handle.close()
+        let incremental = expectation(description: "machine serial console incremental reply")
+        proxy.machineSerialConsoleRead(
+            "dev",
+            cursor: [
+                "schemaVersion": UInt16(1),
+                "generation": generation,
+                "offset": nextOffset,
+            ],
+            limit: 64
+        ) { ok, body, message in
+            XCTAssertTrue(ok, message)
+            XCTAssertEqual(body["snapshotRequired"] as? Bool, false)
+            let encoded = body["bytesBase64"] as? String
+            XCTAssertEqual(encoded.flatMap { Data(base64Encoded: $0) }, Data("ready\n".utf8))
+            incremental.fulfill()
+        }
+        wait(for: [incremental], timeout: 5)
+
+        let malformed = expectation(description: "machine serial console malformed cursor")
+        proxy.machineSerialConsoleRead(
+            "dev",
+            cursor: ["schemaVersion": true, "offset": UInt64(0)],
+            limit: 64
+        ) { ok, body, message in
+            XCTAssertFalse(ok)
+            XCTAssertTrue(body.isEqual(to: [:]))
+            XCTAssertTrue(message.contains("unavailable"))
+            malformed.fulfill()
+        }
+        wait(for: [malformed], timeout: 5)
+
+        let oversized = expectation(description: "machine serial console oversized input")
+        proxy.machineSerialConsoleWrite(
+            "dev",
+            data: Data(repeating: 1, count: 4 * 1_024 + 1) as NSData
+        ) { ok, message in
+            XCTAssertFalse(ok)
+            XCTAssertTrue(message.contains("invalid"))
+            oversized.fulfill()
+        }
+        wait(for: [oversized], timeout: 5)
+    }
+
+    func testMachineStatusPublishesStructuredFailureWithoutFreeFormEvidence() throws {
+        let base = "/tmp/dsf-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: base,
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: true,
+            handoffReadyTimeoutSeconds: 0.02
+        ))
+        defer {
+            manager.stopAll()
+            try? manager.delete(id: "dev")
+            try? FileManager.default.removeItem(atPath: base)
+        }
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "dev",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath
+        ))
+        _ = try manager.start(id: "dev")
+        _ = try waitForServiceMachineState(manager, id: "dev", state: .failed)
+
+        let service = DorydService(
+            socketPath: "/tmp/doryd-test.sock",
+            machineManager: manager
+        )
+        let reply = expectation(description: "structured machine failure")
+        service.machineList { rows, message in
+            XCTAssertEqual(message, "")
+            let status = (rows as? [NSDictionary])?.first
+            let failure = status?["failure"] as? NSDictionary
+            XCTAssertEqual(Set(failure?.allKeys as? [String] ?? []), [
+                "schemaVersion", "code", "occurredAtUnixMilliseconds", "operationID",
+                "causalChain", "recoveryDisposition", "evidenceReferences",
+            ])
+            XCTAssertEqual(failure?["code"] as? String, "readiness-timed-out")
+            XCTAssertEqual(failure?["recoveryDisposition"] as? String, "retry")
+            XCTAssertEqual(failure?["causalChain"] as? [String], ["readiness-gate"])
+            let operationID = failure?["operationID"] as? String
+            XCTAssertEqual(operationID?.count, 36)
+            let encoded = try? JSONSerialization.data(withJSONObject: failure ?? [:])
+            let text = encoded.map { String(decoding: $0, as: UTF8.self) } ?? ""
+            XCTAssertFalse(text.contains(base))
+            XCTAssertFalse(text.contains("timed out after"))
+            XCTAssertNil(status?["activeOperation"])
+            reply.fulfill()
+        }
+        wait(for: [reply], timeout: 5)
+    }
+
     func testMachineLifecycleOverXPC() throws {
         let base = "/tmp/doryd-service-machine-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let share = "\(base)-share"
         try FileManager.default.createDirectory(atPath: share, withIntermediateDirectories: true)
+        let shareBookmark = try URL(fileURLWithPath: share).bookmarkData(
+            options: [.minimalBookmark],
+            includingResourceValuesForKeys: [
+                .fileResourceIdentifierKey,
+                .volumeIdentifierKey,
+            ],
+            relativeTo: nil
+        )
         let manager = MachineManager(configuration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: base,
@@ -1076,31 +2487,144 @@ final class DorydServiceTests: XCTestCase {
             "memoryMB": 1024,
             "cpuCount": 2,
             "address": "192.168.215.40",
-            "env": [
-                [
-                    "key": "APP_ENV",
-                    "value": "dev",
+            "guestIdentityIntent": [
+                "account": [
+                    "username": "developer",
+                    "numericUserID": UInt32(1_000),
                 ] as NSDictionary,
-            ],
+            ] as NSDictionary,
+            "clipboardPolicy": [
+                "text": "off",
+                "image": "off",
+                "files": "off",
+            ] as NSDictionary,
         ]) { ok, body, message in
             XCTAssertTrue(ok, message)
             XCTAssertEqual(body["state"] as? String, "created")
             XCTAssertEqual(body["address"] as? String, "192.168.215.40")
-            let env = body["env"] as? [NSDictionary]
-            XCTAssertEqual(env?.first?["key"] as? String, "APP_ENV")
-            XCTAssertEqual(env?.first?["value"] as? String, "dev")
+            XCTAssertNil(body["env"])
+            let typed = body["typedSettings"] as? NSDictionary
+            let identity = typed?["guestIdentityIntent"] as? NSDictionary
+            let account = identity?["account"] as? NSDictionary
+            XCTAssertEqual(account?["username"] as? String, "developer")
+            XCTAssertEqual((account?["numericUserID"] as? NSNumber)?.uint32Value, 1_000)
+            XCTAssertNil(typed?["clipboardPolicy"])
             create.fulfill()
         }
         wait(for: [create], timeout: 5)
 
+        let invalidStart = expectation(description: "machineStart invalid operation reply")
+        proxy.machineStart(
+            "dev",
+            operationID: "01234567-89AB-4CDE-8F01-23456789ABCD"
+        ) { ok, body, message in
+            XCTAssertFalse(ok)
+            XCTAssertEqual(body.count, 0)
+            XCTAssertTrue(message.contains("canonical operation ID"), message)
+            invalidStart.fulfill()
+        }
+        wait(for: [invalidStart], timeout: 5)
+        XCTAssertEqual(manager.status(id: "dev")?.state, .created)
+
+        let startOperationID = UUID(
+            uuidString: "01234567-89ab-4cde-8f01-23456789abcd"
+        )!
+        let startOperationToken = DoryOperationIdentity.canonical(startOperationID)
         let start = expectation(description: "machineStart reply")
-        proxy.machineStart("dev") { ok, body, message in
+        proxy.machineStart("dev", operationID: startOperationToken) { ok, body, message in
             XCTAssertTrue(ok, message)
             XCTAssertEqual(body["state"] as? String, "running")
             XCTAssertNotNil(body["pid"])
+            let runtime = body["runtimeIdentity"] as? NSDictionary
+            XCTAssertEqual(runtime?["mode"] as? String, "legacy-compatibility")
+            XCTAssertEqual((runtime?["virtualHardwareABIVersion"] as? NSNumber)?.uint16Value, 1)
+            XCTAssertNil(runtime?["resolvedPlan"])
             start.fulfill()
         }
         wait(for: [start], timeout: 5)
+        let startEvents = try manager.flightRecorder(id: "dev", afterSequence: 0).events
+            .filter { $0.operationKind == DoryWorkspaceMutationKind.starting.rawValue }
+        XCTAssertFalse(startEvents.isEmpty)
+        XCTAssertTrue(startEvents.allSatisfy { $0.operationID == startOperationToken })
+
+        let invalidPause = expectation(description: "machinePause invalid operation reply")
+        proxy.machinePause(
+            "dev",
+            operationID: "12345678-9ABC-4DEF-8012-3456789ABCDE"
+        ) { ok, body, message in
+            XCTAssertFalse(ok)
+            XCTAssertEqual(body.count, 0)
+            XCTAssertTrue(message.contains("canonical operation ID"), message)
+            invalidPause.fulfill()
+        }
+        wait(for: [invalidPause], timeout: 5)
+        XCTAssertEqual(manager.status(id: "dev")?.state, .running)
+
+        let pauseOperationID = UUID(
+            uuidString: "12345678-9abc-4def-8012-3456789abcde"
+        )!
+        let pauseOperationToken = DoryOperationIdentity.canonical(pauseOperationID)
+        let pause = expectation(description: "machinePause reply")
+        proxy.machinePause("dev", operationID: pauseOperationToken) { ok, body, message in
+            XCTAssertTrue(ok, message)
+            XCTAssertEqual(body["state"] as? String, "paused")
+            XCTAssertNotNil(body["pid"])
+            pause.fulfill()
+        }
+        wait(for: [pause], timeout: 5)
+
+        let invalidResume = expectation(description: "machineResume invalid operation reply")
+        proxy.machineResume(
+            "dev",
+            operationID: "23456789-ABCD-4EF0-8123-456789ABCDEF"
+        ) { ok, body, message in
+            XCTAssertFalse(ok)
+            XCTAssertEqual(body.count, 0)
+            XCTAssertTrue(message.contains("canonical operation ID"), message)
+            invalidResume.fulfill()
+        }
+        wait(for: [invalidResume], timeout: 5)
+        XCTAssertEqual(manager.status(id: "dev")?.state, .paused)
+
+        let resumeOperationID = UUID(
+            uuidString: "23456789-abcd-4ef0-8123-456789abcdef"
+        )!
+        let resumeOperationToken = DoryOperationIdentity.canonical(resumeOperationID)
+        let resume = expectation(description: "machineResume reply")
+        proxy.machineResume("dev", operationID: resumeOperationToken) { ok, body, message in
+            XCTAssertTrue(ok, message)
+            XCTAssertEqual(body["state"] as? String, "running")
+            XCTAssertNotNil(body["pid"])
+            resume.fulfill()
+        }
+        wait(for: [resume], timeout: 5)
+        let lifecycleEvents = try manager.flightRecorder(id: "dev", afterSequence: 0).events
+        XCTAssertTrue(lifecycleEvents.contains {
+            $0.operationKind == DoryWorkspaceMutationKind.pausing.rawValue
+                && $0.operationID == pauseOperationToken
+        })
+        XCTAssertTrue(lifecycleEvents.contains {
+            $0.operationKind == DoryWorkspaceMutationKind.resuming.rawValue
+                && $0.operationID == resumeOperationToken
+        })
+
+        let suspend = expectation(description: "machineSuspend fail-closed reply")
+        proxy.machineSuspend("dev") { ok, body, message in
+            XCTAssertFalse(ok)
+            XCTAssertTrue(message.contains("durable suspend requires"), message)
+            XCTAssertEqual(body.count, 0)
+            suspend.fulfill()
+        }
+        wait(for: [suspend], timeout: 5)
+
+        let restart = expectation(description: "machineRestart reply")
+        proxy.machineRestart("dev") { ok, body, message in
+            XCTAssertTrue(ok, message)
+            XCTAssertEqual(body["state"] as? String, "running")
+            XCTAssertNotNil(body["pid"])
+            restart.fulfill()
+        }
+        wait(for: [restart], timeout: 5)
 
         let list = expectation(description: "machineList reply")
         proxy.machineList { body, message in
@@ -1108,19 +2632,44 @@ final class DorydServiceTests: XCTestCase {
             let statuses = body as? [NSDictionary]
             XCTAssertEqual(statuses?.first?["id"] as? String, "dev")
             XCTAssertEqual(statuses?.first?["address"] as? String, "192.168.215.40")
-            let env = statuses?.first?["env"] as? [NSDictionary]
-            XCTAssertEqual(env?.first?["value"] as? String, "dev")
+            XCTAssertNil(statuses?.first?["env"])
+            let typed = statuses?.first?["typedSettings"] as? NSDictionary
+            let identity = typed?["guestIdentityIntent"] as? NSDictionary
+            let account = identity?["account"] as? NSDictionary
+            XCTAssertEqual(account?["username"] as? String, "developer")
             list.fulfill()
         }
         wait(for: [list], timeout: 5)
 
+        let invalidStop = expectation(description: "machineStop invalid operation reply")
+        proxy.machineStop(
+            "dev",
+            operationID: "3456789A-BCDE-4F01-8234-56789ABCDEF0"
+        ) { ok, body, message in
+            XCTAssertFalse(ok)
+            XCTAssertEqual(body.count, 0)
+            XCTAssertTrue(message.contains("canonical operation ID"), message)
+            invalidStop.fulfill()
+        }
+        wait(for: [invalidStop], timeout: 5)
+        XCTAssertEqual(manager.status(id: "dev")?.state, .running)
+
+        let stopOperationID = UUID(
+            uuidString: "3456789a-bcde-4f01-8234-56789abcdef0"
+        )!
+        let stopOperationToken = DoryOperationIdentity.canonical(stopOperationID)
         let stop = expectation(description: "machineStop reply")
-        proxy.machineStop("dev") { ok, body, message in
+        proxy.machineStop("dev", operationID: stopOperationToken) { ok, body, message in
             XCTAssertTrue(ok, message)
             XCTAssertEqual(body["state"] as? String, "stopped")
             stop.fulfill()
         }
         wait(for: [stop], timeout: 5)
+        let stopEvents = try manager.flightRecorder(id: "dev", afterSequence: 0).events
+        XCTAssertTrue(stopEvents.contains {
+            $0.operationKind == DoryWorkspaceMutationKind.stopping.rawValue
+                && $0.operationID == stopOperationToken
+        })
 
         let update = expectation(description: "machineUpdate reply")
         proxy.machineUpdate("dev", config: [
@@ -1133,14 +2682,14 @@ final class DorydServiceTests: XCTestCase {
                     "hostPath": share,
                     "guestPath": "/workspace/src",
                     "readOnly": true,
+                    "authorizationBookmark": shareBookmark as NSData,
                 ] as NSDictionary,
             ],
-            "env": [
-                [
-                    "key": "NODE_ENV",
-                    "value": "production",
+            "guestIdentityIntent": [
+                "account": [
+                    "username": "builder",
                 ] as NSDictionary,
-            ],
+            ] as NSDictionary,
         ]) { ok, body, message in
             XCTAssertTrue(ok, message)
             XCTAssertEqual(body["state"] as? String, "stopped")
@@ -1151,12 +2700,55 @@ final class DorydServiceTests: XCTestCase {
             XCTAssertEqual(shares?.first?["hostPath"] as? String, share)
             XCTAssertEqual(shares?.first?["guestPath"] as? String, "/workspace/src")
             XCTAssertEqual(shares?.first?["readOnly"] as? Bool, true)
-            let env = body["env"] as? [NSDictionary]
-            XCTAssertEqual(env?.first?["key"] as? String, "NODE_ENV")
-            XCTAssertEqual(env?.first?["value"] as? String, "production")
+            XCTAssertNil(shares?.first?["authorizationBookmark"])
+            XCTAssertNil(shares?.first?["authorizationVolumeUUID"])
+            XCTAssertNil(shares?.first?["authorizationFileIdentifier"])
+            XCTAssertNil(body["env"])
+            let typed = body["typedSettings"] as? NSDictionary
+            let identity = typed?["guestIdentityIntent"] as? NSDictionary
+            let account = identity?["account"] as? NSDictionary
+            XCTAssertEqual(account?["username"] as? String, "builder")
+            XCTAssertEqual((account?["numericUserID"] as? NSNumber)?.uint32Value, 1_000)
             update.fulfill()
         }
         wait(for: [update], timeout: 5)
+
+        let stored = try JSONDecoder().decode(
+            DoryMachineConfiguration.self,
+            from: Data(contentsOf: URL(fileURLWithPath: "\(base)/dev/machine.json"))
+        )
+        XCTAssertEqual(stored.shares.first?.authorizationBookmark, shareBookmark)
+        XCTAssertNotNil(stored.shares.first?.authorizationVolumeUUID)
+        XCTAssertNotNil(stored.shares.first?.authorizationFileIdentifier)
+
+        let malformedShare = expectation(description: "machineUpdate rejects malformed share bookmark")
+        proxy.machineUpdate("dev", config: [
+            "shares": [[
+                "tag": "src",
+                "hostPath": share,
+                "guestPath": "/workspace/src",
+                "authorizationBookmark": Data() as NSData,
+            ] as NSDictionary],
+        ]) { ok, _, message in
+            XCTAssertFalse(ok)
+            XCTAssertFalse(message.isEmpty)
+            malformedShare.fulfill()
+        }
+        wait(for: [malformedShare], timeout: 5)
+
+        let pathOnlyShare = expectation(description: "machineUpdate rejects path-only share")
+        proxy.machineUpdate("dev", config: [
+            "shares": [[
+                "tag": "src",
+                "hostPath": share,
+                "guestPath": "/workspace/src",
+            ] as NSDictionary],
+        ]) { ok, _, message in
+            XCTAssertFalse(ok)
+            XCTAssertTrue(message.contains("authorizationBookmark"), message)
+            pathOnlyShare.fulfill()
+        }
+        wait(for: [pathOnlyShare], timeout: 5)
 
         let clearAddress = expectation(description: "machineUpdate clear address reply")
         proxy.machineUpdate("dev", config: [
@@ -1175,6 +2767,645 @@ final class DorydServiceTests: XCTestCase {
             delete.fulfill()
         }
         wait(for: [delete], timeout: 5)
+    }
+
+    func testMachineStatusAndSnapshotExposeOnlySafeTypedDesktopPayloadReceipt() throws {
+        let base = "/tmp/doryd-service-desktop-receipt-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: base,
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: false
+        ))
+        defer {
+            try? manager.delete(id: "dev")
+            try? FileManager.default.removeItem(atPath: base)
+        }
+        let kernelData = try Data(contentsOf: URL(fileURLWithPath: doryTestKernelPath))
+        let kernelSHA256 = SHA256.hash(data: kernelData)
+            .map { String(format: "%02x", $0) }.joined()
+        let receipt = DoryInstalledDesktopPayloadReceipt.verifiedUpdate(
+            distributionIdentifier: "ubuntu",
+            releaseVersion: "24.04+runtime.7",
+            inputSHA256: String(repeating: "a", count: 64),
+            bundleSHA256: String(repeating: "b", count: 64),
+            distributionComponentIdentifier: "desktop-ubuntu",
+            distributionInstallationName: "ubuntu-installation",
+            distributionCatalogSHA256: String(repeating: "c", count: 64),
+            bundleAssetIdentifier: "dory-desktop-ubuntu-update-arm64.tar",
+            runtimeComponentIdentifier: "linux-desktop",
+            runtimeInstallationName: "runtime-installation",
+            runtimeCatalogSHA256: String(repeating: "d", count: 64),
+            kernelAssetIdentifier: "dory-desktop-kernel-arm64.lzfse",
+            kernelSHA256: kernelSHA256
+        )
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "dev",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath,
+            displayMode: .desktop,
+            environment: ["OPAQUE_SECRET": "must-not-enter-diagnostics"],
+            installedDesktopPayloadReceipt: receipt
+        ))
+        let service = DorydService(socketPath: "/tmp/doryd-test.sock", machineManager: manager)
+        let listener = makeAnonymousListener(service: service)
+        listener.resume()
+        defer { listener.invalidate() }
+        let connection = NSXPCConnection(listenerEndpoint: listener.endpoint)
+        connection.remoteObjectInterface = NSXPCInterface(with: DorydControl.self)
+        connection.resume()
+        defer { connection.invalidate() }
+        let proxy = try XCTUnwrap(connection.remoteObjectProxy as? DorydControl)
+
+        let list = expectation(description: "typed desktop receipt list")
+        proxy.machineList { rows, message in
+            XCTAssertEqual(message, "")
+            let body = (rows as? [NSDictionary])?.first
+            let encoded = body?["installedDesktopPayloadReceipt"] as? NSDictionary
+            XCTAssertEqual((encoded?["schemaVersion"] as? NSNumber)?.uint16Value, 1)
+            XCTAssertEqual(encoded?["provenance"] as? String, "verified-update-bundle")
+            XCTAssertEqual(encoded?["distributionIdentifier"] as? String, "ubuntu")
+            XCTAssertEqual(encoded?["releaseVersion"] as? String, "24.04+runtime.7")
+            XCTAssertEqual(encoded?["inputSHA256"] as? String, String(repeating: "a", count: 64))
+            XCTAssertEqual(encoded?["bundleSHA256"] as? String, String(repeating: "b", count: 64))
+            let safe = body.map(DoryMachineDiagnosticsProjection.supportSafeMachineStatus)
+            XCTAssertNil(safe?["env"])
+            XCTAssertNotNil(safe?["installedDesktopPayloadReceipt"])
+            XCTAssertFalse(String(describing: safe).contains("must-not-enter-diagnostics"))
+            list.fulfill()
+        }
+        wait(for: [list], timeout: 5)
+
+        let snapshot = expectation(description: "typed desktop receipt snapshot")
+        proxy.machineSnapshot("dev", request: ["snapshotID": "s1"]) { ok, body, message in
+            XCTAssertTrue(ok, message)
+            let encoded = body["installedDesktopPayloadReceipt"] as? NSDictionary
+            XCTAssertEqual(encoded?["releaseVersion"] as? String, "24.04+runtime.7")
+            XCTAssertEqual(encoded?["bundleSHA256"] as? String, String(repeating: "b", count: 64))
+            snapshot.fulfill()
+        }
+        wait(for: [snapshot], timeout: 5)
+    }
+
+    func testMachineStatusExposesPathFreeCopyOnWriteCloneReceipt() throws {
+        let base = "/tmp/doryd-service-clone-receipt-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        let sourceRootfs = "\(base)/source.ext4"
+        try Data("clone-source".utf8).write(to: URL(fileURLWithPath: sourceRootfs))
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: "\(base)/machines",
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: false
+        ))
+        defer {
+            try? manager.delete(id: "source")
+            try? manager.delete(id: "clone")
+            try? FileManager.default.removeItem(atPath: base)
+        }
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "source",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: sourceRootfs
+        ))
+        _ = try manager.snapshot(id: "source", snapshotID: "base")
+        _ = try manager.cloneSnapshot(
+            machineID: "source",
+            snapshotID: "base",
+            newID: "clone"
+        )
+        let service = DorydService(socketPath: "/tmp/doryd-test.sock", machineManager: manager)
+        let listener = makeAnonymousListener(service: service)
+        listener.resume()
+        defer { listener.invalidate() }
+        let connection = NSXPCConnection(listenerEndpoint: listener.endpoint)
+        connection.remoteObjectInterface = NSXPCInterface(with: DorydControl.self)
+        connection.resume()
+        defer { connection.invalidate() }
+        let proxy = try XCTUnwrap(connection.remoteObjectProxy as? DorydControl)
+
+        let list = expectation(description: "clone receipt list")
+        proxy.machineList { rows, message in
+            XCTAssertEqual(message, "")
+            let body = (rows as? [NSDictionary])?.first { $0["id"] as? String == "clone" }
+            let receipt = body?["cloneReceipt"] as? NSDictionary
+            XCTAssertEqual((receipt?["schemaVersion"] as? NSNumber)?.uint16Value, 1)
+            XCTAssertEqual(receipt?["sourceMachineID"] as? String, "source")
+            XCTAssertEqual(receipt?["sourceSnapshotID"] as? String, "base")
+            XCTAssertEqual(receipt?["storageMode"] as? String, "apfs-copy-on-write")
+            XCTAssertNil(receipt?["sourcePath"])
+            XCTAssertNil(receipt?["destinationPath"])
+            list.fulfill()
+        }
+        wait(for: [list], timeout: 5)
+    }
+
+    func testDesktopUpdateRejectsCallerPathsAndRequiresStableComponentGenerations() throws {
+        let base = "/tmp/doryd-service-desktop-authority-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: base,
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: false
+        ))
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let service = DorydService(socketPath: "/tmp/doryd-test.sock", machineManager: manager)
+
+        let oldPaths = expectation(description: "caller paths rejected")
+        service.machineDesktopUpdate("dev", request: [
+            "distro": "ubuntu",
+            "version": "24.04+runtime.7",
+            "bundlePath": "/tmp/caller-controlled.tar",
+            "kernelPath": "/tmp/caller-controlled-kernel",
+        ]) { ok, _, message in
+            XCTAssertFalse(ok)
+            XCTAssertTrue(message.contains("desktopUpdateAuthority"))
+            oldPaths.fulfill()
+        }
+        wait(for: [oldPaths], timeout: 2)
+
+        let mixed = expectation(description: "mixed authority rejected")
+        service.machineDesktopUpdate("dev", request: [
+            "distro": "ubuntu",
+            "version": "24.04+runtime.7",
+            "distributionInstallationName": "ubuntu-installation",
+            "runtimeInstallationName": "runtime-installation",
+            "bundlePath": "/tmp/caller-controlled.tar",
+        ]) { ok, _, message in
+            XCTAssertFalse(ok)
+            XCTAssertTrue(message.contains("desktopUpdateAuthority"))
+            mixed.fulfill()
+        }
+        wait(for: [mixed], timeout: 2)
+
+        let malformedOperation = expectation(description: "malformed operation rejected")
+        service.machineDesktopUpdate("dev", request: [
+            "operationID": "01234567-89AB-4CDE-8F01-23456789ABCD",
+            "distro": "ubuntu",
+            "version": "24.04+runtime.7",
+            "distributionInstallationName": "ubuntu-installation",
+            "runtimeInstallationName": "runtime-installation",
+        ]) { ok, _, message in
+            XCTAssertFalse(ok)
+            XCTAssertTrue(message.contains("desktopUpdateAuthority.operationID"))
+            malformedOperation.fulfill()
+        }
+        wait(for: [malformedOperation], timeout: 2)
+
+        let legacyRequest = expectation(description: "legacy request mints at daemon boundary")
+        service.machineDesktopUpdate("dev", request: [
+            "distro": "ubuntu",
+            "version": "24.04+runtime.7",
+            "distributionInstallationName": "ubuntu-installation",
+            "runtimeInstallationName": "runtime-installation",
+        ]) { ok, _, message in
+            XCTAssertFalse(ok)
+            XCTAssertFalse(message.contains("desktopUpdateAuthority"), message)
+            legacyRequest.fulfill()
+        }
+        wait(for: [legacyRequest], timeout: 2)
+    }
+
+    func testManagedDesktopKernelRefreshRejectsUnboundedCallerAuthority() throws {
+        let base = "/tmp/doryd-service-kernel-refresh-\(getpid())-"
+            + "\(UInt32.random(in: 0..<UInt32.max))"
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: base,
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: false
+        ))
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let service = DorydService(
+            socketPath: "/tmp/doryd-test.sock",
+            machineManager: manager
+        )
+
+        let extraKey = expectation(description: "extra refresh authority rejected")
+        service.machineRefreshManagedDesktopKernel("dev", request: [
+            "sourcePath": base + "/.assets/dory-desktop-kernel-arm64",
+            "sourceSHA256": String(repeating: "a", count: 64),
+            "destinationPath": base + "/dev/kernel",
+        ]) { ok, _, message in
+            XCTAssertFalse(ok)
+            XCTAssertTrue(message.contains("managedDesktopKernelRefresh"))
+            extraKey.fulfill()
+        }
+        wait(for: [extraKey], timeout: 2)
+
+        let malformedDigest = expectation(description: "malformed refresh digest rejected")
+        service.machineRefreshManagedDesktopKernel("dev", request: [
+            "sourcePath": base + "/.assets/dory-desktop-kernel-arm64",
+            "sourceSHA256": "ABC123",
+        ]) { ok, _, message in
+            XCTAssertFalse(ok)
+            XCTAssertTrue(message.contains("managedDesktopKernelRefresh"))
+            malformedDigest.fulfill()
+        }
+        wait(for: [malformedDigest], timeout: 2)
+
+        let typedRequest = expectation(description: "typed refresh reaches manager")
+        service.machineRefreshManagedDesktopKernel("dev", request: [
+            "sourcePath": base + "/.assets/dory-desktop-kernel-arm64",
+            "sourceSHA256": String(repeating: "a", count: 64),
+        ]) { ok, _, message in
+            XCTAssertFalse(ok)
+            XCTAssertFalse(message.contains("managedDesktopKernelRefresh"), message)
+            XCTAssertTrue(message.contains("dev"), message)
+            typedRequest.fulfill()
+        }
+        wait(for: [typedRequest], timeout: 2)
+    }
+
+    func testMachineWritesRequireTypedIntentAndPreserveLegacyEnvironmentFieldLocally() throws {
+        let base = "/tmp/doryd-service-typed-write-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: base,
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: false
+        ))
+        defer {
+            try? manager.delete(id: "legacy")
+            try? manager.delete(id: "typed")
+            try? FileManager.default.removeItem(atPath: base)
+        }
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "legacy",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath,
+            displayMode: .desktop,
+            environment: [
+                "DORY_GUEST_USER": "../../unsafe-old-user",
+                "DORY_GUEST_UID": "not-a-uid",
+                "DORY_VIRGLRENDERER_PATH": "/private/opaque-renderer.dylib",
+                "PRIVATE_TOKEN": "opaque-legacy-value",
+            ]
+        ))
+        let service = DorydService(socketPath: "/tmp/doryd-test.sock", machineManager: manager)
+        let listener = makeAnonymousListener(service: service)
+        listener.resume()
+        defer { listener.invalidate() }
+
+        let connection = NSXPCConnection(listenerEndpoint: listener.endpoint)
+        connection.remoteObjectInterface = NSXPCInterface(with: DorydControl.self)
+        connection.resume()
+        defer { connection.invalidate() }
+        let proxy = try XCTUnwrap(connection.remoteObjectProxy as? DorydControl)
+
+        let rawCreate = expectation(description: "raw environment create rejected")
+        proxy.machineCreate([
+            "id": "typed",
+            "kernelPath": doryTestKernelPath,
+            "rootfsPath": doryTestRootfsPath,
+            "env": [] as [NSDictionary],
+        ]) { ok, _, message in
+            XCTAssertFalse(ok)
+            XCTAssertTrue(message.contains("raw machine environment input is not accepted"))
+            rawCreate.fulfill()
+        }
+        wait(for: [rawCreate], timeout: 5)
+        XCTAssertNil(manager.status(id: "typed"))
+
+        let typedCreate = expectation(description: "typed intent create accepted")
+        proxy.machineCreate([
+            "id": "typed",
+            "kernelPath": doryTestKernelPath,
+            "rootfsPath": doryTestRootfsPath,
+            "displayMode": "desktop",
+            "guestIdentityIntent": [
+                "account": [
+                    "username": "developer",
+                    "numericUserID": UInt32(1_000),
+                ] as NSDictionary,
+                "desktop": [
+                    "distributionIdentifier": "ubuntu",
+                    "displayName": "Ubuntu",
+                    "version": "24.04",
+                    "desktopEnvironment": "GNOME",
+                ] as NSDictionary,
+            ] as NSDictionary,
+            "clipboardPolicy": [
+                "text": "bidirectional",
+                "image": "bidirectional",
+                "files": "off",
+            ] as NSDictionary,
+            "desktopRuntimePreference": "accelerated",
+            "desktopGraphicsPreference": "virgl-venus",
+        ]) { ok, body, message in
+            XCTAssertTrue(ok, message)
+            XCTAssertNil(body["env"])
+            let typed = body["typedSettings"] as? NSDictionary
+            let identity = typed?["guestIdentityIntent"] as? NSDictionary
+            let account = identity?["account"] as? NSDictionary
+            let desktop = identity?["desktop"] as? NSDictionary
+            XCTAssertEqual(account?["username"] as? String, "developer")
+            XCTAssertEqual((account?["numericUserID"] as? NSNumber)?.uint32Value, 1_000)
+            XCTAssertEqual(desktop?["distributionIdentifier"] as? String, "ubuntu")
+            XCTAssertEqual(desktop?["displayName"] as? String, "Ubuntu")
+            XCTAssertEqual(typed?["desktopRuntimePreference"] as? String, "accelerated")
+            XCTAssertEqual(typed?["desktopGraphicsPreference"] as? String, "virgl-venus")
+            XCTAssertEqual(typed?["networkMode"] as? String, "shared-nat")
+            typedCreate.fulfill()
+        }
+        wait(for: [typedCreate], timeout: 5)
+
+        let typedUpdate = expectation(description: "typed update is field local")
+        proxy.machineUpdate("legacy", config: [
+            "guestIdentityIntent": [
+                "desktop": [
+                    "displayName": "Ubuntu Legacy",
+                ] as NSDictionary,
+            ] as NSDictionary,
+            "desktopRuntimePreference": "compatible",
+            "desktopGraphicsPreference": "software",
+        ]) { ok, body, message in
+            XCTAssertTrue(ok, message)
+            XCTAssertNil(body["env"])
+            XCTAssertFalse(body.description.contains("opaque-legacy-value"))
+            let typed = body["typedSettings"] as? NSDictionary
+            let identity = typed?["guestIdentityIntent"] as? NSDictionary
+            let account = identity?["account"] as? NSDictionary
+            let desktop = identity?["desktop"] as? NSDictionary
+            XCTAssertNil(account?["username"])
+            XCTAssertNil(account?["numericUserID"])
+            XCTAssertEqual(desktop?["displayName"] as? String, "Ubuntu Legacy")
+            XCTAssertEqual(typed?["desktopRuntimePreference"] as? String, "compatible")
+            XCTAssertEqual(typed?["desktopGraphicsPreference"] as? String, "software")
+            XCTAssertNil(body["diagnosticOverrides"])
+            XCTAssertFalse(body.description.contains("/private/opaque-renderer.dylib"))
+            typedUpdate.fulfill()
+        }
+        wait(for: [typedUpdate], timeout: 5)
+
+        let rawUpdate = expectation(description: "raw environment update rejected")
+        proxy.machineUpdate("legacy", config: [
+            "env": [["key": "PRIVATE_TOKEN", "value": "replacement"] as NSDictionary],
+        ]) { ok, _, message in
+            XCTAssertFalse(ok)
+            XCTAssertTrue(message.contains("raw machine environment input is not accepted"))
+            rawUpdate.fulfill()
+        }
+        wait(for: [rawUpdate], timeout: 5)
+        XCTAssertEqual(manager.status(id: "legacy")?.environment["PRIVATE_TOKEN"], "opaque-legacy-value")
+    }
+
+    func testMachineCreateAcceptsExactTypedSandboxPolicyAndProjectsSafeStatus() throws {
+        let base = "/tmp/doryd-service-sandbox-policy-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: base,
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: false
+        ))
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let service = DorydService(
+            socketPath: "/tmp/doryd-test.sock",
+            machineManager: manager
+        )
+        let policy: NSDictionary = [
+            "schemaVersion": UInt16(1),
+            "expiresAtUnixSeconds": UInt64(2_000),
+            "sshAgentAccess": "granted",
+            "profile": "agent-ready",
+            "tools": ["agent-core", "node"],
+            "baselineSnapshotID": "baseline-v1",
+        ]
+
+        let created = expectation(description: "typed sandbox created")
+        service.machineCreate([
+            "id": "sandbox",
+            "kernelPath": doryTestKernelPath,
+            "rootfsPath": doryTestRootfsPath,
+            "sandboxPolicy": policy,
+        ]) { ok, body, message in
+            XCTAssertTrue(ok, message)
+            XCTAssertNil(body["env"])
+            let projected = body["sandboxPolicy"] as? NSDictionary
+            XCTAssertEqual(projected?["profile"] as? String, "agent-ready")
+            XCTAssertEqual(projected?["sshAgentAccess"] as? String, "granted")
+            XCTAssertEqual(projected?["tools"] as? [String], ["agent-core", "node"])
+            created.fulfill()
+        }
+        wait(for: [created], timeout: 5)
+        XCTAssertEqual(manager.status(id: "sandbox")?.sandboxPolicy?.profile, .agentReady)
+        XCTAssertEqual(
+            manager.status(id: "sandbox")?.environment["DORY_SANDBOX"],
+            "1"
+        )
+
+        let malformed = expectation(description: "unknown sandbox policy rejected")
+        var unknown = policy as! [String: Any]
+        unknown["secret"] = "opaque"
+        service.machineCreate([
+            "id": "malformed",
+            "kernelPath": doryTestKernelPath,
+            "rootfsPath": doryTestRootfsPath,
+            "sandboxPolicy": unknown as NSDictionary,
+        ]) { ok, _, message in
+            XCTAssertFalse(ok)
+            XCTAssertTrue(message.contains("sandboxPolicy"), message)
+            malformed.fulfill()
+        }
+        wait(for: [malformed], timeout: 5)
+        XCTAssertNil(manager.status(id: "malformed"))
+
+        let desktop = expectation(description: "desktop sandbox rejected")
+        service.machineCreate([
+            "id": "desktop-sandbox",
+            "kernelPath": doryTestKernelPath,
+            "rootfsPath": doryTestRootfsPath,
+            "displayMode": "desktop",
+            "sandboxPolicy": policy,
+        ]) { ok, _, message in
+            XCTAssertFalse(ok)
+            XCTAssertTrue(message.contains("headless Linux"), message)
+            desktop.fulfill()
+        }
+        wait(for: [desktop], timeout: 5)
+        XCTAssertNil(manager.status(id: "desktop-sandbox"))
+    }
+
+    func testMachineCreateRejectsNonPortableEFIImageBeforeWorkspaceImport() throws {
+        let base = "/tmp/doryd-service-efi-preflight-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let installer = base + "/marker-only-arm64.iso"
+        try Data("EFI/BOOT/BOOTAA64.EFI".utf8).write(to: URL(fileURLWithPath: installer))
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: installer
+        )
+        let state = base + "/machines"
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: state,
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: false
+        ))
+        let service = DorydService(
+            socketPath: "/tmp/doryd-test.sock",
+            machineManager: manager
+        )
+
+        let reply = expectation(description: "portable EFI preflight rejection")
+        service.machineCreate([
+            "id": "not-portable",
+            "kernelPath": "",
+            "rootfsPath": "",
+            "bootMode": "efi",
+            "installerISOPath": installer,
+            "diskSizeBytes": MachineManager.minimumEFIDiskSizeBytes,
+            "memoryMB": UInt64(4_096),
+            "cpuCount": 4,
+            "displayMode": "desktop",
+        ]) { ok, _, message in
+            XCTAssertFalse(ok)
+            XCTAssertTrue(message.contains("not a portable ARM64 EFI Linux ISO"), message)
+            reply.fulfill()
+        }
+        wait(for: [reply], timeout: 5)
+
+        XCTAssertNil(manager.status(id: "not-portable"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: state + "/not-portable"))
+    }
+
+    func testPerWorkspaceCreatePlanningFailureRollsBackBeforeNameCanCollide() throws {
+        let base = "/tmp/doryd-service-production-plan-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let manager = MachineManager(
+            configuration: MachineManagerConfiguration(
+                vmmExecutablePath: "/bin/sleep",
+                stateDirectory: base,
+                baseArguments: ["30"],
+                passMachineArguments: false,
+                requiresReadyHandoff: false
+            ),
+            launchPolicy: .perWorkspaceAuthority
+        )
+        let controller = ServiceRejectingProductionPlanningController()
+        let service = DorydService(
+            socketPath: "/tmp/doryd-test.sock",
+            machineManager: manager,
+            productionPlanningController: controller
+        )
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let reply = expectation(description: "production planning rejection")
+        service.machineCreate([
+            "id": "planned",
+            "kernelPath": doryTestKernelPath,
+            "rootfsPath": doryTestRootfsPath,
+            "guestIdentityIntent": [
+                "account": ["username": "developer"] as NSDictionary,
+            ] as NSDictionary,
+            "networkMode": "disconnected",
+            "sandboxPolicy": [
+                "schemaVersion": UInt16(1),
+                "expiresAtUnixSeconds": UInt64(2_000),
+                "sshAgentAccess": "denied",
+                "profile": "standard",
+                "tools": [] as [String],
+            ] as NSDictionary,
+        ]) { ok, _, message in
+            XCTAssertFalse(ok)
+            XCTAssertTrue(message.contains("production planning failed closed"), message)
+            reply.fulfill()
+        }
+        wait(for: [reply], timeout: 5)
+
+        let captured = try XCTUnwrap(controller.captured)
+        XCTAssertEqual(captured.request.planning.machine.id, "planned")
+        XCTAssertEqual(captured.request.planning.machine.environment["DORY_GUEST_USER"], "developer")
+        XCTAssertEqual(captured.request.planning.definition.identity.id, "planned")
+        XCTAssertEqual(
+            captured.request.planning.definition.guestIdentityIntent.account?.username,
+            "developer"
+        )
+        XCTAssertEqual(captured.request.planning.definition.networkMode, .disconnected)
+        XCTAssertEqual(
+            captured.request.planning.definition.sandboxPolicy?.expiresAtUnixSeconds,
+            2_000
+        )
+        XCTAssertEqual(captured.request.workspacePublication, .retainExistingExact)
+        XCTAssertEqual(captured.artifacts.count, 2)
+        XCTAssertTrue(captured.artifacts.allSatisfy { $0.path.hasPrefix(base + "/planned/") })
+        XCTAssertNil(manager.status(id: "planned"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: base + "/planned"))
+        let listReply = expectation(description: "native typed status projection")
+        service.machineList { rows, message in
+            XCTAssertEqual(message, "")
+            let row = (rows as? [NSDictionary])?.first { $0["id"] as? String == "planned" }
+            XCTAssertNil(row)
+            listReply.fulfill()
+        }
+        wait(for: [listReply], timeout: 5)
+
+        // A planning rejection must not reserve the name. Recreating it directly also supplies a
+        // workspace for the update/restore planning-failure coverage below.
+        let recreated = try manager.create(DoryMachineConfiguration(
+            id: "planned",
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath
+        ))
+        XCTAssertEqual(recreated.runtimeIdentity.mode, .requiresReplanning)
+
+        let updateReply = expectation(description: "production update planning rejection")
+        service.machineUpdate("planned", config: [
+            "memoryMB": UInt64(4_096),
+            "networkMode": "shared-nat",
+        ]) {
+            ok, _, message in
+            XCTAssertFalse(ok)
+            XCTAssertTrue(message.contains("production planning failed closed"), message)
+            updateReply.fulfill()
+        }
+        wait(for: [updateReply], timeout: 5)
+        XCTAssertEqual(controller.captures.count, 2)
+        XCTAssertEqual(
+            controller.captures.last?.request.planning.definition.resources.memoryBytes,
+            UInt64(4_096 * 1_024 * 1_024)
+        )
+        XCTAssertEqual(
+            controller.captures.last?.request.planning.definition.networkMode,
+            .sharedNAT
+        )
+        XCTAssertEqual(manager.status(id: "planned")?.runtimeIdentity.mode, .requiresReplanning)
+
+        let managedRootfs = base + "/planned/rootfs.ext4"
+        let snapshotBytes = try Data(contentsOf: URL(fileURLWithPath: managedRootfs))
+        XCTAssertFalse(snapshotBytes.isEmpty)
+        _ = try manager.snapshot(id: "planned", snapshotID: "before-restore")
+        var mutatedBytes = snapshotBytes
+        mutatedBytes[mutatedBytes.startIndex] ^= 0xff
+        try mutatedBytes.write(to: URL(fileURLWithPath: managedRootfs))
+
+        let restoreReply = expectation(description: "production restore planning rejection")
+        service.machineRestoreSnapshot("planned", snapshotID: "before-restore") {
+            ok, _, message in
+            XCTAssertFalse(ok)
+            XCTAssertTrue(message.contains("production planning failed closed"), message)
+            restoreReply.fulfill()
+        }
+        wait(for: [restoreReply], timeout: 5)
+        XCTAssertEqual(controller.captures.count, 3)
+        XCTAssertEqual(
+            controller.captures.last?.request.planning.definition.identity.id,
+            "planned"
+        )
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: managedRootfs)), snapshotBytes)
+        XCTAssertEqual(manager.status(id: "planned")?.state, .created)
+        XCTAssertEqual(manager.status(id: "planned")?.runtimeIdentity.mode, .requiresReplanning)
+        XCTAssertEqual(
+            manager.status(id: "planned")?.runtimeIdentity.invalidationReason,
+            .restoredSnapshot
+        )
     }
 
     func testMachineExecOverXPCUsesMachineAgent() throws {
@@ -1227,7 +3458,10 @@ final class DorydServiceTests: XCTestCase {
             path: try XCTUnwrap(handoffPath.isEmpty ? nil : handoffPath),
             ready: VmmReadyMessage(
                 machineID: "dev",
+                operationID: try XCTUnwrap(manager.status(id: "dev")?.activeOperationID),
                 agentBuild: "dory-agent/test",
+                agentProtocolVersion: DoryCore.protocolVersion(),
+                agentCapabilities: [DoryAgentCapability(id: "exec", version: 1)],
                 agentSocketPath: "/run/agent.sock",
                 dockerdSocketPath: "/run/docker.sock",
                 shellSocketPath: "/run/shell.sock"
@@ -1251,6 +3485,405 @@ final class DorydServiceTests: XCTestCase {
             exec.fulfill()
         }
         wait(for: [exec], timeout: 5)
+    }
+
+    func testMachineTransferOverXPCUsesExactShapeAndOmitsHostPath() throws {
+        let suffix = "\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let base = "/tmp/doryd-service-machine-transfer-\(suffix)"
+        let stagingDirectory = DoryMachineFileTransferStager.defaultStagingDirectory
+        try FileManager.default.createDirectory(
+            at: stagingDirectory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        XCTAssertEqual(chmod(stagingDirectory.path, 0o700), 0)
+        let staging = stagingDirectory.appendingPathComponent(
+            "transfer-" + UUID().uuidString.lowercased(),
+            isDirectory: true
+        ).path
+        try FileManager.default.createDirectory(
+            atPath: staging,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        try Data("payload".utf8).write(
+            to: URL(fileURLWithPath: staging + "/payload.txt")
+        )
+        let manager = MachineManager(
+            configuration: MachineManagerConfiguration(
+                vmmExecutablePath: "/bin/sleep",
+                stateDirectory: base,
+                baseArguments: ["30"],
+                passMachineArguments: false,
+                requiresReadyHandoff: true
+            ),
+            agentConnector: { _ in ServiceFakeAgentControlClient() }
+        )
+        defer {
+            try? manager.delete(id: "dev")
+            try? FileManager.default.removeItem(atPath: base)
+            try? FileManager.default.removeItem(atPath: staging)
+        }
+        let service = DorydService(socketPath: "/tmp/doryd-test.sock", machineManager: manager)
+        let listener = makeAnonymousListener(service: service)
+        listener.resume()
+        defer { listener.invalidate() }
+
+        let connection = NSXPCConnection(listenerEndpoint: listener.endpoint)
+        connection.remoteObjectInterface = NSXPCInterface(with: DorydControl.self)
+        connection.resume()
+        defer { connection.invalidate() }
+        let proxy = try XCTUnwrap(connection.remoteObjectProxy as? DorydControl)
+
+        let create = expectation(description: "machineCreate reply")
+        proxy.machineCreate([
+            "id": "dev",
+            "kernelPath": doryTestKernelPath,
+            "rootfsPath": doryTestRootfsPath,
+            "displayMode": "desktop",
+            "guestIdentityIntent": [
+                "account": [
+                    "username": "developer",
+                    "numericUserID": UInt32(1_000),
+                ] as NSDictionary,
+            ] as NSDictionary,
+        ]) { ok, _, message in
+            XCTAssertTrue(ok, message)
+            create.fulfill()
+        }
+        wait(for: [create], timeout: 5)
+
+        let start = expectation(description: "machineStart reply")
+        var handoffPath = ""
+        proxy.machineStart("dev") { ok, body, message in
+            XCTAssertTrue(ok, message)
+            handoffPath = body["handoffSocketPath"] as? String ?? ""
+            start.fulfill()
+        }
+        wait(for: [start], timeout: 5)
+        try sendVmmHandoff(
+            path: try XCTUnwrap(handoffPath.isEmpty ? nil : handoffPath),
+            ready: VmmReadyMessage(
+                machineID: "dev",
+                operationID: try XCTUnwrap(manager.status(id: "dev")?.activeOperationID),
+                agentBuild: "dory-agent/test",
+                agentProtocolVersion: DoryCore.protocolVersion(),
+                agentCapabilities: [
+                    DoryAgentCapability(id: "exec", version: 1),
+                    DoryAgentCapability(id: "sync-pull", version: 1),
+                    DoryAgentCapability(id: "sync-push", version: 1),
+                ],
+                agentSocketPath: "/run/agent.sock"
+            ),
+            fileDescriptors: []
+        )
+        _ = try waitForServiceMachineState(manager, id: "dev", state: .running)
+
+        for malformed in [
+            ["schema": UInt16(2), "privateStagingRoot": staging] as NSDictionary,
+            [
+                "schema": UInt16(1),
+                "privateStagingRoot": staging,
+                "unexpected": true,
+            ] as NSDictionary,
+        ] {
+            let rejected = expectation(description: "malformed transfer rejected")
+            proxy.machineTransfer("dev", request: malformed) { ok, body, message in
+                XCTAssertFalse(ok)
+                XCTAssertTrue(body.isEqual(to: [:]))
+                XCTAssertTrue(message.contains("machineTransfer"), message)
+                rejected.fulfill()
+            }
+            wait(for: [rejected], timeout: 5)
+        }
+
+        let transfer = expectation(description: "machineTransfer reply")
+        proxy.machineTransfer("dev", request: [
+            "schema": UInt16(1),
+            "privateStagingRoot": staging,
+        ]) { ok, body, message in
+            XCTAssertTrue(ok, message)
+            XCTAssertEqual(
+                Set(body.allKeys.compactMap { $0 as? String }),
+                ["schema", "transferID", "guestDestination", "filesSent", "bytesSent"]
+            )
+            XCTAssertEqual((body["schema"] as? NSNumber)?.uint16Value, 1)
+            XCTAssertEqual(body["filesSent"] as? UInt64, 2)
+            XCTAssertEqual(body["bytesSent"] as? UInt64, 7)
+            XCTAssertTrue(
+                (body["guestDestination"] as? String)?
+                    .hasPrefix("/home/developer/Downloads/Dory Transfer ") == true
+            )
+            XCTAssertFalse(body.description.contains(staging))
+            transfer.fulfill()
+        }
+        wait(for: [transfer], timeout: 5)
+
+        let malformedStart = expectation(description: "malformed machineTransferStart rejected")
+        proxy.machineTransferStart("dev", request: [
+            "schema": UInt16(1),
+            "privateStagingRoot": staging,
+        ]) { ok, body, message in
+            XCTAssertFalse(ok)
+            XCTAssertTrue(body.isEqual(to: [:]))
+            XCTAssertTrue(message.contains("machineTransfer"), message)
+            malformedStart.fulfill()
+        }
+        wait(for: [malformedStart], timeout: 5)
+
+        let asyncStart = expectation(description: "machineTransferStart reply")
+        var operationID = ""
+        proxy.machineTransferStart("dev", request: [
+            "schema": UInt16(2),
+            "privateStagingRoot": staging,
+        ]) { ok, body, message in
+            XCTAssertTrue(ok, message)
+            operationID = body["operationID"] as? String ?? ""
+            XCTAssertEqual(operationID.utf8.count, 32)
+            XCTAssertEqual(body["machineID"] as? String, "dev")
+            XCTAssertEqual((body["schema"] as? NSNumber)?.uint16Value, 1)
+            XCTAssertFalse(body.description.contains(staging))
+            asyncStart.fulfill()
+        }
+        wait(for: [asyncStart], timeout: 5)
+
+        var terminalBody: NSDictionary?
+        let deadline = Date().addingTimeInterval(5)
+        while terminalBody == nil, Date() < deadline {
+            let statusReply = expectation(description: "machineTransferStatus reply")
+            proxy.machineTransferStatus("dev", operationID: operationID) { ok, body, message in
+                XCTAssertTrue(ok, message)
+                if let phase = body["phase"] as? String,
+                   ["completed", "cancelled", "failed"].contains(phase) {
+                    terminalBody = body
+                }
+                statusReply.fulfill()
+            }
+            wait(for: [statusReply], timeout: 5)
+            if terminalBody == nil {
+                Thread.sleep(forTimeInterval: 0.01)
+            }
+        }
+        let completedBody = try XCTUnwrap(terminalBody)
+        XCTAssertEqual(completedBody["phase"] as? String, "completed")
+        XCTAssertEqual(
+            Set(completedBody.allKeys.compactMap { $0 as? String }),
+            [
+                "schema", "operationID", "machineID", "phase", "filesTotal",
+                "filesCompleted", "bytesTotal", "bytesCompleted", "guestDestination",
+                "result",
+            ]
+        )
+        XCTAssertEqual(completedBody["filesTotal"] as? UInt64, 2)
+        XCTAssertEqual(completedBody["filesCompleted"] as? UInt64, 2)
+        XCTAssertEqual(completedBody["bytesTotal"] as? UInt64, 7)
+        XCTAssertEqual(completedBody["bytesCompleted"] as? UInt64, 7)
+        let asyncResult = try XCTUnwrap(completedBody["result"] as? NSDictionary)
+        XCTAssertEqual(asyncResult["transferID"] as? String, operationID)
+        XCTAssertEqual(asyncResult["filesSent"] as? UInt64, 2)
+        XCTAssertEqual(asyncResult["bytesSent"] as? UInt64, 7)
+        XCTAssertFalse(completedBody.description.contains(staging))
+
+        let currentCompleted = expectation(description: "machineTransferCurrent inactive reply")
+        proxy.machineTransferCurrent("dev") { ok, body, message in
+            XCTAssertTrue(ok, message)
+            XCTAssertEqual(
+                Set(body.allKeys.compactMap { $0 as? String }),
+                ["schema", "active"]
+            )
+            XCTAssertEqual((body["schema"] as? NSNumber)?.uint16Value, 1)
+            XCTAssertEqual(body["active"] as? Bool, false)
+            currentCompleted.fulfill()
+        }
+        wait(for: [currentCompleted], timeout: 5)
+
+        let cancelCompleted = expectation(description: "machineTransferCancel terminal reply")
+        proxy.machineTransferCancel("dev", operationID: operationID) { ok, body, message in
+            XCTAssertTrue(ok, message)
+            XCTAssertEqual(body["phase"] as? String, "completed")
+            cancelCompleted.fulfill()
+        }
+        wait(for: [cancelCompleted], timeout: 5)
+
+        let invalidStatus = expectation(description: "invalid transfer status rejected")
+        proxy.machineTransferStatus("dev", operationID: "NOT-AN-OPERATION") { ok, body, message in
+            XCTAssertFalse(ok)
+            XCTAssertTrue(body.isEqual(to: [:]))
+            XCTAssertEqual(message, "invalid machine transfer operation identifier")
+            invalidStatus.fulfill()
+        }
+        wait(for: [invalidStatus], timeout: 5)
+
+        let malformedGuestExports: [NSDictionary] = [
+            [
+                "schema": UInt16(2),
+                "guestSource": "/home/developer/Documents",
+            ],
+            [
+                "schema": UInt16(1),
+                "guestSource": "/home/developer/Documents",
+                "unexpected": true,
+            ],
+            [
+                "schema": UInt16(1),
+                "guestSource": "Documents",
+            ],
+            [
+                "schema": true,
+                "guestSource": "/home/developer/Documents",
+            ],
+        ]
+        for malformed in malformedGuestExports {
+            let rejected = expectation(description: "malformed guest export rejected")
+            proxy.machineGuestExportStart("dev", request: malformed) { ok, body, message in
+                XCTAssertFalse(ok)
+                XCTAssertTrue(body.isEqual(to: [:]))
+                XCTAssertTrue(message.contains("machineGuestExport"), message)
+                rejected.fulfill()
+            }
+            wait(for: [rejected], timeout: 5)
+        }
+
+        let guestExportStart = expectation(description: "machineGuestExportStart reply")
+        var exportOperationID = ""
+        proxy.machineGuestExportStart("dev", request: [
+            "schema": UInt16(1),
+            "guestSource": "/home/developer/Documents",
+        ]) { ok, body, message in
+            XCTAssertTrue(ok, message)
+            exportOperationID = body["operationID"] as? String ?? ""
+            XCTAssertEqual(exportOperationID.utf8.count, 32)
+            XCTAssertEqual(body["machineID"] as? String, "dev")
+            XCTAssertEqual((body["schema"] as? NSNumber)?.uint16Value, 1)
+            XCTAssertNil(body["result"])
+            XCTAssertFalse(body.description.contains("/home/developer/Documents"))
+            XCTAssertFalse(body.description.contains("/export-"))
+            guestExportStart.fulfill()
+        }
+        wait(for: [guestExportStart], timeout: 5)
+
+        var guestExportTerminalBody: NSDictionary?
+        let guestExportDeadline = Date().addingTimeInterval(5)
+        while guestExportTerminalBody == nil, Date() < guestExportDeadline {
+            let statusReply = expectation(description: "machineGuestExportStatus reply")
+            proxy.machineGuestExportStatus(
+                "dev",
+                operationID: exportOperationID
+            ) { ok, body, message in
+                XCTAssertTrue(ok, message)
+                if let phase = body["phase"] as? String,
+                   ["completed", "cancelled", "failed"].contains(phase) {
+                    guestExportTerminalBody = body
+                }
+                statusReply.fulfill()
+            }
+            wait(for: [statusReply], timeout: 5)
+            if guestExportTerminalBody == nil {
+                Thread.sleep(forTimeInterval: 0.01)
+            }
+        }
+        let exportBody = try XCTUnwrap(guestExportTerminalBody)
+        XCTAssertEqual(exportBody["phase"] as? String, "completed")
+        XCTAssertEqual(
+            Set(exportBody.allKeys.compactMap { $0 as? String }),
+            [
+                "schema", "operationID", "machineID", "phase", "filesTotal",
+                "filesCompleted", "bytesTotal", "bytesCompleted", "result",
+            ]
+        )
+        XCTAssertEqual(exportBody["filesTotal"] as? UInt64, 1)
+        XCTAssertEqual(exportBody["filesCompleted"] as? UInt64, 1)
+        XCTAssertEqual(exportBody["bytesTotal"] as? UInt64, 12)
+        XCTAssertEqual(exportBody["bytesCompleted"] as? UInt64, 12)
+        let exportResult = try XCTUnwrap(exportBody["result"] as? NSDictionary)
+        XCTAssertEqual(
+            Set(exportResult.allKeys.compactMap { $0 as? String }),
+            [
+                "schema", "exportID", "privateStagingRoot", "filesReceived",
+                "directoriesReceived", "bytesReceived",
+            ]
+        )
+        XCTAssertEqual(exportResult["exportID"] as? String, exportOperationID)
+        XCTAssertEqual(exportResult["filesReceived"] as? UInt64, 1)
+        XCTAssertEqual(exportResult["directoriesReceived"] as? UInt64, 1)
+        XCTAssertEqual(exportResult["bytesReceived"] as? UInt64, 12)
+        let privateExportRoot = try XCTUnwrap(
+            exportResult["privateStagingRoot"] as? String
+        )
+        XCTAssertTrue(privateExportRoot.contains("/export-"))
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: privateExportRoot + "/nested/guest.txt"
+        ))
+
+        let currentGuestExport = expectation(
+            description: "machineGuestExportCurrent completed reply"
+        )
+        proxy.machineGuestExportCurrent("dev") { ok, body, message in
+            XCTAssertTrue(ok, message)
+            XCTAssertEqual(
+                Set(body.allKeys.compactMap { $0 as? String }),
+                ["schema", "active", "operation"]
+            )
+            XCTAssertEqual(body["active"] as? Bool, true)
+            let operation = body["operation"] as? NSDictionary
+            XCTAssertEqual(operation?["phase"] as? String, "completed")
+            XCTAssertEqual(
+                (operation?["result"] as? NSDictionary)?["privateStagingRoot"] as? String,
+                privateExportRoot
+            )
+            currentGuestExport.fulfill()
+        }
+        wait(for: [currentGuestExport], timeout: 5)
+
+        let discardGuestExport = expectation(description: "machineGuestExportDiscard reply")
+        proxy.machineGuestExportDiscard("dev", operationID: exportOperationID) { ok, message in
+            XCTAssertTrue(ok, message)
+            discardGuestExport.fulfill()
+        }
+        wait(for: [discardGuestExport], timeout: 5)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: privateExportRoot))
+
+        let currentDiscardedGuestExport = expectation(
+            description: "machineGuestExportCurrent inactive after discard"
+        )
+        proxy.machineGuestExportCurrent("dev") { ok, body, message in
+            XCTAssertTrue(ok, message)
+            XCTAssertEqual(
+                Set(body.allKeys.compactMap { $0 as? String }),
+                ["schema", "active"]
+            )
+            XCTAssertEqual(body["active"] as? Bool, false)
+            XCTAssertFalse(body.description.contains(privateExportRoot))
+            currentDiscardedGuestExport.fulfill()
+        }
+        wait(for: [currentDiscardedGuestExport], timeout: 5)
+
+        let discardedStatus = expectation(description: "discarded guest export is unknown")
+        proxy.machineGuestExportStatus(
+            "dev",
+            operationID: exportOperationID
+        ) { ok, body, message in
+            XCTAssertFalse(ok)
+            XCTAssertTrue(body.isEqual(to: [:]))
+            XCTAssertTrue(message.contains("unknown file transfer"), message)
+            XCTAssertFalse(message.contains(privateExportRoot))
+            discardedStatus.fulfill()
+        }
+        wait(for: [discardedStatus], timeout: 5)
+
+        let invalidGuestExportStatus = expectation(
+            description: "invalid guest export status rejected"
+        )
+        proxy.machineGuestExportStatus(
+            "dev",
+            operationID: "NOT-AN-OPERATION"
+        ) { ok, body, message in
+            XCTAssertFalse(ok)
+            XCTAssertTrue(body.isEqual(to: [:]))
+            XCTAssertEqual(message, "invalid guest file export operation identifier")
+            invalidGuestExportStatus.fulfill()
+        }
+        wait(for: [invalidGuestExportStatus], timeout: 5)
     }
 
     func testMachineProvisionOverXPCInstallsRecipeThroughMachineAgent() throws {
@@ -1299,18 +3932,6 @@ final class DorydServiceTests: XCTestCase {
             start.fulfill()
         }
         wait(for: [start], timeout: 5)
-        try sendVmmHandoff(
-            path: try XCTUnwrap(handoffPath.isEmpty ? nil : handoffPath),
-            ready: VmmReadyMessage(
-                machineID: "dev",
-                agentBuild: "dory-agent/test",
-                agentSocketPath: "/run/agent.sock",
-                dockerdSocketPath: "/run/docker.sock"
-            ),
-            fileDescriptors: []
-        )
-        _ = try waitForServiceMachineState(manager, id: "dev", state: .running)
-
         let provision = expectation(description: "machineProvision reply")
         proxy.machineProvision("dev", request: ["recipe": "rust"]) { ok, body, message in
             XCTAssertTrue(ok, message)
@@ -1321,6 +3942,19 @@ final class DorydServiceTests: XCTestCase {
             XCTAssertEqual(verify?["stdout"] as? String, "cargo 1.0\n")
             provision.fulfill()
         }
+        try sendVmmHandoff(
+            path: try XCTUnwrap(handoffPath.isEmpty ? nil : handoffPath),
+            ready: VmmReadyMessage(
+                machineID: "dev",
+                operationID: try XCTUnwrap(manager.status(id: "dev")?.activeOperationID),
+                agentBuild: "dory-agent/test",
+                agentProtocolVersion: DoryCore.protocolVersion(),
+                agentCapabilities: [DoryAgentCapability(id: "exec", version: 1)],
+                agentSocketPath: "/run/agent.sock",
+                dockerdSocketPath: "/run/docker.sock"
+            ),
+            fileDescriptors: []
+        )
         wait(for: [provision], timeout: 5)
     }
 
@@ -1376,6 +4010,16 @@ final class DorydServiceTests: XCTestCase {
             XCTAssertEqual(body["machineID"] as? String, "dev")
             XCTAssertEqual(body["note"] as? String, "before")
             XCTAssertEqual(body["architecture"] as? String, doryTestGuestArchitecture)
+            let runtime = body["runtimeIdentity"] as? NSDictionary
+            XCTAssertEqual(runtime?["mode"] as? String, "legacy-compatibility")
+            XCTAssertEqual((runtime?["virtualHardwareABIVersion"] as? NSNumber)?.uint16Value, 1)
+            XCTAssertEqual(body["consistency"] as? String, "cold-stopped")
+            XCTAssertNil(body["guestQuiesceReceipt"])
+            let artifacts = body["artifactEvidence"] as? NSDictionary
+            XCTAssertEqual(
+                ((artifacts?["rootfs"] as? NSDictionary)?["sha256"] as? String)?.count,
+                64
+            )
             snapshotReply.fulfill()
         }
         wait(for: [snapshotReply], timeout: 5)
@@ -1384,6 +4028,10 @@ final class DorydServiceTests: XCTestCase {
         proxy.machineSnapshots("dev") { rows, message in
             XCTAssertEqual(message, "")
             XCTAssertEqual((rows as? [NSDictionary])?.first?["id"] as? String, "s1")
+            XCTAssertEqual(
+                (rows as? [NSDictionary])?.first?["consistency"] as? String,
+                "cold-stopped"
+            )
             listReply.fulfill()
         }
         wait(for: [listReply], timeout: 5)
@@ -1426,8 +4074,41 @@ final class DorydServiceTests: XCTestCase {
         }
         wait(for: [deleteReply], timeout: 5)
 
+        var assessedContentID = ""
+        let assessmentReply = expectation(description: "machineAssessSnapshotImport reply")
+        proxy.machineAssessSnapshotImport(bundle) { ok, body, message in
+            XCTAssertTrue(ok, message)
+            XCTAssertEqual(body["schemaVersion"] as? Int, 1)
+            XCTAssertEqual(body["sourceMachineID"] as? String, "dev")
+            XCTAssertEqual(body["sourceSnapshotID"] as? String, "s1")
+            XCTAssertEqual(body["disposition"] as? String, "ready")
+            XCTAssertEqual(body["portable"] as? Bool, true)
+            XCTAssertEqual((body["components"] as? NSArray)?.count, 0)
+            assessedContentID = body["contentID"] as? String ?? ""
+            XCTAssertEqual(assessedContentID.count, 64)
+            assessmentReply.fulfill()
+        }
+        wait(for: [assessmentReply], timeout: 5)
+        XCTAssertTrue(try manager.listSnapshots(machineID: "dev").isEmpty)
+
+        let staleReply = expectation(description: "stale machineImportSnapshot reply")
+        proxy.machineImportSnapshot(
+            bundle,
+            expectedContentID: String(repeating: "0", count: 64)
+        ) { ok, body, message in
+            XCTAssertFalse(ok)
+            XCTAssertEqual(body.count, 0)
+            XCTAssertTrue(message.contains("changed after import assessment"))
+            staleReply.fulfill()
+        }
+        wait(for: [staleReply], timeout: 5)
+        XCTAssertTrue(try manager.listSnapshots(machineID: "dev").isEmpty)
+
         let importReply = expectation(description: "machineImportSnapshot reply")
-        proxy.machineImportSnapshot(bundle) { ok, body, message in
+        proxy.machineImportSnapshot(
+            bundle,
+            expectedContentID: assessedContentID
+        ) { ok, body, message in
             XCTAssertTrue(ok, message)
             XCTAssertEqual(body["id"] as? String, "s1")
             XCTAssertEqual(body["machineID"] as? String, "dev")
@@ -1435,6 +4116,377 @@ final class DorydServiceTests: XCTestCase {
         }
         wait(for: [importReply], timeout: 5)
     }
+}
+
+private final class ServiceBlockingStopDockerProcess: DockerManagedProcess, @unchecked Sendable {
+    private let condition = NSCondition()
+    private let processID: Int32
+    private let stopEntered = DispatchSemaphore(value: 0)
+    private var running = false
+    private var mayFinishStop = false
+
+    init(pid: Int32) {
+        processID = pid
+    }
+
+    var pid: Int32? {
+        condition.lock()
+        defer { condition.unlock() }
+        return running ? processID : nil
+    }
+
+    var isRunning: Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        return running
+    }
+
+    func start() throws {
+        condition.lock()
+        running = true
+        mayFinishStop = false
+        condition.unlock()
+    }
+
+    func suspend() -> Bool { true }
+    func resume() -> Bool { true }
+
+    func stop() -> Bool {
+        stopEntered.signal()
+        condition.lock()
+        let deadline = Date().addingTimeInterval(2)
+        while !mayFinishStop, condition.wait(until: deadline) {}
+        let confirmed = mayFinishStop
+        if confirmed {
+            running = false
+            condition.broadcast()
+        }
+        condition.unlock()
+        return confirmed
+    }
+
+    func waitForTermination(timeout: TimeInterval) -> Bool {
+        condition.lock()
+        let deadline = Date().addingTimeInterval(max(0, timeout))
+        while running, condition.wait(until: deadline) {}
+        let terminated = !running
+        condition.unlock()
+        return terminated
+    }
+
+    func lifecycleObservation(
+        until deadline: DispatchTime
+    ) -> DockerManagedProcessObservation? {
+        condition.lock()
+        defer { condition.unlock() }
+        return DockerManagedProcessObservation(
+            pid: running ? processID : nil,
+            isRunning: running
+        )
+    }
+
+    func waitUntilStopEntered(timeout: TimeInterval) -> Bool {
+        stopEntered.wait(timeout: .now() + max(0, timeout)) == .success
+    }
+
+    func finishStop() {
+        condition.lock()
+        mayFinishStop = true
+        condition.broadcast()
+        condition.unlock()
+    }
+}
+
+private final class ServiceUnexpectedTerminationDockerProcess: DockerManagedProcess, @unchecked Sendable {
+    private let lock = NSLock()
+    private let processID: Int32
+    private var running = false
+    private var unexpectedTerminationHandler: HvProcessUnexpectedTerminationHandler?
+
+    init(pid: Int32) {
+        processID = pid
+    }
+
+    func start() throws {
+        lock.lock()
+        running = true
+        lock.unlock()
+    }
+
+    func suspend() -> Bool { true }
+    func resume() -> Bool { true }
+
+    func stop() -> Bool {
+        lock.lock()
+        running = false
+        lock.unlock()
+        return true
+    }
+
+    func waitForTermination(timeout: TimeInterval) -> Bool {
+        _ = timeout
+        lock.lock()
+        defer { lock.unlock() }
+        return !running
+    }
+
+    func lifecycleObservation(
+        until deadline: DispatchTime
+    ) -> DockerManagedProcessObservation? {
+        _ = deadline
+        lock.lock()
+        defer { lock.unlock() }
+        return DockerManagedProcessObservation(
+            pid: running ? processID : nil,
+            isRunning: running
+        )
+    }
+
+    func setUnexpectedTerminationHandler(
+        _ handler: HvProcessUnexpectedTerminationHandler?
+    ) {
+        lock.lock()
+        unexpectedTerminationHandler = handler
+        lock.unlock()
+    }
+
+    func reportUnexpectedTermination() {
+        lock.lock()
+        running = false
+        let handler = unexpectedTerminationHandler
+        lock.unlock()
+        handler?(HvProcessTermination(status: SIGKILL, wasUncaughtSignal: true))
+    }
+
+    func markExitedWithoutNotifying() {
+        lock.lock()
+        running = false
+        lock.unlock()
+    }
+}
+
+private final class ServiceManagedProcessSequence: @unchecked Sendable {
+    private let lock = NSLock()
+    private var processes: [ServiceUnexpectedTerminationDockerProcess]
+
+    init(_ processes: [ServiceUnexpectedTerminationDockerProcess]) {
+        self.processes = processes
+    }
+
+    func next(
+        terminationHandler: HvProcessUnexpectedTerminationHandler?
+    ) -> ServiceUnexpectedTerminationDockerProcess? {
+        lock.lock()
+        guard !processes.isEmpty else {
+            lock.unlock()
+            return nil
+        }
+        let process = processes.removeFirst()
+        lock.unlock()
+        process.setUnexpectedTerminationHandler(terminationHandler)
+        return process
+    }
+}
+
+private final class ServiceCorporateReconcileGate: @unchecked Sendable {
+    private let entered = DispatchSemaphore(value: 0)
+    private let released = DispatchSemaphore(value: 0)
+
+    func apply() -> CorporateGuestApplyResult {
+        entered.signal()
+        _ = released.wait(timeout: .now() + 5)
+        return CorporateGuestApplyResult(
+            state: "fixture applied",
+            changed: false,
+            dockerdRestarted: false
+        )
+    }
+
+    func waitUntilEntered(timeout: TimeInterval) -> Bool {
+        entered.wait(timeout: .now() + max(0, timeout)) == .success
+    }
+
+    func release() {
+        released.signal()
+    }
+}
+
+private final class ServiceEnginePromotionReply: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var storedResult: (ok: Bool, detail: String)?
+
+    func record(ok: Bool, detail: String) {
+        condition.lock()
+        storedResult = (ok, detail)
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    func wait(timeout: TimeInterval) -> (ok: Bool, detail: String)? {
+        condition.lock()
+        let deadline = Date().addingTimeInterval(max(0, timeout))
+        while storedResult == nil, condition.wait(until: deadline) {}
+        let result = storedResult
+        condition.unlock()
+        return result
+    }
+}
+
+private struct ServiceCorporateHealthCommandRunner: HealthCommandRunning {
+    func run(
+        executablePath: String,
+        arguments: [String],
+        environment _: [String: String],
+        timeout _: TimeInterval
+    ) -> HealthCommandOutput {
+        switch ([executablePath] + arguments).joined(separator: " ") {
+        case "/usr/sbin/scutil --proxy":
+            HealthCommandOutput(exitCode: 0, stdout: "<dictionary> {\n}\n", stderr: "")
+        case "/sbin/route -n get default":
+            HealthCommandOutput(
+                exitCode: 0,
+                stdout: "gateway: 10.0.0.1\ninterface: en0\n",
+                stderr: ""
+            )
+        case "/sbin/ifconfig -l":
+            HealthCommandOutput(exitCode: 0, stdout: "lo0 en0\n", stderr: "")
+        case "/usr/sbin/scutil --dns", "/usr/sbin/netstat -rn -f inet":
+            HealthCommandOutput(exitCode: 0, stdout: "", stderr: "")
+        default:
+            HealthCommandOutput(exitCode: 127, stdout: "", stderr: "unexpected fixture command")
+        }
+    }
+}
+
+private func persistServiceCorporateProfile(home: String) throws {
+    try CorporateConnectivityStore(home: home).save(CorporateConnectivityProfile(
+        enabled: false,
+        host: CorporateProxyLayer(source: .disabled),
+        dockerd: CorporateProxyLayer(source: .disabled),
+        buildKit: CorporateProxyLayer(source: .disabled),
+        containers: CorporateProxyLayer(source: .disabled),
+        registries: CorporateRegistryConfiguration(probeRegistries: []),
+        bridgeSubnet: "198.18.0.0/24"
+    ))
+}
+
+private func serviceCorporateConnectivity(
+    home: String,
+    gate: ServiceCorporateReconcileGate
+) -> CorporateConnectivityReconciler {
+    CorporateConnectivityReconciler(
+        home: home,
+        inspector: CorporateConnectivitySystemInspector(
+            runner: ServiceCorporateHealthCommandRunner()
+        ),
+        guestApply: { _, _, _ in gate.apply() }
+    )
+}
+
+private final class ServiceDesiredStateRecorder: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var storedValues: [String] = []
+
+    var values: [String] {
+        condition.lock()
+        defer { condition.unlock() }
+        return storedValues
+    }
+
+    func append(_ value: String) {
+        condition.lock()
+        storedValues.append(value)
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    func waitUntilCount(_ count: Int, timeout: TimeInterval) -> Bool {
+        condition.lock()
+        let deadline = Date().addingTimeInterval(max(0, timeout))
+        while storedValues.count < count, condition.wait(until: deadline) {}
+        let reached = storedValues.count >= count
+        condition.unlock()
+        return reached
+    }
+}
+
+private enum DesiredStateWriterTestError: Error {
+    case rejected
+}
+
+private final class BlockingDesiredStateWriter: @unchecked Sendable {
+    private let condition = NSCondition()
+    private let firstCallEntered = DispatchSemaphore(value: 0)
+    private let firstCallRelease = DispatchSemaphore(value: 0)
+    private let store: IdlePolicyStore
+    private let failingCallIndex: Int
+    private var storedStates: [String] = []
+
+    init(store: IdlePolicyStore, failingCallIndex: Int) {
+        self.store = store
+        self.failingCallIndex = failingCallIndex
+    }
+
+    var states: [String] {
+        condition.lock()
+        defer { condition.unlock() }
+        return storedStates
+    }
+
+    func write(_ state: String) throws {
+        condition.lock()
+        let callIndex = storedStates.count
+        storedStates.append(state)
+        condition.broadcast()
+        condition.unlock()
+
+        if callIndex == 0 {
+            firstCallEntered.signal()
+            firstCallRelease.wait()
+        }
+        guard callIndex != failingCallIndex else {
+            throw DesiredStateWriterTestError.rejected
+        }
+        try store.setEngineDesiredState(state)
+    }
+
+    func waitUntilFirstCallEntered(timeout: TimeInterval) -> Bool {
+        firstCallEntered.wait(timeout: .now() + max(0, timeout)) == .success
+    }
+
+    func releaseFirstCall() {
+        firstCallRelease.signal()
+    }
+
+    func waitUntilCallCount(_ count: Int, timeout: TimeInterval) -> Bool {
+        condition.lock()
+        let deadline = Date().addingTimeInterval(max(0, timeout))
+        while storedStates.count < count, condition.wait(until: deadline) {}
+        let reached = storedStates.count >= count
+        condition.unlock()
+        return reached
+    }
+}
+
+private struct StaticHostUSBDiscovery: DoryHostUSBDiscovering {
+    var values: [DoryHostUSBDevice]
+
+    init(devices: [DoryHostUSBDevice]) { values = devices }
+
+    func devices() throws -> [DoryHostUSBDevice] { values }
+}
+
+private func waitUntilServiceCondition(
+    timeout: TimeInterval,
+    pollInterval: TimeInterval = 0.005,
+    _ condition: () -> Bool
+) -> Bool {
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+        if condition() { return true }
+        Thread.sleep(forTimeInterval: pollInterval)
+    }
+    return condition()
 }
 
 private func waitForServiceMachineState(
@@ -1514,17 +4566,29 @@ private struct ServiceFakeHealthRegistryProbe: HealthRegistryProbing {
 
 private final class ServiceFakeAgentControlClient: AgentControlClient, @unchecked Sendable {
     private let watchedPorts: [DoryListenPort]
+    private let guestResourceOutput: String
 
-    init(ports: [DoryListenPort] = [DoryListenPort(protocol: "tcp", port: 8080)]) {
+    init(
+        ports: [DoryListenPort] = [DoryListenPort(protocol: "tcp", port: 8080)],
+        guestResourceOutput: String = serviceGuestResourceRecord()
+    ) {
         self.watchedPorts = ports
+        self.guestResourceOutput = guestResourceOutput
     }
 
     func info() throws -> DoryAgentInfo {
         DoryAgentInfo(
-            protocolVersion: 1,
+            protocolVersion: DoryCore.protocolVersion(),
             kernel: "Linux docker",
             agentBuild: "docker-agent",
-            uptimeSeconds: 9
+            uptimeSeconds: 9,
+            capabilities: [
+                DoryAgentCapability(id: "clock-sync", version: 1),
+                DoryAgentCapability(id: "exec", version: 1),
+                DoryAgentCapability(id: "exec-stdin", version: 1),
+                DoryAgentCapability(id: "ports-watch", version: 1),
+                DoryAgentCapability(id: "telemetry", version: 1),
+            ]
         )
     }
 
@@ -1549,6 +4613,62 @@ private final class ServiceFakeAgentControlClient: AgentControlClient, @unchecke
         )
     }
 
+    func push(localRoot: String, remoteRoot: String) throws -> DoryPushStats {
+        _ = localRoot
+        _ = remoteRoot
+        return DoryPushStats(filesSent: 2, bytesSent: 7, filesDeleted: 0)
+    }
+
+    func push(
+        localRoot: String,
+        remoteRoot: String,
+        control: DoryPushControl
+    ) throws -> DoryPushStats {
+        _ = control
+        return try push(localRoot: localRoot, remoteRoot: remoteRoot)
+    }
+
+    func pull(
+        remoteRoot: String,
+        localRoot: String,
+        limits: DoryPullLimits
+    ) throws -> DoryPullStats {
+        _ = remoteRoot
+        _ = limits
+        try FileManager.default.createDirectory(
+            atPath: localRoot,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        try FileManager.default.createDirectory(
+            atPath: localRoot + "/nested",
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        try Data("guest-export".utf8).write(
+            to: URL(fileURLWithPath: localRoot + "/nested/guest.txt")
+        )
+        return DoryPullStats(
+            filesReceived: 1,
+            directoriesReceived: 1,
+            bytesReceived: 12
+        )
+    }
+
+    func pull(
+        remoteRoot: String,
+        localRoot: String,
+        limits: DoryPullLimits,
+        control: DoryPullControl
+    ) throws -> DoryPullStats {
+        _ = control
+        return try pull(
+            remoteRoot: remoteRoot,
+            localRoot: localRoot,
+            limits: limits
+        )
+    }
+
     func exec(
         argv: [String],
         cwd: String,
@@ -1558,7 +4678,13 @@ private final class ServiceFakeAgentControlClient: AgentControlClient, @unchecke
     ) throws -> DoryExecResult {
         let command = argv.joined(separator: " ")
         let output: String
-        if command.contains("apk add --no-cache cargo rust") {
+        if argv.prefix(2) == ["/usr/bin/id", "-u"]
+            || argv.prefix(2) == ["/usr/bin/id", "-g"] {
+            output = "1000\n"
+        } else if command.contains("/proc/meminfo")
+            && command.contains("/proc/self/mountinfo") {
+            output = guestResourceOutput
+        } else if command.contains("apk add --no-cache cargo rust") {
             output = "installed rust\n"
         } else if command.contains("cargo --version") {
             output = "cargo 1.0\n"
@@ -1578,6 +4704,28 @@ private final class ServiceFakeAgentControlClient: AgentControlClient, @unchecke
     func close() {}
 }
 
+private func serviceGuestResourceRecord() -> String {
+    """
+    schema=dev.dory.guest-resources
+    version=2
+    mem_total_kb=2048
+    mem_available_kb=1024
+    mem_free_kb=512
+    buffers_kb=128
+    cached_kb=256
+    sreclaimable_kb=64
+    shmem_kb=32
+    disk_mount_source=/dev/vdb
+    disk_filesystem_type=ext4
+    disk_device_major_minor=254:16
+    disk_filesystem_uuid=aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee
+    disk_total_bytes=137438953472
+    disk_used_bytes=8589934592
+    disk_available_bytes=128849018880
+
+    """
+}
+
 private final class ServiceFakeRemoteAgentClient: RemoteAgentClient, @unchecked Sendable {
     struct Push: Equatable {
         var localRoot: String
@@ -1595,10 +4743,15 @@ private final class ServiceFakeRemoteAgentClient: RemoteAgentClient, @unchecked 
 
     func info() throws -> DoryAgentInfo {
         DoryAgentInfo(
-            protocolVersion: 1,
+            protocolVersion: DoryCore.protocolVersion(),
             kernel: "Linux remote",
             agentBuild: "remote-agent",
-            uptimeSeconds: 7
+            uptimeSeconds: 7,
+            capabilities: [
+                DoryAgentCapability(id: "exec", version: 1),
+                DoryAgentCapability(id: "sync-push", version: 1),
+                DoryAgentCapability(id: "telemetry", version: 1),
+            ]
         )
     }
 
@@ -1702,6 +4855,31 @@ private final class ServiceRecordingMachineBalloonController: MachineBalloonCont
     }
 }
 
+private final class ServiceRecordingMachineDeviceTelemetryController:
+    MachineDeviceTelemetryControlling, @unchecked Sendable
+{
+    private let lock = NSLock()
+    private var storedValue: DoryDeviceTelemetrySnapshot?
+    private var storedSocketPaths: [String] = []
+
+    var value: DoryDeviceTelemetrySnapshot? {
+        get { lock.withLock { storedValue } }
+        set { lock.withLock { storedValue = newValue } }
+    }
+
+    var socketPaths: [String] { lock.withLock { storedSocketPaths } }
+
+    func snapshot(socketPath: String) throws -> DoryDeviceTelemetrySnapshot {
+        try lock.withLock {
+            storedSocketPaths.append(socketPath)
+            guard let storedValue else {
+                throw VmmControlError.rejected("test telemetry is missing")
+            }
+            return storedValue
+        }
+    }
+}
+
 private final class ServiceRepairCounter: @unchecked Sendable {
     private let lock = NSLock()
     private var count = 0
@@ -1718,3 +4896,44 @@ private final class ServiceRepairCounter: @unchecked Sendable {
         lock.unlock()
     }
 }
+
+private final class ServiceRejectingProductionPlanningController:
+    DoryDaemonVirtualMachineProductionPlanningControlling, @unchecked Sendable
+{
+    struct Capture: Sendable {
+        var request: DoryDaemonVirtualMachinePlanningTransactionRequest
+        var artifacts: [DoryDaemonVirtualMachinePlanningArtifactPublication]
+    }
+
+    private let lock = NSLock()
+    private var stored: [Capture] = []
+
+    var captured: Capture? {
+        lock.lock()
+        defer { lock.unlock() }
+        return stored.last
+    }
+
+    var captures: [Capture] {
+        lock.lock()
+        defer { lock.unlock() }
+        return stored
+    }
+
+    func authorityRevision(for reference: DoryVMResolverReference) throws -> UInt64? {
+        _ = reference
+        return nil
+    }
+
+    func publishResolvedPlan(
+        _ request: DoryDaemonVirtualMachinePlanningTransactionRequest,
+        artifacts: [DoryDaemonVirtualMachinePlanningArtifactPublication]
+    ) throws {
+        lock.lock()
+        stored.append(Capture(request: request, artifacts: artifacts))
+        lock.unlock()
+        throw ServiceProductionPlanningTestError.rejected
+    }
+}
+
+private enum ServiceProductionPlanningTestError: Error { case rejected }

@@ -19,6 +19,39 @@ pub fn agent_build() -> String {
     concat!("dory-agent/", env!("CARGO_PKG_VERSION")).to_string()
 }
 
+pub fn agent_capabilities() -> Vec<agent::AgentCapability> {
+    let mut capabilities = vec![
+        ("clock-sync", 1),
+        ("exec", 1),
+        ("exec-stdin", 1),
+        ("lifecycle-receipt", 1),
+        ("ports-watch", 1),
+        ("sync-pull", 1),
+        ("sync-push", 2),
+        ("telemetry", 1),
+    ];
+    if crate::snapshot_quiesce::available() {
+        capabilities.push(("snapshot-quiesce", 2));
+    }
+    if crate::usb_vhci::available() {
+        capabilities.push(("usb-vhci", 1));
+    }
+    if crate::virtiofs_mount::available() {
+        capabilities.push((
+            crate::virtiofs_mount::CAPABILITY_ID,
+            crate::virtiofs_mount::CAPABILITY_VERSION,
+        ));
+    }
+    capabilities.sort_unstable_by_key(|(id, _)| *id);
+    capabilities
+        .into_iter()
+        .map(|(id, version)| agent::AgentCapability {
+            id: id.to_string(),
+            version,
+        })
+        .collect()
+}
+
 pub fn err(code: i32, message: &str) -> agent::AgentResponse {
     agent::AgentResponse {
         result: Some(Res::Error(agent::RpcError {
@@ -39,6 +72,9 @@ pub fn handle_method(method: Option<Method>) -> agent::AgentResponse {
         Some(Method::Info(_)) => Res::Info(info()),
         Some(Method::PortsWatch(_)) => Res::PortsWatch(ports_watch()),
         Some(Method::Telemetry(_)) => Res::Telemetry(telemetry()),
+        Some(Method::LifecycleReceipt(request)) => {
+            return lifecycle_receipt(request);
+        }
         Some(_) => return err(500, "async method must be dispatched via the async handler"),
         None => return err(400, "empty method"),
     };
@@ -47,12 +83,51 @@ pub fn handle_method(method: Option<Method>) -> agent::AgentResponse {
     }
 }
 
+fn lifecycle_receipt(request: agent::LifecycleReceiptRequest) -> agent::AgentResponse {
+    use agent::lifecycle_receipt_request::Action;
+
+    let Ok(action) = Action::try_from(request.action) else {
+        return err(422, "unknown lifecycle receipt action");
+    };
+    if action == Action::Unspecified {
+        return err(422, "lifecycle receipt action is required");
+    }
+    if !is_canonical_nonzero_uuid(&request.operation_id) {
+        return err(
+            422,
+            "lifecycle receipt operation_id must be a nonzero canonical lowercase UUID",
+        );
+    }
+    agent::AgentResponse {
+        result: Some(Res::LifecycleReceipt(agent::LifecycleReceiptResponse {
+            acknowledged: true,
+            action: action as i32,
+            operation_id: request.operation_id,
+        })),
+    }
+}
+
+fn is_canonical_nonzero_uuid(value: &str) -> bool {
+    if value.len() != 36 || value == "00000000-0000-0000-0000-000000000000" {
+        return false;
+    }
+    value
+        .as_bytes()
+        .iter()
+        .enumerate()
+        .all(|(index, byte)| match index {
+            8 | 13 | 18 | 23 => *byte == b'-',
+            _ => byte.is_ascii_digit() || (b'a'..=b'f').contains(byte),
+        })
+}
+
 fn info() -> agent::InfoResponse {
     agent::InfoResponse {
         proto_version: dory_proto::handshake::PROTO_VERSION,
         kernel: kernel(),
         agent_build: agent_build(),
         uptime_secs: uptime_secs(),
+        capabilities: agent_capabilities(),
     }
 }
 
@@ -172,6 +247,33 @@ mod tests {
                 assert_eq!(i.proto_version, dory_proto::handshake::PROTO_VERSION);
                 assert!(i.agent_build.starts_with("dory-agent/"));
                 assert!(!i.kernel.is_empty());
+                let mut expected_capabilities = vec![
+                    ("clock-sync", 1),
+                    ("exec", 1),
+                    ("exec-stdin", 1),
+                    ("lifecycle-receipt", 1),
+                    ("ports-watch", 1),
+                    ("sync-pull", 1),
+                    ("sync-push", 2),
+                    ("telemetry", 1),
+                ];
+                if crate::snapshot_quiesce::available() {
+                    expected_capabilities.push(("snapshot-quiesce", 2));
+                }
+                if crate::usb_vhci::available() {
+                    expected_capabilities.push(("usb-vhci", 1));
+                }
+                if crate::virtiofs_mount::available() {
+                    expected_capabilities.push(("virtiofs-mount", 1));
+                }
+                expected_capabilities.sort_unstable();
+                assert_eq!(
+                    i.capabilities
+                        .iter()
+                        .map(|capability| (capability.id.as_str(), capability.version))
+                        .collect::<Vec<_>>(),
+                    expected_capabilities
+                );
             }
             other => panic!("expected Info, got {other:?}"),
         }
@@ -203,6 +305,48 @@ mod tests {
         let out = dispatch(&agent::AgentRequest { method: None }.encode_to_vec());
         let resp = agent::AgentResponse::decode(out.as_slice()).unwrap();
         assert!(matches!(resp.result, Some(Res::Error(_))));
+    }
+
+    #[test]
+    fn lifecycle_receipt_echoes_exact_canonical_operation_authority() {
+        use agent::lifecycle_receipt_request::Action;
+
+        let operation_id = "12345678-1234-4234-8234-123456789abc";
+        let out = dispatch(&encode(agent::agent_request::Method::LifecycleReceipt(
+            agent::LifecycleReceiptRequest {
+                action: Action::PreparePause as i32,
+                operation_id: operation_id.into(),
+            },
+        )));
+        let resp = agent::AgentResponse::decode(out.as_slice()).unwrap();
+        match resp.result {
+            Some(Res::LifecycleReceipt(receipt)) => {
+                assert!(receipt.acknowledged);
+                assert_eq!(receipt.action, Action::PreparePause as i32);
+                assert_eq!(receipt.operation_id, operation_id);
+            }
+            other => panic!("expected LifecycleReceipt, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn lifecycle_receipt_rejects_noncanonical_or_zero_authority() {
+        use agent::lifecycle_receipt_request::Action;
+
+        for operation_id in [
+            "12345678-1234-4234-8234-123456789ABC",
+            "00000000-0000-0000-0000-000000000000",
+            "not-a-uuid",
+        ] {
+            let out = dispatch(&encode(agent::agent_request::Method::LifecycleReceipt(
+                agent::LifecycleReceiptRequest {
+                    action: Action::PrepareStop as i32,
+                    operation_id: operation_id.into(),
+                },
+            )));
+            let resp = agent::AgentResponse::decode(out.as_slice()).unwrap();
+            assert!(matches!(resp.result, Some(Res::Error(_))));
+        }
     }
 
     /// The whole assembled RPC spine over an in-memory connection: handshake -> mux -> dispatch ->

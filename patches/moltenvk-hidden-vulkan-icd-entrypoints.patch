@@ -1,0 +1,17 @@
+diff --git a/MoltenVK/MoltenVK/Vulkan/vulkan.mm b/MoltenVK/MoltenVK/Vulkan/vulkan.mm
+index 198b8473..588a5fb8 100644
+--- a/MoltenVK/MoltenVK/Vulkan/vulkan.mm
++++ b/MoltenVK/MoltenVK/Vulkan/vulkan.mm
+@@ -4531,6 +4531,7 @@ MVK_PUBLIC_VULKAN_SYMBOL VkResult vkCreate_PLATFORM_SurfaceMVK(
+ 
+ #pragma mark -
+ #pragma mark Loader and Layer ICD interface extension
++#if !MVK_HIDE_VULKAN_SYMBOLS
+ 
+ #ifdef __cplusplus
+ extern "C" {
+@@ -4589,3 +4590,4 @@ MVK_PUBLIC_SYMBOL PFN_vkVoidFunction vk_icdGetPhysicalDeviceProcAddr(
+ 	return func;
+ }
+ 
++#endif	// !MVK_HIDE_VULKAN_SYMBOLS

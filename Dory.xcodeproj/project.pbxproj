@@ -11,6 +11,23 @@
 		AA00000000000000000000B3 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = AA00000000000000000000B2 /* SwiftTerm */; };
 		AA00000000000000000000C3 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = AA00000000000000000000C2 /* Sparkle */; };
 		AA00000000000000000000D3 /* DoryOperations in Frameworks */ = {isa = PBXBuildFile; productRef = AA00000000000000000000D2 /* DoryOperations */; };
+		D0B100000000000000000001 /* DoryHV in Frameworks */ = {isa = PBXBuildFile; productRef = D0B700000000000000000001 /* DoryHV */; };
+		D0B100000000000000000002 /* DoryCore in Frameworks */ = {isa = PBXBuildFile; productRef = D0B700000000000000000002 /* DoryCore */; };
+		D0B100000000000000000003 /* DorydKit in Frameworks */ = {isa = PBXBuildFile; productRef = D0B700000000000000000003 /* DorydKit */; };
+		D0B100000000000000000004 /* DoryOperations in Frameworks */ = {isa = PBXBuildFile; productRef = D0B700000000000000000004 /* DoryOperations */; };
+		D0B100000000000000000005 /* DoryVMContracts in Frameworks */ = {isa = PBXBuildFile; productRef = D0B700000000000000000005 /* DoryVMContracts */; };
+		D0B100000000000000000006 /* DoryVMMKit in Frameworks */ = {isa = PBXBuildFile; productRef = D0B700000000000000000006 /* DoryVMMKit */; };
+		D0B100000000000000000007 /* AppKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D0B200000000000000000002 /* AppKit.framework */; };
+		D0B100000000000000000008 /* AVFAudio.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D0B200000000000000000003 /* AVFAudio.framework */; };
+		D0B100000000000000000009 /* AVFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D0B200000000000000000004 /* AVFoundation.framework */; };
+		D0B10000000000000000000B /* DoryHVRunner.app in Embed Linux VM Runner */ = {isa = PBXBuildFile; fileRef = D0B200000000000000000001 /* DoryHVRunner.app */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		D0C100000000000000000001 /* DoryFSWorker.xpc in Embed Filesystem Worker */ = {isa = PBXBuildFile; fileRef = D0C200000000000000000001 /* DoryFSWorker.xpc */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		D0C100000000000000000002 /* DoryFSWorkerContracts in Frameworks */ = {isa = PBXBuildFile; productRef = D0C700000000000000000001 /* DoryFSWorkerContracts */; };
+		D0C100000000000000000003 /* DoryFSWorkerServiceCore in Frameworks */ = {isa = PBXBuildFile; productRef = D0C700000000000000000002 /* DoryFSWorkerServiceCore */; };
+		D0D100000000000000000001 /* DoryRendererWorker.xpc in Embed Renderer Worker */ = {isa = PBXBuildFile; fileRef = D0D200000000000000000001 /* DoryRendererWorker.xpc */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		D0D100000000000000000002 /* DoryRendererWorkerContracts in Frameworks */ = {isa = PBXBuildFile; productRef = D0D700000000000000000001 /* DoryRendererWorkerContracts */; };
+		D0D100000000000000000003 /* DoryRendererWorkerServiceCore in Frameworks */ = {isa = PBXBuildFile; productRef = D0D700000000000000000002 /* DoryRendererWorkerServiceCore */; };
+		D0D100000000000000000004 /* DoryRendererWorkerVirglBackend in Frameworks */ = {isa = PBXBuildFile; productRef = D0D700000000000000000003 /* DoryRendererWorkerVirglBackend */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -23,6 +40,39 @@
 				AA1000000000000000000001 /* DoryStorageProvider.appex in Embed App Extensions */,
 			);
 			name = "Embed App Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D0B400000000000000000004 /* Embed Linux VM Runner */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = Contents/Helpers;
+			dstSubfolderSpec = 1;
+			files = (
+				D0B10000000000000000000B /* DoryHVRunner.app in Embed Linux VM Runner */,
+			);
+			name = "Embed Linux VM Runner";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D0C400000000000000000004 /* Embed Filesystem Worker */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = Contents/XPCServices;
+			dstSubfolderSpec = 1;
+			files = (
+				D0C100000000000000000001 /* DoryFSWorker.xpc in Embed Filesystem Worker */,
+			);
+			name = "Embed Filesystem Worker";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D0D400000000000000000004 /* Embed Renderer Worker */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = Contents/XPCServices;
+			dstSubfolderSpec = 1;
+			files = (
+				D0D100000000000000000001 /* DoryRendererWorker.xpc in Embed Renderer Worker */,
+			);
+			name = "Embed Renderer Worker";
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXCopyFilesBuildPhase section */
@@ -45,6 +95,27 @@
 			remoteGlobalIDString = AA100000000000000000000A;
 			remoteInfo = DoryStorageProvider;
 		};
+		D0B800000000000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 3E705CE72FE37C790094B33C /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = D0B500000000000000000001;
+			remoteInfo = DoryHVRunner;
+		};
+		D0C800000000000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 3E705CE72FE37C790094B33C /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = D0C500000000000000000001;
+			remoteInfo = DoryFSWorker;
+		};
+		D0D800000000000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 3E705CE72FE37C790094B33C /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = D0D500000000000000000001;
+			remoteInfo = DoryRendererWorker;
+		};
 		3E705CFD2FE37C7B0094B33C /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 3E705CE72FE37C790094B33C /* Project object */;
@@ -66,6 +137,12 @@
 		3E705CEF2FE37C790094B33C /* Dory.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Dory.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		3E705CFC2FE37C7B0094B33C /* DoryTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = DoryTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		3E705D062FE37C7B0094B33C /* DoryUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = DoryUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		D0B200000000000000000001 /* DoryHVRunner.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = DoryHVRunner.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		D0B200000000000000000002 /* AppKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AppKit.framework; path = System/Library/Frameworks/AppKit.framework; sourceTree = SDKROOT; };
+		D0B200000000000000000003 /* AVFAudio.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AVFAudio.framework; path = System/Library/Frameworks/AVFAudio.framework; sourceTree = SDKROOT; };
+		D0B200000000000000000004 /* AVFoundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AVFoundation.framework; path = System/Library/Frameworks/AVFoundation.framework; sourceTree = SDKROOT; };
+		D0C200000000000000000001 /* DoryFSWorker.xpc */ = {isa = PBXFileReference; explicitFileType = "wrapper.xpc-service"; includeInIndex = 0; path = DoryFSWorker.xpc; sourceTree = BUILT_PRODUCTS_DIR; };
+		D0D200000000000000000001 /* DoryRendererWorker.xpc */ = {isa = PBXFileReference; explicitFileType = "wrapper.xpc-service"; includeInIndex = 0; path = DoryRendererWorker.xpc; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -97,6 +174,24 @@
 			path = DoryUITests;
 			sourceTree = "<group>";
 		};
+		D0B300000000000000000001 /* DoryHVRunner Sources */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			name = "DoryHVRunner Sources";
+			path = Packages/ContainerizationEngine/Sources/dory-hv;
+			sourceTree = "<group>";
+		};
+		D0C300000000000000000001 /* DoryFSWorker Sources */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			name = "DoryFSWorker Sources";
+			path = Packages/ContainerizationEngine/Sources/DoryFSWorkerXPCService;
+			sourceTree = "<group>";
+		};
+		D0D300000000000000000001 /* DoryRendererWorker Sources */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			name = "DoryRendererWorker Sources";
+			path = Packages/ContainerizationEngine/Sources/DoryRendererWorkerXPCService;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -125,6 +220,41 @@
 			files = (
 			);
 		};
+		D0B400000000000000000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D0B100000000000000000001 /* DoryHV in Frameworks */,
+				D0B100000000000000000002 /* DoryCore in Frameworks */,
+				D0B100000000000000000003 /* DorydKit in Frameworks */,
+				D0B100000000000000000004 /* DoryOperations in Frameworks */,
+				D0B100000000000000000005 /* DoryVMContracts in Frameworks */,
+				D0B100000000000000000006 /* DoryVMMKit in Frameworks */,
+				D0B100000000000000000007 /* AppKit.framework in Frameworks */,
+				D0B100000000000000000008 /* AVFAudio.framework in Frameworks */,
+				D0B100000000000000000009 /* AVFoundation.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D0C400000000000000000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D0C100000000000000000002 /* DoryFSWorkerContracts in Frameworks */,
+				D0C100000000000000000003 /* DoryFSWorkerServiceCore in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D0D400000000000000000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D0D100000000000000000002 /* DoryRendererWorkerContracts in Frameworks */,
+				D0D100000000000000000003 /* DoryRendererWorkerServiceCore in Frameworks */,
+				D0D100000000000000000004 /* DoryRendererWorkerVirglBackend in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -132,18 +262,35 @@
 			isa = PBXGroup;
 			children = (
 				3E705CF12FE37C790094B33C /* Dory */,
+				D0B300000000000000000001 /* DoryHVRunner Sources */,
+				D0C300000000000000000001 /* DoryFSWorker Sources */,
+				D0D300000000000000000001 /* DoryRendererWorker Sources */,
 				AA1000000000000000000004 /* DoryStorageShared */,
 				AA1000000000000000000005 /* DoryStorageProvider */,
 				3E705CFF2FE37C7B0094B33C /* DoryTests */,
 				3E705D092FE37C7B0094B33C /* DoryUITests */,
+				D0B300000000000000000002 /* Frameworks */,
 				3E705CF02FE37C790094B33C /* Products */,
 			);
+			sourceTree = "<group>";
+		};
+		D0B300000000000000000002 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				D0B200000000000000000002 /* AppKit.framework */,
+				D0B200000000000000000003 /* AVFAudio.framework */,
+				D0B200000000000000000004 /* AVFoundation.framework */,
+			);
+			name = Frameworks;
 			sourceTree = "<group>";
 		};
 		3E705CF02FE37C790094B33C /* Products */ = {
 			isa = PBXGroup;
 			children = (
 				3E705CEF2FE37C790094B33C /* Dory.app */,
+				D0B200000000000000000001 /* DoryHVRunner.app */,
+				D0C200000000000000000001 /* DoryFSWorker.xpc */,
+				D0D200000000000000000001 /* DoryRendererWorker.xpc */,
 				AA1000000000000000000003 /* DoryStorageProvider.appex */,
 				3E705CFC2FE37C7B0094B33C /* DoryTests.xctest */,
 				3E705D062FE37C7B0094B33C /* DoryUITests.xctest */,
@@ -158,16 +305,19 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 3E705D0E2FE37C7B0094B33C /* Build configuration list for PBXNativeTarget "Dory" */;
 			buildPhases = (
+				D0E400000000000000000002 /* Verify Release Guest Kernels */,
 				3E705CEB2FE37C790094B33C /* Sources */,
 				3E705CEC2FE37C790094B33C /* Frameworks */,
 				3E705CED2FE37C790094B33C /* Resources */,
 				AA1000000000000000000009 /* Embed App Extensions */,
 				AA00000000000000000000D0 /* Prune Stale Bundled Helpers */,
+				D0B400000000000000000004 /* Embed Linux VM Runner */,
 			);
 			buildRules = (
 			);
 			dependencies = (
 				AA100000000000000000000B /* PBXTargetDependency */,
+				D0B800000000000000000002 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				3E705CF12FE37C790094B33C /* Dory */,
@@ -205,6 +355,86 @@
 			productName = DoryStorageProvider;
 			productReference = AA1000000000000000000003 /* DoryStorageProvider.appex */;
 			productType = "com.apple.product-type.app-extension";
+		};
+		D0B500000000000000000001 /* DoryHVRunner */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = D0B600000000000000000003 /* Build configuration list for PBXNativeTarget "DoryHVRunner" */;
+			buildPhases = (
+				D0B400000000000000000003 /* Sources */,
+				D0B400000000000000000001 /* Frameworks */,
+				D0B400000000000000000002 /* Resources */,
+				D0C400000000000000000004 /* Embed Filesystem Worker */,
+				D0D400000000000000000004 /* Embed Renderer Worker */,
+				D0E400000000000000000001 /* Package Exact Renderer Tuple */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				D0C800000000000000000002 /* PBXTargetDependency */,
+				D0D800000000000000000002 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				D0B300000000000000000001 /* DoryHVRunner Sources */,
+			);
+			name = DoryHVRunner;
+			packageProductDependencies = (
+				D0B700000000000000000001 /* DoryHV */,
+				D0B700000000000000000002 /* DoryCore */,
+				D0B700000000000000000003 /* DorydKit */,
+				D0B700000000000000000004 /* DoryOperations */,
+				D0B700000000000000000005 /* DoryVMContracts */,
+				D0B700000000000000000006 /* DoryVMMKit */,
+			);
+			productName = DoryHVRunner;
+			productReference = D0B200000000000000000001 /* DoryHVRunner.app */;
+			productType = "com.apple.product-type.application";
+		};
+		D0C500000000000000000001 /* DoryFSWorker */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = D0C600000000000000000003 /* Build configuration list for PBXNativeTarget "DoryFSWorker" */;
+			buildPhases = (
+				D0C400000000000000000003 /* Sources */,
+				D0C400000000000000000001 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				D0C300000000000000000001 /* DoryFSWorker Sources */,
+			);
+			name = DoryFSWorker;
+			packageProductDependencies = (
+				D0C700000000000000000001 /* DoryFSWorkerContracts */,
+				D0C700000000000000000002 /* DoryFSWorkerServiceCore */,
+			);
+			productName = DoryFSWorker;
+			productReference = D0C200000000000000000001 /* DoryFSWorker.xpc */;
+			productType = "com.apple.product-type.xpc-service";
+		};
+		D0D500000000000000000001 /* DoryRendererWorker */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = D0D600000000000000000003 /* Build configuration list for PBXNativeTarget "DoryRendererWorker" */;
+			buildPhases = (
+				D0D400000000000000000003 /* Sources */,
+				D0D400000000000000000001 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				D0D300000000000000000001 /* DoryRendererWorker Sources */,
+			);
+			name = DoryRendererWorker;
+			packageProductDependencies = (
+				D0D700000000000000000001 /* DoryRendererWorkerContracts */,
+				D0D700000000000000000002 /* DoryRendererWorkerServiceCore */,
+				D0D700000000000000000003 /* DoryRendererWorkerVirglBackend */,
+			);
+			productName = DoryRendererWorker;
+			productReference = D0D200000000000000000001 /* DoryRendererWorker.xpc */;
+			productType = "com.apple.product-type.xpc-service";
 		};
 		3E705CFB2FE37C7B0094B33C /* DoryTests */ = {
 			isa = PBXNativeTarget;
@@ -261,6 +491,15 @@
 					AA100000000000000000000A = {
 						CreatedOnToolsVersion = 27.0;
 					};
+					D0B500000000000000000001 = {
+						CreatedOnToolsVersion = 27.0;
+					};
+					D0C500000000000000000001 = {
+						CreatedOnToolsVersion = 27.0;
+					};
+					D0D500000000000000000001 = {
+						CreatedOnToolsVersion = 27.0;
+					};
 					3E705CEE2FE37C790094B33C = {
 						CreatedOnToolsVersion = 27.0;
 					};
@@ -285,6 +524,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				AA00000000000000000000D1 /* XCLocalSwiftPackageReference "dory-core-swift" */,
+				D0B700000000000000000000 /* XCLocalSwiftPackageReference "ContainerizationEngine" */,
 				AA00000000000000000000B1 /* XCRemoteSwiftPackageReference "SwiftTerm" */,
 				AA00000000000000000000C1 /* XCRemoteSwiftPackageReference "Sparkle" */,
 			);
@@ -294,6 +534,9 @@
 			projectRoot = "";
 			targets = (
 				3E705CEE2FE37C790094B33C /* Dory */,
+				D0B500000000000000000001 /* DoryHVRunner */,
+				D0C500000000000000000001 /* DoryFSWorker */,
+				D0D500000000000000000001 /* DoryRendererWorker */,
 				AA100000000000000000000A /* DoryStorageProvider */,
 				3E705CFB2FE37C7B0094B33C /* DoryTests */,
 				3E705D052FE37C7B0094B33C /* DoryUITests */,
@@ -324,9 +567,64 @@
 			files = (
 			);
 		};
+		D0B400000000000000000002 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
+		D0E400000000000000000002 /* Verify Release Guest Kernels */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/guest/kernel/PINS",
+				"$(SRCROOT)/guest/kernel/verify-release-package.sh",
+				"$(SRCROOT)/guest/kernel/verify-build.sh",
+			);
+			name = "Verify Release Guest Kernels";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/bash;
+			shellScript = "exec /bin/bash \"$SRCROOT/guest/kernel/verify-release-package.sh\"\n";
+		};
+		D0E400000000000000000001 /* Package Exact Renderer Tuple */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/Config/DoryRendererProductionTuple.json",
+				"$(SRCROOT)/Packages/ContainerizationEngine/DoryRendererWorker.entitlements",
+				"$(SRCROOT)/Packages/ContainerizationEngine/Package.swift",
+				"$(SRCROOT)/scripts/assemble-renderer-production-worker.sh",
+				"$(SRCROOT)/scripts/package-renderer-production-bundle.py",
+				"$(SRCROOT)/scripts/renderer-production-tuple.py",
+				"$(SRCROOT)/scripts/xcode-package-renderer-production.sh",
+			);
+			name = "Package Exact Renderer Tuple";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/bash;
+			shellScript = "exec \"$SRCROOT/scripts/xcode-package-renderer-production.sh\"\n";
+		};
 		AA00000000000000000000D0 /* Prune Stale Bundled Helpers */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;
@@ -345,7 +643,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "set -eu\nAPP=\"${TARGET_BUILD_DIR}/${WRAPPER_NAME}\"\nHELPERS=\"$APP/Contents/Helpers\"\nif [ -d \"$HELPERS\" ]; then\n  find \"$HELPERS\" -maxdepth 1 -type f -exec rm -f {} +\n  rmdir \"$HELPERS\" 2>/dev/null || true\nfi\n";
+			shellScript = "set -eu\nAPP=\"${TARGET_BUILD_DIR}/${WRAPPER_NAME}\"\nHELPERS=\"$APP/Contents/Helpers\"\ncase \"$HELPERS\" in\n  \"${TARGET_BUILD_DIR}\"/*.app/Contents/Helpers) ;;\n  *) echo \"error: refusing to prune unexpected helper path: $HELPERS\" >&2; exit 1 ;;\nesac\nif [ -d \"$HELPERS\" ]; then\n  find \"$HELPERS\" -depth -delete\nfi\n";
 			};
 /* End PBXShellScriptBuildPhase section */
 
@@ -372,6 +670,27 @@
 			files = (
 			);
 		};
+		D0B400000000000000000003 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D0C400000000000000000003 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D0D400000000000000000003 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -379,6 +698,21 @@
 			isa = PBXTargetDependency;
 			target = AA100000000000000000000A /* DoryStorageProvider */;
 			targetProxy = AA1000000000000000000002 /* PBXContainerItemProxy */;
+		};
+		D0B800000000000000000002 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = D0B500000000000000000001 /* DoryHVRunner */;
+			targetProxy = D0B800000000000000000001 /* PBXContainerItemProxy */;
+		};
+		D0C800000000000000000002 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = D0C500000000000000000001 /* DoryFSWorker */;
+			targetProxy = D0C800000000000000000001 /* PBXContainerItemProxy */;
+		};
+		D0D800000000000000000002 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = D0D500000000000000000001 /* DoryRendererWorker */;
+			targetProxy = D0D800000000000000000001 /* PBXContainerItemProxy */;
 		};
 		3E705CFE2FE37C7B0094B33C /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
@@ -399,7 +733,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = DoryStorageProvider/DoryStorageProvider.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 49;
+				CURRENT_PROJECT_VERSION = 52;
 				DEVELOPMENT_TEAM = 864H636QW4;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -411,7 +745,7 @@
 					"@executable_path/../../../../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.4.5;
+				MARKETING_VERSION = 0.4.6;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pythonxi.Dory.StorageProvider;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -427,7 +761,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = DoryStorageProvider/DoryStorageProvider.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 49;
+				CURRENT_PROJECT_VERSION = 52;
 				DEVELOPMENT_TEAM = 864H636QW4;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -439,7 +773,7 @@
 					"@executable_path/../../../../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.4.5;
+				MARKETING_VERSION = 0.4.6;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pythonxi.Dory.StorageProvider;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -577,12 +911,16 @@
 				CODE_SIGN_ENTITLEMENTS = Dory/Dory.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 49;
+				CURRENT_PROJECT_VERSION = 52;
 				DEVELOPMENT_TEAM = 864H636QW4;
+				DORY_BUNDLE_VENUS = 0;
+				DORY_BUNDLE_VENUS_REQUIRED = 0;
+				DORY_VM_QUALIFICATION_BOOTSTRAP = 0;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_DEBUG_DYLIB = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Config/Dory-Info.plist;
@@ -590,11 +928,12 @@
 				INFOPLIST_KEY_LSUIElement = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Dory connects to its local Linux VM so your container ports are reachable at localhost.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Dory shares your Mac microphone with Linux desktop machines when you use audio input.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.4.5;
+				MARKETING_VERSION = 0.4.6;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pythonxi.Dory;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -615,11 +954,15 @@
 				CODE_SIGN_ENTITLEMENTS = Dory/Dory.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 49;
+				CURRENT_PROJECT_VERSION = 52;
 				DEVELOPMENT_TEAM = 864H636QW4;
+				DORY_BUNDLE_VENUS = 1;
+				DORY_BUNDLE_VENUS_REQUIRED = 1;
+				DORY_VM_QUALIFICATION_BOOTSTRAP = 0;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Config/Dory-Info.plist;
@@ -627,11 +970,12 @@
 				INFOPLIST_KEY_LSUIElement = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Dory connects to its local Linux VM so your container ports are reachable at localhost.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Dory shares your Mac microphone with Linux desktop machines when you use audio input.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.4.5;
+				MARKETING_VERSION = 0.4.6;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pythonxi.Dory;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -649,11 +993,11 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 49;
+				CURRENT_PROJECT_VERSION = 52;
 				DEVELOPMENT_TEAM = 864H636QW4;
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.4.5;
+				MARKETING_VERSION = 0.4.6;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pythonxi.DoryTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
@@ -670,11 +1014,11 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 49;
+				CURRENT_PROJECT_VERSION = 52;
 				DEVELOPMENT_TEAM = 864H636QW4;
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.4.5;
+				MARKETING_VERSION = 0.4.6;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pythonxi.DoryTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
@@ -690,10 +1034,10 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 49;
+				CURRENT_PROJECT_VERSION = 52;
 				DEVELOPMENT_TEAM = 864H636QW4;
 				GENERATE_INFOPLIST_FILE = YES;
-				MARKETING_VERSION = 0.4.5;
+				MARKETING_VERSION = 0.4.6;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pythonxi.DoryUITests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
@@ -709,10 +1053,10 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 49;
+				CURRENT_PROJECT_VERSION = 52;
 				DEVELOPMENT_TEAM = 864H636QW4;
 				GENERATE_INFOPLIST_FILE = YES;
-				MARKETING_VERSION = 0.4.5;
+				MARKETING_VERSION = 0.4.6;
 				PRODUCT_BUNDLE_IDENTIFIER = com.pythonxi.DoryUITests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
@@ -721,6 +1065,190 @@
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
 				TEST_TARGET_NAME = Dory;
+			};
+			name = Release;
+		};
+		D0B600000000000000000001 /* Debug configuration for PBXNativeTarget "DoryHVRunner" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = Packages/ContainerizationEngine/dory-hv.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 52;
+				DEVELOPMENT_TEAM = 864H636QW4;
+				DORY_BUNDLE_VENUS = 0;
+				DORY_BUNDLE_VENUS_REQUIRED = 0;
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_DEBUG_DYLIB = NO;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_PREVIEWS = NO;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				EXECUTABLE_NAME = "dory-hv";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Config/DoryHVRunner-Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				MARKETING_VERSION = 0.4.6;
+				OTHER_SWIFT_FLAGS = "$(inherited) -package-name containerizationengine";
+				PRODUCT_BUNDLE_IDENTIFIER = com.pythonxi.Dory.HVRunner;
+				PRODUCT_NAME = DoryHVRunner;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = macosx;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		D0B600000000000000000002 /* Release configuration for PBXNativeTarget "DoryHVRunner" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO;
+				CODE_SIGN_ENTITLEMENTS = Packages/ContainerizationEngine/dory-hv.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 52;
+				DEVELOPMENT_TEAM = 864H636QW4;
+				DORY_BUNDLE_VENUS = 1;
+				DORY_BUNDLE_VENUS_REQUIRED = 1;
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_DEBUG_DYLIB = NO;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_PREVIEWS = NO;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				EXECUTABLE_NAME = "dory-hv";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Config/DoryHVRunner-Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				MARKETING_VERSION = 0.4.6;
+				OTHER_SWIFT_FLAGS = "$(inherited) -package-name containerizationengine";
+				PRODUCT_BUNDLE_IDENTIFIER = com.pythonxi.Dory.HVRunner;
+				PRODUCT_NAME = DoryHVRunner;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = macosx;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+		D0C600000000000000000001 /* Debug configuration for PBXNativeTarget "DoryFSWorker" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO;
+				CODE_SIGN_ENTITLEMENTS = Packages/ContainerizationEngine/DoryFSWorker.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 52;
+				DEVELOPMENT_TEAM = 864H636QW4;
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_DEBUG_DYLIB = NO;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Config/DoryFSWorker-Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@executable_path/../../../../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				MARKETING_VERSION = 0.4.6;
+				PRODUCT_BUNDLE_IDENTIFIER = com.pythonxi.Dory.HVRunner.FSWorker;
+				PRODUCT_NAME = DoryFSWorker;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = macosx;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		D0C600000000000000000002 /* Release configuration for PBXNativeTarget "DoryFSWorker" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO;
+				CODE_SIGN_ENTITLEMENTS = Packages/ContainerizationEngine/DoryFSWorker.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 52;
+				DEVELOPMENT_TEAM = 864H636QW4;
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_DEBUG_DYLIB = NO;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Config/DoryFSWorker-Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@executable_path/../../../../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				MARKETING_VERSION = 0.4.6;
+				PRODUCT_BUNDLE_IDENTIFIER = com.pythonxi.Dory.HVRunner.FSWorker;
+				PRODUCT_NAME = DoryFSWorker;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = macosx;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+		D0D600000000000000000001 /* Debug configuration for PBXNativeTarget "DoryRendererWorker" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = Packages/ContainerizationEngine/DoryRendererWorker.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 52;
+				DEVELOPMENT_TEAM = 864H636QW4;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_DEBUG_DYLIB = NO;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Config/DoryRendererWorker-Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@executable_path/../../../../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				MARKETING_VERSION = 0.4.6;
+				PRODUCT_BUNDLE_IDENTIFIER = com.pythonxi.Dory.HVRunner.RendererWorker;
+				PRODUCT_NAME = DoryRendererWorker;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = macosx;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		D0D600000000000000000002 /* Release configuration for PBXNativeTarget "DoryRendererWorker" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO;
+				CODE_SIGN_ENTITLEMENTS = Packages/ContainerizationEngine/DoryRendererWorker.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 52;
+				DEVELOPMENT_TEAM = 864H636QW4;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_DEBUG_DYLIB = NO;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Config/DoryRendererWorker-Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@executable_path/../../../../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				MARKETING_VERSION = 0.4.6;
+				PRODUCT_BUNDLE_IDENTIFIER = com.pythonxi.Dory.HVRunner.RendererWorker;
+				PRODUCT_NAME = DoryRendererWorker;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = macosx;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 6.0;
 			};
 			name = Release;
 		};
@@ -768,12 +1296,43 @@
 			);
 			defaultConfigurationName = Release;
 		};
+		D0B600000000000000000003 /* Build configuration list for PBXNativeTarget "DoryHVRunner" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D0B600000000000000000001 /* Debug configuration for PBXNativeTarget "DoryHVRunner" */,
+				D0B600000000000000000002 /* Release configuration for PBXNativeTarget "DoryHVRunner" */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		D0C600000000000000000003 /* Build configuration list for PBXNativeTarget "DoryFSWorker" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D0C600000000000000000001 /* Debug configuration for PBXNativeTarget "DoryFSWorker" */,
+				D0C600000000000000000002 /* Release configuration for PBXNativeTarget "DoryFSWorker" */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		D0D600000000000000000003 /* Build configuration list for PBXNativeTarget "DoryRendererWorker" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D0D600000000000000000001 /* Debug configuration for PBXNativeTarget "DoryRendererWorker" */,
+				D0D600000000000000000002 /* Release configuration for PBXNativeTarget "DoryRendererWorker" */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
 		AA00000000000000000000D1 /* XCLocalSwiftPackageReference "dory-core-swift" */ = {
 			isa = XCLocalSwiftPackageReference;
 			relativePath = "dory-core-swift";
+		};
+		D0B700000000000000000000 /* XCLocalSwiftPackageReference "ContainerizationEngine" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Packages/ContainerizationEngine;
 		};
 /* End XCLocalSwiftPackageReference section */
 
@@ -811,6 +1370,61 @@
 			isa = XCSwiftPackageProductDependency;
 			package = AA00000000000000000000C1 /* XCRemoteSwiftPackageReference "Sparkle" */;
 			productName = Sparkle;
+		};
+		D0B700000000000000000001 /* DoryHV */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = D0B700000000000000000000 /* XCLocalSwiftPackageReference "ContainerizationEngine" */;
+			productName = DoryHV;
+		};
+		D0B700000000000000000002 /* DoryCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA00000000000000000000D1 /* XCLocalSwiftPackageReference "dory-core-swift" */;
+			productName = DoryCore;
+		};
+		D0B700000000000000000003 /* DorydKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA00000000000000000000D1 /* XCLocalSwiftPackageReference "dory-core-swift" */;
+			productName = DorydKit;
+		};
+		D0B700000000000000000004 /* DoryOperations */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA00000000000000000000D1 /* XCLocalSwiftPackageReference "dory-core-swift" */;
+			productName = DoryOperations;
+		};
+		D0B700000000000000000005 /* DoryVMContracts */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA00000000000000000000D1 /* XCLocalSwiftPackageReference "dory-core-swift" */;
+			productName = DoryVMContracts;
+		};
+		D0B700000000000000000006 /* DoryVMMKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA00000000000000000000D1 /* XCLocalSwiftPackageReference "dory-core-swift" */;
+			productName = DoryVMMKit;
+		};
+		D0C700000000000000000001 /* DoryFSWorkerContracts */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = D0B700000000000000000000 /* XCLocalSwiftPackageReference "ContainerizationEngine" */;
+			productName = DoryFSWorkerContracts;
+		};
+		D0C700000000000000000002 /* DoryFSWorkerServiceCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = D0B700000000000000000000 /* XCLocalSwiftPackageReference "ContainerizationEngine" */;
+			productName = DoryFSWorkerServiceCore;
+		};
+		D0D700000000000000000001 /* DoryRendererWorkerContracts */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = D0B700000000000000000000 /* XCLocalSwiftPackageReference "ContainerizationEngine" */;
+			productName = DoryRendererWorkerContracts;
+		};
+		D0D700000000000000000002 /* DoryRendererWorkerServiceCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = D0B700000000000000000000 /* XCLocalSwiftPackageReference "ContainerizationEngine" */;
+			productName = DoryRendererWorkerServiceCore;
+		};
+		D0D700000000000000000003 /* DoryRendererWorkerVirglBackend */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = D0B700000000000000000000 /* XCLocalSwiftPackageReference "ContainerizationEngine" */;
+			productName = DoryRendererWorkerVirglBackend;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

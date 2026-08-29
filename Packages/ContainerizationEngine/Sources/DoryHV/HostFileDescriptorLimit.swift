@@ -5,9 +5,9 @@ public enum HostFileDescriptorLimitError: Error, Equatable {
     case update(Int32)
 }
 
-/// Raises launchd's commonly low descriptor soft limit before HostFS starts pinning inode
-/// identities. Existing higher limits are preserved; the requested increase is bounded so a
-/// malformed hard limit cannot grant the VM process an unreasonable descriptor budget.
+/// Raises the helper process's commonly low descriptor soft limit for its VMM devices, sockets,
+/// and relays. The filesystem XPC service establishes its own independent limit in ServiceCore;
+/// resource limits are process-local and cannot be inherited after launch.
 public enum HostFileDescriptorLimit {
     public static let ceiling: rlim_t = 262_144
 

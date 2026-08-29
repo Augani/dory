@@ -1,14 +1,30 @@
 use serde_json::{json, Value};
+use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+#[cfg(target_os = "linux")]
+use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::path::{Path, PathBuf};
 
 pub const FEX_BUNDLE_PATH: &str = "/usr/lib/dory/fex";
 pub const FEX_RUNTIME_PATH: &str = "/run/dory-fex";
 pub const FEX_SERVER_SOCKET_PATH: &str = "/run/dory-fex/FEXServer.Socket";
+pub const FEX_SERVER_PATH: &str = "/usr/lib/dory/fex/FEXServer";
+pub const FEX_INIT_PATH: &str = "/run/dory-fex/dory-fex-init";
+pub const DORY_RUNC_PATH: &str = "/usr/local/bin/dory-runc";
+pub const REAL_RUNC_PATH: &str = "/usr/local/bin/runc.real";
+
+const NESTED_RUNC_CANDIDATES: [&str; 6] = [
+    "/usr/local/sbin/runc",
+    "/usr/local/bin/runc",
+    "/usr/sbin/runc",
+    "/usr/bin/runc",
+    "/sbin/runc",
+    "/bin/runc",
+];
 
 const DEFAULT_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 const FORCED_ENVIRONMENT: [(&str, &str); 5] = [
@@ -18,6 +34,14 @@ const FORCED_ENVIRONMENT: [(&str, &str); 5] = [
     ("FEX_APP_CONFIG_LOCATION", FEX_BUNDLE_PATH),
     ("FEX_SERVERSOCKETPATH", FEX_SERVER_SOCKET_PATH),
 ];
+
+#[cfg(target_os = "linux")]
+const MFD_EXEC: libc::c_uint = 0x0010;
+#[cfg(target_os = "linux")]
+const F_SEAL_EXEC: libc::c_int = 0x0020;
+#[cfg(target_os = "linux")]
+const REQUIRED_EXECUTABLE_SEALS: libc::c_int =
+    libc::F_SEAL_SEAL | libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_WRITE;
 
 #[derive(Debug)]
 pub enum WrapperError {
@@ -60,6 +84,134 @@ fn io_error(context: impl Into<String>, source: io::Error) -> WrapperError {
         context: context.into(),
         source,
     }
+}
+
+/// Copies an executable into a sealed executable memfd.
+///
+/// A nested runc must use its own `/proc/self/exe` as the container init. Newer runc releases try
+/// to create an overlayfs clone when `/proc/self/exe` is a regular file. That clone is not
+/// executable when the original binary entered the parent container through an OCI file bind
+/// mount. Starting runc from a sealed memfd is both the upstream-recognized safe-executable
+/// contract and avoids that invalid nested overlayfs path.
+#[cfg(target_os = "linux")]
+pub fn clone_sealed_executable(path: &Path) -> Result<File, WrapperError> {
+    let mut source = File::open(path)
+        .map_err(|error| io_error(format!("cannot open executable {}", path.display()), error))?;
+    let metadata = source.metadata().map_err(|error| {
+        io_error(
+            format!("cannot inspect executable {}", path.display()),
+            error,
+        )
+    })?;
+    if !metadata.is_file() || metadata.permissions().mode() & 0o111 == 0 {
+        return Err(WrapperError::InvalidArguments(format!(
+            "{} is not an executable regular file",
+            path.display()
+        )));
+    }
+
+    let name = b"dory-runc.real\0";
+    let flags = libc::MFD_ALLOW_SEALING | libc::MFD_CLOEXEC | MFD_EXEC;
+    let mut descriptor = unsafe { libc::memfd_create(name.as_ptr().cast(), flags) };
+    if descriptor == -1 && io::Error::last_os_error().raw_os_error() == Some(libc::EINVAL) {
+        // MFD_EXEC was introduced in Linux 6.3. Dory currently ships a newer kernel, while this
+        // retry keeps the wrapper valid for older Dory guests whose default memfd policy is exec.
+        descriptor = unsafe {
+            libc::memfd_create(
+                name.as_ptr().cast(),
+                libc::MFD_ALLOW_SEALING | libc::MFD_CLOEXEC,
+            )
+        };
+    }
+    if descriptor == -1 {
+        return Err(io_error(
+            format!(
+                "cannot create sealed executable clone of {}",
+                path.display()
+            ),
+            io::Error::last_os_error(),
+        ));
+    }
+    let mut cloned = unsafe { File::from_raw_fd(descriptor) };
+    let copied = io::copy(&mut source, &mut cloned).map_err(|error| {
+        io_error(
+            format!(
+                "cannot copy executable {} into sealed memory",
+                path.display()
+            ),
+            error,
+        )
+    })?;
+    if copied != metadata.len() {
+        return Err(WrapperError::InvalidArguments(format!(
+            "short copy while sealing {}: copied {copied} of {} bytes",
+            path.display(),
+            metadata.len()
+        )));
+    }
+    cloned
+        .set_permissions(fs::Permissions::from_mode(0o511))
+        .map_err(|error| io_error("cannot make sealed runc clone executable", error))?;
+
+    // Linux 6.3+ can additionally prevent executable-bit changes. The base seals are the exact
+    // contract runc's IsSelfExeCloned uses and must be applied after this optional seal.
+    unsafe {
+        libc::fcntl(cloned.as_raw_fd(), libc::F_ADD_SEALS, F_SEAL_EXEC);
+    }
+    if unsafe {
+        libc::fcntl(
+            cloned.as_raw_fd(),
+            libc::F_ADD_SEALS,
+            REQUIRED_EXECUTABLE_SEALS,
+        )
+    } == -1
+    {
+        return Err(io_error(
+            "cannot seal executable runc clone",
+            io::Error::last_os_error(),
+        ));
+    }
+    Ok(cloned)
+}
+
+#[cfg(target_os = "linux")]
+pub fn sealed_executable_path(executable: &File) -> PathBuf {
+    PathBuf::from(format!("/proc/self/fd/{}", executable.as_raw_fd()))
+}
+
+/// Returns whether `path` is an exact mount point in Linux mountinfo.
+///
+/// Dory injects the preserved nested runc as a file bind mount at `runc.real`. An ordinary engine
+/// guest keeps `runc.real` on its root filesystem, so this authoritative kernel record scopes the
+/// sealed-memfd handoff to nested runtimes without adding the copy cost to normal containers.
+pub fn mountinfo_has_exact_mountpoint(mountinfo: &str, path: &Path) -> Result<bool, WrapperError> {
+    let expected = path.to_str().ok_or_else(|| {
+        WrapperError::InvalidArguments(format!(
+            "mount point path is not valid UTF-8: {}",
+            path.display()
+        ))
+    })?;
+    for (index, line) in mountinfo.lines().enumerate() {
+        let fields: Vec<&str> = line.split_ascii_whitespace().collect();
+        let separator = fields.iter().position(|field| *field == "-");
+        if fields.len() < 10 || separator.is_none_or(|position| position < 6) {
+            return Err(WrapperError::InvalidArguments(format!(
+                "invalid /proc/self/mountinfo record on line {}",
+                index + 1
+            )));
+        }
+        if fields[4] == expected {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+#[cfg(target_os = "linux")]
+pub fn real_runc_requires_sealed_handoff() -> Result<bool, WrapperError> {
+    let mountinfo = fs::read_to_string("/proc/self/mountinfo")
+        .map_err(|error| io_error("cannot read /proc/self/mountinfo", error))?;
+    mountinfo_has_exact_mountpoint(&mountinfo, Path::new(REAL_RUNC_PATH))
 }
 
 /// Finds an OCI bundle only for runc operations that consume `config.json`. All other runc
@@ -222,6 +374,7 @@ pub fn inject_fex(spec: &mut Value) -> Result<bool, WrapperError> {
     })?;
     let mut has_expected_bundle_mount = false;
     let mut has_expected_runtime_mount = false;
+    let mut has_expected_hook_mount = false;
     for mount in mounts.iter() {
         let Some(mount) = mount.as_object() else {
             return Err(WrapperError::InvalidSpec(
@@ -252,6 +405,15 @@ pub fn inject_fex(spec: &mut Value) -> Result<bool, WrapperError> {
                     )));
                 }
             }
+            FEX_INIT_PATH => {
+                if is_expected_hook_mount(mount) {
+                    has_expected_hook_mount = true;
+                } else {
+                    return Err(WrapperError::InvalidSpec(format!(
+                        "OCI mount destination {FEX_INIT_PATH} is reserved by Dory's amd64 runtime"
+                    )));
+                }
+            }
             _ => continue,
         }
     }
@@ -269,7 +431,16 @@ pub fn inject_fex(spec: &mut Value) -> Result<bool, WrapperError> {
             "destination": FEX_RUNTIME_PATH,
             "type": "tmpfs",
             "source": "tmpfs",
-            "options": ["nosuid", "nodev", "noexec", "mode=1777", "size=1m"]
+            "options": ["nosuid", "nodev", "mode=1777", "size=1m"]
+        }));
+        changed = true;
+    }
+    if !has_expected_hook_mount {
+        mounts.push(json!({
+            "destination": FEX_INIT_PATH,
+            "type": "bind",
+            "source": DORY_RUNC_PATH,
+            "options": ["bind", "ro", "nosuid", "nodev"]
         }));
         changed = true;
     }
@@ -322,6 +493,154 @@ pub fn inject_fex(spec: &mut Value) -> Result<bool, WrapperError> {
     Ok(changed)
 }
 
+/// Interposes Dory's OCI admission wrapper when a privileged container carries its own runc.
+/// Nested container managers otherwise bypass the outer engine wrapper, so their workloads reach
+/// the host binfmt handler without the private FEXServer mount and fail at process startup.
+fn inject_nested_runtime(
+    spec: &mut Value,
+    bundle: &Path,
+    wrapper_source: &Path,
+) -> Result<bool, WrapperError> {
+    let has_sys_admin = spec
+        .pointer("/process/capabilities/bounding")
+        .and_then(Value::as_array)
+        .is_some_and(|capabilities| {
+            capabilities
+                .iter()
+                .any(|capability| capability.as_str() == Some("CAP_SYS_ADMIN"))
+        });
+    if !has_sys_admin {
+        return Ok(false);
+    }
+
+    let root_path = spec
+        .pointer("/root/path")
+        .and_then(Value::as_str)
+        .ok_or_else(|| WrapperError::InvalidSpec("OCI root.path must be a string".to_owned()))?;
+    let root_path = Path::new(root_path);
+    let root_path = if root_path.is_absolute() {
+        root_path.to_path_buf()
+    } else {
+        bundle.join(root_path)
+    };
+    let canonical_root = fs::canonicalize(&root_path).map_err(|error| {
+        io_error(
+            format!("cannot resolve OCI root {}", root_path.display()),
+            error,
+        )
+    })?;
+    if !canonical_root.is_dir() {
+        return Err(WrapperError::InvalidSpec(format!(
+            "OCI root {} is not a directory",
+            canonical_root.display()
+        )));
+    }
+
+    let mut nested_runtime = None;
+    for candidate in NESTED_RUNC_CANDIDATES {
+        let path = canonical_root.join(candidate.trim_start_matches('/'));
+        let Ok(canonical) = fs::canonicalize(&path) else {
+            continue;
+        };
+        if !canonical.starts_with(&canonical_root) {
+            return Err(WrapperError::InvalidSpec(format!(
+                "nested runc {} resolves outside the OCI root",
+                path.display()
+            )));
+        }
+        let metadata = fs::metadata(&canonical).map_err(|error| {
+            io_error(
+                format!("cannot inspect nested runc {}", canonical.display()),
+                error,
+            )
+        })?;
+        if metadata.is_file() && metadata.permissions().mode() & 0o111 != 0 {
+            nested_runtime = Some((candidate, canonical));
+            break;
+        }
+    }
+    let Some((nested_destination, nested_source)) = nested_runtime else {
+        return Ok(false);
+    };
+
+    let wrapper_metadata = fs::metadata(wrapper_source).map_err(|error| {
+        io_error(
+            format!(
+                "cannot inspect Dory nested-runtime wrapper {}",
+                wrapper_source.display()
+            ),
+            error,
+        )
+    })?;
+    if !wrapper_metadata.is_file() || wrapper_metadata.permissions().mode() & 0o111 == 0 {
+        return Err(WrapperError::InvalidSpec(format!(
+            "Dory nested-runtime wrapper {} is not an executable regular file",
+            wrapper_source.display()
+        )));
+    }
+
+    let mounts = spec
+        .get_mut("mounts")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| {
+            WrapperError::InvalidSpec("OCI config mounts must be an array".to_owned())
+        })?;
+    let expected_mounts = [
+        (nested_source.as_path(), REAL_RUNC_PATH),
+        (wrapper_source, DORY_RUNC_PATH),
+        (wrapper_source, nested_destination),
+    ];
+    let mut expected_present = [false; 3];
+    for mount in mounts.iter() {
+        let destination = mount
+            .get("destination")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                WrapperError::InvalidSpec("OCI mount is missing a string destination".to_owned())
+            })?;
+        let destination = normalized_destination(destination);
+        if let Some((index, (source, _))) = expected_mounts
+            .iter()
+            .enumerate()
+            .find(|(_, (_, expected_destination))| destination == *expected_destination)
+        {
+            let expected_options = json!(["bind", "ro", "nosuid", "nodev"]);
+            let is_expected = mount.get("source").and_then(Value::as_str)
+                == Some(source.to_string_lossy().as_ref())
+                && mount.get("type").and_then(Value::as_str) == Some("bind")
+                && mount.get("options") == Some(&expected_options);
+            if !is_expected {
+                return Err(WrapperError::InvalidSpec(format!(
+                    "OCI mount destination {destination} is reserved by Dory's nested runtime"
+                )));
+            }
+            expected_present[index] = true;
+        }
+    }
+
+    if expected_present.iter().any(|present| *present) {
+        if expected_present.iter().all(|present| *present) {
+            return Ok(false);
+        }
+        return Err(WrapperError::InvalidSpec(
+            "OCI config contains an incomplete Dory nested-runtime mount contract".to_owned(),
+        ));
+    }
+
+    let bind_mount = |source: &Path, destination: &str| {
+        json!({
+            "destination": destination,
+            "type": "bind",
+            "source": source.to_string_lossy(),
+            "options": ["bind", "ro", "nosuid", "nodev"]
+        })
+    };
+    for (source, destination) in expected_mounts {
+        mounts.push(bind_mount(source, destination));
+    }
+    Ok(true)
+}
+
 fn normalized_destination(destination: &str) -> &str {
     if destination == "/" {
         destination
@@ -358,9 +677,25 @@ fn is_expected_runtime_mount(mount: &serde_json::Map<String, Value>) -> bool {
                     == &[
                         Value::String("nosuid".to_owned()),
                         Value::String("nodev".to_owned()),
-                        Value::String("noexec".to_owned()),
                         Value::String("mode=1777".to_owned()),
                         Value::String("size=1m".to_owned()),
+                    ]
+            })
+}
+
+fn is_expected_hook_mount(mount: &serde_json::Map<String, Value>) -> bool {
+    mount.get("source").and_then(Value::as_str) == Some(DORY_RUNC_PATH)
+        && mount.get("type").and_then(Value::as_str) == Some("bind")
+        && mount
+            .get("options")
+            .and_then(Value::as_array)
+            .is_some_and(|options| {
+                options
+                    == &[
+                        Value::String("bind".to_owned()),
+                        Value::String("ro".to_owned()),
+                        Value::String("nosuid".to_owned()),
+                        Value::String("nodev".to_owned()),
                     ]
             })
 }
@@ -378,6 +713,183 @@ fn fex_path(existing: &str) -> String {
     }
 }
 
+fn resolve_in_container_root(root: &Path, path: &Path) -> io::Result<PathBuf> {
+    let mut pending = path
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(value) => Some(value.to_os_string()),
+            std::path::Component::ParentDir => Some(OsString::from("..")),
+            _ => None,
+        })
+        .collect::<VecDeque<_>>();
+    let mut resolved = root.to_path_buf();
+    let mut symlinks = 0_u8;
+
+    while let Some(component) = pending.pop_front() {
+        if component == ".." {
+            if resolved == root {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "container path escapes its root",
+                ));
+            }
+            resolved.pop();
+            continue;
+        }
+
+        let candidate = resolved.join(&component);
+        let metadata = fs::symlink_metadata(&candidate)?;
+        if !metadata.file_type().is_symlink() {
+            resolved = candidate;
+            continue;
+        }
+
+        symlinks = symlinks.saturating_add(1);
+        if symlinks > 40 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "too many symlinks in container executable path",
+            ));
+        }
+        let target = fs::read_link(&candidate)?;
+        if target.is_absolute() {
+            resolved = root.to_path_buf();
+        }
+        let target_components = target
+            .components()
+            .filter_map(|component| match component {
+                std::path::Component::Normal(value) => Some(value.to_os_string()),
+                std::path::Component::ParentDir => Some(OsString::from("..")),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        for component in target_components.into_iter().rev() {
+            pending.push_front(component);
+        }
+    }
+
+    Ok(resolved)
+}
+
+fn executable_path(spec: &Value, bundle: &Path) -> Result<Option<PathBuf>, WrapperError> {
+    let root_path = spec
+        .pointer("/root/path")
+        .and_then(Value::as_str)
+        .ok_or_else(|| WrapperError::InvalidSpec("OCI root.path must be a string".to_owned()))?;
+    let root_path = Path::new(root_path);
+    let root_path = if root_path.is_absolute() {
+        root_path.to_path_buf()
+    } else {
+        bundle.join(root_path)
+    };
+    let canonical_root = match fs::canonicalize(&root_path) {
+        Ok(path) => path,
+        Err(_) => return Ok(None),
+    };
+    let process = spec
+        .get("process")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            WrapperError::InvalidSpec("OCI config process must be an object".to_owned())
+        })?;
+    let program = process
+        .get("args")
+        .and_then(Value::as_array)
+        .and_then(|args| args.first())
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            WrapperError::InvalidSpec("OCI process args must not be empty".to_owned())
+        })?;
+    let cwd = process.get("cwd").and_then(Value::as_str).unwrap_or("/");
+    let candidates = if program.contains('/') {
+        let relative = if program.starts_with('/') {
+            PathBuf::from(program.trim_start_matches('/'))
+        } else {
+            Path::new(cwd.trim_start_matches('/')).join(program)
+        };
+        vec![relative]
+    } else {
+        let path = process
+            .get("env")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .find_map(|entry| entry.strip_prefix("PATH="))
+            .unwrap_or(DEFAULT_PATH);
+        path.split(':')
+            .filter(|entry| !entry.is_empty())
+            .map(|entry| Path::new(entry.trim_start_matches('/')).join(program))
+            .collect()
+    };
+    for candidate in candidates {
+        let Ok(canonical) = resolve_in_container_root(&canonical_root, &candidate) else {
+            continue;
+        };
+        if canonical.starts_with(&canonical_root) && canonical.is_file() {
+            return Ok(Some(canonical));
+        }
+    }
+    Ok(None)
+}
+
+fn is_x86_64_executable(path: &Path, root: &Path, depth: u8) -> io::Result<bool> {
+    if depth > 4 {
+        return Ok(false);
+    }
+    let mut file = File::open(path)?;
+    let mut header = [0_u8; 256];
+    let length = file.read(&mut header)?;
+    if length >= 20 && &header[..4] == b"\x7fELF" {
+        return Ok(header[4] == 2 && header[5] == 1 && header[18] == 0x3e && header[19] == 0);
+    }
+    if length >= 3 && &header[..2] == b"#!" {
+        let line = String::from_utf8_lossy(&header[2..length]);
+        let interpreter = line.lines().next().unwrap_or("").split_whitespace().next();
+        if let Some(interpreter) = interpreter.filter(|value| value.starts_with('/')) {
+            let canonical =
+                resolve_in_container_root(root, Path::new(interpreter.trim_start_matches('/')))?;
+            if canonical.starts_with(root) {
+                return is_x86_64_executable(&canonical, root, depth + 1);
+            }
+        }
+    }
+    Ok(false)
+}
+
+fn wrap_x86_64_entrypoint(spec: &mut Value, bundle: &Path) -> Result<bool, WrapperError> {
+    let Some(executable) = executable_path(spec, bundle)? else {
+        return Ok(false);
+    };
+    let root_path = spec
+        .pointer("/root/path")
+        .and_then(Value::as_str)
+        .expect("validated root path");
+    let root = if Path::new(root_path).is_absolute() {
+        fs::canonicalize(root_path)
+    } else {
+        fs::canonicalize(bundle.join(root_path))
+    }
+    .map_err(|error| io_error("cannot resolve OCI root for amd64 detection", error))?;
+    if !is_x86_64_executable(&executable, &root, 0)
+        .map_err(|error| io_error(format!("cannot inspect {}", executable.display()), error))?
+    {
+        return Ok(false);
+    }
+    let args = spec
+        .pointer_mut("/process/args")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| WrapperError::InvalidSpec("OCI process args must be an array".to_owned()))?;
+    if args.first().and_then(Value::as_str) == Some(FEX_INIT_PATH) {
+        return Ok(false);
+    }
+    let original = std::mem::take(args);
+    args.push(Value::String(FEX_INIT_PATH.to_owned()));
+    args.push(Value::String("fex-init".to_owned()));
+    args.extend(original);
+    Ok(true)
+}
+
 pub fn prepare_bundle(bundle: &Path) -> Result<bool, WrapperError> {
     let config_path = bundle.join("config.json");
     let metadata = fs::symlink_metadata(&config_path)
@@ -391,7 +903,10 @@ pub fn prepare_bundle(bundle: &Path) -> Result<bool, WrapperError> {
     let original = fs::read(&config_path)
         .map_err(|error| io_error(format!("cannot read {}", config_path.display()), error))?;
     let mut spec: Value = serde_json::from_slice(&original)?;
-    if !inject_fex(&mut spec)? {
+    let fex_changed = inject_fex(&mut spec)?;
+    let init_changed = wrap_x86_64_entrypoint(&mut spec, bundle)?;
+    let nested_changed = inject_nested_runtime(&mut spec, bundle, Path::new(DORY_RUNC_PATH))?;
+    if !fex_changed && !init_changed && !nested_changed {
         return Ok(false);
     }
     let mut encoded = serde_json::to_vec(&spec)?;
@@ -495,6 +1010,14 @@ mod tests {
         })
     }
 
+    fn privileged_spec(environment: &[&str]) -> Value {
+        let mut value = spec(environment);
+        value["process"]["capabilities"] = json!({
+            "bounding": ["CAP_CHOWN", "CAP_SYS_ADMIN"]
+        });
+        value
+    }
+
     fn environment(spec: &Value) -> Vec<&str> {
         spec["process"]["env"]
             .as_array()
@@ -523,7 +1046,7 @@ mod tests {
         assert!(inject_fex(&mut value).unwrap());
         assert!(!inject_fex(&mut value).unwrap());
 
-        assert_eq!(value["mounts"].as_array().unwrap().len(), 2);
+        assert_eq!(value["mounts"].as_array().unwrap().len(), 3);
         assert_eq!(value["mounts"][0]["source"], FEX_BUNDLE_PATH);
         assert_eq!(value["mounts"][0]["destination"], FEX_BUNDLE_PATH);
         assert_eq!(
@@ -535,8 +1058,61 @@ mod tests {
         assert_eq!(value["mounts"][1]["type"], "tmpfs");
         assert_eq!(
             value["mounts"][1]["options"],
-            json!(["nosuid", "nodev", "noexec", "mode=1777", "size=1m"])
+            json!(["nosuid", "nodev", "mode=1777", "size=1m"])
         );
+        assert_eq!(value["mounts"][2]["source"], DORY_RUNC_PATH);
+        assert_eq!(value["mounts"][2]["destination"], FEX_INIT_PATH);
+        assert_eq!(
+            value["mounts"][2]["options"],
+            json!(["bind", "ro", "nosuid", "nodev"])
+        );
+    }
+
+    #[test]
+    fn wraps_only_x86_64_entrypoints_with_native_fex_init() {
+        let directory = temporary_directory("entrypoint-architecture");
+        let executable = directory.join("rootfs/bin/sh");
+        fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        let mut x86_header = vec![0_u8; 64];
+        x86_header[..6].copy_from_slice(b"\x7fELF\x02\x01");
+        x86_header[18] = 0x3e;
+        fs::write(&executable, &x86_header).unwrap();
+
+        let mut value = spec(&[]);
+        assert!(wrap_x86_64_entrypoint(&mut value, &directory).unwrap());
+        assert_eq!(
+            value["process"]["args"],
+            json!([FEX_INIT_PATH, "fex-init", "/bin/sh"])
+        );
+        assert!(!wrap_x86_64_entrypoint(&mut value, &directory).unwrap());
+
+        value["process"]["args"] = json!(["/bin/sh"]);
+        x86_header[18] = 0xb7;
+        fs::write(&executable, &x86_header).unwrap();
+        assert!(!wrap_x86_64_entrypoint(&mut value, &directory).unwrap());
+        assert_eq!(value["process"]["args"], json!(["/bin/sh"]));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn resolves_absolute_entrypoint_symlinks_inside_the_container_root() {
+        let directory = temporary_directory("absolute-entrypoint-symlink");
+        let root = directory.join("rootfs");
+        let executable = root.join("bin/busybox");
+        fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        let mut x86_header = vec![0_u8; 64];
+        x86_header[..6].copy_from_slice(b"\x7fELF\x02\x01");
+        x86_header[18] = 0x3e;
+        fs::write(&executable, x86_header).unwrap();
+        std::os::unix::fs::symlink("/bin/busybox", root.join("bin/sh")).unwrap();
+
+        let mut value = spec(&[]);
+        assert!(wrap_x86_64_entrypoint(&mut value, &directory).unwrap());
+        assert_eq!(
+            value["process"]["args"],
+            json!([FEX_INIT_PATH, "fex-init", "/bin/sh"])
+        );
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
@@ -660,6 +1236,88 @@ mod tests {
     }
 
     #[test]
+    fn privileged_nested_runc_is_interposed_without_image_specific_detection() {
+        let directory = temporary_directory("nested-runc");
+        let rootfs = directory.join("rootfs");
+        let nested = rootfs.join("usr/local/sbin/runc");
+        let wrapper = directory.join("dory-runc");
+        fs::create_dir_all(nested.parent().unwrap()).unwrap();
+        fs::write(&nested, b"nested-runc").unwrap();
+        fs::write(&wrapper, b"dory-runc").unwrap();
+        fs::set_permissions(&nested, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let mut value = privileged_spec(&[]);
+        assert!(inject_nested_runtime(&mut value, &directory, &wrapper).unwrap());
+        assert!(!inject_nested_runtime(&mut value, &directory, &wrapper).unwrap());
+        let mounts = value["mounts"].as_array().unwrap();
+        assert_eq!(mounts.len(), 3);
+        assert_eq!(
+            mounts[0]["source"],
+            fs::canonicalize(&nested)
+                .unwrap()
+                .to_string_lossy()
+                .as_ref()
+        );
+        assert_eq!(mounts[0]["destination"], REAL_RUNC_PATH);
+        assert_eq!(mounts[1]["source"], wrapper.to_string_lossy().as_ref());
+        assert_eq!(mounts[1]["destination"], DORY_RUNC_PATH);
+        assert_eq!(mounts[2]["destination"], "/usr/local/sbin/runc");
+        assert_eq!(
+            mounts[2]["options"],
+            json!(["bind", "ro", "nosuid", "nodev"])
+        );
+
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn unprivileged_container_never_receives_nested_runtime_interposition() {
+        let directory = temporary_directory("unprivileged-nested-runc");
+        let nested = directory.join("rootfs/usr/local/sbin/runc");
+        let wrapper = directory.join("dory-runc");
+        fs::create_dir_all(nested.parent().unwrap()).unwrap();
+        fs::write(&nested, b"nested-runc").unwrap();
+        fs::write(&wrapper, b"dory-runc").unwrap();
+        fs::set_permissions(&nested, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let mut value = spec(&[]);
+        assert!(!inject_nested_runtime(&mut value, &directory, &wrapper).unwrap());
+        assert!(value["mounts"].as_array().unwrap().is_empty());
+
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn sealed_handoff_is_scoped_to_the_exact_injected_runc_mount() {
+        let ordinary_engine_mountinfo = concat!(
+            "21 1 8:1 / / rw,relatime - ext4 /dev/vda rw\n",
+            "22 21 0:5 / /proc rw,nosuid,nodev,noexec,relatime - proc proc rw\n"
+        );
+        assert!(!mountinfo_has_exact_mountpoint(
+            ordinary_engine_mountinfo,
+            Path::new(REAL_RUNC_PATH)
+        )
+        .unwrap());
+
+        let nested_runtime_mountinfo = concat!(
+            "21 1 8:1 / / rw,relatime - ext4 /dev/vda rw\n",
+            "42 21 8:1 /usr/local/sbin/runc /usr/local/bin/runc.real ro,nosuid,nodev,relatime - ext4 /dev/vda rw\n"
+        );
+        assert!(mountinfo_has_exact_mountpoint(
+            nested_runtime_mountinfo,
+            Path::new(REAL_RUNC_PATH)
+        )
+        .unwrap());
+        assert!(!mountinfo_has_exact_mountpoint(
+            nested_runtime_mountinfo,
+            Path::new("/usr/local/bin/runc")
+        )
+        .unwrap());
+    }
+
+    #[test]
     fn records_pre_runc_rejections_in_the_requested_json_log() {
         let directory = temporary_directory("runc-log");
         let log_path = directory.join("runc.json");
@@ -676,5 +1334,23 @@ mod tests {
         assert_eq!(value["source"], "dory-runc");
 
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn sealed_executable_clone_is_recognizable_and_executable() {
+        use std::os::unix::io::AsRawFd;
+        use std::process::{Command, Stdio};
+
+        let executable = clone_sealed_executable(&std::env::current_exe().unwrap()).unwrap();
+        let seals = unsafe { libc::fcntl(executable.as_raw_fd(), libc::F_GET_SEALS) };
+        assert_ne!(seals, -1);
+        assert_eq!(seals & REQUIRED_EXECUTABLE_SEALS, REQUIRED_EXECUTABLE_SEALS);
+        assert!(Command::new(sealed_executable_path(&executable))
+            .arg("--list")
+            .stdout(Stdio::null())
+            .status()
+            .unwrap()
+            .success());
     }
 }

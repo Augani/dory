@@ -12,6 +12,8 @@
 	<string>AFetajNbqZty68rRY7OMWYNt6suUsrokQmYMhDJtnP4=</string>
 	<key>DoryComponentCatalogURL</key>
 	<string>https://augani.github.io/dory/components/arm64/catalog.json</string>
+	<key>DoryVMQualificationBootstrap</key>
+	<string>$(DORY_VM_QUALIFICATION_BOOTSTRAP)</string>
 	<key>SUEnableInstallerLauncherService</key>
 	<true/>
 	<key>LSMultipleInstancesProhibited</key>

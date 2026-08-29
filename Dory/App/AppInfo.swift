@@ -26,6 +26,14 @@ nonisolated enum AppInfo {
             && [.desktopDebian, .desktopUbuntu, .desktopKali].contains(where: componentAvailable)
     }
 
+    /// Candidate-only bridge for booting exact desktop bytes while schema-2 qualification
+    /// evidence is collected. Normal builds omit the key and stay fail-closed.
+    static var vmQualificationBootstrapEnabled: Bool {
+        explicitBuildFlagBundleValue(
+            Bundle.main.object(forInfoDictionaryKey: "DoryVMQualificationBootstrap")
+        )
+    }
+
     static func componentAvailable(_ id: DoryComponentID) -> Bool {
         if bundledComponents.contains(id) { return true }
         guard id.isRemovable, let store = try? DoryComponentStore.selected() else { return false }
@@ -44,12 +52,28 @@ nonisolated enum AppInfo {
     }
 
     static func desktopLinuxIncluded(from bundleValue: Any?) -> Bool {
+        booleanBundleValue(bundleValue, default: true)
+    }
+
+    static func booleanBundleValue(_ bundleValue: Any?, default defaultValue: Bool) -> Bool {
         if let value = bundleValue as? Bool {
             return value
         }
         if let value = bundleValue as? NSNumber {
             return value.boolValue
         }
-        return true
+        return defaultValue
+    }
+
+    /// Xcode expands custom Info.plist build settings as strings. Accept only the canonical
+    /// enabled value so malformed, missing, and human-authored truthy strings remain disabled.
+    static func explicitBuildFlagBundleValue(_ bundleValue: Any?) -> Bool {
+        if let value = bundleValue as? Bool {
+            return value
+        }
+        if let value = bundleValue as? NSNumber {
+            return value.boolValue
+        }
+        return (bundleValue as? String) == "1"
     }
 }

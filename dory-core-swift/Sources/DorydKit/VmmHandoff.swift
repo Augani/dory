@@ -1,31 +1,171 @@
 import Darwin
+import DoryCore
+import DoryOperations
 import Foundation
+
+/// Canonical textual form used when a durable lifecycle UUID crosses process or guest boundaries.
+/// Requiring the lowercase RFC 4122 spelling prevents multiple log/cursor identities for one UUID.
+public enum DoryOperationIdentity {
+    public static func canonical(_ operationID: UUID) -> String {
+        operationID.uuidString.lowercased()
+    }
+
+    public static func parseCanonical(_ value: String) -> UUID? {
+        guard value.utf8.count == 36,
+              value == value.lowercased(),
+              let parsed = UUID(uuidString: value),
+              canonical(parsed) == value else {
+            return nil
+        }
+        return parsed
+    }
+}
+
+/// The concrete graphics backend selected by one helper launch. This is intentionally narrower
+/// than user preference: `automatic` and fallback choices never cross the readiness boundary.
+public enum DoryRuntimeGraphicsBackend: String, Codable, Sendable, Equatable, Hashable {
+    case software
+    case virgl
+    case virglVenus = "virgl-venus"
+}
+
+/// Operation-bound proof of the graphics backend that actually reached guest readiness.
+///
+/// The durable resolved plan remains desired launch authority. This receipt is the live result
+/// consumed by status and UI. RawHV acceleration is valid only when the helper can bind it to both
+/// the signed renderer-worker qualification and the exact guest producer-fence proof; the current
+/// in-process renderer therefore cannot manufacture an accelerated receipt.
+public struct DoryRuntimeGraphicsSelection: Codable, Sendable, Equatable, Hashable {
+    public static let currentSchemaVersion: UInt16 = 1
+
+    public var schemaVersion: UInt16
+    public var operationID: String
+    public var resolvedPlanSHA256: String
+    public var planRevision: UInt64
+    public var accelerationLevel: DoryGraphicsAccelerationLevel
+    public var backend: DoryRuntimeGraphicsBackend
+    public var rendererGeneration: UInt64?
+    public var rendererWorkerReceiptSHA256: String?
+    public var guestProducerFenceProofSHA256: String?
+
+    public init(
+        schemaVersion: UInt16 = Self.currentSchemaVersion,
+        operationID: String,
+        resolvedPlanSHA256: String,
+        planRevision: UInt64,
+        accelerationLevel: DoryGraphicsAccelerationLevel,
+        backend: DoryRuntimeGraphicsBackend,
+        rendererGeneration: UInt64? = nil,
+        rendererWorkerReceiptSHA256: String? = nil,
+        guestProducerFenceProofSHA256: String? = nil
+    ) {
+        self.schemaVersion = schemaVersion
+        self.operationID = operationID
+        self.resolvedPlanSHA256 = resolvedPlanSHA256.lowercased()
+        self.planRevision = planRevision
+        self.accelerationLevel = accelerationLevel
+        self.backend = backend
+        self.rendererGeneration = rendererGeneration
+        self.rendererWorkerReceiptSHA256 = rendererWorkerReceiptSHA256?.lowercased()
+        self.guestProducerFenceProofSHA256 = guestProducerFenceProofSHA256?.lowercased()
+    }
+
+    public static func resolvedSoftware(
+        operationID: UUID,
+        resolvedPlanSHA256: String,
+        planRevision: UInt64
+    ) -> Self {
+        Self(
+            operationID: DoryOperationIdentity.canonical(operationID),
+            resolvedPlanSHA256: resolvedPlanSHA256,
+            planRevision: planRevision,
+            accelerationLevel: .software,
+            backend: .software
+        )
+    }
+
+    public var isValid: Bool {
+        guard schemaVersion == Self.currentSchemaVersion,
+              DoryOperationIdentity.parseCanonical(operationID) != nil,
+              Self.isLowercaseSHA256(resolvedPlanSHA256),
+              planRevision > 0 else {
+            return false
+        }
+        switch (accelerationLevel, backend) {
+        case (.software, .software):
+            return rendererGeneration == nil
+                && rendererWorkerReceiptSHA256 == nil
+                && guestProducerFenceProofSHA256 == nil
+        case (.hostAcceleratedDisplay, .virgl), (.hardwareAccelerated3D, .virglVenus):
+            return rendererGeneration.map { $0 > 0 } == true
+                && rendererWorkerReceiptSHA256.map(Self.isLowercaseSHA256) == true
+                && guestProducerFenceProofSHA256.map(Self.isLowercaseSHA256) == true
+        default:
+            return false
+        }
+    }
+
+    public func matchesResolvedRawHVLaunch(
+        operationID expectedOperationID: UUID,
+        planSHA256: String,
+        planRevision expectedPlanRevision: UInt64,
+        accelerationLevel expectedAccelerationLevel: DoryGraphicsAccelerationLevel
+    ) -> Bool {
+        isValid
+            && operationID == DoryOperationIdentity.canonical(expectedOperationID)
+            && resolvedPlanSHA256 == planSHA256
+            && planRevision == expectedPlanRevision
+            && accelerationLevel == expectedAccelerationLevel
+    }
+
+    private static func isLowercaseSHA256(_ value: String) -> Bool {
+        value.utf8.count == 64 && value.utf8.allSatisfy {
+            (48...57).contains($0) || (97...102).contains($0)
+        }
+    }
+}
 
 public struct VmmReadyMessage: Sendable, Equatable, Codable {
     public var machineID: String
+    public var operationID: String?
     public var agentBuild: String?
+    public var agentProtocolVersion: UInt32?
+    public var agentCapabilities: [DoryAgentCapability]
     public var agentSocketPath: String?
     public var dockerdSocketPath: String?
     public var shellSocketPath: String?
     public var controlSocketPath: String?
+    public var graphicsSelection: DoryRuntimeGraphicsSelection?
     public var detail: String?
 
     public init(
         machineID: String,
+        operationID: String? = nil,
         agentBuild: String? = nil,
+        agentProtocolVersion: UInt32? = nil,
+        agentCapabilities: [DoryAgentCapability] = [],
         agentSocketPath: String? = nil,
         dockerdSocketPath: String? = nil,
         shellSocketPath: String? = nil,
         controlSocketPath: String? = nil,
+        graphicsSelection: DoryRuntimeGraphicsSelection? = nil,
         detail: String? = nil
     ) {
         self.machineID = machineID
+        self.operationID = operationID
         self.agentBuild = agentBuild
+        self.agentProtocolVersion = agentProtocolVersion
+        self.agentCapabilities = agentCapabilities
         self.agentSocketPath = agentSocketPath
         self.dockerdSocketPath = dockerdSocketPath
         self.shellSocketPath = shellSocketPath
         self.controlSocketPath = controlSocketPath
+        self.graphicsSelection = graphicsSelection
         self.detail = detail
+    }
+
+    public var hasValidOperationIdentity: Bool {
+        operationID.flatMap(DoryOperationIdentity.parseCanonical) != nil
     }
 }
 
@@ -50,6 +190,7 @@ public enum VmmHandoffError: Error, Sendable, CustomStringConvertible {
     case syscall(String, Int32)
     case emptyMessage
     case invalidJSON(String)
+    case invalidReadyMessage
 
     public var description: String {
         switch self {
@@ -61,6 +202,8 @@ public enum VmmHandoffError: Error, Sendable, CustomStringConvertible {
             return "empty VMM handoff message"
         case let .invalidJSON(message):
             return "invalid VMM handoff JSON: \(message)"
+        case .invalidReadyMessage:
+            return "invalid VMM readiness message"
         }
     }
 }
@@ -222,6 +365,9 @@ public final class VmmHandoffServer: @unchecked Sendable {
             ready = try JSONDecoder().decode(VmmReadyMessage.self, from: payload)
         } catch {
             throw VmmHandoffError.invalidJSON("\(error)")
+        }
+        guard ready.hasValidOperationIdentity else {
+            throw VmmHandoffError.invalidReadyMessage
         }
         return VmmHandoff(ready: ready, fileDescriptors: fileDescriptors(from: Array(control.prefix(controlLength))))
     }

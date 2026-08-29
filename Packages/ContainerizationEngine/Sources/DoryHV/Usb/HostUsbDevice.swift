@@ -31,17 +31,10 @@ public enum HostUsbDiscoveryError: Error, Equatable, Sendable {
     case matchingFailed(kern_return_t)
 }
 
-public enum HostUsbOpenMode: Equatable, Sendable {
+public enum HostUsbOpenMode: Hashable, Sendable {
     case userAuthorized
     case seize
     case capture
-}
-
-public struct HostUsbOpenPlan: Equatable, Sendable {
-    public var mode: HostUsbOpenMode
-    public var authorize: Bool
-    public var requiresPrivilegedHelperForClaimedDevice: Bool
-    public var optionNames: [String]
 }
 
 public enum HostUsbOpenError: Error, Equatable, Sendable {
@@ -51,29 +44,15 @@ public enum HostUsbOpenError: Error, Equatable, Sendable {
 }
 
 public enum HostUsbDeviceFactory: Sendable {
-    public static func plan(mode: HostUsbOpenMode) -> HostUsbOpenPlan {
-        switch mode {
-        case .userAuthorized:
-            HostUsbOpenPlan(mode: mode, authorize: true, requiresPrivilegedHelperForClaimedDevice: false, optionNames: [])
-        case .seize:
-            HostUsbOpenPlan(mode: mode, authorize: true, requiresPrivilegedHelperForClaimedDevice: false, optionNames: ["deviceSeize"])
-        case .capture:
-            HostUsbOpenPlan(mode: mode, authorize: true, requiresPrivilegedHelperForClaimedDevice: true, optionNames: ["deviceCapture"])
-        }
-    }
-
     public static func open(busID: String, mode: HostUsbOpenMode = .userAuthorized) throws -> HostUsbDevice {
         let (candidate, service) = try findService(busID: busID)
         defer { IOObjectRelease(service) }
-        let plan = plan(mode: mode)
-        if plan.authorize {
-            let kr = IOServiceAuthorize(service, UInt32(kIOServiceInteractionAllowed))
-            guard kr == KERN_SUCCESS else { throw HostUsbOpenError.authorizationFailed(kr) }
-        }
+        let kr = IOServiceAuthorize(service, UInt32(kIOServiceInteractionAllowed))
+        guard kr == KERN_SUCCESS else { throw HostUsbOpenError.authorizationFailed(kr) }
         guard let device = DoryIOUSBHostCreateDevice(service, options(for: mode), nil) else {
             throw HostUsbOpenError.openDeviceFailed
         }
-        let opened = collectPipes(deviceService: service, mode: mode)
+        let opened = collectPipes(deviceService: service)
         let retained: [IOUSBHostObject] = [device] + opened.interfaces
         let backend = IOUSBHostDeviceBackend(controlObject: device, pipes: opened.pipes, retainedObjects: retained)
         return HostUsbDevice(descriptor: candidate.descriptor, backend: backend)
@@ -100,7 +79,7 @@ public enum HostUsbDeviceFactory: Sendable {
         throw HostUsbOpenError.notFound(busID)
     }
 
-    private static func collectPipes(deviceService: io_service_t, mode: HostUsbOpenMode) -> (interfaces: [IOUSBHostInterface], pipes: [UInt8: IOUSBHostPipe]) {
+    private static func collectPipes(deviceService: io_service_t) -> (interfaces: [IOUSBHostInterface], pipes: [UInt8: IOUSBHostPipe]) {
         var iterator: io_iterator_t = 0
         guard IORegistryEntryCreateIterator(deviceService, kIOServicePlane, IOOptionBits(kIORegistryIterateRecursively), &iterator) == KERN_SUCCESS else {
             return ([], [:])
@@ -301,27 +280,88 @@ public enum HostUsbTransferError: Error, Equatable, Sendable {
     case failed(errno: Int32)
 }
 
+public enum HostUsbTransferKind: Equatable, Sendable {
+    case bulk
+    case interrupt
+}
+
 public protocol HostUsbBackend: Sendable {
     func control(_ setup: HostUsbControlSetup, payload: [UInt8], direction: UsbipDirection, timeout: TimeInterval) throws -> HostUsbTransferResult
-    func transfer(endpointAddress: UInt8, payload: [UInt8], expectedLength: UInt32, direction: UsbipDirection, timeout: TimeInterval) throws -> HostUsbTransferResult
+    func transfer(endpointAddress: UInt8, payload: [UInt8], expectedLength: UInt32, direction: UsbipDirection, kind: HostUsbTransferKind, timeout: TimeInterval) throws -> HostUsbTransferResult
     func abort(endpointAddress: UInt8?) throws
 }
 
 public final class HostUsbDevice: UsbipExportedDevice, @unchecked Sendable {
+    /// Linux `EREMOTEIO`, used on the USB/IP wire for `URB_SHORT_NOT_OK`.
+    private static let linuxRemoteIO: Int32 = 121
+
+    private struct RequestKey: Hashable {
+        var contextID: UUID
+        var sequenceNumber: UInt32
+    }
+
+    private struct ActiveRequest {
+        var endpointAddress: UInt8
+        var reservedBytes: UInt64
+    }
+
     public let descriptor: UsbipDeviceDescriptor
     private let backend: any HostUsbBackend
     private let timeout: TimeInterval
+    private let shutdownTimeout: TimeInterval
+    private let maxConcurrentRequests: Int
+    private let maxInFlightBytes: UInt64
+    private let state = NSCondition()
+    private var activeRequests: [RequestKey: ActiveRequest] = [:]
+    private var inFlightBytes: UInt64 = 0
+    private var abortingEndpoints = Set<UInt8>()
+    private var shuttingDown = false
 
-    public init(descriptor: UsbipDeviceDescriptor, backend: any HostUsbBackend, timeout: TimeInterval = 5) {
+    public init(
+        descriptor: UsbipDeviceDescriptor,
+        backend: any HostUsbBackend,
+        timeout: TimeInterval = 5,
+        maxConcurrentRequests: Int = 8,
+        maxInFlightBytes: UInt64 = 16 * 1024 * 1024,
+        shutdownTimeout: TimeInterval = 2
+    ) {
         self.descriptor = descriptor
         self.backend = backend
-        self.timeout = timeout
+        self.timeout = Self.finiteDeadline(timeout, fallback: 5)
+        self.maxConcurrentRequests = max(1, maxConcurrentRequests)
+        self.maxInFlightBytes = max(1, maxInFlightBytes)
+        self.shutdownTimeout = Self.finiteDeadline(shutdownTimeout, fallback: 2)
     }
 
-    public func submit(_ command: UsbipSubmitCommand) throws -> UsbipSubmitReply {
-        guard command.numberOfPackets == 0 || command.numberOfPackets == 0xffff_ffff else {
+    public func submit(_ command: UsbipSubmitCommand, context: UsbipRequestContext) throws -> UsbipSubmitReply {
+        do {
+            try UsbipSubmitCommand.validateTransferFlags(
+                command.transferFlags,
+                direction: command.header.direction
+            )
+        } catch {
+            return reply(for: command, status: -EINVAL, actualLength: 0, data: [])
+        }
+        // Accept both non-iso values produced/required by Linux USB/IP; positive counts are
+        // isochronous and remain unsupported by this backend.
+        guard command.numberOfPackets == 0 || command.numberOfPackets == UInt32.max else {
             return reply(for: command, status: -EPIPE, actualLength: 0, data: [])
         }
+        guard command.header.endpoint <= 15,
+              command.transferBufferLength <= UsbipSubmitCommand.maxTransferBytes,
+              (command.header.direction == .in || command.transferBuffer.count == Int(command.transferBufferLength)) else {
+            return reply(for: command, status: -EINVAL, actualLength: 0, data: [])
+        }
+
+        let endpointAddress = command.header.endpoint == 0
+            ? UInt8(0)
+            : Self.endpointAddress(number: command.header.endpoint, direction: command.header.direction)
+        let key = RequestKey(contextID: context.id, sequenceNumber: command.header.sequenceNumber)
+        let reservation = UInt64(command.transferBufferLength)
+        if let admissionError = admit(key: key, endpointAddress: endpointAddress, bytes: reservation) {
+            return reply(for: command, status: -admissionError, actualLength: 0, data: [])
+        }
+        defer { finish(key: key) }
 
         do {
             let result: HostUsbTransferResult
@@ -335,29 +375,93 @@ public final class HostUsbDevice: UsbipExportedDevice, @unchecked Sendable {
                     payload: command.header.direction == .out ? command.transferBuffer : [],
                     expectedLength: command.transferBufferLength,
                     direction: command.header.direction,
-                    timeout: command.header.endpoint == 0 ? timeout : (command.interval == 0 ? 0 : timeout)
+                    kind: command.interval == 0 ? .bulk : .interrupt,
+                    timeout: timeout
                 )
             }
-            return reply(for: command, status: result.status, actualLength: result.actualLength, data: result.data)
+            let validated = try validate(result: result, for: command)
+            return reply(for: command, status: validated.status, actualLength: validated.actualLength, data: validated.data)
         } catch let error as HostUsbTransferError {
             return reply(for: command, status: Self.usbipStatus(for: error), actualLength: 0, data: [])
+        } catch {
+            return reply(for: command, status: -EIO, actualLength: 0, data: [])
         }
     }
 
-    public func unlink(_ command: UsbipUnlinkCommand) throws -> UsbipUnlinkReply {
+    public func unlink(_ command: UsbipUnlinkCommand, context: UsbipRequestContext) throws -> UsbipUnlinkReply {
         let status: Int32
-        do {
-            try backend.abort(endpointAddress: nil)
-            status = 0
-        } catch let error as HostUsbTransferError {
-            status = Self.usbipStatus(for: error)
+        let targetKey = RequestKey(contextID: context.id, sequenceNumber: command.unlinkSequenceNumber)
+        state.lock()
+        if let target = activeRequests[targetKey] {
+            let endpointIsShared = activeRequests.contains { key, request in
+                key != targetKey && request.endpointAddress == target.endpointAddress
+            }
+            if endpointIsShared || abortingEndpoints.contains(target.endpointAddress) {
+                state.unlock()
+                status = -EBUSY
+            } else {
+                abortingEndpoints.insert(target.endpointAddress)
+                state.unlock()
+                do {
+                    // Endpoint zero means only default-control requests. nil is reserved for
+                    // terminal device shutdown and is never used by an untrusted UNLINK.
+                    try backend.abort(endpointAddress: target.endpointAddress)
+                    status = 0
+                } catch let error as HostUsbTransferError {
+                    status = Self.usbipStatus(for: error)
+                } catch {
+                    status = -EIO
+                }
+                state.lock()
+                abortingEndpoints.remove(target.endpointAddress)
+                state.broadcast()
+                state.unlock()
+            }
+        } else {
+            state.unlock()
+            status = -ENOENT
         }
         let header = UsbipHeaderBasic(command: .retUnlink, sequenceNumber: command.header.sequenceNumber, deviceID: 0, direction: .out, endpoint: 0)
         return UsbipUnlinkReply(header: header, status: status)
     }
 
+    public func closeSession(_ context: UsbipRequestContext) {
+        // The synchronous stream pump cannot race-proof a disconnect cancellation against a new
+        // request entering the same pipe. Fail closed: leave it to the finite host deadline instead
+        // of risking an abort of a later or unrelated URB. Explicit UNLINK uses the locked identity
+        // check above; terminal detach uses shutdown().
+    }
+
+    public func shutdown() {
+        state.lock()
+        if shuttingDown {
+            state.unlock()
+            return
+        }
+        shuttingDown = true
+        state.broadcast()
+        state.unlock()
+
+        let deadline = Date().addingTimeInterval(shutdownTimeout)
+        Self.abort(backend, endpointAddress: nil, timeout: shutdownTimeout)
+        state.lock()
+        while !activeRequests.isEmpty, state.wait(until: deadline) {}
+        state.unlock()
+    }
+
+    deinit {
+        state.lock()
+        let alreadyShuttingDown = shuttingDown
+        shuttingDown = true
+        state.unlock()
+        if !alreadyShuttingDown {
+            Self.abort(backend, endpointAddress: nil, timeout: shutdownTimeout)
+        }
+    }
+
     nonisolated public static func endpointAddress(number: UInt32, direction: UsbipDirection) -> UInt8 {
-        UInt8(number & 0x0f) | (direction == .in ? 0x80 : 0x00)
+        precondition(number <= 15)
+        return UInt8(number) | (direction == .in ? 0x80 : 0x00)
     }
 
     private func reply(for command: UsbipSubmitCommand, status: Int32, actualLength: UInt32, data: [UInt8]) -> UsbipSubmitReply {
@@ -372,14 +476,76 @@ public final class HostUsbDevice: UsbipExportedDevice, @unchecked Sendable {
         case .failed(let errno): -abs(errno)
         }
     }
+
+    private func admit(key: RequestKey, endpointAddress: UInt8, bytes: UInt64) -> Int32? {
+        state.lock()
+        defer { state.unlock() }
+        guard !shuttingDown else { return ENODEV }
+        guard activeRequests[key] == nil else { return EALREADY }
+        guard activeRequests.count < maxConcurrentRequests else { return EBUSY }
+        guard !abortingEndpoints.contains(endpointAddress) else { return EBUSY }
+        let (newTotal, overflow) = inFlightBytes.addingReportingOverflow(bytes)
+        guard !overflow, newTotal <= maxInFlightBytes else { return EBUSY }
+        inFlightBytes = newTotal
+        activeRequests[key] = ActiveRequest(endpointAddress: endpointAddress, reservedBytes: bytes)
+        return nil
+    }
+
+    private func finish(key: RequestKey) {
+        state.lock()
+        if let removed = activeRequests.removeValue(forKey: key) {
+            inFlightBytes -= removed.reservedBytes
+        }
+        state.broadcast()
+        state.unlock()
+    }
+
+    private func validate(result: HostUsbTransferResult, for command: UsbipSubmitCommand) throws -> HostUsbTransferResult {
+        guard result.actualLength <= command.transferBufferLength else {
+            throw HostUsbTransferError.failed(errno: EPROTO)
+        }
+        if command.header.direction == .in {
+            guard result.data.count >= Int(result.actualLength),
+                  result.data.count <= Int(command.transferBufferLength) else {
+                throw HostUsbTransferError.failed(errno: EPROTO)
+            }
+            let shortTransferRejected = result.status == 0
+                && command.transferFlags & UsbipTransferFlag.shortNotOK != 0
+                && result.actualLength < command.transferBufferLength
+            return HostUsbTransferResult(
+                status: shortTransferRejected ? -Self.linuxRemoteIO : result.status,
+                actualLength: result.actualLength,
+                data: Array(result.data.prefix(Int(result.actualLength)))
+            )
+        }
+        return HostUsbTransferResult(status: result.status, actualLength: result.actualLength)
+    }
+
+    private nonisolated static func finiteDeadline(_ value: TimeInterval, fallback: TimeInterval) -> TimeInterval {
+        guard value.isFinite, value > 0 else { return fallback }
+        return min(max(value, 0.01), 60)
+    }
+
+    private nonisolated static func abort(
+        _ backend: any HostUsbBackend,
+        endpointAddress: UInt8?,
+        timeout: TimeInterval
+    ) {
+        let completion = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .userInitiated).async {
+            try? backend.abort(endpointAddress: endpointAddress)
+            completion.signal()
+        }
+        _ = completion.wait(timeout: .now() + timeout)
+    }
 }
 
 public final class IOUSBHostDeviceBackend: HostUsbBackend, @unchecked Sendable {
     private let controlObject: IOUSBHostObject?
     private let pipes: [UInt8: IOUSBHostPipe]
-    private let retainedObjects: [IOUSBHostObject]
+    private let lifetime: IOUSBObjectLifetime
     private let controlHandler: (@Sendable (HostUsbControlSetup, [UInt8], UsbipDirection, TimeInterval) throws -> HostUsbTransferResult)?
-    private let lock = NSLock()
+    private let abortLock = NSLock()
 
     public init(
         controlObject: IOUSBHostObject? = nil,
@@ -389,14 +555,8 @@ public final class IOUSBHostDeviceBackend: HostUsbBackend, @unchecked Sendable {
     ) {
         self.controlObject = controlObject
         self.pipes = pipes
-        self.retainedObjects = retainedObjects
+        self.lifetime = IOUSBObjectLifetime(objects: retainedObjects)
         self.controlHandler = controlHandler
-    }
-
-    deinit {
-        for object in retainedObjects {
-            DoryIOUSBHostDestroyObject(object, [])
-        }
     }
 
     public func control(_ setup: HostUsbControlSetup, payload: [UInt8], direction: UsbipDirection, timeout: TimeInterval) throws -> HostUsbTransferResult {
@@ -409,73 +569,118 @@ public final class IOUSBHostDeviceBackend: HostUsbBackend, @unchecked Sendable {
         if direction == .out {
             data.replaceBytes(in: NSRange(location: 0, length: min(payload.count, data.length)), withBytes: payload)
         }
-        var transferred = 0
         let request = setup.ioUSBDeviceRequest()
-        let ok = locked {
-            DoryIOUSBHostSendDeviceRequest(controlObject, request, data, &transferred, timeout, nil)
+        let lease = IOUSBRequestLease(data: data, resource: controlObject, lifetime: lifetime)
+        let result = try HostUsbDeadlineWaiter.perform(
+            timeout: timeout,
+            enqueue: { completion in
+                DoryIOUSBHostEnqueueDeviceRequest(controlObject, request, data, timeout, nil) { status, count in
+                    _ = lease
+                    completion(status, Int(count))
+                }
+            },
+            abort: { [self] in abortControlRequests() }
+        )
+        guard result.status == kIOReturnSuccess else {
+            throw HostUsbTransferError.failed(errno: Self.errno(for: result.status))
         }
-        guard ok else { throw HostUsbTransferError.failed(errno: EIO) }
+        let transferred = result.count
+        guard transferred >= 0, transferred <= data.length, UInt32(exactly: transferred) != nil else {
+            throw HostUsbTransferError.failed(errno: EPROTO)
+        }
         let bytes = direction == .in ? Array(UnsafeBufferPointer(start: data.bytes.assumingMemoryBound(to: UInt8.self), count: min(transferred, data.length))) : []
         return HostUsbTransferResult(status: 0, actualLength: UInt32(transferred), data: bytes)
     }
 
-    public func transfer(endpointAddress: UInt8, payload: [UInt8], expectedLength: UInt32, direction: UsbipDirection, timeout: TimeInterval) throws -> HostUsbTransferResult {
+    public func transfer(
+        endpointAddress: UInt8,
+        payload: [UInt8],
+        expectedLength: UInt32,
+        direction: UsbipDirection,
+        kind: HostUsbTransferKind,
+        timeout: TimeInterval
+    ) throws -> HostUsbTransferResult {
         guard let pipe = pipes[endpointAddress] else { throw HostUsbTransferError.endpointNotFound(endpointAddress) }
+        let actualKind = try Self.transferKind(endpointAttributes: pipe.descriptors.pointee.descriptor.bmAttributes)
+        guard actualKind == kind else { throw HostUsbTransferError.failed(errno: EPROTO) }
         let length = direction == .in ? Int(expectedLength) : payload.count
         guard let data = NSMutableData(length: length) else { throw HostUsbTransferError.failed(errno: ENOMEM) }
         if direction == .out {
             data.replaceBytes(in: NSRange(location: 0, length: min(payload.count, data.length)), withBytes: payload)
         }
-        let completion = IOUSBCompletionBox()
-        let status = locked {
-            let semaphore = DispatchSemaphore(value: 0)
-            do {
-                try pipe.enqueueIORequest(with: data, completionTimeout: timeout) { status, count in
-                    completion.set(status: status, count: count)
-                    semaphore.signal()
+        let lease = IOUSBRequestLease(data: data, resource: pipe, lifetime: lifetime)
+        // IOUSBHost requires a zero framework timeout for interrupt pipes. Dory still applies the
+        // finite outer deadline below and synchronously asks the exact pipe to abort on expiry.
+        let frameworkTimeout = kind == .interrupt ? 0 : timeout
+        let result = try HostUsbDeadlineWaiter.perform(
+            timeout: timeout,
+            enqueue: { completion in
+                do {
+                    try pipe.enqueueIORequest(with: data, completionTimeout: frameworkTimeout) { status, count in
+                        _ = lease
+                        completion(status, count)
+                    }
+                    return true
+                } catch {
+                    return false
                 }
-            } catch {
-                return kIOReturnError
+            },
+            abort: { [self, lease] in
+                guard let retainedPipe = lease.resource as? IOUSBHostPipe else { return }
+                abortPipe(retainedPipe)
             }
-            semaphore.wait()
-            return completion.result.status
+        )
+        guard result.status == kIOReturnSuccess else {
+            throw HostUsbTransferError.failed(errno: Self.errno(for: result.status))
         }
-        guard status == kIOReturnSuccess else { throw HostUsbTransferError.failed(errno: Self.errno(for: status)) }
-        let transferred = completion.result.count
+        let transferred = result.count
+        guard transferred >= 0, transferred <= data.length, UInt32(exactly: transferred) != nil else {
+            throw HostUsbTransferError.failed(errno: EPROTO)
+        }
         let bytes = direction == .in ? Array(UnsafeBufferPointer(start: data.bytes.assumingMemoryBound(to: UInt8.self), count: min(transferred, data.length))) : []
         return HostUsbTransferResult(status: 0, actualLength: UInt32(transferred), data: bytes)
     }
 
     public func abort(endpointAddress: UInt8?) throws {
         if let endpointAddress {
+            if endpointAddress == 0 {
+                guard controlObject != nil else {
+                    throw HostUsbTransferError.endpointNotFound(endpointAddress)
+                }
+                guard abortControlRequests() else { throw HostUsbTransferError.failed(errno: EIO) }
+                return
+            }
             guard let pipe = pipes[endpointAddress] else {
                 throw HostUsbTransferError.endpointNotFound(endpointAddress)
             }
-            let ok = locked {
-                DoryIOUSBHostAbortPipe(pipe, IOUSBHostAbortOption.synchronous, nil)
-            }
+            let ok = abortPipe(pipe)
             guard ok else { throw HostUsbTransferError.failed(errno: EIO) }
             return
         }
         var ok = true
-        if let controlObject {
-            ok = locked {
-                DoryIOUSBHostAbortDeviceRequests(controlObject, IOUSBHostAbortOption.synchronous, nil)
-            }
+        if controlObject != nil {
+            ok = abortControlRequests()
         }
         guard ok else { throw HostUsbTransferError.failed(errno: EIO) }
         for pipe in pipes.values {
-            let pipeOK = locked {
-                DoryIOUSBHostAbortPipe(pipe, IOUSBHostAbortOption.synchronous, nil)
-            }
+            let pipeOK = abortPipe(pipe)
             guard pipeOK else { throw HostUsbTransferError.failed(errno: EIO) }
         }
     }
 
-    private func locked<T>(_ body: () throws -> T) rethrows -> T {
-        lock.lock()
-        defer { lock.unlock() }
-        return try body()
+    @discardableResult
+    private func abortControlRequests() -> Bool {
+        guard let controlObject else { return true }
+        abortLock.lock()
+        defer { abortLock.unlock() }
+        return DoryIOUSBHostAbortDeviceRequests(controlObject, IOUSBHostAbortOption.synchronous, nil)
+    }
+
+    @discardableResult
+    private func abortPipe(_ pipe: IOUSBHostPipe) -> Bool {
+        abortLock.lock()
+        defer { abortLock.unlock() }
+        return DoryIOUSBHostAbortPipe(pipe, IOUSBHostAbortOption.synchronous, nil)
     }
 
     nonisolated static func errno(for status: IOReturn) -> Int32 {
@@ -492,23 +697,109 @@ public final class IOUSBHostDeviceBackend: HostUsbBackend, @unchecked Sendable {
         default: EIO
         }
     }
+
+    /// USB endpoint descriptor bits 0...1 define control, isochronous, bulk, or interrupt. Dory
+    /// never trusts the guest's interval field to reclassify the physical host pipe.
+    nonisolated static func transferKind(endpointAttributes: UInt8) throws -> HostUsbTransferKind {
+        switch endpointAttributes & 0x03 {
+        case 0x02: .bulk
+        case 0x03: .interrupt
+        case 0x01: throw HostUsbTransferError.failed(errno: ENOTSUP)
+        default: throw HostUsbTransferError.failed(errno: EPROTO)
+        }
+    }
+}
+
+struct HostUsbIOCompletion: Equatable, Sendable {
+    var status: IOReturn
+    var count: Int
+}
+
+enum HostUsbDeadlineWaiter {
+    typealias Completion = @Sendable (IOReturn, Int) -> Void
+
+    static func perform(
+        timeout: TimeInterval,
+        enqueue: (_ completion: @escaping Completion) -> Bool,
+        abort: @escaping @Sendable () -> Void
+    ) throws -> HostUsbIOCompletion {
+        let finiteTimeout = timeout.isFinite && timeout > 0 ? min(timeout, 60) : 5
+        let completion = IOUSBCompletionBox()
+        guard enqueue({ status, count in completion.complete(status: status, count: count) }) else {
+            throw HostUsbTransferError.failed(errno: EIO)
+        }
+        if completion.wait(timeout: finiteTimeout) {
+            return completion.result
+        }
+
+        // Never let a synchronous IOUSBHost abort turn the watchdog into another unbounded wait.
+        // The closure retains the exact object/request lifetime until abort returns, and a late
+        // completion only touches the locked completion box.
+        let abortFinished = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .userInitiated).async {
+            abort()
+            abortFinished.signal()
+        }
+        _ = completion.wait(timeout: min(0.25, finiteTimeout))
+        _ = abortFinished.wait(timeout: .now() + min(0.25, finiteTimeout))
+        throw HostUsbTransferError.failed(errno: ETIMEDOUT)
+    }
 }
 
 private final class IOUSBCompletionBox: @unchecked Sendable {
     private let lock = NSLock()
+    private let semaphore = DispatchSemaphore(value: 0)
     private var storedStatus: IOReturn = kIOReturnError
     private var storedCount = 0
+    private var completed = false
 
-    func set(status: IOReturn, count: Int) {
+    func complete(status: IOReturn, count: Int) {
         lock.lock()
+        guard !completed else { lock.unlock(); return }
         storedStatus = status
         storedCount = count
+        completed = true
         lock.unlock()
+        semaphore.signal()
     }
 
-    var result: (status: IOReturn, count: Int) {
+    func wait(timeout: TimeInterval) -> Bool {
+        lock.lock()
+        let alreadyCompleted = completed
+        lock.unlock()
+        if alreadyCompleted { return true }
+        return semaphore.wait(timeout: .now() + timeout) == .success
+    }
+
+    var result: HostUsbIOCompletion {
         lock.lock()
         defer { lock.unlock() }
-        return (storedStatus, storedCount)
+        return HostUsbIOCompletion(status: storedStatus, count: storedCount)
+    }
+}
+
+private final class IOUSBObjectLifetime: @unchecked Sendable {
+    private let objects: [IOUSBHostObject]
+
+    init(objects: [IOUSBHostObject]) {
+        self.objects = objects
+    }
+
+    deinit {
+        for object in objects {
+            DoryIOUSBHostDestroyObject(object, [])
+        }
+    }
+}
+
+private final class IOUSBRequestLease: @unchecked Sendable {
+    let data: NSMutableData
+    let resource: AnyObject
+    let lifetime: IOUSBObjectLifetime
+
+    init(data: NSMutableData, resource: AnyObject, lifetime: IOUSBObjectLifetime) {
+        self.data = data
+        self.resource = resource
+        self.lifetime = lifetime
     }
 }

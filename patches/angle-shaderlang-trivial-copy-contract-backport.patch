@@ -1,0 +1,52 @@
+diff --git a/Source/ThirdParty/ANGLE/include/GLSLANG/ShaderLang.h b/Source/ThirdParty/ANGLE/include/GLSLANG/ShaderLang.h
+index 5eb4806568..cb5b2eaa4d 100644
+--- a/Source/ThirdParty/ANGLE/include/GLSLANG/ShaderLang.h
++++ b/Source/ThirdParty/ANGLE/include/GLSLANG/ShaderLang.h
+@@ -14,6 +14,7 @@
+ #include <map>
+ #include <set>
+ #include <string>
++#include <type_traits>
+ #include <vector>
+ 
+ //
+@@ -144,8 +145,8 @@ struct ShPixelLocalStorageOptions
+ struct ShCompileOptions
+ {
+     ShCompileOptions();
+-    ShCompileOptions(const ShCompileOptions &other);
+-    ShCompileOptions &operator=(const ShCompileOptions &other);
++    ShCompileOptions(const ShCompileOptions &other)            = default;
++    ShCompileOptions &operator=(const ShCompileOptions &other) = default;
+ 
+     // Translates intermediate tree to glsl, hlsl, msl, or SPIR-V binary.  Can be queried by
+     // calling sh::GetObjectCode().
+@@ -448,6 +449,8 @@ struct ShCompileOptions
+     ShCompileOptionsMetal metal;
+     ShPixelLocalStorageOptions pls;
+ };
++static_assert(std::is_trivially_copyable<ShCompileOptions>::value,
++              "ShCompileOptions is persisted as an exact binary value");
+ 
+ // The 64 bits hash function. The first parameter is the input string; the
+ // second parameter is the string length.
+@@ -460,8 +463,8 @@ using ShHashFunction64 = khronos_uint64_t (*)(const char *, size_t);
+ struct ShBuiltInResources
+ {
+     ShBuiltInResources();
+-    ShBuiltInResources(const ShBuiltInResources &other);
+-    ShBuiltInResources &operator=(const ShBuiltInResources &other);
++    ShBuiltInResources(const ShBuiltInResources &other)            = default;
++    ShBuiltInResources &operator=(const ShBuiltInResources &other) = default;
+ 
+     // Constants.
+     int MaxVertexAttribs;
+@@ -704,6 +707,8 @@ struct ShBuiltInResources
+     int MaxColorAttachmentsWithActivePixelLocalStorage;
+     int MaxCombinedDrawBuffersAndPixelLocalStoragePlanes;
+ };
++static_assert(std::is_trivially_copyable<ShBuiltInResources>::value,
++              "ShBuiltInResources is persisted as an exact binary value");
+ 
+ //
+ // ShHandle held by but opaque to the driver.  It is allocated,

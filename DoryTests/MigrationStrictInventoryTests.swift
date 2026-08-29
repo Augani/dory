@@ -202,10 +202,129 @@ struct MigrationStrictInventoryTests: StrictInventoryTestCase {
             let fixture = makeFixture()
             fixture.target.systemDiskUsage = nil
             await #expect(throws: MigrationStrictInventoryError.incomplete(
-                "target Docker storage usage is unavailable"
+                "target Docker storage usage request did not return a response"
             )) {
                 _ = try await collect(fixture)
             }
+        }
+    }
+
+    @Test func targetDockerUsageDiagnosticsPreserveHTTPAndParserFailures() async {
+        do {
+            let fixture = makeFixture()
+            fixture.target.systemDiskUsageStatusCode = 503
+            fixture.target.systemDiskUsageReason = "Service Unavailable"
+
+            await #expect(throws: MigrationStrictInventoryError.incomplete(
+                "target Docker storage usage request returned HTTP 503"
+            )) {
+                _ = try await collect(fixture)
+            }
+        }
+        do {
+            let fixture = makeFixture()
+            fixture.target.systemDiskUsage = [
+                "ImageUsage": ["TotalSize": -1],
+                "VolumeUsage": ["TotalSize": 0],
+                "ContainerUsage": ["TotalSize": 0],
+                "BuildCacheUsage": ["TotalSize": 0],
+            ]
+
+            await #expect(throws: MigrationStrictInventoryError.incomplete(
+                "target Docker storage usage response is invalid: "
+                    + "invalidTotalUsage(\"ImageUsage.TotalSize is invalid\")"
+            )) {
+                _ = try await collect(fixture)
+            }
+        }
+    }
+
+    @Test func doryTargetUsesAuthoritativeGuestDiskUsageWhenDockerUsageIsUnavailable() async throws {
+        let fixture = makeFixture()
+        let gibibyte: Int64 = 1_024 * 1_024 * 1_024
+        fixture.target.systemDiskUsage = nil
+        fixture.target.targetStorageUsage = MigrationTargetStorageUsage(
+            totalBytes: 126 * gibibyte,
+            usedBytes: 8 * gibibyte,
+            availableBytes: 116 * gibibyte
+        )
+
+        let prepared = try await collect(fixture)
+
+        #expect(prepared.capacity.targetDockerBytes == 8 * gibibyte)
+        #expect(fixture.target.targetStorageUsageProbeCount == 1)
+        #expect(fixture.target.systemDiskUsageRequestCount == 0)
+    }
+
+    @Test func authoritativeGuestUsageCarriesTheEffectiveLiveCeilingIntoThePlan() async throws {
+        let fixture = makeFixture()
+        let gibibyte: Int64 = 1_024 * 1_024 * 1_024
+        fixture.target.targetStorageUsage = MigrationTargetStorageUsage(
+            totalBytes: 126 * gibibyte,
+            usedBytes: 8 * gibibyte,
+            availableBytes: 92 * gibibyte
+        )
+
+        let prepared = try await collect(fixture)
+
+        #expect(prepared.capacity.targetDockerBytes == 8 * gibibyte)
+        #expect(prepared.capacity.engineUsableBytes == 100 * gibibyte)
+    }
+
+    @Test func zeroLiveGuestCapacityFailsClosedInsteadOfInventingEmptyUsage() async {
+        let fixture = makeFixture()
+        let gibibyte: Int64 = 1_024 * 1_024 * 1_024
+        fixture.target.targetStorageUsage = MigrationTargetStorageUsage(
+            totalBytes: 126 * gibibyte,
+            usedBytes: 0,
+            availableBytes: 0
+        )
+
+        await #expect(throws: MigrationStrictInventoryError.incomplete(
+            "authoritative target data-disk usage is internally inconsistent"
+        )) {
+            _ = try await collect(fixture)
+        }
+        #expect(fixture.target.systemDiskUsageRequestCount == 0)
+    }
+
+    @Test func sharedVMTargetNeverDowngradesToDockerObjectUsage() async {
+        let fixture = makeFixture(targetKind: .sharedVM)
+
+        await #expect(throws: MigrationStrictInventoryError.incomplete(
+            "Dory's shared-VM target did not provide authoritative guest data-disk usage"
+        )) {
+            _ = try await collect(fixture)
+        }
+
+        #expect(fixture.target.targetStorageUsageProbeCount == 1)
+        #expect(fixture.target.systemDiskUsageRequestCount == 0)
+    }
+
+    @Test func failedAuthoritativeGuestDiskProbeNeverFallsBackToDockerUsage() async {
+        let fixture = makeFixture()
+        fixture.target.failTargetStorageUsage = true
+
+        await #expect(throws: MigrationStrictInventoryError.self) {
+            _ = try await collect(fixture)
+        }
+
+        #expect(fixture.target.targetStorageUsageProbeCount == 1)
+        #expect(fixture.target.systemDiskUsageRequestCount == 0)
+    }
+
+    @Test func authoritativeGuestDiskUsageMustMatchTheSelectedEngineCapacity() async {
+        let fixture = makeFixture()
+        fixture.target.targetStorageUsage = MigrationTargetStorageUsage(
+            totalBytes: 16 * 1_024 * 1_024 * 1_024,
+            usedBytes: 1,
+            availableBytes: 15 * 1_024 * 1_024 * 1_024
+        )
+
+        await #expect(throws: MigrationStrictInventoryError.incomplete(
+            "authoritative target data-disk capacity does not match Dory's selected disk"
+        )) {
+            _ = try await collect(fixture)
         }
     }
 

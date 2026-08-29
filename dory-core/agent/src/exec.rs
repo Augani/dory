@@ -1,13 +1,14 @@
 use dory_pb::agent::{ExecRequest, ExecResponse};
 use std::collections::HashMap;
 use thiserror::Error;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 
 const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 const MAX_TIMEOUT_MS: u64 = 10 * 60_000;
 const DEFAULT_OUTPUT_LIMIT: usize = 1024 * 1024;
 const MAX_OUTPUT_LIMIT: usize = 16 * 1024 * 1024;
+const MAX_STDIN_BYTES: usize = 16 * 1024 * 1024;
 // After the child is reaped, any bytes still in the pipes are bounded by the kernel buffer — unless
 // a descendant inherited the write end. Bound the drain so such a descendant can never hang the RPC.
 const DRAIN_TIMEOUT_MS: u64 = 5_000;
@@ -50,6 +51,12 @@ pub async fn run(req: ExecRequest) -> Result<ExecResponse, ExecError> {
         return Err(ExecError::EmptyProgram);
     }
 
+    if req.stdin.len() > MAX_STDIN_BYTES {
+        return Err(ExecError::InvalidConstraint(format!(
+            "stdin exceeds {MAX_STDIN_BYTES} bytes"
+        )));
+    }
+    let stdin = req.stdin;
     let (environment, constraints) = parse_environment_and_constraints(req.env)?;
     let mut command = Command::new(program);
     command.args(req.argv.iter().skip(1));
@@ -63,6 +70,7 @@ pub async fn run(req: ExecRequest) -> Result<ExecResponse, ExecError> {
     }
     command.stdout(std::process::Stdio::piped());
     command.stderr(std::process::Stdio::piped());
+    command.stdin(std::process::Stdio::piped());
     // Own process group so a timeout can kill the whole tree, not just the direct child — a
     // backgrounded descendant would otherwise survive the kill and hold the output pipes open.
     #[cfg(unix)]
@@ -72,8 +80,16 @@ pub async fn run(req: ExecRequest) -> Result<ExecResponse, ExecError> {
     let _wait_guard = crate::reaper::managed_child_wait_guard().await;
     let mut child = command.spawn()?;
     let group_pid = child.id();
+    let child_stdin = child.stdin.take();
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
+    let stdin_task = tokio::spawn(async move {
+        if let Some(mut stream) = child_stdin {
+            stream.write_all(&stdin).await?;
+            stream.shutdown().await?;
+        }
+        Ok::<(), std::io::Error>(())
+    });
     let limit = output_limit(req.output_limit_bytes);
     let stdout_task = tokio::spawn(async move {
         match stdout {
@@ -102,6 +118,18 @@ pub async fn run(req: ExecRequest) -> Result<ExecResponse, ExecError> {
 
     let (stdout, stdout_truncated) = drain_output(stdout_task, group_pid).await?;
     let (stderr, stderr_truncated) = drain_output(stderr_task, group_pid).await?;
+    // Commands are allowed to exit without consuming all stdin. The process status/stderr is the
+    // authoritative result; never let a closed input pipe turn a completed command into an RPC
+    // failure or leave the writer task alive.
+    if tokio::time::timeout(
+        std::time::Duration::from_millis(DRAIN_TIMEOUT_MS),
+        stdin_task,
+    )
+    .await
+    .is_err()
+    {
+        kill_process_group(group_pid);
+    }
 
     Ok(ExecResponse {
         exit_code: status.code().unwrap_or(if timed_out { 124 } else { 128 }),
@@ -329,6 +357,7 @@ mod tests {
             env: Vec::new(),
             timeout_ms: 5_000,
             output_limit_bytes: 1024,
+            stdin: Vec::new(),
         })
         .await
         .unwrap();
@@ -355,6 +384,7 @@ mod tests {
             }],
             timeout_ms: 5_000,
             output_limit_bytes: 4,
+            stdin: Vec::new(),
         })
         .await
         .unwrap();
@@ -379,6 +409,7 @@ mod tests {
             env: Vec::new(),
             timeout_ms: 60_000,
             output_limit_bytes: 1024,
+            stdin: Vec::new(),
         })
         .await
         .unwrap();
@@ -401,6 +432,7 @@ mod tests {
             env: Vec::new(),
             timeout_ms: 50,
             output_limit_bytes: 1024,
+            stdin: Vec::new(),
         })
         .await
         .unwrap();
@@ -488,6 +520,7 @@ mod tests {
             ],
             timeout_ms: 5_000,
             output_limit_bytes: 1_024,
+            stdin: Vec::new(),
         })
         .await
         .unwrap();
@@ -497,5 +530,40 @@ mod tests {
             String::from_utf8(out.stdout).unwrap(),
             format!("{uid} 64 unset")
         );
+    }
+
+    #[tokio::test]
+    async fn exec_delivers_binary_stdin() {
+        let payload = vec![0, 1, 2, 0xff, b'\n'];
+        let out = run(ExecRequest {
+            argv: vec!["/bin/cat".into()],
+            cwd: String::new(),
+            env: Vec::new(),
+            timeout_ms: 5_000,
+            output_limit_bytes: 1_024,
+            stdin: payload.clone(),
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(out.exit_code, 0);
+        assert_eq!(out.stdout, payload);
+    }
+
+    #[tokio::test]
+    async fn exec_rejects_oversized_stdin() {
+        let error = run(ExecRequest {
+            argv: vec!["/bin/cat".into()],
+            cwd: String::new(),
+            env: Vec::new(),
+            timeout_ms: 5_000,
+            output_limit_bytes: 1_024,
+            stdin: vec![0; MAX_STDIN_BYTES + 1],
+        })
+        .await
+        .unwrap_err();
+
+        assert!(matches!(error, ExecError::InvalidConstraint(_)));
+        assert_eq!(error.code(), 400);
     }
 }

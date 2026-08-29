@@ -1,0 +1,32 @@
+#!/bin/sh
+set -eu
+
+[ "$#" -eq 1 ] || {
+  echo "usage: resolve-graphics-backend <kernel-command-line>" >&2
+  exit 64
+}
+
+requested=software
+modern_count=0
+legacy_count=0
+for token in $1; do
+  case "$token" in
+    dory.graphics=virgl-venus) modern=virgl2+venus; modern_count=$((modern_count + 1)) ;;
+    dory.graphics=virgl) modern=virgl2; modern_count=$((modern_count + 1)) ;;
+    dory.graphics=software) modern=software; modern_count=$((modern_count + 1)) ;;
+    dory.graphics=*) echo "unsupported graphics contract '$token'" >&2; exit 1 ;;
+    dory.gpu=venus) legacy=virgl2+venus; legacy_count=$((legacy_count + 1)) ;;
+    dory.gpu=*) echo "unsupported legacy graphics contract '$token'" >&2; exit 1 ;;
+  esac
+done
+[ "$modern_count" -le 1 ] || { echo "multiple dory.graphics authorities" >&2; exit 1; }
+[ "$legacy_count" -le 1 ] || { echo "multiple dory.gpu authorities" >&2; exit 1; }
+if [ "$modern_count" -eq 1 ] && [ "$legacy_count" -eq 1 ]; then
+  echo "versioned and legacy graphics authorities conflict" >&2
+  exit 1
+elif [ "$modern_count" -eq 1 ]; then
+  requested=$modern
+elif [ "$legacy_count" -eq 1 ]; then
+  requested=$legacy
+fi
+printf '%s\n' "$requested"

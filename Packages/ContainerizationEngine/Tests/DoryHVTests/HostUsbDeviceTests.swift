@@ -51,33 +51,14 @@ struct HostUsbDeviceTests {
         #expect(candidate.descriptor.productID == 0xabcd)
     }
 
-    @Test func openPlansDescribeAuthorizationAndCaptureRequirements() {
-        #expect(HostUsbDeviceFactory.plan(mode: .userAuthorized) == HostUsbOpenPlan(
-            mode: .userAuthorized,
-            authorize: true,
-            requiresPrivilegedHelperForClaimedDevice: false,
-            optionNames: []
-        ))
-        #expect(HostUsbDeviceFactory.plan(mode: .seize) == HostUsbOpenPlan(
-            mode: .seize,
-            authorize: true,
-            requiresPrivilegedHelperForClaimedDevice: false,
-            optionNames: ["deviceSeize"]
-        ))
-        #expect(HostUsbDeviceFactory.plan(mode: .capture) == HostUsbOpenPlan(
-            mode: .capture,
-            authorize: true,
-            requiresPrivilegedHelperForClaimedDevice: true,
-            optionNames: ["deviceCapture"]
-        ))
-    }
-
     @Test func controlSubmitParsesSetupPacketAndReturnsInPayload() throws {
         let backend = RecordingHostUsbBackend(controlResult: HostUsbTransferResult(status: 0, actualLength: 3, data: [1, 2, 3]))
         let device = HostUsbDevice(descriptor: fixtureHostUsbDescriptor(), backend: backend)
+        let context = UsbipRequestContext()
+        defer { device.closeSession(context) }
         let command = UsbipSubmitCommand(
             header: UsbipHeaderBasic(command: .cmdSubmit, sequenceNumber: 10, deviceID: 1, direction: .in, endpoint: 0),
-            transferFlags: 0,
+            transferFlags: UsbipTransferFlag.directionIn,
             transferBufferLength: 3,
             startFrame: 0xffff_ffff,
             numberOfPackets: 0,
@@ -86,7 +67,7 @@ struct HostUsbDeviceTests {
             transferBuffer: []
         )
 
-        let reply = try device.submit(command)
+        let reply = try device.submit(command, context: context)
 
         #expect(backend.controlSetups == [HostUsbControlSetup(requestType: 0x80, request: 0x06, value: 0x0100, index: 0, length: 3)])
         #expect(reply.header.direction == .out)
@@ -111,6 +92,8 @@ struct HostUsbDeviceTests {
     @Test func bulkOutSubmitUsesEndpointAddressAndPayload() throws {
         let backend = RecordingHostUsbBackend(transferResult: HostUsbTransferResult(status: 0, actualLength: 4))
         let device = HostUsbDevice(descriptor: fixtureHostUsbDescriptor(), backend: backend)
+        let context = UsbipRequestContext()
+        defer { device.closeSession(context) }
         let command = UsbipSubmitCommand(
             header: UsbipHeaderBasic(command: .cmdSubmit, sequenceNumber: 11, deviceID: 1, direction: .out, endpoint: 2),
             transferFlags: 0,
@@ -122,7 +105,7 @@ struct HostUsbDeviceTests {
             transferBuffer: [9, 8, 7, 6]
         )
 
-        let reply = try device.submit(command)
+        let reply = try device.submit(command, context: context)
 
         #expect(backend.transfers.map(\.endpointAddress) == [0x02])
         #expect(backend.transfers.map(\.payload) == [[9, 8, 7, 6]])
@@ -135,9 +118,11 @@ struct HostUsbDeviceTests {
     @Test func interruptInSubmitUsesDirectionalEndpointAddress() throws {
         let backend = RecordingHostUsbBackend(transferResult: HostUsbTransferResult(status: 0, actualLength: 2, data: [0xaa, 0xbb]))
         let device = HostUsbDevice(descriptor: fixtureHostUsbDescriptor(), backend: backend)
+        let context = UsbipRequestContext()
+        defer { device.closeSession(context) }
         let command = UsbipSubmitCommand(
             header: UsbipHeaderBasic(command: .cmdSubmit, sequenceNumber: 12, deviceID: 1, direction: .in, endpoint: 3),
-            transferFlags: 0,
+            transferFlags: UsbipTransferFlag.directionIn,
             transferBufferLength: 8,
             startFrame: 0xffff_ffff,
             numberOfPackets: 0,
@@ -146,7 +131,7 @@ struct HostUsbDeviceTests {
             transferBuffer: []
         )
 
-        let reply = try device.submit(command)
+        let reply = try device.submit(command, context: context)
 
         #expect(backend.transfers.map(\.endpointAddress) == [0x83])
         #expect(backend.transfers.map(\.expectedLength) == [8])
@@ -158,9 +143,11 @@ struct HostUsbDeviceTests {
     @Test func transferErrorsMapToNegativeUsbipStatus() throws {
         let backend = RecordingHostUsbBackend(transferError: .endpointNotFound(0x84))
         let device = HostUsbDevice(descriptor: fixtureHostUsbDescriptor(), backend: backend)
+        let context = UsbipRequestContext()
+        defer { device.closeSession(context) }
         let command = UsbipSubmitCommand(
             header: UsbipHeaderBasic(command: .cmdSubmit, sequenceNumber: 13, deviceID: 1, direction: .in, endpoint: 4),
-            transferFlags: 0,
+            transferFlags: UsbipTransferFlag.directionIn,
             transferBufferLength: 8,
             startFrame: 0xffff_ffff,
             numberOfPackets: 0,
@@ -169,7 +156,7 @@ struct HostUsbDeviceTests {
             transferBuffer: []
         )
 
-        let reply = try device.submit(command)
+        let reply = try device.submit(command, context: context)
 
         #expect(reply.status == -ENOENT)
         #expect(reply.actualLength == 0)
@@ -177,18 +164,20 @@ struct HostUsbDeviceTests {
         #expect(reply.header.endpoint == 0)
     }
 
-    @Test func unlinkAbortsBackend() throws {
+    @Test func unlinkWithoutMatchingInFlightRequestFailsClosed() throws {
         let backend = RecordingHostUsbBackend()
         let device = HostUsbDevice(descriptor: fixtureHostUsbDescriptor(), backend: backend)
+        let context = UsbipRequestContext()
+        defer { device.closeSession(context) }
         let command = UsbipUnlinkCommand(
             header: UsbipHeaderBasic(command: .cmdUnlink, sequenceNumber: 14, deviceID: 1, direction: .out, endpoint: 0),
             unlinkSequenceNumber: 12
         )
 
-        let reply = try device.unlink(command)
+        let reply = try device.unlink(command, context: context)
 
-        #expect(backend.abortEndpoints == [nil])
-        #expect(reply.status == 0)
+        #expect(backend.abortEndpoints.isEmpty)
+        #expect(reply.status == -ENOENT)
     }
 }
 
@@ -198,6 +187,8 @@ private final class RecordingHostUsbBackend: HostUsbBackend, @unchecked Sendable
         var payload: [UInt8]
         var expectedLength: UInt32
         var direction: UsbipDirection
+        var kind: HostUsbTransferKind
+        var timeout: TimeInterval
     }
 
     var controlSetups: [HostUsbControlSetup] = []
@@ -224,9 +215,9 @@ private final class RecordingHostUsbBackend: HostUsbBackend, @unchecked Sendable
         return controlResult
     }
 
-    func transfer(endpointAddress: UInt8, payload: [UInt8], expectedLength: UInt32, direction: UsbipDirection, timeout: TimeInterval) throws -> HostUsbTransferResult {
+    func transfer(endpointAddress: UInt8, payload: [UInt8], expectedLength: UInt32, direction: UsbipDirection, kind: HostUsbTransferKind, timeout: TimeInterval) throws -> HostUsbTransferResult {
         if let transferError { throw transferError }
-        transfers.append(Transfer(endpointAddress: endpointAddress, payload: payload, expectedLength: expectedLength, direction: direction))
+        transfers.append(Transfer(endpointAddress: endpointAddress, payload: payload, expectedLength: expectedLength, direction: direction, kind: kind, timeout: timeout))
         return transferResult
     }
 

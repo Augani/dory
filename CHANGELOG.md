@@ -1,6 +1,77 @@
 # Changelog
 
-## Unreleased
+## 0.4.6 - 2026-08-28
+
+### Added
+
+- Added named headless agent sandboxes with reusable sessions, coding-agent and polyglot templates,
+  dependency discovery, declarative recipes, persistent caches, and repairable provisioning.
+- Added native Apple-silicon Linux desktop devices for speakers, microphone, camera, clipboard,
+  mouse, trackpad, keyboard, Retina resize, full-screen display, and host-device recovery.
+- Added an isolated dual VirGL/Venus renderer path for accelerated OpenGL and Vulkan applications,
+  including native Zed startup and explicit GPU policy controls in Dory.
+- Added a clear Desktops versus headless Sandboxes product model and expanded machine cards,
+  controls, resource grids, diagnostics, and lifecycle feedback.
+
+### Changed
+
+- Added custom arm64 Linux installation from a user-selected ISO. Dory now imports the installer
+  into private managed storage, creates a configurable thin-provisioned disk, boots through native
+  EFI with a stable VM identity and persistent NVRAM, and lets users eject or reattach installer
+  media from the machine menu.
+- Extended custom EFI snapshots to capture and transactionally restore the VM disk, machine
+  identifier, and NVRAM together. EFI snapshot exports use an integrity-checked portable bundle,
+  while clones retain EFI boot variables and receive a new hardware identity.
+- Enabled full-screen participation and system-key capture in the native Linux display window.
+
+- Rebuilt the Ubuntu 24.04 LTS desktop component around Canonical's GNOME session, Yaru themes,
+  Ubuntu Dock, Files, Settings, standard desktop utilities, and a working native-package browser
+  instead of presenting the shared Xfce profile as Ubuntu Desktop.
+- Completed Debian's everyday desktop application set with Firefox ESR, Evince, and Galculator.
+- Enabled explicit bidirectional SPICE clipboard transport and added a VirtIO microphone input
+  stream alongside desktop speaker output.
+- Made release candidates rebuild and verify the desktop kernel and all three desktop root filesystems
+  from the release commit instead of accepting pre-existing local guest artifacts.
+- Added a physical-Mac release gate that boots every managed desktop with the signed candidate
+  helper, launches its browser, and verifies applications, networking, audio devices, persistence,
+  read-only sharing, entitlements, and exact process provenance.
+- Added signed, versioned in-place updates for existing Debian, Ubuntu, and Kali desktops. Dory now
+  preserves the persistent guest disk and account, creates a last-good snapshot, updates packages,
+  browser and guest integration, boots the new desktop kernel, qualifies the graphical session,
+  and automatically rolls back any failed or interrupted update.
+- Extended the physical-Mac release gate to apply each exact desktop update payload and prove that
+  a corrupt payload restores the last-good snapshot without losing guest data or running state.
+
+### Fixed
+
+- Fixed first launch and recovery paths that could leave `doryd` unavailable, report “machine
+  manager is not configured,” require an extra Try Again click, or time out while cleaning up an
+  incomplete server or desktop.
+- Fixed Desktop and Server creation failures caused by overlong handoff sockets, stale typed
+  settings, incomplete component activation, and provisioning before the daemon was ready.
+- Fixed Docker tier discovery and repair when the macOS credential helper or bundled CLI plugins
+  were missing, while preserving the selected data drive and exact engine storage authority.
+- Fixed inverted or sluggish mouse and trackpad scrolling, lost pointer clicks, upside-down or
+  flickering frames, desktop audio pacing, microphone/camera device recovery, and runner identity.
+- Fixed strict OrbStack migration capacity checks when Docker object-level `/system/df` is
+  unavailable by using the authoritative guest data-disk capacity and usage probe.
+- Fixed the Agent Core recipe composition so POSIX `sh` receives `fi\nif` instead of the invalid
+  `fiif` token reported by the external sandbox provisioning PR.
+- Kept the engine's Docker inventory bridge alive for the full VM lifetime, restoring automatic
+  gvproxy listeners for published container ports. Port diagnostics and repair now verify real
+  loopback connections instead of treating Docker route metadata as proof of reachability.
+- Capped the Apple-silicon engine at the exact 62 GiB guest-RAM limit imposed by Dory's 2 GiB RAM
+  base and Hypervisor.framework's 64 GiB guest-physical aperture. Existing 64 GiB settings are
+  clamped before launch, and the helper rejects unrepresentable configurations with a clear error.
+- Stopped Firefox and Firefox ESR from producing blank, black, or duplicated desktop frames on
+  Dory's current macOS VirGL renderer. Managed desktops now apply Mozilla's supported
+  per-browser software-compositing fallback while leaving the Linux desktop and other compatible
+  applications on the accelerated graphics path.
+- Made the desktop VM's virtio Ethernet adapter an explicit NetworkManager connection. Ubuntu's
+  vendor policy no longer leaves the guest offline when no Netplan-generated profile exists.
+- Made that managed connection independent of the guest's interface name, covering both Debian and
+  Ubuntu's `enp0s1` and Kali's `eth0` without falling back to an auto-generated profile.
+- Fixed `machine create` reporting a newly created desktop as `headless` until its first status refresh.
 
 ## 0.4.5 - 2026-08-13
 

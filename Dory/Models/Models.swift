@@ -1,3 +1,4 @@
+import DoryOperations
 import SwiftUI
 
 enum AppSection: String, CaseIterable, Identifiable, Sendable {
@@ -13,7 +14,7 @@ enum AppSection: String, CaseIterable, Identifiable, Sendable {
         case .compose: "Compose"
         case .builds: "Build Activity"
         case .kubernetes: "Kubernetes"
-        case .desktops: "Linux Desktops"
+        case .desktops: "Desktops"
         case .machines: "Linux Servers"
         case .components: "Components"
         case .health: "Health"
@@ -40,12 +41,13 @@ enum AppSection: String, CaseIterable, Identifiable, Sendable {
 }
 
 enum RunState: String, Sendable {
-    case running, paused, stopped
+    case running, paused, suspended, stopped
 
     var label: String {
         switch self {
         case .running: "Running"
         case .paused: "Paused"
+        case .suspended: "Suspended"
         case .stopped: "Stopped"
         }
     }
@@ -54,6 +56,7 @@ enum RunState: String, Sendable {
         switch self {
         case .running: p.green
         case .paused: p.amber
+        case .suspended: p.accent
         case .stopped: p.text3
         }
     }
@@ -62,6 +65,7 @@ enum RunState: String, Sendable {
         switch self {
         case .running: p.greenWeak
         case .paused: p.amberWeak
+        case .suspended: p.accentSoft
         case .stopped: p.pill
         }
     }
@@ -298,13 +302,320 @@ struct Machine: Identifiable, Hashable, Sendable {
     var sshPort: Int? = nil
     var shellSocketPath: String = ""
     var processID: Int32? = nil
+    var failure: DorydMachineFailure? = nil
+    var activeOperation: DorydMachineOperationSummary? = nil
+    var flightRecorderHeadSequence: UInt64 = 0
+    var flightRecorderAvailable: Bool = false
     var displayMode: MachineDisplayMode = .headless
+    var bootMode: MachineBootMode = .linuxKernel
+    var installerMediaAttached: Bool = false
+    var runtimeIdentity: DorydMachineRuntimeIdentity = .legacyCompatibility
+    var runtimeGraphicsSelection: DorydMachineRuntimeGraphicsSelection? = nil
+    var cloneReceipt: DorydMachineCloneReceipt? = nil
+    var agentBuild: String? = nil
+    var agentProtocolVersion: UInt32? = nil
+    var agentCapabilities: [DorydAgentCapability] = []
+    var integrationHealth: DoryGuestIntegrationHealth? = nil
+    var fileTransferPolicy: DoryVMClipboardDirection = .bidirectional
     var mounts: [MountPair] = []
     var id: String { name }
 
     var badgeColor: Color { Color(hex: badgeHex) }
     var actionLabel: String { status == .running ? "Stop" : "Start" }
     var isEmulated: Bool { !arch.isEmpty && arch != MachineArch.host.rawValue }
+
+    var runtimeEvidence: [MachineRuntimeEvidence] {
+        var evidence: [MachineRuntimeEvidence] = []
+        if let failure {
+            evidence.append(MachineRuntimeEvidence(
+                id: "failure",
+                label: Self.failureLabel(failure.code),
+                systemImage: "exclamationmark.octagon.fill",
+                tone: .warning,
+                detail: Self.failureDetail(failure)
+            ))
+        } else if let activeOperation {
+            evidence.append(MachineRuntimeEvidence(
+                id: "operation",
+                label: activeOperation.kind.rawValue.capitalized,
+                systemImage: "arrow.triangle.2.circlepath",
+                tone: .standard,
+                detail: "Operation \(activeOperation.operationID.prefix(8))…"
+            ))
+        }
+        if recipe == "doryd" {
+            if !flightRecorderAvailable {
+                evidence.append(MachineRuntimeEvidence(
+                    id: "flight-recorder",
+                    label: "Recorder unavailable",
+                    systemImage: "waveform.path.ecg.rectangle",
+                    tone: .warning,
+                    detail: "Durable workspace diagnostics need repair"
+                ))
+            } else if flightRecorderHeadSequence > 0 {
+                evidence.append(MachineRuntimeEvidence(
+                    id: "flight-recorder",
+                    label: "Flight recorder",
+                    systemImage: "waveform.path.ecg.rectangle",
+                    tone: .standard,
+                    detail: "Durable through event \(flightRecorderHeadSequence)"
+                ))
+            }
+        }
+        if let cloneReceipt {
+            evidence.append(MachineRuntimeEvidence(
+                id: "clone-storage",
+                label: "Copy-on-write clone",
+                systemImage: "square.on.square",
+                tone: .standard,
+                detail: "APFS-managed from \(cloneReceipt.sourceMachineID)/\(cloneReceipt.sourceSnapshotID)"
+            ))
+        }
+        switch runtimeIdentity.mode {
+        case "resolved-plan":
+            evidence.append(MachineRuntimeEvidence(
+                id: "authority",
+                label: runtimeIdentity.supportTier == "supported" ? "Supported" : "Preview",
+                systemImage: runtimeIdentity.supportTier == "supported"
+                    ? "checkmark.seal.fill" : "exclamationmark.triangle.fill",
+                tone: runtimeIdentity.supportTier == "supported" ? .positive : .warning,
+                detail: runtimeIdentity.runtimeQualification?.qualificationIdentity
+                    ?? "Resolved plan \(runtimeIdentity.planRevision ?? 0)"
+            ))
+            if let backend = runtimeIdentity.backend {
+                evidence.append(MachineRuntimeEvidence(
+                    id: "backend",
+                    label: Self.backendLabel(backend),
+                    systemImage: "cpu",
+                    tone: .standard,
+                    detail: runtimeIdentity.backendRuntimeBuildIdentifier ?? backend
+                ))
+            }
+            if displayMode == .desktop {
+                if status == .running, let runtimeGraphicsSelection {
+                    evidence.append(MachineRuntimeEvidence(
+                        id: "graphics",
+                        label: Self.graphicsLabel(runtimeGraphicsSelection.accelerationLevel),
+                        systemImage: "display",
+                        tone: runtimeGraphicsSelection.isQualifiedAcceleration
+                            ? .positive : .standard,
+                        detail: runtimeGraphicsSelection.isQualifiedAcceleration
+                            ? "Live renderer generation \(runtimeGraphicsSelection.rendererGeneration ?? 0)"
+                            : "Live operation-bound software selection"
+                    ))
+                } else if status == .running,
+                          runtimeIdentity.backend == "apple-virtualization-framework",
+                          runtimeIdentity.graphics == "software" {
+                    evidence.append(MachineRuntimeEvidence(
+                        id: "graphics",
+                        label: "Software graphics",
+                        systemImage: "display",
+                        tone: .standard,
+                        detail: "Plan-bound Virtualization.framework display"
+                    ))
+                } else if status == .running {
+                    evidence.append(MachineRuntimeEvidence(
+                        id: "graphics",
+                        label: "Graphics unverified",
+                        systemImage: "exclamationmark.triangle.fill",
+                        tone: .warning,
+                        detail: "The running helper did not prove its live graphics selection"
+                    ))
+                } else {
+                    evidence.append(MachineRuntimeEvidence(
+                        id: "graphics",
+                        label: "Planned \(Self.graphicsLabel(runtimeIdentity.graphics))",
+                        systemImage: "display",
+                        tone: .standard,
+                        detail: runtimeIdentity.graphicsQualification?.manifestIdentity
+                            ?? "No live graphics selection while stopped"
+                    ))
+                }
+            }
+            if runtimeIdentity.selectionDisposition == "approved-fallback" {
+                evidence.append(MachineRuntimeEvidence(
+                    id: "fallback",
+                    label: "Approved fallback",
+                    systemImage: "arrow.triangle.branch",
+                    tone: .warning,
+                    detail: runtimeIdentity.fallbackAuthorizationIdentity ?? "Approved alternative"
+                ))
+            }
+        case "requires-replanning":
+            evidence.append(MachineRuntimeEvidence(
+                id: "authority",
+                label: "Needs planning",
+                systemImage: "exclamationmark.triangle.fill",
+                tone: .warning,
+                detail: runtimeIdentity.invalidationReason ?? "No current launch plan"
+            ))
+        default:
+            evidence.append(MachineRuntimeEvidence(
+                id: "authority",
+                label: "Compatibility",
+                systemImage: "arrow.triangle.2.circlepath",
+                tone: .standard,
+                detail: "Legacy compatibility launch authority"
+            ))
+        }
+        evidence.append(toolsRuntimeEvidence)
+        return evidence
+    }
+
+    private static func failureLabel(_ code: DorydMachineFailureCode) -> String {
+        switch code {
+        case .lifecycleOperationFailed: "Operation failed"
+        case .lifecycleRecoveryRequired: "Recovery required"
+        case .workspaceAuthorityInvalid: "Planning required"
+        case .backendLaunchFailed: "Backend launch failed"
+        case .readinessHandoffFailed: "Readiness failed"
+        case .readinessTimedOut: "Readiness timed out"
+        case .helperExited: "VM helper exited"
+        case .savedStateInvalid: "Saved state invalid"
+        case .resourceAdmissionRejected: "Resources changed"
+        case .desktopUpdateRecoveryRequired: "Update recovery required"
+        case .desktopUpdateRolledBack: "Update rolled back"
+        case .deletionFailed: "Deletion failed"
+        case .diagnosticPersistenceFailed: "Diagnostics unavailable"
+        case .unclassified: "Machine failure"
+        }
+    }
+
+    private static func failureDetail(_ failure: DorydMachineFailure) -> String {
+        let recovery: String
+        switch failure.recoveryDisposition {
+        case .retry: recovery = "Retry the operation"
+        case .replan: recovery = "Replan this workspace"
+        case .repair: recovery = "Run repair and review diagnostics"
+        case .rollbackCompleted: recovery = "Rollback completed"
+        case .deleteWorkspace: recovery = "Delete and recreate the workspace"
+        case .inspectDiagnostics: recovery = "Review diagnostics"
+        }
+        if let operationID = failure.operationID {
+            return "\(recovery) · operation \(operationID.prefix(8))…"
+        }
+        return recovery
+    }
+
+    var integrationHealthProjection: DoryGuestIntegrationHealth {
+        if let integrationHealth, integrationHealth.isValid {
+            return integrationHealth
+        }
+        let authority: DoryGuestIntegrationRuntimeAuthority
+        switch runtimeIdentity.mode {
+        case "resolved-plan": authority = .resolvedPlan
+        case "requires-replanning": authority = .requiresReplanning
+        default: authority = .legacyCompatibility
+        }
+        return DoryGuestIntegrationHealth.evaluate(
+            machineIsRunning: status == .running,
+            runtimeAuthority: authority,
+            desktopIntegrationsExpected: displayMode == .desktop,
+            clipboardTextExpected: displayMode == .desktop,
+            clipboardImageExpected: displayMode == .desktop,
+            sharedFoldersExpected: !mounts.isEmpty,
+            // Older daemons did not expose the plan's exact device contract. The compatibility
+            // projection therefore stays fail-closed instead of inferring host integrations.
+            qualifiedRuntimeFeatures: [],
+            agentBuild: agentBuild,
+            agentProtocolVersion: agentProtocolVersion,
+            agentCapabilities: agentCapabilities.map {
+                DoryGuestIntegrationNegotiatedCapability(id: $0.id, version: $0.version)
+            }
+        )
+    }
+
+    private var toolsRuntimeEvidence: MachineRuntimeEvidence {
+        let health = integrationHealthProjection
+        switch health.state {
+        case .inactive:
+            return MachineRuntimeEvidence(
+                id: "tools",
+                label: "Tools inactive",
+                systemImage: "wrench.and.screwdriver",
+                tone: .standard,
+                detail: "Integration checks resume when the workspace is running"
+            )
+        case .missingTools:
+            return MachineRuntimeEvidence(
+                id: "tools",
+                label: "Tools unavailable",
+                systemImage: "wrench.and.screwdriver",
+                tone: .warning,
+                detail: "The guest has not reported a valid Dory Tools handshake"
+            )
+        case .incompatible:
+            return MachineRuntimeEvidence(
+                id: "tools",
+                label: "Tools incompatible",
+                systemImage: "exclamationmark.triangle.fill",
+                tone: .warning,
+                detail: "\(health.agentBuild ?? "Dory Tools") uses unsupported protocol \(health.agentProtocolVersion ?? 0)"
+            )
+        case .degraded:
+            let unavailable = health.features
+                .filter { $0.required && $0.state != .active }
+                .map(\.id.rawValue)
+            return MachineRuntimeEvidence(
+                id: "tools",
+                label: "Tools partially ready",
+                systemImage: "arrow.triangle.2.circlepath",
+                tone: .warning,
+                detail: unavailable.isEmpty
+                    ? "The workspace needs a current resolved runtime plan"
+                    : "Unavailable: \(unavailable.joined(separator: ", "))"
+            )
+        case .compatibility:
+            return MachineRuntimeEvidence(
+                id: "tools",
+                label: "Tools compatibility",
+                systemImage: "wrench.and.screwdriver",
+                tone: .standard,
+                detail: "\(health.agentBuild ?? "Dory Tools") · guest capabilities negotiated; runtime integrations unqualified"
+            )
+        case .healthy:
+            return MachineRuntimeEvidence(
+                id: "tools",
+                label: "Tools ready",
+                systemImage: "wrench.and.screwdriver.fill",
+                tone: .positive,
+                detail: "\(health.agentBuild ?? "Dory Tools") · \(health.features.filter { $0.state == .active }.count) active integrations"
+            )
+        }
+    }
+
+    private static func backendLabel(_ backend: String) -> String {
+        switch backend {
+        case "dory-hypervisor": "Raw HV"
+        case "apple-virtualization-framework": "Virtualization.framework"
+        case "qemu-hvf": "QEMU/HVF"
+        default: backend
+        }
+    }
+
+    private static func graphicsLabel(_ graphics: String?) -> String {
+        switch graphics {
+        case "hardware-accelerated-3d": "Qualified 3D"
+        case "host-accelerated-display": "Accelerated display"
+        case "software": "Software graphics"
+        case "none": "No graphics"
+        default: "Graphics unknown"
+        }
+    }
+}
+
+enum MachineRuntimeEvidenceTone: Hashable, Sendable {
+    case standard
+    case positive
+    case warning
+}
+
+struct MachineRuntimeEvidence: Identifiable, Hashable, Sendable {
+    var id: String
+    var label: String
+    var systemImage: String
+    var tone: MachineRuntimeEvidenceTone
+    var detail: String
 }
 
 enum LogLevel: String, Sendable {

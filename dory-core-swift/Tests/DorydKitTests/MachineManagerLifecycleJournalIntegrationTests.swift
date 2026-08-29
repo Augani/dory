@@ -1,0 +1,894 @@
+import Darwin
+import DoryCore
+import DoryOperations
+@testable import DorydKit
+import Foundation
+import XCTest
+
+final class MachineManagerLifecycleJournalIntegrationTests: XCTestCase {
+    func testFlightRecorderCapturesLifecycleAndSurvivesRestartAndDeletion() throws {
+        let fixture = try LifecycleFixture(name: #function)
+        defer { fixture.cleanup() }
+        let manager = fixture.makeManager()
+        let created = try fixture.createMachine(manager)
+        XCTAssertTrue(created.flightRecorderAvailable)
+        XCTAssertEqual(created.flightRecorderHeadSequence, 1)
+
+        XCTAssertEqual(try manager.start(id: fixture.machineID).state, .running)
+        XCTAssertEqual(try manager.stop(id: fixture.machineID).state, .stopped)
+        let beforeRestart = try manager.flightRecorder(
+            id: fixture.machineID,
+            afterSequence: 0
+        )
+        XCTAssertFalse(beforeRestart.snapshotRequired)
+        XCTAssertEqual(beforeRestart.headSequence, beforeRestart.events.last?.sequence)
+        XCTAssertTrue(beforeRestart.events.allSatisfy(\.isValid))
+        XCTAssertTrue(beforeRestart.events.contains { $0.kind == .workspaceCreated })
+        XCTAssertTrue(beforeRestart.events.contains { $0.kind == .backendSpawned })
+        XCTAssertTrue(beforeRestart.events.contains { $0.kind == .operationCompleted })
+        XCTAssertTrue(beforeRestart.events.contains {
+            $0.kind == .operationPhase && $0.phase == DoryOperationPhase.publishing.rawValue
+        })
+
+        let restarted = fixture.makeManager()
+        let status = try XCTUnwrap(restarted.status(id: fixture.machineID))
+        XCTAssertTrue(status.flightRecorderAvailable)
+        XCTAssertEqual(status.flightRecorderHeadSequence, beforeRestart.headSequence)
+        XCTAssertEqual(
+            try restarted.flightRecorder(
+                id: fixture.machineID,
+                afterSequence: beforeRestart.headSequence
+            ).events,
+            []
+        )
+
+        try restarted.delete(id: fixture.machineID)
+        let tombstone = try restarted.flightRecorder(
+            id: fixture.machineID,
+            afterSequence: beforeRestart.headSequence
+        )
+        XCTAssertTrue(tombstone.events.contains { $0.kind == .workspaceDeleted })
+        XCTAssertNil(restarted.status(id: fixture.machineID))
+    }
+
+    func testPauseAndResumePublishExactLifecycleTransitions() throws {
+        let fixture = try LifecycleFixture(name: #function)
+        defer { fixture.cleanup() }
+        let manager = fixture.makeManager()
+        _ = try fixture.createMachine(manager)
+        XCTAssertEqual(try manager.start(id: fixture.machineID).state, .running)
+
+        let paused = try manager.pause(id: fixture.machineID)
+        XCTAssertEqual(paused.state, .paused)
+        let pauseRecord = try waitForJournal(fixture, kind: .workspacePause, status: .completed)
+        let pauseOperation = try fixture.store.acquire(pauseRecord.plan.id)
+            .readWorkspaceLifecycleOperation()
+        XCTAssertEqual(pauseOperation.kind, .pausing)
+        XCTAssertEqual(pauseOperation.source.state, .running)
+        XCTAssertEqual(pauseOperation.target.state, .paused)
+
+        let resumed = try manager.resume(id: fixture.machineID)
+        XCTAssertEqual(resumed.state, .running)
+        let resumeRecord = try waitForJournal(fixture, kind: .workspaceResume, status: .completed)
+        let resumeOperation = try fixture.store.acquire(resumeRecord.plan.id)
+            .readWorkspaceLifecycleOperation()
+        XCTAssertEqual(resumeOperation.kind, .resuming)
+        XCTAssertEqual(resumeOperation.source.state, .paused)
+        XCTAssertEqual(resumeOperation.target.state, .running)
+    }
+
+    func testStartJournalRemainsActiveUntilReadyAndFencesConcurrentMutation() throws {
+        let fixture = try LifecycleFixture(name: #function, requiresReadyHandoff: true)
+        defer { fixture.cleanup() }
+        let manager = fixture.makeManager()
+        _ = try fixture.createMachine(manager)
+
+        let starting = try manager.start(id: fixture.machineID)
+        XCTAssertEqual(starting.state, .starting)
+        XCTAssertEqual(starting.activeOperationKind, "starting")
+        XCTAssertNotNil(starting.activeOperationID)
+        let pending = try XCTUnwrap(try fixture.records().last)
+        XCTAssertEqual(
+            starting.activeOperationID,
+            pending.plan.id.uuidString.lowercased()
+        )
+        XCTAssertEqual(pending.plan.kind, .workspaceStart)
+        XCTAssertEqual(pending.state.status, .running)
+
+        let competingStore = try DoryOperationJournalStore(home: fixture.journal)
+        XCTAssertThrowsError(
+            try competingStore.acquire(pending.plan.id, mutationScope: "different-vm")
+        ) { error in
+            guard case DoryOperationJournalError.invalidPlan = error else {
+                return XCTFail("wrong scope was not rejected: \(error)")
+            }
+        }
+        XCTAssertThrowsError(try competingStore.acquire(pending.plan.id)) { error in
+            guard case DoryOperationJournalError.operationInUse = error else {
+                return XCTFail("derived scope did not preserve the active fence: \(error)")
+            }
+        }
+
+        XCTAssertThrowsError(
+            try manager.snapshot(id: fixture.machineID, snapshotID: "while-starting")
+        ) { error in
+            XCTAssertTrue("\(error)".contains("active lifecycle mutation"))
+        }
+
+        try sendVmmHandoff(
+            path: try XCTUnwrap(starting.handoffSocketPath),
+            ready: VmmReadyMessage(
+                machineID: fixture.machineID,
+                operationID: try XCTUnwrap(starting.activeOperationID)
+            ),
+            fileDescriptors: []
+        )
+        XCTAssertEqual(try waitForState(manager, id: fixture.machineID, state: .running).state, .running)
+        XCTAssertNil(manager.status(id: fixture.machineID)?.activeOperationID)
+        let completed = try waitForJournal(
+            fixture,
+            kind: .workspaceStart,
+            status: .completed
+        )
+        let lease = try fixture.store.acquire(completed.plan.id)
+        let operation = try lease.readWorkspaceLifecycleOperation()
+        XCTAssertEqual(operation.kind, .starting)
+        XCTAssertEqual(operation.source.runtime?.policy, .legacyCompatibility)
+        XCTAssertEqual(operation.source.runtime?.authorizationState, .legacyCompatibility)
+        XCTAssertEqual(operation.target.runtime?.policy, .legacyCompatibility)
+        XCTAssertEqual(operation.target.runtime?.authorizationState, .legacyCompatibility)
+        XCTAssertEqual(
+            operation.target.runtime?.virtualHardwareABIVersion,
+            DoryVirtualMachineDefinition.currentVirtualHardwareABIVersion
+        )
+    }
+
+    func testAgentReadinessWaiterObservesButNeverFinalizesStartJournal() throws {
+        let fixture = try LifecycleFixture(name: #function, requiresReadyHandoff: true)
+        defer { fixture.cleanup() }
+        let manager = fixture.makeManager()
+        _ = try fixture.createMachine(manager)
+        let starting = try manager.start(id: fixture.machineID)
+        let machineID = fixture.machineID
+        let handoffSocketPath = try XCTUnwrap(starting.handoffSocketPath)
+        let operationID = try XCTUnwrap(starting.activeOperationID)
+
+        let publicationEntered = DispatchSemaphore(value: 0)
+        let allowPublication = DispatchSemaphore(value: 0)
+        let publicationProbe = LockedReadinessPublicationProbe()
+        manager.installReadinessPublishHookForTesting { publishedMachineID in
+            publicationProbe.record(machineID: publishedMachineID)
+            publicationEntered.signal()
+            _ = allowPublication.wait(timeout: .now() + 2)
+        }
+
+        let waiterCompleted = expectation(description: "agent readiness waiter completed")
+        let waiterState = LockedLifecycleWaitResult()
+        DispatchQueue.global(qos: .userInitiated).async {
+            waiterState.capture { try manager.waitUntilAgentReady(id: machineID) }
+            waiterCompleted.fulfill()
+        }
+
+        let handoffCompleted = expectation(description: "VMM handoff completed")
+        let handoffState = LockedLifecycleWaitResult()
+        DispatchQueue.global(qos: .userInitiated).async {
+            handoffState.capture {
+                try performLifecycleHandoff(
+                    manager: manager,
+                    machineID: machineID,
+                    path: handoffSocketPath,
+                    operationID: operationID
+                )
+            }
+            handoffCompleted.fulfill()
+        }
+
+        XCTAssertEqual(publicationEntered.wait(timeout: .now() + 2), .success)
+        Thread.sleep(forTimeInterval: 0.1)
+        XCTAssertEqual(
+            publicationProbe.machineIDs,
+            [machineID],
+            "the handoff callback must be the sole readiness publisher"
+        )
+        XCTAssertEqual(
+            publicationProbe.count,
+            1,
+            "an observing readiness waiter must not race the handoff lifecycle owner"
+        )
+        allowPublication.signal()
+
+        wait(for: [handoffCompleted, waiterCompleted], timeout: 3)
+        XCTAssertNoThrow(try handoffState.get())
+        XCTAssertEqual(try waiterState.get().state, .running)
+        XCTAssertEqual(
+            try waitForJournal(fixture, kind: .workspaceStart, status: .completed).state.status,
+            .completed
+        )
+    }
+
+    func testPerMachineFenceAllowsDifferentMachinesToReachReadinessConcurrently() throws {
+        let fixture = try LifecycleFixture(name: #function, requiresReadyHandoff: true)
+        defer { fixture.cleanup() }
+        let manager = fixture.makeManager()
+        _ = try fixture.createMachine(manager)
+        _ = try fixture.createMachine(manager, id: "lifecycle-vm-two")
+
+        let first = try manager.start(id: fixture.machineID)
+        let second = try manager.start(id: "lifecycle-vm-two")
+        XCTAssertEqual(first.state, .starting)
+        XCTAssertEqual(second.state, .starting)
+        XCTAssertEqual(
+            try fixture.records().filter {
+                $0.plan.kind == .workspaceStart && $0.state.status == .running
+            }.count,
+            2
+        )
+
+        try sendVmmHandoff(
+            path: try XCTUnwrap(first.handoffSocketPath),
+            ready: VmmReadyMessage(
+                machineID: fixture.machineID,
+                operationID: try XCTUnwrap(first.activeOperationID)
+            ),
+            fileDescriptors: []
+        )
+        try sendVmmHandoff(
+            path: try XCTUnwrap(second.handoffSocketPath),
+            ready: VmmReadyMessage(
+                machineID: "lifecycle-vm-two",
+                operationID: try XCTUnwrap(second.activeOperationID)
+            ),
+            fileDescriptors: []
+        )
+        _ = try waitForState(manager, id: fixture.machineID, state: .running)
+        _ = try waitForState(manager, id: "lifecycle-vm-two", state: .running)
+        let deadline = Date().addingTimeInterval(2)
+        while Date() < deadline {
+            if try fixture.records().filter({
+                $0.plan.kind == .workspaceStart && $0.state.status == .completed
+            }).count == 2 {
+                break
+            }
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        XCTAssertEqual(
+            try fixture.records().filter {
+                $0.plan.kind == .workspaceStart && $0.state.status == .completed
+            }.count,
+            2
+        )
+    }
+
+    func testReadinessTimeoutFailsStartJournalAndNeverPublishesRunning() throws {
+        let fixture = try LifecycleFixture(
+            name: #function,
+            requiresReadyHandoff: true,
+            readyTimeout: 0.05
+        )
+        defer { fixture.cleanup() }
+        let manager = fixture.makeManager()
+        _ = try fixture.createMachine(manager)
+
+        XCTAssertEqual(try manager.start(id: fixture.machineID).state, .starting)
+        let failed = try waitForState(manager, id: fixture.machineID, state: .failed)
+        XCTAssertTrue(failed.lastError?.contains("ready handoff timed out") == true)
+        XCTAssertEqual(failed.failure?.code, .readinessTimedOut)
+        XCTAssertEqual(failed.failure?.recoveryDisposition, .retry)
+        XCTAssertNotNil(failed.failure?.operationID)
+        XCTAssertNil(failed.activeOperationID)
+        _ = try waitForJournal(fixture, kind: .workspaceStart, status: .failed)
+        XCTAssertFalse(try fixture.records().contains { record in
+            record.plan.kind == .workspaceStart && record.state.status == .completed
+        })
+
+        let restarted = fixture.makeManager()
+        let recovered = try XCTUnwrap(restarted.status(id: fixture.machineID))
+        XCTAssertEqual(recovered.failure?.code, .readinessTimedOut)
+        XCTAssertEqual(recovered.failure?.operationID, failed.failure?.operationID)
+        XCTAssertNil(recovered.activeOperationID)
+        XCTAssertFalse(recovered.lastError?.contains("timed out after") == true)
+    }
+
+    func testTerminalHelperExitFailsStartJournalWithoutWaitingForReadinessTimeout() throws {
+        let fixture = try LifecycleFixture(
+            name: #function,
+            executable: "/usr/bin/false",
+            requiresReadyHandoff: true,
+            readyTimeout: 5,
+            restartPolicy: .none
+        )
+        defer { fixture.cleanup() }
+        let manager = fixture.makeManager()
+        _ = try fixture.createMachine(manager)
+
+        _ = try manager.start(id: fixture.machineID)
+        let failed = try waitForState(manager, id: fixture.machineID, state: .failed, timeout: 1)
+        XCTAssertTrue(failed.lastError?.contains("exited with status") == true)
+        XCTAssertEqual(failed.failure?.code, .helperExited)
+        XCTAssertEqual(failed.failure?.causalChain, [.processExit])
+        _ = try waitForJournal(
+            fixture,
+            kind: .workspaceStart,
+            status: .failed,
+            timeout: 1
+        )
+    }
+
+    func testInterruptedStartRecoversStoppedWithoutFalseRunningState() throws {
+        let fixture = try LifecycleFixture(name: #function, requiresReadyHandoff: true)
+        defer { fixture.cleanup() }
+        var manager: MachineManager? = fixture.makeManager()
+        _ = try fixture.createMachine(try XCTUnwrap(manager))
+        XCTAssertEqual(
+            try XCTUnwrap(manager).start(id: fixture.machineID).state,
+            .starting
+        )
+        manager = nil
+
+        let recovered = fixture.makeManager()
+        let status = try XCTUnwrap(recovered.status(id: fixture.machineID))
+        XCTAssertEqual(status.state, .stopped)
+        XCTAssertNil(status.pid)
+        XCTAssertTrue(status.lastError?.contains("interrupted start") == true)
+        _ = try waitForJournal(fixture, kind: .workspaceStart, status: .failed)
+    }
+
+    func testCrashAfterDurableStartPreparationHasJournalButNeverStartsHelper() throws {
+        let fixture = try LifecycleFixture(name: #function)
+        defer { fixture.cleanup() }
+        var manager: MachineManager? = fixture.makeManager()
+        _ = try fixture.createMachine(try XCTUnwrap(manager))
+        try XCTUnwrap(manager).installLifecycleFaultInjectorForTesting { point in
+            if point == .startAfterPreparation { throw MachineLifecycleInjectedCrash() }
+        }
+
+        XCTAssertThrowsError(try XCTUnwrap(manager).start(id: fixture.machineID)) { error in
+            XCTAssertTrue(error is MachineLifecycleInjectedCrash)
+        }
+        XCTAssertEqual(try XCTUnwrap(manager).status(id: fixture.machineID)?.state, .created)
+        XCTAssertEqual(
+            try fixture.records().filter {
+                $0.plan.kind == .workspaceResolve && $0.state.status == .running
+            }.count,
+            1
+        )
+        XCTAssertFalse(try fixture.records().contains { $0.plan.kind == .workspaceStart })
+        manager = nil
+
+        let recovered = fixture.makeManager()
+        XCTAssertEqual(recovered.status(id: fixture.machineID)?.state, .stopped)
+        _ = try waitForJournal(fixture, kind: .workspaceResolve, status: .completed)
+        XCTAssertFalse(try fixture.records().contains { $0.plan.kind == .workspaceStart })
+    }
+
+    func testReadinessCompletionWriteFailureKeepsRunningTargetAndNonterminalJournal() throws {
+        let fixture = try LifecycleFixture(name: #function, requiresReadyHandoff: true)
+        defer { fixture.cleanup() }
+        var manager: MachineManager? = fixture.makeManager()
+        _ = try fixture.createMachine(try XCTUnwrap(manager))
+        try XCTUnwrap(manager).installLifecycleFaultInjectorForTesting { point in
+            if point == .completionBeforeJournalWrite(.starting) {
+                throw MachineLifecycleInjectedCrash()
+            }
+        }
+
+        let starting = try XCTUnwrap(manager).start(id: fixture.machineID)
+        try sendVmmHandoff(
+            path: try XCTUnwrap(starting.handoffSocketPath),
+            ready: VmmReadyMessage(
+                machineID: fixture.machineID,
+                operationID: try XCTUnwrap(starting.activeOperationID)
+            ),
+            fileDescriptors: []
+        )
+        let running = try waitForState(
+            try XCTUnwrap(manager),
+            id: fixture.machineID,
+            state: .running
+        )
+        XCTAssertTrue(running.lastError?.contains("unfinished readiness journal") == true)
+        let unfinished = try XCTUnwrap(try fixture.records().last(where: {
+            $0.plan.kind == .workspaceStart
+        }))
+        XCTAssertEqual(unfinished.state.status, .running)
+        manager = nil
+
+        let recovered = fixture.makeManager()
+        XCTAssertEqual(recovered.status(id: fixture.machineID)?.state, .stopped)
+        _ = try waitForJournal(fixture, kind: .workspaceStart, status: .failed)
+    }
+
+    func testInterruptedStopCompletesFromPersistedTargetAuthorityOnRestart() throws {
+        let fixture = try LifecycleFixture(name: #function)
+        defer { fixture.cleanup() }
+        var manager: MachineManager? = fixture.makeManager()
+        _ = try fixture.createMachine(try XCTUnwrap(manager))
+        XCTAssertEqual(try XCTUnwrap(manager).start(id: fixture.machineID).state, .running)
+        try XCTUnwrap(manager).installLifecycleFaultInjectorForTesting { point in
+            if point == .stopAfterProcessStop { throw MachineLifecycleInjectedCrash() }
+        }
+
+        XCTAssertThrowsError(try XCTUnwrap(manager).stop(id: fixture.machineID)) { error in
+            XCTAssertTrue(error is MachineLifecycleInjectedCrash)
+        }
+        XCTAssertEqual(try XCTUnwrap(manager).status(id: fixture.machineID)?.state, .stopped)
+        manager = nil
+
+        let recovered = fixture.makeManager()
+        let status = try XCTUnwrap(recovered.status(id: fixture.machineID))
+        XCTAssertEqual(status.state, .stopped)
+        XCTAssertTrue(status.lastError?.contains("interrupted stop completed") == true)
+        _ = try waitForJournal(fixture, kind: .workspaceStop, status: .completed)
+    }
+
+    func testInterruptedSnapshotRemovesOnlyOperationOwnedPartialArtifacts() throws {
+        let fixture = try LifecycleFixture(name: #function)
+        defer { fixture.cleanup() }
+        var manager: MachineManager? = fixture.makeManager()
+        _ = try fixture.createMachine(try XCTUnwrap(manager))
+        try XCTUnwrap(manager).installLifecycleFaultInjectorForTesting { point in
+            if point == .snapshotAfterRootfs { throw MachineLifecycleInjectedCrash() }
+        }
+
+        XCTAssertThrowsError(
+            try XCTUnwrap(manager).snapshot(id: fixture.machineID, snapshotID: "partial")
+        ) { error in
+            XCTAssertTrue(error is MachineLifecycleInjectedCrash)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: fixture.state + "/\(fixture.machineID)/snapshots/partial.ext4"
+        ))
+        manager = nil
+
+        let recovered = fixture.makeManager()
+        XCTAssertEqual(recovered.status(id: fixture.machineID)?.state, .stopped)
+        XCTAssertTrue(try recovered.listSnapshots(machineID: fixture.machineID).isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: fixture.state + "/\(fixture.machineID)/snapshots/partial.ext4"
+        ))
+        _ = try waitForJournal(fixture, kind: .workspaceSnapshot, status: .failed)
+    }
+
+    func testInterruptedRestoreRollsBackBackupsAndPreservesMachine() throws {
+        let fixture = try LifecycleFixture(name: #function)
+        defer { fixture.cleanup() }
+        var manager: MachineManager? = fixture.makeManager()
+        _ = try fixture.createMachine(try XCTUnwrap(manager))
+        _ = try XCTUnwrap(manager).snapshot(id: fixture.machineID, snapshotID: "known-good")
+        let managedDisk = fixture.state + "/\(fixture.machineID)/rootfs.ext4"
+        try Data("current-before-restore".utf8).write(to: URL(fileURLWithPath: managedDisk))
+        try XCTUnwrap(manager).installLifecycleFaultInjectorForTesting { point in
+            if point == .restoreAfterBackups { throw MachineLifecycleInjectedCrash() }
+        }
+
+        XCTAssertThrowsError(
+            try XCTUnwrap(manager).restoreSnapshot(
+                machineID: fixture.machineID,
+                snapshotID: "known-good"
+            )
+        ) { error in
+            XCTAssertTrue(error is MachineLifecycleInjectedCrash)
+        }
+        manager = nil
+
+        let recovered = fixture.makeManager()
+        XCTAssertEqual(recovered.status(id: fixture.machineID)?.state, .stopped)
+        XCTAssertEqual(
+            try String(contentsOfFile: managedDisk, encoding: .utf8),
+            "current-before-restore"
+        )
+        XCTAssertEqual(
+            try recovered.listSnapshots(machineID: fixture.machineID).map(\.id),
+            ["known-good"]
+        )
+        _ = try waitForJournal(fixture, kind: .workspaceRestore, status: .failed)
+    }
+
+    func testRestoreRejectsSnapshotMutationAfterAuthorityBindingAndRollsBack() throws {
+        let fixture = try LifecycleFixture(name: #function)
+        defer { fixture.cleanup() }
+        let manager = fixture.makeManager()
+        _ = try fixture.createMachine(manager)
+        let managedDisk = fixture.state + "/\(fixture.machineID)/rootfs.ext4"
+        try Data("snapshot-bound-state".utf8).write(to: URL(fileURLWithPath: managedDisk))
+        let snapshot = try manager.snapshot(id: fixture.machineID, snapshotID: "bound")
+        try Data("original-live-state".utf8).write(to: URL(fileURLWithPath: managedDisk))
+        manager.installLifecycleFaultInjectorForTesting { point in
+            if point == .restoreAfterBackups {
+                try Data("mutated-after-authority-binding".utf8).write(
+                    to: URL(fileURLWithPath: snapshot.rootfsPath)
+                )
+            }
+        }
+
+        XCTAssertThrowsError(
+            try manager.restoreSnapshot(machineID: fixture.machineID, snapshotID: "bound")
+        ) { error in
+            XCTAssertTrue("\(error)".contains("bound snapshot evidence"))
+        }
+        XCTAssertEqual(
+            try String(contentsOfFile: managedDisk, encoding: .utf8),
+            "original-live-state"
+        )
+        let restoreRecords = try fixture.records().filter {
+            $0.plan.kind == .workspaceRestore
+        }
+        XCTAssertEqual(restoreRecords.last?.state.status, .failed)
+        XCTAssertFalse(restoreRecords.contains { $0.state.status == .completed })
+    }
+
+    func testRestoreCompletionWriteFailurePreservesRestoredTargetForRecovery() throws {
+        let fixture = try LifecycleFixture(name: #function)
+        defer { fixture.cleanup() }
+        var manager: MachineManager? = fixture.makeManager()
+        _ = try fixture.createMachine(try XCTUnwrap(manager))
+        let managedDisk = fixture.state + "/\(fixture.machineID)/rootfs.ext4"
+        try Data("snapshot-target".utf8).write(to: URL(fileURLWithPath: managedDisk))
+        _ = try XCTUnwrap(manager).snapshot(id: fixture.machineID, snapshotID: "target")
+        try Data("later-state".utf8).write(to: URL(fileURLWithPath: managedDisk))
+        try XCTUnwrap(manager).installLifecycleFaultInjectorForTesting { point in
+            if point == .completionBeforeJournalWrite(.restoring) {
+                throw MachineLifecycleInjectedCrash()
+            }
+        }
+
+        let restored = try XCTUnwrap(manager).restoreSnapshot(
+            machineID: fixture.machineID,
+            snapshotID: "target"
+        )
+        XCTAssertEqual(restored.state, .created)
+        XCTAssertEqual(
+            try String(contentsOfFile: managedDisk, encoding: .utf8),
+            "snapshot-target"
+        )
+        XCTAssertTrue(
+            try XCTUnwrap(manager).status(id: fixture.machineID)?.lastError?
+                .contains("unfinished restore journal") == true
+        )
+        let unfinished = try XCTUnwrap(try fixture.records().last(where: {
+            $0.plan.kind == .workspaceRestore
+        }))
+        XCTAssertEqual(unfinished.state.status, .running)
+        manager = nil
+
+        let recovered = fixture.makeManager()
+        XCTAssertEqual(recovered.status(id: fixture.machineID)?.state, .stopped)
+        XCTAssertEqual(
+            try String(contentsOfFile: managedDisk, encoding: .utf8),
+            "snapshot-target"
+        )
+        let recoveredJournal = try XCTUnwrap(try fixture.records().last(where: {
+            $0.plan.kind == .workspaceRestore
+        }))
+        XCTAssertEqual(
+            recoveredJournal.state.status,
+            .completed,
+            "recovery diagnostic: \(recovered.status(id: fixture.machineID)?.lastError ?? "none")"
+        )
+    }
+
+    func testSnapshotCompletionRecoveryRejectsMissingBoundKernel() throws {
+        let fixture = try LifecycleFixture(name: #function)
+        defer { fixture.cleanup() }
+        var manager: MachineManager? = fixture.makeManager()
+        _ = try fixture.createMachine(try XCTUnwrap(manager))
+        try XCTUnwrap(manager).installLifecycleFaultInjectorForTesting { point in
+            if point == .completionBeforeJournalWrite(.snapshotting) {
+                throw MachineLifecycleInjectedCrash()
+            }
+        }
+
+        let snapshot = try XCTUnwrap(manager).snapshot(
+            id: fixture.machineID,
+            snapshotID: "bound-snapshot"
+        )
+        XCTAssertEqual(
+            try XCTUnwrap(try fixture.records().last(where: {
+                $0.plan.kind == .workspaceSnapshot
+            })).state.status,
+            .running
+        )
+        try FileManager.default.removeItem(atPath: snapshot.kernelPath)
+        manager = nil
+
+        let recovered = fixture.makeManager()
+        XCTAssertEqual(recovered.status(id: fixture.machineID)?.state, .stopped)
+        let recoveredJournal = try XCTUnwrap(try fixture.records().last(where: {
+            $0.plan.kind == .workspaceSnapshot
+        }))
+        XCTAssertEqual(recoveredJournal.state.status, .failed)
+        XCTAssertTrue(
+            recovered.status(id: fixture.machineID)?.lastError?
+                .contains("interrupted snapshot") == true
+        )
+        XCTAssertFalse(try recovered.listSnapshots(machineID: fixture.machineID).contains {
+            $0.id == "bound-snapshot"
+        })
+    }
+
+    func testRestoreCompletionRecoveryRejectsTamperedLiveRootfs() throws {
+        let fixture = try LifecycleFixture(name: #function)
+        defer { fixture.cleanup() }
+        var manager: MachineManager? = fixture.makeManager()
+        _ = try fixture.createMachine(try XCTUnwrap(manager))
+        let managedDisk = fixture.state + "/\(fixture.machineID)/rootfs.ext4"
+        try Data("snapshot-authority".utf8).write(to: URL(fileURLWithPath: managedDisk))
+        _ = try XCTUnwrap(manager).snapshot(id: fixture.machineID, snapshotID: "authority")
+        try Data("later-state".utf8).write(to: URL(fileURLWithPath: managedDisk))
+        try XCTUnwrap(manager).installLifecycleFaultInjectorForTesting { point in
+            if point == .completionBeforeJournalWrite(.restoring) {
+                throw MachineLifecycleInjectedCrash()
+            }
+        }
+
+        _ = try XCTUnwrap(manager).restoreSnapshot(
+            machineID: fixture.machineID,
+            snapshotID: "authority"
+        )
+        try Data("tampered-after-commit".utf8).write(to: URL(fileURLWithPath: managedDisk))
+        manager = nil
+
+        let recovered = fixture.makeManager()
+        XCTAssertEqual(recovered.status(id: fixture.machineID)?.state, .stopped)
+        XCTAssertEqual(
+            try String(contentsOfFile: managedDisk, encoding: .utf8),
+            "tampered-after-commit"
+        )
+        let recoveredJournal = try XCTUnwrap(try fixture.records().last(where: {
+            $0.plan.kind == .workspaceRestore
+        }))
+        XCTAssertEqual(recoveredJournal.state.status, .failed)
+        XCTAssertTrue(
+            recovered.status(id: fixture.machineID)?.lastError?
+                .contains("requires repair") == true
+        )
+    }
+
+    func testInterruptedDeleteRestoresQuarantinedMachineOnRestart() throws {
+        let fixture = try LifecycleFixture(name: #function)
+        defer { fixture.cleanup() }
+        var manager: MachineManager? = fixture.makeManager()
+        _ = try fixture.createMachine(try XCTUnwrap(manager))
+        try XCTUnwrap(manager).installLifecycleFaultInjectorForTesting { point in
+            if point == .deleteAfterQuarantine { throw MachineLifecycleInjectedCrash() }
+        }
+
+        XCTAssertThrowsError(try XCTUnwrap(manager).delete(id: fixture.machineID)) { error in
+            XCTAssertTrue(error is MachineLifecycleInjectedCrash)
+        }
+        XCTAssertNil(try XCTUnwrap(manager).status(id: fixture.machineID))
+        manager = nil
+
+        let recovered = fixture.makeManager()
+        let status = try XCTUnwrap(recovered.status(id: fixture.machineID))
+        XCTAssertEqual(status.state, .stopped)
+        XCTAssertTrue(status.lastError?.contains("interrupted deletion") == true)
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: fixture.state + "/\(fixture.machineID)/machine.json"
+        ))
+        _ = try waitForJournal(fixture, kind: .workspaceDelete, status: .failed)
+    }
+
+    func testLegacyNestedNonterminalJournalIsRecoveredFromTheDoryHomeStore() throws {
+        let fixture = try LifecycleFixture(name: #function)
+        defer { fixture.cleanup() }
+        let legacyHome = fixture.state + "/.lifecycle-journal"
+        let legacyStore = try DoryOperationJournalStore(home: legacyHome)
+        var manager: MachineManager? = fixture.makeManager(
+            lifecycleJournalHome: legacyHome
+        )
+        _ = try fixture.createMachine(try XCTUnwrap(manager))
+        try XCTUnwrap(manager).installLifecycleFaultInjectorForTesting { point in
+            if point == .deleteAfterQuarantine { throw MachineLifecycleInjectedCrash() }
+        }
+
+        XCTAssertThrowsError(try XCTUnwrap(manager).delete(id: fixture.machineID)) { error in
+            XCTAssertTrue(error is MachineLifecycleInjectedCrash)
+        }
+        XCTAssertTrue(try legacyStore.list().contains {
+            $0.plan.kind == .workspaceDelete
+                && $0.state.status != .completed
+                && $0.state.status != .failed
+        })
+        manager = nil
+
+        let recovered = fixture.makeManager()
+        let status = try XCTUnwrap(recovered.status(id: fixture.machineID))
+        XCTAssertEqual(status.state, .stopped)
+        XCTAssertTrue(status.lastError?.contains("interrupted deletion") == true)
+        let legacyDelete = try XCTUnwrap(try legacyStore.list().last(where: {
+            $0.plan.kind == .workspaceDelete
+        }))
+        XCTAssertEqual(legacyDelete.state.status, .failed)
+        XCTAssertFalse(try fixture.records().contains {
+            $0.plan.kind == .workspaceDelete
+        })
+    }
+
+    func testSharedDoryHomeStoreLeavesNonLifecycleOperationsForTheirOwner() throws {
+        let fixture = try LifecycleFixture(name: #function)
+        defer { fixture.cleanup() }
+        let digest = String(repeating: "a", count: 64)
+        let plan = DoryOperationPlan(
+            kind: .driveBackup,
+            source: DoryOperationAuthority(
+                kind: .dataDrive,
+                id: fixture.machineID,
+                fingerprint: digest
+            ),
+            target: DoryOperationAuthority(
+                kind: .backupArchive,
+                id: fixture.machineID,
+                fingerprint: digest
+            ),
+            selectionDigest: digest,
+            dependencyClosureDigest: digest,
+            successCriteriaDigest: digest
+        )
+        _ = try fixture.store.begin(plan)
+
+        let manager = fixture.makeManager()
+
+        XCTAssertNil(manager.status(id: fixture.machineID))
+        XCTAssertEqual(try fixture.store.read(plan.id).state.status, .running)
+    }
+}
+
+private final class LifecycleFixture {
+    let machineID = "lifecycle-vm"
+    let base: String
+    let state: String
+    let journal: String
+    let store: DoryOperationJournalStore
+    private let configuration: MachineManagerConfiguration
+
+    init(
+        name: String,
+        executable: String = "/bin/sleep",
+        requiresReadyHandoff: Bool = false,
+        readyTimeout: TimeInterval = 2,
+        restartPolicy: HvRestartPolicy = HvRestartPolicy(
+            maxRestarts: 4,
+            delaySeconds: 0.01,
+            maximumDelaySeconds: 0.02,
+            stableRunSeconds: 0
+        )
+    ) throws {
+        _ = name
+        base = "/tmp/dorylc-\(getpid())-\(UInt64.random(in: 0..<UInt64.max))"
+        state = base + "/machines"
+        journal = base + "/journal"
+        configuration = MachineManagerConfiguration(
+            vmmExecutablePath: executable,
+            stateDirectory: state,
+            runtimeDirectory: base + "/runtime",
+            lifecycleJournalHome: journal,
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: requiresReadyHandoff,
+            handoffReadyTimeoutSeconds: readyTimeout,
+            startupRestartPolicy: restartPolicy
+        )
+        store = try DoryOperationJournalStore(home: journal)
+    }
+
+    func makeManager(lifecycleJournalHome: String? = nil) -> MachineManager {
+        var configuration = configuration
+        if let lifecycleJournalHome {
+            configuration.lifecycleJournalHome = lifecycleJournalHome
+        }
+        return MachineManager(configuration: configuration)
+    }
+
+    @discardableResult
+    func createMachine(
+        _ manager: MachineManager,
+        id: String? = nil
+    ) throws -> DoryMachineStatus {
+        try manager.create(DoryMachineConfiguration(
+            id: id ?? machineID,
+            kernelPath: doryTestKernelPath,
+            rootfsPath: doryTestRootfsPath
+        ))
+    }
+
+    func records() throws -> [DoryOperationRecord] {
+        try store.list().sorted { $0.plan.createdAt < $1.plan.createdAt }
+    }
+
+    func cleanup() {
+        try? FileManager.default.removeItem(atPath: base)
+    }
+}
+
+private final class LockedLifecycleWaitResult: @unchecked Sendable {
+    private let lock = NSLock()
+    private var result: Result<DoryMachineStatus, Error>?
+
+    func capture(_ operation: () throws -> DoryMachineStatus) {
+        let captured = Result { try operation() }
+        lock.withLock { result = captured }
+    }
+
+    func get() throws -> DoryMachineStatus {
+        try lock.withLock { try XCTUnwrap(result).get() }
+    }
+}
+
+private func performLifecycleHandoff(
+    manager: MachineManager,
+    machineID: String,
+    path: String,
+    operationID: String
+) throws -> DoryMachineStatus {
+    try sendVmmHandoff(
+        path: path,
+        ready: VmmReadyMessage(
+            machineID: machineID,
+            operationID: operationID,
+            agentSocketPath: "/run/dory-agent.sock"
+        ),
+        fileDescriptors: []
+    )
+    return try XCTUnwrap(manager.status(id: machineID))
+}
+
+private final class LockedReadinessPublicationProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recordedMachineIDs: [String] = []
+
+    func record(machineID: String) {
+        lock.withLock { recordedMachineIDs.append(machineID) }
+    }
+
+    var count: Int {
+        lock.withLock { recordedMachineIDs.count }
+    }
+
+    var machineIDs: [String] {
+        lock.withLock { recordedMachineIDs }
+    }
+}
+
+private func waitForState(
+    _ manager: MachineManager,
+    id: String,
+    state: DoryMachineState,
+    timeout: TimeInterval = 3
+) throws -> DoryMachineStatus {
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+        if let status = manager.status(id: id), status.state == state { return status }
+        Thread.sleep(forTimeInterval: 0.01)
+    }
+    throw NSError(
+        domain: "MachineManagerLifecycleJournalIntegrationTests",
+        code: 1,
+        userInfo: [NSLocalizedDescriptionKey: "timed out waiting for machine state \(state)"]
+    )
+}
+
+private func waitForJournal(
+    _ fixture: LifecycleFixture,
+    kind: DoryOperationKind,
+    status: DoryOperationStatus,
+    timeout: TimeInterval = 3
+) throws -> DoryOperationRecord {
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+        if let record = try fixture.records().last(where: {
+            $0.plan.kind == kind && $0.state.status == status
+        }) {
+            return record
+        }
+        Thread.sleep(forTimeInterval: 0.01)
+    }
+    throw NSError(
+        domain: "MachineManagerLifecycleJournalIntegrationTests",
+        code: 2,
+        userInfo: [
+            NSLocalizedDescriptionKey:
+                "timed out waiting for lifecycle journal \(kind.rawValue) \(status.rawValue)",
+        ]
+    )
+}

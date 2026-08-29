@@ -39,7 +39,7 @@ Desktop distributions add the shared Linux Desktop Runtime automatically. Removi
 
 ## Linux desktops and servers
 
-The app separates graphical Linux Desktops from lightweight Linux Servers. A new desktop can use Debian 13, Ubuntu 24.04 LTS, or Kali rolling with Xfce, systemd, Bash, and a configurable login user. Its display uses a true 2x guest framebuffer with matching Xfce scaling and follows the Mac window as it resizes.
+The app separates graphical Linux Desktops from lightweight Linux Servers. A new desktop can use Ubuntu 24.04 LTS with Canonical's GNOME session, or Debian 13 and Kali rolling with Xfce. All three use systemd, Bash, and a configurable login user. The display uses a true 2x guest framebuffer with matching desktop scaling and follows the Mac window as it resizes.
 
 Desktop creation also controls CPU, memory, development recipe, Mac home sharing, and scoped folders. Each desktop has a thin-provisioned 64 GiB disk in the selected Dory data drive. Headless servers use Alpine with an initial root `/bin/sh` login. Install `linux-machines` for headless servers or a matching `desktop-*` component for graphical machines.
 

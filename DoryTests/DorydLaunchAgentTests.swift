@@ -237,6 +237,12 @@ struct DorydLaunchAgentTests {
         #expect(plist.contains("<string>\(helpersURL.path)</string>"))
         #expect(plist.contains("<key>DORYD_RESOURCES_DIR</key>"))
         #expect(plist.contains("<string>\(contentsURL.appendingPathComponent("Resources").path)</string>"))
+        #expect(plist.contains("<key>DORYD_STATE_DIR</key>"))
+        #expect(plist.contains("<string>\(DorydLaunchAgent.runtimeDirectory.appendingPathComponent("docker").path)</string>"))
+        #expect(plist.contains("<key>DORYD_MACHINE_RUNTIME_DIR</key>"))
+        #expect(plist.contains("<string>\(DorydLaunchAgent.runtimeDirectory.appendingPathComponent("m").path)</string>"))
+        #expect(plist.contains("<key>DORYD_SHARE_HOME</key>"))
+        #expect(plist.contains("<string>1</string>"))
         #expect(plist.contains("<key>DORYD_HOST_CLI</key>"))
         #expect(plist.contains("<string>1</string>"))
         #expect(plist.contains("<key>DORYD_AMD64</key>"))
@@ -266,6 +272,8 @@ struct DorydLaunchAgentTests {
         #expect(DorydLaunchAgent.Configuration.hostScaledCPUCount(activeProcessorCount: 2) == 2)
         #expect(DorydLaunchAgent.Configuration.hostScaledMemoryMB(physicalMemory: 16 * 1024 * 1024 * 1024) == 8192)
         #expect(DorydLaunchAgent.Configuration.hostScaledMemoryMB(physicalMemory: 8 * 1024 * 1024 * 1024) == 4096)
+        #expect(DorydLaunchAgent.Configuration.hostScaledMemoryMB(physicalMemory: 128 * 1024 * 1024 * 1024) == 62 * 1024)
+        #expect(DorydLaunchAgent.Configuration(memoryMB: 64 * 1024).memoryMB == 62 * 1024)
     }
 
     @Test func userEngineResourceLimitsReserveCapacityForMacOS() {
@@ -275,6 +283,8 @@ struct DorydLaunchAgentTests {
             == AppStore.EngineResourceLimits(maximumCPUCount: 8, maximumMemoryMB: 4 * 1024))
         #expect(AppStore.engineResourceLimits(activeProcessorCount: 2, physicalMemory: 4 * 1024 * 1024 * 1024)
             == AppStore.EngineResourceLimits(maximumCPUCount: 2, maximumMemoryMB: 2 * 1024))
+        #expect(AppStore.engineResourceLimits(activeProcessorCount: 16, physicalMemory: 128 * 1024 * 1024 * 1024)
+            == AppStore.EngineResourceLimits(maximumCPUCount: 16, maximumMemoryMB: 62 * 1024))
     }
 
     @Test func ensureCurrentRestartsWhenLaunchAgentEnvironmentChanges() async throws {
@@ -446,6 +456,55 @@ struct DorydLaunchAgentTests {
         #expect(plist.contains("<string>0</string>"))
     }
 
+    @Test func qualificationBootstrapIsExplicitAndOffByDefault() throws {
+        func environment(_ configuration: DorydLaunchAgent.Configuration) throws -> [String: String] {
+            let plist = DorydLaunchAgent.launchAgentPlist(
+                program: "/Applications/Dory.app/Contents/Helpers/doryd",
+                helpersDirectory: URL(fileURLWithPath: "/Applications/Dory.app/Contents/Helpers"),
+                configuration: configuration
+            )
+            let data = try #require(plist.data(using: .utf8))
+            let root = try #require(
+                try PropertyListSerialization.propertyList(
+                    from: data,
+                    options: [],
+                    format: nil
+                ) as? [String: Any]
+            )
+            return try #require(root["EnvironmentVariables"] as? [String: String])
+        }
+
+        #expect(
+            try environment(DorydLaunchAgent.Configuration())[
+                "DORYD_VM_QUALIFICATION_BOOTSTRAP"
+            ] == "0"
+        )
+        #expect(
+            try environment(DorydLaunchAgent.Configuration(
+                vmQualificationBootstrapEnabled: true
+            ))["DORYD_VM_QUALIFICATION_BOOTSTRAP"] == "1"
+        )
+    }
+
+    @Test func launchAgentBindsRawHVToNestedRunnerApplication() throws {
+        let plist = DorydLaunchAgent.launchAgentPlist(
+            program: "/Applications/Dory.app/Contents/Helpers/doryd",
+            helpersDirectory: URL(fileURLWithPath: "/Applications/Dory.app/Contents/Helpers")
+        )
+        let data = try #require(plist.data(using: .utf8))
+        let root = try #require(
+            try PropertyListSerialization.propertyList(from: data, options: [], format: nil)
+                as? [String: Any]
+        )
+        let environment = try #require(root["EnvironmentVariables"] as? [String: String])
+
+        #expect(
+            environment["DORYD_HV_HELPER"]
+                == "/Applications/Dory.app/Contents/Helpers/DoryHVRunner.app/Contents/MacOS/dory-hv"
+        )
+        #expect(environment["DORYD_HV_HELPER"] != "/Applications/Dory.app/Contents/Helpers/dory-hv")
+    }
+
     @Test func launchAgentCanDisableDaemonOwnedDomains() throws {
         let plist = DorydLaunchAgent.launchAgentPlist(
             program: "/Applications/Dory.app/Contents/Helpers/doryd",
@@ -506,9 +565,11 @@ struct DorydLaunchAgentTests {
     }
 
     @Test func launchAgentEngineChoicesAreOptInByDefault() throws {
+        let runtimeDirectory = URL(fileURLWithPath: "/private/var/folders/test/T/dev.dory.doryd")
         let plist = DorydLaunchAgent.launchAgentPlist(
             program: "/Applications/Dory.app/Contents/Helpers/doryd",
-            helpersDirectory: URL(fileURLWithPath: "/Applications/Dory.app/Contents/Helpers")
+            helpersDirectory: URL(fileURLWithPath: "/Applications/Dory.app/Contents/Helpers"),
+            runtimeDirectory: runtimeDirectory
         )
         let data = try #require(plist.data(using: .utf8))
         let root = try #require(
@@ -518,9 +579,37 @@ struct DorydLaunchAgentTests {
 
         #expect(environment["DORYD_AMD64"] == "0")
         #expect(environment["DORYD_GPU"] == "off")
+        #expect(environment["DORYD_STATE_DIR"] == runtimeDirectory.appendingPathComponent("docker").path)
+        #expect(environment["DORYD_MACHINE_RUNTIME_DIR"] == runtimeDirectory.appendingPathComponent("m").path)
+        #expect(environment["DORYD_SHARE_HOME"] == "1")
         #expect(
             environment["DORYD_BRIDGE_SUBNET"] == DoryIPv4BridgeNetwork.defaultCIDR
         )
+    }
+
+    @Test func runtimeDirectoryIsScopedBeneathThePrivateDarwinDirectoryAndFitsMachineSockets() {
+        let darwinTemporaryDirectory = URL(
+            fileURLWithPath: "/private/var/folders/8f/l7zyp8_15jl68g9stnzw7lvw0000gn/T",
+            isDirectory: true
+        )
+        let runtimeDirectory = DorydLaunchAgent.runtimeDirectory(
+            temporaryDirectory: darwinTemporaryDirectory
+        )
+
+        #expect(
+            runtimeDirectory.path
+                == darwinTemporaryDirectory.appendingPathComponent("d").standardizedFileURL.path
+        )
+
+        // MachineManager uses a 96-bit (24-hex-character) namespace token. console.sock is the
+        // longest current per-machine endpoint, so proving it fits also covers handoff, agent,
+        // shell, control, Docker, and USB sockets. sockaddr_un reserves one byte for the NUL.
+        let longestMachineSocket = runtimeDirectory
+            .appendingPathComponent("m", isDirectory: true)
+            .appendingPathComponent(String(repeating: "a", count: 24), isDirectory: true)
+            .appendingPathComponent("console.sock")
+            .path
+        #expect(longestMachineSocket.utf8.count <= 103)
     }
 
     @Test func launchAgentDoesNotOwnRuntimeModePolicy() {

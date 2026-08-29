@@ -1,0 +1,264 @@
+#!/bin/sh
+set -eu
+export LC_ALL=C
+
+pack_root=/opt/dory/mesa
+manifest=$pack_root/share/dory/runtime.env
+icd_manifest=$pack_root/share/vulkan/icd.d/virtio_icd.aarch64.json
+icd_library=$pack_root/lib/libvulkan_virtio.so
+probe=$pack_root/libexec/dory-vulkan-probe
+compositor_probe=$pack_root/libexec/dory-vulkan-compositor-probe
+build_packages=$pack_root/share/dory/build-packages.txt
+
+fail() {
+  echo "Dory graphics-pack preflight failed: $*" >&2
+  exit 1
+}
+
+[ -d "$pack_root" ] || fail "graphics pack root is missing"
+unsafe_path=$(find "$pack_root" -xdev \( -type f -o -type d \) \
+  \( ! -user root -o ! -group root -o -perm -020 -o -perm -002 \) -print -quit)
+[ -z "$unsafe_path" ] \
+  || fail "graphics pack contains a non-root-owned or writable path: $unsafe_path"
+unexpected_node=$(find "$pack_root" -xdev ! -type f ! -type d -print -quit)
+[ -z "$unexpected_node" ] \
+  || fail "graphics pack contains an indirect or special path: $unexpected_node"
+hardlinked_file=$(find "$pack_root" -xdev -type f -links +1 -print -quit)
+[ -z "$hardlinked_file" ] || fail "graphics pack contains a hard-linked file: $hardlinked_file"
+
+actual_files=$(find "$pack_root" -xdev -type f -print \
+  | sed "s#^$pack_root/##" | LC_ALL=C sort)
+expected_files='lib/libvulkan_virtio.so
+libexec/dory-vulkan-compositor-probe
+libexec/dory-vulkan-probe
+share/dory/build-packages.txt
+share/dory/runtime.env
+share/vulkan/icd.d/virtio_icd.aarch64.json'
+[ "$actual_files" = "$expected_files" ] \
+  || fail "graphics pack file inventory differs from schema 6"
+actual_directories=$(find "$pack_root" -xdev -type d -print \
+  | sed "s#^$pack_root#.#" | LC_ALL=C sort)
+expected_directories='.
+./lib
+./libexec
+./share
+./share/dory
+./share/vulkan
+./share/vulkan/icd.d'
+[ "$actual_directories" = "$expected_directories" ] \
+  || fail "graphics pack directory inventory differs from schema 6"
+
+manifest_value() {
+  key=$1
+  count=$(grep -c "^${key}=" "$manifest" || true)
+  [ "$count" -eq 1 ] || fail "manifest field '$key' must occur exactly once"
+  sed -n "s/^${key}=//p" "$manifest"
+}
+
+for regular_file in "$manifest" "$icd_manifest" "$icd_library" "$probe" \
+    "$compositor_probe" "$build_packages"; do
+  [ -f "$regular_file" ] && [ ! -L "$regular_file" ] \
+    || fail "missing regular file $regular_file"
+  [ "$(stat -c %u:%g "$regular_file")" = 0:0 ] \
+    || fail "$regular_file is not root-owned"
+done
+readelf=$(command -v readelf 2>/dev/null || true)
+[ -n "$readelf" ] || fail "readelf is required for exact graphics-pack ABI validation"
+
+[ "$(manifest_value schema)" = 6 ] || fail "unsupported ABI manifest schema"
+[ "$(manifest_value architecture)" = aarch64 ] || fail "pack architecture is not AArch64"
+[ "$(uname -m)" = aarch64 ] || fail "guest architecture is not AArch64"
+[ "$(manifest_value libc_family)" = glibc ] || fail "pack does not target GNU libc"
+[ "$(manifest_value vulkan_api)" = 1.3 ] || fail "pack Vulkan API contract is unsupported"
+[ "$(manifest_value vulkan13_features)" = dynamicRendering,maintenance4,synchronization2 ] \
+  || fail "pack Vulkan 1.3 feature contract is unsupported"
+[ "$(manifest_value vulkan_device_extensions)" = VK_KHR_external_semaphore_fd,VK_KHR_swapchain ] \
+  || fail "pack Vulkan device-extension contract is unsupported"
+[ "$(manifest_value vulkan_instance_extensions)" = VK_KHR_surface,VK_KHR_wayland_surface,VK_KHR_xcb_surface ] \
+  || fail "pack Vulkan instance-extension contract is unsupported"
+[ "$(manifest_value wsi)" = x11,wayland ] || fail "pack WSI contract is unsupported"
+[ "$(manifest_value wsi_surface_gate)" = xcb,wayland ] \
+  || fail "pack native-surface contract is unsupported"
+[ "$(manifest_value compositor_profile)" = native-vulkan-optimal-copy-compositor-v2 ] \
+  || fail "pack compositor profile is unsupported"
+[ "$(manifest_value pack_layout)" = single-tree ] || fail "pack layout is unsupported"
+[ "$(manifest_value libdrm_linkage)" = static-hidden ] \
+  || fail "pack libdrm linkage is not isolated"
+[ "$(manifest_value manifest_library_path)" = ../../../lib/libvulkan_virtio.so ] \
+  || fail "pack manifest path is not relocatable"
+grep -Fq '"library_path": "../../../lib/libvulkan_virtio.so"' "$icd_manifest" \
+  || fail "Vulkan manifest does not bind the signed pack library"
+
+expected_manifest_keys='architecture
+build_packages_sha256
+builder_snapshot
+compositor_probe_needed_sonames
+compositor_profile
+compositor_profile_source_commit
+compositor_profile_source_tree
+icd_needed_sonames
+libc_family
+libdrm_linkage
+manifest_library_path
+max_glibc_symbol
+mesa_source_commit
+mesa_source_date_epoch
+mesa_source_tree
+mesa_version
+pack_layout
+probe_needed_sonames
+schema
+vulkan13_features
+vulkan_api
+vulkan_device_extensions
+vulkan_instance_extensions
+wsi
+wsi_surface_gate'
+actual_manifest_keys=$(sed -n 's/^\([^=]*\)=.*$/\1/p' "$manifest" | LC_ALL=C sort)
+[ "$actual_manifest_keys" = "$expected_manifest_keys" ] \
+  || fail "ABI manifest keys are missing, duplicated, or unknown"
+
+required_symbol=$(manifest_value max_glibc_symbol)
+case "$required_symbol" in
+  GLIBC_[0-9]*.[0-9]*) required_glibc=${required_symbol#GLIBC_} ;;
+  *) fail "invalid GNU-libc symbol floor '$required_symbol'" ;;
+esac
+actual_libc=$(getconf GNU_LIBC_VERSION 2>/dev/null || true)
+case "$actual_libc" in
+  "glibc "[0-9]*.[0-9]*) actual_glibc=${actual_libc#glibc } ;;
+  *) fail "guest does not expose a compatible GNU-libc ABI" ;;
+esac
+required_major=${required_glibc%%.*}
+required_minor=${required_glibc#*.}
+required_minor=${required_minor%%.*}
+actual_major=${actual_glibc%%.*}
+actual_minor=${actual_glibc#*.}
+actual_minor=${actual_minor%%.*}
+case "$required_major:$required_minor:$actual_major:$actual_minor" in
+  *[!0-9:]*) fail "invalid GNU-libc version comparison" ;;
+esac
+if [ "$actual_major" -lt "$required_major" ] \
+    || { [ "$actual_major" -eq "$required_major" ] \
+      && [ "$actual_minor" -lt "$required_minor" ]; }; then
+  fail "guest glibc $actual_glibc is older than required $required_glibc"
+fi
+
+icd_dynamic=$($readelf --dynamic --wide "$icd_library") \
+  || fail "the Venus ICD dynamic table is invalid"
+if printf '%s\n' "$icd_dynamic" | grep -Eq '\((RPATH|RUNPATH)\)'; then
+  fail "the Venus ICD carries an ambient loader search path"
+fi
+icd_needed=$(printf '%s\n' "$icd_dynamic" \
+  | sed -n 's/.*Shared library: \[\([^]]*\)\].*/\1/p' \
+  | LC_ALL=C sort | paste -sd, -)
+[ "$icd_needed" = "$(manifest_value icd_needed_sonames)" ] \
+  || fail "the Venus ICD dependency set differs from its manifest"
+case ",$icd_needed," in
+  *,libdrm.so.*|*,libdorydrm.so.*) fail "the Venus ICD dynamically resolves libdrm" ;;
+esac
+if $readelf --dyn-syms --wide "$icd_library" \
+    | awk '$5 == "GLOBAL" && $6 == "DEFAULT" && $8 ~ /^drm/ { found = 1 } END { exit !found }'; then
+  fail "the Venus ICD exports an interposable libdrm symbol"
+fi
+
+probe_dynamic=$($readelf --dynamic --wide "$probe") \
+  || fail "the Vulkan probe dynamic table is invalid"
+if printf '%s\n' "$probe_dynamic" | grep -Eq '\((RPATH|RUNPATH)\)'; then
+  fail "the Vulkan probe carries an ambient loader search path"
+fi
+probe_needed=$(printf '%s\n' "$probe_dynamic" \
+  | sed -n 's/.*Shared library: \[\([^]]*\)\].*/\1/p' \
+  | LC_ALL=C sort | paste -sd, -)
+[ "$probe_needed" = "$(manifest_value probe_needed_sonames)" ] \
+  || fail "the Vulkan probe dependency set differs from its manifest"
+$readelf --program-headers --wide "$probe" \
+  | grep -Fq 'Requesting program interpreter: /lib/ld-linux-aarch64.so.1' \
+  || fail "the Vulkan probe requests an unexpected loader"
+compositor_probe_dynamic=$($readelf --dynamic --wide "$compositor_probe") \
+  || fail "the Vulkan compositor probe dynamic table is invalid"
+if printf '%s\n' "$compositor_probe_dynamic" | grep -Eq '\((RPATH|RUNPATH)\)'; then
+  fail "the Vulkan compositor probe carries an ambient loader search path"
+fi
+compositor_probe_needed=$(printf '%s\n' "$compositor_probe_dynamic" \
+  | sed -n 's/.*Shared library: \[\([^]]*\)\].*/\1/p' \
+  | LC_ALL=C sort | paste -sd, -)
+[ "$compositor_probe_needed" = "$(manifest_value compositor_probe_needed_sonames)" ] \
+  || fail "the Vulkan compositor probe dependency set differs from its manifest"
+case ",$compositor_probe_needed," in
+  *,libdrm.so.*|*,libdorydrm.so.*) fail "the Vulkan compositor probe dynamically resolves libdrm" ;;
+esac
+$readelf --program-headers --wide "$compositor_probe" \
+  | grep -Fq 'Requesting program interpreter: /lib/ld-linux-aarch64.so.1' \
+  || fail "the Vulkan compositor probe requests an unexpected loader"
+runtime_dyn_symbols=$({
+  $readelf --dyn-syms --wide "$icd_library"
+  $readelf --dyn-syms --wide "$probe"
+  $readelf --dyn-syms --wide "$compositor_probe"
+})
+if printf '%s\n' "$runtime_dyn_symbols" | grep -Fq GLIBC_PRIVATE; then
+  fail "the graphics pack references the private GNU-libc ABI"
+fi
+observed_max_glibc=$(printf '%s\n' "$runtime_dyn_symbols" \
+  | sed -n 's/.*@\(GLIBC_[0-9][0-9.]*\).*/\1/p' | sort -Vu | tail -n 1)
+[ "$observed_max_glibc" = "$required_symbol" ] \
+  || fail "the graphics pack GNU-libc symbols differ from its manifest"
+
+for elf_object in "$icd_library" "$probe" "$compositor_probe"; do
+  dependency_output=$(env -u LD_LIBRARY_PATH LD_BIND_NOW=1 ldd -r "$elf_object" 2>&1) \
+    || fail "the dynamic loader rejected ${elf_object#$pack_root/}"
+  if printf '%s\n' "$dependency_output" | grep -Eq 'not found|undefined symbol'; then
+    fail "${elf_object#$pack_root/} has an unresolved eager dependency"
+  fi
+done
+
+render_node_uses_virtio_gpu() {
+  render_device="/sys/class/drm/${1##*/}/device"
+  for render_driver_link in "$render_device/driver" "$render_device"/virtio*/driver; do
+    [ -L "$render_driver_link" ] || continue
+    render_driver=$(readlink -f "$render_driver_link" 2>/dev/null || true)
+    [ "${render_driver##*/}" = virtio_gpu ] && return 0
+  done
+  return 1
+}
+
+render_node=
+attempt=0
+while [ "$attempt" -lt 50 ] && [ -z "$render_node" ]; do
+  for candidate in /dev/dri/renderD*; do
+    [ -c "$candidate" ] || continue
+    if render_node_uses_virtio_gpu "$candidate"; then
+      render_node=$candidate
+      break
+    fi
+  done
+  [ -n "$render_node" ] || sleep 0.1
+  attempt=$((attempt + 1))
+done
+[ -n "$render_node" ] || fail "no virtio-gpu render node became ready"
+
+probe_output=$(env \
+  -u LD_LIBRARY_PATH \
+  -u VK_ADD_DRIVER_FILES \
+  -u VK_ICD_FILENAMES \
+  -u MESA_VK_DEVICE_SELECT \
+  -u MESA_LOADER_DRIVER_OVERRIDE \
+  LD_BIND_NOW=1 \
+  VK_DRIVER_FILES="$icd_manifest" \
+  VK_ICD_FILENAMES="$icd_manifest" \
+  timeout 10 "$probe" 2>&1) \
+  || fail "the isolated Venus Vulkan 1.3 device gate did not pass"
+for proof in contract=vulkan-1.3-application driver=venus hardware-device=yes \
+  robust-buffer-access=yes dynamic-rendering=yes synchronization2=yes \
+  maintenance4=yes color-atlas-texture-binding=yes \
+  color-atlas-copy-dst=yes swapchain=yes external-sync-fd=yes import-signaled-fd=yes \
+  export-sync-fd=yes \
+  device-create=yes queue-submit2=yes fence-signal=yes wsi-instance=xcb,wayland \
+  wsi-surface=not-requested; do
+  printf '%s\n' "$probe_output" | grep -Fq "$proof" \
+    || fail "the isolated Venus probe omitted $proof"
+done
+printf '%s\n' "$probe_output" | grep -Eq \
+  'color-atlas-format=(bgra8|rgba8)-unorm' \
+  || fail "the isolated Venus probe omitted a usable color-atlas format"
+
+printf 'render-node=%s glibc=%s %s\n' "$render_node" "$actual_glibc" "$probe_output"

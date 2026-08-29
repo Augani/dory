@@ -10,7 +10,10 @@ public struct KernelImage {
     private static let magic: UInt32 = 0x644D_5241  // "ARM\x64"
 
     public init(contentsOf path: String) throws {
-        let data = try Data(contentsOf: URL(fileURLWithPath: path))
+        try self.init(data: Data(contentsOf: URL(fileURLWithPath: path)))
+    }
+
+    public init(data: Data) throws {
         guard data.count > 64 else {
             throw VMError.bootFailure("kernel image too small: \(data.count) bytes")
         }
@@ -26,7 +29,10 @@ public struct KernelImage {
 
     /// Copies the image into guest RAM and returns the entry point.
     public func load(into memory: GuestMemory) throws -> UInt64 {
-        let loadAddress = memory.guestBase + textOffset
+        let (loadAddress, addressOverflowed) = memory.guestBase.addingReportingOverflow(textOffset)
+        guard !addressOverflowed else {
+            throw VMError.bootFailure("kernel load address overflows")
+        }
         guard memory.contains(loadAddress, count: imageSize) else {
             throw VMError.bootFailure("kernel does not fit in guest RAM")
         }

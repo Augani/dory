@@ -12,6 +12,7 @@ public struct DirectIPBridgeConfiguration: Sendable, Equatable {
     public var gvproxySocketPath: String
     public var localSocketPath: String
     public var interfaceNamePath: String?
+    public var guestMACAddress: [UInt8]
 
     public init(
         subnetCIDR: String,
@@ -23,7 +24,8 @@ public struct DirectIPBridgeConfiguration: Sendable, Equatable {
         ipv6HostGateway: String? = nil,
         gvproxySocketPath: String,
         localSocketPath: String,
-        interfaceNamePath: String? = nil
+        interfaceNamePath: String? = nil,
+        guestMACAddress: [UInt8] = DirectIPPacketBridge.defaultGuestMAC
     ) {
         self.tunnelEnabled = tunnelEnabled
         self.subnetCIDR = subnetCIDR
@@ -35,6 +37,7 @@ public struct DirectIPBridgeConfiguration: Sendable, Equatable {
         self.gvproxySocketPath = gvproxySocketPath
         self.localSocketPath = localSocketPath
         self.interfaceNamePath = interfaceNamePath
+        self.guestMACAddress = guestMACAddress
     }
 }
 
@@ -275,19 +278,27 @@ public struct DirectIPPacketBridge: Sendable {
     public static let utunIPv6Header = Data([0, 0, 0, 30])
     public static let bridgeMAC: [UInt8] = [0x5a, 0x94, 0xef, 0xd0, 0x12, 0x01]
     /// gvproxy's canonical vfkit guest MAC, shared by raw-HV and VZ network devices.
-    public static let guestMAC: [UInt8] = [0x5a, 0x94, 0xef, 0xe4, 0x0c, 0xee]
+    public static let defaultGuestMAC: [UInt8] = [0x5a, 0x94, 0xef, 0xe4, 0x0c, 0xee]
 
     public let route: DirectIPv4Route
     public let gateway: DirectIPv4Address
     public let ipv6Route: DirectIPv6Route?
     public let ipv6Gateway: DirectIPv6Address?
+    public let guestMAC: [UInt8]
 
     public init(
         subnetCIDR: String,
         gateway: String,
         ipv6SubnetCIDR: String? = nil,
-        ipv6Gateway: String? = nil
+        ipv6Gateway: String? = nil,
+        guestMAC: [UInt8] = Self.defaultGuestMAC
     ) throws {
+        guard guestMAC.count == 6,
+              guestMAC[0] & 0x01 == 0,
+              guestMAC[0] & 0x02 == 0x02 else {
+            throw DirectIPBridgeError.socket("invalid guest MAC address")
+        }
+        self.guestMAC = guestMAC
         self.route = try DirectIPv4Route(cidr: subnetCIDR)
         guard let gatewayAddress = DirectIPv4Address(gateway) else {
             throw DirectIPBridgeError.invalidIPv4(gateway)
@@ -334,7 +345,7 @@ public struct DirectIPPacketBridge: Sendable {
     public func ethernetFrameForGvproxy(_ packet: Data) -> Data? {
         guard DirectIPv4Packet(bytes: packet) != nil else { return nil }
         var frame = Data()
-        frame.append(contentsOf: Self.guestMAC)
+        frame.append(contentsOf: guestMAC)
         frame.append(contentsOf: Self.bridgeMAC)
         frame.append(contentsOf: [0x08, 0x00])
         frame.append(packet)
@@ -344,7 +355,7 @@ public struct DirectIPPacketBridge: Sendable {
     public func ethernetFrameForGvproxyIPv6(_ packet: Data) -> Data? {
         guard DirectIPv6Packet(bytes: packet) != nil else { return nil }
         var frame = Data()
-        frame.append(contentsOf: Self.guestMAC)
+        frame.append(contentsOf: guestMAC)
         frame.append(contentsOf: Self.bridgeMAC)
         frame.append(contentsOf: [0x86, 0xdd])
         frame.append(packet)
@@ -421,7 +432,8 @@ public final class DirectIPBridge: @unchecked Sendable {
             subnetCIDR: configuration.subnetCIDR,
             gateway: configuration.gateway,
             ipv6SubnetCIDR: configuration.ipv6SubnetCIDR,
-            ipv6Gateway: configuration.ipv6Gateway
+            ipv6Gateway: configuration.ipv6Gateway,
+            guestMAC: configuration.guestMACAddress
         )
         self.log = log
         queue.setSpecific(key: queueKey, value: 1)

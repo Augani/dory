@@ -1,0 +1,105 @@
+diff --git a/Source/ThirdParty/ANGLE/src/libANGLE/GLES1Renderer.cpp b/Source/ThirdParty/ANGLE/src/libANGLE/GLES1Renderer.cpp
+index c8efc9d557..d85a8bff97 100644
+--- a/Source/ThirdParty/ANGLE/src/libANGLE/GLES1Renderer.cpp
++++ b/Source/ThirdParty/ANGLE/src/libANGLE/GLES1Renderer.cpp
+@@ -9,6 +9,7 @@
+ #include "libANGLE/GLES1Renderer.h"
+ 
+ #include <string.h>
++#include <algorithm>
+ #include <iterator>
+ #include <sstream>
+ #include <vector>
+@@ -27,6 +28,21 @@ namespace
+ {
+ #include "libANGLE/GLES1Shaders.inc"
+ 
++template <typename T, size_t N>
++bool ArraysEqual(const T (&a)[N], const T (&b)[N])
++{
++    return std::equal(std::begin(a), std::end(a), std::begin(b));
++}
++
++template <typename T, size_t N>
++void HashArray(size_t &hash, const T (&values)[N])
++{
++    for (const T &value : values)
++    {
++        angle::HashCombine(hash, value);
++    }
++}
++
+ uint32_t GetLogicOpUniform(const gl::FramebufferAttachment *color, gl::LogicalOperation logicOp)
+ {
+     const uint32_t red   = color->getRedSize();
+@@ -44,14 +60,32 @@ namespace gl
+ {
+ GLES1ShaderState::GLES1ShaderState()  = default;
+ GLES1ShaderState::~GLES1ShaderState() = default;
+-GLES1ShaderState::GLES1ShaderState(const GLES1ShaderState &other)
+-{
+-    memcpy(this, &other, sizeof(GLES1ShaderState));
+-}
+ 
+ bool operator==(const GLES1ShaderState &a, const GLES1ShaderState &b)
+ {
+-    return memcmp(&a, &b, sizeof(GLES1ShaderState)) == 0;
++    return a.mGLES1StateEnabled == b.mGLES1StateEnabled &&
++           ArraysEqual(a.tex2DEnables, b.tex2DEnables) &&
++           ArraysEqual(a.texCubeEnables, b.texCubeEnables) &&
++           ArraysEqual(a.tex2DFormats, b.tex2DFormats) &&
++           ArraysEqual(a.texEnvModes, b.texEnvModes) &&
++           ArraysEqual(a.texCombineRgbs, b.texCombineRgbs) &&
++           ArraysEqual(a.texCombineAlphas, b.texCombineAlphas) &&
++           ArraysEqual(a.texCombineSrc0Rgbs, b.texCombineSrc0Rgbs) &&
++           ArraysEqual(a.texCombineSrc0Alphas, b.texCombineSrc0Alphas) &&
++           ArraysEqual(a.texCombineSrc1Rgbs, b.texCombineSrc1Rgbs) &&
++           ArraysEqual(a.texCombineSrc1Alphas, b.texCombineSrc1Alphas) &&
++           ArraysEqual(a.texCombineSrc2Rgbs, b.texCombineSrc2Rgbs) &&
++           ArraysEqual(a.texCombineSrc2Alphas, b.texCombineSrc2Alphas) &&
++           ArraysEqual(a.texCombineOp0Rgbs, b.texCombineOp0Rgbs) &&
++           ArraysEqual(a.texCombineOp0Alphas, b.texCombineOp0Alphas) &&
++           ArraysEqual(a.texCombineOp1Rgbs, b.texCombineOp1Rgbs) &&
++           ArraysEqual(a.texCombineOp1Alphas, b.texCombineOp1Alphas) &&
++           ArraysEqual(a.texCombineOp2Rgbs, b.texCombineOp2Rgbs) &&
++           ArraysEqual(a.texCombineOp2Alphas, b.texCombineOp2Alphas) &&
++           ArraysEqual(a.pointSpriteCoordReplaces, b.pointSpriteCoordReplaces) &&
++           ArraysEqual(a.lightEnables, b.lightEnables) &&
++           ArraysEqual(a.clipPlaneEnables, b.clipPlaneEnables) &&
++           a.alphaTestFunc == b.alphaTestFunc && a.fogMode == b.fogMode;
+ }
+ bool operator!=(const GLES1ShaderState &a, const GLES1ShaderState &b)
+ {
+@@ -60,7 +94,31 @@ bool operator!=(const GLES1ShaderState &a, const GLES1ShaderState &b)
+ 
+ size_t GLES1ShaderState::hash() const
+ {
+-    return angle::ComputeGenericHash(*this);
++    size_t hash = 0;
++    angle::HashCombine(hash, mGLES1StateEnabled.bits());
++    HashArray(hash, tex2DEnables);
++    HashArray(hash, texCubeEnables);
++    HashArray(hash, tex2DFormats);
++    HashArray(hash, texEnvModes);
++    HashArray(hash, texCombineRgbs);
++    HashArray(hash, texCombineAlphas);
++    HashArray(hash, texCombineSrc0Rgbs);
++    HashArray(hash, texCombineSrc0Alphas);
++    HashArray(hash, texCombineSrc1Rgbs);
++    HashArray(hash, texCombineSrc1Alphas);
++    HashArray(hash, texCombineSrc2Rgbs);
++    HashArray(hash, texCombineSrc2Alphas);
++    HashArray(hash, texCombineOp0Rgbs);
++    HashArray(hash, texCombineOp0Alphas);
++    HashArray(hash, texCombineOp1Rgbs);
++    HashArray(hash, texCombineOp1Alphas);
++    HashArray(hash, texCombineOp2Rgbs);
++    HashArray(hash, texCombineOp2Alphas);
++    HashArray(hash, pointSpriteCoordReplaces);
++    HashArray(hash, lightEnables);
++    HashArray(hash, clipPlaneEnables);
++    angle::HashCombine(hash, alphaTestFunc, fogMode);
++    return hash;
+ }
+ 
+ GLES1Renderer::GLES1Renderer() : mRendererProgramInitialized(false) {}

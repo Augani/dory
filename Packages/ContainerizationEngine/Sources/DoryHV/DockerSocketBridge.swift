@@ -1,4 +1,3 @@
-import Darwin
 import Foundation
 
 /// Serves the engine's docker socket (`engine.sock`) from dory-hv itself, relaying every connection
@@ -12,10 +11,20 @@ import Foundation
 public final class DockerSocketBridge: @unchecked Sendable {
     private let socketPath: String
     private let log: @Sendable (String) -> Void
+    private let listener: BoundedVsockSocketListener
 
-    public init(socketPath: String, log: @escaping @Sendable (String) -> Void = { _ in }) {
+    public init(
+        socketPath: String,
+        log: @escaping @Sendable (String) -> Void = { _ in }
+    ) {
         self.socketPath = socketPath
         self.log = log
+        self.listener = BoundedVsockSocketListener(
+            socketPath: socketPath,
+            mode: nil,
+            endpointLabel: "docker socket bridge",
+            log: log
+        )
     }
 
     /// Lets the engine reject an impossible Docker endpoint before it creates disks or sidecars.
@@ -23,38 +32,29 @@ public final class DockerSocketBridge: @unchecked Sendable {
         try VsockUnixRelay.validateSocketPath(socketPath)
     }
 
-    private final class VsockBox: @unchecked Sendable {
-        let vsock: VirtioVsock
-        init(_ vsock: VirtioVsock) { self.vsock = vsock }
-    }
-
-    private final class ConnectionBox: @unchecked Sendable {
-        let connection: VsockConnection
-        init(_ connection: VsockConnection) { self.connection = connection }
-    }
-
     public func attach(to vsock: VirtioVsock) throws {
-        let listener = try VsockUnixRelay.makeListener(socketPath: socketPath)
-        let box = VsockBox(vsock)
-        let path = socketPath
-        let log = log
-        Thread.detachNewThread {
-            while true {
-                let client = accept(listener, nil, nil)
-                guard client >= 0 else {
-                    if errno == EINTR { continue }
-                    log("docker socket bridge accept failed on \(path): errno \(errno)")
-                    break
-                }
-                var noSigpipe: Int32 = 1
-                _ = setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &noSigpipe, socklen_t(MemoryLayout<Int32>.size))
-                let connection = ConnectionBox(box.vsock.connect(port: VsockPorts.docker))
-                Thread.detachNewThread {
-                    VsockUnixRelay.serve(client: client, connection: connection.connection)
-                }
+        let logger = log
+        try listener.attach(to: vsock, service: .docker) { _ in
+            do {
+                return try vsock.connectIfCapacity(port: VsockPorts.docker)
+            } catch {
+                logger("docker socket bridge rejected guest dial: \(error)")
+                return nil
             }
-            close(listener)
         }
         log("docker socket bridge serving \(socketPath) over vsock:\(VsockPorts.docker)")
+    }
+
+    public func stop(timeout: TimeInterval = 1) {
+        listener.stop(timeout: timeout)
+    }
+
+    var activeSessionCount: Int { listener.activeSessionCount }
+    var serviceAdmissionSnapshot: VirtioVsockServiceAdmissionSnapshot? {
+        listener.serviceAdmissionSnapshot
+    }
+
+    deinit {
+        stop()
     }
 }

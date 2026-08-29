@@ -111,6 +111,9 @@ public struct RemoteMachineStatus: Sendable, Equatable {
 public enum RemoteMachineError: Error, Sendable, Equatable {
     case unknownMachine(String)
     case notConnected(String)
+    case incompatibleProtocol(expected: UInt32, actual: UInt32)
+    case invalidCapabilities(String)
+    case capabilityUnavailable(String, String)
 }
 
 public final class RemoteMachineManager: @unchecked Sendable {
@@ -157,6 +160,15 @@ public final class RemoteMachineManager: @unchecked Sendable {
             // The FFI call carries its own deadline (Rust AgentClient enforces 30s control /
             // 2min sync timeouts), so there is no host-side timeout to add here.
             info = try agent.info()
+            guard info.protocolVersion == DoryCore.protocolVersion() else {
+                throw RemoteMachineError.incompatibleProtocol(
+                    expected: DoryCore.protocolVersion(),
+                    actual: info.protocolVersion
+                )
+            }
+            guard info.capabilitiesAreCanonical else {
+                throw RemoteMachineError.invalidCapabilities(configuration.id)
+            }
         } catch {
             // connector() already handed us a live handle; close it before we drop it so a
             // failing info() can't leak an fd/SSH session per retry.
@@ -206,13 +218,21 @@ public final class RemoteMachineManager: @unchecked Sendable {
         localRoot: String,
         remoteRoot: String? = nil
     ) throws -> DoryPushStats {
-        let (agent, root) = try connectedAgent(id: id, remoteRoot: remoteRoot)
+        let (agent, root) = try connectedAgent(
+            id: id,
+            remoteRoot: remoteRoot,
+            requiredCapability: "sync-push"
+        )
         // Per-call deadline is enforced in the Rust AgentClient; no host-side timeout to add.
         return try agent.push(localRoot: localRoot, remoteRoot: root)
     }
 
     public func telemetry(id: String) throws -> DoryTelemetry {
-        let (agent, _) = try connectedAgent(id: id, remoteRoot: nil)
+        let (agent, _) = try connectedAgent(
+            id: id,
+            remoteRoot: nil,
+            requiredCapability: "telemetry"
+        )
         // Per-call deadline is enforced in the Rust AgentClient; no host-side timeout to add.
         let telemetry = try agent.telemetry()
         lock.lock()
@@ -229,7 +249,11 @@ public final class RemoteMachineManager: @unchecked Sendable {
         timeoutMs: UInt64 = 30_000,
         outputLimitBytes: UInt64 = 1024 * 1024
     ) throws -> DoryExecResult {
-        let (agent, _) = try connectedAgent(id: id, remoteRoot: nil)
+        let (agent, _) = try connectedAgent(
+            id: id,
+            remoteRoot: nil,
+            requiredCapability: "exec"
+        )
         return try agent.exec(
             argv: argv,
             cwd: cwd,
@@ -282,7 +306,8 @@ public final class RemoteMachineManager: @unchecked Sendable {
 
     private func connectedAgent(
         id: String,
-        remoteRoot: String?
+        remoteRoot: String?,
+        requiredCapability: String
     ) throws -> (any RemoteAgentClient, String) {
         lock.lock()
         guard let entry = machines[id] else {
@@ -292,6 +317,10 @@ public final class RemoteMachineManager: @unchecked Sendable {
         guard let agent = entry.agent, entry.state == .connected else {
             lock.unlock()
             throw RemoteMachineError.notConnected(id)
+        }
+        guard entry.info?.supports(requiredCapability) == true else {
+            lock.unlock()
+            throw RemoteMachineError.capabilityUnavailable(id, requiredCapability)
         }
         let root = remoteRoot ?? entry.configuration.remoteRoot
         lock.unlock()

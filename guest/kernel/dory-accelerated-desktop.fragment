@@ -1,0 +1,16 @@
+# Raw Hypervisor.framework desktop profile. Keep the Linux userspace ABI at 4 KiB so FEX can run
+# supported x86-64 applications. Dory's virtio-gpu kernel patch separately aligns host-visible
+# Venus blobs to Hypervisor.framework's 16 KiB stage-2 mapping granule.
+CONFIG_ARM64_4K_PAGES=y
+CONFIG_ARM64_16K_PAGES=n
+CONFIG_INPUT=y
+CONFIG_INPUT_EVDEV=y
+CONFIG_VIRTIO_INPUT=y
+
+# Keep the framebuffer console and KMS handoff used by graphical desktop guests. The generic Venus
+# compute fragment disables these because the Docker engine has no display attached.
+CONFIG_FB=y
+CONFIG_DRM_FBDEV_EMULATION=y
+CONFIG_VT=y
+CONFIG_VT_CONSOLE=y
+CONFIG_FRAMEBUFFER_CONSOLE=y

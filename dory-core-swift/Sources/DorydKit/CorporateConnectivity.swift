@@ -1183,10 +1183,13 @@ public final class CorporateConnectivityReconciler: WakeNetworkReconciling, @unc
     private let prober: CorporateConnectivityProber
     private let guestApply: CorporateGuestApply?
     private let incidentWriter: IncidentWriter?
+    private let systemChangeMonitor: any CorporateConnectivitySystemChangeMonitoring
     private let interval: TimeInterval
     private let queue = DispatchQueue(label: "dev.dory.corporate-connectivity")
     private let lock = NSLock()
     private var timer: DispatchSourceTimer?
+    private var pendingSystemChange: DispatchWorkItem?
+    private var monitorGeneration: UInt64 = 0
     private var lastFingerprint: String?
     private var lastProfileDigest: String?
     private var lastStatus: CorporateConnectivityStatus?
@@ -1197,6 +1200,8 @@ public final class CorporateConnectivityReconciler: WakeNetworkReconciling, @unc
         prober: CorporateConnectivityProber = CorporateConnectivityProber(),
         guestApply: CorporateGuestApply? = nil,
         incidentWriter: IncidentWriter? = nil,
+        systemChangeMonitor: any CorporateConnectivitySystemChangeMonitoring =
+            SystemCorporateConnectivityChangeMonitor(),
         interval: TimeInterval = 10
     ) {
         self.store = CorporateConnectivityStore(home: home)
@@ -1204,6 +1209,7 @@ public final class CorporateConnectivityReconciler: WakeNetworkReconciling, @unc
         self.prober = prober
         self.guestApply = guestApply
         self.incidentWriter = incidentWriter
+        self.systemChangeMonitor = systemChangeMonitor
         self.interval = max(2, interval)
     }
 
@@ -1214,15 +1220,32 @@ public final class CorporateConnectivityReconciler: WakeNetworkReconciling, @unc
         source.schedule(deadline: .now() + interval, repeating: interval, leeway: .seconds(1))
         source.setEventHandler { [weak self] in self?.reconcileIfSystemChanged() }
         timer = source
+        monitorGeneration &+= 1
+        let generation = monitorGeneration
         lock.unlock()
         source.resume()
+        do {
+            try systemChangeMonitor.start { [weak self] in
+                self?.scheduleSystemChangeReconciliation(generation: generation)
+            }
+        } catch {
+            incidentWriter?.record(
+                type: "network.corporate_monitor_failed",
+                detail: "dynamic store: \(error)"
+            )
+        }
     }
 
     public func stop() {
         lock.lock()
         let current = timer
         timer = nil
+        monitorGeneration &+= 1
+        let pending = pendingSystemChange
+        pendingSystemChange = nil
         lock.unlock()
+        systemChangeMonitor.stop()
+        pending?.cancel()
         current?.cancel()
     }
 
@@ -1482,6 +1505,27 @@ public final class CorporateConnectivityReconciler: WakeNetworkReconciling, @unc
             if changed { _ = reconcileCurrent(runProbes: false) }
         } catch {
             incidentWriter?.record(type: "network.corporate_monitor_failed", detail: "\(error)")
+        }
+    }
+
+    private func scheduleSystemChangeReconciliation(generation: UInt64) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.lock.lock()
+            guard self.timer != nil, self.monitorGeneration == generation else {
+                self.lock.unlock()
+                return
+            }
+            self.pendingSystemChange?.cancel()
+            let work = DispatchWorkItem { [weak self] in
+                self?.reconcileIfSystemChanged()
+            }
+            self.pendingSystemChange = work
+            self.lock.unlock()
+            // Dynamic-store changes arrive in short IPv4/IPv6/DNS bursts. Coalescing them avoids
+            // repeatedly restarting the managed guest while still recovering far sooner than
+            // the fallback polling interval.
+            self.queue.asyncAfter(deadline: .now() + 0.25, execute: work)
         }
     }
 

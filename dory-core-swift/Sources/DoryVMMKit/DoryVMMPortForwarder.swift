@@ -12,6 +12,7 @@ final class DoryVMMPortForwarder: @unchecked Sendable {
     private let sourcePreservingLANSessionID: String?
     private let sourcePreservingLANGVProxySocketPath: String?
     private let bridgeSubnetCIDR: String
+    private let guestMACAddress: String
     private let log: @Sendable (String) -> Void
     private let queue = DispatchQueue(label: "dev.dory.dory-vmm.port-forwarder")
     private let queueKey = DispatchSpecificKey<UInt8>()
@@ -30,6 +31,7 @@ final class DoryVMMPortForwarder: @unchecked Sendable {
         sourcePreservingLANSessionID: String? = nil,
         sourcePreservingLANGVProxySocketPath: String? = nil,
         bridgeSubnetCIDR: String = DoryIPv4BridgeNetwork.defaultCIDR,
+        guestMACAddress: String = SourcePreservingLANPlan.defaultGuestMAC,
         log: @escaping @Sendable (String) -> Void = { _ in }
     ) {
         self.dockerSocketPath = dockerSocketPath
@@ -39,6 +41,7 @@ final class DoryVMMPortForwarder: @unchecked Sendable {
         self.sourcePreservingLANSessionID = sourcePreservingLANSessionID
         self.sourcePreservingLANGVProxySocketPath = sourcePreservingLANGVProxySocketPath
         self.bridgeSubnetCIDR = bridgeSubnetCIDR
+        self.guestMACAddress = guestMACAddress
         self.log = log
         queue.setSpecific(key: queueKey, value: 1)
         timer = DispatchSource.makeTimerSource(queue: queue)
@@ -88,7 +91,8 @@ final class DoryVMMPortForwarder: @unchecked Sendable {
                     operation: .refresh,
                     sessionID: sessionID,
                     bindings: ports,
-                    bridgeSubnetCIDR: bridgeSubnetCIDR
+                    bridgeSubnetCIDR: bridgeSubnetCIDR,
+                    guestMACAddress: guestMACAddress
                 ))
                 if recoveringLANSession {
                     recoveringLANSession = false
@@ -129,7 +133,8 @@ final class DoryVMMPortForwarder: @unchecked Sendable {
                 sessionID: sessionID,
                 gvproxySocketPath: socketPath,
                 bindings: bindings,
-                bridgeSubnetCIDR: bridgeSubnetCIDR
+                bridgeSubnetCIDR: bridgeSubnetCIDR,
+                guestMACAddress: guestMACAddress
             ))
             guard response.status == "active" else {
                 logLANFailure("source-preserving LAN recovery failed closed: unexpected status \(response.status)")

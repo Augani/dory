@@ -1,7 +1,7 @@
 [Unit]
 Description=Prepare the Dory desktop machine
 After=local-fs.target systemd-remount-fs.service
-Before=NetworkManager.service lightdm.service ssh.service dory-boot.service
+Before=NetworkManager.service display-manager.service ssh.service dory-boot.service
 ConditionPathExists=!/var/lib/dory/first-boot-complete
 
 [Service]

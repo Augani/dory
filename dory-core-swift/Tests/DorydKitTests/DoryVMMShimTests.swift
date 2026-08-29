@@ -3,6 +3,7 @@ import XCTest
 
 final class DoryVMMShimTests: XCTestCase {
     func testDoryVMMExecutableSendsReadyHandoffAndExits() throws {
+        let operationID = UUID(uuidString: "01234567-89ab-4cde-8f01-23456789abcd")!
         let helper = FileManager.default.currentDirectoryPath + "/.build/debug/dory-vmm"
         guard FileManager.default.isExecutableFile(atPath: helper) else {
             throw XCTSkip("dory-vmm helper not built at \(helper)")
@@ -25,6 +26,7 @@ final class DoryVMMShimTests: XCTestCase {
         process.executableURL = URL(fileURLWithPath: helper)
         process.arguments = [
             "--machine-id", "dev",
+            "--operation-id", DoryOperationIdentity.canonical(operationID),
             "--handoff-sock", server.path,
             "--agent-build", "dory-vmm/test",
             "--agent-sock", "/run/agent.sock",
@@ -38,6 +40,7 @@ final class DoryVMMShimTests: XCTestCase {
         XCTAssertEqual(got.wait(timeout: .now() + 2), .success)
         let handoff = try resultBox.get()
         XCTAssertEqual(handoff.ready.machineID, "dev")
+        XCTAssertEqual(handoff.ready.operationID, DoryOperationIdentity.canonical(operationID))
         XCTAssertEqual(handoff.ready.agentBuild, "dory-vmm/test")
         XCTAssertEqual(handoff.ready.agentSocketPath, "/run/agent.sock")
         XCTAssertEqual(handoff.ready.dockerdSocketPath, "/run/docker.sock")

@@ -1,6 +1,7 @@
 import Testing
 @testable import DoryHV
 import DoryCore
+import DoryOperations
 
 @Suite struct PublishedPortForwardPlanTests {
     @Test func parsesDockerTransportTypes() {
@@ -10,6 +11,44 @@ import DoryCore
         #expect(PublishedPortBinding(dockerType: "udp6", publicPort: 5353) == PublishedPortBinding(protocol: .udp, port: 5353))
         #expect(PublishedPortBinding(dockerType: "sctp", publicPort: 8080) == nil)
         #expect(PublishedPortBinding(dockerType: "tcp", publicPort: 0) == nil)
+    }
+
+    @Test func resolvedWorkspaceForwardsPreserveExactPortsAndExposure() throws {
+        let forwards = try #require(PublishedPortForwardPlan.resolvedForwards([
+            DoryVMPortForward(id: "web", hostPort: 8_080, guestPort: 80),
+            DoryVMPortForward(
+                id: "dns",
+                transport: .udp,
+                hostPort: 5_353,
+                guestPort: 53,
+                exposure: .lan
+            ),
+        ], guestIP: "192.168.127.2"))
+        #expect(forwards == [
+            PublishedPortForward(
+                protocol: .tcp,
+                publishedPort: 8_080,
+                localHost: "127.0.0.1",
+                localPort: 8_080,
+                guestHost: "192.168.127.2",
+                guestPort: 80
+            ),
+            PublishedPortForward(
+                protocol: .udp,
+                publishedPort: 5_353,
+                localHost: "0.0.0.0",
+                localPort: 5_353,
+                guestHost: "192.168.127.2",
+                guestPort: 53
+            ),
+        ])
+        #expect(PublishedPortForwardPlan.resolvedForwards([
+            DoryVMPortForward(id: "privileged", hostPort: 443, guestPort: 443),
+        ], guestIP: "192.168.127.2") == nil)
+        #expect(PublishedPortForwardPlan.resolvedForwards([
+            DoryVMPortForward(id: "one", hostPort: 8_080, guestPort: 80),
+            DoryVMPortForward(id: "two", hostPort: 8_080, guestPort: 81),
+        ], guestIP: "192.168.127.2") == nil)
     }
 
     @Test func loopbackPlanIncludesIPv4AndIPv6ForTCPAndUDP() {

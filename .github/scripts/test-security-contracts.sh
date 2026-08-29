@@ -43,8 +43,23 @@ grep -F 'DorydXPCSecurity.productionDaemonRequirement' \
   dory-core-swift/Sources/dorydctl/main.swift >/dev/null \
   || fail "production dorydctl does not pin doryd's signature"
 
-grep -F 'static let attachSupported = false' Dory/Net/UsbAttachmentStore.swift >/dev/null \
-  || fail "USB passthrough can be advertised before the guest RPC exists"
+for usb_ui_contract in \
+  'static func attachSupported(for status: DorydMachineStatus?) -> Bool' \
+  'status.state == "running"' \
+  'status.runtimeIdentity.backend == "dory-hypervisor"' \
+  'status.runtimeIdentity.authorizesRemovableUSBHotplug'; do
+  grep -F "$usb_ui_contract" Dory/Net/UsbAttachmentStore.swift >/dev/null \
+    || fail "USB passthrough UI lost fail-closed runtime contract: $usb_ui_contract"
+done
+grep -F 'public func machineUSBAttach(' \
+  dory-core-swift/Sources/DorydKit/DorydService.swift >/dev/null \
+  || fail "doryd lost the authenticated USB attach RPC"
+grep -F 'public func attachResolvedUSBDevice(' \
+  dory-core-swift/Sources/DorydKit/MachineManager.swift >/dev/null \
+  || fail "machine manager lost resolved-plan USB authorization"
+grep -F 'try await ensureSupported()' \
+  Packages/ContainerizationEngine/Sources/DoryHV/Usb/UsbControlHandler.swift >/dev/null \
+  || fail "host USB can be opened before the guest usb-vhci capability is proved"
 
 for kernel_contract in \
   'CONFIG_NETFILTER_XT_MATCH_OWNER=y' \
@@ -59,8 +74,13 @@ for agent_contract in DORY_AGENT_RUN_UID DORY_AGENT_MAX_PROCESSES DORY_AGENT_MAX
 done
 grep -F 'mode = "ro"' scripts/dory >/dev/null \
   || fail "sandbox mounts no longer default read-only"
-grep -F 'DORY_SANDBOX_EXPIRES_AT' \
-  scripts/dory dory-core-swift/Sources/DorydKit/SandboxTTLReconciler.swift >/dev/null \
+grep -F -- '--sandbox-expires-at "$expires_epoch"' scripts/dory >/dev/null \
+  || fail "sandbox CLI no longer sends its absolute expiry through the typed create contract"
+grep -F 'let expiration = try takeOption("--sandbox-expires-at", from: &arguments)' \
+  dory-core-swift/Sources/DorydKit/DoryMachineSandboxPolicyWriteAuthority.swift >/dev/null \
+  || fail "doryd no longer parses sandbox expiry through the typed policy authority"
+grep -F 'let expiration = policy.expiresAtUnixSeconds' \
+  dory-core-swift/Sources/DorydKit/SandboxTTLReconciler.swift >/dev/null \
   || fail "sandbox expiry is not persisted and daemon reconciled"
 grep -F 'sandboxSSHAgentDenied' dory-core-swift/Sources/DoryVMMKit/DoryVMM.swift >/dev/null \
   || fail "sandbox VMM does not fail closed for ambient SSH-agent forwarding"

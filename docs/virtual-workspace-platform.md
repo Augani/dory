@@ -1,0 +1,1214 @@
+# ADR: Dory virtual workspace platform architecture
+
+- **Status:** Accepted direction; implementation is staged
+- **Date:** 2026-08-20
+- **Owners:** Dory platform team
+- **Scope:** Apple-silicon Dory host first; Linux, Windows, and macOS guests
+- **First release target:** Production-qualified ARM64 Linux desktops; 3D acceleration remains a
+  separate evidence-gated capability and is not presently available
+
+> **Linux-first execution overlay (2026-08-22):** The cross-guest direction in this ADR remains in
+> force, but current implementation and release work is Linux-only. The proposed controlling Linux
+> architecture is [`linux-virtual-workspace-architecture.md`](linux-virtual-workspace-architecture.md),
+> its sequenced work is [`linux-virtual-workspace-delivery-plan.md`](linux-virtual-workspace-delivery-plan.md),
+> its candidate-bound performance and budget semantics are
+> [`linux-vm-performance-contract.md`](linux-vm-performance-contract.md), and support truth lives in
+> [`linux-capability-and-qualification-matrix.md`](linux-capability-and-qualification-matrix.md).
+> Windows and macOS milestones are deferred. Where the older milestone text assumes RawHV is the
+> permanent accelerated backend, the Linux overlay's evidence-based backend decision takes
+> precedence. On the current branch, VZ on shipping macOS is the generic ARM64 ISO/UEFI and 2D
+> baseline. RawHV is a managed direct-boot development path: it does not execute an installed
+> disk's EFI path and has no firmware/NVRAM. Its current renderer mechanism is the schema-3 dual
+> VirGL2-plus-Venus signed XPC worker, but hardware 3D remains Unqualified until the exact signed
+> candidate passes producer-fence, lifecycle, physical guest-application, and whole-VM gates.
+> Arbitrary EFI guests do not inherit the managed kernel's producer-complete fence contract, and
+> the retired in-process renderer is not a fallback.
+> The Linux overlay also treats cleanup as architecture: when a typed contract replaces a launch
+> flag, environment value, inferred allocator, listener loop, or adapter, the superseded production
+> code and obsolete test are removed in the same slice. Historical readers may survive only as
+> explicit replan/migration inputs, never as a second launch authority.
+
+## Decision
+
+Dory will become a virtual-workspace platform, not a collection of distribution-specific VM
+launch paths. A user installs one small, signed Dory application, chooses only the components and
+guest media they need, and creates persistent workspaces through one consistent product surface.
+
+The platform will have six explicit layers:
+
+1. product UI;
+2. orchestration and control plane;
+3. virtualization backend adapters;
+4. a backend-independent virtual device model;
+5. versioned guest integration;
+6. a signed component and artifact supply chain.
+
+The control plane will select a backend by negotiating declared capabilities against a machine's
+requirements. It will not select implementations by scattering checks such as “if Ubuntu,” “if
+desktop,” or “if EFI” across the UI and daemon. Operating-system identity remains useful for
+catalog presentation, image preparation, and guest-tools installation, but it is not the
+virtualization architecture.
+
+The existing Linux implementation is the foundation, not a prototype to discard. The immediate
+work is to extract stable contracts around it, qualify the VZ generic baseline, harden RawHV's
+managed direct-boot path, and evaluate acceleration without advertising experimental renderer
+mechanisms as support. Windows and macOS are then added as new image families, guest-integration
+providers, and backend capability combinations without cloning the control plane.
+
+## Why this decision
+
+Dory already has much of the difficult machinery:
+
+- one per-user daemon owns local lifecycle and exposes authenticated XPC through
+  [`DorydService`](../dory-core-swift/Sources/DorydKit/DorydService.swift);
+- [`MachineManager`](../dory-core-swift/Sources/DorydKit/MachineManager.swift) persists machine
+  configuration, supervises helpers, waits for readiness, and owns snapshot/clone/export/import;
+- [`DoryVMM`](../dory-core-swift/Sources/DoryVMMKit/DoryVMM.swift) configures
+  Virtualization.framework EFI/direct-kernel guests with storage, networking, display, input,
+  audio, VirtioFS, NVRAM, and a persistent machine identity; this is the shipping-macOS mechanism
+  baseline for generic ARM64 Linux ISO/UEFI, while Dory support still requires exact qualification;
+- [`DesktopMode`](../Packages/ContainerizationEngine/Sources/dory-hv/DesktopMode.swift) and the
+  [`DoryHV`](../Packages/ContainerizationEngine/Sources/DoryHV) device implementations provide a
+  custom Hypervisor.framework Linux mechanism with VirtIO block, network, vsock, balloon, GPU,
+  input, sound, and filesystem sharing; device source does not by itself establish support;
+- the former in-process `VirglRenderer` dynamic-loader implementation and its OpenGL framework and
+  library-validation authority are deleted. The only renderer implementation is the separately
+  signed, sandboxed XPC worker with the schema-3 dual VirGL2-plus-Venus inventory, exact peer
+  identity, and candidate-bound bootstrap receipt. That mechanism is not an acceleration claim
+  until producer-fence handoff, reset/quiesce, device-loss recovery, physical guest applications,
+  and exact-candidate qualification all pass;
+- [`DoryInstallerISOInspector`](../dory-core-swift/Sources/DoryOperations/DoryInstallerISO.swift)
+  performs bounded, non-executing ISO architecture inspection and exact-media hashing before
+  import;
+- [`DoryInstalledLinuxBootBundle`](../dory-core-swift/Sources/DoryOperations/DoryInstalledLinuxBootBundle.swift)
+  preserves a verified host-side kernel/initrd/root-device direct-boot contract for a disk that was
+  installed through EFI; RawHV consumes that bundle instead of executing the disk's EFI path and
+  therefore does not support generic installed Linux;
+- [`DoryComponentCatalog`](../dory-core-swift/Sources/DoryOperations/DoryComponents.swift) already
+  signs catalogs, verifies asset digests, resolves dependencies, installs immutably, and activates
+  atomically on the selected Dory data drive;
+- [`MachineBackupScheduler`](../dory-core-swift/Sources/DorydKit/MachineBackupScheduler.swift),
+  [`HealthReporter`](../dory-core-swift/Sources/DorydKit/HealthReporter.swift), and
+  [`IncidentWriter`](../dory-core-swift/Sources/DorydKit/IncidentWriter.swift) establish recovery
+  and diagnostics foundations;
+- [`guest/desktop`](../guest/desktop), [`guest/kernel`](../guest/kernel), and
+  [`guest/mesa`](../guest/mesa) provide reproducible guest integration, kernels, and an isolated
+  experimental Vulkan runtime input. Their presence is mechanism and provenance evidence, not a
+  qualified acceleration claim.
+
+These foundations are inputs to the resolver and qualification system. They must not be projected
+as Supported or Preview merely because their source, symbols, or component assets exist.
+
+The present joining layer, however, still encodes product concepts in implementation switches.
+For example, `DoryMachineConfiguration` combines kernel paths, rootfs paths, EFI media, display
+mode, resources, shares, and an untyped environment dictionary. `MachineManager.processTarget`
+then recognizes a particular combination as an “accelerated desktop.” The UI in
+[`NewMachineSheet`](../Dory/Features/Sheets/NewMachineSheet.swift) similarly starts from “Linux
+desktop” and “custom Linux ISO.” This works for proving Linux, but extending those switches to
+Windows and macOS would produce three intertwined products and make qualification unreliable.
+
+The new architecture keeps the proven engines and replaces the joining logic with durable,
+versioned contracts.
+
+## North-star user journey
+
+1. The user downloads and opens Dory. The core app is useful by itself and clearly reports host
+   compatibility.
+2. A workspace gallery offers supported templates and **Install from image**. Templates display
+   their download size, guest architecture, qualification level, license requirements, and needed
+   Dory components before anything downloads.
+3. Selecting Ubuntu, Windows 11 ARM, macOS, or a user-owned installer image creates one draft
+   `WorkspaceSpec`. Dory inspects the media without executing it and shows facts separately:
+   architecture compatibility, backend availability, device support, acceleration, guest-tools
+   status, and whether the exact combination is qualified.
+4. The settings editor presents CPU, memory, storage, graphics, displays, network adapters, audio,
+   input, shared folders, clipboard, USB, and recovery in the same structure for every workspace.
+   Controls unavailable for the chosen host/image are disabled with the missing capability and a
+   supported alternative. Settings never silently downgrade.
+5. **Create and Run** resolves components, downloads and verifies only missing artifacts, creates
+   durable machine state transactionally, boots the installer or template, and opens its display.
+6. The workspace card exposes start, stop, pause, resume, restart, duplicate, snapshot, restore,
+   export, and delete. Closing a display window does not destroy or ambiguously stop the VM.
+7. Dory Tools installs or becomes active when supported. Resize, clipboard, shared folders, time
+   sync, graceful shutdown, telemetry, application launch, and recovery report their negotiated
+   status in one **Integration health** surface.
+8. Updates change replaceable components transactionally. User disks, firmware identity, license
+   state, snapshots, and settings remain intact. A failed update returns to the last qualified
+   component selection.
+9. Diagnostics can answer “what ran?” exactly: Dory version, host build and hardware, backend,
+   virtual-hardware ABI, component and media digests, guest-tools version, negotiated capabilities,
+   and the failed lifecycle operation.
+
+The product promise is a physical-machine-like development and testing environment. That means
+durable state, correct device semantics, responsive accelerated graphics, and reproducible
+configuration. It does **not** mean claiming physical GPU passthrough, nested virtualization, or
+bit-identical hardware when the host platform cannot provide it.
+
+## System boundaries and ownership
+
+```mermaid
+flowchart TB
+    UI["Dory.app: library, create flow, settings, console"]
+    CP["doryd: desired state, operations, policy, recovery"]
+    SOLVER["Capability solver and launch planner"]
+    VZL["VZ Linux adapter"]
+    RHV["Raw-HV Linux adapter"]
+    WIN["Experimental QEMU/HVF/SBSA Windows adapter"]
+    VZM["VZ macOS adapter"]
+    DEV["Virtual hardware and device contracts"]
+    GUEST["Dory Tools guest protocol"]
+    SUPPLY["Signed component catalog and content-addressed store"]
+
+    UI -->|intent and operation stream| CP
+    CP --> SOLVER
+    SOLVER --> VZL
+    SOLVER --> RHV
+    SOLVER --> WIN
+    SOLVER --> VZM
+    VZL --> DEV
+    RHV --> DEV
+    WIN --> DEV
+    VZM --> DEV
+    CP <-->|versioned authenticated channel| GUEST
+    CP --> SUPPLY
+    SOLVER --> SUPPLY
+```
+
+### 1. Product UI
+
+The UI owns presentation, editing draft intent, and explaining support. It does not select helper
+executables, mutate disks, or infer readiness from a process existing.
+
+The machine surface should be reorganized around:
+
+- **Workspace library:** all local VMs, grouped or filtered by guest family and state;
+- **Create workspace:** source, requirements, resources, devices, integration, review;
+- **Workspace inspector:** Summary, Hardware, Network, Sharing, Recovery, Integration, Diagnostics;
+- **Components:** installed runtimes, templates, guest-tools packs, sizes, provenance, updates;
+- **Operations:** durable progress with cancelability and recovery, not transient button spinners.
+
+[`MachinesView`](../Dory/Features/Machines/MachinesView.swift) and
+[`ComponentsView`](../Dory/Features/Components/ComponentsView.swift) remain the initial views, but
+they consume control-plane projections. They must not reimplement compatibility decisions.
+
+### 2. Orchestration and control plane
+
+`doryd` remains the only production owner. Introduce the following logical contracts in a package
+that both the app and daemon can import without linking UI or VM frameworks:
+
+```swift
+struct WorkspaceSpec: Codable, Sendable {
+    let schemaVersion: Int
+    let id: WorkspaceID
+    var source: GuestSource
+    var requirements: CapabilityRequirements
+    var hardware: VirtualHardwareSpec
+    var integration: GuestIntegrationPolicy
+    var recovery: RecoveryPolicy
+}
+
+protocol MachineBackend: Sendable {
+    var descriptor: BackendDescriptor { get }
+    func probe(_ context: HostContext) async -> BackendProbe
+    func plan(_ request: BackendPlanRequest) throws -> BackendLaunchPlan
+    func start(_ plan: BackendLaunchPlan, events: MachineEventSink) async throws
+    func requestStop(_ id: WorkspaceID, deadline: Duration) async throws
+    func pause(_ id: WorkspaceID) async throws
+    func resume(_ id: WorkspaceID) async throws
+}
+```
+
+The concrete type names may change, but these boundaries may not collapse back into environment
+variables or path tuples.
+
+Control-plane responsibilities:
+
+- validate and version desired state;
+- serialize mutating operations per workspace;
+- resolve and pin a launch plan before changing state;
+- ensure required components and permissions;
+- own helper process lifetime and readiness deadlines;
+- reconcile observed state after daemon/host restart;
+- own stable MAC addresses, device IDs, firmware files, and guest identity;
+- journal every multi-step operation and perform recovery;
+- publish ordered machine events and an immutable status projection over XPC;
+- authorize access to files selected through the app and materialize security-scoped bookmarks;
+- refuse unsupported or unqualified combinations rather than applying hidden workarounds.
+
+The current Linux bridge publishes this status boundary through
+[`DoryMachineEventStore`](../dory-core-swift/Sources/DorydKit/DoryMachineEventStream.swift). The
+daemon reconciles immutable, secret-free machine projections into an owner-only, fsync-durable,
+bounded journal with a cross-process monotonic sequence. A zero, future, or expired cursor requests
+an exact machine-list snapshot instead of returning a partial history. Configuration changes are
+tracked by a digest of file identity rather than configuration contents; observed agent, address,
+socket-availability, and balloon changes use a separate non-secret revision digest. The app advances
+its cursor only after a required snapshot succeeds and falls back to the existing list call when
+talking to an older daemon or when event evidence is malformed.
+
+[`MachineManager`](../dory-core-swift/Sources/DorydKit/MachineManager.swift) becomes the migration
+host for a `WorkspaceCoordinator`, `WorkspaceRepository`, `OperationJournal`, and
+`BackendRegistry`. Its existing persistence, helper supervision, readiness handoff, snapshot logic,
+and artifact safety checks should move behind those focused types incrementally.
+
+### 3. Backend adapters
+
+Backends implement host mechanisms; they do not own product policy.
+
+| Adapter | Initial scope | Existing foundation |
+|---|---|---|
+| `RawHVLinuxBackend` | Managed ARM64 Linux direct-boot development path. Installed-disk EFI, firmware/NVRAM, and generic installed Linux are absent. The schema-3 signed XPC renderer presents VirGL2 capset 2 and Venus capset 4 as one fail-closed candidate, but hardware 3D remains Unqualified pending exact-signature and physical guest evidence | [`dory-hv`](../Packages/ContainerizationEngine/Sources/dory-hv), [`DoryHV`](../Packages/ContainerizationEngine/Sources/DoryHV) |
+| `VZLinuxBackend` | Generic ARM64 Linux ISO/UEFI and 2D baseline on shipping macOS, plus direct boot where selected; exact Dory guest/host combinations remain qualification-bound | [`DoryVMMKit`](../dory-core-swift/Sources/DoryVMMKit) |
+| `VZMacBackend` | macOS restore-image installation and macOS VM lifecycle | New adapter using Apple macOS-specific Virtualization.framework configuration |
+| `QEMUHVFWindowsBackend` | Experimental Windows 11 ARM64 on an SBSA-style machine, accelerated by Hypervisor.framework through QEMU/HVF; unavailable in public builds until authorization, device, driver, and qualification gates pass | New, separately packaged adapter; not an extension of `DoryVMMKit` |
+| `EmulatedBackend` | Possible future non-native whole-guest emulation, explicitly labeled and separately qualified | Not a release dependency |
+
+Backend probes return structured facts, including host OS/API requirements, guest architectures,
+boot mechanisms, supported device models, maximum vCPU/memory limits, pause/save support, and
+graphics API levels. `automatic` is a solver policy, not a backend.
+
+The current `DoryDesktopVMMPreference` and `DoryDesktopGraphicsPreference` in
+[`DoryDesktopRuntimeContract`](../dory-core-swift/Sources/DoryOperations/DoryDesktopRuntimeContract.swift)
+remain a compatibility input during migration. New persisted workspaces store typed preference and
+requirements. Environment keys remain test/diagnostic overrides only and are recorded in
+diagnostics when used.
+
+### 4. Backend-independent device model
+
+`VirtualHardwareSpec` describes stable guest-visible hardware. A backend must either map each
+required device to an implementation with the declared semantics or reject the plan.
+
+```text
+VirtualHardwareSpec
+  cpu: architecture, count, feature policy
+  memory: boot size, minimum, balloon policy
+  firmware: direct kernel | UEFI | macOS platform
+  storage[]: stable ID, role, bus, format, durability, discard, read-only
+  networks[]: stable MAC, attachment profile, MTU, forwards, filters
+  displays[]: dimensions, scale, acceleration requirements
+  input[]: keyboard, absolute pointer, relative pointer, tablet
+  audio[]: direction, channels, format policy, host device policy
+  shares[]: stable tag, host authorization, guest mount, read-only
+  channels[]: console, agent, clipboard, file transfer, diagnostics
+  security: secure boot, TPM, entropy, isolation policy
+```
+
+Device identity and ordering are part of a versioned **virtual-hardware ABI**. A backend update may
+not reorder disks, change NIC MACs, replace firmware identity, or change a controller visible to an
+installed OS without an explicit migration. This is essential for Windows activation, macOS
+identity, Linux boot, snapshots, and reliable testing.
+
+The raw-HV devices—[`VirtioBlk`](../Packages/ContainerizationEngine/Sources/DoryHV/VirtioBlk.swift),
+[`VirtioNet`](../Packages/ContainerizationEngine/Sources/DoryHV/VirtioNet.swift),
+[`VirtioGPU`](../Packages/ContainerizationEngine/Sources/DoryHV/VirtioGPU.swift),
+[`VirtioInput`](../Packages/ContainerizationEngine/Sources/DoryHV/VirtioInput.swift),
+[`VirtioSound`](../Packages/ContainerizationEngine/Sources/DoryHV/VirtioSound.swift),
+[`VirtioFS`](../Packages/ContainerizationEngine/Sources/DoryHV/VirtioFS.swift), and
+[`VirtioVsock`](../Packages/ContainerizationEngine/Sources/DoryHV/VirtioVsock.swift)—become one
+implementation of those contracts. Virtualization.framework mappings in
+[`DoryVMM`](../dory-core-swift/Sources/DoryVMMKit/DoryVMM.swift) become another.
+
+### 5. Guest integration
+
+“Dory Tools” is a versioned protocol with optional capabilities, not a monolithic Linux script.
+The daemon authenticates the VM/channel established by the launch plan, then the guest reports a
+protocol version and supported operations.
+
+Capability groups:
+
+- readiness, shutdown, reboot, clock synchronization, and health;
+- display topology and resize acknowledgement;
+- clipboard text/image and directional policy;
+- shared-folder discovery and mount status;
+- file transfer and drag/drop with progress and cancellation;
+- network identity and telemetry;
+- filesystem freeze/thaw for application-consistent snapshots;
+- package/integration update with rollback health;
+- process/app launch for qualification and developer automation.
+
+Linux initially uses the existing Rust agent, vsock transport, and integration under
+[`guest/desktop/rootfs-overlay/usr/lib/dory`](../guest/desktop/rootfs-overlay/usr/lib/dory).
+Windows requires a signed Windows service and drivers where inbox drivers are insufficient. macOS
+uses only supported guest-side mechanisms and Virtualization.framework facilities. Missing tools
+must degrade individual integrations, not make the display or recovery console inaccessible.
+
+### 6. Components and artifact supply chain
+
+The current signed catalog is retained and generalized. A component is immutable content plus
+declared capabilities; a template is metadata referencing components and permitted source media.
+Examples include:
+
+- raw-HV Linux runtime and renderer;
+- VZ Linux runtime support files;
+- Linux kernel/runtime packs;
+- Ubuntu/Debian/Kali templates;
+- experimental QEMU/HVF/SBSA Windows runtime;
+- Windows VirtIO/guest-tools driver ISO;
+- macOS integration support;
+- architecture-specific CLI tools;
+- qualification evidence packs.
+
+Catalog v2 should add typed `provides`, `requires`, host constraints, artifact roles, provenance,
+and qualification references while preserving v1 installation during migration:
+
+```json
+{
+  "kind": "dev.dory.component",
+  "schemaVersion": 2,
+  "id": "runtime.rawhv-linux",
+  "version": "0.5.0",
+  "architectures": ["arm64"],
+  "hostRequirements": { "platform": "macos", "minimumVersion": "15.0" },
+  "provides": [
+    "backend.rawhv-linux@2"
+  ],
+  "requires": ["app.dory-core>=0.5.0"],
+  "artifacts": [
+    {
+      "role": "host-helper",
+      "path": "dory-hv",
+      "bytes": 123,
+      "sha256": "<64 lowercase hex characters>",
+      "executable": true,
+      "codeRequirement": "<designated requirement>"
+    }
+  ],
+  "provenance": {
+    "sourceCommit": "<git sha>",
+    "builder": "<builder identity>",
+    "recipeDigest": "<sha256>",
+    "sbomDigest": "<sha256>",
+    "attestationDigest": "<sha256>"
+  },
+  "qualification": []
+}
+```
+
+The example intentionally publishes only the runtime mechanism. Schema-3 dual-worker inputs,
+XPC-local ANGLE Metal libraries, MoltenVK, and guest Mesa artifacts may be inventoried or required
+by an experimental plan, but this catalog schema-2 example must not publish a guest 3D capability
+or qualification reference until the immutable candidate passes the complete GPU, lifecycle,
+isolation, and physical-host matrix.
+
+Supply-chain rules:
+
+- the catalog is signed by an offline-rotatable root; metadata supports key IDs, expiry, and
+  rollback/freeze protection;
+- every downloaded byte has a declared size and digest and is fetched over HTTPS;
+- executable host artifacts also pass code-signature/designated-requirement validation;
+- guest images include an SBOM, package manifest, source/recipe digests, and reproducible build
+  inputs;
+- activation is an atomic pointer to an immutable installation; no consumer reads from a partial
+  download;
+- active launch plans pin component digests, so an update cannot change a running or restoring VM;
+- removal is dependency- and lease-aware; artifacts referenced by workspaces/snapshots remain;
+- rollback restores the exact prior component selection;
+- local overrides are visibly “developer/unqualified,” never indistinguishable from release bits.
+
+[`DoryComponentStore`](../dory-core-swift/Sources/DoryOperations/DoryComponents.swift) and
+[`scripts/build-components.py`](../scripts/build-components.py) are the migration starting points.
+
+## Capability negotiation
+
+### Capability model
+
+A capability has a stable identifier, semantic version, attributes, quality, and evidence:
+
+```swift
+struct Capability: Hashable, Codable, Sendable {
+    let id: CapabilityID               // e.g. graphics.vulkan, lifecycle.pause
+    let version: SemanticVersion
+    let attributes: [String: Value]    // API level, limits, formats, directions
+    let quality: CapabilityQuality     // native, accelerated, translated, emulated
+    let evidence: EvidenceReference?
+}
+
+enum RequirementStrength: Codable { case required, preferred, optional }
+```
+
+Capabilities come from five sources:
+
+1. the host probe;
+2. installed backend components;
+3. selected media/template metadata;
+4. the virtual-hardware ABI implementation;
+5. the live guest-tools handshake.
+
+The resolver takes `WorkspaceSpec + HostCapabilities + ComponentInventory + MediaInspection` and
+returns either a fully pinned `ResolvedMachinePlan` or an ordered list of unsatisfied requirements
+and alternatives. Resolution is pure and testable. Starting a VM executes the pinned plan; it does
+not resolve again halfway through launch.
+
+Examples:
+
+- a requirement for `graphics.vulkan >= 1.3, quality >= accelerated` is currently unsatisfied.
+  A future resolver may select RawHV only for an exact managed guest that proves Dory's
+  producer-complete fence contract, or a VZ custom-VirtIO candidate only after it defines and proves
+  an equivalent contract for the selected guest. An arbitrary ARM64 EFI ISO has no such authority
+  merely because its kernel binds `virtio_gpu`; renderer isolation, pinned renderer/guest inputs,
+  lifecycle behavior, and exact-candidate physical evidence must also be present;
+- a Linux ISO with ARM64 EFI can select VZ Linux installation even without Dory Tools, while clipboard
+  remains `unavailable` until the guest reports it;
+- an x86_64-only ISO on Apple silicon fails architecture resolution before disk allocation;
+- Windows never selects the VZ Linux adapter. It requires the separately authorized and qualified
+  QEMU/HVF/SBSA Windows backend and does not inherit Linux's `graphics.vulkan` result; graphics
+  requires a Windows capability such as a qualified WDDM/DirectX level;
+- macOS requires `platform.macos-vm`, a compatible restore image/hardware model, and the macOS VZ
+  adapter; it never selects the generic Linux EFI adapter based only on ARM64.
+
+### No hidden fallback
+
+Preferred requirements may produce a user-approved alternative. Required requirements fail.
+Every fallback is persisted in the plan and visible in the UI and diagnostics. In particular,
+software rendering is not an acceptable automatic substitute when a template or app qualification
+requires accelerated graphics.
+
+## Lifecycle state machine
+
+Persist a stable condition plus at most one durable mutating operation. Do not encode every
+operation combination in a single ever-growing enum.
+
+Stable conditions:
+
+- `defined`: desired state and durable artifacts exist; never booted;
+- `stopped`: bootable, not executing;
+- `running`: backend and required readiness gates are healthy;
+- `paused`: execution is resident but paused;
+- `suspended`: durable saved state exists and no helper runs;
+- `failed`: the last transition failed and includes a recovery disposition;
+- `deleting`: tombstoned; only cleanup/recovery may proceed.
+
+Durable operations:
+
+- `importing`, `provisioning`, `resolving`, `starting`, `stopping`, `pausing`, `resuming`,
+  `suspending`, `restoring`, `snapshotting`, `cloning`, `updating`, `repairing`, `deleting`.
+
+```mermaid
+stateDiagram-v2
+    [*] --> defined: create/import committed
+    defined --> stopped: provision
+    stopped --> running: resolve + start + readiness gates
+    running --> stopped: graceful stop
+    running --> paused: pause
+    paused --> running: resume
+    running --> suspended: quiesce + save
+    paused --> suspended: save
+    suspended --> running: validate pinned plan + restore
+    running --> failed: helper/device/readiness failure
+    stopped --> failed: validation/restore failure
+    failed --> stopped: repair or rollback
+    defined --> deleting
+    stopped --> deleting
+    suspended --> deleting
+    failed --> deleting
+    deleting --> [*]: artifacts released
+```
+
+Rules:
+
+- every operation has an ID, expected source condition, target condition, step journal, deadline,
+  cancellation policy, and rollback/recovery recipe;
+- events carry monotonically increasing sequence numbers so UI reconnects cannot reorder state;
+- readiness is a set of named gates (backend running, display frame where required, agent where
+  required, network where required), not one generic handoff;
+- closing the UI never changes desired power state;
+- daemon restart reconstructs observed state from the journal, helper identity, locks, and durable
+  artifacts before accepting another mutation;
+- unexpected helper exit after readiness is `failed`, not an unbounded restart loop;
+- retry budgets apply to individual, classified startup failures and are recorded;
+- stop first requests guest shutdown, then a virtual power button when supported, then force-stops
+  after a visible deadline;
+- pause is not suspend; a paused VM still owns RAM and host resources;
+- resource/device changes declare whether they are live, require restart, or require an explicit
+  device-ABI migration.
+
+`DoryMachineState`, `HvProcess`, and the workspace operation journal implement this transition
+model. Durable suspend is currently qualified only for the Apple Virtualization backend: the
+daemon saves an exact VZ state file, terminates the helper, and restores only after the machine
+configuration, runtime identity, host model, OS build, and state digest all revalidate. Raw-HV
+machines reject durable suspend instead of presenting pause or cold stop as equivalent behavior.
+
+## Device and subsystem decisions
+
+### Storage
+
+- Store each workspace as a manifest referencing disks and firmware artifacts by stable IDs, not
+  as paths embedded throughout UI/XPC models.
+- Distinguish disk roles: boot, system, data, removable installer, tools, recovery.
+- Default to sparse, host-native files with explicit logical/allocated size. Reject shrinking.
+- Preserve write ordering and flush semantics. A backend is not qualified until power-loss and
+  forced-exit tests prove filesystem recovery.
+- EFI NVRAM, machine identifier, macOS auxiliary storage, secure-boot identity, and TPM state are
+  first-class artifacts included in snapshot/export compatibility checks.
+- A snapshot manifest records parent content, storage-controller ABI, component digests, and
+  consistency level. Linked clones arrive only after reference counting and garbage collection are
+  crash-safe.
+- Keep imported user media immutable in daemon-owned storage and retain its original digest and
+  source bookmark. Media ejection changes attachment state, not bytes.
+
+The current selected-drive and private-materialization foundations live in
+[`DoryDataDrive`](../dory-core-swift/Sources/DoryOperations/DoryDataDrive.swift),
+[`DesktopMachineAssetProvisioner`](../Dory/Runtime/Machines/DesktopMachineAssets.swift), and
+`MachineManager.prepareMachineArtifacts`.
+
+### Networking
+
+Represent networking per NIC through named attachment profiles:
+
+- **Shared/NAT:** default, isolated inbound, optional explicit port forwarding;
+- **Host-only:** deterministic private connectivity with no external route;
+- **Bridged:** explicit interface choice and permission, only when the backend/host can implement
+  and qualify it;
+- **Disconnected:** device present, link down;
+- future policy networks for test labs.
+
+Each NIC has a stable MAC, MTU, DNS policy, address policy, firewall/ingress policy, and counters.
+Port forwards are resources with conflict detection and lifecycle reconciliation. Network changes
+must survive host sleep, Wi-Fi/interface changes, VPN route changes, and daemon restarts.
+
+The Linux VZ and raw-HV adapters use the provenance-pinned `gvproxy` launch path in
+[`GVProxyDesktopLaunchPlan`](../Packages/ContainerizationEngine/Sources/DoryHV/GVProxyDesktopLaunchPlan.swift)
+and existing Dory DNS/routing. Shared/NAT, host-only, and disconnected are exact resolved device
+contracts on both adapters. Host-only uses the audited `host-only-connectivity-v1` gvproxy policy:
+guest TCP/UDP cannot open arbitrary host-network sockets, upstream DNS resolution is disabled, and
+only explicit virtual-host mappings remain reachable. The historical schema value `isolated` is
+retained on the wire for compatibility while product surfaces call it **Host-only**. Bridged mode
+remains unavailable until an adapter and physical-host qualification prove it; the UI must not
+imply that NAT or host-only is bridged networking.
+
+New resolved Linux plans also carry a deterministic locally administered MAC and an exact MTU for
+the primary `nic0`. Both adapters consume those values directly: VZ and raw-HV use the same
+plan-owned address, gvproxy's DHCP lease is rewritten to that address, virtio-net advertises the
+resolved MTU, and the privileged source-preserving LAN bridge targets the same MAC. Historical
+plans with no NIC identity retain their prior adapter-specific behavior and cannot silently acquire
+the new contract without replanning.
+
+The generic and RawHV NIC contract retains a 1280 minimum, and a disconnected VZ NIC may use it.
+A connected exact VZ NIC is narrower because its file-handle attachment validates at 1500 but
+rejects 1280: its minimum and deterministic default are therefore 1500, and a smaller explicit
+value fails before gvproxy filesystem or process side effects. The isolated structural gate passes
+113/113 tests plus both `dory-vmm` and `doryd` builds; this is configuration correctness, not a
+throughput or latency claim. Signed qualification must distinguish native VZ NAT from
+file-handle/gvproxy and must also bind the exact VZ storage controller, media, cache, and
+synchronization mode.
+
+### Display and graphics
+
+- A display is a stable device with point size, pixel size, scale, refresh policy, and color-space
+  metadata. Backends report maximum display count and dimensions.
+- Window resize is a negotiated display event completed only after the guest acknowledges a mode
+  and renders a correctly sized frame.
+- Retina scale and guest UI scale are distinct and recorded.
+- The display surface and graphics acceleration capability are distinct: a VM can have a console
+  without 3D acceleration.
+- Graphics capabilities are guest-API specific: VirGL/OpenGL, Venus/Vulkan, Windows
+  WDDM/DirectX, and macOS Metal are not interchangeable labels.
+- Renderer and shader failures are fatal capability-health events with backend, context, and guest
+  application evidence. They may not silently switch the machine to `llvmpipe`.
+- Multi-display, full-screen, cursor shape/hotspot, capture/release, and sleep/wake are explicit
+  qualification cases.
+
+RawHV's available development baseline uses
+[`DesktopMetalDisplay`](../Packages/ContainerizationEngine/Sources/dory-hv/DesktopMetalDisplay.swift)
+and `VirtioGPU` for CPU presentation. The in-process dynamic renderer has been deleted rather than
+retained as a diagnostic fallback. RawHV acceleration remains fail-closed, while VZ's documented 2D
+display remains a separate capability whose frontend is
+[`DoryVMMDesktopApplication`](../dory-core-swift/Sources/DoryVMMKit/DoryVMMDesktopApplication.swift).
+
+The Linux-first acceleration mechanism is the schema-3 `dory-dual-metal-20260826` renderer bundle.
+One separately signed, sandboxed XPC worker binds the dual virglrenderer core, its XPC-local ANGLE
+Metal pair, static MoltenVK inputs, and exact peer Code Directory identity. Candidate admission
+requires an authenticated real-bootstrap receipt and then a fresh live receipt with identical
+inventory, worker, feature bits, producer-fence contract, and exactly ordered capsets `[2, 4]`.
+Neither source presence nor a fixture receipt authorizes hardware 3D.
+
+VirGL2 capset 2 uses the bounded classic command lane, including the versioned
+`createResource3D` operation, and exports scanout only as a private shareable Metal-texture handle.
+Venus capset 4 uses bounded blob/descriptor-backed shared memory and Metal scanout. Both paths are
+generation-bound, asynchronously fence-completed, single-use leased, and device-loss fail-stop;
+there is no in-process renderer, software substitution, frame-copy fallback, or unauthenticated
+path/environment-selected renderer authority. The earlier Venus-only cut that reserved operation
+raw value 6 and requested `VIRGL_RENDERER_NO_VIRGL` is retired history, not the current production
+contract.
+
+The renderer bootstrap currently accepts only the managed
+`managedLinux612106PrepareFBV1` producer-fence contract. That kernel contract makes a qualifying
+`RESOURCE_FLUSH` producer-complete before the host consumes the scanout. A stock or arbitrary EFI
+guest cannot claim the same ordering merely because it negotiates the same VirtIO GPU features.
+Consequently RawHV acceleration remains a managed exact-kernel capability, and a future generic-ISO
+custom-VZ GPU remains blocked until it defines a producer-complete fence contract that an upstream
+guest can actually supply. RawHV launch-envelope schema 5 continues to reserve immutable read-only
+FD 6 for hardware 3D and omit it for software.
+
+Earlier managed-Ubuntu Venus diagnostics established a non-CPU Vulkan device, Wayland swapchain
+presentation, and a first Zed frame, but Zed did not remain alive and GNOME still used
+`kms_swrast`. Those observations predate the schema-3 dual bundle and cannot qualify its VirGL2
+desktop path, its Venus application path, or whole-desktop composition.
+
+The current dual worker and admission chain are implemented mechanism, but hardware 3D remains
+Unqualified pending an exact release-signed physical guest campaign: real VirGL renderer identity
+and sustained GL desktop applications, real Venus identity and sustained native Vulkan apps, a
+producer-fence-waited Metal-presented frame, resize/reset/device-loss recovery, visual integrity,
+and whole-VM budgets. Evidence from the managed guest must not be projected onto another distro,
+kernel, compositor, media digest, or the generic VZ EFI baseline.
+
+Application readiness is now a versioned mechanism contract rather than an ICD version string.
+Current Zed Linux support requires a Vulkan 1.3 driver, and its exact wgpu path configures a real
+64x64 FIFO surface before accepting an adapter. The guest boot gate therefore requires a non-CPU
+Venus 1.3 device, robust access, dynamic rendering, synchronization2, maintenance4, the exact
+instance/device extensions and atlas usages, plus a real SYNC_FD queue/fence round trip. The active
+desktop gate additionally creates an explicitly selected XCB or Wayland native surface and FIFO
+swapchain, acquires and clears an image with Vulkan 1.3 dynamic rendering, queues presentation, and
+waits for the presentation queue before launching Zed. The source audit, exact pins, physical Xorg
+and Wayland results, failure boundaries, and remaining evidence are recorded in
+[`vulkan-13-application-readiness.md`](architecture-gates/vulkan-13-application-readiness.md).
+
+### Input
+
+- Model keyboard, absolute pointer, relative pointer, and tablet independently.
+- Persist keyboard layout policy and translate host shortcuts in the display frontend, not the
+  device backend.
+- Keep input queues bounded and prioritize release events to avoid stuck keys/buttons.
+- Clipboard shortcuts invoke negotiated clipboard actions; they are not a substitute for a
+  clipboard transport.
+- Accessibility, international layouts, key repeat, modifier chords, gaming/raw input, and focus
+  changes require automated and live qualification.
+
+### Audio
+
+- Model output and input as separate optional devices with host permission and routing state.
+- Negotiate sample formats/rates and perform bounded conversion behind the backend interface.
+- Handle mute, underflow/overflow, host device changes, Bluetooth latency, sleep/wake, and
+  microphone permission revocation.
+- Never block a vCPU on host audio I/O. Metrics include queue depth, dropped frames, latency, and
+  device reconnections.
+
+The raw-HV foundation is [`VirtioSound`](../Packages/ContainerizationEngine/Sources/DoryHV/VirtioSound.swift)
+with [`DoryMacAudioBackend`](../Packages/ContainerizationEngine/Sources/dory-hv/DesktopAudioBackend.swift).
+VZ already configures host audio devices in `DoryVMM`.
+
+### Shared folders, clipboard, and transfer
+
+- Host paths are authorized through persistent security-scoped bookmarks, canonicalized, and
+  opened with least privilege. A textual path is never authorization.
+- Each share has a stable tag, explicit read-only/read-write mode, guest mount point, case and
+  ownership policy, and backend compatibility result.
+- Default shares are minimal; the user's entire home is never an implicit desktop-workspace grant.
+- Runtime add/remove is transactional and requires guest acknowledgement or a documented restart.
+- DAX-like direct mappings remain disabled unless coherence and invalidation are proven.
+- Clipboard has off, host-to-guest, guest-to-host, and bidirectional modes, independently for text,
+  image, and files.
+- Drag/drop uses a versioned transfer protocol with staging, digest, conflict policy, cancellation,
+  progress, quarantine metadata, and cleanup; it is not implemented as an unrestricted share.
+
+Reuse [`DoryMachineShareConfiguration`](../dory-core-swift/Sources/DorydKit/MachineManager.swift),
+[`VirtioFSShareConfiguration`](../Packages/ContainerizationEngine/Sources/DoryHV/VirtioFSShareConfiguration.swift),
+and [`DoryDesktopClipboardCoordinator`](../dory-core-swift/Sources/DoryVMMKit/DoryDesktopClipboardCoordinator.swift)
+behind these contracts.
+
+## Snapshots, recovery, clone, and export
+
+Snapshot consistency levels are explicit:
+
+1. **stopped:** strongest default; backend stopped and all files flushed;
+2. **guest-quiesced:** guest tools froze filesystems/applications, disks and optional device state
+   captured, then thawed;
+3. **crash-consistent:** storage barriers completed but the guest was not quiesced;
+4. **saved-state:** CPU/RAM/device state captured by a backend that declares a compatible saved
+   state format.
+
+No live snapshot is labeled application-consistent without a successful guest quiesce receipt.
+Snapshot metadata contains:
+
+- workspace spec revision and virtual-hardware ABI;
+- backend ID/version and required saved-state compatibility, if any;
+- component catalog and artifact digests;
+- disk graph and consistency level;
+- firmware/NVRAM/machine identity/TPM/macOS auxiliary storage as applicable;
+- guest-tools build and quiesce receipt;
+- media identity, host qualification key, creation operation, and checksum tree.
+
+Backend saved state is a separate same-host execution artifact, not a portable snapshot. It is
+stored under the machine's private state namespace, bound to the exact runtime identity and
+authoritative configuration, rehashed immediately before helper spawn, and removed only after
+restore readiness succeeds. Stopping a suspended machine explicitly discards that execution state
+and returns to a cold-stopped condition. Snapshot export never includes the VZ state payload; a
+portable archive contains disk/firmware snapshot artifacts and reports that a fresh backend start
+is required on the destination.
+
+Restore is transactional: verify all content, snapshot current replaceable state or retain a
+rollback reference, materialize to temporary names, fsync, atomically publish, then boot-verify.
+Export uses a versioned archive with a signed/checksummed manifest and never assumes another host
+supports the original backend. Import first reports portability and missing components; it does not
+partially create a workspace.
+
+The daemon implements that first phase as a read-only, content-bound assessment. It opens the
+archive without following symlinks, streams and verifies every declared disk/kernel/firmware body,
+checks metadata, architecture, hardware ABI, backend runtime, and exact component evidence, and
+returns a path-free content ID plus one of `ready`, `requires-components`, `requires-replanning`, or
+`unavailable`. The later import must present that same content ID and reverify the archive before
+writing any snapshot artifact; incompatible or missing-evidence assessments cannot cross the XPC
+import boundary.
+
+Extend the proven snapshot/export logic in `MachineManager`, rather than maintaining the older
+container-image snapshots in [`MachineSnapshot`](../Dory/Runtime/Machines/MachineSnapshot.swift)
+as a second VM truth.
+
+## Security model
+
+### Trust boundaries
+
+| Boundary | Rule |
+|---|---|
+| Dory.app | Unprivileged presentation client. Sends typed intent over same-user, production-signature-authenticated XPC. |
+| `doryd` | Per-user authority for desired state, artifacts, network policy, operations, and helper supervision. Validates every client input again. |
+| VM helper | One process per VM or explicit shared engine. Holds only required VM entitlements/files/descriptors. Never becomes a second control plane. |
+| Privileged network helper | Performs only a pre-derived, ownership-checked network plan. No general command execution. |
+| Guest | Untrusted even for Dory-built images. Device parsers, queues, agent messages, filenames, and telemetry are hostile inputs. |
+| Components/media | Untrusted until signature/digest/type/size/architecture checks succeed. User media is never executed on the host. |
+| Host shares | Capability-granted by bookmark and mode, scoped to one workspace/device. |
+
+Required controls:
+
+- owner-only state directories, `O_NOFOLLOW`, regular-file/link-count/owner validation, atomic
+  writes, fsync, and bounded parsers;
+- authenticated, versioned XPC and guest channels with message-size/time limits;
+- least-privilege entitlements and descriptor passing instead of global filesystem reach;
+- no secrets in environment dictionaries, command lines, diagnostics, or component manifests;
+- explicit network exposure and collision checks; localhost is the port-forward default;
+- device fuzzing for VirtIO descriptor chains, protocol messages, ISO/GPT parsing, and archives;
+- signed guest tools/drivers and verifiable updates; Windows kernel drivers require the appropriate
+  Microsoft signing path before public distribution;
+- no automatic mounting of untrusted installer media on the host;
+- clear license/consent gates for Windows and macOS media and guest integration.
+
+## Observability and supportability
+
+Every lifecycle mutation receives an operation ID propagated through UI, daemon, backend, helper,
+guest agent, and component installer. Emit structured events with:
+
+- monotonic sequence and wall-clock time;
+- workspace ID, operation ID, spec revision, backend/ABI IDs;
+- host model/OS build and component/media digests;
+- lifecycle transition, readiness gate, duration, deadline, and classified error;
+- device health: queue stalls, resets, GPU fences/device loss, display frames, audio drops, storage
+  flush latency, network reconnects, share invalidations;
+- resource data: vCPU time, guest/host memory, balloon target, I/O, network, renderer memory, helper
+  process tree, file descriptors, and threads.
+
+Keep a bounded per-workspace flight recorder and serial/firmware console independent of Dory Tools.
+Support bundles are opt-in, redacted, size-bounded, and show the user what will be included. Raw
+clipboard, file contents, credentials, host paths, and keystrokes are excluded by default.
+
+Build on `HealthReporter`, `IncidentWriter`, raw-HV serial logs, `DorydMachineStats`, and the current
+VMM handoff. Replace string-only `lastError` as the primary diagnostic with stable error codes,
+causal chains, recovery disposition, and relevant evidence references.
+
+The current daemon now persists a bounded, owner-only structured failure authority with stable
+failure/cause/recovery enums, operation IDs, and path-free evidence references. Machine status,
+the durable monotonic event cursor, XPC, `HealthReporter`, and Dory.app project that authority
+without relying on free-form error text. `lastError` remains a same-user compatibility field for
+older clients, but public CLI/support projections omit it along with environment values and host
+paths. Active lifecycle journals expose their operation ID and kind until completion, and terminal
+failures retain the originating operation ID across daemon restart. Each workspace also has an
+owner-only, crash-durable, size-bounded flight recorder with a monotonic cursor. Serial/firmware
+output is available independently of Dory Tools through a generation-and-offset cursor in Dory.app,
+`dorydctl`, and XPC; reads are bounded and path-free, while input is accepted only through the
+private VMM console socket and is reported read-only for the current raw-HV UART. Console bytes are
+never copied into status, incidents, flight-recorder events, diagnostics, or support bundles. Full
+start-operation propagation now carries the durable lifecycle UUID accepted by `doryd` through
+the backend registry, exact adapter launch binding, helper arguments, serial boot marker, Linux
+kernel/boot context, guest-agent configuration, and the readiness echo; an absent, malformed,
+stale, or different readiness UUID is rejected before the machine can become running. The app and
+CLI mint the canonical start UUID and round-trip it through the XPC boundary into that exact
+durable operation; the retained legacy start selector mints at the daemon boundary for upgrade
+compatibility. Stop, pause, and resume now also accept a caller-minted canonical UUID, reject
+malformed or zero identities before mutation, preserve the exact UUID in the durable lifecycle
+journal and flight recorder, and carry it through the selected backend adapter; the legacy XPC
+selectors mint at the daemon boundary for rolling upgrades. Stop, pause, and resume now also carry
+that exact UUID to the live helper and negotiated guest agent. The VZ helper returns the receipt
+only around its actual pause/resume transition; raw-HV exposes an owner-only receipt socket around
+daemon-owned signals; and the guest echoes the same action and UUID through `lifecycle-receipt@1`.
+Mismatches reject the mutation, resolved-plan readiness requires the helper receipt channel, and
+older guests without the capability use an explicit flight-recorder compatibility event rather
+than claiming acknowledgement. Component install and update operations now also retain one
+caller-minted canonical UUID across Dory.app, `dorydctl`, signed candidate dependency imports,
+immutable installed-generation records, the desktop-update XPC request, the crash-recovery journal,
+incident evidence, and the per-workspace flight recorder. Malformed or zero identifiers fail before
+mutation, legacy clients receive an explicit daemon-minted compatibility identity, stale UI progress
+is ignored, and the live release gate verifies the returned identity. Device telemetry now uses a
+versioned, path-free helper snapshot bound to the exact workspace, start operation, backend, and
+live launch. The daemon autonomously samples running and paused machines, persists new classified
+events in the workspace flight recorder, and exposes the same bounded evidence through XPC, the app
+client, and `dorydctl`. Raw-HV derives reset and sustained queue-stall events from monotonic VirtIO
+transport counters and retains a bounded event history. Its block backend also counts serialized
+guest flushes, measures the maximum host `fsync` latency, and emits a classified slow-flush event
+for every flush taking at least 250 ms. Its Core Audio bridge reports exact playback and capture
+period drops and emits classified audio-drop events. VirtioFS counts admitted reverse invalidations
+and failed submission or acknowledgement transactions; because an uncertain invalidation latches
+request publication closed for that backend, its telemetry remains failed until backend replacement.
+The request frontend mirrors the broker's immutable in-flight ceiling before popping a chain. When
+all 32 production permits are owned, later descriptors remain in their guest rings and request
+queues resume in FIFO order as permits return; resource saturation is backpressure, not worker loss.
+The same backend now reports protocol-boundary request, worker-response, and guest-published payload
+bytes; completed, failed, in-flight, and peak request counts; and total and maximum end-to-end
+request latency. Those payload counters do not pretend to measure physical copies inside Foundation
+or XPC, and timing remains unqualified until it is captured from an exact signed candidate.
+The raw-HV display mailbox reports only updates accepted by the Metal presentation layer as frames;
+invalid updates, bounded partial-update overflow, released pending resources, and a missing display
+surface are counted as drops, while a newer complete frame superseding older damage is intentional
+coalescing rather than loss. VirtioGPU counts successful renderer fence registrations, reports a
+registration failure as degraded health, and classifies a fence still pending after 10 seconds as a
+timeout; health remains failed until that exact pending fence is signaled.
+An explicit host renderer loss is counted once and latches raw-HV graphics health failed; the
+Venus bridge issues that authority only for Vulkan's explicit `VK_ERROR_DEVICE_LOST`.
+Ordinary guest command validation failures remain excluded from device-loss telemetry.
+Virtualization.framework counters that do not have a stable public authority remain explicitly
+unavailable rather than being reported as zero. Network reconnect support remains a release gate
+for that individual capability claim.
+
+## Qualification and release gates
+
+Code existence is not support. A capability may be advertised only when the exact release
+candidate has evidence at all applicable levels:
+
+1. **Schema and solver tests:** serialization, migration, deterministic resolution, rejection,
+   fallback visibility, and stable hardware identity.
+2. **Device conformance:** protocol/unit/property/fuzz tests, reset/error paths, queue saturation,
+   flush/barrier semantics, and backend contract tests.
+3. **Backend integration:** boot, readiness, shutdown, pause/resume, failure injection, daemon
+   restart, host sleep/wake, component replacement, and low-disk recovery.
+4. **Guest matrix:** every supported OS release/kernel/tools combination, clean install and update,
+   with and without guest tools.
+5. **Application workloads:** browser/video/audio, IDEs including Zed, terminals, file managers,
+   package installers, compilers, containers where supported, graphics API probes, and sustained
+   I/O/network/GPU stress.
+6. **Lifecycle/data safety:** snapshot/restore/clone/export/import, corrupted/truncated artifacts,
+   force-kill at every journal step, and boot verification of recovered data.
+7. **Physical Macs:** every supported macOS major and qualified Apple-silicon generation, multiple
+   display scales, sleep/wake, network/VPN changes, microphone permissions, and external storage.
+8. **Signed-candidate binding:** app digest, helper code signatures, component catalog digest,
+   artifact/media digests, guest package manifest, host model/build, and test result are inseparable.
+9. **Exact performance-cell bijection:** every proposed Linux support record carries one
+   authenticated performance bundle-inventory digest, and the proposed record set equals the set
+   of release-qualified verified cells; missing, duplicate, extra, or extrapolated cells fail
+   before the support catalog is constructed.
+
+The public compatibility UI has four levels:
+
+- **Supported:** exact matrix passed and regressions gate release;
+- **Preview:** bounded scope passed but the full release matrix has not;
+- **Unqualified:** architecture appears possible but no exact evidence;
+- **Unavailable:** a required capability is absent or policy forbids the combination.
+
+Software fallback never turns a failed acceleration gate into a supported accelerated result.
+[`LINUX_DESKTOP_PARITY.md`](../LINUX_DESKTOP_PARITY.md) remains the Linux product checklist until
+its gates are represented in executable qualification manifests.
+
+This ninth gate remains incomplete authority. The signed-bundle verifier now rebuilds the canonical
+exact-media cell descriptor, requires its SHA-256 to be `matrixCellID`, binds selection and
+acceleration receipts to inventoried bytes, and requires caller-supplied candidate plus cell/ISO/
+backend/graphics identities for release admission. Manifest schema 1 still has no per-record bundle
+reference, the physical campaign producer and canonical authenticated receipt do not yet exist,
+and component finalization accepts no performance-cell inputs. Those remaining pieces must land
+together with manifest/resolver schema 2; a standalone digest field would not satisfy the gate.
+The performance bundle remains bound to precatalog candidate identities so the final catalog can
+be constructed after the verified-set comparison without a circular dependency.
+
+## Apple-silicon constraints and honest product scope
+
+### Linux
+
+- Hardware virtualization runs ARM64 guests on Apple silicon. An x86_64-only whole Linux ISO is
+  not a hardware-virtualized VM on this host. Dory rejects it before allocation today through
+  `DoryInstallerISOInspector`.
+- A future whole-system emulator may run x86_64 media, but it must be labeled **emulated**, has a
+  different performance/compatibility promise, and cannot satisfy native-workspace qualification.
+- x86_64 **applications** can run inside an ARM64 Linux guest through a separately supported
+  translation facility. Apple's Rosetta-for-Linux integration belongs to its
+  Virtualization.framework path and has host/guest requirements; Dory's other backends need their
+  own translated-app capability (the current Docker engine uses bundled FEX).
+- Virtualization.framework on shipping macOS supplies the generic ARM64 Linux ISO/UEFI and
+  documented 2D display/device baseline. Dory's custom RawHV VirtIO GPU and in-progress static
+  dual VirGL2-plus-Venus signed XPC worker are a translated-renderer mechanism, not PCIe GPU
+  passthrough. The retired in-process renderer is not a fallback. Hardware 3D remains Unqualified
+  until exact identity, managed producer-fence, isolation, lifecycle, physical guest-application,
+  installed-launch, and qualification gates pass; arbitrary EFI guests have no producer-complete
+  acceleration contract today.
+- Arbitrary installer compatibility is never inferred from ARM64 EFI alone. Kernel/device behavior
+  and sustained workload tests remain tied to media digest, host build/model, backend, and
+  virtual-hardware ABI.
+
+### Windows
+
+- The native target on Apple silicon is Windows 11 ARM64. Microsoft publishes ARM64 ISO media and
+  states that ARM64 VMs can be created on Apple-silicon Macs. Dory must not present x64 Windows ISO
+  installation as native virtualization.
+- Apple's shipped Virtualization.framework headers document Linux boot and macOS platform/install
+  configurations, but expose no Windows guest platform. `VZGenericPlatformConfiguration` and an
+  EFI loader are not a Windows support contract. Dory will therefore not disguise Windows as a
+  `DoryVMM`/VZ Linux variant.
+- The engineering backend is an experimental QEMU ARM `virt`/SBSA-style machine accelerated by
+  Hypervisor.framework through HVF. It is a separately packaged adapter with a separately versioned
+  virtual-hardware ABI. QEMU's ability to reach an installer is research evidence, not public Dory
+  support.
+- Windows 11 on ARM can translate many x86/x64 user applications, but that does not make x64
+  kernel drivers, anti-cheat, low-level hardware software, or every application compatible.
+- A booting QEMU/HVF EFI VM is not a supported Windows product. Dory must qualify stable SBSA/UEFI
+  firmware, TPM/Secure Boot policy, storage/network/input/audio devices, recovery, installer
+  drivers, and a signed Dory Tools package.
+- Linux VirGL/Venus does not provide Windows DirectX acceleration. Windows GPU support requires a
+  signed and qualified ARM64 WDDM display driver plus a host graphics translation path. The
+  Windows component cannot graduate from experimental, and Dory cannot advertise GPU acceleration,
+  until that path passes DirectX conformance and application qualification. Linux renderer code is
+  not a shortcut around this gate.
+- Microsoft's current Apple-silicon support page names Windows 365 and Parallels Desktop 18–20 as
+  the available solutions, calls those Parallels versions authorized, and documents DirectX 12 and
+  nested-virtualization limitations. Before Dory distributes or advertises a local Windows product,
+  it needs an explicit Microsoft support/authorization and licensing review; technical boot success
+  cannot substitute for that review.
+- Users supply or obtain Windows through an authorized Microsoft channel and are responsible for
+  a valid license/activation. Dory does not redistribute Windows or bypass installation/security
+  requirements.
+
+### macOS
+
+- macOS guests on Apple silicon use Apple's macOS-specific Virtualization.framework model, not
+  the generic Linux EFI model, the experimental Windows SBSA machine, or Dory's raw-HV Linux device
+  tree.
+- Creation and installation use `VZMacOSRestoreImage`/`VZMacOSInstaller` with a host-supported IPSW,
+  `VZMacPlatformConfiguration`, a restore-image-derived `VZMacHardwareModel`, a persistent
+  `VZMacMachineIdentifier`, and matching `VZMacAuxiliaryStorage`. These artifacts are part of
+  machine identity and snapshot/export compatibility.
+- Dory must use Apple-provided macOS graphics/input/storage mechanisms and capability-probe the
+  host API. The Linux VirGL/Venus stack is irrelevant to macOS guest Metal support.
+- Dory will not bundle or mirror macOS restore images. The user selects an Apple-fetched IPSW or
+  explicitly asks Dory to fetch Apple's latest image supported by the current host. Dory validates
+  the restore image's supported configuration before allocation and clearly communicates applicable
+  Apple software-license restrictions.
+- Cross-Mac restore is conditional on restore-image/hardware-model compatibility; an archive being
+  intact does not guarantee it is bootable on every Mac.
+
+### Cross-cutting host limits
+
+- Dory's current product is a macOS host application. “For everyone” first means a consistent
+  workspace product on supported Macs; Windows/Linux host implementations require their own host
+  adapters and qualification and are a later program.
+- Nested virtualization, device passthrough, saved-state APIs, bridged networking, and other host
+  features are capability-probed and version-qualified. They are not inferred from marketing names
+  or macOS version alone.
+- No public Apple API currently used by Dory provides general physical GPU passthrough. Product
+  language must describe translated, API-level acceleration and its tested limits.
+
+Primary platform references:
+
+- [Apple: Running GUI Linux in a virtual machine on a Mac](https://developer.apple.com/documentation/virtualization/running-gui-linux-in-a-virtual-machine-on-a-mac)
+- [Apple: Running macOS in a virtual machine on Apple silicon](https://developer.apple.com/documentation/virtualization/running-macos-in-a-virtual-machine-on-apple-silicon)
+- [Apple: Hypervisor framework](https://developer.apple.com/documentation/hypervisor)
+- [Microsoft: Windows 11 Arm ISO files](https://learn.microsoft.com/windows/arm/iso)
+- [Microsoft: Options for using Windows 11 with Apple-silicon Macs](https://support.microsoft.com/en-US/Windows/Experience/Platform-variants/options-for-using-windows-11-with-mac-computers-with-apple-m1-m2-and-m3-chips)
+- [Microsoft: How emulation works on Arm](https://learn.microsoft.com/windows/arm/apps-on-arm-x86-emulation)
+
+## Delivery milestones
+
+Each milestone ends in a demonstrable, releasable vertical slice. Parallel implementation is
+welcome only after shared contracts and file ownership are assigned; merging uncoordinated backend
+patches into `MachineManager` is not progress.
+
+### Milestone 0 — Contract extraction and migration safety
+
+**Goal:** Make the current Linux system expressible without behavior changes.
+
+- Add `WorkspaceSpec v2`, capability, launch-plan, device, operation, and backend contracts.
+- Add lossless migration between persisted `DoryMachineConfiguration` and the v2 Linux spec.
+- Introduce `WorkspaceRepository`, `OperationJournal`, `BackendRegistry`, and pure
+  `CapabilityResolver` behind existing XPC calls.
+- Wrap current `dory-vmm` and `dory-hv` selection as adapters; keep current launch tests passing.
+- Version the virtual-hardware ABI and record it in status, snapshots, exports, and diagnostics.
+- Replace new persisted environment settings with typed fields; retain read compatibility.
+- Gate: existing managed desktops, headless machines, custom ISO, snapshots, and backups pass with
+  byte-compatible durable artifacts and rollback tests.
+
+### Milestone 1 — Linux as the first complete workspace; acceleration remains gated
+
+**Goal:** Ship a Linux desktop that users can trust for real application work.
+
+- Keep shipping VZ as the generic ARM64 ISO/UEFI and recovery baseline, with its Linux graphics
+  truthfully described as 2D.
+- Before making RawHV the permanent production acceleration architecture, time-box a macOS 27
+  VZ custom-VirtIO spike for a standards-compatible, isolated VirGL/Venus device and physical USB.
+- Treat that spike as blocked research under
+  [`architecture-gates/vz-custom-virtio-gpu.json`](architecture-gates/vz-custom-virtio-gpu.json):
+  the current SDK cannot compile the beta API, guest configuration writes and custom input have no
+  documented callback, VZ guest RAM has no cross-process descriptor authority, custom scanout/input
+  presentation is unproved, and accelerated saved state is deliberately rejected.
+- Promote either RawHV or the custom-VirtIO path only after the selected backend satisfies the
+  complete requested device/lifecycle conjunction with exact-candidate evidence.
+- Productize import/install/eject/direct-boot for qualified ARM64 Linux ISOs without converting an
+  installed disk into a distro-specific image.
+- Finish reliable dynamic resolution, Retina scale, full screen, cursor, input, output/input audio,
+  clipboard, shares, graceful shutdown, and host sleep/wake.
+- Surface backend, GPU, guest tools, software fallback, and exact qualification in the UI.
+- Run representative desktop/app stress, including Zed on any selected qualified Vulkan path,
+  browsers, package updates, compilers, media, file I/O, networking, snapshot/restore, and forced
+  recovery.
+- Gate: no known login trap, invisible text/render corruption, `llvmpipe` substitution, installer
+  freeze, or unexplained whole-guest stall in the signed-candidate matrix.
+
+### Milestone 2 — Unified Dory Tools and integration health
+
+**Goal:** Make integrations independently discoverable, updateable, and diagnosable.
+
+- Formalize the guest handshake and capability versions.
+- Turn Linux overlay scripts into a versioned tools pack with transactional update/rollback.
+- Implement transfer/drag-drop and snapshot freeze/thaw.
+- Add integration health, repair actions, and unambiguous missing-tools behavior.
+- Define Windows service/driver and macOS guest-integration packaging contracts without claiming
+  support yet.
+
+### Milestone 3 — Storage, networking, and recovery parity
+
+**Goal:** Make workspaces safe and configurable enough to replace a daily-use VM product.
+
+- Add backend-neutral NAT, host-only, disconnected, and qualified bridged profiles.
+- Finish runtime share mutation, stable NIC/device identity, port-forward reconciliation, and VPN
+  recovery.
+- Add guest-quiesced/live snapshot semantics, linked clones with safe reference accounting, durable
+  suspend where supported, and cross-host portability reports.
+- Complete low-disk, corruption, interruption, daemon crash, helper crash, and host-reboot gates.
+
+### Milestone 4 — Windows 11 ARM workspace
+
+**Goal:** Determine whether Dory can become an authorized, supportable Windows 11 ARM product, then
+create, install, run, integrate, and recover it without special-case control-plane code.
+
+- Complete Microsoft support/authorization, redistribution, driver-signing, and licensing review.
+  The milestone remains research-only unless that gate passes.
+- Build the optional `QEMUHVFWindowsBackend` around pinned QEMU/HVF with an explicit ARM
+  `virt`/SBSA virtual-hardware ABI; do not route Windows through `DoryVMM`.
+- Inspect/import user-authorized ARM64 ISO media and resolve only that Windows-capable backend/device
+  ABI.
+- Implement and qualify UEFI/SBSA firmware, TPM/Secure Boot policy, storage, network, display,
+  input, audio, and removable/tools media.
+- Deliver signed Dory Tools for readiness, shutdown, resize, clipboard, sharing, time sync,
+  telemetry, and quiesced snapshots.
+- Deliver a signed ARM64 WDDM driver and host graphics translation plan, then pass DirectX and
+  representative application qualification before advertising acceleration or graduating the
+  backend from experimental.
+- Test ARM64 and Windows-translated x86/x64 development applications; report exclusions honestly.
+- Gate: clean install, activation-preserving identity, update, sleep/wake, recovery, snapshots,
+  app workloads, authorization/support sign-off, WDDM graphics evidence, and signed-candidate
+  evidence on physical Macs.
+
+### Milestone 5 — macOS workspace
+
+**Goal:** Add supported macOS guests as a native VZ-backed workspace family.
+
+- Add restore-image discovery/download consent and compatibility inspection.
+- Implement `VZMacBackend` with stable hardware model, machine ID, auxiliary storage, display,
+  input, network, audio, and lifecycle.
+- Define macOS guest integration using supported mechanisms.
+- Extend snapshot/export portability checks for macOS-specific identity and restore compatibility.
+- Gate: installation, OS update, Xcode/developer workloads, graphics/display, sleep/wake, recovery,
+  and applicable license UX.
+
+### Milestone 6 — Broader host platform program
+
+**Goal:** Evaluate Windows and Linux Dory hosts without contaminating guest/control-plane contracts.
+
+- Implement host services and backends behind the same `MachineBackend` and artifact contracts.
+- Keep workspace manifests portable where the destination capability solver proves compatibility.
+- Do not announce a host until security boundaries, installers, updates, devices, and physical-host
+  qualification reach the same standard as the Mac product.
+
+## First implementation slices and agent ownership
+
+To move quickly without creating another patch stack, assign agents to bounded seams:
+
+| Workstream | First output | Must not edit |
+|---|---|---|
+| Contracts | Workspace/capability/device/operation types, schema fixtures, migration tests | Backend implementations and UI |
+| Resolver | Pure capability solver, rejection diagnostics, deterministic-plan tests | VM process launch code |
+| Linux backend | Adapters around existing `dory-hv`/`dory-vmm`, probes, readiness gates | Product policy and component catalog |
+| Supply chain | Catalog v2/provenance/leases, v1 migration, builder/verifier tests | Machine lifecycle |
+| Product UI | New create/settings projections driven by resolver fixtures | Direct file/process/backend selection |
+| Qualification | Machine-readable matrices and signed-candidate runner | Runtime behavior except dedicated test hooks |
+
+Integration order is contracts, resolver, adapters, daemon/XPC projection, UI, then release gates.
+Every workstream supplies tests and an explicit migration story. One owner reviews virtual-hardware
+ABI changes because a “small” disk/controller/device reorder can invalidate installed machines.
+
+## Performance engineering rules
+
+- Optimize the whole native-ARM64 VM, not a favored distribution. Every exact Linux media digest
+  admitted to the support catalog must satisfy the same applicable backend/resource/capability
+  budgets; distro-specific tuning cannot waive a failed CPU, memory, storage, network, input,
+  display, filesystem, GPU, durability, or endurance result.
+- Establish budgets before optimization: cold/warm start, first frame, input-to-present latency,
+  sustained frame pacing, storage fsync latency, network throughput/latency, audio latency, idle CPU,
+  and host memory overhead.
+- Never block a vCPU on host UI, audio, network control, filesystem watching, logging, entropy
+  generation, host-memory reclaim, or component work. Use bounded queues, generation fencing, and
+  observable backpressure.
+- Avoid whole-frame copies and synchronous GPU completion on presentation paths; preserve fence and
+  resource lifetimes explicitly.
+- Treat host memory as a VM process-tree cost. Balloon targets may not hide renderer/helper memory.
+- Pin build inputs and benchmark the signed release configuration; debug/local artifacts are not
+  performance evidence.
+- Prefer a measured fast path with a correct qualified fallback. A fallback must preserve data and
+  be visible; it need not claim equal performance.
+- Any optimization that weakens flush, snapshot, share-coherence, or isolation semantics requires
+  a new capability/ABI version and qualification, not a comment.
+
+## Rejected approaches
+
+### Add more OS checks to the existing create sheet and `MachineManager`
+
+This is fast for one boot demo and expensive forever. It couples product, media, backend, devices,
+guest tools, and qualification; Windows and macOS would multiply untestable state combinations.
+
+### One backend for every guest
+
+No current Apple host API provides the best device, graphics, firmware, and lifecycle path for all
+three guest families. A common control plane and device contracts are valuable; forcing one helper
+implementation is not.
+
+### Treat “boots” as “supported”
+
+Installer boot does not prove storage durability, graphics correctness, application behavior,
+updates, sleep/wake, or recovery. Support requires exact-candidate evidence.
+
+### Ship full operating systems in Dory.app
+
+It makes the core download large, entangles update cadence, complicates licensing, and expands the
+trusted payload. Signed optional components and user-authorized media keep installation focused and
+replaceable.
+
+### Promise physical hardware or GPU passthrough equivalence
+
+Dory can provide excellent translated acceleration and stable virtual hardware, but unsupported
+passthrough claims would be technically false and would make application test results misleading.
+
+## Consequences
+
+Positive consequences:
+
+- Linux, Windows, and macOS share lifecycle, settings, recovery, diagnostics, and artifact logic;
+- new backends or devices become capability providers rather than UI/daemon rewrites;
+- the UI can explain precisely why a configuration is fast, degraded, unqualified, or impossible;
+- signed components stay small and independently updateable;
+- persistent device identity and transaction rules protect user work;
+- performance work occurs in measurable device/backend paths;
+- product claims become evidence-backed.
+
+Costs and risks:
+
+- contract extraction temporarily adds adapters and schema migration code;
+- the capability vocabulary and virtual-hardware ABI require disciplined ownership;
+- Windows graphics and drivers are a distinct engineering program, not reuse of Linux Vulkan;
+- macOS restore/licensing/platform identity constrain distribution and portability;
+- the full physical qualification matrix is expensive and must be automated aggressively;
+- a platform this broad must say “unavailable” rather than accumulating hidden compatibility
+  switches.
+
+These costs are accepted because they are smaller than maintaining three separate VM products and
+because correctness, performance, and user trust are the core differentiators Dory needs.

@@ -1,0 +1,84 @@
+From: Dory maintainers <maintainers@dory.dev>
+Subject: [PATCH] drm/virtio: align host-visible VRAM to the Apple host page
+
+Hypervisor.framework maps memory at the Apple Silicon host-page granule (16
+KiB), independently of the Linux guest's stage-1 page size. Keep the GEM
+object and userspace mmap at the guest's 4 KiB page granule, but allocate the
+renderer blob and its host-visible aperture node at the 16 KiB host granule.
+
+Do not expose the padded aperture size as the GEM object size. Mesa maps the
+size it originally requested, and virtio_gpu_vram_mmap rejects that mapping if
+the GEM object was enlarged to the aperture size. The host padding remains
+mapped at stage 2 while userspace sees only the original guest-page-aligned
+object, preserving the Linux ABI and making RESOURCE_MAP_BLOB legal for
+hv_vm_map.
+---
+ drivers/gpu/drm/virtio/virtgpu_vram.c | 25 +++++++++++++++++++------
+ 1 file changed, 19 insertions(+), 6 deletions(-)
+
+diff --git a/drivers/gpu/drm/virtio/virtgpu_vram.c b/drivers/gpu/drm/virtio/virtgpu_vram.c
+index 25df81c5ed91..21751119eb7b 100644
+--- a/drivers/gpu/drm/virtio/virtgpu_vram.c
++++ b/drivers/gpu/drm/virtio/virtgpu_vram.c
+@@ -2,6 +2,9 @@
+ #include "virtgpu_drv.h"
+
+ #include <linux/dma-mapping.h>
++#include <linux/sizes.h>
++
++#define DORY_HOST_VISIBLE_ALIGNMENT SZ_16K
+
+ static void virtio_gpu_vram_free(struct drm_gem_object *obj)
+ {
+@@ -56,8 +59,12 @@ static int virtio_gpu_vram_mmap(struct drm_gem_object *obj,
+ 	else if (vram->map_info == VIRTIO_GPU_MAP_CACHE_UNCACHED)
+ 		vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
+
+-	/* Partial mappings of GEM buffers don't happen much in practice. */
+-	if (vm_size != vram->vram_node.size)
++	/*
++	 * The aperture node is padded to the Apple host-page granule. Map the
++	 * guest-page-sized GEM object and leave the private stage-2 padding out
++	 * of the userspace ABI.
++	 */
++	if (vm_size != obj->size)
+ 		return -EINVAL;
+
+ 	ret = io_remap_pfn_range(vma, vma->vm_start,
+@@ -150,8 +157,12 @@ static int virtio_gpu_vram_map(struct virtio_gpu_object *bo)
+ 		return -EINVAL;
+
+ 	spin_lock(&vgdev->host_visible_lock);
+-	ret = drm_mm_insert_node(&vgdev->host_visible_mm, &vram->vram_node,
+-				 bo->base.base.size);
++	ret = drm_mm_insert_node_generic(&vgdev->host_visible_mm,
++					 &vram->vram_node,
++					 roundup(bo->base.base.size,
++						 DORY_HOST_VISIBLE_ALIGNMENT),
++					 DORY_HOST_VISIBLE_ALIGNMENT,
++					 0, 0);
+ 	spin_unlock(&vgdev->host_visible_lock);
+
+ 	if (ret)
+@@ -188,6 +199,7 @@ int virtio_gpu_vram_create(struct virtio_gpu_device *vgdev,
+ {
+ 	struct drm_gem_object *obj;
+ 	struct virtio_gpu_object_vram *vram;
++	size_t guest_size;
+ 	int ret;
+
+ 	vram = kzalloc(sizeof(*vram), GFP_KERNEL);
+@@ -197,8 +209,9 @@ int virtio_gpu_vram_create(struct virtio_gpu_device *vgdev,
+ 	obj = &vram->base.base.base;
+ 	obj->funcs = &virtio_gpu_vram_funcs;
+
+-	params->size = PAGE_ALIGN(params->size);
+-	drm_gem_private_object_init(vgdev->ddev, obj, params->size);
++	guest_size = PAGE_ALIGN(params->size);
++	params->size = roundup(params->size, DORY_HOST_VISIBLE_ALIGNMENT);
++	drm_gem_private_object_init(vgdev->ddev, obj, guest_size);
+
+ 	/* Create fake offset */
+ 	ret = drm_gem_create_mmap_offset(obj);
+--
+2.50.1

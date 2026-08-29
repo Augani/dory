@@ -12,6 +12,5 @@ struct HostPageTests {
         #expect(HostPage.size == 4_096)
         #endif
         #expect(GuestMemory.pageSize == HostPage.size)
-        #expect(DaxWindow.pageSize == HostPage.size)
     }
 }

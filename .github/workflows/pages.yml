@@ -7,7 +7,10 @@ name: Deploy Pages
 on:
   push:
     branches: [main]
-    paths: ['website/**', '.github/workflows/pages.yml']
+    paths:
+      - 'website/**'
+      - '.github/workflows/pages.yml'
+      - '.github/scripts/verify-pages-release-metadata.py'
   workflow_dispatch:
 
 permissions:
@@ -24,46 +27,30 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-      - name: Preserve the currently deployed Sparkle feed
+      - name: Configure the job-scoped Sparkle authority cache
+        run: echo "DORY_SPARKLE_AUTHORITY_CACHE=$RUNNER_TEMP/dory-sparkle-authority" >> "$GITHUB_ENV"
+      - name: Preserve newer live signed release metadata as one transaction
         run: |
-          live="$RUNNER_TEMP/live-appcast.xml"
-          if curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 15 --max-time 60 \
-              "https://augani.github.io/dory/appcast.xml?preserve=${{ github.run_id }}" \
-              -o "$live" \
-             && python3 - "$live" website/public/appcast.xml <<'PY'
-          import sys
-          import xml.etree.ElementTree as ET
-
-          sparkle = "http://www.andymatuschak.org/xml-namespaces/sparkle"
-          dory = "https://augani.github.io/dory/appcast"
-          def release_item(path):
-              item = ET.parse(path).getroot().find("./channel/item")
-              assert item is not None, f"{path} has no release item"
-              assert item.findtext(f"{{{sparkle}}}minimumSystemVersion") == "14.0", \
-                  f"{path} has an invalid macOS floor"
-              for name in ("dataSchemaVersion", "minimumReadableDataSchema", \
-                           "maximumReadableDataSchema", "componentCatalogSchema"):
-                  assert item.findtext(f"{{{dory}}}{name}") == "1", \
-                      f"{path} has an invalid Dory upgrade schema contract"
-              return item
-
-          live_item = release_item(sys.argv[1])
-          checked_item = release_item(sys.argv[2])
-          live_build = int(live_item.findtext(f"{{{sparkle}}}version"))
-          checked_build = int(checked_item.findtext(f"{{{sparkle}}}version"))
-          assert live_build > checked_build, \
-              f"live appcast build {live_build} is not newer than checked-in build {checked_build}"
-          PY
-          then
-            cp "$live" website/public/appcast.xml
-          else
-            echo "Live appcast is missing, invalid, or not newer; retaining the checked-in macOS 14 bootstrap feed."
-          fi
+          set -euo pipefail
+          live="$RUNNER_TEMP/live-release-metadata"
+          mkdir -p "$live/components/arm64"
+          curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 15 --max-time 60 \
+            "https://augani.github.io/dory/appcast.xml?preserve=${{ github.run_id }}" \
+            -o "$live/appcast.xml"
+          for name in catalog.json catalog.json.sha256 catalog.json.sig; do
+            curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 15 --max-time 60 \
+              "https://augani.github.io/dory/components/arm64/$name?preserve=${{ github.run_id }}" \
+              -o "$live/components/arm64/$name"
+          done
+          python3 .github/scripts/verify-pages-release-metadata.py \
+            preserve "$live" website/public
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
@@ -75,9 +62,47 @@ jobs:
         working-directory: website
       - run: npm run build
         working-directory: website
+      - name: Prove the normal site build retained one exact signed metadata transaction
+        run: |
+          set -euo pipefail
+          cmp website/public/appcast.xml docs-build/appcast.xml
+          for name in catalog.json catalog.json.sha256 catalog.json.sig; do
+            cmp "website/public/components/arm64/$name" "docs-build/components/arm64/$name"
+          done
+          python3 .github/scripts/verify-pages-release-metadata.py \
+            verify docs-build docs-build
       - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
       - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
         with:
           path: docs-build
       - id: deployment
         uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
+      - name: Verify all live signed metadata converges to the deployed transaction
+        run: |
+          set -euo pipefail
+          live="$RUNNER_TEMP/deployed-release-metadata"
+          mkdir -p "$live/components/arm64"
+          for attempt in $(seq 1 18); do
+            complete=1
+            curl -fsSL --connect-timeout 10 --max-time 30 \
+              "https://augani.github.io/dory/appcast.xml?pages=${{ github.run_id }}&attempt=$attempt" \
+              -o "$live/appcast.xml" || complete=0
+            for name in catalog.json catalog.json.sha256 catalog.json.sig; do
+              curl -fsSL --connect-timeout 10 --max-time 30 \
+                "https://augani.github.io/dory/components/arm64/$name?pages=${{ github.run_id }}&attempt=$attempt" \
+                -o "$live/components/arm64/$name" || complete=0
+            done
+            if [ "$complete" = 1 ] \
+               && cmp docs-build/appcast.xml "$live/appcast.xml" \
+               && cmp docs-build/components/arm64/catalog.json "$live/components/arm64/catalog.json" \
+               && cmp docs-build/components/arm64/catalog.json.sha256 "$live/components/arm64/catalog.json.sha256" \
+               && cmp docs-build/components/arm64/catalog.json.sig "$live/components/arm64/catalog.json.sig"; then
+              python3 .github/scripts/verify-pages-release-metadata.py \
+                verify "$live" deployed
+              echo "All four signed release metadata files converged byte-for-byte."
+              exit 0
+            fi
+            [ "$attempt" -eq 18 ] || sleep 5
+          done
+          echo "GitHub Pages did not converge to the exact deployed release metadata transaction" >&2
+          exit 1

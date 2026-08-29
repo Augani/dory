@@ -13,11 +13,18 @@ message ClockSyncResponse {
 }
 
 message InfoRequest {}
+message AgentCapability {
+  string id = 1;
+  uint32 version = 2;
+}
 message InfoResponse {
   uint32 proto_version = 1;
   string kernel = 2;
   string agent_build = 3;
   uint64 uptime_secs = 4;
+  // Independently versioned guest-tool capabilities. New optional entries do not require a
+  // transport protocol bump; callers must require the exact capability/version they consume.
+  repeated AgentCapability capabilities = 5;
 }
 
 message ListenPort {
@@ -51,6 +58,92 @@ message TelemetryResponse {
   double psi_full_avg10 = 4; // memory-pressure "full" 10s average, percent (0..100)
 }
 
+// Coordinate application-consistent snapshots. The agent advertises `snapshot-quiesce@1` only
+// when the guest contains a usable filesystem-freeze implementation. Freeze and thaw are one
+// negotiated capability because callers must always be able to undo a failed snapshot attempt.
+message SnapshotQuiesceRequest {
+  enum Action {
+    ACTION_UNSPECIFIED = 0;
+    FREEZE = 1;
+    THAW = 2;
+  }
+  Action action = 1;
+  // A host-generated 128-bit lowercase-hex operation receipt. FREEZE and THAW must carry the
+  // same value so the host can recover even when a successful freeze reply is lost in transit.
+  string receipt_id = 2;
+}
+message SnapshotQuiesceResponse {
+  bool completed = 1;
+  string detail = 2;
+  // A single-use 128-bit lowercase-hex receipt. Present only after a successful FREEZE.
+  string receipt_id = 3;
+}
+
+// Acknowledge one host lifecycle operation at the guest boundary. This does not itself pause or
+// terminate the VM: it proves that the exact durable operation identity reached the negotiated
+// guest agent immediately before/after the corresponding helper transition.
+message LifecycleReceiptRequest {
+  enum Action {
+    ACTION_UNSPECIFIED = 0;
+    PREPARE_PAUSE = 1;
+    RESUMED = 2;
+    PREPARE_STOP = 3;
+  }
+  Action action = 1;
+  // Canonical lowercase RFC 4122 UUID. The all-zero UUID is never a valid operation authority.
+  string operation_id = 2;
+}
+message LifecycleReceiptResponse {
+  bool acknowledged = 1;
+  LifecycleReceiptRequest.Action action = 2;
+  string operation_id = 3;
+}
+
+// Attach one host-exported USB/IP device to the guest's vhci controller. The host has already
+// claimed the device and exposed it on the fixed USB/IP vsock channel; the guest agent performs
+// the USB/IP import handshake and passes that exact connected socket to vhci_hcd.
+message UsbVhciAttachRequest {
+  string bus_id = 1;
+  uint32 port = 2;
+  uint32 vsock_port = 3;
+  uint32 device_id = 4;
+  uint32 speed = 5;
+}
+message UsbVhciAttachResponse {
+  bool attached = 1;
+  string bus_id = 2;
+  uint32 port = 3;
+  uint32 device_id = 4;
+}
+
+message UsbVhciDetachRequest {
+  string bus_id = 1;
+  uint32 port = 2;
+}
+message UsbVhciDetachResponse {
+  bool detached = 1;
+  string bus_id = 2;
+  uint32 port = 3;
+}
+
+// Mount one host-published virtio-fs device inside a qualified Linux guest. This is deliberately a
+// Dory Tools capability instead of an Exec recipe: the agent validates the exact mount authority,
+// invokes mount(2) directly, and returns only after /proc/self/mountinfo proves the kernel-observed
+// source, target, access mode, and mount identity. Callers must negotiate `virtiofs-mount@1`.
+message VirtiofsMountRequest {
+  string tag = 1;
+  string mount_path = 2;
+  bool read_only = 3;
+}
+message VirtiofsMountResponse {
+  bool mounted = 1;
+  bool already_mounted = 2;
+  string tag = 3;
+  string mount_path = 4;
+  bool read_only = 5;
+  uint64 mount_id = 6;
+}
+
 // Run a bounded non-interactive command in the guest. This is the primitive doryd uses for
 // VM-machine provisioning and smoke checks; streaming terminals/debug shells can layer on a
 // separate channel later.
@@ -64,6 +157,9 @@ message ExecRequest {
   repeated ExecEnv env = 3;
   uint64 timeout_ms = 4;
   uint64 output_limit_bytes = 5;
+  // Optional bounded stdin payload. This is binary-safe so desktop integration can transfer
+  // clipboard images without placing their contents in argv or the environment.
+  bytes stdin = 6;
 }
 message ExecResponse {
   int32 exit_code = 1;
@@ -126,6 +222,55 @@ message SyncDeleteRequest {
 }
 message SyncDeleteResponse { uint32 deleted = 1; }
 
+// Reconcile the complete file/directory namespace before and after streamed file puts. The first
+// pass (`finalize=false`) removes conflicts/extras and creates missing directories. The final pass
+// additionally requires every desired file to exist and applies directory modes, closing races and
+// preserving empty directories without sentinel files.
+message SyncDirectoryEntry {
+  string path = 1;
+  uint32 mode = 2;
+}
+message SyncTreeRequest {
+  string root = 1;
+  repeated string files = 2;
+  repeated SyncDirectoryEntry directories = 3;
+  bool finalize = 4;
+}
+message SyncTreeResponse {
+  uint32 paths_deleted = 1;
+  uint32 directories_created = 2;
+}
+
+// Read-only counterpart used for guest-to-host transfers. The manifest is a point-in-time content
+// authority; the host must hash the fully assembled destination and reject it if guest bytes change
+// while they are being read. Empty directories are explicit so a pull never invents sentinel files.
+message SyncReadTreeRequest {
+  string root = 1;
+  uint64 max_files = 2;
+  uint64 max_directories = 3;
+  uint64 max_bytes = 4;
+}
+message SyncReadTreeResponse {
+  repeated SyncFileEntry files = 1;
+  repeated SyncDirectoryEntry directories = 2;
+}
+
+// Read one bounded range from a regular file observed in SyncReadTreeResponse. `expected_size`
+// makes growth/truncation fail before bytes are accepted; the manifest SHA-256 remains the final
+// authority for same-size concurrent mutation. Responses are capped by the agent at CHUNK_BYTES.
+message SyncGetChunkRequest {
+  string root = 1;
+  string path = 2;
+  uint64 offset = 3;
+  uint32 max_bytes = 4;
+  uint64 expected_size = 5;
+}
+message SyncGetChunkResponse {
+  bytes data = 1;
+  uint64 next_offset = 2;
+  bool eof = 3;
+}
+
 message AgentRequest {
   oneof method {
     ClockSyncRequest clock_sync = 1;
@@ -137,6 +282,14 @@ message AgentRequest {
     SyncDeleteRequest sync_delete = 7;
     TelemetryRequest telemetry = 8;
     ExecRequest exec = 9;
+    SnapshotQuiesceRequest snapshot_quiesce = 10;
+    SyncTreeRequest sync_tree = 11;
+    SyncReadTreeRequest sync_read_tree = 12;
+    SyncGetChunkRequest sync_get_chunk = 13;
+    LifecycleReceiptRequest lifecycle_receipt = 14;
+    UsbVhciAttachRequest usb_vhci_attach = 15;
+    UsbVhciDetachRequest usb_vhci_detach = 16;
+    VirtiofsMountRequest virtiofs_mount = 17;
   }
 }
 
@@ -152,5 +305,13 @@ message AgentResponse {
     SyncDeleteResponse sync_delete = 8;
     TelemetryResponse telemetry = 9;
     ExecResponse exec = 10;
+    SnapshotQuiesceResponse snapshot_quiesce = 11;
+    SyncTreeResponse sync_tree = 12;
+    SyncReadTreeResponse sync_read_tree = 13;
+    SyncGetChunkResponse sync_get_chunk = 14;
+    LifecycleReceiptResponse lifecycle_receipt = 15;
+    UsbVhciAttachResponse usb_vhci_attach = 16;
+    UsbVhciDetachResponse usb_vhci_detach = 17;
+    VirtiofsMountResponse virtiofs_mount = 18;
   }
 }

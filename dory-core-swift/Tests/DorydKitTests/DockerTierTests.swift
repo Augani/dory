@@ -1,5 +1,6 @@
 import Darwin
 import DoryCore
+import DoryOperations
 @testable import DorydKit
 import Foundation
 import XCTest
@@ -212,7 +213,9 @@ final class DockerTierTests: XCTestCase {
         XCTAssertTrue(tier.sleepForIdle(idleAfter: 0))
         await tier.ensureAwake()
 
-        XCTAssertEqual(states.value, [.running, .sleeping, .running])
+        XCTAssertTrue(waitUntil(timeout: 1) {
+            states.value == [.running, .sleeping, .running]
+        })
         XCTAssertEqual(tier.status().state, .running)
     }
 
@@ -231,7 +234,7 @@ final class DockerTierTests: XCTestCase {
         try tier.start()
         tier.shutdown()
 
-        XCTAssertEqual(states.value, [.running])
+        XCTAssertTrue(waitUntil(timeout: 1) { states.value == [.running] })
         XCTAssertEqual(tier.status().state, .stopped)
     }
 
@@ -400,6 +403,66 @@ final class DockerTierTests: XCTestCase {
         XCTAssertEqual(errno, ESRCH)
     }
 
+    func testLateCancelledStartReadinessCannotOverwriteStoppedCycle() throws {
+        let base = "/tmp/dory-tier-readiness-cycle-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let readyWaitEntered = DispatchSemaphore(value: 0)
+        let releaseReadyWait = DispatchSemaphore(value: 0)
+        let startFinished = DispatchSemaphore(value: 0)
+        let startError = LockedErrorBox()
+        let tier = DockerTier(
+            configuration: DockerTierConfiguration(
+                home: base + "/home",
+                forwardSocketPath: base + "/forward.sock",
+                activitySocketPath: base + "/activity.sock",
+                hvProcess: HvProcessConfiguration(
+                    executablePath: "/bin/sleep",
+                    arguments: ["30"]
+                )
+            ),
+            idleController: IdleController(),
+            dockerReadyWaiter: { _, _, _ in
+                readyWaitEntered.signal()
+                _ = releaseReadyWait.wait(timeout: .now() + 5)
+                return true
+            }
+        )
+        defer {
+            releaseReadyWait.signal()
+            _ = tier.stop()
+        }
+
+        DispatchQueue.global().async {
+            do {
+                try tier.start()
+            } catch {
+                startError.set(error)
+            }
+            startFinished.signal()
+        }
+
+        XCTAssertEqual(readyWaitEntered.wait(timeout: .now() + 2), .success)
+        XCTAssertTrue(tier.stop())
+        let stopped = tier.readinessSnapshot()
+        XCTAssertEqual(stopped.trigger, "stopped")
+        XCTAssertTrue(stopped.stages.allSatisfy {
+            $0.state == .inactive && $0.reasonCode == "engine.stopped"
+        })
+
+        releaseReadyWait.signal()
+        XCTAssertEqual(startFinished.wait(timeout: .now() + 2), .success)
+        XCTAssertTrue(startError.value.map { "\($0)".contains("start was cancelled") } ?? false)
+
+        let afterLateCompletion = tier.readinessSnapshot()
+        XCTAssertEqual(afterLateCompletion.cycleID, stopped.cycleID)
+        XCTAssertEqual(afterLateCompletion.trigger, "stopped")
+        XCTAssertTrue(afterLateCompletion.stages.allSatisfy {
+            $0.state == .inactive && $0.reasonCode == "engine.stopped"
+        })
+    }
+
     func testOrdinaryStopAllowsRestartButDaemonShutdownPermanentlyRejectsStart() throws {
         let base = "/tmp/dory-tier-terminal-latch-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
@@ -442,7 +505,7 @@ final class DockerTierTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: tier.socketPath))
     }
 
-    func testConcurrentRestartWaitsForOrdinaryStopEndpointTeardown() throws {
+    func testConcurrentRestartIsRejectedPromptlyUntilOrdinaryStopCommits() throws {
         let base = "/tmp/dory-tier-stop-start-barrier-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(atPath: base) }
@@ -493,28 +556,210 @@ final class DockerTierTests: XCTestCase {
             FileManager.default.fileExists(atPath: stopMarker)
         })
 
-        let restartFinished = DispatchSemaphore(value: 0)
-        let restartError = LockedErrorBox()
-        DispatchQueue.global().async {
-            do {
-                try tier.start()
-            } catch {
-                restartError.set(error)
-            }
-            restartFinished.signal()
+        let rejectedAt = Date()
+        XCTAssertThrowsError(try tier.start()) { error in
+            XCTAssertEqual("\(error)", DockerTier.TierError.helperTerminationPending.description)
         }
-
-        XCTAssertEqual(
-            restartFinished.wait(timeout: .now() + 0.15),
-            .timedOut,
-            "a replacement lifecycle must not bind while the older stop still owns teardown"
+        XCTAssertLessThan(
+            Date().timeIntervalSince(rejectedAt),
+            0.15,
+            "a replacement lifecycle must fail promptly instead of waiting behind external cleanup"
         )
+        XCTAssertTrue(tier.status().isStopping)
         XCTAssertEqual(stopFinished.wait(timeout: .now() + 10), .success)
-        XCTAssertEqual(restartFinished.wait(timeout: .now() + 10), .success)
-        XCTAssertNil(restartError.value)
+
+        try tier.start()
         XCTAssertEqual(tier.status().state, .running)
         XCTAssertNotEqual(tier.status().hvPID, originalPID)
         XCTAssertTrue(FileManager.default.fileExists(atPath: tier.socketPath))
+    }
+
+    func testBlockedHelperCleanupLeavesStatusResponsiveAndStartExcluded() throws {
+        let base = "/tmp/dory-tier-responsive-stop-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let helper = BlockingStopDockerProcess(pid: 43_001)
+        let tier = makeTier(base: base, helper: helper)
+        try tier.start()
+
+        let stopResult = LockedBoolBox()
+        let stopFinished = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            stopResult.set(tier.stop())
+            stopFinished.signal()
+        }
+        XCTAssertEqual(helper.stopEntered.wait(timeout: .now() + 1), .success)
+
+        let statusStartedAt = Date()
+        let stoppingStatus = tier.status()
+        XCTAssertLessThan(Date().timeIntervalSince(statusStartedAt), 0.1)
+        XCTAssertTrue(stoppingStatus.isStopping)
+        XCTAssertEqual(stoppingStatus.state, .failed)
+        XCTAssertEqual(stoppingStatus.hvPID, 43_001)
+
+        let startStartedAt = Date()
+        XCTAssertThrowsError(try tier.start()) { error in
+            XCTAssertEqual("\(error)", DockerTier.TierError.helperTerminationPending.description)
+        }
+        XCTAssertLessThan(Date().timeIntervalSince(startStartedAt), 0.1)
+
+        let wakeFinished = DispatchSemaphore(value: 0)
+        Task {
+            await tier.ensureAwake()
+            wakeFinished.signal()
+        }
+        XCTAssertEqual(wakeFinished.wait(timeout: .now() + 0.1), .success)
+        XCTAssertEqual(helper.startCallCount, 1, "wake must not launch during teardown")
+
+        helper.releaseStop.signal()
+        XCTAssertEqual(stopFinished.wait(timeout: .now() + 1), .success)
+        XCTAssertEqual(stopResult.value, true)
+        XCTAssertFalse(tier.status().isStopping)
+        XCTAssertEqual(tier.status().state, .stopped)
+    }
+
+    func testStatusBudgetIsBoundedWhileManagedHelperLaunchOwnsLifecycleReservation() throws {
+        let base = "/tmp/dory-tier-blocked-launch-status-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let launchPublished = DispatchSemaphore(value: 0)
+        let releaseLaunch = DispatchSemaphore(value: 0)
+        let startFinished = DispatchSemaphore(value: 0)
+        let startError = LockedErrorBox()
+        let helper = HvProcess(configuration: HvProcessConfiguration(
+            executablePath: "/bin/sleep",
+            arguments: ["30"]
+        ))
+        helper.installPostPublicationLifecycleGateForTesting { _ in
+            launchPublished.signal()
+            releaseLaunch.wait()
+        }
+        let tier = DockerTier(
+            configuration: DockerTierConfiguration(
+                home: base + "/home",
+                forwardSocketPath: base + "/forward.sock",
+                hvProcess: HvProcessConfiguration(
+                    executablePath: "/bin/false",
+                    arguments: []
+                )
+            ),
+            dockerReadyWaiter: { _, _, _ in true }
+        )
+        tier.installManagedProcessFactory { _, _ in helper }
+        defer {
+            releaseLaunch.signal()
+            _ = tier.stop()
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                try tier.start()
+            } catch {
+                startError.set(error)
+            }
+            startFinished.signal()
+        }
+        XCTAssertEqual(launchPublished.wait(timeout: .now() + 1), .success)
+
+        let statusFinished = DispatchSemaphore(value: 0)
+        let statusResult = LockedDockerTierStatusBox()
+        DispatchQueue.global(qos: .userInitiated).async {
+            statusResult.set(tier.status())
+            statusFinished.signal()
+        }
+        XCTAssertEqual(
+            statusFinished.wait(timeout: .now() + 1),
+            .success,
+            "status must return unknown instead of blocking behind the helper's launch reservation"
+        )
+        let status = try XCTUnwrap(statusResult.value)
+        XCTAssertEqual(status.state, .starting)
+        XCTAssertNil(status.hvPID, "contended exact observation must fail closed, never guess a PID")
+
+        releaseLaunch.signal()
+        XCTAssertEqual(startFinished.wait(timeout: .now() + 2), .success)
+        XCTAssertNil(startError.value)
+        XCTAssertEqual(tier.status().state, .running)
+    }
+
+    func testConcurrentStopsJoinOneCleanupAndOneLifecycleCommit() throws {
+        let base = "/tmp/dory-tier-joined-stop-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let helper = BlockingStopDockerProcess(pid: 43_002)
+        let tier = makeTier(base: base, helper: helper)
+        let states = LockedTierStates()
+        tier.setLifecycleStateObserver { states.append($0) }
+        try tier.start()
+        XCTAssertTrue(waitUntil(timeout: 1) { states.value == [.running] })
+
+        let firstResult = LockedBoolBox()
+        let secondResult = LockedBoolBox()
+        let firstFinished = DispatchSemaphore(value: 0)
+        let secondFinished = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            firstResult.set(tier.stop())
+            firstFinished.signal()
+        }
+        XCTAssertEqual(helper.stopEntered.wait(timeout: .now() + 1), .success)
+        DispatchQueue.global().async {
+            secondResult.set(tier.stop())
+            secondFinished.signal()
+        }
+
+        XCTAssertEqual(secondFinished.wait(timeout: .now() + 0.1), .timedOut)
+        XCTAssertEqual(helper.stopCallCount, 1)
+        helper.releaseStop.signal()
+        XCTAssertEqual(firstFinished.wait(timeout: .now() + 1), .success)
+        XCTAssertEqual(secondFinished.wait(timeout: .now() + 1), .success)
+        XCTAssertEqual(firstResult.value, true)
+        XCTAssertEqual(secondResult.value, true)
+        XCTAssertEqual(helper.stopCallCount, 1)
+        XCTAssertTrue(waitUntil(timeout: 1) { states.value == [.running, .stopped] })
+    }
+
+    func testFalseStopResultDoesNotRetainHelperAfterExactTerminalObservation() throws {
+        let base = "/tmp/dory-tier-stale-false-stop-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let helper = StaleFalseStopDockerProcess(pid: 43_003)
+        let tier = makeTier(base: base, helper: helper)
+        try tier.start()
+
+        XCTAssertTrue(tier.stop(), "a stale false stop result must be revalidated")
+        XCTAssertEqual(helper.stopCallCount, 1)
+        XCTAssertEqual(tier.status().state, .stopped)
+        XCTAssertNil(tier.status().hvPID)
+        XCTAssertNoThrow(try tier.start(), "terminal old authority must not block replacement")
+        XCTAssertTrue(tier.stop())
+    }
+
+    func testLifecycleObserverCanReenterAndStillReceivesCommitOrder() throws {
+        let base = "/tmp/dory-tier-observer-reentry-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let tier = DockerTier(configuration: DockerTierConfiguration(
+            home: base + "/home",
+            forwardSocketPath: base + "/forward.sock"
+        ))
+        let states = LockedTierStates()
+        let callbackFinished = DispatchSemaphore(value: 0)
+        tier.setLifecycleStateObserver { [weak tier] state in
+            _ = tier?.status()
+            states.append(state)
+            callbackFinished.signal()
+        }
+
+        try tier.start()
+        XCTAssertEqual(callbackFinished.wait(timeout: .now() + 1), .success)
+        XCTAssertTrue(tier.stop())
+        XCTAssertEqual(callbackFinished.wait(timeout: .now() + 1), .success)
+        XCTAssertEqual(states.value, [.running, .stopped])
     }
 
     func testDaemonShutdownCancelsAcceptedStartAndLatchesAgainstRetry() throws {
@@ -656,6 +901,119 @@ final class DockerTierTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: activityPath))
         XCTAssertFalse(FileManager.default.fileExists(atPath: base + "/forward.sock"))
         XCTAssertEqual(tier.status().state, .stopped)
+    }
+
+    func testCancelledSleepingDataplaneLaunchRetiresItsSocketsBeforeReplacementCanBind() throws {
+        let base = "/tmp/dory-tier-arm-cleanup-authority-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let firstDataplaneStartEntered = DispatchSemaphore(value: 0)
+        let releaseFirstDataplaneStart = DispatchSemaphore(value: 0)
+        let armFinished = DispatchSemaphore(value: 0)
+        let armError = LockedErrorBox()
+        let dataplaneStarts = LockedInt()
+        let tier = DockerTier(
+            configuration: DockerTierConfiguration(
+                home: base + "/home",
+                forwardSocketPath: base + "/forward.sock",
+                activitySocketPath: base + "/activity.sock",
+                hvProcess: HvProcessConfiguration(executablePath: "/bin/sleep", arguments: ["30"])
+            ),
+            idleController: IdleController(),
+            dockerReadyWaiter: { _, _, _ in true },
+            beforeDataplaneStart: {
+                if dataplaneStarts.increment() == 1 {
+                    firstDataplaneStartEntered.signal()
+                    _ = releaseFirstDataplaneStart.wait(timeout: .now() + 2)
+                }
+            }
+        )
+
+        DispatchQueue.global().async {
+            do {
+                try tier.armSleeping()
+            } catch {
+                armError.set(error)
+            }
+            armFinished.signal()
+        }
+
+        XCTAssertEqual(firstDataplaneStartEntered.wait(timeout: .now() + 2), .success)
+        XCTAssertTrue(tier.stop())
+        XCTAssertThrowsError(try tier.start()) { error in
+            XCTAssertEqual("\(error)", DockerTier.TierError.helperTerminationPending.description)
+        }
+
+        releaseFirstDataplaneStart.signal()
+        XCTAssertEqual(armFinished.wait(timeout: .now() + 2), .success)
+        XCTAssertTrue(armError.value.map { "\($0)".contains("start was cancelled") } ?? false)
+
+        try tier.start()
+        XCTAssertEqual(tier.status().state, .running)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: tier.socketPath))
+        XCTAssertEqual(dataplaneStarts.value, 2)
+        XCTAssertTrue(tier.stop())
+    }
+
+    func testStopSupersedesSocketRepairWithoutLockingOrLateEndpointCleanup() throws {
+        let base = "/tmp/dory-tier-repair-stop-race-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let repairDataplaneStartEntered = DispatchSemaphore(value: 0)
+        let releaseRepairDataplaneStart = DispatchSemaphore(value: 0)
+        let repairFinished = DispatchSemaphore(value: 0)
+        let repairError = LockedErrorBox()
+        let dataplaneStarts = LockedInt()
+        let tier = DockerTier(
+            configuration: DockerTierConfiguration(
+                home: base + "/home",
+                forwardSocketPath: base + "/forward.sock",
+                activitySocketPath: base + "/activity.sock",
+                hvProcess: HvProcessConfiguration(executablePath: "/bin/sleep", arguments: ["30"])
+            ),
+            idleController: IdleController(),
+            dockerReadyWaiter: { _, _, _ in true },
+            beforeDataplaneStart: {
+                if dataplaneStarts.increment() == 2 {
+                    repairDataplaneStartEntered.signal()
+                    _ = releaseRepairDataplaneStart.wait(timeout: .now() + 3)
+                }
+            }
+        )
+        try tier.start()
+
+        unlink(tier.socketPath)
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                _ = try tier.repairSocketForwarder()
+            } catch {
+                repairError.set(error)
+            }
+            repairFinished.signal()
+        }
+
+        XCTAssertEqual(repairDataplaneStartEntered.wait(timeout: .now() + 3), .success)
+        XCTAssertTrue(tier.stop(), "stop must not wait for the repair's external dataplane start")
+        XCTAssertThrowsError(try tier.start()) { error in
+            XCTAssertEqual("\(error)", DockerTier.TierError.helperTerminationPending.description)
+        }
+
+        releaseRepairDataplaneStart.signal()
+        XCTAssertEqual(repairFinished.wait(timeout: .now() + 3), .success)
+        XCTAssertTrue(
+            repairError.value.map { "\($0)".contains("superseded") } ?? false,
+            "\(String(describing: repairError.value))"
+        )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: tier.socketPath))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: base + "/activity.sock"))
+
+        try tier.start()
+        XCTAssertEqual(tier.status().state, .running)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: tier.socketPath))
+        XCTAssertEqual(dataplaneStarts.value, 3)
+        XCTAssertTrue(tier.stop())
     }
 
     func testDaemonShutdownCancelsAcceptedWakeAndPreventsFutureWake() async throws {
@@ -1053,6 +1411,65 @@ final class DockerTierTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: tier.socketPath))
     }
 
+    func testRetainedUnexpectedHelperTerminalObservationContinuesRecoveryWithoutControlRequest() throws {
+        let base = "/tmp/dory-tier-retained-recovery-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let retained = UnconfirmedStopDockerProcess(pid: 42_500)
+        let replacement = ReadyDockerManagedProcess(pid: 42_501)
+        let factoryCalls = LockedInt()
+        let states = LockedTierStates()
+        let tier = DockerTier(
+            configuration: DockerTierConfiguration(
+                home: base + "/home",
+                forwardSocketPath: base + "/forward.sock",
+                activitySocketPath: base + "/activity.sock",
+                hvProcess: HvProcessConfiguration(
+                    executablePath: "/bin/false",
+                    restartPolicy: HvRestartPolicy(
+                        maxRestarts: 1,
+                        delaySeconds: 0,
+                        maximumDelaySeconds: 0
+                    )
+                )
+            ),
+            idleController: IdleController(),
+            dockerReadyWaiter: { _, _, _ in true }
+        )
+        tier.setLifecycleStateObserver { states.append($0) }
+        tier.installManagedProcessFactory { _, terminationHandler in
+            if factoryCalls.increment() == 1 {
+                retained.setUnexpectedTerminationHandler(terminationHandler)
+                return retained
+            }
+            return replacement
+        }
+        defer { _ = tier.stop() }
+
+        try tier.start()
+        retained.reportUnexpectedTermination()
+        XCTAssertEqual(retained.terminationWaitEntered.wait(timeout: .now() + 1), .success)
+        XCTAssertEqual(tier.status().state, .failed)
+        XCTAssertEqual(tier.status().hvPID, 42_500)
+
+        retained.confirmExit()
+        XCTAssertEqual(
+            replacement.startEntered.wait(timeout: .now() + 1),
+            .success,
+            "terminal observation must schedule the retained recovery without start/status/stop"
+        )
+        XCTAssertTrue(waitUntil(timeout: 1) {
+            let status = tier.status()
+            return status.state == .running && status.hvPID == 42_501
+        })
+        XCTAssertEqual(factoryCalls.value, 2)
+        XCTAssertTrue(waitUntil(timeout: 1) {
+            states.value == [.running, .starting, .failed, .starting, .running]
+        })
+        XCTAssertEqual(states.value, [.running, .starting, .failed, .starting, .running])
+    }
+
     func testExplicitStopNeverTriggersSupervisorRestart() throws {
         let base = "/tmp/dory-tier-explicit-stop-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
@@ -1129,6 +1546,69 @@ final class DockerTierTests: XCTestCase {
         XCTAssertNil(tier.status().hvPID, "cancelled restart must not resurrect a sleeping tier")
     }
 
+    func testQueuedRecoverySleepKeepsOneSocketAuthorityAcrossCleanupAndArm() throws {
+        let base = "/tmp/dory-tier-recovery-sleep-authority-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let sleepingDataplaneStartEntered = DispatchSemaphore(value: 0)
+        let releaseSleepingDataplaneStart = DispatchSemaphore(value: 0)
+        let sleepFinished = DispatchSemaphore(value: 0)
+        let sleepResult = LockedBoolBox()
+        let dataplaneStarts = LockedInt()
+        let tier = DockerTier(
+            configuration: DockerTierConfiguration(
+                home: base + "/home",
+                forwardSocketPath: base + "/forward.sock",
+                activitySocketPath: base + "/activity.sock",
+                hvProcess: HvProcessConfiguration(
+                    executablePath: "/bin/sleep",
+                    arguments: ["30"],
+                    restartPolicy: HvRestartPolicy(
+                        maxRestarts: 3,
+                        delaySeconds: 0.30,
+                        maximumDelaySeconds: 0.30
+                    )
+                )
+            ),
+            idleController: IdleController(),
+            containerActivityProbe: { _ in .empty },
+            dockerReadyWaiter: { _, _, _ in true },
+            beforeDataplaneStart: {
+                if dataplaneStarts.increment() == 2 {
+                    sleepingDataplaneStartEntered.signal()
+                    _ = releaseSleepingDataplaneStart.wait(timeout: .now() + 3)
+                }
+            }
+        )
+        try tier.start()
+        defer { tier.stop() }
+        let originalPID = try XCTUnwrap(tier.status().hvPID)
+        XCTAssertEqual(kill(originalPID, SIGKILL), 0)
+        XCTAssertTrue(waitUntil(timeout: 1) {
+            let status = tier.status()
+            return status.state == .starting && status.hvPID == nil
+        })
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            sleepResult.set(tier.sleepForIdle(idleAfter: 0))
+            sleepFinished.signal()
+        }
+        XCTAssertEqual(sleepingDataplaneStartEntered.wait(timeout: .now() + 3), .success)
+        XCTAssertThrowsError(try tier.start()) { error in
+            XCTAssertEqual("\(error)", DockerTier.TierError.helperTerminationPending.description)
+        }
+
+        releaseSleepingDataplaneStart.signal()
+        XCTAssertEqual(sleepFinished.wait(timeout: .now() + 3), .success)
+        XCTAssertEqual(sleepResult.value, true)
+        XCTAssertEqual(tier.status().state, .sleeping)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: tier.socketPath))
+        Thread.sleep(forTimeInterval: 0.40)
+        XCTAssertEqual(tier.status().state, .sleeping)
+        XCTAssertEqual(dataplaneStarts.value, 2)
+    }
+
     func testSupervisorStopsAtLimitAndManualStartResetsBudget() throws {
         let base = "/tmp/dory-tier-restart-limit-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
@@ -1195,6 +1675,7 @@ final class DockerTierTests: XCTestCase {
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: helper)
 
         let readyCalls = LockedInt()
+        let states = LockedTierStates()
         let tier = DockerTier(
             configuration: DockerTierConfiguration(
                 home: base + "/home",
@@ -1221,6 +1702,7 @@ final class DockerTierTests: XCTestCase {
                 return false
             }
         )
+        tier.setLifecycleStateObserver { states.append($0) }
         defer { tier.stop() }
         try tier.start()
         let firstPID = try XCTUnwrap(tier.status().hvPID)
@@ -1250,6 +1732,1663 @@ final class DockerTierTests: XCTestCase {
         XCTAssertTrue(tier.status().lastError?.contains("restart limit") == true)
         XCTAssertNil(tier.status().hvPID)
         XCTAssertFalse(FileManager.default.fileExists(atPath: tier.socketPath))
+        XCTAssertTrue(waitUntil(timeout: 1) {
+            states.value == [.running, .starting, .starting, .failed]
+        })
+        XCTAssertEqual(states.value, [.running, .starting, .starting, .failed])
+    }
+
+    func testUnconfirmedHelperStopFailsClosedAndBlocksReplacementGeneration() throws {
+        let base = "/tmp/dory-tier-unconfirmed-stop-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let helper = UnconfirmedStopDockerProcess(pid: 42_424)
+        let states = LockedTierStates()
+        let tier = DockerTier(
+            configuration: DockerTierConfiguration(
+                home: base + "/home",
+                forwardSocketPath: base + "/forward.sock",
+                activitySocketPath: base + "/activity.sock",
+                hvProcess: HvProcessConfiguration(
+                    executablePath: "/bin/false",
+                    arguments: []
+                )
+            ),
+            idleController: IdleController(),
+            dockerReadyWaiter: { _, _, _ in true }
+        )
+        tier.installManagedProcessFactory { _, _ in helper }
+        tier.setLifecycleStateObserver { states.append($0) }
+
+        try tier.start()
+        XCTAssertEqual(tier.status().state, .running)
+        XCTAssertEqual(tier.status().hvPID, 42_424)
+
+        XCTAssertFalse(tier.stop())
+        XCTAssertEqual(tier.status().state, .failed)
+        XCTAssertEqual(tier.status().hvPID, 42_424)
+        XCTAssertTrue(tier.status().lastError?.contains("termination is still being verified") == true)
+        XCTAssertFalse(states.value.contains(.stopped))
+        XCTAssertThrowsError(try tier.start()) { error in
+            XCTAssertEqual("\(error)", DockerTier.TierError.helperTerminationPending.description)
+        }
+
+        helper.confirmExit()
+        XCTAssertTrue(tier.stop())
+        XCTAssertEqual(tier.status().state, .stopped)
+        XCTAssertNil(tier.status().hvPID)
+        XCTAssertTrue(waitUntil(timeout: 1) { states.value.last == .stopped })
+    }
+
+    func testTerminalRetirementWaitUsesExactHelperCompletionWithoutPolling() throws {
+        let base = "/tmp/dory-tier-terminal-wait-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let helper = UnconfirmedStopDockerProcess(pid: 43_004)
+        let tier = makeTier(base: base, helper: helper)
+        try tier.start()
+        XCTAssertFalse(tier.shutdown())
+
+        let waitResult = LockedBoolBox()
+        let waitFinished = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            waitResult.set(tier.waitForTerminalRetirement(timeout: 1))
+            waitFinished.signal()
+        }
+        XCTAssertEqual(helper.terminationWaitEntered.wait(timeout: .now() + 1), .success)
+        XCTAssertEqual(waitFinished.wait(timeout: .now() + 0.05), .timedOut)
+
+        helper.confirmExit()
+        XCTAssertEqual(waitFinished.wait(timeout: .now() + 1), .success)
+        XCTAssertEqual(waitResult.value, true)
+        XCTAssertEqual(tier.status().state, .stopped)
+        XCTAssertNil(tier.status().hvPID)
+        XCTAssertFalse(tier.status().isStopping)
+    }
+
+    func testTerminalRetirementCannotMistakeCurrentHelperForRetiredBeforeTeardownClaim() throws {
+        let base = "/tmp/dory-tier-current-terminal-wait-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let helper = UnconfirmedStopDockerProcess(pid: 43_005)
+        let tier = makeTier(base: base, helper: helper)
+        try tier.start()
+        defer { _ = tier.shutdown() }
+
+        tier.latchTerminalShutdown()
+        XCTAssertFalse(
+            tier.waitForTerminalRetirement(timeout: 0.02),
+            "a live current helper is terminal authority even before a shutdown worker claims it"
+        )
+        XCTAssertEqual(tier.status().hvPID, 43_005)
+
+        helper.confirmExit()
+        XCTAssertTrue(tier.waitForTerminalRetirement(timeout: 1))
+        XCTAssertEqual(tier.status().state, .stopped)
+        XCTAssertNil(tier.status().hvPID)
+    }
+
+    func testFileServiceSnapshotRequiresFreshExactBoundedSchema() throws {
+        let base = "/tmp/dory-tier-file-service-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let state = base + "/state"
+        try FileManager.default.createDirectory(atPath: state, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let tier = DockerTier(configuration: DockerTierConfiguration(
+            home: base + "/home",
+            forwardSocketPath: base + "/forward.sock",
+            hvProcess: HvProcessConfiguration(
+                executablePath: "/bin/true",
+                arguments: ["--state-dir", state]
+            )
+        ))
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let path = state + "/file-service-resources.json"
+        var record = fileServiceResourceRecord(generatedAt: now)
+
+        try writeFileServiceResourceRecord(record, to: path)
+        let decoded = try XCTUnwrap(tier.fileServiceResourceSnapshot(now: now))
+        XCTAssertTrue(decoded.running)
+        XCTAssertEqual(decoded.cacheMode, "zero-validity")
+        XCTAssertEqual(decoded.configuredShareCount, 1)
+        XCTAssertEqual(decoded.watcherNudgeShareCount, 1)
+        XCTAssertEqual(decoded.requiredObservationShareCount, 1)
+        XCTAssertEqual(decoded.observedRequiredShareCount, 1)
+
+        record["hostPath"] = "/Users/private/project"
+        try writeFileServiceResourceRecord(record, to: path)
+        XCTAssertNil(
+            tier.fileServiceResourceSnapshot(now: now),
+            "unknown keys, including host paths, are outside the exact telemetry contract"
+        )
+
+        record.removeValue(forKey: "hostPath")
+        record["watcherNudgeShareCount"] = 0
+        try writeFileServiceResourceRecord(record, to: path)
+        XCTAssertNil(
+            tier.fileServiceResourceSnapshot(now: now),
+            "policy counts cannot contradict the configured capability count"
+        )
+
+        record = fileServiceResourceRecord(generatedAt: now.addingTimeInterval(-16))
+        try writeFileServiceResourceRecord(record, to: path)
+        XCTAssertNil(tier.fileServiceResourceSnapshot(now: now))
+    }
+
+    func testDeprecatedHostShareSnapshotStillDecodesItsLegacyFile() throws {
+        let base = "/tmp/dory-tier-host-share-compat-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let state = base + "/state"
+        try FileManager.default.createDirectory(atPath: state, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let tier = DockerTier(configuration: DockerTierConfiguration(
+            home: base + "/home",
+            forwardSocketPath: base + "/forward.sock",
+            hvProcess: HvProcessConfiguration(
+                executablePath: "/bin/true",
+                arguments: ["--state-dir", state]
+            )
+        ))
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let record: [String: Any] = [
+            "schema": "dev.dory.host-share.resources",
+            "version": 1,
+            "generatedAt": ISO8601DateFormatter().string(from: now),
+            "configuredRoots": ["/workspace"],
+            "observationRoots": ["/workspace"],
+            "running": true,
+            "flushScheduled": false,
+            "consecutiveFailures": 0,
+            "batcher": [
+                "pendingCount": 1,
+                "pendingLimit": 4_096,
+                "pendingRequiresRescan": false,
+                "receivedEventCount": 8,
+                "deliveredBatchCount": 7,
+                "failedBatchCount": 0,
+                "rescanCollapseCount": 0,
+            ],
+        ]
+        let data = try JSONSerialization.data(withJSONObject: record, options: [.sortedKeys])
+        try data.write(to: URL(fileURLWithPath: state + "/host-share-resources.json"))
+
+        let snapshot = try XCTUnwrap(tier.hostShareResourceSnapshot(now: now))
+        XCTAssertTrue(snapshot.running)
+        XCTAssertEqual(snapshot.configuredRoots, ["/workspace"])
+        XCTAssertEqual(snapshot.batcher.pendingCount, 1)
+        XCTAssertEqual(snapshot.batcher.receivedEventCount, 8)
+    }
+
+    func testGuestResourceSnapshotRequiresExactVersionedCompleteRecord() throws {
+        let valid = guestResourceRecord()
+        let authority = guestDataDiskAuthority()
+        let snapshot = try DockerTier.decodeGuestResourceSnapshot(
+            valid,
+            authority: authority
+        )
+        XCTAssertEqual(snapshot.selectedDataDriveID, authority.dataDriveID)
+        XCTAssertEqual(snapshot.dataDiskFilesystemUUID, authority.filesystemUUID)
+        XCTAssertEqual(snapshot.dataDiskMountSource, "/dev/vdb")
+        XCTAssertEqual(snapshot.dataDiskFilesystemType, "ext4")
+        XCTAssertEqual(snapshot.dataDiskDeviceMajorMinor, "254:16")
+        XCTAssertEqual(snapshot.memoryCeilingBytes, 2_048 * 1_024)
+        XCTAssertEqual(snapshot.memoryUsedBytes, 1_024 * 1_024)
+        XCTAssertEqual(snapshot.memoryCacheBytes, 416 * 1_024)
+        XCTAssertEqual(snapshot.memoryAvailableBytes, 1_024 * 1_024)
+        XCTAssertEqual(snapshot.memoryReclaimableBytes, 512 * 1_024)
+        XCTAssertEqual(snapshot.dataDiskTotalBytes, 137_438_953_472)
+
+        var compatibilityMutation = snapshot
+        compatibilityMutation.memoryReclaimableBytes = 256 * 1_024
+        XCTAssertEqual(compatibilityMutation.memoryAvailableBytes, 768 * 1_024)
+        XCTAssertEqual(compatibilityMutation.memoryUsedBytes, 1_280 * 1_024)
+
+        let freeExceedsAvailable = String(decoding: valid, as: UTF8.self)
+            .replacingOccurrences(of: "mem_free_kb=512", with: "mem_free_kb=1536")
+        let freeExceedsAvailableSnapshot = try DockerTier.decodeGuestResourceSnapshot(
+            Data(freeExceedsAvailable.utf8),
+            authority: authority
+        )
+        XCTAssertEqual(freeExceedsAvailableSnapshot.memoryFreeBytes, 1_536 * 1_024)
+        XCTAssertEqual(freeExceedsAvailableSnapshot.memoryAvailableBytes, 1_024 * 1_024)
+
+        let text = String(decoding: valid, as: UTF8.self)
+        let invalidRecords: [Data] = [
+            Data(text.replacingOccurrences(
+                of: "shmem_kb=32",
+                with: "mem_total_kb=2048"
+            ).utf8),
+            Data(text.replacingOccurrences(
+                of: "shmem_kb=32",
+                with: "host_path=/private/project"
+            ).utf8),
+            Data(text.replacingOccurrences(
+                of: "cached_kb=256",
+                with: "cached_kb=invalid"
+            ).utf8),
+            Data(text.replacingOccurrences(
+                of: "shmem_kb=32\n",
+                with: ""
+            ).utf8),
+            Data(String(decoding: valid.dropLast(), as: UTF8.self).utf8),
+            Data(text.replacingOccurrences(
+                of: "mem_available_kb=1024",
+                with: "mem_available_kb=2049"
+            ).utf8),
+            Data(text.replacingOccurrences(
+                of: "mem_free_kb=512",
+                with: "mem_free_kb=2049"
+            ).utf8),
+        ]
+        for record in invalidRecords {
+            XCTAssertThrowsError(try DockerTier.decodeGuestResourceSnapshot(
+                record,
+                authority: authority
+            ))
+        }
+    }
+
+    func testProductionGuestMountInfoAWKExecutesAgainstExactFixtures() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "dory-guest-mount-awk-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let syntaxOutput = Pipe()
+        let syntaxCheck = Process()
+        syntaxCheck.executableURL = URL(fileURLWithPath: "/bin/sh")
+        syntaxCheck.arguments = ["-n", "-c", DockerTier.guestResourceProbeScript]
+        syntaxCheck.standardError = syntaxOutput
+        try syntaxCheck.run()
+        syntaxCheck.waitUntilExit()
+        XCTAssertEqual(
+            syntaxCheck.terminationStatus,
+            0,
+            String(decoding: syntaxOutput.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        )
+        XCTAssertEqual(
+            DockerTier.guestResourceProbeScript.components(
+                separatedBy: DockerTier.guestResourceMountInfoAWK
+            ).count - 1,
+            2,
+            "the syntax-tested production probe must use the exact fixture-tested parser both times"
+        )
+        XCTAssertTrue(
+            DockerTier.guestResourceProbeScript.contains(
+                DockerDataDiskLaunchContract.guestFilesystemUUIDShellFunction
+            )
+        )
+        XCTAssertEqual(
+            DockerTier.guestResourceProbeScript.components(
+                separatedBy: "$(\(DockerDataDiskLaunchContract.guestFilesystemUUIDShellCommand))"
+            ).count - 1,
+            2,
+            "initial and final probe reads must use the same BusyBox-compatible parser"
+        )
+        XCTAssertTrue(
+            DockerTier.guestResourceProbeScript.contains(
+                "$(\(DockerDataDiskLaunchContract.guestFilesystemUUIDShellCommand)) || exit 77"
+            )
+        )
+        XCTAssertTrue(
+            DockerTier.guestResourceProbeScript.contains(
+                "$(\(DockerDataDiskLaunchContract.guestFilesystemUUIDShellCommand)) || exit 81"
+            )
+        )
+        XCTAssertFalse(DockerTier.guestResourceProbeScript.contains("blkid -s UUID"))
+        XCTAssertFalse(DockerTier.guestResourceProbeScript.contains("-o value /dev/vdb"))
+
+        func execute(_ fixture: String, name: String) throws -> (Int32, String, String) {
+            let fixtureURL = root.appendingPathComponent(name)
+            try Data(fixture.utf8).write(to: fixtureURL, options: .atomic)
+            let standardOutput = Pipe()
+            let standardError = Pipe()
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/awk")
+            process.arguments = [DockerTier.guestResourceMountInfoAWK, fixtureURL.path]
+            process.standardOutput = standardOutput
+            process.standardError = standardError
+            try process.run()
+            process.waitUntilExit()
+            return (
+                process.terminationStatus,
+                String(decoding: standardOutput.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self),
+                String(decoding: standardError.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            )
+        }
+
+        let valid = try execute(
+            """
+            29 24 0:25 / / rw,relatime - tmpfs tmpfs rw
+            36 25 254:16 / /var/lib/docker rw,relatime shared:9 - ext4 /dev/vdb rw
+
+            """,
+            name: "valid.mountinfo"
+        )
+        XCTAssertEqual(valid.0, 0, valid.2)
+        XCTAssertEqual(valid.1, "36 254:16\n")
+
+        let duplicate = try execute(
+            """
+            36 25 254:16 / /var/lib/docker rw,relatime - ext4 /dev/vdb rw
+            37 25 254:16 / /var/lib/docker rw,relatime - ext4 /dev/vdb rw
+
+            """,
+            name: "duplicate.mountinfo"
+        )
+        XCTAssertNotEqual(duplicate.0, 0, "duplicate exact mounts must fail closed")
+
+        let invalidMounts: [(name: String, fixture: String)] = [
+            (
+                "bind-subdirectory.mountinfo",
+                "36 25 254:16 /docker-subdirectory /var/lib/docker rw,relatime - ext4 /dev/vdb rw\n"
+            ),
+            (
+                "readonly-mount.mountinfo",
+                "36 25 254:16 / /var/lib/docker ro,relatime - ext4 /dev/vdb rw\n"
+            ),
+            (
+                "readonly-superblock.mountinfo",
+                "36 25 254:16 / /var/lib/docker rw,relatime - ext4 /dev/vdb ro\n"
+            ),
+        ]
+        for invalid in invalidMounts {
+            let result = try execute(invalid.fixture, name: invalid.name)
+            XCTAssertNotEqual(result.0, 0, "\(invalid.name) must fail closed")
+            XCTAssertEqual(result.1, "")
+        }
+    }
+
+    func testGuestResourceRecordRejectsWrongSourceRootfsFallbackAndChangedFilesystem() {
+        let authority = guestDataDiskAuthority()
+        let valid = String(decoding: guestResourceRecord(), as: UTF8.self)
+        let invalidRecords = [
+            valid.replacingOccurrences(
+                of: "disk_mount_source=/dev/vdb",
+                with: "disk_mount_source=/dev/vda"
+            ),
+            valid.replacingOccurrences(
+                of: "disk_mount_source=/dev/vdb\ndisk_filesystem_type=ext4",
+                with: "disk_mount_source=overlay\ndisk_filesystem_type=overlay"
+            ),
+            valid.replacingOccurrences(
+                of: "disk_mount_source=/dev/vdb\n",
+                with: ""
+            ),
+            valid.replacingOccurrences(
+                of: "disk_device_major_minor=254:16",
+                with: "disk_device_major_minor=0254:16"
+            ),
+            valid.replacingOccurrences(
+                of: "disk_filesystem_uuid=aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+                with: "disk_filesystem_uuid=11111111-2222-4333-8444-555555555555"
+            ),
+        ]
+
+        for record in invalidRecords {
+            XCTAssertThrowsError(try DockerTier.decodeGuestResourceSnapshot(
+                Data(record.utf8),
+                authority: authority
+            ))
+        }
+    }
+
+    func testManagedGuestReadinessAndCapacityUseTheSameExactDiskIdentity() throws {
+        let base = "/tmp/dory-tier-guest-identity-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let client = GuestResourceProbeAgentClient(records: [
+            .success(guestResourceRecord()),
+            .success(guestResourceRecord()),
+        ])
+        let agent = AgentControl(
+            configuration: AgentControlConfiguration(forwardSocketPath: base + "/agent.sock")
+        ) { _ in client }
+        let helper = ReadyDockerManagedProcess(pid: 44_001)
+        let dataDriveRoot = base + "/selected.dorydrive"
+        let authority = guestDataDiskAuthority(
+            diskImagePath: dataDriveRoot + "/engine/docker-data.ext4"
+        )
+        let tier = DockerTier(
+            configuration: DockerTierConfiguration(
+                home: base + "/home",
+                forwardSocketPath: base + "/forward.sock",
+                hvProcess: HvProcessConfiguration(
+                    executablePath: "/bin/false",
+                    arguments: ["--data-drive", dataDriveRoot]
+                )
+            ),
+            agentControl: agent,
+            dockerReadyWaiter: { _, _, _ in true },
+            guestDataDiskAuthorityProvider: { _ in authority }
+        )
+        tier.installManagedProcessFactory { _, _ in helper }
+
+        try tier.start()
+        XCTAssertEqual(tier.status().state, .running)
+        XCTAssertEqual(client.resourceProbeCount, 1)
+        let snapshot = try XCTUnwrap(tier.guestResourceSnapshot())
+        XCTAssertEqual(snapshot.selectedDataDriveID, authority.dataDriveID)
+        XCTAssertEqual(snapshot.dataDiskFilesystemUUID, authority.filesystemUUID)
+        XCTAssertEqual(client.resourceProbeCount, 2)
+        XCTAssertTrue(tier.stop())
+    }
+
+    func testManagedFreshSelectedDriveFormatsPreparedSparseDiskInPlaceBeforeReadiness() throws {
+        let base = "/Users/Shared/dory-test-tier-fresh-data-drive-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let home = base + "/home"
+        try FileManager.default.createDirectory(atPath: home, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let selectionStore = try DoryDataDriveSelectionStore(home: home)
+        let selectionAuthority = try selectionStore.acquireAuthority()
+        let drive = try selectionStore.prepareSelection(authority: selectionAuthority)
+        let trustedDriveRoot = try DoryTrustedDirectoryRoot(
+            canonicalAbsolutePath: drive.root
+        )
+        let diskImagePath = drive.engineDataDiskPath
+        let filesystemUUID = UUID(uuidString: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")!
+        XCTAssertFalse(FileManager.default.fileExists(atPath: diskImagePath))
+
+        let formatting = LockedDiskFormattingObservation()
+        let helper = ReadyDockerManagedProcess(pid: 44_006) {
+            let before = try diskImageFileIdentity(at: diskImagePath)
+            try writeMinimalExt4SuperblockInPlace(
+                at: diskImagePath,
+                filesystemUUID: filesystemUUID
+            )
+            formatting.set(before: before, after: try diskImageFileIdentity(at: diskImagePath))
+        }
+        let client = GuestResourceProbeAgentClient(records: [
+            .success(guestResourceRecord(filesystemUUID: filesystemUUID)),
+            .success(guestResourceRecord(filesystemUUID: filesystemUUID)),
+        ])
+        let agent = AgentControl(
+            configuration: AgentControlConfiguration(forwardSocketPath: base + "/agent.sock")
+        ) { _ in client }
+        let tier = DockerTier(
+            configuration: DockerTierConfiguration(
+                home: home,
+                forwardSocketPath: base + "/forward.sock",
+                hvProcess: HvProcessConfiguration(
+                    executablePath: "/bin/false",
+                    arguments: ["--data-drive", drive.root]
+                )
+            ),
+            agentControl: agent,
+            dockerReadyWaiter: { _, _, _ in true },
+            dataDriveSelectionAuthority: selectionAuthority,
+            dataDriveTrustedRoot: trustedDriveRoot,
+            newGuestDataDiskFilesystemUUID: { filesystemUUID }
+        )
+        tier.installManagedProcessFactory { _, _ in helper }
+        defer { tier.stop() }
+
+        try tier.start()
+
+        let observation = try XCTUnwrap(formatting.value)
+        XCTAssertEqual(observation.before.device, observation.after.device)
+        XCTAssertEqual(observation.before.inode, observation.after.inode)
+        XCTAssertEqual(observation.before.logicalBytes, DockerDataDisk.blankDiskBytes)
+        XCTAssertEqual(observation.after.logicalBytes, DockerDataDisk.blankDiskBytes)
+        XCTAssertEqual(observation.before.allocatedBlocks, 0)
+        XCTAssertGreaterThan(observation.after.allocatedBlocks, 0)
+        XCTAssertEqual(tier.status().state, .running)
+
+        let manifest = try drive.readManifest()
+        let authority = try DockerTier.inspectGuestDataDiskAuthority(
+            dataDriveID: manifest.id,
+            at: diskImagePath
+        )
+        XCTAssertEqual(authority.filesystemUUID, filesystemUUID)
+        XCTAssertEqual(authority.diskImageInode, observation.before.inode)
+        let snapshot = try XCTUnwrap(tier.guestResourceSnapshot())
+        XCTAssertEqual(snapshot.selectedDataDriveID, manifest.id)
+        XCTAssertEqual(snapshot.dataDiskFilesystemUUID, filesystemUUID)
+        XCTAssertEqual(client.resourceProbeCount, 2)
+    }
+
+    func testPinnedSelectedDriveRejectsSameIdentityCloneBeforeHelperOrDiskMutation() throws {
+        let base = "/Users/Shared/dory-test-tier-pinned-drive-swap-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let home = base + "/home"
+        try FileManager.default.createDirectory(atPath: home, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let selectionStore = try DoryDataDriveSelectionStore(home: home)
+        let selectionAuthority = try selectionStore.acquireAuthority()
+        let drive = try selectionStore.prepareSelection(authority: selectionAuthority)
+        let pinnedRoot = try DoryTrustedDirectoryRoot(canonicalAbsolutePath: drive.root)
+        let originalManifest = try drive.readManifest()
+        let displacedRoot = drive.root + ".pinned-original"
+        let displacedDisk = displacedRoot + "/engine/docker-data.ext4"
+        let replacementDisk = drive.engineDataDiskPath
+        XCTAssertFalse(FileManager.default.fileExists(atPath: replacementDisk))
+
+        try FileManager.default.moveItem(atPath: drive.root, toPath: displacedRoot)
+        try FileManager.default.copyItem(atPath: displacedRoot, toPath: drive.root)
+        let replacementDrive = try DoryDataDrive(home: home, overrideRoot: drive.root)
+        XCTAssertEqual(try replacementDrive.readManifest().id, originalManifest.id)
+
+        let helperStarts = LockedInt()
+        let helper = ReadyDockerManagedProcess(pid: 44_008) {
+            helperStarts.increment()
+            try Data("helper touched replacement\n".utf8).write(
+                to: URL(fileURLWithPath: replacementDisk)
+            )
+        }
+        let tier = DockerTier(
+            configuration: DockerTierConfiguration(
+                home: home,
+                forwardSocketPath: base + "/forward.sock",
+                hvProcess: HvProcessConfiguration(
+                    executablePath: "/bin/false",
+                    arguments: ["--data-drive", drive.root]
+                )
+            ),
+            dockerReadyWaiter: { _, _, _ in true },
+            dataDriveSelectionAuthority: selectionAuthority,
+            dataDriveTrustedRoot: pinnedRoot
+        )
+        tier.installManagedProcessFactory { _, _ in helper }
+        defer { tier.stop() }
+
+        XCTAssertThrowsError(try tier.start()) { error in
+            let detail = "\(error)"
+            XCTAssertTrue(
+                detail.contains("quarantined") || detail.contains("identity"),
+                detail
+            )
+        }
+        XCTAssertEqual(helperStarts.value, 0)
+        XCTAssertEqual(helper.startEntered.wait(timeout: .now()), .timedOut)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: replacementDisk))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: displacedDisk))
+        XCTAssertEqual(tier.status().state, .failed)
+        XCTAssertNil(tier.status().hvPID)
+    }
+
+    func testManagedFreshSelectedDriveRejectsSameUUIDPathReplacementDuringHelperStart() throws {
+        let base = "/Users/Shared/dory-test-tier-fresh-data-drive-swap-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let home = base + "/home"
+        try FileManager.default.createDirectory(atPath: home, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let selectionStore = try DoryDataDriveSelectionStore(home: home)
+        let selectionAuthority = try selectionStore.acquireAuthority()
+        let drive = try selectionStore.prepareSelection(authority: selectionAuthority)
+        let trustedDriveRoot = try DoryTrustedDirectoryRoot(
+            canonicalAbsolutePath: drive.root
+        )
+        let manifest = try drive.readManifest()
+        let diskImagePath = drive.engineDataDiskPath
+        let displacedPath = diskImagePath + ".displaced"
+        let filesystemUUID = UUID(uuidString: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")!
+        XCTAssertFalse(FileManager.default.fileExists(atPath: diskImagePath))
+
+        let swap = LockedDiskFormattingObservation()
+        let helper = ReadyDockerManagedProcess(pid: 44_007) {
+            try writeMinimalExt4SuperblockInPlace(
+                at: diskImagePath,
+                filesystemUUID: filesystemUUID
+            )
+            let displaced = try diskImageFileIdentity(at: diskImagePath)
+            try FileManager.default.moveItem(atPath: diskImagePath, toPath: displacedPath)
+            try writeMinimalExt4Image(to: diskImagePath, filesystemUUID: filesystemUUID)
+            swap.set(before: displaced, after: try diskImageFileIdentity(at: diskImagePath))
+        }
+        let client = GuestResourceProbeAgentClient(records: [
+            .success(guestResourceRecord(filesystemUUID: filesystemUUID)),
+        ])
+        let agent = AgentControl(
+            configuration: AgentControlConfiguration(forwardSocketPath: base + "/agent.sock")
+        ) { _ in client }
+        let tier = DockerTier(
+            configuration: DockerTierConfiguration(
+                home: home,
+                forwardSocketPath: base + "/forward.sock",
+                hvProcess: HvProcessConfiguration(
+                    executablePath: "/bin/false",
+                    arguments: ["--data-drive", drive.root]
+                )
+            ),
+            agentControl: agent,
+            dockerReadyWaiter: { _, _, _ in true },
+            dataDriveSelectionAuthority: selectionAuthority,
+            dataDriveTrustedRoot: trustedDriveRoot,
+            newGuestDataDiskFilesystemUUID: { filesystemUUID }
+        )
+        tier.installManagedProcessFactory { _, _ in helper }
+        defer { tier.stop() }
+
+        XCTAssertThrowsError(try tier.start()) { error in
+            XCTAssertTrue("\(error)".contains("launch authority"), "\(error)")
+        }
+
+        let observation = try XCTUnwrap(swap.value)
+        XCTAssertNotEqual(observation.before.inode, observation.after.inode)
+        let displacedAuthority = try DockerTier.inspectGuestDataDiskAuthority(
+            dataDriveID: manifest.id,
+            at: displacedPath
+        )
+        let replacementAuthority = try DockerTier.inspectGuestDataDiskAuthority(
+            dataDriveID: manifest.id,
+            at: diskImagePath
+        )
+        XCTAssertEqual(displacedAuthority.filesystemUUID, replacementAuthority.filesystemUUID)
+        XCTAssertNotEqual(displacedAuthority.diskImageInode, replacementAuthority.diskImageInode)
+        XCTAssertEqual(client.resourceProbeCount, 0)
+        XCTAssertEqual(tier.status().state, .failed)
+        XCTAssertNil(tier.status().hvPID)
+    }
+
+    func testUnconfirmedSelectedDriveHelperRetainsLocksAndUnlinkedDiskUntilExactTerminal() throws {
+        let base = "/Users/Shared/dory-test-tier-retained-disk-authority-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let home = base + "/home"
+        try FileManager.default.createDirectory(atPath: home, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let selectionStore = try DoryDataDriveSelectionStore(home: home)
+        let drive = try selectionStore.prepareSelection()
+        let pinnedRoot = try DoryTrustedDirectoryRoot(canonicalAbsolutePath: drive.root)
+        let helper = UnconfirmedStopDockerProcess(pid: 44_009)
+        let tier = DockerTier(
+            configuration: DockerTierConfiguration(
+                home: home,
+                forwardSocketPath: base + "/forward.sock",
+                hvProcess: HvProcessConfiguration(
+                    executablePath: "/bin/false",
+                    arguments: ["--data-drive", drive.root]
+                )
+            ),
+            dockerReadyWaiter: { _, _, _ in true },
+            dataDriveTrustedRoot: pinnedRoot
+        )
+        tier.installManagedProcessFactory { _, _ in helper }
+        defer { tier.stop() }
+
+        try tier.start()
+        let diskIdentity = try diskImageFileIdentity(at: drive.engineDataDiskPath)
+        XCTAssertTrue(
+            processHasOpenFile(
+                device: diskIdentity.device,
+                inode: diskIdentity.inode
+            )
+        )
+        XCTAssertThrowsError(try selectionStore.acquireAuthority())
+        XCTAssertThrowsError(
+            try EngineStateDirectoryLock(
+                stateDirectory: drive.root,
+                lockFileName: "drive.lock"
+            )
+        )
+
+        try FileManager.default.removeItem(atPath: drive.engineDataDiskPath)
+        XCTAssertFalse(tier.stop())
+        XCTAssertEqual(tier.status().state, .failed)
+        XCTAssertTrue(
+            processHasOpenFile(
+                device: diskIdentity.device,
+                inode: diskIdentity.inode
+            ),
+            "an unconfirmed helper must retain the exact unlinked disk descriptor"
+        )
+        XCTAssertThrowsError(try selectionStore.acquireAuthority())
+        XCTAssertThrowsError(
+            try EngineStateDirectoryLock(
+                stateDirectory: drive.root,
+                lockFileName: "drive.lock"
+            )
+        )
+
+        helper.confirmExit()
+        XCTAssertTrue(tier.stop())
+        XCTAssertFalse(
+            processHasOpenFile(
+                device: diskIdentity.device,
+                inode: diskIdentity.inode
+            ),
+            "the exact terminal transition must release the admitted disk descriptor"
+        )
+        let releasedSelection = try selectionStore.acquireAuthority()
+        let releasedDriveLock = try EngineStateDirectoryLock(
+            stateDirectory: drive.root,
+            lockFileName: "drive.lock"
+        )
+        withExtendedLifetime((releasedSelection, releasedDriveLock)) {}
+    }
+
+    func testManagedGuestRejectsAClonedUUIDFromTheWrongConfiguredHostDrive() throws {
+        let base = "/tmp/dory-tier-cloned-uuid-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let selectedRoot = base + "/selected.dorydrive"
+        let cloneRoot = base + "/clone.dorydrive"
+        let selectedImage = selectedRoot + "/engine/docker-data.ext4"
+        let cloneImage = cloneRoot + "/engine/docker-data.ext4"
+        try FileManager.default.createDirectory(
+            atPath: selectedRoot + "/engine",
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            atPath: cloneRoot + "/engine",
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        try writeMinimalExt4Image(
+            to: selectedImage,
+            filesystemUUID: UUID(uuidString: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")!
+        )
+        try FileManager.default.copyItem(atPath: selectedImage, toPath: cloneImage)
+        XCTAssertEqual(chmod(cloneImage, 0o600), 0)
+
+        let dataDriveID = UUID(uuidString: "01234567-89ab-4cde-8f01-23456789abcd")!
+        let selectedAuthority = try DockerTier.inspectGuestDataDiskAuthority(
+            dataDriveID: dataDriveID,
+            at: selectedImage
+        )
+        let clonedAuthority = try DockerTier.inspectGuestDataDiskAuthority(
+            dataDriveID: dataDriveID,
+            at: cloneImage
+        )
+        XCTAssertEqual(selectedAuthority.filesystemUUID, clonedAuthority.filesystemUUID)
+        XCTAssertNotEqual(selectedAuthority.diskImageInode, clonedAuthority.diskImageInode)
+
+        let client = GuestResourceProbeAgentClient(records: [.success(guestResourceRecord())])
+        let agent = AgentControl(
+            configuration: AgentControlConfiguration(forwardSocketPath: base + "/agent.sock")
+        ) { _ in client }
+        let helper = ReadyDockerManagedProcess(pid: 44_004)
+        let tier = DockerTier(
+            configuration: DockerTierConfiguration(
+                home: base + "/home",
+                forwardSocketPath: base + "/forward.sock",
+                hvProcess: HvProcessConfiguration(
+                    executablePath: "/bin/false",
+                    arguments: ["--data-drive", selectedRoot]
+                )
+            ),
+            agentControl: agent,
+            dockerReadyWaiter: { _, _, _ in true },
+            guestDataDiskAuthorityProvider: { _ in clonedAuthority }
+        )
+        tier.installManagedProcessFactory { _, _ in helper }
+
+        XCTAssertThrowsError(try tier.start()) { error in
+            XCTAssertTrue("\(error)".contains("exact image configured"), "\(error)")
+        }
+        XCTAssertEqual(client.resourceProbeCount, 0)
+        XCTAssertEqual(tier.status().state, .failed)
+        XCTAssertNil(tier.status().hvPID)
+    }
+
+    func testGuestDeviceBindingIsStrictWithinGenerationButRebindsOnNewBoot() throws {
+        let base = "/tmp/dory-tier-guest-dev-binding-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let dataDriveRoot = base + "/selected.dorydrive"
+        let authority = guestDataDiskAuthority(
+            diskImagePath: dataDriveRoot + "/engine/docker-data.ext4"
+        )
+        let secondDeviceRecord = Data(
+            String(decoding: guestResourceRecord(), as: UTF8.self)
+                .replacingOccurrences(
+                    of: "disk_device_major_minor=254:16",
+                    with: "disk_device_major_minor=254:17"
+                ).utf8
+        )
+        let client = GuestResourceProbeAgentClient(records: [
+            .success(guestResourceRecord()),
+            .success(secondDeviceRecord),
+            .success(secondDeviceRecord),
+            .success(secondDeviceRecord),
+        ])
+        let agent = AgentControl(
+            configuration: AgentControlConfiguration(forwardSocketPath: base + "/agent.sock")
+        ) { _ in client }
+        let helper = ReadyDockerManagedProcess(pid: 44_005)
+        let tier = DockerTier(
+            configuration: DockerTierConfiguration(
+                home: base + "/home",
+                forwardSocketPath: base + "/forward.sock",
+                hvProcess: HvProcessConfiguration(
+                    executablePath: "/bin/false",
+                    arguments: ["--data-drive", dataDriveRoot]
+                )
+            ),
+            agentControl: agent,
+            dockerReadyWaiter: { _, _, _ in true },
+            guestDataDiskAuthorityProvider: { _ in authority }
+        )
+        tier.installManagedProcessFactory { _, _ in helper }
+
+        try tier.start()
+        XCTAssertThrowsError(try tier.guestResourceSnapshot()) { error in
+            XCTAssertTrue("\(error)".contains("within one helper generation"), "\(error)")
+        }
+        XCTAssertTrue(tier.stop())
+
+        try tier.start()
+        XCTAssertEqual(tier.status().state, .running)
+        XCTAssertEqual(
+            try XCTUnwrap(tier.guestResourceSnapshot()).dataDiskDeviceMajorMinor,
+            "254:17"
+        )
+        XCTAssertTrue(tier.stop())
+    }
+
+    func testManagedGuestReadinessRejectsRootfsFallbackBeforePublishingTheEngine() throws {
+        let base = "/tmp/dory-tier-guest-rootfs-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let rootfsRecord = String(decoding: guestResourceRecord(), as: UTF8.self)
+            .replacingOccurrences(
+                of: "disk_mount_source=/dev/vdb\ndisk_filesystem_type=ext4",
+                with: "disk_mount_source=/dev/vda\ndisk_filesystem_type=ext4"
+            )
+        let client = GuestResourceProbeAgentClient(records: [
+            .success(Data(rootfsRecord.utf8)),
+        ])
+        let agent = AgentControl(
+            configuration: AgentControlConfiguration(forwardSocketPath: base + "/agent.sock")
+        ) { _ in client }
+        let helper = ReadyDockerManagedProcess(pid: 44_002)
+        let dataDriveRoot = base + "/selected.dorydrive"
+        let authority = guestDataDiskAuthority(
+            diskImagePath: dataDriveRoot + "/engine/docker-data.ext4"
+        )
+        let tier = DockerTier(
+            configuration: DockerTierConfiguration(
+                home: base + "/home",
+                forwardSocketPath: base + "/forward.sock",
+                hvProcess: HvProcessConfiguration(
+                    executablePath: "/bin/false",
+                    arguments: ["--data-drive", dataDriveRoot]
+                )
+            ),
+            agentControl: agent,
+            dockerReadyWaiter: { _, _, _ in true },
+            guestDataDiskAuthorityProvider: { _ in authority }
+        )
+        tier.installManagedProcessFactory { _, _ in helper }
+
+        XCTAssertThrowsError(try tier.start()) { error in
+            XCTAssertTrue("\(error)".contains("Mounts and data disk readiness failed"), "\(error)")
+        }
+        XCTAssertEqual(tier.status().state, .failed)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: tier.socketPath))
+    }
+
+    func testGuestResourceProbeRejectsTimeoutAndUnparseableOutput() throws {
+        let authority = guestDataDiskAuthority()
+        let cases: [GuestResourceProbeAgentClient.ResourceResult] = [
+            .timeout(guestResourceRecord()),
+            .success(Data("not-a-versioned-record\n".utf8)),
+        ]
+        for (index, result) in cases.enumerated() {
+            let base = "/tmp/dory-tier-guest-invalid-\(getpid())-\(index)-\(UInt32.random(in: 0..<UInt32.max))"
+            defer { try? FileManager.default.removeItem(atPath: base) }
+            let client = GuestResourceProbeAgentClient(records: [result])
+            let agent = AgentControl(
+                configuration: AgentControlConfiguration(forwardSocketPath: base + "/agent.sock")
+            ) { _ in client }
+            let tier = DockerTier(
+                configuration: DockerTierConfiguration(
+                    home: base + "/home",
+                    forwardSocketPath: base + "/forward.sock"
+                ),
+                agentControl: agent,
+                guestDataDiskAuthorityProvider: { _ in authority }
+            )
+            try tier.start()
+            XCTAssertThrowsError(try tier.guestResourceSnapshot())
+            XCTAssertTrue(tier.stop())
+        }
+    }
+
+    func testGuestFilesystemIdentityCannotChangeAfterTheFirstVerifiedProbe() throws {
+        let base = "/tmp/dory-tier-guest-replaced-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let firstAuthority = guestDataDiskAuthority()
+        let secondFilesystemUUID = try XCTUnwrap(UUID(
+            uuidString: "11111111-2222-4333-8444-555555555555"
+        ))
+        let secondAuthority = guestDataDiskAuthority(filesystemUUID: secondFilesystemUUID)
+        let secondRecord = String(decoding: guestResourceRecord(), as: UTF8.self)
+            .replacingOccurrences(
+                of: firstAuthority.filesystemUUID.uuidString.lowercased(),
+                with: secondFilesystemUUID.uuidString.lowercased()
+            )
+        let authorities = GuestDataDiskAuthoritySequence([
+            firstAuthority,
+            secondAuthority,
+        ])
+        let client = GuestResourceProbeAgentClient(records: [
+            .success(guestResourceRecord()),
+            .success(Data(secondRecord.utf8)),
+        ])
+        let agent = AgentControl(
+            configuration: AgentControlConfiguration(forwardSocketPath: base + "/agent.sock")
+        ) { _ in client }
+        let tier = DockerTier(
+            configuration: DockerTierConfiguration(
+                home: base + "/home",
+                forwardSocketPath: base + "/forward.sock"
+            ),
+            agentControl: agent,
+            guestDataDiskAuthorityProvider: { _ in authorities.next() }
+        )
+        try tier.start()
+
+        _ = try XCTUnwrap(tier.guestResourceSnapshot())
+        XCTAssertThrowsError(try tier.guestResourceSnapshot()) { error in
+            XCTAssertTrue("\(error)".contains("identity changed within one helper generation"), "\(error)")
+        }
+        XCTAssertTrue(tier.stop())
+    }
+
+    func testGuestResourceProbeRejectsAStopAcrossTheExactExecGeneration() throws {
+        let base = "/tmp/dory-tier-guest-stop-race-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let client = GuestResourceProbeAgentClient(
+            records: [
+                .success(guestResourceRecord()),
+                .success(guestResourceRecord()),
+            ],
+            blockOnProbeNumber: 2
+        )
+        let agent = AgentControl(
+            configuration: AgentControlConfiguration(forwardSocketPath: base + "/agent.sock")
+        ) { _ in client }
+        let helper = ReadyDockerManagedProcess(pid: 44_003)
+        let dataDriveRoot = base + "/selected.dorydrive"
+        let authority = guestDataDiskAuthority(
+            diskImagePath: dataDriveRoot + "/engine/docker-data.ext4"
+        )
+        let tier = DockerTier(
+            configuration: DockerTierConfiguration(
+                home: base + "/home",
+                forwardSocketPath: base + "/forward.sock",
+                hvProcess: HvProcessConfiguration(
+                    executablePath: "/bin/false",
+                    arguments: ["--data-drive", dataDriveRoot]
+                )
+            ),
+            agentControl: agent,
+            dockerReadyWaiter: { _, _, _ in true },
+            guestDataDiskAuthorityProvider: { _ in authority }
+        )
+        tier.installManagedProcessFactory { _, _ in helper }
+        try tier.start()
+
+        let outcome = Capture()
+        let finished = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                _ = try tier.guestResourceSnapshot()
+            } catch {
+                outcome.setError("\(error)")
+            }
+            finished.signal()
+        }
+        XCTAssertTrue(client.waitUntilBlocked(timeout: 2))
+        XCTAssertTrue(tier.stop())
+        client.releaseBlockedProbe()
+        XCTAssertEqual(finished.wait(timeout: .now() + 2), .success)
+        XCTAssertTrue(
+            outcome.error?.contains("boundary") == true,
+            outcome.error ?? "late stopped-generation snapshot was accepted"
+        )
+    }
+
+    private func makeTier(
+        base: String,
+        helper: any DockerManagedProcess
+    ) -> DockerTier {
+        let tier = DockerTier(
+            configuration: DockerTierConfiguration(
+                home: base + "/home",
+                forwardSocketPath: base + "/forward.sock",
+                activitySocketPath: base + "/activity.sock",
+                hvProcess: HvProcessConfiguration(
+                    executablePath: "/bin/false",
+                    arguments: []
+                )
+            ),
+            idleController: IdleController(),
+            dockerReadyWaiter: { _, _, _ in true }
+        )
+        tier.installManagedProcessFactory { _, _ in helper }
+        return tier
+    }
+}
+
+private func guestResourceRecord(
+    filesystemUUID: UUID = UUID(uuidString: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")!
+) -> Data {
+    Data("""
+    schema=dev.dory.guest-resources
+    version=2
+    mem_total_kb=2048
+    mem_available_kb=1024
+    mem_free_kb=512
+    buffers_kb=128
+    cached_kb=256
+    sreclaimable_kb=64
+    shmem_kb=32
+    disk_mount_source=/dev/vdb
+    disk_filesystem_type=ext4
+    disk_device_major_minor=254:16
+    disk_filesystem_uuid=\(filesystemUUID.uuidString.lowercased())
+    disk_total_bytes=137438953472
+    disk_used_bytes=8589934592
+    disk_available_bytes=128849018880
+
+    """.utf8)
+}
+
+private func writeMinimalExt4Image(to path: String, filesystemUUID: UUID) throws {
+    var image = Data(repeating: 0, count: 2_048)
+    let superblock = 1_024
+    // Two 1 KiB blocks: enough real geometry for the production no-follow inspector.
+    image[superblock + 0x04] = 2
+    image[superblock + 0x38] = 0x53
+    image[superblock + 0x39] = 0xef
+    var rawUUID = filesystemUUID.uuid
+    let uuidBytes = withUnsafeBytes(of: &rawUUID) { Array($0) }
+    image.replaceSubrange(
+        (superblock + 0x68)..<(superblock + 0x68 + uuidBytes.count),
+        with: uuidBytes
+    )
+    try image.write(to: URL(fileURLWithPath: path), options: .atomic)
+    guard chmod(path, 0o600) == 0 else {
+        throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+    }
+}
+
+private struct DiskImageFileIdentity: Sendable, Equatable {
+    let device: UInt64
+    let inode: UInt64
+    let logicalBytes: Int64
+    let allocatedBlocks: Int64
+}
+
+private func diskImageFileIdentity(at path: String) throws -> DiskImageFileIdentity {
+    let descriptor = path.withCString { open($0, O_RDONLY | O_CLOEXEC | O_NOFOLLOW) }
+    guard descriptor >= 0 else {
+        throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+    }
+    defer { close(descriptor) }
+    var status = stat()
+    guard fstat(descriptor, &status) == 0 else {
+        throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+    }
+    return DiskImageFileIdentity(
+        device: UInt64(status.st_dev),
+        inode: UInt64(status.st_ino),
+        logicalBytes: Int64(status.st_size),
+        allocatedBlocks: Int64(status.st_blocks)
+    )
+}
+
+private func processHasOpenFile(device: UInt64, inode: UInt64) -> Bool {
+    for descriptor in 0..<getdtablesize() {
+        var status = stat()
+        guard fstat(descriptor, &status) == 0 else { continue }
+        if UInt64(truncatingIfNeeded: status.st_dev) == device,
+           UInt64(status.st_ino) == inode {
+            return true
+        }
+    }
+    return false
+}
+
+private func writeMinimalExt4SuperblockInPlace(
+    at path: String,
+    filesystemUUID: UUID
+) throws {
+    let descriptor = path.withCString { open($0, O_RDWR | O_CLOEXEC | O_NOFOLLOW) }
+    guard descriptor >= 0 else {
+        throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+    }
+    defer { close(descriptor) }
+
+    var superblock = [UInt8](repeating: 0, count: 1_024)
+    // Two 1 KiB blocks fit within the already-prepared sparse image's logical capacity.
+    superblock[0x04] = 2
+    superblock[0x38] = 0x53
+    superblock[0x39] = 0xef
+    var rawUUID = filesystemUUID.uuid
+    let uuidBytes = withUnsafeBytes(of: &rawUUID) { Array($0) }
+    superblock.replaceSubrange(0x68..<(0x68 + uuidBytes.count), with: uuidBytes)
+    let written = superblock.withUnsafeBytes {
+        pwrite(descriptor, $0.baseAddress, $0.count, off_t(1_024))
+    }
+    guard written == superblock.count, fsync(descriptor) == 0 else {
+        throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+    }
+}
+
+private func guestDataDiskAuthority(
+    dataDriveID: UUID = UUID(uuidString: "01234567-89ab-4cde-8f01-23456789abcd")!,
+    filesystemUUID: UUID = UUID(uuidString: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")!,
+    diskImagePath: String = "/test/selected.dorydrive/engine/docker-data.ext4"
+) -> DockerGuestDataDiskAuthority {
+    DockerGuestDataDiskAuthority(
+        dataDriveID: dataDriveID,
+        filesystemUUID: filesystemUUID,
+        diskImagePath: diskImagePath,
+        diskImageDevice: 1,
+        diskImageInode: 1
+    )
+}
+
+private func fileServiceResourceRecord(generatedAt: Date) -> [String: Any] {
+    [
+        "schema": "dev.dory.file-service.resources",
+        "version": 1,
+        "generatedAt": ISO8601DateFormatter().string(from: generatedAt),
+        "running": true,
+        "cacheMode": "zero-validity",
+        "maximumCacheValiditySeconds": 0,
+        "configuredShareCount": 1,
+        "invalidationOnlyShareCount": 0,
+        "watcherNudgeShareCount": 1,
+        "frontendCount": 3,
+        "requestQueueCount": 3,
+        "observationRequired": true,
+        "observationActive": true,
+        "requiredObservationShareCount": 1,
+        "observedRequiredShareCount": 1,
+        "observationStreamCount": 1,
+        "pendingEventCount": 0,
+        "pendingEventLimit": 65_536,
+        "receivedEventCount": 4,
+        "deliveredBatchCount": 4,
+        "failedBatchCount": 0,
+        "eventLossCount": 0,
+        "invalidationCount": 4,
+        "invalidationFailureCount": 0,
+        "invalidationFailureLatched": false,
+        "rejectedRequestCount": 0,
+        "executedRequestCount": 10,
+        "terminalQueueFaultCount": 0,
+        "completedRequestCount": 10,
+        "failedRequestCount": 0,
+        "inFlightRequestCount": 0,
+        "peakInFlightRequestCount": 1,
+        "requestPayloadBytes": 1_024,
+        "workerResponsePayloadBytes": 2_048,
+        "guestPublishedResponseBytes": 2_048,
+        "totalRequestLatencyNanoseconds": 10_000,
+        "maximumRequestLatencyNanoseconds": 2_000,
+        "coherenceReceivedBatchCount": 4,
+        "coherenceReplayedBatchCount": 0,
+        "coherenceInFlightBatchCount": 0,
+        "coherenceFailedBatchCount": 0,
+        "coherenceTotalLatencyNanoseconds": 4_000,
+        "coherenceMaximumLatencyNanoseconds": 1_000,
+        "coherenceRequestBytes": 400,
+        "coherenceAcknowledgementBytes": 192,
+        "coherenceTerminalFailureLatched": false,
+    ]
+}
+
+private func writeFileServiceResourceRecord(
+    _ record: [String: Any],
+    to path: String
+) throws {
+    let data = try JSONSerialization.data(withJSONObject: record, options: [.sortedKeys])
+    try data.write(to: URL(fileURLWithPath: path), options: .atomic)
+}
+
+private final class GuestResourceProbeAgentClient: AgentControlClient, @unchecked Sendable {
+    enum ResourceResult {
+        case success(Data)
+        case timeout(Data)
+    }
+
+    private let lock = NSLock()
+    private var records: [ResourceResult]
+    private var storedResourceProbeCount = 0
+    private let blockOnProbeNumber: Int?
+    private let blockedProbeEntered = DispatchSemaphore(value: 0)
+    private let blockedProbeRelease = DispatchSemaphore(value: 0)
+
+    init(records: [ResourceResult], blockOnProbeNumber: Int? = nil) {
+        self.records = records
+        self.blockOnProbeNumber = blockOnProbeNumber
+    }
+
+    var resourceProbeCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedResourceProbeCount
+    }
+
+    func info() throws -> DoryAgentInfo {
+        DoryAgentInfo(
+            protocolVersion: DoryCore.protocolVersion(),
+            kernel: "Linux identity-test",
+            agentBuild: "identity-test-agent",
+            uptimeSeconds: 1,
+            capabilities: [DoryAgentCapability(id: "exec", version: 1)]
+        )
+    }
+
+    func clockSync(hostEpochNs: Int64) throws -> Bool {
+        _ = hostEpochNs
+        return true
+    }
+
+    func portsWatch() throws -> DoryPortsSnapshot {
+        DoryPortsSnapshot(ports: [], added: [], removed: [])
+    }
+
+    func telemetry() throws -> DoryTelemetry {
+        DoryTelemetry(
+            memTotalKB: 2_048,
+            memAvailableKB: 1_024,
+            psiSomeAvg10: 0,
+            psiFullAvg10: 0
+        )
+    }
+
+    func exec(
+        argv: [String],
+        cwd: String,
+        env: [DoryExecEnvironment],
+        timeoutMs: UInt64,
+        outputLimitBytes: UInt64
+    ) throws -> DoryExecResult {
+        _ = cwd
+        _ = env
+        _ = timeoutMs
+        _ = outputLimitBytes
+        let command = argv.joined(separator: " ")
+        guard command.contains("/proc/self/mountinfo") else {
+            return DoryExecResult(
+                exitCode: 0,
+                stdout: Data(),
+                stderr: Data(),
+                timedOut: false,
+                stdoutTruncated: false,
+                stderrTruncated: false
+            )
+        }
+        lock.lock()
+        storedResourceProbeCount += 1
+        let probeNumber = storedResourceProbeCount
+        let result = records.isEmpty ? nil : records.removeFirst()
+        lock.unlock()
+        if probeNumber == blockOnProbeNumber {
+            blockedProbeEntered.signal()
+            _ = blockedProbeRelease.wait(timeout: .now() + 5)
+        }
+        guard let result else {
+            return DoryExecResult(
+                exitCode: 79,
+                stdout: Data(),
+                stderr: Data("missing test resource record\n".utf8),
+                timedOut: false,
+                stdoutTruncated: false,
+                stderrTruncated: false
+            )
+        }
+        switch result {
+        case .success(let data):
+            return DoryExecResult(
+                exitCode: 0,
+                stdout: data,
+                stderr: Data(),
+                timedOut: false,
+                stdoutTruncated: false,
+                stderrTruncated: false
+            )
+        case .timeout(let data):
+            return DoryExecResult(
+                exitCode: 0,
+                stdout: data,
+                stderr: Data(),
+                timedOut: true,
+                stdoutTruncated: false,
+                stderrTruncated: false
+            )
+        }
+    }
+
+    func waitUntilBlocked(timeout: TimeInterval) -> Bool {
+        blockedProbeEntered.wait(timeout: .now() + max(0, timeout)) == .success
+    }
+
+    func releaseBlockedProbe() {
+        blockedProbeRelease.signal()
+    }
+
+    func close() {}
+}
+
+private final class GuestDataDiskAuthoritySequence: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [DockerGuestDataDiskAuthority]
+
+    init(_ values: [DockerGuestDataDiskAuthority]) {
+        precondition(!values.isEmpty)
+        self.values = values
+    }
+
+    func next() -> DockerGuestDataDiskAuthority {
+        lock.lock()
+        defer { lock.unlock() }
+        if values.count == 1 { return values[0] }
+        return values.removeFirst()
+    }
+}
+
+private final class LockedDiskFormattingObservation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedValue: (before: DiskImageFileIdentity, after: DiskImageFileIdentity)?
+
+    var value: (before: DiskImageFileIdentity, after: DiskImageFileIdentity)? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedValue
+    }
+
+    func set(before: DiskImageFileIdentity, after: DiskImageFileIdentity) {
+        lock.lock()
+        storedValue = (before, after)
+        lock.unlock()
+    }
+}
+
+private final class ReadyDockerManagedProcess: DockerManagedProcess, @unchecked Sendable {
+    let startEntered = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private let processID: Int32
+    private let startAction: @Sendable () throws -> Void
+    private var running = false
+
+    init(
+        pid: Int32,
+        startAction: @escaping @Sendable () throws -> Void = {}
+    ) {
+        processID = pid
+        self.startAction = startAction
+    }
+
+    func start() throws {
+        try startAction()
+        lock.lock()
+        running = true
+        lock.unlock()
+        startEntered.signal()
+    }
+
+    func suspend() -> Bool { true }
+    func resume() -> Bool { true }
+
+    func stop() -> Bool {
+        lock.lock()
+        running = false
+        lock.unlock()
+        return true
+    }
+
+    func waitForTermination(timeout: TimeInterval) -> Bool {
+        _ = timeout
+        lock.lock()
+        defer { lock.unlock() }
+        return !running
+    }
+
+    func lifecycleObservation(
+        until deadline: DispatchTime
+    ) -> DockerManagedProcessObservation? {
+        _ = deadline
+        lock.lock()
+        defer { lock.unlock() }
+        return DockerManagedProcessObservation(
+            pid: running ? processID : nil,
+            isRunning: running
+        )
+    }
+}
+
+final class UnconfirmedStopDockerProcess: DockerManagedProcess, @unchecked Sendable {
+    private let lock = NSLock()
+    private let terminationWaiter = DispatchGroup()
+    let terminationWaitEntered = DispatchSemaphore(value: 0)
+    private let processID: Int32
+    private var running = false
+    private var terminationOutstanding = false
+    private var unexpectedTerminationHandler: HvProcessUnexpectedTerminationHandler?
+
+    init(pid: Int32) {
+        processID = pid
+    }
+
+    var pid: Int32? {
+        lock.lock()
+        defer { lock.unlock() }
+        return running ? processID : nil
+    }
+
+    var isRunning: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return running
+    }
+
+    func start() throws {
+        lock.lock()
+        if !terminationOutstanding {
+            terminationWaiter.enter()
+            terminationOutstanding = true
+        }
+        running = true
+        lock.unlock()
+    }
+
+    func suspend() -> Bool { true }
+    func resume() -> Bool { true }
+    func stop() -> Bool { false }
+
+    func waitForTermination(timeout: TimeInterval) -> Bool {
+        terminationWaitEntered.signal()
+        return terminationWaiter.wait(timeout: .now() + max(0, timeout)) == .success
+    }
+
+    func lifecycleObservation(
+        until deadline: DispatchTime
+    ) -> DockerManagedProcessObservation? {
+        lock.lock()
+        defer { lock.unlock() }
+        return DockerManagedProcessObservation(
+            pid: running ? processID : nil,
+            isRunning: running
+        )
+    }
+
+    func confirmExit() {
+        lock.lock()
+        running = false
+        let shouldSignal = terminationOutstanding
+        terminationOutstanding = false
+        lock.unlock()
+        if shouldSignal { terminationWaiter.leave() }
+    }
+
+    func setUnexpectedTerminationHandler(
+        _ handler: HvProcessUnexpectedTerminationHandler?
+    ) {
+        lock.lock()
+        unexpectedTerminationHandler = handler
+        lock.unlock()
+    }
+
+    func reportUnexpectedTermination() {
+        lock.lock()
+        let handler = unexpectedTerminationHandler
+        lock.unlock()
+        handler?(HvProcessTermination(status: SIGKILL, wasUncaughtSignal: true))
+    }
+}
+
+private final class BlockingStopDockerProcess: DockerManagedProcess, @unchecked Sendable {
+    let stopEntered = DispatchSemaphore(value: 0)
+    let releaseStop = DispatchSemaphore(value: 0)
+
+    private let lock = NSLock()
+    private let terminationWaiter = DispatchGroup()
+    private let processID: Int32
+    private var running = false
+    private var terminationOutstanding = false
+    private var storedStartCallCount = 0
+    private var storedStopCallCount = 0
+
+    init(pid: Int32) {
+        processID = pid
+    }
+
+    var pid: Int32? {
+        lock.lock()
+        defer { lock.unlock() }
+        return running ? processID : nil
+    }
+
+    var isRunning: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return running
+    }
+
+    var stopCallCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedStopCallCount
+    }
+
+    var startCallCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedStartCallCount
+    }
+
+    func start() throws {
+        lock.lock()
+        storedStartCallCount += 1
+        if !terminationOutstanding {
+            terminationWaiter.enter()
+            terminationOutstanding = true
+        }
+        running = true
+        lock.unlock()
+    }
+
+    func suspend() -> Bool { true }
+    func resume() -> Bool { true }
+
+    func stop() -> Bool {
+        lock.lock()
+        storedStopCallCount += 1
+        lock.unlock()
+        stopEntered.signal()
+        _ = releaseStop.wait(timeout: .now() + 2)
+
+        lock.lock()
+        running = false
+        let shouldSignal = terminationOutstanding
+        terminationOutstanding = false
+        lock.unlock()
+        if shouldSignal { terminationWaiter.leave() }
+        return true
+    }
+
+    func waitForTermination(timeout: TimeInterval) -> Bool {
+        terminationWaiter.wait(timeout: .now() + max(0, timeout)) == .success
+    }
+
+    func lifecycleObservation(
+        until deadline: DispatchTime
+    ) -> DockerManagedProcessObservation? {
+        lock.lock()
+        defer { lock.unlock() }
+        return DockerManagedProcessObservation(
+            pid: running ? processID : nil,
+            isRunning: running
+        )
+    }
+}
+
+private final class StaleFalseStopDockerProcess: DockerManagedProcess, @unchecked Sendable {
+    private let lock = NSLock()
+    private let terminationWaiter = DispatchGroup()
+    private let processID: Int32
+    private var running = false
+    private var terminationOutstanding = false
+    private var storedStopCallCount = 0
+
+    init(pid: Int32) {
+        processID = pid
+    }
+
+    var pid: Int32? {
+        lock.lock()
+        defer { lock.unlock() }
+        return running ? processID : nil
+    }
+
+    var isRunning: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return running
+    }
+
+    var stopCallCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedStopCallCount
+    }
+
+    func start() throws {
+        lock.lock()
+        if !terminationOutstanding {
+            terminationWaiter.enter()
+            terminationOutstanding = true
+        }
+        running = true
+        lock.unlock()
+    }
+
+    func suspend() -> Bool { true }
+    func resume() -> Bool { true }
+
+    func stop() -> Bool {
+        lock.lock()
+        storedStopCallCount += 1
+        running = false
+        let shouldSignal = terminationOutstanding
+        terminationOutstanding = false
+        lock.unlock()
+        if shouldSignal { terminationWaiter.leave() }
+        return false
+    }
+
+    func waitForTermination(timeout: TimeInterval) -> Bool {
+        terminationWaiter.wait(timeout: .now() + max(0, timeout)) == .success
+    }
+
+    func lifecycleObservation(
+        until deadline: DispatchTime
+    ) -> DockerManagedProcessObservation? {
+        lock.lock()
+        defer { lock.unlock() }
+        return DockerManagedProcessObservation(
+            pid: running ? processID : nil,
+            isRunning: running
+        )
     }
 }
 
@@ -1458,6 +3597,40 @@ private final class LockedErrorBox: @unchecked Sendable {
     func set(_ error: Error) {
         lock.lock()
         stored = error
+        lock.unlock()
+    }
+}
+
+private final class LockedBoolBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: Bool?
+
+    var value: Bool? {
+        lock.lock()
+        defer { lock.unlock() }
+        return stored
+    }
+
+    func set(_ value: Bool) {
+        lock.lock()
+        stored = value
+        lock.unlock()
+    }
+}
+
+private final class LockedDockerTierStatusBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: DockerTierStatus?
+
+    var value: DockerTierStatus? {
+        lock.lock()
+        defer { lock.unlock() }
+        return stored
+    }
+
+    func set(_ value: DockerTierStatus) {
+        lock.lock()
+        stored = value
         lock.unlock()
     }
 }

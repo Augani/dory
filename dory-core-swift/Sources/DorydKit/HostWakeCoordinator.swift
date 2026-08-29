@@ -45,6 +45,10 @@ public protocol WakeClockSyncing: Sendable {
     func syncAgentClock(now: Date) -> AgentClockSyncResult
 }
 
+public protocol HostWakeHandling: Sendable {
+    func recoverAfterHostWake(now: Date) -> HostWakeActionResult
+}
+
 public struct HostSleepActionResult: Sendable, Equatable {
     public var name: String
     public var attempted: Bool
@@ -70,6 +74,20 @@ public struct AgentClockSyncResult: Sendable, Equatable {
         self.attempted = attempted
         self.synced = synced
         self.error = error
+    }
+}
+
+public struct HostWakeActionResult: Sendable, Equatable {
+    public var name: String
+    public var attempted: Bool
+    public var recovered: Bool
+    public var detail: String?
+
+    public init(name: String, attempted: Bool, recovered: Bool, detail: String? = nil) {
+        self.name = name
+        self.attempted = attempted
+        self.recovered = recovered
+        self.detail = detail
     }
 }
 
@@ -170,6 +188,7 @@ public final class SystemDNSProbe: DNSProbing, @unchecked Sendable {
 
 public struct HostWakeResult: Sendable, Equatable {
     public var at: Date
+    public var actions: [HostWakeActionResult]
     public var clockSyncs: [AgentClockSyncResult]
     public var dnsProbes: [DNSProbeResult]
     public var networkReconciliations: [String]
@@ -183,6 +202,7 @@ public struct HostSleepResult: Sendable, Equatable {
 public final class HostWakeCoordinator: @unchecked Sendable {
     private let powerSource: PowerEventSource
     private let sleepHandlers: [HostSleepHandling]
+    private let wakeHandlers: [HostWakeHandling]
     private let clockSyncers: [WakeClockSyncing]
     private let dnsProbe: DNSProbing
     private let networkReconcilers: [WakeNetworkReconciling]
@@ -194,6 +214,7 @@ public final class HostWakeCoordinator: @unchecked Sendable {
     public init(
         powerSource: PowerEventSource = IOKitPowerEventSource(),
         sleepHandlers: [HostSleepHandling] = [],
+        wakeHandlers: [HostWakeHandling] = [],
         clockSyncers: [WakeClockSyncing] = [],
         dnsProbe: DNSProbing = SystemDNSProbe(),
         networkReconcilers: [WakeNetworkReconciling] = [],
@@ -201,6 +222,7 @@ public final class HostWakeCoordinator: @unchecked Sendable {
     ) {
         self.powerSource = powerSource
         self.sleepHandlers = sleepHandlers
+        self.wakeHandlers = wakeHandlers
         self.clockSyncers = clockSyncers
         self.dnsProbe = dnsProbe
         self.networkReconcilers = networkReconcilers
@@ -237,6 +259,9 @@ public final class HostWakeCoordinator: @unchecked Sendable {
 
     @discardableResult
     public func handleWake(now: Date = Date()) -> HostWakeResult {
+        // Resume daemon-owned workspaces before contacting their guest agents. A machine that Dory
+        // paused for host sleep must be running before clock synchronization can succeed.
+        let actions = wakeHandlers.map { $0.recoverAfterHostWake(now: now) }
         let clockResults = clockSyncers.map { $0.syncAgentClock(now: now) }
         let dnsResults = dnsProbe.probe()
         // Reconcile after clock and baseline DNS recovery so PAC expiry, DHCP resolver changes,
@@ -244,6 +269,7 @@ public final class HostWakeCoordinator: @unchecked Sendable {
         let networkResults = networkReconcilers.map { $0.reconcileAfterWake(now: now) }
         let result = HostWakeResult(
             at: now,
+            actions: actions,
             clockSyncs: clockResults,
             dnsProbes: dnsResults,
             networkReconciliations: networkResults
@@ -278,9 +304,11 @@ public final class HostWakeCoordinator: @unchecked Sendable {
     }
 
     private func incidentDetail(_ result: HostWakeResult) -> String {
+        let wakeAttempts = result.actions.filter(\.attempted).count
+        let wakeFailures = result.actions.filter { $0.attempted && !$0.recovered }.count
         let attempted = result.clockSyncs.filter(\.attempted).count
         let failed = result.clockSyncs.filter { $0.error != nil }.count
         let dnsOK = result.dnsProbes.filter(\.resolved).count
-        return "clock_syncs=\(attempted) clock_errors=\(failed) dns_ok=\(dnsOK)/\(result.dnsProbes.count) network_reconciles=\(result.networkReconciliations.count)"
+        return "wake_actions=\(wakeAttempts) wake_errors=\(wakeFailures) clock_syncs=\(attempted) clock_errors=\(failed) dns_ok=\(dnsOK)/\(result.dnsProbes.count) network_reconciles=\(result.networkReconciliations.count)"
     }
 }

@@ -269,12 +269,53 @@ extension ProcessMemorySampleError: CustomStringConvertible {
     var description: String { message }
 }
 
+enum DoryLoopbackTCPListenerProbe {
+    static func isReachable(port: UInt16, timeoutMilliseconds: Int32 = 150) -> Bool {
+        let descriptor = socket(AF_INET, SOCK_STREAM, 0)
+        guard descriptor >= 0 else { return false }
+        defer { close(descriptor) }
+
+        let originalFlags = fcntl(descriptor, F_GETFL, 0)
+        guard originalFlags >= 0,
+              fcntl(descriptor, F_SETFL, originalFlags | O_NONBLOCK) == 0 else {
+            return false
+        }
+        var address = sockaddr_in()
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_port = port.bigEndian
+        address.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
+        let connected = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                connect(descriptor, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        if connected == 0 { return true }
+        guard errno == EINPROGRESS else { return false }
+
+        var readiness = pollfd(fd: descriptor, events: Int16(POLLOUT), revents: 0)
+        guard poll(&readiness, 1, timeoutMilliseconds) > 0 else { return false }
+        var socketError: Int32 = 0
+        var socketErrorLength = socklen_t(MemoryLayout<Int32>.size)
+        guard getsockopt(
+            descriptor,
+            SOL_SOCKET,
+            SO_ERROR,
+            &socketError,
+            &socketErrorLength
+        ) == 0 else {
+            return false
+        }
+        return socketError == 0
+    }
+}
+
 struct DoryResourceTrendSample: Sendable, Equatable {
     var at: Date
     var openFileDescriptors: Int
     var threads: Int
     var physicalFootprintBytes: Int64
-    var watcherPending: Int
+    var fileServicePending: Int
 }
 
 struct DoryResourceTrendAssessment: Sendable, Equatable {
@@ -307,8 +348,8 @@ final class DoryResourceTrendTracker: @unchecked Sendable {
             if Self.rises(recent.map(\.threads), minimumDelta: 16) {
                 warnings.append("threads rose \(recent[0].threads)→\(recent[2].threads)")
             }
-            if Self.rises(recent.map(\.watcherPending), minimumDelta: 1_024) {
-                warnings.append("watcher backlog rose \(recent[0].watcherPending)→\(recent[2].watcherPending)")
+            if Self.rises(recent.map(\.fileServicePending), minimumDelta: 1_024) {
+                warnings.append("file-service backlog rose \(recent[0].fileServicePending)→\(recent[2].fileServicePending)")
             }
             if Self.rises(recent.map(\.physicalFootprintBytes), minimumDelta: 256 * 1_024 * 1_024) {
                 warnings.append("physical footprint rose \(recent[0].physicalFootprintBytes)→\(recent[2].physicalFootprintBytes) bytes")
@@ -341,6 +382,7 @@ public final class HealthReporter: @unchecked Sendable {
     private let commandRunner: any HealthCommandRunning
     private let registryProbe: any HealthRegistryProbing
     private let memorySampler: any DoryProcessMemorySampling
+    private let loopbackTCPListenerProbe: @Sendable (UInt16) -> Bool
     private let networkingController: NetworkingController?
     private let corporateConnectivity: CorporateConnectivityReconciler?
     private let resourceTrendTracker = DoryResourceTrendTracker()
@@ -372,7 +414,10 @@ public final class HealthReporter: @unchecked Sendable {
             environment: environment,
             home: home,
             fileManager: fileManager,
-            memorySampler: DarwinDoryProcessMemorySampler()
+            memorySampler: DarwinDoryProcessMemorySampler(),
+            loopbackTCPListenerProbe: { port in
+                DoryLoopbackTCPListenerProbe.isReachable(port: port)
+            }
         )
     }
 
@@ -389,7 +434,10 @@ public final class HealthReporter: @unchecked Sendable {
         environment: [String: String] = ProcessInfo.processInfo.environment,
         home: String = NSHomeDirectory(),
         fileManager: FileManager = .default,
-        memorySampler: any DoryProcessMemorySampling
+        memorySampler: any DoryProcessMemorySampling,
+        loopbackTCPListenerProbe: @escaping @Sendable (UInt16) -> Bool = { port in
+            DoryLoopbackTCPListenerProbe.isReachable(port: port)
+        }
     ) {
         self.socketPath = socketPath
         self.dockerTier = dockerTier
@@ -404,6 +452,7 @@ public final class HealthReporter: @unchecked Sendable {
         self.corporateConnectivity = corporateConnectivity
         self.fileManager = fileManager
         self.memorySampler = memorySampler
+        self.loopbackTCPListenerProbe = loopbackTCPListenerProbe
     }
 
     public func report(now: Date = Date()) -> DoctorReport {
@@ -419,7 +468,8 @@ public final class HealthReporter: @unchecked Sendable {
     }
 
     public func doctorReport(now: Date = Date()) -> DoctorReport {
-        let checks = compatibilityChecks(now: now)
+        var checks = compatibilityChecks(now: now)
+        checks.append(contentsOf: machineChecks())
         return DoctorReport(
             generatedAt: now,
             results: checks,
@@ -625,7 +675,7 @@ public final class HealthReporter: @unchecked Sendable {
             managedHelperPID: dockerTier?.status().hvPID
         )
         let guestResources = try? dockerTier?.guestResourceSnapshot()
-        let hostShareResources = dockerTier?.hostShareResourceSnapshot(now: now)
+        let hostShareResources = dockerTier?.fileServiceResourceSnapshot(now: now)
         checks.append(memoryCheck(snapshot: processSnapshot))
         checks.append(processResourceCheck(snapshot: processSnapshot))
         checks.append(guestResourceCheck(snapshot: guestResources ?? nil))
@@ -1042,7 +1092,7 @@ public final class HealthReporter: @unchecked Sendable {
             status: .pass,
             code: "network.lan_localhost_only",
             title: "Published ports are localhost-only",
-            detail: "localhost-only - \(count) published port(s) reachable only from this Mac",
+            detail: "localhost-only policy configured for \(count) published port(s)",
             data: ["lan_visible": "false", "published_ports": String(count)]
         )
     }
@@ -1062,14 +1112,61 @@ public final class HealthReporter: @unchecked Sendable {
     }
 
     private func publishedPortsCheck(dockerReachable: Bool) -> HealthCheck {
-        if let ports = publishedPorts() {
+        Self.publishedPortsCheck(
+            ports: publishedPorts(),
+            dockerReachable: dockerReachable,
+            tcpListenerProbe: loopbackTCPListenerProbe
+        )
+    }
+
+    static func publishedPortsCheck(
+        ports: [DoryListenPort]?,
+        dockerReachable: Bool,
+        tcpListenerProbe: (UInt16) -> Bool
+    ) -> HealthCheck {
+        if let ports {
+            let tcpPorts = ports.compactMap { port -> UInt16? in
+                let protocolName = port.protocol.lowercased()
+                guard protocolName == "tcp" || protocolName == "tcp6" else { return nil }
+                return UInt16(exactly: port.port)
+            }
+            let missing = tcpPorts.filter { !tcpListenerProbe($0) }
+            let nonTCPCount = ports.count - tcpPorts.count
+            let data = [
+                "ports": String(ports.count),
+                "tcp_ports": String(tcpPorts.count),
+                "non_tcp_ports": String(nonTCPCount),
+                "missing_tcp_listeners": missing.map(String.init).joined(separator: ","),
+            ]
+            if !missing.isEmpty {
+                return HealthCheck(
+                    id: "network.published_ports",
+                    status: .fail,
+                    code: "network.port_listener_missing",
+                    title: "Published port listeners missing",
+                    detail: "Docker reports \(tcpPorts.count) published TCP port(s), but loopback refused \(missing.map(String.init).joined(separator: ", "))",
+                    action: "Run `dory repair ports --apply`; if a port remains unavailable, attach a Dory support bundle to the issue.",
+                    data: data
+                )
+            }
+            if tcpPorts.isEmpty, nonTCPCount > 0 {
+                return HealthCheck(
+                    id: "network.published_ports",
+                    status: .warn,
+                    code: "network.port_listener_unverified",
+                    title: "Published UDP listeners unverified",
+                    detail: "\(nonTCPCount) non-TCP published port route(s) found; passive diagnostics cannot prove datagram delivery",
+                    action: "Run an application-level UDP probe for the published service.",
+                    data: data
+                )
+            }
             return HealthCheck(
                 id: "network.published_ports",
                 status: .pass,
-                code: "network.port_table_ok",
-                title: "Published port table readable",
-                detail: "\(ports.count) published port route(s) found",
-                data: ["ports": String(ports.count)]
+                code: "network.port_listeners_ready",
+                title: "Published port listeners ready",
+                detail: "\(ports.count) published route(s) found; all \(tcpPorts.count) TCP loopback listener(s) accepted a connection",
+                data: data
             )
         }
         guard dockerReachable else {
@@ -1610,7 +1707,17 @@ public final class HealthReporter: @unchecked Sendable {
     }
 
     private func guestResourceCheck(snapshot: DoryGuestResourceSnapshot?) -> HealthCheck {
-        guard dockerTier?.status().state == .running else {
+        Self.guestResourceCheck(
+            snapshot: snapshot,
+            engineRunning: dockerTier?.status().state == .running
+        )
+    }
+
+    static func guestResourceCheck(
+        snapshot: DoryGuestResourceSnapshot?,
+        engineRunning: Bool
+    ) -> HealthCheck {
+        guard engineRunning else {
             return HealthCheck(
                 id: "resources.guest",
                 status: .skip,
@@ -1634,7 +1741,7 @@ public final class HealthReporter: @unchecked Sendable {
         let diskRatio = snapshot.dataDiskTotalBytes == 0 ? 0
             : Double(snapshot.dataDiskAvailableBytes) / Double(snapshot.dataDiskTotalBytes)
         let pressured = memoryRatio >= 0.9
-            && snapshot.memoryReclaimableBytes < snapshot.memoryCeilingBytes / 20
+            && snapshot.memoryAvailableBytes < snapshot.memoryCeilingBytes / 20
         let diskLow = snapshot.dataDiskTotalBytes > 0 && diskRatio < 0.1
         let status: HealthCheckStatus = pressured || diskLow ? .warn : .pass
         return HealthCheck(
@@ -1642,7 +1749,7 @@ public final class HealthReporter: @unchecked Sendable {
             status: status,
             code: pressured ? "resources.guest_memory_pressure" : (diskLow ? "resources.guest_disk_low" : "resources.guest_ok"),
             title: "Guest memory and disk",
-            detail: "memory used \(formatBytes(Int64(clamping: snapshot.memoryUsedBytes))), cache \(formatBytes(Int64(clamping: snapshot.memoryCacheBytes))), reclaimable \(formatBytes(Int64(clamping: snapshot.memoryReclaimableBytes))) of \(formatBytes(Int64(clamping: snapshot.memoryCeilingBytes))); data disk used \(formatBytes(Int64(clamping: snapshot.dataDiskUsedBytes))) of \(formatBytes(Int64(clamping: snapshot.dataDiskTotalBytes)))",
+            detail: "memory used \(formatBytes(Int64(clamping: snapshot.memoryUsedBytes))), cache \(formatBytes(Int64(clamping: snapshot.memoryCacheBytes))), available \(formatBytes(Int64(clamping: snapshot.memoryAvailableBytes))) of \(formatBytes(Int64(clamping: snapshot.memoryCeilingBytes))); data disk used \(formatBytes(Int64(clamping: snapshot.dataDiskUsedBytes))) of \(formatBytes(Int64(clamping: snapshot.dataDiskTotalBytes)))",
             action: pressured
                 ? "Inspect workload memory before changing the configured ceiling."
                 : (diskLow ? "Run `dory cleanup --json` to preview exact reclaimable objects before applying any prune." : nil),
@@ -1650,7 +1757,14 @@ public final class HealthReporter: @unchecked Sendable {
                 "memory_ceiling_bytes": String(snapshot.memoryCeilingBytes),
                 "memory_used_bytes": String(snapshot.memoryUsedBytes),
                 "memory_cache_bytes": String(snapshot.memoryCacheBytes),
-                "memory_reclaimable_bytes": String(snapshot.memoryReclaimableBytes),
+                "memory_available_bytes": String(snapshot.memoryAvailableBytes),
+                // Compatibility key: historically this meant MemAvailable - MemFree. Keep it
+                // derived from the authoritative kernel fields instead of maintaining two values.
+                "memory_reclaimable_bytes": String(
+                    snapshot.memoryAvailableBytes > snapshot.memoryFreeBytes
+                        ? snapshot.memoryAvailableBytes - snapshot.memoryFreeBytes
+                        : 0
+                ),
                 "memory_free_bytes": String(snapshot.memoryFreeBytes),
                 "data_disk_total_bytes": String(snapshot.dataDiskTotalBytes),
                 "data_disk_used_bytes": String(snapshot.dataDiskUsedBytes),
@@ -1659,14 +1773,24 @@ public final class HealthReporter: @unchecked Sendable {
         )
     }
 
-    private func hostShareResourceCheck(snapshot: DoryHostShareResourceSnapshot?) -> HealthCheck {
-        guard dockerTier?.status().state == .running else {
+    private func hostShareResourceCheck(snapshot: DoryFileServiceResourceSnapshot?) -> HealthCheck {
+        Self.fileServiceResourceCheck(
+            snapshot: snapshot,
+            engineRunning: dockerTier?.status().state == .running
+        )
+    }
+
+    static func fileServiceResourceCheck(
+        snapshot: DoryFileServiceResourceSnapshot?,
+        engineRunning: Bool
+    ) -> HealthCheck {
+        guard engineRunning else {
             return HealthCheck(
                 id: "resources.file_service",
                 status: .skip,
                 code: "resources.file_service_inactive",
                 title: "File-service resources",
-                detail: "The Docker engine is not running; watcher state is inactive."
+                detail: "The Docker engine is not running; file-service state is inactive."
             )
         }
         guard let snapshot else {
@@ -1675,45 +1799,58 @@ public final class HealthReporter: @unchecked Sendable {
                 status: .warn,
                 code: "resources.file_service_snapshot_unavailable",
                 title: "File-service resource snapshot unavailable",
-                detail: "The managed helper did not publish a fresh watcher/backpressure record.",
+                detail: "The managed helper did not publish a fresh bounded file-service record.",
                 action: "Refresh diagnostics; if mounts are also stale, collect a support bundle before repairing the failed layer."
             )
         }
-        let backlogHigh = snapshot.batcher.pendingCount >= max(1, snapshot.batcher.pendingLimit * 3 / 4)
-        let degraded = !snapshot.running
-            || snapshot.consecutiveFailures > 0
-            || snapshot.batcher.pendingRequiresRescan
-            || backlogHigh
-        let roots = snapshot.observationRoots.isEmpty
-            ? "none discovered yet"
-            : snapshot.observationRoots.joined(separator: ", ")
+        let backlogHigh = snapshot.pendingEventCount >= max(1, snapshot.pendingEventLimit * 3 / 4)
+        let failed = !snapshot.running
+            || snapshot.cacheMode != "zero-validity"
+            || snapshot.maximumCacheValiditySeconds != 0
+            || (snapshot.observationRequired && !snapshot.observationActive)
+            || snapshot.eventLossCount > 0
+            || snapshot.invalidationFailureLatched
+            || snapshot.terminalQueueFaultCount > 0
+            || snapshot.coherenceTerminalFailureLatched
+        let degraded = backlogHigh
+            || snapshot.failedBatchCount > 0
+            || snapshot.invalidationFailureCount > 0
+            || snapshot.coherenceFailedBatchCount > 0
         return HealthCheck(
             id: "resources.file_service",
-            status: degraded ? .warn : .pass,
-            code: degraded ? "resources.file_service_backpressure" : "resources.file_service_ok",
+            status: failed ? .fail : (degraded ? .warn : .pass),
+            code: failed
+                ? "resources.file_service_failed"
+                : (degraded ? "resources.file_service_backpressure" : "resources.file_service_ok"),
             title: "File-service resources",
-            detail: "\(snapshot.observationRoots.count) narrow watcher root(s); queue \(snapshot.batcher.pendingCount)/\(snapshot.batcher.pendingLimit), failed batches \(snapshot.batcher.failedBatchCount), rescan collapses \(snapshot.batcher.rescanCollapseCount)",
-            action: degraded
-                ? "Let the bounded queue drain; if the trend continues, collect a support bundle. Dory keeps zero-cache safety or requests a bounded VM recovery rather than serving stale files."
-                : nil,
+            detail: "zero-validity cache; \(snapshot.frontendCount) frontend(s)/\(snapshot.requestQueueCount) request queue(s); observation \(snapshot.observedRequiredShareCount)/\(snapshot.requiredObservationShareCount) required shares across \(snapshot.observationStreamCount) stream(s); event queue \(snapshot.pendingEventCount)/\(snapshot.pendingEventLimit); request failures \(snapshot.failedRequestCount), coherence failures \(snapshot.coherenceFailedBatchCount)",
+            action: failed
+                ? "The file-service coherence contract failed closed. Collect a support bundle and restart the affected managed VM; Dory will not serve stale shared files."
+                : (degraded
+                    ? "Let the bounded queue drain; if the trend continues, collect a support bundle. Dory keeps zero-cache safety or requests a bounded VM recovery rather than serving stale files."
+                    : nil),
             data: [
-                "configured_roots": snapshot.configuredRoots.joined(separator: ","),
-                "observation_roots": roots,
-                "pending_count": String(snapshot.batcher.pendingCount),
-                "pending_limit": String(snapshot.batcher.pendingLimit),
-                "pending_requires_rescan": snapshot.batcher.pendingRequiresRescan ? "true" : "false",
-                "received_events": String(snapshot.batcher.receivedEventCount),
-                "delivered_batches": String(snapshot.batcher.deliveredBatchCount),
-                "failed_batches": String(snapshot.batcher.failedBatchCount),
-                "rescan_collapses": String(snapshot.batcher.rescanCollapseCount),
-                "consecutive_failures": String(snapshot.consecutiveFailures),
+                "configured_shares": String(snapshot.configuredShareCount),
+                "invalidation_only_shares": String(snapshot.invalidationOnlyShareCount),
+                "watcher_nudge_shares": String(snapshot.watcherNudgeShareCount),
+                "observation_active": snapshot.observationActive ? "true" : "false",
+                "observation_streams": String(snapshot.observationStreamCount),
+                "pending_count": String(snapshot.pendingEventCount),
+                "pending_limit": String(snapshot.pendingEventLimit),
+                "received_events": String(snapshot.receivedEventCount),
+                "delivered_batches": String(snapshot.deliveredBatchCount),
+                "failed_batches": String(snapshot.failedBatchCount),
+                "event_losses": String(snapshot.eventLossCount),
+                "in_flight_requests": String(snapshot.inFlightRequestCount),
+                "request_payload_bytes": String(snapshot.requestPayloadBytes),
+                "response_payload_bytes": String(snapshot.guestPublishedResponseBytes),
             ]
         )
     }
 
     private func resourceTrendCheck(
         processSnapshot: DoryProcessMemorySnapshot,
-        hostShareSnapshot: DoryHostShareResourceSnapshot?,
+        hostShareSnapshot: DoryFileServiceResourceSnapshot?,
         now: Date
     ) -> HealthCheck {
         let assessment = resourceTrendTracker.record(DoryResourceTrendSample(
@@ -1721,7 +1858,7 @@ public final class HealthReporter: @unchecked Sendable {
             openFileDescriptors: processSnapshot.usages.compactMap(\.openFileDescriptorCount).reduce(0, +),
             threads: processSnapshot.usages.compactMap(\.threadCount).reduce(0, +),
             physicalFootprintBytes: saturatingSum(processSnapshot.usages.map(\.physicalFootprintBytes)),
-            watcherPending: hostShareSnapshot?.batcher.pendingCount ?? 0
+            fileServicePending: hostShareSnapshot?.pendingEventCount ?? 0
         ))
         guard assessment.sampleCount >= 3 else {
             return HealthCheck(
@@ -1911,52 +2048,419 @@ public final class HealthReporter: @unchecked Sendable {
         let failed = statuses.filter { $0.state == .failed }
         let starting = statuses.filter { $0.state == .starting }
         let running = statuses.filter { $0.state == .running }
+        let paused = statuses.filter { $0.state == .paused }
         let stopped = statuses.filter { $0.state == .stopped || $0.state == .created }
         let data = [
             "total": String(statuses.count),
             "running": String(running.count),
+            "paused": String(paused.count),
             "starting": String(starting.count),
             "stopped": String(stopped.count),
             "failed": String(failed.count),
         ]
 
+        let summary: HealthCheck
         if !failed.isEmpty {
-            return [
-                HealthCheck(
-                    id: "machine.local",
-                    status: .fail,
-                    code: "machine.failed",
-                    title: "Local machine failed",
-                    detail: failed.map { "\($0.id): \($0.lastError ?? "unknown failure")" }.joined(separator: "; "),
-                    action: "Inspect the dory-vmm log for the failed machine.",
-                    data: data
-                ),
-            ]
-        }
-
-        if !starting.isEmpty {
-            return [
-                HealthCheck(
-                    id: "machine.local",
-                    status: .warn,
-                    code: "machine.starting",
-                    title: "Local machine starting",
-                    detail: starting.map(\.id).joined(separator: ", "),
-                    data: data
-                ),
-            ]
-        }
-
-        return [
-            HealthCheck(
+            summary = HealthCheck(
+                id: "machine.local",
+                status: .fail,
+                code: "machine.failed",
+                title: "Local machine failed",
+                detail: failed.map(\.id).joined(separator: ", "),
+                action: "Inspect the machine evidence and operation journal for the failed workspace.",
+                data: data
+            )
+        } else if !starting.isEmpty {
+            summary = HealthCheck(
+                id: "machine.local",
+                status: .warn,
+                code: "machine.starting",
+                title: "Local machine starting",
+                detail: starting.map(\.id).joined(separator: ", "),
+                data: data
+            )
+        } else if !paused.isEmpty && running.isEmpty {
+            summary = HealthCheck(
+                id: "machine.local",
+                status: .pass,
+                code: "machine.paused",
+                title: "Local machine paused",
+                detail: paused.map(\.id).joined(separator: ", "),
+                data: data
+            )
+        } else {
+            summary = HealthCheck(
                 id: "machine.local",
                 status: .pass,
                 code: running.isEmpty ? "machine.configured" : "machine.running",
                 title: running.isEmpty ? "Local machines configured" : "Local machine running",
                 detail: statuses.map { "\($0.id)=\($0.state.rawValue)" }.joined(separator: ", "),
                 data: data
-            ),
+            )
+        }
+        return [summary] + statuses.flatMap { status in
+            var checks = [
+                Self.machineEvidenceCheck(status),
+                Self.machineFlightRecorderCheck(status),
+                Self.machineToolsCheck(status),
+            ]
+            if let portForwardCheck = Self.machinePortForwardCheck(
+                machineID: status.id,
+                state: status.state,
+                configuredForwards: status.typedSettings?.portForwards.count ?? 0,
+                telemetry: { try machineManager.deviceTelemetry(id: status.id) }
+            ) {
+                checks.append(portForwardCheck)
+            }
+            return checks
+        }
+    }
+
+    static func machinePortForwardCheck(
+        machineID: String,
+        state: DoryMachineState,
+        configuredForwards: Int,
+        telemetry: () throws -> DoryDeviceTelemetrySnapshot
+    ) -> HealthCheck? {
+        guard configuredForwards > 0 else { return nil }
+        let id = "machine.local.\(machineID).port-forwards"
+        guard state == .running || state == .paused else {
+            return HealthCheck(
+                id: id,
+                status: .skip,
+                code: "machine.port_forwards.inactive",
+                title: "Workspace port forwards inactive",
+                detail: "\(machineID) has \(configuredForwards) configured host listener(s)",
+                data: ["configured": String(configuredForwards)]
+            )
+        }
+        let snapshot: DoryDeviceTelemetrySnapshot
+        do {
+            snapshot = try telemetry()
+        } catch {
+            return HealthCheck(
+                id: id,
+                status: .warn,
+                code: "machine.port_forwards.telemetry_unavailable",
+                title: "Port-forward health unavailable",
+                detail: "\(machineID) did not return its resolved listener health",
+                action: "Retry after the workspace is ready; restart it if telemetry remains unavailable.",
+                data: ["configured": String(configuredForwards)]
+            )
+        }
+        guard snapshot.isValid,
+              let device = snapshot.devices.first(where: {
+                  $0.id == "resolved-port-forwards" && $0.kind == .network
+              }),
+              let helperConfigured = Self.measuredValue(
+                  .configuredPortForwards,
+                  in: device
+              ),
+              let active = Self.measuredValue(.activePortForwards, in: device),
+              let failures = Self.measuredValue(
+                  .portForwardReconciliationFailures,
+                  in: device
+              ) else {
+            return HealthCheck(
+                id: id,
+                status: .warn,
+                code: "machine.port_forwards.telemetry_unavailable",
+                title: "Port-forward health unavailable",
+                detail: "\(machineID) returned no exact listener-health device",
+                action: "Restart the workspace with the current qualified helper components.",
+                data: ["configured": String(configuredForwards)]
+            )
+        }
+        let data = [
+            "configured": String(helperConfigured),
+            "active": String(active),
+            "failed_reconciliations": String(failures),
         ]
+        guard helperConfigured == UInt64(configuredForwards) else {
+            return HealthCheck(
+                id: id,
+                status: .fail,
+                code: "machine.port_forwards.contract_mismatch",
+                title: "Port-forward launch contract mismatch",
+                detail: "\(machineID) helper owns \(helperConfigured) of \(configuredForwards) configured listener contracts",
+                action: "Stop and replan the workspace before exposing host ports.",
+                data: data
+            )
+        }
+        guard device.health == .healthy, active == helperConfigured else {
+            return HealthCheck(
+                id: id,
+                status: .warn,
+                code: "machine.port_forwards.recovering",
+                title: "Workspace port forwards are recovering",
+                detail: "\(machineID) has \(active)/\(helperConfigured) resolved host listener(s) active",
+                action: "Check for a host-port conflict if automatic recovery does not complete.",
+                data: data
+            )
+        }
+        return HealthCheck(
+            id: id,
+            status: .pass,
+            code: "machine.port_forwards.ready",
+            title: "Workspace port forwards ready",
+            detail: "\(machineID) has \(active)/\(helperConfigured) resolved host listener(s) active",
+            data: data
+        )
+    }
+
+    private static func measuredValue(
+        _ kind: DoryDeviceTelemetryMetricKind,
+        in device: DoryDeviceTelemetryDevice
+    ) -> UInt64? {
+        device.metrics.first {
+            $0.kind == kind && $0.availability == .measured
+        }?.value
+    }
+
+    static func machineFlightRecorderCheck(_ status: DoryMachineStatus) -> HealthCheck {
+        HealthCheck(
+            id: "machine.local.\(status.id).flight-recorder",
+            status: status.flightRecorderAvailable ? .pass : .warn,
+            code: status.flightRecorderAvailable
+                ? "machine.flight_recorder.ready"
+                : "machine.flight_recorder.unavailable",
+            title: "Workspace flight recorder",
+            detail: status.flightRecorderAvailable
+                ? "\(status.id) flight recorder is durable through sequence \(status.flightRecorderHeadSequence)"
+                : "\(status.id) flight recorder authority could not be read or persisted",
+            action: status.flightRecorderAvailable
+                ? nil
+                : "Repair the private machine state directory before the next lifecycle mutation.",
+            data: [
+                "available": status.flightRecorderAvailable ? "true" : "false",
+                "head_sequence": String(status.flightRecorderHeadSequence),
+            ]
+        )
+    }
+
+    static func machineToolsCheck(_ status: DoryMachineStatus) -> HealthCheck {
+        let health = status.integrationHealth
+        var data = [
+            "state": status.state.rawValue,
+            "integration_state": health.state.rawValue,
+            "runtime_authority": health.runtimeAuthority.rawValue,
+            "features": health.features.map {
+                var value = "\($0.id.rawValue)=\($0.state.rawValue)"
+                if let negotiated = $0.negotiatedVersion { value += "@\(negotiated)" }
+                return value
+            }.joined(separator: ","),
+        ]
+        if let build = health.agentBuild { data["build"] = build }
+        if let version = health.agentProtocolVersion {
+            data["protocol_version"] = String(version)
+        }
+        let unavailableRequired = health.features.filter {
+            $0.required && $0.state != .active
+        }.map(\.id.rawValue)
+        if !unavailableRequired.isEmpty {
+            data["unavailable_required"] = unavailableRequired.joined(separator: ",")
+        }
+
+        switch health.state {
+        case .inactive:
+            return HealthCheck(
+                id: "machine.local.\(status.id).tools",
+                status: .skip,
+                code: "machine.tools.inactive",
+                title: "Dory Tools inactive",
+                detail: "\(status.id) is not resident",
+                data: data
+            )
+        case .missingTools:
+            return HealthCheck(
+                id: "machine.local.\(status.id).tools",
+                status: .warn,
+                code: "machine.tools.unavailable",
+                title: "Dory Tools unavailable",
+                detail: "\(status.id) has not reported a guest-tools handshake",
+                action: "Install or repair the qualified Dory Tools pack in this workspace.",
+                data: data
+            )
+        case .incompatible:
+            return HealthCheck(
+                id: "machine.local.\(status.id).tools",
+                status: .fail,
+                code: "machine.tools.invalid_handshake",
+                title: "Dory Tools handshake invalid",
+                detail: "\(status.id) reported an incompatible or malformed tools contract",
+                action: "Stop the workspace and repair its Dory Tools pack before using integrations.",
+                data: data
+            )
+        case .degraded:
+            return HealthCheck(
+                id: "machine.local.\(status.id).tools",
+                status: .warn,
+                code: "machine.tools.partial",
+                title: "Dory Tools integrations are degraded",
+                detail: unavailableRequired.isEmpty
+                    ? "\(status.id) needs a current resolved runtime plan"
+                    : "\(status.id) cannot provide \(unavailableRequired.joined(separator: ", "))",
+                action: "Update or repair Dory Tools, then replan the workspace if runtime authority is stale.",
+                data: data
+            )
+        case .compatibility:
+            return HealthCheck(
+                id: "machine.local.\(status.id).tools",
+                status: .warn,
+                code: "machine.tools.compatibility",
+                title: "Dory Tools running in compatibility mode",
+                detail: "\(status.id) negotiated guest capabilities without qualified runtime integration authority",
+                action: "Replan this workspace before relying on host runtime integrations.",
+                data: data
+            )
+        case .healthy:
+            return HealthCheck(
+                id: "machine.local.\(status.id).tools",
+                status: .pass,
+                code: "machine.tools.ready",
+                title: "Dory Tools ready",
+                detail: "\(status.id) has \(health.features.filter { $0.state == .active }.count) active integrations",
+                data: data
+            )
+        }
+    }
+
+    /// Emits exact, non-secret launch evidence for one workspace. Environment values, host paths,
+    /// guest file contents, sockets, and clipboard data are deliberately excluded.
+    static func machineEvidenceCheck(_ status: DoryMachineStatus) -> HealthCheck {
+        let identity = status.runtimeIdentity
+        let issues = identity.validate()
+        var data: [String: String] = [
+            "state": status.state.rawValue,
+            "runtime_identity_mode": identity.mode.rawValue,
+            "runtime_identity_schema": String(identity.schemaVersion),
+            "virtual_hardware_abi": String(identity.virtualHardwareABIVersion),
+            "runtime_identity_valid": issues.isEmpty ? "true" : "false",
+        ]
+        if !status.diagnosticOverrides.isEmpty {
+            data["diagnostic_overrides"] = status.diagnosticOverrides
+                .map(\.rawValue)
+                .joined(separator: ",")
+        }
+        if !issues.isEmpty {
+            data["runtime_identity_issues"] = issues
+                .map { "\($0.code.rawValue):\($0.field)" }
+                .sorted()
+                .joined(separator: ",")
+        }
+        if let reason = identity.invalidationReason {
+            data["replanning_reason"] = reason.rawValue
+        }
+        if let failure = status.failure, failure.isValid {
+            data["failure_code"] = failure.code.rawValue
+            data["failure_occurred_at_ms"] = String(
+                failure.occurredAtUnixMilliseconds
+            )
+            data["failure_recovery"] = failure.recoveryDisposition.rawValue
+            data["failure_causes"] = failure.causalChain
+                .map(\.rawValue)
+                .joined(separator: ",")
+            if let operationID = failure.operationID {
+                data["failure_operation_id"] = operationID
+            }
+            data["failure_evidence"] = failure.evidenceReferences.map {
+                "\($0.kind.rawValue):\($0.identifier)"
+            }.joined(separator: ",")
+        }
+        if let operationID = status.activeOperationID,
+           let operationKind = status.activeOperationKind {
+            data["active_operation_id"] = operationID
+            data["active_operation_kind"] = operationKind
+        }
+        if issues.isEmpty, let plan = identity.resolvedPlan {
+            data["plan_sha256"] = identity.resolvedPlanSHA256
+            data["plan_revision"] = String(plan.planRevision)
+            data["spec_revision"] = String(plan.definitionRevision)
+            data["spec_sha256"] = plan.definitionSHA256
+            data["backend"] = plan.backend.rawValue
+            data["backend_implementation"] = plan.backendImplementationIdentifier
+            data["backend_runtime_build"] = plan.backendRuntimeBuildIdentifier
+            data["support_tier"] = plan.supportTier.rawValue
+            data["graphics"] = plan.graphics.rawValue
+            data["selection"] = plan.selectionEvidence?.disposition.rawValue
+            data["component_count"] = String(plan.components.count)
+            data["components"] = plan.components
+                .sorted { lhs, rhs in
+                    if lhs.componentIdentifier == rhs.componentIdentifier {
+                        return lhs.buildIdentifier < rhs.buildIdentifier
+                    }
+                    return lhs.componentIdentifier < rhs.componentIdentifier
+                }
+                .map { "\($0.componentIdentifier)@\($0.buildIdentifier):\($0.artifactSHA256)" }
+                .joined(separator: ",")
+            data["media_kind"] = plan.bootMedia.media.kind.rawValue
+            data["media_source"] = plan.bootMedia.media.source.rawValue
+            data["media_artifact_sha256"] = plan.bootMedia.media.artifactSHA256
+            if let resolver = plan.bootMedia.resolverReference {
+                data["media_resolver"] = "\(resolver.namespace):\(resolver.identifier)"
+            }
+            if let provenance = plan.bootMedia.media.mutableProvenance {
+                data["media_repository_identity"] = provenance.repositoryIdentity
+                data["media_identity"] = provenance.mediaIdentity
+                data["media_revision"] = String(provenance.revision)
+            }
+            if let runtime = plan.qualificationEvidence.runtime {
+                data["runtime_qualification"] = runtime.qualificationIdentity
+                data["runtime_qualification_sha256"] = runtime.qualificationReportSHA256
+            }
+            if let graphics = plan.qualificationEvidence.graphics {
+                data["graphics_qualification"] = graphics.manifestIdentity
+                data["graphics_manifest_sha256"] = graphics.manifestSHA256
+            }
+            if let host = plan.hostQualification {
+                data["host_qualification"] = host.qualificationIdentity
+                data["host_qualification_sha256"] = host.qualificationReportSHA256
+                data["host_hardware_model"] = host.hostHardwareModelIdentifier
+                data["host_os_build"] = host.hostOperatingSystemBuild
+            }
+            if let admission = plan.resourceAdmission {
+                data["resource_admission"] = admission.admissionIdentity
+                data["resource_admission_sha256"] = admission.admissionReportSHA256
+            }
+        }
+
+        let healthStatus: HealthCheckStatus
+        let code: String
+        let action: String?
+        if !issues.isEmpty {
+            healthStatus = .fail
+            code = "machine.runtime_identity_invalid"
+            action = "Repair or re-resolve this workspace before its next launch."
+        } else if identity.mode == .requiresReplanning {
+            healthStatus = .warn
+            code = "machine.requires_replanning"
+            action = "Resolve and approve a current launch plan before starting this workspace."
+        } else if let failure = status.failure {
+            healthStatus = status.state == .failed ? .fail : .warn
+            code = "machine.failure.\(failure.code.rawValue)"
+            action = "Follow the recorded recovery disposition before the next mutation."
+        } else if status.state == .failed {
+            healthStatus = .fail
+            code = "machine.runtime_failed"
+            action = "Inspect the operation journal and backend evidence for this workspace."
+        } else {
+            healthStatus = .pass
+            code = identity.mode == .resolvedPlan
+                ? "machine.runtime_resolved"
+                : "machine.runtime_legacy_compatibility"
+            action = identity.mode == .legacyCompatibility
+                ? "Re-plan this workspace to move it onto evidence-bound launch policy."
+                : nil
+        }
+        return HealthCheck(
+            id: "machine.local.\(status.id)",
+            status: healthStatus,
+            code: code,
+            title: "Workspace runtime evidence",
+            detail: "\(status.id) is \(status.state.rawValue) using \(identity.mode.rawValue) ABI \(identity.virtualHardwareABIVersion)",
+            action: action,
+            data: data
+        )
     }
 
     private func engineData(_ status: DockerTierStatus) -> [String: String] {

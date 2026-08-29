@@ -6,6 +6,23 @@ enum DorydLaunchAgent {
     static let label = "dev.dory.doryd"
     static let stateDirectory = "\(NSHomeDirectory())/.dory"
     static let logPath = "\(NSHomeDirectory())/.dory/doryd.log"
+    /// dory-hv and Linux Machine helpers create private Unix sockets and disposable boot assets.
+    /// Keep those beneath Darwin's per-user 0700 temporary directory rather than the user's home:
+    /// a permissive or network-backed home is not a trustworthy Unix-socket ancestor, and the
+    /// hypervisor deliberately refuses to weaken that boundary. Durable Docker and Machine data
+    /// remains in the selected Dory data drive under Application Support.
+    static var runtimeDirectory: URL {
+        runtimeDirectory(temporaryDirectory: FileManager.default.temporaryDirectory)
+    }
+
+    static func runtimeDirectory(temporaryDirectory: URL) -> URL {
+        temporaryDirectory
+            // Darwin Unix-domain sockets have only 103 usable pathname bytes. The private
+            // per-user temporary-directory prefix is already long on real systems, so keep this
+            // disposable namespace deliberately short. Durable state still uses the Dory drive.
+            .appendingPathComponent("d", isDirectory: true)
+            .standardizedFileURL
+    }
     // Docker gets 20 seconds, dory-hv gets 25, and doryd gets 30 before its own last resort.
     // launchd's system default is only five seconds on current macOS, so make upgrade/logout
     // replacement honor the same graceful shutdown contract as an explicit engine stop.
@@ -26,6 +43,9 @@ enum DorydLaunchAgent {
         var httpProxyPort: UInt16
         var httpsProxyPort: UInt16
         var hostCLIEnabled: Bool
+        /// Candidate-only switch for creating compatibility-labeled VMs while their exact bytes
+        /// are under live qualification. Public builds leave this false.
+        var vmQualificationBootstrapEnabled: Bool
         /// Enables Dory's FEX/binfmt runtime in the native arm64 guest. Keeping this in the
         /// LaunchAgent makes the persisted Settings choice authoritative for doryd.
         var amd64EmulationEnabled: Bool
@@ -46,6 +66,7 @@ enum DorydLaunchAgent {
             httpProxyPort: UInt16 = 8080,
             httpsProxyPort: UInt16 = 8443,
             hostCLIEnabled: Bool = true,
+            vmQualificationBootstrapEnabled: Bool = false,
             amd64EmulationEnabled: Bool = false,
             gpuVenusEnabled: Bool = false,
             cpuCount: UInt16? = nil,
@@ -60,10 +81,13 @@ enum DorydLaunchAgent {
             self.httpProxyPort = httpProxyPort
             self.httpsProxyPort = httpsProxyPort
             self.hostCLIEnabled = hostCLIEnabled
+            self.vmQualificationBootstrapEnabled = vmQualificationBootstrapEnabled
             self.amd64EmulationEnabled = amd64EmulationEnabled
             self.gpuVenusEnabled = gpuVenusEnabled
             self.cpuCount = max(1, cpuCount ?? Self.hostScaledCPUCount())
-            self.memoryMB = max(256, memoryMB ?? Self.hostScaledMemoryMB())
+            self.memoryMB = UInt32(clamping: DoryEngineMemoryPolicy.clampedMemoryMB(
+                memoryMB ?? Self.hostScaledMemoryMB()
+            ))
             self.bridgeSubnetCIDR = (try? DoryIPv4BridgeNetwork(bridgeSubnetCIDR).cidr)
                 ?? DoryIPv4BridgeNetwork.defaultCIDR
             self.sshAuthSock = sshAuthSock.flatMap {
@@ -80,9 +104,9 @@ enum DorydLaunchAgent {
         }
 
         nonisolated static func hostScaledMemoryMB(physicalMemory: UInt64 = ProcessInfo.processInfo.physicalMemory) -> UInt32 {
-            let hostMB = Int(clamping: physicalMemory / (1024 * 1024))
-            let ceiling = max(2048, min(hostMB / 2, hostMB - 4096))
-            return UInt32(clamping: ceiling)
+            UInt32(clamping: DoryEngineMemoryPolicy.hostScaledMemoryMB(
+                physicalMemory: physicalMemory
+            ))
         }
     }
 
@@ -357,6 +381,15 @@ enum DorydLaunchAgent {
         let directory = url.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(atPath: stateDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: runtimeDirectory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: runtimeDirectory.path
+        )
         if let existing = try? String(contentsOf: url, encoding: .utf8),
            existing == install.plistContents {
             return false
@@ -368,10 +401,13 @@ enum DorydLaunchAgent {
     static func launchAgentPlist(
         program: String,
         helpersDirectory: URL,
-        configuration: Configuration = Configuration()
+        configuration: Configuration = Configuration(),
+        runtimeDirectory: URL = DorydLaunchAgent.runtimeDirectory
     ) -> String {
         let vmm = vmmExecutablePath(helpersDirectory: helpersDirectory)
-        let hv = helpersDirectory.appendingPathComponent("dory-hv").path
+        let hv = helpersDirectory
+            .appendingPathComponent("DoryHVRunner.app/Contents/MacOS/dory-hv")
+            .path
         let gvproxy = helpersDirectory.appendingPathComponent("gvproxy").path
         let resourcesDirectory = helpersDirectory
             .deletingLastPathComponent()
@@ -411,8 +447,19 @@ enum DorydLaunchAgent {
                 <string>\(xmlEscaped(helpersDirectory.path))</string>
                 <key>DORYD_RESOURCES_DIR</key>
                 <string>\(xmlEscaped(resourcesDirectory))</string>
+                <key>DORYD_STATE_DIR</key>
+                <string>\(xmlEscaped(runtimeDirectory.appendingPathComponent("docker", isDirectory: true).path))</string>
+                <key>DORYD_MACHINE_RUNTIME_DIR</key>
+                <string>\(xmlEscaped(runtimeDirectory.appendingPathComponent("m", isDirectory: true).path))</string>
+                <!-- Docker bind mounts use native macOS paths. The hypervisor's safe share mode
+                     hides credential stores and other sensitive names while making ordinary
+                     project directories work without per-container VM reconfiguration. -->
+                <key>DORYD_SHARE_HOME</key>
+                <string>1</string>
                 <key>DORYD_HOST_CLI</key>
                 <string>\(configuration.hostCLIEnabled ? "1" : "0")</string>
+                <key>DORYD_VM_QUALIFICATION_BOOTSTRAP</key>
+                <string>\(configuration.vmQualificationBootstrapEnabled ? "1" : "0")</string>
                 <key>DORYD_AMD64</key>
                 <string>\(configuration.amd64EmulationEnabled ? "1" : "0")</string>
                 <key>DORYD_GPU</key>

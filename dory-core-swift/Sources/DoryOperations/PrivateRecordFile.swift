@@ -15,6 +15,35 @@ enum PrivateRecordFile {
         }
         defer { Darwin.close(descriptor) }
 
+        return try read(descriptor: descriptor, maximumBytes: maximumBytes)
+    }
+
+    static func read(
+        in directoryDescriptor: Int32,
+        fileName: String,
+        maximumBytes: Int
+    ) throws -> Data {
+        guard !fileName.isEmpty,
+              fileName != ".",
+              fileName != "..",
+              !fileName.contains("/"),
+              !fileName.contains("\0") else {
+            throw PrivateRecordFileError.invalid
+        }
+        let descriptor = openat(
+            directoryDescriptor,
+            fileName,
+            O_RDONLY | O_CLOEXEC | O_NOFOLLOW
+        )
+        guard descriptor >= 0 else {
+            if errno == ENOENT { throw PrivateRecordFileError.missing }
+            throw PrivateRecordFileError.invalid
+        }
+        defer { Darwin.close(descriptor) }
+        return try read(descriptor: descriptor, maximumBytes: maximumBytes)
+    }
+
+    private static func read(descriptor: Int32, maximumBytes: Int) throws -> Data {
         var status = stat()
         guard Darwin.fstat(descriptor, &status) == 0,
               status.st_mode & S_IFMT == S_IFREG,
@@ -37,7 +66,19 @@ enum PrivateRecordFile {
             guard count >= 0, data.count + count <= maximumBytes else {
                 throw PrivateRecordFileError.invalid
             }
-            if count == 0 { return data }
+            if count == 0 {
+                var finalStatus = stat()
+                guard Darwin.fstat(descriptor, &finalStatus) == 0,
+                      status.st_dev == finalStatus.st_dev,
+                      status.st_ino == finalStatus.st_ino,
+                      status.st_mode == finalStatus.st_mode,
+                      status.st_uid == finalStatus.st_uid,
+                      status.st_nlink == finalStatus.st_nlink,
+                      status.st_size == finalStatus.st_size else {
+                    throw PrivateRecordFileError.invalid
+                }
+                return data
+            }
             data.append(contentsOf: buffer.prefix(count))
         }
     }

@@ -424,12 +424,16 @@ struct DockerEngineRuntime: ContainerRuntime {
     let socketPath: String
     let displayName: String
     let operationIdleTimeout: TimeInterval?
+    private let migrationTargetStorageUsageProbe:
+        (@Sendable () async throws -> MigrationTargetStorageUsage)?
 
     nonisolated init(
         socketPath: String,
         kind: RuntimeKind = .docker,
         displayName: String? = nil,
-        operationIdleTimeout: TimeInterval? = nil
+        operationIdleTimeout: TimeInterval? = nil,
+        migrationTargetStorageUsageProbe:
+            (@Sendable () async throws -> MigrationTargetStorageUsage)? = nil
     ) {
         self.socketPath = socketPath
         self.kind = kind
@@ -437,6 +441,7 @@ struct DockerEngineRuntime: ContainerRuntime {
             ? DockerEngineSocketDiscovery.engineLabel(for: socketPath, home: NSHomeDirectory())
             : kind.displayName)
         self.operationIdleTimeout = operationIdleTimeout
+        self.migrationTargetStorageUsageProbe = migrationTargetStorageUsageProbe
     }
 
     var migrationSourceIdentifier: String {
@@ -457,8 +462,14 @@ struct DockerEngineRuntime: ContainerRuntime {
             socketPath: socketPath,
             kind: kind,
             displayName: displayName,
-            operationIdleTimeout: timeout
+            operationIdleTimeout: timeout,
+            migrationTargetStorageUsageProbe: migrationTargetStorageUsageProbe
         )
+    }
+
+    func migrationTargetStorageUsage() async throws -> MigrationTargetStorageUsage? {
+        guard let migrationTargetStorageUsageProbe else { return nil }
+        return try await migrationTargetStorageUsageProbe()
     }
 
     private var http: UnixSocketHTTP {
@@ -563,6 +574,34 @@ struct DockerEngineRuntime: ContainerRuntime {
             containers: containers, images: images, volumes: volumes, networks: networks,
             pods: [], machines: [],
             engineRunning: true, engineVersion: version?.version ?? "docker"
+        )
+    }
+
+    /// Decodes the non-waking dashboard payload produced by doryd's private observation path.
+    /// Runtime statistics are intentionally omitted: collecting them is an active two-sample
+    /// operation and belongs to an explicit user refresh, not the background idle observer.
+    func dashboardSnapshot(from payload: [String: Data]) throws -> RuntimeSnapshot {
+        func required<T: Decodable>(_ key: String, as type: T.Type) throws -> T {
+            guard let data = payload[key] else {
+                throw RuntimeFeatureError.unsupported("doryd dashboard snapshot omitted \(key)")
+            }
+            return try decoder.decode(T.self, from: data)
+        }
+
+        let summaries = try required("containers", as: [DockerContainerSummary].self)
+        let imageSummaries = try required("images", as: [DockerImageSummary].self)
+        let volumeList = try required("volumes", as: DockerVolumeList.self)
+        let networkSummaries = try required("networks", as: [DockerNetwork].self)
+        let version = try required("version", as: DockerVersion.self)
+        return RuntimeSnapshot(
+            containers: summaries.map { map($0, stats: nil) },
+            images: imageSummaries.compactMap(mapImage),
+            volumes: volumeList.volumes?.map(mapVolume) ?? [],
+            networks: networkSummaries.map(mapNetwork),
+            pods: [],
+            machines: [],
+            engineRunning: true,
+            engineVersion: version.version ?? "docker"
         )
     }
 

@@ -26,8 +26,13 @@ struct HostSSHAgentBridgeTests {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
         defer { try? FileManager.default.removeItem(at: root) }
         let socketPath = root.appendingPathComponent("agent.sock").path
-        let listener = try VsockUnixRelay.makeListener(socketPath: socketPath, mode: 0o600)
-        defer { close(listener) }
+        let listener = try VsockUnixRelay.makeOwnedListener(
+            socketPath: socketPath,
+            mode: 0o600
+        )
+        defer {
+            VsockUnixRelay.retireOwnedListener(listener, socketPath: socketPath)
+        }
 
         let client = try #require(HostSSHAgentBridge.connectSameUserSocket(
             path: socketPath,
@@ -35,7 +40,26 @@ struct HostSSHAgentBridgeTests {
         ))
         defer { close(client) }
         #expect(fcntl(client, F_GETFL, 0) & O_NONBLOCK == 0)
-        let accepted = accept(listener, nil, nil)
+        #expect(fcntl(client, F_GETFD, 0) & FD_CLOEXEC != 0)
+        var noSigpipe: Int32 = 0
+        var noSigpipeLength = socklen_t(MemoryLayout<Int32>.size)
+        #expect(getsockopt(
+            client,
+            SOL_SOCKET,
+            SO_NOSIGPIPE,
+            &noSigpipe,
+            &noSigpipeLength
+        ) == 0)
+        #expect(noSigpipe == 1)
+        #expect(HostSSHAgentBridge.peerUIDMatches(
+            descriptor: client,
+            expectedUID: geteuid()
+        ))
+        #expect(!HostSSHAgentBridge.peerUIDMatches(
+            descriptor: client,
+            expectedUID: geteuid() &+ 1
+        ))
+        let accepted = accept(listener.descriptor, nil, nil)
         #expect(accepted >= 0)
         defer { if accepted >= 0 { close(accepted) } }
         #expect(write(client, "x", 1) == 1)

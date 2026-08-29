@@ -1,0 +1,59 @@
+#!/bin/bash
+set -euo pipefail
+
+operation="${1:-}"
+mime="${2:-text/plain;charset=utf-8}"
+case "$operation" in
+  get|set|types) ;;
+  *) echo "usage: dory-clipboard get|set|types [mime-type]" >&2; exit 64 ;;
+esac
+case "$mime" in
+  text/plain|text/plain\;charset=utf-8|image/png) ;;
+  *) echo "unsupported clipboard type: $mime" >&2; exit 64 ;;
+esac
+
+user="$(cat /var/lib/dory/username 2>/dev/null || printf 'dory\n')"
+uid="$(id -u "$user")"
+home="$(getent passwd "$user" | cut -d: -f6)"
+runtime="/run/user/$uid"
+
+run_as_user() {
+  runuser -u "$user" -- env \
+    HOME="$home" \
+    USER="$user" \
+    LOGNAME="$user" \
+    XDG_RUNTIME_DIR="$runtime" \
+    DBUS_SESSION_BUS_ADDRESS="unix:path=$runtime/bus" \
+    "$@"
+}
+
+wayland_socket=""
+for candidate in "$runtime"/wayland-*; do
+  [ -S "$candidate" ] || continue
+  wayland_socket="${candidate##*/}"
+  break
+done
+
+if [ -n "$wayland_socket" ] && command -v wl-copy >/dev/null 2>&1; then
+  case "$operation" in
+    set) run_as_user env WAYLAND_DISPLAY="$wayland_socket" wl-copy --type "$mime" ;;
+    get) run_as_user env WAYLAND_DISPLAY="$wayland_socket" wl-paste --no-newline --type "$mime" ;;
+    types) run_as_user env WAYLAND_DISPLAY="$wayland_socket" wl-paste --list-types ;;
+  esac
+  exit $?
+fi
+
+display="${DISPLAY:-:0}"
+xauthority="$home/.Xauthority"
+[ -f "$xauthority" ] || xauthority=""
+x11_env=(DISPLAY="$display")
+[ -z "$xauthority" ] || x11_env+=(XAUTHORITY="$xauthority")
+x11_target="$mime"
+case "$mime" in
+  text/plain|text/plain\;charset=utf-8) x11_target="UTF8_STRING" ;;
+esac
+case "$operation" in
+  set) run_as_user env "${x11_env[@]}" xclip -selection clipboard -in -target "$x11_target" ;;
+  get) run_as_user env "${x11_env[@]}" xclip -selection clipboard -out -target "$x11_target" ;;
+  types) run_as_user env "${x11_env[@]}" xclip -selection clipboard -out -target TARGETS ;;
+esac

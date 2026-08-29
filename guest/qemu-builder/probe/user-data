@@ -1,0 +1,10 @@
+#cloud-config
+package_update: false
+package_upgrade: false
+final_message: DORY_QEMU_BUILDER_CLOUD_INIT_READY
+power_state:
+  delay: now
+  mode: poweroff
+  message: Dory disposable builder probe completed
+  timeout: 120
+  condition: true

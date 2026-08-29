@@ -1,6 +1,40 @@
 import AppKit
+import DoryOperations
 import Foundation
 @preconcurrency import Virtualization
+
+/// Owns AppKit's termination boundary while a LaunchServices-started desktop is still creating its
+/// virtual machine. On early Sonoma `NSRunningApplication.terminate()` is the exact-process
+/// fallback for SIGTERM, and it can arrive before the display controller exists. Keeping this
+/// delegate installed lets the shared shutdown coordinator remember that request and deliver it as
+/// soon as the runtime attaches.
+@MainActor
+final class DoryVMMEarlyApplicationTerminationDelegate: NSObject, NSApplicationDelegate {
+    private let requestGracefulShutdown: @Sendable (String) -> Void
+
+    init(requestGracefulShutdown: @escaping @Sendable (String) -> Void) {
+        self.requestGracefulShutdown = requestGracefulShutdown
+    }
+
+    func install(on application: NSApplication = .shared) {
+        application.delegate = self
+    }
+
+    /// Both delegates are main-actor isolated, so replacing the startup boundary with the display
+    /// controller is one serialized assignment with no interval in which AppKit has no delegate.
+    func handOff(
+        to desktopApplication: DoryVMMDesktopApplication,
+        on application: NSApplication
+    ) {
+        application.delegate = desktopApplication
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        DoryVMMDesktopApplication.terminationReply {
+            requestGracefulShutdown("NSApplication termination request during VM startup")
+        }
+    }
+}
 
 @MainActor
 final class DoryVMMDesktopApplication: NSObject, NSApplicationDelegate, NSWindowDelegate {
@@ -8,23 +42,72 @@ final class DoryVMMDesktopApplication: NSObject, NSApplicationDelegate, NSWindow
     private let runtime: DoryVMMRuntime
     private let machineView: VZVirtualMachineView
     private let window: NSWindow
+    private let clipboard: DoryDesktopClipboardCoordinator?
+    private let requestGracefulShutdown: @Sendable (String) -> Void
+    private let dynamicDisplayEnabled: Bool
+    private let backingScaleFactor: CGFloat
+    private let displayAssignment: DoryGuestDisplayPresentationAssignment?
     private var pendingDisplayResize: DispatchWorkItem?
     private var requestedPixelSize: CGSize?
     private var stopError: String?
 
-    private init(runtime: DoryVMMRuntime, machineID: String) {
+    private init(
+        runtime: DoryVMMRuntime,
+        machineID: String,
+        environment: [String: String],
+        resolvedDevices: DoryVirtualMachineDeviceCapabilityRequest?,
+        displayPresentation: DoryMachineDisplayPresentation,
+        requestGracefulShutdown: @escaping @Sendable (String) -> Void
+    ) {
         self.application = NSApplication.shared
         self.runtime = runtime
+        self.requestGracefulShutdown = requestGracefulShutdown
+        dynamicDisplayEnabled = resolvedDevices?.dynamicDisplay ?? true
 
-        let windowSize = NSSize(width: 1_280, height: 800)
-        let machineView = VZVirtualMachineView(frame: NSRect(origin: .zero, size: windowSize))
+        let display = resolvedDevices?.display ?? DoryVMMDisplayDefaults.capability
+        displayAssignment = displayPresentation.assignment(
+            forGuestDisplayID: display.id
+        )
+        backingScaleFactor = CGFloat(display.backingScaleFactor)
+        let windowSize = NSSize(
+            width: max(1, CGFloat(display.widthPixels) / backingScaleFactor),
+            height: max(1, CGFloat(display.heightPixels) / backingScaleFactor)
+        )
+        let machineView = DoryVirtualMachineView(frame: NSRect(origin: .zero, size: windowSize))
         machineView.virtualMachine = runtime.machine.virtualMachineForDisplay
         // Apple's automatic path currently requests the view's point size on Retina displays.
         // Dory drives the scanout with backing pixels so a 1280x800-point window renders a true
         // 2560x1600 guest framebuffer instead of stretching a low-resolution desktop.
         machineView.automaticallyReconfiguresDisplay = false
-        machineView.capturesSystemKeys = false
+        machineView.capturesSystemKeys = true
         self.machineView = machineView
+
+        let requestedPolicy = resolvedDevices?.clipboardPolicy
+            ?? DoryDesktopClipboardPolicy(environment: environment).virtualMachinePolicy
+        // Bidirectional sharing is already handled by Apple's efficient SPICE transport. The
+        // shared coordinator still translates Mac shortcuts, while directional modes use its
+        // agent-backed data path to enforce the selected boundary.
+        let usesNativeBidirectionalClipboard = requestedPolicy.text == .bidirectional
+            && requestedPolicy.image == .bidirectional
+        let coordinatorPolicy: DoryVMClipboardPolicy = usesNativeBidirectionalClipboard
+            ? .disabled
+            : requestedPolicy
+        clipboard = resolvedDevices?.clipboard == false || !requestedPolicy.isEnabled
+            ? nil : DoryDesktopClipboardCoordinator(
+                policy: coordinatorPolicy,
+                execute: { argv, stdin, timeoutMs, outputLimitBytes in
+                    try runtime.executeDesktopIntegration(
+                        argv: argv,
+                        stdin: stdin,
+                        timeoutMs: timeoutMs,
+                        outputLimitBytes: outputLimitBytes
+                    )
+                },
+                sendShortcut: { keyCode in machineView.sendControlShortcut(linuxKeyCode: keyCode) },
+                log: { message in
+                    FileHandle.standardError.write(Data("dory-vmm clipboard: \(message)\n".utf8))
+                }
+            )
 
         self.window = NSWindow(
             contentRect: NSRect(origin: .zero, size: windowSize),
@@ -32,25 +115,60 @@ final class DoryVMMDesktopApplication: NSObject, NSApplicationDelegate, NSWindow
             backing: .buffered,
             defer: false
         )
-        self.window.title = "\(machineID) — Dory Linux"
+        self.window.title = "\(machineID) — Dory Desktop"
         self.window.contentView = machineView
         self.window.minSize = NSSize(width: 640, height: 400)
+        self.window.collectionBehavior.insert(.fullScreenPrimary)
+        self.window.tabbingMode = .disallowed
         self.window.center()
         super.init()
         self.window.delegate = self
+        installViewMenu()
+        machineView.onMacShortcut = { [weak clipboard] event in
+            clipboard?.handleMacShortcut(event) ?? false
+        }
     }
 
-    static func run(runtime: DoryVMMRuntime, machineID: String) throws {
-        let controller = DoryVMMDesktopApplication(runtime: runtime, machineID: machineID)
-        try controller.runUntilStopped()
+    static func run(
+        runtime: DoryVMMRuntime,
+        machineID: String,
+        environment: [String: String],
+        resolvedDevices: DoryVirtualMachineDeviceCapabilityRequest? = nil,
+        displayPresentation: DoryMachineDisplayPresentation = .windowed,
+        earlyApplicationTerminationDelegate: DoryVMMEarlyApplicationTerminationDelegate,
+        requestGracefulShutdown: @escaping @Sendable (String) -> Void
+    ) throws {
+        let controller = DoryVMMDesktopApplication(
+            runtime: runtime,
+            machineID: machineID,
+            environment: environment,
+            resolvedDevices: resolvedDevices,
+            displayPresentation: displayPresentation,
+            requestGracefulShutdown: requestGracefulShutdown
+        )
+        try controller.runUntilStopped(
+            earlyApplicationTerminationDelegate: earlyApplicationTerminationDelegate
+        )
     }
 
-    private func runUntilStopped() throws {
+    private func runUntilStopped(
+        earlyApplicationTerminationDelegate: DoryVMMEarlyApplicationTerminationDelegate
+    ) throws {
+        DoryDesktopApplicationIdentity.install(on: application)
         application.setActivationPolicy(.regular)
-        application.delegate = self
+        earlyApplicationTerminationDelegate.handOff(to: self, on: application)
+        clipboard?.start()
+        clipboard?.markGuestReady()
         window.makeKeyAndOrderFront(nil)
         application.activate()
-        reconfigureDisplayNow()
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            _ = DoryHostDisplayPresentation.enterDedicatedFullscreen(
+                window: self.window,
+                assignment: self.displayAssignment
+            )
+        }
+        if dynamicDisplayEnabled { reconfigureDisplayNow() }
 
         let runtime = self.runtime
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -67,6 +185,7 @@ final class DoryVMMDesktopApplication: NSObject, NSApplicationDelegate, NSWindow
         }
 
         application.run()
+        clipboard?.stop()
         if let stopError {
             throw DoryVZMachineError.stoppedWithError(stopError)
         }
@@ -95,8 +214,48 @@ final class DoryVMMDesktopApplication: NSObject, NSApplicationDelegate, NSWindow
         return true
     }
 
+    func applicationDidChangeScreenParameters(_ notification: Notification) {
+        _ = DoryHostDisplayPresentation.recoverDisconnectedDisplay(
+            window: window,
+            assignment: displayAssignment
+        )
+    }
+
+    @objc private func toggleFullScreen(_ sender: Any?) {
+        window.toggleFullScreen(sender)
+    }
+
+    private func installViewMenu() {
+        let mainMenu = NSMenu()
+        let viewRoot = NSMenuItem()
+        let viewMenu = NSMenu(title: "View")
+        let fullscreen = NSMenuItem(
+            title: "Toggle Full Screen",
+            action: #selector(toggleFullScreen(_:)),
+            keyEquivalent: "f"
+        )
+        fullscreen.keyEquivalentModifierMask = [.command, .control]
+        fullscreen.target = self
+        viewMenu.addItem(fullscreen)
+        viewRoot.submenu = viewMenu
+        mainMenu.addItem(viewRoot)
+        application.mainMenu = mainMenu
+    }
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         window.orderOut(nil)
+        return Self.terminationReply {
+            requestGracefulShutdown("NSApplication termination request")
+        }
+    }
+
+    /// AppKit termination is only the request boundary. The VMM must remain alive while the
+    /// shared coordinator asks the guest to shut down, enforces its watchdog, and lets the runtime
+    /// waiter stop the application after disk and device teardown completes.
+    nonisolated static func terminationReply(
+        requestGracefulShutdown: () -> Void
+    ) -> NSApplication.TerminateReply {
+        requestGracefulShutdown()
         return .terminateCancel
     }
 
@@ -125,10 +284,7 @@ final class DoryVMMDesktopApplication: NSObject, NSApplicationDelegate, NSWindow
         viewSize: CGSize,
         backingScaleFactor: CGFloat
     ) -> CGSize {
-        // Keep the Linux desktop at a 2x render scale even on a 1x host display. Retina screens
-        // map those pixels directly; lower-density screens get a supersampled image instead of a
-        // visibly coarse guest framebuffer.
-        let scale = max(2, backingScaleFactor)
+        let scale = max(1, backingScaleFactor)
         return CGSize(
             width: max(1, (viewSize.width * scale).rounded()),
             height: max(1, (viewSize.height * scale).rounded())
@@ -136,6 +292,7 @@ final class DoryVMMDesktopApplication: NSObject, NSApplicationDelegate, NSWindow
     }
 
     private func scheduleDisplayReconfiguration() {
+        guard dynamicDisplayEnabled else { return }
         pendingDisplayResize?.cancel()
         let work = DispatchWorkItem { [weak self] in
             self?.reconfigureDisplayNow()
@@ -145,11 +302,12 @@ final class DoryVMMDesktopApplication: NSObject, NSApplicationDelegate, NSWindow
     }
 
     private func reconfigureDisplayNow() {
+        guard dynamicDisplayEnabled else { return }
         pendingDisplayResize?.cancel()
         pendingDisplayResize = nil
         let size = Self.targetPixelSize(
             viewSize: machineView.bounds.size,
-            backingScaleFactor: window.backingScaleFactor
+            backingScaleFactor: backingScaleFactor
         )
         guard size != requestedPixelSize else { return }
         do {
@@ -160,5 +318,87 @@ final class DoryVMMDesktopApplication: NSObject, NSApplicationDelegate, NSWindow
                 "dory-vmm: desktop resize to \(Int(size.width))x\(Int(size.height)) failed: \(error)\n".utf8
             ))
         }
+    }
+}
+
+/// `VZVirtualMachineView` consumes discrete mouse-wheel events from the device-oriented Core
+/// Graphics fields, so natural scrolling needs one sign normalization for those events. Precise
+/// trackpad and Magic Mouse events are already phase-aware AppKit gestures; rebuilding them from a
+/// copied `CGEvent` drops that semantic stream and turns one gesture into a burst of emulated Linux
+/// wheel-button clicks. Preserve precise events unchanged so Virtualization.framework retains
+/// their direction, phase, momentum, and coalescing. The RawHV display has its own evdev bridge and
+/// must continue to use `NSEvent.scrollingDelta*` directly.
+enum DoryVMMInputBridge {
+    static func scrollEventForGuest(
+        _ event: NSEvent,
+        directionInvertedFromDevice: Bool? = nil
+    ) -> NSEvent {
+        let requiresNormalization = directionInvertedFromDevice
+            ?? event.isDirectionInvertedFromDevice
+        guard !event.hasPreciseScrollingDeltas,
+              requiresNormalization,
+              let normalizedCGEvent = event.cgEvent?.copy() else {
+            return event
+        }
+
+        let integerFields: [CGEventField] = [
+            .scrollWheelEventDeltaAxis1,
+            .scrollWheelEventDeltaAxis2,
+            .scrollWheelEventPointDeltaAxis1,
+            .scrollWheelEventPointDeltaAxis2,
+        ]
+        let fixedPointFields: [CGEventField] = [
+            .scrollWheelEventFixedPtDeltaAxis1,
+            .scrollWheelEventFixedPtDeltaAxis2,
+        ]
+        // Core Graphics keeps these representations linked. Snapshot every value before writing
+        // any field so a write cannot become the source for a second, accidental inversion.
+        let integerDeltas = integerFields.map { normalizedCGEvent.getIntegerValueField($0) }
+        let fixedPointDeltas = fixedPointFields.map { normalizedCGEvent.getDoubleValueField($0) }
+        for (field, delta) in zip(integerFields, integerDeltas) {
+            normalizedCGEvent.setIntegerValueField(field, value: -delta)
+        }
+        for (field, delta) in zip(fixedPointFields, fixedPointDeltas) {
+            normalizedCGEvent.setDoubleValueField(field, value: -delta)
+        }
+        return NSEvent(cgEvent: normalizedCGEvent) ?? event
+    }
+}
+
+@MainActor
+private final class DoryVirtualMachineView: VZVirtualMachineView {
+    var onMacShortcut: ((NSEvent) -> Bool)?
+
+    override func keyDown(with event: NSEvent) {
+        if onMacShortcut?(event) == true { return }
+        super.keyDown(with: event)
+    }
+
+    func sendControlShortcut(linuxKeyCode: UInt16) {
+        guard let macKeyCode = Self.macKeyCode(forLinuxKeyCode: linuxKeyCode) else { return }
+        for keyDown in [true, false] {
+            guard let cgEvent = CGEvent(
+                keyboardEventSource: nil,
+                virtualKey: CGKeyCode(macKeyCode),
+                keyDown: keyDown
+            ) else { continue }
+            cgEvent.flags = .maskControl
+            if let event = NSEvent(cgEvent: cgEvent) {
+                if keyDown { super.keyDown(with: event) } else { super.keyUp(with: event) }
+            }
+        }
+    }
+
+    private static func macKeyCode(forLinuxKeyCode code: UInt16) -> UInt16? {
+        switch code {
+        case 46: 8  // C
+        case 45: 7  // X
+        case 47: 9  // V
+        default: nil
+        }
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        super.scrollWheel(with: DoryVMMInputBridge.scrollEventForGuest(event))
     }
 }

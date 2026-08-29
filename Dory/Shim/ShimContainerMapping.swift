@@ -87,7 +87,7 @@ enum ShimContainerMapping {
     static func state(_ status: RunState) -> String {
         switch status {
         case .running: "running"
-        case .paused: "paused"
+        case .paused, .suspended: "paused"
         case .stopped: "exited"
         }
     }
@@ -95,7 +95,7 @@ enum ShimContainerMapping {
     static func statusText(_ container: Container) -> String {
         switch container.status {
         case .running: "Up \(container.uptime)"
-        case .paused: "Paused"
+        case .paused, .suspended: "Paused"
         case .stopped: "Exited"
         }
     }
@@ -278,7 +278,7 @@ enum DockerListFilters {
     private static func statusValue(_ status: RunState) -> String {
         switch status {
         case .running: "running"
-        case .paused: "paused"
+        case .paused, .suspended: "paused"
         case .stopped: "exited"
         }
     }

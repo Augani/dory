@@ -1,7 +1,7 @@
 [Unit]
 Description=Wait for Dory host desktop configuration
 After=dory-boot.service
-Before=lightdm.service
+Before=display-manager.service
 Requires=dory-boot.service
 
 [Service]

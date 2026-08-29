@@ -1,3 +1,4 @@
+import DoryFSWorkerContracts
 import Foundation
 
 /// Cache invalidations delivered through the negotiated virtio-fs notification queue.

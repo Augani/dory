@@ -1,38 +1,77 @@
 import CryptoKit
 import DoryCore
+import DoryOperations
+import DoryRendererWorkerWireContracts
+import DoryVMContracts
 import Foundation
 
 public struct MachineManagerConfiguration: Sendable, Equatable {
     public var vmmExecutablePath: String
+    /// Raw-Hypervisor helper used only for accelerated Linux desktops. EFI installers and
+    /// headless machines retain the established Virtualization.framework helper.
+    public var acceleratedDesktopExecutablePath: String?
     public var stateDirectory: String
     public var runtimeDirectory: String
+    /// Home used to derive durable mutation authority. The daemon supplies the Dory user home so
+    /// this remains outside the managed data drive; isolated callers may supply their own home.
+    public var lifecycleJournalHome: String
     public var baseArguments: [String]
+    public var acceleratedDesktopBaseArguments: [String]
     public var passMachineArguments: Bool
     public var logDirectory: String
     public var requiresReadyHandoff: Bool
+    /// Headless Linux guests should publish the agent handoff promptly. Keep this bounded so a
+    /// helper that is alive but unable to boot does not remain in the starting state.
+    public var handoffReadyTimeoutSeconds: TimeInterval
+    /// Full desktop first boots perform account, display-manager, graphics, and share setup before
+    /// the helper can publish readiness. This must exceed the desktop helper's own preparation
+    /// budget, while still remaining bounded.
+    public var desktopHandoffReadyTimeoutSeconds: TimeInterval
+    /// Bounded helper retries are active only until the ready handoff. This absorbs transient
+    /// Virtualization.framework resource release races without masking a later VM crash.
+    public var startupRestartPolicy: HvRestartPolicy
     public var guestArchitecture: String
     /// Host SSH agent made available to ordinary machines. Sandboxes only receive it when their
-    /// persisted policy contains the explicit DORY_SANDBOX_SSH_AGENT=1 grant.
+    /// typed policy contains an explicit `.granted` credential grant. Legacy records are decoded
+    /// through the bounded compatibility parser.
     public var sshAgentSocketPath: String?
 
     public init(
         vmmExecutablePath: String,
+        acceleratedDesktopExecutablePath: String? = nil,
         stateDirectory: String,
         runtimeDirectory: String? = nil,
+        lifecycleJournalHome: String? = nil,
         baseArguments: [String] = [],
+        acceleratedDesktopBaseArguments: [String] = [],
         passMachineArguments: Bool = true,
         logDirectory: String? = nil,
         requiresReadyHandoff: Bool = true,
+        handoffReadyTimeoutSeconds: TimeInterval = 60,
+        desktopHandoffReadyTimeoutSeconds: TimeInterval = 180,
+        startupRestartPolicy: HvRestartPolicy = HvRestartPolicy(
+            maxRestarts: 4,
+            delaySeconds: 0.25,
+            maximumDelaySeconds: 2,
+            stableRunSeconds: 0
+        ),
         guestArchitecture: String? = nil,
         sshAgentSocketPath: String? = nil
     ) {
         self.vmmExecutablePath = vmmExecutablePath
+        self.acceleratedDesktopExecutablePath = acceleratedDesktopExecutablePath
         self.stateDirectory = stateDirectory
         self.runtimeDirectory = runtimeDirectory ?? stateDirectory
+        self.lifecycleJournalHome = lifecycleJournalHome
+            ?? "\(self.runtimeDirectory)/.lifecycle-journal"
         self.baseArguments = baseArguments
+        self.acceleratedDesktopBaseArguments = acceleratedDesktopBaseArguments
         self.passMachineArguments = passMachineArguments
         self.logDirectory = logDirectory ?? "\(stateDirectory)/logs"
         self.requiresReadyHandoff = requiresReadyHandoff
+        self.handoffReadyTimeoutSeconds = handoffReadyTimeoutSeconds
+        self.desktopHandoffReadyTimeoutSeconds = desktopHandoffReadyTimeoutSeconds
+        self.startupRestartPolicy = startupRestartPolicy
         self.guestArchitecture = guestArchitecture ?? Self.currentGuestArchitecture
         self.sshAgentSocketPath = sshAgentSocketPath
     }
@@ -55,17 +94,30 @@ public struct DoryMachineShareConfiguration: Sendable, Equatable, Hashable, Coda
     public var hostPath: String
     public var guestPath: String
     public var readOnly: Bool
+    /// Persistent opaque identity created by the user-facing selector. It is daemon-resolved at
+    /// every start and is deliberately omitted from helper arguments and public status payloads.
+    public var authorizationBookmark: Data?
+    /// Daemon-sealed object identity. These fields prevent bookmark path fallback from silently
+    /// authorizing a replacement directory when the selected directory moved or was removed.
+    public var authorizationVolumeUUID: String?
+    public var authorizationFileIdentifier: Data?
 
     public init(
         tag: String,
         hostPath: String,
         guestPath: String,
-        readOnly: Bool = false
+        readOnly: Bool = false,
+        authorizationBookmark: Data? = nil,
+        authorizationVolumeUUID: String? = nil,
+        authorizationFileIdentifier: Data? = nil
     ) {
         self.tag = tag
         self.hostPath = hostPath
         self.guestPath = guestPath
         self.readOnly = readOnly
+        self.authorizationBookmark = authorizationBookmark
+        self.authorizationVolumeUUID = authorizationVolumeUUID
+        self.authorizationFileIdentifier = authorizationFileIdentifier
     }
 
     public init(argument: String) throws {
@@ -147,6 +199,15 @@ public struct DoryMachineShareConfiguration: Sendable, Equatable, Hashable, Coda
         guard guestPath.hasPrefix("/"), guestPath != "/", !guestPath.contains("\0") else {
             throw MachineManagerError.invalidShare(guestPath)
         }
+        guard authorizationBookmark.map({ !$0.isEmpty && $0.count <= 1_048_576 }) ?? true else {
+            throw MachineManagerError.invalidShare(hostPath)
+        }
+        guard authorizationVolumeUUID.map({ !$0.isEmpty && $0.utf8.count <= 128 }) ?? true,
+              authorizationFileIdentifier.map({ !$0.isEmpty && $0.count <= 4_096 }) ?? true,
+              authorizationBookmark != nil
+                || (authorizationVolumeUUID == nil && authorizationFileIdentifier == nil) else {
+            throw MachineManagerError.invalidShare(hostPath)
+        }
     }
 
     private static func encodeWireField(_ value: String) -> String {
@@ -164,49 +225,74 @@ public enum DoryMachineDisplayMode: String, Sendable, Equatable, Hashable, Codab
     case desktop
 }
 
+public enum DoryMachineBootMode: String, Sendable, Equatable, Hashable, Codable, CaseIterable {
+    case linuxKernel = "linux-kernel"
+    case efi
+}
+
 public struct DoryMachineConfiguration: Sendable, Equatable, Hashable, Codable {
     public var id: String
     public var kernelPath: String
     public var rootfsPath: String
+    public var bootMode: DoryMachineBootMode
+    public var installerISOPath: String?
+    public var diskSizeBytes: UInt64?
     public var memoryMB: UInt64
     public var cpuCount: Int
     public var address: String?
     public var displayMode: DoryMachineDisplayMode
     public var shares: [DoryMachineShareConfiguration]
     public var environment: [String: String]
+    public var installedDesktopPayloadReceipt: DoryInstalledDesktopPayloadReceipt?
+    public var cloneReceipt: DoryMachineCloneReceipt?
 
     public init(
         id: String,
         kernelPath: String,
         rootfsPath: String,
+        bootMode: DoryMachineBootMode = .linuxKernel,
+        installerISOPath: String? = nil,
+        diskSizeBytes: UInt64? = nil,
         memoryMB: UInt64 = 2048,
         cpuCount: Int = 2,
         address: String? = nil,
         displayMode: DoryMachineDisplayMode = .headless,
         shares: [DoryMachineShareConfiguration] = [],
-        environment: [String: String] = [:]
+        environment: [String: String] = [:],
+        installedDesktopPayloadReceipt: DoryInstalledDesktopPayloadReceipt? = nil,
+        cloneReceipt: DoryMachineCloneReceipt? = nil
     ) {
         self.id = id
         self.kernelPath = kernelPath
         self.rootfsPath = rootfsPath
+        self.bootMode = bootMode
+        self.installerISOPath = installerISOPath
+        self.diskSizeBytes = diskSizeBytes
         self.memoryMB = memoryMB
         self.cpuCount = cpuCount
         self.address = address
         self.displayMode = displayMode
         self.shares = shares
         self.environment = environment
+        self.installedDesktopPayloadReceipt = installedDesktopPayloadReceipt
+        self.cloneReceipt = cloneReceipt
     }
 
     private enum CodingKeys: String, CodingKey {
         case id
         case kernelPath
         case rootfsPath
+        case bootMode
+        case installerISOPath
+        case diskSizeBytes
         case memoryMB
         case cpuCount
         case address
         case displayMode
         case shares
         case environment
+        case installedDesktopPayloadReceipt
+        case cloneReceipt
     }
 
     public init(from decoder: Decoder) throws {
@@ -215,13 +301,29 @@ public struct DoryMachineConfiguration: Sendable, Equatable, Hashable, Codable {
             id: try container.decode(String.self, forKey: .id),
             kernelPath: try container.decode(String.self, forKey: .kernelPath),
             rootfsPath: try container.decode(String.self, forKey: .rootfsPath),
+            bootMode: try container.decodeIfPresent(DoryMachineBootMode.self, forKey: .bootMode) ?? .linuxKernel,
+            installerISOPath: try container.decodeIfPresent(String.self, forKey: .installerISOPath),
+            diskSizeBytes: try container.decodeIfPresent(UInt64.self, forKey: .diskSizeBytes),
             memoryMB: try container.decodeIfPresent(UInt64.self, forKey: .memoryMB) ?? 2048,
             cpuCount: try container.decodeIfPresent(Int.self, forKey: .cpuCount) ?? 2,
             address: try container.decodeIfPresent(String.self, forKey: .address),
             displayMode: try container.decodeIfPresent(DoryMachineDisplayMode.self, forKey: .displayMode) ?? .headless,
             shares: try container.decodeIfPresent([DoryMachineShareConfiguration].self, forKey: .shares) ?? [],
-            environment: try container.decodeIfPresent([String: String].self, forKey: .environment) ?? [:]
+            environment: try container.decodeIfPresent([String: String].self, forKey: .environment) ?? [:],
+            installedDesktopPayloadReceipt: try container.decodeIfPresent(
+                DoryInstalledDesktopPayloadReceipt.self,
+                forKey: .installedDesktopPayloadReceipt
+            ),
+            cloneReceipt: try container.decodeIfPresent(
+                DoryMachineCloneReceipt.self,
+                forKey: .cloneReceipt
+            )
         )
+    }
+
+    public var effectiveInstalledDesktopPayloadReceipt: DoryInstalledDesktopPayloadReceipt? {
+        installedDesktopPayloadReceipt
+            ?? DoryInstalledDesktopPayloadReceipt.legacyEnvironment(environment)
     }
 }
 
@@ -229,6 +331,8 @@ public enum DoryMachineState: String, Sendable, Equatable {
     case created
     case starting
     case running
+    case paused
+    case suspended
     case stopped
     case failed
 }
@@ -238,8 +342,15 @@ public struct DoryMachineStatus: Sendable, Equatable {
     public var state: DoryMachineState
     public var pid: Int32?
     public var lastError: String?
+    public var failure: DoryMachineFailure?
+    public var activeOperationID: String?
+    public var activeOperationKind: String?
+    public var flightRecorderHeadSequence: UInt64
+    public var flightRecorderAvailable: Bool
     public var handoffSocketPath: String?
     public var agentBuild: String?
+    public var agentProtocolVersion: UInt32?
+    public var agentCapabilities: [DoryAgentCapability]
     public var agentSocketPath: String?
     public var dockerdSocketPath: String?
     public var shellSocketPath: String?
@@ -254,16 +365,36 @@ public struct DoryMachineStatus: Sendable, Equatable {
     public var currentBalloonTargetMB: UInt64
     public var cpuCount: Int
     public var displayMode: DoryMachineDisplayMode
+    public var bootMode: DoryMachineBootMode
+    public var installerMediaAttached: Bool
     public var shares: [DoryMachineShareConfiguration]
     public var environment: [String: String]
+    public var typedSettings: DoryMachineTypedSettingsSnapshot?
+    public var sandboxPolicy: DoryVMSandboxPolicy?
+    public var diagnosticOverrides: [DoryMachineDiagnosticOverride]
+    public var displayPresentation: DoryMachineDisplayPresentation
+    public var runtimeIdentity: DoryMachineRuntimeIdentity
+    /// Live, operation-bound graphics result. The resolved plan remains desired authority and is
+    /// never substituted for this receipt in running status.
+    public var runtimeGraphicsSelection: DoryRuntimeGraphicsSelection?
+    public var installedDesktopPayloadReceipt: DoryInstalledDesktopPayloadReceipt?
+    public var cloneReceipt: DoryMachineCloneReceipt?
+    public var savedState: DoryMachineSavedStateStatus?
 
     public init(
         id: String,
         state: DoryMachineState,
         pid: Int32? = nil,
         lastError: String? = nil,
+        failure: DoryMachineFailure? = nil,
+        activeOperationID: String? = nil,
+        activeOperationKind: String? = nil,
+        flightRecorderHeadSequence: UInt64 = 0,
+        flightRecorderAvailable: Bool = false,
         handoffSocketPath: String? = nil,
         agentBuild: String? = nil,
+        agentProtocolVersion: UInt32? = nil,
+        agentCapabilities: [DoryAgentCapability] = [],
         agentSocketPath: String? = nil,
         dockerdSocketPath: String? = nil,
         shellSocketPath: String? = nil,
@@ -276,15 +407,36 @@ public struct DoryMachineStatus: Sendable, Equatable {
         currentBalloonTargetMB: UInt64? = nil,
         cpuCount: Int = 0,
         displayMode: DoryMachineDisplayMode = .headless,
+        bootMode: DoryMachineBootMode = .linuxKernel,
+        installerMediaAttached: Bool = false,
         shares: [DoryMachineShareConfiguration] = [],
-        environment: [String: String] = [:]
+        environment: [String: String] = [:],
+        typedSettings: DoryMachineTypedSettingsSnapshot? = nil,
+        sandboxPolicy: DoryVMSandboxPolicy? = nil,
+        diagnosticOverrides: [DoryMachineDiagnosticOverride] = [],
+        displayPresentation: DoryMachineDisplayPresentation = .windowed,
+        runtimeIdentity: DoryMachineRuntimeIdentity = .legacyCompatibility(
+            virtualHardwareABIVersion:
+                DoryVirtualMachineDefinition.currentVirtualHardwareABIVersion
+        ),
+        runtimeGraphicsSelection: DoryRuntimeGraphicsSelection? = nil,
+        installedDesktopPayloadReceipt: DoryInstalledDesktopPayloadReceipt? = nil,
+        cloneReceipt: DoryMachineCloneReceipt? = nil,
+        savedState: DoryMachineSavedStateStatus? = nil
     ) {
         self.id = id
         self.state = state
         self.pid = pid
         self.lastError = lastError
+        self.failure = failure
+        self.activeOperationID = activeOperationID
+        self.activeOperationKind = activeOperationKind
+        self.flightRecorderHeadSequence = flightRecorderHeadSequence
+        self.flightRecorderAvailable = flightRecorderAvailable
         self.handoffSocketPath = handoffSocketPath
         self.agentBuild = agentBuild
+        self.agentProtocolVersion = agentProtocolVersion
+        self.agentCapabilities = agentCapabilities
         self.agentSocketPath = agentSocketPath
         self.dockerdSocketPath = dockerdSocketPath
         self.shellSocketPath = shellSocketPath
@@ -297,8 +449,103 @@ public struct DoryMachineStatus: Sendable, Equatable {
         self.currentBalloonTargetMB = currentBalloonTargetMB ?? memoryMB
         self.cpuCount = cpuCount
         self.displayMode = displayMode
+        self.bootMode = bootMode
+        self.installerMediaAttached = installerMediaAttached
         self.shares = shares
         self.environment = environment
+        self.typedSettings = typedSettings
+        self.sandboxPolicy = sandboxPolicy
+        self.diagnosticOverrides = diagnosticOverrides
+        self.displayPresentation = displayPresentation
+        self.runtimeIdentity = runtimeIdentity
+        self.runtimeGraphicsSelection = runtimeGraphicsSelection
+        self.installedDesktopPayloadReceipt = installedDesktopPayloadReceipt
+        self.cloneReceipt = cloneReceipt
+        self.savedState = savedState
+    }
+
+    public var integrationHealth: DoryGuestIntegrationHealth {
+        let authority: DoryGuestIntegrationRuntimeAuthority
+        switch runtimeIdentity.mode {
+        case .legacyCompatibility: authority = .legacyCompatibility
+        case .resolvedPlan: authority = .resolvedPlan
+        case .requiresReplanning: authority = .requiresReplanning
+        }
+        let clipboardPolicy = typedSettings?.clipboardPolicy
+            ?? (displayMode == .desktop
+                ? DoryVMClipboardPolicy.legacyDesktop(.bidirectional)
+                : .disabled)
+        var qualifiedRuntimeFeatures: Set<DoryGuestIntegrationCapabilityID> = []
+        if let devices = runtimeIdentity.resolvedPlan?.devices {
+            if devices.gracefulShutdown {
+                qualifiedRuntimeFeatures.insert(.gracefulShutdown)
+            }
+            if devices.dynamicDisplay {
+                qualifiedRuntimeFeatures.insert(.displayResize)
+            }
+            if devices.clipboard {
+                qualifiedRuntimeFeatures.formUnion([.clipboardText, .clipboardImage])
+            }
+            if devices.directorySharing {
+                qualifiedRuntimeFeatures.formUnion([
+                    .sharedFolderDiscovery, .sharedFolderMountStatus,
+                ])
+            }
+        }
+        return DoryGuestIntegrationHealth.evaluate(
+            machineIsRunning: state == .running,
+            runtimeAuthority: authority,
+            desktopIntegrationsExpected: displayMode == .desktop,
+            clipboardTextExpected: clipboardPolicy.text != .off,
+            clipboardImageExpected: clipboardPolicy.image != .off,
+            sharedFoldersExpected: !shares.isEmpty,
+            qualifiedRuntimeFeatures: qualifiedRuntimeFeatures,
+            agentBuild: agentBuild,
+            agentProtocolVersion: agentProtocolVersion,
+            agentCapabilities: agentCapabilities.map {
+                DoryGuestIntegrationNegotiatedCapability(id: $0.id, version: $0.version)
+            }
+        )
+    }
+}
+
+public enum DoryMachineSnapshotConsistency: String, Sendable, Equatable, Hashable, Codable {
+    case coldStopped = "cold-stopped"
+    case guestQuiesced = "guest-quiesced"
+}
+
+public struct DoryMachineSnapshotQuiesceReceipt: Sendable, Equatable, Hashable, Codable {
+    public var schemaVersion: UInt16
+    public var receiptID: String
+    public var agentBuild: String
+    public var agentProtocolVersion: UInt32
+    public var capabilityVersion: UInt32
+
+    public init(
+        schemaVersion: UInt16 = 1,
+        receiptID: String,
+        agentBuild: String,
+        agentProtocolVersion: UInt32,
+        capabilityVersion: UInt32
+    ) {
+        self.schemaVersion = schemaVersion
+        self.receiptID = receiptID
+        self.agentBuild = agentBuild
+        self.agentProtocolVersion = agentProtocolVersion
+        self.capabilityVersion = capabilityVersion
+    }
+
+    public var isValid: Bool {
+        schemaVersion == 1
+            && receiptID.utf8.count == 32
+            && receiptID.utf8.allSatisfy {
+                ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x61 && $0 <= 0x66)
+            }
+            && !agentBuild.isEmpty
+            && agentBuild.utf8.count <= 128
+            && agentBuild.utf8.allSatisfy { $0 >= 0x20 && $0 <= 0x7e }
+            && agentProtocolVersion == DoryCore.protocolVersion()
+            && capabilityVersion >= 2
     }
 }
 
@@ -317,6 +564,16 @@ public struct DoryMachineSnapshot: Sendable, Equatable, Hashable, Codable {
     public var address: String?
     public var shares: [DoryMachineShareConfiguration]
     public var environment: [String: String]
+    public var typedSettings: DoryMachineTypedSettingsSnapshot?
+    public var sandboxPolicy: DoryVMSandboxPolicy?
+    public var bootMode: DoryMachineBootMode
+    public var machineIdentifierPath: String?
+    public var nvramPath: String?
+    public var runtimeIdentity: DoryMachineRuntimeIdentity
+    public var artifactEvidence: DoryMachineSnapshotArtifactEvidence?
+    public var installedDesktopPayloadReceipt: DoryInstalledDesktopPayloadReceipt?
+    public var consistency: DoryMachineSnapshotConsistency
+    public var guestQuiesceReceipt: DoryMachineSnapshotQuiesceReceipt?
 
     public init(
         id: String,
@@ -332,7 +589,20 @@ public struct DoryMachineSnapshot: Sendable, Equatable, Hashable, Codable {
         displayMode: DoryMachineDisplayMode = .headless,
         address: String? = nil,
         shares: [DoryMachineShareConfiguration] = [],
-        environment: [String: String] = [:]
+        environment: [String: String] = [:],
+        typedSettings: DoryMachineTypedSettingsSnapshot? = nil,
+        sandboxPolicy: DoryVMSandboxPolicy? = nil,
+        bootMode: DoryMachineBootMode = .linuxKernel,
+        machineIdentifierPath: String? = nil,
+        nvramPath: String? = nil,
+        runtimeIdentity: DoryMachineRuntimeIdentity = .legacyCompatibility(
+            virtualHardwareABIVersion:
+                DoryVirtualMachineDefinition.currentVirtualHardwareABIVersion
+        ),
+        artifactEvidence: DoryMachineSnapshotArtifactEvidence? = nil,
+        installedDesktopPayloadReceipt: DoryInstalledDesktopPayloadReceipt? = nil,
+        consistency: DoryMachineSnapshotConsistency = .coldStopped,
+        guestQuiesceReceipt: DoryMachineSnapshotQuiesceReceipt? = nil
     ) {
         self.id = id
         self.machineID = machineID
@@ -348,6 +618,16 @@ public struct DoryMachineSnapshot: Sendable, Equatable, Hashable, Codable {
         self.address = address
         self.shares = shares
         self.environment = environment
+        self.typedSettings = typedSettings
+        self.sandboxPolicy = sandboxPolicy
+        self.bootMode = bootMode
+        self.machineIdentifierPath = machineIdentifierPath
+        self.nvramPath = nvramPath
+        self.runtimeIdentity = runtimeIdentity
+        self.artifactEvidence = artifactEvidence
+        self.installedDesktopPayloadReceipt = installedDesktopPayloadReceipt
+        self.consistency = consistency
+        self.guestQuiesceReceipt = guestQuiesceReceipt
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -365,10 +645,36 @@ public struct DoryMachineSnapshot: Sendable, Equatable, Hashable, Codable {
         case address
         case shares
         case environment
+        case typedSettings
+        case sandboxPolicy
+        case bootMode
+        case machineIdentifierPath
+        case nvramPath
+        case runtimeIdentity
+        case artifactEvidence
+        case installedDesktopPayloadReceipt
+        case consistency
+        case guestQuiesceReceipt
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        let consistency = try container.decodeIfPresent(
+            DoryMachineSnapshotConsistency.self,
+            forKey: .consistency
+        ) ?? .coldStopped
+        let guestQuiesceReceipt = try container.decodeIfPresent(
+            DoryMachineSnapshotQuiesceReceipt.self,
+            forKey: .guestQuiesceReceipt
+        )
+        guard guestQuiesceReceipt?.isValid ?? true,
+              (consistency == .guestQuiesced) == (guestQuiesceReceipt != nil) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .guestQuiesceReceipt,
+                in: container,
+                debugDescription: "snapshot consistency and guest quiesce receipt disagree"
+            )
+        }
         self.init(
             id: try container.decode(String.self, forKey: .id),
             machineID: try container.decode(String.self, forKey: .machineID),
@@ -383,8 +689,152 @@ public struct DoryMachineSnapshot: Sendable, Equatable, Hashable, Codable {
             displayMode: try container.decodeIfPresent(DoryMachineDisplayMode.self, forKey: .displayMode) ?? .headless,
             address: try container.decodeIfPresent(String.self, forKey: .address),
             shares: try container.decodeIfPresent([DoryMachineShareConfiguration].self, forKey: .shares) ?? [],
-            environment: try container.decodeIfPresent([String: String].self, forKey: .environment) ?? [:]
+            environment: try container.decodeIfPresent([String: String].self, forKey: .environment) ?? [:],
+            typedSettings: try container.decodeIfPresent(
+                DoryMachineTypedSettingsSnapshot.self,
+                forKey: .typedSettings
+            ),
+            sandboxPolicy: try Self.decodeSandboxPolicy(from: container),
+            bootMode: try container.decodeIfPresent(DoryMachineBootMode.self, forKey: .bootMode) ?? .linuxKernel,
+            machineIdentifierPath: try container.decodeIfPresent(String.self, forKey: .machineIdentifierPath),
+            nvramPath: try container.decodeIfPresent(String.self, forKey: .nvramPath),
+            runtimeIdentity: try container.decodeIfPresent(
+                DoryMachineRuntimeIdentity.self,
+                forKey: .runtimeIdentity
+            ) ?? .legacyCompatibility(
+                virtualHardwareABIVersion:
+                    DoryMachineRuntimeIdentity.oldestLegacyVirtualHardwareABIVersion
+            ),
+            artifactEvidence: try container.decodeIfPresent(
+                DoryMachineSnapshotArtifactEvidence.self,
+                forKey: .artifactEvidence
+            ),
+            installedDesktopPayloadReceipt: try container.decodeIfPresent(
+                DoryInstalledDesktopPayloadReceipt.self,
+                forKey: .installedDesktopPayloadReceipt
+            ),
+            consistency: consistency,
+            guestQuiesceReceipt: guestQuiesceReceipt
         )
+        guard sandboxPolicy == nil || displayMode == .headless else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .sandboxPolicy,
+                in: container,
+                debugDescription: "sandbox policy requires a headless Linux snapshot"
+            )
+        }
+    }
+
+    private static func decodeSandboxPolicy(
+        from container: KeyedDecodingContainer<CodingKeys>
+    ) throws -> DoryVMSandboxPolicy? {
+        let policy = try container.decodeIfPresent(
+            DoryVMSandboxPolicy.self,
+            forKey: .sandboxPolicy
+        )
+        guard policy?.isValidForPersistence ?? true else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .sandboxPolicy,
+                in: container,
+                debugDescription: "snapshot sandbox policy is invalid"
+            )
+        }
+        return policy
+    }
+}
+
+public struct DoryDesktopUpdateResult: Sendable, Equatable {
+    public var operationID: String
+    public var machineID: String
+    public var distro: String
+    public var version: String
+    public var inputSHA256: String
+    public var bundleSHA256: String
+    public var snapshotID: String
+    public var status: DoryMachineStatus
+    public var restoredRunningState: Bool
+
+    public init(
+        operationID: String,
+        machineID: String,
+        distro: String,
+        version: String,
+        inputSHA256: String,
+        bundleSHA256: String,
+        snapshotID: String,
+        status: DoryMachineStatus,
+        restoredRunningState: Bool
+    ) {
+        self.operationID = operationID
+        self.machineID = machineID
+        self.distro = distro
+        self.version = version
+        self.inputSHA256 = inputSHA256
+        self.bundleSHA256 = bundleSHA256
+        self.snapshotID = snapshotID
+        self.status = status
+        self.restoredRunningState = restoredRunningState
+    }
+}
+
+private enum DesktopUpdateJournalStage: String, Codable, Sendable {
+    case snapshotReady = "snapshot-ready"
+    case installing
+    case qualifying
+    case committed
+}
+
+private struct DesktopUpdateJournal: Codable, Sendable, Equatable {
+    var schema: Int
+    var operationID: String?
+    var machineID: String
+    var distro: String
+    var version: String
+    var snapshotID: String
+    var originalWasRunning: Bool
+    var stage: DesktopUpdateJournalStage
+    var sourceConfigurationSHA256: String?
+    var updateAuthority: DoryInstalledDesktopPayloadReceipt?
+
+    var isValid: Bool {
+        guard [1, 2, 3].contains(schema),
+              Self.isValidIdentifier(machineID),
+              Self.isValidIdentifier(snapshotID),
+              ["debian", "kali", "ubuntu"].contains(distro),
+              version.wholeMatch(of: /[A-Za-z0-9][A-Za-z0-9._+-]{0,127}/) != nil else {
+            return false
+        }
+        if schema == 1 {
+            return operationID == nil
+                && sourceConfigurationSHA256 == nil && updateAuthority == nil
+        }
+        let authorityIsValid = sourceConfigurationSHA256.map(Self.isLowercaseSHA256) == true
+            && updateAuthority?.isValid == true
+            && updateAuthority?.provenance == .verifiedUpdateBundle
+            && updateAuthority?.distributionIdentifier == distro
+            && updateAuthority?.releaseVersion == version
+        if schema == 2 {
+            return operationID == nil && authorityIsValid
+        }
+        return operationID.map(Self.isCanonicalOperationID) == true && authorityIsValid
+    }
+
+    private static func isLowercaseSHA256(_ value: String) -> Bool {
+        value.utf8.count == 64 && value.utf8.allSatisfy { byte in
+            (byte >= 48 && byte <= 57) || (byte >= 97 && byte <= 102)
+        }
+    }
+
+    private static func isCanonicalOperationID(_ value: String) -> Bool {
+        guard let id = UUID(uuidString: value),
+              id != UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)) else {
+            return false
+        }
+        return value == id.uuidString.lowercased()
+    }
+
+    private static func isValidIdentifier(_ value: String) -> Bool {
+        value.wholeMatch(of: /[A-Za-z0-9][A-Za-z0-9_.-]{0,62}/) != nil
     }
 }
 
@@ -396,8 +846,15 @@ public enum MachineManagerError: Error, Sendable, Equatable, CustomStringConvert
     case unknownSnapshot(String)
     case alreadyRunning(String)
     case agentUnavailable(String)
+    case agentCapabilityUnavailable(String, String)
     case balloonUnavailable(String)
     case balloonApplyFailed(String, String)
+    case deviceTelemetryUnavailable(String)
+    case deviceTelemetryRejected(String, String)
+    case usbUnavailable(String)
+    case usbControlFailed(String, String)
+    case usbAttachCompensationUncertain(String, original: String, compensation: String)
+    case usbDetachOutcomeUnknown(String, busID: String, detail: String)
     case invalidAddress(String)
     case invalidShare(String)
     case invalidEnvironment(String)
@@ -419,10 +876,26 @@ public enum MachineManagerError: Error, Sendable, Equatable, CustomStringConvert
             return "machine is already running: \(id)"
         case let .agentUnavailable(id):
             return "machine agent is unavailable: \(id)"
+        case let .agentCapabilityUnavailable(id, capability):
+            return "machine agent capability is unavailable for \(id): \(capability)"
         case let .balloonUnavailable(id):
             return "machine balloon control is unavailable: \(id)"
         case let .balloonApplyFailed(id, message):
             return "machine balloon control failed for \(id): \(message)"
+        case let .deviceTelemetryUnavailable(id):
+            return "machine device telemetry is unavailable: \(id)"
+        case let .deviceTelemetryRejected(id, message):
+            return "machine device telemetry was rejected for \(id): \(message)"
+        case let .usbUnavailable(id):
+            return "machine USB passthrough is unavailable for \(id)"
+        case let .usbControlFailed(id, message):
+            return "machine USB control failed for \(id): \(message)"
+        case let .usbAttachCompensationUncertain(id, original, compensation):
+            return "machine USB attach failed for \(id): \(original); "
+                + "compensating detach did not establish cleanup: \(compensation)"
+        case let .usbDetachOutcomeUnknown(id, busID, detail):
+            return "machine USB detach outcome is unknown for \(id) device \(busID): "
+                + "\(detail); reconcile live USB state before retrying"
         case let .invalidAddress(address):
             return "invalid machine address: \(address)"
         case let .invalidShare(share):
@@ -435,20 +908,338 @@ public enum MachineManagerError: Error, Sendable, Equatable, CustomStringConvert
     }
 }
 
+/// Executes the fallible helper portion of a resolved USB operation after `MachineManager` has
+/// pinned a live launch. The manager keeps its operation lock held across this transaction and the
+/// supplied authority check, so a failed post-attach check can compensate against the same helper
+/// generation before another machine operation is admitted.
+struct DoryResolvedUSBControlTransaction {
+    let controller: any DoryMachineUSBControlling
+
+    func attach(
+        machineID: String,
+        socketPath: String,
+        busID: String,
+        mode: DoryMachineUSBOpenMode,
+        launchAuthorityRemainsValid: () -> Bool
+    ) throws -> DoryMachineUSBAttachment {
+        let attachment: DoryMachineUSBAttachment
+        do {
+            attachment = try controller.attach(
+                machineID: machineID,
+                socketPath: socketPath,
+                busID: busID,
+                mode: mode
+            )
+        } catch {
+            let original = "attach request failed: \(error)"
+            guard (error as? DoryMachineUSBControlError)?.mayHaveChangedDeviceState == true else {
+                throw MachineManagerError.usbControlFailed(machineID, original)
+            }
+            throw compensatedAttachFailure(
+                machineID: machineID,
+                socketPath: socketPath,
+                busID: busID,
+                original: original
+            )
+        }
+
+        guard attachment.machineID == machineID,
+              attachment.busID == busID else {
+            throw compensatedAttachFailure(
+                machineID: machineID,
+                socketPath: socketPath,
+                busID: busID,
+                original: "helper response does not match the requested machine and device"
+            )
+        }
+        guard launchAuthorityRemainsValid() else {
+            throw compensatedAttachFailure(
+                machineID: machineID,
+                socketPath: socketPath,
+                busID: busID,
+                original: "live launch changed while attaching the USB device"
+            )
+        }
+        return attachment
+    }
+
+    func detach(
+        machineID: String,
+        socketPath: String,
+        busID: String,
+        launchAuthorityRemainsValid: () -> Bool
+    ) throws {
+        do {
+            try controller.detach(socketPath: socketPath, busID: busID)
+        } catch {
+            if (error as? DoryMachineUSBControlError)?.mayHaveChangedDeviceState == true {
+                throw MachineManagerError.usbDetachOutcomeUnknown(
+                    machineID,
+                    busID: busID,
+                    detail: "\(error)"
+                )
+            }
+            throw MachineManagerError.usbControlFailed(machineID, "\(error)")
+        }
+        guard launchAuthorityRemainsValid() else {
+            throw MachineManagerError.usbDetachOutcomeUnknown(
+                machineID,
+                busID: busID,
+                detail: "the helper confirmed detach, but the live launch changed before "
+                    + "the manager could confirm its authority"
+            )
+        }
+    }
+
+    private func compensatedAttachFailure(
+        machineID: String,
+        socketPath: String,
+        busID: String,
+        original: String
+    ) -> MachineManagerError {
+        do {
+            try controller.detach(socketPath: socketPath, busID: busID)
+            return .usbControlFailed(machineID, original)
+        } catch {
+            return .usbAttachCompensationUncertain(
+                machineID,
+                original: original,
+                compensation: "\(error)"
+            )
+        }
+    }
+}
+
+public enum DoryWorkspaceProjectionState: String, Sendable, Equatable {
+    case current
+    case regenerated
+    case unavailable
+}
+
+public enum DoryWorkspaceProjectionFailureCode: String, Sendable, Equatable {
+    case unsupportedLegacyConfiguration = "unsupported-legacy-configuration"
+    case repositoryFailure = "repository-failure"
+}
+
+/// Non-fatal migration status. Legacy `machine.json` remains runnable when a projection cannot
+/// be produced; callers can surface this diagnostic without treating the VM itself as corrupt.
+public struct DoryWorkspaceProjectionDiagnostic: Sendable, Equatable {
+    public var state: DoryWorkspaceProjectionState
+    public var failureCode: DoryWorkspaceProjectionFailureCode?
+    public var message: String?
+
+    public init(
+        state: DoryWorkspaceProjectionState,
+        failureCode: DoryWorkspaceProjectionFailureCode? = nil,
+        message: String? = nil
+    ) {
+        self.state = state
+        self.failureCode = failureCode
+        self.message = message
+    }
+}
+
+public struct DoryMachineResolvedLaunchIdentity: Sendable, Equatable {
+    public var planRevision: UInt64
+    public var planSHA256: String
+    public var definitionRevision: UInt64
+    public var backend: DoryVirtualizationBackendIdentity
+    public var backendRuntimeBuildIdentifier: String
+    public var virtualHardwareABIVersion: UInt16
+
+    public init(plan: DoryResolvedMachinePlan, planSHA256: String) {
+        planRevision = plan.planRevision
+        self.planSHA256 = planSHA256
+        definitionRevision = plan.definitionRevision
+        backend = plan.backend
+        backendRuntimeBuildIdentifier = plan.backendRuntimeBuildIdentifier
+        virtualHardwareABIVersion = plan.virtualHardwareABIVersion
+    }
+}
+
+public enum DoryMachineLaunchPolicy: String, Sendable, Equatable {
+    /// Explicit transition mode for machines that predate durable workspace plans.
+    case legacyCompatibility
+    /// A start is rejected unless the complete persisted-plan trust path is installed.
+    case requireResolvedPlan
+    /// Each workspace is dispatched solely from its durable runtime identity. Existing machines
+    /// may retain explicit legacy compatibility while new and invalidated machines require a plan.
+    case perWorkspaceAuthority
+}
+
+private struct DoryMachineCloneCreationAuthority {
+    var sourceMachineID: String
+    var sourceSnapshotID: String
+    var rootfsSHA256: String
+    var rootfsByteCount: UInt64
+}
+
+struct RawHVRuntimeLaunchAuthority: @unchecked Sendable {
+    let envelope: RuntimeLaunchEnvelope
+    let inheritedFileDescriptors: [HvProcessInheritedFileDescriptor]
+}
+
+private struct DoryQualificationBootstrapLaunchPlan: Codable, Sendable {
+    let schemaVersion: UInt16
+    let qualificationMode: String
+    let verdict: String
+    let definition: DoryVirtualMachineDefinition
+    let devices: DoryVirtualMachineDeviceCapabilityRequest
+    let topology: DoryRawHVVirtualHardwareTopology
+    let executionResources: RuntimeLaunchEnvelope.RawHVExecutionResources
+    let backendRuntimeBuildIdentifier: String
+    let backendExecutableSHA256: String
+    let managedBootArtifactSHA256: String
+    let systemDiskCapacityBytes: UInt64
+    let components: [DoryResolvedBackendComponentEvidence]
+}
+
+private struct DoryQualificationBootstrapGraphicsExpectation: Sendable {
+    let operationID: UUID
+    let launchPlanSHA256: String
+    let planRevision: UInt64
+}
+
+/// Single-launch handoff authority for the explicitly enabled, non-release-qualifying VM
+/// bootstrap. The box is captured by the handoff server before filesystem admission begins, but
+/// remains empty until the exact envelope and descriptor set have been validated. It is never
+/// persisted and cannot be mistaken for a durable resolved plan.
+private final class DoryQualificationBootstrapHandoffAuthority: @unchecked Sendable {
+    private let lock = NSLock()
+    private var expectation: DoryQualificationBootstrapGraphicsExpectation?
+
+    func publish(_ value: DoryQualificationBootstrapGraphicsExpectation) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        guard expectation == nil else {
+            throw MachineManagerError.persistence(
+                "qualification bootstrap handoff authority was already published"
+            )
+        }
+        expectation = value
+    }
+
+    func accepts(
+        _ selection: DoryRuntimeGraphicsSelection?,
+        operationID: UUID
+    ) -> Bool? {
+        lock.lock()
+        let expected = expectation
+        lock.unlock()
+        guard let expected else { return nil }
+        guard expected.operationID == operationID,
+              let selection else { return false }
+        return selection.matchesResolvedRawHVLaunch(
+            operationID: operationID,
+            planSHA256: expected.launchPlanSHA256,
+            planRevision: expected.planRevision,
+            accelerationLevel: .hardwareAccelerated3D
+        )
+    }
+}
+
+private struct DoryQualificationBootstrapRuntimeAuthority: @unchecked Sendable {
+    let runtime: RawHVRuntimeLaunchAuthority
+    let rendererReleaseIdentity: DoryRendererReleaseIdentityV1
+    let graphicsExpectation: DoryQualificationBootstrapGraphicsExpectation
+}
+
+struct RawHVAdmittedSystemDisk: @unchecked Sendable {
+    let capacityBytes: UInt64
+    let authority: HvProcessInheritedFileDescriptor
+}
+
+struct RawHVAdmittedImmutableBootBlob: @unchecked Sendable {
+    let byteCount: UInt64
+    let sha256: String
+    let authority: HvProcessInheritedFileDescriptor
+}
+
+struct RawHVAdmittedLinuxBoot: @unchecked Sendable {
+    let rootDevice: String
+    let genericGuest: Bool
+    let kernel: RawHVAdmittedImmutableBootBlob
+    let initrd: RawHVAdmittedImmutableBootBlob?
+
+    var authorities: [HvProcessInheritedFileDescriptor] {
+        [kernel.authority] + (initrd.map { [$0.authority] } ?? [])
+    }
+
+    func close() {
+        kernel.authority.close()
+        initrd?.authority.close()
+    }
+}
+
+struct RawHVRendererBootstrapRequest: Sendable {
+    let workspaceID: UUID
+    let generation: UInt64
+    let runtimeBuildIdentifier: String
+    let components: [DoryResolvedBackendComponentEvidence]
+    let rendererWorkerCodeDirectoryHash: DoryCodeDirectoryHash
+}
+
+struct RawHVAdmittedRendererBootstrap: @unchecked Sendable {
+    let byteCount: UInt64
+    let sha256: String
+    let authority: HvProcessInheritedFileDescriptor
+
+    func close() {
+        authority.close()
+    }
+}
+
+struct RawHVAdmittedRuntimeResources: @unchecked Sendable {
+    let disk: RawHVAdmittedSystemDisk
+    let boot: RawHVAdmittedLinuxBoot
+    let rendererBootstrap: RawHVAdmittedRendererBootstrap?
+
+    func close() {
+        disk.authority.close()
+        boot.close()
+        rendererBootstrap?.close()
+    }
+}
+
 public final class MachineManager: @unchecked Sendable {
     public typealias AgentConnector = @Sendable (String) throws -> any AgentControlClient
     public typealias ProcessStarter = @Sendable (HvProcess) throws -> Void
+    public typealias ProcessStopper = @Sendable (HvProcess) -> Bool
+    public typealias ResolvedPlanRevisionProvider = @Sendable (_ machineID: String) -> UInt64?
 
-    private static let handoffReadyTimeoutSeconds: TimeInterval = 60
+    struct FailedRuntimeAuthoritySnapshot: Equatable {
+        var hasProcess: Bool
+        var processIsRunning: Bool
+        var hasResolvedAdmissionAuthority: Bool
+        var backend: DoryVirtualizationBackendIdentity?
+    }
+
     private static let deletionQuarantinePrefix = ".dory-machine-delete-"
     private static let machineDiskTemporaryPrefix = ".rootfs.ext4.tmp-"
     private static let machineKernelTemporaryPrefix = ".kernel.tmp-"
+    private static let installedLinuxKernelName = "direct-kernel"
+    private static let installedLinuxInitrdName = "direct-initrd"
     private static let machineMetadataTemporaryPrefix = ".dory-machine-metadata-"
+    private static let interruptedNativeCreationQuarantinePrefix =
+        ".dory-native-create-recovery-"
+    private static let nativeCreationPrecommitMarkerName =
+        ".dory-native-create-precommit-v1"
+    private static let nativeCreationCommittedMarkerName =
+        ".dory-native-create-committed-v1"
+    private static let installerFirmwarePromotionMarkerName =
+        ".dory-nvram-promotion-pending-v1"
+    private static let zeroLifecycleOperationID = UUID(
+        uuidString: "00000000-0000-0000-0000-000000000000"
+    )!
     private static let machineRestoreBackupMarker = ".restore-"
     private static let snapshotDeletionQuarantinePrefix = ".dory-snapshot-delete-"
     private static let snapshotDiskTemporaryMarker = ".ext4.tmp-"
     private static let snapshotKernelTemporaryMarker = ".kernel.tmp-"
+    private static let snapshotMachineIdentifierTemporaryMarker = ".machine-identifier.tmp-"
+    private static let snapshotNVRAMTemporaryMarker = ".nvram.tmp-"
     private static let snapshotMetadataTemporaryPrefix = ".dory-snapshot-metadata-"
+    private static let desktopUpdateJournalName = "desktop-update.json"
+    private static let desktopUpdateStagingPrefix = ".desktop-update-stage-"
     private static let maximumPersistedMetadataBytes: Int64 = 16 * 1024 * 1024
     /// Public Apple-Silicon machine resource contract. These match the app's steppers; enforcing
     /// them again in doryd prevents CLI/XPC callers from persisting values that the VMM would later
@@ -457,48 +1248,505 @@ public final class MachineManager: @unchecked Sendable {
     public static let maximumMachineMemoryMB: UInt64 = 16 * 1024
     public static let minimumMachineCPUCount = 1
     public static let maximumMachineCPUCount = 8
+    public static let minimumEFIDiskSizeBytes: UInt64 = 8 * 1024 * 1024 * 1024
+    public static let maximumEFIDiskSizeBytes: UInt64 = 2 * 1024 * 1024 * 1024 * 1024
 
     private let configuration: MachineManagerConfiguration
     private let agentConnector: AgentConnector
     private let balloonController: any MachineBalloonControlling
+    private let deviceTelemetryController: any MachineDeviceTelemetryControlling
+    private let directoryShareController: any MachineDirectoryShareControlling
+    private let usbController: any DoryMachineUSBControlling
+    private let vzLifecycleController: any MachineVZLifecycleControlling
+    private let savedStateStore: DoryMachineSavedStateStore
     private let processStarter: ProcessStarter
-    private let operationLock = NSRecursiveLock()
+    private let processStopper: ProcessStopper
+    private let machineStateBroker: DoryMachineStateBroker?
+    private var rendererCrashSuppressionStore:
+        DoryRendererCrashSuppressionStore?
+    private let workspaceRepository: DoryWorkspaceRepository
+    private let runtimeIdentityStore: DoryMachineRuntimeIdentityStore
+    private let displayPresentationStore: DoryMachineDisplayPresentationStore
+    private let failureStore: DoryMachineFailureStore
+    private let flightRecorderStore: DoryMachineFlightRecorderStore
+    private let launchPolicy: DoryMachineLaunchPolicy
+    private let allowsNewMachinesInLegacyCompatibility: Bool
+    private let allowsQualificationBootstrapLaunches: Bool
+    private var storageCapacityProvider: @Sendable (String) throws -> UInt64
+    private let lifecycleJournalStore: DoryOperationJournalStore?
+    /// Upgrade bridge for unfinished journals written when the configured journal directory was
+    /// incorrectly passed to `DoryOperationJournalStore` as a user home. New operations never use
+    /// this store; it remains available only until its nonterminal records have been recovered.
+    private let legacyLifecycleJournalStore: DoryOperationJournalStore?
+    private let lifecycleJournalInitializationError: String?
+    private let mutationCoordinator = MachineWorkspaceMutationCoordinator()
+    /// Protects short-lived manager-global configuration and keyed coordination dictionaries.
+    /// It must never be held across filesystem, helper, guest, or journal operations.
+    private let managerStateLock = NSRecursiveLock()
     private let lock = NSLock()
+    private let fileTransferLock = NSLock()
+    private let fileTransferQueue = DispatchQueue(
+        label: "dev.dory.machine-file-transfer",
+        qos: .utility,
+        attributes: .concurrent
+    )
     private var machines: [String: MachineEntry] = [:]
+    private var fileTransferOperations: [String: MachineFileTransferOperation] = [:]
+    private var activeFileTransferByMachine: [String: String] = [:]
+    private var guestFileExportOperations: [String: MachineGuestFileExportOperation] = [:]
+    private var activeGuestFileExportByMachine: [String: String] = [:]
     private var deletingMachineIDs: Set<String> = []
+    private var workspaceProjectionDiagnostics: [String: DoryWorkspaceProjectionDiagnostic] = [:]
+    private var resolvedLaunchRegistry: BackendRegistry?
+    private var resolvedLaunchPlanResolver: (any DoryDaemonVirtualMachineLaunchPlanResolving)?
+    private var resolvedLaunchPlanStore: (any DoryResolvedMachinePlanStoring)?
+    private var resolvedPlanRevisionProvider: ResolvedPlanRevisionProvider?
+    private var productionPlanningController:
+        (any DoryDaemonVirtualMachineProductionPlanningControlling)?
+    private var productionResourceAdmissionLedger:
+        DoryVirtualMachineResourceAdmissionLedger?
+    private var resolvedLaunchInfrastructureReady = false
+    private var pendingResolvedStarts: [String: PendingResolvedMachineStart] = [:]
+    private var resolvedLaunchIdentities: [String: DoryMachineResolvedLaunchIdentity] = [:]
+    private var activeLifecycleOperations: [String: MachineLifecycleJournalContext] = [:]
+    private var activePlanningMutationIDs: Set<String> = []
+    private var activeDirectWorkspaceMutationLocks:
+        [String: MachineManagerDirectMutationRetention] = [:]
+    private var pendingMachineProcessRetirements: Set<ObjectIdentifier> = []
+    private var desktopUpdateArtifactResolver: (any DoryDesktopUpdateArtifactResolving)?
+    private var forceSnapshotCopyFallback = false
+    /// Monotonic while `lock` is held. The UUID in each reservation protects the one practically
+    /// relevant wrap/restart boundary; the generation makes ordering and diagnostics explicit.
+    private var lastLaunchReservationGeneration: UInt64 = 0
+#if DEBUG
+    private var lifecycleFaultInjector: (@Sendable (MachineLifecycleFaultPoint) throws -> Void)?
+    private var readinessPublishTestHook:
+        (@Sendable (_ machineID: String) -> Void)?
+    private var shareAuthorityPreSpawnTestHook: (@Sendable (_ machineID: String) throws -> Void)?
+    private var rawHVStateAuthorityPreFinalRevalidationTestHook:
+        (@Sendable (_ machineID: String) throws -> Void)?
+#endif
 
     public init(
         configuration: MachineManagerConfiguration,
+        launchPolicy: DoryMachineLaunchPolicy = .legacyCompatibility,
+        allowsNewMachinesInLegacyCompatibility: Bool = true,
+        allowsQualificationBootstrapLaunches: Bool = false,
+        machineStateBroker: DoryMachineStateBroker? = nil,
         balloonController: any MachineBalloonControlling = UnixMachineBalloonController(),
+        deviceTelemetryController: any MachineDeviceTelemetryControlling =
+            UnixMachineDeviceTelemetryController(),
+        directoryShareController: any MachineDirectoryShareControlling =
+            UnixMachineDirectoryShareController(),
+        usbController: any DoryMachineUSBControlling = UnixDoryMachineUSBController(),
+        vzLifecycleController: any MachineVZLifecycleControlling = UnixMachineVZLifecycleController(),
         agentConnector: @escaping AgentConnector = { socketPath in
             try LocalAgentControl.connect(socketPath: socketPath)
         },
-        processStarter: @escaping ProcessStarter = { process in try process.start() }
+        processStarter: @escaping ProcessStarter = { process in try process.start() },
+        processStopper: @escaping ProcessStopper = { process in
+            process.stop(timeout: DoryEngineShutdownTiming.hostTerminationSeconds)
+        }
     ) {
         self.configuration = configuration
+        self.launchPolicy = launchPolicy
+        self.allowsNewMachinesInLegacyCompatibility =
+            allowsNewMachinesInLegacyCompatibility
+        self.allowsQualificationBootstrapLaunches =
+            allowsQualificationBootstrapLaunches
+        self.machineStateBroker = machineStateBroker
+        rendererCrashSuppressionStore = nil
         self.balloonController = balloonController
+        self.deviceTelemetryController = deviceTelemetryController
+        self.directoryShareController = directoryShareController
+        self.usbController = usbController
+        self.vzLifecycleController = vzLifecycleController
         self.agentConnector = agentConnector
         self.processStarter = processStarter
+        self.processStopper = processStopper
+        self.storageCapacityProvider = { path in
+            try MachineManager.availableStorageCapacity(forDestinationPath: path)
+        }
+        self.workspaceRepository = DoryWorkspaceRepository(root: configuration.stateDirectory)
+        self.runtimeIdentityStore = DoryMachineRuntimeIdentityStore(
+            root: configuration.stateDirectory
+        )
+        self.displayPresentationStore = DoryMachineDisplayPresentationStore(
+            root: configuration.stateDirectory
+        )
+        self.failureStore = DoryMachineFailureStore(root: configuration.stateDirectory)
+        self.flightRecorderStore = DoryMachineFlightRecorderStore(
+            root: configuration.stateDirectory
+        )
+        self.savedStateStore = DoryMachineSavedStateStore(root: configuration.stateDirectory)
+        do {
+            let store = try DoryOperationJournalStore(
+                home: configuration.lifecycleJournalHome
+            )
+            try store.prepare()
+            let legacyStore = try DoryOperationJournalStore(
+                home: "\(configuration.stateDirectory)/.lifecycle-journal"
+            )
+            let unfinishedLegacyRecords: [DoryOperationRecord]
+            if legacyStore == store {
+                unfinishedLegacyRecords = []
+            } else {
+                unfinishedLegacyRecords = try legacyStore.list().filter {
+                    Self.isWorkspaceLifecycleJournalKind($0.plan.kind)
+                        && $0.state.status != .completed && $0.state.status != .failed
+                }
+            }
+            lifecycleJournalStore = store
+            legacyLifecycleJournalStore = unfinishedLegacyRecords.isEmpty ? nil : legacyStore
+            lifecycleJournalInitializationError = nil
+        } catch {
+            lifecycleJournalStore = nil
+            legacyLifecycleJournalStore = nil
+            lifecycleJournalInitializationError = String(describing: error)
+        }
         _ = HelperProcessJanitor.terminateStaleHelpers(
             executablePath: configuration.vmmExecutablePath,
             stateDirectory: configuration.stateDirectory,
             includeDescendants: true
         )
+        if let acceleratedDesktopExecutablePath = configuration.acceleratedDesktopExecutablePath,
+           acceleratedDesktopExecutablePath != configuration.vmmExecutablePath {
+            _ = HelperProcessJanitor.terminateStaleHelpers(
+                executablePath: acceleratedDesktopExecutablePath,
+                stateDirectory: configuration.stateDirectory,
+                includeDescendants: true
+            )
+        }
+        DoryMachineFileTransferStager.removeAbandonedDaemonStages()
+        var lifecycleRecoveryDiagnostics = Self.recoverInterruptedLifecycleOperations(
+            store: lifecycleJournalStore,
+            configuration: configuration
+        )
+        let legacyLifecycleRecoveryDiagnostics = Self.recoverInterruptedLifecycleOperations(
+            store: legacyLifecycleJournalStore,
+            configuration: configuration
+        )
+        for (machineID, diagnostic) in legacyLifecycleRecoveryDiagnostics {
+            lifecycleRecoveryDiagnostics[machineID] = [
+                lifecycleRecoveryDiagnostics[machineID],
+                diagnostic,
+            ].compactMap { $0 }.joined(separator: "; ")
+        }
         Self.removeStaleDeletionQuarantines(stateDirectory: configuration.stateDirectory)
         Self.removeStaleMachineMetadataArtifacts(stateDirectory: configuration.stateDirectory)
         Self.removeStaleSnapshotArtifacts(stateDirectory: configuration.stateDirectory)
-        self.machines = Self.loadPersistedMachines(configuration: configuration)
+        Self.restrictWorkspaceProjectionRootIfOwned(configuration.stateDirectory)
+        Self.recoverCompletedNativeCreationMarkers(
+            stateDirectory: configuration.stateDirectory,
+            runtimeIdentityStore: runtimeIdentityStore
+        )
+        Self.removeInterruptedNativeCreations(
+            stateDirectory: configuration.stateDirectory
+        )
+        self.machines = Self.loadPersistedMachines(
+            configuration: configuration,
+            launchPolicy: launchPolicy,
+            workspaceRepository: workspaceRepository,
+            runtimeIdentityStore: runtimeIdentityStore,
+            savedStateStore: savedStateStore
+        )
+        for machineID in machines.keys {
+            machines[machineID]?.displayPresentation =
+                (try? displayPresentationStore.read(machineID: machineID)) ?? .windowed
+        }
+        do {
+            let heads = try flightRecorderStore.headSequences()
+            for machineID in machines.keys {
+                machines[machineID]?.flightRecorderHeadSequence = heads[machineID] ?? 0
+                machines[machineID]?.flightRecorderAvailable = true
+            }
+        } catch {
+            for machineID in machines.keys {
+                machines[machineID]?.flightRecorderAvailable = false
+            }
+        }
+        do {
+            let failures = try failureStore.failures()
+            for (machineID, failure) in failures where machines[machineID] != nil {
+                machines[machineID]?.failure = failure
+                machines[machineID]?.lastError = failure.compatibilitySummary
+            }
+        } catch {
+            for machineID in machines.keys {
+                let failure = DoryMachineFailure(
+                    code: .diagnosticPersistenceFailed,
+                    causalChain: [.filesystem],
+                    recoveryDisposition: .repair
+                )
+                machines[machineID]?.failure = failure
+                machines[machineID]?.lastError = failure.compatibilitySummary
+            }
+        }
+        // Saved-state inspection runs while reconstructing the machine table, before the
+        // instance can publish a durable structured diagnostic. Convert that bounded restart
+        // failure here after loading any previously persisted failure authority. Existing
+        // records win; an invalid store has already failed closed above.
+        for machineID in machines.keys {
+            guard var entry = machines[machineID],
+                  entry.state == .failed,
+                  entry.failure == nil,
+                  let diagnostic = entry.lastError else { continue }
+            setFailure(
+                on: &entry,
+                code: .savedStateInvalid,
+                message: diagnostic,
+                causes: [.artifactAuthority, .runtimeAuthority],
+                recoveryDisposition: .repair
+            )
+            machines[machineID] = entry
+        }
+        for (machineID, diagnostic) in lifecycleRecoveryDiagnostics {
+            if var entry = machines[machineID] {
+                setFailure(
+                    on: &entry,
+                    code: .lifecycleRecoveryRequired,
+                    message: diagnostic,
+                    causes: [.journal],
+                    recoveryDisposition: .repair
+                )
+                appendFlightEvent(
+                    on: &entry,
+                    kind: .recoveryRequired,
+                    failure: entry.failure
+                )
+                machines[machineID] = entry
+            }
+        }
+        reconcileLoadedWorkspaceProjections()
+        recoverPendingInstallerFirmwarePromotions()
+        recoverInterruptedDesktopUpdates()
+    }
+
+    public var configuredLaunchPolicy: DoryMachineLaunchPolicy { launchPolicy }
+
+    public var managedStateDirectory: String { configuration.stateDirectory }
+
+    /// Installs the daemon-owned active-component resolver. Desktop update writes fail closed until
+    /// this is installed; caller-supplied filesystem paths are never accepted as update authority.
+    public func installDesktopUpdateArtifactResolver(
+        _ resolver: any DoryDesktopUpdateArtifactResolving
+    ) {
+        managerStateLock.lock()
+        desktopUpdateArtifactResolver = resolver
+        managerStateLock.unlock()
+    }
+
+    /// Installs the production renderer circuit breaker before the resolved launch graph becomes
+    /// visible. This is daemon-owned runtime health evidence, not caller graphics preference.
+    func installRendererCrashSuppressionStore(
+        _ store: DoryRendererCrashSuppressionStore
+    ) throws {
+        managerStateLock.lock()
+        defer { managerStateLock.unlock() }
+        guard launchPolicy == .perWorkspaceAuthority,
+              rendererCrashSuppressionStore == nil,
+              !resolvedLaunchInfrastructureReady,
+              resolvedLaunchRegistry == nil else {
+            throw MachineManagerError.persistence(
+                "renderer crash suppression must be installed once before production planning"
+            )
+        }
+        rendererCrashSuppressionStore = store
+    }
+
+    /// Enables the explicit plan-driven launch path exactly once. Machines keep using the
+    /// labeled legacy compatibility path until this production trust infrastructure is injected;
+    /// once installed, a start never falls back when plan validation or adapter dispatch fails.
+    public func installResolvedLaunchInfrastructure(
+        registry: BackendRegistry,
+        resolver: any DoryDaemonVirtualMachineLaunchPlanResolving,
+        plans: any DoryResolvedMachinePlanStoring,
+        expectedPlanRevision: @escaping ResolvedPlanRevisionProvider,
+        productionPlanningController:
+            (any DoryDaemonVirtualMachineProductionPlanningControlling)? = nil,
+        resourceAdmissionLedger: DoryVirtualMachineResourceAdmissionLedger? = nil
+    ) throws {
+        managerStateLock.lock()
+        guard launchPolicy == .requireResolvedPlan
+                || launchPolicy == .perWorkspaceAuthority else {
+            managerStateLock.unlock()
+            throw MachineManagerError.persistence(
+                "resolved launch infrastructure requires a resolved-plan-capable policy"
+            )
+        }
+        guard (productionPlanningController == nil) == (resourceAdmissionLedger == nil) else {
+            managerStateLock.unlock()
+            throw MachineManagerError.persistence(
+                "production planning and resource-admission lifecycle must be installed together"
+            )
+        }
+        guard resolvedLaunchRegistry == nil, resolvedLaunchPlanResolver == nil,
+              resolvedLaunchPlanStore == nil,
+              resolvedPlanRevisionProvider == nil,
+              self.productionPlanningController == nil,
+              productionResourceAdmissionLedger == nil,
+              pendingResolvedStarts.isEmpty else {
+            managerStateLock.unlock()
+            throw MachineManagerError.persistence(
+                "resolved launch infrastructure is already installed"
+            )
+        }
+        resolvedLaunchRegistry = registry
+        resolvedLaunchPlanResolver = resolver
+        resolvedLaunchPlanStore = plans
+        resolvedPlanRevisionProvider = expectedPlanRevision
+        self.productionPlanningController = productionPlanningController
+        productionResourceAdmissionLedger = resourceAdmissionLedger
+        managerStateLock.unlock()
+
+        // Installation is one-shot, but recovery still obeys the same workspace authority as
+        // live mutations. Infrastructure remains unavailable to starts until every loaded
+        // workspace has been reconciled successfully.
+        lock.lock()
+        let loadedMachineIDs = Array(machines.keys)
+        lock.unlock()
+        let mutationLease = mutationCoordinator.acquire(workspaceIDs: loadedMachineIDs)
+        defer { mutationLease.release() }
+        recoverResolvedRuntimeIdentities(
+            plans: plans,
+            expectedPlanRevision: expectedPlanRevision
+        )
+        try reconcileResourceAdmissionsAfterDaemonRestart()
+        managerStateLock.withLock {
+            resolvedLaunchInfrastructureReady = true
+        }
+    }
+
+    /// Operations for the current Linux compatibility adapters. Start is protected by a
+    /// single-use authorization installed only after persisted-plan revalidation; calling the
+    /// returned operation directly cannot bypass the plan-driven public start path.
+    public func resolvedLaunchCompatibilityOperations(
+        for backend: DoryVirtualizationBackendIdentity
+    ) -> MachineBackendCompatibilityOperations {
+        MachineBackendCompatibilityOperations(
+            authorizedStart: { [weak self] binding in
+                guard let self else {
+                    throw MachineManagerError.persistence("machine manager is unavailable")
+                }
+                return try self.performAuthorizedResolvedBackendStart(
+                    binding: binding,
+                    expectedBackend: backend
+                )
+            },
+            stop: { [weak self] request in
+                guard let self else {
+                    throw MachineManagerError.persistence("machine manager is unavailable")
+                }
+                return MachineBackendRuntimeObservation(
+                    try self.performAuthorizedResolvedBackendStop(
+                        request: request,
+                        expectedBackend: backend
+                    )
+                )
+            },
+            pause: { [weak self] request in
+                guard let self else {
+                    throw MachineManagerError.persistence("machine manager is unavailable")
+                }
+                return MachineBackendRuntimeObservation(
+                    try self.performAuthorizedResolvedBackendPause(
+                        request: request,
+                        expectedBackend: backend
+                    )
+                )
+            },
+            resume: { [weak self] request in
+                guard let self else {
+                    throw MachineManagerError.persistence("machine manager is unavailable")
+                }
+                return MachineBackendRuntimeObservation(
+                    try self.performAuthorizedResolvedBackendResume(
+                        request: request,
+                        expectedBackend: backend
+                    )
+                )
+            }
+        )
     }
 
     @discardableResult
-    public func create(_ machine: DoryMachineConfiguration) throws -> DoryMachineStatus {
-        operationLock.lock()
-        defer { operationLock.unlock() }
+    public func create(
+        _ machine: DoryMachineConfiguration,
+        typedSettings: DoryMachineTypedSettingsPatch? = nil,
+        sandboxPolicy: DoryVMSandboxPolicy? = nil
+    ) throws -> DoryMachineStatus {
+        try createMachine(
+            machine,
+            typedSettings: typedSettings,
+            sandboxPolicy: sandboxPolicy,
+            cloneAuthority: nil
+        )
+    }
+
+    private func createMachine(
+        _ requestedMachine: DoryMachineConfiguration,
+        typedSettings: DoryMachineTypedSettingsPatch?,
+        sandboxPolicy: DoryVMSandboxPolicy?,
+        cloneAuthority: DoryMachineCloneCreationAuthority?
+    ) throws -> DoryMachineStatus {
+        let mutationLease = mutationCoordinator.acquire(workspaceID: requestedMachine.id)
+        defer { mutationLease.release() }
+        if launchPolicy == .legacyCompatibility,
+           !allowsNewMachinesInLegacyCompatibility {
+            throw MachineManagerError.persistence(
+                "new machine creation requires a schema-2 qualified VM component catalog; "
+                    + "legacy compatibility is migration-only"
+            )
+        }
+        var machine = requestedMachine
+        // Public create callers cannot manufacture clone evidence. It is minted only by the
+        // snapshot-clone path after an exact APFS clone and destination digest verification.
+        machine.cloneReceipt = nil
         guard Self.isValidID(machine.id) else {
             throw MachineManagerError.invalidID(machine.id)
         }
-        var machine = machine
         machine.address = try Self.normalizedAddress(machine.address)
+        if launchPolicy == .perWorkspaceAuthority {
+            guard machine.environment.isEmpty else {
+                throw MachineManagerError.persistence(
+                    "native workspace creation does not accept persisted environment values"
+                )
+            }
+        } else {
+            if let typedSettings {
+                machine.environment = try typedSettings.applying(
+                    to: machine.environment,
+                    displayMode: machine.displayMode
+                )
+            }
+            if let sandboxPolicy {
+                for key in [
+                    DoryVMSandboxPolicy.legacyMarkerEnvironmentKey,
+                    DoryVMSandboxPolicy.legacyExpirationEnvironmentKey,
+                    DoryVMSandboxPolicy.legacySSHAgentEnvironmentKey,
+                    DoryVMSandboxPolicy.legacyProfileEnvironmentKey,
+                    DoryVMSandboxPolicy.legacyToolsEnvironmentKey,
+                    DoryVMSandboxPolicy.legacyBaselineEnvironmentKey,
+                ] {
+                    machine.environment.removeValue(forKey: key)
+                }
+                machine.environment.merge(
+                    try DoryMachineSandboxPolicyWriteAuthority.legacyEnvironment(
+                        for: sandboxPolicy
+                    ),
+                    uniquingKeysWith: { _, new in new }
+                )
+            }
+        }
+        guard sandboxPolicy?.isValidForPersistence ?? true else {
+            throw MachineManagerError.persistence("sandbox policy is invalid")
+        }
+        guard sandboxPolicy == nil || machine.displayMode == .headless else {
+            throw MachineManagerError.persistence(
+                "sandbox policy is supported only for headless Linux machines"
+            )
+        }
+        machine.shares = try Self.sealShareAuthorizations(machine.shares)
         try Self.validateLaunchConfiguration(machine)
         lock.lock()
         let exists = machines[machine.id] != nil || deletingMachineIDs.contains(machine.id)
@@ -506,14 +1754,56 @@ public final class MachineManager: @unchecked Sendable {
         guard !exists else {
             throw MachineManagerError.duplicateMachine(machine.id)
         }
-        guard Self.isRegularNonemptyFile(path: machine.kernelPath) else {
-            throw MachineManagerError.persistence("machine kernel is missing or invalid: \(machine.kernelPath)")
+        switch machine.bootMode {
+        case .linuxKernel:
+            guard Self.isRegularNonemptyFile(path: machine.kernelPath) else {
+                throw MachineManagerError.persistence("machine kernel is missing or invalid: \(machine.kernelPath)")
+            }
+            guard Self.isRegularNonemptyFile(path: machine.rootfsPath) else {
+                throw MachineManagerError.persistence("machine rootfs is missing or invalid: \(machine.rootfsPath)")
+            }
+        case .efi:
+            guard machine.displayMode == .desktop else {
+                throw MachineManagerError.persistence("EFI installer machines require desktop display mode")
+            }
+            if let installerISOPath = machine.installerISOPath {
+                guard Self.isRegularNonemptyFile(path: installerISOPath) else {
+                    throw MachineManagerError.persistence("installer ISO is missing or invalid: \(installerISOPath)")
+                }
+            }
+            if Self.isRegularNonemptyFile(path: machine.rootfsPath) {
+                guard machine.diskSizeBytes == nil else {
+                    throw MachineManagerError.persistence("EFI disk imports cannot also specify diskSizeBytes")
+                }
+            } else {
+                guard machine.installerISOPath != nil else {
+                    throw MachineManagerError.persistence("a new EFI machine requires an installer ISO")
+                }
+                guard let diskSizeBytes = machine.diskSizeBytes,
+                      (Self.minimumEFIDiskSizeBytes...Self.maximumEFIDiskSizeBytes).contains(diskSizeBytes) else {
+                    throw MachineManagerError.persistence(
+                        "EFI disk size must be between \(Self.minimumEFIDiskSizeBytes) and \(Self.maximumEFIDiskSizeBytes) bytes"
+                    )
+                }
+            }
         }
+        // Reject incompatible media before allocating a virtual disk or importing a potentially
+        // multi-gigabyte ISO. The managed copy is created only after this preflight succeeds.
+        try validateInstallerArchitecture(machine)
         let fileManager = FileManager.default
         do {
             try fileManager.createDirectory(atPath: configuration.stateDirectory, withIntermediateDirectories: true)
+            Self.restrictWorkspaceProjectionRootIfOwned(configuration.stateDirectory)
         } catch {
             throw MachineManagerError.persistence("could not create machine state root: \(error)")
+        }
+        do {
+            try failureStore.clear(machine.id)
+            try flightRecorderStore.clear(machineID: machine.id)
+        } catch {
+            throw MachineManagerError.persistence(
+                "could not prepare machine diagnostic and flight-recorder authority: \(error)"
+            )
         }
         let statePath = machineStateDirectory(id: machine.id)
         guard mkdir(statePath, 0o700) == 0 else {
@@ -531,97 +1821,2091 @@ public final class MachineManager: @unchecked Sendable {
             }
         }
 
-        let preparedMachine = try prepareMachineArtifacts(machine)
+        let nativeCreationMarker = statePath + "/"
+            + Self.nativeCreationPrecommitMarkerName
+        try Self.writeDurablePrivateData(
+            Self.nativeCreationPrecommitMarkerData(machineID: machine.id),
+            toPath: nativeCreationMarker
+        )
+        try Self.syncDirectory(path: statePath)
+
+        var preparedMachine = try prepareMachineArtifacts(
+            machine,
+            cloneAuthority: cloneAuthority
+        )
+        if let cloneAuthority {
+            let receipt = DoryMachineCloneReceipt(
+                sourceMachineID: cloneAuthority.sourceMachineID,
+                sourceSnapshotID: cloneAuthority.sourceSnapshotID,
+                sourceRootfsSHA256: cloneAuthority.rootfsSHA256,
+                sourceRootfsByteCount: cloneAuthority.rootfsByteCount,
+                createdAtUnixMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000)
+            )
+            guard receipt.isValid else {
+                throw MachineManagerError.persistence("could not mint clone receipt")
+            }
+            preparedMachine.cloneReceipt = receipt
+        }
         try validateManagedMachineArtifacts(preparedMachine)
-        try persist(preparedMachine)
-        lock.lock()
-        machines[machine.id] = MachineEntry(configuration: preparedMachine, state: .created)
-        lock.unlock()
+        let initialRuntimeIdentity = runtimeIdentityForUnplannedMachine()
+        let authoritativeLegacyData = try DoryMachineConfigurationMigrationBridge
+            .encodeLegacy(preparedMachine)
+        var nativeDefinition: DoryVirtualMachineDefinition?
+        if launchPolicy == .perWorkspaceAuthority {
+            let facts = try workspaceMigrationFacts(for: preparedMachine)
+            let migration = try DoryMachineConfigurationMigrationBridge.migrate(
+                preparedMachine,
+                facts: facts
+            )
+            var definition = try (typedSettings ?? DoryMachineTypedSettingsPatch()).applying(
+                to: migration.definition,
+                displayMode: preparedMachine.displayMode
+            )
+            definition.sandboxPolicy = sandboxPolicy
+            guard definition.validate().isEmpty else {
+                throw MachineManagerError.persistence(
+                    "sandbox policy is incompatible with the machine definition"
+                )
+            }
+            try workspaceRepository.create(definition)
+            nativeDefinition = definition
+        }
+        // The launch authority is durable before machine.json becomes discoverable. A crash in
+        // this window leaves an incomplete, non-loadable directory, never a newly created VM that
+        // startup can mistake for pre-companion legacy state.
+        try runtimeIdentityStore.publish(
+            initialRuntimeIdentity,
+            machineID: preparedMachine.id,
+            authoritativeLegacyData: authoritativeLegacyData
+        )
+        try persist(
+            preparedMachine,
+            reconcilesLegacyProjection: launchPolicy != .perWorkspaceAuthority
+        )
+        // machine.json is now durable. Preserve this exact state on a marker-transition error so
+        // restart can complete it; never report success until the committed marker is directory-
+        // durable. Keeping the committed marker also distinguishes later metadata loss from an
+        // interrupted precommit and prevents destructive cleanup.
         committed = true
+        let committedMarker = statePath + "/"
+            + Self.nativeCreationCommittedMarkerName
+        guard rename(nativeCreationMarker, committedMarker) == 0 else {
+            throw MachineManagerError.persistence(
+                "could not commit native creation authority marker"
+            )
+        }
+        try Self.syncDirectory(path: statePath)
+        let typedSettingsSnapshot = try nativeDefinition.map(
+            DoryMachineTypedSettingsSnapshot.init
+        )
+        lock.lock()
+        var createdEntry = MachineEntry(
+            configuration: preparedMachine,
+            state: .created,
+            typedSettingsSnapshot: typedSettingsSnapshot,
+            sandboxPolicySnapshot: nativeDefinition?.sandboxPolicy,
+            usesNativeWorkspaceAuthority: nativeDefinition != nil,
+            runtimeIdentity: initialRuntimeIdentity
+        )
+        appendFlightEvent(on: &createdEntry, kind: .workspaceCreated)
+        machines[machine.id] = createdEntry
+        lock.unlock()
+        let statusTypedSettings = typedSettingsSnapshot ?? DoryMachineTypedSettingsSnapshot(
+            legacyEnvironment: preparedMachine.environment,
+            displayMode: preparedMachine.displayMode
+        )
         return DoryMachineStatus(
             id: preparedMachine.id,
             state: .created,
+            flightRecorderHeadSequence: createdEntry.flightRecorderHeadSequence,
+            flightRecorderAvailable: createdEntry.flightRecorderAvailable,
             address: preparedMachine.address,
             configuredAddress: preparedMachine.address,
             memoryMB: preparedMachine.memoryMB,
             cpuCount: preparedMachine.cpuCount,
+            displayMode: preparedMachine.displayMode,
+            bootMode: preparedMachine.bootMode,
+            installerMediaAttached: preparedMachine.installerISOPath != nil,
             shares: preparedMachine.shares,
-            environment: preparedMachine.environment
+            environment: preparedMachine.environment,
+            typedSettings: statusTypedSettings,
+            sandboxPolicy: sandboxPolicy
+                ?? DoryVMSandboxPolicy.legacyEnvironment(preparedMachine.environment),
+            diagnosticOverrides: DoryMachineDiagnosticOverride.configured(
+                in: preparedMachine.environment
+            ),
+            runtimeIdentity: initialRuntimeIdentity,
+            installedDesktopPayloadReceipt:
+                preparedMachine.effectiveInstalledDesktopPayloadReceipt,
+            cloneReceipt: preparedMachine.cloneReceipt
         )
     }
 
+    /// Resolves and publishes the exact current compatibility projection through the production
+    /// planning transaction. This is invoked by the product create/update boundary only after
+    /// machine metadata and managed artifacts are durable. Starts remain fail-closed throughout:
+    /// the workspace is `requires-replanning` until the coordinator completes its mutation fence
+    /// and publishes the matching runtime identity.
     @discardableResult
-    public func start(id: String) throws -> DoryMachineStatus {
-        operationLock.lock()
-        defer { operationLock.unlock() }
+    public func resolveAndPublishProductionPlan(
+        id: String,
+        controller: any DoryDaemonVirtualMachineProductionPlanningControlling
+    ) throws -> DoryMachineStatus {
+        let mutationLease = mutationCoordinator.acquire(workspaceID: id)
+        defer { mutationLease.release() }
+        guard launchPolicy == .perWorkspaceAuthority else {
+            guard let current = status(id: id) else {
+                throw MachineManagerError.unknownMachine(id)
+            }
+            return current
+        }
+        try requireNoActivePlanningMutation(id: id)
+
+        let entry: MachineEntry
         lock.lock()
-        guard var entry = machines[id] else {
+        guard let current = machines[id], !deletingMachineIDs.contains(id) else {
             lock.unlock()
             throw MachineManagerError.unknownMachine(id)
         }
+        entry = current
+        lock.unlock()
+        guard entry.process == nil, entry.handoffServer == nil,
+              entry.state == .created || entry.state == .stopped else {
+            throw MachineManagerError.persistence(
+                "machine \(id) must be stopped before production planning"
+            )
+        }
+        switch entry.runtimeIdentity.mode {
+        case .legacyCompatibility:
+            guard let current = status(id: id) else {
+                throw MachineManagerError.unknownMachine(id)
+            }
+            return current
+        case .requiresReplanning:
+            break
+        case .resolvedPlan:
+            guard let plan = entry.runtimeIdentity.resolvedPlan else {
+                throw MachineManagerError.persistence(
+                    "resolved runtime identity has no exact plan"
+                )
+            }
+            guard let ledger = productionAdmissionLedgerSnapshot() else {
+                guard let current = status(id: id) else {
+                    throw MachineManagerError.unknownMachine(id)
+                }
+                return current
+            }
+            switch try exactResourceAdmissionLease(for: plan, ledger: ledger).state {
+            case .starting, .running:
+                guard let current = status(id: id) else {
+                    throw MachineManagerError.unknownMachine(id)
+                }
+                return current
+            case .stopped:
+                break
+            case .recoveryRequired:
+                throw MachineManagerError.persistence(
+                    "machine \(id) resource admission requires restart reconciliation"
+                )
+            }
+        }
+
+        guard let legacyData = Self.readPrivateMetadata(path: machineConfigPath(id: id)),
+              let decoded = try? JSONDecoder().decode(
+                DoryMachineConfiguration.self,
+                from: legacyData
+              ), decoded == entry.configuration else {
+            throw MachineManagerError.persistence(
+                "authoritative machine metadata is unavailable for production planning"
+            )
+        }
+        let authority: MachineWorkspaceAuthority
         do {
-            try Self.validateLaunchConfiguration(entry.configuration)
-            try validateManagedMachineArtifacts(entry.configuration)
+            authority = try workspaceAuthority(
+                machine: entry.configuration,
+                authoritativeLegacyData: legacyData
+            )
         } catch {
+            throw MachineManagerError.persistence(
+                "workspace authority is unavailable for production planning: \(error)"
+            )
+        }
+        let definition = authority.definition
+        let canonicalDefinitionData = try Self.canonicalDefinitionData(definition)
+
+        let installedPlanStore = managerStateLock.withLock { resolvedLaunchPlanStore }
+        let plans: any DoryResolvedMachinePlanStoring = installedPlanStore
+            ?? DoryResolvedMachinePlanRepository(root: configuration.stateDirectory)
+        let planPublication: DoryDaemonVirtualMachinePlanPublication
+        do {
+            let existing = try plans.read(id: id)
+            planPublication = .replace(expectedPlanRevision: existing.planRevision)
+        } catch let error as DoryResolvedMachinePlanRepositoryError {
+            switch error {
+            case .planNotFound:
+                planPublication = .create
+            default:
+                throw MachineManagerError.persistence(
+                    "resolved-plan authority cannot be inspected: \(error)"
+                )
+            }
+        } catch {
+            throw MachineManagerError.persistence(
+                "resolved-plan authority cannot be inspected: \(error)"
+            )
+        }
+
+        guard let requirements = DoryDaemonVirtualMachinePlanningCoordinator
+            .launchArtifactRequirements(for: definition) else {
+            throw MachineManagerError.persistence(
+                "workspace launch artifacts are not representable"
+            )
+        }
+        let bindings = Dictionary(grouping: authority.migration.artifactBindings, by: \.reference)
+        var publications: [DoryDaemonVirtualMachinePlanningArtifactPublication] = []
+        publications.reserveCapacity(requirements.count)
+        for requirement in requirements {
+            guard let matches = bindings[requirement.reference], matches.count == 1,
+                  let binding = matches.first else {
+                throw MachineManagerError.persistence(
+                    "workspace launch artifact has no exact managed path"
+                )
+            }
+            let revision: UInt64?
+            do { revision = try controller.authorityRevision(for: requirement.reference) }
+            catch {
+                throw MachineManagerError.persistence(
+                    "workspace artifact authority cannot be inspected: \(error)"
+                )
+            }
+            publications.append(DoryDaemonVirtualMachinePlanningArtifactPublication(
+                reference: requirement.reference,
+                path: binding.path,
+                kind: requirement.kind,
+                source: requirement.source,
+                mutability: requirement.mutable ? .mutable : .immutable,
+                expectedAuthorityRevision: revision
+            ))
+        }
+
+        let request = DoryDaemonVirtualMachinePlanningTransactionRequest(
+            planning: DoryDaemonVirtualMachinePlanningRequest(
+                definition: definition,
+                canonicalDefinitionData: canonicalDefinitionData,
+                machine: authority.runtimeMachine,
+                publication: planPublication
+            ),
+            workspacePublication: .retainExistingExact
+        )
+        do {
+            try controller.publishResolvedPlan(
+                request,
+                artifacts: publications
+            )
+        } catch {
+            throw MachineManagerError.persistence(
+                "production planning failed closed: \(error)"
+            )
+        }
+        guard let current = status(id: id),
+              current.runtimeIdentity.mode == .resolvedPlan else {
+            throw MachineManagerError.persistence(
+                "production planning did not publish resolved runtime authority"
+            )
+        }
+        return current
+    }
+
+    @discardableResult
+    public func start(
+        id: String,
+        operationID: UUID? = nil
+    ) throws -> DoryMachineStatus {
+        let mutationLease = mutationCoordinator.acquire(workspaceID: id)
+        defer { mutationLease.release() }
+        let durableOperationID = try Self.lifecycleOperationID(
+            operationID,
+            action: "start"
+        )
+        try requireNoActivePlanningMutation(id: id)
+        lock.lock()
+        guard let startEntry = machines[id] else {
             lock.unlock()
+            throw MachineManagerError.unknownMachine(id)
+        }
+        let isDurablySuspended = startEntry.state == .suspended
+        lock.unlock()
+        try reconcilePendingInstallerFirmwarePromotionIfNeeded(
+            for: startEntry.configuration
+        )
+        if let authoritativeData = Self.readPrivateMetadata(path: machineConfigPath(id: id)) {
+            switch savedStateStore.inspect(
+                machineID: id,
+                authoritativeConfigurationData: authoritativeData,
+                runtimeIdentity: startEntry.runtimeIdentity
+            ) {
+            case .absent:
+                break
+            case .valid where isDurablySuspended:
+                break
+            case .valid:
+                throw MachineManagerError.persistence(
+                    "saved-state authority exists outside the suspended lifecycle state"
+                )
+            case .invalid(let detail):
+                throw MachineManagerError.persistence(detail)
+            }
+        }
+        if isDurablySuspended {
+            let directMutation = try retainDirectWorkspaceMutationLock(id: id)
+            defer { releaseDirectWorkspaceMutationLock(id: id, retention: directMutation) }
+            return try restoreSavedStateImplementation(
+                id: id,
+                requestedOperationID: durableOperationID
+            )
+        }
+        try refreshResolvedAdmissionForStartIfNeeded(id: id)
+        let directMutation = try retainDirectWorkspaceMutationLock(id: id)
+        defer { releaseDirectWorkspaceMutationLock(id: id, retention: directMutation) }
+        return try startImplementation(
+            id: id,
+            journalLifecycle: true,
+            requestedOperationID: durableOperationID
+        )
+    }
+
+    private static func lifecycleOperationID(
+        _ requested: UUID?,
+        action: String
+    ) throws -> UUID {
+        let operationID = requested ?? UUID()
+        guard operationID != zeroLifecycleOperationID else {
+            throw MachineManagerError.persistence(
+                "machine \(action) operation identifier cannot be zero"
+            )
+        }
+        return operationID
+    }
+
+    private func resolvedLaunchInfrastructureSnapshot()
+        -> MachineManagerResolvedLaunchInfrastructure? {
+        managerStateLock.withLock { () -> MachineManagerResolvedLaunchInfrastructure? in
+            guard resolvedLaunchInfrastructureReady,
+                  let registry = resolvedLaunchRegistry,
+                  let resolver = resolvedLaunchPlanResolver,
+                  let planStore = resolvedLaunchPlanStore,
+                  let revisionProvider = resolvedPlanRevisionProvider else { return nil }
+            return MachineManagerResolvedLaunchInfrastructure(
+                registry: registry,
+                resolver: resolver,
+                planStore: planStore,
+                revisionProvider: revisionProvider
+            )
+        }
+    }
+
+    private func resolvedBackendRegistrySnapshot() -> BackendRegistry? {
+        managerStateLock.withLock {
+            guard resolvedLaunchInfrastructureReady else { return nil }
+            return resolvedLaunchRegistry
+        }
+    }
+
+    private func productionAdmissionComponentsSnapshot() -> (
+        controller: (any DoryDaemonVirtualMachineProductionPlanningControlling)?,
+        ledger: DoryVirtualMachineResourceAdmissionLedger?
+    ) {
+        managerStateLock.withLock {
+            guard resolvedLaunchInfrastructureReady else { return (nil, nil) }
+            return (productionPlanningController, productionResourceAdmissionLedger)
+        }
+    }
+
+    private func productionAdmissionLedgerSnapshot()
+        -> DoryVirtualMachineResourceAdmissionLedger? {
+        productionAdmissionComponentsSnapshot().ledger
+    }
+
+    private func rendererCrashSuppressionStoreSnapshot()
+        -> DoryRendererCrashSuppressionStore? {
+        managerStateLock.withLock { rendererCrashSuppressionStore }
+    }
+
+    private func startImplementation(
+        id: String,
+        journalLifecycle: Bool,
+        requestedOperationID: UUID? = nil
+    ) throws -> DoryMachineStatus {
+        switch launchPolicy {
+        case .legacyCompatibility:
+            return try startLegacyMachine(
+                id: id,
+                journalLifecycle: journalLifecycle,
+                requestedOperationID: requestedOperationID,
+                expectedDurableIdentity: nil
+            )
+        case .requireResolvedPlan:
+            guard let infrastructure = resolvedLaunchInfrastructureSnapshot() else {
+                throw MachineManagerError.persistence(
+                    "resolved launch infrastructure is not installed"
+                )
+            }
+            return try startResolvedMachine(
+                id: id,
+                registry: infrastructure.registry,
+                resolver: infrastructure.resolver,
+                planStore: infrastructure.planStore,
+                revisionProvider: infrastructure.revisionProvider,
+                journalLifecycle: journalLifecycle,
+                requestedOperationID: requestedOperationID,
+                expectedRuntimeIdentity: nil
+            )
+        case .perWorkspaceAuthority:
+            let identity = try currentDurableRuntimeIdentity(id: id)
+            switch identity.mode {
+            case .legacyCompatibility:
+                return try startLegacyMachine(
+                    id: id,
+                    journalLifecycle: journalLifecycle,
+                    requestedOperationID: requestedOperationID,
+                    expectedDurableIdentity: identity
+                )
+            case .requiresReplanning:
+                throw MachineManagerError.persistence(
+                    "machine \(id) requires a resolved plan before launch"
+                )
+            case .resolvedPlan:
+                guard let infrastructure = resolvedLaunchInfrastructureSnapshot() else {
+                    throw MachineManagerError.persistence(
+                        "resolved launch infrastructure is not installed"
+                    )
+                }
+                return try startResolvedMachine(
+                    id: id,
+                    registry: infrastructure.registry,
+                    resolver: infrastructure.resolver,
+                    planStore: infrastructure.planStore,
+                    revisionProvider: infrastructure.revisionProvider,
+                    journalLifecycle: journalLifecycle,
+                    requestedOperationID: requestedOperationID,
+                    expectedRuntimeIdentity: identity
+                )
+            }
+        }
+    }
+
+    private func startLegacyMachine(
+        id: String,
+        journalLifecycle: Bool,
+        requestedOperationID: UUID?,
+        expectedDurableIdentity: DoryMachineRuntimeIdentity?
+    ) throws -> DoryMachineStatus {
+        let prepared = try prepareMachineStartWithLifecycle(
+            id: id,
+            authority: .legacyCompatibility,
+            journalLifecycle: journalLifecycle
+        )
+        let identity = try currentRuntimeIdentity(id: id)
+        guard identity.mode == .legacyCompatibility else {
+            throw MachineManagerError.persistence(
+                "legacy launch requires explicit compatibility authority"
+            )
+        }
+        if let expectedDurableIdentity {
+            try revalidateDurableRuntimeIdentity(
+                id: id,
+                expected: expectedDurableIdentity,
+                expectedMachine: prepared.authoritativeMachine
+            )
+        }
+        let lifecycle = try journalLifecycle
+            ? beginLifecycleStart(
+                machine: prepared.authoritativeMachine,
+                targetIdentity: identity,
+                operationID: requestedOperationID
+            )
+            : nil
+        let operationID = try launchOperationID(id: id, lifecycle: lifecycle)
+        do {
+            if let lifecycle { try advanceLifecycleToPublishing(lifecycle) }
+            let status = try spawnPreparedMachine(
+                prepared.machine,
+                shareAuthorities: prepared.shareAuthorities,
+                launchBinding: nil,
+                operationID: operationID,
+                qualificationBootstrapDefinition: prepared.definition
+            )
+            if let lifecycle {
+                if status.state == .failed {
+                    failLifecycle(lifecycle, stepID: "start.helper-exited")
+                    return self.status(id: id) ?? status
+                }
+                if status.state != .starting {
+                    _ = completeCommittedLifecycle(
+                        lifecycle,
+                        diagnostic: "running machine has an unfinished start journal"
+                    )
+                }
+            }
+            return status
+        } catch {
+            if let lifecycle { failLifecycle(lifecycle, stepID: "start.failed") }
             throw error
+        }
+    }
+
+    private func startResolvedMachine(
+        id: String,
+        registry: BackendRegistry,
+        resolver: any DoryDaemonVirtualMachineLaunchPlanResolving,
+        planStore: any DoryResolvedMachinePlanStoring,
+        revisionProvider: ResolvedPlanRevisionProvider,
+        journalLifecycle: Bool,
+        requestedOperationID: UUID?,
+        expectedRuntimeIdentity: DoryMachineRuntimeIdentity?
+    ) throws -> DoryMachineStatus {
+        let prepared = try prepareMachineStartWithLifecycle(
+            id: id,
+            authority: .resolvedPlan,
+            journalLifecycle: journalLifecycle
+        )
+        guard let definition = prepared.definition,
+              let definitionData = prepared.canonicalDefinitionData else {
+            throw MachineManagerError.persistence(
+                "authoritative workspace definition is unavailable for resolved launch"
+            )
+        }
+        guard let expectedPlanRevision = revisionProvider(id), expectedPlanRevision > 0 else {
+            throw MachineManagerError.persistence(
+                "no resolved-plan revision is pinned for machine \(id)"
+            )
+        }
+        let resolved: DoryDaemonVirtualMachineLaunchPlanResolution
+        do {
+            resolved = try resolver.resolve(DoryDaemonVirtualMachineLaunchPlanRequest(
+                definition: definition,
+                canonicalDefinitionData: definitionData,
+                machine: prepared.machine,
+                expectedPlanRevision: expectedPlanRevision
+            ))
+        } catch {
+            throw MachineManagerError.persistence("resolved launch rejected: \(error)")
+        }
+        try validateResolvedLaunch(
+            resolved,
+            machine: prepared.machine,
+            definition: definition,
+            canonicalDefinitionData: definitionData
+        )
+        try revalidatePreparedAuthorityImmediatelyBeforeSpawn(
+            prepared,
+            expectedDefinition: definition,
+            expectedCanonicalDefinitionData: definitionData
+        )
+        try revalidateResolvedPlanAuthorityImmediatelyBeforeSpawn(
+            resolved,
+            planStore: planStore
+        )
+        guard let preSpawnAuthorization = resolved.preSpawnAuthorization else {
+            throw MachineManagerError.persistence(
+                "resolved launch is missing final pre-spawn authorization"
+            )
+        }
+        let runtimeIdentity = try DoryMachineRuntimeIdentity(
+            resolvedPlan: resolved.resolvedPlan,
+            planSHA256: resolved.resolvedPlanSHA256
+        )
+        if let expectedRuntimeIdentity, runtimeIdentity != expectedRuntimeIdentity {
+            throw MachineManagerError.persistence(
+                "resolved launch does not match the workspace's durable runtime authority"
+            )
+        }
+        if let expectedRuntimeIdentity {
+            try revalidateDurableRuntimeIdentity(
+                id: id,
+                expected: expectedRuntimeIdentity,
+                expectedMachine: prepared.authoritativeMachine
+            )
+        }
+        let lifecycle = try journalLifecycle
+            ? beginLifecycleStart(
+                machine: prepared.authoritativeMachine,
+                targetIdentity: runtimeIdentity,
+                operationID: requestedOperationID
+            )
+            : nil
+        let operationID = try launchOperationID(id: id, lifecycle: lifecycle)
+
+        do {
+            if let lifecycle { try advanceLifecycleToPublishing(lifecycle) }
+            let pendingStart = PendingResolvedMachineStart(
+                machine: prepared.machine,
+                plan: resolved.resolvedPlan,
+                backend: resolved.backendPlan.backend,
+                runtimeBuildIdentifier: resolved.resolvedPlan.backendRuntimeBuildIdentifier,
+                runtimeComponents: resolved.resolvedPlan.components,
+                graphics: resolved.resolvedPlan.graphics,
+                devices: resolved.resolvedPlan.devices,
+                portForwards: resolved.resolvedPlan.portForwards,
+                operationID: operationID,
+                planRevision: resolved.resolvedPlan.planRevision,
+                planSHA256: resolved.resolvedPlanSHA256,
+                preSpawnAuthorization: preSpawnAuthorization,
+                shareAuthorities: prepared.shareAuthorities
+            )
+            try managerStateLock.withLock {
+                guard pendingResolvedStarts[id] == nil else {
+                    throw MachineManagerError.persistence(
+                        "machine already has a pending resolved-start authorization"
+                    )
+                }
+                pendingResolvedStarts[id] = pendingStart
+            }
+            defer {
+                managerStateLock.withLock {
+                    if pendingResolvedStarts[id]?.operationID == operationID {
+                        pendingResolvedStarts.removeValue(forKey: id)
+                    }
+                }
+            }
+            let operation = registry.start(MachineBackendStartRequest(
+                plan: resolved.backendPlan,
+                operationID: operationID
+            ))
+            guard operation.isSuccess,
+                  operation.backend == resolved.resolvedPlan.backend,
+                  operation.observation?.machineID == id else {
+                let failure = operation.failure?.message ?? "backend adapter returned no observation"
+                throw MachineManagerError.persistence("resolved backend start failed: \(failure)")
+            }
+            lock.lock()
+            if var entry = machines[id] {
+                entry.runtimeIdentity = runtimeIdentity
+                machines[id] = entry
+            }
+            lock.unlock()
+            guard let status = status(id: id), [.starting, .running].contains(status.state) else {
+                throw MachineManagerError.persistence(
+                    "resolved backend did not enter MachineManager's prepared spawn path"
+                )
+            }
+            managerStateLock.withLock {
+                resolvedLaunchIdentities[id] = DoryMachineResolvedLaunchIdentity(
+                    plan: resolved.resolvedPlan,
+                    planSHA256: resolved.resolvedPlanSHA256
+                )
+            }
+            if let lifecycle {
+                if status.state == .failed {
+                    failLifecycle(lifecycle, stepID: "start.helper-exited")
+                    return self.status(id: id) ?? status
+                }
+                if status.state != .starting {
+                    _ = completeCommittedLifecycle(
+                        lifecycle,
+                        diagnostic: "running machine has an unfinished resolved-start journal"
+                    )
+                }
+            }
+            return status
+        } catch {
+            if let lifecycle { failLifecycle(lifecycle, stepID: "start.failed") }
+            throw error
+        }
+    }
+
+    private func revalidateResolvedPlanAuthorityImmediatelyBeforeSpawn(
+        _ resolved: DoryDaemonVirtualMachineLaunchPlanResolution,
+        planStore: any DoryResolvedMachinePlanStoring
+    ) throws {
+        let current: DoryResolvedMachinePlan
+        do {
+            current = try planStore.read(id: resolved.resolvedPlan.machineID)
+        } catch {
+            throw MachineManagerError.persistence(
+                "resolved-plan authority changed during launch validation: \(error)"
+            )
+        }
+        guard current.planRevision == resolved.resolvedPlan.planRevision,
+              current == resolved.resolvedPlan,
+              try Self.canonicalResolvedPlanSHA256(current)
+                == resolved.resolvedPlanSHA256.lowercased() else {
+            throw MachineManagerError.persistence(
+                "resolved-plan authority changed during launch validation"
+            )
+        }
+    }
+
+    private func revalidatePreparedAuthorityImmediatelyBeforeSpawn(
+        _ prepared: PreparedMachineStart,
+        expectedDefinition: DoryVirtualMachineDefinition,
+        expectedCanonicalDefinitionData: Data
+    ) throws {
+        guard let preparedLegacyData = prepared.authoritativeLegacyData,
+              let currentLegacyData = Self.readPrivateMetadata(
+                path: machineConfigPath(id: prepared.authoritativeMachine.id)
+              ),
+              currentLegacyData == preparedLegacyData,
+              let decoded = try? JSONDecoder().decode(
+                DoryMachineConfiguration.self,
+                from: currentLegacyData
+              ),
+              decoded == prepared.authoritativeMachine,
+              let currentDefinition = reconcileWorkspaceProjection(
+                machine: prepared.authoritativeMachine,
+                authoritativeLegacyData: currentLegacyData
+              ),
+              currentDefinition == expectedDefinition,
+              try Self.canonicalDefinitionData(currentDefinition)
+                == expectedCanonicalDefinitionData else {
+            throw MachineManagerError.persistence(
+                "machine authority changed during resolved launch validation"
+            )
+        }
+    }
+
+    private func performAuthorizedResolvedBackendStart(
+        binding: MachineBackendLaunchBinding,
+        expectedBackend: DoryVirtualizationBackendIdentity
+    ) throws -> MachineBackendRuntimeObservation {
+        let mutationLease = mutationCoordinator.acquire(workspaceID: binding.machineID)
+        defer { mutationLease.release() }
+        let authorization: PendingResolvedMachineStart
+        managerStateLock.lock()
+        guard let pending = pendingResolvedStarts[binding.machineID],
+              pending.machine.id == binding.machineID,
+              pending.operationID == binding.operationID,
+              pending.backend == binding.backend,
+              binding.backend.identity == expectedBackend,
+              pending.graphics == binding.graphics,
+              pending.devices == binding.devices,
+              pending.portForwards == binding.portForwards,
+              !binding.executablePath.isEmpty else {
+            pendingResolvedStarts.removeValue(forKey: binding.machineID)
+            managerStateLock.unlock()
+            throw MachineManagerError.persistence(
+                "backend start does not match the exact resolved-plan launch contract"
+            )
+        }
+        // Consume atomically before hashing or process construction. A second or delayed adapter
+        // callback for this workspace cannot reuse the validated context, even after failure.
+        authorization = pending
+        pendingResolvedStarts.removeValue(forKey: binding.machineID)
+        managerStateLock.unlock()
+        let executableSHA256: String
+        do {
+            executableSHA256 = try Self.fileSHA256(path: binding.executablePath)
+        } catch {
+            throw MachineManagerError.persistence(
+                "resolved backend executable could not be verified: \(error)"
+            )
+        }
+        let matchingComponents = authorization.runtimeComponents.filter {
+            $0.componentIdentifier == binding.componentIdentifier
+                && $0.buildIdentifier == authorization.runtimeBuildIdentifier
+                && $0.artifactSHA256.lowercased() == executableSHA256
+        }
+        guard matchingComponents.count == 1 else {
+            throw MachineManagerError.persistence(
+                "resolved backend executable does not match qualified runtime evidence"
+            )
+        }
+        return MachineBackendRuntimeObservation(try spawnPreparedMachine(
+            authorization.machine,
+            shareAuthorities: authorization.shareAuthorities,
+            launchBinding: binding,
+            operationID: authorization.operationID,
+            preSpawnAuthorization: authorization.preSpawnAuthorization,
+            resolvedPlan: authorization.plan
+        ))
+    }
+
+    private func launchOperationID(
+        id: String,
+        lifecycle: MachineLifecycleJournalContext?
+    ) throws -> UUID {
+        if let lifecycle {
+            return lifecycle.operation.operationID
+        }
+        lock.lock()
+        defer { lock.unlock() }
+        guard let operationID = machines[id]?.activeOperationID else {
+            throw MachineManagerError.persistence(
+                "machine launch is missing a durable lifecycle operation identifier"
+            )
+        }
+        return operationID
+    }
+
+    private func validateResolvedLaunch(
+        _ resolved: DoryDaemonVirtualMachineLaunchPlanResolution,
+        machine: DoryMachineConfiguration,
+        definition: DoryVirtualMachineDefinition,
+        canonicalDefinitionData: Data
+    ) throws {
+        let plan = resolved.resolvedPlan
+        let capability = resolved.backendPlan.capability
+        let definitionDigest = SHA256.hash(data: canonicalDefinitionData)
+            .map { String(format: "%02x", $0) }.joined()
+        let canonicalPlanDigest = try Self.canonicalResolvedPlanSHA256(plan)
+        let expectedMemoryBytes = machine.memoryMB.multipliedReportingOverflow(by: 1_048_576)
+        guard !expectedMemoryBytes.overflow,
+              resolved.revalidation.mayStart,
+              plan.validate().isEmpty,
+              plan.machineID == machine.id,
+              plan.definitionRevision == definition.lifecycle.revision,
+              plan.definitionSHA256?.lowercased() == definitionDigest,
+              resolved.resolvedPlanSHA256.lowercased() == canonicalPlanDigest,
+              plan.resourceAdmission?.admittedVirtualCPUCount == UInt64(machine.cpuCount),
+              plan.resourceAdmission?.admittedMemoryBytes == expectedMemoryBytes.partialValue,
+              plan.resourceAdmission?.admittedStorageBytes == definition.resources.diskBytes,
+              resolved.backendPlan.machine == machine,
+              resolved.backendPlan.backend.identity == plan.backend,
+              resolved.backendPlan.backend.implementationIdentifier
+                == plan.backendImplementationIdentifier,
+              capability.request.guest == plan.guest,
+              capability.request.backend == plan.backend,
+              capability.request.bootMedia == plan.bootMedia.media,
+              capability.request.devices == plan.devices,
+              capability.request.graphics == plan.graphics,
+              plan.portForwards == definition.portForwards,
+              resolved.backendPlan.portForwards == plan.portForwards,
+              capability.request.virtualHardwareABIVersion == plan.virtualHardwareABIVersion,
+              capability.availability.supportTier == plan.supportTier,
+              capability.availability.isUsable,
+              capability.resolvedDevices == plan.devices else {
+            throw MachineManagerError.persistence(
+                "resolved plan does not exactly match current definition and adapter evidence"
+            )
+        }
+    }
+
+    private static func canonicalResolvedPlanSHA256(
+        _ plan: DoryResolvedMachinePlan
+    ) throws -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let data = try encoder.encode(plan)
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func exactResourceAdmissionLease(
+        for plan: DoryResolvedMachinePlan,
+        ledger: DoryVirtualMachineResourceAdmissionLedger
+    ) throws -> DoryVirtualMachineResourceAdmissionLease {
+        guard let admission = plan.resourceAdmission,
+              let definitionSHA256 = plan.definitionSHA256 else {
+            throw MachineManagerError.persistence(
+                "resolved plan has no exact resource-admission authority"
+            )
+        }
+        let snapshot: DoryVirtualMachineResourceAdmissionLedgerSnapshot
+        do { snapshot = try ledger.snapshot() }
+        catch {
+            throw MachineManagerError.persistence(
+                "resource-admission ledger cannot be inspected: \(error)"
+            )
+        }
+        let matches = snapshot.leases.filter { $0.leaseID == admission.admissionIdentity }
+        guard matches.count == 1, let lease = matches.first,
+              lease.binding.machineID == plan.machineID,
+              lease.binding.definitionRevision == plan.definitionRevision,
+              lease.binding.definitionSHA256.lowercased() == definitionSHA256.lowercased(),
+              lease.binding.plannedPlanRevision == plan.planRevision,
+              lease.boundPlanSHA256?.lowercased()
+                == (try Self.canonicalResolvedPlanSHA256(plan)),
+              lease.evidence == admission else {
+            throw MachineManagerError.persistence(
+                "resolved plan does not match its durable resource-admission lease"
+            )
+        }
+        return lease
+    }
+
+    private func refreshResolvedAdmissionForStartIfNeeded(id: String) throws {
+        let components = productionAdmissionComponentsSnapshot()
+        guard launchPolicy == .perWorkspaceAuthority,
+              let controller = components.controller,
+              let ledger = components.ledger else { return }
+        let identity = try currentDurableRuntimeIdentity(id: id)
+        guard identity.mode == .resolvedPlan, let plan = identity.resolvedPlan else { return }
+        var lease = try exactResourceAdmissionLease(for: plan, ledger: ledger)
+        switch lease.state {
+        case .starting:
+            return
+        case .running:
+            guard status(id: id)?.state != .running else { return }
+            do {
+                lease = try ledger.markStopped(
+                    leaseID: lease.leaseID,
+                    expectedLeaseRevision: lease.leaseRevision
+                )
+            } catch {
+                throw MachineManagerError.persistence(
+                    "stale running resource admission could not be reconciled: \(error)"
+                )
+            }
+        case .recoveryRequired:
+            guard status(id: id)?.state != .running else {
+                throw MachineManagerError.persistence(
+                    "running machine has an ambiguous expired resource admission"
+                )
+            }
+            do {
+                lease = try ledger.reconcileExpiredStart(
+                    leaseID: lease.leaseID,
+                    observedRuntimeState: .stopped,
+                    expectedLeaseRevision: lease.leaseRevision
+                )
+            } catch {
+                throw MachineManagerError.persistence(
+                    "expired resource admission could not be reconciled: \(error)"
+                )
+            }
+        case .stopped:
+            break
+        }
+        guard lease.state == .stopped else {
+            throw MachineManagerError.persistence(
+                "resource admission did not settle to stopped before replanning"
+            )
+        }
+        _ = try resolveAndPublishProductionPlan(id: id, controller: controller)
+    }
+
+    private func reconcileResourceAdmissionsAfterDaemonRestart() throws {
+        let ledger = managerStateLock.withLock { productionResourceAdmissionLedger }
+        guard let ledger else { return }
+        let snapshot: DoryVirtualMachineResourceAdmissionLedgerSnapshot
+        do { snapshot = try ledger.snapshot() }
+        catch {
+            throw MachineManagerError.persistence(
+                "resource-admission restart reconciliation failed: \(error)"
+            )
+        }
+        let loadedMachineIDs: Set<String>
+        lock.lock()
+        loadedMachineIDs = Set(machines.keys)
+        lock.unlock()
+        for lease in snapshot.leases {
+            let machineIsLoaded = loadedMachineIDs.contains(lease.binding.machineID)
+            let machinePathExists = Self.pathEntryExists(
+                machineStateDirectory(id: lease.binding.machineID)
+            )
+            do {
+                if !machineIsLoaded, !machinePathExists, lease.state == .stopped {
+                    try ledger.releaseStorageReservation(
+                        leaseID: lease.leaseID,
+                        expectedLeaseRevision: lease.leaseRevision
+                    )
+                    continue
+                }
+                guard machineIsLoaded else { continue }
+                switch lease.state {
+                case .running:
+                    _ = try ledger.markStopped(
+                        leaseID: lease.leaseID,
+                        expectedLeaseRevision: lease.leaseRevision
+                    )
+                case .recoveryRequired:
+                    _ = try ledger.reconcileExpiredStart(
+                        leaseID: lease.leaseID,
+                        observedRuntimeState: .stopped,
+                        expectedLeaseRevision: lease.leaseRevision
+                    )
+                case .starting, .stopped:
+                    break
+                }
+            } catch {
+                throw MachineManagerError.persistence(
+                    "resource admission for \(lease.binding.machineID) could not be reconciled: \(error)"
+                )
+            }
+        }
+    }
+
+    private func markResolvedAdmissionRunning(
+        plan: DoryResolvedMachinePlan
+    ) throws {
+        guard let ledger = productionAdmissionLedgerSnapshot() else { return }
+        let lease = try exactResourceAdmissionLease(for: plan, ledger: ledger)
+        guard lease.state == .starting else {
+            throw MachineManagerError.persistence(
+                "resolved start requires a starting resource-admission lease"
+            )
+        }
+        do {
+            _ = try ledger.markRunning(
+                leaseID: lease.leaseID,
+                plan: plan,
+                hostFacts: lease.hostFacts,
+                expectedLeaseRevision: lease.leaseRevision
+            )
+        } catch {
+            throw MachineManagerError.persistence(
+                "resource admission could not commit running state: \(error)"
+            )
+        }
+    }
+
+    private func markResolvedAdmissionStopped(
+        plan: DoryResolvedMachinePlan?
+    ) throws {
+        guard let plan, let ledger = productionAdmissionLedgerSnapshot() else { return }
+        let lease = try exactResourceAdmissionLease(for: plan, ledger: ledger)
+        do {
+            switch lease.state {
+            case .starting, .running:
+                _ = try ledger.markStopped(
+                    leaseID: lease.leaseID,
+                    expectedLeaseRevision: lease.leaseRevision
+                )
+            case .recoveryRequired:
+                _ = try ledger.reconcileExpiredStart(
+                    leaseID: lease.leaseID,
+                    observedRuntimeState: .stopped,
+                    expectedLeaseRevision: lease.leaseRevision
+                )
+            case .stopped:
+                break
+            }
+        } catch {
+            throw MachineManagerError.persistence(
+                "resource admission could not commit stopped state: \(error)"
+            )
+        }
+    }
+
+    private func prepareRetainedResolvedAdmissionForRestart(
+        plan: DoryResolvedMachinePlan?
+    ) throws {
+        guard let plan, let ledger = productionAdmissionLedgerSnapshot() else { return }
+        let lease = try exactResourceAdmissionLease(for: plan, ledger: ledger)
+        switch lease.state {
+        case .running:
+            do {
+                _ = try ledger.prepareRetainedRunningForRestart(
+                    leaseID: lease.leaseID,
+                    plan: plan,
+                    expectedLeaseRevision: lease.leaseRevision
+                )
+            } catch {
+                throw MachineManagerError.persistence(
+                    "retained resource admission could not authorize restart: \(error)"
+                )
+            }
+        case .starting:
+            return
+        case .stopped, .recoveryRequired:
+            throw MachineManagerError.persistence(
+                "retained resource admission is unavailable for restart"
+            )
+        }
+    }
+
+    private func releaseResolvedAdmissionStorage(
+        machineID: String,
+        plan: DoryResolvedMachinePlan?
+    ) throws {
+        guard let ledger = productionAdmissionLedgerSnapshot() else { return }
+        let lease: DoryVirtualMachineResourceAdmissionLease
+        if let plan {
+            lease = try exactResourceAdmissionLease(for: plan, ledger: ledger)
+        } else {
+            let matches = try ledger.snapshot().leases.filter {
+                $0.binding.machineID == machineID
+            }
+            guard matches.count <= 1 else {
+                throw MachineManagerError.persistence(
+                    "machine has ambiguous resource storage reservations"
+                )
+            }
+            guard let retained = matches.first else { return }
+            lease = retained
+        }
+        guard lease.state == .stopped else {
+            throw MachineManagerError.persistence(
+                "resource storage can be released only after the machine is stopped"
+            )
+        }
+        do {
+            try ledger.releaseStorageReservation(
+                leaseID: lease.leaseID,
+                expectedLeaseRevision: lease.leaseRevision
+            )
+        } catch {
+            throw MachineManagerError.persistence(
+                "resource storage reservation could not be released: \(error)"
+            )
+        }
+    }
+
+    private static func fileSHA256(path: String) throws -> String {
+        guard let handle = FileHandle(forReadingAtPath: path) else {
+            throw MachineManagerError.persistence("cannot open runtime executable at \(path)")
+        }
+        defer { _ = try? handle.close() }
+        var hash = SHA256()
+        while true {
+            let data = try handle.read(upToCount: 1_048_576) ?? Data()
+            if data.isEmpty { break }
+            hash.update(data: data)
+        }
+        return hash.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func prepareMachineStart(
+        id: String,
+        authority: MachineStartPreparationAuthority
+    ) throws -> PreparedMachineStart {
+        lock.lock()
+        guard let entry = machines[id] else {
+            lock.unlock()
+            throw MachineManagerError.unknownMachine(id)
         }
         if entry.process?.isRunning == true {
             lock.unlock()
             throw MachineManagerError.alreadyRunning(id)
         }
-        let handoffPath = configuration.requiresReadyHandoff ? handoffSocketPath(id: id) : nil
-        let launchID = UUID()
-        let handoffServer: VmmHandoffServer?
-        do {
-            handoffServer = try handoffPath.map { path in
-                let server = VmmHandoffServer(path: path) { [weak self] result in
-                    self?.handleHandoff(machineID: id, launchID: launchID, result: result)
+        lock.unlock()
+
+        let authoritativeMachine = entry.configuration
+        if authority == .legacyCompatibility {
+            try prepareLegacyRawHVInstalledLinuxBootIfNeeded(authoritativeMachine)
+        }
+        let authoritativeLegacyData = Self.readPrivateMetadata(
+            path: machineConfigPath(id: authoritativeMachine.id)
+        )
+        var authoritativeDefinition: DoryVirtualMachineDefinition?
+        var runtimeMachine = authoritativeMachine
+        if let authoritativeLegacyData {
+            if authority.requiresAuthoritativeDefinition {
+                guard let decoded = try? JSONDecoder().decode(
+                    DoryMachineConfiguration.self,
+                    from: authoritativeLegacyData
+                ), decoded == authoritativeMachine else {
+                    throw MachineManagerError.persistence(
+                        "authoritative machine metadata changed before resolved launch"
+                    )
                 }
-                try server.start()
-                return server
             }
+            // Boot-bundle materialization can change authoritative inspection facts without
+            // changing machine.json. Reconcile those facts immediately before launch.
+            authoritativeDefinition = reconcileWorkspaceProjection(
+                machine: authoritativeMachine,
+                authoritativeLegacyData: authoritativeLegacyData
+            )
+            if authoritativeDefinition != nil {
+                do {
+                    runtimeMachine = try workspaceAuthority(
+                        machine: authoritativeMachine,
+                        authoritativeLegacyData: authoritativeLegacyData
+                    ).runtimeMachine
+                } catch {
+                    throw MachineManagerError.persistence(
+                        "workspace runtime projection is unavailable: \(error)"
+                    )
+                }
+            }
+        } else if authority.requiresAuthoritativeDefinition {
+            throw MachineManagerError.persistence(
+                "authoritative machine metadata is unavailable for resolved launch"
+            )
+        }
+        try Self.validateLaunchConfiguration(runtimeMachine)
+        let shareAuthorities = try Self.captureShareRuntimeAuthorities(
+            runtimeMachine.shares
+        )
+        try validateManagedMachineArtifacts(runtimeMachine)
+        if !authority.requiresAuthoritativeDefinition {
+            try validateRuntimeAvailability(runtimeMachine)
+        }
+        if authority.requiresAuthoritativeDefinition, authoritativeDefinition == nil {
+            throw MachineManagerError.persistence(
+                "authoritative workspace projection is unavailable for resolved launch"
+            )
+        }
+        let definitionData = try authoritativeDefinition.map(Self.canonicalDefinitionData)
+        return PreparedMachineStart(
+            machine: runtimeMachine,
+            authoritativeMachine: authoritativeMachine,
+            definition: authoritativeDefinition,
+            canonicalDefinitionData: definitionData,
+            authoritativeLegacyData: authoritativeLegacyData,
+            shareAuthorities: shareAuthorities
+        )
+    }
+
+    private func prepareMachineStartWithLifecycle(
+        id: String,
+        authority: MachineStartPreparationAuthority,
+        journalLifecycle: Bool
+    ) throws -> PreparedMachineStart {
+        guard journalLifecycle else {
+            return try prepareMachineStart(
+                id: id,
+                authority: authority
+            )
+        }
+        let lifecycle = try beginLifecycleStartPreparation(id: id)
+        do {
+            try advanceLifecycleToPublishing(lifecycle)
+            let prepared = try prepareMachineStart(
+                id: id,
+                authority: authority
+            )
+#if DEBUG
+            try injectLifecycleFault(.startAfterPreparation)
+#endif
+            guard completeCommittedLifecycle(
+                lifecycle,
+                diagnostic: "start preparation committed; journal completion requires recovery"
+            ) else {
+                throw MachineLifecycleJournalCompletionPending()
+            }
+            return prepared
         } catch {
-            lock.unlock()
+#if DEBUG
+            if error is MachineLifecycleInjectedCrash { throw error }
+#endif
+            if error is MachineLifecycleJournalCompletionPending {
+                throw MachineManagerError.persistence(
+                    "start preparation committed but journal completion requires recovery"
+                )
+            }
+            failLifecycle(lifecycle, stepID: "start-preparation.failed")
             throw error
         }
-        let process = HvProcess(configuration: processConfiguration(for: entry.configuration, handoffPath: handoffPath))
+    }
+
+    private func reservePreparedMachineLaunch(
+        _ preparedMachine: DoryMachineConfiguration,
+        operationID: UUID
+    ) throws -> MachineLaunchAdmissionSnapshot {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard var entry = machines[preparedMachine.id] else {
+            throw MachineManagerError.unknownMachine(preparedMachine.id)
+        }
+        guard entry.configuration == preparedMachine else {
+            throw MachineManagerError.persistence(
+                "machine configuration changed after launch validation"
+            )
+        }
+        guard entry.activeOperationID == operationID else {
+            throw MachineManagerError.persistence(
+                "machine launch operation authority changed before helper spawn"
+            )
+        }
+        guard entry.process?.isRunning != true else {
+            throw MachineManagerError.alreadyRunning(preparedMachine.id)
+        }
+        guard entry.launchReservation == nil else {
+            throw MachineManagerError.persistence(
+                "machine already has an active launch admission reservation"
+            )
+        }
+        guard entry.activeResolvedPlan == nil, entry.activeBackend == nil else {
+            throw MachineManagerError.persistence(
+                "stopped machine retains active backend launch state"
+            )
+        }
+        let next = lastLaunchReservationGeneration.addingReportingOverflow(1)
+        guard !next.overflow, next.partialValue != 0 else {
+            throw MachineManagerError.persistence(
+                "machine launch admission generation space is exhausted"
+            )
+        }
+        lastLaunchReservationGeneration = next.partialValue
+        let reservation = MachineLaunchReservation(
+            generation: next.partialValue,
+            token: UUID()
+        )
+        let snapshot = MachineLaunchAdmissionSnapshot(
+            reservation: reservation,
+            configuration: entry.configuration,
+            state: entry.state,
+            process: entry.process,
+            handoffServer: entry.handoffServer,
+            handoff: entry.handoff,
+            launchID: entry.launchID,
+            runtimeAddress: entry.runtimeAddress,
+            currentBalloonTargetMB: entry.currentBalloonTargetMB,
+            activeOperationID: entry.activeOperationID,
+            activeOperationKind: entry.activeOperationKind,
+            readinessAcceptedPendingPublication:
+                entry.readinessAcceptedPendingPublication,
+            pendingRestoreStatePath: entry.pendingRestoreStatePath,
+            savedStateStatus: entry.savedStateStatus,
+            runtimeIdentity: entry.runtimeIdentity,
+            runtimeIdentityAuthority: Self.runtimeIdentityLaunchAuthority(
+                entry.runtimeIdentity
+            )
+        )
+        entry.launchReservation = reservation
+        machines[preparedMachine.id] = entry
+        return snapshot
+    }
+
+    private static func sameObject<Object: AnyObject>(
+        _ lhs: Object?,
+        _ rhs: Object?
+    ) -> Bool {
+        switch (lhs, rhs) {
+        case (nil, nil): true
+        case let (lhs?, rhs?): lhs === rhs
+        default: false
+        }
+    }
+
+    private static func launchAuthorityStillMatches(
+        _ entry: MachineEntry,
+        snapshot: MachineLaunchAdmissionSnapshot
+    ) -> Bool {
+        entry.launchReservation == snapshot.reservation
+            && entry.configuration == snapshot.configuration
+            && entry.state == snapshot.state
+            && sameObject(entry.process, snapshot.process)
+            && sameObject(entry.handoffServer, snapshot.handoffServer)
+            && sameObject(entry.handoff, snapshot.handoff)
+            && entry.launchID == snapshot.launchID
+            && entry.runtimeAddress == snapshot.runtimeAddress
+            && entry.currentBalloonTargetMB == snapshot.currentBalloonTargetMB
+            && entry.activeOperationID == snapshot.activeOperationID
+            && entry.activeOperationKind == snapshot.activeOperationKind
+            && entry.readinessAcceptedPendingPublication
+                == snapshot.readinessAcceptedPendingPublication
+            && entry.activeResolvedPlan == nil
+            && entry.activeBackend == nil
+            && entry.pendingRestoreStatePath == snapshot.pendingRestoreStatePath
+            && entry.savedStateStatus == snapshot.savedStateStatus
+            && runtimeIdentityLaunchAuthority(entry.runtimeIdentity)
+                == snapshot.runtimeIdentityAuthority
+    }
+
+    /// The runtime identity has already passed full plan validation and digest verification before
+    /// the reservation is minted. Public mutations cannot enter this workspace until commit, so
+    /// the final locked check needs only the digest-bound identity header and plan presence. Using
+    /// synthesized equality for the complete plan here generated an unbounded compiler stack frame
+    /// as the versioned topology contract grew, and provided no additional mutation authority.
+    private static func runtimeIdentityLaunchAuthority(
+        _ identity: DoryMachineRuntimeIdentity
+    ) -> MachineRuntimeIdentityLaunchAuthority {
+        MachineRuntimeIdentityLaunchAuthority(
+            schemaVersion: identity.schemaVersion,
+            mode: identity.mode,
+            virtualHardwareABIVersion: identity.virtualHardwareABIVersion,
+            invalidationReason: identity.invalidationReason,
+            resolvedPlanSHA256: identity.resolvedPlanSHA256,
+            hasResolvedPlan: identity.resolvedPlan != nil
+        )
+    }
+
+    private func clearLaunchReservation(
+        machineID: String,
+        matching reservation: MachineLaunchReservation
+    ) {
+        lock.lock()
+        if var entry = machines[machineID], entry.launchReservation == reservation {
+            entry.launchReservation = nil
+            machines[machineID] = entry
+        }
+        lock.unlock()
+    }
+
+    private func discardUncommittedMachineLaunch(
+        snapshot: MachineLaunchAdmissionSnapshot,
+        handoffServer: VmmHandoffServer?,
+        process: HvProcess? = nil,
+        deferredAdmissionPlan: DoryResolvedMachinePlan? = nil
+    ) -> Bool {
+        // Keep the reservation authoritative until every locally-created endpoint and descriptor
+        // owner is stopped. Clearing first would permit a newer launch to reuse those paths while
+        // teardown of the older generation was still in progress.
+        handoffServer?.stop()
+        if let process, !processStopper(process) {
+            // The exact helper (or a failed-launch application retirement) remains authoritative.
+            // Leave the reservation in place so no later start can reuse its VM disk/descriptors;
+            // a background terminal waiter clears it only after the retained reaper proves exit.
+            DispatchQueue.global(qos: .utility).async { [self, process] in
+                process.waitUntilTerminated()
+                let machineID = snapshot.configuration.id
+                let mutationLease = mutationCoordinator.acquire(workspaceID: machineID)
+                defer { mutationLease.release() }
+                do {
+                    try markResolvedAdmissionStopped(plan: deferredAdmissionPlan)
+                    clearLaunchReservation(
+                        machineID: machineID,
+                        matching: snapshot.reservation
+                    )
+                } catch {
+                    lock.lock()
+                    if var current = machines[machineID],
+                       current.launchReservation == snapshot.reservation {
+                        current.state = .failed
+                        setFailure(
+                            on: &current,
+                            code: .resourceAdmissionRejected,
+                            message: "retired uncommitted helper could not settle resource admission: \(error)",
+                            causes: [.resourceAdmission, .runtimeAuthority],
+                            recoveryDisposition: .repair
+                        )
+                        machines[machineID] = current
+                    }
+                    lock.unlock()
+                }
+            }
+            return false
+        }
+        clearLaunchReservation(
+            machineID: snapshot.configuration.id,
+            matching: snapshot.reservation
+        )
+        return true
+    }
+
+    private func commitPreparedMachineLaunch(
+        snapshot: MachineLaunchAdmissionSnapshot,
+        process: HvProcess,
+        handoffServer: VmmHandoffServer?,
+        launchID: UUID,
+        backend: DoryVirtualizationBackendIdentity,
+        resolvedPlan: DoryResolvedMachinePlan?
+    ) throws {
+        let id = snapshot.configuration.id
+        let hasProductionAdmissionLedger = productionAdmissionLedgerSnapshot() != nil
+        lock.lock()
+        defer { lock.unlock() }
+        guard var entry = machines[id],
+              Self.launchAuthorityStillMatches(entry, snapshot: snapshot) else {
+            throw MachineManagerError.persistence(
+                "machine launch authority changed during unlocked admission"
+            )
+        }
+
+        entry.launchReservation = nil
         entry.process = process
         entry.handoffServer = handoffServer
         entry.handoff = nil
         entry.launchID = launchID
         entry.runtimeAddress = nil
         entry.currentBalloonTargetMB = nil
-        entry.state = configuration.requiresReadyHandoff ? .starting : .running
-        entry.lastError = nil
+        entry.activeResolvedPlan = resolvedPlan
+        entry.activeBackend = backend
+        entry.lastDeviceTelemetrySampleSequence = 0
+        entry.lastDeviceTelemetryEventSequence = 0
+        entry.readinessAcceptedPendingPublication = false
+        let requiresAdmissionCommit = resolvedPlan != nil
+            && hasProductionAdmissionLedger
+        entry.state = configuration.requiresReadyHandoff || requiresAdmissionCommit
+            ? .starting : .running
+        clearFailure(on: &entry)
         machines[id] = entry
+    }
+
+    private func resolvedLaunchFailureAfterStoppingAdmission(
+        _ error: Error,
+        plan: DoryResolvedMachinePlan?,
+        context: String
+    ) -> Error {
+        do {
+            try markResolvedAdmissionStopped(plan: plan)
+            return error
+        } catch let settlementError {
+            return MachineManagerError.persistence(
+                "\(context): \(error); resource settlement failed: \(settlementError)"
+            )
+        }
+    }
+
+    /// Caller must own this workspace's mutation lease. Terminal observation is the boundary at
+    /// which the failed generation may release its resource admission and detach disk/backend
+    /// authority. If admission settlement fails, every authority stays attached for explicit
+    /// repair instead of publishing a reusable machine.
+    @discardableResult
+    private func finalizeFailedMachineProcessRetirement(
+        machineID: String,
+        process: HvProcess
+    ) throws -> Bool {
+        lock.lock()
+        guard let entry = machines[machineID], entry.process === process else {
+            lock.unlock()
+            return false
+        }
+        let admissionPlan = entry.activeResolvedPlan
         lock.unlock()
+
+        try markResolvedAdmissionStopped(plan: admissionPlan)
+
+        lock.lock()
+        guard var current = machines[machineID], current.process === process else {
+            lock.unlock()
+            return false
+        }
+        let handoffServer = current.handoffServer
+        current.process = nil
+        current.handoffServer = nil
+        current.handoff = nil
+        current.launchID = nil
+        current.runtimeAddress = nil
+        current.currentBalloonTargetMB = nil
+        current.activeResolvedPlan = nil
+        current.activeBackend = nil
+        current.readinessAcceptedPendingPublication = false
+        machines[machineID] = current
+        lock.unlock()
+        handoffServer?.stop()
+        return true
+    }
+
+    /// Keep an unconfirmed helper or prepublication app retirement attached to the failed entry.
+    /// The exact supervisor owns its descriptors until a background waiter proves terminal state;
+    /// only then does a workspace-fenced settlement release admission/backend authority.
+    private func retainFailedMachineProcessUntilTerminalObservation(
+        machineID: String,
+        process: HvProcess,
+        context: String
+    ) {
+        let identity = ObjectIdentifier(process)
+        let shouldSchedule: Bool
+        lock.lock()
+        if var current = machines[machineID], current.process === process {
+            current.state = .failed
+            let base = current.lastError.map { "\($0); " } ?? ""
+            current.lastError =
+                "\(base)\(context); helper termination is still being verified"
+            machines[machineID] = current
+            shouldSchedule = pendingMachineProcessRetirements.insert(identity).inserted
+        } else {
+            shouldSchedule = false
+        }
+        lock.unlock()
+        guard shouldSchedule else { return }
+
+        DispatchQueue.global(qos: .utility).async { [self, process] in
+            process.waitUntilTerminated()
+            let mutationLease = mutationCoordinator.acquire(workspaceID: machineID)
+            defer { mutationLease.release() }
+            do {
+                _ = try finalizeFailedMachineProcessRetirement(
+                    machineID: machineID,
+                    process: process
+                )
+            } catch {
+                lock.lock()
+                if var current = machines[machineID], current.process === process {
+                    setFailure(
+                        on: &current,
+                        code: .resourceAdmissionRejected,
+                        message: "terminal helper observation could not settle resource admission: \(error)",
+                        causes: [.resourceAdmission, .runtimeAuthority],
+                        recoveryDisposition: .repair
+                    )
+                    machines[machineID] = current
+                }
+                lock.unlock()
+            }
+            lock.lock()
+            pendingMachineProcessRetirements.remove(identity)
+            lock.unlock()
+        }
+    }
+
+    private func spawnPreparedMachine(
+        _ preparedMachine: DoryMachineConfiguration,
+        shareAuthorities: [DoryMachineShareRuntimeAuthority],
+        launchBinding: MachineBackendLaunchBinding?,
+        operationID: UUID,
+        preSpawnAuthorization: DoryDaemonVirtualMachinePreSpawnAuthorization? = nil,
+        resolvedPlan: DoryResolvedMachinePlan? = nil,
+        qualificationBootstrapDefinition: DoryVirtualMachineDefinition? = nil
+    ) throws -> DoryMachineStatus {
+        let snapshot: MachineLaunchAdmissionSnapshot
+        do {
+            snapshot = try reservePreparedMachineLaunch(
+                preparedMachine,
+                operationID: operationID
+            )
+        } catch {
+            throw resolvedLaunchFailureAfterStoppingAdmission(
+                error,
+                plan: resolvedPlan,
+                context: "resolved launch reservation failed"
+            )
+        }
+        let id = preparedMachine.id
+        let handoffPath = configuration.requiresReadyHandoff ? handoffSocketPath(id: id) : nil
+        let launchID = UUID()
+        let qualificationBootstrapHandoffAuthority =
+            DoryQualificationBootstrapHandoffAuthority()
+        let handoffServer: VmmHandoffServer?
+        do {
+            try preparePrivateMachineRuntimeDirectory(id: id)
+            handoffServer = try handoffPath.map { path in
+                let server = VmmHandoffServer(path: path) { [weak self] result in
+                    self?.handleHandoff(
+                        machineID: id,
+                        launchID: launchID,
+                        expectedOperationID: operationID,
+                        qualificationBootstrapHandoffAuthority:
+                            qualificationBootstrapHandoffAuthority,
+                        result: result
+                    )
+                }
+                try server.start()
+                return server
+            }
+        } catch {
+            _ = discardUncommittedMachineLaunch(
+                snapshot: snapshot,
+                handoffServer: nil
+            )
+            throw resolvedLaunchFailureAfterStoppingAdmission(
+                error,
+                plan: resolvedPlan,
+                context: "resolved launch runtime setup failed"
+            )
+        }
+        let processLaunch: (configuration: HvProcessConfiguration,
+                            backend: DoryVirtualizationBackendIdentity)
+        do {
+            // This single-use daemon-owned check deliberately sits after all persisted
+            // machine/plan validation and immediately before any path-derived launch arguments
+            // are read. Failure consumes the token and cannot reach processStarter.
+            let preSpawnLaunchAuthority:
+                DoryDaemonVirtualMachinePreSpawnLaunchAuthority
+            if launchBinding != nil {
+                guard let preSpawnAuthorization else {
+                    throw MachineManagerError.persistence(
+                        "resolved launch is missing final pre-spawn authorization"
+                    )
+                }
+                preSpawnLaunchAuthority = try preSpawnAuthorization
+                    .authorizeResolvedLaunch()
+            } else {
+                preSpawnLaunchAuthority = .noRendererReleaseIdentityRequired
+            }
+            var rendererReleaseIdentity = try Self.resolvedRendererReleaseIdentity(
+                preSpawnLaunchAuthority: preSpawnLaunchAuthority,
+                resolvedLaunchBinding: launchBinding
+            )
+#if DEBUG
+            let preSpawnTestHook = managerStateLock.withLock {
+                shareAuthorityPreSpawnTestHook
+            }
+            try preSpawnTestHook?(id)
+#endif
+            if let restoreStatePath = snapshot.pendingRestoreStatePath {
+                guard restoreStatePath == savedStateStore.statePath(machineID: id),
+                      let expectedStatus = snapshot.savedStateStatus,
+                      let authoritativeData = Self.readPrivateMetadata(
+                          path: machineConfigPath(id: id)
+                      ) else {
+                    throw MachineManagerError.persistence(
+                        "saved-state authority is unavailable immediately before spawn"
+                    )
+                }
+                switch savedStateStore.inspect(
+                    machineID: id,
+                    authoritativeConfigurationData: authoritativeData,
+                    runtimeIdentity: snapshot.runtimeIdentity
+                ) {
+                case .valid(let current)
+                    where DoryMachineSavedStateStatus(manifest: current) == expectedStatus:
+                    break
+                case .valid:
+                    throw MachineManagerError.persistence(
+                        "saved-state authority changed immediately before spawn"
+                    )
+                case .absent:
+                    throw MachineManagerError.persistence(
+                        "saved-state payload disappeared immediately before spawn"
+                    )
+                case .invalid(let detail):
+                    throw MachineManagerError.persistence(detail)
+                }
+            }
+            var launchMachine = snapshot.configuration
+            launchMachine.shares = try Self.revalidateShareRuntimeAuthorities(
+                shareAuthorities,
+                expectedShares: snapshot.configuration.shares
+            )
+            let runtimeLaunchAuthority: RawHVRuntimeLaunchAuthority?
+            var qualificationBootstrapLaunch = false
+            if launchBinding?.backend.identity == .doryHypervisor {
+                guard let resolvedPlan,
+                      let launchBinding,
+                      let rawHVVirtualHardwareTopology =
+                        resolvedPlan.rawHVVirtualHardwareTopology,
+                      let admittedVirtualCPUCount =
+                        resolvedPlan.resourceAdmission?.admittedVirtualCPUCount,
+                      let admittedMemoryBytes =
+                        resolvedPlan.resourceAdmission?.admittedMemoryBytes,
+                      let admittedStorageBytes = resolvedPlan.resourceAdmission?.admittedStorageBytes,
+                      let expectedBootArtifactSHA256 =
+                        resolvedPlan.bootMedia.media.artifactSHA256 else {
+                    throw MachineManagerError.persistence(
+                        "resolved raw-HV launch is missing topology, boot digest, or admitted resources"
+                    )
+                }
+                guard resolvedPlan.graphics == launchBinding.graphics else {
+                    throw MachineManagerError.persistence(
+                        "resolved raw-HV launch graphics changed after plan revalidation"
+                    )
+                }
+                let rendererBootstrapRequest: RawHVRendererBootstrapRequest?
+                if launchBinding.graphics == .hardwareAccelerated3D {
+                    guard resolvedPlan.qualificationEvidence.graphics != nil,
+                          resolvedPlan.qualificationEvidence.runtime != nil,
+                          let rendererReleaseIdentity else {
+                        throw MachineManagerError.persistence(
+                            "accelerated raw-HV launch is missing signed guest or worker authority"
+                        )
+                    }
+                    rendererBootstrapRequest = RawHVRendererBootstrapRequest(
+                        workspaceID: operationID,
+                        generation: resolvedPlan.planRevision,
+                        runtimeBuildIdentifier: resolvedPlan.backendRuntimeBuildIdentifier,
+                        components: resolvedPlan.components,
+                        rendererWorkerCodeDirectoryHash:
+                            rendererReleaseIdentity.rendererWorkerCodeDirectoryHash
+                    )
+                } else {
+                    rendererBootstrapRequest = nil
+                }
+                let bytesPerMiB: UInt64 = 1_048_576
+                guard admittedMemoryBytes.isMultiple(of: bytesPerMiB),
+                      admittedVirtualCPUCount <= UInt64(UInt16.max) else {
+                    throw MachineManagerError.persistence(
+                        "resolved raw-HV compute resources cannot be represented by the runtime envelope"
+                    )
+                }
+                let executionResources = RuntimeLaunchEnvelope.RawHVExecutionResources.production(
+                    memoryMB: admittedMemoryBytes / bytesPerMiB,
+                    virtualCPUCount: UInt16(admittedVirtualCPUCount)
+                )
+                let systemDiskSlots = rawHVVirtualHardwareTopology.occupiedSlots.filter {
+                    $0.role == .systemDisk
+                }
+                guard systemDiskSlots.count == 1 else {
+                    throw MachineManagerError.persistence(
+                        "resolved raw-HV launch requires one exact system-disk topology slot"
+                    )
+                }
+                let managedMachineDirectory = machineStateDirectory(id: launchMachine.id)
+                guard launchMachine.rootfsPath
+                        == managedMachineDirectory + "/rootfs.ext4",
+                      launchMachine.kernelPath == managedMachineDirectory + "/kernel" else {
+                    throw MachineManagerError.persistence(
+                        "resolved raw-HV launch paths do not match managed machine storage"
+                    )
+                }
+                guard let machineStateBroker else {
+                    throw MachineManagerError.persistence(
+                        "resolved raw-HV launch requires trusted machine-state authority"
+                    )
+                }
+                let machineDirectoryLease: DoryMachineDirectoryLease
+                do {
+                    machineDirectoryLease = try machineStateBroker
+                        .acquireMachineDirectoryLease(machineID: launchMachine.id)
+                } catch {
+                    throw MachineManagerError.persistence(
+                        "resolved raw-HV machine-directory authority is unavailable: \(error)"
+                    )
+                }
+                let admittedResources = try machineDirectoryLease.withBorrowedDescriptor {
+                    machineDirectoryDescriptor in
+                    try Self.admitResolvedRawHVResources(
+                        machineDirectoryDescriptor: machineDirectoryDescriptor,
+                        machineDirectoryGeneration: machineDirectoryLease.generation,
+                        expectedDiskCapacityBytes: admittedStorageBytes,
+                        mediaKind: resolvedPlan.bootMedia.media.kind,
+                        expectedArtifactSHA256: expectedBootArtifactSHA256,
+                        machineBootMode: launchMachine.bootMode,
+                        installerISOPath: launchMachine.installerISOPath,
+                        rendererBootstrapRequest: rendererBootstrapRequest
+                    )
+                }
+                var authorityTransferred = false
+                defer {
+                    if !authorityTransferred {
+                        admittedResources.close()
+                    }
+                }
+                let envelope = RuntimeLaunchEnvelope.resolvedRawHV(
+                    machineID: launchMachine.id,
+                    operationID: operationID,
+                    resolvedPlanSHA256: try Self.canonicalResolvedPlanSHA256(resolvedPlan),
+                    planRevision: resolvedPlan.planRevision,
+                    backendRuntimeBuildIdentifier: resolvedPlan.backendRuntimeBuildIdentifier,
+                    virtualHardwareABIVersion: resolvedPlan.virtualHardwareABIVersion,
+                    rawHVVirtualHardwareTopology: rawHVVirtualHardwareTopology,
+                    graphics: launchBinding.graphics,
+                    devices: launchBinding.devices,
+                    portForwards: launchBinding.portForwards,
+                    executionResources: executionResources,
+                    systemDiskCapacityBytes: admittedResources.disk.capacityBytes,
+                    systemDiskLogicalID: systemDiskSlots[0].logicalID,
+                    linuxRootDevice: admittedResources.boot.rootDevice,
+                    genericGuest: admittedResources.boot.genericGuest,
+                    linuxKernelByteCount: admittedResources.boot.kernel.byteCount,
+                    linuxKernelSHA256: admittedResources.boot.kernel.sha256,
+                    linuxInitrdByteCount: admittedResources.boot.initrd?.byteCount,
+                    linuxInitrdSHA256: admittedResources.boot.initrd?.sha256,
+                    rendererBootstrapByteCount:
+                        admittedResources.rendererBootstrap?.byteCount,
+                    rendererBootstrapSHA256:
+                        admittedResources.rendererBootstrap?.sha256
+                )
+                _ = try envelope.validatedResolvedRawHVResources()
+                runtimeLaunchAuthority = RawHVRuntimeLaunchAuthority(
+                    envelope: envelope,
+                    inheritedFileDescriptors: [admittedResources.disk.authority]
+                        + admittedResources.boot.authorities
+                        + (admittedResources.rendererBootstrap.map {
+                            [$0.authority]
+                        } ?? [])
+                )
+#if DEBUG
+                let stateAuthorityTestHook = managerStateLock.withLock {
+                    rawHVStateAuthorityPreFinalRevalidationTestHook
+                }
+                try stateAuthorityTestHook?(launchMachine.id)
+#endif
+                do {
+                    // Admission used one pinned directory generation. Revalidate the root and
+                    // current machine entry once more after every disk/boot/staging operation and
+                    // immediately before constructing the process launch.
+                    _ = try machineDirectoryLease.revalidate()
+                } catch {
+                    throw MachineManagerError.persistence(
+                        "resolved raw-HV machine-directory authority changed before spawn: \(error)"
+                    )
+                }
+                authorityTransferred = true
+            } else if let bootstrapAuthority = try qualificationBootstrapRuntimeAuthority(
+                machine: launchMachine,
+                definition: qualificationBootstrapDefinition,
+                operationID: operationID
+            ) {
+                runtimeLaunchAuthority = bootstrapAuthority.runtime
+                rendererReleaseIdentity = bootstrapAuthority.rendererReleaseIdentity
+                try qualificationBootstrapHandoffAuthority.publish(
+                    bootstrapAuthority.graphicsExpectation
+                )
+                qualificationBootstrapLaunch = true
+            } else {
+                runtimeLaunchAuthority = nil
+            }
+            processLaunch = try self.processConfiguration(
+                for: launchMachine,
+                operationID: operationID,
+                handoffPath: handoffPath,
+                resolvedLaunchBinding: launchBinding,
+                restoreStatePath: snapshot.pendingRestoreStatePath,
+                runtimeLaunchAuthority: runtimeLaunchAuthority,
+                rendererReleaseIdentity: rendererReleaseIdentity,
+                qualificationBootstrapLaunch: qualificationBootstrapLaunch
+            )
+        } catch {
+            _ = discardUncommittedMachineLaunch(
+                snapshot: snapshot,
+                handoffServer: handoffServer
+            )
+            throw resolvedLaunchFailureAfterStoppingAdmission(
+                error,
+                plan: resolvedPlan,
+                context: "resolved launch failed before spawn"
+            )
+        }
+        let process = HvProcess(
+            configuration: processLaunch.configuration,
+            unexpectedTerminationHandler: { [weak self] termination in
+                self?.handleUnexpectedMachineProcessTermination(
+                    machineID: id,
+                    launchID: launchID,
+                    termination: termination
+                )
+            }
+        )
+        let handoffReadyTimeout = handoffReadyTimeout(for: snapshot.configuration)
+        let requiresAdmissionCommit = resolvedPlan != nil
+            && productionAdmissionLedgerSnapshot() != nil
+        do {
+            try commitPreparedMachineLaunch(
+                snapshot: snapshot,
+                process: process,
+                handoffServer: handoffServer,
+                launchID: launchID,
+                backend: processLaunch.backend,
+                resolvedPlan: resolvedPlan
+            )
+        } catch {
+            let terminal = discardUncommittedMachineLaunch(
+                snapshot: snapshot,
+                handoffServer: handoffServer,
+                process: process,
+                deferredAdmissionPlan: resolvedPlan
+            )
+            guard terminal else {
+                throw MachineManagerError.persistence(
+                    "resolved launch compare-and-commit failed: \(error); exact helper retirement remains in progress"
+                )
+            }
+            throw resolvedLaunchFailureAfterStoppingAdmission(
+                error,
+                plan: resolvedPlan,
+                context: "resolved launch compare-and-commit failed"
+            )
+        }
 
         do {
             try processStarter(process)
         } catch {
+            var handoffToStop: VmmHandoffServer?
             lock.lock()
-            machines[id]?.handoffServer?.stop()
-            machines[id]?.handoffServer = nil
-            machines[id]?.launchID = nil
-            machines[id]?.runtimeAddress = nil
-            machines[id]?.state = .failed
-            machines[id]?.lastError = "\(error)"
+            if var current = machines[id],
+               current.launchID == launchID,
+               current.process === process {
+                handoffToStop = current.handoffServer
+                current.handoffServer = nil
+                current.launchID = nil
+                current.runtimeAddress = nil
+                current.state = .failed
+                setFailure(
+                    on: &current,
+                    code: .backendLaunchFailed,
+                    message: "\(error)",
+                    causes: [.processExit],
+                    recoveryDisposition: .retry
+                )
+                machines[id] = current
+            }
             lock.unlock()
+            handoffToStop?.stop()
+            guard processStopper(process) else {
+                retainFailedMachineProcessUntilTerminalObservation(
+                    machineID: id,
+                    process: process,
+                    context: "resolved process start failed before publication"
+                )
+                throw MachineManagerError.persistence(
+                    "resolved process start failed: \(error); exact helper retirement remains in progress"
+                )
+            }
+            do {
+                _ = try finalizeFailedMachineProcessRetirement(
+                    machineID: id,
+                    process: process
+                )
+            } catch let settlementError {
+                throw MachineManagerError.persistence(
+                    "resolved process start failed: \(error); resource settlement failed: \(settlementError)"
+                )
+            }
             throw error
         }
+        lock.lock()
+        if var current = machines[id], current.process === process {
+            appendFlightEvent(on: &current, kind: .backendSpawned)
+            machines[id] = current
+        }
+        lock.unlock()
         if configuration.requiresReadyHandoff {
-            scheduleHandoffTimeout(id: id, process: process)
+            scheduleHandoffTimeout(id: id, process: process, timeout: handoffReadyTimeout)
+        } else if requiresAdmissionCommit, let resolvedPlan {
+            do {
+                try markResolvedAdmissionRunning(plan: resolvedPlan)
+                lock.lock()
+                if machines[id]?.launchID == launchID {
+                    machines[id]?.state = .running
+                    if var current = machines[id] {
+                        appendFlightEvent(on: &current, kind: .resourceTransition)
+                        machines[id] = current
+                    }
+                }
+                lock.unlock()
+            } catch {
+                var handoffToStop: VmmHandoffServer?
+                lock.lock()
+                if var current = machines[id], current.launchID == launchID {
+                    handoffToStop = current.handoffServer
+                    current.state = .failed
+                    current.handoffServer = nil
+                    current.handoff = nil
+                    current.launchID = nil
+                    current.runtimeAddress = nil
+                    current.readinessAcceptedPendingPublication = false
+                    setFailure(
+                        on: &current,
+                        code: .resourceAdmissionRejected,
+                        message: "\(error)",
+                        causes: [.resourceAdmission],
+                        recoveryDisposition: .repair
+                    )
+                    machines[id] = current
+                }
+                lock.unlock()
+                handoffToStop?.stop()
+                guard processStopper(process) else {
+                    retainFailedMachineProcessUntilTerminalObservation(
+                        machineID: id,
+                        process: process,
+                        context: "resolved launch admission commit failed"
+                    )
+                    throw MachineManagerError.persistence(
+                        "resolved launch admission commit failed: \(error); exact helper retirement remains in progress"
+                    )
+                }
+                do {
+                    _ = try finalizeFailedMachineProcessRetirement(
+                        machineID: id,
+                        process: process
+                    )
+                } catch let settlementError {
+                    throw MachineManagerError.persistence(
+                        "resolved launch admission commit failed: \(error); resource settlement failed: \(settlementError)"
+                    )
+                }
+                throw error
+            }
         }
         return status(id: id) ?? DoryMachineStatus(id: id, state: .running)
     }
 
     private func startAndWaitUntilReady(id: String) throws -> DoryMachineStatus {
-        let started = try start(id: id)
-        guard started.state == .starting else { return started }
+        try startAndWaitUntilReady(id: id, journalLifecycle: true)
+    }
 
-        let deadline = Date().addingTimeInterval(Self.handoffReadyTimeoutSeconds + 1)
+    private func startAndWaitUntilReady(
+        id: String,
+        journalLifecycle: Bool
+    ) throws -> DoryMachineStatus {
+        let started = try startImplementation(id: id, journalLifecycle: journalLifecycle)
+        switch started.state {
+        case .running:
+            return started
+        case .failed:
+            throw MachineManagerError.persistence(
+                "vmm ready handoff failed for \(id): \(started.lastError ?? "unknown error")"
+            )
+        case .starting:
+            break
+        default:
+            throw MachineManagerError.persistence(
+                "vmm ready handoff for \(id) ended in unexpected state \(started.state.rawValue)"
+            )
+        }
+
+        let handoffReadyTimeout = handoffReadyTimeout(
+            displayMode: started.displayMode,
+            bootMode: started.bootMode
+        )
+        let deadline = Date().addingTimeInterval(handoffReadyTimeout + 1)
         while Date() < deadline {
+            publishAcceptedReadiness(id: id)
             guard let current = status(id: id) else {
                 throw MachineManagerError.unknownMachine(id)
             }
@@ -643,11 +3927,25 @@ public final class MachineManager: @unchecked Sendable {
         throw MachineManagerError.persistence("vmm ready handoff timed out for \(id)")
     }
 
-    private func scheduleHandoffTimeout(id: String, process: HvProcess) {
+    private func handoffReadyTimeout(for machine: DoryMachineConfiguration) -> TimeInterval {
+        handoffReadyTimeout(displayMode: machine.displayMode, bootMode: machine.bootMode)
+    }
+
+    private func handoffReadyTimeout(
+        displayMode: DoryMachineDisplayMode,
+        bootMode: DoryMachineBootMode
+    ) -> TimeInterval {
+        if displayMode == .desktop {
+            return configuration.desktopHandoffReadyTimeoutSeconds
+        }
+        return configuration.handoffReadyTimeoutSeconds
+    }
+
+    private func scheduleHandoffTimeout(id: String, process: HvProcess, timeout: TimeInterval) {
         // A VMM that boots but never completes the ready handoff would otherwise leave the
         // machine `.starting` forever. Bound the wait: if this exact launch is still starting
         // when the deadline passes, mark it failed and tear the helper down.
-        DispatchQueue.global().asyncAfter(deadline: .now() + Self.handoffReadyTimeoutSeconds) { [weak self] in
+        DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { [weak self] in
             guard let self else { return }
             self.lock.lock()
             guard var entry = self.machines[id],
@@ -663,114 +3961,1318 @@ public final class MachineManager: @unchecked Sendable {
             entry.runtimeAddress = nil
             entry.currentBalloonTargetMB = nil
             entry.state = .failed
-            entry.lastError = "vmm ready handoff timed out after \(Int(Self.handoffReadyTimeoutSeconds))s"
+            self.setFailure(
+                on: &entry,
+                code: .readinessTimedOut,
+                message: "vmm ready handoff timed out after \(Int(timeout))s",
+                causes: [.readinessGate],
+                recoveryDisposition: .retry
+            )
+            self.appendFlightEvent(
+                on: &entry,
+                kind: .readinessRejected,
+                failure: entry.failure
+            )
+            // A terminal machine state must never advertise the journal as still active. The
+            // durable failure retained the operation ID above; journal settlement follows under
+            // the workspace operation fence.
+            entry.activeOperationID = nil
+            entry.activeOperationKind = nil
             self.machines[id] = entry
             self.lock.unlock()
-            process.stop(timeout: DoryEngineShutdownTiming.hostTerminationSeconds)
+            let terminated = self.processStopper(process)
+            let mutationLease = self.mutationCoordinator.acquire(workspaceID: id)
+            defer { mutationLease.release() }
+            if terminated {
+                do {
+                    _ = try self.finalizeFailedMachineProcessRetirement(
+                        machineID: id,
+                        process: process
+                    )
+                } catch {
+                    self.lock.lock()
+                    if var current = self.machines[id], current.process === process {
+                        self.setFailure(
+                            on: &current,
+                            code: .resourceAdmissionRejected,
+                            message: "readiness timeout could not settle terminal helper admission: \(error)",
+                            causes: [.resourceAdmission, .runtimeAuthority],
+                            recoveryDisposition: .repair
+                        )
+                        self.machines[id] = current
+                    }
+                    self.lock.unlock()
+                }
+            } else {
+                self.retainFailedMachineProcessUntilTerminalObservation(
+                    machineID: id,
+                    process: process,
+                    context: "readiness timeout"
+                )
+            }
+            self.failActiveStartLifecycle(id: id, stepID: "start.readiness-timeout")
         }
     }
 
-    public func stop(id: String) throws -> DoryMachineStatus {
-        operationLock.lock()
-        defer { operationLock.unlock() }
+    private func handleUnexpectedMachineProcessTermination(
+        machineID: String,
+        launchID: UUID,
+        termination: HvProcessTermination
+    ) {
+        var handoffServer: VmmHandoffServer?
+        var admissionPlan: DoryResolvedMachinePlan?
+        var rendererCandidate: DoryRendererCrashSuppressionCandidate?
+        let rendererCandidateFailure = termination.statusIsKnown
+            && !termination.wasUncaughtSignal
+            && termination.status
+                == DoryDesktopHelperExitStatus.rendererCandidateFailure.rawValue
         lock.lock()
-        guard var entry = machines[id] else {
+        guard var entry = machines[machineID],
+              entry.launchID == launchID,
+              [.starting, .running, .paused].contains(entry.state) else {
             lock.unlock()
-            throw MachineManagerError.unknownMachine(id)
+            return
         }
-        let process = entry.process
-        let handoffServer = entry.handoffServer
-        entry.process = nil
+        if rendererCandidateFailure {
+            // The supervisor may have scheduled a bounded startup retry before invoking this
+            // callback. A classified renderer failure must suppress that exact generation before
+            // it can relaunch with the same inherited bootstrap authority.
+            entry.process?.disableRestarts()
+            rendererCandidate = try? entry.activeResolvedPlan.flatMap {
+                try DoryRendererCrashSuppressionCandidate(plan: $0)
+            }
+        } else if entry.process?.isRunningOrRestarting == true {
+            lock.unlock()
+            return
+        }
+        handoffServer = entry.handoffServer
+        admissionPlan = entry.activeResolvedPlan
         entry.handoffServer = nil
         entry.handoff = nil
         entry.launchID = nil
         entry.runtimeAddress = nil
         entry.currentBalloonTargetMB = nil
-        entry.state = .stopped
-        machines[id] = entry
+        entry.activeResolvedPlan = nil
+        entry.activeBackend = nil
+        setFailure(
+            on: &entry,
+            code: .helperExited,
+            message: rendererCandidateFailure
+                ? "dory-hv renderer candidate failed closed; the exact candidate is temporarily suppressed"
+                : "dory-vmm \(termination.description)",
+            causes: rendererCandidateFailure
+                ? [.processExit, .componentAuthority] : [.processExit],
+            recoveryDisposition: rendererCandidateFailure ? .replan : .retry
+        )
+        machines[machineID] = entry
         lock.unlock()
 
+        if let rendererCandidate {
+            // Persistence is intentionally outside the manager lock. A corrupt/unwritable store
+            // already makes the planning-side availability check fail acceleration closed.
+            try? rendererCrashSuppressionStoreSnapshot()?.recordFailure(rendererCandidate)
+        }
+
+        let mutationLease = mutationCoordinator.acquire(workspaceID: machineID)
+        defer { mutationLease.release() }
+        try? markResolvedAdmissionStopped(plan: admissionPlan)
+        failActiveStartLifecycle(id: machineID, stepID: "start.helper-exited")
+        lock.lock()
+        if var current = machines[machineID], current.failure?.code == .helperExited {
+            current.state = .failed
+            current.activeOperationID = nil
+            current.activeOperationKind = nil
+            appendFlightEvent(
+                on: &current,
+                kind: .processExited,
+                failure: current.failure
+            )
+            machines[machineID] = current
+        }
+        lock.unlock()
         handoffServer?.stop()
-        process?.stop(timeout: DoryEngineShutdownTiming.hostTerminationSeconds)
+    }
+
+    public func stop(id: String) throws -> DoryMachineStatus {
+        try stop(id: id, operationID: UUID())
+    }
+
+    public func stop(
+        id: String,
+        operationID: UUID
+    ) throws -> DoryMachineStatus {
+        let mutationLease = mutationCoordinator.acquire(workspaceID: id)
+        defer { mutationLease.release() }
+        let durableOperationID = try Self.lifecycleOperationID(
+            operationID,
+            action: "stop"
+        )
+        try requireNoActivePlanningMutation(id: id)
+        try cancelActiveStartLifecycleIfNeeded(id: id, reason: "start.cancelled-by-stop")
+        let directMutation = try retainDirectWorkspaceMutationLock(id: id)
+        defer { releaseDirectWorkspaceMutationLock(id: id, retention: directMutation) }
+        let identity = try currentRuntimeIdentity(id: id)
+        guard identity.mode == .resolvedPlan else {
+            return try stopImplementation(
+                id: id,
+                journalLifecycle: true,
+                requestedOperationID: durableOperationID
+            )
+        }
+        guard let backend = identity.resolvedPlan?.backend,
+              let registry = resolvedBackendRegistrySnapshot() else {
+            throw MachineManagerError.persistence(
+                "resolved stop infrastructure is not installed"
+            )
+        }
+        let result = registry.stop(.init(
+            machineID: id,
+            backend: backend,
+            operationID: durableOperationID
+        ))
+        guard result.isSuccess, result.observation?.machineID == id,
+              result.observation?.state == .stopped else {
+            throw MachineManagerError.persistence(
+                "resolved backend stop failed: "
+                    + (result.failure?.message ?? "backend returned no stopped observation")
+            )
+        }
         return status(id: id) ?? DoryMachineStatus(id: id, state: .stopped)
     }
 
+    public func pause(
+        id: String,
+        operationID: UUID? = nil
+    ) throws -> DoryMachineStatus {
+        let mutationLease = mutationCoordinator.acquire(workspaceID: id)
+        defer { mutationLease.release() }
+        let durableOperationID = try Self.lifecycleOperationID(
+            operationID,
+            action: "pause"
+        )
+        try requireNoActivePlanningMutation(id: id)
+        let directMutation = try retainDirectWorkspaceMutationLock(id: id)
+        defer { releaseDirectWorkspaceMutationLock(id: id, retention: directMutation) }
+        let identity = try currentRuntimeIdentity(id: id)
+        switch identity.mode {
+        case .legacyCompatibility:
+            return try pauseImplementation(
+                id: id,
+                journalLifecycle: true,
+                requestedOperationID: durableOperationID
+            )
+        case .requiresReplanning:
+            throw MachineManagerError.persistence(
+                "machine \(id) requires replanning and cannot be paused"
+            )
+        case .resolvedPlan:
+            guard let backend = identity.resolvedPlan?.backend,
+                  let registry = resolvedBackendRegistrySnapshot() else {
+                throw MachineManagerError.persistence(
+                    "resolved pause infrastructure is not installed"
+                )
+            }
+            let result = registry.pause(.init(
+                machineID: id,
+                backend: backend,
+                operationID: durableOperationID
+            ))
+            guard result.isSuccess, result.observation?.machineID == id,
+                  result.observation?.state == .paused else {
+                throw MachineManagerError.persistence(
+                    "resolved backend pause failed: "
+                        + (result.failure?.message ?? "backend returned no paused observation")
+                )
+            }
+            return status(id: id) ?? DoryMachineStatus(id: id, state: .paused)
+        }
+    }
+
+    public func resume(
+        id: String,
+        operationID: UUID? = nil
+    ) throws -> DoryMachineStatus {
+        let mutationLease = mutationCoordinator.acquire(workspaceID: id)
+        defer { mutationLease.release() }
+        let durableOperationID = try Self.lifecycleOperationID(
+            operationID,
+            action: "resume"
+        )
+        try requireNoActivePlanningMutation(id: id)
+        let directMutation = try retainDirectWorkspaceMutationLock(id: id)
+        defer { releaseDirectWorkspaceMutationLock(id: id, retention: directMutation) }
+        lock.lock()
+        let isDurablySuspended = machines[id]?.state == .suspended
+        lock.unlock()
+        if isDurablySuspended {
+            return try restoreSavedStateImplementation(
+                id: id,
+                requestedOperationID: durableOperationID
+            )
+        }
+        let identity = try currentRuntimeIdentity(id: id)
+        switch identity.mode {
+        case .legacyCompatibility:
+            return try resumeImplementation(
+                id: id,
+                journalLifecycle: true,
+                requestedOperationID: durableOperationID
+            )
+        case .requiresReplanning:
+            throw MachineManagerError.persistence(
+                "machine \(id) requires replanning and cannot be resumed"
+            )
+        case .resolvedPlan:
+            guard let backend = identity.resolvedPlan?.backend,
+                  let registry = resolvedBackendRegistrySnapshot() else {
+                throw MachineManagerError.persistence(
+                    "resolved resume infrastructure is not installed"
+                )
+            }
+            let result = registry.resume(.init(
+                machineID: id,
+                backend: backend,
+                operationID: durableOperationID
+            ))
+            guard result.isSuccess, result.observation?.machineID == id,
+                  result.observation?.state == .running else {
+                throw MachineManagerError.persistence(
+                    "resolved backend resume failed: "
+                        + (result.failure?.message ?? "backend returned no running observation")
+                )
+            }
+            return status(id: id) ?? DoryMachineStatus(id: id, state: .running)
+        }
+    }
+
+    public func suspend(id: String) throws -> DoryMachineStatus {
+        let mutationLease = mutationCoordinator.acquire(workspaceID: id)
+        defer { mutationLease.release() }
+        try requireNoActivePlanningMutation(id: id)
+        let directMutation = try retainDirectWorkspaceMutationLock(id: id)
+        defer { releaseDirectWorkspaceMutationLock(id: id, retention: directMutation) }
+
+        lock.lock()
+        guard let entry = machines[id] else {
+            lock.unlock()
+            throw MachineManagerError.unknownMachine(id)
+        }
+        guard entry.state == .running || entry.state == .paused,
+              let process = entry.process,
+              entry.activeBackend == .appleVirtualizationFramework,
+              let controlSocketPath = entry.handoff?.ready.controlSocketPath else {
+            lock.unlock()
+            throw MachineManagerError.persistence(
+                "durable suspend requires a running Apple Virtualization backend with VZ control"
+            )
+        }
+        let machine = entry.configuration
+        let runtimeIdentity = entry.runtimeIdentity
+        let admissionPlan = entry.activeResolvedPlan ?? runtimeIdentity.resolvedPlan
+        let sourceState: DoryWorkspaceLifecycleState = entry.state == .paused ? .paused : .running
+        let authoritativeData = Self.readPrivateMetadata(path: machineConfigPath(id: id))
+        lock.unlock()
+        guard let authoritativeData,
+              (try? JSONDecoder().decode(DoryMachineConfiguration.self, from: authoritativeData))
+                == machine else {
+            throw MachineManagerError.persistence(
+                "machine metadata changed before saved-state suspension"
+            )
+        }
+        let authority = try Self.savedStateIntentAuthority(
+            machine: machine,
+            runtimeIdentity: runtimeIdentity,
+            authoritativeConfigurationData: authoritativeData
+        )
+        let lifecycle = try beginLifecycleSuspend(
+            machine: machine,
+            runtimeIdentity: runtimeIdentity,
+            sourceState: sourceState,
+            savedStateAuthority: authority
+        )
+        let temporaryPath = try savedStateStore.temporaryStatePath(machineID: id)
+        var helperExited = false
+        do {
+            try advanceLifecycleToPublishing(lifecycle)
+            guard process.prepareForExpectedExit() else {
+                throw MachineManagerError.persistence(
+                    "VMM helper cannot enter saved-state exit mode"
+                )
+            }
+            do {
+                try vzLifecycleController.saveMachineState(
+                    socketPath: controlSocketPath,
+                    statePath: temporaryPath
+                )
+            } catch {
+                if !process.isRunning
+                    || process.waitForExpectedExit(timeout: 0.25) {
+                    helperExited = true
+                }
+                process.cancelExpectedExit()
+                throw error
+            }
+            guard process.waitForExpectedExit(timeout: 30),
+                  process.terminationStatus == 0 else {
+                helperExited = processStopper(process)
+                if !helperExited {
+                    lock.lock()
+                    if var current = machines[id], current.process === process {
+                        current.state = .failed
+                        setFailure(
+                            on: &current,
+                            code: .lifecycleOperationFailed,
+                            message: "saved-state failure left helper termination awaiting exact observation",
+                            causes: [.processExit, .runtimeAuthority],
+                            recoveryDisposition: .repair
+                        )
+                        machines[id] = current
+                    }
+                    lock.unlock()
+                    retainFailedMachineProcessUntilTerminalObservation(
+                        machineID: id,
+                        process: process,
+                        context: "saved-state failure"
+                    )
+                    throw MachineManagerError.persistence(
+                        "VMM helper termination remains in progress after saved-state failure; runtime authority is retained"
+                    )
+                }
+                throw MachineManagerError.persistence(
+                    "VMM helper did not exit cleanly after saving state"
+                )
+            }
+            helperExited = true
+            let manifest = try savedStateStore.publish(
+                temporaryStatePath: temporaryPath,
+                machineID: id,
+                authoritativeConfigurationData: authoritativeData,
+                runtimeIdentity: runtimeIdentity
+            )
+            lock.lock()
+            guard var current = machines[id], current.process === process,
+                  current.configuration == machine,
+                  current.runtimeIdentity == runtimeIdentity else {
+                lock.unlock()
+                throw MachineManagerError.persistence(
+                    "machine authority changed while saved state was being published"
+                )
+            }
+            current.process = nil
+            current.handoffServer?.stop()
+            current.handoffServer = nil
+            current.handoff = nil
+            current.launchID = nil
+            current.runtimeAddress = nil
+            current.currentBalloonTargetMB = nil
+            current.activeResolvedPlan = nil
+            current.activeBackend = nil
+            current.pendingRestoreStatePath = nil
+            current.state = .suspended
+            current.savedStateStatus = DoryMachineSavedStateStatus(manifest: manifest)
+            clearFailure(on: &current)
+            machines[id] = current
+            lock.unlock()
+            do {
+                try markResolvedAdmissionStopped(plan: admissionPlan)
+            } catch {
+                // The VZ payload and suspended machine state are already durable. Retaining an
+                // over-counted running lease is fail-safe; the next restore or daemon restart
+                // reconciles it before reserving CPU/RAM again.
+                lock.lock()
+                if var current = machines[id] {
+                    setFailure(
+                        on: &current,
+                        code: .resourceAdmissionRejected,
+                        message: "saved state committed but resource admission requires reconciliation: \(error)",
+                        causes: [.resourceAdmission],
+                        recoveryDisposition: .repair
+                    )
+                    machines[id] = current
+                }
+                lock.unlock()
+            }
+            _ = completeCommittedLifecycle(
+                lifecycle,
+                diagnostic: "saved state committed; suspension journal requires recovery"
+            )
+            return status(id: id) ?? DoryMachineStatus(id: id, state: .suspended)
+        } catch {
+            _ = unlink(temporaryPath)
+            if helperExited {
+                try? savedStateStore.remove(machineID: id)
+                lock.lock()
+                if var current = machines[id],
+                   current.configuration == machine,
+                   current.runtimeIdentity == runtimeIdentity {
+                    current.process = nil
+                    current.handoffServer?.stop()
+                    current.handoffServer = nil
+                    current.handoff = nil
+                    current.launchID = nil
+                    current.runtimeAddress = nil
+                    current.currentBalloonTargetMB = nil
+                    current.activeResolvedPlan = nil
+                    current.activeBackend = nil
+                    current.pendingRestoreStatePath = nil
+                    current.savedStateStatus = nil
+                    current.state = .failed
+                    setFailure(
+                        on: &current,
+                        code: .savedStateInvalid,
+                        message: "saved-state suspension failed after the VMM exited: \(error)",
+                        causes: [.artifactAuthority, .processExit],
+                        recoveryDisposition: .repair
+                    )
+                    machines[id] = current
+                }
+                lock.unlock()
+                try? markResolvedAdmissionStopped(plan: admissionPlan)
+            }
+            failLifecycle(lifecycle, stepID: "suspend.failed")
+            throw error
+        }
+    }
+
+    private func restoreSavedStateImplementation(
+        id: String,
+        requestedOperationID: UUID? = nil
+    ) throws -> DoryMachineStatus {
+        lock.lock()
+        guard let entry = machines[id] else {
+            lock.unlock()
+            throw MachineManagerError.unknownMachine(id)
+        }
+        guard entry.state == .suspended, entry.process == nil else {
+            lock.unlock()
+            throw MachineManagerError.persistence("machine \(id) is not durably suspended")
+        }
+        let machine = entry.configuration
+        let runtimeIdentity = entry.runtimeIdentity
+        lock.unlock()
+
+        let durableIdentity = try currentDurableRuntimeIdentity(id: id)
+        guard durableIdentity == runtimeIdentity,
+              let authoritativeData = Self.readPrivateMetadata(path: machineConfigPath(id: id)) else {
+            throw MachineManagerError.persistence(
+                "saved-state runtime or configuration authority changed"
+            )
+        }
+        let manifest: DoryMachineSavedStateManifest
+        switch savedStateStore.inspect(
+            machineID: id,
+            authoritativeConfigurationData: authoritativeData,
+            runtimeIdentity: runtimeIdentity
+        ) {
+        case .valid(let accepted): manifest = accepted
+        case .absent:
+            throw MachineManagerError.persistence("saved-state payload is missing")
+        case .invalid(let detail):
+            throw MachineManagerError.persistence(detail)
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let authority = DoryWorkspaceSnapshotAuthority(
+            descriptorSHA256: Self.sha256(data: try encoder.encode(manifest)),
+            artifactEvidenceSHA256: manifest.stateFileSHA256
+        )
+        let lifecycle = try beginLifecycleOperation(
+            operationID: requestedOperationID,
+            kind: .restoring,
+            source: lifecycleCondition(
+                machine: machine,
+                state: .suspended,
+                runtimeIdentity: runtimeIdentity
+            ),
+            target: lifecycleCondition(
+                machine: machine,
+                state: .running,
+                runtimeIdentity: runtimeIdentity
+            ),
+            targetResourceID: DoryWorkspaceLifecycleOperation.savedStateResourceID,
+            targetSnapshotAuthority: authority,
+            readiness: true
+        )
+        do {
+            try advanceLifecycleToPublishing(lifecycle)
+            try refreshResolvedAdmissionForStartIfNeeded(id: id)
+            lock.lock()
+            guard var current = machines[id],
+                  current.configuration == machine,
+                  current.runtimeIdentity == runtimeIdentity,
+                  current.state == .suspended,
+                  current.activeOperationID == lifecycle.operation.operationID else {
+                lock.unlock()
+                throw MachineManagerError.persistence(
+                    "machine changed before saved-state restoration"
+                )
+            }
+            current.pendingRestoreStatePath = savedStateStore.statePath(machineID: id)
+            machines[id] = current
+            lock.unlock()
+
+            let running = try startAndWaitUntilReady(id: id, journalLifecycle: false)
+            guard running.state == .running else {
+                throw MachineManagerError.persistence(
+                    "saved-state restore did not reach backend readiness"
+                )
+            }
+            try savedStateStore.remove(machineID: id)
+            lock.lock()
+            machines[id]?.pendingRestoreStatePath = nil
+            machines[id]?.savedStateStatus = nil
+            lock.unlock()
+            _ = completeCommittedLifecycle(
+                lifecycle,
+                diagnostic: "restored machine is running with an unfinished saved-state journal"
+            )
+            return status(id: id) ?? running
+        } catch {
+            lock.lock()
+            let active = machines[id]?.process?.isRunningOrRestarting == true
+            lock.unlock()
+            if active {
+                _ = try? stopImplementation(id: id, journalLifecycle: false)
+            }
+            let savedStateIsValid: Bool
+            if case .valid = savedStateStore.inspect(
+                machineID: id,
+                authoritativeConfigurationData: authoritativeData,
+                runtimeIdentity: runtimeIdentity
+            ) {
+                savedStateIsValid = true
+            } else {
+                savedStateIsValid = false
+            }
+            lock.lock()
+            if savedStateIsValid, var current = machines[id] {
+                current.state = .suspended
+                current.pendingRestoreStatePath = nil
+                machines[id] = current
+            } else if var current = machines[id] {
+                current.state = .failed
+                current.pendingRestoreStatePath = nil
+                current.savedStateStatus = nil
+                setFailure(
+                    on: &current,
+                    code: .savedStateInvalid,
+                    message: "saved-state restoration failed and its authority is invalid",
+                    causes: [.artifactAuthority, .runtimeAuthority],
+                    recoveryDisposition: .repair
+                )
+                machines[id] = current
+            }
+            lock.unlock()
+            failLifecycle(lifecycle, stepID: "saved-state-restore.failed")
+            throw error
+        }
+    }
+
+    public func restart(id: String) throws -> DoryMachineStatus {
+        let mutationLease = mutationCoordinator.acquire(workspaceID: id)
+        defer { mutationLease.release() }
+        try requireNoActivePlanningMutation(id: id)
+        let directMutation = try retainDirectWorkspaceMutationLock(id: id)
+        defer { releaseDirectWorkspaceMutationLock(id: id, retention: directMutation) }
+
+        lock.lock()
+        guard let entry = machines[id] else {
+            lock.unlock()
+            throw MachineManagerError.unknownMachine(id)
+        }
+        guard [.running, .paused].contains(entry.state), entry.process != nil else {
+            lock.unlock()
+            throw MachineManagerError.persistence(
+                "machine \(id) must be running or paused before restart"
+            )
+        }
+        lock.unlock()
+
+        _ = try stopImplementation(id: id, journalLifecycle: true)
+        try refreshResolvedAdmissionForStartIfNeeded(id: id)
+        return try startImplementation(id: id, journalLifecycle: true)
+    }
+
+    private func performAuthorizedResolvedBackendStop(
+        request: MachineBackendRuntimeRequest,
+        expectedBackend: DoryVirtualizationBackendIdentity
+    ) throws -> DoryMachineStatus {
+        let identity = try currentRuntimeIdentity(id: request.machineID)
+        guard identity.mode == .resolvedPlan,
+              request.backend == expectedBackend,
+              identity.resolvedPlan?.backend == expectedBackend else {
+            throw MachineManagerError.persistence(
+                "resolved stop adapter does not match durable runtime authority"
+            )
+        }
+        return try stopImplementation(
+            id: request.machineID,
+            journalLifecycle: true,
+            requestedOperationID: request.operationID
+        )
+    }
+
+    private func performAuthorizedResolvedBackendPause(
+        request: MachineBackendRuntimeRequest,
+        expectedBackend: DoryVirtualizationBackendIdentity
+    ) throws -> DoryMachineStatus {
+        let identity = try currentRuntimeIdentity(id: request.machineID)
+        guard identity.mode == .resolvedPlan,
+              request.backend == expectedBackend,
+              identity.resolvedPlan?.backend == expectedBackend else {
+            throw MachineManagerError.persistence(
+                "resolved pause adapter does not match durable runtime authority"
+            )
+        }
+        return try pauseImplementation(
+            id: request.machineID,
+            journalLifecycle: true,
+            requestedOperationID: request.operationID
+        )
+    }
+
+    private func performAuthorizedResolvedBackendResume(
+        request: MachineBackendRuntimeRequest,
+        expectedBackend: DoryVirtualizationBackendIdentity
+    ) throws -> DoryMachineStatus {
+        let identity = try currentRuntimeIdentity(id: request.machineID)
+        guard identity.mode == .resolvedPlan,
+              request.backend == expectedBackend,
+              identity.resolvedPlan?.backend == expectedBackend else {
+            throw MachineManagerError.persistence(
+                "resolved resume adapter does not match durable runtime authority"
+            )
+        }
+        return try resumeImplementation(
+            id: request.machineID,
+            journalLifecycle: true,
+            requestedOperationID: request.operationID
+        )
+    }
+
+    @discardableResult
+    private func acknowledgeGuestLifecycle(
+        entry: MachineEntry,
+        action: DoryLifecycleReceiptAction,
+        operationID: UUID
+    ) throws -> Bool {
+        let canonical = DoryOperationIdentity.canonical(operationID)
+        guard let ready = entry.handoff?.ready,
+              ready.agentCapabilities.contains(where: {
+                  $0.id == "lifecycle-receipt" && $0.version >= 1
+              }),
+              let socketPath = ready.agentSocketPath else {
+            appendFlightEvent(
+                machineID: entry.configuration.id,
+                kind: .guestLifecycleUnavailable
+            )
+            return false
+        }
+        let client = try agentConnector(socketPath)
+        defer { client.close() }
+        let receipt = try client.lifecycleReceipt(
+            action: action,
+            operationID: canonical
+        )
+        guard receipt == canonical else {
+            throw MachineManagerError.persistence(
+                "guest returned a mismatched lifecycle operation receipt"
+            )
+        }
+        appendFlightEvent(
+            machineID: entry.configuration.id,
+            kind: .guestLifecycleAcknowledged
+        )
+        return true
+    }
+
+    private func acknowledgeHelperLifecycle(
+        entry: MachineEntry,
+        action: DoryLifecycleReceiptAction,
+        operationID: UUID
+    ) throws {
+        guard let socketPath = entry.handoff?.ready.controlSocketPath else {
+            appendFlightEvent(
+                machineID: entry.configuration.id,
+                kind: .helperLifecycleUnavailable
+            )
+            return
+        }
+        try vzLifecycleController.acknowledgeLifecycle(
+            socketPath: socketPath,
+            action: action,
+            operationID: operationID
+        )
+        appendFlightEvent(
+            machineID: entry.configuration.id,
+            kind: .helperLifecycleAcknowledged
+        )
+    }
+
+    private func recordHelperLifecycleAcknowledged(machineID: String) {
+        appendFlightEvent(machineID: machineID, kind: .helperLifecycleAcknowledged)
+    }
+
+    private func pauseImplementation(
+        id: String,
+        journalLifecycle: Bool,
+        requestedOperationID: UUID? = nil
+    ) throws -> DoryMachineStatus {
+        lock.lock()
+        guard let entry = machines[id] else {
+            lock.unlock()
+            throw MachineManagerError.unknownMachine(id)
+        }
+        guard entry.state == .running, let process = entry.process else {
+            lock.unlock()
+            throw MachineManagerError.persistence("machine \(id) is not running")
+        }
+        let machine = entry.configuration
+        let runtimeIdentity = entry.runtimeIdentity
+        lock.unlock()
+        let lifecycle = try journalLifecycle
+            ? beginLifecyclePause(
+                machine: machine,
+                runtimeIdentity: runtimeIdentity,
+                operationID: requestedOperationID
+            )
+            : nil
+        let operationID = lifecycle?.operation.operationID
+            ?? requestedOperationID
+            ?? entry.activeOperationID
+        do {
+            if let lifecycle { try advanceLifecycleToPublishing(lifecycle) }
+            if let operationID {
+                _ = try acknowledgeGuestLifecycle(
+                    entry: entry,
+                    action: .preparePause,
+                    operationID: operationID
+                )
+            }
+            let usedVZPause = entry.activeBackend == .appleVirtualizationFramework
+                && entry.handoff?.ready.controlSocketPath != nil
+            if let socketPath = entry.handoff?.ready.controlSocketPath, usedVZPause,
+               let operationID {
+                try vzLifecycleController.pause(
+                    socketPath: socketPath,
+                    operationID: operationID
+                )
+                recordHelperLifecycleAcknowledged(machineID: id)
+            } else {
+                if let operationID {
+                    try acknowledgeHelperLifecycle(
+                        entry: entry,
+                        action: .preparePause,
+                        operationID: operationID
+                    )
+                }
+                guard process.suspend() else {
+                    throw MachineManagerError.persistence("could not pause machine \(id)")
+                }
+            }
+            lock.lock()
+            guard var current = machines[id], current.process === process,
+                  current.state == .running else {
+                lock.unlock()
+                if let socketPath = entry.handoff?.ready.controlSocketPath, usedVZPause {
+                    if let operationID {
+                        try? vzLifecycleController.resume(
+                            socketPath: socketPath,
+                            operationID: operationID
+                        )
+                    }
+                } else {
+                    _ = process.resume()
+                }
+                throw MachineManagerError.persistence(
+                    "machine \(id) changed while pause was being committed"
+                )
+            }
+            current.state = .paused
+            clearFailure(on: &current)
+            machines[id] = current
+            lock.unlock()
+            if let lifecycle {
+                _ = completeCommittedLifecycle(
+                    lifecycle,
+                    diagnostic: "paused machine has an unfinished pause journal"
+                )
+            }
+            return status(id: id) ?? DoryMachineStatus(id: id, state: .paused)
+        } catch {
+            if let lifecycle { failLifecycle(lifecycle, stepID: "pause.failed") }
+            throw error
+        }
+    }
+
+    private func resumeImplementation(
+        id: String,
+        journalLifecycle: Bool,
+        requestedOperationID: UUID? = nil
+    ) throws -> DoryMachineStatus {
+        lock.lock()
+        guard let entry = machines[id] else {
+            lock.unlock()
+            throw MachineManagerError.unknownMachine(id)
+        }
+        guard entry.state == .paused, let process = entry.process else {
+            lock.unlock()
+            throw MachineManagerError.persistence("machine \(id) is not paused")
+        }
+        let machine = entry.configuration
+        let runtimeIdentity = entry.runtimeIdentity
+        lock.unlock()
+        let lifecycle = try journalLifecycle
+            ? beginLifecycleResume(
+                machine: machine,
+                runtimeIdentity: runtimeIdentity,
+                operationID: requestedOperationID
+            )
+            : nil
+        let operationID = lifecycle?.operation.operationID
+            ?? requestedOperationID
+            ?? entry.activeOperationID
+        var resumedBackend = false
+        do {
+            if let lifecycle { try advanceLifecycleToPublishing(lifecycle) }
+            let usedVZResume = entry.activeBackend == .appleVirtualizationFramework
+                && entry.handoff?.ready.controlSocketPath != nil
+            if let socketPath = entry.handoff?.ready.controlSocketPath, usedVZResume,
+               let operationID {
+                try vzLifecycleController.resume(
+                    socketPath: socketPath,
+                    operationID: operationID
+                )
+                resumedBackend = true
+                recordHelperLifecycleAcknowledged(machineID: id)
+            } else {
+                guard process.resume() else {
+                    throw MachineManagerError.persistence("could not resume machine \(id)")
+                }
+                resumedBackend = true
+                if let operationID {
+                    try acknowledgeHelperLifecycle(
+                        entry: entry,
+                        action: .resumed,
+                        operationID: operationID
+                    )
+                }
+            }
+            if let operationID {
+                _ = try acknowledgeGuestLifecycle(
+                    entry: entry,
+                    action: .resumed,
+                    operationID: operationID
+                )
+            }
+            lock.lock()
+            guard var current = machines[id], current.process === process,
+                  current.state == .paused else {
+                lock.unlock()
+                throw MachineManagerError.persistence(
+                    "machine \(id) changed while resume was being committed"
+                )
+            }
+            current.state = .running
+            clearFailure(on: &current)
+            machines[id] = current
+            lock.unlock()
+            if let lifecycle {
+                _ = completeCommittedLifecycle(
+                    lifecycle,
+                    diagnostic: "resumed machine has an unfinished resume journal"
+                )
+            }
+            return status(id: id) ?? DoryMachineStatus(id: id, state: .running)
+        } catch {
+            if resumedBackend {
+                if let socketPath = entry.handoff?.ready.controlSocketPath,
+                   entry.activeBackend == .appleVirtualizationFramework,
+                   let operationID {
+                    try? vzLifecycleController.pause(
+                        socketPath: socketPath,
+                        operationID: operationID
+                    )
+                } else {
+                    _ = process.suspend()
+                }
+            }
+            if let lifecycle { failLifecycle(lifecycle, stepID: "resume.failed") }
+            throw error
+        }
+    }
+
+    private func stopImplementation(
+        id: String,
+        journalLifecycle: Bool,
+        preserveResolvedAdmissionForRestart: Bool = false,
+        requestedOperationID: UUID? = nil
+    ) throws -> DoryMachineStatus {
+        lock.lock()
+        guard var entry = machines[id] else {
+            lock.unlock()
+            throw MachineManagerError.unknownMachine(id)
+        }
+        let sourceState = lifecycleState(for: entry.state)
+        let wasSuspended = entry.state == .suspended
+        let wasActive = [.starting, .running, .paused].contains(entry.state)
+            && entry.process != nil
+        let machine = entry.configuration
+        let runtimeIdentity = entry.runtimeIdentity
+        let admissionPlan = entry.activeResolvedPlan ?? runtimeIdentity.resolvedPlan
+        lock.unlock()
+        let lifecycle = try journalLifecycle && (wasActive || wasSuspended)
+            ? beginLifecycleStop(
+                machine: machine,
+                runtimeIdentity: runtimeIdentity,
+                sourceState: sourceState,
+                operationID: requestedOperationID
+            )
+            : nil
+        let operationID = lifecycle?.operation.operationID
+            ?? requestedOperationID
+            ?? entry.activeOperationID
+        var stopCommitted = false
+        var resumedPausedBackend = false
+        do {
+            if let lifecycle { try advanceLifecycleToPublishing(lifecycle) }
+            // Stopping a suspended VM means discarding its same-host execution state and
+            // returning to a cold-stopped machine. Retire that authority before publishing the
+            // stopped state so a failed removal leaves the machine truthfully suspended.
+            if wasSuspended {
+                try savedStateStore.remove(machineID: id)
+            }
+            if entry.state == .paused, let operationID {
+                if let socketPath = entry.handoff?.ready.controlSocketPath,
+                   entry.activeBackend == .appleVirtualizationFramework {
+                    try vzLifecycleController.resume(
+                        socketPath: socketPath,
+                        operationID: operationID
+                    )
+                    recordHelperLifecycleAcknowledged(machineID: id)
+                } else {
+                    guard entry.process?.resume() == true else {
+                        throw MachineManagerError.persistence(
+                            "could not resume paused machine \(id) for graceful stop"
+                        )
+                    }
+                }
+                resumedPausedBackend = true
+            }
+            if wasActive, let operationID {
+                _ = try acknowledgeGuestLifecycle(
+                    entry: entry,
+                    action: .prepareStop,
+                    operationID: operationID
+                )
+                try acknowledgeHelperLifecycle(
+                    entry: entry,
+                    action: .prepareStop,
+                    operationID: operationID
+                )
+            }
+            lock.lock()
+            guard let current = machines[id] else {
+                lock.unlock()
+                throw MachineManagerError.unknownMachine(id)
+            }
+            entry = current
+            let process = entry.process
+            let handoffServer = entry.handoffServer
+            lock.unlock()
+
+            handoffServer?.stop()
+            guard process.map(processStopper) != false else {
+                // SIGKILL was issued, but terminal observation did not arrive within the bounded
+                // grace period. Keep the process, backend plan, and disk authority attached to the
+                // failed entry so start/delete/update cannot reuse them while its retained reaper
+                // continues off the mutation path.
+                resumedPausedBackend = false
+                lock.lock()
+                if var current = machines[id], current.process === process {
+                    current.state = .failed
+                    setFailure(
+                        on: &current,
+                        code: .lifecycleOperationFailed,
+                        message: "machine helper termination could not be confirmed within the bounded stop window",
+                        causes: [.processExit, .runtimeAuthority],
+                        recoveryDisposition: .repair
+                    )
+                    machines[id] = current
+                }
+                lock.unlock()
+                if let process {
+                    retainFailedMachineProcessUntilTerminalObservation(
+                        machineID: id,
+                        process: process,
+                        context: "explicit stop"
+                    )
+                }
+                throw MachineManagerError.persistence(
+                    "machine \(id) helper termination remains in progress; its runtime authority is retained"
+                )
+            }
+
+            lock.lock()
+            guard let current = machines[id],
+                  Self.sameObject(current.process, process) else {
+                lock.unlock()
+                throw MachineManagerError.persistence(
+                    "machine \(id) changed while helper termination was being committed"
+                )
+            }
+            entry = current
+            entry.process = nil
+            entry.handoffServer = nil
+            entry.handoff = nil
+            entry.launchID = nil
+            entry.runtimeAddress = nil
+            entry.currentBalloonTargetMB = nil
+            entry.activeResolvedPlan = nil
+            entry.activeBackend = nil
+            if wasSuspended {
+                entry.savedStateStatus = nil
+            }
+            entry.state = .stopped
+            clearFailure(on: &entry)
+            machines[id] = entry
+            lock.unlock()
+
+            stopCommitted = true
+            if !preserveResolvedAdmissionForRestart {
+                try markResolvedAdmissionStopped(plan: admissionPlan)
+            }
+#if DEBUG
+            try injectLifecycleFault(.stopAfterProcessStop)
+#endif
+            if let lifecycle {
+                _ = completeCommittedLifecycle(
+                    lifecycle,
+                    diagnostic: "stopped machine has an unfinished stop journal"
+                )
+            }
+            return status(id: id) ?? DoryMachineStatus(id: id, state: .stopped)
+        } catch {
+#if DEBUG
+            if error is MachineLifecycleInjectedCrash { throw error }
+#endif
+            if stopCommitted {
+                if let lifecycle {
+                    removeActiveLifecycleOperation(lifecycle)
+                    lifecycle.releaseLease()
+                }
+                lock.lock()
+                if var current = machines[id] {
+                    setFailure(
+                        on: &current,
+                        code: .resourceAdmissionRejected,
+                        message: "machine stopped but resource settlement requires recovery: \(error)",
+                        causes: [.resourceAdmission],
+                        recoveryDisposition: .repair
+                    )
+                    machines[id] = current
+                }
+                lock.unlock()
+                throw error
+            }
+            if resumedPausedBackend {
+                if let socketPath = entry.handoff?.ready.controlSocketPath,
+                   entry.activeBackend == .appleVirtualizationFramework,
+                   let operationID {
+                    try? vzLifecycleController.pause(
+                        socketPath: socketPath,
+                        operationID: operationID
+                    )
+                } else {
+                    _ = entry.process?.suspend()
+                }
+            }
+            if let lifecycle { failLifecycle(lifecycle, stepID: "stop.failed") }
+            throw error
+        }
+    }
+
     public func stopAll() {
-        operationLock.lock()
-        defer { operationLock.unlock() }
+        lock.lock()
+        let workspaceIDs = Array(machines.keys)
+        lock.unlock()
+        let mutationLease = mutationCoordinator.acquire(workspaceIDs: workspaceIDs)
+        defer { mutationLease.release() }
+
         lock.lock()
         let runningEntries = machines.map { id, entry in
-            (id: id, process: entry.process, handoffServer: entry.handoffServer)
-        }
-        for id in machines.keys {
-            machines[id]?.process = nil
-            machines[id]?.handoffServer = nil
-            machines[id]?.handoff = nil
-            machines[id]?.launchID = nil
-            machines[id]?.runtimeAddress = nil
-            machines[id]?.currentBalloonTargetMB = nil
-            machines[id]?.state = .stopped
+            (
+                id: id,
+                state: entry.state,
+                process: entry.process,
+                handoffServer: entry.handoffServer,
+                admissionPlan: entry.activeResolvedPlan ?? entry.runtimeIdentity.resolvedPlan
+            )
         }
         lock.unlock()
 
         for entry in runningEntries {
+            if entry.state == .suspended { continue }
             entry.handoffServer?.stop()
-            entry.process?.stop(timeout: DoryEngineShutdownTiming.hostTerminationSeconds)
+            let terminated = entry.process.map(processStopper) != false
+            lock.lock()
+            if var current = machines[entry.id],
+               Self.sameObject(current.process, entry.process) {
+                if terminated {
+                    current.process = nil
+                    current.handoffServer = nil
+                    current.handoff = nil
+                    current.launchID = nil
+                    current.runtimeAddress = nil
+                    current.currentBalloonTargetMB = nil
+                    current.activeResolvedPlan = nil
+                    current.activeBackend = nil
+                    current.state = .stopped
+                    clearFailure(on: &current)
+                } else {
+                    current.state = .failed
+                    setFailure(
+                        on: &current,
+                        code: .lifecycleOperationFailed,
+                        message: "machine helper termination could not be confirmed during engine shutdown",
+                        causes: [.processExit, .runtimeAuthority],
+                        recoveryDisposition: .repair
+                    )
+                }
+                machines[entry.id] = current
+            }
+            lock.unlock()
+            if terminated {
+                try? markResolvedAdmissionStopped(plan: entry.admissionPlan)
+            } else if let process = entry.process {
+                retainFailedMachineProcessUntilTerminalObservation(
+                    machineID: entry.id,
+                    process: process,
+                    context: "engine shutdown"
+                )
+            }
         }
     }
 
     public func delete(id: String) throws {
-        operationLock.lock()
-        defer { operationLock.unlock() }
+        let mutationLease = mutationCoordinator.acquire(workspaceID: id)
+        defer { mutationLease.release() }
         // Reject traversal ids before any path is derived: delete() removes the machine's
         // state directory, so a "." / ".." id must never reach machineStateDirectory(id:).
         guard Self.isValidID(id) else {
             throw MachineManagerError.invalidID(id)
         }
+        try requireNoActivePlanningMutation(id: id)
+        try cancelActiveStartLifecycleIfNeeded(id: id, reason: "start.cancelled-by-delete")
+        let directMutation = try retainDirectWorkspaceMutationLock(id: id)
+        defer { releaseDirectWorkspaceMutationLock(id: id, retention: directMutation) }
         lock.lock()
-        guard let entry = machines.removeValue(forKey: id) else {
+        guard let sourceEntry = machines[id] else {
             lock.unlock()
             throw MachineManagerError.unknownMachine(id)
         }
-        deletingMachineIDs.insert(id)
         lock.unlock()
+        let lifecycle = try beginLifecycleDelete(
+            machine: sourceEntry.configuration,
+            runtimeIdentity: sourceEntry.runtimeIdentity,
+            sourceState: lifecycleState(for: sourceEntry.state)
+        )
+        var deletionCommitted = false
 
-        entry.handoffServer?.stop()
-        entry.process?.stop(timeout: DoryEngineShutdownTiming.hostTerminationSeconds)
+        do {
+            try advanceLifecycleToPublishing(lifecycle)
+            _ = try stopImplementation(id: id, journalLifecycle: false)
+            lock.lock()
+            guard var deletingEntry = machines[id] else {
+                lock.unlock()
+                throw MachineManagerError.unknownMachine(id)
+            }
+            appendFlightEvent(on: &deletingEntry, kind: .workspaceDeleted)
+            machines.removeValue(forKey: id)
+            deletingMachineIDs.insert(id)
+            lock.unlock()
 
-        let fileManager = FileManager.default
-        let statePath = machineStateDirectory(id: id)
-        var quarantinePath: String?
-        if fileManager.fileExists(atPath: statePath) {
-            let quarantine = "\(configuration.stateDirectory)/\(Self.deletionQuarantinePrefix)\(id)-\(UUID().uuidString)"
-            do {
+            let fileManager = FileManager.default
+            let statePath = machineStateDirectory(id: id)
+            var quarantinePath: String?
+            if fileManager.fileExists(atPath: statePath) {
+                let quarantine = lifecycleDeletionQuarantinePath(
+                    machineID: id,
+                    operationID: lifecycle.operation.operationID
+                )
                 try fileManager.moveItem(atPath: statePath, toPath: quarantine)
                 quarantinePath = quarantine
-            } catch {
-                var restored = entry
-                restored.process = nil
-                restored.handoffServer = nil
-                restored.handoff = nil
-                restored.currentBalloonTargetMB = nil
-                restored.state = .stopped
-                restored.lastError = "delete failed: \(error)"
-                lock.lock()
-                deletingMachineIDs.remove(id)
-                if machines[id] == nil {
-                    machines[id] = restored
-                }
-                lock.unlock()
-                throw MachineManagerError.persistence("could not delete \(id): \(error)")
+#if DEBUG
+                try injectLifecycleFault(.deleteAfterQuarantine)
+#endif
             }
-        }
 
-        lock.lock()
-        deletingMachineIDs.remove(id)
-        lock.unlock()
+            lock.lock()
+            deletingMachineIDs.remove(id)
+            workspaceProjectionDiagnostics.removeValue(forKey: id)
+            lock.unlock()
+            _ = managerStateLock.withLock {
+                resolvedLaunchIdentities.removeValue(forKey: id)
+            }
 
-        try? FileManager.default.removeItem(atPath: machineRuntimeDirectory(id: id))
-        if let quarantinePath {
-            try? fileManager.removeItem(atPath: quarantinePath)
+            try? FileManager.default.removeItem(atPath: machineRuntimeDirectory(id: id))
+            if let quarantinePath {
+                try fileManager.removeItem(atPath: quarantinePath)
+            }
+            // Once both the authoritative state and its quarantine are gone, deletion is
+            // committed. A later journal fsync/transition failure must not resurrect an
+            // in-memory entry whose storage no longer exists. Recovery can deterministically
+            // finish the still-durable deleting operation on the next daemon start.
+            deletionCommitted = true
+            try? failureStore.clear(id)
+            try? displayPresentationStore.remove(machineID: id)
+            try releaseResolvedAdmissionStorage(
+                machineID: id,
+                plan: sourceEntry.runtimeIdentity.resolvedPlan
+            )
+            do {
+                try completeLifecycle(lifecycle)
+            } catch {
+                removeActiveLifecycleOperation(lifecycle)
+                lifecycle.releaseLease()
+            }
+        } catch {
+#if DEBUG
+            if error is MachineLifecycleInjectedCrash { throw error }
+#endif
+            if deletionCommitted {
+                removeActiveLifecycleOperation(lifecycle)
+                lifecycle.releaseLease()
+                return
+            }
+            let quarantine = lifecycleDeletionQuarantinePath(
+                machineID: id,
+                operationID: lifecycle.operation.operationID
+            )
+            let statePath = machineStateDirectory(id: id)
+            if Self.pathEntryExists(quarantine), !Self.pathEntryExists(statePath) {
+                try? FileManager.default.moveItem(atPath: quarantine, toPath: statePath)
+            }
+            var restored = sourceEntry
+            restored.process = nil
+            restored.handoffServer = nil
+            restored.handoff = nil
+            restored.currentBalloonTargetMB = nil
+            restored.state = .stopped
+            setFailure(
+                on: &restored,
+                code: .deletionFailed,
+                message: "delete failed: \(error)",
+                causes: [.filesystem, .journal],
+                recoveryDisposition: .retry
+            )
+            lock.lock()
+            deletingMachineIDs.remove(id)
+            if machines[id] == nil { machines[id] = restored }
+            lock.unlock()
+            failLifecycle(lifecycle, stepID: "delete.failed", rolledBack: true)
+            if let error = error as? MachineManagerError { throw error }
+            throw MachineManagerError.persistence("could not delete \(id): \(error)")
         }
     }
 
@@ -783,11 +5285,35 @@ public final class MachineManager: @unchecked Sendable {
         shares: [DoryMachineShareConfiguration]? = nil,
         updatesShares: Bool = false,
         environment: [String: String]? = nil,
-        updatesEnvironment: Bool = false
+        updatesEnvironment: Bool = false,
+        typedSettingsPatch: DoryMachineTypedSettingsPatch? = nil,
+        installerMediaAttached: Bool? = nil
     ) throws -> DoryMachineStatus {
-        operationLock.lock()
-        defer { operationLock.unlock() }
+        let mutationLease = mutationCoordinator.acquire(workspaceID: id)
+        defer { mutationLease.release() }
+        try requireNoActivePlanningMutation(id: id)
+        let directMutation = try retainDirectWorkspaceMutationLock(id: id)
+        defer { releaseDirectWorkspaceMutationLock(id: id, retention: directMutation) }
+        guard !(updatesEnvironment && typedSettingsPatch != nil) else {
+            throw MachineManagerError.persistence(
+                "raw environment replacement and typed machine settings are mutually exclusive"
+            )
+        }
         let (current, wasRunning) = try configurationAndRunningState(id: id)
+        try reconcilePendingInstallerFirmwarePromotionIfNeeded(for: current)
+        let nativeRecord: DoryWorkspaceRepositoryRecord?
+        if launchPolicy == .perWorkspaceAuthority {
+            let record = try workspaceRepository.readPersistedRecord(id: id)
+            nativeRecord = record.legacyConfigurationSHA256 == nil
+                && record.legacyMigrationFactsSHA256 == nil ? record : nil
+        } else {
+            nativeRecord = nil
+        }
+        if nativeRecord != nil, updatesEnvironment {
+            throw MachineManagerError.persistence(
+                "native workspace updates do not accept persisted environment values"
+            )
+        }
         var updated = current
         if let memoryMB {
             updated.memoryMB = memoryMB
@@ -799,19 +5325,160 @@ public final class MachineManager: @unchecked Sendable {
             updated.address = try Self.normalizedAddress(address)
         }
         if updatesShares {
-            updated.shares = shares ?? []
+            updated.shares = try Self.sealShareAuthorizations(shares ?? [])
         }
         if updatesEnvironment {
             updated.environment = environment ?? [:]
         }
+        if let typedSettingsPatch, nativeRecord == nil {
+            updated.environment = try typedSettingsPatch.applying(
+                to: current.environment,
+                displayMode: updated.displayMode
+            )
+        }
+        if let installerMediaAttached {
+            guard updated.bootMode == .efi else {
+                throw MachineManagerError.persistence("installer media is only available for EFI machines")
+            }
+            if installerMediaAttached {
+                let managedInstaller = machineInstallerISOPath(id: id)
+                guard Self.isPrivateRegularFile(path: managedInstaller) else {
+                    throw MachineManagerError.persistence("managed installer ISO is unavailable")
+                }
+                updated.installerISOPath = managedInstaller
+            } else {
+                // Detaching removable media leaves the EFI disk/NVRAM boot contract intact. A
+                // generic installer must not be forced through distro-specific direct-kernel
+                // extraction merely to cold-boot the system it installed.
+                updated.installerISOPath = nil
+            }
+        }
         try Self.validateLaunchConfiguration(updated)
-        guard updated != current else {
+        // Reject an impossible first eject before stopping a healthy running helper. Promotion
+        // repeats this validation after the stop so filesystem drift still fails closed.
+        _ = try installerFirmwareVariableStorePromotionRequired(
+            from: current,
+            to: updated
+        )
+        var nativeDefinition: DoryVirtualMachineDefinition?
+        if let nativeRecord {
+            let facts = try workspaceMigrationFacts(for: updated)
+            var migration = try DoryMachineConfigurationMigrationBridge.migrate(
+                updated,
+                facts: facts
+            )
+            var candidate = migration.definition
+            candidate.lifecycle = nativeRecord.definition.lifecycle
+            candidate.backendPreference = nativeRecord.definition.backendPreference
+            candidate.graphics = nativeRecord.definition.graphics
+            candidate.guestIdentityIntent = nativeRecord.definition.guestIdentityIntent
+            candidate.clipboardPolicy = nativeRecord.definition.clipboardPolicy
+            candidate.sandboxPolicy = nativeRecord.definition.sandboxPolicy
+            if let typedSettingsPatch {
+                candidate = try typedSettingsPatch.applying(
+                    to: candidate,
+                    displayMode: updated.displayMode
+                )
+            }
+            if updated == current, candidate == nativeRecord.definition {
+                return status(id: id) ?? DoryMachineStatus(id: id, state: .stopped)
+            }
+            guard nativeRecord.definition.lifecycle.revision < UInt64.max else {
+                throw MachineManagerError.persistence("workspace revision is exhausted")
+            }
+            guard nativeRecord.definition.lifecycle.updatedAtUnixMilliseconds < Int64.max else {
+                throw MachineManagerError.persistence("workspace timestamp is exhausted")
+            }
+            let now = Int64(max(0, Date().timeIntervalSince1970 * 1_000))
+            candidate.lifecycle = DoryVMLifecycleMetadata(
+                revision: nativeRecord.definition.lifecycle.revision + 1,
+                createdAtUnixMilliseconds:
+                    nativeRecord.definition.lifecycle.createdAtUnixMilliseconds,
+                updatedAtUnixMilliseconds: max(
+                    now,
+                    nativeRecord.definition.lifecycle.updatedAtUnixMilliseconds + 1
+                )
+            )
+            guard Self.nativeDefinition(candidate, isCompatibleWith: migration.definition) else {
+                throw MachineManagerError.persistence(
+                    "native workspace update is not representable by the compatibility runtime"
+                )
+            }
+            migration.definition = Self.compatibilityRuntimeDefinition(
+                candidate,
+                compatibility: migration.definition
+            )
+            _ = try migration.legacyConfiguration()
+            nativeDefinition = candidate
+        }
+        guard updated != current || nativeDefinition != nil else {
+            return status(id: id) ?? DoryMachineStatus(id: id, state: .stopped)
+        }
+        if launchPolicy == .perWorkspaceAuthority {
+            if wasRunning {
+                _ = try stopImplementation(id: id, journalLifecycle: true)
+            }
+            var promotedInstallerFirmwareStore = false
+            do {
+                try resetInstallerFirmwareVariableStoreForRecoveryIfNeeded(
+                    from: current,
+                    to: updated
+                )
+                promotedInstallerFirmwareStore = try promoteInstallerFirmwareVariableStoreIfNeeded(
+                    from: current,
+                    to: updated
+                )
+                try persist(
+                    updated,
+                    reconcilesLegacyProjection: nativeRecord == nil
+                )
+                if let nativeRecord, let nativeDefinition {
+                    try workspaceRepository.replace(
+                        nativeDefinition,
+                        expectedRevision: nativeRecord.definition.lifecycle.revision
+                    )
+                }
+                try publishConfiguration(updated)
+                if let nativeDefinition {
+                    let snapshot = try DoryMachineTypedSettingsSnapshot(
+                        definition: nativeDefinition
+                    )
+                    lock.lock()
+                    machines[id]?.typedSettingsSnapshot = snapshot
+                    machines[id]?.sandboxPolicySnapshot = nativeDefinition.sandboxPolicy
+                    machines[id]?.usesNativeWorkspaceAuthority = true
+                    lock.unlock()
+                }
+                try? finalizeInstallerFirmwareVariableStorePromotionIfNeeded(
+                    promotedInstallerFirmwareStore,
+                    machineID: id
+                )
+            } catch {
+                let updateError = error
+                if nativeRecord != nil {
+                    try? persist(current, reconcilesLegacyProjection: false)
+                }
+                do {
+                    try rollbackPromotedInstallerFirmwareVariableStoreIfNeeded(
+                        promotedInstallerFirmwareStore,
+                        machineID: id
+                    )
+                } catch let rollbackError {
+                    throw MachineManagerError.persistence(
+                        "could not update \(id): \(updateError); EFI variable-store rollback failed: \(rollbackError)"
+                    )
+                }
+                throw updateError
+            }
+            // Every desired-state mutation invalidates the former plan. The workspace remains
+            // stopped until planning publishes a replacement exact runtime identity.
             return status(id: id) ?? DoryMachineStatus(id: id, state: .stopped)
         }
         let requiresRestart = updated.memoryMB != current.memoryMB
             || updated.cpuCount != current.cpuCount
             || updated.shares != current.shares
             || updated.environment != current.environment
+            || updated.installerISOPath != current.installerISOPath
         if !requiresRestart {
             do {
                 try persist(updated)
@@ -822,46 +5489,150 @@ public final class MachineManager: @unchecked Sendable {
             }
             return status(id: id) ?? DoryMachineStatus(id: id, state: .stopped)
         }
-        if wasRunning {
-            _ = try stop(id: id)
-        }
-        do {
+        let hasOnlyLiveShareRestartChanges = updated.shares != current.shares
+            && updated.memoryMB == current.memoryMB
+            && updated.cpuCount == current.cpuCount
+            && updated.environment == current.environment
+            && updated.installerISOPath == current.installerISOPath
+        if wasRunning,
+           hasOnlyLiveShareRestartChanges,
+           let liveContext = liveVZDirectoryShareReplacementContext(
+               id: id,
+               current: current,
+               updated: updated
+           ) {
+            let authorities = try Self.captureShareRuntimeAuthorities(updated.shares)
+            // Desired state is committed first. If the helper rejects the mutation or its live
+            // launch changes, the normal stop/start transaction below applies that same durable
+            // state and preserves the existing rollback semantics.
             try persist(updated)
             try publishConfiguration(updated)
+            do {
+                let liveShares = try Self.revalidateShareRuntimeAuthorities(
+                    authorities,
+                    expectedShares: updated.shares
+                ).map {
+                    VmmDirectoryShareReplacement(
+                        tag: $0.tag,
+                        hostPath: $0.hostPath,
+                        readOnly: $0.readOnly
+                    )
+                }
+                try directoryShareController.replaceDirectoryShares(
+                    socketPath: liveContext.socketPath,
+                    shares: liveShares
+                )
+                guard liveVZDirectoryShareReplacementStillApplies(
+                    id: id,
+                    context: liveContext,
+                    configuration: updated
+                ) else {
+                    throw MachineManagerError.persistence(
+                        "live VZ launch changed during directory-share replacement"
+                    )
+                }
+                return status(id: id) ?? DoryMachineStatus(id: id, state: .running)
+            } catch {
+                // A lost response is ambiguous: the helper may have applied the replacement.
+                // Fall through to a full stop/start instead of attempting a path-based rollback.
+            }
+        }
+        if wasRunning {
+            _ = try stopImplementation(id: id, journalLifecycle: true)
+        }
+        var promotedInstallerFirmwareStore = false
+        do {
+            try resetInstallerFirmwareVariableStoreForRecoveryIfNeeded(
+                from: current,
+                to: updated
+            )
+            promotedInstallerFirmwareStore = try promoteInstallerFirmwareVariableStoreIfNeeded(
+                from: current,
+                to: updated
+            )
+            try persist(updated)
+            try publishConfiguration(updated)
+            try? finalizeInstallerFirmwareVariableStorePromotionIfNeeded(
+                promotedInstallerFirmwareStore,
+                machineID: id
+            )
         } catch {
+            let updateError = error
+            var firmwareRollbackError: Error?
+            do {
+                try rollbackPromotedInstallerFirmwareVariableStoreIfNeeded(
+                    promotedInstallerFirmwareStore,
+                    machineID: id
+                )
+            } catch {
+                firmwareRollbackError = error
+            }
             if wasRunning {
                 do {
-                    _ = try startAndWaitUntilReady(id: id)
+                    _ = try startAndWaitUntilReady(id: id, journalLifecycle: true)
                 } catch let restartError {
                     throw MachineManagerError.persistence(
-                        "could not update \(id): \(error); original configuration restart failed: \(restartError)"
+                        "could not update \(id): \(updateError); original configuration restart failed: \(restartError)"
+                            + (firmwareRollbackError.map {
+                                "; EFI variable-store rollback also failed: \($0)"
+                            } ?? "")
                     )
                 }
             }
-            if let error = error as? MachineManagerError { throw error }
-            throw MachineManagerError.persistence("could not update \(id): \(error)")
+            if let firmwareRollbackError {
+                throw MachineManagerError.persistence(
+                    "could not update \(id): \(updateError); EFI variable-store rollback failed: \(firmwareRollbackError)"
+                )
+            }
+            if let updateError = updateError as? MachineManagerError { throw updateError }
+            throw MachineManagerError.persistence("could not update \(id): \(updateError)")
         }
         guard wasRunning else {
             return status(id: id) ?? DoryMachineStatus(id: id, state: .stopped)
         }
         do {
-            return try startAndWaitUntilReady(id: id)
+            return try startAndWaitUntilReady(id: id, journalLifecycle: true)
         } catch {
             let updateError = error
-            _ = try? stop(id: id)
+            // The handoff callback publishes `.failed` before it can acquire the workspace
+            // coordinator to terminalize the readiness journal. update() already owns that
+            // workspace here, so it
+            // must settle that failed start before opening the rollback stop/start transaction.
+            failActiveStartLifecycle(id: id, stepID: "start.readiness-failed")
+            _ = try? stopImplementation(id: id, journalLifecycle: true)
+            var firmwareRollbackError: Error?
+            do {
+                try rollbackPromotedInstallerFirmwareVariableStoreIfNeeded(
+                    promotedInstallerFirmwareStore,
+                    machineID: id
+                )
+            } catch {
+                firmwareRollbackError = error
+            }
             do {
                 try persist(current)
                 try publishConfiguration(current)
             } catch {
                 throw MachineManagerError.persistence(
                     "could not start updated \(id): \(updateError); configuration rollback failed: \(error)"
+                        + (firmwareRollbackError.map {
+                            "; EFI variable-store rollback also failed: \($0)"
+                        } ?? "")
                 )
             }
             do {
-                _ = try startAndWaitUntilReady(id: id)
+                _ = try startAndWaitUntilReady(id: id, journalLifecycle: true)
             } catch {
                 throw MachineManagerError.persistence(
                     "could not start updated \(id): \(updateError); original configuration was restored but restart failed: \(error)"
+                        + (firmwareRollbackError.map {
+                            "; EFI variable-store rollback also failed: \($0)"
+                        } ?? "")
+                )
+            }
+            if let firmwareRollbackError {
+                throw MachineManagerError.persistence(
+                    "could not start updated \(id): \(updateError); original configuration was restored; EFI variable-store rollback failed: \(firmwareRollbackError)"
                 )
             }
             throw MachineManagerError.persistence(
@@ -870,66 +5641,261 @@ public final class MachineManager: @unchecked Sendable {
         }
     }
 
+    private struct LiveVZDirectoryShareReplacementContext {
+        var launchID: UUID
+        var socketPath: String
+    }
+
+    private func liveVZDirectoryShareReplacementContext(
+        id: String,
+        current: DoryMachineConfiguration,
+        updated: DoryMachineConfiguration
+    ) -> LiveVZDirectoryShareReplacementContext? {
+        // Resolved workspaces must first publish a replacement exact plan. The current planning
+        // transaction is intentionally stopped-only, so this fast path is compatibility-only
+        // until running-plan replacement has its own durable admission transaction.
+        guard launchPolicy == .legacyCompatibility,
+              current.shares.count == updated.shares.count else {
+            return nil
+        }
+        let currentMounts = Dictionary(
+            uniqueKeysWithValues: current.shares.map { ($0.tag, $0.guestPath) }
+        )
+        let updatedMounts = Dictionary(
+            uniqueKeysWithValues: updated.shares.map { ($0.tag, $0.guestPath) }
+        )
+        guard currentMounts == updatedMounts else { return nil }
+
+        lock.lock()
+        defer { lock.unlock() }
+        guard let entry = machines[id],
+              entry.configuration == current,
+              entry.state == .running,
+              entry.process?.isRunning == true,
+              entry.activeBackend == .appleVirtualizationFramework,
+              let launchID = entry.launchID,
+              let socketPath = entry.handoff?.ready.controlSocketPath else {
+            return nil
+        }
+        return LiveVZDirectoryShareReplacementContext(
+            launchID: launchID,
+            socketPath: socketPath
+        )
+    }
+
+    private func liveVZDirectoryShareReplacementStillApplies(
+        id: String,
+        context: LiveVZDirectoryShareReplacementContext,
+        configuration: DoryMachineConfiguration
+    ) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let entry = machines[id] else { return false }
+        return entry.configuration == configuration
+            && entry.state == .running
+            && entry.process?.isRunning == true
+            && entry.activeBackend == .appleVirtualizationFramework
+            && entry.launchID == context.launchID
+            && entry.handoff?.ready.controlSocketPath == context.socketPath
+    }
+
     public func snapshot(
         id: String,
         note: String = "",
         createdISO: String = ISO8601DateFormatter().string(from: Date()),
         snapshotID explicitSnapshotID: String? = nil
     ) throws -> DoryMachineSnapshot {
-        operationLock.lock()
-        defer { operationLock.unlock() }
+        let mutationLease = mutationCoordinator.acquire(workspaceID: id)
+        defer { mutationLease.release() }
+        try requireNoActivePlanningMutation(id: id)
+        let directMutation = try retainDirectWorkspaceMutationLock(id: id)
+        defer { releaseDirectWorkspaceMutationLock(id: id, retention: directMutation) }
         let snapshotID = explicitSnapshotID ?? Self.generatedSnapshotID()
         guard Self.isValidID(snapshotID) else {
             throw MachineManagerError.invalidID(snapshotID)
         }
-        let (machine, wasRunning) = try configurationAndRunningState(id: id)
+        let (machine, sourceMachineState) = try configurationAndPowerState(id: id)
+        let wasRunning = [.starting, .running].contains(sourceMachineState)
+        let wasPaused = sourceMachineState == .paused
+        let wasResident = wasRunning || wasPaused
+        let snapshotRuntimeIdentity = try currentRuntimeIdentity(id: id)
         try Self.validateLaunchConfiguration(machine)
         try ensurePrivateSnapshotDirectory(machineID: id)
         let rootfsPath = snapshotRootfsPath(machineID: id, snapshotID: snapshotID)
         let kernelPath = snapshotKernelPath(machineID: id, snapshotID: snapshotID)
+        let machineIdentifierPath = snapshotMachineIdentifierPath(machineID: id, snapshotID: snapshotID)
+        let nvramPath = snapshotNVRAMPath(machineID: id, snapshotID: snapshotID)
         guard !Self.pathEntryExists(snapshotMetadataPath(machineID: id, snapshotID: snapshotID)),
               !Self.pathEntryExists(rootfsPath),
-              !Self.pathEntryExists(kernelPath) else {
+              !Self.pathEntryExists(kernelPath),
+              !Self.pathEntryExists(machineIdentifierPath),
+              !Self.pathEntryExists(nvramPath) else {
             throw MachineManagerError.duplicateSnapshot(snapshotID)
         }
-
-        if wasRunning {
-            _ = try stop(id: id)
+        // Prefer a negotiated guest freeze before the durable cold-stop boundary. A missing tools
+        // capability degrades to the existing cold snapshot; an advertised capability that fails
+        // is not silently ignored because the guest may already be partially frozen.
+        let guestQuiesceReceipt = sourceMachineState == .running
+            ? try freezeGuestForSnapshotIfSupported(
+                id: id,
+                resolvedPlan: snapshotRuntimeIdentity.resolvedPlan
+            ) : nil
+        if wasResident {
+            do {
+                _ = try stopImplementation(
+                    id: id,
+                    journalLifecycle: true,
+                    preserveResolvedAdmissionForRestart: true
+                )
+            } catch {
+                if let guestQuiesceReceipt {
+                    do {
+                        try thawGuestAfterFailedSnapshotStop(
+                            id: id,
+                            receiptID: guestQuiesceReceipt.receiptID
+                        )
+                    }
+                    catch let thawError {
+                        throw MachineManagerError.persistence(
+                            "could not stop \(id) for snapshot: \(error); guest thaw failed: \(thawError)"
+                        )
+                    }
+                }
+                throw error
+            }
         }
-        let snapshot: DoryMachineSnapshot
+        var snapshotLifecycleStarted = false
+        defer {
+            if wasResident, !snapshotLifecycleStarted {
+                try? restoreSnapshotSourcePowerState(
+                    id: id,
+                    wasPaused: wasPaused,
+                    resolvedPlan: snapshotRuntimeIdentity.resolvedPlan
+                )
+            }
+        }
+        let liveMachineIdentifierPath = machine.bootMode == .efi
+            ? machineFirmwareIdentifierPath(id: id) : nil
+        let liveNVRAMPath = machine.bootMode == .efi
+            ? machineFirmwareNVRAMPath(id: id) : nil
+        if machine.bootMode == .efi {
+            guard let liveMachineIdentifierPath, let liveNVRAMPath,
+                  Self.isPrivateRegularFile(path: liveMachineIdentifierPath),
+                  Self.isPrivateRegularFile(path: liveNVRAMPath) else {
+                throw MachineManagerError.persistence(
+                    "EFI firmware state is unavailable; start the machine once before taking a snapshot"
+                )
+            }
+        }
+        let artifactEvidence = try Self.snapshotArtifactEvidence(
+            rootfsPath: machine.rootfsPath,
+            kernelPath: machine.kernelPath,
+            machineIdentifierPath: liveMachineIdentifierPath,
+            nvramPath: liveNVRAMPath
+        )
+        guard let snapshotSize = Int64(exactly: artifactEvidence.rootfs.byteCount) else {
+            throw MachineManagerError.persistence("machine snapshot disk is too large")
+        }
+        let snapshot = DoryMachineSnapshot(
+            id: snapshotID,
+            machineID: id,
+            note: note,
+            createdISO: createdISO,
+            rootfsPath: rootfsPath,
+            sizeBytes: snapshotSize,
+            kernelPath: kernelPath,
+            architecture: configuration.guestArchitecture,
+            memoryMB: machine.memoryMB,
+            cpuCount: machine.cpuCount,
+            displayMode: machine.displayMode,
+            address: machine.address,
+            shares: machine.shares,
+            environment: machine.environment,
+            typedSettings: nativeTypedSettingsSnapshot(id: id),
+            sandboxPolicy: try effectiveSandboxPolicy(
+                id: id,
+                configuration: machine
+            ),
+            bootMode: machine.bootMode,
+            machineIdentifierPath: machine.bootMode == .efi ? machineIdentifierPath : nil,
+            nvramPath: machine.bootMode == .efi ? nvramPath : nil,
+            runtimeIdentity: snapshotRuntimeIdentity,
+            artifactEvidence: artifactEvidence,
+            installedDesktopPayloadReceipt:
+                machine.effectiveInstalledDesktopPayloadReceipt,
+            consistency: guestQuiesceReceipt == nil ? .coldStopped : .guestQuiesced,
+            guestQuiesceReceipt: guestQuiesceReceipt
+        )
+        let snapshotAuthority = try Self.lifecycleSnapshotAuthority(snapshot)
+        let lifecycle = try beginLifecycleSnapshot(
+            machine: machine,
+            runtimeIdentity: snapshotRuntimeIdentity,
+            sourceState: wasPaused ? .paused : .stopped,
+            snapshotID: snapshotID,
+            snapshotAuthority: snapshotAuthority
+        )
+        snapshotLifecycleStarted = true
+
         var publishedRootfs = false
         var publishedKernel = false
+        var publishedMachineIdentifier = false
+        var publishedNVRAM = false
         do {
-            try Self.cloneOrCopyFile(source: machine.rootfsPath, destination: rootfsPath)
-            publishedRootfs = true
-            try Self.cloneOrCopyFile(source: machine.kernelPath, destination: kernelPath)
-            publishedKernel = true
-            snapshot = DoryMachineSnapshot(
-                id: snapshotID,
-                machineID: id,
-                note: note,
-                createdISO: createdISO,
-                rootfsPath: rootfsPath,
-                sizeBytes: Self.fileSize(path: rootfsPath),
-                kernelPath: kernelPath,
-                architecture: configuration.guestArchitecture,
-                memoryMB: machine.memoryMB,
-                cpuCount: machine.cpuCount,
-                displayMode: machine.displayMode,
-                address: machine.address,
-                shares: machine.shares,
-                environment: machine.environment
+            try advanceLifecycleToPublishing(lifecycle)
+            try cloneOrCopySnapshotArtifact(
+                source: machine.rootfsPath,
+                destination: rootfsPath
             )
+            publishedRootfs = true
+#if DEBUG
+            try injectLifecycleFault(.snapshotAfterRootfs)
+#endif
+            try cloneOrCopySnapshotArtifact(
+                source: machine.kernelPath,
+                destination: kernelPath
+            )
+            publishedKernel = true
+            if machine.bootMode == .efi {
+                guard let liveMachineIdentifierPath, let liveNVRAMPath else {
+                    throw MachineManagerError.persistence("EFI firmware state is unavailable")
+                }
+                try cloneOrCopySnapshotArtifact(
+                    source: liveMachineIdentifierPath,
+                    destination: machineIdentifierPath
+                )
+                publishedMachineIdentifier = true
+                try cloneOrCopySnapshotArtifact(
+                    source: liveNVRAMPath,
+                    destination: nvramPath
+                )
+                publishedNVRAM = true
+            }
+            // Validate the copies against the pre-publish authority before publishing metadata.
+            try Self.validateSnapshotArtifactEvidence(snapshot)
             try persistSnapshot(snapshot)
         } catch {
+#if DEBUG
+            if error is MachineLifecycleInjectedCrash { throw error }
+#endif
             if publishedRootfs {
                 try? FileManager.default.removeItem(atPath: rootfsPath)
             }
             if publishedKernel {
                 try? FileManager.default.removeItem(atPath: kernelPath)
             }
-            if wasRunning {
-                _ = try? start(id: id)
+            if publishedMachineIdentifier {
+                try? FileManager.default.removeItem(atPath: machineIdentifierPath)
+            }
+            if publishedNVRAM {
+                try? FileManager.default.removeItem(atPath: nvramPath)
+            }
+            failLifecycle(lifecycle, stepID: "snapshot.failed", rolledBack: true)
+            if wasResident {
+                try? restoreSnapshotSourcePowerState(
+                    id: id,
+                    wasPaused: wasPaused,
+                    resolvedPlan: snapshotRuntimeIdentity.resolvedPlan
+                )
             }
             if let error = error as? MachineManagerError {
                 throw error
@@ -937,12 +5903,24 @@ public final class MachineManager: @unchecked Sendable {
             throw MachineManagerError.persistence("could not snapshot \(id): \(error)")
         }
 
-        if wasRunning {
+        let journalCompleted = completeCommittedLifecycle(
+            lifecycle,
+            diagnostic: "published snapshot has an unfinished snapshot journal"
+        )
+        if wasResident, journalCompleted {
             do {
-                _ = try start(id: id)
+                try restoreSnapshotSourcePowerState(
+                    id: id,
+                    wasPaused: wasPaused,
+                    resolvedPlan: snapshotRuntimeIdentity.resolvedPlan
+                )
             } catch let firstError {
                 do {
-                    _ = try start(id: id)
+                    try restoreSnapshotSourcePowerState(
+                        id: id,
+                        wasPaused: wasPaused,
+                        resolvedPlan: snapshotRuntimeIdentity.resolvedPlan
+                    )
                 } catch {
                     throw MachineManagerError.persistence(
                         "snapshot \(snapshotID) was created, but \(id) could not restart: \(firstError); retry: \(error)"
@@ -953,9 +5931,505 @@ public final class MachineManager: @unchecked Sendable {
         return snapshot
     }
 
+    private func cloneOrCopySnapshotArtifact(source: String, destination: String) throws {
+        let (capacityProvider, copyFallback) = managerStateLock.withLock {
+            (storageCapacityProvider, forceSnapshotCopyFallback)
+        }
+        try Self.cloneOrCopyFile(
+            source: source,
+            destination: destination,
+            copyCapacityProvider: capacityProvider,
+            capacityOperation: "machine snapshot",
+            forceCopyFallback: copyFallback
+        )
+    }
+
+    private func freezeGuestForSnapshotIfSupported(
+        id: String,
+        resolvedPlan: DoryResolvedMachinePlan?
+    ) throws -> DoryMachineSnapshotQuiesceReceipt? {
+        guard let status = status(id: id),
+              status.supportsAgentCapability("snapshot-quiesce", minimumVersion: 2),
+              let agentBuild = status.agentBuild,
+              let protocolVersion = status.agentProtocolVersion,
+              let capabilityVersion = status.agentCapabilities.first(where: {
+                  $0.id == "snapshot-quiesce"
+              })?.version else {
+            return nil
+        }
+        let requestedReceiptID = UUID().uuidString
+            .replacingOccurrences(of: "-", with: "")
+            .lowercased()
+        do {
+            let receiptID = try withAgentClient(
+                id: id,
+                requiredCapability: "snapshot-quiesce",
+                minimumCapabilityVersion: 2
+            ) { client in
+                try client.snapshotFreeze(receiptID: requestedReceiptID)
+            }
+            let receipt = DoryMachineSnapshotQuiesceReceipt(
+                receiptID: receiptID,
+                agentBuild: agentBuild,
+                agentProtocolVersion: protocolVersion,
+                capabilityVersion: capabilityVersion
+            )
+            guard receipt.isValid, receiptID == requestedReceiptID else {
+                throw MachineManagerError.persistence(
+                    "guest snapshot freeze returned an invalid receipt for \(id)"
+                )
+            }
+            return receipt
+        } catch {
+            let freezeError = error
+            do {
+                try thawGuestAfterFailedSnapshotStop(
+                    id: id,
+                    receiptID: requestedReceiptID
+                )
+            } catch let thawError {
+                do {
+                    _ = try stopImplementation(
+                        id: id,
+                        journalLifecycle: true,
+                        preserveResolvedAdmissionForRestart: true
+                    )
+                    try restoreSnapshotSourcePowerState(
+                        id: id,
+                        wasPaused: false,
+                        resolvedPlan: resolvedPlan
+                    )
+                } catch let recoveryError {
+                    throw MachineManagerError.persistence(
+                        "guest snapshot freeze failed for \(id): \(freezeError); recovery thaw failed: \(thawError); forced restart failed: \(recoveryError)"
+                    )
+                }
+                throw MachineManagerError.persistence(
+                    "guest snapshot freeze failed for \(id): \(freezeError); recovery thaw failed: \(thawError); the guest was restarted"
+                )
+            }
+            throw MachineManagerError.persistence(
+                "guest snapshot freeze failed for \(id): \(freezeError)"
+            )
+        }
+    }
+
+    private func thawGuestAfterFailedSnapshotStop(id: String, receiptID: String) throws {
+        try withAgentClient(
+            id: id,
+            requiredCapability: "snapshot-quiesce",
+            minimumCapabilityVersion: 2
+        ) { client in
+            try client.snapshotThaw(receiptID: receiptID)
+        }
+    }
+
+    private func restoreSnapshotSourcePowerState(
+        id: String,
+        wasPaused: Bool,
+        resolvedPlan: DoryResolvedMachinePlan?
+    ) throws {
+        try prepareRetainedResolvedAdmissionForRestart(plan: resolvedPlan)
+        _ = try startAndWaitUntilReady(id: id, journalLifecycle: true)
+        if wasPaused {
+            // Readiness publishes `.running` before its callback can reacquire the workspace
+            // coordinator to terminalize the start journal. snapshot() already owns that
+            // recursive workspace, so
+            // settle the committed start here before opening the pause lifecycle transaction.
+            completeActiveStartLifecycle(id: id)
+            _ = try pauseImplementation(id: id, journalLifecycle: true)
+        }
+    }
+
+    /// Applies a signed desktop component to an existing persistent guest. The caller provides
+    /// only stable active-component generation identifiers; doryd resolves and re-verifies the
+    /// exact component-store bytes and owns the entire transaction: a last-good disk/kernel
+    /// snapshot is durable before the guest is mutated, and any failed install or post-reboot
+    /// qualification restores that snapshot and the machine's original running state.
+    public func updateDesktop(
+        id: String,
+        request: DoryDesktopUpdateRequest
+    ) throws -> DoryDesktopUpdateResult {
+        let mutationLease = mutationCoordinator.acquire(workspaceID: id)
+        defer { mutationLease.release() }
+        try requireNoActivePlanningMutation(id: id)
+        let directMutation = try retainDirectWorkspaceMutationLock(id: id)
+        defer { releaseDirectWorkspaceMutationLock(id: id, retention: directMutation) }
+        let canonicalOperationID = request.operationID.uuidString.lowercased()
+        guard request.operationID
+            != UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)) else {
+            throw MachineManagerError.persistence(
+                "desktop update requires a nonzero operation identifier"
+            )
+        }
+
+        let (original, originallyRunning) = try configurationAndRunningState(id: id)
+        guard original.bootMode == .linuxKernel else {
+            throw MachineManagerError.persistence("managed desktop updates do not apply to custom EFI machines")
+        }
+        guard original.displayMode == .desktop else {
+            throw MachineManagerError.persistence("desktop updates require a graphical machine")
+        }
+        let persistedDistro = original.environment["DORY_DESKTOP_DISTRO"]
+            ?? original.effectiveInstalledDesktopPayloadReceipt?.distributionIdentifier
+        guard ["debian", "ubuntu", "kali"].contains(request.distro),
+              persistedDistro == request.distro else {
+            throw MachineManagerError.persistence("desktop update distribution does not match " + id)
+        }
+        guard request.version.wholeMatch(of: /[A-Za-z0-9][A-Za-z0-9._+-]{0,127}/) != nil else {
+            throw MachineManagerError.persistence("desktop update version is invalid")
+        }
+        guard let desktopUpdateArtifactResolver = managerStateLock.withLock({
+            desktopUpdateArtifactResolver
+        }) else {
+            throw MachineManagerError.persistence(
+                "desktop updates require daemon component-store authority"
+            )
+        }
+        let authority = try desktopUpdateArtifactResolver.resolve(
+            request,
+            guestArchitecture: configuration.guestArchitecture
+        )
+        guard authority.receipt.isValid,
+              authority.receipt.provenance == .verifiedUpdateBundle,
+              authority.receipt.distributionIdentifier == request.distro,
+              authority.receipt.releaseVersion == request.version,
+              authority.receipt.distributionInstallationName
+                == request.distributionInstallationName,
+              authority.receipt.runtimeInstallationName == request.runtimeInstallationName,
+              let bundleSHA256 = authority.receipt.bundleSHA256,
+              let kernelSHA256 = authority.receipt.kernelSHA256 else {
+            throw MachineManagerError.persistence("desktop update authority is inconsistent")
+        }
+        let staged = try stageDesktopUpdateAuthority(authority, machineID: id)
+        defer { try? FileManager.default.removeItem(atPath: staged.directory) }
+        let snapshotID = Self.generatedSnapshotID(prefix: "du")
+        let snapshot = try snapshot(
+            id: id,
+            note: "Automatic last-good snapshot before " + request.distro + " " + request.version + " desktop update",
+            snapshotID: snapshotID
+        )
+        var journal = DesktopUpdateJournal(
+            schema: 3,
+            operationID: canonicalOperationID,
+            machineID: id,
+            distro: request.distro,
+            version: request.version,
+            snapshotID: snapshot.id,
+            originalWasRunning: originallyRunning,
+            stage: .snapshotReady,
+            sourceConfigurationSHA256: Self.sha256(
+                data: try DoryMachineConfigurationMigrationBridge.encodeLegacy(original)
+            ),
+            updateAuthority: authority.receipt
+        )
+        try persistDesktopUpdateJournal(journal)
+        appendFlightEvent(
+            machineID: id,
+            operationID: request.operationID,
+            operationKind: .updating,
+            kind: .operationStarted,
+            phase: .planned
+        )
+        appendFlightEvent(
+            machineID: id,
+            operationID: request.operationID,
+            operationKind: .updating,
+            kind: .operationPhase,
+            phase: .staging
+        )
+
+        let token = String(bundleSHA256.prefix(12))
+        let mountPath = "/mnt/dory-update-" + token
+        let guestStage = "/var/lib/dory/update-" + token
+        let updateShare = DoryMachineShareConfiguration(
+            tag: "dory-update-" + token,
+            hostPath: staged.directory,
+            guestPath: mountPath,
+            readOnly: true
+        )
+        let bundleGuestPath = mountPath + "/payload.tar"
+
+        do {
+            var transientShares = original.shares.filter { $0.tag != updateShare.tag }
+            transientShares.append(updateShare)
+            _ = try update(id: id, shares: transientShares, updatesShares: true)
+            if status(id: id)?.state != .running {
+                _ = try startAndWaitUntilReady(id: id)
+            }
+            journal.stage = .installing
+            try persistDesktopUpdateJournal(journal)
+            appendFlightEvent(
+                machineID: id,
+                operationID: request.operationID,
+                operationKind: .updating,
+                kind: .operationPhase,
+                phase: .publishing
+            )
+
+            try requireSuccessfulDesktopUpdateExec(
+                id: id,
+                argv: ["/bin/rm", "-rf", guestStage],
+                stage: "clear guest staging"
+            )
+            try requireSuccessfulDesktopUpdateExec(
+                id: id,
+                argv: ["/bin/mkdir", "-p", guestStage],
+                stage: "create guest staging"
+            )
+            try requireSuccessfulDesktopUpdateExec(
+                id: id,
+                argv: ["/bin/tar", "-xf", bundleGuestPath, "-C", guestStage],
+                timeoutMs: 120_000,
+                stage: "extract signed payload"
+            )
+            guard try Self.sha256(path: staged.bundlePath) == bundleSHA256 else {
+                throw MachineManagerError.persistence(
+                    "desktop update staged bundle changed while the guest read it"
+                )
+            }
+            let install = try requireSuccessfulDesktopUpdateExec(
+                id: id,
+                argv: [guestStage + "/apply.sh", request.distro, request.version],
+                timeoutMs: 3_600_000,
+                outputLimitBytes: 16 * 1024 * 1024,
+                stage: "install guest update"
+            )
+            var inputSHA256 = Self.desktopUpdateInputSHA256(from: install)
+            if inputSHA256 == nil {
+                // Package managers can emit more than the bounded exec output and displace the
+                // final success line. The update writes this receipt atomically before exiting,
+                // so read it directly instead of rolling back a successfully applied payload.
+                let receipt = try requireSuccessfulDesktopUpdateExec(
+                    id: id,
+                    argv: ["/bin/cat", "/var/lib/dory/desktop-update.env"],
+                    outputLimitBytes: 16 * 1024,
+                    stage: "read the installed desktop update receipt"
+                )
+                inputSHA256 = Self.desktopUpdateReceiptInputSHA256(
+                    from: receipt,
+                    distro: request.distro,
+                    version: request.version
+                )
+            }
+            guard let inputSHA256 else {
+                throw MachineManagerError.persistence("desktop update did not return its input fingerprint")
+            }
+
+            _ = try? requireSuccessfulDesktopUpdateExec(
+                id: id,
+                argv: ["/bin/rm", "-rf", guestStage],
+                stage: "clear applied payload"
+            )
+            _ = try stop(id: id)
+            var installedReceipt = authority.receipt
+            installedReceipt.inputSHA256 = inputSHA256
+            try publishInstalledDesktopPayloadReceipt(
+                original: original,
+                receipt: installedReceipt
+            )
+            try Self.cloneOrCopyFile(
+                source: staged.kernelPath,
+                destination: original.kernelPath,
+                replaceExisting: true
+            )
+            guard try Self.sha256(path: staged.kernelPath) == kernelSHA256,
+                  try Self.sha256(path: original.kernelPath) == kernelSHA256 else {
+                throw MachineManagerError.persistence(
+                    "desktop update kernel authority changed before commit"
+                )
+            }
+            journal.stage = .qualifying
+            try persistDesktopUpdateJournal(journal)
+            appendFlightEvent(
+                machineID: id,
+                operationID: request.operationID,
+                operationKind: .updating,
+                kind: .operationPhase,
+                phase: .validating
+            )
+            _ = try startAndWaitUntilReady(id: id)
+            try qualifyUpdatedDesktop(
+                id: id,
+                distro: request.distro,
+                version: request.version,
+                inputSHA256: inputSHA256
+            )
+
+            let finalStatus: DoryMachineStatus
+            if originallyRunning {
+                finalStatus = status(id: id) ?? DoryMachineStatus(id: id, state: .running)
+            } else {
+                finalStatus = try stop(id: id)
+            }
+            journal.stage = .committed
+            try persistDesktopUpdateJournal(journal)
+            try removeDesktopUpdateJournal(machineID: id)
+            appendFlightEvent(
+                machineID: id,
+                operationID: request.operationID,
+                operationKind: .updating,
+                kind: .operationCompleted,
+                phase: .completed
+            )
+            return DoryDesktopUpdateResult(
+                operationID: canonicalOperationID,
+                machineID: id,
+                distro: request.distro,
+                version: request.version,
+                inputSHA256: inputSHA256,
+                bundleSHA256: bundleSHA256,
+                snapshotID: snapshot.id,
+                status: finalStatus,
+                restoredRunningState: originallyRunning
+            )
+        } catch {
+            let updateError = error
+            do {
+                _ = try? stop(id: id)
+                _ = try restoreSnapshot(machineID: id, snapshotID: snapshot.id)
+                if originallyRunning, status(id: id)?.state != .running {
+                    _ = try startAndWaitUntilReady(id: id)
+                } else if !originallyRunning, status(id: id)?.state == .running {
+                    _ = try stop(id: id)
+                }
+                try removeDesktopUpdateJournal(machineID: id)
+            } catch {
+                appendDesktopUpdateFailureFlightEvent(
+                    machineID: id,
+                    operationID: request.operationID,
+                    recoveryDisposition: .repair
+                )
+                throw MachineManagerError.persistence(
+                    "desktop update " + request.version + " failed: " + String(describing: updateError)
+                        + "; automatic rollback failed: " + String(describing: error)
+                )
+            }
+            appendDesktopUpdateFailureFlightEvent(
+                machineID: id,
+                operationID: request.operationID,
+                recoveryDisposition: .rollbackCompleted
+            )
+            throw MachineManagerError.persistence(
+                "desktop update " + request.version + " failed: " + String(describing: updateError)
+                    + "; last-good snapshot " + snapshot.id + " was restored"
+            )
+        }
+    }
+
+    /// Reconciles the Dory-owned direct-boot kernel before a managed desktop starts. Desktop
+    /// root disks are deliberately outside this operation: applications, accounts, settings, and
+    /// every other guest byte remain untouched. The source is restricted to the daemon's selected
+    /// data-drive asset cache and is verified before an atomic replacement is published.
+    public func refreshManagedDesktopKernel(
+        id: String,
+        sourcePath: String,
+        sourceSHA256: String
+    ) throws -> DoryMachineStatus {
+        let mutationLease = mutationCoordinator.acquire(workspaceID: id)
+        defer { mutationLease.release() }
+        try requireNoActivePlanningMutation(id: id)
+        let directMutation = try retainDirectWorkspaceMutationLock(id: id)
+        defer { releaseDirectWorkspaceMutationLock(id: id, retention: directMutation) }
+
+        guard sourceSHA256.wholeMatch(of: /[0-9a-f]{64}/) != nil else {
+            throw MachineManagerError.persistence(
+                "managed desktop kernel digest is invalid"
+            )
+        }
+        let entry: MachineEntry
+        lock.lock()
+        guard let current = machines[id] else {
+            lock.unlock()
+            throw MachineManagerError.unknownMachine(id)
+        }
+        entry = current
+        lock.unlock()
+        guard entry.process == nil, entry.handoffServer == nil,
+              [.created, .stopped, .failed].contains(entry.state) else {
+            throw MachineManagerError.persistence(
+                "managed desktop kernel refresh requires a stopped machine"
+            )
+        }
+        let machine = entry.configuration
+        try validateManagedMachineArtifacts(machine)
+        guard machine.bootMode == .linuxKernel,
+              machine.displayMode == .desktop,
+              machine.installerISOPath == nil else {
+            throw MachineManagerError.persistence(
+                "managed desktop kernel refresh does not apply to this machine"
+            )
+        }
+
+        let assetDirectory = configuration.stateDirectory + "/.assets"
+        let expectedSourcePath = assetDirectory + "/dory-desktop-kernel-"
+            + configuration.guestArchitecture
+        guard sourcePath == expectedSourcePath,
+              Self.isPrivateDirectory(path: assetDirectory),
+              Self.isPrivateRegularFile(path: sourcePath) else {
+            throw MachineManagerError.persistence(
+                "managed desktop kernel source is outside daemon asset authority"
+            )
+        }
+        if let receipt = machine.effectiveInstalledDesktopPayloadReceipt,
+           receipt.provenance == .verifiedUpdateBundle,
+           receipt.kernelSHA256 != sourceSHA256 {
+            throw MachineManagerError.persistence(
+                "managed desktop runtime changed; install its signed guest update before launch"
+            )
+        }
+
+        let sourceByteCount = Self.fileSize(path: sourcePath)
+        guard sourceByteCount > 0,
+              try Self.sha256(path: sourcePath) == sourceSHA256 else {
+            throw MachineManagerError.persistence(
+                "managed desktop kernel source does not match its prepared digest"
+            )
+        }
+        if try Self.sha256(path: machine.kernelPath) == sourceSHA256 {
+            return status(id: id) ?? DoryMachineStatus(id: id, state: entry.state)
+        }
+
+        let stagingPath = machineStateDirectory(id: id)
+            + "/.kernel-refresh-" + UUID().uuidString.lowercased()
+        defer { try? FileManager.default.removeItem(atPath: stagingPath) }
+        try Self.cloneOrCopyFile(source: sourcePath, destination: stagingPath)
+        guard Self.fileSize(path: stagingPath) == sourceByteCount,
+              try Self.sha256(path: stagingPath) == sourceSHA256,
+              try Self.sha256(path: sourcePath) == sourceSHA256 else {
+            throw MachineManagerError.persistence(
+                "managed desktop kernel changed while it was staged"
+            )
+        }
+        guard rename(stagingPath, machine.kernelPath) == 0 else {
+            throw MachineManagerError.persistence(
+                "could not publish managed desktop kernel: "
+                    + String(cString: strerror(errno))
+            )
+        }
+        try Self.syncDirectory(path: machineStateDirectory(id: id))
+        guard try Self.sha256(path: machine.kernelPath) == sourceSHA256 else {
+            throw MachineManagerError.persistence(
+                "published managed desktop kernel failed verification"
+            )
+        }
+
+        // The artifact graph changed even though the user's VM definition did not. Invalidate any
+        // resolved launch identity so the service must publish a plan bound to this exact kernel.
+        try publishConfiguration(machine)
+        lock.lock()
+        if var refreshed = machines[id] {
+            if refreshed.state == .failed {
+                refreshed.state = .stopped
+            }
+            clearFailure(on: &refreshed)
+            machines[id] = refreshed
+        }
+        lock.unlock()
+        return status(id: id) ?? DoryMachineStatus(id: id, state: .stopped)
+    }
+
     public func listSnapshots(machineID: String? = nil) throws -> [DoryMachineSnapshot] {
-        operationLock.lock()
-        defer { operationLock.unlock() }
         let ids: [String]
         if let machineID {
             guard Self.isValidID(machineID) else {
@@ -966,6 +6440,8 @@ public final class MachineManager: @unchecked Sendable {
             let persisted = (try? FileManager.default.contentsOfDirectory(atPath: configuration.stateDirectory)) ?? []
             ids = persisted.filter(Self.isValidID(_:))
         }
+        let mutationLease = mutationCoordinator.acquire(workspaceIDs: ids)
+        defer { mutationLease.release() }
         let snapshots = ids.flatMap { id -> [DoryMachineSnapshot] in
             let directory = snapshotDirectory(machineID: id)
             guard Self.isPrivateDirectory(path: directory) else {
@@ -990,22 +6466,62 @@ public final class MachineManager: @unchecked Sendable {
     }
 
     public func cloneSnapshot(machineID: String, snapshotID: String, newID: String) throws -> DoryMachineStatus {
-        operationLock.lock()
-        defer { operationLock.unlock() }
+        let mutationLease = mutationCoordinator.acquire(
+            workspaceIDs: [machineID, newID]
+        )
+        defer { mutationLease.release() }
         let snapshot = try loadSnapshot(machineID: machineID, snapshotID: snapshotID)
+        try validateSnapshotRuntimeCompatibility(snapshot, machine: nil, cloning: true)
+        let rootfsEvidence = try snapshot.artifactEvidence?.rootfs
+            ?? Self.snapshotArtifact(path: snapshot.rootfsPath)
+        guard rootfsEvidence.byteCount > 0 else {
+            throw MachineManagerError.persistence(
+                "snapshot root disk has no immutable clone authority"
+            )
+        }
+        let cloneAuthority = DoryMachineCloneCreationAuthority(
+            sourceMachineID: machineID,
+            sourceSnapshotID: snapshotID,
+            rootfsSHA256: rootfsEvidence.sha256,
+            rootfsByteCount: rootfsEvidence.byteCount
+        )
         let machine = DoryMachineConfiguration(
             id: newID,
             kernelPath: snapshot.kernelPath,
             rootfsPath: snapshot.rootfsPath,
+            bootMode: snapshot.bootMode,
             memoryMB: snapshot.memoryMB,
             cpuCount: snapshot.cpuCount,
             address: nil,
             displayMode: snapshot.displayMode,
             shares: snapshot.shares,
-            environment: snapshot.environment
+            environment: snapshot.environment,
+            installedDesktopPayloadReceipt:
+                Self.configurationReceipt(restoring: snapshot)
         )
-        _ = try create(machine)
+        let created = try createMachine(
+            machine,
+            typedSettings: snapshot.typedSettings?.replacementPatch,
+            sandboxPolicy: snapshot.sandboxPolicy,
+            cloneAuthority: cloneAuthority
+        )
         do {
+            if snapshot.bootMode == .efi {
+                guard let snapshotNVRAMPath = snapshot.nvramPath else {
+                    throw MachineManagerError.persistence("EFI snapshot is missing NVRAM state")
+                }
+                // A clone gets a new Virtualization.framework machine identifier, but retains
+                // the guest's EFI variables (including its installed boot entries).
+                try Self.cloneOrCopyFile(
+                    source: snapshotNVRAMPath,
+                    destination: machineFirmwareNVRAMPath(id: newID)
+                )
+            }
+            if launchPolicy == .perWorkspaceAuthority {
+                // A clone has new mutable storage and a new machine identity. Its source runtime
+                // evidence remains useful history, but can never authorize the clone's launch.
+                return status(id: newID) ?? created
+            }
             return try start(id: newID)
         } catch {
             do {
@@ -1020,10 +6536,22 @@ public final class MachineManager: @unchecked Sendable {
     }
 
     public func restoreSnapshot(machineID: String, snapshotID: String) throws -> DoryMachineStatus {
-        operationLock.lock()
-        defer { operationLock.unlock() }
+        let mutationLease = mutationCoordinator.acquire(workspaceID: machineID)
+        defer { mutationLease.release() }
+        try requireNoActivePlanningMutation(id: machineID)
+        let directMutation = try retainDirectWorkspaceMutationLock(id: machineID)
+        defer {
+            releaseDirectWorkspaceMutationLock(
+                id: machineID,
+                retention: directMutation
+            )
+        }
         let snapshot = try loadSnapshot(machineID: machineID, snapshotID: snapshotID)
         let (machine, wasRunning) = try configurationAndRunningState(id: machineID)
+        try validateSnapshotRuntimeCompatibility(snapshot, machine: machine, cloning: false)
+        guard machine.bootMode == snapshot.bootMode else {
+            throw MachineManagerError.persistence("snapshot boot mode does not match the machine")
+        }
         let address = try Self.normalizedAddress(snapshot.address)
         try Self.validateShares(snapshot.shares)
         try Self.validateEnvironment(snapshot.environment)
@@ -1031,102 +6559,282 @@ public final class MachineManager: @unchecked Sendable {
         restoredMachine.memoryMB = snapshot.memoryMB
         restoredMachine.cpuCount = snapshot.cpuCount
         restoredMachine.displayMode = snapshot.displayMode
+        restoredMachine.bootMode = snapshot.bootMode
         restoredMachine.address = address
         restoredMachine.shares = snapshot.shares
         restoredMachine.environment = snapshot.environment
-        if wasRunning {
-            _ = try stop(id: machineID)
+        restoredMachine.installedDesktopPayloadReceipt =
+            Self.configurationReceipt(restoring: snapshot)
+        let restoredNativeWorkspace: (
+            definition: DoryVirtualMachineDefinition,
+            expectedRevision: UInt64
+        )?
+        if launchPolicy == .perWorkspaceAuthority {
+            let record = try workspaceRepository.readPersistedRecord(id: machineID)
+            if record.legacyConfigurationSHA256 == nil,
+               record.legacyMigrationFactsSHA256 == nil {
+                // A native workspace never regains the legacy environment as desired-state
+                // authority. Older or imported snapshot metadata may still contain compatibility
+                // keys (or secrets); typed snapshot intent is restored through the definition
+                // below and the raw dictionary remains read-only historical evidence.
+                restoredMachine.environment = [:]
+                let facts = try workspaceMigrationFacts(for: restoredMachine)
+                let migration = try DoryMachineConfigurationMigrationBridge.migrate(
+                    restoredMachine,
+                    facts: facts
+                )
+                var candidate = migration.definition
+                candidate.lifecycle = record.definition.lifecycle
+                candidate.backendPreference = record.definition.backendPreference
+                candidate.graphics = record.definition.graphics
+                candidate.guestIdentityIntent = record.definition.guestIdentityIntent
+                candidate.clipboardPolicy = record.definition.clipboardPolicy
+                candidate.sandboxPolicy = snapshot.sandboxPolicy
+                if let typedSettings = snapshot.typedSettings {
+                    candidate = try typedSettings.applyingAsReplacement(
+                        to: candidate,
+                        displayMode: restoredMachine.displayMode
+                    )
+                }
+                guard record.definition.lifecycle.revision < UInt64.max,
+                      record.definition.lifecycle.updatedAtUnixMilliseconds < Int64.max else {
+                    throw MachineManagerError.persistence(
+                        "workspace lifecycle authority is exhausted"
+                    )
+                }
+                let now = Int64(max(0, Date().timeIntervalSince1970 * 1_000))
+                candidate.lifecycle = DoryVMLifecycleMetadata(
+                    revision: record.definition.lifecycle.revision + 1,
+                    createdAtUnixMilliseconds:
+                        record.definition.lifecycle.createdAtUnixMilliseconds,
+                    updatedAtUnixMilliseconds: max(
+                        now,
+                        record.definition.lifecycle.updatedAtUnixMilliseconds + 1
+                    )
+                )
+                guard Self.nativeDefinition(
+                    candidate,
+                    isCompatibleWith: migration.definition
+                ) else {
+                    throw MachineManagerError.persistence(
+                        "snapshot typed settings do not match the restored machine"
+                    )
+                }
+                restoredNativeWorkspace = (
+                    candidate,
+                    record.definition.lifecycle.revision
+                )
+            } else {
+                restoredNativeWorkspace = nil
+            }
+        } else {
+            restoredNativeWorkspace = nil
         }
+        let sourceIdentity = try currentRuntimeIdentity(id: machineID)
+        let targetIdentity = runtimeIdentityAfterSnapshotRestore(
+            snapshot.runtimeIdentity,
+            sourceIdentity: sourceIdentity
+        )
+        let snapshotAuthority = try Self.lifecycleSnapshotAuthority(snapshot)
+        let lifecycle = try beginLifecycleRestore(
+            sourceMachine: machine,
+            targetMachine: restoredMachine,
+            sourceIdentity: sourceIdentity,
+            targetIdentity: targetIdentity,
+            sourceState: wasRunning ? .running : .stopped,
+            targetState: wasRunning && shouldRestartAfterSnapshotRestore(targetIdentity)
+                ? .running : .stopped,
+            snapshotID: snapshotID,
+            snapshotAuthority: snapshotAuthority
+        )
         do {
-            try restoreManagedArtifacts(machine: machine, snapshot: snapshot) {
-                try persist(restoredMachine)
+            try advanceLifecycleToPublishing(lifecycle)
+            if wasRunning {
+                _ = try stopImplementation(
+                    id: machineID,
+                    journalLifecycle: false,
+                    preserveResolvedAdmissionForRestart: true
+                )
+            }
+            try restoreManagedArtifacts(
+                machine: machine,
+                snapshot: snapshot,
+                operationID: lifecycle.operation.operationID
+            ) {
+                try persist(
+                    restoredMachine,
+                    reconcilesLegacyProjection: restoredNativeWorkspace == nil
+                )
+                if let restoredNativeWorkspace {
+                    do {
+                        try workspaceRepository.replace(
+                            restoredNativeWorkspace.definition,
+                            expectedRevision: restoredNativeWorkspace.expectedRevision
+                        )
+                    } catch {
+                        try? persist(machine, reconcilesLegacyProjection: false)
+                        throw error
+                    }
+                }
+                try persistRuntimeIdentity(
+                    targetIdentity,
+                    configuration: restoredMachine
+                )
                 lock.lock()
                 if var entry = machines[machineID] {
                     entry.configuration = restoredMachine
                     entry.currentBalloonTargetMB = nil
+                    entry.runtimeIdentity = targetIdentity
+                    if let restoredNativeWorkspace {
+                        entry.typedSettingsSnapshot = try? DoryMachineTypedSettingsSnapshot(
+                            definition: restoredNativeWorkspace.definition
+                        )
+                        entry.sandboxPolicySnapshot = restoredNativeWorkspace.definition.sandboxPolicy
+                        entry.usesNativeWorkspaceAuthority = true
+                    } else {
+                        entry.typedSettingsSnapshot = nil
+                        entry.sandboxPolicySnapshot = nil
+                        entry.usesNativeWorkspaceAuthority = false
+                    }
                     machines[machineID] = entry
                 }
                 lock.unlock()
             }
-            let status = wasRunning
-                ? try start(id: machineID)
-                : (status(id: machineID) ?? DoryMachineStatus(id: machineID, state: .stopped))
+            let status: DoryMachineStatus
+            if wasRunning, shouldRestartAfterSnapshotRestore(targetIdentity) {
+                try prepareRetainedResolvedAdmissionForRestart(
+                    plan: sourceIdentity.resolvedPlan
+                )
+                status = try startAndWaitUntilReady(id: machineID, journalLifecycle: false)
+            } else {
+                if wasRunning {
+                    do {
+                        try markResolvedAdmissionStopped(plan: sourceIdentity.resolvedPlan)
+                    } catch {
+                        // The restored target is already committed and its old plan is no longer
+                        // launch authority. Keep the conservative running reservation for daemon
+                        // restart reconciliation instead of falsely rolling back the restore.
+                        lock.lock()
+                        if var current = machines[machineID] {
+                            setFailure(
+                                on: &current,
+                                code: .resourceAdmissionRejected,
+                                message: "snapshot restored; resource settlement requires recovery: \(error)",
+                                causes: [.resourceAdmission],
+                                recoveryDisposition: .repair
+                            )
+                            machines[machineID] = current
+                        }
+                        lock.unlock()
+                    }
+                }
+                status = self.status(id: machineID)
+                    ?? DoryMachineStatus(id: machineID, state: .stopped)
+            }
+            _ = completeCommittedLifecycle(
+                lifecycle,
+                diagnostic: "restored machine has an unfinished restore journal"
+            )
             return status
         } catch let error as MachineManagerError {
             if wasRunning {
-                _ = try? start(id: machineID)
+                try? prepareRetainedResolvedAdmissionForRestart(
+                    plan: sourceIdentity.resolvedPlan
+                )
+                _ = try? startImplementation(id: machineID, journalLifecycle: false)
             }
+            failLifecycle(lifecycle, stepID: "restore.failed", rolledBack: true)
             throw error
         } catch {
+#if DEBUG
+            if error is MachineLifecycleInjectedCrash { throw error }
+#endif
             if wasRunning {
-                _ = try? start(id: machineID)
+                try? prepareRetainedResolvedAdmissionForRestart(
+                    plan: sourceIdentity.resolvedPlan
+                )
+                _ = try? startImplementation(id: machineID, journalLifecycle: false)
             }
+            failLifecycle(lifecycle, stepID: "restore.failed", rolledBack: true)
             throw MachineManagerError.persistence("could not restore snapshot \(snapshotID): \(error)")
         }
     }
 
     public func deleteSnapshot(machineID: String, snapshotID: String) throws {
-        operationLock.lock()
-        defer { operationLock.unlock() }
-        _ = try loadSnapshot(machineID: machineID, snapshotID: snapshotID)
+        let mutationLease = mutationCoordinator.acquire(workspaceID: machineID)
+        defer { mutationLease.release() }
+        let snapshot = try loadSnapshot(machineID: machineID, snapshotID: snapshotID)
         let metadataPath = snapshotMetadataPath(machineID: machineID, snapshotID: snapshotID)
         let rootfsPath = snapshotRootfsPath(machineID: machineID, snapshotID: snapshotID)
         let kernelPath = snapshotKernelPath(machineID: machineID, snapshotID: snapshotID)
         let token = "\(Self.snapshotDeletionQuarantinePrefix)\(snapshotID)-\(UUID().uuidString)"
         let directory = snapshotDirectory(machineID: machineID)
-        let quarantinedMetadataPath = "\(directory)/\(token).json"
-        let quarantinedRootfsPath = "\(directory)/\(token).ext4"
-        let quarantinedKernelPath = "\(directory)/\(token).kernel"
-        do {
-            try FileManager.default.moveItem(atPath: rootfsPath, toPath: quarantinedRootfsPath)
-        } catch {
-            throw MachineManagerError.persistence("could not delete snapshot \(snapshotID): \(error)")
+        var artifacts: [(label: String, source: String, quarantine: String)] = [
+            ("rootfs", rootfsPath, "\(directory)/\(token).ext4"),
+            ("kernel", kernelPath, "\(directory)/\(token).kernel"),
+        ]
+        if snapshot.bootMode == .efi {
+            artifacts.append((
+                "machine identifier",
+                snapshotMachineIdentifierPath(machineID: machineID, snapshotID: snapshotID),
+                "\(directory)/\(token).machine-identifier"
+            ))
+            artifacts.append((
+                "NVRAM",
+                snapshotNVRAMPath(machineID: machineID, snapshotID: snapshotID),
+                "\(directory)/\(token).nvram"
+            ))
         }
+        artifacts.append(("metadata", metadataPath, "\(directory)/\(token).json"))
+
+        var quarantined: [(label: String, source: String, quarantine: String)] = []
         do {
-            try FileManager.default.moveItem(atPath: kernelPath, toPath: quarantinedKernelPath)
-        } catch {
-            do {
-                try FileManager.default.moveItem(atPath: quarantinedRootfsPath, toPath: rootfsPath)
-            } catch let rollbackError {
-                throw MachineManagerError.persistence(
-                    "could not delete snapshot \(snapshotID): \(error); rootfs rollback failed: \(rollbackError)"
-                )
+            for artifact in artifacts {
+                try FileManager.default.moveItem(atPath: artifact.source, toPath: artifact.quarantine)
+                quarantined.append(artifact)
             }
-            throw MachineManagerError.persistence("could not delete snapshot \(snapshotID): \(error)")
-        }
-        do {
-            try FileManager.default.moveItem(atPath: metadataPath, toPath: quarantinedMetadataPath)
         } catch {
             var rollbackFailures: [String] = []
-            do {
-                try FileManager.default.moveItem(atPath: quarantinedKernelPath, toPath: kernelPath)
-            } catch {
-                rollbackFailures.append("kernel rollback failed: \(error)")
+            for artifact in quarantined.reversed() {
+                do {
+                    try FileManager.default.moveItem(atPath: artifact.quarantine, toPath: artifact.source)
+                } catch {
+                    rollbackFailures.append("\(artifact.label) rollback failed: \(error)")
+                }
             }
-            do {
-                try FileManager.default.moveItem(atPath: quarantinedRootfsPath, toPath: rootfsPath)
-            } catch {
-                rollbackFailures.append("rootfs rollback failed: \(error)")
-            }
-            if !rollbackFailures.isEmpty {
-                throw MachineManagerError.persistence(
-                    "could not delete snapshot \(snapshotID): \(error); \(rollbackFailures.joined(separator: "; "))"
-                )
-            }
-            throw MachineManagerError.persistence("could not delete snapshot \(snapshotID): \(error)")
+            let suffix = rollbackFailures.isEmpty ? "" : "; \(rollbackFailures.joined(separator: "; "))"
+            throw MachineManagerError.persistence("could not delete snapshot \(snapshotID): \(error)\(suffix)")
         }
-        try? FileManager.default.removeItem(atPath: quarantinedMetadataPath)
-        try? FileManager.default.removeItem(atPath: quarantinedRootfsPath)
-        try? FileManager.default.removeItem(atPath: quarantinedKernelPath)
+        for artifact in quarantined {
+            try? FileManager.default.removeItem(atPath: artifact.quarantine)
+        }
         removeEmptyImportedSnapshotNamespace(machineID: machineID)
     }
 
     public func exportSnapshot(machineID: String, snapshotID: String, toPath path: String) throws {
-        operationLock.lock()
-        defer { operationLock.unlock() }
-        let snapshot = try loadSnapshot(machineID: machineID, snapshotID: snapshotID)
+        let mutationLease = mutationCoordinator.acquire(workspaceID: machineID)
+        defer { mutationLease.release() }
+        let capacityProvider = managerStateLock.withLock { storageCapacityProvider }
+        var snapshot = try loadSnapshot(machineID: machineID, snapshotID: snapshotID)
+        if snapshot.installedDesktopPayloadReceipt == nil {
+            snapshot.installedDesktopPayloadReceipt =
+                DoryInstalledDesktopPayloadReceipt.legacyEnvironment(snapshot.environment)
+        }
+        if let portable = snapshot.installedDesktopPayloadReceipt?.portableSnapshotReceipt {
+            snapshot.installedDesktopPayloadReceipt = portable
+            snapshot.environment.removeValue(
+                forKey: DoryInstalledDesktopPayloadReceipt.legacyReleaseVersionEnvironmentKey
+            )
+            snapshot.environment.removeValue(
+                forKey: DoryInstalledDesktopPayloadReceipt.legacyInputSHA256EnvironmentKey
+            )
+        }
         do {
-            try MachineSnapshotBundle.write(snapshot: snapshot, toPath: path)
+            try MachineSnapshotBundle.write(
+                snapshot: snapshot,
+                toPath: path,
+                availableCapacity: capacityProvider
+            )
         } catch let error as MachineManagerError {
             throw error
         } catch {
@@ -1134,14 +6842,138 @@ public final class MachineManager: @unchecked Sendable {
         }
     }
 
+    public func assessSnapshotImport(
+        fromPath path: String,
+        environment: DoryMachineImportEnvironment = .unverified
+    ) throws -> DoryMachineImportAssessment {
+        let bundle = try MachineSnapshotBundle.verifyDescriptor(fromPath: path)
+        let snapshot = bundle.snapshot
+        guard Self.isValidID(snapshot.machineID), Self.isValidID(snapshot.id) else {
+            throw MachineManagerError.persistence("invalid snapshot metadata")
+        }
+        try Self.validateResources(memoryMB: snapshot.memoryMB, cpuCount: snapshot.cpuCount)
+        try Self.validateSnapshotRuntimeIdentity(snapshot)
+
+        var issues: [DoryMachineImportIssueCode] = []
+        let architectureMatches = snapshot.architecture == configuration.guestArchitecture
+        if !architectureMatches { issues.append(.architectureMismatch) }
+        let abiMatches = snapshot.runtimeIdentity.virtualHardwareABIVersion
+            == DoryVirtualMachineDefinition.currentVirtualHardwareABIVersion
+        if !abiMatches { issues.append(.virtualHardwareABIMismatch) }
+
+        var components: [DoryMachineImportComponentAssessment] = []
+        if let plan = snapshot.runtimeIdentity.resolvedPlan {
+            let available = environment.backendComponents[plan.backend] ?? []
+            let exactAvailable = Set(available)
+            let availableIdentifiers = Set(available.map(\.componentIdentifier))
+            components = plan.components.map { required in
+                let availability: DoryMachineImportComponentAvailability
+                if exactAvailable.contains(required) {
+                    availability = .available
+                } else if availableIdentifiers.contains(required.componentIdentifier) {
+                    availability = .mismatched
+                } else {
+                    availability = .missing
+                }
+                return DoryMachineImportComponentAssessment(
+                    componentIdentifier: required.componentIdentifier,
+                    buildIdentifier: required.buildIdentifier,
+                    artifactSHA256: required.artifactSHA256,
+                    availability: availability
+                )
+            }
+            if components.contains(where: { $0.availability == .missing }) {
+                issues.append(.missingComponents)
+            }
+            if components.contains(where: { $0.availability == .mismatched }) {
+                issues.append(.mismatchedComponents)
+            }
+            if environment.backendRuntimeBuildIdentifiers[plan.backend]
+                != plan.backendRuntimeBuildIdentifier {
+                issues.append(.backendRuntimeDiffers)
+            }
+        }
+
+        let portable = architectureMatches && abiMatches
+        let disposition: DoryMachineImportDisposition
+        if !portable {
+            disposition = .unavailable
+        } else if components.contains(where: { $0.availability != .available }) {
+            disposition = .requiresComponents
+        } else {
+            switch snapshot.runtimeIdentity.mode {
+            case .resolvedPlan:
+                // Portable archives are checksummed, not a signed authority transfer. The exact
+                // source plan is useful evidence, but the destination must mint its own media,
+                // host-qualification, resource-admission, and plan authority.
+                issues.append(.resolvedPlanRequiresReplanning)
+                disposition = .requiresReplanning
+            case .requiresReplanning:
+                issues.append(.sourceRequiresReplanning)
+                disposition = .requiresReplanning
+            case .legacyCompatibility:
+                if launchPolicy == .perWorkspaceAuthority {
+                    issues.append(.legacyRequiresMigration)
+                    disposition = .requiresReplanning
+                } else {
+                    disposition = .ready
+                }
+            }
+        }
+
+        return DoryMachineImportAssessment(
+            contentID: MachineSnapshotBundle.digestHex(bundle.contentID),
+            sourceMachineID: snapshot.machineID,
+            sourceSnapshotID: snapshot.id,
+            architecture: snapshot.architecture,
+            bootMode: snapshot.bootMode,
+            diskSizeBytes: UInt64(snapshot.sizeBytes),
+            virtualHardwareABIVersion: snapshot.runtimeIdentity.virtualHardwareABIVersion,
+            sourceRuntimeMode: snapshot.runtimeIdentity.mode,
+            sourceBackend: snapshot.runtimeIdentity.backend,
+            portable: portable,
+            disposition: disposition,
+            issues: issues,
+            components: components
+        )
+    }
+
     public func importSnapshot(fromPath path: String) throws -> DoryMachineSnapshot {
-        operationLock.lock()
-        defer { operationLock.unlock() }
+        try importSnapshot(fromPath: path, expectedContentID: nil)
+    }
+
+    public func importSnapshot(
+        fromPath path: String,
+        expectedContentID: String?
+    ) throws -> DoryMachineSnapshot {
+        let importAuthority = try MachineSnapshotBundle.verifyDescriptor(fromPath: path)
+        guard Self.isValidID(importAuthority.snapshot.machineID) else {
+            throw MachineManagerError.persistence("invalid snapshot metadata")
+        }
+        let mutationLease = mutationCoordinator.acquire(
+            workspaceID: importAuthority.snapshot.machineID
+        )
+        defer { mutationLease.release() }
         var extractedRootfsPath: String?
         var extractedKernelPath: String?
+        var extractedMachineIdentifierPath: String?
+        var extractedNVRAMPath: String?
         var importedMachineID: String?
         do {
-            let bundle = try MachineSnapshotBundle.readDescriptor(fromPath: path)
+            let bundle = try MachineSnapshotBundle.verifyDescriptor(fromPath: path)
+            guard bundle.contentID == importAuthority.contentID,
+                  bundle.snapshot.machineID == importAuthority.snapshot.machineID else {
+                throw MachineManagerError.persistence(
+                    "machine bundle changed before workspace admission"
+                )
+            }
+            if let expectedContentID {
+                guard expectedContentID == MachineSnapshotBundle.digestHex(bundle.contentID) else {
+                    throw MachineManagerError.persistence(
+                        "machine bundle changed after import assessment"
+                    )
+                }
+            }
             var snapshot = bundle.snapshot
             guard Self.isValidID(snapshot.machineID), Self.isValidID(snapshot.id) else {
                 throw MachineManagerError.persistence("invalid snapshot metadata")
@@ -1152,9 +6984,26 @@ public final class MachineManager: @unchecked Sendable {
                 )
             }
             try Self.validateResources(memoryMB: snapshot.memoryMB, cpuCount: snapshot.cpuCount)
+            try Self.validateSnapshotRuntimeIdentity(snapshot)
+            if launchPolicy == .perWorkspaceAuthority {
+                snapshot.runtimeIdentity = .requiresReplanning(
+                    virtualHardwareABIVersion:
+                        snapshot.runtimeIdentity.virtualHardwareABIVersion,
+                    reason: .importedSnapshot
+                )
+            }
+            snapshot.installedDesktopPayloadReceipt =
+                snapshot.installedDesktopPayloadReceipt?.portableSnapshotReceipt
             snapshot.address = nil
             snapshot.shares = []
             snapshot.environment = [:]
+            let capacityProvider = managerStateLock.withLock { storageCapacityProvider }
+            try MachineSnapshotBundle.requireArtifactCapacity(
+                artifactByteCount: bundle.artifactByteCount,
+                destinationPath: snapshotDirectory(machineID: snapshot.machineID),
+                operation: "machine import",
+                availableCapacity: capacityProvider
+            )
             importedMachineID = snapshot.machineID
             try ensurePrivateSnapshotDirectory(machineID: snapshot.machineID)
             snapshot.id = try availableImportedSnapshotID(
@@ -1163,14 +7012,28 @@ public final class MachineManager: @unchecked Sendable {
             )
             snapshot.rootfsPath = snapshotRootfsPath(machineID: snapshot.machineID, snapshotID: snapshot.id)
             snapshot.kernelPath = snapshotKernelPath(machineID: snapshot.machineID, snapshotID: snapshot.id)
+            if snapshot.bootMode == .efi {
+                snapshot.machineIdentifierPath = snapshotMachineIdentifierPath(
+                    machineID: snapshot.machineID,
+                    snapshotID: snapshot.id
+                )
+                snapshot.nvramPath = snapshotNVRAMPath(machineID: snapshot.machineID, snapshotID: snapshot.id)
+            } else {
+                snapshot.machineIdentifierPath = nil
+                snapshot.nvramPath = nil
+            }
             try MachineSnapshotBundle.extractArtifacts(
                 fromPath: path,
                 expectedContentID: bundle.contentID,
                 rootfsPath: snapshot.rootfsPath,
-                kernelPath: snapshot.kernelPath
+                kernelPath: snapshot.kernelPath,
+                machineIdentifierPath: snapshot.machineIdentifierPath,
+                nvramPath: snapshot.nvramPath
             )
             extractedRootfsPath = snapshot.rootfsPath
             extractedKernelPath = snapshot.kernelPath
+            extractedMachineIdentifierPath = snapshot.machineIdentifierPath
+            extractedNVRAMPath = snapshot.nvramPath
             snapshot.sizeBytes = Self.fileSize(path: snapshot.rootfsPath)
             try persistSnapshot(snapshot)
             return snapshot
@@ -1180,6 +7043,12 @@ public final class MachineManager: @unchecked Sendable {
             }
             if let extractedKernelPath {
                 try? FileManager.default.removeItem(atPath: extractedKernelPath)
+            }
+            if let extractedMachineIdentifierPath {
+                try? FileManager.default.removeItem(atPath: extractedMachineIdentifierPath)
+            }
+            if let extractedNVRAMPath {
+                try? FileManager.default.removeItem(atPath: extractedNVRAMPath)
             }
             if let importedMachineID {
                 removeEmptyImportedSnapshotNamespace(machineID: importedMachineID)
@@ -1191,6 +7060,12 @@ public final class MachineManager: @unchecked Sendable {
             }
             if let extractedKernelPath {
                 try? FileManager.default.removeItem(atPath: extractedKernelPath)
+            }
+            if let extractedMachineIdentifierPath {
+                try? FileManager.default.removeItem(atPath: extractedMachineIdentifierPath)
+            }
+            if let extractedNVRAMPath {
+                try? FileManager.default.removeItem(atPath: extractedNVRAMPath)
             }
             if let importedMachineID {
                 removeEmptyImportedSnapshotNamespace(machineID: importedMachineID)
@@ -1206,6 +7081,110 @@ public final class MachineManager: @unchecked Sendable {
         return statusLocked(id: id, entry: entry)
     }
 
+    /// Internal observation used by lifecycle contract tests. Public status deliberately exposes
+    /// the durable runtime identity rather than these transient ownership details, but teardown
+    /// tests must prove that a failed generation cannot detach its exact process/plan/backend
+    /// authority before terminal observation.
+    func failedRuntimeAuthoritySnapshot(id: String) -> FailedRuntimeAuthoritySnapshot? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let entry = machines[id] else { return nil }
+        return FailedRuntimeAuthoritySnapshot(
+            hasProcess: entry.process != nil,
+            processIsRunning: entry.process?.isRunning == true,
+            hasResolvedAdmissionAuthority: entry.activeResolvedPlan != nil,
+            backend: entry.activeBackend
+        )
+    }
+
+    /// Observes an in-progress launch until its handoff owner publishes the agent endpoint used by
+    /// guest operations. Start intentionally returns after spawning the helper, so callers that
+    /// immediately need the guest agent wait here without competing to terminalize its lifecycle.
+    public func waitUntilAgentReady(id: String) throws -> DoryMachineStatus {
+        guard let initial = status(id: id) else {
+            throw MachineManagerError.unknownMachine(id)
+        }
+        let timeout = handoffReadyTimeout(
+            displayMode: initial.displayMode,
+            bootMode: initial.bootMode
+        ) + 1
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            guard let current = status(id: id) else {
+                throw MachineManagerError.unknownMachine(id)
+            }
+            switch current.state {
+            case .running:
+                guard current.agentSocketPath != nil else {
+                    throw MachineManagerError.agentUnavailable(id)
+                }
+                return current
+            case .starting:
+                Thread.sleep(forTimeInterval: 0.01)
+            case .failed:
+                let detail = current.lastError ?? "unknown error"
+                throw MachineManagerError.persistence(
+                    "machine agent readiness failed for \(id): \(detail)"
+                )
+            case .created, .paused, .suspended, .stopped:
+                throw MachineManagerError.agentUnavailable(id)
+            }
+        }
+        throw MachineManagerError.persistence("machine agent readiness timed out for \(id)")
+    }
+
+    public func setDisplayPresentation(
+        id: String,
+        presentation: DoryMachineDisplayPresentation
+    ) throws -> DoryMachineStatus {
+        let mutationLease = mutationCoordinator.acquire(workspaceID: id)
+        defer { mutationLease.release() }
+        guard presentation.isValid else {
+            throw MachineManagerError.persistence("invalid display presentation preference")
+        }
+        lock.lock()
+        guard let entry = machines[id] else {
+            lock.unlock()
+            throw MachineManagerError.unknownMachine(id)
+        }
+        let availableDisplayIDs: Set<String>
+        if let displays = entry.runtimeIdentity.resolvedPlan?.devices.displays {
+            availableDisplayIDs = Set(displays.map(\.id))
+        } else if entry.configuration.displayMode == .desktop {
+            availableDisplayIDs = ["display-0"]
+        } else {
+            availableDisplayIDs = []
+        }
+        lock.unlock()
+        guard presentation.assignments.allSatisfy({
+            availableDisplayIDs.contains($0.guestDisplayID)
+        }) else {
+            throw MachineManagerError.persistence(
+                "display presentation references a display outside the machine contract"
+            )
+        }
+        do {
+            try displayPresentationStore.publish(presentation, machineID: id)
+        } catch {
+            throw MachineManagerError.persistence(
+                "could not persist display presentation: \(error)"
+            )
+        }
+        lock.lock()
+        machines[id]?.displayPresentation = presentation
+        lock.unlock()
+        guard let status = status(id: id) else {
+            throw MachineManagerError.unknownMachine(id)
+        }
+        return status
+    }
+
+    public func runtimeIdentity(id: String) -> DoryMachineRuntimeIdentity? {
+        lock.lock()
+        defer { lock.unlock() }
+        return machines[id]?.runtimeIdentity
+    }
+
     public func list() -> [DoryMachineStatus] {
         lock.lock()
         let statuses = machines.keys.sorted().compactMap { id in
@@ -1215,19 +7194,153 @@ public final class MachineManager: @unchecked Sendable {
         return statuses
     }
 
+    public func workspaceProjectionDiagnostic(
+        id: String
+    ) -> DoryWorkspaceProjectionDiagnostic? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard machines[id] != nil else { return nil }
+        return workspaceProjectionDiagnostics[id]
+    }
+
+    /// Immutable identity of the last plan-driven launch accepted for this machine. Runtime
+    /// status/snapshot/export can consume this hook without copying the full trust evidence yet.
+    public func resolvedLaunchIdentity(id: String) -> DoryMachineResolvedLaunchIdentity? {
+        let mutationLease = mutationCoordinator.acquire(workspaceID: id)
+        defer { mutationLease.release() }
+        lock.lock()
+        let exists = machines[id] != nil
+        lock.unlock()
+        guard exists else { return nil }
+        return managerStateLock.withLock { resolvedLaunchIdentities[id] }
+    }
+
+    /// Returns the retained, path-free flight-recorder tail after a per-workspace cursor. A stale
+    /// or future cursor receives the full retained snapshot with `snapshotRequired == true`.
+    public func flightRecorder(
+        id: String,
+        afterSequence: UInt64
+    ) throws -> DoryMachineFlightRecorderBatch {
+        let mutationLease = mutationCoordinator.acquire(workspaceID: id)
+        defer { mutationLease.release() }
+        lock.lock()
+        let exists = machines[id] != nil
+        lock.unlock()
+        if !exists {
+            let heads = try flightRecorderStore.headSequences()
+            guard heads[id] != nil else { throw MachineManagerError.unknownMachine(id) }
+        }
+        return try flightRecorderStore.batch(
+            machineID: id,
+            afterSequence: afterSequence
+        )
+    }
+
+    /// Reads a bounded cursor-based tail of the helper-owned serial/firmware console. This path
+    /// does not depend on the guest agent and remains available after a failed or stopped boot.
+    public func serialConsole(
+        id: String,
+        cursor: DoryMachineSerialConsoleCursor = .init(),
+        limit: Int = 64 * 1_024
+    ) throws -> DoryMachineSerialConsoleBatch {
+        let mutationLease = mutationCoordinator.acquire(workspaceID: id)
+        defer { mutationLease.release() }
+        lock.lock()
+        let state = machines[id]?.state
+        lock.unlock()
+        guard let state else { throw MachineManagerError.unknownMachine(id) }
+        do {
+            var batch = try DoryMachineSerialConsoleAuthority.read(
+                machineID: id,
+                machineDirectory: machineStateDirectory(id: id),
+                consoleSocketPath: consoleSocketPath(id: id),
+                cursor: cursor,
+                limit: limit
+            )
+            batch.inputAvailable = [.starting, .running].contains(state)
+                && batch.inputAvailable
+            return batch
+        } catch {
+            throw MachineManagerError.persistence(
+                "machine serial console is unavailable: \(error)"
+            )
+        }
+    }
+
+    /// Sends one bounded input frame to a helper's private recovery-console socket. Raw-HV's
+    /// current UART is output-only, so its missing socket is reported as unavailable rather than
+    /// pretending that input was accepted.
+    public func writeSerialConsole(id: String, data: Data) throws {
+        let mutationLease = mutationCoordinator.acquire(workspaceID: id)
+        defer { mutationLease.release() }
+        lock.lock()
+        let state = machines[id]?.state
+        lock.unlock()
+        guard let state else { throw MachineManagerError.unknownMachine(id) }
+        guard [.starting, .running].contains(state) else {
+            throw MachineManagerError.persistence(
+                "machine serial console input requires a starting or running machine"
+            )
+        }
+        do {
+            try DoryMachineSerialConsoleAuthority.write(
+                data,
+                consoleSocketPath: consoleSocketPath(id: id)
+            )
+        } catch {
+            throw MachineManagerError.persistence(
+                "machine serial console input is unavailable: \(error)"
+            )
+        }
+    }
+
     private func statusLocked(id: String, entry: MachineEntry) -> DoryMachineStatus {
-        if [.starting, .running].contains(entry.state), entry.process?.isRunning != true {
+        let typedSettings = entry.typedSettingsSnapshot
+            ?? DoryMachineTypedSettingsSnapshot(
+                legacyEnvironment: entry.configuration.environment,
+                displayMode: entry.configuration.displayMode
+            )
+        let sandboxPolicy = entry.usesNativeWorkspaceAuthority
+            ? entry.sandboxPolicySnapshot
+            : DoryVMSandboxPolicy.legacyEnvironment(entry.configuration.environment)
+        let displayPresentation = entry.displayPresentation
+        if [.starting, .running, .paused].contains(entry.state),
+           entry.process?.isRunningOrRestarting != true {
             return DoryMachineStatus(
                 id: id,
                 state: .failed,
                 lastError: entry.lastError ?? "dory-vmm process exited",
+                failure: entry.failure ?? DoryMachineFailure(
+                    code: .helperExited,
+                    operationID: entry.activeOperationID?.uuidString.lowercased(),
+                    causalChain: [.processExit],
+                    recoveryDisposition: .retry,
+                    evidenceReferences: failureEvidenceReferences(for: entry)
+                ),
+                activeOperationID: entry.activeOperationID?.uuidString.lowercased(),
+                activeOperationKind: entry.activeOperationKind?.rawValue,
+                flightRecorderHeadSequence: entry.flightRecorderHeadSequence,
+                flightRecorderAvailable: entry.flightRecorderAvailable,
                 address: entry.configuration.address,
                 configuredAddress: entry.configuration.address,
                 memoryMB: entry.configuration.memoryMB,
                 cpuCount: entry.configuration.cpuCount,
                 displayMode: entry.configuration.displayMode,
+                bootMode: entry.configuration.bootMode,
+                installerMediaAttached: entry.configuration.installerISOPath != nil,
                 shares: entry.configuration.shares,
-                environment: entry.configuration.environment
+                environment: entry.configuration.environment,
+                typedSettings: typedSettings,
+                sandboxPolicy: sandboxPolicy,
+                diagnosticOverrides: DoryMachineDiagnosticOverride.configured(
+                    in: entry.configuration.environment
+                ),
+                displayPresentation: displayPresentation,
+                runtimeIdentity: entry.runtimeIdentity,
+                installedDesktopPayloadReceipt:
+                    entry.configuration.effectiveInstalledDesktopPayloadReceipt,
+                cloneReceipt: entry.configuration.cloneReceipt,
+                savedState: entry.savedStateStatus
             )
         }
         return DoryMachineStatus(
@@ -1235,8 +7348,15 @@ public final class MachineManager: @unchecked Sendable {
             state: entry.state,
             pid: entry.process?.pid,
             lastError: entry.lastError,
+            failure: entry.failure,
+            activeOperationID: entry.activeOperationID?.uuidString.lowercased(),
+            activeOperationKind: entry.activeOperationKind?.rawValue,
+            flightRecorderHeadSequence: entry.flightRecorderHeadSequence,
+            flightRecorderAvailable: entry.flightRecorderAvailable,
             handoffSocketPath: entry.handoffServer?.path,
             agentBuild: entry.handoff?.ready.agentBuild,
+            agentProtocolVersion: entry.handoff?.ready.agentProtocolVersion,
+            agentCapabilities: entry.handoff?.ready.agentCapabilities ?? [],
             agentSocketPath: entry.handoff?.ready.agentSocketPath,
             dockerdSocketPath: entry.handoff?.ready.dockerdSocketPath,
             shellSocketPath: entry.handoff?.ready.shellSocketPath,
@@ -1249,56 +7369,1620 @@ public final class MachineManager: @unchecked Sendable {
             currentBalloonTargetMB: entry.currentBalloonTargetMB ?? entry.configuration.memoryMB,
             cpuCount: entry.configuration.cpuCount,
             displayMode: entry.configuration.displayMode,
+            bootMode: entry.configuration.bootMode,
+            installerMediaAttached: entry.configuration.installerISOPath != nil,
             shares: entry.configuration.shares,
-            environment: entry.configuration.environment
+            environment: entry.configuration.environment,
+            typedSettings: typedSettings,
+            sandboxPolicy: sandboxPolicy,
+            diagnosticOverrides: DoryMachineDiagnosticOverride.configured(
+                in: entry.configuration.environment
+            ),
+            displayPresentation: displayPresentation,
+            runtimeIdentity: entry.runtimeIdentity,
+            runtimeGraphicsSelection: entry.handoff?.ready.graphicsSelection,
+            installedDesktopPayloadReceipt:
+                entry.configuration.effectiveInstalledDesktopPayloadReceipt,
+            cloneReceipt: entry.configuration.cloneReceipt,
+            savedState: entry.savedStateStatus
+        )
+    }
+
+    private func failureEvidenceReferences(
+        for entry: MachineEntry
+    ) -> [DoryMachineFailureEvidenceReference] {
+        var references: [DoryMachineFailureEvidenceReference] = []
+        if let operationID = entry.activeOperationID?.uuidString.lowercased() {
+            references.append(.init(kind: .operation, identifier: operationID))
+        }
+        if let planSHA256 = entry.runtimeIdentity.resolvedPlanSHA256 {
+            references.append(.init(kind: .plan, identifier: planSHA256))
+        }
+        if let backend = entry.runtimeIdentity.backend?.rawValue {
+            references.append(.init(kind: .backend, identifier: backend))
+        }
+        if let savedStateSHA256 = entry.savedStateStatus?.stateFileSHA256 {
+            references.append(.init(kind: .savedState, identifier: savedStateSHA256))
+        }
+        return references
+    }
+
+    private func appendFlightEvent(
+        on entry: inout MachineEntry,
+        kind: DoryMachineFlightEventKind,
+        phase: DoryOperationPhase? = nil,
+        failure: DoryMachineFailure? = nil,
+        durationMilliseconds: UInt64? = nil,
+        deadlineUnixMilliseconds: Int64? = nil
+    ) {
+        do {
+            let event = try flightRecorderStore.append(
+                machineID: entry.configuration.id,
+                operationID: entry.activeOperationID?.uuidString.lowercased(),
+                operationKind: entry.activeOperationKind?.rawValue,
+                kind: kind,
+                phase: phase?.rawValue,
+                machineState: entry.state.rawValue,
+                failureCode: failure?.code,
+                recoveryDisposition: failure?.recoveryDisposition,
+                backend: entry.activeBackend ?? entry.runtimeIdentity.backend,
+                virtualHardwareABIVersion:
+                    entry.runtimeIdentity.virtualHardwareABIVersion,
+                planSHA256: entry.runtimeIdentity.resolvedPlanSHA256,
+                durationMilliseconds: durationMilliseconds,
+                deadlineUnixMilliseconds: deadlineUnixMilliseconds,
+                evidenceReferences: failureEvidenceReferences(for: entry)
+            )
+            entry.flightRecorderHeadSequence = event.sequence
+            entry.flightRecorderAvailable = true
+        } catch {
+            // Recorder persistence is deliberately independent from lifecycle authority. Mark it
+            // unavailable in status without recursively trying to persist another diagnostic.
+            entry.flightRecorderAvailable = false
+        }
+    }
+
+    private func appendFlightEvent(
+        machineID: String,
+        kind: DoryMachineFlightEventKind,
+        phase: DoryOperationPhase? = nil,
+        failure: DoryMachineFailure? = nil,
+        durationMilliseconds: UInt64? = nil,
+        deadlineUnixMilliseconds: Int64? = nil
+    ) {
+        lock.lock()
+        if var entry = machines[machineID] {
+            appendFlightEvent(
+                on: &entry,
+                kind: kind,
+                phase: phase,
+                failure: failure,
+                durationMilliseconds: durationMilliseconds,
+                deadlineUnixMilliseconds: deadlineUnixMilliseconds
+            )
+            machines[machineID] = entry
+        }
+        lock.unlock()
+    }
+
+    /// Records a caller-owned root operation that is intentionally broader than the nested
+    /// lifecycle journals it invokes (for example component install -> snapshot -> guest update
+    /// -> restart qualification). This keeps one correlation identity without replacing the
+    /// independently durable IDs of those nested mutations.
+    private func appendFlightEvent(
+        machineID: String,
+        operationID: UUID,
+        operationKind: DoryWorkspaceMutationKind,
+        kind: DoryMachineFlightEventKind,
+        phase: DoryOperationPhase? = nil,
+        failure: DoryMachineFailure? = nil
+    ) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard var entry = machines[machineID] else { return }
+        do {
+            let event = try flightRecorderStore.append(
+                machineID: machineID,
+                operationID: operationID.uuidString.lowercased(),
+                operationKind: operationKind.rawValue,
+                kind: kind,
+                phase: phase?.rawValue,
+                machineState: entry.state.rawValue,
+                failureCode: failure?.code,
+                recoveryDisposition: failure?.recoveryDisposition,
+                backend: entry.activeBackend ?? entry.runtimeIdentity.backend,
+                virtualHardwareABIVersion:
+                    entry.runtimeIdentity.virtualHardwareABIVersion,
+                planSHA256: entry.runtimeIdentity.resolvedPlanSHA256,
+                evidenceReferences: failure?.evidenceReferences
+                    ?? failureEvidenceReferences(for: entry)
+            )
+            entry.flightRecorderHeadSequence = event.sequence
+            entry.flightRecorderAvailable = true
+        } catch {
+            entry.flightRecorderAvailable = false
+        }
+        machines[machineID] = entry
+    }
+
+    private func appendDesktopUpdateFailureFlightEvent(
+        machineID: String,
+        operationID: UUID,
+        recoveryDisposition: DoryMachineRecoveryDisposition
+    ) {
+        let failure = DoryMachineFailure(
+            code: recoveryDisposition == .rollbackCompleted
+                ? .desktopUpdateRolledBack : .desktopUpdateRecoveryRequired,
+            operationID: operationID.uuidString.lowercased(),
+            causalChain: [.unknown],
+            recoveryDisposition: recoveryDisposition,
+            evidenceReferences: [
+                .init(
+                    kind: .operation,
+                    identifier: operationID.uuidString.lowercased()
+                ),
+            ]
+        )
+        appendFlightEvent(
+            machineID: machineID,
+            operationID: operationID,
+            operationKind: .updating,
+            kind: .operationFailed,
+            failure: failure
+        )
+    }
+
+    private func setFailure(
+        on entry: inout MachineEntry,
+        code: DoryMachineFailureCode,
+        message: String,
+        causes: [DoryMachineFailureCauseCode],
+        recoveryDisposition: DoryMachineRecoveryDisposition,
+        extraEvidence: [DoryMachineFailureEvidenceReference] = []
+    ) {
+        let failure = DoryMachineFailure(
+            code: code,
+            operationID: entry.activeOperationID?.uuidString.lowercased(),
+            causalChain: causes,
+            recoveryDisposition: recoveryDisposition,
+            evidenceReferences: failureEvidenceReferences(for: entry) + extraEvidence
+        )
+        do {
+            try failureStore.set(failure, for: entry.configuration.id)
+            entry.failure = failure
+            entry.lastError = message
+        } catch {
+            entry.failure = DoryMachineFailure(
+                code: .diagnosticPersistenceFailed,
+                operationID: entry.activeOperationID?.uuidString.lowercased(),
+                causalChain: [.filesystem],
+                recoveryDisposition: .repair,
+                evidenceReferences: failureEvidenceReferences(for: entry)
+            )
+            entry.lastError = "\(message); structured diagnostics could not be persisted"
+        }
+        appendFlightEvent(
+            on: &entry,
+            kind: .failureRecorded,
+            failure: entry.failure
+        )
+    }
+
+    private func clearFailure(on entry: inout MachineEntry) {
+        do {
+            try failureStore.clear(entry.configuration.id)
+            entry.failure = nil
+            entry.lastError = nil
+        } catch {
+            entry.failure = DoryMachineFailure(
+                code: .diagnosticPersistenceFailed,
+                operationID: entry.activeOperationID?.uuidString.lowercased(),
+                causalChain: [.filesystem],
+                recoveryDisposition: .repair,
+                evidenceReferences: failureEvidenceReferences(for: entry)
+            )
+            entry.lastError = "Structured machine diagnostics could not be cleared safely."
+        }
+    }
+
+    private func clearActiveOperation(
+        machineID: String,
+        operationID: UUID
+    ) {
+        lock.lock()
+        if var entry = machines[machineID], entry.activeOperationID == operationID {
+            entry.activeOperationID = nil
+            entry.activeOperationKind = nil
+            machines[machineID] = entry
+        }
+        lock.unlock()
+    }
+
+    private func nativeTypedSettingsSnapshot(
+        id: String
+    ) -> DoryMachineTypedSettingsSnapshot? {
+        guard launchPolicy == .perWorkspaceAuthority,
+              let record = try? workspaceRepository.readPersistedRecord(id: id),
+              record.legacyConfigurationSHA256 == nil,
+              record.legacyMigrationFactsSHA256 == nil else {
+            return nil
+        }
+        return try? DoryMachineTypedSettingsSnapshot(definition: record.definition)
+    }
+
+    private func effectiveSandboxPolicy(
+        id: String,
+        configuration: DoryMachineConfiguration
+    ) throws -> DoryVMSandboxPolicy? {
+        if launchPolicy == .perWorkspaceAuthority {
+            let record = try workspaceRepository.readPersistedRecord(id: id)
+            if record.legacyConfigurationSHA256 == nil,
+               record.legacyMigrationFactsSHA256 == nil {
+                guard record.definition.sandboxPolicy?.isValidForPersistence ?? true else {
+                    throw MachineManagerError.persistence(
+                        "native sandbox policy is invalid"
+                    )
+                }
+                return record.definition.sandboxPolicy
+            }
+        }
+        let policy = DoryVMSandboxPolicy.legacyEnvironment(configuration.environment)
+        if configuration.environment[DoryVMSandboxPolicy.legacyMarkerEnvironmentKey] == "1",
+           policy == nil {
+            throw MachineManagerError.persistence("legacy sandbox policy is invalid")
+        }
+        return policy
+    }
+
+    /// Builds a one-launch, descriptor-backed RawHV authority for the explicit local candidate
+    /// build. It reuses the same signed runner/worker graph, immutable renderer bootstrap, sparse
+    /// topology, and suspended-child CDHash gate as production. The plan is deliberately transient
+    /// and permanently labelled non-release-qualifying; durable runtime identity remains legacy.
+    private func qualificationBootstrapRuntimeAuthority(
+        machine: DoryMachineConfiguration,
+        definition: DoryVirtualMachineDefinition?,
+        operationID: UUID
+    ) throws -> DoryQualificationBootstrapRuntimeAuthority? {
+        guard allowsQualificationBootstrapLaunches,
+              launchPolicy == .legacyCompatibility,
+              machine.displayMode == .desktop,
+              machine.installerISOPath == nil,
+              try DoryDesktopVMMPreference(environment: machine.environment)
+                == .accelerated,
+              try DoryDesktopGraphicsPreference(environment: machine.environment)
+                .requiredBackend == .virglVenus else {
+            return nil
+        }
+        guard let definition,
+              definition.identity.id == machine.id,
+              definition.validate().isEmpty,
+              definition.graphics.acceptableLevels.contains(.hardwareAccelerated3D),
+              let bootID = definition.boot.order.first,
+              definition.boot.order.count == 1,
+              let bootMedia = definition.boot.devices.first(where: { $0.id == bootID }),
+              definition.boot.devices.count == 1 else {
+            throw MachineManagerError.persistence(
+                "qualification bootstrap requires one exact valid desktop definition"
+            )
+        }
+        let managedDirectory = machineStateDirectory(id: machine.id)
+        guard machine.rootfsPath == managedDirectory + "/rootfs.ext4",
+              machine.kernelPath == managedDirectory + "/kernel" else {
+            throw MachineManagerError.persistence(
+                "qualification bootstrap paths do not match managed machine storage"
+            )
+        }
+        guard let executablePath = configuration.acceleratedDesktopExecutablePath,
+              FileManager.default.isExecutableFile(atPath: executablePath),
+              let machineStateBroker else {
+            throw MachineManagerError.persistence(
+                "qualification bootstrap runtime authority is unavailable"
+            )
+        }
+
+        let executableSHA256 = try Self.fileSHA256(path: executablePath)
+        let runtimeBuildIdentifier = "sha256:\(executableSHA256)"
+        guard let rendererAdmission = try DoryDaemonRendererProductionAuthority.verifyIfPresent(
+            runnerExecutablePath: executablePath,
+            runtimeBuildIdentifier: runtimeBuildIdentifier
+        ), rendererAdmission.authorizes(runtimeBuildIdentifier: runtimeBuildIdentifier) else {
+            throw MachineManagerError.persistence(
+                "qualification bootstrap rejected the signed renderer component graph"
+            )
+        }
+        guard let runnerCodeDirectoryHash = rendererAdmission.runnerCodeDirectoryHash,
+              let rendererWorkerCodeDirectoryHash =
+                rendererAdmission.rendererWorkerCodeDirectoryHash else {
+            throw MachineManagerError.persistence(
+                "qualification bootstrap signed code identity is unavailable"
+            )
+        }
+        let rendererReleaseIdentity = DoryRendererReleaseIdentityV1(
+            runnerCodeDirectoryHash: runnerCodeDirectoryHash,
+            rendererWorkerCodeDirectoryHash: rendererWorkerCodeDirectoryHash,
+            tupleDefinitionSHA256: try DoryRendererArtifactDigest(
+                lowercaseSHA256: DoryRendererSourceTuple.productionDefinitionSHA256,
+                field: "rendererTupleDefinition"
+            )
+        )
+
+        var diskInfo = stat()
+        guard lstat(machine.rootfsPath, &diskInfo) == 0,
+              diskInfo.st_mode & S_IFMT == S_IFREG,
+              diskInfo.st_size > 0,
+              UInt64(diskInfo.st_size) == definition.resources.diskBytes else {
+            throw MachineManagerError.persistence(
+                "qualification bootstrap system-disk capacity does not match workspace intent"
+            )
+        }
+        let bootArtifactSHA256 = try Self.fileSHA256(path: machine.kernelPath)
+        let devices = DoryDaemonVirtualMachinePlanningCoordinator.devices(for: definition)
+        let topology = try DoryRawHVVirtualHardwareTopologyPlanner.resolve(
+            definition: definition,
+            resolvedDevices: devices
+        )
+        let executionResources = RuntimeLaunchEnvelope.RawHVExecutionResources.production(
+            memoryMB: machine.memoryMB,
+            virtualCPUCount: UInt16(machine.cpuCount)
+        )
+        var components = rendererAdmission.qualifiedComponents.map {
+            DoryResolvedBackendComponentEvidence(
+                componentIdentifier: $0.componentIdentifier,
+                buildIdentifier: $0.buildIdentifier,
+                artifactSHA256: $0.artifactSHA256
+            )
+        }
+        components.append(DoryResolvedBackendComponentEvidence(
+            componentIdentifier: "dory-hv",
+            buildIdentifier: runtimeBuildIdentifier,
+            artifactSHA256: executableSHA256
+        ))
+        components.sort { $0.componentIdentifier < $1.componentIdentifier }
+        let plan = DoryQualificationBootstrapLaunchPlan(
+            schemaVersion: 1,
+            qualificationMode: "candidate-bootstrap",
+            verdict: "not-release-qualifying",
+            definition: definition,
+            devices: devices,
+            topology: topology,
+            executionResources: executionResources,
+            backendRuntimeBuildIdentifier: runtimeBuildIdentifier,
+            backendExecutableSHA256: executableSHA256,
+            managedBootArtifactSHA256: bootArtifactSHA256,
+            systemDiskCapacityBytes: UInt64(diskInfo.st_size),
+            components: components
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let planData = try encoder.encode(plan)
+        let launchPlanSHA256 = SHA256.hash(data: planData).map {
+            String(format: "%02x", $0)
+        }.joined()
+
+        let lease: DoryMachineDirectoryLease
+        do {
+            lease = try machineStateBroker.acquireMachineDirectoryLease(
+                machineID: machine.id
+            )
+        } catch {
+            throw MachineManagerError.persistence(
+                "qualification bootstrap machine-directory authority is unavailable: \(error)"
+            )
+        }
+        let admitted = try lease.withBorrowedDescriptor { directory in
+            try Self.admitResolvedRawHVResources(
+                machineDirectoryDescriptor: directory,
+                machineDirectoryGeneration: lease.generation,
+                expectedDiskCapacityBytes: UInt64(diskInfo.st_size),
+                mediaKind: bootMedia.kind,
+                expectedArtifactSHA256: bootArtifactSHA256,
+                machineBootMode: machine.bootMode,
+                installerISOPath: nil,
+                rendererBootstrapRequest: RawHVRendererBootstrapRequest(
+                    workspaceID: operationID,
+                    generation: definition.lifecycle.revision,
+                    runtimeBuildIdentifier: runtimeBuildIdentifier,
+                    components: components,
+                    rendererWorkerCodeDirectoryHash:
+                        rendererReleaseIdentity.rendererWorkerCodeDirectoryHash
+                )
+            )
+        }
+        var authorityTransferred = false
+        defer {
+            if !authorityTransferred { admitted.close() }
+        }
+        guard let systemDiskLogicalID = topology.occupiedSlots.first(where: {
+            $0.role == .systemDisk
+        })?.logicalID else {
+            throw MachineManagerError.persistence(
+                "qualification bootstrap topology omitted the system disk"
+            )
+        }
+        let envelope = RuntimeLaunchEnvelope.resolvedRawHV(
+            machineID: machine.id,
+            operationID: operationID,
+            resolvedPlanSHA256: launchPlanSHA256,
+            planRevision: definition.lifecycle.revision,
+            backendRuntimeBuildIdentifier: runtimeBuildIdentifier,
+            virtualHardwareABIVersion: definition.virtualHardwareABIVersion,
+            rawHVVirtualHardwareTopology: topology,
+            graphics: .hardwareAccelerated3D,
+            devices: devices,
+            portForwards: definition.portForwards,
+            executionResources: executionResources,
+            systemDiskCapacityBytes: admitted.disk.capacityBytes,
+            systemDiskLogicalID: systemDiskLogicalID,
+            linuxRootDevice: admitted.boot.rootDevice,
+            genericGuest: admitted.boot.genericGuest,
+            linuxKernelByteCount: admitted.boot.kernel.byteCount,
+            linuxKernelSHA256: admitted.boot.kernel.sha256,
+            linuxInitrdByteCount: admitted.boot.initrd?.byteCount,
+            linuxInitrdSHA256: admitted.boot.initrd?.sha256,
+            rendererBootstrapByteCount: admitted.rendererBootstrap?.byteCount,
+            rendererBootstrapSHA256: admitted.rendererBootstrap?.sha256
+        )
+        _ = try envelope.validatedResolvedRawHVResources()
+        do {
+            _ = try lease.revalidate()
+        } catch {
+            throw MachineManagerError.persistence(
+                "qualification bootstrap machine-directory authority changed before spawn: \(error)"
+            )
+        }
+        authorityTransferred = true
+        return DoryQualificationBootstrapRuntimeAuthority(
+            runtime: RawHVRuntimeLaunchAuthority(
+                envelope: envelope,
+                inheritedFileDescriptors: [admitted.disk.authority]
+                    + admitted.boot.authorities
+                    + (admitted.rendererBootstrap.map { [$0.authority] } ?? [])
+            ),
+            rendererReleaseIdentity: rendererReleaseIdentity,
+            graphicsExpectation: DoryQualificationBootstrapGraphicsExpectation(
+                operationID: operationID,
+                launchPlanSHA256: launchPlanSHA256,
+                planRevision: definition.lifecycle.revision
+            )
         )
     }
 
     private func processConfiguration(
         for machine: DoryMachineConfiguration,
-        handoffPath: String?
-    ) -> HvProcessConfiguration {
-        HvProcessConfiguration(
-            executablePath: configuration.vmmExecutablePath,
-            arguments: processArguments(for: machine, handoffPath: handoffPath),
-            logPath: "\(configuration.logDirectory)/\(machine.id).log"
+        operationID: UUID,
+        handoffPath: String?,
+        resolvedLaunchBinding: MachineBackendLaunchBinding?,
+        restoreStatePath: String?,
+        runtimeLaunchAuthority: RawHVRuntimeLaunchAuthority?,
+        rendererReleaseIdentity: DoryRendererReleaseIdentityV1?,
+        qualificationBootstrapLaunch: Bool = false
+    ) throws -> (configuration: HvProcessConfiguration,
+                 backend: DoryVirtualizationBackendIdentity) {
+        let target = try processTarget(
+            for: machine,
+            resolvedLaunchBinding: resolvedLaunchBinding
+        )
+        var process = HvProcessConfiguration(
+            executablePath: target.executablePath,
+            arguments: try processArguments(
+                for: machine,
+                operationID: operationID,
+                handoffPath: handoffPath,
+                baseArguments: target.baseArguments,
+                acceleratedDesktop: target.acceleratedDesktop,
+                resolvedLaunchBinding: resolvedLaunchBinding,
+                restoreStatePath: restoreStatePath,
+                runtimeLaunchEnvelope: runtimeLaunchAuthority?.envelope,
+                qualificationBootstrapLaunch: qualificationBootstrapLaunch
+            ),
+            logPath: "\(configuration.logDirectory)/\(machine.id).log",
+            restartPolicy: configuration.requiresReadyHandoff
+                ? configuration.startupRestartPolicy
+                : .none,
+            runtimeLaunchEnvelope: runtimeLaunchAuthority?.envelope,
+            inheritedFileDescriptors: runtimeLaunchAuthority?.inheritedFileDescriptors ?? [],
+            launchStyle: Self.processLaunchStyle(
+                executablePath: target.executablePath,
+                acceleratedDesktop: target.acceleratedDesktop,
+                requiresProtectedDeviceAttribution: machine.displayMode == .desktop
+            )
+        )
+        process.rendererReleaseIdentity = rendererReleaseIdentity
+        return (
+            process,
+            resolvedLaunchBinding?.backend.identity
+                ?? (target.acceleratedDesktop
+                    ? .doryHypervisor : .appleVirtualizationFramework)
         )
     }
 
-    private func processArguments(for machine: DoryMachineConfiguration, handoffPath: String?) -> [String] {
-        guard configuration.passMachineArguments else {
-            return configuration.baseArguments
+    /// Signed desktop applications receive protected-device attribution through LaunchServices.
+    /// Flat development/test helpers remain direct children, while production DoryHVRunner and
+    /// DoryVMM app paths can never silently inherit the unentitled daemon's TCC identity.
+    static func processLaunchStyle(
+        executablePath: String,
+        acceleratedDesktop: Bool,
+        requiresProtectedDeviceAttribution: Bool
+    ) -> HvProcessLaunchStyle {
+        guard requiresProtectedDeviceAttribution else { return .directExecutable }
+        let path = URL(fileURLWithPath: executablePath).standardizedFileURL.path
+        if acceleratedDesktop,
+           path.hasSuffix("/DoryHVRunner.app/Contents/MacOS/dory-hv") {
+            return .applicationBundle
         }
-        var arguments = configuration.baseArguments + [
+        if path.hasSuffix("/DoryVMM.app/Contents/MacOS/dory-vmm") {
+            return .applicationBundle
+        }
+        return .directExecutable
+    }
+
+    /// Converts the single-use production trust output into process configuration authority.
+    /// Resolved RawHV hardware-3D may never silently continue without an exact live-daemon
+    /// release identity, and that identity may not bleed into any other backend or graphics mode.
+    static func resolvedRendererReleaseIdentity(
+        preSpawnLaunchAuthority:
+            DoryDaemonVirtualMachinePreSpawnLaunchAuthority,
+        resolvedLaunchBinding: MachineBackendLaunchBinding?
+    ) throws -> DoryRendererReleaseIdentityV1? {
+        let requiresRendererIdentity = resolvedLaunchBinding?.backend.identity
+                == .doryHypervisor
+            && resolvedLaunchBinding?.graphics == .hardwareAccelerated3D
+        switch preSpawnLaunchAuthority {
+        case .noRendererReleaseIdentityRequired:
+            guard !requiresRendererIdentity else {
+                throw MachineManagerError.persistence(
+                    "resolved hardware-3D launch is missing live renderer release identity"
+                )
+            }
+            return nil
+        case .rendererReleaseIdentity(let identity):
+            guard requiresRendererIdentity,
+                  identity.tupleDefinitionSHA256.lowercaseSHA256
+                    == DoryRendererSourceTuple.productionDefinitionSHA256 else {
+                throw MachineManagerError.persistence(
+                    "renderer release identity does not match the resolved launch"
+                )
+            }
+            return identity
+        }
+    }
+
+    /// Admits the fixed system-disk and boot leaves through one already revalidated machine
+    /// directory generation. No resolved RawHV resource is reopened from an absolute pathname.
+    static func admitResolvedRawHVResources(
+        machineDirectoryDescriptor: Int32,
+        machineDirectoryGeneration: DoryTrustedDirectoryIdentity,
+        expectedDiskCapacityBytes: UInt64,
+        mediaKind: DoryBootMediaKind,
+        expectedArtifactSHA256: String,
+        machineBootMode: DoryMachineBootMode,
+        installerISOPath: String?,
+        rendererBootstrapRequest: RawHVRendererBootstrapRequest? = nil
+    ) throws -> RawHVAdmittedRuntimeResources {
+        try validateRawHVMachineDirectoryDescriptor(
+            machineDirectoryDescriptor,
+            generation: machineDirectoryGeneration
+        )
+        let disk = try admitResolvedRawHVSystemDisk(
+            machineDirectoryDescriptor: machineDirectoryDescriptor,
+            machineDirectoryGeneration: machineDirectoryGeneration,
+            expectedCapacityBytes: expectedDiskCapacityBytes
+        )
+        do {
+            let boot = try admitResolvedRawHVLinuxBoot(
+                machineDirectoryDescriptor: machineDirectoryDescriptor,
+                machineDirectoryGeneration: machineDirectoryGeneration,
+                mediaKind: mediaKind,
+                expectedArtifactSHA256: expectedArtifactSHA256,
+                machineBootMode: machineBootMode,
+                installerISOPath: installerISOPath
+            )
+            do {
+                let rendererBootstrap = try rendererBootstrapRequest.map { request in
+                    try stageResolvedRawHVRendererBootstrap(
+                        machineDirectoryDescriptor: machineDirectoryDescriptor,
+                        machineDirectoryGeneration: machineDirectoryGeneration,
+                        exactKernelSHA256: boot.kernel.sha256,
+                        request: request
+                    )
+                }
+                return RawHVAdmittedRuntimeResources(
+                    disk: disk,
+                    boot: boot,
+                    rendererBootstrap: rendererBootstrap
+                )
+            } catch {
+                boot.close()
+                throw error
+            }
+        } catch {
+            disk.authority.close()
+            throw error
+        }
+    }
+
+    /// Converts the fixed managed `rootfs.ext4` leaf into object authority. The returned
+    /// descriptor owns the opened inode; production still revalidates the directory lease before
+    /// allowing the process configuration to escape.
+    static func admitResolvedRawHVSystemDisk(
+        machineDirectoryDescriptor: Int32,
+        machineDirectoryGeneration: DoryTrustedDirectoryIdentity,
+        expectedCapacityBytes: UInt64
+    ) throws -> RawHVAdmittedSystemDisk {
+        guard expectedCapacityBytes > 0 else {
+            throw MachineManagerError.persistence(
+                "resolved raw-HV system-disk admission input is invalid"
+            )
+        }
+        try validateRawHVMachineDirectoryDescriptor(
+            machineDirectoryDescriptor,
+            generation: machineDirectoryGeneration
+        )
+
+        let descriptor = openat(
+            machineDirectoryDescriptor,
+            "rootfs.ext4",
+            O_RDWR | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK
+        )
+        guard descriptor >= 0 else {
+            throw MachineManagerError.persistence(
+                "could not open managed system disk: \(String(cString: strerror(errno)))"
+            )
+        }
+        var descriptorTransferred = false
+        defer {
+            if !descriptorTransferred { close(descriptor) }
+        }
+
+        var info = stat()
+        guard fstat(descriptor, &info) == 0,
+              isPrivateRegularFile(info: info),
+              UInt64(truncatingIfNeeded: info.st_dev)
+                == machineDirectoryGeneration.device,
+              info.st_size > 0,
+              UInt64(info.st_size) == expectedCapacityBytes else {
+            throw MachineManagerError.persistence(
+                "managed system disk failed final owner/link/mode/capacity validation"
+            )
+        }
+        guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
+            throw MachineManagerError.persistence(
+                "managed system disk is already leased by another runtime launch"
+            )
+        }
+        let authority = HvProcessInheritedFileDescriptor(
+            name: RuntimeLaunchEnvelope.systemDiskSlotName,
+            takingOwnershipOf: descriptor,
+            childDescriptor: RuntimeLaunchEnvelope.systemDiskDescriptor
+        )
+        descriptorTransferred = true
+        return RawHVAdmittedSystemDisk(
+            capacityBytes: expectedCapacityBytes,
+            authority: authority
+        )
+    }
+
+    /// Converts verified boot media into launch-private immutable objects. The plan digest is
+    /// checked against the exact opened source inode, while the inherited descriptors refer to
+    /// fresh read-only, unlinked staging inodes that cannot later be replaced through a pathname.
+    static func admitResolvedRawHVLinuxBoot(
+        machineDirectoryDescriptor: Int32,
+        machineDirectoryGeneration: DoryTrustedDirectoryIdentity,
+        mediaKind: DoryBootMediaKind,
+        expectedArtifactSHA256: String,
+        machineBootMode: DoryMachineBootMode,
+        installerISOPath: String?
+    ) throws -> RawHVAdmittedLinuxBoot {
+        guard Self.isLowercaseSHA256(expectedArtifactSHA256),
+              installerISOPath == nil else {
+            throw MachineManagerError.persistence(
+                "resolved raw-HV boot admission input is invalid"
+            )
+        }
+        try validateRawHVMachineDirectoryDescriptor(
+            machineDirectoryDescriptor,
+            generation: machineDirectoryGeneration
+        )
+
+        switch mediaKind {
+        case .linuxKernel:
+            guard machineBootMode == .linuxKernel else {
+                throw MachineManagerError.persistence(
+                    "resolved Linux kernel media does not match the machine boot mode"
+                )
+            }
+            let source = try openResolvedRawHVBootArtifact(
+                machineDirectoryDescriptor: machineDirectoryDescriptor,
+                machineDirectoryGeneration: machineDirectoryGeneration,
+                maximumByteCount: DoryInstalledLinuxBootBundle.maximumKernelBytes
+            )
+            defer { close(source) }
+            let pending = try createRawHVImmutableStagingWriter(
+                directoryDescriptor: machineDirectoryDescriptor,
+                expectedRootDevice: machineDirectoryGeneration.device,
+                prefix: "kernel"
+            )
+            var writer = pending.descriptor
+            var reader: Int32 = -1
+            defer {
+                if writer >= 0 { close(writer) }
+                if reader >= 0 { close(reader) }
+                _ = unlinkat(machineDirectoryDescriptor, pending.name, 0)
+            }
+            let copied = try copyResolvedRawHVImmutableArtifact(
+                sourceDescriptor: source,
+                outputDescriptor: writer,
+                expectedSHA256: expectedArtifactSHA256,
+                maximumByteCount: DoryInstalledLinuxBootBundle.maximumKernelBytes
+            )
+            reader = try finalizeRawHVImmutableStagingFile(
+                directoryDescriptor: machineDirectoryDescriptor,
+                expectedRootDevice: machineDirectoryGeneration.device,
+                name: pending.name,
+                writerDescriptor: &writer,
+                expectedByteCount: copied.byteCount,
+                expectedSHA256: copied.sha256
+            )
+            let authority = HvProcessInheritedFileDescriptor(
+                name: RuntimeLaunchEnvelope.linuxKernelSlotName,
+                takingOwnershipOf: reader,
+                childDescriptor: RuntimeLaunchEnvelope.linuxKernelDescriptor
+            )
+            reader = -1
+            return RawHVAdmittedLinuxBoot(
+                rootDevice: "/dev/vda",
+                genericGuest: false,
+                kernel: RawHVAdmittedImmutableBootBlob(
+                    byteCount: copied.byteCount,
+                    sha256: copied.sha256,
+                    authority: authority
+                ),
+                initrd: nil
+            )
+
+        case .installedLinuxBootBundle:
+            guard machineBootMode == .efi else {
+                throw MachineManagerError.persistence(
+                    "resolved installed-Linux bundle does not match the machine boot mode"
+                )
+            }
+            let maximumBundleBytes = DoryInstalledLinuxBootBundle.maximumKernelBytes
+                + DoryInstalledLinuxBootBundle.maximumInitrdBytes + 4_096
+            let source = try openResolvedRawHVBootArtifact(
+                machineDirectoryDescriptor: machineDirectoryDescriptor,
+                machineDirectoryGeneration: machineDirectoryGeneration,
+                maximumByteCount: maximumBundleBytes
+            )
+            defer { close(source) }
+            let kernelPending = try createRawHVImmutableStagingWriter(
+                directoryDescriptor: machineDirectoryDescriptor,
+                expectedRootDevice: machineDirectoryGeneration.device,
+                prefix: "kernel"
+            )
+            var kernelWriter = kernelPending.descriptor
+            var kernelReader: Int32 = -1
+            defer {
+                if kernelWriter >= 0 { close(kernelWriter) }
+                if kernelReader >= 0 { close(kernelReader) }
+                _ = unlinkat(machineDirectoryDescriptor, kernelPending.name, 0)
+            }
+            let initrdPending = try createRawHVImmutableStagingWriter(
+                directoryDescriptor: machineDirectoryDescriptor,
+                expectedRootDevice: machineDirectoryGeneration.device,
+                prefix: "initrd"
+            )
+            var initrdWriter = initrdPending.descriptor
+            var initrdReader: Int32 = -1
+            defer {
+                if initrdWriter >= 0 { close(initrdWriter) }
+                if initrdReader >= 0 { close(initrdReader) }
+                _ = unlinkat(machineDirectoryDescriptor, initrdPending.name, 0)
+            }
+
+            let descriptor = try DoryInstalledLinuxBootBundle.materializeVerifiedContents(
+                fromFileDescriptor: source,
+                expectedBundleSHA256: expectedArtifactSHA256,
+                kernelFileDescriptor: kernelWriter,
+                initrdFileDescriptor: initrdWriter
+            )
+            kernelReader = try finalizeRawHVImmutableStagingFile(
+                directoryDescriptor: machineDirectoryDescriptor,
+                expectedRootDevice: machineDirectoryGeneration.device,
+                name: kernelPending.name,
+                writerDescriptor: &kernelWriter,
+                expectedByteCount: descriptor.kernelLength,
+                expectedSHA256: descriptor.kernelSHA256
+            )
+            initrdReader = try finalizeRawHVImmutableStagingFile(
+                directoryDescriptor: machineDirectoryDescriptor,
+                expectedRootDevice: machineDirectoryGeneration.device,
+                name: initrdPending.name,
+                writerDescriptor: &initrdWriter,
+                expectedByteCount: descriptor.initrdLength,
+                expectedSHA256: descriptor.initrdSHA256
+            )
+            let kernelAuthority = HvProcessInheritedFileDescriptor(
+                name: RuntimeLaunchEnvelope.linuxKernelSlotName,
+                takingOwnershipOf: kernelReader,
+                childDescriptor: RuntimeLaunchEnvelope.linuxKernelDescriptor
+            )
+            kernelReader = -1
+            let initrdAuthority = HvProcessInheritedFileDescriptor(
+                name: RuntimeLaunchEnvelope.linuxInitrdSlotName,
+                takingOwnershipOf: initrdReader,
+                childDescriptor: RuntimeLaunchEnvelope.linuxInitrdDescriptor
+            )
+            initrdReader = -1
+            return RawHVAdmittedLinuxBoot(
+                rootDevice: descriptor.rootDevice,
+                genericGuest: true,
+                kernel: RawHVAdmittedImmutableBootBlob(
+                    byteCount: descriptor.kernelLength,
+                    sha256: descriptor.kernelSHA256,
+                    authority: kernelAuthority
+                ),
+                initrd: RawHVAdmittedImmutableBootBlob(
+                    byteCount: descriptor.initrdLength,
+                    sha256: descriptor.initrdSHA256,
+                    authority: initrdAuthority
+                )
+            )
+
+        default:
+            throw MachineManagerError.persistence(
+                "resolved raw-HV boot media is not a Linux kernel or installed-Linux bundle"
+            )
+        }
+    }
+
+    /// Mints one immutable renderer-worker bootstrap only from the exact signed runtime component
+    /// graph and the expanded kernel bytes admitted for this launch. The descriptor is reopened
+    /// read-only and unlinked before it can cross the process boundary.
+    static func stageResolvedRawHVRendererBootstrap(
+        machineDirectoryDescriptor: Int32,
+        machineDirectoryGeneration: DoryTrustedDirectoryIdentity,
+        exactKernelSHA256: String,
+        request: RawHVRendererBootstrapRequest
+    ) throws -> RawHVAdmittedRendererBootstrap {
+        try validateRawHVMachineDirectoryDescriptor(
+            machineDirectoryDescriptor,
+            generation: machineDirectoryGeneration
+        )
+        let renderer = try DoryDaemonRendererAccelerationAdmission.recovering(
+            runtimeBuildIdentifier: request.runtimeBuildIdentifier,
+            components: request.components
+        )
+        let kernel = try DoryRendererArtifactDigest(
+            lowercaseSHA256: exactKernelSHA256,
+            field: "managedGuestKernel"
+        )
+        let bootstrap = try DoryRendererWorkerBootstrap(
+            workspaceID: DoryRendererWorkspaceID(rawValue: request.workspaceID),
+            generation: DoryRendererWorkerGeneration(rawValue: request.generation),
+            sourceTuple: .productionCandidate,
+            producerFenceContract: .managedLinux612106PrepareFBV1,
+            requestedCapabilities: .productionAcceleration,
+            artifacts: renderer.artifactManifest(
+                managedGuestKernel: kernel,
+                rendererWorkerCodeDirectoryHash:
+                    request.rendererWorkerCodeDirectoryHash
+            )
+        )
+        let encoded = DoryRendererWorkerBootstrapCodec.encode(bootstrap)
+        guard encoded.count == DoryRendererWorkerBootstrapCodec.fixedByteCount else {
+            throw MachineManagerError.persistence(
+                "renderer bootstrap codec produced an invalid fixed-width record"
+            )
+        }
+        let sha256 = SHA256.hash(data: encoded).map {
+            String(format: "%02x", $0)
+        }.joined()
+        let pending = try createRawHVImmutableStagingWriter(
+            directoryDescriptor: machineDirectoryDescriptor,
+            expectedRootDevice: machineDirectoryGeneration.device,
+            prefix: "renderer-bootstrap"
+        )
+        var writer = pending.descriptor
+        var reader: Int32 = -1
+        defer {
+            if writer >= 0 { close(writer) }
+            if reader >= 0 { close(reader) }
+            _ = unlinkat(machineDirectoryDescriptor, pending.name, 0)
+        }
+        try encoded.withUnsafeBytes { bytes in
+            try pwriteAll(
+                descriptor: writer,
+                bytes: bytes,
+                offset: 0
+            )
+        }
+        reader = try finalizeRawHVImmutableStagingFile(
+            directoryDescriptor: machineDirectoryDescriptor,
+            expectedRootDevice: machineDirectoryGeneration.device,
+            name: pending.name,
+            writerDescriptor: &writer,
+            expectedByteCount: UInt64(encoded.count),
+            expectedSHA256: sha256
+        )
+        let authority = HvProcessInheritedFileDescriptor(
+            name: RuntimeLaunchEnvelope.rendererBootstrapSlotName,
+            takingOwnershipOf: reader,
+            childDescriptor: RuntimeLaunchEnvelope.rendererBootstrapDescriptor
+        )
+        reader = -1
+        return RawHVAdmittedRendererBootstrap(
+            byteCount: UInt64(encoded.count),
+            sha256: sha256,
+            authority: authority
+        )
+    }
+
+    private static func validateRawHVMachineDirectoryDescriptor(
+        _ descriptor: Int32,
+        generation: DoryTrustedDirectoryIdentity
+    ) throws {
+        var info = stat()
+        guard fstat(descriptor, &info) == 0,
+              info.st_mode & S_IFMT == S_IFDIR,
+              info.st_uid == geteuid(),
+              info.st_mode & mode_t(0o7777) == mode_t(0o700),
+              UInt64(truncatingIfNeeded: info.st_dev) == generation.device,
+              UInt64(truncatingIfNeeded: info.st_ino) == generation.inode else {
+            throw MachineManagerError.persistence(
+                "resolved raw-HV machine-directory descriptor changed during admission"
+            )
+        }
+    }
+
+    private static func openResolvedRawHVBootArtifact(
+        machineDirectoryDescriptor: Int32,
+        machineDirectoryGeneration: DoryTrustedDirectoryIdentity,
+        maximumByteCount: UInt64
+    ) throws -> Int32 {
+        guard maximumByteCount > 0 else {
+            throw MachineManagerError.persistence(
+                "resolved raw-HV boot artifact limit is invalid"
+            )
+        }
+        try validateRawHVMachineDirectoryDescriptor(
+            machineDirectoryDescriptor,
+            generation: machineDirectoryGeneration
+        )
+        let descriptor = openat(
+            machineDirectoryDescriptor,
+            "kernel",
+            O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK
+        )
+        guard descriptor >= 0 else {
+            throw MachineManagerError.persistence(
+                "could not open raw-HV boot artifact: \(String(cString: strerror(errno)))"
+            )
+        }
+        var info = stat()
+        guard fstat(descriptor, &info) == 0,
+              isPrivateRegularFile(info: info),
+              UInt64(truncatingIfNeeded: info.st_dev)
+                == machineDirectoryGeneration.device,
+              info.st_size > 0,
+              UInt64(info.st_size) <= maximumByteCount else {
+            close(descriptor)
+            throw MachineManagerError.persistence(
+                "raw-HV boot artifact failed final owner/link/mode/size validation"
+            )
+        }
+        return descriptor
+    }
+
+    private static func createRawHVImmutableStagingWriter(
+        directoryDescriptor: Int32,
+        expectedRootDevice: UInt64,
+        prefix: String
+    ) throws -> (name: String, descriptor: Int32) {
+        for _ in 0..<8 {
+            let name = ".rawhv-\(prefix)-\(UUID().uuidString.lowercased())"
+            let descriptor = openat(
+                directoryDescriptor,
+                name,
+                O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW,
+                mode_t(0o600)
+            )
+            if descriptor >= 0 {
+                var info = stat()
+                guard fstat(descriptor, &info) == 0,
+                      info.st_mode & S_IFMT == S_IFREG,
+                      info.st_uid == geteuid(),
+                      info.st_nlink == 1,
+                      info.st_mode & 0o077 == 0,
+                      UInt64(truncatingIfNeeded: info.st_dev) == expectedRootDevice else {
+                    close(descriptor)
+                    _ = unlinkat(directoryDescriptor, name, 0)
+                    throw MachineManagerError.persistence(
+                        "raw-HV immutable staging writer crossed machine-state authority"
+                    )
+                }
+                return (name, descriptor)
+            }
+            if errno != EEXIST {
+                throw MachineManagerError.persistence(
+                    "could not create raw-HV immutable staging file: \(String(cString: strerror(errno)))"
+                )
+            }
+        }
+        throw MachineManagerError.persistence(
+            "could not allocate a unique raw-HV immutable staging file"
+        )
+    }
+
+    private static func finalizeRawHVImmutableStagingFile(
+        directoryDescriptor: Int32,
+        expectedRootDevice: UInt64,
+        name: String,
+        writerDescriptor: inout Int32,
+        expectedByteCount: UInt64,
+        expectedSHA256: String
+    ) throws -> Int32 {
+        guard writerDescriptor >= 0, expectedByteCount > 0,
+              Self.isLowercaseSHA256(expectedSHA256),
+              fsync(writerDescriptor) == 0 else {
+            throw MachineManagerError.persistence(
+                "raw-HV immutable staging file could not be synchronized"
+            )
+        }
+        var writerInfo = stat()
+        guard fstat(writerDescriptor, &writerInfo) == 0,
+              isPrivateRegularFile(info: writerInfo),
+              UInt64(truncatingIfNeeded: writerInfo.st_dev) == expectedRootDevice,
+              writerInfo.st_size > 0,
+              UInt64(writerInfo.st_size) == expectedByteCount else {
+            throw MachineManagerError.persistence(
+                "raw-HV immutable staging writer failed exact-size validation"
+            )
+        }
+        let reader = openat(
+            directoryDescriptor,
+            name,
+            O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK
+        )
+        guard reader >= 0 else {
+            throw MachineManagerError.persistence(
+                "raw-HV immutable staging file could not be reopened read-only"
+            )
+        }
+        var readerTransferred = false
+        defer {
+            if !readerTransferred { close(reader) }
+        }
+        var readerInfo = stat()
+        let flags = fcntl(reader, F_GETFL)
+        guard fstat(reader, &readerInfo) == 0,
+              UInt64(truncatingIfNeeded: readerInfo.st_dev) == expectedRootDevice,
+              readerInfo.st_dev == writerInfo.st_dev,
+              readerInfo.st_ino == writerInfo.st_ino,
+              readerInfo.st_size == writerInfo.st_size,
+              flags >= 0,
+              flags & O_ACCMODE == O_RDONLY,
+              try sha256Stable(
+                  descriptor: reader,
+                  expectedByteCount: expectedByteCount
+              ) == expectedSHA256 else {
+            throw MachineManagerError.persistence(
+                "raw-HV immutable staging reader failed identity or digest validation"
+            )
+        }
+        close(writerDescriptor)
+        writerDescriptor = -1
+        guard unlinkat(directoryDescriptor, name, 0) == 0 else {
+            throw MachineManagerError.persistence(
+                "raw-HV immutable staging pathname could not be removed"
+            )
+        }
+        var unlinkedInfo = stat()
+        guard fstat(reader, &unlinkedInfo) == 0,
+              unlinkedInfo.st_mode & S_IFMT == S_IFREG,
+              unlinkedInfo.st_uid == geteuid(),
+              UInt64(truncatingIfNeeded: unlinkedInfo.st_dev) == expectedRootDevice,
+              unlinkedInfo.st_nlink == 0,
+              unlinkedInfo.st_size > 0,
+              UInt64(unlinkedInfo.st_size) == expectedByteCount,
+              unlinkedInfo.st_mode & 0o077 == 0 else {
+            throw MachineManagerError.persistence(
+                "raw-HV immutable staging descriptor was not isolated after unlink"
+            )
+        }
+        readerTransferred = true
+        return reader
+    }
+
+    private static func copyResolvedRawHVImmutableArtifact(
+        sourceDescriptor: Int32,
+        outputDescriptor: Int32,
+        expectedSHA256: String,
+        maximumByteCount: UInt64
+    ) throws -> (byteCount: UInt64, sha256: String) {
+        var before = stat()
+        guard fstat(sourceDescriptor, &before) == 0,
+              isPrivateRegularFile(info: before),
+              before.st_size > 0,
+              UInt64(before.st_size) <= maximumByteCount,
+              Self.isLowercaseSHA256(expectedSHA256) else {
+            throw MachineManagerError.persistence(
+                "raw-HV boot source failed exact immutable-file validation"
+            )
+        }
+        let byteCount = UInt64(before.st_size)
+        var hasher = SHA256()
+        var offset: UInt64 = 0
+        var buffer = [UInt8](repeating: 0, count: 4 * 1_024 * 1_024)
+        while offset < byteCount {
+            let requested = Int(min(UInt64(buffer.count), byteCount - offset))
+            let readCount = try preadRetrying(
+                descriptor: sourceDescriptor,
+                buffer: &buffer,
+                count: requested,
+                offset: offset
+            )
+            guard readCount == requested else {
+                throw MachineManagerError.persistence(
+                    "raw-HV boot source was truncated during admission"
+                )
+            }
+            try buffer.withUnsafeBytes { bytes in
+                let slice = UnsafeRawBufferPointer(start: bytes.baseAddress, count: readCount)
+                hasher.update(bufferPointer: slice)
+                try pwriteAll(
+                    descriptor: outputDescriptor,
+                    bytes: slice,
+                    offset: offset
+                )
+            }
+            offset += UInt64(readCount)
+        }
+        var after = stat()
+        let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
+        guard fstat(sourceDescriptor, &after) == 0,
+              sameRawHVBootSnapshot(before, after),
+              digest == expectedSHA256,
+              fsync(outputDescriptor) == 0 else {
+            throw MachineManagerError.persistence(
+                "raw-HV boot source does not match the resolved artifact digest"
+            )
+        }
+        return (byteCount, digest)
+    }
+
+    private static func sha256Stable(
+        descriptor: Int32,
+        expectedByteCount: UInt64
+    ) throws -> String {
+        var before = stat()
+        guard fstat(descriptor, &before) == 0,
+              before.st_mode & S_IFMT == S_IFREG,
+              before.st_size > 0,
+              UInt64(before.st_size) == expectedByteCount else {
+            throw MachineManagerError.persistence(
+                "raw-HV boot staging descriptor has an invalid size"
+            )
+        }
+        var hasher = SHA256()
+        var offset: UInt64 = 0
+        var buffer = [UInt8](repeating: 0, count: 4 * 1_024 * 1_024)
+        while offset < expectedByteCount {
+            let requested = Int(min(UInt64(buffer.count), expectedByteCount - offset))
+            let readCount = try preadRetrying(
+                descriptor: descriptor,
+                buffer: &buffer,
+                count: requested,
+                offset: offset
+            )
+            guard readCount == requested else {
+                throw MachineManagerError.persistence(
+                    "raw-HV boot staging descriptor was truncated"
+                )
+            }
+            buffer.withUnsafeBytes { bytes in
+                hasher.update(bufferPointer: UnsafeRawBufferPointer(
+                    start: bytes.baseAddress,
+                    count: readCount
+                ))
+            }
+            offset += UInt64(readCount)
+        }
+        var after = stat()
+        guard fstat(descriptor, &after) == 0,
+              sameRawHVBootSnapshot(before, after) else {
+            throw MachineManagerError.persistence(
+                "raw-HV boot staging descriptor changed during hashing"
+            )
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func preadRetrying(
+        descriptor: Int32,
+        buffer: inout [UInt8],
+        count: Int,
+        offset: UInt64
+    ) throws -> Int {
+        guard offset <= UInt64(Int64.max) else {
+            throw MachineManagerError.persistence("raw-HV boot offset is too large")
+        }
+        return try buffer.withUnsafeMutableBytes { bytes in
+            while true {
+                let result = pread(descriptor, bytes.baseAddress, count, off_t(offset))
+                if result < 0, errno == EINTR { continue }
+                guard result >= 0 else {
+                    throw MachineManagerError.persistence(
+                        "could not read raw-HV boot artifact: \(String(cString: strerror(errno)))"
+                    )
+                }
+                return result
+            }
+        }
+    }
+
+    private static func pwriteAll(
+        descriptor: Int32,
+        bytes: UnsafeRawBufferPointer,
+        offset: UInt64
+    ) throws {
+        guard offset <= UInt64(Int64.max) else {
+            throw MachineManagerError.persistence("raw-HV boot offset is too large")
+        }
+        var completed = 0
+        while completed < bytes.count {
+            let result = pwrite(
+                descriptor,
+                bytes.baseAddress!.advanced(by: completed),
+                bytes.count - completed,
+                off_t(offset + UInt64(completed))
+            )
+            if result < 0, errno == EINTR { continue }
+            guard result > 0 else {
+                throw MachineManagerError.persistence(
+                    "could not write raw-HV boot staging file: \(String(cString: strerror(errno)))"
+                )
+            }
+            completed += result
+        }
+    }
+
+    private static func sameRawHVBootSnapshot(_ lhs: stat, _ rhs: stat) -> Bool {
+        lhs.st_dev == rhs.st_dev
+            && lhs.st_ino == rhs.st_ino
+            && lhs.st_size == rhs.st_size
+            && lhs.st_mtimespec.tv_sec == rhs.st_mtimespec.tv_sec
+            && lhs.st_mtimespec.tv_nsec == rhs.st_mtimespec.tv_nsec
+            && lhs.st_ctimespec.tv_sec == rhs.st_ctimespec.tv_sec
+            && lhs.st_ctimespec.tv_nsec == rhs.st_ctimespec.tv_nsec
+    }
+
+    private static func isLowercaseSHA256(_ value: String) -> Bool {
+        value.utf8.count == 64 && value.utf8.allSatisfy {
+            (48...57).contains($0) || (97...102).contains($0)
+        }
+    }
+
+    private func processTarget(
+        for machine: DoryMachineConfiguration,
+        resolvedLaunchBinding: MachineBackendLaunchBinding?
+    ) throws -> (
+        executablePath: String,
+        baseArguments: [String],
+        acceleratedDesktop: Bool
+    ) {
+        if let binding = resolvedLaunchBinding {
+            switch binding.backend.identity {
+            case .doryHypervisor:
+                return (
+                    binding.executablePath,
+                    configuration.acceleratedDesktopBaseArguments,
+                    true
+                )
+            case .appleVirtualizationFramework:
+                return (binding.executablePath, configuration.baseArguments, false)
+            default:
+                throw MachineManagerError.persistence(
+                    "resolved backend \(binding.backend.identity.rawValue) has no MachineManager launcher"
+                )
+            }
+        }
+        let desktopPreference = try? DoryDesktopVMMPreference(environment: machine.environment)
+        let supportsAcceleratedBoot = machine.bootMode == .linuxKernel
+            || (machine.bootMode == .efi
+                && machine.installerISOPath == nil
+                && DoryInstalledLinuxBootBundle.isBundle(atPath: machine.kernelPath))
+        if configuration.passMachineArguments,
+           machine.displayMode == .desktop,
+           supportsAcceleratedBoot,
+           machine.installerISOPath == nil,
+           // A resolved binding above is the only authority that can make `automatic` choose
+           // raw-HV. Without one (the legacy-compatibility path), automatic must retain the
+           // Virtualization.framework fallback because the retired in-process renderer cannot
+           // satisfy it. Explicit accelerated + software remains the bounded recovery contract.
+           desktopPreference == .accelerated,
+           let executablePath = configuration.acceleratedDesktopExecutablePath {
+            return (executablePath, configuration.acceleratedDesktopBaseArguments, true)
+        }
+        return (configuration.vmmExecutablePath, configuration.baseArguments, false)
+    }
+
+    private func validateRuntimeAvailability(_ machine: DoryMachineConfiguration) throws {
+        guard machine.displayMode == .desktop,
+              machine.installerISOPath == nil else {
+            return
+        }
+        let preference = try DoryDesktopVMMPreference(environment: machine.environment)
+        let installedEFIDesktop = machine.bootMode == .efi
+            && DoryInstalledLinuxBootBundle.isBundle(atPath: machine.kernelPath)
+        if machine.bootMode == .efi,
+           preference == .accelerated,
+           !installedEFIDesktop {
+            throw MachineManagerError.persistence(
+                "accelerated installed-Linux runtime is unavailable; reattach and eject the installer media to derive its boot assets"
+            )
+        }
+        guard preference == .accelerated else {
+            return
+        }
+        guard let executablePath = configuration.acceleratedDesktopExecutablePath,
+              FileManager.default.isExecutableFile(atPath: executablePath) else {
+            throw MachineManagerError.persistence(
+                "accelerated desktop runtime was required but is unavailable"
+            )
+        }
+    }
+
+    private func validateInstallerArchitecture(_ machine: DoryMachineConfiguration) throws {
+        guard machine.bootMode == .efi, let installerISOPath = machine.installerISOPath else {
+            return
+        }
+        let detected: DoryInstallerISOArchitecture
+        do {
+            detected = try DoryInstallerISOInspector.architecture(atPath: installerISOPath)
+        } catch {
+            throw MachineManagerError.persistence("could not inspect installer ISO: \(error)")
+        }
+        switch DoryInstallerISOInspector.compatibility(
+            of: detected,
+            hostArchitecture: configuration.guestArchitecture
+        ) {
+        case let .incompatible(message):
+            throw MachineManagerError.persistence(message)
+        case .compatible, .unknown:
+            return
+        }
+    }
+
+    private func processArguments(
+        for machine: DoryMachineConfiguration,
+        operationID: UUID,
+        handoffPath: String?,
+        baseArguments: [String],
+        acceleratedDesktop: Bool,
+        resolvedLaunchBinding: MachineBackendLaunchBinding?,
+        restoreStatePath: String?,
+        runtimeLaunchEnvelope: RuntimeLaunchEnvelope?,
+        qualificationBootstrapLaunch: Bool = false
+    ) throws -> [String] {
+        guard configuration.passMachineArguments else {
+            if runtimeLaunchEnvelope != nil {
+                throw MachineManagerError.persistence(
+                    "resolved raw-HV launch envelope cannot be omitted from helper arguments"
+                )
+            }
+            return baseArguments
+        }
+        let acceleratedInstalledLinux = acceleratedDesktop
+            && machine.bootMode == .efi
+            && machine.installerISOPath == nil
+        let bootDescriptor = acceleratedInstalledLinux && runtimeLaunchEnvelope == nil
+            ? try DoryInstalledLinuxBootBundle.descriptor(atPath: machine.kernelPath)
+            : nil
+        var arguments = baseArguments + [
             "--machine-id", machine.id,
+            "--operation-id", operationID.uuidString.lowercased(),
             "--state-dir", machineStateDirectory(id: machine.id),
-            "--dockerd-sock", "\(machineRuntimeDirectory(id: machine.id))/d.sock",
             "--agent-sock", "\(machineRuntimeDirectory(id: machine.id))/a.sock",
             "--shell-sock", "\(machineRuntimeDirectory(id: machine.id))/s.sock",
+            "--console-sock", consoleSocketPath(id: machine.id),
             "--control-sock", "\(machineRuntimeDirectory(id: machine.id))/c.sock",
-            "--kernel", machine.kernelPath,
-            "--rootfs", machine.rootfsPath,
-            "--memory-mb", String(machine.memoryMB),
-            "--cpus", String(machine.cpuCount),
             "--display-mode", machine.displayMode.rawValue,
         ]
+        if runtimeLaunchEnvelope == nil {
+            arguments.append(contentsOf: [
+                "--memory-mb", String(machine.memoryMB),
+                "--cpus", String(machine.cpuCount),
+            ])
+        }
+        if !acceleratedDesktop {
+            // The VZ helper still owns the Docker socket bridge. RawHV has no consumer for this
+            // path and must not accept a decorative authority-bearing argument.
+            arguments.append(contentsOf: [
+                "--dockerd-sock", "\(machineRuntimeDirectory(id: machine.id))/d.sock",
+            ])
+        }
+        if let runtimeLaunchEnvelope {
+            guard acceleratedDesktop,
+                  resolvedLaunchBinding?.backend.identity == .doryHypervisor
+                    || qualificationBootstrapLaunch else {
+                throw MachineManagerError.persistence(
+                    "runtime launch envelope is not valid for the selected backend"
+                )
+            }
+            arguments.append(contentsOf: [
+                "--runtime-launch-envelope",
+                try runtimeLaunchEnvelope.encodedArgument(),
+            ])
+        } else {
+            if resolvedLaunchBinding?.backend.identity == .doryHypervisor {
+                throw MachineManagerError.persistence(
+                    "resolved raw-HV launch cannot fall back to a rootfs pathname"
+                )
+            }
+            arguments.append(contentsOf: [
+                "--kernel", acceleratedInstalledLinux
+                    ? machineInstalledLinuxKernelPath(id: machine.id)
+                    : machine.kernelPath,
+                "--boot-mode", acceleratedInstalledLinux
+                    ? "efi-installed" : machine.bootMode.rawValue,
+                "--rootfs", machine.rootfsPath,
+            ])
+            if acceleratedDesktop {
+                let legacyGraphics = try DoryDesktopGraphicsPreference(
+                    environment: machine.environment
+                ).requiredBackend
+                arguments.append(contentsOf: [
+                    "--legacy-graphics", legacyGraphics.rawValue,
+                ])
+            }
+        }
+        // A schema-v3 RawHV helper receives device authority only through the immutable
+        // envelope. VZ has no such envelope yet and continues to consume the resolved binding's
+        // split argument contract.
+        let removableUSBHotplugEnabled = runtimeLaunchEnvelope?
+            .devices.removableUSBHotplug
+            ?? resolvedLaunchBinding?.devices.removableUSBHotplug
+            ?? true
+        if acceleratedDesktop, removableUSBHotplugEnabled {
+            arguments.append(contentsOf: [
+                "--usb-control-sock", "\(machineRuntimeDirectory(id: machine.id))/u.sock",
+            ])
+        }
+        if let bootDescriptor {
+            arguments.append(contentsOf: [
+                "--initrd", machineInstalledLinuxInitrdPath(id: machine.id),
+                "--root-device", bootDescriptor.rootDevice,
+                "--generic-guest",
+            ])
+        }
+        if let installerISOPath = machine.installerISOPath {
+            arguments.append(contentsOf: ["--installer-iso", installerISOPath])
+        }
         if let handoffPath {
             arguments.append(contentsOf: ["--handoff-sock", handoffPath])
+        }
+        if let restoreStatePath {
+            guard !acceleratedDesktop,
+                  restoreStatePath == savedStateStore.statePath(machineID: machine.id) else {
+                throw MachineManagerError.persistence(
+                    "saved state cannot be restored by the selected backend or path"
+                )
+            }
+            arguments.append(contentsOf: ["--restore-state", restoreStatePath])
+        }
+        if let resolvedLaunchBinding, runtimeLaunchEnvelope == nil {
+            guard resolvedLaunchBinding.backend.identity == .appleVirtualizationFramework else {
+                throw MachineManagerError.persistence(
+                    "only Virtualization.framework may use split resolved helper arguments"
+                )
+            }
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            let deviceContract = String(
+                decoding: try encoder.encode(resolvedLaunchBinding.devices),
+                as: UTF8.self
+            )
+            arguments.append(contentsOf: [
+                "--resolved-graphics", resolvedLaunchBinding.graphics.rawValue,
+                "--resolved-devices", deviceContract,
+            ])
+            let portForwardContract = String(
+                decoding: try encoder.encode(resolvedLaunchBinding.portForwards),
+                as: UTF8.self
+            )
+            arguments.append(contentsOf: [
+                "--resolved-port-forwards", portForwardContract,
+            ])
+        }
+        if machine.displayMode == .desktop {
+            let presentation: DoryMachineDisplayPresentation
+            do {
+                presentation = try displayPresentationStore.read(machineID: machine.id)
+            } catch {
+                throw MachineManagerError.persistence(
+                    "display presentation authority is invalid: \(error)"
+                )
+            }
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            let presentationContract = String(
+                decoding: try encoder.encode(presentation),
+                as: UTF8.self
+            )
+            arguments.append(contentsOf: [
+                "--display-presentation", presentationContract,
+            ])
         }
         for share in machine.shares {
             arguments.append(contentsOf: ["--share", share.argumentValue])
         }
-        for (key, value) in machine.environment.sorted(by: { $0.key < $1.key }) {
+        var launchEnvironment = machine.environment
+        if acceleratedDesktop || resolvedLaunchBinding != nil {
+            // A typed helper contract receives graphics exactly once: the immutable resolved
+            // envelope/binding or the bounded legacy migration argument above. Persisted keys are
+            // migration input only and cannot cross the helper boundary as a second authority.
+            launchEnvironment = Self.environmentWithoutLegacyDesktopLaunchAuthority(
+                launchEnvironment
+            )
+        }
+        if let resolvedLaunchBinding {
+            switch resolvedLaunchBinding.backend.identity {
+            case .doryHypervisor:
+                guard runtimeLaunchEnvelope != nil,
+                      resolvedLaunchBinding.graphics != .none else {
+                    throw MachineManagerError.persistence(
+                        "raw-Hypervisor desktop requires immutable resolved launch authority"
+                    )
+                }
+            case .appleVirtualizationFramework:
+                guard runtimeLaunchEnvelope == nil else {
+                    throw MachineManagerError.persistence(
+                        "Virtualization.framework cannot consume a raw-HV launch envelope"
+                    )
+                }
+                guard resolvedLaunchBinding.graphics == .hostAcceleratedDisplay
+                        || resolvedLaunchBinding.graphics == .software
+                        || (machine.displayMode == .headless
+                            && resolvedLaunchBinding.graphics == .none) else {
+                    throw MachineManagerError.persistence(
+                        "Virtualization.framework cannot satisfy the exact resolved graphics contract"
+                    )
+                }
+                launchEnvironment[DoryDesktopVMMPreference.environmentKey]
+                    = DoryDesktopVMMPreference.compatible.rawValue
+            default:
+                throw MachineManagerError.persistence(
+                    "resolved backend has no exact graphics argument contract"
+                )
+            }
+        }
+        for (key, value) in launchEnvironment.sorted(by: { $0.key < $1.key }) {
             arguments.append(contentsOf: ["--env", "\(key)=\(value)"])
         }
-        let isSandbox = machine.environment["DORY_SANDBOX"] == "1"
-        let sandboxSSHAgentGranted = machine.environment["DORY_SANDBOX_SSH_AGENT"] == "1"
+        let sandboxPolicy = try effectiveSandboxPolicy(
+            id: machine.id,
+            configuration: machine
+        )
+        let isSandbox = sandboxPolicy != nil
+        let sandboxSSHAgentGranted = sandboxPolicy?.sshAgentAccess == .granted
         if let sshAgentSocketPath = configuration.sshAgentSocketPath,
            !sshAgentSocketPath.isEmpty,
            !isSandbox || sandboxSSHAgentGranted {
             arguments.append(contentsOf: ["--ssh-agent-socket", sshAgentSocketPath])
         }
         return arguments
+    }
+
+    static func environmentWithoutLegacyDesktopLaunchAuthority(
+        _ environment: [String: String]
+    ) -> [String: String] {
+        var result = environment
+        result.removeValue(forKey: DoryDesktopVMMPreference.environmentKey)
+        result.removeValue(forKey: DoryDesktopGraphicsPreference.environmentKey)
+        result.removeValue(
+            forKey: DoryDesktopGraphicsPreference.legacyClassicOnlyEnvironmentKey
+        )
+        return result
     }
 
     private func machineStateDirectory(id: String) -> String {
@@ -1313,8 +8997,549 @@ public final class MachineManager: @unchecked Sendable {
         return "\(configuration.runtimeDirectory)/\(token)"
     }
 
+    /// Every per-machine control endpoint is published beneath this leaf. Pin and restrict the
+    /// leaf before any helper or handoff listener can use it so a control client can treat its
+    /// parent identity as part of the endpoint authority.
+    private func preparePrivateMachineRuntimeDirectory(id: String) throws {
+        let path = machineRuntimeDirectory(id: id)
+        guard path.hasPrefix("/"),
+              path == NSString(string: path).standardizingPath else {
+            throw MachineManagerError.persistence(
+                "machine runtime directory is not a canonical absolute path"
+            )
+        }
+        do {
+            try FileManager.default.createDirectory(
+                atPath: path,
+                withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700]
+            )
+        } catch {
+            throw MachineManagerError.persistence(
+                "could not prepare private machine runtime directory: \(error)"
+            )
+        }
+
+        let descriptor = open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
+        guard descriptor >= 0 else {
+            throw MachineManagerError.persistence(
+                "could not open private machine runtime directory: "
+                    + String(cString: strerror(errno))
+            )
+        }
+        defer { close(descriptor) }
+        var opened = stat()
+        guard fstat(descriptor, &opened) == 0,
+              opened.st_mode & mode_t(S_IFMT) == mode_t(S_IFDIR),
+              opened.st_uid == geteuid(),
+              fchmod(descriptor, mode_t(0o700)) == 0,
+              fstat(descriptor, &opened) == 0,
+              opened.st_mode & mode_t(0o777) == mode_t(0o700) else {
+            throw MachineManagerError.persistence(
+                "machine runtime directory failed owner/type/mode validation"
+            )
+        }
+        var linked = stat()
+        guard lstat(path, &linked) == 0,
+              linked.st_mode & mode_t(S_IFMT) == mode_t(S_IFDIR),
+              linked.st_uid == opened.st_uid,
+              linked.st_dev == opened.st_dev,
+              linked.st_ino == opened.st_ino,
+              linked.st_gen == opened.st_gen,
+              linked.st_birthtimespec.tv_sec == opened.st_birthtimespec.tv_sec,
+              linked.st_birthtimespec.tv_nsec == opened.st_birthtimespec.tv_nsec,
+              linked.st_mode & mode_t(0o777) == mode_t(0o700) else {
+            throw MachineManagerError.persistence(
+                "machine runtime directory identity changed during preparation"
+            )
+        }
+    }
+
     private func handoffSocketPath(id: String) -> String {
         "\(machineRuntimeDirectory(id: id))/h.sock"
+    }
+
+    private func consoleSocketPath(id: String) -> String {
+        "\(machineRuntimeDirectory(id: id))/\(DoryMachineSerialConsoleAuthority.socketFileName)"
+    }
+
+    private func desktopUpdateJournalPath(machineID: String) -> String {
+        "\(machineStateDirectory(id: machineID))/\(Self.desktopUpdateJournalName)"
+    }
+
+    private struct StagedDesktopUpdateAuthority {
+        var directory: String
+        var bundlePath: String
+        var kernelPath: String
+    }
+
+    private func stageDesktopUpdateAuthority(
+        _ authority: DoryDesktopUpdateArtifactAuthority,
+        machineID: String
+    ) throws -> StagedDesktopUpdateAuthority {
+        guard let bundleSHA256 = authority.receipt.bundleSHA256,
+              let kernelSHA256 = authority.receipt.kernelSHA256 else {
+            throw MachineManagerError.persistence("desktop update authority lacks artifact digests")
+        }
+        let directory = machineStateDirectory(id: machineID)
+            + "/" + Self.desktopUpdateStagingPrefix + UUID().uuidString.lowercased()
+        guard mkdir(directory, 0o700) == 0 else {
+            throw MachineManagerError.persistence("could not create private desktop update staging")
+        }
+        let bundlePath = directory + "/payload.tar"
+        let kernelPath = directory + "/kernel"
+        do {
+            try Self.copyExactDesktopUpdateArtifact(
+                source: authority.bundlePath,
+                destination: bundlePath,
+                expectedByteCount: authority.bundleByteCount,
+                expectedSHA256: bundleSHA256
+            )
+            try Self.copyExactDesktopUpdateArtifact(
+                source: authority.kernelPath,
+                destination: kernelPath,
+                expectedByteCount: authority.kernelByteCount,
+                expectedSHA256: kernelSHA256
+            )
+            try Self.syncDirectory(path: directory)
+            return StagedDesktopUpdateAuthority(
+                directory: directory,
+                bundlePath: bundlePath,
+                kernelPath: kernelPath
+            )
+        } catch {
+            try? FileManager.default.removeItem(atPath: directory)
+            throw error
+        }
+    }
+
+    private static func copyExactDesktopUpdateArtifact(
+        source: String,
+        destination: String,
+        expectedByteCount: UInt64,
+        expectedSHA256: String
+    ) throws {
+        let sourceFD = open(source, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+        guard sourceFD >= 0 else {
+            throw MachineManagerError.persistence("could not open verified desktop update artifact")
+        }
+        defer { close(sourceFD) }
+        var before = stat()
+        guard fstat(sourceFD, &before) == 0,
+              (before.st_mode & S_IFMT) == S_IFREG,
+              before.st_size > 0,
+              UInt64(before.st_size) == expectedByteCount else {
+            throw MachineManagerError.persistence("verified desktop update artifact identity is invalid")
+        }
+        let destinationFD = open(
+            destination,
+            O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW,
+            mode_t(0o400)
+        )
+        guard destinationFD >= 0 else {
+            throw MachineManagerError.persistence("could not create private desktop update artifact")
+        }
+        var copied: UInt64 = 0
+        var hasher = SHA256()
+        var copyError: Error?
+        do {
+            let input = FileHandle(fileDescriptor: sourceFD, closeOnDealloc: false)
+            let output = FileHandle(fileDescriptor: destinationFD, closeOnDealloc: false)
+            while true {
+                let chunk = try input.read(upToCount: 1024 * 1024) ?? Data()
+                if chunk.isEmpty { break }
+                copied = copied.addingReportingOverflow(UInt64(chunk.count)).partialValue
+                guard copied <= expectedByteCount else {
+                    throw MachineManagerError.persistence("verified desktop update artifact grew while staging")
+                }
+                hasher.update(data: chunk)
+                try output.write(contentsOf: chunk)
+            }
+            guard fsync(destinationFD) == 0 else {
+                throw MachineManagerError.persistence("could not sync private desktop update artifact")
+            }
+        } catch {
+            copyError = error
+        }
+        close(destinationFD)
+        if let copyError {
+            try? FileManager.default.removeItem(atPath: destination)
+            throw copyError
+        }
+        var after = stat()
+        let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
+        guard fstat(sourceFD, &after) == 0,
+              before.st_dev == after.st_dev,
+              before.st_ino == after.st_ino,
+              before.st_size == after.st_size,
+              before.st_mtimespec.tv_sec == after.st_mtimespec.tv_sec,
+              before.st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec,
+              before.st_ctimespec.tv_sec == after.st_ctimespec.tv_sec,
+              before.st_ctimespec.tv_nsec == after.st_ctimespec.tv_nsec,
+              copied == expectedByteCount,
+              digest == expectedSHA256 else {
+            try? FileManager.default.removeItem(atPath: destination)
+            throw MachineManagerError.persistence("verified desktop update artifact changed while staging")
+        }
+    }
+
+    private func persistDesktopUpdateJournal(_ journal: DesktopUpdateJournal) throws {
+        guard journal.isValid else {
+            throw MachineManagerError.persistence("invalid desktop update journal")
+        }
+        let directory = machineStateDirectory(id: journal.machineID)
+        guard Self.isPrivateDirectory(path: directory) else {
+            throw MachineManagerError.persistence("desktop update journal owner is not private")
+        }
+        let temporaryPath = "\(directory)/.desktop-update.tmp-\(UUID().uuidString)"
+        do {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let data = try encoder.encode(journal)
+            try Self.writeDurablePrivateData(data, toPath: temporaryPath)
+            guard rename(temporaryPath, desktopUpdateJournalPath(machineID: journal.machineID)) == 0 else {
+                throw MachineManagerError.persistence(
+                    "could not publish desktop update journal: \(String(cString: strerror(errno)))"
+                )
+            }
+            try Self.syncDirectory(path: directory)
+        } catch {
+            try? FileManager.default.removeItem(atPath: temporaryPath)
+            if let error = error as? MachineManagerError { throw error }
+            throw MachineManagerError.persistence("could not persist desktop update journal: \(error)")
+        }
+    }
+
+    private func removeDesktopUpdateJournal(machineID: String) throws {
+        let path = desktopUpdateJournalPath(machineID: machineID)
+        guard Self.pathEntryExists(path) else { return }
+        do {
+            try FileManager.default.removeItem(atPath: path)
+            try Self.syncDirectory(path: machineStateDirectory(id: machineID))
+        } catch {
+            throw MachineManagerError.persistence("could not remove desktop update journal: \(error)")
+        }
+    }
+
+    /// Commits the verified installed-state receipt and removes only its two superseded legacy
+    /// fields. The update transaction's last-good snapshot owns rollback of this exact change.
+    private func publishInstalledDesktopPayloadReceipt(
+        original: DoryMachineConfiguration,
+        receipt: DoryInstalledDesktopPayloadReceipt
+    ) throws {
+        guard receipt.isValid, receipt.provenance == .verifiedUpdateBundle else {
+            throw MachineManagerError.persistence(
+                "desktop update produced an invalid installed payload receipt"
+            )
+        }
+        var updated = original
+        updated.shares = original.shares
+        updated.environment.removeValue(
+            forKey: DoryInstalledDesktopPayloadReceipt.legacyReleaseVersionEnvironmentKey
+        )
+        updated.environment.removeValue(
+            forKey: DoryInstalledDesktopPayloadReceipt.legacyInputSHA256EnvironmentKey
+        )
+        updated.installedDesktopPayloadReceipt = receipt
+        try Self.validateLaunchConfiguration(updated)
+        try persist(updated)
+        try publishConfiguration(updated)
+    }
+
+    private func recoverInterruptedDesktopUpdates() {
+        lock.lock()
+        let machineIDs = Array(machines.keys)
+        lock.unlock()
+        for machineID in machineIDs {
+            let path = desktopUpdateJournalPath(machineID: machineID)
+            guard Self.pathEntryExists(path) else {
+                continue
+            }
+            guard let data = Self.readPrivateMetadata(path: path),
+                  let journal = try? JSONDecoder().decode(DesktopUpdateJournal.self, from: data),
+                  journal.machineID == machineID,
+                  journal.isValid else {
+                lock.lock()
+                if var entry = machines[machineID] {
+                    entry.state = .failed
+                    setFailure(
+                        on: &entry,
+                        code: .desktopUpdateRecoveryRequired,
+                        message: "Desktop update recovery is required: the durable update journal is invalid.",
+                        causes: [.journal],
+                        recoveryDisposition: .repair
+                    )
+                    machines[machineID] = entry
+                }
+                lock.unlock()
+                continue
+            }
+            if journal.stage == .committed {
+                // Schema 1 was authored by the pre-receipt updater after its machine.json write
+                // had committed. It carried no component authority to revalidate, and historical
+                // recovery semantics treated this marker as cleanup-only. Preserve that exact
+                // upgrade behavior instead of relabeling a working legacy machine as failed.
+                if journal.schema == 1 {
+                    do {
+                        try removeDesktopUpdateJournal(machineID: machineID)
+                    } catch {
+                        lock.lock()
+                        if var entry = machines[machineID] {
+                            setFailure(
+                                on: &entry,
+                                code: .desktopUpdateRecoveryRequired,
+                                message: "Legacy desktop update committed, but journal cleanup requires retry: \(error)",
+                                causes: [.journal, .filesystem],
+                                recoveryDisposition: .retry
+                            )
+                            machines[machineID] = entry
+                        }
+                        lock.unlock()
+                    }
+                    continue
+                }
+                lock.lock()
+                let receipt = machines[machineID]?.configuration.installedDesktopPayloadReceipt
+                let environment = machines[machineID]?.configuration.environment
+                lock.unlock()
+                var expectedReceipt = journal.updateAuthority
+                expectedReceipt?.inputSHA256 = receipt?.inputSHA256 ?? ""
+                guard let receipt,
+                      let environment,
+                      receipt.provenance == .verifiedUpdateBundle,
+                      receipt.hasCoherentAuthority(environment: environment),
+                      receipt == expectedReceipt else {
+                    lock.lock()
+                    if var entry = machines[machineID] {
+                        entry.state = .failed
+                        setFailure(
+                            on: &entry,
+                            code: .desktopUpdateRecoveryRequired,
+                            message: "Desktop update recovery is required: committed component evidence does not match machine state.",
+                            causes: [.componentAuthority, .journal],
+                            recoveryDisposition: .repair
+                        )
+                        machines[machineID] = entry
+                    }
+                    lock.unlock()
+                    continue
+                }
+                do {
+                    try removeDesktopUpdateJournal(machineID: machineID)
+                } catch {
+                    lock.lock()
+                    if var entry = machines[machineID] {
+                        setFailure(
+                            on: &entry,
+                            code: .desktopUpdateRecoveryRequired,
+                            message: "Desktop update committed, but journal cleanup requires retry: \(error)",
+                            causes: [.journal, .filesystem],
+                            recoveryDisposition: .retry
+                        )
+                        machines[machineID] = entry
+                    }
+                    lock.unlock()
+                }
+                continue
+            }
+            do {
+                if journal.schema == 2 {
+                    let snapshot = try loadSnapshot(
+                        machineID: machineID,
+                        snapshotID: journal.snapshotID
+                    )
+                    lock.lock()
+                    let current = machines[machineID]?.configuration
+                    lock.unlock()
+                    guard let current,
+                          let expectedSourceSHA256 = journal.sourceConfigurationSHA256 else {
+                        throw MachineManagerError.persistence(
+                            "desktop update journal source authority is unavailable"
+                        )
+                    }
+                    let source = DoryMachineConfiguration(
+                        id: current.id,
+                        kernelPath: current.kernelPath,
+                        rootfsPath: current.rootfsPath,
+                        bootMode: snapshot.bootMode,
+                        memoryMB: snapshot.memoryMB,
+                        cpuCount: snapshot.cpuCount,
+                        address: snapshot.address,
+                        displayMode: snapshot.displayMode,
+                        shares: snapshot.shares,
+                        environment: snapshot.environment,
+                        installedDesktopPayloadReceipt:
+                            Self.configurationReceipt(restoring: snapshot),
+                        cloneReceipt: current.cloneReceipt
+                    )
+                    let actualSourceSHA256 = Self.sha256(
+                        data: try DoryMachineConfigurationMigrationBridge.encodeLegacy(source)
+                    )
+                    guard actualSourceSHA256 == expectedSourceSHA256 else {
+                        throw MachineManagerError.persistence(
+                            "desktop update journal does not match its last-good snapshot"
+                        )
+                    }
+                }
+                _ = try restoreSnapshot(machineID: machineID, snapshotID: journal.snapshotID)
+                try removeDesktopUpdateJournal(machineID: machineID)
+                lock.lock()
+                if var entry = machines[machineID] {
+                    setFailure(
+                        on: &entry,
+                        code: .desktopUpdateRolledBack,
+                        message: "An interrupted desktop update was rolled back to \(journal.snapshotID). Start the machine when ready.",
+                        causes: [.journal],
+                        recoveryDisposition: .rollbackCompleted,
+                        extraEvidence: [
+                            .init(kind: .snapshot, identifier: journal.snapshotID),
+                        ]
+                    )
+                    machines[machineID] = entry
+                }
+                lock.unlock()
+            } catch {
+                lock.lock()
+                if var entry = machines[machineID] {
+                    entry.state = .failed
+                    setFailure(
+                        on: &entry,
+                        code: .desktopUpdateRecoveryRequired,
+                        message: "Interrupted desktop update recovery failed: \(error)",
+                        causes: [.journal, .artifactAuthority],
+                        recoveryDisposition: .repair
+                    )
+                    machines[machineID] = entry
+                }
+                lock.unlock()
+            }
+        }
+    }
+
+    @discardableResult
+    private func requireSuccessfulDesktopUpdateExec(
+        id: String,
+        argv: [String],
+        env: [DoryExecEnvironment] = [],
+        timeoutMs: UInt64 = 30_000,
+        outputLimitBytes: UInt64 = 1024 * 1024,
+        stage: String
+    ) throws -> DoryExecResult {
+        let result = try exec(
+            id: id,
+            argv: argv,
+            env: env,
+            timeoutMs: timeoutMs,
+            outputLimitBytes: outputLimitBytes
+        )
+        guard result.exitCode == 0, !result.timedOut else {
+            let stderr = String(decoding: result.stderr.suffix(4096), as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            throw MachineManagerError.persistence(
+                "desktop update could not \(stage) (exit \(result.timedOut ? 124 : result.exitCode))\(stderr.isEmpty ? "" : ": \(stderr)")"
+            )
+        }
+        return result
+    }
+
+    private func qualifyUpdatedDesktop(
+        id: String,
+        distro: String,
+        version: String,
+        inputSHA256: String
+    ) throws {
+        let script = """
+        set -euo pipefail
+        . /etc/os-release
+        [ "$ID" = "$DORY_EXPECTED_DISTRO" ]
+        grep -Fqx "version=$DORY_EXPECTED_VERSION" /var/lib/dory/desktop-update.env
+        grep -Fqx "input_sha256=$DORY_EXPECTED_INPUT" /var/lib/dory/desktop-update.env
+        [ "$(systemctl get-default)" = graphical.target ]
+        for _ in $(seq 1 180); do
+          if systemctl is-active --quiet NetworkManager.service \
+              && systemctl is-active --quiet display-manager.service \
+              && systemctl is-active --quiet dory-boot.service \
+              && systemctl is-active --quiet dory-zram.service \
+              && grep -q '^/dev/zram0 ' /proc/swaps; then
+            break
+          fi
+          sleep 1
+        done
+        systemctl is-active --quiet NetworkManager.service
+        systemctl is-active --quiet display-manager.service
+        systemctl is-active --quiet dory-boot.service
+        systemctl is-active --quiet dory-zram.service
+        grep -q '^/dev/zram0 ' /proc/swaps
+        user="$(cat /var/lib/dory/username 2>/dev/null || printf 'dory')"
+        id "$user" >/dev/null
+        for _ in $(seq 1 120); do
+          if pgrep -u "$user" -f 'gnome-shell|xfce4-session' >/dev/null; then break; fi
+          sleep 1
+        done
+        pgrep -u "$user" -f 'gnome-shell|xfce4-session' >/dev/null
+        case "$DORY_EXPECTED_DISTRO" in
+          debian) command -v firefox-esr >/dev/null ;;
+          ubuntu) command -v firefox >/dev/null ;;
+          kali) command -v firefox-esr >/dev/null || command -v firefox >/dev/null ;;
+        esac
+        for _ in $(seq 1 120); do
+          if getent ahosts example.com >/dev/null; then break; fi
+          sleep 1
+        done
+        getent ahosts example.com >/dev/null
+        """
+        _ = try requireSuccessfulDesktopUpdateExec(
+            id: id,
+            argv: ["/bin/bash", "-lc", script],
+            env: [
+                DoryExecEnvironment(key: "DORY_EXPECTED_DISTRO", value: distro),
+                DoryExecEnvironment(key: "DORY_EXPECTED_VERSION", value: version),
+                DoryExecEnvironment(key: "DORY_EXPECTED_INPUT", value: inputSHA256),
+            ],
+            timeoutMs: 480_000,
+            outputLimitBytes: 4 * 1024 * 1024,
+            stage: "qualify the updated desktop"
+        )
+    }
+
+    private static func desktopUpdateInputSHA256(from result: DoryExecResult) -> String? {
+        let output = String(decoding: result.stdout, as: UTF8.self)
+        for line in output.split(separator: "\n").reversed() {
+            let fields = line.split(separator: " ")
+            guard fields.count == 7,
+                  fields[0] == "Dory",
+                  fields[1] == "desktop",
+                  fields[2] == "update",
+                  fields[3] == "applied:" else { continue }
+            let digest = String(fields[6])
+            if digest.count == 64, digest.allSatisfy({ $0.isHexDigit && !$0.isUppercase }) {
+                return digest
+            }
+        }
+        return nil
+    }
+
+    private static func desktopUpdateReceiptInputSHA256(
+        from result: DoryExecResult,
+        distro: String,
+        version: String
+    ) -> String? {
+        guard !result.stdoutTruncated else { return nil }
+        let fields = Dictionary(uniqueKeysWithValues: String(decoding: result.stdout, as: UTF8.self)
+            .split(separator: "\n")
+            .compactMap { line -> (String, String)? in
+                guard let separator = line.firstIndex(of: "=") else { return nil }
+                return (String(line[..<separator]), String(line[line.index(after: separator)...]))
+            })
+        guard fields["schema"] == "1",
+              fields["distro"] == distro,
+              fields["version"] == version,
+              let digest = fields["input_sha256"],
+              digest.count == 64,
+              digest.allSatisfy({ $0.isHexDigit && !$0.isUppercase }) else {
+            return nil
+        }
+        return digest
     }
 
     public func agentInfo(id: String) throws -> DoryAgentInfo {
@@ -1324,13 +9549,248 @@ public final class MachineManager: @unchecked Sendable {
     }
 
     public func telemetry(id: String) throws -> DoryTelemetry {
-        try withAgentClient(id: id) { client in
+        try withAgentClient(id: id, requiredCapability: "telemetry") { client in
             try client.telemetry()
+        }
+    }
+
+    public func deviceTelemetry(id: String) throws -> DoryDeviceTelemetrySnapshot {
+        let socketPath: String
+        let launchID: UUID
+        let operationID: String
+        let backend: DoryVirtualizationBackendIdentity
+        lock.lock()
+        guard let entry = machines[id],
+              [.running, .paused].contains(entry.state),
+              entry.process?.isRunning == true,
+              let currentLaunchID = entry.launchID,
+              let currentSocketPath = entry.handoff?.ready.controlSocketPath,
+              let currentOperationID = entry.handoff?.ready.operationID,
+              DoryOperationIdentity.parseCanonical(currentOperationID) != nil,
+              let currentBackend = entry.activeBackend else {
+            lock.unlock()
+            throw MachineManagerError.deviceTelemetryUnavailable(id)
+        }
+        socketPath = currentSocketPath
+        launchID = currentLaunchID
+        operationID = currentOperationID
+        backend = currentBackend
+        lock.unlock()
+
+        let snapshot: DoryDeviceTelemetrySnapshot
+        do {
+            snapshot = try deviceTelemetryController.snapshot(socketPath: socketPath)
+        } catch {
+            throw MachineManagerError.deviceTelemetryRejected(id, "\(error)")
+        }
+        guard snapshot.isValid,
+              snapshot.machineID == id,
+              snapshot.operationID == operationID,
+              snapshot.backend == backend else {
+            throw MachineManagerError.deviceTelemetryRejected(
+                id,
+                "helper snapshot does not match the live launch authority"
+            )
+        }
+
+        lock.lock()
+        defer { lock.unlock() }
+        guard var entry = machines[id],
+              [.running, .paused].contains(entry.state),
+              entry.process?.isRunning == true,
+              entry.launchID == launchID,
+              entry.handoff?.ready.controlSocketPath == socketPath,
+              entry.handoff?.ready.operationID == operationID,
+              entry.activeBackend == backend,
+              snapshot.sampleSequence > entry.lastDeviceTelemetrySampleSequence else {
+            throw MachineManagerError.deviceTelemetryRejected(
+                id,
+                "live launch changed or telemetry sequence did not advance"
+            )
+        }
+        entry.lastDeviceTelemetrySampleSequence = snapshot.sampleSequence
+        var flightRecorderPersistenceFailed = false
+        for event in snapshot.events
+            where event.sequence > entry.lastDeviceTelemetryEventSequence {
+            do {
+                let recorded = try flightRecorderStore.append(
+                    machineID: id,
+                    operationID: operationID,
+                    operationKind: DoryWorkspaceMutationKind.starting.rawValue,
+                    kind: .deviceHealthEvent,
+                    machineState: entry.state.rawValue,
+                    backend: backend,
+                    virtualHardwareABIVersion:
+                        entry.runtimeIdentity.virtualHardwareABIVersion,
+                    planSHA256: entry.runtimeIdentity.resolvedPlanSHA256,
+                    deviceID: event.deviceID,
+                    deviceEventKind: event.kind,
+                    deviceEventSequence: event.sequence,
+                    deviceEventOccurrences: event.occurrences,
+                    evidenceReferences: failureEvidenceReferences(for: entry)
+                )
+                entry.flightRecorderHeadSequence = recorded.sequence
+                entry.flightRecorderAvailable = true
+                entry.lastDeviceTelemetryEventSequence = event.sequence
+            } catch {
+                entry.flightRecorderAvailable = false
+                flightRecorderPersistenceFailed = true
+                break
+            }
+        }
+        machines[id] = entry
+        if flightRecorderPersistenceFailed {
+            throw MachineManagerError.deviceTelemetryRejected(
+                id,
+                "flight recorder could not persist device event evidence"
+            )
+        }
+        return snapshot
+    }
+
+    /// Routes a hotplug request only to the exact live raw-HV helper selected by resolved desired
+    /// state. The first signed contract permits only the normal user-authorization mode.
+    public func attachResolvedUSBDevice(
+        id: String,
+        busID: String,
+        mode: DoryMachineUSBOpenMode = .userAuthorized
+    ) throws -> DoryMachineUSBAttachment {
+        let mutationLease = mutationCoordinator.acquire(workspaceID: id)
+        defer { mutationLease.release() }
+
+        let launchID: UUID
+        let socketPath: String
+        lock.lock()
+        guard let entry = machines[id],
+              entry.state == .running,
+              entry.process?.isRunning == true,
+              entry.activeBackend == .doryHypervisor,
+              usbHotplugIsAuthorized(
+                  entry.runtimeIdentity,
+                  mode: mode
+              ),
+              let currentLaunchID = entry.launchID,
+              entry.handoff?.ready.supportsAgentCapability(
+                  "usb-vhci",
+                  minimumVersion: 1
+              ) == true else {
+            lock.unlock()
+            throw MachineManagerError.usbUnavailable(id)
+        }
+        launchID = currentLaunchID
+        socketPath = "\(machineRuntimeDirectory(id: id))/u.sock"
+        lock.unlock()
+
+        let transaction = DoryResolvedUSBControlTransaction(controller: usbController)
+        return try transaction.attach(
+            machineID: id,
+            socketPath: socketPath,
+            busID: busID,
+            mode: mode
+        ) {
+            lock.lock()
+            defer { lock.unlock() }
+            return machines[id].map { entry in
+                entry.state == .running
+                    && entry.process?.isRunning == true
+                    && entry.activeBackend == .doryHypervisor
+                    && entry.launchID == launchID
+                    && usbHotplugIsAuthorized(entry.runtimeIdentity, mode: mode)
+                    && entry.handoff?.ready.supportsAgentCapability(
+                        "usb-vhci",
+                        minimumVersion: 1
+                    ) == true
+            } ?? false
+        }
+    }
+
+    /// Detach uses the same resolved launch fence as attach so a request cannot be redirected
+    /// across a stop/restart boundary or to the compatible Virtualization.framework backend.
+    public func detachResolvedUSBDevice(id: String, busID: String) throws {
+        let mutationLease = mutationCoordinator.acquire(workspaceID: id)
+        defer { mutationLease.release() }
+
+        let launchID: UUID
+        let socketPath: String
+        lock.lock()
+        guard let entry = machines[id],
+              entry.state == .running,
+              entry.process?.isRunning == true,
+              entry.activeBackend == .doryHypervisor,
+              usbHotplugIsAuthorized(
+                  entry.runtimeIdentity,
+                  mode: nil
+              ),
+              let currentLaunchID = entry.launchID,
+              entry.handoff?.ready.supportsAgentCapability(
+                  "usb-vhci",
+                  minimumVersion: 1
+              ) == true else {
+            lock.unlock()
+            throw MachineManagerError.usbUnavailable(id)
+        }
+        launchID = currentLaunchID
+        socketPath = "\(machineRuntimeDirectory(id: id))/u.sock"
+        lock.unlock()
+
+        let transaction = DoryResolvedUSBControlTransaction(controller: usbController)
+        try transaction.detach(
+            machineID: id,
+            socketPath: socketPath,
+            busID: busID
+        ) {
+            lock.lock()
+            defer { lock.unlock() }
+            guard let entry = machines[id] else { return false }
+            return entry.state == .running
+                && entry.process?.isRunning == true
+                && entry.activeBackend == .doryHypervisor
+                && entry.launchID == launchID
+                && usbHotplugIsAuthorized(entry.runtimeIdentity, mode: nil)
+                && entry.handoff?.ready.supportsAgentCapability(
+                    "usb-vhci",
+                    minimumVersion: 1
+                ) == true
+        }
+    }
+
+    private func usbHotplugIsAuthorized(
+        _ identity: DoryMachineRuntimeIdentity,
+        mode: DoryMachineUSBOpenMode?
+    ) -> Bool {
+        switch identity.mode {
+        case .legacyCompatibility:
+            return false
+        case .resolvedPlan:
+            guard identity.resolvedPlan?.devices.removableUSBHotplug == true else {
+                return false
+            }
+            // The first signed contract authorizes only the normal user-consent flow. Host-device
+            // seizure and capture need their own durable policy before resolved launches may use it.
+            return mode == nil || mode == .userAuthorized
+        case .requiresReplanning:
+            return false
         }
     }
 
     public func memorySnapshots() -> [GuestMemorySnapshot] {
         list().compactMap { status in
+            if status.state == .paused {
+                let residentMB = max(1, status.currentBalloonTargetMB)
+                return GuestMemorySnapshot(
+                    id: "machine.\(status.id)",
+                    kind: .virtualMachine,
+                    telemetry: DoryTelemetry(
+                        memTotalKB: residentMB * 1024,
+                        memAvailableKB: 0,
+                        psiSomeAvg10: 0,
+                        psiFullAvg10: 0
+                    ),
+                    currentTargetMB: residentMB,
+                    maximumTargetMB: status.memoryMB,
+                    canBalloon: false
+                )
+            }
             guard status.state == .running, status.agentSocketPath != nil else {
                 return nil
             }
@@ -1343,9 +9803,29 @@ public final class MachineManager: @unchecked Sendable {
                 telemetry: telemetry,
                 currentTargetMB: status.currentBalloonTargetMB,
                 maximumTargetMB: status.memoryMB,
-                canBalloon: status.controlSocketPath != nil
+                canBalloon: targetDrivenBalloonControlIsAvailable(
+                    machineID: status.id,
+                    expectedSocketPath: status.controlSocketPath
+                )
             )
         }
+    }
+
+    /// A control socket is only an endpoint, not proof that every backend implements every
+    /// command. Virtualization.framework owns a target-driven balloon device; RawHV currently
+    /// owns autonomous free-page reporting and deliberately rejects `setBalloonTarget`.
+    private func targetDrivenBalloonControlIsAvailable(
+        machineID: String,
+        expectedSocketPath: String?
+    ) -> Bool {
+        guard let expectedSocketPath else { return false }
+        lock.lock()
+        defer { lock.unlock() }
+        guard let entry = machines[machineID] else { return false }
+        return entry.state == .running
+            && entry.process?.isRunning == true
+            && entry.activeBackend == .appleVirtualizationFramework
+            && entry.handoff?.ready.controlSocketPath == expectedSocketPath
     }
 
     public func applyBalloonTargets(_ targets: [BalloonTarget]) throws {
@@ -1363,6 +9843,7 @@ public final class MachineManager: @unchecked Sendable {
         if let entry = machines[machineID],
            entry.state == .running,
            entry.process?.isRunning == true,
+           entry.activeBackend == .appleVirtualizationFramework,
            let path = entry.handoff?.ready.controlSocketPath {
             socketPath = path
             clampedTargetMB = min(max(targetMB, 1), entry.configuration.memoryMB)
@@ -1399,7 +9880,7 @@ public final class MachineManager: @unchecked Sendable {
         guard !argv.isEmpty else {
             throw MachineManagerError.agentUnavailable(id)
         }
-        return try withAgentClient(id: id) { client in
+        return try withAgentClient(id: id, requiredCapability: "exec") { client in
             try client.exec(
                 argv: argv,
                 cwd: cwd,
@@ -1410,8 +9891,702 @@ public final class MachineManager: @unchecked Sendable {
         }
     }
 
+    /// Copies a daemon-private staging tree into a fresh guest-owned Downloads subdirectory.
+    /// The destination is intentionally derived here rather than accepted from XPC: `sync-push`
+    /// makes its target an exact replica, so pointing it at an existing user directory could erase
+    /// unrelated files. Synchronous compatibility callers remain responsible for deleting their
+    /// staging root afterwards.
+    public func transferStagedFiles(
+        id: String,
+        privateStagingRoot: String
+    ) throws -> DoryMachineFileTransferResult {
+        try requireFileTransferAuthorization(id: id, flow: .hostToGuest)
+        let transferID = Self.makeMachineFileTransferID()
+        fileTransferLock.lock()
+        pruneFileTransferOperationsLocked(now: Date())
+        if activeFileTransferByMachine[id] != nil
+            || activeGuestFileExportByMachine[id] != nil {
+            fileTransferLock.unlock()
+            throw DoryMachineFileTransferError.transferAlreadyInProgress(id)
+        }
+        activeFileTransferByMachine[id] = transferID
+        fileTransferLock.unlock()
+        defer {
+            fileTransferLock.lock()
+            if activeFileTransferByMachine[id] == transferID {
+                activeFileTransferByMachine.removeValue(forKey: id)
+            }
+            fileTransferLock.unlock()
+        }
+        guard DoryMachineFileTransferStager.isClientStagingRoot(privateStagingRoot) else {
+            throw DoryMachineFileTransferError.invalidPrivateStagingRoot
+        }
+        return try performStagedFileTransfer(
+            id: id,
+            privateStagingRoot: privateStagingRoot,
+            transferID: transferID,
+            operation: nil
+        )
+    }
+
+    /// Starts a cancellable transfer without retaining an XPC reply block for the duration of the
+    /// data-plane operation. Only one active transfer per machine is allowed; terminal records are
+    /// retained briefly for polling and bounded globally.
+    public func beginStagedFileTransfer(
+        id: String,
+        privateStagingRoot: String
+    ) throws -> DoryMachineFileTransferOperationStatus {
+        try requireFileTransferAuthorization(id: id, flow: .hostToGuest)
+        guard let machineStatus = status(id: id) else {
+            throw MachineManagerError.unknownMachine(id)
+        }
+        guard machineStatus.state == .running,
+              machineStatus.agentSocketPath != nil else {
+            throw MachineManagerError.agentUnavailable(id)
+        }
+        for capability in ["exec", "sync-push"] where
+            !machineStatus.supportsAgentCapability(capability) {
+            throw MachineManagerError.agentCapabilityUnavailable(id, capability)
+        }
+
+        let transferID = Self.makeMachineFileTransferID()
+        fileTransferLock.lock()
+        pruneFileTransferOperationsLocked(now: Date())
+        if activeFileTransferByMachine[id] != nil
+            || activeGuestFileExportByMachine[id] != nil {
+            fileTransferLock.unlock()
+            throw DoryMachineFileTransferError.transferAlreadyInProgress(id)
+        }
+        let claimedStagingRoot: String
+        do {
+            claimedStagingRoot = try DoryMachineFileTransferStager.claimForDaemon(
+                privateStagingRoot,
+                operationID: transferID
+            )
+        } catch {
+            fileTransferLock.unlock()
+            throw DoryMachineFileTransferError.invalidPrivateStagingRoot
+        }
+        let operation = MachineFileTransferOperation(
+            operationID: transferID,
+            machineID: id
+        )
+        fileTransferOperations[transferID] = operation
+        activeFileTransferByMachine[id] = transferID
+        fileTransferLock.unlock()
+
+        fileTransferQueue.async { [self, operation] in
+            var outcome: MachineFileTransferTerminalOutcome
+            do {
+                let result = try performStagedFileTransfer(
+                    id: id,
+                    privateStagingRoot: claimedStagingRoot,
+                    transferID: transferID,
+                    operation: operation
+                )
+                if operation.isCancellationRequested {
+                    outcome = .cancelled
+                } else {
+                    outcome = .completed(result)
+                }
+            } catch {
+                if operation.isCancellationRequested {
+                    outcome = .cancelled
+                } else {
+                    outcome = .failed(Self.fileTransferFailure(error, machineID: id))
+                }
+            }
+            do {
+                try DoryMachineFileTransferStager.removeManagedStagingRoot(
+                    claimedStagingRoot
+                )
+            } catch {
+                outcome = .failed(.init(
+                    code: .transferFailed,
+                    message: "File transfer cleanup failed for \(id)."
+                ))
+            }
+            fileTransferLock.lock()
+            switch outcome {
+            case let .completed(result):
+                operation.complete(result)
+            case .cancelled:
+                operation.cancel()
+            case let .failed(failure):
+                operation.fail(failure)
+            }
+            if activeFileTransferByMachine[id] == transferID {
+                activeFileTransferByMachine.removeValue(forKey: id)
+            }
+            fileTransferLock.unlock()
+        }
+        return operation.status()
+    }
+
+    public func stagedFileTransferStatus(
+        id: String,
+        operationID: String
+    ) throws -> DoryMachineFileTransferOperationStatus {
+        fileTransferLock.lock()
+        pruneFileTransferOperationsLocked(now: Date())
+        let operation = fileTransferOperations[operationID]
+        fileTransferLock.unlock()
+        guard let operation, operation.machineID == id else {
+            throw DoryMachineFileTransferError.unknownTransfer(id, operationID)
+        }
+        return operation.status()
+    }
+
+    /// Returns the one active transfer for a machine so a reconnecting app can resume polling
+    /// without retaining an operation identifier across process lifetime. Terminal history is not
+    /// rediscovered: it remains available only through the exact operation-ID status endpoint.
+    public func currentStagedFileTransferStatus(
+        id: String
+    ) -> DoryMachineFileTransferOperationStatus? {
+        fileTransferLock.lock()
+        pruneFileTransferOperationsLocked(now: Date())
+        guard let operationID = activeFileTransferByMachine[id],
+              let operation = fileTransferOperations[operationID] else {
+            activeFileTransferByMachine.removeValue(forKey: id)
+            fileTransferLock.unlock()
+            return nil
+        }
+        fileTransferLock.unlock()
+        return operation.status()
+    }
+
+    public func cancelStagedFileTransfer(
+        id: String,
+        operationID: String
+    ) throws -> DoryMachineFileTransferOperationStatus {
+        fileTransferLock.lock()
+        let operation = fileTransferOperations[operationID]
+        fileTransferLock.unlock()
+        guard let operation, operation.machineID == id else {
+            throw DoryMachineFileTransferError.unknownTransfer(id, operationID)
+        }
+        operation.requestCancellation()
+        return operation.status()
+    }
+
+    /// Starts a bounded guest-to-host export into Dory's private staging namespace. The caller
+    /// supplies no host path: the output root is derived from the operation ID and created with
+    /// create-new semantics by the Rust pull engine. Guest reads are restricted to the configured
+    /// non-root account's home tree.
+    public func beginGuestFileExport(
+        id: String,
+        guestSource: String
+    ) throws -> DoryMachineGuestFileExportOperationStatus {
+        try requireFileTransferAuthorization(id: id, flow: .guestToHost)
+        guard let machineStatus = status(id: id) else {
+            throw MachineManagerError.unknownMachine(id)
+        }
+        guard machineStatus.state == .running,
+              machineStatus.agentSocketPath != nil else {
+            throw MachineManagerError.agentUnavailable(id)
+        }
+        guard machineStatus.supportsAgentCapability("sync-pull") else {
+            throw MachineManagerError.agentCapabilityUnavailable(id, "sync-pull")
+        }
+        let validatedGuestSource = try Self.validatedGuestExportSource(
+            guestSource,
+            machineStatus: machineStatus,
+            machineID: id
+        )
+
+        let exportID = Self.makeMachineFileTransferID()
+        fileTransferLock.lock()
+        pruneFileTransferOperationsLocked(now: Date())
+        if activeFileTransferByMachine[id] != nil
+            || activeGuestFileExportByMachine[id] != nil {
+            fileTransferLock.unlock()
+            throw DoryMachineFileTransferError.transferAlreadyInProgress(id)
+        }
+        let privateStagingRoot: String
+        do {
+            privateStagingRoot = try DoryMachineFileTransferStager.reserveDaemonExportRoot(
+                operationID: exportID
+            )
+        } catch {
+            fileTransferLock.unlock()
+            throw DoryMachineFileTransferError.invalidPrivateStagingRoot
+        }
+        let operation = MachineGuestFileExportOperation(
+            operationID: exportID,
+            machineID: id,
+            privateStagingRoot: privateStagingRoot
+        )
+        guestFileExportOperations[exportID] = operation
+        activeGuestFileExportByMachine[id] = exportID
+        fileTransferLock.unlock()
+
+        fileTransferQueue.async { [self, operation] in
+            var outcome: MachineGuestFileExportTerminalOutcome
+            do {
+                let result = try performGuestFileExport(
+                    id: id,
+                    guestSource: validatedGuestSource,
+                    privateStagingRoot: privateStagingRoot,
+                    exportID: exportID,
+                    operation: operation
+                )
+                outcome = operation.isCancellationRequested ? .cancelled : .completed(result)
+            } catch {
+                outcome = operation.isCancellationRequested
+                    ? .cancelled
+                    : .failed(Self.fileTransferFailure(error, machineID: id))
+            }
+            if case .completed = outcome {
+                // Ownership remains with the exact terminal operation until the client consumes
+                // or discards it. Failed and cancelled roots never escape the daemon.
+            } else {
+                do {
+                    try DoryMachineFileTransferStager.removeManagedStagingRoot(
+                        privateStagingRoot
+                    )
+                } catch {
+                    outcome = .failed(.init(
+                        code: .transferFailed,
+                        message: "Guest file export cleanup failed for \(id)."
+                    ))
+                }
+            }
+            fileTransferLock.lock()
+            switch outcome {
+            case let .completed(result):
+                operation.complete(result)
+            case .cancelled:
+                operation.cancel()
+            case let .failed(failure):
+                operation.fail(failure)
+            }
+            if activeGuestFileExportByMachine[id] == exportID {
+                activeGuestFileExportByMachine.removeValue(forKey: id)
+            }
+            fileTransferLock.unlock()
+        }
+        return operation.status()
+    }
+
+    public func guestFileExportStatus(
+        id: String,
+        operationID: String
+    ) throws -> DoryMachineGuestFileExportOperationStatus {
+        fileTransferLock.lock()
+        pruneFileTransferOperationsLocked(now: Date())
+        let operation = guestFileExportOperations[operationID]
+        fileTransferLock.unlock()
+        guard let operation, operation.machineID == id else {
+            throw DoryMachineFileTransferError.unknownTransfer(id, operationID)
+        }
+        return operation.status()
+    }
+
+    public func currentGuestFileExportStatus(
+        id: String
+    ) -> DoryMachineGuestFileExportOperationStatus? {
+        fileTransferLock.lock()
+        pruneFileTransferOperationsLocked(now: Date())
+        if let operationID = activeGuestFileExportByMachine[id],
+           let operation = guestFileExportOperations[operationID] {
+            fileTransferLock.unlock()
+            return operation.status()
+        }
+        activeGuestFileExportByMachine.removeValue(forKey: id)
+        // A completed export remains an app-recoverable handoff until explicit discard. This
+        // closes the reconnect window between the daemon finishing its verified pull and the app
+        // materializing those bytes into a user-selected destination.
+        let recoverable = guestFileExportOperations.values
+            .filter { $0.machineID == id && $0.completedResult() != nil }
+            .max { ($0.terminalDate ?? .distantPast) < ($1.terminalDate ?? .distantPast) }
+        fileTransferLock.unlock()
+        return recoverable?.status()
+    }
+
+    public func cancelGuestFileExport(
+        id: String,
+        operationID: String
+    ) throws -> DoryMachineGuestFileExportOperationStatus {
+        fileTransferLock.lock()
+        let operation = guestFileExportOperations[operationID]
+        fileTransferLock.unlock()
+        guard let operation, operation.machineID == id else {
+            throw DoryMachineFileTransferError.unknownTransfer(id, operationID)
+        }
+        operation.requestCancellation()
+        return operation.status()
+    }
+
+    /// Deletes the private result after the client has copied it to its user-selected destination.
+    /// Only a completed exact operation can authorize this cleanup.
+    public func discardGuestFileExport(
+        id: String,
+        operationID: String
+    ) throws {
+        fileTransferLock.lock()
+        let operation = guestFileExportOperations[operationID]
+        fileTransferLock.unlock()
+        guard let operation, operation.machineID == id else {
+            throw DoryMachineFileTransferError.unknownTransfer(id, operationID)
+        }
+        guard let result = operation.completedResult() else {
+            throw DoryMachineFileTransferError.exportNotComplete(id, operationID)
+        }
+        do {
+            try DoryMachineFileTransferStager.removeManagedStagingRoot(
+                result.privateStagingRoot
+            )
+        } catch {
+            throw DoryMachineFileTransferError.invalidPrivateStagingRoot
+        }
+        fileTransferLock.lock()
+        if guestFileExportOperations[operationID] === operation {
+            guestFileExportOperations.removeValue(forKey: operationID)
+        }
+        fileTransferLock.unlock()
+    }
+
+    private func performGuestFileExport(
+        id: String,
+        guestSource: String,
+        privateStagingRoot: String,
+        exportID: String,
+        operation: MachineGuestFileExportOperation
+    ) throws -> DoryMachineGuestFileExportResult {
+        try requireFileTransferAuthorization(id: id, flow: .guestToHost)
+        try Self.requireTransferNotCancelled(operation)
+        operation.setTransferring()
+        let limits = DoryPullLimits(
+            maxFiles: UInt64(DoryMachineFileTransferStager.maximumFileCount),
+            maxDirectories: UInt64(
+                DoryMachineFileTransferStager.maximumEntryCount
+                    - DoryMachineFileTransferStager.maximumFileCount
+            ),
+            maxBytes: DoryMachineFileTransferStager.maximumTransferBytes
+        )
+        let stats: DoryPullStats
+        do {
+            stats = try withAgentClient(id: id, requiredCapability: "sync-pull") { client in
+                try client.pull(
+                    remoteRoot: guestSource,
+                    localRoot: privateStagingRoot,
+                    limits: limits,
+                    control: operation.control
+                )
+            }
+        } catch {
+            throw DoryMachineFileTransferError.transferFailed(id)
+        }
+        try Self.requireTransferNotCancelled(operation)
+        operation.setFinalizing()
+        guard DoryMachineFileTransferStager.isDaemonExportRoot(privateStagingRoot) else {
+            throw DoryMachineFileTransferError.invalidPrivateStagingRoot
+        }
+        return DoryMachineGuestFileExportResult(
+            exportID: exportID,
+            privateStagingRoot: privateStagingRoot,
+            stats: stats
+        )
+    }
+
+    private func performStagedFileTransfer(
+        id: String,
+        privateStagingRoot: String,
+        transferID: String,
+        operation: MachineFileTransferOperation?
+    ) throws -> DoryMachineFileTransferResult {
+        try requireFileTransferAuthorization(id: id, flow: .hostToGuest)
+        guard DoryMachineFileTransferStager.isManagedStagingRoot(privateStagingRoot) else {
+            throw DoryMachineFileTransferError.invalidPrivateStagingRoot
+        }
+        guard let machineStatus = status(id: id) else {
+            throw MachineManagerError.unknownMachine(id)
+        }
+        guard machineStatus.state == .running,
+              machineStatus.agentSocketPath != nil else {
+            throw MachineManagerError.agentUnavailable(id)
+        }
+        for capability in ["exec", "sync-push"] where
+            !machineStatus.supportsAgentCapability(capability) {
+            throw MachineManagerError.agentCapabilityUnavailable(id, capability)
+        }
+
+        guard let account = machineStatus.typedSettings?.guestIdentityIntent.account,
+              let username = account.username,
+              DoryVMGuestAccountIntent.isValidUsername(username),
+              username != "root" else {
+            throw DoryMachineFileTransferError.guestAccountUnavailable(id)
+        }
+
+        let guestHome = "/home/\(username)"
+        let downloads = guestHome + "/Downloads"
+        let guestDestination = downloads + "/Dory Transfer " + transferID
+        operation?.setGuestDestination(guestDestination)
+        try Self.requireTransferNotCancelled(operation)
+
+        return try withAgentClient(id: id) { client in
+            try Self.requireTransferNotCancelled(operation)
+            let uid = try Self.guestNumericIdentity(
+                client: client,
+                program: "/usr/bin/id",
+                argument: "-u",
+                username: username,
+                machineID: id
+            )
+            let gid = try Self.guestNumericIdentity(
+                client: client,
+                program: "/usr/bin/id",
+                argument: "-g",
+                username: username,
+                machineID: id
+            )
+            if let expectedUID = account.numericUserID, expectedUID != uid {
+                throw DoryMachineFileTransferError.guestAccountUnavailable(id)
+            }
+            let guestIdentityEnvironment = [
+                DoryExecEnvironment(key: "DORY_AGENT_RUN_UID", value: String(uid)),
+                DoryExecEnvironment(key: "DORY_AGENT_RUN_GID", value: String(gid)),
+            ]
+            try Self.requireTransferNotCancelled(operation)
+            try Self.requireSuccessfulTransferCommand(
+                client.exec(
+                    argv: ["/bin/mkdir", "-p", "--", downloads],
+                    cwd: guestHome,
+                    env: guestIdentityEnvironment,
+                    timeoutMs: 30_000,
+                    outputLimitBytes: 64 * 1024
+                ),
+                error: .guestPreparationFailed(id)
+            )
+            try Self.requireTransferNotCancelled(operation)
+            // No `-p`: a collision or pre-existing attacker-controlled directory must fail rather
+            // than becoming the exact-replica target.
+            try Self.requireSuccessfulTransferCommand(
+                client.exec(
+                    argv: ["/bin/mkdir", "--", guestDestination],
+                    cwd: downloads,
+                    env: guestIdentityEnvironment,
+                    timeoutMs: 30_000,
+                    outputLimitBytes: 64 * 1024
+                ),
+                error: .guestPreparationFailed(id)
+            )
+
+            var completed = false
+            defer {
+                if !completed {
+                    _ = try? client.exec(
+                        argv: ["/bin/rm", "-rf", "--", guestDestination],
+                        cwd: downloads,
+                        env: [],
+                        timeoutMs: 30_000,
+                        outputLimitBytes: 64 * 1024
+                    )
+                }
+            }
+            let stats: DoryPushStats
+            do {
+                if let operation {
+                    operation.setTransferring()
+                    stats = try client.push(
+                        localRoot: privateStagingRoot,
+                        remoteRoot: guestDestination,
+                        control: operation.control
+                    )
+                } else {
+                    stats = try client.push(
+                        localRoot: privateStagingRoot,
+                        remoteRoot: guestDestination
+                    )
+                }
+            } catch {
+                throw DoryMachineFileTransferError.transferFailed(id)
+            }
+            try Self.requireTransferNotCancelled(operation)
+            guard stats.filesDeleted == 0 else {
+                throw DoryMachineFileTransferError.transferFailed(id)
+            }
+            operation?.setFinalizing()
+            try Self.requireSuccessfulTransferCommand(
+                client.exec(
+                    argv: [
+                        "/bin/chown", "-R", "--", "\(uid):\(gid)", guestDestination,
+                    ],
+                    cwd: downloads,
+                    env: [],
+                    timeoutMs: 30_000,
+                    outputLimitBytes: 64 * 1024
+                ),
+                error: .guestFinalizationFailed(id)
+            )
+            try Self.requireTransferNotCancelled(operation)
+            completed = true
+            return DoryMachineFileTransferResult(
+                transferID: transferID,
+                guestDestination: guestDestination,
+                stats: stats
+            )
+        }
+    }
+
+    private static func makeMachineFileTransferID() -> String {
+        UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+    }
+
+    private func requireFileTransferAuthorization(
+        id: String,
+        flow: DoryMachineFileTransferFlow
+    ) throws {
+        let identity = try currentRuntimeIdentity(id: id)
+        guard DoryMachineFileTransferAuthorization.allows(
+            runtimeIdentity: identity,
+            flow: flow
+        ) else {
+            throw DoryMachineFileTransferError.directionNotAuthorized(id)
+        }
+    }
+
+    private static func requireTransferNotCancelled(
+        _ operation: MachineFileTransferOperation?
+    ) throws {
+        if operation?.isCancellationRequested == true {
+            throw DoryMachineFileTransferCancellation.cancelled
+        }
+    }
+
+    private static func requireTransferNotCancelled(
+        _ operation: MachineGuestFileExportOperation
+    ) throws {
+        if operation.isCancellationRequested {
+            throw DoryMachineFileTransferCancellation.cancelled
+        }
+    }
+
+    private static func validatedGuestExportSource(
+        _ requestedPath: String,
+        machineStatus: DoryMachineStatus,
+        machineID: String
+    ) throws -> String {
+        guard requestedPath.utf8.count > 1,
+              requestedPath.utf8.count <= 4_096,
+              !requestedPath.contains("\0"),
+              let account = machineStatus.typedSettings?.guestIdentityIntent.account,
+              let username = account.username,
+              DoryVMGuestAccountIntent.isValidUsername(username),
+              username != "root" else {
+            throw DoryMachineFileTransferError.invalidGuestSource(machineID)
+        }
+        let standardized = URL(fileURLWithPath: requestedPath).standardizedFileURL.path
+        let guestHome = "/home/\(username)"
+        guard requestedPath == standardized,
+              standardized == guestHome || standardized.hasPrefix(guestHome + "/") else {
+            throw DoryMachineFileTransferError.invalidGuestSource(machineID)
+        }
+        return standardized
+    }
+
+    private static func fileTransferFailure(
+        _ error: Error,
+        machineID: String
+    ) -> DoryMachineFileTransferFailure {
+        let transferError = error as? DoryMachineFileTransferError
+        switch transferError {
+        case .directionNotAuthorized:
+            return .init(
+                code: .directionNotAuthorized,
+                message: "The resolved file-transfer direction is not authorized."
+            )
+        case .guestAccountUnavailable:
+            return .init(code: .guestUnavailable, message: "Guest account is unavailable.")
+        case .guestPreparationFailed:
+            return .init(code: .guestPreparationFailed, message: "Could not prepare the guest destination.")
+        case .guestFinalizationFailed:
+            return .init(code: .guestFinalizationFailed, message: "Could not finalize guest file ownership.")
+        case .invalidPrivateStagingRoot, .invalidGuestSource, .transferAlreadyInProgress,
+             .unknownTransfer, .exportNotComplete, .transferFailed, nil:
+            return .init(code: .transferFailed, message: "File transfer failed for \(machineID).")
+        }
+    }
+
+    private func pruneFileTransferOperationsLocked(now: Date) {
+        let expiration = now.addingTimeInterval(-60 * 60)
+        fileTransferOperations = fileTransferOperations.filter { _, operation in
+            guard let finishedAt = operation.terminalDate else { return true }
+            return finishedAt >= expiration
+        }
+        pruneGuestFileExportOperationsLocked(now: now)
+        if fileTransferOperations.count <= 128 { return }
+        let removable = fileTransferOperations
+            .filter { $0.value.isTerminal }
+            .sorted { ($0.value.terminalDate ?? .distantFuture) < ($1.value.terminalDate ?? .distantFuture) }
+        for (operationID, _) in removable.prefix(fileTransferOperations.count - 128) {
+            fileTransferOperations.removeValue(forKey: operationID)
+        }
+    }
+
+    private func pruneGuestFileExportOperationsLocked(now: Date) {
+        let expiration = now.addingTimeInterval(-60 * 60)
+        let expired = guestFileExportOperations.filter { _, operation in
+            guard let finishedAt = operation.terminalDate else { return false }
+            return finishedAt < expiration
+        }
+        for (operationID, operation) in expired {
+            try? DoryMachineFileTransferStager.removeManagedStagingRoot(
+                operation.privateStagingRoot
+            )
+            guestFileExportOperations.removeValue(forKey: operationID)
+        }
+        if guestFileExportOperations.count <= 128 { return }
+        let removable = guestFileExportOperations
+            .filter { $0.value.isTerminal }
+            .sorted { ($0.value.terminalDate ?? .distantFuture) < ($1.value.terminalDate ?? .distantFuture) }
+        for (operationID, operation) in removable.prefix(guestFileExportOperations.count - 128) {
+            try? DoryMachineFileTransferStager.removeManagedStagingRoot(
+                operation.privateStagingRoot
+            )
+            guestFileExportOperations.removeValue(forKey: operationID)
+        }
+    }
+
+    private static func guestNumericIdentity(
+        client: any AgentControlClient,
+        program: String,
+        argument: String,
+        username: String,
+        machineID: String
+    ) throws -> UInt32 {
+        let result = try client.exec(
+            argv: [program, argument, "--", username],
+            cwd: "/",
+            env: [],
+            timeoutMs: 10_000,
+            outputLimitBytes: 4 * 1024
+        )
+        guard result.exitCode == 0,
+              !result.timedOut,
+              !result.stdoutTruncated,
+              !result.stderrTruncated,
+              let value = UInt32(
+                  String(decoding: result.stdout, as: UTF8.self)
+                      .trimmingCharacters(in: .whitespacesAndNewlines)
+              ),
+              DoryVMGuestAccountIntent.isValidNumericUserID(value) else {
+            throw DoryMachineFileTransferError.guestAccountUnavailable(machineID)
+        }
+        return value
+    }
+
+    private static func requireSuccessfulTransferCommand(
+        _ result: DoryExecResult,
+        error: DoryMachineFileTransferError
+    ) throws {
+        guard result.exitCode == 0, !result.timedOut else { throw error }
+    }
+
     private func withAgentClient<T>(
         id: String,
+        requiredCapability: String? = nil,
+        minimumCapabilityVersion: UInt32 = 1,
         _ operation: (any AgentControlClient) throws -> T
     ) throws -> T {
         guard let status = status(id: id) else {
@@ -1419,6 +10594,13 @@ public final class MachineManager: @unchecked Sendable {
         }
         guard status.state == .running, let socketPath = status.agentSocketPath else {
             throw MachineManagerError.agentUnavailable(id)
+        }
+        if let requiredCapability,
+           !status.supportsAgentCapability(
+               requiredCapability,
+               minimumVersion: minimumCapabilityVersion
+           ) {
+            throw MachineManagerError.agentCapabilityUnavailable(id, requiredCapability)
         }
         let client = try agentConnector(socketPath)
         defer { client.close() }
@@ -1437,6 +10619,349 @@ public final class MachineManager: @unchecked Sendable {
         "\(machineStateDirectory(id: id))/kernel"
     }
 
+    private func machineInstalledLinuxKernelPath(id: String) -> String {
+        "\(machineStateDirectory(id: id))/\(Self.installedLinuxKernelName)"
+    }
+
+    private func machineInstalledLinuxInitrdPath(id: String) -> String {
+        "\(machineStateDirectory(id: id))/\(Self.installedLinuxInitrdName)"
+    }
+
+    private func machineInstallerISOPath(id: String) -> String {
+        "\(machineStateDirectory(id: id))/installer.iso"
+    }
+
+    /// Legacy installed-Linux acceleration is the only launch contract that consumes stable
+    /// kernel/initrd pathnames. Resolved RawHV launches instead admit the boot bundle into fresh,
+    /// immutable descriptor-backed objects at the final spawn boundary.
+    private func prepareLegacyRawHVInstalledLinuxBootIfNeeded(
+        _ machine: DoryMachineConfiguration
+    ) throws {
+        guard configuration.passMachineArguments,
+              machine.bootMode == .efi,
+              machine.displayMode == .desktop,
+              machine.installerISOPath == nil,
+              try DoryDesktopVMMPreference(environment: machine.environment) == .accelerated,
+              configuration.acceleratedDesktopExecutablePath != nil else {
+            return
+        }
+        try ensureInstalledLinuxBootBundleIfNeeded(machine)
+        guard try processTarget(
+            for: machine,
+            resolvedLaunchBinding: nil
+        ).acceleratedDesktop else {
+            return
+        }
+        try materializeInstalledLinuxBootRuntimeIfNeeded(machine)
+    }
+
+    private func ensureInstalledLinuxBootBundleIfNeeded(
+        _ machine: DoryMachineConfiguration
+    ) throws {
+        guard machine.bootMode == .efi,
+              machine.displayMode == .desktop,
+              machine.installerISOPath == nil,
+              try DoryDesktopVMMPreference(environment: machine.environment) == .accelerated,
+              configuration.acceleratedDesktopExecutablePath != nil,
+              !DoryInstalledLinuxBootBundle.isBundle(atPath: machine.kernelPath) else {
+            return
+        }
+        let installerPath = machineInstallerISOPath(id: machine.id)
+        guard Self.isPrivateRegularFile(path: installerPath) else {
+            throw MachineManagerError.persistence(
+                "installed Linux acceleration requires the managed installer ISO to derive a kernel and initrd"
+            )
+        }
+        do {
+            let assets = try DoryLinuxInstallerBootAssetExtractor.extract(
+                atPath: installerPath,
+                zstdDecompressor: { body, maximumOutputBytes in
+                    try DoryCore.decompressZstd(
+                        body,
+                        maximumOutputBytes: maximumOutputBytes
+                    )
+                }
+            )
+            let rootDevice = try DoryLinuxInstalledDiskInspector.rootDevice(atPath: machine.rootfsPath)
+            try DoryInstalledLinuxBootBundle.write(
+                assets: assets,
+                rootDevice: rootDevice,
+                toPath: machine.kernelPath
+            )
+        } catch {
+            throw MachineManagerError.persistence(
+                "could not prepare the installed Linux accelerated runtime: \(error.localizedDescription)"
+            )
+        }
+    }
+
+    private func materializeInstalledLinuxBootRuntimeIfNeeded(
+        _ machine: DoryMachineConfiguration
+    ) throws {
+        guard machine.bootMode == .efi,
+              machine.installerISOPath == nil,
+              try DoryDesktopVMMPreference(environment: machine.environment) == .accelerated,
+              DoryInstalledLinuxBootBundle.isBundle(atPath: machine.kernelPath) else {
+            return
+        }
+        do {
+            try DoryInstalledLinuxBootBundle.materialize(
+                fromPath: machine.kernelPath,
+                kernelPath: machineInstalledLinuxKernelPath(id: machine.id),
+                initrdPath: machineInstalledLinuxInitrdPath(id: machine.id)
+            )
+        } catch {
+            throw MachineManagerError.persistence(
+                "could not verify the installed Linux accelerated runtime: \(error.localizedDescription)"
+            )
+        }
+    }
+
+    private func machineFirmwareIdentifierPath(id: String) -> String {
+        "\(machineStateDirectory(id: id))/MachineIdentifier"
+    }
+
+    private func machineFirmwareNVRAMPath(id: String) -> String {
+        "\(machineStateDirectory(id: id))/NVRAM"
+    }
+
+    private func machineInstallerFirmwareNVRAMPath(id: String) -> String {
+        "\(machineStateDirectory(id: id))/NVRAM.installer"
+    }
+
+    private func machineFirmwarePromotionMarkerPath(id: String) -> String {
+        "\(machineStateDirectory(id: id))/\(Self.installerFirmwarePromotionMarkerName)"
+    }
+
+    private static func installerFirmwarePromotionMarkerData(machineID: String) -> Data {
+        Data("dory-nvram-promotion-v1\nmachine=\(machineID)\n".utf8)
+    }
+
+    private func installerFirmwareVariableStorePromotionRequired(
+        from current: DoryMachineConfiguration,
+        to updated: DoryMachineConfiguration
+    ) throws -> Bool {
+        guard current.bootMode == .efi,
+              current.installerISOPath != nil,
+              updated.installerISOPath == nil else {
+            return false
+        }
+        let installedNVRAM = machineFirmwareNVRAMPath(id: current.id)
+        if Self.pathEntryExists(installedNVRAM) {
+            guard Self.isPrivateRegularFile(path: installedNVRAM) else {
+                throw MachineManagerError.persistence(
+                    "installed EFI variable store failed managed-storage validation"
+                )
+            }
+            return false
+        }
+        let installerNVRAM = machineInstallerFirmwareNVRAMPath(id: current.id)
+        guard Self.pathEntryExists(installerNVRAM),
+              Self.isPrivateRegularFile(path: installerNVRAM) else {
+            throw MachineManagerError.persistence(
+                "the installer has not produced a valid EFI variable store; keep the ISO attached and complete an installer boot before ejecting it"
+            )
+        }
+        return true
+    }
+
+    /// The first installed EFI boot must inherit the Boot#### entries written by the installer.
+    /// Keep a later recovery attachment isolated: once an installed variable store exists it is
+    /// authoritative and must not be overwritten by the CD-first installer store.
+    private func promoteInstallerFirmwareVariableStoreIfNeeded(
+        from current: DoryMachineConfiguration,
+        to updated: DoryMachineConfiguration
+    ) throws -> Bool {
+        guard current.bootMode == .efi,
+              current.installerISOPath != nil,
+              updated.installerISOPath == nil else {
+            return false
+        }
+        try reconcilePendingInstallerFirmwarePromotionIfNeeded(for: current)
+        guard try installerFirmwareVariableStorePromotionRequired(
+            from: current,
+            to: updated
+        ) else { return false }
+        let directory = machineStateDirectory(id: current.id)
+        let installerNVRAM = machineInstallerFirmwareNVRAMPath(id: current.id)
+        let installedNVRAM = machineFirmwareNVRAMPath(id: current.id)
+        let marker = machineFirmwarePromotionMarkerPath(id: current.id)
+        do {
+            try Self.writeDurablePrivateData(
+                Self.installerFirmwarePromotionMarkerData(machineID: current.id),
+                toPath: marker
+            )
+            try Self.syncDirectory(path: directory)
+            try Self.cloneOrCopyFile(
+                source: installerNVRAM,
+                destination: installedNVRAM
+            )
+            try Self.syncDirectory(path: directory)
+            return true
+        } catch {
+            if Self.pathEntryExists(installedNVRAM),
+               Self.isPrivateRegularFile(path: installedNVRAM) {
+                _ = unlink(installedNVRAM)
+            }
+            if Self.pathEntryExists(marker),
+               Self.isOwnedPrivateRegularFileAllowingEmpty(path: marker) {
+                _ = unlink(marker)
+            }
+            try? Self.syncDirectory(path: directory)
+            throw error
+        }
+    }
+
+    /// A later recovery attachment must enter firmware with a fresh removable-media variable
+    /// store. Reusing the installation store can preserve a disk-first BootOrder and silently skip
+    /// the newly attached ISO. The installed `NVRAM` remains authoritative and is never touched.
+    private func resetInstallerFirmwareVariableStoreForRecoveryIfNeeded(
+        from current: DoryMachineConfiguration,
+        to updated: DoryMachineConfiguration
+    ) throws {
+        guard current.bootMode == .efi,
+              current.installerISOPath == nil,
+              updated.installerISOPath != nil else {
+            return
+        }
+        let installerNVRAM = machineInstallerFirmwareNVRAMPath(id: current.id)
+        guard Self.pathEntryExists(installerNVRAM) else { return }
+        guard Self.isPrivateRegularFile(path: installerNVRAM) else {
+            throw MachineManagerError.persistence(
+                "installer EFI variable store failed managed-storage validation"
+            )
+        }
+        guard unlink(installerNVRAM) == 0 else {
+            throw MachineManagerError.persistence(
+                "could not reset installer EFI variable store: \(String(cString: strerror(errno)))"
+            )
+        }
+        try Self.syncDirectory(path: machineStateDirectory(id: current.id))
+    }
+
+    private func rollbackPromotedInstallerFirmwareVariableStoreIfNeeded(
+        _ promoted: Bool,
+        machineID: String
+    ) throws {
+        guard promoted else { return }
+        let directory = machineStateDirectory(id: machineID)
+        let installedNVRAM = machineFirmwareNVRAMPath(id: machineID)
+        if Self.pathEntryExists(installedNVRAM) {
+            guard Self.isPrivateRegularFile(path: installedNVRAM) else {
+                throw MachineManagerError.persistence(
+                    "promoted EFI variable store failed managed-storage validation"
+                )
+            }
+            guard unlink(installedNVRAM) == 0 else {
+                throw MachineManagerError.persistence(
+                    "could not roll back promoted EFI variable store: \(String(cString: strerror(errno)))"
+                )
+            }
+        }
+        let marker = machineFirmwarePromotionMarkerPath(id: machineID)
+        if Self.pathEntryExists(marker) {
+            guard Self.isOwnedPrivateRegularFileAllowingEmpty(path: marker),
+                  unlink(marker) == 0 else {
+                throw MachineManagerError.persistence(
+                    "could not roll back the EFI variable-store promotion journal"
+                )
+            }
+        }
+        try Self.syncDirectory(path: directory)
+    }
+
+    private func finalizeInstallerFirmwareVariableStorePromotionIfNeeded(
+        _ promoted: Bool,
+        machineID: String
+    ) throws {
+        guard promoted else { return }
+        let marker = machineFirmwarePromotionMarkerPath(id: machineID)
+        guard Self.readPrivateMetadata(path: marker)
+                == Self.installerFirmwarePromotionMarkerData(machineID: machineID) else {
+            throw MachineManagerError.persistence(
+                "EFI variable-store promotion journal failed validation"
+            )
+        }
+        guard unlink(marker) == 0 else {
+            throw MachineManagerError.persistence(
+                "could not commit the EFI variable-store promotion journal"
+            )
+        }
+        try Self.syncDirectory(path: machineStateDirectory(id: machineID))
+    }
+
+    private func reconcilePendingInstallerFirmwarePromotionIfNeeded(
+        for machine: DoryMachineConfiguration
+    ) throws {
+        let marker = machineFirmwarePromotionMarkerPath(id: machine.id)
+        guard Self.pathEntryExists(marker) else { return }
+        let expected = Self.installerFirmwarePromotionMarkerData(machineID: machine.id)
+        let complete = Self.readPrivateMetadata(path: marker) == expected
+        let recoverablePartial = Self.isOwnedPrivateRegularFileAllowingEmpty(path: marker)
+        guard complete || (machine.installerISOPath != nil && recoverablePartial) else {
+            throw MachineManagerError.persistence(
+                "EFI variable-store promotion journal is incomplete or invalid"
+            )
+        }
+
+        let directory = machineStateDirectory(id: machine.id)
+        let installedNVRAM = machineFirmwareNVRAMPath(id: machine.id)
+        if machine.installerISOPath != nil {
+            if Self.pathEntryExists(installedNVRAM) {
+                guard Self.isPrivateRegularFile(path: installedNVRAM),
+                      unlink(installedNVRAM) == 0 else {
+                    throw MachineManagerError.persistence(
+                        "could not roll back an interrupted EFI variable-store promotion"
+                    )
+                }
+            }
+        } else if !Self.pathEntryExists(installedNVRAM) {
+            let installerNVRAM = machineInstallerFirmwareNVRAMPath(id: machine.id)
+            guard complete, Self.isPrivateRegularFile(path: installerNVRAM) else {
+                throw MachineManagerError.persistence(
+                    "interrupted EFI variable-store promotion has no recoverable source"
+                )
+            }
+            try Self.cloneOrCopyFile(
+                source: installerNVRAM,
+                destination: installedNVRAM
+            )
+            try Self.syncDirectory(path: directory)
+        } else if !Self.isPrivateRegularFile(path: installedNVRAM) {
+            throw MachineManagerError.persistence(
+                "interrupted EFI variable-store promotion has an invalid destination"
+            )
+        }
+        guard Self.isOwnedPrivateRegularFileAllowingEmpty(path: marker),
+              unlink(marker) == 0 else {
+            throw MachineManagerError.persistence(
+                "could not reconcile the EFI variable-store promotion journal"
+            )
+        }
+        try Self.syncDirectory(path: directory)
+    }
+
+    private func recoverPendingInstallerFirmwarePromotions() {
+        for machineID in Array(machines.keys) {
+            guard var entry = machines[machineID] else { continue }
+            do {
+                try reconcilePendingInstallerFirmwarePromotionIfNeeded(
+                    for: entry.configuration
+                )
+            } catch {
+                entry.state = .failed
+                setFailure(
+                    on: &entry,
+                    code: .lifecycleRecoveryRequired,
+                    message: "EFI variable-store promotion recovery failed: \(error)",
+                    causes: [.filesystem, .journal],
+                    recoveryDisposition: .repair
+                )
+                machines[machineID] = entry
+            }
+        }
+    }
+
     private func snapshotDirectory(machineID: String) -> String {
         "\(machineStateDirectory(id: machineID))/snapshots"
     }
@@ -1451,6 +10976,14 @@ public final class MachineManager: @unchecked Sendable {
 
     private func snapshotKernelPath(machineID: String, snapshotID: String) -> String {
         "\(snapshotDirectory(machineID: machineID))/\(snapshotID).kernel"
+    }
+
+    private func snapshotMachineIdentifierPath(machineID: String, snapshotID: String) -> String {
+        "\(snapshotDirectory(machineID: machineID))/\(snapshotID).machine-identifier"
+    }
+
+    private func snapshotNVRAMPath(machineID: String, snapshotID: String) -> String {
+        "\(snapshotDirectory(machineID: machineID))/\(snapshotID).nvram"
     }
 
     private func availableImportedSnapshotID(machineID: String, preferredID: String) throws -> String {
@@ -1470,6 +11003,8 @@ public final class MachineManager: @unchecked Sendable {
         Self.pathEntryExists(snapshotMetadataPath(machineID: machineID, snapshotID: snapshotID))
             || Self.pathEntryExists(snapshotRootfsPath(machineID: machineID, snapshotID: snapshotID))
             || Self.pathEntryExists(snapshotKernelPath(machineID: machineID, snapshotID: snapshotID))
+            || Self.pathEntryExists(snapshotMachineIdentifierPath(machineID: machineID, snapshotID: snapshotID))
+            || Self.pathEntryExists(snapshotNVRAMPath(machineID: machineID, snapshotID: snapshotID))
     }
 
     private func configurationAndRunningState(id: String) throws -> (DoryMachineConfiguration, Bool) {
@@ -1479,10 +11014,46 @@ public final class MachineManager: @unchecked Sendable {
             throw MachineManagerError.unknownMachine(id)
         }
         try validateManagedMachineArtifacts(entry.configuration)
-        return (entry.configuration, entry.process?.isRunning == true)
+        // Process.isRunning can briefly read false at the spawn/termination callback boundary.
+        // The supervisor lifecycle is authoritative: a running/starting entry with an active or
+        // scheduled helper must be stopped and restarted for a configuration transaction.
+        guard entry.state != .paused else {
+            throw MachineManagerError.persistence(
+                "machine \(id) must be resumed or stopped before this mutation"
+            )
+        }
+        guard entry.state != .suspended else {
+            throw MachineManagerError.persistence(
+                "machine \(id) must be restored before this mutation"
+            )
+        }
+        let active = [.starting, .running].contains(entry.state) && entry.process != nil
+        return (entry.configuration, active)
+    }
+
+    private func configurationAndPowerState(
+        id: String
+    ) throws -> (DoryMachineConfiguration, DoryMachineState) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let entry = machines[id] else {
+            throw MachineManagerError.unknownMachine(id)
+        }
+        try validateManagedMachineArtifacts(entry.configuration)
+        return (entry.configuration, entry.state)
     }
 
     private func publishConfiguration(_ configuration: DoryMachineConfiguration) throws {
+        let identity = runtimeIdentityForUnplannedMachine(reason: .definitionChanged)
+        var identityPersistenceError: String?
+        do {
+            try persistRuntimeIdentity(identity, configuration: configuration)
+        } catch {
+            // machine.json is already the durable authority at every call site. Never leave the
+            // in-memory configuration behind that commit; a missing/stale companion fails closed
+            // to requires-replanning on the next restart.
+            identityPersistenceError = "runtime identity publication requires recovery: \(error)"
+        }
         lock.lock()
         defer { lock.unlock() }
         guard var entry = machines[configuration.id] else {
@@ -1490,21 +11061,277 @@ public final class MachineManager: @unchecked Sendable {
         }
         entry.configuration = configuration
         entry.currentBalloonTargetMB = nil
+        entry.runtimeIdentity = identity
+        if let identityPersistenceError {
+            setFailure(
+                on: &entry,
+                code: .workspaceAuthorityInvalid,
+                message: identityPersistenceError,
+                causes: [.runtimeAuthority, .filesystem],
+                recoveryDisposition: .replan
+            )
+        }
         machines[configuration.id] = entry
     }
 
-    private func prepareMachineArtifacts(_ machine: DoryMachineConfiguration) throws -> DoryMachineConfiguration {
+    private func runtimeIdentityForUnplannedMachine(
+        reason: DoryMachineRuntimeIdentityInvalidationReason = .planNotInstalled
+    ) -> DoryMachineRuntimeIdentity {
+        switch launchPolicy {
+        case .legacyCompatibility:
+            return .legacyCompatibility(
+                virtualHardwareABIVersion:
+                    DoryVirtualMachineDefinition.currentVirtualHardwareABIVersion
+            )
+        case .requireResolvedPlan, .perWorkspaceAuthority:
+            return .requiresReplanning(
+                virtualHardwareABIVersion:
+                    DoryVirtualMachineDefinition.currentVirtualHardwareABIVersion,
+                reason: reason
+            )
+        }
+    }
+
+    private func runtimeIdentityAfterSnapshotRestore(
+        _ snapshotIdentity: DoryMachineRuntimeIdentity,
+        sourceIdentity: DoryMachineRuntimeIdentity
+    ) -> DoryMachineRuntimeIdentity {
+        switch launchPolicy {
+        case .legacyCompatibility:
+            return .legacyCompatibility(
+                virtualHardwareABIVersion: snapshotIdentity.virtualHardwareABIVersion
+            )
+        case .requireResolvedPlan:
+            return .requiresReplanning(
+                virtualHardwareABIVersion: snapshotIdentity.virtualHardwareABIVersion,
+                reason: .restoredSnapshot
+            )
+        case .perWorkspaceAuthority:
+            if sourceIdentity.mode == .legacyCompatibility,
+               snapshotIdentity.mode == .legacyCompatibility {
+                return .legacyCompatibility(
+                    virtualHardwareABIVersion: snapshotIdentity.virtualHardwareABIVersion
+                )
+            }
+            return .requiresReplanning(
+                virtualHardwareABIVersion: snapshotIdentity.virtualHardwareABIVersion,
+                reason: .restoredSnapshot
+            )
+        }
+    }
+
+    private func shouldRestartAfterSnapshotRestore(
+        _ targetIdentity: DoryMachineRuntimeIdentity
+    ) -> Bool {
+        switch launchPolicy {
+        case .legacyCompatibility:
+            return true
+        case .requireResolvedPlan:
+            return false
+        case .perWorkspaceAuthority:
+            return targetIdentity.mode == .legacyCompatibility
+        }
+    }
+
+    /// Reconstructs durable identity only when the persisted plan still binds the exact current
+    /// authoritative definition. Missing, stale, or migration-only plans remain visibly blocked
+    /// instead of being mislabeled as legacy compatibility after a daemon restart.
+    private func recoverResolvedRuntimeIdentities(
+        plans: any DoryResolvedMachinePlanStoring,
+        expectedPlanRevision: ResolvedPlanRevisionProvider
+    ) {
+        let entries: [(String, DoryMachineConfiguration, DoryMachineRuntimeIdentity)] = {
+            lock.lock()
+            defer { lock.unlock() }
+            return machines.map {
+                ($0.key, $0.value.configuration, $0.value.runtimeIdentity)
+            }
+        }()
+        for (id, machine, existingIdentity) in entries {
+            if launchPolicy == .perWorkspaceAuthority {
+                switch existingIdentity.mode {
+                case .legacyCompatibility, .requiresReplanning:
+                    // Only an acquired planning mutation fence may cross either authority
+                    // boundary. An old definition-exact plan cannot cover a restored/imported or
+                    // otherwise changed mutable disk.
+                    continue
+                case .resolvedPlan:
+                    break
+                }
+            }
+            var recovered = exactResolvedRuntimeIdentity(
+                machine: machine,
+                plans: plans,
+                expectedPlanRevision: expectedPlanRevision
+            ) ?? .requiresReplanning(
+                virtualHardwareABIVersion:
+                    existingIdentity.virtualHardwareABIVersion,
+                reason: .planRecoveryFailed
+            )
+            if launchPolicy == .perWorkspaceAuthority,
+               recovered != existingIdentity {
+                recovered = .requiresReplanning(
+                    virtualHardwareABIVersion: existingIdentity.virtualHardwareABIVersion,
+                    reason: .planRecoveryFailed
+                )
+            }
+            var persistenceError: String?
+            var effectiveIdentity = recovered
+            if launchPolicy == .perWorkspaceAuthority {
+                do {
+                    if recovered != existingIdentity {
+                        try persistRuntimeIdentity(recovered, configuration: machine)
+                    }
+                }
+                catch {
+                    persistenceError = "runtime identity recovery could not be persisted: \(error)"
+                    effectiveIdentity = .requiresReplanning(
+                        virtualHardwareABIVersion: recovered.virtualHardwareABIVersion,
+                        reason: .planRecoveryFailed
+                    )
+                }
+            }
+            lock.lock()
+            if var entry = machines[id] {
+                entry.runtimeIdentity = effectiveIdentity
+                if let persistenceError {
+                    setFailure(
+                        on: &entry,
+                        code: .workspaceAuthorityInvalid,
+                        message: persistenceError,
+                        causes: [.runtimeAuthority, .filesystem],
+                        recoveryDisposition: .replan
+                    )
+                }
+                machines[id] = entry
+            }
+            lock.unlock()
+        }
+    }
+
+    private func exactResolvedRuntimeIdentity(
+        machine: DoryMachineConfiguration,
+        plans: any DoryResolvedMachinePlanStoring,
+        expectedPlanRevision: ResolvedPlanRevisionProvider
+    ) -> DoryMachineRuntimeIdentity? {
+        guard let legacyData = Self.readPrivateMetadata(path: machineConfigPath(id: machine.id)),
+              let definition = reconcileWorkspaceProjection(
+                machine: machine,
+                authoritativeLegacyData: legacyData
+              ),
+              let canonicalData = try? Self.canonicalDefinitionData(definition),
+              let plan = try? plans.read(id: machine.id),
+              expectedPlanRevision(machine.id) == plan.planRevision,
+              plan.machineID == machine.id,
+              plan.definitionRevision == definition.lifecycle.revision,
+              plan.definitionSHA256 == Self.sha256(data: canonicalData),
+              plan.migrationDisposition == .current,
+              plan.validate().isEmpty else {
+            return nil
+        }
+        return try? DoryMachineRuntimeIdentity(
+            resolvedPlan: plan,
+            planSHA256: DoryMachineRuntimeIdentity.planSHA256(plan)
+        )
+    }
+
+    private func completePlanningRuntimeIdentity(machineID: String) throws {
+        // Recovery completes planning before production activation installs the launch graph.
+        // Both planning and start deliberately use the canonical manager state root, so reading
+        // the exact durable plan here does not invent evidence or select a backend.
+        let installedPlanningInfrastructure = managerStateLock.withLock {
+            (resolvedLaunchPlanStore, resolvedPlanRevisionProvider)
+        }
+        let plans: any DoryResolvedMachinePlanStoring = installedPlanningInfrastructure.0
+            ?? DoryResolvedMachinePlanRepository(root: configuration.stateDirectory)
+        let expectedPlanRevision: ResolvedPlanRevisionProvider =
+            installedPlanningInfrastructure.1 ?? { machineID in
+                try? plans.read(id: machineID).planRevision
+            }
+        lock.lock()
+        let machine = machines[machineID]?.configuration
+        lock.unlock()
+        guard let machine,
+              let identity = exactResolvedRuntimeIdentity(
+                machine: machine,
+                plans: plans,
+                expectedPlanRevision: expectedPlanRevision
+              ) else {
+            throw MachineManagerError.persistence(
+                "published plan does not match current workspace authority"
+            )
+        }
+        try persistRuntimeIdentity(identity, configuration: machine)
+        lock.lock()
+        guard var entry = machines[machineID], entry.configuration == machine else {
+            lock.unlock()
+            throw MachineManagerError.persistence(
+                "machine authority changed while completing planning"
+            )
+        }
+        entry.runtimeIdentity = identity
+        clearFailure(on: &entry)
+        machines[machineID] = entry
+        lock.unlock()
+    }
+
+    private func prepareMachineArtifacts(
+        _ machine: DoryMachineConfiguration,
+        cloneAuthority: DoryMachineCloneCreationAuthority? = nil
+    ) throws -> DoryMachineConfiguration {
         let rootfsDestination = machineRootfsPath(id: machine.id)
         let kernelDestination = machineKernelPath(id: machine.id)
-        guard machine.rootfsPath != rootfsDestination, machine.kernelPath != kernelDestination else {
+        let installerDestination = machineInstallerISOPath(id: machine.id)
+        guard machine.rootfsPath != rootfsDestination, machine.kernelPath != kernelDestination,
+              machine.installerISOPath != installerDestination else {
             throw MachineManagerError.persistence("machine artifacts must be imported into managed storage")
         }
         do {
-            try Self.cloneOrCopyFile(source: machine.rootfsPath, destination: rootfsDestination)
-            try Self.cloneOrCopyFile(source: machine.kernelPath, destination: kernelDestination)
             var copy = machine
+            switch machine.bootMode {
+            case .linuxKernel:
+                try Self.cloneOrCopyFile(
+                    source: machine.rootfsPath,
+                    destination: rootfsDestination,
+                    requiresCopyOnWrite: cloneAuthority != nil,
+                    expectedSHA256: cloneAuthority?.rootfsSHA256,
+                    expectedByteCount: cloneAuthority?.rootfsByteCount
+                )
+                try Self.cloneOrCopyFile(source: machine.kernelPath, destination: kernelDestination)
+            case .efi:
+                if Self.isRegularNonemptyFile(path: machine.rootfsPath) {
+                    try Self.cloneOrCopyFile(
+                        source: machine.rootfsPath,
+                        destination: rootfsDestination,
+                        requiresCopyOnWrite: cloneAuthority != nil,
+                        expectedSHA256: cloneAuthority?.rootfsSHA256,
+                        expectedByteCount: cloneAuthority?.rootfsByteCount
+                    )
+                } else if let diskSizeBytes = machine.diskSizeBytes {
+                    guard cloneAuthority == nil else {
+                        throw MachineManagerError.persistence(
+                            "a linked clone requires an existing snapshot root disk"
+                        )
+                    }
+                    try Self.createPrivateSparseFile(path: rootfsDestination, sizeBytes: diskSizeBytes)
+                } else {
+                    throw MachineManagerError.persistence("EFI machine is missing its disk source or size")
+                }
+                if DoryInstalledLinuxBootBundle.isBundle(atPath: machine.kernelPath) {
+                    // EFI snapshot clones carry this opaque, verified bundle in the existing
+                    // kernel artifact, so acceleration survives the full machine lifecycle.
+                    try Self.cloneOrCopyFile(source: machine.kernelPath, destination: kernelDestination)
+                } else {
+                    try Self.createPrivateFile(path: kernelDestination, contents: Data("DORY-EFI\n".utf8))
+                }
+                if let installerISOPath = machine.installerISOPath {
+                    try Self.cloneOrCopyFile(source: installerISOPath, destination: installerDestination)
+                    copy.installerISOPath = installerDestination
+                }
+            }
             copy.rootfsPath = rootfsDestination
             copy.kernelPath = kernelDestination
+            copy.diskSizeBytes = nil
             return copy
         } catch {
             throw MachineManagerError.persistence("could not prepare artifacts for \(machine.id): \(error)")
@@ -1525,20 +11352,38 @@ public final class MachineManager: @unchecked Sendable {
               Self.isPrivateRegularFile(path: expectedKernelPath) else {
             throw MachineManagerError.persistence("machine kernel failed managed-storage validation")
         }
+        if let installerISOPath = machine.installerISOPath {
+            let expectedInstallerISOPath = machineInstallerISOPath(id: machine.id)
+            guard machine.bootMode == .efi,
+                  installerISOPath == expectedInstallerISOPath,
+                  Self.isPrivateRegularFile(path: expectedInstallerISOPath) else {
+                throw MachineManagerError.persistence("machine installer ISO failed managed-storage validation")
+            }
+        }
     }
 
     private func restoreManagedArtifacts(
         machine: DoryMachineConfiguration,
         snapshot: DoryMachineSnapshot,
+        operationID: UUID,
         commit: () throws -> Void
     ) throws {
         let directory = machineStateDirectory(id: machine.id)
-        let token = UUID().uuidString
-        let rootfsBackup = "\(directory)/.restore-rootfs-\(token)"
-        let kernelBackup = "\(directory)/.restore-kernel-\(token)"
+        let token = operationID.uuidString.lowercased()
+        let rootfsBackup = "\(directory)/.restore-\(token)-rootfs"
+        let kernelBackup = "\(directory)/.restore-\(token)-kernel"
+        let machineIdentifierBackup = "\(directory)/.restore-\(token)-machine-identifier"
+        let nvramBackup = "\(directory)/.restore-\(token)-nvram"
+        let configurationBackup = "\(directory)/.restore-\(token)-machine-json"
+        var preserveBackupsForRecovery = false
         defer {
-            try? FileManager.default.removeItem(atPath: rootfsBackup)
-            try? FileManager.default.removeItem(atPath: kernelBackup)
+            if !preserveBackupsForRecovery {
+                try? FileManager.default.removeItem(atPath: rootfsBackup)
+                try? FileManager.default.removeItem(atPath: kernelBackup)
+                try? FileManager.default.removeItem(atPath: machineIdentifierBackup)
+                try? FileManager.default.removeItem(atPath: nvramBackup)
+                try? FileManager.default.removeItem(atPath: configurationBackup)
+            }
         }
         try Self.cloneOrCopyFile(source: machine.rootfsPath, destination: rootfsBackup)
         do {
@@ -1546,6 +11391,44 @@ public final class MachineManager: @unchecked Sendable {
         } catch {
             throw MachineManagerError.persistence("could not preserve live kernel before restore: \(error)")
         }
+        do {
+            try Self.cloneOrCopyFile(
+                source: machineConfigPath(id: machine.id),
+                destination: configurationBackup
+            )
+        } catch {
+            throw MachineManagerError.persistence(
+                "could not preserve machine metadata before restore: \(error)"
+            )
+        }
+        let firmwareRestore: (identifier: String, nvram: String, snapshotIdentifier: String, snapshotNVRAM: String)?
+        if snapshot.bootMode == .efi {
+            let identifier = machineFirmwareIdentifierPath(id: machine.id)
+            let nvram = machineFirmwareNVRAMPath(id: machine.id)
+            guard let snapshotIdentifier = snapshot.machineIdentifierPath,
+                  let snapshotNVRAM = snapshot.nvramPath,
+                  Self.isPrivateRegularFile(path: identifier),
+                  Self.isPrivateRegularFile(path: nvram) else {
+                throw MachineManagerError.persistence("could not preserve live EFI firmware before restore")
+            }
+            do {
+                try Self.cloneOrCopyFile(source: identifier, destination: machineIdentifierBackup)
+                try Self.cloneOrCopyFile(source: nvram, destination: nvramBackup)
+            } catch {
+                throw MachineManagerError.persistence("could not preserve live EFI firmware before restore: \(error)")
+            }
+            firmwareRestore = (identifier, nvram, snapshotIdentifier, snapshotNVRAM)
+        } else {
+            firmwareRestore = nil
+        }
+#if DEBUG
+        do {
+            try injectLifecycleFault(.restoreAfterBackups)
+        } catch {
+            preserveBackupsForRecovery = true
+            throw error
+        }
+#endif
         do {
             try Self.cloneOrCopyFile(
                 source: snapshot.rootfsPath,
@@ -1557,6 +11440,27 @@ public final class MachineManager: @unchecked Sendable {
                 destination: machine.kernelPath,
                 replaceExisting: true
             )
+            if let firmwareRestore {
+                try Self.cloneOrCopyFile(
+                    source: firmwareRestore.snapshotIdentifier,
+                    destination: firmwareRestore.identifier,
+                    replaceExisting: true
+                )
+                try Self.cloneOrCopyFile(
+                    source: firmwareRestore.snapshotNVRAM,
+                    destination: firmwareRestore.nvram,
+                    replaceExisting: true
+                )
+            }
+            guard Self.recoveredLiveArtifactsMatch(
+                snapshot: snapshot,
+                machineID: machine.id,
+                configuration: configuration
+            ) else {
+                throw MachineManagerError.persistence(
+                    "restored machine artifacts do not match bound snapshot evidence"
+                )
+            }
             try commit()
         } catch {
             var rollbackFailures: [String] = []
@@ -1577,6 +11481,35 @@ public final class MachineManager: @unchecked Sendable {
                 )
             } catch {
                 rollbackFailures.append("kernel rollback failed: \(error)")
+            }
+            do {
+                try Self.cloneOrCopyFile(
+                    source: configurationBackup,
+                    destination: machineConfigPath(id: machine.id),
+                    replaceExisting: true
+                )
+            } catch {
+                rollbackFailures.append("machine metadata rollback failed: \(error)")
+            }
+            if let firmwareRestore {
+                do {
+                    try Self.cloneOrCopyFile(
+                        source: machineIdentifierBackup,
+                        destination: firmwareRestore.identifier,
+                        replaceExisting: true
+                    )
+                } catch {
+                    rollbackFailures.append("machine identifier rollback failed: \(error)")
+                }
+                do {
+                    try Self.cloneOrCopyFile(
+                        source: nvramBackup,
+                        destination: firmwareRestore.nvram,
+                        replaceExisting: true
+                    )
+                } catch {
+                    rollbackFailures.append("NVRAM rollback failed: \(error)")
+                }
             }
             guard rollbackFailures.isEmpty else {
                 throw MachineManagerError.persistence(
@@ -1638,26 +11571,29 @@ public final class MachineManager: @unchecked Sendable {
         _ = rmdir(owner)
     }
 
-    private func persist(_ machine: DoryMachineConfiguration) throws {
+    private func persist(
+        _ machine: DoryMachineConfiguration,
+        reconcilesLegacyProjection: Bool = true
+    ) throws {
         let fileManager = FileManager.default
         let directory = machineStateDirectory(id: machine.id)
         let temporaryPath = "\(directory)/\(Self.machineMetadataTemporaryPrefix)\(UUID().uuidString)"
+        var authoritativeLegacyData: Data?
         do {
             try fileManager.createDirectory(
                 atPath: directory,
                 withIntermediateDirectories: true
             )
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            let data = try encoder.encode(machine)
+            let data = try DoryMachineConfigurationMigrationBridge.encodeLegacy(machine)
             let path = machineConfigPath(id: machine.id)
-            try data.write(to: URL(fileURLWithPath: temporaryPath), options: .atomic)
-            try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: temporaryPath)
+            try Self.writeDurablePrivateData(data, toPath: temporaryPath)
             guard rename(temporaryPath, path) == 0 else {
                 throw MachineManagerError.persistence(
                     "could not publish machine metadata: \(String(cString: strerror(errno)))"
                 )
             }
+            try Self.syncDirectory(path: directory)
+            authoritativeLegacyData = data
         } catch let error as MachineManagerError {
             try? fileManager.removeItem(atPath: temporaryPath)
             throw error
@@ -1665,6 +11601,366 @@ public final class MachineManager: @unchecked Sendable {
             try? fileManager.removeItem(atPath: temporaryPath)
             throw MachineManagerError.persistence("\(error)")
         }
+        // The rename above is the commit point. Projection is intentionally best-effort and
+        // ordered afterwards: a v2 failure must never roll back or hide working legacy metadata.
+        _ = managerStateLock.withLock {
+            resolvedLaunchIdentities.removeValue(forKey: machine.id)
+        }
+        if reconcilesLegacyProjection, let authoritativeLegacyData {
+            _ = reconcileWorkspaceProjection(
+                machine: machine,
+                authoritativeLegacyData: authoritativeLegacyData
+            )
+        }
+    }
+
+    private func persistRuntimeIdentity(
+        _ identity: DoryMachineRuntimeIdentity,
+        configuration machine: DoryMachineConfiguration
+    ) throws {
+        guard identity.validate().isEmpty,
+              let authoritativeLegacyData = Self.readPrivateMetadata(
+                path: machineConfigPath(id: machine.id)
+              ),
+              let decoded = try? JSONDecoder().decode(
+                DoryMachineConfiguration.self,
+                from: authoritativeLegacyData
+              ),
+              decoded == machine else {
+            throw MachineManagerError.persistence(
+                "runtime identity does not match authoritative machine metadata"
+            )
+        }
+        do {
+            try runtimeIdentityStore.publish(
+                identity,
+                machineID: machine.id,
+                authoritativeLegacyData: authoritativeLegacyData
+            )
+        } catch {
+            throw MachineManagerError.persistence(
+                "could not publish runtime identity for \(machine.id): \(error)"
+            )
+        }
+    }
+
+    private func reconcileLoadedWorkspaceProjections() {
+        let configurations = machines.values.map(\.configuration)
+            .sorted { $0.id < $1.id }
+        for machine in configurations {
+            guard let data = Self.readPrivateMetadata(path: machineConfigPath(id: machine.id)) else {
+                setWorkspaceProjectionDiagnostic(
+                    DoryWorkspaceProjectionDiagnostic(
+                        state: .unavailable,
+                        failureCode: .repositoryFailure,
+                        message: "authoritative legacy metadata could not be reread"
+                    ),
+                    id: machine.id
+                )
+                continue
+            }
+            _ = reconcileWorkspaceProjection(machine: machine, authoritativeLegacyData: data)
+        }
+    }
+
+    private func reconcileWorkspaceProjection(
+        machine: DoryMachineConfiguration,
+        authoritativeLegacyData: Data
+    ) -> DoryVirtualMachineDefinition? {
+        do {
+            let authority = try workspaceAuthority(
+                machine: machine,
+                authoritativeLegacyData: authoritativeLegacyData
+            )
+            setWorkspaceProjectionDiagnostic(
+                DoryWorkspaceProjectionDiagnostic(
+                    state: authority.reconcileState == .unchanged
+                        ? .current : .regenerated
+                ),
+                id: machine.id
+            )
+            return authority.definition
+        } catch let error as DoryMachineConfigurationMigrationError {
+            setWorkspaceProjectionDiagnostic(
+                DoryWorkspaceProjectionDiagnostic(
+                    state: .unavailable,
+                    failureCode: .unsupportedLegacyConfiguration,
+                    message: error.localizedDescription
+                ),
+                id: machine.id
+            )
+            return nil
+        } catch let error as DoryWorkspaceRepositoryError {
+            setWorkspaceProjectionDiagnostic(
+                DoryWorkspaceProjectionDiagnostic(
+                    state: .unavailable,
+                    failureCode: .repositoryFailure,
+                    message: error.description
+                ),
+                id: machine.id
+            )
+            return nil
+        } catch {
+            setWorkspaceProjectionDiagnostic(
+                DoryWorkspaceProjectionDiagnostic(
+                    state: .unavailable,
+                    failureCode: .repositoryFailure,
+                    message: String(describing: error)
+                ),
+                id: machine.id
+            )
+            return nil
+        }
+    }
+
+    private func workspaceAuthority(
+        machine: DoryMachineConfiguration,
+        authoritativeLegacyData: Data
+    ) throws -> MachineWorkspaceAuthority {
+        let facts = try workspaceMigrationFacts(for: machine)
+        var migration = try DoryMachineConfigurationMigrationBridge.migrate(
+            machine,
+            facts: facts
+        )
+        let factsData = try Self.workspaceMigrationAuthorityData(facts)
+        let currentRecord: DoryWorkspaceRepositoryRecord?
+        do {
+            currentRecord = try workspaceRepository.readPersistedRecord(id: machine.id)
+        } catch let error as DoryWorkspaceRepositoryError {
+            if case .workspaceNotFound = error {
+                currentRecord = nil
+            } else {
+                throw error
+            }
+        }
+
+        let definition: DoryVirtualMachineDefinition
+        let isNative: Bool
+        let reconcileState: DoryWorkspaceLegacyProjectionReconcileState
+        if let currentRecord,
+           currentRecord.legacyConfigurationSHA256 == nil,
+           currentRecord.legacyMigrationFactsSHA256 == nil {
+            let nativeDefinition: DoryVirtualMachineDefinition
+            if let migrated = try migrateNativeDirectKernelMediaIfNeeded(
+                currentRecord.definition,
+                compatibility: migration.definition
+            ) {
+                try workspaceRepository.replace(
+                    migrated,
+                    expectedRevision: currentRecord.definition.lifecycle.revision
+                )
+                nativeDefinition = migrated
+                reconcileState = .published
+            } else {
+                nativeDefinition = currentRecord.definition
+                reconcileState = .unchanged
+            }
+            guard Self.nativeDefinition(
+                nativeDefinition,
+                isCompatibleWith: migration.definition
+            ) else {
+                throw DoryWorkspaceRepositoryError.staleLegacyProjection(machine.id)
+            }
+            definition = nativeDefinition
+            isNative = true
+        } else {
+            let result = try workspaceRepository.reconcileLegacyProjection(
+                migration.definition,
+                authoritativeLegacyData: authoritativeLegacyData,
+                authoritativeMigrationFactsData: factsData
+            )
+            let persisted = try workspaceRepository.readLegacyProjection(
+                id: machine.id,
+                authoritativeLegacyData: authoritativeLegacyData,
+                authoritativeMigrationFactsData: factsData
+            )
+            guard result.definition == persisted else {
+                throw DoryWorkspaceRepositoryError.staleLegacyProjection(machine.id)
+            }
+            definition = persisted
+            isNative = false
+            reconcileState = result.state
+        }
+        let compatibilityDefinition = migration.definition
+        var runtimeMigration = migration
+        runtimeMigration.definition = isNative
+            ? Self.compatibilityRuntimeDefinition(
+                definition,
+                compatibility: compatibilityDefinition
+            )
+            : definition
+        migration.definition = definition
+        return MachineWorkspaceAuthority(
+            definition: definition,
+            migration: migration,
+            migrationFactsData: factsData,
+            runtimeMachine: try runtimeMigration.legacyConfiguration(),
+            isNative: isNative,
+            reconcileState: reconcileState
+        )
+    }
+
+    /// Native records written before the raw direct-kernel media kind existed used the portable
+    /// installed-bundle label for both shapes. The compatibility machine still proves which bytes
+    /// are actually launched, so upgrade only that one exact alias and advance desired-state
+    /// authority instead of continuing to misclassify a raw kernel at production trust time.
+    private func migrateNativeDirectKernelMediaIfNeeded(
+        _ definition: DoryVirtualMachineDefinition,
+        compatibility: DoryVirtualMachineDefinition
+    ) throws -> DoryVirtualMachineDefinition? {
+        guard compatibility.boot.devices.count == 1,
+              compatibility.boot.devices[0].kind == .linuxKernel,
+              definition.boot.devices.count == 1,
+              definition.boot.devices[0].kind == .installedLinuxBootBundle else {
+            return nil
+        }
+        var legacyCompatibility = compatibility
+        legacyCompatibility.boot.devices[0].kind = .installedLinuxBootBundle
+        guard Self.nativeDefinition(
+            definition,
+            isCompatibleWith: legacyCompatibility
+        ), definition.lifecycle.revision < UInt64.max,
+           definition.lifecycle.updatedAtUnixMilliseconds < Int64.max else {
+            return nil
+        }
+        var migrated = definition
+        migrated.boot = compatibility.boot
+        migrated.lifecycle = DoryVMLifecycleMetadata(
+            revision: definition.lifecycle.revision + 1,
+            createdAtUnixMilliseconds: definition.lifecycle.createdAtUnixMilliseconds,
+            updatedAtUnixMilliseconds: definition.lifecycle.updatedAtUnixMilliseconds + 1
+        )
+        guard migrated.validate().isEmpty else {
+            throw DoryWorkspaceRepositoryError.staleLegacyProjection(
+                definition.identity.id
+            )
+        }
+        return migrated
+    }
+
+    private static func nativeDefinition(
+        _ definition: DoryVirtualMachineDefinition,
+        isCompatibleWith compatibility: DoryVirtualMachineDefinition
+    ) -> Bool {
+        var expected = compatibility
+        expected.lifecycle = definition.lifecycle
+        expected.backendPreference = definition.backendPreference
+        expected.graphics = definition.graphics
+        expected.guestIdentityIntent = definition.guestIdentityIntent
+        expected.clipboardPolicy = definition.clipboardPolicy
+        expected.sandboxPolicy = definition.sandboxPolicy
+        expected.networkMode = definition.networkMode
+        expected.portForwards = definition.portForwards
+        expected.camera = definition.camera
+        return expected == definition && definition.validate().isEmpty
+    }
+
+    /// The compatibility helper has no persisted network-mode field. Native desired state keeps
+    /// that authority in WorkspaceSpec while the exact resolved device contract is supplied at
+    /// launch; only the transient legacy projection retains its historical shared-NAT value.
+    private static func compatibilityRuntimeDefinition(
+        _ definition: DoryVirtualMachineDefinition,
+        compatibility: DoryVirtualMachineDefinition
+    ) -> DoryVirtualMachineDefinition {
+        var projected = definition
+        projected.networkMode = compatibility.networkMode
+        // Legacy machine arguments can encode only one text/image clipboard direction and no
+        // file policy. Resolved helpers receive the exact policy through their backend authority
+        // (the RawHV envelope or VZ's split device argument), while this transient projection
+        // remains representable without persisting or widening the native workspace authority.
+        projected.clipboardPolicy = compatibility.clipboardPolicy
+        // The compatibility machine persists camera intent through its typed environment bridge,
+        // but only the RawHV envelope can authorize the actual UVC transport.
+        projected.camera = compatibility.camera
+        return projected
+    }
+
+    private static func canonicalDefinitionData(
+        _ definition: DoryVirtualMachineDefinition
+    ) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return try encoder.encode(definition)
+    }
+
+    private func workspaceMigrationFacts(
+        for machine: DoryMachineConfiguration
+    ) throws -> DoryMachineConfigurationMigrationFacts {
+        let architecture: DoryGuestArchitecture
+        switch configuration.guestArchitecture.lowercased() {
+        case "arm64", "aarch64":
+            architecture = .arm64
+        case "amd64", "x86_64":
+            architecture = .x86_64
+        default:
+            throw DoryMachineConfigurationMigrationError.invalidLegacyConfiguration(
+                "unsupported guest architecture \(configuration.guestArchitecture)"
+            )
+        }
+
+        var diskInfo = stat()
+        guard lstat(machine.rootfsPath, &diskInfo) == 0,
+              (diskInfo.st_mode & S_IFMT) == S_IFREG,
+              diskInfo.st_size > 0 else {
+            throw DoryMachineConfigurationMigrationError.missingSystemDiskCapacity
+        }
+        let diskCapacity = UInt64(diskInfo.st_size)
+
+        let installedEFIBoot: DoryMachineConfigurationInstalledEFIBoot?
+        if machine.bootMode == .efi, machine.installerISOPath == nil {
+            installedEFIBoot = DoryInstalledLinuxBootBundle.isBundle(atPath: machine.kernelPath)
+                ? .installedLinuxBootBundle : .firmwareDisk
+        } else {
+            installedEFIBoot = nil
+        }
+
+        return DoryMachineConfigurationMigrationFacts(
+            guestArchitecture: architecture,
+            systemDiskCapacityBytes: diskCapacity,
+            installedEFIBoot: installedEFIBoot,
+            lifecycle: DoryVMLifecycleMetadata(
+                revision: 1,
+                createdAtUnixMilliseconds: workspaceCreationTimestamp(id: machine.id),
+                updatedAtUnixMilliseconds: workspaceCreationTimestamp(id: machine.id)
+            )
+        )
+    }
+
+    private func workspaceCreationTimestamp(id: String) -> Int64 {
+        var info = stat()
+        guard lstat(machineStateDirectory(id: id), &info) == 0 else { return 1 }
+        let time = info.st_birthtimespec.tv_sec > 0
+            ? info.st_birthtimespec : info.st_ctimespec
+        guard time.tv_sec > 0 else { return 1 }
+        let seconds = Int64(time.tv_sec)
+        let (milliseconds, overflow) = seconds.multipliedReportingOverflow(by: 1_000)
+        guard !overflow else { return Int64.max }
+        let nanos = max(Int64(0), Int64(time.tv_nsec)) / 1_000_000
+        let (result, additionOverflow) = milliseconds.addingReportingOverflow(nanos)
+        return additionOverflow ? Int64.max : max(1, result)
+    }
+
+    private static func workspaceMigrationAuthorityData(
+        _ facts: DoryMachineConfigurationMigrationFacts
+    ) throws -> Data {
+        let authority = WorkspaceMigrationAuthorityFacts(
+            guestArchitecture: facts.guestArchitecture,
+            systemDiskCapacityBytes: facts.systemDiskCapacityBytes,
+            installedEFIBoot: facts.installedEFIBoot,
+            lifecycle: facts.lifecycle
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return try encoder.encode(authority)
+    }
+
+    private func setWorkspaceProjectionDiagnostic(
+        _ diagnostic: DoryWorkspaceProjectionDiagnostic,
+        id: String
+    ) {
+        lock.lock()
+        workspaceProjectionDiagnostics[id] = diagnostic
+        lock.unlock()
     }
 
     private func persistSnapshot(_ snapshot: DoryMachineSnapshot) throws {
@@ -1672,12 +11968,12 @@ public final class MachineManager: @unchecked Sendable {
         let directory = snapshotDirectory(machineID: snapshot.machineID)
         let temporaryPath = "\(directory)/\(Self.snapshotMetadataTemporaryPrefix)\(snapshot.id)-\(UUID().uuidString)"
         do {
+            try Self.validateSnapshotRuntimeIdentity(snapshot)
+            try Self.validateSnapshotArtifactEvidence(snapshot)
             guard Self.isPrivateDirectory(path: directory) else {
                 throw MachineManagerError.persistence("machine snapshot path is not a private directory")
             }
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            let data = try encoder.encode(snapshot)
+            let data = try Self.snapshotDescriptorData(snapshot)
             let path = snapshotMetadataPath(machineID: snapshot.machineID, snapshotID: snapshot.id)
             try data.write(to: URL(fileURLWithPath: temporaryPath), options: .atomic)
             try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: temporaryPath)
@@ -1706,6 +12002,8 @@ public final class MachineManager: @unchecked Sendable {
         let path = snapshotMetadataPath(machineID: machineID, snapshotID: snapshotID)
         let expectedRootfsPath = snapshotRootfsPath(machineID: machineID, snapshotID: snapshotID)
         let expectedKernelPath = snapshotKernelPath(machineID: machineID, snapshotID: snapshotID)
+        let expectedMachineIdentifierPath = snapshotMachineIdentifierPath(machineID: machineID, snapshotID: snapshotID)
+        let expectedNVRAMPath = snapshotNVRAMPath(machineID: machineID, snapshotID: snapshotID)
         guard Self.isPrivateDirectory(path: snapshotDirectory(machineID: machineID)),
               let data = Self.readPrivateMetadata(path: path),
               let snapshot = try? JSONDecoder().decode(DoryMachineSnapshot.self, from: data),
@@ -1714,57 +12012,544 @@ public final class MachineManager: @unchecked Sendable {
               snapshot.rootfsPath == expectedRootfsPath,
               snapshot.kernelPath == expectedKernelPath,
               snapshot.architecture == configuration.guestArchitecture,
+              snapshot.runtimeIdentity.validate().isEmpty,
               (try? Self.validateResources(memoryMB: snapshot.memoryMB, cpuCount: snapshot.cpuCount)) != nil,
               Self.isPrivateRegularFile(path: expectedRootfsPath),
               Self.isPrivateRegularFile(path: expectedKernelPath) else {
             throw MachineManagerError.unknownSnapshot(snapshotID)
         }
+        switch snapshot.bootMode {
+        case .linuxKernel:
+            guard snapshot.machineIdentifierPath == nil, snapshot.nvramPath == nil else {
+                throw MachineManagerError.unknownSnapshot(snapshotID)
+            }
+        case .efi:
+            guard snapshot.machineIdentifierPath == expectedMachineIdentifierPath,
+                  snapshot.nvramPath == expectedNVRAMPath,
+                  Self.isPrivateRegularFile(path: expectedMachineIdentifierPath),
+                  Self.isPrivateRegularFile(path: expectedNVRAMPath) else {
+                throw MachineManagerError.unknownSnapshot(snapshotID)
+            }
+        }
+        try Self.validateSnapshotArtifactEvidence(snapshot)
         var validated = snapshot
         validated.sizeBytes = Self.fileSize(path: expectedRootfsPath)
         return validated
     }
 
+    private static func snapshotDescriptorData(_ snapshot: DoryMachineSnapshot) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return try encoder.encode(snapshot)
+    }
+
+    private static func snapshotEvidenceData(
+        _ evidence: DoryMachineSnapshotArtifactEvidence
+    ) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return try encoder.encode(evidence)
+    }
+
+    private static func lifecycleSnapshotAuthority(
+        _ snapshot: DoryMachineSnapshot
+    ) throws -> DoryWorkspaceSnapshotAuthority {
+        guard let evidence = snapshot.artifactEvidence, evidence.isValid else {
+            throw MachineManagerError.persistence(
+                "machine snapshot lacks immutable lifecycle artifact evidence"
+            )
+        }
+        return DoryWorkspaceSnapshotAuthority(
+            descriptorSHA256: sha256(data: try snapshotDescriptorData(snapshot)),
+            artifactEvidenceSHA256: sha256(data: try snapshotEvidenceData(evidence))
+        )
+    }
+
+    fileprivate static func validateSnapshotRuntimeIdentity(
+        _ snapshot: DoryMachineSnapshot
+    ) throws {
+        guard snapshot.installedDesktopPayloadReceipt?.hasCoherentAuthority(
+            environment: snapshot.environment
+        ) ?? true else {
+            throw MachineManagerError.persistence(
+                "invalid installed desktop payload receipt"
+            )
+        }
+        if let receipt = snapshot.installedDesktopPayloadReceipt,
+           receipt.provenance == .verifiedUpdateBundle {
+            guard let artifactEvidence = snapshot.artifactEvidence,
+                  receipt.kernelSHA256 == artifactEvidence.kernel.sha256 else {
+                throw MachineManagerError.persistence(
+                    "installed desktop kernel receipt does not match snapshot evidence"
+                )
+            }
+        }
+        guard snapshot.runtimeIdentity.validate().isEmpty,
+              snapshot.runtimeIdentity.virtualHardwareABIVersion
+                == DoryVirtualMachineDefinition.currentVirtualHardwareABIVersion else {
+            throw MachineManagerError.persistence("invalid machine snapshot runtime identity")
+        }
+        if snapshot.runtimeIdentity.mode == .resolvedPlan,
+           snapshot.artifactEvidence == nil {
+            throw MachineManagerError.persistence(
+                "resolved machine snapshot is missing mutable artifact evidence"
+            )
+        }
+        guard let plan = snapshot.runtimeIdentity.resolvedPlan else {
+            return
+        }
+        let memoryBytes = snapshot.memoryMB.multipliedReportingOverflow(by: 1_048_576)
+        guard let artifactEvidence = snapshot.artifactEvidence,
+              snapshot.sizeBytes > 0,
+              let snapshotSizeBytes = UInt64(exactly: snapshot.sizeBytes),
+              !memoryBytes.overflow,
+              plan.machineID == snapshot.machineID,
+              plan.guest.architecture.rawValue == snapshot.architecture,
+              plan.resourceAdmission?.admittedVirtualCPUCount == UInt64(snapshot.cpuCount),
+              plan.resourceAdmission?.admittedMemoryBytes == memoryBytes.partialValue,
+              plan.resourceAdmission?.admittedStorageBytes == snapshotSizeBytes,
+              artifactEvidence.rootfs.byteCount == snapshotSizeBytes else {
+            throw MachineManagerError.persistence(
+                "machine snapshot resources do not match immutable runtime evidence"
+            )
+        }
+    }
+
+    private static func snapshotArtifactEvidence(
+        rootfsPath: String,
+        kernelPath: String,
+        machineIdentifierPath: String?,
+        nvramPath: String?
+    ) throws -> DoryMachineSnapshotArtifactEvidence {
+        DoryMachineSnapshotArtifactEvidence(
+            rootfs: try snapshotArtifact(path: rootfsPath),
+            kernel: try snapshotArtifact(path: kernelPath),
+            machineIdentifier: try machineIdentifierPath.map(snapshotArtifact(path:)),
+            nvram: try nvramPath.map(snapshotArtifact(path:))
+        )
+    }
+
+    private static func snapshotArtifact(path: String) throws -> DoryMachineSnapshotArtifact {
+        let descriptor = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
+        guard descriptor >= 0 else {
+            throw MachineManagerError.persistence("could not open machine snapshot artifact")
+        }
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        let byteCount = try handle.seekToEnd()
+        guard byteCount > 0 else {
+            throw MachineManagerError.persistence("machine snapshot artifact is empty")
+        }
+        try handle.seek(toOffset: 0)
+        var hasher = SHA256()
+        while true {
+            let chunk = try handle.read(upToCount: 4 * 1_024 * 1_024) ?? Data()
+            if chunk.isEmpty { break }
+            hasher.update(data: chunk)
+        }
+        return DoryMachineSnapshotArtifact(
+            byteCount: byteCount,
+            sha256: hasher.finalize().map { String(format: "%02x", $0) }.joined()
+        )
+    }
+
+    fileprivate static func validateSnapshotArtifactEvidence(
+        _ snapshot: DoryMachineSnapshot
+    ) throws {
+        guard let expected = snapshot.artifactEvidence else {
+            // Old legacy snapshots remain decodable and usable under the explicitly selected
+            // compatibility policy. New snapshots always persist evidence.
+            guard snapshot.runtimeIdentity.mode == .legacyCompatibility else {
+                throw MachineManagerError.persistence(
+                    "machine snapshot artifact evidence requires migration"
+                )
+            }
+            return
+        }
+        guard expected.isValid,
+              (snapshot.bootMode == .efi) == (expected.machineIdentifier != nil) else {
+            throw MachineManagerError.persistence("invalid machine snapshot artifact evidence")
+        }
+        let actual = try snapshotArtifactEvidence(
+            rootfsPath: snapshot.rootfsPath,
+            kernelPath: snapshot.kernelPath,
+            machineIdentifierPath: snapshot.machineIdentifierPath,
+            nvramPath: snapshot.nvramPath
+        )
+        guard actual == expected else {
+            throw MachineManagerError.persistence(
+                "machine snapshot artifacts do not match immutable evidence"
+            )
+        }
+    }
+
+    private func validateSnapshotRuntimeCompatibility(
+        _ snapshot: DoryMachineSnapshot,
+        machine: DoryMachineConfiguration?,
+        cloning: Bool
+    ) throws {
+        try Self.validateSnapshotRuntimeIdentity(snapshot)
+        switch snapshot.runtimeIdentity.mode {
+        case .legacyCompatibility:
+            guard launchPolicy == .legacyCompatibility
+                    || launchPolicy == .perWorkspaceAuthority else {
+                throw MachineManagerError.persistence(
+                    "legacy snapshot requires explicit legacy compatibility launch policy"
+                )
+            }
+        case .resolvedPlan:
+            guard !cloning || launchPolicy == .perWorkspaceAuthority else {
+                throw MachineManagerError.persistence(
+                    "resolved snapshot identity is machine-bound and must be replanned before cloning"
+                )
+            }
+            if cloning, launchPolicy == .perWorkspaceAuthority { return }
+            let infrastructure = resolvedLaunchInfrastructureSnapshot()
+            guard launchPolicy == .requireResolvedPlan
+                    || launchPolicy == .perWorkspaceAuthority,
+                  let plan = snapshot.runtimeIdentity.resolvedPlan,
+                  let infrastructure,
+                  let descriptor = infrastructure.registry.backend(for: plan.backend)?.descriptor,
+                  descriptor.identity == plan.backend,
+                  descriptor.implementationIdentifier == plan.backendImplementationIdentifier,
+                  let machine,
+                  machine.id == plan.machineID else {
+                throw MachineManagerError.persistence(
+                    "snapshot runtime is incompatible with installed resolved-launch infrastructure"
+                )
+            }
+            let currentPlan: DoryResolvedMachinePlan
+            do {
+                currentPlan = try infrastructure.planStore.read(id: machine.id)
+            } catch {
+                throw MachineManagerError.persistence(
+                    "snapshot resolved plan is unavailable: \(error)"
+                )
+            }
+            guard currentPlan == plan,
+                  snapshot.runtimeIdentity.resolvedPlanSHA256
+                    == DoryMachineRuntimeIdentity.planSHA256(currentPlan) else {
+                throw MachineManagerError.persistence(
+                    "snapshot resolved plan no longer matches durable launch authority"
+                )
+            }
+        case .requiresReplanning:
+            guard (launchPolicy == .requireResolvedPlan && !cloning)
+                    || launchPolicy == .perWorkspaceAuthority else {
+                throw MachineManagerError.persistence(
+                    "snapshot requires a new resolved plan before it can launch"
+                )
+            }
+        }
+    }
+
     private func handleHandoff(
         machineID: String,
         launchID: UUID,
+        expectedOperationID: UUID,
+        qualificationBootstrapHandoffAuthority:
+            DoryQualificationBootstrapHandoffAuthority,
         result: Result<VmmHandoff, Error>
     ) {
+        let hasProductionAdmissionLedger = productionAdmissionLedgerSnapshot() != nil
         var handoffServer: VmmHandoffServer?
         var processToStop: HvProcess?
-        var agentSocketPath: String?
+        var lifecycleReadinessSucceeded = false
+        var admissionPlan: DoryResolvedMachinePlan?
+        var requiresAdmissionCommit = false
+        var lifecycleFailureStepID: String?
         lock.lock()
-        guard var entry = machines[machineID], entry.launchID == launchID else {
+        guard var entry = machines[machineID], entry.launchID == launchID,
+              entry.activeOperationID == expectedOperationID else {
             lock.unlock()
             return
         }
         handoffServer = entry.handoffServer
         entry.handoffServer = nil
+        admissionPlan = entry.activeResolvedPlan
         switch result {
         case let .success(handoff):
-            guard handoff.ready.machineID == machineID else {
+            let expectedOperationToken = expectedOperationID.uuidString.lowercased()
+            guard handoff.ready.machineID == machineID,
+                  handoff.ready.operationID == expectedOperationToken else {
                 entry.state = .failed
-                entry.lastError = "handoff machine id mismatch: \(handoff.ready.machineID)"
+                setFailure(
+                    on: &entry,
+                    code: .readinessHandoffFailed,
+                    message: "handoff launch authority did not match the active machine operation",
+                    causes: [.readinessGate, .guestAgent],
+                    recoveryDisposition: .repair
+                )
+                appendFlightEvent(
+                    on: &entry,
+                    kind: .readinessRejected,
+                    failure: entry.failure
+                )
                 entry.launchID = nil
                 entry.runtimeAddress = nil
+                entry.readinessAcceptedPendingPublication = false
+                processToStop = entry.process
+                break
+            }
+            guard admissionPlan == nil || handoff.ready.controlSocketPath != nil else {
+                entry.state = .failed
+                setFailure(
+                    on: &entry,
+                    code: .readinessHandoffFailed,
+                    message: "resolved helper omitted lifecycle receipt authority",
+                    causes: [.readinessGate, .runtimeAuthority],
+                    recoveryDisposition: .repair
+                )
+                appendFlightEvent(
+                    on: &entry,
+                    kind: .readinessRejected,
+                    failure: entry.failure
+                )
+                entry.launchID = nil
+                entry.runtimeAddress = nil
+                entry.readinessAcceptedPendingPublication = false
+                processToStop = entry.process
+                break
+            }
+            guard Self.graphicsReadinessMatches(
+                handoff.ready.graphicsSelection,
+                plan: admissionPlan,
+                backend: entry.activeBackend,
+                operationID: expectedOperationID,
+                qualificationBootstrapHandoffAuthority:
+                    qualificationBootstrapHandoffAuthority
+            ) else {
+                entry.state = .failed
+                setFailure(
+                    on: &entry,
+                    code: .readinessHandoffFailed,
+                    message: "helper graphics selection did not match the live resolved plan generation",
+                    causes: [.readinessGate, .runtimeAuthority],
+                    recoveryDisposition: .repair
+                )
+                appendFlightEvent(
+                    on: &entry,
+                    kind: .readinessRejected,
+                    failure: entry.failure
+                )
+                entry.launchID = nil
+                entry.runtimeAddress = nil
+                entry.readinessAcceptedPendingPublication = false
                 processToStop = entry.process
                 break
             }
             entry.handoff = handoff
-            entry.state = .running
-            entry.lastError = nil
-            agentSocketPath = handoff.ready.agentSocketPath
+            clearFailure(on: &entry)
+            requiresAdmissionCommit = admissionPlan != nil
+                && hasProductionAdmissionLedger
+            entry.state = .starting
+            lifecycleReadinessSucceeded = !requiresAdmissionCommit
+            entry.readinessAcceptedPendingPublication = lifecycleReadinessSucceeded
         case let .failure(error):
             entry.state = .failed
-            entry.lastError = "\(error)"
+            setFailure(
+                on: &entry,
+                code: .readinessHandoffFailed,
+                message: "\(error)",
+                causes: [.readinessGate],
+                recoveryDisposition: .retry
+            )
+            appendFlightEvent(
+                on: &entry,
+                kind: .readinessRejected,
+                failure: entry.failure
+            )
             entry.launchID = nil
             entry.runtimeAddress = nil
+            entry.readinessAcceptedPendingPublication = false
             processToStop = entry.process
         }
         machines[machineID] = entry
         lock.unlock()
 
         handoffServer?.stop()
-        processToStop?.stop()
+
+        if requiresAdmissionCommit, let admissionPlan {
+            do {
+                try markResolvedAdmissionRunning(plan: admissionPlan)
+                lock.lock()
+                if var current = machines[machineID], current.launchID == launchID,
+                   current.state == .starting, current.handoff != nil {
+                    current.readinessAcceptedPendingPublication = true
+                    machines[machineID] = current
+                    lifecycleReadinessSucceeded = true
+                }
+                lock.unlock()
+                if !lifecycleReadinessSucceeded {
+                    lifecycleFailureStepID = "start.readiness-state-changed"
+                }
+            } catch {
+                lock.lock()
+                if var current = machines[machineID], current.launchID == launchID {
+                    processToStop = current.process
+                    current.state = .failed
+                    setFailure(
+                        on: &current,
+                        code: .resourceAdmissionRejected,
+                        message: "resource admission rejected readiness: \(error)",
+                        causes: [.resourceAdmission, .readinessGate],
+                        recoveryDisposition: .repair
+                    )
+                    appendFlightEvent(
+                        on: &current,
+                        kind: .readinessRejected,
+                        failure: current.failure
+                    )
+                    current.handoff = nil
+                    current.launchID = nil
+                    current.runtimeAddress = nil
+                    current.readinessAcceptedPendingPublication = false
+                    machines[machineID] = current
+                }
+                lock.unlock()
+                lifecycleFailureStepID = "start.admission-failed"
+            }
+        } else if !lifecycleReadinessSucceeded {
+            lifecycleFailureStepID = "start.readiness-failed"
+        }
+
+        // A synchronous update/restore can own this workspace while it waits for the callback.
+        // Publish the accepted readiness token before blocking on that coordinator; its owner can
+        // terminalize its start journal and publish `.running` itself. Ordinary asynchronous starts
+        // acquire the lock here and preserve journal-before-status ordering.
+        let mutationLease = mutationCoordinator.acquire(workspaceID: machineID)
+        defer { mutationLease.release() }
+        if let processToStop {
+            if processStopper(processToStop) {
+                do {
+                    _ = try finalizeFailedMachineProcessRetirement(
+                        machineID: machineID,
+                        process: processToStop
+                    )
+                } catch {
+                    lock.lock()
+                    if var current = machines[machineID], current.process === processToStop {
+                        setFailure(
+                            on: &current,
+                            code: .resourceAdmissionRejected,
+                            message: "readiness rejection could not settle terminal helper admission: \(error)",
+                            causes: [.resourceAdmission, .runtimeAuthority],
+                            recoveryDisposition: .repair
+                        )
+                        machines[machineID] = current
+                    }
+                    lock.unlock()
+                }
+            } else {
+                retainFailedMachineProcessUntilTerminalObservation(
+                    machineID: machineID,
+                    process: processToStop,
+                    context: "readiness rejection"
+                )
+            }
+        }
+        if lifecycleReadinessSucceeded {
+            publishAcceptedReadiness(id: machineID)
+        } else if let lifecycleFailureStepID {
+            failActiveStartLifecycle(id: machineID, stepID: lifecycleFailureStepID)
+        }
+
+    }
+
+    private static func graphicsReadinessMatches(
+        _ selection: DoryRuntimeGraphicsSelection?,
+        plan: DoryResolvedMachinePlan?,
+        backend: DoryVirtualizationBackendIdentity?,
+        operationID: UUID,
+        qualificationBootstrapHandoffAuthority:
+            DoryQualificationBootstrapHandoffAuthority
+    ) -> Bool {
+        switch (plan, backend) {
+        case (nil, .doryHypervisor):
+            if let accepted = qualificationBootstrapHandoffAuthority.accepts(
+                selection,
+                operationID: operationID
+            ) {
+                return accepted
+            }
+            return selection == nil
+        case (nil, _):
+            // Legacy compatibility has no immutable plan generation and must not publish a
+            // resolved graphics claim through a decorative ready payload. It can still have a
+            // concrete live backend selected by the compatibility launch path.
+            return selection == nil
+        case let (plan?, backend?):
+            guard backend == .doryHypervisor else {
+                // Other backends have not adopted the RawHV renderer/fence receipt. They cannot
+                // publish this receipt type, and their existing readiness contract remains unchanged.
+                return selection == nil
+            }
+            guard let selection else { return false }
+            return selection.matchesResolvedRawHVLaunch(
+                operationID: operationID,
+                planSHA256: DoryMachineRuntimeIdentity.planSHA256(plan),
+                planRevision: plan.planRevision,
+                accelerationLevel: plan.graphics
+            )
+        default:
+            return false
+        }
+    }
+
+    /// Completes an accepted readiness transition while the caller owns the workspace coordinator.
+    /// This can
+    /// run either on the handoff callback or on a synchronous mutation that is already waiting for
+    /// readiness, avoiding a cross-thread operation-lock deadlock without exposing `.running`
+    /// before the start journal has reached its terminal/recovery boundary.
+    private func publishAcceptedReadiness(id machineID: String) {
+        let hasProductionAdmissionLedger = productionAdmissionLedgerSnapshot() != nil
+        lock.lock()
+        guard let pending = machines[machineID],
+              pending.state == .starting,
+              pending.readinessAcceptedPendingPublication,
+              pending.handoff != nil,
+              let launchID = pending.launchID else {
+            lock.unlock()
+            return
+        }
+        lock.unlock()
+
+#if DEBUG
+        let preCompletionTestHook = managerStateLock.withLock {
+            readinessPublishTestHook
+        }
+        preCompletionTestHook?(machineID)
+#endif
+        completeActiveStartLifecycle(id: machineID)
+
+        var agentSocketPath: String?
+        var rendererCandidate: DoryRendererCrashSuppressionCandidate?
+        lock.lock()
+        if var current = machines[machineID], current.launchID == launchID,
+           current.state == .starting,
+           current.readinessAcceptedPendingPublication,
+           current.handoff != nil {
+            current.state = .running
+            current.readinessAcceptedPendingPublication = false
+            current.process?.disableRestarts()
+            rendererCandidate = try? current.activeResolvedPlan.flatMap {
+                try DoryRendererCrashSuppressionCandidate(plan: $0)
+            }
+            agentSocketPath = current.handoff?.ready.agentSocketPath
+            if current.activeResolvedPlan != nil,
+               hasProductionAdmissionLedger {
+                appendFlightEvent(on: &current, kind: .resourceTransition)
+            }
+            appendFlightEvent(on: &current, kind: .readinessAccepted)
+            machines[machineID] = current
+        }
+        lock.unlock()
+
+        if let rendererCandidate {
+            try? rendererCrashSuppressionStoreSnapshot()?.recordSuccessfulReadiness(
+                rendererCandidate
+            )
+        }
+
         if let agentSocketPath {
             DispatchQueue.global(qos: .utility).async { [weak self] in
                 self?.discoverRuntimeAddress(
@@ -1781,6 +12566,16 @@ public final class MachineManager: @unchecked Sendable {
         launchID: UUID,
         agentSocketPath: String
     ) {
+        lock.lock()
+        let mayExecute = machines[machineID].map { entry in
+            entry.launchID == launchID
+                && entry.state == .running
+                && entry.handoff?.ready.agentSocketPath == agentSocketPath
+                && entry.handoff?.ready.supportsAgentCapability("exec") == true
+        } ?? false
+        lock.unlock()
+        guard mayExecute else { return }
+
         let address: String
         do {
             let client = try agentConnector(agentSocketPath)
@@ -1856,12 +12651,184 @@ public final class MachineManager: @unchecked Sendable {
             guard tags.insert(share.tag).inserted else {
                 throw MachineManagerError.invalidShare(share.tag)
             }
-            var isDirectory: ObjCBool = false
-            guard FileManager.default.fileExists(atPath: share.hostPath, isDirectory: &isDirectory),
-                  isDirectory.boolValue else {
+        }
+        _ = try captureShareRuntimeAuthorities(shares)
+    }
+
+    /// Captures the directory object behind each persisted share path. The canonical path is what
+    /// crosses the helper boundary; the original spelling is retained only so a symlink or mount
+    /// alias cannot be redirected between preparation and spawn.
+    private static func captureShareRuntimeAuthorities(
+        _ shares: [DoryMachineShareConfiguration]
+    ) throws -> [DoryMachineShareRuntimeAuthority] {
+        try shares.map { share in
+            let authorizedPath = try authorizedShareRoot(share)
+            let canonicalPath = try canonicalShareRoot(authorizedPath)
+            let identity = try openedShareRootIdentity(
+                canonicalPath: canonicalPath,
+                reportedPath: share.hostPath
+            )
+            return DoryMachineShareRuntimeAuthority(
+                share: share,
+                canonicalPath: canonicalPath,
+                device: identity.device,
+                inode: identity.inode
+            )
+        }
+    }
+
+    private static func sealShareAuthorizations(
+        _ shares: [DoryMachineShareConfiguration]
+    ) throws -> [DoryMachineShareConfiguration] {
+        try shares.map { share in
+            guard let bookmark = share.authorizationBookmark else { return share }
+            let resolution = try resolveShareBookmark(
+                bookmark,
+                reportedPath: share.hostPath
+            )
+            guard share.authorizationVolumeUUID.map({
+                $0 == resolution.volumeUUID
+            }) ?? true,
+            share.authorizationFileIdentifier.map({
+                $0 == resolution.fileIdentifier
+            }) ?? true else {
                 throw MachineManagerError.invalidShare(share.hostPath)
             }
+            var sealed = share
+            sealed.authorizationVolumeUUID = resolution.volumeUUID
+            sealed.authorizationFileIdentifier = resolution.fileIdentifier
+            return sealed
         }
+    }
+
+    /// Reopens every root immediately before helper argument construction. This does not infer
+    /// authority from a path that happens to exist: both the original resolver spelling and the
+    /// canonical directory entry must still name the exact captured inode.
+    private static func revalidateShareRuntimeAuthorities(
+        _ authorities: [DoryMachineShareRuntimeAuthority],
+        expectedShares: [DoryMachineShareConfiguration]
+    ) throws -> [DoryMachineShareConfiguration] {
+        guard authorities.map(\.share) == expectedShares else {
+            throw MachineManagerError.persistence(
+                "machine share configuration changed after launch validation"
+            )
+        }
+        return try authorities.map { authority in
+            let authorizedPath = try authorizedShareRoot(authority.share)
+            guard try canonicalShareRoot(authorizedPath)
+                    == authority.canonicalPath else {
+                throw MachineManagerError.invalidShare(authority.share.hostPath)
+            }
+            let identity = try openedShareRootIdentity(
+                canonicalPath: authority.canonicalPath,
+                reportedPath: authority.share.hostPath
+            )
+            guard identity.device == authority.device,
+                  identity.inode == authority.inode else {
+                throw MachineManagerError.invalidShare(authority.share.hostPath)
+            }
+            var launchShare = authority.share
+            launchShare.hostPath = authority.canonicalPath
+            return launchShare
+        }
+    }
+
+    private static func canonicalShareRoot(_ path: String) throws -> String {
+        var resolved = [CChar](repeating: 0, count: Int(PATH_MAX))
+        guard realpath(path, &resolved) != nil else {
+            throw MachineManagerError.invalidShare(path)
+        }
+        let canonicalBytes = resolved.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
+        let canonical = String(decoding: canonicalBytes, as: UTF8.self)
+        guard canonical.hasPrefix("/"), canonical != "/" else {
+            throw MachineManagerError.invalidShare(path)
+        }
+        return canonical
+    }
+
+    private static func authorizedShareRoot(
+        _ share: DoryMachineShareConfiguration
+    ) throws -> String {
+        guard let bookmark = share.authorizationBookmark else {
+            return share.hostPath
+        }
+        guard let expectedVolumeUUID = share.authorizationVolumeUUID,
+              let expectedFileIdentifier = share.authorizationFileIdentifier else {
+            throw MachineManagerError.invalidShare(share.hostPath)
+        }
+        let resolution = try resolveShareBookmark(
+            bookmark,
+            reportedPath: share.hostPath
+        )
+        guard resolution.volumeUUID == expectedVolumeUUID,
+              resolution.fileIdentifier == expectedFileIdentifier else {
+            throw MachineManagerError.invalidShare(share.hostPath)
+        }
+        return resolution.path
+    }
+
+    private static func resolveShareBookmark(
+        _ bookmark: Data,
+        reportedPath: String
+    ) throws -> (path: String, volumeUUID: String, fileIdentifier: Data) {
+        var stale = false
+        let resolved: URL
+        do {
+            resolved = try URL(
+                resolvingBookmarkData: bookmark,
+                options: [.withoutUI, .withoutMounting],
+                relativeTo: nil,
+                bookmarkDataIsStale: &stale
+            )
+        } catch {
+            throw MachineManagerError.invalidShare(reportedPath)
+        }
+        // A move commonly marks a bookmark stale even when it resolves the original object. The
+        // daemon-sealed volume/file identity decides whether that resolution is authorized; stale
+        // path fallback to a replacement object therefore remains fail-closed.
+        _ = stale
+        let values: URLResourceValues
+        do {
+            values = try resolved.resourceValues(forKeys: [
+                .fileResourceIdentifierKey,
+                .volumeUUIDStringKey,
+            ])
+        } catch {
+            throw MachineManagerError.invalidShare(reportedPath)
+        }
+        guard let volumeUUID = values.volumeUUIDString,
+              !volumeUUID.isEmpty,
+              let identifier = values.fileResourceIdentifier as? NSData,
+              identifier.length > 0,
+              identifier.length <= 4_096 else {
+            throw MachineManagerError.invalidShare(reportedPath)
+        }
+        return (resolved.path, volumeUUID, identifier as Data)
+    }
+
+    private static func openedShareRootIdentity(
+        canonicalPath: String,
+        reportedPath: String
+    ) throws -> (device: UInt64, inode: UInt64) {
+        let descriptor = open(
+            canonicalPath,
+            O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW
+        )
+        guard descriptor >= 0 else {
+            throw MachineManagerError.invalidShare(reportedPath)
+        }
+        defer { close(descriptor) }
+        var opened = stat()
+        var named = stat()
+        guard fstat(descriptor, &opened) == 0,
+              (opened.st_mode & S_IFMT) == S_IFDIR,
+              lstat(canonicalPath, &named) == 0,
+              (named.st_mode & S_IFMT) == S_IFDIR,
+              opened.st_dev == named.st_dev,
+              opened.st_ino == named.st_ino else {
+            throw MachineManagerError.invalidShare(reportedPath)
+        }
+        return (UInt64(opened.st_dev), UInt64(opened.st_ino))
     }
 
     private static func validateEnvironment(_ environment: [String: String]) throws {
@@ -1873,16 +12840,51 @@ public final class MachineManager: @unchecked Sendable {
                 throw MachineManagerError.invalidEnvironment(key)
             }
         }
+        do {
+            _ = try DoryDesktopVMMPreference(environment: environment)
+        } catch {
+            throw MachineManagerError.invalidEnvironment(DoryDesktopVMMPreference.environmentKey)
+        }
+        do {
+            _ = try DoryDesktopGraphicsPreference(environment: environment)
+        } catch {
+            throw MachineManagerError.invalidEnvironment(DoryDesktopGraphicsPreference.environmentKey)
+        }
     }
 
     private static func validateLaunchConfiguration(_ machine: DoryMachineConfiguration) throws {
         try validateResources(memoryMB: machine.memoryMB, cpuCount: machine.cpuCount)
+        if machine.bootMode == .efi, machine.displayMode != .desktop {
+            throw MachineManagerError.persistence("EFI machines require desktop display mode")
+        }
+        if machine.bootMode == .linuxKernel, machine.installerISOPath != nil {
+            throw MachineManagerError.persistence("installer ISO requires EFI boot mode")
+        }
         let normalizedAddress = try normalizedAddress(machine.address)
         guard normalizedAddress == machine.address else {
             throw MachineManagerError.invalidAddress(machine.address ?? "")
         }
         try validateShares(machine.shares)
         try validateEnvironment(machine.environment)
+        guard machine.installedDesktopPayloadReceipt?.hasCoherentAuthority(
+            environment: machine.environment
+        ) ?? true else {
+            throw MachineManagerError.persistence(
+                "installed desktop payload receipt is invalid"
+            )
+        }
+        guard machine.cloneReceipt?.isValid ?? true else {
+            throw MachineManagerError.persistence("machine clone receipt is invalid")
+        }
+    }
+
+    /// A local legacy snapshot retains the original raw receipt fields byte-for-byte. Imported
+    /// snapshots have no environment authority, so their typed receipt becomes authoritative.
+    private static func configurationReceipt(
+        restoring snapshot: DoryMachineSnapshot
+    ) -> DoryInstalledDesktopPayloadReceipt? {
+        guard let receipt = snapshot.installedDesktopPayloadReceipt else { return nil }
+        return receipt.matchesLegacyEnvironment(snapshot.environment) ? nil : receipt
     }
 
     private static func validateResources(memoryMB: UInt64, cpuCount: Int) throws {
@@ -1915,8 +12917,19 @@ public final class MachineManager: @unchecked Sendable {
     private static func cloneOrCopyFile(
         source: String,
         destination: String,
-        replaceExisting: Bool = false
+        replaceExisting: Bool = false,
+        requiresCopyOnWrite: Bool = false,
+        expectedSHA256: String? = nil,
+        expectedByteCount: UInt64? = nil,
+        copyCapacityProvider: (@Sendable (String) throws -> UInt64)? = nil,
+        capacityOperation: String? = nil,
+        forceCopyFallback: Bool = false
     ) throws {
+        guard (expectedSHA256 == nil) == (expectedByteCount == nil),
+              (copyCapacityProvider == nil) == (capacityOperation == nil),
+              !requiresCopyOnWrite || expectedSHA256 != nil else {
+            throw MachineManagerError.persistence("invalid clone artifact authority")
+        }
         let destinationURL = URL(fileURLWithPath: destination)
         let parent = destinationURL.deletingLastPathComponent()
         let parentDescriptor = open(parent.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
@@ -1948,8 +12961,26 @@ public final class MachineManager: @unchecked Sendable {
             throw MachineManagerError.persistence("artifact source is not a nonempty regular file")
         }
         do {
-            if fclonefileat(sourceDescriptor, parentDescriptor, temporaryName, 0) != 0 {
+            let cloneResult = forceCopyFallback
+                ? -1
+                : fclonefileat(sourceDescriptor, parentDescriptor, temporaryName, 0)
+            if cloneResult != 0 {
+                let cloneError = forceCopyFallback ? ENOTSUP : errno
                 _ = unlinkat(parentDescriptor, temporaryName, 0)
+                guard !requiresCopyOnWrite else {
+                    throw MachineManagerError.persistence(
+                        "APFS copy-on-write cloning is unavailable: "
+                            + String(cString: strerror(cloneError))
+                    )
+                }
+                if let copyCapacityProvider, let capacityOperation {
+                    try MachineSnapshotBundle.requireArtifactCapacity(
+                        artifactByteCount: UInt64(sourceInfo.st_size),
+                        destinationPath: destination,
+                        operation: capacityOperation,
+                        availableCapacity: copyCapacityProvider
+                    )
+                }
                 let destinationDescriptor = openat(
                     parentDescriptor,
                     temporaryName,
@@ -1977,12 +13008,33 @@ public final class MachineManager: @unchecked Sendable {
                     throw MachineManagerError.persistence("could not reopen cloned artifact")
                 }
                 defer { close(clonedDescriptor) }
+                var clonedInfo = stat()
                 guard fchmod(clonedDescriptor, mode_t(0o600)) == 0,
                       isPrivateRegularFile(descriptor: clonedDescriptor),
+                      fstat(clonedDescriptor, &clonedInfo) == 0,
                       fsync(clonedDescriptor) == 0 else {
                     throw MachineManagerError.persistence(
                         "could not synchronize cloned artifact: \(String(cString: strerror(errno)))"
                     )
+                }
+                if let expectedSHA256, let expectedByteCount {
+                    let actualSHA256 = try sha256(descriptor: clonedDescriptor)
+                    var verifiedInfo = stat()
+                    guard clonedInfo.st_size >= 0,
+                          UInt64(clonedInfo.st_size) == expectedByteCount,
+                          fstat(clonedDescriptor, &verifiedInfo) == 0,
+                          clonedInfo.st_dev == verifiedInfo.st_dev,
+                          clonedInfo.st_ino == verifiedInfo.st_ino,
+                          clonedInfo.st_size == verifiedInfo.st_size,
+                          clonedInfo.st_mtimespec.tv_sec == verifiedInfo.st_mtimespec.tv_sec,
+                          clonedInfo.st_mtimespec.tv_nsec == verifiedInfo.st_mtimespec.tv_nsec,
+                          clonedInfo.st_ctimespec.tv_sec == verifiedInfo.st_ctimespec.tv_sec,
+                          clonedInfo.st_ctimespec.tv_nsec == verifiedInfo.st_ctimespec.tv_nsec,
+                          actualSHA256 == expectedSHA256 else {
+                        throw MachineManagerError.persistence(
+                            "copy-on-write clone does not match immutable snapshot evidence"
+                        )
+                    }
                 }
             }
             if replaceExisting {
@@ -2010,6 +13062,73 @@ public final class MachineManager: @unchecked Sendable {
         }
     }
 
+    private static func sha256(descriptor: Int32) throws -> String {
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
+        try handle.seek(toOffset: 0)
+        defer { try? handle.seek(toOffset: 0) }
+        var hasher = SHA256()
+        while true {
+            let chunk = try handle.read(upToCount: 4 * 1_024 * 1_024) ?? Data()
+            if chunk.isEmpty { break }
+            hasher.update(data: chunk)
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func createPrivateSparseFile(path: String, sizeBytes: UInt64) throws {
+        guard sizeBytes <= UInt64(Int64.max) else {
+            throw MachineManagerError.persistence("managed disk size is too large")
+        }
+        let descriptor = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, mode_t(0o600))
+        guard descriptor >= 0 else {
+            throw MachineManagerError.persistence(
+                "could not create managed disk: \(String(cString: strerror(errno)))"
+            )
+        }
+        defer { close(descriptor) }
+        guard ftruncate(descriptor, off_t(sizeBytes)) == 0,
+              fsync(descriptor) == 0,
+              isPrivateRegularFile(descriptor: descriptor) else {
+            let code = errno
+            _ = unlink(path)
+            throw MachineManagerError.persistence(
+                "could not size managed disk: \(String(cString: strerror(code)))"
+            )
+        }
+    }
+
+    private static func createPrivateFile(path: String, contents: Data) throws {
+        let descriptor = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, mode_t(0o600))
+        guard descriptor >= 0 else {
+            throw MachineManagerError.persistence(
+                "could not create managed file: \(String(cString: strerror(errno)))"
+            )
+        }
+        defer { close(descriptor) }
+        let wrote = contents.withUnsafeBytes { buffer -> Bool in
+            guard let baseAddress = buffer.baseAddress else { return contents.isEmpty }
+            var offset = 0
+            while offset < buffer.count {
+                let result = write(descriptor, baseAddress.advanced(by: offset), buffer.count - offset)
+                if result > 0 {
+                    offset += result
+                } else if result < 0, errno == EINTR {
+                    continue
+                } else {
+                    return false
+                }
+            }
+            return true
+        }
+        guard wrote, fsync(descriptor) == 0, isPrivateRegularFile(descriptor: descriptor) else {
+            let code = errno
+            _ = unlink(path)
+            throw MachineManagerError.persistence(
+                "could not write managed file: \(String(cString: strerror(code)))"
+            )
+        }
+    }
+
     private static func fileSize(path: String) -> Int64 {
         let attrs = try? FileManager.default.attributesOfItem(atPath: path)
         if let number = attrs?[.size] as? NSNumber {
@@ -2028,6 +13147,16 @@ public final class MachineManager: @unchecked Sendable {
         return lstat(path, &info) == 0 && isPrivateRegularFile(info: info)
     }
 
+    private static func isOwnedPrivateRegularFileAllowingEmpty(path: String) -> Bool {
+        var info = stat()
+        return lstat(path, &info) == 0
+            && (info.st_mode & S_IFMT) == S_IFREG
+            && info.st_uid == geteuid()
+            && info.st_nlink == 1
+            && info.st_size >= 0
+            && (info.st_mode & 0o077) == 0
+    }
+
     private static func isPrivateRegularFile(descriptor: Int32) -> Bool {
         var info = stat()
         return fstat(descriptor, &info) == 0 && isPrivateRegularFile(info: info)
@@ -2035,7 +13164,7 @@ public final class MachineManager: @unchecked Sendable {
 
     private static func isPrivateRegularFile(info: stat) -> Bool {
         (info.st_mode & S_IFMT) == S_IFREG
-            && info.st_uid == getuid()
+            && info.st_uid == geteuid()
             && info.st_nlink == 1
             && info.st_size > 0
             && (info.st_mode & 0o077) == 0
@@ -2112,9 +13241,91 @@ public final class MachineManager: @unchecked Sendable {
         return lstat(path, &info) == 0 && isPrivateDirectory(info: info)
     }
 
+    /// Workspace records share MachineManager's state root. Tighten an existing owned directory
+    /// without following links; failure merely leaves projection publishing unavailable.
+    private static func restrictWorkspaceProjectionRootIfOwned(_ path: String) {
+        var info = stat()
+        guard lstat(path, &info) == 0,
+              (info.st_mode & S_IFMT) == S_IFDIR,
+              info.st_uid == getuid() else {
+            return
+        }
+        _ = chmod(path, mode_t(0o700))
+    }
+
+    private static func isDirectory(path: String) -> Bool {
+        var info = stat()
+        return lstat(path, &info) == 0 && (info.st_mode & S_IFMT) == S_IFDIR
+    }
+
+    private static func sha256(path: String) throws -> String {
+        let descriptor = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
+        guard descriptor >= 0 else {
+            throw MachineManagerError.persistence("could not open desktop update bundle")
+        }
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        var hasher = SHA256()
+        while true {
+            let chunk = try handle.read(upToCount: 1024 * 1024) ?? Data()
+            if chunk.isEmpty { break }
+            hasher.update(data: chunk)
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func sha256(data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func syncDirectory(path: String) throws {
+        let descriptor = open(path, O_RDONLY | O_CLOEXEC | O_DIRECTORY)
+        guard descriptor >= 0 else {
+            throw MachineManagerError.persistence("could not open metadata directory for sync")
+        }
+        defer { close(descriptor) }
+        guard fsync(descriptor) == 0 else {
+            throw MachineManagerError.persistence("could not sync metadata directory")
+        }
+    }
+
+    private static func writeDurablePrivateData(_ data: Data, toPath path: String) throws {
+        let descriptor = open(
+            path,
+            O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW,
+            mode_t(0o600)
+        )
+        guard descriptor >= 0 else {
+            throw MachineManagerError.persistence("could not create durable private metadata")
+        }
+        var succeeded = false
+        defer {
+            close(descriptor)
+            if !succeeded { _ = unlink(path) }
+        }
+        try data.withUnsafeBytes { raw in
+            guard var address = raw.baseAddress else { return }
+            var remaining = raw.count
+            while remaining > 0 {
+                let written = Darwin.write(descriptor, address, remaining)
+                if written > 0 {
+                    remaining -= written
+                    address = address.advanced(by: written)
+                } else if written < 0, errno == EINTR {
+                    continue
+                } else {
+                    throw MachineManagerError.persistence("could not write durable private metadata")
+                }
+            }
+        }
+        guard fsync(descriptor) == 0 else {
+            throw MachineManagerError.persistence("could not sync durable private metadata")
+        }
+        succeeded = true
+    }
+
     private static func isPrivateDirectory(info: stat) -> Bool {
         (info.st_mode & S_IFMT) == S_IFDIR
-            && info.st_uid == getuid()
+            && info.st_uid == geteuid()
             && (info.st_mode & 0o077) == 0
     }
 
@@ -2125,7 +13336,13 @@ public final class MachineManager: @unchecked Sendable {
             && info.st_size > 0
     }
 
-    private static func loadPersistedMachines(configuration: MachineManagerConfiguration) -> [String: MachineEntry] {
+    private static func loadPersistedMachines(
+        configuration: MachineManagerConfiguration,
+        launchPolicy: DoryMachineLaunchPolicy,
+        workspaceRepository: DoryWorkspaceRepository,
+        runtimeIdentityStore: DoryMachineRuntimeIdentityStore,
+        savedStateStore: DoryMachineSavedStateStore
+    ) -> [String: MachineEntry] {
         let root = configuration.stateDirectory
         guard let ids = try? FileManager.default.contentsOfDirectory(atPath: root) else {
             return [:]
@@ -2136,20 +13353,2007 @@ public final class MachineManager: @unchecked Sendable {
             let path = "\(root)/\(id)/machine.json"
             let rootfsPath = "\(root)/\(id)/rootfs.ext4"
             let kernelPath = "\(root)/\(id)/kernel"
+            let installerISOPath = "\(root)/\(id)/installer.iso"
             guard let data = readPrivateMetadata(path: path),
                   let machine = try? decoder.decode(DoryMachineConfiguration.self, from: data),
                   machine.id == id,
                   isValidID(machine.id),
+                  machine.installedDesktopPayloadReceipt?.hasCoherentAuthority(
+                    environment: machine.environment
+                  ) ?? true,
                   isPrivateDirectory(path: "\(root)/\(id)"),
                   machine.rootfsPath == rootfsPath,
                   machine.kernelPath == kernelPath,
                   isPrivateRegularFile(path: rootfsPath),
-                  isPrivateRegularFile(path: kernelPath) else {
+                  isPrivateRegularFile(path: kernelPath),
+                  machine.installerISOPath == nil || (
+                    machine.bootMode == .efi
+                        && machine.installerISOPath == installerISOPath
+                        && isPrivateRegularFile(path: installerISOPath)
+                  ) else {
                 continue
             }
-            loaded[id] = MachineEntry(configuration: machine, state: .stopped)
+            let identity: DoryMachineRuntimeIdentity = switch launchPolicy {
+            case .legacyCompatibility:
+                .legacyCompatibility(
+                    virtualHardwareABIVersion:
+                        DoryVirtualMachineDefinition.currentVirtualHardwareABIVersion
+                )
+            case .requireResolvedPlan:
+                .requiresReplanning(
+                    virtualHardwareABIVersion:
+                        DoryVirtualMachineDefinition.currentVirtualHardwareABIVersion,
+                    reason: .planRecoveryFailed
+                )
+            case .perWorkspaceAuthority:
+                loadOrMigratePerWorkspaceRuntimeIdentity(
+                    machine: machine,
+                    authoritativeLegacyData: data,
+                    store: runtimeIdentityStore
+                )
+            }
+            let savedState = savedStateStore.inspect(
+                machineID: id,
+                authoritativeConfigurationData: data,
+                runtimeIdentity: identity
+            )
+            let recoveredState: DoryMachineState
+            let savedStateError: String?
+            switch savedState {
+            case .absent:
+                recoveredState = .stopped
+                savedStateError = nil
+            case .valid:
+                recoveredState = .suspended
+                savedStateError = nil
+            case .invalid(let detail):
+                recoveredState = .failed
+                savedStateError = detail
+            }
+            let recoveredStatus: DoryMachineSavedStateStatus?
+            if case .valid(let manifest) = savedState {
+                recoveredStatus = DoryMachineSavedStateStatus(manifest: manifest)
+            } else {
+                recoveredStatus = nil
+            }
+            let typedSettingsSnapshot: DoryMachineTypedSettingsSnapshot?
+            let sandboxPolicySnapshot: DoryVMSandboxPolicy?
+            let usesNativeWorkspaceAuthority: Bool
+            if launchPolicy == .perWorkspaceAuthority,
+               let record = try? workspaceRepository.readPersistedRecord(id: id),
+               record.legacyConfigurationSHA256 == nil,
+               record.legacyMigrationFactsSHA256 == nil {
+                typedSettingsSnapshot = try? DoryMachineTypedSettingsSnapshot(
+                    definition: record.definition
+                )
+                sandboxPolicySnapshot = record.definition.sandboxPolicy
+                usesNativeWorkspaceAuthority = true
+            } else {
+                typedSettingsSnapshot = nil
+                sandboxPolicySnapshot = nil
+                usesNativeWorkspaceAuthority = false
+            }
+            loaded[id] = MachineEntry(
+                configuration: machine,
+                state: recoveredState,
+                lastError: savedStateError,
+                typedSettingsSnapshot: typedSettingsSnapshot,
+                sandboxPolicySnapshot: sandboxPolicySnapshot,
+                usesNativeWorkspaceAuthority: usesNativeWorkspaceAuthority,
+                savedStateStatus: recoveredStatus,
+                runtimeIdentity: identity
+            )
         }
         return loaded
+    }
+
+    private static func removeInterruptedNativeCreations(
+        stateDirectory: String
+    ) {
+        guard let ids = try? FileManager.default.contentsOfDirectory(
+            atPath: stateDirectory
+        ) else { return }
+        let allowed = Set([
+            "rootfs.ext4",
+            "kernel",
+            "installer.iso",
+            Self.nativeCreationPrecommitMarkerName,
+            DoryMachineRuntimeIdentityStore.recordFileName,
+            DoryMachineRuntimeIdentityStore.headFileName,
+            DoryWorkspaceRepository.recordFileName,
+        ])
+        for id in ids where Self.isValidID(id) {
+            let directory = stateDirectory + "/" + id
+            let markerPath = directory + "/" + Self.nativeCreationPrecommitMarkerName
+            guard Self.isPrivateDirectory(path: directory),
+                  !Self.pathEntryExists(directory + "/machine.json"),
+                  let entries = try? FileManager.default.contentsOfDirectory(
+                    atPath: directory
+                  ) else {
+                continue
+            }
+            let expectedMarker = Self.nativeCreationPrecommitMarkerData(machineID: id)
+            let isMarkerInitializationCrash = entries.isEmpty
+                || (entries.count == 1
+                    && entries[0] == Self.nativeCreationPrecommitMarkerName
+                    && Self.isPrivatePartialNativeCreationMarker(
+                        path: markerPath,
+                        expectedByteCount: expectedMarker.count
+                    ))
+            let containsOnlyCreationEntries = entries.allSatisfy { entry in
+                allowed.contains(entry)
+                    || entry.hasPrefix(
+                        DoryMachineRuntimeIdentityStore.recordTemporaryPrefix
+                    )
+                    || entry.hasPrefix(
+                        DoryMachineRuntimeIdentityStore.headTemporaryPrefix
+                    )
+                    || entry.hasPrefix(DoryWorkspaceRepository.recordTemporaryPrefix)
+            }
+            let containsOnlyPrivateRuntimeTemporaries = entries.filter { entry in
+                entry.hasPrefix(
+                    DoryMachineRuntimeIdentityStore.recordTemporaryPrefix
+                ) || entry.hasPrefix(
+                    DoryMachineRuntimeIdentityStore.headTemporaryPrefix
+                )
+                    || entry.hasPrefix(DoryWorkspaceRepository.recordTemporaryPrefix)
+            }.allSatisfy { entry in
+                Self.isPrivateRegularFile(path: directory + "/" + entry)
+            }
+            let hasValidWorkspaceAuthority = !entries.contains(
+                DoryWorkspaceRepository.recordFileName
+            ) || Self.isPrivateRegularFile(
+                path: directory + "/" + DoryWorkspaceRepository.recordFileName
+            )
+            let hasValidManagedArtifacts =
+                (!entries.contains("rootfs.ext4")
+                    || Self.isPrivateRegularFile(path: directory + "/rootfs.ext4"))
+                && (!entries.contains("kernel")
+                    || Self.isPrivateRegularFile(path: directory + "/kernel"))
+                && (!entries.contains("installer.iso")
+                    || Self.isPrivateRegularFile(path: directory + "/installer.iso"))
+            let isAuthenticatedInterruptedCreation =
+                Self.readPrivateMetadata(path: markerPath) == expectedMarker
+                && containsOnlyCreationEntries
+                && containsOnlyPrivateRuntimeTemporaries
+                && hasValidManagedArtifacts
+                && hasValidWorkspaceAuthority
+            guard isMarkerInitializationCrash || isAuthenticatedInterruptedCreation else {
+                continue
+            }
+            let quarantine = stateDirectory + "/"
+                + Self.interruptedNativeCreationQuarantinePrefix
+                + id + "-" + UUID().uuidString.lowercased()
+            guard rename(directory, quarantine) == 0 else { continue }
+            try? FileManager.default.removeItem(atPath: quarantine)
+        }
+    }
+
+    private static func isPrivatePartialNativeCreationMarker(
+        path: String,
+        expectedByteCount: Int
+    ) -> Bool {
+        var info = stat()
+        return lstat(path, &info) == 0
+            && (info.st_mode & S_IFMT) == S_IFREG
+            && info.st_uid == getuid()
+            && info.st_nlink == 1
+            && (info.st_mode & 0o077) == 0
+            && info.st_size >= 0
+            && info.st_size < Int64(expectedByteCount)
+    }
+
+    private static func recoverCompletedNativeCreationMarkers(
+        stateDirectory: String,
+        runtimeIdentityStore: DoryMachineRuntimeIdentityStore
+    ) {
+        guard let ids = try? FileManager.default.contentsOfDirectory(
+            atPath: stateDirectory
+        ) else { return }
+        for id in ids where Self.isValidID(id) {
+            let directory = stateDirectory + "/" + id
+            let preparing = directory + "/" + Self.nativeCreationPrecommitMarkerName
+            let committed = directory + "/" + Self.nativeCreationCommittedMarkerName
+            guard Self.isPrivateDirectory(path: directory),
+                  !Self.pathEntryExists(committed),
+                  Self.readPrivateMetadata(path: preparing)
+                    == Self.nativeCreationPrecommitMarkerData(machineID: id),
+                  let legacyData = Self.readPrivateMetadata(
+                    path: directory + "/machine.json"
+                  ),
+                  let machine = try? JSONDecoder().decode(
+                    DoryMachineConfiguration.self,
+                    from: legacyData
+                  ), machine.id == id,
+                  (try? runtimeIdentityStore.readIfPresent(
+                    machineID: id,
+                    authoritativeLegacyData: legacyData
+                  )) != nil else {
+                continue
+            }
+            guard rename(preparing, committed) == 0 else { continue }
+            try? Self.syncDirectory(path: directory)
+        }
+    }
+
+    private static func nativeCreationPrecommitMarkerData(machineID: String) -> Data {
+        Data("DORY-NATIVE-CREATE-PRECOMMIT-V1:\(machineID)\n".utf8)
+    }
+
+    private static func loadOrMigratePerWorkspaceRuntimeIdentity(
+        machine: DoryMachineConfiguration,
+        authoritativeLegacyData: Data,
+        store: DoryMachineRuntimeIdentityStore
+    ) -> DoryMachineRuntimeIdentity {
+        do {
+            if let persisted = try store.readIfPresent(
+                machineID: machine.id,
+                authoritativeLegacyData: authoritativeLegacyData
+            ) {
+                return persisted
+            }
+            let machineDirectory = store.root + "/" + machine.id
+            if Self.readPrivateMetadata(
+                path: machineDirectory + "/" + Self.nativeCreationCommittedMarkerName
+            ) == Self.nativeCreationPrecommitMarkerData(machineID: machine.id) {
+                let unresolved = DoryMachineRuntimeIdentity.requiresReplanning(
+                    virtualHardwareABIVersion:
+                        DoryVirtualMachineDefinition.currentVirtualHardwareABIVersion,
+                    reason: .planRecoveryFailed
+                )
+                try store.publish(
+                    unresolved,
+                    machineID: machine.id,
+                    authoritativeLegacyData: authoritativeLegacyData
+                )
+                return unresolved
+            }
+            if Self.pathEntryExists(
+                machineDirectory + "/" + DoryResolvedMachinePlanRepository.recordFileName
+            ) || Self.pathEntryExists(
+                machineDirectory + "/planning-transaction-v1.json"
+            ) {
+                let unresolved = DoryMachineRuntimeIdentity.requiresReplanning(
+                    virtualHardwareABIVersion:
+                        DoryVirtualMachineDefinition.currentVirtualHardwareABIVersion,
+                    reason: .planRecoveryFailed
+                )
+                try store.publish(
+                    unresolved,
+                    machineID: machine.id,
+                    authoritativeLegacyData: authoritativeLegacyData
+                )
+                return unresolved
+            }
+            // Absence is the one compatibility migration case: this exact machine predates the
+            // per-workspace authority record. Persist the migration decision before allowing a
+            // compatibility launch; malformed or stale records never receive this fallback.
+            let migrated = DoryMachineRuntimeIdentity.legacyCompatibility(
+                virtualHardwareABIVersion:
+                    DoryVirtualMachineDefinition.currentVirtualHardwareABIVersion
+            )
+            try store.publish(
+                migrated,
+                machineID: machine.id,
+                authoritativeLegacyData: authoritativeLegacyData
+            )
+            return migrated
+        } catch {
+            return .requiresReplanning(
+                virtualHardwareABIVersion:
+                    DoryVirtualMachineDefinition.currentVirtualHardwareABIVersion,
+                reason: .planRecoveryFailed
+            )
+        }
+    }
+
+    private func currentRuntimeIdentity(id: String) throws -> DoryMachineRuntimeIdentity {
+        lock.lock()
+        guard let entry = machines[id] else {
+            lock.unlock()
+            throw MachineManagerError.unknownMachine(id)
+        }
+        let identity = entry.runtimeIdentity
+        let machine = entry.configuration
+        lock.unlock()
+        guard identity.validate().isEmpty else {
+            throw MachineManagerError.persistence("machine runtime identity is invalid")
+        }
+        if launchPolicy == .perWorkspaceAuthority {
+            try revalidateDurableRuntimeIdentity(
+                id: id,
+                expected: identity,
+                expectedMachine: machine
+            )
+        }
+        return identity
+    }
+
+    private func currentDurableRuntimeIdentity(id: String) throws -> DoryMachineRuntimeIdentity {
+        try currentRuntimeIdentity(id: id)
+    }
+
+    private func revalidateDurableRuntimeIdentity(
+        id: String,
+        expected: DoryMachineRuntimeIdentity,
+        expectedMachine: DoryMachineConfiguration
+    ) throws {
+        guard expected.validate().isEmpty,
+              let authoritativeLegacyData = Self.readPrivateMetadata(
+                path: machineConfigPath(id: id)
+              ),
+              let decoded = try? JSONDecoder().decode(
+                DoryMachineConfiguration.self,
+                from: authoritativeLegacyData
+              ), decoded == expectedMachine else {
+            throw MachineManagerError.persistence(
+                "durable machine authority changed before launch"
+            )
+        }
+        let durable: DoryMachineRuntimeIdentity?
+        do {
+            durable = try runtimeIdentityStore.readIfPresent(
+                machineID: id,
+                authoritativeLegacyData: authoritativeLegacyData
+            )
+        } catch {
+            throw MachineManagerError.persistence(
+                "durable runtime identity is unavailable before launch: \(error)"
+            )
+        }
+        guard durable == expected else {
+            throw MachineManagerError.persistence(
+                "durable runtime identity changed before launch"
+            )
+        }
+    }
+
+    /// Acquires the same per-workspace cross-process mutation lock used by lifecycle operations,
+    /// then derives planning authority only from the exact persisted legacy bytes and migration
+    /// facts observed under that lock. This path never starts a helper or mutates guest state.
+    public func acquirePlanningMutationFence(
+        machine: DoryMachineConfiguration,
+        definition: DoryVirtualMachineDefinition,
+        canonicalDefinitionData: Data
+    ) throws -> DoryDaemonVirtualMachinePlanningMutationFence {
+        let mutationLease = mutationCoordinator.acquire(workspaceID: machine.id)
+        defer { mutationLease.release() }
+
+        guard launchPolicy == .requireResolvedPlan
+                || launchPolicy == .perWorkspaceAuthority else {
+            throw MachineManagerError.persistence(
+                "planning promotion requires the resolved-plan launch policy"
+            )
+        }
+        guard Self.isValidID(machine.id), machine.id == definition.identity.id,
+              canonicalDefinitionData == (try Self.canonicalDefinitionData(definition)) else {
+            throw MachineManagerError.persistence("planning request identity is inconsistent")
+        }
+        let planningAdmissionFailure: String? = managerStateLock.withLock {
+            guard activePlanningMutationIDs.insert(machine.id).inserted else {
+                return "machine \(machine.id) already has an active planning mutation"
+            }
+            guard activeLifecycleOperations[machine.id] == nil else {
+                activePlanningMutationIDs.remove(machine.id)
+                return "machine \(machine.id) already has an active lifecycle mutation"
+            }
+            return nil
+        }
+        if let planningAdmissionFailure {
+            throw MachineManagerError.persistence(planningAdmissionFailure)
+        }
+        var shouldRemoveActiveID = true
+        defer {
+            if shouldRemoveActiveID {
+                _ = managerStateLock.withLock {
+                    activePlanningMutationIDs.remove(machine.id)
+                }
+            }
+        }
+        guard let store = lifecycleJournalStore else {
+            throw MachineManagerError.persistence(
+                "lifecycle journal is unavailable: "
+                    + (lifecycleJournalInitializationError ?? "unknown error")
+            )
+        }
+
+        let workspaceLock: EngineStateDirectoryLock
+        do {
+            workspaceLock = try EngineStateDirectoryLock(
+                stateDirectory: store.root,
+                lockFileName: ".mutation.\(machine.id).lock"
+            )
+        } catch {
+            throw MachineManagerError.persistence(
+                "machine \(machine.id) mutation authority is busy: \(error)"
+            )
+        }
+        if let unfinished = try unfinishedPersistedLifecycleOperation(machineID: machine.id) {
+            throw MachineManagerError.persistence(
+                "machine \(machine.id) lifecycle operation "
+                    + unfinished.plan.id.uuidString.lowercased() + " requires recovery"
+            )
+        }
+
+        let entry: MachineEntry
+        lock.lock()
+        guard let current = machines[machine.id],
+              !deletingMachineIDs.contains(machine.id) else {
+            lock.unlock()
+            throw MachineManagerError.unknownMachine(machine.id)
+        }
+        entry = current
+        lock.unlock()
+        let authoritativeMachine = entry.configuration
+        guard entry.process == nil, entry.handoffServer == nil,
+              entry.state == .created || entry.state == .stopped else {
+            throw MachineManagerError.persistence(
+                "machine \(machine.id) must be exactly stopped before planning"
+            )
+        }
+        guard entry.runtimeIdentity.validate().isEmpty,
+              entry.runtimeIdentity.mode != .legacyCompatibility else {
+            throw MachineManagerError.persistence(
+                "machine \(machine.id) has no resolved-policy migration authority"
+            )
+        }
+
+        guard let legacyData = Self.readPrivateMetadata(path: machineConfigPath(id: machine.id)),
+              let decoded = try? JSONDecoder().decode(
+                DoryMachineConfiguration.self,
+                from: legacyData
+              ), decoded == authoritativeMachine else {
+            throw MachineManagerError.persistence(
+                "authoritative machine metadata changed before planning"
+            )
+        }
+        let workspace = try workspaceAuthority(
+            machine: authoritativeMachine,
+            authoritativeLegacyData: legacyData
+        )
+        guard workspace.runtimeMachine == machine,
+              workspace.definition == definition,
+              try Self.canonicalDefinitionData(workspace.definition)
+                == canonicalDefinitionData else {
+            throw MachineManagerError.persistence(
+                "planning request does not match authoritative workspace state"
+            )
+        }
+
+        let runtimeIdentityData = try Self.canonicalPlanningRuntimeAuthorityData(
+            entry.runtimeIdentity
+        )
+        let authority = DoryDaemonVirtualMachinePlanningMachineAuthority(
+            machineID: machine.id,
+            legacyConfigurationSHA256: Self.sha256(data: legacyData),
+            migrationFactsSHA256: Self.sha256(data: workspace.migrationFactsData),
+            sourceDefinitionRevision: workspace.definition.lifecycle.revision,
+            sourceDefinitionSHA256: Self.sha256(data: canonicalDefinitionData),
+            runtimeIdentitySHA256: Self.sha256(data: runtimeIdentityData)
+        )
+        guard authority.isValid else {
+            throw MachineManagerError.persistence("planning mutation authority is invalid")
+        }
+
+        let retention = MachineManagerPlanningMutationRetention(
+            manager: self,
+            machineID: machine.id,
+            workspaceLock: workspaceLock
+        )
+        shouldRemoveActiveID = false
+        return DoryDaemonVirtualMachinePlanningMutationFence(
+            authority: authority,
+            retainedAuthority: retention,
+            validation: { [weak self] in
+                guard let self else {
+                    throw MachineManagerError.persistence("machine manager is unavailable")
+                }
+                try self.revalidatePlanningMutationAuthority(
+                    authoritativeMachine: authoritativeMachine,
+                    runtimeMachine: machine,
+                    definition: definition,
+                    canonicalDefinitionData: canonicalDefinitionData,
+                    legacyData: legacyData,
+                    migrationFactsData: workspace.migrationFactsData,
+                    runtimeIdentitySHA256: authority.runtimeIdentitySHA256
+                )
+            },
+            completion: { [weak self] in
+                guard let self else {
+                    throw MachineManagerError.persistence("machine manager is unavailable")
+                }
+                if self.launchPolicy == .perWorkspaceAuthority {
+                    try self.completePlanningRuntimeIdentity(machineID: machine.id)
+                }
+                retention.release()
+            },
+            recoveryRelease: { retention.release() }
+        )
+    }
+
+    private func revalidatePlanningMutationAuthority(
+        authoritativeMachine: DoryMachineConfiguration,
+        runtimeMachine: DoryMachineConfiguration,
+        definition: DoryVirtualMachineDefinition,
+        canonicalDefinitionData: Data,
+        legacyData: Data,
+        migrationFactsData: Data,
+        runtimeIdentitySHA256: String
+    ) throws {
+        let mutationLease = mutationCoordinator.acquire(
+            workspaceID: authoritativeMachine.id
+        )
+        defer { mutationLease.release() }
+        guard managerStateLock.withLock({
+            activePlanningMutationIDs.contains(authoritativeMachine.id)
+        }) else {
+            throw MachineManagerError.persistence("planning mutation authority was released")
+        }
+        let entry: MachineEntry
+        lock.lock()
+        guard let current = machines[authoritativeMachine.id],
+              !deletingMachineIDs.contains(authoritativeMachine.id) else {
+            lock.unlock()
+            throw MachineManagerError.unknownMachine(authoritativeMachine.id)
+        }
+        entry = current
+        lock.unlock()
+        guard entry.configuration == authoritativeMachine,
+              entry.process == nil, entry.handoffServer == nil,
+              entry.state == .created || entry.state == .stopped,
+              entry.runtimeIdentity.validate().isEmpty,
+              Self.sha256(
+                data: try Self.canonicalPlanningRuntimeAuthorityData(entry.runtimeIdentity)
+              )
+                == runtimeIdentitySHA256,
+              let currentLegacyData = Self.readPrivateMetadata(
+                path: machineConfigPath(id: authoritativeMachine.id)
+              ), currentLegacyData == legacyData,
+              let decoded = try? JSONDecoder().decode(
+                DoryMachineConfiguration.self,
+                from: currentLegacyData
+              ), decoded == authoritativeMachine else {
+            throw MachineManagerError.persistence(
+                "authoritative machine state changed during planning"
+            )
+        }
+        let currentWorkspace = try workspaceAuthority(
+            machine: authoritativeMachine,
+            authoritativeLegacyData: currentLegacyData
+        )
+        guard currentWorkspace.migrationFactsData == migrationFactsData else {
+            throw MachineManagerError.persistence(
+                "authoritative migration facts changed during planning"
+            )
+        }
+        guard currentWorkspace.runtimeMachine == runtimeMachine else {
+            throw MachineManagerError.persistence(
+                "authoritative machine projection changed during planning"
+            )
+        }
+        guard currentWorkspace.definition == definition,
+              try Self.canonicalDefinitionData(currentWorkspace.definition)
+                == canonicalDefinitionData else {
+            throw MachineManagerError.persistence(
+                "authoritative workspace projection changed during planning"
+            )
+        }
+    }
+
+    private static func canonicalPlanningRuntimeAuthorityData(
+        _ identity: DoryMachineRuntimeIdentity
+    ) throws -> Data {
+        let authority = MachinePlanningRuntimeAuthority(identity: identity)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        return try encoder.encode(authority)
+    }
+
+    private func requireNoActivePlanningMutation(id: String) throws {
+        guard managerStateLock.withLock({ !activePlanningMutationIDs.contains(id) }) else {
+            throw MachineManagerError.persistence(
+                "machine \(id) already has an active planning mutation"
+            )
+        }
+    }
+
+    private func activeLifecycleOperation(
+        machineID: String
+    ) -> MachineLifecycleJournalContext? {
+        managerStateLock.withLock { activeLifecycleOperations[machineID] }
+    }
+
+    private func unfinishedPersistedLifecycleOperation(
+        machineID: String
+    ) throws -> DoryOperationRecord? {
+        for store in [lifecycleJournalStore, legacyLifecycleJournalStore].compactMap({ $0 }) {
+            if let record = try store.list().first(where: {
+                Self.isWorkspaceLifecycleJournalKind($0.plan.kind)
+                    && $0.state.status != .completed && $0.state.status != .failed
+                    && ($0.plan.source.id == machineID || $0.plan.target.id == machineID)
+            }) {
+                return record
+            }
+        }
+        return nil
+    }
+
+    private func removeActiveLifecycleOperation(
+        _ context: MachineLifecycleJournalContext
+    ) {
+        let machineID = context.operation.source.workspaceID
+        managerStateLock.withLock {
+            guard activeLifecycleOperations[machineID] === context else { return }
+            activeLifecycleOperations.removeValue(forKey: machineID)
+        }
+    }
+
+    private func acquireDirectWorkspaceMutationLock(
+        id: String
+    ) throws -> EngineStateDirectoryLock {
+        guard let store = lifecycleJournalStore else {
+            throw MachineManagerError.persistence(
+                "lifecycle journal is unavailable: "
+                    + (lifecycleJournalInitializationError ?? "unknown error")
+            )
+        }
+        let workspaceLock: EngineStateDirectoryLock
+        do {
+            workspaceLock = try EngineStateDirectoryLock(
+                stateDirectory: store.root,
+                lockFileName: ".mutation.\(id).lock"
+            )
+        } catch {
+            throw MachineManagerError.persistence(
+                "machine \(id) mutation authority is busy: \(error)"
+            )
+        }
+        if let unfinished = try unfinishedPersistedLifecycleOperation(machineID: id) {
+            throw MachineManagerError.persistence(
+                "machine \(id) lifecycle operation "
+                    + unfinished.plan.id.uuidString.lowercased() + " requires recovery"
+            )
+        }
+        return workspaceLock
+    }
+
+    private func retainDirectWorkspaceMutationLock(
+        id: String
+    ) throws -> MachineManagerDirectMutationRetention {
+        if let existing = managerStateLock.withLock({ () -> MachineManagerDirectMutationRetention? in
+            guard let existing = activeDirectWorkspaceMutationLocks[id] else { return nil }
+            existing.depth += 1
+            return existing
+        }) { return existing }
+        // A handoff publishes the runtime state before its callback can acquire this workspace to
+        // settle the readiness journal. If the very next user mutation wins that race, it owns
+        // the workspace already and can deterministically finish the committed start itself
+        // instead of rejecting a healthy running machine as an active lifecycle conflict.
+        if activeLifecycleOperation(machineID: id)?.operation.kind == .starting {
+            lock.lock()
+            let readinessCommitted = machines[id]?.state == .running
+            lock.unlock()
+            if readinessCommitted { completeActiveStartLifecycle(id: id) }
+        }
+        guard activeLifecycleOperation(machineID: id) == nil else {
+            throw MachineManagerError.persistence(
+                "machine \(id) already has an active lifecycle mutation"
+            )
+        }
+        let retention = MachineManagerDirectMutationRetention(
+            workspaceLock: try acquireDirectWorkspaceMutationLock(id: id)
+        )
+        managerStateLock.withLock {
+            activeDirectWorkspaceMutationLocks[id] = retention
+        }
+        return retention
+    }
+
+    private func releaseDirectWorkspaceMutationLock(
+        id: String,
+        retention: MachineManagerDirectMutationRetention
+    ) {
+        managerStateLock.withLock {
+            guard activeDirectWorkspaceMutationLocks[id] === retention,
+                  retention.depth > 0 else { return }
+            retention.depth -= 1
+            if retention.depth == 0 {
+                activeDirectWorkspaceMutationLocks.removeValue(forKey: id)
+            }
+        }
+    }
+
+    fileprivate func releasePlanningMutation(
+        machineID: String,
+        releaseWorkspaceLock: () -> Void
+    ) {
+        releaseWorkspaceLock()
+        _ = managerStateLock.withLock {
+            activePlanningMutationIDs.remove(machineID)
+        }
+    }
+
+    private func lifecycleState(for state: DoryMachineState) -> DoryWorkspaceLifecycleState {
+        switch state {
+        case .starting, .running: .running
+        case .paused: .paused
+        case .suspended: .suspended
+        case .created, .stopped: .stopped
+        case .failed: .failed
+        }
+    }
+
+    private func lifecycleCondition(
+        machine: DoryMachineConfiguration,
+        state: DoryWorkspaceLifecycleState,
+        runtimeIdentity: DoryMachineRuntimeIdentity
+    ) throws -> DoryWorkspaceLifecycleCondition {
+        let legacyData: Data
+        if let current = Self.readPrivateMetadata(path: machineConfigPath(id: machine.id)),
+           let decoded = try? JSONDecoder().decode(DoryMachineConfiguration.self, from: current),
+           decoded == machine {
+            legacyData = current
+        } else {
+            legacyData = try DoryMachineConfigurationMigrationBridge.encodeLegacy(machine)
+        }
+        let facts = try workspaceMigrationFacts(for: machine)
+        let definition = try DoryMachineConfigurationMigrationBridge.migrate(
+            machine,
+            facts: facts
+        ).definition
+        let definitionData = try Self.canonicalDefinitionData(definition)
+        return DoryWorkspaceLifecycleCondition(
+            workspaceID: machine.id,
+            state: state,
+            definitionRevision: definition.lifecycle.revision,
+            runtime: try lifecycleRuntimeBinding(runtimeIdentity),
+            configurationAuthority: DoryWorkspaceConfigurationAuthority(
+                legacyConfigurationSHA256: Self.sha256(data: legacyData),
+                canonicalDefinitionSHA256: Self.sha256(data: definitionData)
+            )
+        )
+    }
+
+    private func lifecycleRuntimeBinding(
+        _ identity: DoryMachineRuntimeIdentity
+    ) throws -> DoryWorkspaceRuntimeBinding {
+        guard identity.validate().isEmpty else {
+            throw MachineManagerError.persistence("machine runtime identity is invalid")
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let digest = Self.sha256(data: try encoder.encode(identity))
+        switch identity.mode {
+        case .legacyCompatibility:
+            return .legacyCompatibility(
+                virtualHardwareABIVersion: identity.virtualHardwareABIVersion,
+                runtimeIdentityDigest: digest
+            )
+        case .requiresReplanning:
+            return .requiresReplanning(
+                virtualHardwareABIVersion: identity.virtualHardwareABIVersion,
+                runtimeIdentityDigest: digest
+            )
+        case .resolvedPlan:
+            guard let plan = identity.resolvedPlan,
+                  let planDigest = identity.resolvedPlanSHA256 else {
+                throw MachineManagerError.persistence("resolved runtime identity is incomplete")
+            }
+            return .resolvedPlan(
+                DoryWorkspaceResolvedCondition(
+                    planRevision: plan.planRevision,
+                    planDigest: planDigest,
+                    backendID: plan.backend.rawValue,
+                    backendRuntimeBuildID: plan.backendRuntimeBuildIdentifier,
+                    virtualHardwareABIVersion: plan.virtualHardwareABIVersion
+                ),
+                runtimeIdentityDigest: digest
+            )
+        }
+    }
+
+    private func beginLifecycleStart(
+        machine: DoryMachineConfiguration,
+        targetIdentity: DoryMachineRuntimeIdentity,
+        operationID: UUID?
+    ) throws -> MachineLifecycleJournalContext {
+        let sourceIdentity = try currentRuntimeIdentity(id: machine.id)
+        return try beginLifecycleOperation(
+            operationID: operationID,
+            kind: .starting,
+            source: lifecycleCondition(
+                machine: machine,
+                state: .stopped,
+                runtimeIdentity: sourceIdentity
+            ),
+            target: lifecycleCondition(
+                machine: machine,
+                state: .running,
+                runtimeIdentity: targetIdentity
+            ),
+            targetResourceID: nil,
+            readiness: true
+        )
+    }
+
+    private func beginLifecycleStartPreparation(
+        id: String
+    ) throws -> MachineLifecycleJournalContext {
+        lock.lock()
+        guard let entry = machines[id] else {
+            lock.unlock()
+            throw MachineManagerError.unknownMachine(id)
+        }
+        let machine = entry.configuration
+        let runtimeIdentity = entry.runtimeIdentity
+        lock.unlock()
+
+        var condition = try lifecycleCondition(
+            machine: machine,
+            state: .stopped,
+            runtimeIdentity: runtimeIdentity
+        )
+        // Boot-bundle and direct-boot materialization are derived from the unchanged authoritative
+        // legacy configuration. Their projection facts may legitimately become more specific, so
+        // this preparation boundary binds the exact raw authority and runtime identity while the
+        // subsequent start journal binds the reconciled canonical definition.
+        condition.configurationAuthority?.canonicalDefinitionSHA256 = nil
+        return try beginLifecycleOperation(
+            kind: .resolving,
+            source: condition,
+            target: condition,
+            targetResourceID: nil,
+            readiness: false
+        )
+    }
+
+    private func beginLifecycleStop(
+        machine: DoryMachineConfiguration,
+        runtimeIdentity: DoryMachineRuntimeIdentity,
+        sourceState: DoryWorkspaceLifecycleState,
+        operationID: UUID?
+    ) throws -> MachineLifecycleJournalContext {
+        try beginLifecycleOperation(
+            operationID: operationID,
+            kind: .stopping,
+            source: lifecycleCondition(
+                machine: machine,
+                state: sourceState,
+                runtimeIdentity: runtimeIdentity
+            ),
+            target: lifecycleCondition(
+                machine: machine,
+                state: .stopped,
+                runtimeIdentity: runtimeIdentity
+            ),
+            targetResourceID: nil,
+            readiness: false
+        )
+    }
+
+    private func beginLifecyclePause(
+        machine: DoryMachineConfiguration,
+        runtimeIdentity: DoryMachineRuntimeIdentity,
+        operationID: UUID?
+    ) throws -> MachineLifecycleJournalContext {
+        try beginLifecycleOperation(
+            operationID: operationID,
+            kind: .pausing,
+            source: lifecycleCondition(
+                machine: machine,
+                state: .running,
+                runtimeIdentity: runtimeIdentity
+            ),
+            target: lifecycleCondition(
+                machine: machine,
+                state: .paused,
+                runtimeIdentity: runtimeIdentity
+            ),
+            targetResourceID: nil,
+            readiness: false
+        )
+    }
+
+    private func beginLifecycleResume(
+        machine: DoryMachineConfiguration,
+        runtimeIdentity: DoryMachineRuntimeIdentity,
+        operationID: UUID?
+    ) throws -> MachineLifecycleJournalContext {
+        try beginLifecycleOperation(
+            operationID: operationID,
+            kind: .resuming,
+            source: lifecycleCondition(
+                machine: machine,
+                state: .paused,
+                runtimeIdentity: runtimeIdentity
+            ),
+            target: lifecycleCondition(
+                machine: machine,
+                state: .running,
+                runtimeIdentity: runtimeIdentity
+            ),
+            targetResourceID: nil,
+            readiness: true
+        )
+    }
+
+    private func beginLifecycleSuspend(
+        machine: DoryMachineConfiguration,
+        runtimeIdentity: DoryMachineRuntimeIdentity,
+        sourceState: DoryWorkspaceLifecycleState,
+        savedStateAuthority: DoryWorkspaceSnapshotAuthority
+    ) throws -> MachineLifecycleJournalContext {
+        try beginLifecycleOperation(
+            kind: .suspending,
+            source: lifecycleCondition(
+                machine: machine,
+                state: sourceState,
+                runtimeIdentity: runtimeIdentity
+            ),
+            target: lifecycleCondition(
+                machine: machine,
+                state: .suspended,
+                runtimeIdentity: runtimeIdentity
+            ),
+            targetResourceID: DoryMachineSavedStateStore.directoryName,
+            targetSnapshotAuthority: savedStateAuthority,
+            readiness: false
+        )
+    }
+
+    private static func savedStateIntentAuthority(
+        machine: DoryMachineConfiguration,
+        runtimeIdentity: DoryMachineRuntimeIdentity,
+        authoritativeConfigurationData: Data
+    ) throws -> DoryWorkspaceSnapshotAuthority {
+        let host = DoryInstallerHostRuntime.current
+        let intent = MachineSavedStateIntentAuthority(
+            machineID: machine.id,
+            configurationSHA256: Self.sha256(data: authoritativeConfigurationData),
+            runtimeIdentity: runtimeIdentity,
+            hostHardwareModel: host.hardwareModel,
+            hostOperatingSystemBuild: host.operatingSystemBuild,
+            backend: .appleVirtualizationFramework
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let descriptor = try encoder.encode(intent)
+        let runtime = try encoder.encode(runtimeIdentity)
+        return DoryWorkspaceSnapshotAuthority(
+            descriptorSHA256: Self.sha256(data: descriptor),
+            artifactEvidenceSHA256: Self.sha256(data: runtime)
+        )
+    }
+
+    private func beginLifecycleSnapshot(
+        machine: DoryMachineConfiguration,
+        runtimeIdentity: DoryMachineRuntimeIdentity,
+        sourceState: DoryWorkspaceLifecycleState,
+        snapshotID: String,
+        snapshotAuthority: DoryWorkspaceSnapshotAuthority
+    ) throws -> MachineLifecycleJournalContext {
+        let condition = try lifecycleCondition(
+            machine: machine,
+            state: sourceState,
+            runtimeIdentity: runtimeIdentity
+        )
+        return try beginLifecycleOperation(
+            kind: .snapshotting,
+            source: condition,
+            target: condition,
+            targetResourceID: snapshotID,
+            targetSnapshotAuthority: snapshotAuthority,
+            readiness: false
+        )
+    }
+
+    private func beginLifecycleRestore(
+        sourceMachine: DoryMachineConfiguration,
+        targetMachine: DoryMachineConfiguration,
+        sourceIdentity: DoryMachineRuntimeIdentity,
+        targetIdentity: DoryMachineRuntimeIdentity,
+        sourceState: DoryWorkspaceLifecycleState,
+        targetState: DoryWorkspaceLifecycleState,
+        snapshotID: String,
+        snapshotAuthority: DoryWorkspaceSnapshotAuthority
+    ) throws -> MachineLifecycleJournalContext {
+        try beginLifecycleOperation(
+            kind: .restoring,
+            source: lifecycleCondition(
+                machine: sourceMachine,
+                state: sourceState,
+                runtimeIdentity: sourceIdentity
+            ),
+            target: lifecycleCondition(
+                machine: targetMachine,
+                state: targetState,
+                runtimeIdentity: targetIdentity
+            ),
+            targetResourceID: snapshotID,
+            targetSnapshotAuthority: snapshotAuthority,
+            readiness: targetState == .running
+        )
+    }
+
+    private func beginLifecycleDelete(
+        machine: DoryMachineConfiguration,
+        runtimeIdentity: DoryMachineRuntimeIdentity,
+        sourceState: DoryWorkspaceLifecycleState
+    ) throws -> MachineLifecycleJournalContext {
+        try beginLifecycleOperation(
+            kind: .deleting,
+            source: lifecycleCondition(
+                machine: machine,
+                state: sourceState,
+                runtimeIdentity: runtimeIdentity
+            ),
+            target: lifecycleCondition(
+                machine: machine,
+                state: .deleting,
+                runtimeIdentity: runtimeIdentity
+            ),
+            targetResourceID: nil,
+            readiness: false
+        )
+    }
+
+    private func beginLifecycleOperation(
+        operationID: UUID? = nil,
+        kind: DoryWorkspaceMutationKind,
+        source: DoryWorkspaceLifecycleCondition,
+        target: DoryWorkspaceLifecycleCondition,
+        targetResourceID: String?,
+        targetSnapshotAuthority: DoryWorkspaceSnapshotAuthority? = nil,
+        readiness: Bool
+    ) throws -> MachineLifecycleJournalContext {
+        let machineID = source.workspaceID
+        if kind == .snapshotting || kind == .suspending || kind == .restoring {
+            guard targetSnapshotAuthority != nil else {
+                throw MachineManagerError.persistence(
+                    "snapshot lifecycle operation is missing immutable artifact authority"
+                )
+            }
+        }
+        guard activeLifecycleOperation(machineID: machineID) == nil else {
+            throw MachineManagerError.persistence(
+                "machine \(machineID) already has an active lifecycle mutation"
+            )
+        }
+        guard let store = lifecycleJournalStore else {
+            throw MachineManagerError.persistence(
+                "lifecycle journal is unavailable: \(lifecycleJournalInitializationError ?? "unknown error")"
+            )
+        }
+        if let unfinished = try unfinishedPersistedLifecycleOperation(machineID: machineID) {
+            throw MachineManagerError.persistence(
+                "machine \(machineID) lifecycle operation "
+                    + unfinished.plan.id.uuidString.lowercased() + " requires recovery"
+            )
+        }
+        let now = Date()
+        let created = Int64(max(0, (now.timeIntervalSince1970 * 1_000).rounded()))
+        let deadlineDelta: Int64 = 15 * 60 * 1_000
+        let deadline = created > Int64.max - deadlineDelta ? Int64.max : created + deadlineDelta
+        let operation = DoryWorkspaceLifecycleOperation(
+            operationID: operationID ?? UUID(),
+            kind: kind,
+            source: source,
+            target: target,
+            targetResourceID: targetResourceID,
+            targetSnapshotAuthority: targetSnapshotAuthority,
+            createdAtUnixMilliseconds: created,
+            deadlineUnixMilliseconds: deadline,
+            steps: [
+                .init(id: "quiesce", stage: .quiesce, deadlineOffsetMilliseconds: 60_000),
+                .init(id: "stage", stage: .prepare, deadlineOffsetMilliseconds: 120_000),
+                .init(id: "verify", stage: .mutate, deadlineOffsetMilliseconds: 300_000),
+                .init(id: "publish", stage: .publish, deadlineOffsetMilliseconds: 600_000),
+                .init(id: "validate", stage: readiness ? .readiness : .cleanup,
+                      deadlineOffsetMilliseconds: 840_000),
+            ],
+            readinessGates: readiness
+                ? [.init(kind: .backendRunning, deadlineOffsetMilliseconds: 840_000)] : [],
+            retryBudgets: [],
+            cancellationPolicy: kind == .deleting ? .prohibited : .rollbackRequired,
+            recovery: .init(disposition: .rollback, stepIDs: ["stage", "publish"])
+        )
+        let dependency = MachineLifecycleDependencyAuthority(
+            mutationKind: kind.rawValue,
+            workspaceID: machineID,
+            sourceLegacyConfigurationSHA256:
+                source.configurationAuthority?.legacyConfigurationSHA256,
+            sourceDefinitionSHA256: source.configurationAuthority?.canonicalDefinitionSHA256,
+            sourceRuntimeIdentitySHA256: source.runtime?.runtimeIdentityDigest,
+            targetLegacyConfigurationSHA256:
+                target.configurationAuthority?.legacyConfigurationSHA256,
+            targetDefinitionSHA256: target.configurationAuthority?.canonicalDefinitionSHA256,
+            targetRuntimeIdentitySHA256: target.runtime?.runtimeIdentityDigest,
+            targetResourceID: targetResourceID,
+            targetSnapshotDescriptorSHA256:
+                targetSnapshotAuthority?.descriptorSHA256,
+            targetSnapshotArtifactEvidenceSHA256:
+                targetSnapshotAuthority?.artifactEvidenceSHA256
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let binding = try operation.journalBinding(
+            dependencyClosureDigest: Self.sha256(data: try encoder.encode(dependency))
+        )
+        let lease: DoryOperationLease
+        let retainedMutation = managerStateLock.withLock {
+            activeDirectWorkspaceMutationLocks[machineID]
+        }
+        if let retained = retainedMutation {
+            lease = try store.begin(
+                binding,
+                holdingMutationLock: retained.workspaceLock
+            )
+        } else {
+            lease = try store.begin(binding)
+        }
+        let context = MachineLifecycleJournalContext(operation: operation, lease: lease)
+        managerStateLock.withLock {
+            activeLifecycleOperations[machineID] = context
+        }
+        lock.lock()
+        if var entry = machines[machineID] {
+            entry.activeOperationID = operation.operationID
+            entry.activeOperationKind = kind
+            appendFlightEvent(
+                on: &entry,
+                kind: .operationStarted,
+                phase: .planned,
+                deadlineUnixMilliseconds: deadline
+            )
+            machines[machineID] = entry
+        }
+        lock.unlock()
+        return context
+    }
+
+    private func advanceLifecycleToPublishing(
+        _ context: MachineLifecycleJournalContext
+    ) throws {
+        for phase in [
+            DoryOperationPhase.quiescing,
+            .staging,
+            .verifying,
+            .readyToPublish,
+            .publishing,
+        ] {
+            let current = try context.lease.read().state
+            if current.phase.indexForMachineLifecycle >= phase.indexForMachineLifecycle { continue }
+            _ = try context.lease.transition(
+                to: phase,
+                status: .running,
+                expectedRevision: current.revision,
+                stepID: "lifecycle.\(phase.rawValue)"
+            )
+            appendFlightEvent(
+                machineID: context.operation.source.workspaceID,
+                kind: .operationPhase,
+                phase: phase,
+                deadlineUnixMilliseconds:
+                    context.operation.deadlineUnixMilliseconds
+            )
+        }
+    }
+
+    private func completeLifecycle(_ context: MachineLifecycleJournalContext) throws {
+        var current = try context.lease.read().state
+        if current.phase.indexForMachineLifecycle < DoryOperationPhase.validating.indexForMachineLifecycle {
+            current = try context.lease.transition(
+                to: .validating,
+                status: .running,
+                expectedRevision: current.revision,
+                stepID: "lifecycle.validated"
+            )
+            appendFlightEvent(
+                machineID: context.operation.source.workspaceID,
+                kind: .operationPhase,
+                phase: .validating,
+                deadlineUnixMilliseconds:
+                    context.operation.deadlineUnixMilliseconds
+            )
+        }
+#if DEBUG
+        // Persist the post-commit boundary before exercising the terminal journal write. Recovery
+        // can then distinguish a committed target from a pre-commit interruption even when the
+        // source and target machine.json bytes happen to be identical.
+        try injectLifecycleFault(.completionBeforeJournalWrite(context.operation.kind))
+#endif
+        if current.phase.indexForMachineLifecycle < DoryOperationPhase.completed.indexForMachineLifecycle {
+            _ = try context.lease.transition(
+                to: .completed,
+                status: .completed,
+                expectedRevision: current.revision,
+                stepID: "lifecycle.completed"
+            )
+        }
+        appendFlightEvent(
+            machineID: context.operation.source.workspaceID,
+            kind: .operationCompleted,
+            phase: .completed,
+            durationMilliseconds: lifecycleDurationMilliseconds(context.operation)
+        )
+        removeActiveLifecycleOperation(context)
+        clearActiveOperation(
+            machineID: context.operation.source.workspaceID,
+            operationID: context.operation.operationID
+        )
+        context.releaseLease()
+    }
+
+    @discardableResult
+    private func completeCommittedLifecycle(
+        _ context: MachineLifecycleJournalContext,
+        diagnostic: String
+    ) -> Bool {
+        do {
+            try completeLifecycle(context)
+            return true
+        } catch {
+            // The target side effect is already durable. Preserve the journal's last valid,
+            // nonterminal state so restart recovery can verify and finish it; claiming rollback
+            // or terminal failure here would contradict the machine/snapshot authority on disk.
+            removeActiveLifecycleOperation(context)
+            context.releaseLease()
+            lock.lock()
+            if var entry = machines[context.operation.source.workspaceID] {
+                setFailure(
+                    on: &entry,
+                    code: .lifecycleRecoveryRequired,
+                    message: "\(diagnostic): \(error)",
+                    causes: [.journal],
+                    recoveryDisposition: .repair
+                )
+                appendFlightEvent(
+                    on: &entry,
+                    kind: .recoveryRequired,
+                    failure: entry.failure,
+                    durationMilliseconds: lifecycleDurationMilliseconds(context.operation)
+                )
+                machines[context.operation.source.workspaceID] = entry
+            }
+            lock.unlock()
+            clearActiveOperation(
+                machineID: context.operation.source.workspaceID,
+                operationID: context.operation.operationID
+            )
+            return false
+        }
+    }
+
+    private func failLifecycle(
+        _ context: MachineLifecycleJournalContext,
+        stepID: String,
+        rolledBack: Bool = false
+    ) {
+        defer {
+            removeActiveLifecycleOperation(context)
+            clearActiveOperation(
+                machineID: context.operation.source.workspaceID,
+                operationID: context.operation.operationID
+            )
+            context.releaseLease()
+        }
+        guard var current = try? context.lease.read().state,
+              current.status != .failed, current.status != .completed else { return }
+        if rolledBack,
+           let rollingBack = try? context.lease.transition(
+               to: current.phase,
+               status: .rollingBack,
+               expectedRevision: current.revision,
+               stepID: "lifecycle.rolling-back",
+               recoveryAction: "rollback"
+           ) {
+            current = rollingBack
+        }
+        _ = try? context.lease.transition(
+            to: current.phase,
+            status: .failed,
+            expectedRevision: current.revision,
+            stepID: stepID,
+            recoveryAction: rolledBack ? "rollback" : nil
+        )
+        lock.lock()
+        let machineID = context.operation.source.workspaceID
+        if var entry = machines[machineID] {
+            if entry.failure == nil {
+                setFailure(
+                    on: &entry,
+                    code: .lifecycleOperationFailed,
+                    message: "Workspace \(context.operation.kind.rawValue) failed at \(stepID).",
+                    causes: [.journal],
+                    recoveryDisposition: rolledBack ? .rollbackCompleted : .retry,
+                    extraEvidence: [
+                        .init(
+                            kind: .journal,
+                            identifier: context.operation.operationID.uuidString.lowercased()
+                        ),
+                    ]
+                )
+            }
+            if let failure = entry.failure {
+                appendFlightEvent(
+                    on: &entry,
+                    kind: .operationFailed,
+                    phase: current.phase,
+                    failure: failure,
+                    durationMilliseconds: lifecycleDurationMilliseconds(context.operation)
+                )
+            }
+            machines[machineID] = entry
+        }
+        lock.unlock()
+    }
+
+    private func lifecycleDurationMilliseconds(
+        _ operation: DoryWorkspaceLifecycleOperation
+    ) -> UInt64 {
+        let now = Int64(max(0, (Date().timeIntervalSince1970 * 1_000).rounded()))
+        guard now > operation.createdAtUnixMilliseconds else { return 0 }
+        return min(
+            UInt64(now - operation.createdAtUnixMilliseconds),
+            UInt64(31 * 24 * 60 * 60 * 1_000)
+        )
+    }
+
+    private func completeActiveStartLifecycle(id: String) {
+        guard let context = activeLifecycleOperation(machineID: id),
+              context.operation.kind == .starting else {
+            return
+        }
+        _ = completeCommittedLifecycle(
+            context,
+            diagnostic: "running machine has an unfinished readiness journal"
+        )
+    }
+
+    private func failActiveStartLifecycle(id: String, stepID: String) {
+        guard let context = activeLifecycleOperation(machineID: id),
+              context.operation.kind == .starting else {
+            return
+        }
+        failLifecycle(context, stepID: stepID)
+    }
+
+    private func cancelActiveStartLifecycleIfNeeded(id: String, reason: String) throws {
+        guard let context = activeLifecycleOperation(machineID: id) else { return }
+        guard context.operation.kind == .starting else {
+            throw MachineManagerError.persistence(
+                "machine \(id) already has an active lifecycle mutation"
+            )
+        }
+        failLifecycle(context, stepID: reason)
+    }
+
+    private func lifecycleDeletionQuarantinePath(
+        machineID: String,
+        operationID: UUID
+    ) -> String {
+        Self.lifecycleDeletionQuarantinePath(
+            configuration: configuration,
+            machineID: machineID,
+            operationID: operationID
+        )
+    }
+
+    private static func lifecycleDeletionQuarantinePath(
+        configuration: MachineManagerConfiguration,
+        machineID: String,
+        operationID: UUID
+    ) -> String {
+        "\(configuration.stateDirectory)/\(deletionQuarantinePrefix)\(machineID)-"
+            + operationID.uuidString.lowercased()
+    }
+
+#if DEBUG
+    func installReadinessPublishHookForTesting(
+        _ hook: @escaping @Sendable (_ machineID: String) -> Void
+    ) {
+        managerStateLock.withLock {
+            readinessPublishTestHook = hook
+        }
+    }
+
+    func installLifecycleFaultInjectorForTesting(
+        _ injector: @escaping @Sendable (MachineLifecycleFaultPoint) throws -> Void
+    ) {
+        managerStateLock.lock()
+        lifecycleFaultInjector = injector
+        managerStateLock.unlock()
+    }
+
+    private func injectLifecycleFault(_ point: MachineLifecycleFaultPoint) throws {
+        let injector = managerStateLock.withLock { lifecycleFaultInjector }
+        try injector?(point)
+    }
+
+    func installShareAuthorityPreSpawnHookForTesting(
+        _ hook: @escaping @Sendable () throws -> Void
+    ) {
+        installMachineAwareShareAuthorityPreSpawnHookForTesting { _ in try hook() }
+    }
+
+    func installMachineAwareShareAuthorityPreSpawnHookForTesting(
+        _ hook: @escaping @Sendable (_ machineID: String) throws -> Void
+    ) {
+        managerStateLock.withLock {
+            shareAuthorityPreSpawnTestHook = hook
+        }
+    }
+
+    func retainedWorkspaceMutationCoordinatorEntriesForTesting() -> Int {
+        mutationCoordinator.retainedEntryCountForTesting
+    }
+
+    /// Simulates an asynchronous authority replacement that cannot normally be initiated through
+    /// a public mutation while the workspace coordinator owns the launch. This exercises the
+    /// compare-and-commit boundary without weakening or bypassing it.
+    func mutateReservedLaunchAuthorityForTesting(
+        machineID: String,
+        mutation: MachineLaunchAdmissionMutationForTesting
+    ) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        guard var entry = machines[machineID], entry.launchReservation != nil else {
+            throw MachineManagerError.persistence(
+                "test launch admission reservation is unavailable"
+            )
+        }
+        switch mutation {
+        case .reservationGeneration:
+            let next = lastLaunchReservationGeneration.addingReportingOverflow(1)
+            guard !next.overflow, next.partialValue != 0 else {
+                throw MachineManagerError.persistence(
+                    "test launch admission generation space is exhausted"
+                )
+            }
+            lastLaunchReservationGeneration = next.partialValue
+            entry.launchReservation = MachineLaunchReservation(
+                generation: next.partialValue,
+                token: UUID()
+            )
+        case .configuration:
+            let memory = entry.configuration.memoryMB.addingReportingOverflow(1)
+            guard !memory.overflow else {
+                throw MachineManagerError.persistence(
+                    "test machine configuration mutation overflowed"
+                )
+            }
+            entry.configuration.memoryMB = memory.partialValue
+        case .operation:
+            var replacement = UUID()
+            while replacement == entry.activeOperationID { replacement = UUID() }
+            entry.activeOperationID = replacement
+        }
+        machines[machineID] = entry
+    }
+
+    func activeLaunchReservationGenerationForTesting(machineID: String) -> UInt64? {
+        lock.lock()
+        defer { lock.unlock() }
+        return machines[machineID]?.launchReservation?.generation
+    }
+
+    func installRawHVStateAuthorityPreFinalRevalidationHookForTesting(
+        _ hook: @escaping @Sendable (_ machineID: String) throws -> Void
+    ) {
+        managerStateLock.lock()
+        rawHVStateAuthorityPreFinalRevalidationTestHook = hook
+        managerStateLock.unlock()
+    }
+
+    func installStorageCapacityProviderForTesting(
+        _ provider: @escaping @Sendable (String) throws -> UInt64
+    ) {
+        managerStateLock.lock()
+        storageCapacityProvider = provider
+        managerStateLock.unlock()
+    }
+
+    func forceSnapshotCopyFallbackForTesting() {
+        managerStateLock.lock()
+        forceSnapshotCopyFallback = true
+        managerStateLock.unlock()
+    }
+#endif
+
+    private static func availableStorageCapacity(forDestinationPath path: String) throws -> UInt64 {
+        var candidate = URL(fileURLWithPath: path)
+            .standardizedFileURL
+            .deletingLastPathComponent()
+        let fileManager = FileManager.default
+        while !fileManager.fileExists(atPath: candidate.path) {
+            let parent = candidate.deletingLastPathComponent()
+            guard parent.path != candidate.path else {
+                throw MachineManagerError.persistence(
+                    "could not locate the machine export destination filesystem"
+                )
+            }
+            candidate = parent
+        }
+        var filesystem = statfs()
+        guard statfs(candidate.path, &filesystem) == 0 else {
+            throw MachineManagerError.persistence(
+                "could not inspect machine export storage: \(String(cString: strerror(errno)))"
+            )
+        }
+        let (available, overflow) = UInt64(filesystem.f_bavail).multipliedReportingOverflow(
+            by: UInt64(filesystem.f_bsize)
+        )
+        guard !overflow else {
+            throw MachineManagerError.persistence(
+                "machine export storage capacity exceeds supported accounting"
+            )
+        }
+        return available
+    }
+
+    private static func recoverInterruptedLifecycleOperations(
+        store: DoryOperationJournalStore?,
+        configuration: MachineManagerConfiguration
+    ) -> [String: String] {
+        guard let store, let records = try? store.list() else { return [:] }
+        var diagnostics: [String: String] = [:]
+        for record in records where isWorkspaceLifecycleJournalKind(record.plan.kind)
+            && record.state.status != .completed
+            && record.state.status != .failed {
+            var lease: DoryOperationLease?
+            do {
+                guard Self.isValidID(record.plan.source.id) else { continue }
+                lease = try store.acquire(record.plan.id)
+                guard let lease else { continue }
+                let operation = try lease.readWorkspaceLifecycleOperation()
+                guard operation.source.workspaceID == record.plan.source.id,
+                      operation.target.workspaceID == record.plan.source.id else {
+                    throw MachineManagerError.persistence(
+                        "lifecycle journal mutation scope changed during recovery"
+                    )
+                }
+                let id = operation.source.workspaceID
+                let recoveryState = try lease.read().state
+                switch operation.kind {
+                case .resolving:
+                    if lifecycleConfigurationMatches(
+                        operation.target.configurationAuthority,
+                        machineID: id,
+                        configuration: configuration
+                    ) {
+                        try completeRecoveredLifecycle(lease)
+                        diagnostics[id] =
+                            "interrupted start preparation was recovered; machine remains stopped"
+                    } else {
+                        try failRecoveredLifecycle(lease, rolledBack: false)
+                        diagnostics[id] =
+                            "interrupted start preparation authority changed; recovery failed closed"
+                    }
+                case .starting:
+                    try failRecoveredLifecycle(lease, rolledBack: true)
+                    diagnostics[id] = "interrupted start was recovered as stopped"
+                case .stopping:
+                    if lifecycleConfigurationMatches(
+                        operation.target.configurationAuthority,
+                        machineID: id,
+                        configuration: configuration
+                    ) {
+                        if operation.source.state == .suspended {
+                            try DoryMachineSavedStateStore(
+                                root: configuration.stateDirectory
+                            ).remove(machineID: id)
+                        }
+                        try completeRecoveredLifecycle(lease)
+                        diagnostics[id] = "interrupted stop completed during daemon recovery"
+                    } else {
+                        try failRecoveredLifecycle(lease, rolledBack: false)
+                        diagnostics[id] = "interrupted stop authority changed; recovery failed closed"
+                    }
+                case .snapshotting:
+                    if recoveryState.phase.indexForMachineLifecycle
+                        >= DoryOperationPhase.validating.indexForMachineLifecycle,
+                       recoveredSnapshot(
+                           machineID: id,
+                           operation: operation,
+                           configuration: configuration
+                       ) != nil,
+                       lifecycleConfigurationMatches(
+                           operation.target.configurationAuthority,
+                           machineID: id,
+                           configuration: configuration
+                       ) {
+                        try completeRecoveredLifecycle(lease)
+                        diagnostics[id] =
+                            "published snapshot journal completed during daemon recovery"
+                    } else {
+                        if let snapshotID = operation.targetResourceID {
+                            removeRecoveredSnapshot(
+                                machineID: id,
+                                snapshotID: snapshotID,
+                                configuration: configuration
+                            )
+                        }
+                        try failRecoveredLifecycle(lease, rolledBack: true)
+                        diagnostics[id] = "interrupted snapshot was rolled back"
+                    }
+                case .restoring:
+                    if operation.targetResourceID
+                        == DoryWorkspaceLifecycleOperation.savedStateResourceID {
+                        if recoveredSavedState(
+                            machineID: id,
+                            operation: operation,
+                            configuration: configuration
+                        ) {
+                            try failRecoveredLifecycle(lease, rolledBack: true)
+                            diagnostics[id] =
+                                "interrupted saved-state restore returned to suspended"
+                        } else {
+                            try failRecoveredLifecycle(lease, rolledBack: false)
+                            diagnostics[id] =
+                                "interrupted saved-state restore requires repair"
+                        }
+                        break
+                    }
+                    if recoveryState.phase.indexForMachineLifecycle
+                        >= DoryOperationPhase.validating.indexForMachineLifecycle {
+                        if let snapshot = recoveredSnapshot(
+                            machineID: id,
+                            operation: operation,
+                            configuration: configuration
+                        ), lifecycleConfigurationMatches(
+                                operation.target.configurationAuthority,
+                                machineID: id,
+                                configuration: configuration
+                           ), recoveredLiveArtifactsMatch(
+                                snapshot: snapshot,
+                                machineID: id,
+                                configuration: configuration
+                           ) {
+                            try completeRecoveredLifecycle(lease)
+                            diagnostics[id] =
+                                "interrupted snapshot restore completed before daemon restart"
+                        } else {
+                            try failRecoveredLifecycle(lease, rolledBack: false)
+                            diagnostics[id] = "committed snapshot restore authority requires repair"
+                        }
+                    } else {
+                        let restored = restoreRecoveredMachineBackups(
+                            machineID: id,
+                            operationID: operation.operationID,
+                            configuration: configuration
+                        )
+                        if restored || lifecycleConfigurationMatches(
+                            operation.source.configurationAuthority,
+                            machineID: id,
+                            configuration: configuration
+                        ) {
+                            try failRecoveredLifecycle(lease, rolledBack: true)
+                            diagnostics[id] = "interrupted snapshot restore was rolled back"
+                        } else if lifecycleConfigurationMatches(
+                            operation.target.configurationAuthority,
+                            machineID: id,
+                            configuration: configuration
+                        ) {
+                            try completeRecoveredLifecycle(lease)
+                            diagnostics[id] =
+                                "interrupted snapshot restore completed before daemon restart"
+                        } else {
+                            try failRecoveredLifecycle(lease, rolledBack: false)
+                            diagnostics[id] = "interrupted snapshot restore requires repair"
+                        }
+                    }
+                case .deleting:
+                    let state = "\(configuration.stateDirectory)/\(id)"
+                    let quarantine = lifecycleDeletionQuarantinePath(
+                        configuration: configuration,
+                        machineID: id,
+                        operationID: operation.operationID
+                    )
+                    if pathEntryExists(quarantine), !pathEntryExists(state) {
+                        guard rename(quarantine, state) == 0 else {
+                            throw MachineManagerError.persistence(
+                                "could not roll back interrupted machine deletion"
+                            )
+                        }
+                        try failRecoveredLifecycle(lease, rolledBack: true)
+                        diagnostics[id] = "interrupted deletion was rolled back"
+                    } else if !pathEntryExists(quarantine), !pathEntryExists(state) {
+                        try completeRecoveredLifecycle(lease)
+                    } else {
+                        try failRecoveredLifecycle(lease, rolledBack: false)
+                        diagnostics[id] = "interrupted deletion preserved existing machine data"
+                    }
+                case .pausing:
+                    try failRecoveredLifecycle(lease, rolledBack: false)
+                    diagnostics[id] =
+                        "interrupted pause was recovered as stopped after helper cleanup"
+                case .resuming:
+                    try failRecoveredLifecycle(lease, rolledBack: false)
+                    diagnostics[id] =
+                        "interrupted resume was recovered as stopped after helper cleanup"
+                case .suspending:
+                    if recoveredSavedState(
+                        machineID: id,
+                        operation: operation,
+                        configuration: configuration
+                    ) {
+                        try completeRecoveredLifecycle(lease)
+                        diagnostics[id] =
+                            "published saved state completed during daemon recovery"
+                    } else {
+                        try? DoryMachineSavedStateStore(
+                            root: configuration.stateDirectory
+                        ).remove(machineID: id)
+                        try failRecoveredLifecycle(lease, rolledBack: true)
+                        diagnostics[id] =
+                            "interrupted saved-state suspension was rolled back"
+                    }
+                case .importing, .provisioning, .cloning, .updating, .repairing:
+                    try failRecoveredLifecycle(lease, rolledBack: false)
+                    diagnostics[id] = "unsupported interrupted lifecycle mutation requires repair"
+                }
+            } catch {
+                let id = (try? lease?.readWorkspaceLifecycleOperation().source.workspaceID)
+                    ?? record.plan.source.id
+                if Self.isValidID(id) {
+                    diagnostics[id] = "lifecycle recovery failed closed: \(error)"
+                }
+            }
+            lease = nil
+        }
+        return diagnostics
+    }
+
+    private static func isWorkspaceLifecycleJournalKind(_ kind: DoryOperationKind) -> Bool {
+        switch kind {
+        case .workspaceImport, .workspaceProvision, .workspaceResolve, .workspaceStart,
+             .workspaceStop, .workspacePause, .workspaceResume, .workspaceSuspend,
+             .workspaceRestore, .workspaceSnapshot, .workspaceClone, .workspaceUpdate,
+             .workspaceRepair, .workspaceDelete:
+            true
+        case .competitorImport, .driveBackup, .driveRestore, .driveRelocation, .driveUpgrade:
+            false
+        }
+    }
+
+    private static func recoveredSavedState(
+        machineID: String,
+        operation: DoryWorkspaceLifecycleOperation,
+        configuration: MachineManagerConfiguration
+    ) -> Bool {
+        guard operation.targetResourceID
+                == DoryWorkspaceLifecycleOperation.savedStateResourceID,
+              let expectedAuthority = operation.targetSnapshotAuthority,
+              let data = readPrivateMetadata(
+                path: "\(configuration.stateDirectory)/\(machineID)/machine.json"
+              ),
+              let machine = try? JSONDecoder().decode(
+                DoryMachineConfiguration.self,
+                from: data
+              ), machine.id == machineID,
+              let runtime = operation.target.runtime else {
+            return false
+        }
+        let identity: DoryMachineRuntimeIdentity?
+        switch runtime.authorizationState {
+        case .legacyCompatibility:
+            identity = .legacyCompatibility(
+                virtualHardwareABIVersion: runtime.virtualHardwareABIVersion
+            )
+        case .resolvedPlan:
+            identity = try? DoryMachineRuntimeIdentityStore(
+                root: configuration.stateDirectory
+            ).readIfPresent(machineID: machineID, authoritativeLegacyData: data)
+        case .requiresReplanning:
+            identity = nil
+        }
+        guard let identity else { return false }
+        let inspection = DoryMachineSavedStateStore(
+            root: configuration.stateDirectory
+        ).inspect(
+            machineID: machineID,
+            authoritativeConfigurationData: data,
+            runtimeIdentity: identity
+        )
+        guard case .valid(let manifest) = inspection else { return false }
+        switch operation.kind {
+        case .suspending:
+            return (try? savedStateIntentAuthority(
+                machine: machine,
+                runtimeIdentity: identity,
+                authoritativeConfigurationData: data
+            )) == expectedAuthority
+        case .restoring:
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            guard let manifestData = try? encoder.encode(manifest) else { return false }
+            return DoryWorkspaceSnapshotAuthority(
+                descriptorSHA256: sha256(data: manifestData),
+                artifactEvidenceSHA256: manifest.stateFileSHA256
+            ) == expectedAuthority
+        default:
+            return false
+        }
+    }
+
+    private static func lifecycleConfigurationMatches(
+        _ authority: DoryWorkspaceConfigurationAuthority?,
+        machineID: String,
+        configuration: MachineManagerConfiguration
+    ) -> Bool {
+        guard let expected = authority?.legacyConfigurationSHA256,
+              let data = readPrivateMetadata(
+                  path: "\(configuration.stateDirectory)/\(machineID)/machine.json"
+              ) else { return false }
+        return sha256(data: data) == expected
+    }
+
+    private static func completeRecoveredLifecycle(_ lease: DoryOperationLease) throws {
+        var current = try lease.read().state
+        if current.status != .running {
+            current = try lease.transition(
+                to: current.phase,
+                status: .running,
+                expectedRevision: current.revision,
+                stepID: "recovery.resumed"
+            )
+        }
+        for phase in DoryOperationPhase.allCases
+            where phase.indexForMachineLifecycle > current.phase.indexForMachineLifecycle {
+            current = try lease.transition(
+                to: phase,
+                status: phase == .completed ? .completed : .running,
+                expectedRevision: current.revision,
+                stepID: phase == .completed ? "recovery.completed" : "recovery.\(phase.rawValue)"
+            )
+        }
+    }
+
+    private static func failRecoveredLifecycle(
+        _ lease: DoryOperationLease,
+        rolledBack: Bool
+    ) throws {
+        var current = try lease.read().state
+        if rolledBack, current.status != .rollingBack {
+            current = try lease.transition(
+                to: current.phase,
+                status: .rollingBack,
+                expectedRevision: current.revision,
+                stepID: "recovery.rolling-back",
+                recoveryAction: "rollback"
+            )
+        }
+        _ = try lease.transition(
+            to: current.phase,
+            status: .failed,
+            expectedRevision: current.revision,
+            stepID: "recovery.failed",
+            recoveryAction: rolledBack ? "rollback" : nil
+        )
+    }
+
+    private static func removeRecoveredSnapshot(
+        machineID: String,
+        snapshotID: String,
+        configuration: MachineManagerConfiguration
+    ) {
+        let directory = "\(configuration.stateDirectory)/\(machineID)/snapshots"
+        for suffix in ["json", "ext4", "kernel", "machine-identifier", "nvram"] {
+            try? FileManager.default.removeItem(
+                atPath: "\(directory)/\(snapshotID).\(suffix)"
+            )
+        }
+    }
+
+    private static func recoveredSnapshot(
+        machineID: String,
+        operation: DoryWorkspaceLifecycleOperation,
+        configuration: MachineManagerConfiguration
+    ) -> DoryMachineSnapshot? {
+        guard let snapshotID = operation.targetResourceID,
+              let authority = operation.targetSnapshotAuthority,
+              isValidID(machineID), isValidID(snapshotID) else { return nil }
+        let directory = "\(configuration.stateDirectory)/\(machineID)/snapshots"
+        let metadataPath = "\(directory)/\(snapshotID).json"
+        let rootfsPath = "\(directory)/\(snapshotID).ext4"
+        let kernelPath = "\(directory)/\(snapshotID).kernel"
+        let machineIdentifierPath = "\(directory)/\(snapshotID).machine-identifier"
+        let nvramPath = "\(directory)/\(snapshotID).nvram"
+        guard isPrivateDirectory(path: directory),
+              let metadata = readPrivateMetadata(path: metadataPath),
+              sha256(data: metadata) == authority.descriptorSHA256,
+              let snapshot = try? JSONDecoder().decode(DoryMachineSnapshot.self, from: metadata),
+              snapshot.id == snapshotID,
+              snapshot.machineID == machineID,
+              snapshot.rootfsPath == rootfsPath,
+              snapshot.kernelPath == kernelPath,
+              snapshot.architecture == configuration.guestArchitecture,
+              snapshot.sizeBytes > 0,
+              snapshot.runtimeIdentity.validate().isEmpty,
+              (try? validateResources(
+                  memoryMB: snapshot.memoryMB,
+                  cpuCount: snapshot.cpuCount
+              )) != nil,
+              let evidence = snapshot.artifactEvidence,
+              evidence.isValid,
+              (try? snapshotEvidenceData(evidence)).map(sha256(data:))
+                == authority.artifactEvidenceSHA256,
+              isPrivateRegularFile(path: rootfsPath),
+              isPrivateRegularFile(path: kernelPath) else { return nil }
+        switch snapshot.bootMode {
+        case .linuxKernel:
+            guard snapshot.machineIdentifierPath == nil,
+                  snapshot.nvramPath == nil else { return nil }
+        case .efi:
+            guard snapshot.machineIdentifierPath == machineIdentifierPath,
+                  snapshot.nvramPath == nvramPath,
+                  isPrivateRegularFile(path: machineIdentifierPath),
+                  isPrivateRegularFile(path: nvramPath) else { return nil }
+        }
+        guard (try? validateSnapshotRuntimeIdentity(snapshot)) != nil,
+              (try? validateSnapshotArtifactEvidence(snapshot)) != nil else { return nil }
+        return snapshot
+    }
+
+    private static func recoveredLiveArtifactsMatch(
+        snapshot: DoryMachineSnapshot,
+        machineID: String,
+        configuration: MachineManagerConfiguration
+    ) -> Bool {
+        guard let expected = snapshot.artifactEvidence else { return false }
+        let directory = "\(configuration.stateDirectory)/\(machineID)"
+        let rootfsPath = "\(directory)/rootfs.ext4"
+        let kernelPath = "\(directory)/kernel"
+        let machineIdentifierPath = snapshot.bootMode == .efi
+            ? "\(directory)/MachineIdentifier" : nil
+        let nvramPath = snapshot.bootMode == .efi ? "\(directory)/NVRAM" : nil
+        guard isPrivateDirectory(path: directory),
+              isPrivateRegularFile(path: rootfsPath),
+              isPrivateRegularFile(path: kernelPath),
+              machineIdentifierPath.map(isPrivateRegularFile(path:)) ?? true,
+              nvramPath.map(isPrivateRegularFile(path:)) ?? true,
+              let actual = try? snapshotArtifactEvidence(
+                  rootfsPath: rootfsPath,
+                  kernelPath: kernelPath,
+                  machineIdentifierPath: machineIdentifierPath,
+                  nvramPath: nvramPath
+              ) else { return false }
+        return actual == expected
+    }
+
+    private static func restoreRecoveredMachineBackups(
+        machineID: String,
+        operationID: UUID,
+        configuration: MachineManagerConfiguration
+    ) -> Bool {
+        let directory = "\(configuration.stateDirectory)/\(machineID)"
+        let token = operationID.uuidString.lowercased()
+        let pairs = [
+            (".restore-\(token)-rootfs", "rootfs.ext4"),
+            (".restore-\(token)-kernel", "kernel"),
+            (".restore-\(token)-machine-json", "machine.json"),
+            (".restore-\(token)-machine-identifier", "MachineIdentifier"),
+            (".restore-\(token)-nvram", "NVRAM"),
+        ]
+        let required = Array(pairs.prefix(3))
+        guard required.allSatisfy({ pathEntryExists("\(directory)/\($0.0)") }) else {
+            return false
+        }
+        do {
+            for (backup, destination) in pairs where pathEntryExists("\(directory)/\(backup)") {
+                try cloneOrCopyFile(
+                    source: "\(directory)/\(backup)",
+                    destination: "\(directory)/\(destination)",
+                    replaceExisting: true
+                )
+            }
+            for (backup, _) in pairs {
+                try? FileManager.default.removeItem(atPath: "\(directory)/\(backup)")
+            }
+            return true
+        } catch {
+            return false
+        }
     }
 
     private static func removeStaleDeletionQuarantines(stateDirectory: String) {
@@ -2175,6 +15379,7 @@ public final class MachineManager: @unchecked Sendable {
             for entry in entries where entry.hasPrefix(machineMetadataTemporaryPrefix)
                 || entry.hasPrefix(machineDiskTemporaryPrefix)
                 || entry.hasPrefix(machineKernelTemporaryPrefix)
+                || entry.hasPrefix(desktopUpdateStagingPrefix)
                 || (entry.hasPrefix(".") && entry.contains(machineRestoreBackupMarker)) {
                 try? fileManager.removeItem(atPath: "\(directory)/\(entry)")
             }
@@ -2199,6 +15404,8 @@ public final class MachineManager: @unchecked Sendable {
                 || (entry.hasPrefix(".") && (
                     entry.contains(snapshotDiskTemporaryMarker)
                         || entry.contains(snapshotKernelTemporaryMarker)
+                        || entry.contains(snapshotMachineIdentifierTemporaryMarker)
+                        || entry.contains(snapshotNVRAMTemporaryMarker)
                 )) {
                 try? fileManager.removeItem(atPath: "\(directory)/\(entry)")
             }
@@ -2211,6 +15418,16 @@ public final class MachineManager: @unchecked Sendable {
 }
 
 private enum MachineSnapshotBundle {
+    private struct FileSnapshot: Equatable {
+        var device: UInt64
+        var inode: UInt64
+        var size: Int64
+        var modifiedSeconds: Int64
+        var modifiedNanoseconds: Int64
+        var changedSeconds: Int64
+        var changedNanoseconds: Int64
+    }
+
     private struct Header {
         var snapshot: DoryMachineSnapshot
         var rootfsOffset: UInt64
@@ -2219,34 +15436,80 @@ private enum MachineSnapshotBundle {
         var kernelOffset: UInt64
         var kernelLength: UInt64
         var kernelDigest: Data
+        var machineIdentifierOffset: UInt64?
+        var machineIdentifierLength: UInt64?
+        var machineIdentifierDigest: Data?
+        var nvramOffset: UInt64?
+        var nvramLength: UInt64?
+        var nvramDigest: Data?
         var contentID: Data
     }
 
-    private static let magic = Data("DORYMACHINE3\n".utf8)
+    private static let v3Magic = Data("DORYMACHINE3\n".utf8)
+    private static let v4Magic = Data("DORYMACHINE4\n".utf8)
     private static let lengthByteCount = 8
     private static let digestByteCount = 32
     private static let maximumMetadataLength: UInt64 = 16 * 1024 * 1024
     private static let copyChunkSize = 4 * 1024 * 1024
+    private static let capacitySafetyBytes: UInt64 = 256 * 1024 * 1024
 
-    static func write(snapshot: DoryMachineSnapshot, toPath path: String) throws {
+    static func write(
+        snapshot: DoryMachineSnapshot,
+        toPath path: String,
+        availableCapacity: @Sendable (String) throws -> UInt64
+    ) throws {
+        try MachineManager.validateSnapshotRuntimeIdentity(snapshot)
+        try MachineManager.validateSnapshotArtifactEvidence(snapshot)
         let rootfs = try openRegularFileForReading(path: snapshot.rootfsPath, requirePrivateOwnership: true)
         defer { try? rootfs.close() }
         let kernel = try openRegularFileForReading(path: snapshot.kernelPath, requirePrivateOwnership: true)
         defer { try? kernel.close() }
+        let machineIdentifier: FileHandle?
+        let nvram: FileHandle?
+        if snapshot.bootMode == .efi {
+            guard let machineIdentifierPath = snapshot.machineIdentifierPath,
+                  let nvramPath = snapshot.nvramPath else {
+                throw MachineManagerError.persistence("EFI snapshot is missing firmware state")
+            }
+            machineIdentifier = try openRegularFileForReading(
+                path: machineIdentifierPath,
+                requirePrivateOwnership: true
+            )
+            nvram = try openRegularFileForReading(path: nvramPath, requirePrivateOwnership: true)
+        } else {
+            machineIdentifier = nil
+            nvram = nil
+        }
+        defer {
+            try? machineIdentifier?.close()
+            try? nvram?.close()
+        }
         let rootfsLength = try rootfs.seekToEnd()
         let kernelLength = try kernel.seekToEnd()
+        let machineIdentifierLength = try machineIdentifier?.seekToEnd()
+        let nvramLength = try nvram?.seekToEnd()
         guard rootfsLength > 0, rootfsLength <= UInt64(Int64.max) else {
             throw MachineManagerError.persistence("invalid machine snapshot rootfs size")
         }
         guard kernelLength > 0, kernelLength <= UInt64(Int64.max) else {
             throw MachineManagerError.persistence("invalid machine snapshot kernel size")
         }
+        if snapshot.bootMode == .efi {
+            guard let machineIdentifierLength, machineIdentifierLength > 0,
+                  let nvramLength, nvramLength > 0 else {
+                throw MachineManagerError.persistence("invalid EFI snapshot firmware size")
+            }
+        }
         try rootfs.seek(toOffset: 0)
         try kernel.seek(toOffset: 0)
+        try machineIdentifier?.seek(toOffset: 0)
+        try nvram?.seek(toOffset: 0)
 
         var exportedSnapshot = snapshot
         exportedSnapshot.rootfsPath = ""
         exportedSnapshot.kernelPath = ""
+        exportedSnapshot.machineIdentifierPath = nil
+        exportedSnapshot.nvramPath = nil
         exportedSnapshot.address = nil
         exportedSnapshot.shares = []
         exportedSnapshot.environment = [:]
@@ -2256,6 +15519,19 @@ private enum MachineSnapshotBundle {
             throw MachineManagerError.persistence("invalid dory machine bundle metadata")
         }
         let metadataDigest = Data(SHA256.hash(data: metadata))
+        let bundleByteCount = try requiredBundleByteCount(
+            metadataLength: UInt64(metadata.count),
+            rootfsLength: rootfsLength,
+            kernelLength: kernelLength,
+            machineIdentifierLength: machineIdentifierLength,
+            nvramLength: nvramLength
+        )
+        try requireArtifactCapacity(
+            artifactByteCount: bundleByteCount,
+            destinationPath: path,
+            operation: "machine export",
+            availableCapacity: availableCapacity
+        )
 
         let outputURL = URL(fileURLWithPath: path)
         let parent = outputURL.deletingLastPathComponent()
@@ -2276,15 +15552,31 @@ private enum MachineSnapshotBundle {
             }
         }
         do {
-            try output.write(contentsOf: magic)
+            let includesFirmware = snapshot.bootMode == .efi
+            try output.write(contentsOf: includesFirmware ? v4Magic : v3Magic)
             try output.write(contentsOf: bigEndianBytes(UInt64(metadata.count)))
             try output.write(contentsOf: bigEndianBytes(rootfsLength))
             try output.write(contentsOf: bigEndianBytes(kernelLength))
+            if includesFirmware {
+                try output.write(contentsOf: bigEndianBytes(machineIdentifierLength!))
+                try output.write(contentsOf: bigEndianBytes(nvramLength!))
+            }
             try output.write(contentsOf: metadataDigest)
             let rootfsDigestOffset = try output.offset()
             try output.write(contentsOf: Data(repeating: 0, count: digestByteCount))
             let kernelDigestOffset = try output.offset()
             try output.write(contentsOf: Data(repeating: 0, count: digestByteCount))
+            let machineIdentifierDigestOffset: UInt64?
+            let nvramDigestOffset: UInt64?
+            if includesFirmware {
+                machineIdentifierDigestOffset = try output.offset()
+                try output.write(contentsOf: Data(repeating: 0, count: digestByteCount))
+                nvramDigestOffset = try output.offset()
+                try output.write(contentsOf: Data(repeating: 0, count: digestByteCount))
+            } else {
+                machineIdentifierDigestOffset = nil
+                nvramDigestOffset = nil
+            }
             try output.write(contentsOf: metadata)
             let rootfsDigest = try copyExactly(
                 from: rootfs,
@@ -2298,10 +15590,36 @@ private enum MachineSnapshotBundle {
                 byteCount: kernelLength,
                 rejectTrailingInput: true
             )
+            let machineIdentifierDigest: Data?
+            let nvramDigest: Data?
+            if let machineIdentifier, let machineIdentifierLength, let nvram, let nvramLength {
+                machineIdentifierDigest = try copyExactly(
+                    from: machineIdentifier,
+                    to: output,
+                    byteCount: machineIdentifierLength,
+                    rejectTrailingInput: true
+                )
+                nvramDigest = try copyExactly(
+                    from: nvram,
+                    to: output,
+                    byteCount: nvramLength,
+                    rejectTrailingInput: true
+                )
+            } else {
+                machineIdentifierDigest = nil
+                nvramDigest = nil
+            }
             try output.seek(toOffset: rootfsDigestOffset)
             try output.write(contentsOf: rootfsDigest)
             try output.seek(toOffset: kernelDigestOffset)
             try output.write(contentsOf: kernelDigest)
+            if let machineIdentifierDigestOffset, let machineIdentifierDigest,
+               let nvramDigestOffset, let nvramDigest {
+                try output.seek(toOffset: machineIdentifierDigestOffset)
+                try output.write(contentsOf: machineIdentifierDigest)
+                try output.seek(toOffset: nvramDigestOffset)
+                try output.write(contentsOf: nvramDigest)
+            }
             try output.synchronize()
             try output.close()
             outputIsOpen = false
@@ -2320,18 +15638,135 @@ private enum MachineSnapshotBundle {
         }
     }
 
-    static func readDescriptor(fromPath path: String) throws -> (snapshot: DoryMachineSnapshot, contentID: Data) {
+    private static func requiredBundleByteCount(
+        metadataLength: UInt64,
+        rootfsLength: UInt64,
+        kernelLength: UInt64,
+        machineIdentifierLength: UInt64?,
+        nvramLength: UInt64?
+    ) throws -> UInt64 {
+        let includesFirmware = machineIdentifierLength != nil || nvramLength != nil
+        guard (machineIdentifierLength == nil) == (nvramLength == nil) else {
+            throw MachineManagerError.persistence(
+                "machine export firmware capacity evidence is incomplete"
+            )
+        }
+        let artifactCount: UInt64 = includesFirmware ? 5 : 3
+        var total = UInt64(includesFirmware ? v4Magic.count : v3Magic.count)
+        total = try checkedAdd(
+            total,
+            artifactCount * UInt64(lengthByteCount + digestByteCount),
+            failure: "machine export capacity exceeds supported accounting"
+        )
+        for length in [
+            metadataLength,
+            rootfsLength,
+            kernelLength,
+            machineIdentifierLength ?? 0,
+            nvramLength ?? 0,
+        ] {
+            total = try checkedAdd(
+                total,
+                length,
+                failure: "machine export capacity exceeds supported accounting"
+            )
+        }
+        return total
+    }
+
+    private static func checkedAdd(
+        _ lhs: UInt64,
+        _ rhs: UInt64,
+        failure: String
+    ) throws -> UInt64 {
+        let (value, overflow) = lhs.addingReportingOverflow(rhs)
+        guard !overflow else { throw MachineManagerError.persistence(failure) }
+        return value
+    }
+
+    static func requireArtifactCapacity(
+        artifactByteCount: UInt64,
+        destinationPath: String,
+        operation: String,
+        availableCapacity: @Sendable (String) throws -> UInt64
+    ) throws {
+        let safetyBytes = max(capacitySafetyBytes, artifactByteCount / 10)
+        let requiredCapacity = try checkedAdd(
+            artifactByteCount,
+            safetyBytes,
+            failure: "\(operation) capacity exceeds supported accounting"
+        )
+        let available = try availableCapacity(destinationPath)
+        guard available >= requiredCapacity else {
+            throw MachineManagerError.persistence(
+                "insufficient host storage for \(operation) "
+                    + "(need \(requiredCapacity) bytes including safety reserve, "
+                    + "have \(available))"
+            )
+        }
+    }
+
+    static func verifyDescriptor(
+        fromPath path: String
+    ) throws -> (snapshot: DoryMachineSnapshot, contentID: Data, artifactByteCount: UInt64) {
         let input = try openRegularFileForReading(path: path)
         defer { try? input.close() }
+        let before = try fileSnapshot(input)
         let header = try readHeader(from: input)
-        return (header.snapshot, header.contentID)
+        var artifacts: [(UInt64, UInt64, Data)] = [
+            (header.rootfsOffset, header.rootfsLength, header.rootfsDigest),
+            (header.kernelOffset, header.kernelLength, header.kernelDigest),
+        ]
+        if let offset = header.machineIdentifierOffset,
+           let length = header.machineIdentifierLength,
+           let digest = header.machineIdentifierDigest {
+            artifacts.append((offset, length, digest))
+        }
+        if let offset = header.nvramOffset,
+           let length = header.nvramLength,
+           let digest = header.nvramDigest {
+            artifacts.append((offset, length, digest))
+        }
+        for (offset, length, expectedDigest) in artifacts {
+            try input.seek(toOffset: offset)
+            guard try hashExactly(from: input, byteCount: length) == expectedDigest else {
+                throw MachineManagerError.persistence("corrupt dory machine bundle artifact")
+            }
+        }
+        let after = try fileSnapshot(input)
+        guard before == after else {
+            throw MachineManagerError.persistence(
+                "machine bundle changed during import assessment"
+            )
+        }
+        var artifactByteCount = try checkedAdd(
+            header.rootfsLength,
+            header.kernelLength,
+            failure: "machine import capacity exceeds supported accounting"
+        )
+        if let machineIdentifierLength = header.machineIdentifierLength,
+           let nvramLength = header.nvramLength {
+            artifactByteCount = try checkedAdd(
+                artifactByteCount,
+                machineIdentifierLength,
+                failure: "machine import capacity exceeds supported accounting"
+            )
+            artifactByteCount = try checkedAdd(
+                artifactByteCount,
+                nvramLength,
+                failure: "machine import capacity exceeds supported accounting"
+            )
+        }
+        return (header.snapshot, header.contentID, artifactByteCount)
     }
 
     static func extractArtifacts(
         fromPath path: String,
         expectedContentID: Data,
         rootfsPath: String,
-        kernelPath: String
+        kernelPath: String,
+        machineIdentifierPath: String?,
+        nvramPath: String?
     ) throws {
         let input = try openRegularFileForReading(path: path)
         var inputIsOpen = true
@@ -2344,125 +15779,128 @@ private enum MachineSnapshotBundle {
         guard header.contentID == expectedContentID else {
             throw MachineManagerError.persistence("machine bundle changed during import")
         }
-        let rootfsURL = URL(fileURLWithPath: rootfsPath)
-        let kernelURL = URL(fileURLWithPath: kernelPath)
-        let parent = rootfsURL.deletingLastPathComponent()
-        guard kernelURL.deletingLastPathComponent() == parent,
+        var artifacts: [(offset: UInt64, length: UInt64, digest: Data, destination: URL)] = [
+            (header.rootfsOffset, header.rootfsLength, header.rootfsDigest, URL(fileURLWithPath: rootfsPath)),
+            (header.kernelOffset, header.kernelLength, header.kernelDigest, URL(fileURLWithPath: kernelPath)),
+        ]
+        if let offset = header.machineIdentifierOffset,
+           let length = header.machineIdentifierLength,
+           let digest = header.machineIdentifierDigest,
+           let nvramOffset = header.nvramOffset,
+           let nvramLength = header.nvramLength,
+           let nvramDigest = header.nvramDigest,
+           let machineIdentifierPath,
+           let nvramPath {
+            artifacts.append((offset, length, digest, URL(fileURLWithPath: machineIdentifierPath)))
+            artifacts.append((nvramOffset, nvramLength, nvramDigest, URL(fileURLWithPath: nvramPath)))
+        } else if header.machineIdentifierOffset != nil
+            || machineIdentifierPath != nil
+            || nvramPath != nil {
+            throw MachineManagerError.persistence("EFI machine bundle firmware destinations are incomplete")
+        }
+
+        let parent = artifacts[0].destination.deletingLastPathComponent()
+        guard artifacts.allSatisfy({ $0.destination.deletingLastPathComponent() == parent }),
               isPrivateDirectory(path: parent.path) else {
             throw MachineManagerError.persistence("machine snapshot destination is not private")
         }
         let token = UUID().uuidString
-        let temporaryRootfsURL = parent.appendingPathComponent(".\(rootfsURL.lastPathComponent).tmp-\(token)")
-        let temporaryKernelURL = parent.appendingPathComponent(".\(kernelURL.lastPathComponent).tmp-\(token)")
-        guard FileManager.default.createFile(
-            atPath: temporaryRootfsURL.path,
-            contents: nil,
-            attributes: [.posixPermissions: 0o600]
-        ) else {
-            try? input.close()
-            throw MachineManagerError.persistence("could not create temporary machine snapshot rootfs")
+        let temporaryURLs = artifacts.map {
+            parent.appendingPathComponent(".\($0.destination.lastPathComponent).tmp-\(token)")
         }
-        guard FileManager.default.createFile(
-            atPath: temporaryKernelURL.path,
-            contents: nil,
-            attributes: [.posixPermissions: 0o600]
-        ) else {
-            try? FileManager.default.removeItem(at: temporaryRootfsURL)
-            throw MachineManagerError.persistence("could not create temporary machine snapshot kernel")
+        var createdTemporaryURLs: [URL] = []
+        for temporaryURL in temporaryURLs {
+            guard FileManager.default.createFile(
+                atPath: temporaryURL.path,
+                contents: nil,
+                attributes: [.posixPermissions: 0o600]
+            ) else {
+                for created in createdTemporaryURLs {
+                    try? FileManager.default.removeItem(at: created)
+                }
+                throw MachineManagerError.persistence("could not create temporary machine snapshot artifact")
+            }
+            createdTemporaryURLs.append(temporaryURL)
         }
-        let rootfsOutput: FileHandle
-        let kernelOutput: FileHandle
+        var outputs: [FileHandle] = []
         do {
-            rootfsOutput = try FileHandle(forWritingTo: temporaryRootfsURL)
-            kernelOutput = try FileHandle(forWritingTo: temporaryKernelURL)
+            for temporaryURL in temporaryURLs {
+                outputs.append(try FileHandle(forWritingTo: temporaryURL))
+            }
         } catch {
-            try? FileManager.default.removeItem(at: temporaryRootfsURL)
-            try? FileManager.default.removeItem(at: temporaryKernelURL)
+            for output in outputs { try? output.close() }
+            for temporaryURL in temporaryURLs { try? FileManager.default.removeItem(at: temporaryURL) }
             throw error
         }
         var outputsAreOpen = true
         defer {
             if outputsAreOpen {
-                try? rootfsOutput.close()
-                try? kernelOutput.close()
+                for output in outputs { try? output.close() }
             }
         }
+        var publishedDestinations: [URL] = []
         do {
-            try input.seek(toOffset: header.rootfsOffset)
-            let rootfsDigest = try copyExactly(
-                from: input,
-                to: rootfsOutput,
-                byteCount: header.rootfsLength
-            )
-            guard rootfsDigest == header.rootfsDigest else {
-                throw MachineManagerError.persistence("corrupt dory machine bundle rootfs")
+            for (index, artifact) in artifacts.enumerated() {
+                try input.seek(toOffset: artifact.offset)
+                let digest = try copyExactly(
+                    from: input,
+                    to: outputs[index],
+                    byteCount: artifact.length
+                )
+                guard digest == artifact.digest else {
+                    throw MachineManagerError.persistence("corrupt dory machine bundle artifact")
+                }
             }
-            try input.seek(toOffset: header.kernelOffset)
-            let kernelDigest = try copyExactly(
-                from: input,
-                to: kernelOutput,
-                byteCount: header.kernelLength
-            )
-            guard kernelDigest == header.kernelDigest else {
-                throw MachineManagerError.persistence("corrupt dory machine bundle kernel")
-            }
-            try rootfsOutput.synchronize()
-            try kernelOutput.synchronize()
+            for output in outputs { try output.synchronize() }
             try input.close()
             inputIsOpen = false
-            try rootfsOutput.close()
-            try kernelOutput.close()
+            for output in outputs { try output.close() }
             outputsAreOpen = false
-            try FileManager.default.setAttributes(
-                [.posixPermissions: 0o600],
-                ofItemAtPath: temporaryRootfsURL.path
-            )
-            try FileManager.default.setAttributes(
-                [.posixPermissions: 0o600],
-                ofItemAtPath: temporaryKernelURL.path
-            )
-            var publishedRootfs = false
-            var publishedKernel = false
-            defer {
-                if publishedRootfs {
-                    try? FileManager.default.removeItem(at: rootfsURL)
-                }
-                if publishedKernel {
-                    try? FileManager.default.removeItem(at: kernelURL)
-                }
-            }
-            guard link(temporaryRootfsURL.path, rootfsURL.path) == 0 else {
-                throw MachineManagerError.persistence(
-                    "could not publish machine snapshot rootfs: \(String(cString: strerror(errno)))"
+            for temporaryURL in temporaryURLs {
+                try FileManager.default.setAttributes(
+                    [.posixPermissions: 0o600],
+                    ofItemAtPath: temporaryURL.path
                 )
             }
-            publishedRootfs = true
-            guard link(temporaryKernelURL.path, kernelURL.path) == 0 else {
-                throw MachineManagerError.persistence(
-                    "could not publish machine snapshot kernel: \(String(cString: strerror(errno)))"
-                )
+            for (temporaryURL, artifact) in zip(temporaryURLs, artifacts) {
+                guard link(temporaryURL.path, artifact.destination.path) == 0 else {
+                    throw MachineManagerError.persistence(
+                        "could not publish machine snapshot artifact: \(String(cString: strerror(errno)))"
+                    )
+                }
+                publishedDestinations.append(artifact.destination)
             }
-            publishedKernel = true
-            try FileManager.default.removeItem(at: temporaryRootfsURL)
-            try FileManager.default.removeItem(at: temporaryKernelURL)
-            publishedRootfs = false
-            publishedKernel = false
+            for temporaryURL in temporaryURLs { try FileManager.default.removeItem(at: temporaryURL) }
+            publishedDestinations.removeAll()
         } catch {
-            try? FileManager.default.removeItem(at: temporaryRootfsURL)
-            try? FileManager.default.removeItem(at: temporaryKernelURL)
+            for destination in publishedDestinations {
+                try? FileManager.default.removeItem(at: destination)
+            }
+            for temporaryURL in temporaryURLs { try? FileManager.default.removeItem(at: temporaryURL) }
             throw error
         }
     }
 
     private static func readHeader(from input: FileHandle) throws -> Header {
         try input.seek(toOffset: 0)
-        let gotMagic = try readExactly(from: input, count: magic.count)
-        guard gotMagic == magic else {
+        let gotMagic = try readExactly(from: input, count: v3Magic.count)
+        let includesFirmware: Bool
+        if gotMagic == v3Magic {
+            includesFirmware = false
+        } else if gotMagic == v4Magic {
+            includesFirmware = true
+        } else {
             throw MachineManagerError.persistence("not a dory machine bundle")
         }
         let metadataLength = decodeUInt64(try readExactly(from: input, count: lengthByteCount))
         let rootfsLength = decodeUInt64(try readExactly(from: input, count: lengthByteCount))
         let kernelLength = decodeUInt64(try readExactly(from: input, count: lengthByteCount))
+        let machineIdentifierLength = includesFirmware
+            ? decodeUInt64(try readExactly(from: input, count: lengthByteCount))
+            : nil
+        let nvramLength = includesFirmware
+            ? decodeUInt64(try readExactly(from: input, count: lengthByteCount))
+            : nil
         guard metadataLength > 0, metadataLength <= maximumMetadataLength else {
             throw MachineManagerError.persistence("invalid dory machine bundle metadata")
         }
@@ -2472,22 +15910,74 @@ private enum MachineSnapshotBundle {
         guard kernelLength > 0, kernelLength <= UInt64(Int64.max) else {
             throw MachineManagerError.persistence("invalid dory machine bundle kernel size")
         }
+        if includesFirmware {
+            guard let machineIdentifierLength, machineIdentifierLength > 0,
+                  let nvramLength, nvramLength > 0 else {
+                throw MachineManagerError.persistence("invalid dory machine bundle firmware size")
+            }
+        }
         let metadataDigest = try readExactly(from: input, count: digestByteCount)
         let rootfsDigest = try readExactly(from: input, count: digestByteCount)
         let kernelDigest = try readExactly(from: input, count: digestByteCount)
+        let machineIdentifierDigest = includesFirmware
+            ? try readExactly(from: input, count: digestByteCount)
+            : nil
+        let nvramDigest = includesFirmware
+            ? try readExactly(from: input, count: digestByteCount)
+            : nil
         let metadata = try readExactly(from: input, count: Int(metadataLength))
         guard Data(SHA256.hash(data: metadata)) == metadataDigest else {
             throw MachineManagerError.persistence("corrupt dory machine bundle metadata")
         }
         let snapshot = try JSONDecoder().decode(DoryMachineSnapshot.self, from: metadata)
+        try MachineManager.validateSnapshotRuntimeIdentity(snapshot)
         guard snapshot.sizeBytes == Int64(rootfsLength) else {
             throw MachineManagerError.persistence("machine bundle rootfs size does not match metadata")
         }
-        let fixedHeaderLength = UInt64(magic.count + (lengthByteCount * 3) + (digestByteCount * 3))
+        guard (snapshot.bootMode == .efi) == includesFirmware else {
+            throw MachineManagerError.persistence("machine bundle boot mode does not match its artifacts")
+        }
+        if let evidence = snapshot.artifactEvidence {
+            guard evidence.isValid,
+                  evidence.rootfs.byteCount == rootfsLength,
+                  evidence.rootfs.sha256 == digestHex(rootfsDigest),
+                  evidence.kernel.byteCount == kernelLength,
+                  evidence.kernel.sha256 == digestHex(kernelDigest),
+                  evidence.machineIdentifier?.byteCount == machineIdentifierLength,
+                  evidence.machineIdentifier?.sha256 == machineIdentifierDigest.map(digestHex),
+                  evidence.nvram?.byteCount == nvramLength,
+                  evidence.nvram?.sha256 == nvramDigest.map(digestHex) else {
+                throw MachineManagerError.persistence(
+                    "machine bundle artifacts do not match immutable snapshot evidence"
+                )
+            }
+        } else if snapshot.runtimeIdentity.mode != .legacyCompatibility {
+            throw MachineManagerError.persistence(
+                "machine bundle artifact evidence requires migration"
+            )
+        }
+        let artifactCount = includesFirmware ? 5 : 3
+        let fixedHeaderLength = UInt64(
+            v3Magic.count + (lengthByteCount * artifactCount) + (digestByteCount * artifactCount)
+        )
         let (rootfsOffset, metadataOverflow) = fixedHeaderLength.addingReportingOverflow(metadataLength)
         let (kernelOffset, rootfsOverflow) = rootfsOffset.addingReportingOverflow(rootfsLength)
-        let (expectedFileLength, kernelOverflow) = kernelOffset.addingReportingOverflow(kernelLength)
-        guard !metadataOverflow, !rootfsOverflow, !kernelOverflow,
+        let (afterKernelOffset, kernelOverflow) = kernelOffset.addingReportingOverflow(kernelLength)
+        var machineIdentifierOffset: UInt64?
+        var nvramOffset: UInt64?
+        let expectedFileLength: UInt64
+        var firmwareOverflow = false
+        if let machineIdentifierLength, let nvramLength {
+            machineIdentifierOffset = afterKernelOffset
+            let (computedNVRAMOffset, identifierOverflow) = afterKernelOffset.addingReportingOverflow(machineIdentifierLength)
+            nvramOffset = computedNVRAMOffset
+            let (computedFileLength, nvramOverflow) = computedNVRAMOffset.addingReportingOverflow(nvramLength)
+            expectedFileLength = computedFileLength
+            firmwareOverflow = identifierOverflow || nvramOverflow
+        } else {
+            expectedFileLength = afterKernelOffset
+        }
+        guard !metadataOverflow, !rootfsOverflow, !kernelOverflow, !firmwareOverflow,
               try input.seekToEnd() == expectedFileLength else {
             throw MachineManagerError.persistence("truncated or trailing dory machine bundle artifacts")
         }
@@ -2495,9 +15985,17 @@ private enum MachineSnapshotBundle {
         identity.append(bigEndianBytes(metadataLength))
         identity.append(bigEndianBytes(rootfsLength))
         identity.append(bigEndianBytes(kernelLength))
+        if let machineIdentifierLength, let nvramLength {
+            identity.append(bigEndianBytes(machineIdentifierLength))
+            identity.append(bigEndianBytes(nvramLength))
+        }
         identity.append(metadataDigest)
         identity.append(rootfsDigest)
         identity.append(kernelDigest)
+        if let machineIdentifierDigest, let nvramDigest {
+            identity.append(machineIdentifierDigest)
+            identity.append(nvramDigest)
+        }
         return Header(
             snapshot: snapshot,
             rootfsOffset: rootfsOffset,
@@ -2506,8 +16004,51 @@ private enum MachineSnapshotBundle {
             kernelOffset: kernelOffset,
             kernelLength: kernelLength,
             kernelDigest: kernelDigest,
+            machineIdentifierOffset: machineIdentifierOffset,
+            machineIdentifierLength: machineIdentifierLength,
+            machineIdentifierDigest: machineIdentifierDigest,
+            nvramOffset: nvramOffset,
+            nvramLength: nvramLength,
+            nvramDigest: nvramDigest,
             contentID: Data(SHA256.hash(data: identity))
         )
+    }
+
+    static func digestHex(_ digest: Data) -> String {
+        digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func fileSnapshot(_ handle: FileHandle) throws -> FileSnapshot {
+        var info = stat()
+        guard fstat(handle.fileDescriptor, &info) == 0 else {
+            throw MachineManagerError.persistence(
+                "could not inspect machine bundle file: \(String(cString: strerror(errno)))"
+            )
+        }
+        return FileSnapshot(
+            device: UInt64(info.st_dev),
+            inode: UInt64(info.st_ino),
+            size: info.st_size,
+            modifiedSeconds: Int64(info.st_mtimespec.tv_sec),
+            modifiedNanoseconds: Int64(info.st_mtimespec.tv_nsec),
+            changedSeconds: Int64(info.st_ctimespec.tv_sec),
+            changedNanoseconds: Int64(info.st_ctimespec.tv_nsec)
+        )
+    }
+
+    private static func hashExactly(from input: FileHandle, byteCount: UInt64) throws -> Data {
+        var remaining = byteCount
+        var hasher = SHA256()
+        while remaining > 0 {
+            let requested = Int(min(remaining, UInt64(copyChunkSize)))
+            let chunk = try input.read(upToCount: requested) ?? Data()
+            guard !chunk.isEmpty else {
+                throw MachineManagerError.persistence("truncated dory machine bundle payload")
+            }
+            hasher.update(data: chunk)
+            remaining -= UInt64(chunk.count)
+        }
+        return Data(hasher.finalize())
     }
 
     private static func openRegularFileForReading(
@@ -2605,6 +16146,248 @@ private enum MachineSnapshotBundle {
     }
 }
 
+private struct WorkspaceMigrationAuthorityFacts: Codable {
+    var guestArchitecture: DoryGuestArchitecture
+    var systemDiskCapacityBytes: UInt64?
+    var installedEFIBoot: DoryMachineConfigurationInstalledEFIBoot?
+    var lifecycle: DoryVMLifecycleMetadata
+}
+
+private struct MachineManagerResolvedLaunchInfrastructure {
+    let registry: BackendRegistry
+    let resolver: any DoryDaemonVirtualMachineLaunchPlanResolving
+    let planStore: any DoryResolvedMachinePlanStoring
+    let revisionProvider: MachineManager.ResolvedPlanRevisionProvider
+}
+
+private final class MachineLifecycleJournalContext: @unchecked Sendable {
+    let operation: DoryWorkspaceLifecycleOperation
+    private(set) var lease: DoryOperationLease!
+
+    init(operation: DoryWorkspaceLifecycleOperation, lease: DoryOperationLease) {
+        self.operation = operation
+        self.lease = lease
+    }
+
+    func releaseLease() {
+        lease = nil
+    }
+}
+
+private final class MachineManagerPlanningMutationRetention: @unchecked Sendable {
+    private let stateLock = NSLock()
+    private let manager: MachineManager
+    private let machineID: String
+    private var workspaceLock: EngineStateDirectoryLock?
+
+    init(
+        manager: MachineManager,
+        machineID: String,
+        workspaceLock: EngineStateDirectoryLock
+    ) {
+        self.manager = manager
+        self.machineID = machineID
+        self.workspaceLock = workspaceLock
+    }
+
+    func release() {
+        stateLock.withLock {
+            guard workspaceLock != nil else { return }
+            manager.releasePlanningMutation(machineID: machineID) {
+                workspaceLock = nil
+            }
+        }
+    }
+
+    deinit { release() }
+}
+
+private final class MachineManagerDirectMutationRetention: @unchecked Sendable {
+    let workspaceLock: EngineStateDirectoryLock
+    var depth = 1
+
+    init(workspaceLock: EngineStateDirectoryLock) {
+        self.workspaceLock = workspaceLock
+    }
+}
+
+/// Planning recovery binds launch-relevant runtime authority, not the transient explanation for
+/// why an unplanned machine needs a plan. This stays stable across daemon restart while resolved
+/// identities retain the exact immutable plan digest and backend/runtime tuple.
+private struct MachinePlanningRuntimeAuthority: Codable {
+    var schemaVersion: UInt16
+    var mode: DoryMachineRuntimeIdentityMode
+    var virtualHardwareABIVersion: UInt16
+    var resolvedPlanSHA256: String?
+    var planRevision: UInt64?
+    var definitionRevision: UInt64?
+    var definitionSHA256: String?
+    var backend: DoryVirtualizationBackendIdentity?
+    var backendImplementationIdentifier: String?
+    var backendRuntimeBuildIdentifier: String?
+
+    init(identity: DoryMachineRuntimeIdentity) {
+        schemaVersion = identity.schemaVersion
+        mode = identity.mode
+        virtualHardwareABIVersion = identity.virtualHardwareABIVersion
+        resolvedPlanSHA256 = identity.resolvedPlanSHA256
+        planRevision = identity.planRevision
+        definitionRevision = identity.definitionRevision
+        definitionSHA256 = identity.definitionSHA256
+        backend = identity.backend
+        backendImplementationIdentifier = identity.backendImplementationIdentifier
+        backendRuntimeBuildIdentifier = identity.backendRuntimeBuildIdentifier
+    }
+}
+
+private struct MachineLifecycleDependencyAuthority: Codable {
+    var schemaVersion: UInt16 = 2
+    var mutationKind: String
+    var workspaceID: String
+    var sourceLegacyConfigurationSHA256: String?
+    var sourceDefinitionSHA256: String?
+    var sourceRuntimeIdentitySHA256: String?
+    var targetLegacyConfigurationSHA256: String?
+    var targetDefinitionSHA256: String?
+    var targetRuntimeIdentitySHA256: String?
+    var targetResourceID: String?
+    var targetSnapshotDescriptorSHA256: String?
+    var targetSnapshotArtifactEvidenceSHA256: String?
+}
+
+extension MachineManager: DoryDaemonVirtualMachinePlanningMutationAuthorizing {}
+
+private extension DoryOperationPhase {
+    var indexForMachineLifecycle: Int {
+        switch self {
+        case .planned: 0
+        case .quiescing: 1
+        case .staging: 2
+        case .verifying: 3
+        case .readyToPublish: 4
+        case .publishing: 5
+        case .validating: 6
+        case .completed: 7
+        }
+    }
+}
+
+#if DEBUG
+enum MachineLifecycleFaultPoint: Sendable, Equatable {
+    case startAfterPreparation
+    case completionBeforeJournalWrite(DoryWorkspaceMutationKind)
+    case stopAfterProcessStop
+    case snapshotAfterRootfs
+    case restoreAfterBackups
+    case deleteAfterQuarantine
+}
+
+enum MachineLaunchAdmissionMutationForTesting: Sendable, Equatable {
+    case reservationGeneration
+    case configuration
+    case operation
+}
+
+struct MachineLifecycleInjectedCrash: Error, Sendable {}
+#endif
+
+private struct MachineLifecycleJournalCompletionPending: Error, Sendable {}
+
+private enum MachineStartPreparationAuthority: Equatable, Sendable {
+    case legacyCompatibility
+    case resolvedPlan
+
+    var requiresAuthoritativeDefinition: Bool {
+        self == .resolvedPlan
+    }
+}
+
+private struct PreparedMachineStart {
+    var machine: DoryMachineConfiguration
+    var authoritativeMachine: DoryMachineConfiguration
+    var definition: DoryVirtualMachineDefinition?
+    var canonicalDefinitionData: Data?
+    var authoritativeLegacyData: Data?
+    var shareAuthorities: [DoryMachineShareRuntimeAuthority]
+}
+
+private struct MachineLaunchReservation: Sendable, Equatable {
+    let generation: UInt64
+    let token: UUID
+}
+
+private struct MachineRuntimeIdentityLaunchAuthority: Sendable, Equatable {
+    let schemaVersion: UInt16
+    let mode: DoryMachineRuntimeIdentityMode
+    let virtualHardwareABIVersion: UInt16
+    let invalidationReason: DoryMachineRuntimeIdentityInvalidationReason?
+    let resolvedPlanSHA256: String?
+    let hasResolvedPlan: Bool
+}
+
+/// The complete in-memory authority that permits one prepared launch to commit. Reference-typed
+/// members are retained deliberately so identity comparison cannot be defeated by deallocation
+/// and allocator reuse while admission runs without the machine-table lock.
+private struct MachineLaunchAdmissionSnapshot: @unchecked Sendable {
+    let reservation: MachineLaunchReservation
+    let configuration: DoryMachineConfiguration
+    let state: DoryMachineState
+    let process: HvProcess?
+    let handoffServer: VmmHandoffServer?
+    let handoff: VmmHandoff?
+    let launchID: UUID?
+    let runtimeAddress: String?
+    let currentBalloonTargetMB: UInt64?
+    let activeOperationID: UUID?
+    let activeOperationKind: DoryWorkspaceMutationKind?
+    let readinessAcceptedPendingPublication: Bool
+    let pendingRestoreStatePath: String?
+    let savedStateStatus: DoryMachineSavedStateStatus?
+    let runtimeIdentity: DoryMachineRuntimeIdentity
+    let runtimeIdentityAuthority: MachineRuntimeIdentityLaunchAuthority
+}
+
+private struct DoryMachineShareRuntimeAuthority {
+    var share: DoryMachineShareConfiguration
+    var canonicalPath: String
+    var device: UInt64
+    var inode: UInt64
+}
+
+private struct MachineWorkspaceAuthority {
+    var definition: DoryVirtualMachineDefinition
+    var migration: DoryMachineConfigurationMigrationResult
+    var migrationFactsData: Data
+    var runtimeMachine: DoryMachineConfiguration
+    var isNative: Bool
+    var reconcileState: DoryWorkspaceLegacyProjectionReconcileState
+}
+
+private struct PendingResolvedMachineStart {
+    var machine: DoryMachineConfiguration
+    var plan: DoryResolvedMachinePlan
+    var backend: MachineBackendDescriptor
+    var runtimeBuildIdentifier: String
+    var runtimeComponents: [DoryResolvedBackendComponentEvidence]
+    var graphics: DoryGraphicsAccelerationLevel
+    var devices: DoryVirtualMachineDeviceCapabilityRequest
+    var portForwards: [DoryVMPortForward]
+    var operationID: UUID
+    var planRevision: UInt64
+    var planSHA256: String
+    var preSpawnAuthorization: DoryDaemonVirtualMachinePreSpawnAuthorization
+    var shareAuthorities: [DoryMachineShareRuntimeAuthority]
+}
+
+private struct MachineSavedStateIntentAuthority: Codable {
+    var machineID: String
+    var configurationSHA256: String
+    var runtimeIdentity: DoryMachineRuntimeIdentity
+    var hostHardwareModel: String
+    var hostOperatingSystemBuild: String
+    var backend: DoryVirtualizationBackendIdentity
+}
+
 private struct MachineEntry {
     var configuration: DoryMachineConfiguration
     var state: DoryMachineState
@@ -2615,15 +16398,41 @@ private struct MachineEntry {
     var runtimeAddress: String?
     var currentBalloonTargetMB: UInt64?
     var lastError: String?
+    /// Cached from the authoritative workspace record at load/create/update time. Status is a hot,
+    /// deeply nested path during launch and must not perform filesystem JSON decoding while the
+    /// machine lock and the large launch frame are live.
+    var typedSettingsSnapshot: DoryMachineTypedSettingsSnapshot? = nil
+    var sandboxPolicySnapshot: DoryVMSandboxPolicy? = nil
+    var usesNativeWorkspaceAuthority = false
+    var displayPresentation: DoryMachineDisplayPresentation = .windowed
+    var failure: DoryMachineFailure? = nil
+    var activeOperationID: UUID? = nil
+    var activeOperationKind: DoryWorkspaceMutationKind? = nil
+    var flightRecorderHeadSequence: UInt64 = 0
+    var flightRecorderAvailable: Bool = true
+    var lastDeviceTelemetrySampleSequence: UInt64 = 0
+    var lastDeviceTelemetryEventSequence: UInt64 = 0
+    var readinessAcceptedPendingPublication: Bool = false
+    var activeResolvedPlan: DoryResolvedMachinePlan?
+    var activeBackend: DoryVirtualizationBackendIdentity?
+    var pendingRestoreStatePath: String?
+    var savedStateStatus: DoryMachineSavedStateStatus?
+    var launchReservation: MachineLaunchReservation? = nil
+    var runtimeIdentity: DoryMachineRuntimeIdentity = .legacyCompatibility(
+        virtualHardwareABIVersion:
+            DoryVirtualMachineDefinition.currentVirtualHardwareABIVersion
+    )
 }
 
 extension MachineManager: WakeClockSyncing {
     public func syncAgentClock(now: Date) -> AgentClockSyncResult {
-        let runningAgents = list().compactMap { status -> (id: String, socketPath: String)? in
-            guard status.state == .running, let socketPath = status.agentSocketPath else {
+        let runningAgents = list().compactMap { status -> (id: String, socketPath: String, supported: Bool)? in
+            guard status.state == .running,
+                  status.authorizesAgentClockSynchronization,
+                  let socketPath = status.agentSocketPath else {
                 return nil
             }
-            return (status.id, socketPath)
+            return (status.id, socketPath, status.supportsAgentCapability("clock-sync"))
         }
         guard !runningAgents.isEmpty else {
             return AgentClockSyncResult(name: "machines", attempted: false, synced: false)
@@ -2633,6 +16442,10 @@ extension MachineManager: WakeClockSyncing {
         var failures: [String] = []
         var syncedCount = 0
         for agent in runningAgents {
+            guard agent.supported else {
+                failures.append("\(agent.id): clock-sync capability unavailable")
+                continue
+            }
             do {
                 let client = try agentConnector(agent.socketPath)
                 defer { client.close() }
@@ -2652,5 +16465,43 @@ extension MachineManager: WakeClockSyncing {
             synced: failures.isEmpty && syncedCount == runningAgents.count,
             error: failures.isEmpty ? nil : failures.joined(separator: "; ")
         )
+    }
+}
+
+private extension DoryMachineStatus {
+    var authorizesAgentClockSynchronization: Bool {
+        switch runtimeIdentity.mode {
+        case .legacyCompatibility:
+            // Compatibility machines retain the pre-contract wake behavior.
+            return true
+        case .requiresReplanning:
+            return false
+        case .resolvedPlan:
+            return runtimeIdentity.resolvedPlan?.devices.clockSynchronization == true
+        }
+    }
+
+    func supportsAgentCapability(_ id: String, minimumVersion: UInt32 = 1) -> Bool {
+        guard agentBuild?.isEmpty == false,
+              agentProtocolVersion == DoryCore.protocolVersion(),
+              agentCapabilities.allSatisfy(\.isValid),
+              agentCapabilities == agentCapabilities.sorted(by: { $0.id < $1.id }),
+              Set(agentCapabilities.map(\.id)).count == agentCapabilities.count else {
+            return false
+        }
+        return agentCapabilities.contains { $0.id == id && $0.version >= minimumVersion }
+    }
+}
+
+private extension VmmReadyMessage {
+    func supportsAgentCapability(_ id: String, minimumVersion: UInt32 = 1) -> Bool {
+        guard agentBuild?.isEmpty == false,
+              agentProtocolVersion == DoryCore.protocolVersion(),
+              agentCapabilities.allSatisfy(\.isValid),
+              agentCapabilities == agentCapabilities.sorted(by: { $0.id < $1.id }),
+              Set(agentCapabilities.map(\.id)).count == agentCapabilities.count else {
+            return false
+        }
+        return agentCapabilities.contains { $0.id == id && $0.version >= minimumVersion }
     }
 }

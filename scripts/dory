@@ -15,7 +15,14 @@ while [ -L "$DORY_SCRIPT_SOURCE" ]; do
 done
 DORY_SCRIPT_DIR="$(cd -P "$(dirname "$DORY_SCRIPT_SOURCE")" >/dev/null 2>&1 && pwd)"
 
-DORY_CLI_VERSION="0.0.0-dev"
+DORY_CLI_VERSION="${DORY_CLI_VERSION:-0.0.0-dev}"
+# When this script is bundled at Dory.app/Contents/Helpers/dory, report the app's authoritative
+# marketing version instead of leaking the source-tree development fallback into a release CLI.
+DORY_BUNDLE_INFO="$DORY_SCRIPT_DIR/../Info.plist"
+if [ -f "$DORY_BUNDLE_INFO" ]; then
+  DORY_BUNDLED_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$DORY_BUNDLE_INFO" 2>/dev/null || true)"
+  [ -z "$DORY_BUNDLED_VERSION" ] || DORY_CLI_VERSION="$DORY_BUNDLED_VERSION"
+fi
 DORY_SOCK="${DORY_SOCK:-$HOME/.dory/dory.sock}"
 KUBECONFIG_DORY="$HOME/.kube/dory-config"
 RECIPE_DIR="${DORY_RECIPE_DIR:-$HOME/.dory/recipes}"
@@ -60,6 +67,7 @@ vmm_helper() {
 
 hv_helper() {
   for p in "${DORY_HV_BIN:-}" \
+           "$DORY_SCRIPT_DIR/../Helpers/DoryHVRunner.app/Contents/MacOS/dory-hv" \
            "$DORY_SCRIPT_DIR/../Helpers/dory-hv" \
            "$DORY_SCRIPT_DIR/../Packages/ContainerizationEngine/.build/debug/dory-hv" \
            "$DORY_SCRIPT_DIR/../Packages/ContainerizationEngine/.build/out/Products/Release/dory-hv" \
@@ -153,9 +161,17 @@ dory — Dory CLI
   dory sandbox run [--json] [--keep] [--network MODE] [--allow-network HOST:PORT] -- <command...>
                                Run non-root in a dedicated VM; mounts default read-only and network
                                defaults denied. Use sandbox inspect/list/kill for retained runs.
-  dory sandbox create NAME [--workspace PATH] [--tool TOOL] [--json]
-                               Create a warm Agent-ready Sandbox with persistent tools and caches
-  dory sandbox exec NAME [run options] -- <command...>
+  dory sandbox capabilities [NAME] [--json]
+                               Query profiles, batteries, packages, and a named sandbox's prepared runtime
+  dory sandbox template list|show|validate [NAME|PATH] [--json]
+                               Discover or validate reusable agent-authored Sandbox templates
+  dory sandbox create NAME [--template NAME|PATH] [--workspace PATH] [--profile PROFILE] [--tool TOOL] [--setup FILE] [--json]
+                               Create a warm named Sandbox with one-time setup, persistent tools, and caches
+  dory sandbox use|current [NAME] [--json]
+                               Remember or query the default Sandbox for future agent commands
+  dory sandbox attach|switch [NAME]
+                               Reattach to the Sandbox's persistent tmux terminal, defaulting to current
+  dory sandbox exec [NAME] [run options] -- <command...>
                                Run a command in an existing named sandbox
   dory sandbox reset NAME [--json]
                                Restore an Agent-ready Sandbox to its prepared baseline
@@ -168,11 +184,6 @@ dory — Dory CLI
                                Share a local port or machine endpoint through a public HTTPS tunnel
   dory k8s <kubectl args...>   Run kubectl against Dory's Kubernetes cluster
   dory ssh <machine>           SSH into a Linux machine as you (real ssh when available)
-  dory vm [--image R] [--arch amd64|arm64] [--rosetta] [--mount h:g] -- <cmd>
-                               Run a container on Dory's in-process framework engine
-                               (Rosetta-fast x86 + host file mounts)
-  dory vm --devices            Boot a VM with USB + audio passthrough and dynamic
-                               memory ballooning (reclaims RAM to macOS)
   dory version                 Print the dory CLI version
   dory help                    Show this help
 EOF
@@ -1468,33 +1479,6 @@ PY
   }
 }
 
-dory_machine_env_allow_list() {
-  local raw
-  if [ "${DORY_MACHINE_ENV_ALLOW_LIST+x}" = "x" ]; then
-    printf '%s\n' "$DORY_MACHINE_ENV_ALLOW_LIST"
-    return 0
-  fi
-  if raw="$(defaults read com.pythonxi.Dory dory.machineEnvAllowList 2>/dev/null)"; then
-    printf '%s\n' "$raw"
-  else
-    printf '%s\n' "ANTHROPIC_API_KEY"
-  fi
-}
-
-dory_machine_env_rows() {
-  local raw token key value seen=" "
-  raw="$(dory_machine_env_allow_list)"
-  for token in $(printf '%s\n' "$raw" | tr ',\n\t' '   '); do
-    key="$(printf '%s' "$token" | tr '[:lower:]' '[:upper:]')"
-    [[ "$key" =~ ^[A-Z_][A-Z0-9_]*$ ]] || continue
-    case "$seen" in *" $key "*) continue ;; esac
-    seen="$seen$key "
-    value="${!key-}"
-    [ -n "$value" ] || continue
-    printf '%s=%s\n' "$key" "$value"
-  done
-}
-
 DORY_CONFIRM_REMAINDER=()
 
 require_exact_confirmation() {
@@ -1606,7 +1590,7 @@ doryd_machine_cmd() {
       ;;
     create)
       shift
-      name="${1:?usage: dory machine create <name> [--kernel PATH] [--rootfs PATH] [--image-manifest PATH --image-signature PATH --image-allowed-signers PATH --image-signer ID] [--memory-mb N] [--cpus N] [--share TAG=HOST:GUEST[:ro|rw] or JSON] [--env KEY=VALUE]}"
+      name="${1:?usage: dory machine create <name> [--kernel PATH] [--rootfs PATH] [--image-manifest PATH --image-signature PATH --image-allowed-signers PATH --image-signer ID] [--memory-mb N] [--cpus N] [--share TAG=HOST:GUEST[:ro|rw] or JSON]}"
       shift
       local image_manifest="" image_signature="" image_allowed_signers="" image_signer="" forwarded=()
       while [ "$#" -gt 0 ]; do
@@ -1617,6 +1601,10 @@ doryd_machine_cmd() {
           --image-signer) image_signer="${2:?--image-signer requires an identity}"; shift 2 ;;
           --image-manifest=*|--image-signature=*|--image-allowed-signers=*|--image-signer=*)
             echo "machine image trust options require a separate value, not --option=value" >&2
+            exit 2
+            ;;
+          --env|--env=*)
+            echo "machine create no longer accepts persistent environment values; pass command-scoped values to 'dory machine exec --env'" >&2
             exit 2
             ;;
           *) forwarded+=("$1"); shift ;;
@@ -1632,21 +1620,24 @@ doryd_machine_cmd() {
         set --
       fi
       args=("$name")
-      if ! dory_machine_has_option --kernel "$@"; then
+      # A generic EFI installer owns its boot path. Do not silently mix the
+      # managed direct-kernel/rootfs image into an ISO-backed machine request.
+      local uses_installer_iso=0
+      if dory_machine_has_option --installer-iso "$@"; then
+        uses_installer_iso=1
+      fi
+      if [ "$uses_installer_iso" -eq 0 ] && ! dory_machine_has_option --kernel "$@"; then
         local kernel
         kernel="$(sandbox_default_kernel || true)"
         [ -n "$kernel" ] || { echo "Linux Machines is not installed. Run: dory component install linux-machines" >&2; exit 1; }
         args+=(--kernel "$kernel")
       fi
-      if ! dory_machine_has_option --rootfs "$@"; then
+      if [ "$uses_installer_iso" -eq 0 ] && ! dory_machine_has_option --rootfs "$@"; then
         local rootfs
         rootfs="$(sandbox_default_rootfs || true)"
         [ -n "$rootfs" ] || { echo "Linux Machines is not installed. Run: dory component install linux-machines" >&2; exit 1; }
         args+=(--rootfs "$rootfs")
       fi
-      while IFS= read -r env_row; do
-        [ -n "$env_row" ] && args+=(--env "$env_row")
-      done < <(dory_machine_env_rows)
       if [ -n "$image_manifest$image_signature$image_allowed_signers$image_signer" ]; then
         [ -n "$image_manifest" ] && [ -n "$image_signature" ] && [ -n "$image_allowed_signers" ] && [ -n "$image_signer" ] || {
           echo "signed machine images require --image-manifest, --image-signature, --image-allowed-signers, and --image-signer together" >&2
@@ -1742,9 +1733,13 @@ machine_cmd() {
 }
 
 sandbox_usage() {
-  echo "usage: dory sandbox run [--json] [--keep] [--name NAME | --reuse NAME] [--agent-ready] [--tool TOOL] [--mount HOST[:GUEST[:ro|rw]]] [--network none|outbound|full] [--allow-network HOST[:PORT]] [--secret-env NAME] [--ssh-agent] [--elevated] [--rollback] [--ttl-seconds N] [--wall-time-seconds N] [--processes N] [--open-files N] [--disk-mb N] [--memory-mb N] [--cpus N] [--kernel PATH] [--rootfs PATH] -- <command...>" >&2
-  echo "       dory sandbox create NAME [--workspace PATH] [--tool node|python|go|rust|java|ruby|devops] [run options]" >&2
-  echo "       dory sandbox exec NAME [run options] -- <command...>" >&2
+  echo "usage: dory sandbox capabilities [NAME] [--json]" >&2
+  echo "       dory sandbox template list [--json] | show NAME|PATH [--json] | validate PATH [--json]" >&2
+  echo "       dory sandbox run [--json] [--keep] [--name NAME | --reuse NAME] [--agent-ready] [--profile PROFILE] [--tool TOOL] [--setup FILE] [--mount HOST[:GUEST[:ro|rw]]] [--network none|outbound|full] [--allow-network HOST[:PORT]] [--secret-env NAME] [--ssh-agent] [--elevated] [--rollback] [--ttl-seconds N] [--wall-time-seconds N] [--processes N] [--open-files N] [--disk-mb N] [--memory-mb N] [--cpus N] [--kernel PATH] [--rootfs PATH] -- <command...>" >&2
+  echo "       dory sandbox create NAME [--template NAME|PATH] [--workspace PATH] [--profile core|web|data|systems|jvm|ruby|devops|polyglot|auto] [--tool TOOL] [--setup FILE] [run options]" >&2
+  echo "       dory sandbox use NAME [--json] | current [--json]" >&2
+  echo "       dory sandbox attach|switch [NAME]" >&2
+  echo "       dory sandbox exec [NAME] [run options] -- <command...>" >&2
   echo "       dory sandbox reset NAME [--json]" >&2
   echo "       dory sandbox inspect NAME [--json]" >&2
   echo "       dory sandbox list [--json]" >&2
@@ -1752,6 +1747,7 @@ sandbox_usage() {
   echo "  none is the safe default; outbound permits DNS only to Dory's resolver plus explicit --allow-network destinations." >&2
   echo "  mounts default to read-only; use a trailing :rw for an explicit write grant." >&2
   echo "  workloads run as a non-root uid. --elevated is explicit and is accepted only with --network full." >&2
+  echo "  --setup runs once as the sandbox user after network/mount policy is enforced, then becomes part of the reset baseline." >&2
 }
 
 sandbox_normalize_tool() {
@@ -1766,6 +1762,312 @@ sandbox_normalize_tool() {
     docker-host|docker-cli) printf '%s\n' docker-host ;;
     k8s|k8s-lab|kubectl) printf '%s\n' k8s-lab ;;
     *) echo "unknown Agent-ready Sandbox tool: $1" >&2; return 2 ;;
+  esac
+}
+
+sandbox_profile_rows() {
+  cat <<'EOF'
+core	Agent Core	Shell, Git, search, patching, archives, SSH, Python, and native build essentials.	-
+web	Web + Node.js	Agent Core plus Node.js and npm for frontend, backend, and full-stack JavaScript work.	node
+data	Python + Data	Agent Core plus Python, pip, virtual environments, and NumPy.	python-ml
+systems	Systems	Agent Core plus Go, Rust, Cargo, and native build dependencies.	go,rust
+jvm	JVM	Agent Core plus Java 21 and Maven.	java
+ruby	Ruby	Agent Core plus Ruby, Bundler, and native extension build dependencies.	ruby
+devops	Cloud + DevOps	Agent Core plus Docker and Kubernetes CLIs.	devops
+polyglot	Polyglot	All built-in language runtimes plus Docker and Kubernetes CLIs.	node,python-ml,go,rust,java,ruby,devops
+EOF
+}
+
+sandbox_normalize_profile() {
+  local normalized
+  normalized="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  case "$normalized" in
+    auto|detect) printf '%s\n' auto ;;
+    core|base|default|agent|agent-core) printf '%s\n' core ;;
+    web|frontend|fullstack|node|nodejs) printf '%s\n' web ;;
+    data|python|python-ml|ml) printf '%s\n' data ;;
+    systems|system|go-rust) printf '%s\n' systems ;;
+    jvm|java) printf '%s\n' jvm ;;
+    ruby) printf '%s\n' ruby ;;
+    devops|cloud|k8s|kubernetes) printf '%s\n' devops ;;
+    polyglot|all) printf '%s\n' polyglot ;;
+    *) echo "unknown Agent-ready Sandbox profile: $1" >&2; return 2 ;;
+  esac
+}
+
+sandbox_profile_tools() {
+  local wanted="$1" id display summary tools
+  [ "$wanted" != auto ] || return 0
+  while IFS=$'\t' read -r id display summary tools; do
+    [ "$id" = "$wanted" ] || continue
+    [ "$tools" = - ] || printf '%s\n' "$tools" | tr ',' '\n'
+    return 0
+  done < <(sandbox_profile_rows)
+  echo "unknown Agent-ready Sandbox profile: $wanted" >&2
+  return 2
+}
+
+sandbox_validate_setup() {
+  python3 - "$1" <<'PY'
+import hashlib
+import os
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1]).expanduser().resolve(strict=True)
+if not path.is_file():
+    raise SystemExit(f"sandbox setup must be a regular file: {path}")
+data = path.read_bytes()
+if len(data) > 256 * 1024:
+    raise SystemExit("sandbox setup is larger than the 256 KiB provisioning limit")
+if b"\0" in data:
+    raise SystemExit("sandbox setup must be a text script without NUL bytes")
+try:
+    data.decode("utf-8")
+except UnicodeDecodeError:
+    raise SystemExit("sandbox setup must be UTF-8 text")
+print("\t".join((str(path), path.name, hashlib.sha256(data).hexdigest())))
+PY
+}
+
+sandbox_template_directories() {
+  [ -z "${DORY_SANDBOX_TEMPLATE_DIR:-}" ] || printf '%s\n' "$DORY_SANDBOX_TEMPLATE_DIR"
+  printf '%s\n' "$HOME/.dory/sandbox-templates"
+  # Xcode flattens folder-backed resource groups into Contents/Resources. Keep the
+  # source-tree paths below for development, but resolve the installed layout first.
+  printf '%s\n' "$DORY_SCRIPT_DIR/../Resources"
+  printf '%s\n' "$DORY_SCRIPT_DIR/../Resources/SandboxTemplates"
+  printf '%s\n' "$DORY_SCRIPT_DIR/../Dory/Resources/SandboxTemplates"
+}
+
+sandbox_template_resolve() {
+  local requested="$1" directory candidate
+  if [[ "$requested" == */* ]] || [[ "$requested" == *.json ]]; then
+    candidate="$requested"
+    [ -f "$candidate" ] || { echo "sandbox template not found: $requested" >&2; return 1; }
+    (cd "$(dirname "$candidate")" && printf '%s/%s\n' "$PWD" "$(basename "$candidate")")
+    return 0
+  fi
+  while IFS= read -r directory; do
+    [ -n "$directory" ] || continue
+    candidate="$directory/$requested.json"
+    if [ -f "$candidate" ]; then
+      (cd "$(dirname "$candidate")" && printf '%s/%s\n' "$PWD" "$(basename "$candidate")")
+      return 0
+    fi
+  done < <(sandbox_template_directories)
+  echo "sandbox template not found: $requested" >&2
+  return 1
+}
+
+sandbox_template_validate() {
+  python3 - "$1" "${2:-metadata}" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1]).resolve(strict=True)
+mode = sys.argv[2]
+if not path.is_file() or path.stat().st_size > 64 * 1024:
+    raise SystemExit("sandbox template must be a regular JSON file no larger than 64 KiB")
+try:
+    data = json.loads(path.read_text(encoding="utf-8"))
+except (UnicodeDecodeError, json.JSONDecodeError) as error:
+    raise SystemExit(f"invalid sandbox template JSON: {error}")
+if not isinstance(data, dict):
+    raise SystemExit("sandbox template must be a JSON object")
+allowed = {
+    "schema", "version", "id", "displayName", "summary", "profile", "tools", "setup",
+    "workspace", "mounts", "networkPolicy", "allowNetwork", "limits", "ttlSeconds", "sshAgent",
+}
+unknown = sorted(set(data) - allowed)
+if unknown:
+    raise SystemExit("unknown sandbox template fields: " + ", ".join(unknown))
+if data.get("schema") != "dev.dory.sandbox.template" or data.get("version") != 1:
+    raise SystemExit("sandbox template must use dev.dory.sandbox.template version 1")
+
+def plain(value, field, *, required=False):
+    if value is None and not required:
+        return ""
+    if not isinstance(value, str) or (required and not value):
+        raise SystemExit(f"sandbox template {field} must be a non-empty string")
+    if "\n" in value or "\r" in value or "\0" in value:
+        raise SystemExit(f"sandbox template {field} cannot contain control lines")
+    return value
+
+template_id = plain(data.get("id"), "id", required=True)
+if not all(character.isalnum() or character in "_.-" for character in template_id):
+    raise SystemExit("sandbox template id may contain only letters, digits, dots, underscores, and dashes")
+plain(data.get("displayName", template_id), "displayName", required=True)
+plain(data.get("summary", ""), "summary")
+profile = plain(data.get("profile", "core"), "profile", required=True)
+tools = data.get("tools", [])
+if not isinstance(tools, list) or not all(isinstance(item, str) and item and "\n" not in item and "\r" not in item for item in tools):
+    raise SystemExit("sandbox template tools must be an array of non-empty strings")
+network = plain(data.get("networkPolicy", "none"), "networkPolicy", required=True)
+if network not in ("none", "outbound", "full"):
+    raise SystemExit("sandbox template networkPolicy must be none, outbound, or full")
+allow = data.get("allowNetwork", [])
+if not isinstance(allow, list) or not all(isinstance(item, str) and item and "\n" not in item and "\r" not in item for item in allow):
+    raise SystemExit("sandbox template allowNetwork must be an array of non-empty strings")
+if (network == "outbound") != bool(allow):
+    raise SystemExit("outbound templates require allowNetwork, and other network policies must omit it")
+if not isinstance(data.get("sshAgent", False), bool):
+    raise SystemExit("sandbox template sshAgent must be a boolean")
+ttl = data.get("ttlSeconds", 0)
+if not isinstance(ttl, int) or isinstance(ttl, bool) or not 0 <= ttl <= 2_592_000:
+    raise SystemExit("sandbox template ttlSeconds must be an integer from 0 through 2592000")
+
+limits = data.get("limits", {})
+if not isinstance(limits, dict):
+    raise SystemExit("sandbox template limits must be an object")
+limit_rules = {
+    "cpus": (1, 8), "memoryMB": (1024, 16384), "diskMB": (32, 640),
+    "processes": (1, 4096), "openFiles": (16, 65536), "wallTimeSeconds": (1, 600),
+}
+unknown_limits = sorted(set(limits) - set(limit_rules))
+if unknown_limits:
+    raise SystemExit("unknown sandbox template limits: " + ", ".join(unknown_limits))
+for key, value in limits.items():
+    minimum, maximum = limit_rules[key]
+    if not isinstance(value, int) or isinstance(value, bool) or not minimum <= value <= maximum:
+        raise SystemExit(f"sandbox template {key} must be an integer from {minimum} through {maximum}")
+
+base = path.parent
+workspace = plain(data.get("workspace", ""), "workspace")
+if workspace:
+    workspace_path = pathlib.Path(workspace).expanduser()
+    if not workspace_path.is_absolute():
+        workspace_path = base / workspace_path
+    workspace = str(workspace_path.resolve(strict=True))
+    if not pathlib.Path(workspace).is_dir():
+        raise SystemExit("sandbox template workspace must resolve to an existing directory")
+setup = plain(data.get("setup", ""), "setup")
+if setup:
+    setup_path = pathlib.Path(setup).expanduser()
+    if not setup_path.is_absolute():
+        setup_path = base / setup_path
+    setup = str(setup_path.resolve(strict=True))
+    if not pathlib.Path(setup).is_file():
+        raise SystemExit("sandbox template setup must resolve to a regular file")
+
+mounts = data.get("mounts", [])
+if not isinstance(mounts, list):
+    raise SystemExit("sandbox template mounts must be an array")
+resolved_mounts = []
+for index, mount in enumerate(mounts):
+    if not isinstance(mount, dict) or set(mount) - {"hostPath", "guestPath", "mode"}:
+        raise SystemExit(f"sandbox template mount {index} has unknown fields")
+    host = pathlib.Path(plain(mount.get("hostPath"), f"mounts[{index}].hostPath", required=True)).expanduser()
+    if not host.is_absolute():
+        host = base / host
+    host = host.resolve(strict=True)
+    if not host.is_dir():
+        raise SystemExit(f"sandbox template mount {index} hostPath must resolve to a directory")
+    guest = plain(mount.get("guestPath"), f"mounts[{index}].guestPath", required=True)
+    if not guest.startswith("/") or guest == "/":
+        raise SystemExit(f"sandbox template mount {index} guestPath must be absolute and not /")
+    mount_mode = plain(mount.get("mode", "ro"), f"mounts[{index}].mode", required=True)
+    if mount_mode not in ("ro", "rw"):
+        raise SystemExit(f"sandbox template mount {index} mode must be ro or rw")
+    resolved_mounts.append(f"{host}:{guest}:{mount_mode}")
+
+normalized = dict(data)
+normalized.update({
+    "sourcePath": str(path), "profile": profile, "tools": tools, "networkPolicy": network,
+    "allowNetwork": allow, "mounts": resolved_mounts, "ttlSeconds": ttl,
+    "sshAgent": data.get("sshAgent", False), "limits": limits,
+    "machineClass": "headless-agent-sandbox", "display": False,
+    "purpose": "coding agents and Linux CLI applications",
+})
+if workspace:
+    normalized["workspace"] = workspace
+if setup:
+    normalized["setup"] = setup
+
+if mode == "json":
+    print(json.dumps(normalized, separators=(",", ":"), sort_keys=True))
+elif mode == "arguments":
+    arguments = ["--profile", profile]
+    for tool in tools:
+        arguments += ["--tool", tool]
+    if workspace:
+        arguments += ["--workspace", workspace]
+    if setup:
+        arguments += ["--setup", setup]
+    arguments += ["--network", network]
+    for destination in allow:
+        arguments += ["--allow-network", destination]
+    for mount in resolved_mounts:
+        arguments += ["--mount", mount]
+    if ttl:
+        arguments += ["--ttl-seconds", str(ttl)]
+    if data.get("sshAgent", False):
+        arguments.append("--ssh-agent")
+    options = {
+        "cpus": "--cpus", "memoryMB": "--memory-mb", "diskMB": "--disk-mb",
+        "processes": "--processes", "openFiles": "--open-files", "wallTimeSeconds": "--wall-time-seconds",
+    }
+    for key, option in options.items():
+        if key in limits:
+            arguments += [option, str(limits[key])]
+    for argument in arguments:
+        print(argument)
+else:
+    print("\t".join((template_id, normalized.get("displayName", template_id), normalized.get("summary", ""), str(path))))
+PY
+}
+
+sandbox_template_cmd() {
+  local sub="${1:-list}" json=0 requested path directory file row
+  shift || true
+  case "$sub" in
+    list)
+      [ "${1:-}" != "--json" ] || { json=1; shift; }
+      [ "$#" -eq 0 ] || { sandbox_usage; return 2; }
+      local rows=()
+      while IFS= read -r directory; do
+        [ -d "$directory" ] || continue
+        for file in "$directory"/*.json; do
+          [ -f "$file" ] || continue
+          row="$(sandbox_template_validate "$file" metadata 2>/dev/null || true)"
+          [ -z "$row" ] || rows+=("$row")
+        done
+      done < <(sandbox_template_directories)
+      python3 - "$json" ${rows[@]+"${rows[@]}"} <<'PY'
+import json, sys
+as_json, *raw = sys.argv[1:]
+rows = []
+seen = set()
+for item in raw:
+    template_id, display, summary, path = item.split("\t", 3)
+    if template_id in seen:
+        continue
+    seen.add(template_id)
+    rows.append({"id": template_id, "displayName": display, "summary": summary, "sourcePath": path})
+if as_json == "1":
+    print(json.dumps({"schema":"dev.dory.sandbox.template-list","version":1,"templates":rows}, separators=(",",":"), sort_keys=True))
+else:
+    for row in rows:
+        print(f"{row['id']}\t{row['displayName']}\t{row['summary']}")
+PY
+      ;;
+    show|validate)
+      requested="${1:?usage: dory sandbox template $sub NAME|PATH [--json]}"
+      shift
+      [ "${1:-}" != "--json" ] || { json=1; shift; }
+      [ "$#" -eq 0 ] || { sandbox_usage; return 2; }
+      path="$(sandbox_template_resolve "$requested")" || return 1
+      if [ "$json" -eq 1 ]; then
+        sandbox_template_validate "$path" json
+      elif [ "$sub" = show ]; then
+        python3 -m json.tool "$path"
+      else
+        sandbox_template_validate "$path" metadata >/dev/null
+        echo "sandbox template is valid: $path"
+      fi
+      ;;
+    *) sandbox_usage; return 2 ;;
   esac
 }
 
@@ -1980,8 +2282,11 @@ fi
 mkdir -p /dory-sandbox/.home /dory-sandbox/.tmp
 chown -R "$uid:$gid" /dory-sandbox
 chmod 0700 /dory-sandbox /dory-sandbox/.home /dory-sandbox/.tmp
-chmod 0755 /tmp 2>/dev/null || true
-chmod 0755 /var/tmp 2>/dev/null || true
+# Preserve ordinary Linux temporary-directory semantics. The agent also receives a private TMPDIR
+# on its scratch disk, but third-party tools are allowed to use /tmp and rely on the sticky bit to
+# prevent one unprivileged identity from deleting files owned by another identity.
+chmod 1777 /tmp 2>/dev/null || true
+chmod 1777 /var/tmp 2>/dev/null || true
 
 chain=DORY_SANDBOX
 while iptables -w 5 -D OUTPUT -m owner --uid-owner "$uid" -j "$chain" 2>/dev/null; do :; done
@@ -2079,14 +2384,15 @@ sandbox_write_manifest() {
   local disk_mb="$9" processes="${10}" open_files="${11}" wall_seconds="${12}" ttl_expires="${13}" kept="${14}"
   local ssh_agent="${15}" mounts_json="${16}" egress_json="${17}" executable="${18}" argument_count="${19}"
   local profile_kind="${20}" profile_tools_json="${21}" baseline_snapshot_id="${22}"
-  shift 22
+  local profile_preset="${23}" setup_name="${24}" setup_sha256="${25}"
+  shift 25
   local state_dir path
   state_dir="$(sandbox_state_directory)"
   path="$(sandbox_manifest_path "$name")"
   mkdir -p "$state_dir"
   chmod 0700 "$state_dir"
   umask 077
-  python3 - "$path" "$name" "$status" "$network" "$uid" "$gid" "$elevated" "$memory" "$cpus" "$disk_mb" "$processes" "$open_files" "$wall_seconds" "$ttl_expires" "$kept" "$ssh_agent" "$mounts_json" "$egress_json" "$executable" "$argument_count" "$profile_kind" "$profile_tools_json" "$baseline_snapshot_id" "$@" <<'PY'
+  python3 - "$path" "$name" "$status" "$network" "$uid" "$gid" "$elevated" "$memory" "$cpus" "$disk_mb" "$processes" "$open_files" "$wall_seconds" "$ttl_expires" "$kept" "$ssh_agent" "$mounts_json" "$egress_json" "$executable" "$argument_count" "$profile_kind" "$profile_tools_json" "$baseline_snapshot_id" "$profile_preset" "$setup_name" "$setup_sha256" "$@" <<'PY'
 import json
 import os
 import pathlib
@@ -2096,7 +2402,8 @@ import time
 
 (path, name, status, network, uid, gid, elevated, memory, cpus, disk_mb, processes,
  open_files, wall_seconds, ttl_expires, kept, ssh_agent, mounts_path, egress_path, executable,
- argument_count, profile_kind, profile_tools_json, baseline_snapshot_id, *secret_names) = sys.argv[1:]
+ argument_count, profile_kind, profile_tools_json, baseline_snapshot_id, profile_preset,
+ setup_name, setup_sha256, *secret_names) = sys.argv[1:]
 target = pathlib.Path(path)
 existing = {}
 try:
@@ -2109,6 +2416,11 @@ manifest = {
     "sandbox": name,
     "machine": name,
     "isolation": "dedicated-vm",
+    "machineClass": "headless-agent-sandbox",
+    "purpose": "agent-coding",
+    "display": False,
+    "desktopApplications": False,
+    "terminalApplications": True,
     "status": status,
     "createdEpoch": existing.get("createdEpoch", int(time.time())),
     "updatedEpoch": int(time.time()),
@@ -2135,10 +2447,18 @@ manifest = {
 if profile_kind:
     manifest["profile"] = {
         "kind": profile_kind,
+        "preset": profile_preset or "core",
         "tools": json.loads(profile_tools_json),
         "warm": True,
         "baselineSnapshotID": baseline_snapshot_id or None,
     }
+    if setup_name and setup_sha256:
+        manifest["profile"]["setup"] = {
+            "file": setup_name,
+            "sha256": setup_sha256,
+            "executedOnce": True,
+            "contentsPersisted": False,
+        }
 fd, temporary = tempfile.mkstemp(prefix=".sandbox-manifest-", dir=str(target.parent))
 try:
     with os.fdopen(fd, "w", encoding="utf-8") as handle:
@@ -2191,6 +2511,225 @@ else:
 PY
 }
 
+sandbox_active_path() {
+  printf '%s/.current\n' "$(sandbox_state_directory)"
+}
+
+sandbox_current_name() {
+  local name path
+  if [ -n "${DORY_SANDBOX_NAME:-}" ]; then
+    name="$DORY_SANDBOX_NAME"
+  else
+    path="$(sandbox_active_path)"
+    [ -f "$path" ] || { echo "no current Sandbox; run 'dory sandbox use NAME' or 'dory sandbox attach NAME'" >&2; return 1; }
+    IFS= read -r name < "$path"
+  fi
+  [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || { echo "the current Sandbox selection is invalid" >&2; return 1; }
+  [ -f "$(sandbox_manifest_path "$name")" ] || { echo "current Sandbox manifest not found: $name" >&2; return 1; }
+  printf '%s\n' "$name"
+}
+
+sandbox_use_cmd() {
+  local name="${1:?usage: dory sandbox use NAME [--json]}" json=0 manifest state_dir active
+  shift
+  [ "${1:-}" != --json ] || { json=1; shift; }
+  [ "$#" -eq 0 ] || { sandbox_usage; return 2; }
+  [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || { echo "invalid sandbox name: $name" >&2; return 2; }
+  manifest="$(sandbox_manifest_path "$name")"
+  [ -f "$manifest" ] || { echo "sandbox manifest not found: $name" >&2; return 1; }
+  python3 - "$manifest" <<'PY'
+import json, sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+if data.get("schema") != "dev.dory.sandbox.manifest" or data.get("persistence") != "named":
+    raise SystemExit("only a retained named Sandbox can become current")
+if data.get("machineClass") not in (None, "headless-agent-sandbox"):
+    raise SystemExit("the selected machine is not a headless agent Sandbox")
+if data.get("status") in ("deleted", "killed"):
+    raise SystemExit("the selected Sandbox has been deleted")
+PY
+  state_dir="$(sandbox_state_directory)"
+  active="$(sandbox_active_path)"
+  mkdir -p "$state_dir"
+  chmod 0700 "$state_dir"
+  python3 - "$active" "$name" <<'PY'
+import os, sys, tempfile
+path, name = sys.argv[1:]
+fd, temporary = tempfile.mkstemp(prefix=".current-", dir=os.path.dirname(path))
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(name + "\n"); handle.flush(); os.fsync(handle.fileno())
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, path)
+finally:
+    if os.path.exists(temporary):
+        os.unlink(temporary)
+PY
+  if [ "$json" -eq 1 ]; then
+    python3 - "$name" <<'PY'
+import json, sys
+print(json.dumps({"schema":"dev.dory.sandbox.current","version":1,"sandbox":sys.argv[1],"source":"persisted-selection"}, separators=(",",":"), sort_keys=True))
+PY
+  else
+    echo "Current headless agent Sandbox: $name"
+  fi
+}
+
+sandbox_current_cmd() {
+  local json=0 name manifest
+  [ "${1:-}" != --json ] || { json=1; shift; }
+  [ "$#" -eq 0 ] || { sandbox_usage; return 2; }
+  name="$(sandbox_current_name)" || return 1
+  manifest="$(sandbox_manifest_path "$name")"
+  if [ "$json" -eq 1 ]; then
+    python3 - "$name" "$manifest" "${DORY_SANDBOX_NAME:+environment}" <<'PY'
+import json, sys
+name, path, source = sys.argv[1:]
+manifest = json.load(open(path, encoding="utf-8"))
+print(json.dumps({
+    "schema":"dev.dory.sandbox.current", "version":1, "sandbox":name,
+    "source":source or "persisted-selection", "machineClass":"headless-agent-sandbox",
+    "manifest":manifest,
+}, separators=(",",":"), sort_keys=True))
+PY
+  else
+    echo "$name"
+  fi
+}
+
+sandbox_capabilities_cmd() {
+  local json=0 name="" ctl tmp manifest=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --json) json=1; shift ;;
+      --*) sandbox_usage; return 2 ;;
+      *) [ -z "$name" ] || { sandbox_usage; return 2; }; name="$1"; shift ;;
+    esac
+  done
+  if [ -n "$name" ]; then
+    [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || { echo "invalid sandbox name: $name" >&2; return 2; }
+    manifest="$(sandbox_manifest_path "$name")"
+    [ -f "$manifest" ] || { echo "sandbox manifest not found: $name" >&2; return 1; }
+  fi
+  ctl="$(dorydctl_bin 2>/dev/null)" || { echo "dorydctl not found; capability catalog is unavailable" >&2; return 1; }
+  tmp="$(mktemp -d -t dory-sandbox-capabilities.XXXXXX)"
+  if ! "$ctl" machine recipes > "$tmp/recipes.json"; then
+    echo "this dorydctl does not expose the Sandbox capability catalog; update the local Dory build" >&2
+    rm -rf "$tmp"
+    return 1
+  fi
+  if [ -n "$name" ]; then
+    "$ctl" --timeout 10 machine status "$name" > "$tmp/status.json" 2>/dev/null || true
+  fi
+  sandbox_profile_rows > "$tmp/profiles.tsv"
+  python3 - "$tmp/recipes.json" "$tmp/profiles.tsv" "$manifest" "$tmp/status.json" "$json" <<'PY'
+import json, pathlib, sys
+recipes_path, profiles_path, manifest_path, status_path, as_json = sys.argv[1:]
+recipes_payload = json.load(open(recipes_path, encoding="utf-8"))
+profiles = []
+for line in pathlib.Path(profiles_path).read_text(encoding="utf-8").splitlines():
+    profile_id, display, summary, tools = (line.split("\t") + [""])[:4]
+    profiles.append({
+        "id":profile_id, "displayName":display, "summary":summary,
+        "recipes":["agent-core"] + [item for item in tools.split(",") if item and item != "-"],
+    })
+payload = {
+    "schema":"dev.dory.sandbox.capabilities", "version":1,
+    "machineClass":"headless-agent-sandbox", "display":False,
+    "purpose":"Run coding agents and Linux CLI applications in a dedicated headless VM.",
+    "notFor":"Linux desktop/GUI applications; use a Linux Desktop VM for those.",
+    "profiles":profiles, "recipes":recipes_payload.get("recipes", []),
+    "templateSchema":"dev.dory.sandbox.template v1",
+    "manifestSchema":"dev.dory.sandbox.manifest v1",
+}
+if manifest_path:
+    payload["sandbox"] = json.load(open(manifest_path, encoding="utf-8"))
+if pathlib.Path(status_path).is_file():
+    payload["machineStatus"] = json.load(open(status_path, encoding="utf-8"))
+if as_json == "1":
+    print(json.dumps(payload, separators=(",",":"), sort_keys=True))
+else:
+    print("Headless Agent Sandbox profiles (Linux CLI workloads; no desktop/display):")
+    for profile in profiles:
+        print(f"{profile['id']}\t{profile['displayName']}\t{','.join(profile['recipes'])}")
+    print("\nBatteries and runtimes:")
+    for recipe in payload["recipes"]:
+        print(f"{recipe['id']}\t{recipe['displayName']}\t{','.join(recipe['executables'])}")
+PY
+  rm -rf "$tmp"
+}
+
+sandbox_attach_cmd() {
+  local name="" ctl manifest tmp attach_meta network uid gid disk_mb state cwd session
+  if [ "$#" -gt 0 ] && [[ "$1" != --* ]]; then name="$1"; shift; fi
+  [ "$#" -eq 0 ] || { sandbox_usage; return 2; }
+  [ -n "$name" ] || name="$(sandbox_current_name)" || return 1
+  [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || { echo "invalid sandbox name: $name" >&2; return 2; }
+  manifest="$(sandbox_manifest_path "$name")"
+  [ -f "$manifest" ] || { echo "sandbox manifest not found: $name" >&2; return 1; }
+  ctl="$(dorydctl_bin 2>/dev/null)" || { echo "dorydctl not found" >&2; return 1; }
+  tmp="$(mktemp -d -t dory-sandbox-attach.XXXXXX)"
+  "$ctl" --timeout 30 machine status "$name" > "$tmp/status.json" || { rm -rf "$tmp"; return 1; }
+  if ! attach_meta="$(python3 - "$manifest" "$tmp/status.json" "$tmp/egress.json" <<'PY'
+import json, re, sys
+manifest = json.load(open(sys.argv[1], encoding="utf-8"))
+status = json.load(open(sys.argv[2], encoding="utf-8"))
+if manifest.get("machineClass") not in (None, "headless-agent-sandbox") or manifest.get("persistence") != "named":
+    raise SystemExit("attach is available only for retained headless agent Sandboxes")
+profile = manifest.get("profile") or {}
+if profile.get("kind") != "agent-ready" or "agent-core" not in profile.get("tools", []):
+    raise SystemExit("attach requires an Agent-ready Sandbox with the core terminal battery")
+policy = status.get("sandboxPolicy") or {}
+if policy.get("schemaVersion") != 1 or policy.get("profile") != "agent-ready":
+    raise SystemExit("machine identity does not match the Sandbox manifest")
+expected = sorted((m["tag"], m["hostPath"], m["guestPath"], bool(m["readOnly"])) for m in manifest.get("mounts", []))
+actual = sorted((m["tag"], m["hostPath"], m["guestPath"], bool(m["readOnly"])) for m in status.get("shares", []))
+if expected != actual:
+    raise SystemExit("Sandbox mounts differ from its manifest; refusing attach")
+with open(sys.argv[3], "w", encoding="utf-8") as handle:
+    json.dump(manifest.get("network", {}).get("grants", []), handle, separators=(",",":"), sort_keys=True)
+identity = manifest.get("identity", {})
+limits = manifest.get("limits", {})
+rw = [mount.get("guestPath") for mount in manifest.get("mounts", []) if mount.get("mode") == "rw"]
+cwd = rw[0] if rw else "/dory-sandbox"
+print("\x1f".join((
+    str(manifest.get("network", {}).get("mode") or "none"), str(identity.get("uid", 65534)),
+    str(identity.get("gid", 65534)), str(limits.get("diskMB", 256)),
+    str(status.get("state") or "stopped"), cwd,
+)))
+PY
+)"; then rm -rf "$tmp"; return 2; fi
+  IFS=$'\x1f' read -r network uid gid disk_mb state cwd <<<"$attach_meta"
+  if [ "$state" != running ]; then
+    "$ctl" --timeout 120 machine start "$name" > "$tmp/start.json" || { rm -rf "$tmp"; return 1; }
+  fi
+  sandbox_wait_for_machine_ready "$ctl" "$name" 120 || { rm -rf "$tmp"; return 1; }
+  sandbox_apply_guest_policy "$ctl" "$name" "$network" "$uid" "$gid" "$disk_mb" "$tmp/egress.json" > "$tmp/network.json" || { rm -rf "$tmp"; return 1; }
+  while IFS= read -r guest; do
+    [ -n "$guest" ] || continue
+    "$ctl" --timeout 30 machine exec "$name" --json -- /bin/sh -eu -c 'mountpoint "$1" >/dev/null' sh "$guest" > /dev/null || {
+      echo "sandbox share was not mounted before attach: $guest" >&2
+      rm -rf "$tmp"
+      return 1
+    }
+  done < <(python3 - "$manifest" <<'PY'
+import json, sys
+for mount in json.load(open(sys.argv[1], encoding="utf-8")).get("mounts", []):
+    print(mount["guestPath"])
+PY
+)
+  "$ctl" --timeout 30 machine exec "$name" --json -- /bin/sh -eu -c 'command -v tmux >/dev/null && command -v setpriv >/dev/null' > "$tmp/terminal-tools.json" || {
+    echo "Sandbox terminal battery is incomplete; reset or recreate it with the current Agent Core profile." >&2
+    rm -rf "$tmp"
+    return 1
+  }
+  sandbox_use_cmd "$name" >/dev/null
+  session="dory_${name//[^A-Za-z0-9_]/_}"
+  session="${session:0:64}"
+  rm -rf "$tmp"
+  echo "Attaching to headless agent Sandbox '$name' (tmux session '$session')." >&2
+  "$ctl" machine shell "$name" --uid "$uid" --gid "$gid" --cwd "$cwd" --session "$session"
+}
+
 sandbox_kill_cmd() {
   local name="${1:?usage: dory sandbox kill NAME}" ctl path
   shift
@@ -2213,12 +2752,15 @@ with os.fdopen(fd, "w", encoding="utf-8") as handle:
 os.chmod(temporary, 0o600); os.replace(temporary, path)
 PY
   fi
+  if [ -f "$(sandbox_active_path)" ] && [ "$(sandbox_current_name 2>/dev/null || true)" = "$name" ]; then
+    rm -f "$(sandbox_active_path)"
+  fi
   echo "sandbox killed: $name"
 }
 
 sandbox_wait_for_machine_ready() {
   local ctl="$1" name="$2" timeout_seconds="${3:-120}"
-  local started now elapsed output parsed state="unknown" agent_socket="" detail=""
+  local started now elapsed output parsed state="unknown" agent_socket="" agent_protocol="0" detail=""
   started="$(date +%s)"
   while :; do
     if output="$("$ctl" --timeout 3 machine status "$name" 2>&1)"; then
@@ -2228,10 +2770,18 @@ try:
 except Exception:
     raise SystemExit(1)
 detail = str(status.get("lastError") or "").replace("\t", " ").replace("\r", " ").replace("\n", " ")
-print("\t".join((str(status.get("state") or "unknown"), str(status.get("agentSocketPath") or ""), detail)))
+print("\t".join((
+    str(status.get("state") or "unknown"),
+    str(status.get("agentSocketPath") or ""),
+    str(status.get("agentProtocolVersion") or 0),
+    detail,
+)))
 ')" || parsed="unknown\t\tinvalid machine status response"
-      IFS=$'\t' read -r state agent_socket detail <<<"$parsed"
-      if [ "$state" = running ] && [ -n "$agent_socket" ]; then
+      IFS=$'\t' read -r state agent_socket agent_protocol detail <<<"$parsed"
+      # Public dorydctl status intentionally redacts private daemon socket paths. Treat the
+      # negotiated guest-agent protocol as the authoritative public readiness signal, while still
+      # accepting the socket field from older/private control clients during migration.
+      if [ "$state" = running ] && { [ -n "$agent_socket" ] || [ "$agent_protocol" -gt 0 ] 2>/dev/null; }; then
         return 0
       fi
       case "$state" in
@@ -2243,6 +2793,7 @@ print("\t".join((str(status.get("state") or "unknown"), str(status.get("agentSoc
     else
       state="unavailable"
       agent_socket=""
+      agent_protocol="0"
       detail="${output//$'\n'/ }"
     fi
 
@@ -2352,8 +2903,9 @@ sandbox_run_cmd() {
   local wall_seconds=600 kernel="" rootfs="" tmp exec_rc=0 created=0 cwd="/dory-sandbox"
   local network="none" network_explicit=0 rollback=0 ttl_seconds=0 expires_epoch=0 snapshot_id="" rollback_failed=0
   local ssh_agent=0 ssh_agent_explicit=0 elevated=0 uid gid now_epoch manifest_path producer_rc=0 command_argc
-  local agent_ready=0 explicit_name=0 profile_kind="" profile_tools_json="[]" profile_tools_csv=""
-  local baseline_snapshot_id=""
+  local agent_ready=0 explicit_name=0 profile_kind="" profile_preset="" requested_profile=""
+  local profile_tools_json="[]" profile_tools_csv="" baseline_snapshot_id=""
+  local setup_path="" setup_name="" setup_sha256="" setup_meta="" setup_content=""
   local mounts=() mount_tags=() mount_guests=() mount_modes=() mount_rows=() create_args=()
   local allow_network=() secret_env=() raw_tools=() profile_tools=()
   while [ "$#" -gt 0 ]; do
@@ -2363,7 +2915,9 @@ sandbox_run_cmd() {
       --name) name="${2:?--name requires a value}"; explicit_name=1; shift 2 ;;
       --reuse) name="${2:?--reuse requires a name}"; reuse=1; keep=1; shift 2 ;;
       --agent-ready|--batteries) agent_ready=1; shift ;;
+      --profile) requested_profile="${2:?--profile requires a value}"; agent_ready=1; shift 2 ;;
       --tool) raw_tools+=("${2:?--tool requires a value}"); shift 2 ;;
+      --setup) setup_path="${2:?--setup requires a file}"; agent_ready=1; shift 2 ;;
       --memory-mb) memory="${2:?--memory-mb requires a value}"; shift 2 ;;
       --cpus) cpus="${2:?--cpus requires a value}"; shift 2 ;;
       --disk-mb) disk_mb="${2:?--disk-mb requires a value}"; shift 2 ;;
@@ -2423,9 +2977,20 @@ sandbox_run_cmd() {
     echo "a reused sandbox retains its original mount grants; omit --mount and inspect the persisted manifest first" >&2
     exit 2
   fi
-  if [ "$reuse" -eq 1 ] && { [ "$agent_ready" -eq 1 ] || [ "${#raw_tools[@]}" -gt 0 ]; }; then
-    echo "a reused sandbox retains its prepared profile; omit --agent-ready and --tool" >&2
+  if [ "$reuse" -eq 1 ] && { [ "$agent_ready" -eq 1 ] || [ "${#raw_tools[@]}" -gt 0 ] || [ -n "$requested_profile" ] || [ -n "$setup_path" ]; }; then
+    echo "a reused sandbox retains its prepared profile and one-time setup; omit --agent-ready, --profile, --tool, and --setup" >&2
     exit 2
+  fi
+  if [ -n "$requested_profile" ]; then
+    profile_preset="$(sandbox_normalize_profile "$requested_profile")" || exit 2
+    local preset_tool
+    while IFS= read -r preset_tool; do
+      [ -z "$preset_tool" ] || raw_tools+=("$preset_tool")
+    done < <(sandbox_profile_tools "$profile_preset")
+  fi
+  if [ -n "$setup_path" ]; then
+    setup_meta="$(sandbox_validate_setup "$setup_path")" || exit 2
+    IFS=$'\t' read -r setup_path setup_name setup_sha256 <<<"$setup_meta"
   fi
   if [ "$agent_ready" -eq 1 ] || [ "${#raw_tools[@]}" -gt 0 ]; then
     [ "$reuse" -eq 0 ] && [ "$keep" -eq 1 ] && [ "$explicit_name" -eq 1 ] || {
@@ -2434,6 +2999,7 @@ sandbox_run_cmd() {
     }
     agent_ready=1
     profile_kind="agent-ready"
+    [ -n "$profile_preset" ] || profile_preset=core
     profile_tools=(agent-core)
     local raw_tool normalized_tool existing_tool duplicate
     if [ "${#raw_tools[@]}" -gt 0 ]; then
@@ -2516,9 +3082,16 @@ PY
     elif [ "$keep" -eq 0 ]; then
       expires_epoch=$((now_epoch + wall_seconds + 300))
     fi
-    create_args+=(--env "DORY_SANDBOX=1" --env "DORY_SANDBOX_EXPIRES_AT=$expires_epoch" --env "DORY_SANDBOX_SSH_AGENT=$ssh_agent")
+    create_args+=(--sandbox --sandbox-ssh-agent "$([ "$ssh_agent" -eq 1 ] && printf granted || printf denied)")
+    if [ "$expires_epoch" -gt 0 ]; then
+      create_args+=(--sandbox-expires-at "$expires_epoch")
+    fi
     if [ "$agent_ready" -eq 1 ]; then
-      create_args+=(--env "DORY_SANDBOX_PROFILE=$profile_kind" --env "DORY_SANDBOX_TOOLS=$profile_tools_csv" --env "DORY_SANDBOX_BASELINE=$baseline_snapshot_id")
+      create_args+=(--sandbox-profile "$profile_kind" --sandbox-baseline "$baseline_snapshot_id")
+      local persisted_tool
+      for persisted_tool in "${profile_tools[@]}"; do
+        create_args+=(--sandbox-tool "$persisted_tool")
+      done
       if ! sandbox_prepare_agent_rootfs "$rootfs" "$tmp/agent-rootfs.ext4" 8192; then
         echo "Dory could not prepare sparse storage for the Agent-ready Sandbox." >&2
         rm -rf "$tmp"
@@ -2547,13 +3120,13 @@ requested_ssh = sys.argv[3] == "1"
 ssh_was_explicit = sys.argv[4] == "1"
 now = int(sys.argv[5])
 network_was_explicit = sys.argv[6] == "1"
-environment = {row["key"]: row["value"] for row in status.get("env", [])}
-if environment.get("DORY_SANDBOX") != "1":
+policy = status.get("sandboxPolicy")
+if not isinstance(policy, dict) or policy.get("schemaVersion") != 1:
     raise SystemExit("refusing to reuse a machine that was not created as a sandbox")
-expires = int(environment.get("DORY_SANDBOX_EXPIRES_AT", "0"))
+expires = int(policy.get("expiresAtUnixSeconds") or 0)
 if expires and expires <= now:
     raise SystemExit("sandbox TTL has expired; wait for daemon cleanup or kill it explicitly")
-granted_ssh = environment.get("DORY_SANDBOX_SSH_AGENT") == "1"
+granted_ssh = policy.get("sshAgentAccess") == "granted"
 if ssh_was_explicit and granted_ssh != requested_ssh:
     raise SystemExit("--ssh-agent must exactly match the retained sandbox credential grant")
 expected_mounts = manifest.get("mounts", [])
@@ -2564,6 +3137,15 @@ if expected != actual:
     raise SystemExit("retained sandbox mounts differ from its manifest; refusing reuse")
 limits = manifest.get("limits", {})
 profile = manifest.get("profile") or {}
+setup = profile.get("setup") or {}
+if setup and (setup.get("executedOnce") is not True or not setup.get("file") or not setup.get("sha256")):
+    raise SystemExit("retained sandbox setup receipt is invalid")
+if str(policy.get("profile") or "") != str(profile.get("kind") or "standard"):
+    raise SystemExit("retained sandbox profile differs from its manifest; refusing reuse")
+if sorted(str(tool) for tool in policy.get("tools", [])) != sorted(str(tool) for tool in profile.get("tools", [])):
+    raise SystemExit("retained sandbox tools differ from its manifest; refusing reuse")
+if str(policy.get("baselineSnapshotID") or "") != str(profile.get("baselineSnapshotID") or ""):
+    raise SystemExit("retained sandbox baseline differs from its manifest; refusing reuse")
 persisted_network = str(manifest.get("network", {}).get("mode") or "none")
 if persisted_network not in ("none", "outbound", "full"):
     raise SystemExit("retained sandbox manifest has an invalid network policy")
@@ -2577,12 +3159,14 @@ print("\x1f".join((
     "1" if granted_ssh else "0", str(profile.get("kind") or ""),
     ",".join(str(tool) for tool in profile.get("tools", [])),
     str(profile.get("baselineSnapshotID") or ""),
+    str(profile.get("preset") or "core"),
+    str(setup.get("file") or ""), str(setup.get("sha256") or ""),
     "" if network_was_explicit else persisted_network,
 )))
 PY
 )"; then rm -rf "$tmp"; exit 2; fi
     local reuse_state granted_ssh inherited_network
-    IFS=$'\x1f' read -r memory cpus disk_mb expires_epoch reuse_state granted_ssh profile_kind profile_tools_csv baseline_snapshot_id inherited_network <<<"$reuse_meta"
+    IFS=$'\x1f' read -r memory cpus disk_mb expires_epoch reuse_state granted_ssh profile_kind profile_tools_csv baseline_snapshot_id profile_preset setup_name setup_sha256 inherited_network <<<"$reuse_meta"
     ssh_agent="$granted_ssh"
     [ -z "$inherited_network" ] || network="$inherited_network"
     if [ -n "$profile_kind" ]; then
@@ -2654,6 +3238,18 @@ PY
     idx=$((idx + 1))
   done
 
+  if [ "$created" -eq 1 ] && [ -n "$setup_path" ]; then
+    setup_content="$(<"$setup_path")"
+    if ! sandbox_exec_environment_json "$uid" "$gid" "$processes" "$((disk_mb * 1024 * 1024))" "$open_files" "$ssh_agent" \
+      | "$ctl" --timeout 615 machine exec "$name" --json --cwd "$cwd" --env-json-stdin --timeout-ms 600000 --output-limit-bytes 4194304 -- /bin/sh -eu -c "$setup_content" > "$tmp/setup.json"; then
+      echo "Sandbox one-time setup failed: $setup_name" >&2
+      sandbox_remove_incomplete_machine "$ctl" "$name" "$tmp"
+      rm -rf "$tmp"
+      exit 1
+    fi
+    setup_content=""
+  fi
+
   if [ "$created" -eq 1 ] && [ "$agent_ready" -eq 1 ]; then
     if ! "$ctl" --timeout 180 machine snapshot "$name" --id "$baseline_snapshot_id" --note "Agent-ready Sandbox baseline" > "$tmp/baseline-snapshot.json"; then
       sandbox_remove_incomplete_machine "$ctl" "$name" "$tmp"
@@ -2702,7 +3298,7 @@ PY
   fi
 
   manifest_path="$(sandbox_manifest_path "$name")"
-  sandbox_write_manifest "$name" running "$network" "$uid" "$gid" "$elevated" "$memory" "$cpus" "$disk_mb" "$processes" "$open_files" "$wall_seconds" "$expires_epoch" "$keep" "$ssh_agent" "$tmp/mounts.json" "$tmp/egress.json" "$1" "$command_argc" "$profile_kind" "$profile_tools_json" "$baseline_snapshot_id" ${secret_env[@]+"${secret_env[@]}"}
+  sandbox_write_manifest "$name" running "$network" "$uid" "$gid" "$elevated" "$memory" "$cpus" "$disk_mb" "$processes" "$open_files" "$wall_seconds" "$expires_epoch" "$keep" "$ssh_agent" "$tmp/mounts.json" "$tmp/egress.json" "$1" "$command_argc" "$profile_kind" "$profile_tools_json" "$baseline_snapshot_id" "$profile_preset" "$setup_name" "$setup_sha256" ${secret_env[@]+"${secret_env[@]}"}
 
   set +e
   local pipeline_status=()
@@ -2739,18 +3335,38 @@ PY
   fi
   local final_status=retained
   [ "$keep" -eq 1 ] || final_status=deleted
-  sandbox_write_manifest "$name" "$final_status" "$network" "$uid" "$gid" "$elevated" "$memory" "$cpus" "$disk_mb" "$processes" "$open_files" "$wall_seconds" "$expires_epoch" "$keep" "$ssh_agent" "$tmp/mounts.json" "$tmp/egress.json" "$1" "$command_argc" "$profile_kind" "$profile_tools_json" "$baseline_snapshot_id" ${secret_env[@]+"${secret_env[@]}"}
+  sandbox_write_manifest "$name" "$final_status" "$network" "$uid" "$gid" "$elevated" "$memory" "$cpus" "$disk_mb" "$processes" "$open_files" "$wall_seconds" "$expires_epoch" "$keep" "$ssh_agent" "$tmp/mounts.json" "$tmp/egress.json" "$1" "$command_argc" "$profile_kind" "$profile_tools_json" "$baseline_snapshot_id" "$profile_preset" "$setup_name" "$setup_sha256" ${secret_env[@]+"${secret_env[@]}"}
   sandbox_emit_run_result "$name" "$keep" "$exec_rc" "$json" "$tmp" "$network" "$rollback" "$ttl_seconds" "$snapshot_id" "$manifest_path"
   rm -rf "$tmp"
   exit "$exec_rc"
 }
 
 sandbox_create_cmd() {
-  local name="${1:?usage: dory sandbox create NAME [--workspace PATH] [--tool TOOL] [options]}"
+  local name="${1:?usage: dory sandbox create NAME [--template NAME|PATH] [--workspace PATH] [--profile PROFILE] [--tool TOOL] [--setup FILE] [options]}"
   shift
-  local workspace="" workspace_path="" explicit_tools=0 option
+  local workspace="" workspace_path="" explicit_tools=0 option template="" template_path="" template_output="" profile=auto
   local args=(--keep --name "$name" --agent-ready)
-  local detected_tools=()
+  local detected_tools=() cli_args=() template_args=()
+
+  while [ "$#" -gt 0 ]; do
+    if [ "$1" = --template ]; then
+      [ -z "$template" ] || { echo "sandbox create accepts only one --template" >&2; return 2; }
+      template="${2:?--template requires a name or path}"
+      shift 2
+    else
+      cli_args+=("$1")
+      shift
+    fi
+  done
+  if [ -n "$template" ]; then
+    template_path="$(sandbox_template_resolve "$template")" || return 1
+    template_output="$(sandbox_template_validate "$template_path" arguments)" || return 2
+    while IFS= read -r option; do
+      template_args+=("$option")
+    done <<<"$template_output"
+  fi
+  set -- ${template_args[@]+"${template_args[@]}"} ${cli_args[@]+"${cli_args[@]}"}
+
   while [ "$#" -gt 0 ]; do
     option="$1"
     case "$option" in
@@ -2761,6 +3377,15 @@ sandbox_create_cmd() {
       --tool)
         args+=(--tool "${2:?--tool requires a value}")
         explicit_tools=1
+        shift 2
+        ;;
+      --profile)
+        profile="$(sandbox_normalize_profile "${2:?--profile requires a value}")" || return 2
+        args+=(--profile "$profile")
+        shift 2
+        ;;
+      --setup)
+        args+=(--setup "${2:?--setup requires a file}")
         shift 2
         ;;
       --json|--ssh-agent)
@@ -2793,7 +3418,7 @@ sandbox_create_cmd() {
       exit 2
     }
     args+=(--mount "$workspace_path:/workspace:rw")
-    if [ "$explicit_tools" -eq 0 ]; then
+    if [ "$explicit_tools" -eq 0 ] && [ "$profile" = auto ]; then
       [ ! -f "$workspace_path/package.json" ] || detected_tools+=(node)
       if [ -f "$workspace_path/pyproject.toml" ] || [ -f "$workspace_path/requirements.txt" ] || [ -f "$workspace_path/setup.py" ]; then
         detected_tools+=(python)
@@ -2813,12 +3438,21 @@ sandbox_create_cmd() {
     fi
   fi
 
+  if [ "$profile" = auto ]; then
+    args+=(--profile auto)
+  fi
+
   sandbox_run_cmd "${args[@]}" -- /bin/sh -lc 'command -v git >/dev/null && command -v curl >/dev/null && command -v jq >/dev/null && command -v rg >/dev/null && command -v python3 >/dev/null && printf "Agent-ready Sandbox is ready\n"'
 }
 
 sandbox_exec_named_cmd() {
-  local name="${1:?usage: dory sandbox exec NAME [run options] -- COMMAND}"
-  shift
+  local name
+  if [ "$#" -gt 0 ] && [[ "$1" != --* ]]; then
+    name="$1"
+    shift
+  else
+    name="$(sandbox_current_name)" || return 1
+  fi
   sandbox_run_cmd --reuse "$name" "$@"
 }
 
@@ -2847,9 +3481,13 @@ if profile.get("kind") != "agent-ready":
 baseline = str(profile.get("baselineSnapshotID") or "")
 if not baseline:
     raise SystemExit("Agent-ready Sandbox has no prepared baseline")
-environment = {row["key"]: row["value"] for row in status.get("env", [])}
-if environment.get("DORY_SANDBOX") != "1" or environment.get("DORY_SANDBOX_PROFILE") != "agent-ready":
+policy = status.get("sandboxPolicy")
+if not isinstance(policy, dict) or policy.get("schemaVersion") != 1 or policy.get("profile") != "agent-ready":
     raise SystemExit("machine identity does not match the Agent-ready Sandbox manifest")
+if str(policy.get("baselineSnapshotID") or "") != baseline:
+    raise SystemExit("machine baseline does not match the Agent-ready Sandbox manifest")
+if sorted(str(tool) for tool in policy.get("tools", [])) != sorted(str(tool) for tool in profile.get("tools", [])):
+    raise SystemExit("machine tools do not match the Agent-ready Sandbox manifest")
 expected = sorted((m["tag"], m["hostPath"], m["guestPath"], bool(m["readOnly"])) for m in manifest.get("mounts", []))
 actual = sorted((m["tag"], m["hostPath"], m["guestPath"], bool(m["readOnly"])) for m in status.get("shares", []))
 if expected != actual:
@@ -2920,6 +3558,11 @@ sandbox_cmd() {
     run) shift || true; sandbox_run_cmd "$@" ;;
     create) shift || true; sandbox_create_cmd "$@" ;;
     exec) shift || true; sandbox_exec_named_cmd "$@" ;;
+    capabilities|capability|batteries) shift || true; sandbox_capabilities_cmd "$@" ;;
+    template|templates) shift || true; sandbox_template_cmd "$@" ;;
+    use) shift || true; sandbox_use_cmd "$@" ;;
+    current) shift || true; sandbox_current_cmd "$@" ;;
+    attach|switch|shell) shift || true; sandbox_attach_cmd "$@" ;;
     reset) shift || true; sandbox_reset_cmd "$@" ;;
     inspect) shift || true; sandbox_inspect_cmd "$@" ;;
     list|ls) shift || true; sandbox_list_cmd "$@" ;;
@@ -2958,7 +3601,7 @@ usb_cmd() {
         esac
       done
       [ -n "$busid" ] || { echo "usage: dory usb attach <busid> [--mode userAuthorized|seize|capture]" >&2; exit 2; }
-      echo "dory usb attach is unavailable: host discovery works, but guest USB/IP attach/detach RPC is not implemented" >&2
+      echo "dory usb attach is unavailable: removable-device plan authorization and physical qualification are not complete" >&2
       return 3
       ;;
     detach)
@@ -2971,7 +3614,7 @@ usb_cmd() {
         esac
       done
       [ -n "$busid" ] || { echo "usage: dory usb detach <busid>" >&2; exit 2; }
-      echo "dory usb detach is unavailable: guest USB/IP attach/detach RPC is not implemented" >&2
+      echo "dory usb detach is unavailable: removable-device plan authorization and physical qualification are not complete" >&2
       return 3
       ;;
     *) echo "usage: dory usb ls|attach|detach" >&2; exit 2 ;;
@@ -4196,9 +4839,37 @@ TOOLS: list[dict[str, Any]] = [
         "annotations": {"readOnlyHint": False, "destructiveHint": True},
     },
     {
+        "name": "dory.sandbox_capabilities",
+        "title": "Headless Agent Sandbox Capabilities",
+        "description": "Query Dory's profiles, batteries, package recipes, and optionally one prepared headless Agent Sandbox.",
+        "inputSchema": schema_object({"name": {"type": "string", "description": "Optional retained Sandbox name."}}),
+        "annotations": {"readOnlyHint": True},
+    },
+    {
+        "name": "dory.sandbox_templates",
+        "title": "Agent Sandbox Templates",
+        "description": "List reusable Agent Sandbox templates, or return one normalized template by name or path.",
+        "inputSchema": schema_object({"template": {"type": "string", "description": "Optional template id or JSON path."}}),
+        "annotations": {"readOnlyHint": True},
+    },
+    {
+        "name": "dory.sandbox_current",
+        "title": "Current Agent Sandbox",
+        "description": "Return the headless Agent Sandbox remembered for subsequent terminal-agent work.",
+        "inputSchema": schema_object(),
+        "annotations": {"readOnlyHint": True},
+    },
+    {
+        "name": "dory.sandbox_use",
+        "title": "Select Agent Sandbox",
+        "description": "Remember a retained headless Agent Sandbox as the default for future agent commands and terminal attach.",
+        "inputSchema": schema_object({"name": {"type": "string"}}, ["name"]),
+        "annotations": {"readOnlyHint": False, "destructiveHint": False},
+    },
+    {
         "name": "dory.sandbox_run",
         "title": "Dory Sandbox Run",
-        "description": "Run a bounded, non-root command in a dedicated Dory sandbox VM. Deletes the sandbox by default; use sandbox_create for a prepared named environment.",
+        "description": "Run a bounded, non-root Linux CLI command in a dedicated headless Dory Agent Sandbox VM. Deletes the Sandbox by default; use sandbox_create for a prepared named environment. GUI applications belong in Linux Desktops.",
         "inputSchema": schema_object({
             "name": {"type": "string", "description": "Optional sandbox name."},
             "command": {
@@ -4226,6 +4897,8 @@ TOOLS: list[dict[str, Any]] = [
             "sshAgent": {"type": "boolean", "description": "Grant the host SSH agent for this sandbox only."},
             "elevated": {"type": "boolean", "description": "Run as root; requires networkPolicy=full."},
             "agentReady": {"type": "boolean", "description": "Prepare the named retained sandbox with Dory's core agent toolkit."},
+            "profile": {"type": "string", "enum": ["core", "web", "data", "systems", "jvm", "ruby", "devops", "polyglot", "auto"]},
+            "setupScriptPath": {"type": "string", "description": "Host path to a UTF-8 shell script executed exactly once before the prepared baseline is captured."},
             "tools": {
                 "type": "array",
                 "items": {"type": "string", "enum": ["node", "python", "go", "rust", "java", "ruby", "devops", "docker-host", "k8s-lab"]},
@@ -4248,7 +4921,10 @@ TOOLS: list[dict[str, Any]] = [
         "description": "Create a warm named sandbox with core agent tools, persistent caches, an optional project workspace, and a clean reset baseline.",
         "inputSchema": schema_object({
             "name": {"type": "string", "description": "Stable sandbox name."},
+            "template": {"type": "string", "description": "Built-in template id or Agent-authored dev.dory.sandbox.template v1 JSON path."},
             "workspace": {"type": "string", "description": "Existing host project directory mounted read-write at /workspace. Toolchains are detected when tools is omitted."},
+            "profile": {"type": "string", "enum": ["core", "web", "data", "systems", "jvm", "ruby", "devops", "polyglot", "auto"]},
+            "setupScriptPath": {"type": "string", "description": "Host path to a UTF-8 shell script executed once, after policy enforcement and before baseline capture."},
             "tools": {
                 "type": "array",
                 "items": {"type": "string", "enum": ["node", "python", "go", "rust", "java", "ruby", "devops", "docker-host", "k8s-lab"]},
@@ -4515,6 +5191,24 @@ def call_tool(name: str, arguments: Any) -> dict[str, Any]:
         command.extend(["--output-limit-bytes", str(output_limit)])
         command.extend(["--", *command_value])
         return tool_result(run_cli(command, timeout=max(10, timeout_seconds + 15)))
+    if name == "dory.sandbox_capabilities":
+        command = ["sandbox", "capabilities"]
+        sandbox_name = string_arg(args, "name")
+        if sandbox_name:
+            command.append(sandbox_name)
+        command.append("--json")
+        return tool_result(run_cli(command))
+    if name == "dory.sandbox_templates":
+        template = string_arg(args, "template")
+        command = ["sandbox", "template", "show", template, "--json"] if template else ["sandbox", "template", "list", "--json"]
+        return tool_result(run_cli(command))
+    if name == "dory.sandbox_current":
+        return tool_result(run_cli(["sandbox", "current", "--json"]))
+    if name == "dory.sandbox_use":
+        if READ_ONLY:
+            return tool_error("dory.sandbox_use is disabled because this MCP server is running in read-only mode")
+        sandbox_name = string_arg(args, "name", required=True)
+        return tool_result(run_cli(["sandbox", "use", sandbox_name, "--json"]))
     if name == "dory.sandbox_run":
         if READ_ONLY:
             return tool_error("dory.sandbox_run is disabled because this MCP server is running in read-only mode")
@@ -4553,21 +5247,37 @@ def call_tool(name: str, arguments: Any) -> dict[str, Any]:
                 command.append(option)
         if bool_arg(args, "agentReady"):
             command.append("--agent-ready")
+        profile = string_arg(args, "profile")
+        if profile:
+            command.extend(["--profile", profile])
+        setup_script = string_arg(args, "setupScriptPath")
+        if setup_script:
+            command.extend(["--setup", setup_script])
         for tool in string_list_arg(args, "tools"):
             command.extend(["--tool", tool])
         wall_seconds = append_sandbox_limits(command, args, include_machine=True)
         command.extend(["--", *command_value])
         tool_count = len(string_list_arg(args, "tools"))
-        provision_count = tool_count + (1 if bool_arg(args, "agentReady") or tool_count else 0)
+        profile_count = {"core": 1, "auto": 1, "web": 2, "data": 2, "systems": 3, "jvm": 2, "ruby": 2, "devops": 2, "polyglot": 8}.get(profile, 0)
+        provision_count = max(profile_count, tool_count + (1 if bool_arg(args, "agentReady") or tool_count else 0))
         return tool_result(run_cli(command, timeout=wall_seconds + 300 + 2_600 * provision_count))
     if name == "dory.sandbox_create":
         if READ_ONLY:
             return tool_error("dory.sandbox_create is disabled because this MCP server is running in read-only mode")
         sandbox_name = string_arg(args, "name", required=True)
         command = ["sandbox", "create", sandbox_name, "--json"]
+        template = string_arg(args, "template")
+        if template:
+            command.extend(["--template", template])
         workspace = string_arg(args, "workspace")
         if workspace:
             command.extend(["--workspace", workspace])
+        profile = string_arg(args, "profile")
+        if profile:
+            command.extend(["--profile", profile])
+        setup_script = string_arg(args, "setupScriptPath")
+        if setup_script:
+            command.extend(["--setup", setup_script])
         tools = string_list_arg(args, "tools")
         for tool in tools:
             command.extend(["--tool", tool])
@@ -4581,7 +5291,8 @@ def call_tool(name: str, arguments: Any) -> dict[str, Any]:
         wall_seconds = append_sandbox_limits(command, args, include_machine=True)
         # Core always provisions. With a workspace and no explicit tools, CLI auto-detection can
         # add all six project language toolchains. Each recipe can retry once after an interruption.
-        provision_count = 1 + (len(tools) if tools else (6 if workspace else 0))
+        profile_count = {"core": 1, "auto": 1, "web": 2, "data": 2, "systems": 3, "jvm": 2, "ruby": 2, "devops": 2, "polyglot": 8}.get(profile, 0)
+        provision_count = max(profile_count, 1 + (len(tools) if tools else (6 if workspace and not profile else 0)))
         return tool_result(run_cli(command, timeout=wall_seconds + 300 + 2_600 * provision_count))
     if name == "dory.sandbox_exec":
         if READ_ONLY:
@@ -4725,6 +5436,10 @@ data = {
         "supportBundle": "dev.dory.support.bundle v1",
         "machineExec": "dev.dory.machine.exec v1",
         "sandboxRun": "dev.dory.sandbox.run v2",
+        "sandboxManifest": "dev.dory.sandbox.manifest v1",
+        "sandboxTemplate": "dev.dory.sandbox.template v1",
+        "sandboxCapabilities": "dev.dory.sandbox.capabilities v1",
+        "sandboxCurrent": "dev.dory.sandbox.current v1",
         "readiness": "dev.dory.readiness v1",
         "corporateConnectivity": "dev.dory.corporate-connectivity.status v1",
         "upgradeTransaction": "dev.dory.upgrade.transaction v1",
@@ -4803,7 +5518,7 @@ data = {
             "safeForAutomation": True,
             "targets": ["all", "socket", "context", "dns", "routes", "domains", "ports", "dockerd", "engine", "guest-agent"],
             "dataPlaneSafeByDefault": True,
-            "notes": "repair all --apply never restarts the engine (it stays data-plane safe and warns to run `dory repair engine --restart-engine` instead). Bouncing the engine stops running containers, so `dory repair engine --apply` and the dockerd escalation require the explicit --restart-engine flag; without it they report the restart is available but disruptive and exit cleanly. Actions that stop the engine are marked dataPlaneDisruptive=true.",
+            "notes": "repair all --apply never restarts a running engine. Engine repair is daemon-owned: `repair engine --apply` may start a stopped, sleeping, or failed engine, while a running engine is never bounced without `--restart-engine`. Dockerd repair first attempts an in-VM dockerd-only recovery. Every applied repair verifies its subsystem postcondition; actions that stop a running engine are marked dataPlaneDisruptive=true.",
         },
         {
             "id": "network",
@@ -4922,7 +5637,7 @@ data = {
             "invoke": "dory usb ls",
             "json": False,
             "safeForAutomation": True,
-            "notes": "Host discovery is supported. Attach, detach, and replay are unavailable and fail closed until the guest USB/IP RPC and physical qualification exist.",
+            "notes": "Host discovery and private machine routing are supported. Attach, detach, and replay remain unavailable until removable-device plan authorization and physical qualification exist.",
         },
         {
             "id": "upgrade",
@@ -4956,10 +5671,15 @@ data = {
         {
             "id": "sandbox",
             "status": "supported",
-            "invoke": "dory sandbox run [options] -- COMMAND | dory sandbox create NAME [--workspace PATH] [--tool TOOL] [options] | dory sandbox exec NAME [options] -- COMMAND | dory sandbox reset|inspect|kill NAME | dory sandbox list",
+            "invoke": "dory sandbox capabilities [NAME] --json | dory sandbox template list|show|validate ... | dory sandbox create NAME [--template NAME|PATH] [--workspace PATH] [--profile PROFILE] [--setup FILE] | dory sandbox use|current [NAME] | dory sandbox attach|switch [NAME] | dory sandbox exec [NAME] [options] -- COMMAND | dory sandbox reset|inspect|kill NAME | dory sandbox list",
             "json": True,
             "safeForAutomation": True,
-            "isolation": "dedicated doryd Linux VM per run",
+            "machineClass": "headless-agent-sandbox",
+            "purpose": "coding agents and Linux CLI applications",
+            "display": False,
+            "desktopApplications": False,
+            "desktopAlternative": "Use Linux Desktops for interactive GUI applications; use Linux Servers for general-purpose user-managed headless VMs.",
+            "isolation": "dedicated doryd headless Linux VM per run",
             "hostFileSharingDefault": "none",
             "scopedMounts": True,
             "mountModeDefault": "ro",
@@ -4975,11 +5695,20 @@ data = {
             "resourceCaps": ["cpu", "memory", "disk", "processes", "open-files", "wall-time"],
             "manifestSchema": "dev.dory.sandbox.manifest v1",
             "agentReady": {
-                "create": "dory sandbox create NAME [--workspace PATH] [--tool TOOL] [options]",
-                "exec": "dory sandbox exec NAME [options] -- COMMAND",
+                "create": "dory sandbox create NAME [--template NAME|PATH] [--workspace PATH] [--profile PROFILE] [--tool TOOL] [--setup FILE] [options]",
+                "exec": "dory sandbox exec [NAME] [options] -- COMMAND",
                 "reset": "dory sandbox reset NAME [--json]",
-                "coreTools": ["bash", "build tools", "curl", "fd", "git", "jq", "openssh-client", "python3", "ripgrep", "tar", "unzip", "zip"],
+                "select": "dory sandbox use NAME [--json]",
+                "current": "dory sandbox current [--json]",
+                "attach": "dory sandbox attach [NAME]",
+                "switch": "dory sandbox switch NAME",
+                "capabilities": "dory sandbox capabilities [NAME] --json",
+                "templates": "dory sandbox template list --json | dory sandbox template show NAME|PATH --json",
+                "coreTools": ["bash", "build tools", "curl", "fd", "git", "jq", "openssh-client", "python3", "ripgrep", "setpriv", "tar", "tmux", "unzip", "zip"],
                 "toolchains": ["node", "python", "go", "rust", "java", "ruby", "devops", "docker-host", "k8s-lab"],
+                "profiles": ["core", "web", "data", "systems", "jvm", "ruby", "devops", "polyglot", "auto"],
+                "oneTimeSetup": "A validated UTF-8 host script runs as the non-root Sandbox identity after mounts/network policy are enforced and before baseline capture; only its filename and SHA-256 receipt persist.",
+                "persistentTerminal": "attach enters a non-root tmux session inside the VM; disconnecting the host PTY leaves the tmux server and agent processes running. use/current persist the selected Sandbox across terminal sessions; DORY_SANDBOX_NAME overrides it per process.",
                 "workspaceGuestPath": "/workspace",
                 "workspaceMode": "rw",
                 "autoDetectFromWorkspace": True,
@@ -4997,7 +5726,7 @@ data = {
             "safeForAutomation": True,
             "transport": "stdio",
             "protocolVersion": "2025-11-25",
-            "tools": ["dory.agent_guide", "dory.doctor", "dory.compat", "dory.engine_status", "dory.machine_list", "dory.machine_exec", "dory.sandbox_run", "dory.sandbox_create", "dory.sandbox_exec", "dory.sandbox_reset", "dory.sandbox_inspect", "dory.sandbox_list", "dory.sandbox_kill", "dory.wait", "dory.events"],
+            "tools": ["dory.agent_guide", "dory.doctor", "dory.compat", "dory.engine_status", "dory.machine_list", "dory.machine_exec", "dory.sandbox_capabilities", "dory.sandbox_templates", "dory.sandbox_current", "dory.sandbox_use", "dory.sandbox_run", "dory.sandbox_create", "dory.sandbox_exec", "dory.sandbox_reset", "dory.sandbox_inspect", "dory.sandbox_list", "dory.sandbox_kill", "dory.wait", "dory.events"],
             "notes": "Thin stdio Dory control server over the CLI command core, not a third-party MCP catalog or gateway. Launch with --read-only to block machine exec and sandbox writes.",
         },
     ],
@@ -5166,7 +5895,8 @@ case "${1:-help}" in
                     if [ -z "$home" ]; then if [ "$user" = "root" ]; then home="/root"; else home="/home/$user"; fi; fi
                     exec "$DOCKER_BIN" -H "unix://$DORY_SOCK" exec -it -u "$user" -w "$home" "$cid" "$shell" -l
                   fi ;;
-  vm)             shift; H="$(vmm_helper || true)"; [ -z "$H" ] && { echo "dory-vmm helper not found; build+sign it (see scripts/bundle-engine.sh)" >&2; exit 1; }; exec "$H" "$@" ;;
+  vm)             echo "dory vm is unavailable. Dory does not run Intel Linux ISOs on Apple Silicon; Rosetta and FEX translate Intel applications or containers inside ARM64 Linux and are not whole-system emulation." >&2
+                  exit 64 ;;
   k8s)            shift
                   if ! [ -x "$KUBECTL_BIN" ] && ! command -v "$KUBECTL_BIN" >/dev/null 2>&1; then
                     echo "Kubernetes is not installed. Run: dory component install kubernetes" >&2

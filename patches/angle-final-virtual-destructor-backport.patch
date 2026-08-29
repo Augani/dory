@@ -1,0 +1,29 @@
+From 99037f70dee2820630fc32265c57581d7ec3ee1b Mon Sep 17 00:00:00 2001
+From: Devon Loehr <dloehr@google.com>
+Date: Mon, 24 Mar 2025 08:51:58 -0700
+Subject: [PATCH] Remove unnecessary virtual specifier from FenceNV
+
+Backport the exact ANGLE source change from upstream commit
+99037f70dee2820630fc32265c57581d7ec3ee1b. Xcode 26 diagnoses a virtual
+method in a final class as -Wunnecessary-virtual-specifier, and the reviewed
+ANGLE project treats warnings as errors.
+---
+ Source/ThirdParty/ANGLE/src/libANGLE/Fence.h | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/Source/ThirdParty/ANGLE/src/libANGLE/Fence.h b/Source/ThirdParty/ANGLE/src/libANGLE/Fence.h
+index 5939bfb19..ed0ae8495 100644
+--- a/Source/ThirdParty/ANGLE/src/libANGLE/Fence.h
++++ b/Source/ThirdParty/ANGLE/src/libANGLE/Fence.h
+@@ -30,7 +30,7 @@ class FenceNV final : angle::NonCopyable
+ {
+   public:
+     explicit FenceNV(rx::GLImplFactory *factory);
+-    virtual ~FenceNV();
++    ~FenceNV();
+ 
+     void onDestroy(const gl::Context *context);
+     angle::Result set(const Context *context, GLenum condition);
+-- 
+2.51.0
+

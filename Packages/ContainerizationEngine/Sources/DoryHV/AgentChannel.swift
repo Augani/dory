@@ -12,15 +12,37 @@ protocol AgentControlRPC: AnyObject, Sendable {
     func info() throws -> DoryAgentInfo
     func clockSync(hostEpochNs: Int64) throws -> Bool
     func portsWatch() throws -> DoryPortsSnapshot
+    func virtioFSMount(tag: String, mountPath: String, readOnly: Bool) throws
+        -> DoryVirtioFSMountReceipt
+    func usbVhciAttach(busID: String, port: UInt32, vsockPort: UInt32, deviceID: UInt32, speed: UInt32) throws
+    func usbVhciDetach(busID: String, port: UInt32) throws
     func close()
 }
 
 extension DoryAgentControlHandle: AgentControlRPC {}
 
+extension AgentControlRPC {
+    func virtioFSMount(tag: String, mountPath: String, readOnly: Bool) throws
+        -> DoryVirtioFSMountReceipt {
+        throw AgentProtocolError.capabilityUnavailable("virtiofs-mount", 1)
+    }
+
+    func usbVhciAttach(busID: String, port: UInt32, vsockPort: UInt32, deviceID: UInt32, speed: UInt32) throws {
+        throw AgentProtocolError.capabilityUnavailable("usb-vhci", 1)
+    }
+
+    func usbVhciDetach(busID: String, port: UInt32) throws {
+        throw AgentProtocolError.capabilityUnavailable("usb-vhci", 1)
+    }
+}
+
 public enum AgentProtocolError: Error, Equatable, Sendable {
     case connectionAlreadyConsumed
     case invalidGuestPort(UInt32)
+    case invalidVhciPort(Int)
     case socketPair(Int32)
+    case capabilityUnavailable(String, UInt32)
+    case invalidCapabilityInventory
 }
 
 /// A typed control channel over one connected guest vsock stream.
@@ -32,18 +54,12 @@ public enum AgentProtocolError: Error, Equatable, Sendable {
 public final class AgentChannel: @unchecked Sendable {
     typealias ClientConnector = @Sendable (Int32) throws -> any AgentControlRPC
 
-    private final class ConnectionBox: @unchecked Sendable {
-        let connection: VsockConnection
-
-        init(_ connection: VsockConnection) {
-            self.connection = connection
-        }
-    }
-
     private let lock = NSLock()
+    private let relayCompletion = DispatchGroup()
     private let connector: ClientConnector
     private var connection: VsockConnection?
     private var relayConnection: VsockConnection?
+    private var relaySession: VsockUnixRelay.RelaySession?
     private var client: (any AgentControlRPC)?
 
     public init(connection: VsockConnection) {
@@ -65,11 +81,17 @@ public final class AgentChannel: @unchecked Sendable {
 
     public func info() async throws -> AgentInfo {
         let raw = try await perform { try $0.info() }
+        guard raw.capabilitiesAreCanonical else {
+            throw AgentProtocolError.invalidCapabilityInventory
+        }
         return AgentInfo(
             protocolVersion: raw.protocolVersion,
             kernel: raw.kernel,
             agentBuild: raw.agentBuild,
-            uptimeSeconds: raw.uptimeSeconds
+            uptimeSeconds: raw.uptimeSeconds,
+            capabilities: raw.capabilities.map {
+                AgentCapability(id: $0.id, version: $0.version)
+            }
         )
     }
 
@@ -91,6 +113,57 @@ public final class AgentChannel: @unchecked Sendable {
                 AgentPortEvent(action: $0.action, protocol: $0.protocol, port: try checkedPort($0.port))
             }
         )
+    }
+
+    public func requireCapability(_ id: String, version: UInt32) async throws {
+        let info = try await info()
+        guard info.capabilities.contains(where: { $0.id == id && $0.version >= version }) else {
+            throw AgentProtocolError.capabilityUnavailable(id, version)
+        }
+    }
+
+    public func usbVhciAttach(_ request: UsbAgentAttachRequest) async throws {
+        guard let port = UInt32(exactly: request.port) else {
+            throw AgentProtocolError.invalidVhciPort(request.port)
+        }
+        try await perform {
+            try $0.usbVhciAttach(
+                busID: request.busid,
+                port: port,
+                vsockPort: request.vsock_port,
+                deviceID: request.device_id,
+                speed: request.speed
+            )
+        }
+    }
+
+    /// Mount a published virtio-fs share through the negotiated guest-tools primitive. Capability
+    /// validation is part of this operation so a caller cannot accidentally invoke a mutating RPC
+    /// against an arbitrary generic Linux guest merely because an agent transport answered.
+    public func mountVirtioFS(_ request: VirtioFSMountRequest) async throws
+        -> VirtioFSMountReceipt {
+        try await requireCapability("virtiofs-mount", version: 1)
+        let proof = try await perform {
+            try $0.virtioFSMount(
+                tag: request.tag,
+                mountPath: request.mountPath,
+                readOnly: request.readOnly
+            )
+        }
+        return VirtioFSMountReceipt(
+            tag: proof.tag,
+            mountPath: proof.mountPath,
+            readOnly: proof.readOnly,
+            alreadyMounted: proof.alreadyMounted,
+            mountID: proof.mountID
+        )
+    }
+
+    public func usbVhciDetach(_ request: UsbAgentDetachRequest) async throws {
+        guard let port = UInt32(exactly: request.port) else {
+            throw AgentProtocolError.invalidVhciPort(request.port)
+        }
+        try await perform { try $0.usbVhciDetach(busID: request.busid, port: port) }
     }
 
     private func perform<Result: Sendable>(
@@ -127,9 +200,20 @@ public final class AgentChannel: @unchecked Sendable {
         }
         let rustDescriptor = descriptors[0]
         let relayDescriptor = descriptors[1]
-        let connectionBox = ConnectionBox(connection)
+        relayCompletion.enter()
+        let completion = relayCompletion
+        let session = VsockUnixRelay.RelaySession(
+            client: relayDescriptor,
+            connection: connection,
+            completion: { completion.leave() }
+        )
+        relaySession = session
+        if let ownedConnection = connection as? ServiceOwnedVsockConnection,
+           !ownedConnection.replaceServiceStopAction({ session.requestStop() }) {
+            session.requestStop()
+        }
         Thread.detachNewThread {
-            VsockUnixRelay.serve(client: relayDescriptor, connection: connectionBox.connection)
+            session.run()
         }
 
         do {
@@ -143,7 +227,7 @@ public final class AgentChannel: @unchecked Sendable {
             // Rust owns/closes its socketpair fd on every return path, but a read EOF is only a
             // half-close to the generic stream relay. Explicitly reset the vsock side so its other
             // pump cannot wait forever on a silent guest after handshake timeout/failure.
-            connection.close()
+            session.requestStop()
             throw error
         }
     }
@@ -152,17 +236,23 @@ public final class AgentChannel: @unchecked Sendable {
         lock.lock()
         let unclaimedConnection = connection
         let activeRelayConnection = relayConnection
+        let activeRelaySession = relaySession
         let activeClient = client
         connection = nil
         relayConnection = nil
+        relaySession = nil
         client = nil
         lock.unlock()
         // Closing the Rust endpoint first lets a healthy guest observe EOF; resetting the in-process
         // vsock immediately afterwards deterministically wakes both detached relay pumps even if the
         // guest never acknowledges shutdown.
         activeClient?.close()
+        activeRelaySession?.requestStop()
         activeRelayConnection?.close()
         unclaimedConnection?.close()
+        if activeRelaySession != nil {
+            _ = relayCompletion.wait(timeout: .now() + 1)
+        }
     }
 }
 
@@ -178,12 +268,20 @@ public struct AgentInfo: Codable, Equatable, Sendable {
     public var kernel: String
     public var agentBuild: String
     public var uptimeSeconds: UInt64
+    public var capabilities: [AgentCapability]
 
-    public init(protocolVersion: UInt32, kernel: String, agentBuild: String, uptimeSeconds: UInt64) {
+    public init(
+        protocolVersion: UInt32,
+        kernel: String,
+        agentBuild: String,
+        uptimeSeconds: UInt64,
+        capabilities: [AgentCapability] = []
+    ) {
         self.protocolVersion = protocolVersion
         self.kernel = kernel
         self.agentBuild = agentBuild
         self.uptimeSeconds = uptimeSeconds
+        self.capabilities = capabilities
     }
 
     enum CodingKeys: String, CodingKey {
@@ -191,6 +289,17 @@ public struct AgentInfo: Codable, Equatable, Sendable {
         case kernel
         case agentBuild = "agent_build"
         case uptimeSeconds = "uptime_seconds"
+        case capabilities
+    }
+}
+
+public struct AgentCapability: Codable, Equatable, Sendable {
+    public var id: String
+    public var version: UInt32
+
+    public init(id: String, version: UInt32) {
+        self.id = id
+        self.version = version
     }
 }
 
@@ -199,6 +308,40 @@ public struct ClockSyncResult: Equatable, Sendable {
 
     public init(synced: Bool) {
         self.synced = synced
+    }
+}
+
+public struct VirtioFSMountRequest: Equatable, Sendable {
+    public var tag: String
+    public var mountPath: String
+    public var readOnly: Bool
+
+    public init(tag: String, mountPath: String, readOnly: Bool) {
+        self.tag = tag
+        self.mountPath = mountPath
+        self.readOnly = readOnly
+    }
+}
+
+public struct VirtioFSMountReceipt: Equatable, Sendable {
+    public var tag: String
+    public var mountPath: String
+    public var readOnly: Bool
+    public var alreadyMounted: Bool
+    public var mountID: UInt64
+
+    public init(
+        tag: String,
+        mountPath: String,
+        readOnly: Bool,
+        alreadyMounted: Bool,
+        mountID: UInt64
+    ) {
+        self.tag = tag
+        self.mountPath = mountPath
+        self.readOnly = readOnly
+        self.alreadyMounted = alreadyMounted
+        self.mountID = mountID
     }
 }
 

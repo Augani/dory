@@ -1,17 +1,24 @@
+import DoryFSWorkerContracts
 import Foundation
 
 public enum VirtioFSError: Error, Equatable {
     case invalidTag(String)
-    case invalidDaxWindow
 }
 
-public struct VirtioFSDaxConfiguration: Equatable, Sendable {
-    public var guestBase: UInt64
-    public var length: UInt64
+/// Typed lifecycle boundary reported by one virtio-fs backend. A committed FUSE_DESTROY followed
+/// by device reset is normal guest teardown; every other worker loss/reset remains a VM-fatal
+/// authority failure. Callers must never infer this distinction from diagnostic strings.
+public enum VirtioFSWorkerLifecycleEvent: Equatable, Sendable {
+    case connectionTeardown
+    case failure(String)
 
-    public init(guestBase: UInt64, length: UInt64 = DaxWindow.defaultSize) {
-        self.guestBase = guestBase
-        self.length = length
+    public var diagnostic: String {
+        switch self {
+        case .connectionTeardown:
+            "filesystem worker connection teardown committed"
+        case .failure(let reason):
+            reason
+        }
     }
 }
 
@@ -35,17 +42,78 @@ public enum VirtioFSCacheActivationResult: Equatable, Sendable {
     case ineligible(VirtioFSCacheActivationEligibility)
 }
 
-public final class VirtioFS: VirtioDeviceBackend, VirtioSharedMemoryRegionProvider {
+public struct VirtioFSStatistics: Equatable, Sendable {
+    public var invalidations: UInt64
+    public var invalidationFailures: UInt64
+    public var invalidationFailureLatched: Bool
+
+    public init(
+        invalidations: UInt64,
+        invalidationFailures: UInt64,
+        invalidationFailureLatched: Bool
+    ) {
+        self.invalidations = invalidations
+        self.invalidationFailures = invalidationFailures
+        self.invalidationFailureLatched = invalidationFailureLatched
+    }
+}
+
+public struct VirtioFSFrontendStatistics: Equatable, Sendable {
+    public let rejectedRequests: UInt64
+    public let executedRequests: UInt64
+    public let terminalQueueFaults: UInt64
+
+    public init(rejectedRequests: UInt64, executedRequests: UInt64, terminalQueueFaults: UInt64) {
+        self.rejectedRequests = rejectedRequests
+        self.executedRequests = executedRequests
+        self.terminalQueueFaults = terminalQueueFaults
+    }
+}
+
+/// Payload, concurrency, and end-to-end timing counters for admitted request work. Byte counters
+/// describe protocol payloads observed at each ownership boundary; they intentionally do not claim
+/// that Foundation or XPC performed one physical copy per byte.
+public struct VirtioFSPerformanceStatistics: Equatable, Sendable {
+    public let requestPayloadBytes: UInt64
+    public let workerResponsePayloadBytes: UInt64
+    public let guestPublishedResponseBytes: UInt64
+    public let completedRequests: UInt64
+    public let failedRequests: UInt64
+    public let inFlightRequests: UInt64
+    public let peakInFlightRequests: UInt64
+    public let totalRequestLatencyNanoseconds: UInt64
+    public let maximumRequestLatencyNanoseconds: UInt64
+
+    public init(
+        requestPayloadBytes: UInt64,
+        workerResponsePayloadBytes: UInt64,
+        guestPublishedResponseBytes: UInt64,
+        completedRequests: UInt64,
+        failedRequests: UInt64,
+        inFlightRequests: UInt64,
+        peakInFlightRequests: UInt64,
+        totalRequestLatencyNanoseconds: UInt64,
+        maximumRequestLatencyNanoseconds: UInt64
+    ) {
+        self.requestPayloadBytes = requestPayloadBytes
+        self.workerResponsePayloadBytes = workerResponsePayloadBytes
+        self.guestPublishedResponseBytes = guestPublishedResponseBytes
+        self.completedRequests = completedRequests
+        self.failedRequests = failedRequests
+        self.inFlightRequests = inFlightRequests
+        self.peakInFlightRequests = peakInFlightRequests
+        self.totalRequestLatencyNanoseconds = totalRequestLatencyNanoseconds
+        self.maximumRequestLatencyNanoseconds = maximumRequestLatencyNanoseconds
+    }
+}
+
+public final class VirtioFS: VirtioDeviceBackend {
     public static let tagByteCount = 36
     public static let notificationFeature: UInt64 = 1 << 0
-    static let traceInvalidations: Bool = {
-        let value = ProcessInfo.processInfo.environment["DORY_FUSE_TRACE_INVAL"] ?? ""
-        return ["1", "true", "yes", "on"].contains(value.lowercased())
-    }()
     public static let notificationBufferSize: UInt32 = 4096
     /// Upper bound for positive entry and attribute validity in coherent mode. Open-file and
     /// directory cache flags remain disabled because they cannot be revoked after degradation.
-    public static let maximumCoherentCacheValiditySeconds: UInt64 = FuseServer.maximumCoherentCacheValiditySeconds
+    public static let maximumCoherentCacheValiditySeconds: UInt64 = 0
     /// The matching guest driver posts 16 page-sized notification buffers. Caching is forbidden
     /// until this process has seen every stable backing address in the current transport epoch.
     public static let requiredStableNotificationBufferCountForCaching = 16
@@ -65,18 +133,15 @@ public final class VirtioFS: VirtioDeviceBackend, VirtioSharedMemoryRegionProvid
     public let requestQueueCount: Int
     public let notificationBacklogLimit: Int
     public let tag: String
-    public let hostFS: HostFS
-    public let daxConfiguration: VirtioFSDaxConfiguration?
-    private let server: FuseServer
-    private let stats: VirtioFSStats?
-    private let inlineRequests: Bool
+    private let broker: DoryFSWorkerBroker
+    private let onWorkerLifecycle: @Sendable (VirtioFSWorkerLifecycleEvent) -> Void
     public var deviceFeatures: UInt64 { Self.notificationFeature }
 
-    // Small metadata-heavy workloads are latency-bound: dispatching every FUSE request to another
-    // thread costs more than the host syscall. Inline processing is therefore the default, with an
-    // environment opt-out for workloads that need the older worker-only behavior. The worker pool is
-    // still used when inline mode is disabled and remains available for experimentation.
-    private let workers = DispatchQueue(label: "dory-hv.virtiofs.worker", qos: .userInteractive, attributes: .concurrent)
+    private let workers = DispatchQueue(
+        label: "dory-hv.virtiofs.worker",
+        qos: RawHVSchedulingPolicy.fileSystemWorkerDispatchQoS,
+        attributes: .concurrent
+    )
     private let drainLock = NSLock()
     /// The lifecycle epoch currently owned by a drainer, or nil when that queue has no drainer.
     /// Reset/reconfiguration clears the slot while the old epoch finishes outside the queue lock,
@@ -116,7 +181,14 @@ public final class VirtioFS: VirtioDeviceBackend, VirtioSharedMemoryRegionProvid
     // backend's lifetime; success keeps the write fence until every admitted barrier resolves.
     private let requestGateLock = NSLock()
     private var requestGateClosed = false
+    /// The broker's shared workspace authority owns capacity. This frontend tracks only requests
+    /// that crossed its publication boundary plus per-queue grants already reserved by that shared
+    /// authority; it never mirrors the workspace counters with a second semaphore.
     private var activeRequestCount = 0
+    private var deferredAdmissionQueues = Set<Int>()
+    private var grantedAdmissions = [Int: DoryFSWorkerAdmissionLease]()
+    private var admissionWaiterIDs = [DoryFSWorkerAdmissionWaiterID]()
+    private var frontendAdmissionTerminationReported = false
     private var requestGateWaiters: [
         UUID: CheckedContinuation<Result<Void, VirtioFSNotificationError>, Never>
     ] = [:]
@@ -136,70 +208,71 @@ public final class VirtioFS: VirtioDeviceBackend, VirtioSharedMemoryRegionProvid
     private var connectionResetPending = false
     private var connectionResetInProgress = false
     private weak var connectionResetTransport: VirtioMMIOTransport?
+    private var connectionResetEvent: VirtioFSWorkerLifecycleEvent?
 
     private let responseFenceTestHookLock = NSLock()
     private var _responseFenceTestHook: (@Sendable (FuseInHeader, FuseOpcode) -> Void)?
     private let requestGateDrainTestHookLock = NSLock()
     private var _requestGateDrainTestHook: (@Sendable (RequestGateDrainTestEvent) -> Void)?
+    private let requestExecutionTestHookLock = NSLock()
+    private var _requestExecutionTestHook: (@Sendable (FuseInHeader, FuseOpcode) -> Void)?
+    private let hostResponseSnapshotTestHookLock = NSLock()
+    private var _hostResponseSnapshotTestHook: (@Sendable (FuseInHeader, FuseOpcode, [UInt8]) -> Void)?
+    private let telemetryLock = NSLock()
+    private var invalidationCount: UInt64 = 0
+    private var invalidationFailureCount: UInt64 = 0
+    private var hasLatchedInvalidationFailure = false
+    private var rejectedRequestCount: UInt64 = 0
+    private var executedRequestCount: UInt64 = 0
+    private var terminalQueueFaultCount: UInt64 = 0
+    private var requestPayloadByteCount: UInt64 = 0
+    private var workerResponsePayloadByteCount: UInt64 = 0
+    private var guestPublishedResponseByteCount: UInt64 = 0
+    private var completedRequestCount: UInt64 = 0
+    private var failedRequestCount: UInt64 = 0
+    private var inFlightRequestCount: UInt64 = 0
+    private var peakInFlightRequestCount: UInt64 = 0
+    private var totalRequestLatencyNanoseconds: UInt64 = 0
+    private var maximumRequestLatencyNanoseconds: UInt64 = 0
+    private var requestFrontendTerminallyFaulted = false
+    private var fuseInitCompleted = false
+    private var fuseDestroyCommitted = false
 
-    public convenience init(
+    public init(
         tag: String,
-        hostFS: HostFS,
-        daxConfiguration: VirtioFSDaxConfiguration? = nil,
-        requestQueueCount requestedQueueCount: Int? = nil,
-        notificationBacklogLimit requestedNotificationBacklogLimit: Int = 256
-    ) throws {
-        try self.init(
-            tag: tag,
-            hostFS: hostFS,
-            daxConfiguration: daxConfiguration,
-            requestQueueCount: requestedQueueCount,
-            notificationBacklogLimit: requestedNotificationBacklogLimit,
-            inlineRequests: nil
-        )
-    }
-
-    init(
-        tag: String,
-        hostFS: HostFS,
-        daxConfiguration: VirtioFSDaxConfiguration? = nil,
+        broker: DoryFSWorkerBroker,
         requestQueueCount requestedQueueCount: Int? = nil,
         notificationBacklogLimit requestedNotificationBacklogLimit: Int = 256,
-        inlineRequests requestedInlineRequests: Bool?
+        onWorkerLifecycle: @escaping @Sendable (VirtioFSWorkerLifecycleEvent) -> Void = { event in
+            FileHandle.standardError.write(Data("dory-hv: \(event.diagnostic)\n".utf8))
+        }
     ) throws {
         let bytes = Array(tag.utf8)
         guard !bytes.isEmpty, bytes.count < Self.tagByteCount else {
             throw VirtioFSError.invalidTag(tag)
         }
-        if let daxConfiguration {
-            guard daxConfiguration.guestBase.isMultiple(of: DaxWindow.pageSize),
-                  daxConfiguration.length > 0,
-                  daxConfiguration.length.isMultiple(of: DaxWindow.pageSize) else {
-                throw VirtioFSError.invalidDaxWindow
-            }
-        }
         self.tag = tag
-        self.hostFS = hostFS
-        self.daxConfiguration = daxConfiguration
+        self.broker = broker
+        self.onWorkerLifecycle = onWorkerLifecycle
         self.requestQueueCount = Self.clampedRequestQueueCount(
-            requestedQueueCount ?? Self.requestQueueCountFromEnvironment()
+            requestedQueueCount ?? Self.defaultRequestQueueCount()
         )
         self.notificationBacklogLimit = min(4096, max(1, requestedNotificationBacklogLimit))
         self.queueCount = self.requestQueueCount + 2
+        self.admissionWaiterIDs = (0..<self.queueCount).map { _ in
+            DoryFSWorkerAdmissionWaiterID()
+        }
         self.activeDrainerEpochs = Array(repeating: nil, count: self.queueCount)
         self.kickGenerations = Array(repeating: 0, count: self.queueCount)
         self.queueLifecycleEpochs = Array(repeating: 0, count: self.queueCount)
-        self.stats = VirtioFSStats.fromEnvironment(tag: tag)
-        self.inlineRequests = requestedInlineRequests ?? Self.inlineRequestsFromEnvironment()
-        let daxWindow = try daxConfiguration.map {
-            try DaxWindow(guestBase: $0.guestBase, length: $0.length, backend: FileBackedDaxMappingBackend())
-        }
-        self.server = FuseServer(hostFS: hostFS, daxWindow: daxWindow)
     }
 
-    public var sharedMemoryRegions: [VirtioSharedMemoryRegion] {
-        guard let daxConfiguration else { return [] }
-        return [VirtioSharedMemoryRegion(id: 0, guestBase: daxConfiguration.guestBase, length: daxConfiguration.length)]
+    /// Library callers that do not own a launch policy receive a deterministic host-capability
+    /// default. Production launchers pass an explicit daemon-resolved value.
+    static func defaultRequestQueueCount(
+        activeProcessorCount: Int = ProcessInfo.processInfo.activeProcessorCount
+    ) -> Int {
+        min(8, max(1, activeProcessorCount))
     }
 
     public var configSpace: [UInt8] {
@@ -221,7 +294,7 @@ public final class VirtioFS: VirtioDeviceBackend, VirtioSharedMemoryRegionProvid
     }
 
     public var coherentCachingActive: Bool {
-        server.coherentCachingActive
+        false
     }
 
     /// Test-only interlock used to stop a request after encoding but before used-ring publication.
@@ -238,12 +311,28 @@ public final class VirtioFS: VirtioDeviceBackend, VirtioSharedMemoryRegionProvid
         set { requestGateDrainTestHookLock.withLock { _requestGateDrainTestHook = newValue } }
     }
 
+    /// Test-only proof that admitted work crosses the single generic FuseServer execution seam.
+    var requestExecutionTestHook: (@Sendable (FuseInHeader, FuseOpcode) -> Void)? {
+        get { requestExecutionTestHookLock.withLock { _requestExecutionTestHook } }
+        set { requestExecutionTestHookLock.withLock { _requestExecutionTestHook = newValue } }
+    }
+
+    /// Test-only host-owned response observation. It runs before any guest-memory publication.
+    var hostResponseSnapshotTestHook: (@Sendable (FuseInHeader, FuseOpcode, [UInt8]) -> Void)? {
+        get { hostResponseSnapshotTestHookLock.withLock { _hostResponseSnapshotTestHook } }
+        set { hostResponseSnapshotTestHookLock.withLock { _hostResponseSnapshotTestHook = newValue } }
+    }
+
     var requestPublicationGateClosed: Bool {
         requestGateLock.withLock { requestGateClosed }
     }
 
     var deferredRequestQueueSnapshot: Set<Int> {
         requestGateLock.withLock { deferredRequestQueues }
+    }
+
+    var capacityDeferredRequestQueueSnapshot: Set<Int> {
+        requestGateLock.withLock { deferredAdmissionQueues }
     }
 
     /// Enables one-second positive entry/attribute validity only after notification negotiation, a
@@ -253,20 +342,14 @@ public final class VirtioFS: VirtioDeviceBackend, VirtioSharedMemoryRegionProvid
     public func activateCoherentCaching() -> VirtioFSCacheActivationResult {
         notificationLock.lock()
         let eligibility = cacheActivationEligibilityLocked()
-        guard eligibility.isEligible, server.activateCoherentCaching() else {
-            notificationLock.unlock()
-            return .ineligible(eligibility)
-        }
-        responseCacheEpoch &+= 1
         notificationLock.unlock()
-        return .activated
+        return .ineligible(eligibility)
     }
 
     /// Synchronously makes every subsequently encoded FUSE response use zero metadata validity.
     /// KEEP_CACHE and CACHE_DIR are never emitted, including while coherent caching is active.
     public func deactivateCoherentCaching() {
         notificationLock.withLock {
-            server.deactivateCoherentCaching()
             responseCacheEpoch &+= 1
         }
     }
@@ -320,7 +403,13 @@ public final class VirtioFS: VirtioDeviceBackend, VirtioSharedMemoryRegionProvid
     public func deviceReset(transport: VirtioMMIOTransport) {
         advanceAllQueueLifecycles()
         let staleBarriers: [VirtioFSNotificationBarrier]
+        let hadStartedDriverLifecycle: Bool
+        let resetEvent: VirtioFSWorkerLifecycleEvent
         notificationLock.lock()
+        hadStartedDriverLifecycle = notificationTransport === transport
+        resetEvent = fuseDestroyCommitted
+            ? .connectionTeardown
+            : .failure("filesystem worker generation invalidated by virtio-fs device reset")
         if notificationTransport === transport {
             staleBarriers = removeAllNotificationStateLocked()
         } else {
@@ -328,7 +417,15 @@ public final class VirtioFS: VirtioDeviceBackend, VirtioSharedMemoryRegionProvid
         }
         notificationLock.unlock()
 
-        beginConnectionReset(transport: transport)
+        // Linux writes device status 0 while probing an already-reset virtio device, before the
+        // DRIVER_OK edge that establishes a guest FUSE connection. Retiring the one-shot worker
+        // there makes every normal boot fail. Once this backend has observed DRIVER_OK, however,
+        // any reset can strand guest FUSE handles or dirty cache state and remains fail-stop. The
+        // sole normal exception is a reset after the exact FUSE_DESTROY response was committed;
+        // that retires only this share so sibling shares can finish on the shared worker channel.
+        if hadStartedDriverLifecycle {
+            beginConnectionReset(transport: transport, event: resetEvent)
+        }
         fail(staleBarriers, with: .transportReset, transport: transport)
     }
 
@@ -359,7 +456,20 @@ public final class VirtioFS: VirtioDeviceBackend, VirtioSharedMemoryRegionProvid
     public func submitInvalidations(
         _ invalidations: [VirtioFSInvalidation]
     ) async throws -> VirtioFSNotificationBarrier {
-        try await submitInvalidations(invalidations, retainRequestGateForCaller: false)
+        guard !invalidations.isEmpty else {
+            return VirtioFSNotificationBarrier(notificationCount: 0)
+        }
+        do {
+            return try await submitInvalidations(
+                invalidations,
+                retainRequestGateForCaller: false
+            )
+        } catch {
+            recordInvalidationFailure(latched: requestGateLock.withLock {
+                requestGateFailureLatched
+            })
+            throw error
+        }
     }
 
     private func submitInvalidations(
@@ -369,11 +479,6 @@ public final class VirtioFS: VirtioDeviceBackend, VirtioSharedMemoryRegionProvid
     ) async throws -> VirtioFSNotificationBarrier {
         guard !invalidations.isEmpty else {
             return VirtioFSNotificationBarrier(notificationCount: 0)
-        }
-        if Self.traceInvalidations {
-            for invalidation in invalidations {
-                FileHandle.standardError.write(Data("dory-hv: inval \(invalidation)\n".utf8))
-            }
         }
         let frames = try invalidations.map { try $0.encoded() }
         guard frames.allSatisfy({ $0.count <= Int(Self.notificationBufferSize) }) else {
@@ -453,7 +558,9 @@ public final class VirtioFS: VirtioDeviceBackend, VirtioSharedMemoryRegionProvid
             )
         }
         apply(effects, transport: transport)
-        return try submission.get()
+        let barrier = try submission.get()
+        recordInvalidations(frames.count)
+        return barrier
     }
 
     public func submitInvalidation(
@@ -521,12 +628,151 @@ public final class VirtioFS: VirtioDeviceBackend, VirtioSharedMemoryRegionProvid
                 releaseCallerRetainedRequestGate(barrier, succeeded: false)
             }
             latchRequestGateFailure(barrier: nil)
+            recordInvalidationFailure(latched: true)
             throw error
         }
     }
 
+    public var statistics: VirtioFSStatistics {
+        telemetryLock.withLock {
+            VirtioFSStatistics(
+                invalidations: invalidationCount,
+                invalidationFailures: invalidationFailureCount,
+                invalidationFailureLatched: hasLatchedInvalidationFailure
+            )
+        }
+    }
+
+    public var frontendStatistics: VirtioFSFrontendStatistics {
+        telemetryLock.withLock {
+            VirtioFSFrontendStatistics(
+                rejectedRequests: rejectedRequestCount,
+                executedRequests: executedRequestCount,
+                terminalQueueFaults: terminalQueueFaultCount
+            )
+        }
+    }
+
+    public var performanceStatistics: VirtioFSPerformanceStatistics {
+        telemetryLock.withLock {
+            VirtioFSPerformanceStatistics(
+                requestPayloadBytes: requestPayloadByteCount,
+                workerResponsePayloadBytes: workerResponsePayloadByteCount,
+                guestPublishedResponseBytes: guestPublishedResponseByteCount,
+                completedRequests: completedRequestCount,
+                failedRequests: failedRequestCount,
+                inFlightRequests: inFlightRequestCount,
+                peakInFlightRequests: peakInFlightRequestCount,
+                totalRequestLatencyNanoseconds: totalRequestLatencyNanoseconds,
+                maximumRequestLatencyNanoseconds: maximumRequestLatencyNanoseconds
+            )
+        }
+    }
+
+    private func recordInvalidations(_ count: Int) {
+        guard count > 0 else { return }
+        let increment = UInt64(count)
+        telemetryLock.withLock {
+            invalidationCount = Self.saturatingAdd(invalidationCount, increment)
+        }
+    }
+
+    private func recordInvalidationFailure(latched: Bool) {
+        telemetryLock.withLock {
+            invalidationFailureCount = Self.saturatingAdd(invalidationFailureCount, 1)
+            hasLatchedInvalidationFailure = hasLatchedInvalidationFailure || latched
+        }
+    }
+
+    private func recordRequestRejection() {
+        telemetryLock.withLock {
+            rejectedRequestCount = Self.saturatingAdd(rejectedRequestCount, 1)
+        }
+    }
+
+    private func recordRequestExecution(requestPayloadBytes: Int) {
+        telemetryLock.withLock {
+            executedRequestCount = Self.saturatingAdd(executedRequestCount, 1)
+            requestPayloadByteCount = Self.saturatingAdd(
+                requestPayloadByteCount,
+                UInt64(requestPayloadBytes)
+            )
+            inFlightRequestCount = Self.saturatingAdd(inFlightRequestCount, 1)
+            peakInFlightRequestCount = max(
+                peakInFlightRequestCount,
+                inFlightRequestCount
+            )
+        }
+    }
+
+    private func recordWorkerResponsePayload(bytes: Int) {
+        telemetryLock.withLock {
+            workerResponsePayloadByteCount = Self.saturatingAdd(
+                workerResponsePayloadByteCount,
+                UInt64(bytes)
+            )
+        }
+    }
+
+    private func recordGuestPublishedResponse(bytes: Int) {
+        telemetryLock.withLock {
+            guestPublishedResponseByteCount = Self.saturatingAdd(
+                guestPublishedResponseByteCount,
+                UInt64(bytes)
+            )
+        }
+    }
+
+    private func recordRequestCompletion(
+        admittedAtUptimeNanoseconds: UInt64,
+        published: Bool
+    ) {
+        let completedAt = DispatchTime.now().uptimeNanoseconds
+        let latency = completedAt >= admittedAtUptimeNanoseconds
+            ? completedAt - admittedAtUptimeNanoseconds
+            : 0
+        telemetryLock.withLock {
+            precondition(inFlightRequestCount > 0)
+            inFlightRequestCount -= 1
+            if published {
+                completedRequestCount = Self.saturatingAdd(completedRequestCount, 1)
+            } else {
+                failedRequestCount = Self.saturatingAdd(failedRequestCount, 1)
+            }
+            totalRequestLatencyNanoseconds = Self.saturatingAdd(
+                totalRequestLatencyNanoseconds,
+                latency
+            )
+            maximumRequestLatencyNanoseconds = max(
+                maximumRequestLatencyNanoseconds,
+                latency
+            )
+        }
+    }
+
+    private func recordTerminalQueueFault(_ error: any Error, queue: Int) {
+        telemetryLock.withLock {
+            terminalQueueFaultCount = Self.saturatingAdd(terminalQueueFaultCount, 1)
+            requestFrontendTerminallyFaulted = true
+        }
+        FileHandle.standardError.write(Data(
+            "dory-hv: virtiofs terminal queue fault queue=\(queue): \(error)\n".utf8
+        ))
+        latchRequestGateFailure(barrier: nil)
+    }
+
+    private var requestFrontendIsTerminallyFaulted: Bool {
+        telemetryLock.withLock { requestFrontendTerminallyFaulted }
+    }
+
+    private static func saturatingAdd(_ value: UInt64, _ increment: UInt64) -> UInt64 {
+        let (sum, overflow) = value.addingReportingOverflow(increment)
+        return overflow ? UInt64.max : sum
+    }
+
     public func handleKick(queue: Int, transport: VirtioMMIOTransport) {
         guard queue >= 0, queue < queueCount else { return }
+        guard !requestFrontendIsTerminallyFaulted else { return }
         // Queue notification MMIO is intentionally delivered without the transport lock for this
         // backend. Snapshot only routing/readiness under that lock; every pop/push below takes it
         // again and verifies the queue lifecycle epoch before touching the ring.
@@ -549,13 +795,7 @@ public final class VirtioFS: VirtioDeviceBackend, VirtioSharedMemoryRegionProvid
         // Exactly one drainer owns a queue lifecycle epoch. Kicks on different queues may overlap,
         // while a same-queue kick only advances the generation so the active drainer sweeps again.
         guard let lifecycleEpoch = beginQueueDrain(queue: queue) else { return }
-        if inlineRequests {
-            drain(queue: queue, lifecycleEpoch: lifecycleEpoch, transport: transport)
-        } else {
-            workers.async { [self] in
-                drain(queue: queue, lifecycleEpoch: lifecycleEpoch, transport: transport)
-            }
-        }
+        drain(queue: queue, lifecycleEpoch: lifecycleEpoch, transport: transport)
     }
 
     private func drain(queue: Int, lifecycleEpoch: UInt64, transport: VirtioMMIOTransport) {
@@ -570,35 +810,50 @@ public final class VirtioFS: VirtioDeviceBackend, VirtioSharedMemoryRegionProvid
                 return
             }
             var shouldNotify = false
-            while true {
-                guard beginRequestProcessing(
+            requestLoop: while true {
+                let requestAdmission = beginRequestProcessing(
                     queue: queue,
                     lifecycleEpoch: lifecycleEpoch,
                     virtqueue: virtqueue,
                     transport: transport
-                ) else {
+                )
+                guard case .process(let admissionLease, let previewOpcode) = requestAdmission else {
                     requestGateDrainTestHook?(.deferred(queue: queue))
                     break
                 }
-                guard let chain = popChain(
+                let popResult = popChain(
                     queue: queue,
                     lifecycleEpoch: lifecycleEpoch,
                     virtqueue: virtqueue,
                     transport: transport
-                ) else {
+                )
+                switch popResult {
+                case .chain(let chain):
+                    switch process(
+                        chain: chain,
+                        queue: queue,
+                        lifecycleEpoch: lifecycleEpoch,
+                        virtqueue: virtqueue,
+                        transport: transport,
+                        admissionLease: admissionLease,
+                        previewOpcode: previewOpcode
+                    ) {
+                    case .completed(let interruptWanted):
+                        shouldNotify = shouldNotify || interruptWanted
+                        endRequestProcessing()
+                    case .submitted:
+                        break
+                    }
+                case .empty:
+                    admissionLease?.release()
                     endRequestProcessing()
-                    break
+                    break requestLoop
+                case .terminalFault(let error):
+                    admissionLease?.release()
+                    endRequestProcessing()
+                    recordTerminalQueueFault(error, queue: queue)
+                    break requestLoop
                 }
-                if process(
-                    chain: chain,
-                    queue: queue,
-                    lifecycleEpoch: lifecycleEpoch,
-                    virtqueue: virtqueue,
-                    transport: transport
-                ) {
-                    shouldNotify = true
-                }
-                endRequestProcessing()
             }
             if shouldNotify {
                 transport.notifyUsed()
@@ -651,204 +906,312 @@ public final class VirtioFS: VirtioDeviceBackend, VirtioSharedMemoryRegionProvid
         }
     }
 
+    private enum ChainPopResult {
+        case chain(VirtqueueChain)
+        case empty
+        case terminalFault(any Error)
+    }
+
+    private enum RequestProcessResult {
+        case completed(interruptWanted: Bool)
+        case submitted
+    }
+
+    private enum RequestBeginResult {
+        case process(DoryFSWorkerAdmissionLease?, previewOpcode: FuseOpcode?)
+        case deferred
+    }
+
     private func popChain(
         queue: Int,
         lifecycleEpoch: UInt64,
         virtqueue: Virtqueue,
         transport: VirtioMMIOTransport
-    ) -> VirtqueueChain? {
+    ) -> ChainPopResult {
         transport.withQueueLock {
             guard drainLock.withLock({ queueLifecycleEpochs[queue] == lifecycleEpoch }),
-                  virtqueue.ready else { return nil }
-            return (try? virtqueue.pop()) ?? nil
+                  virtqueue.ready else { return .empty }
+            do {
+                guard let chain = try virtqueue.pop() else { return .empty }
+                return .chain(chain)
+            } catch {
+                return .terminalFault(error)
+            }
         }
     }
 
-    @discardableResult
     private func process(
         chain: VirtqueueChain,
         queue: Int,
         lifecycleEpoch: UInt64,
         virtqueue: Virtqueue,
-        transport: VirtioMMIOTransport
-    ) -> Bool {
-        let requestEpochs: (notification: UInt64?, cache: UInt64) = notificationLock.withLock {
-            (
-                notificationTransport === transport ? notificationEpoch : nil,
-                responseCacheEpoch
+        transport: VirtioMMIOTransport,
+        admissionLease: DoryFSWorkerAdmissionLease?,
+        previewOpcode: FuseOpcode?
+    ) -> RequestProcessResult {
+        let requestNotificationEpoch: UInt64? = notificationLock.withLock {
+            notificationTransport === transport ? notificationEpoch : nil
+        }
+        guard let admission = chain.withLeaseHeld({ access in
+            VirtioFSRequestAdmission.inspect(
+                chain: chain,
+                access: access,
+                queue: queue,
+                maximumRequestBytes: broker.effectiveAdmissionLimits.maximumRequestBytes,
+                maximumResponseBytes: broker.effectiveAdmissionLimits.maximumResponseBytes
+            )
+        }) else {
+            admissionLease?.release()
+            return .completed(interruptWanted: false)
+        }
+
+        switch admission {
+        case .reject(let rejected):
+            admissionLease?.release()
+            recordRequestRejection()
+            let publication = publishResponse(
+                rejected.response,
+                chain: chain,
+                queue: queue,
+                lifecycleEpoch: lifecycleEpoch,
+                virtqueue: virtqueue,
+                transport: transport
+            )
+            return .completed(
+                interruptWanted: publication.pushed && publication.interruptWanted
+            )
+        case .execute(let request):
+            let shape = DoryFSWorkerAdmissionShape(
+                requestBytes: request.bytes.count,
+                responseBytes: request.maximumResponseBytes
+            )
+            guard let admissionLease,
+                  admissionLease.shape == shape,
+                  request.opcode == previewOpcode else {
+                admissionLease?.release()
+                recordRequestRejection()
+                let publication = publishResponse(
+                    Self.errorResponse(unique: request.header.unique, errno: EAGAIN),
+                    chain: chain,
+                    queue: queue,
+                    lifecycleEpoch: lifecycleEpoch,
+                    virtqueue: virtqueue,
+                    transport: transport
+                )
+                return .completed(
+                    interruptWanted: publication.pushed && publication.interruptWanted
+                )
+            }
+            if let opcode = request.opcode {
+                requestExecutionTestHook?(request.header, opcode)
+            }
+            let admittedAtUptimeNanoseconds = DispatchTime.now().uptimeNanoseconds
+            recordRequestExecution(requestPayloadBytes: request.bytes.count)
+            Task { [weak self, weak transport, admissionLease] in
+                guard let self else {
+                    admissionLease.release()
+                    return
+                }
+                var responsePublished = false
+                defer {
+                    self.recordRequestCompletion(
+                        admittedAtUptimeNanoseconds: admittedAtUptimeNanoseconds,
+                        published: responsePublished
+                    )
+                    self.endRequestProcessing()
+                }
+                guard let transport else {
+                    admissionLease.release()
+                    self.failWorker("virtio-fs transport disappeared before request execution")
+                    return
+                }
+                let now = DispatchTime.now().uptimeNanoseconds
+                let operationLimit = self.broker.limits.maximumOperationNanoseconds
+                let (deadline, overflow) = now.addingReportingOverflow(operationLimit)
+                guard !overflow else {
+                    admissionLease.release()
+                    self.failWorker("virtio-fs worker operation deadline overflow")
+                    return
+                }
+                do {
+                    let execution = try await self.broker.execute(
+                        correlationID: request.header.unique,
+                        opcodeClass: request.opcode?.workerOpcodeClass ?? .control,
+                        request: Data(request.bytes),
+                        responseCapacity: request.maximumResponseBytes,
+                        deadlineUptimeNanoseconds: deadline,
+                        admissionLease: admissionLease
+                    )
+                    self.recordWorkerResponsePayload(bytes: execution.response.count)
+                    let normalized = self.normalizedResponse(
+                        [UInt8](execution.response),
+                        for: request
+                    )
+                    if let opcode = request.opcode {
+                        self.hostResponseSnapshotTestHook?(
+                            request.header,
+                            opcode,
+                            normalized.bytes
+                        )
+                        self.responseFenceTestHook?(request.header, opcode)
+                    }
+                    let publication = self.publishResponse(
+                        normalized.bytes,
+                        chain: chain,
+                        queue: queue,
+                        lifecycleEpoch: lifecycleEpoch,
+                        virtqueue: virtqueue,
+                        transport: transport
+                    )
+                    responsePublished = publication.pushed
+                    if publication.pushed {
+                        self.recordGuestPublishedResponse(bytes: normalized.bytes.count)
+                    }
+                    if publication.pushed && normalized.representsWorkerResponse {
+                        try await self.broker.commitPublication(execution.publication)
+                        if request.opcode == .destroy,
+                           (try? FuseProtocol.decodeOutHeader(normalized.bytes).error) == 0 {
+                            self.notificationLock.withLock {
+                                self.fuseDestroyCommitted = true
+                            }
+                        }
+                    } else {
+                        try await self.broker.discardPublication(execution.publication)
+                    }
+                    if publication.pushed,
+                       request.opcode == .initOp,
+                       (try? FuseProtocol.decodeOutHeader(normalized.bytes).error) == 0,
+                       let requestNotificationEpoch {
+                        self.notificationLock.withLock {
+                            guard self.notificationTransport === transport,
+                                  self.notificationEpoch == requestNotificationEpoch else {
+                                return
+                            }
+                            self.fuseInitCompleted = true
+                        }
+                    }
+                    if publication.pushed && publication.interruptWanted {
+                        transport.notifyUsed()
+                    }
+                    if !publication.pushed, let opcode = request.opcode {
+                        FileHandle.standardError.write(Data(
+                            "dory-hv: virtiofs response unpublished (\(publication.failureReason ?? "unknown")) op=\(opcode) unique=\(request.header.unique) queue=\(queue)\n".utf8
+                        ))
+                    }
+                } catch {
+                    self.failWorker("filesystem worker request failed: \(error)")
+                }
+            }
+            return .submitted
+        }
+    }
+
+    private struct NormalizedWorkerResponse {
+        let bytes: [UInt8]
+        let representsWorkerResponse: Bool
+    }
+
+    private func normalizedResponse(
+        _ serverResponse: [UInt8],
+        for request: VirtioFSAdmittedRequest
+    ) -> NormalizedWorkerResponse {
+        if !request.expectsReply {
+            return NormalizedWorkerResponse(
+                bytes: [],
+                representsWorkerResponse: serverResponse.isEmpty
             )
         }
-        let request = chain.readBytes()
-        var written = 0
-        var decoded: (header: FuseInHeader, opcode: FuseOpcode)?
-        var statsStartNanoseconds: UInt64?
-        var completesFuseInit = false
-        var lifetimeGrantRolledBack = false
-        if let header = try? FuseProtocol.decodeInHeader(request),
-           header.length >= UInt32(FuseInHeader.byteCount), Int(header.length) <= request.count,
-           let opcode = FuseOpcode(rawValue: header.opcode) {
-            decoded = (header, opcode)
-            if stats != nil {
-                statsStartNanoseconds = DispatchTime.now().uptimeNanoseconds
-            }
+        if request.opcode == .interrupt, serverResponse.isEmpty {
+            return NormalizedWorkerResponse(
+                bytes: Self.errorResponse(unique: request.header.unique, errno: 0),
+                representsWorkerResponse: false
+            )
         }
-        if chain.hasWritableSegments, let decoded {
-            let header = decoded.header
-            let opcode = decoded.opcode
-            if opcode == .lookup {
-                let payload = request[FuseInHeader.byteCount..<Int(header.length)]
-                written = server.writeLookupResponse(header: header, payload: payload, writable: chain.writableSegments)
-            } else if opcode == .getattr {
-                let payload = request[FuseInHeader.byteCount..<Int(header.length)]
-                written = server.writeGetattrResponse(
-                    header: header,
-                    payload: payload,
-                    writable: chain.writableSegments
-                )
-            } else if opcode == .read {
-                // Zero-copy fast path: preadv the payload straight into the guest's read buffers.
-                let payload = request[FuseInHeader.byteCount..<Int(header.length)]
-                written = server.writeReadResponse(header: header, payload: payload, writable: chain.writableSegments)
-            } else if opcode == .write {
-                let payload = request[FuseInHeader.byteCount..<Int(header.length)]
-                written = server.writeWriteResponse(header: header, payload: payload, writable: chain.writableSegments)
-            } else if opcode == .release || opcode == .releasedir {
-                let payload = request[FuseInHeader.byteCount..<Int(header.length)]
-                written = server.writeReleaseResponse(header: header, payload: payload, writable: chain.writableSegments)
-            } else if opcode == .flush {
-                let payload = request[FuseInHeader.byteCount..<Int(header.length)]
-                written = server.writeFlushResponse(
-                    header: header,
-                    payload: payload,
-                    writable: chain.writableSegments
-                )
-            } else if opcode == .getxattr {
-                written = server.writeGetXattrNoDataResponse(header: header, writable: chain.writableSegments)
-            } else if opcode == .create {
-                let payload = request[FuseInHeader.byteCount..<Int(header.length)]
-                written = server.writeCreateResponse(header: header, payload: payload, writable: chain.writableSegments)
-            } else if opcode == .mkdir {
-                let payload = request[FuseInHeader.byteCount..<Int(header.length)]
-                written = server.writeMkdirResponse(header: header, payload: payload, writable: chain.writableSegments)
-            } else if opcode == .unlink || opcode == .rmdir {
-                let payload = request[FuseInHeader.byteCount..<Int(header.length)]
-                written = server.writeRemoveResponse(header: header, opcode: opcode, payload: payload, writable: chain.writableSegments)
-            }
+        guard serverResponse.count >= FuseOutHeader.byteCount,
+              serverResponse.count <= request.maximumResponseBytes,
+              let header = try? FuseProtocol.decodeOutHeader(serverResponse),
+              Int(header.length) == serverResponse.count,
+              header.unique == request.header.unique else {
+            return NormalizedWorkerResponse(
+                bytes: Self.errorResponse(unique: request.header.unique, errno: EIO),
+                representsWorkerResponse: false
+            )
         }
-        if written == 0 {
-            if let decoded {
-                // FORGET/BATCH_FORGET deliberately have no reply. Every other valid FUSE request
-                // needs at least one writable descriptor; never execute a stateful operation when
-                // the guest supplied nowhere to publish its newly granted node/handle reference.
-                if chain.hasWritableSegments
-                    || decoded.opcode == .forget
-                    || decoded.opcode == .batchForget {
-                    let response = server.handle(
-                        header: decoded.header,
-                        opcode: decoded.opcode,
-                        request: request
-                    )
-                    let responseWritten = chain.writeBytes(response)
-                    if responseWritten == response.count {
-                        written = responseWritten
-                        completesFuseInit = decoded.opcode == .initOp
-                            && (try? FuseProtocol.decodeOutHeader(response).error) == 0
-                    } else {
-                        // The operation may already have succeeded, but a partial FUSE frame is not
-                        // publishable. Revoke its server-side grants and return a complete transport
-                        // error when the chain can at least hold fuse_out_header.
-                        server.rollbackUnpublishedResponse(
-                            opcode: decoded.opcode,
-                            response: response
-                        )
-                        lifetimeGrantRolledBack = true
-                        var error = [UInt8]()
-                        error.appendLE(UInt32(FuseOutHeader.byteCount))
-                        error.appendLE(UInt32(bitPattern: -FuseProtocol.linuxErrno(EIO)))
-                        error.appendLE(decoded.header.unique)
-                        written = chain.writeBytes(error)
-                        if written != error.count { written = 0 }
-                    }
-                }
-            } else if chain.hasWritableSegments {
-                written = chain.writeBytes(server.handle(request: request))
-            }
-        }
-        if let decoded {
-            responseFenceTestHook?(decoded.header, decoded.opcode)
-        }
-        // `Virtqueue.push` publishes unconditionally once the queue is live; its Bool only reports
-        // whether the guest wants a used-ring interrupt (VRING_AVAIL_F_NO_INTERRUPT). Track
-        // publication separately: treating interrupt suppression as a failed publish rolled back
-        // handle/lookup grants the guest had legitimately received, poisoning rm/npm storms.
+        return NormalizedWorkerResponse(
+            bytes: serverResponse,
+            representsWorkerResponse: true
+        )
+    }
+
+    private struct ResponsePublication {
+        let pushed: Bool
+        let interruptWanted: Bool
+        let failureReason: String?
+    }
+
+    private func publishResponse(
+        _ response: [UInt8],
+        chain: VirtqueueChain,
+        queue: Int,
+        lifecycleEpoch: UInt64,
+        virtqueue: Virtqueue,
+        transport: VirtioMMIOTransport
+    ) -> ResponsePublication {
         var interruptWanted = false
-        var publishFailureReason: String?
+        var failureReason: String?
         let pushed = transport.withQueueLock {
             guard drainLock.withLock({ queueLifecycleEpochs[queue] == lifecycleEpoch }) else {
-                publishFailureReason = "lifecycle epoch changed"
+                failureReason = "lifecycle epoch changed"
                 return false
             }
             guard virtqueue.ready else {
-                publishFailureReason = "queue not ready"
+                failureReason = "queue not ready"
                 return false
             }
-            return notificationLock.withLock {
-                if responseCacheEpoch != requestEpochs.cache, let decoded {
-                    // Queue-health degradation can overtake a worker outside the register lock.
-                    // Such a response may keep its payload, but it cannot carry a pre-degradation
-                    // entry/attribute validity grant. Normal host edits use the full request gate,
-                    // preserving LOOKUP identities and READ payload ordering as well.
-                    _ = server.neutralizeCacheGrants(
-                        opcode: decoded.opcode,
-                        writable: chain.writableSegments,
-                        written: written
-                    )
+            return requestGateLock.withLock {
+                guard !requestGateFailureLatched else {
+                    failureReason = "request gate latched"
+                    return false
                 }
-                // A high-level invalidation deadline is a one-way publication boundary. HostFS
-                // work admitted before that boundary may already have performed its host syscall
-                // and cannot be rolled back here, but its response must never become guest-visible
-                // afterward. An already-admitted syscall cannot be canceled and keeps normal host
-                // last-writer semantics; this fence covers only response publication and new work.
-                return requestGateLock.withLock {
-                    guard !requestGateFailureLatched else {
-                        publishFailureReason = "request gate latched"
-                        return false
-                    }
-                    do {
-                        interruptWanted = try virtqueue.push(chain, written: written)
-                        return true
-                    } catch {
-                        publishFailureReason = "virtqueue push threw: \(error)"
-                        return false
-                    }
+                guard virtqueue.isLeaseValid(chain) else {
+                    failureReason = "queue lease changed"
+                    return false
+                }
+                guard chain.withLeaseHeld({ access in
+                    access.writeBytes(response) == response.count
+                }) == true else {
+                    failureReason = "bounded response copy failed"
+                    return false
+                }
+                do {
+                    interruptWanted = try virtqueue.push(chain, written: response.count)
+                    return true
+                } catch {
+                    failureReason = "virtqueue push threw: \(error)"
+                    return false
                 }
             }
         }
-        if pushed, completesFuseInit, let requestNotificationEpoch = requestEpochs.notification {
-            notificationLock.withLock {
-                guard notificationTransport === transport,
-                      notificationEpoch == requestNotificationEpoch else { return }
-                server.markFuseInitCompleted()
-            }
-        }
-        if !pushed, !lifetimeGrantRolledBack, let decoded {
-            FileHandle.standardError.write(Data(
-                "dory-hv: virtiofs response unpublished (\(publishFailureReason ?? "unknown")) op=\(decoded.opcode) unique=\(decoded.header.unique) queue=\(queue)\n".utf8
-            ))
-            server.rollbackUnpublishedResponse(
-                opcode: decoded.opcode,
-                writable: chain.writableSegments,
-                written: written
-            )
-        }
-        if let decoded, let statsStartNanoseconds {
-            stats?.recordCompletion(
-                decoded.opcode,
-                durationNanoseconds: DispatchTime.now().uptimeNanoseconds &- statsStartNanoseconds
-            )
-        }
-        return pushed && interruptWanted
+        return ResponsePublication(
+            pushed: pushed,
+            interruptWanted: interruptWanted,
+            failureReason: failureReason
+        )
     }
+
+    private func failWorker(_ reason: String) {
+        latchRequestGateFailure(barrier: nil)
+        onWorkerLifecycle(.failure(reason))
+    }
+
+    private static func errorResponse(unique: UInt64, errno: Int32) -> [UInt8] {
+        FuseProtocol.encodeOutHeader(FuseOutHeader(
+            length: UInt32(FuseOutHeader.byteCount),
+            error: errno == 0 ? 0 : -FuseProtocol.linuxErrno(errno),
+            unique: unique
+        ))
+    }
+
 }
 
 private struct PendingNotification {
@@ -937,16 +1300,18 @@ private extension VirtioFS {
     }
 
     func makeNotificationBuffer(_ chain: VirtqueueChain) -> NotificationBuffer? {
-        guard chain.readableSegments.isEmpty,
-              chain.writableSegments.count == 1,
-              let segment = chain.writableSegments.first,
-              segment.length >= Int(Self.notificationBufferSize) else {
-            return nil
-        }
-        // The patched guest reuses its kzalloc'd page but virtio may choose a new descriptor head
-        // when it reposts it. GuestMemory has a stable mapping, so its host pointer is a stable
-        // identity for the underlying guest buffer across those descriptor changes.
-        return NotificationBuffer(key: UInt(bitPattern: segment.pointer), chain: chain)
+        chain.withLeaseHeld { access -> NotificationBuffer? in
+            guard access.readableSegments.isEmpty,
+                  access.writableSegments.count == 1,
+                  let segment = access.writableSegments.first,
+                  segment.length >= Int(Self.notificationBufferSize) else {
+                return nil
+            }
+            // The patched guest reuses its kzalloc'd page but virtio may choose a new descriptor
+            // head when it reposts it. Capture only the integer identity while the lease is held;
+            // the raw segment itself never escapes this callback.
+            return NotificationBuffer(key: UInt(bitPattern: segment.pointer), chain: chain)
+        } ?? nil
     }
 
     func pumpNotificationsLocked(queue: Virtqueue, effects: inout NotificationEffects) {
@@ -1010,7 +1375,7 @@ private extension VirtioFS {
         // A QueueReady disable/reconfigure invalidates every retained descriptor immediately. Keep
         // feature negotiation and FUSE INIT only when the device itself remains live, but require a
         // fresh complete set of stable buffers before metadata caching can be reactivated.
-        server.deactivateCoherentCaching(resetFuseInit: resetFuseInit)
+        if resetFuseInit { fuseInitCompleted = false }
         responseCacheEpoch &+= 1
         notificationEpoch &+= 1
         let barriers = notificationBarrierTargets.map(\.barrier)
@@ -1034,7 +1399,7 @@ private extension VirtioFS {
             notificationQueueReady: featureNegotiated && notificationQueueReady,
             stableNotificationBufferCount: observedNotificationBufferKeys.count,
             requiredStableNotificationBufferCount: Self.requiredStableNotificationBufferCountForCaching,
-            fuseInitCompleted: server.fuseInitCompleted
+            fuseInitCompleted: fuseInitCompleted
         )
     }
 
@@ -1106,38 +1471,113 @@ private extension VirtioFS {
         try result.get()
     }
 
-    func beginRequestProcessing(
+    private func beginRequestProcessing(
         queue: Int,
         lifecycleEpoch: UInt64,
         virtqueue: Virtqueue,
         transport: VirtioMMIOTransport
-    ) -> Bool {
-        // Resolve, but do not consume, the next opcode before taking requestGateLock. Queue access
-        // always precedes gate state elsewhere too, avoiding a transport -> gate lock inversion.
-        let opcode: FuseOpcode? = transport.withQueueLock {
+    ) -> RequestBeginResult {
+        // Resolve, but do not consume, the next exact admission shape before taking
+        // requestGateLock. Queue access always precedes gate state elsewhere too, avoiding a
+        // transport -> gate lock inversion. Rejected guest requests need no workspace lease.
+        var queueFault: (any Error)?
+        let preview: (opcode: FuseOpcode?, shape: DoryFSWorkerAdmissionShape?) =
+            transport.withQueueLock {
             guard drainLock.withLock({ queueLifecycleEpochs[queue] == lifecycleEpoch }),
-                  virtqueue.ready,
-                  let chain = try? virtqueue.peek() else { return nil }
-            let request = chain.readBytes(maximum: FuseInHeader.byteCount)
-            guard let header = try? FuseProtocol.decodeInHeader(request) else { return nil }
-            return FuseOpcode(rawValue: header.opcode)
+                  virtqueue.ready else { return (nil, nil) }
+            let chain: VirtqueueChain
+            do {
+                guard let pending = try virtqueue.peek() else { return (nil, nil) }
+                chain = pending
+            } catch {
+                queueFault = error
+                return (nil, nil)
+            }
+            guard let preview = chain.withLeaseHeld({ access in
+                VirtioFSRequestAdmission.preview(
+                    chain: chain,
+                    access: access,
+                    queue: queue,
+                    maximumRequestBytes: broker.effectiveAdmissionLimits.maximumRequestBytes,
+                    maximumResponseBytes: broker.effectiveAdmissionLimits.maximumResponseBytes
+                )
+            }) else { return (nil, nil) }
+            guard let requestBytes = preview.requestBytes,
+                  let responseBytes = preview.responseBytes else {
+                return (preview.opcode, nil)
+            }
+            return (
+                preview.opcode,
+                DoryFSWorkerAdmissionShape(
+                    requestBytes: requestBytes,
+                    responseBytes: responseBytes
+                )
+            )
+        }
+        if let queueFault {
+            recordTerminalQueueFault(queueFault, queue: queue)
+            return .deferred
         }
         return requestGateLock.withLock {
             guard !connectionResetPending, !requestGateFailureLatched else {
+                grantedAdmissions.removeValue(forKey: queue)?.release()
                 deferredRequestQueues.insert(queue)
-                return false
+                return .deferred
             }
             // A delayed write may be writeback copied before the host edit. Keep it in the guest's
             // available ring until reverse invalidation succeeds or the VM is discarded. All other
             // object operations must be able to finish so the guest can release VFS locks needed by
             // its notification worker. Unknown/malformed requests remain fail-closed.
             if requestGateClosed,
-               opcode?.mayDrainDuringReverseInvalidation != true {
+               preview.opcode?.mayDrainDuringReverseInvalidation != true {
+                grantedAdmissions.removeValue(forKey: queue)?.release()
                 deferredRequestQueues.insert(queue)
-                return false
+                return .deferred
             }
-            activeRequestCount += 1
-            return true
+            guard let shape = preview.shape else {
+                activeRequestCount += 1
+                return .process(nil, previewOpcode: preview.opcode)
+            }
+            if let granted = grantedAdmissions.removeValue(forKey: queue) {
+                guard granted.shape == shape else {
+                    granted.release()
+                    activeRequestCount += 1
+                    return .process(nil, previewOpcode: preview.opcode)
+                }
+                activeRequestCount += 1
+                return .process(granted, previewOpcode: preview.opcode)
+            }
+            guard !deferredAdmissionQueues.contains(queue) else { return .deferred }
+            let waiterID = admissionWaiterIDs[queue]
+            let result = broker.requestFrontendAdmission(
+                shape: shape,
+                waiterID: waiterID
+            ) { [weak self, weak transport] resolution in
+                switch resolution {
+                case .granted(let lease):
+                    guard let self, let transport else {
+                        lease.release()
+                        return
+                    }
+                    self.receiveGrantedAdmission(lease, queue: queue, transport: transport)
+                case .terminated(let error):
+                    self?.receiveTerminatedAdmission(error, queue: queue)
+                }
+            }
+            switch result {
+            case .admitted(let lease):
+                activeRequestCount += 1
+                return .process(lease, previewOpcode: preview.opcode)
+            case .deferred:
+                deferredAdmissionQueues.insert(queue)
+                return .deferred
+            case .rejected:
+                // Exact per-request ceilings were already applied while peeking. If the typed
+                // authority still rejects, consume this guest request only to publish retryable
+                // EAGAIN; never reinterpret ordinary capacity as worker loss.
+                activeRequestCount += 1
+                return .process(nil, previewOpcode: preview.opcode)
+            }
         }
     }
 
@@ -1148,7 +1588,9 @@ private extension VirtioFS {
         ) = requestGateLock.withLock {
             precondition(activeRequestCount > 0)
             activeRequestCount -= 1
-            guard activeRequestCount == 0 else { return ([], false) }
+            guard activeRequestCount == 0 else {
+                return ([], false)
+            }
             let shouldReset = connectionResetPending && !connectionResetInProgress
             if shouldReset {
                 connectionResetInProgress = true
@@ -1158,26 +1600,101 @@ private extension VirtioFS {
             requestGateWaiters.removeAll(keepingCapacity: true)
             return (waiters, shouldReset)
         }
-        if result.shouldReset {
-            server.resetConnection()
-            finishConnectionReset()
-        }
+        if result.shouldReset { invalidateWorkerForConnectionReset() }
         for waiter in result.waiters {
             waiter.resume(returning: .success(()))
         }
     }
 
-    func beginConnectionReset(transport: VirtioMMIOTransport) {
-        let shouldReset = requestGateLock.withLock {
-            connectionResetPending = true
-            connectionResetTransport = transport
-            guard activeRequestCount == 0, !connectionResetInProgress else { return false }
-            connectionResetInProgress = true
+    func receiveGrantedAdmission(
+        _ lease: DoryFSWorkerAdmissionLease,
+        queue: Int,
+        transport: VirtioMMIOTransport
+    ) {
+        let shouldSchedule = requestGateLock.withLock {
+            deferredAdmissionQueues.remove(queue)
+            guard !connectionResetPending,
+                  !requestGateFailureLatched,
+                  grantedAdmissions[queue] == nil else { return false }
+            grantedAdmissions[queue] = lease
             return true
         }
-        guard shouldReset else { return }
-        server.resetConnection()
-        finishConnectionReset()
+        guard shouldSchedule else {
+            lease.release()
+            return
+        }
+        workers.async { [weak self, weak transport] in
+            guard let self, let transport else {
+                lease.release()
+                return
+            }
+            self.handleKick(queue: queue, transport: transport)
+        }
+    }
+
+    func receiveTerminatedAdmission(
+        _ error: DoryFSWorkerBrokerError,
+        queue: Int
+    ) {
+        let shouldReport = requestGateLock.withLock {
+            deferredAdmissionQueues.remove(queue)
+            guard !frontendAdmissionTerminationReported else { return false }
+            frontendAdmissionTerminationReported = true
+            return true
+        }
+        guard shouldReport else { return }
+        failWorker("filesystem worker admission terminated: \(error)")
+    }
+
+    func beginConnectionReset(
+        transport: VirtioMMIOTransport,
+        event: VirtioFSWorkerLifecycleEvent
+    ) {
+        let result = requestGateLock.withLock { () -> (Bool, FrontendAdmissionCleanup) in
+            connectionResetPending = true
+            connectionResetTransport = transport
+            requestGateClosed = true
+            requestGateFailureLatched = true
+            let cleanup = detachFrontendAdmissionsLocked()
+            if connectionResetEvent == nil {
+                connectionResetEvent = event
+            }
+            guard activeRequestCount == 0,
+                  !connectionResetInProgress else { return (false, cleanup) }
+            connectionResetInProgress = true
+            return (true, cleanup)
+        }
+        releaseFrontendAdmissions(result.1)
+        guard result.0 else { return }
+        invalidateWorkerForConnectionReset()
+    }
+
+    func invalidateWorkerForConnectionReset() {
+        Task { [weak self] in
+            guard let self else { return }
+            let event = requestGateLock.withLock {
+                connectionResetEvent
+                    ?? .failure("filesystem worker generation invalidated by virtio-fs device reset")
+            }
+            let reportedEvent: VirtioFSWorkerLifecycleEvent
+            switch event {
+            case .connectionTeardown:
+                do {
+                    try await broker.completeConnectionTeardown()
+                    reportedEvent = .connectionTeardown
+                } catch {
+                    await broker.invalidate()
+                    reportedEvent = .failure(
+                        "filesystem worker connection teardown was not quiescent: \(error)"
+                    )
+                }
+            case .failure:
+                await broker.invalidate()
+                reportedEvent = event
+            }
+            onWorkerLifecycle(reportedEvent)
+            finishConnectionReset()
+        }
     }
 
     func finishConnectionReset() {
@@ -1185,6 +1702,7 @@ private extension VirtioFS {
             guard connectionResetInProgress else { return nil }
             connectionResetInProgress = false
             connectionResetPending = false
+            connectionResetEvent = nil
             if requestGateClosed {
                 if requestGateTransport == nil {
                     requestGateTransport = connectionResetTransport
@@ -1300,7 +1818,7 @@ private extension VirtioFS {
     /// different executor, so the publication boundary must be established synchronously here.
     /// Constructing the replacement VM/backend is the only operation that clears this latch.
     func latchRequestGateFailure(barrier: VirtioFSNotificationBarrier?) {
-        requestGateLock.withLock {
+        let cleanup = requestGateLock.withLock {
             requestGateClosed = true
             requestGateFailureLatched = true
             if let barrier {
@@ -1308,7 +1826,9 @@ private extension VirtioFS {
                 requestGateBarriers.removeValue(forKey: identifier)
                 requestGateCallerRetainedBarriers.remove(identifier)
             }
+            return detachFrontendAdmissionsLocked()
         }
+        releaseFrontendAdmissions(cleanup)
     }
 
     func openRequestGateIfResolvedLocked() -> RequestGateRelease? {
@@ -1340,23 +1860,30 @@ private extension VirtioFS {
         }
     }
 
-    static func requestQueueCountFromEnvironment() -> Int {
-        guard let value = ProcessInfo.processInfo.environment["DORY_FUSE_QUEUES"].flatMap(Int.init) else {
-            return min(8, max(1, ProcessInfo.processInfo.activeProcessorCount))
+    func detachFrontendAdmissionsLocked() -> FrontendAdmissionCleanup {
+        let waiters = deferredAdmissionQueues.map { admissionWaiterIDs[$0] }
+        let leases = Array(grantedAdmissions.values)
+        deferredAdmissionQueues.removeAll(keepingCapacity: false)
+        grantedAdmissions.removeAll(keepingCapacity: false)
+        return FrontendAdmissionCleanup(waiters: waiters, leases: leases)
+    }
+
+    func releaseFrontendAdmissions(_ cleanup: FrontendAdmissionCleanup) {
+        for waiter in cleanup.waiters {
+            broker.cancelFrontendAdmission(waiterID: waiter)
         }
-        return value
+        for lease in cleanup.leases { lease.release() }
     }
 
     static func clampedRequestQueueCount(_ count: Int) -> Int {
         min(16, max(1, count))
     }
 
-    static func inlineRequestsFromEnvironment() -> Bool {
-        guard let value = ProcessInfo.processInfo.environment["DORY_FUSE_INLINE"]?.lowercased() else {
-            return true
-        }
-        return !["0", "false", "no", "off"].contains(value)
-    }
+}
+
+private struct FrontendAdmissionCleanup {
+    let waiters: [DoryFSWorkerAdmissionWaiterID]
+    let leases: [DoryFSWorkerAdmissionLease]
 }
 
 private extension FuseOpcode {
@@ -1366,54 +1893,12 @@ private extension FuseOpcode {
     /// locks and remain behind the boundary too, keeping the exceptional path minimal.
     var mayDrainDuringReverseInvalidation: Bool {
         switch self {
-        case .write, .statfs, .initOp, .destroy, .interrupt, .notifyReply,
+        case .write, .statfs, .syncfs, .initOp, .destroy, .interrupt, .notifyReply,
              .forget, .batchForget:
             false
         default:
             true
         }
-    }
-}
-
-private final class VirtioFSStats: @unchecked Sendable {
-    private let tag: String
-    private let lock = NSLock()
-    private var counts: [FuseOpcode: Int] = [:]
-    private var durationNanoseconds: [FuseOpcode: UInt64] = [:]
-    private var total = 0
-
-    init(tag: String) {
-        self.tag = tag
-    }
-
-    static func fromEnvironment(tag: String) -> VirtioFSStats? {
-        let value = ProcessInfo.processInfo.environment["DORY_FUSE_STATS"] ?? ""
-        guard ["1", "true", "yes", "on"].contains(value.lowercased()) else { return nil }
-        FileHandle.standardError.write(Data("dory-hv: virtiofs stats enabled tag=\(tag)\n".utf8))
-        return VirtioFSStats(tag: tag)
-    }
-
-    func recordCompletion(_ opcode: FuseOpcode, durationNanoseconds elapsed: UInt64) {
-        let snapshot: (Int, [FuseOpcode: Int], [FuseOpcode: UInt64])? = lock.withLock {
-            total += 1
-            counts[opcode, default: 0] += 1
-            durationNanoseconds[opcode, default: 0] &+= elapsed
-            guard total <= 20 || total.isMultiple(of: 100) else { return nil }
-            return (total, counts, durationNanoseconds)
-        }
-        guard let snapshot else { return }
-        let line = snapshot.1
-            .sorted { lhs, rhs in lhs.key.rawValue < rhs.key.rawValue }
-            .map { opcode, count in
-                let nanoseconds = snapshot.2[opcode] ?? 0
-                let totalMilliseconds = Double(nanoseconds) / 1_000_000
-                let averageMicroseconds = count == 0 ? 0 : Double(nanoseconds) / Double(count) / 1_000
-                let totalText = String(format: "%.3f", totalMilliseconds)
-                let averageText = String(format: "%.1f", averageMicroseconds)
-                return "\(opcode)=\(count)/\(totalText)ms/\(averageText)us"
-            }
-            .joined(separator: " ")
-        FileHandle.standardError.write(Data("dory-hv: virtiofs stats tag=\(tag) total=\(snapshot.0) \(line)\n".utf8))
     }
 }
 

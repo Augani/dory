@@ -25,10 +25,80 @@ public final class EngineStateDirectoryLock: @unchecked Sendable {
     public let path: String
     private let descriptor: Int32
 
+    /// Acquires the lock relative to an already pinned managed root. This is the Docker engine's
+    /// production launch path: neither an intermediate link nor a replaced root pathname can
+    /// redirect the lock after the data drive has been admitted.
+    public init(
+        trustedDirectoryRoot: DoryTrustedDirectoryRoot,
+        lockFileName: String = "engine.lock"
+    ) throws {
+        guard !lockFileName.isEmpty,
+              lockFileName != ".",
+              lockFileName != "..",
+              !lockFileName.contains("/") else {
+            throw EngineStateDirectoryLockError.cannotOpen(
+                path: trustedDirectoryRoot.canonicalPath + "/" + lockFileName,
+                errno: EINVAL
+            )
+        }
+        path = trustedDirectoryRoot.canonicalPath + "/" + lockFileName
+        let opened = try trustedDirectoryRoot.withBorrowedDescriptor { rootDescriptor in
+            openat(
+                rootDescriptor,
+                lockFileName,
+                O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW,
+                mode_t(0o600)
+            )
+        }
+        guard opened >= 0 else {
+            throw EngineStateDirectoryLockError.cannotOpen(path: path, errno: errno)
+        }
+        var status = stat()
+        guard fstat(opened, &status) == 0,
+              status.st_mode & S_IFMT == S_IFREG,
+              status.st_uid == getuid(),
+              status.st_nlink == 1 else {
+            Darwin.close(opened)
+            throw EngineStateDirectoryLockError.cannotOpen(path: path, errno: EINVAL)
+        }
+        guard flock(opened, LOCK_EX | LOCK_NB) == 0 else {
+            let lockError = errno
+            let owner = Self.ownerDescription(descriptor: opened)
+            Darwin.close(opened)
+            throw EngineStateDirectoryLockError.alreadyInUse(
+                stateDirectory: trustedDirectoryRoot.canonicalPath,
+                path: path,
+                owner: owner,
+                errno: lockError
+            )
+        }
+        descriptor = opened
+        _ = Darwin.fchmod(descriptor, mode_t(0o600))
+
+        let owner = "pid=\(getpid())\nstate=\(trustedDirectoryRoot.canonicalPath)\n"
+        _ = Darwin.ftruncate(descriptor, 0)
+        owner.withCString { pointer in
+            _ = Darwin.write(descriptor, pointer, strlen(pointer))
+        }
+        _ = Darwin.fsync(descriptor)
+    }
+
     public init(stateDirectory: String, lockFileName: String = "engine.lock") throws {
-        let standardizedState = URL(fileURLWithPath: stateDirectory).standardizedFileURL.path
+        let canonicalState: String
+        do {
+            // Use the same physical, no-follow spelling as the journal/data-drive authority.
+            // Foundation can preserve or rewrite aliases such as /tmp inconsistently, which
+            // makes one real lock fail an exact authority comparison under two path spellings.
+            canonicalState = try DoryDataDrive.canonicalPath(stateDirectory)
+        } catch {
+            throw EngineStateDirectoryLockError.cannotOpen(
+                path: URL(fileURLWithPath: stateDirectory).standardizedFileURL.path
+                    + "/" + lockFileName,
+                errno: EINVAL
+            )
+        }
         try FileManager.default.createDirectory(
-            atPath: standardizedState,
+            atPath: canonicalState,
             withIntermediateDirectories: true
         )
         guard !lockFileName.isEmpty,
@@ -36,11 +106,11 @@ public final class EngineStateDirectoryLock: @unchecked Sendable {
               lockFileName != "..",
               !lockFileName.contains("/") else {
             throw EngineStateDirectoryLockError.cannotOpen(
-                path: standardizedState + "/" + lockFileName,
+                path: canonicalState + "/" + lockFileName,
                 errno: EINVAL
             )
         }
-        path = standardizedState + "/" + lockFileName
+        path = canonicalState + "/" + lockFileName
 
         let opened = path.withCString {
             Darwin.open($0, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, mode_t(0o600))
@@ -61,7 +131,7 @@ public final class EngineStateDirectoryLock: @unchecked Sendable {
             let owner = Self.ownerDescription(descriptor: opened)
             Darwin.close(opened)
             throw EngineStateDirectoryLockError.alreadyInUse(
-                stateDirectory: standardizedState,
+                stateDirectory: canonicalState,
                 path: path,
                 owner: owner,
                 errno: lockError
@@ -70,7 +140,7 @@ public final class EngineStateDirectoryLock: @unchecked Sendable {
         descriptor = opened
         _ = Darwin.fchmod(descriptor, mode_t(0o600))
 
-        let owner = "pid=\(getpid())\nstate=\(standardizedState)\n"
+        let owner = "pid=\(getpid())\nstate=\(canonicalState)\n"
         _ = Darwin.ftruncate(descriptor, 0)
         owner.withCString { pointer in
             _ = Darwin.write(descriptor, pointer, strlen(pointer))

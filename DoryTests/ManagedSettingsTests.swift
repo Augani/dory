@@ -26,7 +26,6 @@ struct ManagedSettingsTests {
             keepPinnedProjectsAwake: false,
             showWakeNotifications: false
         )
-        store.machineEnvAllowList = ["PATH", "GITHUB_TOKEN"]
         store.engineCPUCount = 4
         store.engineMemoryMB = 6144
 
@@ -49,7 +48,7 @@ struct ManagedSettingsTests {
         #expect(profile.fileSharing.defaultPolicy == "safe-scoped")
         #expect(profile.fileSharing.scopedMountsRequiredForSandboxes)
         #expect(profile.fileSharing.credentialStoresHidden)
-        #expect(profile.fileSharing.machineEnvAllowList == ["PATH", "GITHUB_TOKEN"])
+        #expect(profile.fileSharing.machineEnvAllowList.isEmpty)
         #expect(profile.telemetry.mode == "none")
 
         let json = store.managedSettingsJSON()

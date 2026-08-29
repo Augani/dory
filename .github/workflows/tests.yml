@@ -31,12 +31,78 @@ jobs:
         run: |
           newest="$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)"
           echo "DEVELOPER_DIR=$newest/Contents/Developer" >> "$GITHUB_ENV"
-      - name: Dory CLI machine create
-        run: .github/scripts/test-dory-machine-create.sh
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
       - name: Install Protocol Buffers compiler
         run: brew install protobuf
+      - name: Build shared Rust guest-control client
+        run: scripts/build-dory-ffi-xcframework.sh --if-needed
+      - name: Dory CLI machine create
+        run: .github/scripts/test-dory-machine-create.sh
+      - name: Signed release metadata contract
+        run: |
+          python3 .github/scripts/test-release-metadata.py
+          python3 .github/scripts/test-release-output-validator.py
+          python3 .github/scripts/test-homebrew-install-gate.py
+          python3 .github/scripts/test-container-engine-performance-gate.py
+          python3 .github/scripts/test-linux-vm-performance-evidence.py
+          python3 -B scripts/test-linux-vm-performance-bundle.py -v
+          python3 .github/scripts/test-renderer-production-tuple.py
+          python3 -B .github/scripts/test-renderer-release-identity.py -v
+          scripts/test-build-renderer-components.sh
+          python3 .github/scripts/test-source-preserving-lan-gate.py
+          python3 .github/scripts/test-sparkle-install-relaunch-gate.py
+          python3 .github/scripts/test-vz-native-ipv6-gate.py
+          bash scripts/test-make-dmg.sh
+          bash scripts/test-app-update-payload.sh
+          bash scripts/test-verify-macos-deployment-targets.sh
+          python3 .github/scripts/test-release-orchestrator.py
+          bash scripts/test-dmg-distribution-signing.sh
+          python3 .github/scripts/test-ci-umbrella.py
+          python3 .github/scripts/test-interrupted-upgrade-rollback-gate.py
+          python3 .github/scripts/test-generate-appcast.py
+          python3 .github/scripts/test-release-sbom.py
+          python3 .github/scripts/test-direct-dmg-install-gate.py
+          python3 .github/scripts/test-desktop-linux-live-gate.py
+          python3 .github/scripts/test-graphics-pack-installer.py
+          python3 .github/scripts/test-graphics-backend-resolver.py
+          python3 .github/scripts/test-machine-resource-reconfiguration-gate.py
+          python3 .github/scripts/test-sandbox-security-gate.py
+          python3 .github/scripts/test-ssh-agent-forwarding-gate.py
+          python3 .github/scripts/test-bind-advisory-lock-gate.py
+          python3 .github/scripts/test-nonnative-build-smoke.py
+          python3 .github/scripts/test-external-volume-bind-gate.py
+          python3 .github/scripts/test-host-network-integrity-gate.py
+          python3 .github/scripts/test-readiness-gate.py
+          python3 .github/scripts/test-release-candidate-live-smoke.py
+          python3 .github/scripts/test-live-migration-gate.py
+          python3 .github/scripts/test-devcontainers-compatibility-gate.py
+          python3 .github/scripts/test-act-compatibility-gate.py
+          python3 .github/scripts/test-testcontainers-compatibility-gate.py
+          python3 .github/scripts/test-localstack-compatibility-gate.py
+          python3 .github/scripts/test-tilt-compose-compatibility-gate.py
+          python3 .github/scripts/test-supabase-compatibility-gate.py
+          python3 .github/scripts/test-kubernetes-tooling-compatibility-gate.py
+          python3 .github/scripts/test-default-platform-image-gate.py
+          python3 .github/scripts/test-bind-file-coherence-gate.py
+          python3 .github/scripts/test-prune-safety-gate.py
+          python3 .github/scripts/test-data-drive-volume-identity-gate.py
+          python3 .github/scripts/test-data-disk-growth-gate.py
+          python3 .github/scripts/test-ecr-registry-retry-gate.py
+          python3 .github/scripts/test-private-registry-auth-gate.py
+          python3 .github/scripts/test-offline-bundled-boot-gate.py
+          python3 .github/scripts/test-competitor-runtime-regression-gate.py
+          python3 .github/scripts/test-managed-data-drive-gate.py
+          python3 .github/scripts/test-native-ipv6-gate.py
+          python3 .github/scripts/test-nonnative-exec-conformance-gate.py
+          python3 .github/scripts/test-nonnative-nix-gc-gate.py
+          python3 .github/scripts/test-nonnative-arch-pacman-gate.py
+          python3 .github/scripts/test-nonnative-mmdebstrap-gate.py
+          python3 .github/scripts/test-gvproxy-qemu-switch-gate.py
+          python3 .github/scripts/test-long-lived-network-soak.py
+          python3 .github/scripts/test-endurance-reliability-soak.py
+          python3 .github/scripts/test-release-candidate-qualifier.py
+          python3 .github/scripts/test-release-qualification-verifier.py
       - name: Install Go toolchain
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:

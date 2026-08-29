@@ -29,9 +29,10 @@ Docker dataplane, selected `.dorydrive`, and userspace gvproxy network contract.
 - **Supported:** Apple-silicon Docker/Compose/Buildx on macOS 14+, raw-HV on macOS 15+, Sonoma VZ
   fallback, explicit external Docker sockets, dedicated agent sandbox VMs, Build Activity for
   Dory-launched work, exact-selection transactional migration, verified scheduled local machine
-  backups, Dory's control MCP, and host USB discovery.
-- **Preview:** Venus/Vulkan on the arm64 raw-HV path, remote SSH workspace foundations, and custom
-  machine kernel/rootfs inputs within the published image contract.
+  backups, Dory's control MCP, host USB discovery, and capability-probed Venus/Vulkan for managed
+  arm64 desktop applications.
+- **Preview:** Remote SSH workspace foundations and custom machine kernel/rootfs inputs within the
+  published image contract.
 - **Unavailable:** USB attach/detach/replay, audio passthrough, managed remote/offsite machine
   backup, third-party MCP catalog/gateway, image-update orchestration, mDNS/multicast relay or
   general L2 bridging, Intel public releases, and Windows/Linux host apps.

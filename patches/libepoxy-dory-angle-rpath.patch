@@ -1,0 +1,17 @@
+diff --git a/src/dispatch_common.c b/src/dispatch_common.c
+index 770563c..b61354a 100644
+--- a/src/dispatch_common.c
++++ b/src/dispatch_common.c
+@@ -177,10 +177,10 @@
+ 
+ #if defined(__APPLE__)
+ #define GLX_LIB "/opt/X11/lib/libGL.1.dylib"
+-#define EGL_LIB "libEGL.dylib"
++#define EGL_LIB "@loader_path/../Frameworks/libEGL.dylib"
+ #define GLES1_LIB "libGLESv1_CM.dylib"
+-#define GLES2_LIB "libGLESv2.dylib"
++#define GLES2_LIB "@loader_path/../Frameworks/libGLESv2.dylib"
+ #define OPENGL_LIB "/System/Library/Frameworks/OpenGL.framework/Versions/Current/OpenGL"
+ #elif defined(__ANDROID__)
+ #define GLX_LIB "libGLESv2.so"
+ #define EGL_LIB "libEGL.so"
