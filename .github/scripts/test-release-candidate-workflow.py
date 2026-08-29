@@ -48,7 +48,13 @@ class ReleaseCandidateWorkflowTests(unittest.TestCase):
     def test_candidate_builds_every_modular_guest_from_its_commit(self) -> None:
         source = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn(
-            "sudo apt-get install -y binutils e2fsprogs file patchelf protobuf-compiler zstd",
+            "sudo apt-get install -y binutils-aarch64-linux-gnu e2fsprogs file patchelf protobuf-compiler zstd",
+            source,
+        )
+        self.assertIn("command -v protoc", source)
+        self.assertIn("command -v aarch64-linux-gnu-readelf", source)
+        self.assertIn(
+            "DORY_AARCH64_READELF: /usr/bin/aarch64-linux-gnu-readelf",
             source,
         )
         self.assertIn("DORY_EXPERIMENTAL_GPU=0 guest/kernel/build.sh arm64", source)
