@@ -24,6 +24,8 @@ class ReleaseCandidateWorkflowTests(unittest.TestCase):
         self.assertIn("SPARKLE_PRIVATE_KEY", source)
         self.assertIn("component-candidate-final-verification.receipt", source)
         self.assertIn("dory-signed-release-candidate-", source)
+        self.assertIn('test -s "release-build/Dory-$VERSION.dmg"', source)
+        self.assertIn('test -s "release-build/Dory-$VERSION.zip"', source)
         self.assertIn("test ! -e release-build/components/arm64/catalog.json", source)
         self.assertIn('"docker-core": 0', source)
         self.assertIn('"kubernetes": 1', source)
