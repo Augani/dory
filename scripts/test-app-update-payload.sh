@@ -9,10 +9,22 @@ trap 'rm -rf "$TMP"' EXIT
 APP="$TMP/Dory.app"
 RESOURCES="$APP/Contents/Resources"
 HELPERS="$APP/Contents/Helpers"
+RUNNER_APP="$HELPERS/DoryHVRunner.app"
+RUNNER="$RUNNER_APP/Contents/MacOS/dory-hv"
 NETWORK_DAEMON_DIR="$APP/Contents/Library/LaunchDaemons"
 NETWORK_DAEMON_PLIST="$NETWORK_DAEMON_DIR/dev.dory.network-helper.plist"
-mkdir -p "$RESOURCES" "$HELPERS" "$NETWORK_DAEMON_DIR"
+mkdir -p "$RESOURCES" "$HELPERS" "$RUNNER_APP/Contents/MacOS" "$NETWORK_DAEMON_DIR"
 cp Config/dev.dory.network-helper.plist "$NETWORK_DAEMON_PLIST"
+cat > "$RUNNER_APP/Contents/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleExecutable</key><string>dory-hv</string>
+<key>CFBundleIdentifier</key><string>com.pythonxi.Dory.HVRunner</string>
+</dict></plist>
+PLIST
+printf '#!/bin/sh\nexit 0\n' > "$RUNNER"
+chmod 0755 "$RUNNER"
 
 ASSETS=(
   dory-agent-linux-arm64
@@ -39,13 +51,48 @@ for asset in "${ASSETS[@]}"; do
 done
 
 HELPER_ASSETS=(
-  doryd dorydctl dory-vmm dory-network-helper dory-dataplane-proxy dory-hv
+  doryd dorydctl dory-vmm dory-network-helper dory-dataplane-proxy
   gvproxy docker docker-buildx docker-compose kubectl dory dory-doctor
 )
 for helper in "${HELPER_ASSETS[@]}"; do
   printf '#!/bin/sh\nexit 0\n' > "$HELPERS/$helper"
   chmod 0755 "$HELPERS/$helper"
 done
+
+mv "$RUNNER" "$TMP/dory-hv"
+if scripts/validate-app-update-payload.sh "$APP" arm64 desktop >"$TMP/missing-runner.out" 2>&1; then
+  echo "app-update payload test failed: missing nested dory-hv was accepted" >&2
+  exit 1
+fi
+grep -F 'missing direct DoryHVRunner executable dory-hv' "$TMP/missing-runner.out" >/dev/null
+mv "$TMP/dory-hv" "$RUNNER"
+
+ln -s "$RUNNER" "$HELPERS/dory-hv"
+if scripts/validate-app-update-payload.sh "$APP" arm64 desktop >"$TMP/parallel-runner.out" 2>&1; then
+  echo "app-update payload test failed: obsolete parallel dory-hv was accepted" >&2
+  exit 1
+fi
+grep -F 'obsolete parallel executable helper dory-hv is present' "$TMP/parallel-runner.out" >/dev/null
+rm "$HELPERS/dory-hv"
+
+mv "$RUNNER_APP" "$TMP/DoryHVRunner.app"
+ln -s "$TMP/DoryHVRunner.app" "$RUNNER_APP"
+if scripts/validate-app-update-payload.sh "$APP" arm64 desktop >"$TMP/indirect-runner.out" 2>&1; then
+  echo "app-update payload test failed: indirect DoryHVRunner.app was accepted" >&2
+  exit 1
+fi
+grep -F 'missing direct DoryHVRunner.app' "$TMP/indirect-runner.out" >/dev/null
+rm "$RUNNER_APP"
+mv "$TMP/DoryHVRunner.app" "$RUNNER_APP"
+
+cp "$RUNNER_APP/Contents/Info.plist" "$TMP/runner-info.plist"
+/usr/libexec/PlistBuddy -c 'Set :CFBundleExecutable not-dory-hv' "$RUNNER_APP/Contents/Info.plist"
+if scripts/validate-app-update-payload.sh "$APP" arm64 desktop >"$TMP/runner-metadata.out" 2>&1; then
+  echo "app-update payload test failed: invalid runner metadata was accepted" >&2
+  exit 1
+fi
+grep -F 'DoryHVRunner.app CFBundleExecutable is not dory-hv' "$TMP/runner-metadata.out" >/dev/null
+cp "$TMP/runner-info.plist" "$RUNNER_APP/Contents/Info.plist"
 
 scripts/validate-app-update-payload.sh "$APP" arm64 desktop >/dev/null
 for asset in "${ASSETS[@]}"; do

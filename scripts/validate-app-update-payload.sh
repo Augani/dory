@@ -14,6 +14,8 @@ APP="$(cd "$APP" && pwd -P)"
   || { echo "app-update payload error: input app has an indirect ancestor" >&2; exit 66; }
 RESOURCES="$APP/Contents/Resources"
 HELPERS="$APP/Contents/Helpers"
+RUNNER_APP="$HELPERS/DoryHVRunner.app"
+RUNNER="$RUNNER_APP/Contents/MacOS/dory-hv"
 NETWORK_DAEMON_PLIST="$APP/Contents/Library/LaunchDaemons/dev.dory.network-helper.plist"
 
 fail() {
@@ -32,10 +34,20 @@ done
 [ -d "$RESOURCES" ] || fail "missing $RESOURCES"
 [ -d "$HELPERS" ] || fail "missing $HELPERS"
 for helper in \
-  doryd dorydctl dory-vmm dory-network-helper dory-dataplane-proxy dory-hv \
+  doryd dorydctl dory-vmm dory-network-helper dory-dataplane-proxy \
   gvproxy docker docker-buildx docker-compose dory dory-doctor; do
   [ -x "$HELPERS/$helper" ] || fail "missing executable helper $helper"
 done
+[ -d "$RUNNER_APP" ] && [ ! -L "$RUNNER_APP" ] \
+  || fail "missing direct DoryHVRunner.app"
+[ -x "$RUNNER" ] && [ -f "$RUNNER" ] && [ ! -L "$RUNNER" ] \
+  || fail "missing direct DoryHVRunner executable dory-hv"
+[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$RUNNER_APP/Contents/Info.plist" 2>/dev/null || true)" = dory-hv ] \
+  || fail "DoryHVRunner.app CFBundleExecutable is not dory-hv"
+[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$RUNNER_APP/Contents/Info.plist" 2>/dev/null || true)" = com.pythonxi.Dory.HVRunner ] \
+  || fail "DoryHVRunner.app bundle identifier is invalid"
+[ ! -e "$HELPERS/dory-hv" ] \
+  || fail "obsolete parallel executable helper dory-hv is present"
 if [ "$EDITION" = core ]; then
   [ ! -e "$HELPERS/kubectl" ] || fail "Core update unexpectedly contains kubectl"
   [ "$(/usr/libexec/PlistBuddy -c 'Print :DoryBundledComponents' "$APP/Contents/Info.plist" 2>/dev/null || true)" = $'Array {\n    docker-core\n}' ] \
