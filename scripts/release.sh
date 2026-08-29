@@ -223,6 +223,18 @@ preflight_component_supply_chain() {
   release_error "public component publication is blocked: no physical Linux VM campaign producer is wired after immutable candidate assembly and SBOM generation; pre-candidate or synthetic qualification evidence cannot authorize schema-2 finalization"
 }
 
+preflight_component_candidate_supply_chain() {
+  [ "${DORY_COMPONENT_CATALOG_SCHEMA:-2}" = 2 ] \
+    || release_error "public component candidates require catalog schema 2"
+  [ -f scripts/build-components.py ] && [ ! -L scripts/build-components.py ] \
+    && [ -x scripts/build-components.py ] \
+    || release_error "schema-2 component assembler must be a direct executable file"
+  for command in assemble verify-candidate; do
+    scripts/build-components.py "$command" --help >/dev/null \
+      || release_error "schema-2 component pipeline does not provide '$command'"
+  done
+}
+
 preflight_public_release() {
   [ "${DORY_PUBLIC_RELEASE:-0}" = "1" ] || return 0
 
@@ -318,7 +330,11 @@ preflight_public_release() {
   [ -z "${DORY_SPARKLE_SIGN_UPDATE:-}" ] \
     || release_error "public releases must use sign_update from the release build's pinned Sparkle package"
 
-  preflight_component_supply_chain
+  case "${DORY_PUBLIC_RELEASE_PHASE:-publish}" in
+    candidate) preflight_component_candidate_supply_chain ;;
+    publish) preflight_component_supply_chain ;;
+    *) release_error "DORY_PUBLIC_RELEASE_PHASE must be candidate or publish" ;;
+  esac
 
   scripts/verify-clean-release-source.sh . >/dev/null \
     || release_error "public release source does not exactly match commit $SOURCE_COMMIT"

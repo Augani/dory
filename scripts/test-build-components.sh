@@ -64,6 +64,15 @@ if ! (
   exit 1
 fi
 
+if ! (
+  export DORY_RELEASE_SOURCE_ONLY=1
+  source "$ROOT/scripts/release.sh" 9.8.7 42
+  preflight_component_candidate_supply_chain
+); then
+  echo "component packaging test: immutable public-candidate staging is unavailable" >&2
+  exit 1
+fi
+
 if (
   export DORY_RELEASE_SOURCE_ONLY=1
   source "$ROOT/scripts/release.sh" 9.8.7 42

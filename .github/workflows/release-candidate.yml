@@ -1,0 +1,344 @@
+name: Stage Release Candidate
+
+# Builds the exact public-shaped, Developer-ID-signed, notarized core app and immutable optional
+# component candidate. It deliberately does not create a tag, GitHub Release, appcast deployment,
+# Homebrew update, signed component catalog, or support claim. Physical qualification consumes this
+# immutable artifact before the normal Release workflow is allowed to publish it.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to stage (for example 0.4.6)'
+        required: true
+        type: string
+      build:
+        description: 'Monotonic CURRENT_PROJECT_VERSION to stage (for example 52)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dory-release-candidate
+  cancel-in-progress: false
+
+jobs:
+  metadata:
+    name: Validate exact main release identity
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      previous_version: ${{ steps.identity.outputs.previous_version }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 0
+      - name: Prove version, build, source, and release absence
+        id: identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/main
+          git fetch --force --tags origin main
+          test "$GITHUB_SHA" = "$(git rev-parse origin/main)"
+          GH_TOKEN="$GH_TOKEN" python3 .github/scripts/verify-release-identity.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --project Dory.xcodeproj/project.pbxproj \
+            --version "${{ inputs.version }}" \
+            --build "${{ inputs.build }}" \
+            --github-output "$GITHUB_OUTPUT"
+
+  guest-assets-arm64:
+    name: Build exact arm64 optional-component inputs
+    needs: metadata
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - name: Install guest build prerequisites
+        run: sudo apt-get update && sudo apt-get install -y binutils e2fsprogs file patchelf zstd
+      - name: Expose rust-lld for the static guest agent
+        run: |
+          set -euo pipefail
+          rust_lld="$(find "$(rustc --print sysroot)/lib/rustlib" -type f -name rust-lld | head -1)"
+          test -x "$rust_lld"
+          mkdir -p "$RUNNER_TEMP/rust-lld-bin"
+          ln -sf "$rust_lld" "$RUNNER_TEMP/rust-lld-bin/rust-lld"
+          echo "$RUNNER_TEMP/rust-lld-bin" >> "$GITHUB_PATH"
+      - name: Build and verify core guest payloads
+        run: |
+          set -euo pipefail
+          DORY_EXPERIMENTAL_GPU=0 guest/kernel/build.sh arm64
+          DORY_EXPERIMENTAL_GPU=1 guest/kernel/build.sh arm64
+          guest/initfs/build.sh arm64
+          DORY_EXPERIMENTAL_GPU=0 guest/kernel/verify-build.sh arm64
+          DORY_EXPERIMENTAL_GPU=1 guest/kernel/verify-build.sh arm64
+          guest/initfs/verify-build.sh arm64
+      - name: Build and verify every optional desktop payload
+        run: |
+          set -euo pipefail
+          DORY_KERNEL_PROFILE=accelerated-desktop guest/kernel/build.sh arm64
+          for distro in debian ubuntu kali; do
+            guest/desktop/build.sh arm64 "$distro"
+          done
+          DORY_KERNEL_PROFILE=accelerated-desktop guest/kernel/verify-build.sh arm64
+          for distro in debian ubuntu kali; do
+            guest/desktop/verify-build.sh arm64 "$distro"
+          done
+      - name: Upload same-commit guest payloads
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dory-candidate-guest-arm64-${{ github.sha }}-${{ github.run_attempt }}
+          retention-days: 30
+          if-no-files-found: error
+          compression-level: 0
+          path: |
+            guest/out/Image
+            guest/out/Image.zst
+            guest/out/config-arm64
+            guest/out/kernel-build-arm64.stamp
+            guest/out/Image-gpu
+            guest/out/Image-gpu.zst
+            guest/out/config-arm64-gpu
+            guest/out/kernel-build-arm64-gpu.stamp
+            guest/out/initfs-arm64.ext4
+            guest/out/dory-agent-arm64
+            guest/out/initfs-build-arm64.stamp
+            guest/out/Image-desktop.zst
+            guest/out/config-arm64-desktop
+            guest/out/kernel-build-arm64-desktop.stamp
+            guest/out/dory-mesa-venus-arm64.tar.zst
+            guest/out/dory-mesa-venus-build-arm64.stamp
+            guest/out/dory-desktop-debian-rootfs-arm64.ext4.zst
+            guest/out/dory-desktop-debian-packages-arm64.txt
+            guest/out/dory-desktop-debian-update-arm64.tar
+            guest/out/dory-desktop-debian-build-arm64.stamp
+            guest/out/dory-desktop-ubuntu-rootfs-arm64.ext4.zst
+            guest/out/dory-desktop-ubuntu-packages-arm64.txt
+            guest/out/dory-desktop-ubuntu-update-arm64.tar
+            guest/out/dory-desktop-ubuntu-build-arm64.stamp
+            guest/out/dory-desktop-kali-rootfs-arm64.ext4.zst
+            guest/out/dory-desktop-kali-packages-arm64.txt
+            guest/out/dory-desktop-kali-update-arm64.tar
+            guest/out/dory-desktop-kali-build-arm64.stamp
+
+  signed-candidate:
+    name: Sign, notarize, and stage immutable modular candidate
+    needs: [metadata, guest-assets-arm64]
+    runs-on: [self-hosted, macOS, arm64, dory, release]
+    timeout-minutes: 720
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - name: Select and verify the pinned release toolchain
+        run: |
+          set -euo pipefail
+          xcode_app=/Applications/Xcode-26.6.0-Release.Candidate.app
+          test -x "$xcode_app/Contents/Developer/usr/bin/xcodebuild"
+          echo "DEVELOPER_DIR=$xcode_app/Contents/Developer" >> "$GITHUB_ENV"
+          xcode_version="$(DEVELOPER_DIR="$xcode_app/Contents/Developer" xcodebuild -version)"
+          grep -Fx 'Xcode 26.6' <<<"$xcode_version"
+          grep -Eq '^Build version 17F(109|113)$' <<<"$xcode_version"
+          test "$(uname -m)" = arm64
+          test "$(sysctl -n kern.hv_support)" = 1
+          case "$(sysctl -n hw.model)" in VirtualMac*) exit 1 ;; esac
+      - name: Ensure the pinned Xcode Metal toolchain is available
+        run: xcodebuild -downloadComponent MetalToolchain
+      - name: Download same-commit guest payloads
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: dory-candidate-guest-arm64-${{ github.sha }}-${{ github.run_attempt }}
+          path: guest/out
+      - name: Expand and independently verify every guest payload
+        run: |
+          set -euo pipefail
+          brew install protobuf zstd meson ninja pkgconf molten-vk libepoxy
+          zstd -q -d --sparse -f guest/out/Image-desktop.zst -o guest/out/Image-desktop
+          for distro in debian ubuntu kali; do
+            zstd -q -d --sparse -f \
+              "guest/out/dory-desktop-$distro-rootfs-arm64.ext4.zst" \
+              -o "guest/out/dory-desktop-$distro-rootfs-arm64.ext4"
+          done
+          DORY_EXPERIMENTAL_GPU=0 guest/kernel/verify-build.sh arm64
+          DORY_EXPERIMENTAL_GPU=1 guest/kernel/verify-build.sh arm64
+          guest/initfs/verify-build.sh arm64
+          DORY_KERNEL_PROFILE=accelerated-desktop guest/kernel/verify-build.sh arm64
+          guest/mesa/verify-build.sh arm64
+          for distro in debian ubuntu kali; do
+            guest/desktop/verify-build.sh arm64 "$distro"
+          done
+      - name: Preserve authenticated previous appcast history
+        env:
+          PREVIOUS_RELEASE_VERSION: ${{ needs.metadata.outputs.previous_version }}
+        run: |
+          set -euo pipefail
+          if [ -n "$PREVIOUS_RELEASE_VERSION" ]; then
+            curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 15 --max-time 60 \
+              "https://github.com/Augani/dory/releases/download/v$PREVIOUS_RELEASE_VERSION/appcast.xml" \
+              -o "$RUNNER_TEMP/previous-appcast.xml"
+            cp "$RUNNER_TEMP/previous-appcast.xml" website/public/appcast.xml
+          fi
+      - name: Import Developer ID certificate into a throwaway keychain
+        env:
+          CERT_BASE64: ${{ secrets.DEVELOPER_ID_CERT_P12_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.DEVELOPER_ID_CERT_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          keychain="$RUNNER_TEMP/dory-candidate-signing.keychain-db"
+          original_keychains="$RUNNER_TEMP/dory-original-user-keychains.txt"
+          security list-keychains -d user > "$original_keychains"
+          printf '%s' "$CERT_BASE64" | base64 --decode > "$RUNNER_TEMP/dory-candidate-cert.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$keychain"
+          security import "$RUNNER_TEMP/dory-candidate-cert.p12" \
+            -P "$CERT_PASSWORD" -A -t cert -f pkcs12 -k "$keychain"
+          security set-key-partition-list -S apple-tool:,apple: \
+            -k "$KEYCHAIN_PASSWORD" "$keychain"
+          existing=()
+          while IFS= read -r value; do
+            value="${value#\"}"
+            value="${value%\"}"
+            [ -n "$value" ] && existing+=("$value")
+          done < "$original_keychains"
+          security list-keychains -d user -s "$keychain" "${existing[@]}"
+          echo "DORY_CANDIDATE_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+          echo "DORY_ORIGINAL_KEYCHAINS=$original_keychains" >> "$GITHUB_ENV"
+      - name: Build, Developer-ID sign, notarize, and staple the candidate
+        id: build
+        env:
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID || '864H636QW4' }}
+          NOTARY_PASSWORD: ${{ secrets.NOTARY_APPLE_PASSWORD }}
+          DORY_PUBLIC_RELEASE: '1'
+          DORY_PUBLIC_RELEASE_PHASE: candidate
+          DORY_BUNDLE_ENGINE: '1'
+          DORY_REQUIRE_BUNDLE_ASSETS: '1'
+          DORY_REQUIRE_DEVELOPER_ID_SIGNATURES: '1'
+          DORY_BUNDLE_VENUS: '1'
+          DORY_BUNDLE_VENUS_REQUIRED: '1'
+          DORY_RELEASE_VARIANTS: arm64
+          DORY_BUILD_APPCAST: '1'
+          DORY_BUILD_APP_UPDATE: '1'
+          DORY_COMPONENT_CATALOG_SCHEMA: '2'
+          DORY_RELEASE_ASSET_BASE_URL: https://github.com/Augani/dory/releases/download/v${{ inputs.version }}
+          DORY_SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY || secrets.SPARKLE_ED_PRIVATE_KEY }}
+          DORY_RELEASE_SOURCE_COMMIT: ${{ github.sha }}
+        run: scripts/release.sh "${{ inputs.version }}" "${{ inputs.build }}"
+      - name: Verify exact signed candidate and modular boundary
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          app=release-build/export-arm64/Dory.app
+          dmg="release-build/Dory-$VERSION-arm64.dmg"
+          candidate=release-build/component-candidate/arm64
+          test -d "$app"
+          test -s "$dmg"
+          test -s "release-build/Dory-$VERSION-arm64.zip"
+          test -s "release-build/Dory-$VERSION.dmg"
+          test -s "release-build/Dory-$VERSION.zip"
+          cmp "$dmg" "release-build/Dory-$VERSION.dmg"
+          cmp "release-build/Dory-$VERSION-arm64.zip" "release-build/Dory-$VERSION.zip"
+          test -s "release-build/Dory-$VERSION-app-update.zip"
+          test -s "release-build/dory-engine-$VERSION-arm64.tar.gz"
+          test -s "release-build/Dory-$VERSION.cdx.json"
+          test -s release-build/appcast.xml
+          test -s release-build/release-manifest.json
+          test ! -e release-build/components/arm64/catalog.json
+          test ! -e "$candidate/catalog.json"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          xcrun stapler validate "$app"
+          spctl --assess --type execute --verbose=4 "$app"
+          codesign --verify --strict --verbose=2 "$dmg"
+          xcrun stapler validate "$dmg"
+          scripts/verify-release-sbom.py \
+            --sbom "release-build/Dory-$VERSION.cdx.json" \
+            --app "$app" --version "$VERSION" --source-commit "$GITHUB_SHA"
+          scripts/verify-sparkle-update.sh \
+            "$app" "release-build/Dory-$VERSION-app-update.zip" release-build/appcast.xml
+          scripts/build-components.py verify-candidate \
+            --candidate "$candidate" --core-artifact "$dmg" --core-app "$app" \
+            > release-build/component-candidate-final-verification.receipt
+          python3 - \
+            release-build/release-manifest.json \
+            release-build \
+            "$candidate/component-candidate-inventory.json" <<'PY'
+          import hashlib, json, os, pathlib, sys
+
+          manifest_path = pathlib.Path(sys.argv[1])
+          root = pathlib.Path(sys.argv[2]).resolve()
+          inventory_path = pathlib.Path(sys.argv[3])
+          manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+          if manifest.get("publicRelease") is not True or manifest.get("notarized") is not True:
+              raise SystemExit("candidate manifest is not public-shaped and notarized")
+          if manifest.get("sourceCommit") != os.environ["GITHUB_SHA"]:
+              raise SystemExit("candidate manifest source commit mismatch")
+          for record in manifest.get("artifacts", []):
+              path = (root / record["path"]).resolve()
+              if root not in path.parents or not path.is_file() or path.is_symlink():
+                  raise SystemExit(f"unsafe or missing candidate artifact: {path}")
+              digest = hashlib.sha256(path.read_bytes()).hexdigest()
+              if path.stat().st_size != record["bytes"] or digest != record["sha256"]:
+                  raise SystemExit(f"candidate artifact changed: {path}")
+
+          inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+          components = inventory.get("components", [])
+          expected_assets = {
+              "docker-core": 0,
+              "kubernetes": 1,
+              "linux-machines": 2,
+              "linux-desktop": 2,
+              "desktop-debian": 4,
+              "desktop-ubuntu": 4,
+              "desktop-kali": 4,
+          }
+          if [component.get("id") for component in components] != list(expected_assets):
+              raise SystemExit("candidate does not contain the exact modular component set")
+          for component in components:
+              identifier = component["id"]
+              if len(component.get("assets", [])) != expected_assets[identifier]:
+                  raise SystemExit(f"candidate asset count changed for {identifier}")
+          if len(inventory.get("files", [])) != sum(expected_assets.values()):
+              raise SystemExit("candidate inventory does not bind the exact optional asset count")
+          PY
+      - name: Upload immutable signed candidate for physical qualification
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dory-signed-release-candidate-${{ github.sha }}-${{ github.run_attempt }}
+          retention-days: 30
+          if-no-files-found: error
+          compression-level: 0
+          path: |
+            release-build/*.zip
+            release-build/*.dmg
+            release-build/*.tar.gz
+            release-build/*.cdx.json
+            release-build/appcast.xml
+            release-build/release-manifest.json
+            release-build/component-candidate/arm64/*
+            release-build/component-candidate-verification.receipt
+            release-build/component-candidate-final-verification.receipt
+      - name: Remove throwaway signing material
+        if: always()
+        run: |
+          if [ -s "${DORY_ORIGINAL_KEYCHAINS:-}" ]; then
+            original=()
+            while IFS= read -r value; do
+              value="${value#\"}"
+              value="${value%\"}"
+              [ -n "$value" ] && original+=("$value")
+            done < "$DORY_ORIGINAL_KEYCHAINS"
+            security list-keychains -d user -s "${original[@]}" || true
+          fi
+          if [ -n "${DORY_CANDIDATE_KEYCHAIN:-}" ]; then
+            security delete-keychain "$DORY_CANDIDATE_KEYCHAIN" || true
+          fi
+          rm -f "$RUNNER_TEMP/dory-candidate-cert.p12"
