@@ -54,6 +54,35 @@ assert 'echo "xcodebuild_exit=$xcodebuild_status"' in text
 assert 'echo "build_exit=$status"' in text
 PY
 
+python3 - "$ROOT/scripts/bundle-engine.sh" <<'PY'
+import pathlib
+import re
+import sys
+
+text = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+
+def function_body(name):
+    match = re.search(rf"^{re.escape(name)}\(\) \{{\n(.*?)^\}}$", text, re.M | re.S)
+    assert match is not None, f"missing bundle-engine function: {name}"
+    return match.group(1)
+
+signer = function_body("codesign_helper")
+assert '--requirements "=designated => $requirement"' in signer
+assert '--requirements "=designated => $adhoc_requirement"' in signer
+canonicalizer = function_body("canonicalize_xcode_runner_signatures")
+assert "DORY_RENDERER_EXPECTED_TEAM:-864H636QW4" in canonicalizer
+assert "[ \"$expected_team\" = 864H636QW4 ]" in canonicalizer
+assert 'Packages/ContainerizationEngine/DoryFSWorker.entitlements' in canonicalizer
+assert 'Packages/ContainerizationEngine/dory-hv.entitlements' in canonicalizer
+assert canonicalizer.index('"$FS_WORKER_XPC"') < canonicalizer.index('"$HV_RUNNER_APP"')
+assert 'codesign_helper \\\n+    "$RENDERER_WORKER_XPC"' not in canonicalizer
+assert 'codesign --verify --strict --verbose=2 "$RENDERER_WORKER_XPC"' in canonicalizer
+assert 'codesign --verify --deep --strict --verbose=2 "$HV_RUNNER_APP"' in canonicalizer
+packaging = text[text.index('echo "==> Verifying the Xcode-sealed Hypervisor.framework runner application'):]
+assert packaging.index("canonicalize_xcode_runner_signatures") < packaging.index("bundle_venus_renderer")
+assert packaging.index("canonicalize_xcode_runner_signatures") < packaging.index("finalize_doryd_signature")
+PY
+
 if ! (
   export DORY_RELEASE_SOURCE_ONLY=1
   export DORY_PUBLIC_RELEASE=0
