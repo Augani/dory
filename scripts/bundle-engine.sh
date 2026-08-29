@@ -346,6 +346,9 @@ build_swiftpm_product_for_arch() {
   local package="$1" configuration="$2" product="$3" arch="$4" package_abs scratch triple bin_path
   package_abs="$(cd "$package" && pwd)"
   scratch="$package_abs/.build/bundle-$configuration-$arch"
+  if [ "$product" = doryd ] && [ -n "${DORY_RENDERER_RELEASE_IDENTITY_PLIST:-}" ]; then
+    scratch="$package_abs/.build/bundle-$configuration-$arch-renderer-release-identity"
+  fi
   triple="$(darwin_triple_for_arch "$arch")"
   swift build --package-path "$package_abs" -c "$configuration" --triple "$triple" \
     --scratch-path "$scratch" --product "$product" >&2
@@ -467,28 +470,8 @@ renderer_release_identity_mode() {
   printf '%s\n' "$mode"
 }
 
-codesign_production_release_identity() {
-  local path="$1" entitlements="$2" id="${DORY_SIGN_ID:-Developer ID Application}"
-  local _attempt error_file
-  [ "$id" != - ] \
-    || { echo "    ERROR: production renderer release identity cannot use ad-hoc signing" >&2; return 1; }
-  error_file="$(mktemp "${TMPDIR:-/tmp}/dory-release-identity-codesign.XXXXXX")"
-  for _attempt in 1 2 3; do
-    if /usr/bin/codesign --force --options runtime --timestamp --identifier doryd \
-        --entitlements "$entitlements" --sign "$id" "$path" 2>"$error_file"; then
-      rm -f "$error_file"
-      return 0
-    fi
-    sleep 2
-  done
-  echo "    ERROR: final production doryd signing failed (identity: $id):" >&2
-  sed 's/^/      /' "$error_file" >&2
-  rm -f "$error_file"
-  return 1
-}
-
 finalize_doryd_signature() {
-  local mode expected_team temporary entitlements
+  local mode expected_team temporary identity_plist configuration
   [ "${DORY_BUNDLE_DORYD:-1}" = 1 ] || return 0
   [ -x "$DORYD_EXECUTABLE" ] && [ ! -L "$DORYD_EXECUTABLE" ] \
     || { echo "    ERROR: deferred doryd executable is missing or indirect" >&2; return 1; }
@@ -509,22 +492,27 @@ finalize_doryd_signature() {
   [ "$expected_team" = 864H636QW4 ] \
     || { echo "    ERROR: production renderer release identity requires Dory team 864H636QW4" >&2; return 1; }
 
-  echo "==> Binding final Runner + Worker Code Directory hashes into doryd…"
+  echo "==> Embedding final Runner + Worker Code Directory hashes into doryd…"
   temporary="$(mktemp -d "${TMPDIR:-/tmp}/dory-renderer-release-identity.XXXXXX")"
-  entitlements="$temporary/doryd-renderer-release-identity.entitlements"
+  identity_plist="$temporary/doryd-renderer-release-identity.plist"
+  configuration="${DORY_DORYD_HELPER_CONFIGURATION:-release}"
   (
-    trap 'rm -f "$entitlements"; rmdir "$temporary" 2>/dev/null || true' EXIT
-    python3 "$REPO_ROOT/scripts/renderer-release-identity.py" create-entitlements \
+    trap 'rm -f "$identity_plist"; rmdir "$temporary" 2>/dev/null || true' EXIT
+    python3 "$REPO_ROOT/scripts/renderer-release-identity.py" create-plist \
       --runner-app "$HV_RUNNER_APP" \
       --expected-team "$expected_team" \
-      --output "$entitlements"
-    codesign_production_release_identity "$DORYD_EXECUTABLE" "$entitlements"
+      --output "$identity_plist"
+    export DORY_RENDERER_RELEASE_IDENTITY_PLIST="$identity_plist"
+    assemble_swiftpm_executable \
+      "dory-core-swift" "$configuration" doryd "$DORYD_EXECUTABLE"
+    unset DORY_RENDERER_RELEASE_IDENTITY_PLIST
+    sign_runtime_payload "$DORYD_EXECUTABLE"
     python3 "$REPO_ROOT/scripts/renderer-release-identity.py" verify \
       --runner-app "$HV_RUNNER_APP" \
       --doryd "$DORYD_EXECUTABLE" \
       --expected-team "$expected_team"
   )
-  echo "    sealed Helpers/doryd after the immutable runner graph"
+  echo "    sealed Helpers/doryd with an executable, entitlement-free renderer identity"
 }
 
 find_debugfs() {

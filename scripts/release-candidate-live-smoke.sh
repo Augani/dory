@@ -15,6 +15,7 @@ APP="$(cd "$(dirname "$APP")" && pwd)/$(basename "$APP")"
 EXECUTABLE="$APP/Contents/MacOS/Dory"
 DORY_CLI="$APP/Contents/Helpers/dory"
 DOCKER_CLI="$APP/Contents/Helpers/docker"
+HV_RUNNER_EXECUTABLE="$APP/Contents/Helpers/DoryHVRunner.app/Contents/MacOS/dory-hv"
 SERVICE="gui/$(id -u)/dev.dory.doryd"
 PLIST="$HOME/Library/LaunchAgents/dev.dory.doryd.plist"
 STATE="$HOME/.dory"
@@ -203,7 +204,7 @@ fi
 for helper in \
   "$EXECUTABLE" "$DORY_CLI" "$DOCKER_CLI" \
   "$APP/Contents/Helpers/dory-doctor" "$APP/Contents/Helpers/dorydctl" \
-  "$APP/Contents/Helpers/doryd" "$APP/Contents/Helpers/dory-hv" \
+  "$APP/Contents/Helpers/doryd" "$HV_RUNNER_EXECUTABLE" \
   "$APP/Contents/Helpers/dory-vmm"; do
   [ -f "$helper" ] && [ ! -L "$helper" ] && [ -x "$helper" ] \
     || fail "candidate executable is unavailable or indirect: $helper"
@@ -379,7 +380,7 @@ hv_pid_count="$(printf '%s\n' "$hv_pid_list" | awk 'NF { count++ } END { print c
 hv_pid="$(printf '%s\n' "$hv_pid_list" | awk 'NF { print; exit }')"
 hv_command="$(ps -ww -p "$hv_pid" -o command=)"
 printf '%s\n' "$hv_command" > "$LOG_ROOT/dory-hv-command.txt"
-grep -Fq "$APP/Contents/Helpers/dory-hv" <<< "$hv_command" \
+grep -Fq "$HV_RUNNER_EXECUTABLE" <<< "$hv_command" \
   || fail "running dory-hv helper does not come from the candidate app: $hv_command"
 
 if [ "$REQUIRED_ARCH" = arm64 ]; then
@@ -579,7 +580,7 @@ fi
   echo "app_executable_sha256=$(shasum -a 256 "$EXECUTABLE" | awk '{print $1}')"
   echo "docker_sha256=$(shasum -a 256 "$DOCKER_CLI" | awk '{print $1}')"
   echo "doryd_sha256=$(shasum -a 256 "$APP/Contents/Helpers/doryd" | awk '{print $1}')"
-  echo "dory_hv_sha256=$(shasum -a 256 "$APP/Contents/Helpers/dory-hv" | awk '{print $1}')"
+  echo "dory_hv_sha256=$(shasum -a 256 "$HV_RUNNER_EXECUTABLE" | awk '{print $1}')"
   echo "dory_vmm_sha256=$(shasum -a 256 "$APP/Contents/Helpers/dory-vmm" | awk '{print $1}')"
   echo "fixture_image=$FIXTURE_IMAGE"
   echo "nonnative_build_image=$NONNATIVE_BUILD_IMAGE"

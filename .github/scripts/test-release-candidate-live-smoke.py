@@ -26,6 +26,7 @@ class ReleaseCandidateLiveSmokeTests(unittest.TestCase):
             "live qualification requires an exact source commit",
             "candidate app is unavailable or indirect",
             "candidate executable is unavailable or indirect",
+            'HV_RUNNER_EXECUTABLE="$APP/Contents/Helpers/DoryHVRunner.app/Contents/MacOS/dory-hv"',
             "candidate Docker socket is not owned by the release user",
             "candidate app has no valid notarization ticket",
             "candidate is not accepted as Notarized Developer ID",
@@ -72,7 +73,13 @@ class ReleaseCandidateLiveSmokeTests(unittest.TestCase):
             "DORY_RELEASE_LIVE_LOG_ROOT",
         ):
             self.assertIn(proof, text, proof)
-        for stale in ("alpine:latest", "nginx:alpine", "node:20-alpine", "assert "):
+        for stale in (
+            "alpine:latest",
+            "nginx:alpine",
+            "node:20-alpine",
+            "assert ",
+            '"$APP/Contents/Helpers/dory-hv"',
+        ):
             self.assertNotIn(stale, text, stale)
 
     def test_every_invoked_script_is_tracked(self) -> None:

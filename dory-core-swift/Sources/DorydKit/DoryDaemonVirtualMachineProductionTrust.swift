@@ -413,7 +413,7 @@ struct DoryDaemonVirtualMachineVerifiedTrustMaterial: Sendable {
     var permitsLegacyCompatibilityMigration: Bool
     /// This provider is installed into production start authority only after the live daemon has
     /// passed its complete signing-identity proof. It remains lazy so non-renderer launches never
-    /// depend on the renderer entitlement.
+    /// depend on the embedded renderer release identity.
     var rendererReleaseIdentityProvider: any DoryRendererReleaseIdentityProviding
     var runtimeVerifier: @Sendable (
         String, MachineBackendDescriptor, String
@@ -1209,7 +1209,7 @@ public struct DoryDaemonVirtualMachineProductionTrustFactory: Sendable {
         hostProbe = Self.probeProductionHost
         daemonIdentityVerifier = DorydXPCSecurity
             .currentProcessSatisfiesProductionDaemonRequirement
-        rendererReleaseIdentityProvider = DoryCurrentTaskRendererReleaseIdentityProvider()
+        rendererReleaseIdentityProvider = DoryEmbeddedRendererReleaseIdentityProvider()
         planningTransactionAvailable = { false }
         synchronizeTrustFloorDirectory = { fsync($0) == 0 }
         trustFloorActivator = { stateDirectory, authority, synchronizeDirectory in
@@ -1228,7 +1228,7 @@ public struct DoryDaemonVirtualMachineProductionTrustFactory: Sendable {
         daemonIdentityVerifier: @escaping @Sendable () -> Bool,
         rendererReleaseIdentityProvider:
             any DoryRendererReleaseIdentityProviding =
-                DoryCurrentTaskRendererReleaseIdentityProvider(),
+                DoryEmbeddedRendererReleaseIdentityProvider(),
         planningTransactionAvailable: @escaping @Sendable () -> Bool = { false },
         synchronizeTrustFloorDirectory: @escaping DirectorySynchronizer = { fsync($0) == 0 },
         trustFloorActivator: TrustFloorActivator? = nil
