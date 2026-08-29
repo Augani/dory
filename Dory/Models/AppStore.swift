@@ -241,6 +241,7 @@ final class AppStore {
     ) async throws -> DesktopMachineAssets
     @ObservationIgnored private let composeCommandRunner: any ToolCommandRunning
     @ObservationIgnored private let buildCommandRunner: any ToolCommandRunning
+    @ObservationIgnored private let userFacingDoryCommandResolver: @MainActor @Sendable () -> String?
     @ObservationIgnored private let finderStorageLocation = DoryFinderStorageLocation()
     @ObservationIgnored private var lastFinderStorageRefresh = Date.distantPast
     @ObservationIgnored private var lastFinderStorageGroups: [DoryStorageInventoryGroup]?
@@ -261,6 +262,9 @@ final class AppStore {
         environment: [String: String] = ProcessInfo.processInfo.environment,
         composeCommandRunner: any ToolCommandRunning = BoundedToolProcessRunner(),
         buildCommandRunner: any ToolCommandRunning = BoundedToolProcessRunner(),
+        userFacingDoryCommandResolver: @escaping @MainActor @Sendable () -> String? = {
+            HostTools.userFacingDoryCommand()
+        },
         desktopMachineAssetPreparer: @escaping @Sendable (
             _ home: String,
             _ environment: [String: String],
@@ -280,6 +284,7 @@ final class AppStore {
         self.environment = env
         self.composeCommandRunner = composeCommandRunner
         self.buildCommandRunner = buildCommandRunner
+        self.userFacingDoryCommandResolver = userFacingDoryCommandResolver
         self.desktopMachineAssetPreparer = desktopMachineAssetPreparer
         self.dorydClient = dorydClient
         self.dorydEngineEnabled = dorydFlags.enabled
@@ -5585,7 +5590,7 @@ final class AppStore {
     }
 
     func canOpenMachineTerminal(_ machine: Machine) -> Bool {
-        runtimeOwnedByDoryd && !machine.shellSocketPath.isEmpty && HostTools.userFacingDoryCommand() != nil
+        runtimeOwnedByDoryd && !machine.shellSocketPath.isEmpty && userFacingDoryCommandResolver() != nil
     }
 
     func readMachineSerialConsole(
@@ -7612,7 +7617,7 @@ final class AppStore {
         let home = machine.username == "root" ? "/root" : "/Users/\(machine.username)"
         let family = MachineDistro.all.first { $0.display == machine.distro }?.family
         let machineShell = runtimeOwnedByDoryd
-            ? HostTools.userFacingDoryCommand().map { _ in MachineShellTarget(machineID: machine.name) }
+            ? userFacingDoryCommandResolver().map { _ in MachineShellTarget(machineID: machine.name) }
             : nil
         let sessionID = runtimeOwnedByDoryd ? "machine:\(machine.name)" : "machine:\(machine.containerID)"
         return TerminalSession(id: sessionID, title: machine.name,

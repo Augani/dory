@@ -2913,6 +2913,7 @@ struct DorydClientTests {
         let store = AppStore(
             dorydClient: DorydClient(endpoint: listener.endpoint),
             useDorydEngine: true,
+            userFacingDoryCommandResolver: { "/usr/local/bin/dory" },
             desktopMachineAssetPreparer: { _, _, _ in desktopFixture.assets }
         )
         store.routeDockerCLI = false
