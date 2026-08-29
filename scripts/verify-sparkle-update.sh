@@ -46,9 +46,15 @@ find_sign_update() {
   || fail "update ZIP is missing, indirect, or empty: $UPDATE_ZIP"
 [ -f "$APPCAST" ] && [ ! -L "$APPCAST" ] && [ -s "$APPCAST" ] \
   || fail "appcast is missing, indirect, or empty: $APPCAST"
+APP_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \
+  "$APP/Contents/Info.plist" 2>/dev/null || true)"
+APP_BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' \
+  "$APP/Contents/Info.plist" 2>/dev/null || true)"
+[ -n "$APP_VERSION" ] && [ -n "$APP_BUILD" ] \
+  || fail "candidate app has no release version/build identity"
 
 SIGNATURE="$(python3 - "$APPCAST" "$(basename "$UPDATE_ZIP")" \
-  "$(stat -f %z "$UPDATE_ZIP")" <<'PY'
+  "$(stat -f %z "$UPDATE_ZIP")" "$APP_VERSION" "$APP_BUILD" <<'PY'
 import base64
 import os
 import re
@@ -56,23 +62,40 @@ import sys
 import urllib.parse
 import xml.etree.ElementTree as ET
 
-path, expected_name, expected_length = sys.argv[1:4]
+path, expected_name, expected_length, expected_version, expected_build = sys.argv[1:6]
 sparkle = "http://www.andymatuschak.org/xml-namespaces/sparkle"
 items = ET.parse(path).getroot().findall("./channel/item")
-if len(items) != 1:
-    raise SystemExit("appcast must contain exactly one current item")
-item = items[0]
-enclosure = item.find("enclosure")
-if enclosure is None:
-    raise SystemExit("current appcast item has no enclosure")
-parsed = urllib.parse.urlparse(enclosure.attrib.get("url", ""))
-name = os.path.basename(parsed.path)
-if name != expected_name:
-    raise SystemExit(f"appcast encloses {name!r}, expected {expected_name!r}")
 match = re.fullmatch(r"Dory-(.+)-app-update\.zip", expected_name)
 if match is None:
     raise SystemExit("update ZIP name does not identify a Dory release")
-expected_path = f"/Augani/dory/releases/download/v{match.group(1)}/{expected_name}"
+release_version = match.group(1)
+if release_version != expected_version:
+    raise SystemExit("update ZIP version does not match the candidate app")
+expected_path = f"/Augani/dory/releases/download/v{release_version}/{expected_name}"
+current = []
+for item in items:
+    enclosure = item.find("enclosure")
+    parsed = urllib.parse.urlparse(enclosure.attrib.get("url", "")) if enclosure is not None else None
+    title = (item.findtext("title") or "").strip()
+    short_version = (item.findtext(f"{{{sparkle}}}shortVersionString") or "").strip()
+    path_matches_release = parsed is not None and parsed.path.startswith(
+        f"/Augani/dory/releases/download/v{release_version}/"
+    )
+    if title == release_version or short_version == release_version or path_matches_release:
+        current.append((item, enclosure, parsed))
+if len(current) != 1:
+    raise SystemExit("appcast must contain exactly one item for the current release")
+item, enclosure, parsed = current[0]
+if enclosure is None or parsed is None:
+    raise SystemExit("current appcast item has no enclosure")
+title = (item.findtext("title") or "").strip()
+short_version = (item.findtext(f"{{{sparkle}}}shortVersionString") or "").strip()
+build = (item.findtext(f"{{{sparkle}}}version") or "").strip()
+if title != release_version or short_version != release_version or build != expected_build:
+    raise SystemExit("current appcast item version/build does not match the candidate app")
+name = os.path.basename(parsed.path)
+if name != expected_name:
+    raise SystemExit(f"appcast encloses {name!r}, expected {expected_name!r}")
 if (
     parsed.scheme != "https"
     or parsed.netloc != "github.com"

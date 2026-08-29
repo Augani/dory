@@ -20,16 +20,29 @@ write_plist() {
   cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict><key>SUPublicEDKey</key><string>$key</string></dict></plist>
+<plist version="1.0"><dict>
+<key>SUPublicEDKey</key><string>$key</string>
+<key>CFBundleShortVersionString</key><string>0.3.0</string>
+<key>CFBundleVersion</key><string>12</string>
+</dict></plist>
 PLIST
 }
 
 cat > "$APPCAST" <<'XML'
 <?xml version="1.0"?>
 <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
-<channel><item><enclosure url="https://github.com/Augani/dory/releases/download/v0.3.0/Dory-0.3.0-app-update.zip"
+<channel>
+<item><title>0.3.0</title><sparkle:version>12</sparkle:version>
+<sparkle:shortVersionString>0.3.0</sparkle:shortVersionString>
+<enclosure url="https://github.com/Augani/dory/releases/download/v0.3.0/Dory-0.3.0-app-update.zip"
 sparkle:edSignature="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="
-length="15" /></item></channel></rss>
+length="15" /></item>
+<item><title>0.2.9</title><sparkle:version>11</sparkle:version>
+<sparkle:shortVersionString>0.2.9</sparkle:shortVersionString>
+<enclosure url="https://github.com/Augani/dory/releases/download/v0.2.9/Dory-0.2.9-app-update.zip"
+sparkle:edSignature="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="
+length="14" /></item>
+</channel></rss>
 XML
 
 sed -i '' \
@@ -76,6 +89,43 @@ if EXPECTED_ZIP="$ZIP" EXPECTED_PRIVATE_KEY="$PRIVATE_KEY" \
   DORY_SPARKLE_SIGN_UPDATE="$TMP/sign_update" DORY_SPARKLE_PRIVATE_KEY="$PRIVATE_KEY" \
   scripts/verify-sparkle-update.sh "$APP" "$ZIP" "$TMP/wrong-appcast.xml" >/dev/null 2>&1; then
   echo "test-verify-sparkle-update: accepted an appcast pointing at another artifact" >&2
+  exit 1
+fi
+
+python3 - "$APPCAST" "$TMP/duplicate-current-appcast.xml" <<'PY'
+import pathlib
+import sys
+
+source = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+current = source[source.index("<item><title>0.3.0"):source.index("<item><title>0.2.9")]
+pathlib.Path(sys.argv[2]).write_text(
+    source.replace("<item><title>0.2.9", current + "<item><title>0.2.9", 1),
+    encoding="utf-8",
+)
+PY
+if scripts/verify-sparkle-update.sh "$APP" "$ZIP" "$TMP/duplicate-current-appcast.xml" \
+    >/dev/null 2>&1; then
+  echo "test-verify-sparkle-update: accepted duplicate current release items" >&2
+  exit 1
+fi
+
+python3 - "$APPCAST" "$TMP/wrong-build-appcast.xml" <<'PY'
+import pathlib
+import sys
+
+source = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+pathlib.Path(sys.argv[2]).write_text(
+    source.replace(
+        "<sparkle:version>12</sparkle:version>",
+        "<sparkle:version>13</sparkle:version>",
+        1,
+    ),
+    encoding="utf-8",
+)
+PY
+if scripts/verify-sparkle-update.sh "$APP" "$ZIP" "$TMP/wrong-build-appcast.xml" \
+    >/dev/null 2>&1; then
+  echo "test-verify-sparkle-update: accepted the wrong current build" >&2
   exit 1
 fi
 
