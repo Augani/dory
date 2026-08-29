@@ -26,6 +26,75 @@ fi
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 REPO_ROOT="$(pwd -P)"
 
+# Xcode invokes the release script itself as the narrow renderer-receipt signer. Keeping this
+# adapter inside the already reviewed release entry point avoids a second operator command while
+# still giving the runner packaging phase the exact `--receipt/--output` interface it requires.
+if [ "${1:-}" = --receipt ]; then
+  RECEIPT=""
+  OUTPUT=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --receipt) [ "$#" -ge 2 ] || exit 64; RECEIPT="$2"; shift 2 ;;
+      --output) [ "$#" -ge 2 ] || exit 64; OUTPUT="$2"; shift 2 ;;
+      *) exit 64 ;;
+    esac
+  done
+  [ -n "$RECEIPT" ] && [ -n "$OUTPUT" ] || exit 64
+  [ -f "$RECEIPT" ] && [ ! -L "$RECEIPT" ] || {
+    echo "renderer qualification signer error: receipt must be one direct file" >&2
+    exit 1
+  }
+  [ ! -e "$OUTPUT" ] && [ ! -L "$OUTPUT" ] || {
+    echo "renderer qualification signer error: output already exists" >&2
+    exit 1
+  }
+  SIGN_UPDATE="${DORY_SPARKLE_SIGN_UPDATE:-}"
+  [ -n "$SIGN_UPDATE" ] && [ -f "$SIGN_UPDATE" ] && [ ! -L "$SIGN_UPDATE" ] \
+    && [ -x "$SIGN_UPDATE" ] || {
+    echo "renderer qualification signer error: pinned Sparkle sign_update is unavailable" >&2
+    exit 1
+  }
+  if [ -n "${DORY_SPARKLE_PRIVATE_KEY:-}" ]; then
+    if [ -n "${DORY_SPARKLE_ACCOUNT:-}" ]; then
+      SIGNATURE="$(printf '%s' "$DORY_SPARKLE_PRIVATE_KEY" \
+        | "$SIGN_UPDATE" --account "$DORY_SPARKLE_ACCOUNT" --ed-key-file - -p "$RECEIPT")"
+    else
+      SIGNATURE="$(printf '%s' "$DORY_SPARKLE_PRIVATE_KEY" \
+        | "$SIGN_UPDATE" --ed-key-file - -p "$RECEIPT")"
+    fi
+  elif [ -n "${DORY_SPARKLE_ACCOUNT:-}" ]; then
+    SIGNATURE="$("$SIGN_UPDATE" --account "$DORY_SPARKLE_ACCOUNT" -p "$RECEIPT")"
+  else
+    SIGNATURE="$("$SIGN_UPDATE" -p "$RECEIPT")"
+  fi
+  SIGNATURE="$(printf '%s\n' "$SIGNATURE" | tail -n 1 | tr -d '\r\n')"
+  python3 - "$SIGNATURE" <<'PY'
+import base64
+import binascii
+import sys
+
+signature = sys.argv[1]
+try:
+    decoded = base64.b64decode(signature, validate=True)
+except binascii.Error as error:
+    raise SystemExit(f"renderer qualification signer error: malformed Ed25519 signature: {error}")
+if len(decoded) != 64 or base64.b64encode(decoded).decode("ascii") != signature:
+    raise SystemExit("renderer qualification signer error: signature is not canonical Ed25519 base64")
+PY
+  OUTPUT_PARENT="$(dirname "$OUTPUT")"
+  [ -d "$OUTPUT_PARENT" ] && [ ! -L "$OUTPUT_PARENT" ] || {
+    echo "renderer qualification signer error: output parent must be one direct directory" >&2
+    exit 1
+  }
+  TEMP_OUTPUT="$(mktemp "$OUTPUT_PARENT/.renderer-bootstrap-qualification.sig.XXXXXX")"
+  trap 'rm -f "$TEMP_OUTPUT"' EXIT
+  printf '%s\n' "$SIGNATURE" > "$TEMP_OUTPUT"
+  chmod 0644 "$TEMP_OUTPUT"
+  mv "$TEMP_OUTPUT" "$OUTPUT"
+  trap - EXIT
+  exit 0
+fi
+
 VERSION="${1:-}"
 BUILD="${2:-${DORY_BUILD:-}}"
 if [ -z "$VERSION" ] || [ -z "$BUILD" ]; then
@@ -275,6 +344,16 @@ preflight_public_release() {
     || release_error "public releases cannot consume an external renderer link stage"
   [ -z "${DORY_RENDERER_LINK_INVENTORY+x}" ] \
     || release_error "public releases cannot consume an external renderer link inventory"
+  [ -z "${DORY_RENDERER_QUALIFICATION_MODE+x}" ] \
+    || release_error "public releases derive the renderer qualification mode internally"
+  [ -z "${DORY_RENDERER_QUALIFICATION_SIGNATURE+x}" ] \
+    || release_error "public releases cannot consume an external renderer qualification signature"
+  [ -z "${DORY_RENDERER_QUALIFICATION_SIGNER+x}" ] \
+    || release_error "public releases derive the renderer qualification signer internally"
+  [ -z "${DORY_RENDERER_QUALIFICATION_ISSUED_AT+x}" ] \
+    || release_error "public releases derive renderer qualification issuance internally"
+  [ -z "${DORY_RENDERER_QUALIFICATION_EXPIRES_AT+x}" ] \
+    || release_error "public releases derive renderer qualification expiry internally"
   [ "$SIGN_IDENTITY" != "-" ] \
     || release_error "public releases cannot use ad-hoc signing"
   [ "${DORY_SKIP_NOTARIZE:-0}" != "1" ] \
@@ -565,6 +644,38 @@ prepare_release_ffi_bridge() {
       *) release_error "generated DoryFFI static library must contain arm64 and x86_64 (archs: ${archs:-none})" ;;
     esac
   done
+}
+
+prepare_release_renderer_qualification_authority() {
+  [ "${DORY_PUBLIC_RELEASE:-0}" = 1 ] || return 0
+  [ "${DORY_BUNDLE_VENUS:-1}" = 1 ] || return 0
+
+  local signer issued expires sign_update
+  signer="$REPO_ROOT/scripts/release.sh"
+  sign_update="$DERIVED_DATA_DIR/SourcePackages/artifacts/sparkle/Sparkle/bin/sign_update"
+  [ -f "$signer" ] && [ ! -L "$signer" ] && [ -x "$signer" ] \
+    || release_error "renderer qualification signer is unavailable"
+  issued="$(LC_ALL=C TZ=UTC date -u '+%Y-%m-%dT%H:%M:%SZ')"
+  expires="$(python3 - "$issued" <<'PY'
+import datetime
+import sys
+
+issued = datetime.datetime.strptime(sys.argv[1], "%Y-%m-%dT%H:%M:%SZ")
+print((issued + datetime.timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ"))
+PY
+  )"
+
+  # The pinned Sparkle package is resolved before Xcode executes the runner packaging phase. Keep
+  # one Ed25519 trust root for Sparkle, renderer bootstrap, and the finalized component catalog,
+  # while making the exact signer path an internal product of this release's DerivedData tree.
+  DORY_RENDERER_QUALIFICATION_MODE=release
+  DORY_RENDERER_QUALIFICATION_SIGNER="$signer"
+  DORY_RENDERER_QUALIFICATION_ISSUED_AT="$issued"
+  DORY_RENDERER_QUALIFICATION_EXPIRES_AT="$expires"
+  DORY_SPARKLE_SIGN_UPDATE="$sign_update"
+  export DORY_RENDERER_QUALIFICATION_MODE DORY_RENDERER_QUALIFICATION_SIGNER
+  export DORY_RENDERER_QUALIFICATION_ISSUED_AT DORY_RENDERER_QUALIFICATION_EXPIRES_AT
+  export DORY_SPARKLE_SIGN_UPDATE
 }
 
 renderer_managed_kernel_source() {
@@ -919,6 +1030,11 @@ archive_variant() {
     DORY_RENDERER_LINK_INVENTORY="${DORY_RENDERER_LINK_INVENTORY:-}" \
     DORY_RENDERER_MANAGED_KERNEL="$managed_kernel" \
     DORY_RENDERER_MANAGED_KERNEL_SHA256="$managed_kernel_sha256" \
+    DORY_RENDERER_QUALIFICATION_MODE="${DORY_RENDERER_QUALIFICATION_MODE:-preview}" \
+    DORY_RENDERER_QUALIFICATION_SIGNER="${DORY_RENDERER_QUALIFICATION_SIGNER:-}" \
+    DORY_RENDERER_QUALIFICATION_ISSUED_AT="${DORY_RENDERER_QUALIFICATION_ISSUED_AT:-}" \
+    DORY_RENDERER_QUALIFICATION_EXPIRES_AT="${DORY_RENDERER_QUALIFICATION_EXPIRES_AT:-}" \
+    DORY_SPARKLE_SIGN_UPDATE="${DORY_SPARKLE_SIGN_UPDATE:-}" \
     archive
 }
 
@@ -1055,6 +1171,7 @@ mkdir -p "$BUILD_DIR"
 
 if [ "${DORY_RELEASE_RESUME_ACCEPTED_DESKTOP:-0}" != "1" ]; then
   prepare_release_renderer_host
+  prepare_release_renderer_qualification_authority
 fi
 
 ZIPS=()

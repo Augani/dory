@@ -47,14 +47,21 @@ class ReleaseOrchestratorTests(unittest.TestCase):
             "scripts/generate-appcast.sh",
             "scripts/build-dory-ffi-xcframework.sh",
             "generated DoryFFI static library must contain arm64 and x86_64",
+            "renderer qualification signer error: signature is not canonical Ed25519 base64",
+            "DORY_RENDERER_QUALIFICATION_MODE=release",
+            'DORY_RENDERER_QUALIFICATION_SIGNER="$signer"',
+            'DORY_SPARKLE_SIGN_UPDATE="$sign_update"',
             "write_release_manifest",
         ):
             self.assertIn(contract, source)
 
         ffi = source.index("  prepare_release_ffi_bridge\n")
         renderer = source.index("  prepare_release_renderer_host\n")
+        qualification = source.index("  prepare_release_renderer_qualification_authority\n")
         archive = source.index('  archive_variant "$VARIANT" "$ARCHIVE"')
         self.assertLess(ffi, renderer)
+        self.assertLess(renderer, qualification)
+        self.assertLess(qualification, archive)
         self.assertLess(renderer, archive)
 
     def test_missing_metadata_fails_before_release_mutation(self) -> None:
@@ -91,6 +98,17 @@ class ReleaseOrchestratorTests(unittest.TestCase):
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("must use Dory signing team 864H636QW4", result.stdout)
+
+    def test_public_release_rejects_external_renderer_qualification_authority(self) -> None:
+        result = self.run_bash(
+            "set -euo pipefail; "
+            "DORY_RELEASE_SOURCE_ONLY=1 source scripts/release.sh 1.2.3 4; "
+            "DORY_PUBLIC_RELEASE=1 DORY_BUNDLE_VENUS_REQUIRED=1 "
+            "DORY_RENDERER_QUALIFICATION_SIGNER=/tmp/foreign "
+            "preflight_public_release"
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("derive the renderer qualification signer internally", result.stdout)
 
 
 if __name__ == "__main__":
