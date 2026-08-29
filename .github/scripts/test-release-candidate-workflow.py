@@ -50,6 +50,8 @@ class ReleaseCandidateWorkflowTests(unittest.TestCase):
         self.assertIn("DORY_EXPERIMENTAL_GPU=0 guest/kernel/build.sh arm64", source)
         self.assertIn("DORY_EXPERIMENTAL_GPU=1 guest/kernel/build.sh arm64", source)
         self.assertIn("DORY_KERNEL_PROFILE=accelerated-desktop guest/kernel/build.sh arm64", source)
+        self.assertIn("grep -Fx 'Xcode 26.6'", source)
+        self.assertIn("grep -Eq '^Build version 17F(109|113)$'", source)
         for distro in ("debian", "ubuntu", "kali"):
             self.assertIn(
                 f"guest/out/dory-desktop-{distro}-rootfs-arm64.ext4.zst",

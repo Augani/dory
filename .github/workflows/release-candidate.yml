@@ -142,8 +142,9 @@ jobs:
           xcode_app=/Applications/Xcode-26.6.0-Release.Candidate.app
           test -x "$xcode_app/Contents/Developer/usr/bin/xcodebuild"
           echo "DEVELOPER_DIR=$xcode_app/Contents/Developer" >> "$GITHUB_ENV"
-          DEVELOPER_DIR="$xcode_app/Contents/Developer" xcodebuild -version \
-            | grep -Eq '^(Xcode 26\.6|Build version 17F(109|113))$'
+          xcode_version="$(DEVELOPER_DIR="$xcode_app/Contents/Developer" xcodebuild -version)"
+          grep -Fx 'Xcode 26.6' <<<"$xcode_version"
+          grep -Eq '^Build version 17F(109|113)$' <<<"$xcode_version"
           test "$(uname -m)" = arm64
           test "$(sysctl -n kern.hv_support)" = 1
           case "$(sysctl -n hw.model)" in VirtualMac*) exit 1 ;; esac
