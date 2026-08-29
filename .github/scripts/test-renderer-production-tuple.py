@@ -395,6 +395,29 @@ class StaticTupleTests(unittest.TestCase):
             '=anchor apple generic and identifier "com.pythonxi.Dory.HVRunner"',
         )
 
+    def test_qualification_accepts_parent_alias_but_rejects_symlink_bundle(self) -> None:
+        namespace = runpy.run_path(str(QUALIFICATION_VERIFIER))
+        direct_bundle_path = namespace["direct_bundle_path"]
+        verification_error = namespace["VerificationError"]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            authority = root / "authority"
+            authority.mkdir()
+            runner = authority / "DoryHVRunner.app"
+            runner.mkdir()
+            alias = root / "alias"
+            alias.symlink_to(authority, target_is_directory=True)
+
+            self.assertEqual(
+                direct_bundle_path(alias / "DoryHVRunner.app"),
+                runner.resolve(strict=True),
+            )
+
+            indirect_runner = root / "Indirect.app"
+            indirect_runner.symlink_to(runner, target_is_directory=True)
+            with self.assertRaises(verification_error):
+                direct_bundle_path(indirect_runner)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

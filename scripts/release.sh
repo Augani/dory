@@ -544,6 +544,29 @@ prepare_release_renderer_host() {
   export DORY_RENDERER_LINK_ROOT DORY_RENDERER_LINK_INVENTORY
 }
 
+prepare_release_ffi_bridge() {
+  local framework library archs arch
+  framework="$REPO_ROOT/dory-core-swift/artifacts/DoryFFI.xcframework"
+  library="$framework/macos-arm64_x86_64/libdory_ffi.a"
+  [ -x "$REPO_ROOT/scripts/build-dory-ffi-xcframework.sh" ] \
+    || release_error "Dory FFI XCFramework builder is unavailable"
+  echo "==> Preparing the generated Rust/Swift host bridge..."
+  "$REPO_ROOT/scripts/build-dory-ffi-xcframework.sh" --if-needed
+  [ -f "$framework/Info.plist" ] && [ ! -L "$framework/Info.plist" ] \
+    || release_error "generated DoryFFI.xcframework has no direct Info.plist"
+  plutil -lint "$framework/Info.plist" >/dev/null \
+    || release_error "generated DoryFFI.xcframework Info.plist is invalid"
+  [ -f "$library" ] && [ ! -L "$library" ] \
+    || release_error "generated DoryFFI.xcframework has no direct static library"
+  archs="$(lipo -archs "$library" 2>/dev/null || true)"
+  for arch in arm64 x86_64; do
+    case " $archs " in
+      *" $arch "*) ;;
+      *) release_error "generated DoryFFI static library must contain arm64 and x86_64 (archs: ${archs:-none})" ;;
+    esac
+  done
+}
+
 renderer_managed_kernel_source() {
   local candidate
   for candidate in \
@@ -1025,6 +1048,7 @@ if [ "${DORY_RELEASE_PREFLIGHT_ONLY:-0}" = "1" ]; then
 fi
 
 if [ "${DORY_RELEASE_RESUME_ACCEPTED_DESKTOP:-0}" != "1" ]; then
+  prepare_release_ffi_bridge
   rm -rf "$BUILD_DIR"
 fi
 mkdir -p "$BUILD_DIR"

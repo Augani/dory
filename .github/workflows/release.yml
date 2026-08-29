@@ -1,7 +1,7 @@
 name: Release
 
 # Builds, signs, notarizes, and publishes a Dory release on manual dispatch.
-# Start public releases only through: scripts/publish-release.sh VERSION
+# Start public releases only through: scripts/dory-release.sh publish VERSION
 #
 # Required repository secrets:
 #   DEVELOPER_ID_CERT_P12_BASE64  base64 of your "Developer ID Application" .p12

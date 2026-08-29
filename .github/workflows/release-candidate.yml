@@ -4,6 +4,7 @@ name: Stage Release Candidate
 # component candidate. It deliberately does not create a tag, GitHub Release, appcast deployment,
 # Homebrew update, signed component catalog, or support claim. Physical qualification consumes this
 # immutable artifact before the normal Release workflow is allowed to publish it.
+# Stage it only through: scripts/dory-release.sh candidate VERSION
 
 on:
   workflow_dispatch:

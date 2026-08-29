@@ -43,6 +43,7 @@ def expect_failure(callback, expected: str, message: str) -> None:
 workflow = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
 pages_workflow = Path(".github/workflows/pages.yml").read_text(encoding="utf-8")
 publisher = Path("scripts/publish-release.sh").read_text(encoding="utf-8")
+release_command = Path("scripts/dory-release.sh").read_text(encoding="utf-8")
 release_script = Path("scripts/release.sh").read_text(encoding="utf-8")
 component_tests = Path("scripts/test-build-components.sh").read_text(encoding="utf-8")
 identity_verifier_path = Path(".github/scripts/verify-release-identity.py")
@@ -652,18 +653,21 @@ require(
     "published appcast does not require component catalog schema 2",
 )
 
-require(publisher, 'gh workflow run "$WORKFLOW"', "publisher does not dispatch the release workflow")
-require(publisher, "CURRENT_PROJECT_VERSION", "publisher does not parse the authoritative project build")
-require(publisher, '--field "build=$PROJECT_BUILD"', "publisher does not dispatch the project build")
-require(publisher, ".github/scripts/verify-release-identity.py", "publisher does not enforce complete-history monotonic identity")
+require(publisher, 'scripts/dory-release.sh" publish', "legacy publisher does not delegate to the release command")
+require(release_command, 'CANDIDATE_WORKFLOW="release-candidate.yml"', "release command cannot stage a private candidate")
+require(release_command, 'PUBLIC_WORKFLOW="release.yml"', "release command cannot dispatch public publication")
+require(release_command, "CURRENT_PROJECT_VERSION", "release command does not parse the authoritative project build")
+require(release_command, '--field "build=$PROJECT_BUILD"', "release command does not dispatch the project build")
+require(release_command, ".github/scripts/verify-release-identity.py", "release command does not enforce complete-history monotonic identity")
 require(
-    publisher,
+    release_command,
     "'^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$'",
-    "publisher accepts leading-zero semantic versions",
+    "release command accepts leading-zero semantic versions",
 )
-require(publisher, "case \"$tag_status\" in", "publisher treats every git lookup failure as tag absence")
-require(publisher, "could not prove release v$VERSION is absent", "publisher treats ambiguous GitHub responses as absence")
-require(publisher, 'gh run watch "$RUN_ID"', "publisher does not wait for the complete workflow")
-require(publisher, ".github/scripts/verify-public-release.py", "publisher skips independent live verification")
+require(release_command, "case \"$tag_status\" in", "release command treats every git lookup failure as tag absence")
+require(release_command, "could not prove release v$version is absent", "release command treats ambiguous GitHub responses as absence")
+require(release_command, 'gh run watch "$RUN_ID"', "release command does not wait for the selected workflow")
+require(release_command, "dory-signed-release-candidate-$HEAD_SHA-$run_attempt", "release command cannot resolve the exact private candidate")
+require(release_command, ".github/scripts/verify-public-release.py", "release command skips independent live verification")
 
 print("release workflow contract: PASS")

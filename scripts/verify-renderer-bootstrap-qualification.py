@@ -244,6 +244,29 @@ def timestamp(value: Any, label: str) -> dt.datetime:
         fail(f"{label} is invalid: {error}")
 
 
+def direct_bundle_path(path: pathlib.Path) -> pathlib.Path:
+    """Return one direct bundle while allowing a canonicalized parent alias.
+
+    Xcode can spell its archive products below ``/tmp`` even when the checkout and build
+    authority were supplied below macOS' canonical ``/private/tmp``.  The bundle itself must
+    still be a directory rather than a symlink.  Binding the pre- and post-resolution inode
+    identities keeps that direct-leaf guarantee and also closes a parent-alias race without
+    rejecting the operating system's stable ``/tmp`` alias.
+    """
+    supplied = path.absolute()
+    try:
+        before = supplied.lstat()
+        resolved = supplied.resolve(strict=True)
+        after = resolved.stat()
+    except OSError as error:
+        fail(f"cannot inspect runner app: {error}")
+    if supplied.suffix != ".app" or not stat.S_ISDIR(before.st_mode):
+        fail("runner must be one direct app bundle")
+    if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
+        fail("runner changed while resolving its parent authority")
+    return resolved
+
+
 def verify_signature(repo: pathlib.Path, signature: pathlib.Path, receipt: pathlib.Path) -> None:
     signature_data = regular_file(signature, 128)
     try:
@@ -263,18 +286,7 @@ def verify_signature(repo: pathlib.Path, signature: pathlib.Path, receipt: pathl
 
 
 def verify(arguments: argparse.Namespace) -> None:
-    supplied_runner = arguments.runner_app.absolute()
-    try:
-        runner_info = supplied_runner.lstat()
-        runner = supplied_runner.resolve(strict=True)
-    except OSError as error:
-        fail(f"cannot inspect runner app: {error}")
-    if (
-        supplied_runner.suffix != ".app"
-        or not stat.S_ISDIR(runner_info.st_mode)
-        or runner != supplied_runner
-    ):
-        fail("runner must be one direct app bundle")
+    runner = direct_bundle_path(arguments.runner_app)
     contents = runner / "Contents"
     worker_bundle = contents / "XPCServices/DoryRendererWorker.xpc"
     if not arguments.allow_unsealed_staging:
