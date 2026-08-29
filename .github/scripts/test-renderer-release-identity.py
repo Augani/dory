@@ -20,6 +20,7 @@ HELPER = ROOT / "scripts" / "renderer-release-identity.py"
 BUNDLE_ENGINE = ROOT / "scripts" / "bundle-engine.sh"
 RELEASE = ROOT / "scripts" / "release.sh"
 RELEASE_WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
+PACKAGE = ROOT / "dory-core-swift" / "Package.swift"
 
 
 def load_helper():
@@ -59,34 +60,32 @@ def production_details(
 
 
 class RendererReleaseIdentityTests(unittest.TestCase):
-    def test_canonical_entitlement_has_exact_shape_and_types(self) -> None:
-        expected = identity.release_identity_entitlements(
+    def test_canonical_embedded_identity_has_exact_shape_and_types(self) -> None:
+        expected = identity.release_identity_payload(
             runner_cdhash="a1" * 20,
             worker_cdhash="ab" * 20,
             tuple_digest="cd" * 32,
         )
-        self.assertEqual(set(expected), {identity.ENTITLEMENT_NAME})
-        nested = expected[identity.ENTITLEMENT_NAME]
-        self.assertEqual(set(nested), identity.IDENTITY_KEYS)
-        self.assertIs(type(nested["schema-version"]), int)
+        self.assertEqual(set(expected), identity.IDENTITY_KEYS)
+        self.assertIs(type(expected["schema-version"]), int)
         for field in (
             "runner-cdhash",
             "renderer-worker-cdhash",
             "tuple-definition-sha256",
         ):
-            self.assertIs(type(nested[field]), str)
+            self.assertIs(type(expected[field]), str)
 
-        raw = identity.canonical_entitlement_bytes(expected)
-        self.assertEqual(raw, identity.canonical_entitlement_bytes(expected))
+        raw = identity.canonical_identity_bytes(expected)
+        self.assertEqual(raw, identity.canonical_identity_bytes(expected))
         self.assertEqual(plistlib.loads(raw), expected)
         with tempfile.TemporaryDirectory() as temporary:
-            output = pathlib.Path(temporary) / "doryd.entitlements"
-            identity.write_entitlements(output, expected)
+            output = pathlib.Path(temporary) / "doryd-release-identity.plist"
+            identity.write_identity_plist(output, expected)
             self.assertEqual(output.read_bytes(), raw)
             self.assertEqual(output.stat().st_mode & 0o777, 0o600)
 
-    def test_entitlement_rejects_extra_missing_and_mistyped_fields(self) -> None:
-        expected = identity.release_identity_entitlements(
+    def test_embedded_identity_rejects_extra_missing_and_mistyped_fields(self) -> None:
+        expected = identity.release_identity_payload(
             runner_cdhash="a1" * 20,
             worker_cdhash="ab" * 20,
             tuple_digest="cd" * 32,
@@ -97,27 +96,23 @@ class RendererReleaseIdentityTests(unittest.TestCase):
         extra_top["unreviewed"] = True
         fixtures.append(extra_top)
 
-        extra_nested = copy.deepcopy(expected)
-        extra_nested[identity.ENTITLEMENT_NAME]["unreviewed"] = "value"
-        fixtures.append(extra_nested)
-
         missing = copy.deepcopy(expected)
-        del missing[identity.ENTITLEMENT_NAME]["runner-cdhash"]
+        del missing["runner-cdhash"]
         fixtures.append(missing)
 
         for wrong in (True, 1.0, "1"):
             mistyped = copy.deepcopy(expected)
-            mistyped[identity.ENTITLEMENT_NAME]["schema-version"] = wrong
+            mistyped["schema-version"] = wrong
             fixtures.append(mistyped)
 
         mistyped_hash = copy.deepcopy(expected)
-        mistyped_hash[identity.ENTITLEMENT_NAME]["runner-cdhash"] = b"a1" * 20
+        mistyped_hash["runner-cdhash"] = b"a1" * 20
         fixtures.append(mistyped_hash)
 
         for fixture in fixtures:
             with self.subTest(fixture=fixture):
                 with self.assertRaises(identity.ReleaseIdentityError):
-                    identity.validate_release_identity_entitlements(fixture, expected)
+                    identity.validate_release_identity_payload(fixture, expected)
 
     def test_signature_parser_requires_exact_production_identity(self) -> None:
         cdhash = identity.parse_production_signature_details(
@@ -194,6 +189,7 @@ class RendererReleaseIdentityTests(unittest.TestCase):
         bundle = BUNDLE_ENGINE.read_text(encoding="utf-8")
         release = RELEASE.read_text(encoding="utf-8")
         workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+        package = PACKAGE.read_text(encoding="utf-8")
         execution = bundle.split("\nbundle_doryd_helpers\n", 1)[1]
         self.assertLess(
             execution.index("bundle_venus_renderer"),
@@ -213,13 +209,16 @@ class RendererReleaseIdentityTests(unittest.TestCase):
         )
         self.assertIn("verify-absent", bundle)
         self.assertIn("RawHV hardware 3D fails closed", bundle)
-        production_signer = bundle.split(
-            "codesign_production_release_identity() {", 1
-        )[1].split("\nfinalize_doryd_signature()", 1)[0]
-        self.assertIn("/usr/bin/codesign", production_signer)
-        self.assertIn("--identifier doryd", production_signer)
-        self.assertNotIn("DORY_ALLOW_ADHOC_SIGN", production_signer)
-        self.assertNotIn("--sign -", production_signer)
+        finalizer = bundle.split("finalize_doryd_signature() {", 1)[1].split(
+            "\nfind_debugfs()", 1
+        )[0]
+        self.assertIn("create-plist", finalizer)
+        self.assertIn("DORY_RENDERER_RELEASE_IDENTITY_PLIST", finalizer)
+        self.assertIn("sign_runtime_payload", finalizer)
+        self.assertNotIn("--entitlements", finalizer)
+        self.assertIn('"-Xlinker", "-sectcreate"', package)
+        self.assertIn('"-Xlinker", "__TEXT"', package)
+        self.assertIn('"-Xlinker", "__doryid"', package)
         self.assertIn("renderer-release-identity.py\" verify", release)
         self.assertIn(
             "public releases require the production doryd renderer release identity",
@@ -240,11 +239,11 @@ class RendererReleaseIdentityTests(unittest.TestCase):
             [
                 sys.executable,
                 str(HELPER),
-                "create-entitlements",
+                "create-plist",
                 "--runner-app",
                 "/nonexistent/DoryHVRunner.app",
                 "--output",
-                "/nonexistent/doryd.entitlements",
+                "/nonexistent/doryd-release-identity.plist",
                 "--expected-team",
                 "ABCDEFGHIJ",
             ],
@@ -270,27 +269,39 @@ class RendererReleaseIdentityTests(unittest.TestCase):
             identity.verify_absent(argparse.Namespace(doryd=doryd))
 
     @unittest.skipUnless(sys.platform == "darwin", "codesign fixture requires macOS")
-    def test_codesign_preserves_exact_custom_entitlement_shape(self) -> None:
-        expected = identity.release_identity_entitlements(
+    def test_codesign_seals_exact_embedded_identity_without_entitlements(self) -> None:
+        expected = identity.release_identity_payload(
             runner_cdhash="a1" * 20,
             worker_cdhash="ab" * 20,
             tuple_digest="cd" * 32,
         )
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)
+            source = root / "main.c"
+            source.write_text("int main(void) { return 0; }\n", encoding="utf-8")
             doryd = root / "doryd"
-            entitlements = root / "doryd.entitlements"
-            shutil.copyfile("/usr/bin/true", doryd)
-            doryd.chmod(0o755)
-            identity.write_entitlements(entitlements, expected)
+            embedded = root / "doryd-release-identity.plist"
+            identity.write_identity_plist(embedded, expected)
+            subprocess.run(
+                [
+                    "/usr/bin/clang",
+                    "-arch",
+                    "arm64",
+                    str(source),
+                    "-Wl,-sectcreate,__TEXT,__doryid," + str(embedded),
+                    "-o",
+                    str(doryd),
+                ],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
             subprocess.run(
                 [
                     "/usr/bin/codesign",
                     "--force",
                     "--options",
                     "runtime",
-                    "--entitlements",
-                    str(entitlements),
                     "--sign",
                     "-",
                     str(doryd),
@@ -299,8 +310,15 @@ class RendererReleaseIdentityTests(unittest.TestCase):
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
-            actual = identity.read_signed_entitlements(doryd, "fixture doryd")
-            identity.validate_release_identity_entitlements(actual, expected)
+            actual = identity.read_embedded_identity(doryd)
+            self.assertIsNotNone(actual)
+            identity.validate_release_identity_payload(actual, expected)
+            self.assertEqual(
+                identity.read_signed_entitlements(
+                    doryd, "fixture doryd", allow_empty=True
+                ),
+                {},
+            )
             with self.assertRaises(identity.ReleaseIdentityError):
                 identity.verify_absent(argparse.Namespace(doryd=doryd))
 

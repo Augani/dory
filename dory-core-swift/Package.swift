@@ -5,6 +5,29 @@ import PackageDescription
 let packageRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
 let doryVMMInfoPlist = packageRoot.appendingPathComponent("Sources/dory-vmm/Info.plist").path
 
+let dorydRendererReleaseIdentityLinkerSettings: [LinkerSetting]
+if let rawIdentityPath = ProcessInfo.processInfo.environment[
+    "DORY_RENDERER_RELEASE_IDENTITY_PLIST"
+] {
+    guard rawIdentityPath.hasPrefix("/") else {
+        fatalError("DORY_RENDERER_RELEASE_IDENTITY_PLIST must be absolute")
+    }
+    let identityURL = URL(fileURLWithPath: rawIdentityPath).standardizedFileURL
+    guard FileManager.default.fileExists(atPath: identityURL.path) else {
+        fatalError("DORY_RENDERER_RELEASE_IDENTITY_PLIST is unavailable")
+    }
+    dorydRendererReleaseIdentityLinkerSettings = [
+        .unsafeFlags([
+            "-Xlinker", "-sectcreate",
+            "-Xlinker", "__TEXT",
+            "-Xlinker", "__doryid",
+            "-Xlinker", identityURL.path,
+        ]),
+    ]
+} else {
+    dorydRendererReleaseIdentityLinkerSettings = []
+}
+
 let package = Package(
     name: "dory-core-swift",
     platforms: [.macOS(.v14)],
@@ -80,7 +103,8 @@ let package = Package(
         ),
         .executableTarget(
             name: "doryd",
-            dependencies: ["DorydKit"]
+            dependencies: ["DorydKit"],
+            linkerSettings: dorydRendererReleaseIdentityLinkerSettings
         ),
         .executableTarget(
             name: "dorydctl",

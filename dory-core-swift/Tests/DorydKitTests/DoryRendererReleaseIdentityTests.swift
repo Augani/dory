@@ -10,11 +10,11 @@ struct DoryRendererReleaseIdentityTests {
     private let runnerCDHash = String(repeating: "a1", count: 20)
     private let workerCDHash = String(repeating: "ab", count: 20)
 
-    @Test("canonical entitlement binds the directed release chain")
-    func canonicalEntitlement() throws {
+    @Test("canonical embedded identity binds the directed release chain")
+    func canonicalEmbeddedIdentity() throws {
         let dictionary = fixture()
         let identity = try DoryRendererReleaseIdentityV1.decode(
-            entitlementDictionary: dictionary
+            identityDictionary: dictionary
         )
 
         #expect(identity.runnerCodeDirectoryHash.lowercaseHexadecimal == runnerCDHash)
@@ -29,29 +29,29 @@ struct DoryRendererReleaseIdentityTests {
         #expect(try provider.loadReleaseIdentity() == identity)
     }
 
-    @Test("entitlement rejects missing extra and mistyped fields")
+    @Test("embedded identity rejects missing extra and mistyped fields")
     func rejectsNonCanonicalShape() {
         var dictionary = fixture()
         dictionary.removeValue(forKey: "runner-cdhash")
-        #expect(throws: DoryRendererReleaseIdentityError.nonCanonicalEntitlement) {
+        #expect(throws: DoryRendererReleaseIdentityError.nonCanonicalIdentity) {
             _ = try DoryRendererReleaseIdentityV1.decode(
-                entitlementDictionary: dictionary
+                identityDictionary: dictionary
             )
         }
 
         dictionary = fixture()
         dictionary["unreviewed"] = "value"
-        #expect(throws: DoryRendererReleaseIdentityError.nonCanonicalEntitlement) {
+        #expect(throws: DoryRendererReleaseIdentityError.nonCanonicalIdentity) {
             _ = try DoryRendererReleaseIdentityV1.decode(
-                entitlementDictionary: dictionary
+                identityDictionary: dictionary
             )
         }
 
         dictionary = fixture()
         dictionary["schema-version"] = "1"
-        #expect(throws: DoryRendererReleaseIdentityError.nonCanonicalEntitlement) {
+        #expect(throws: DoryRendererReleaseIdentityError.nonCanonicalIdentity) {
             _ = try DoryRendererReleaseIdentityV1.decode(
-                entitlementDictionary: dictionary
+                identityDictionary: dictionary
             )
         }
 
@@ -62,21 +62,21 @@ struct DoryRendererReleaseIdentityTests {
         ] {
             dictionary = fixture()
             dictionary["schema-version"] = wrongNumberType
-            #expect(throws: DoryRendererReleaseIdentityError.nonCanonicalEntitlement) {
+            #expect(throws: DoryRendererReleaseIdentityError.nonCanonicalIdentity) {
                 _ = try DoryRendererReleaseIdentityV1.decode(
-                    entitlementDictionary: dictionary
+                    identityDictionary: dictionary
                 )
             }
         }
     }
 
-    @Test("entitlement rejects unsupported generations and tuple drift")
+    @Test("embedded identity rejects unsupported generations and tuple drift")
     func rejectsVersionAndTupleDrift() {
         var dictionary = fixture()
         dictionary["schema-version"] = 2
         #expect(throws: DoryRendererReleaseIdentityError.unsupportedSchemaVersion(2)) {
             _ = try DoryRendererReleaseIdentityV1.decode(
-                entitlementDictionary: dictionary
+                identityDictionary: dictionary
             )
         }
 
@@ -84,12 +84,12 @@ struct DoryRendererReleaseIdentityTests {
         dictionary["tuple-definition-sha256"] = String(repeating: "cd", count: 32)
         #expect(throws: DoryRendererReleaseIdentityError.tupleDefinitionMismatch) {
             _ = try DoryRendererReleaseIdentityV1.decode(
-                entitlementDictionary: dictionary
+                identityDictionary: dictionary
             )
         }
     }
 
-    @Test("entitlement requires canonical nonzero CDHashes")
+    @Test("embedded identity requires canonical nonzero CDHashes")
     func rejectsInvalidCDHashes() {
         var dictionary = fixture()
         dictionary["runner-cdhash"] = runnerCDHash.uppercased()
@@ -97,7 +97,7 @@ struct DoryRendererReleaseIdentityTests {
             field: "runner-cdhash"
         )) {
             _ = try DoryRendererReleaseIdentityV1.decode(
-                entitlementDictionary: dictionary
+                identityDictionary: dictionary
             )
         }
 
@@ -107,7 +107,7 @@ struct DoryRendererReleaseIdentityTests {
             field: "renderer-worker-cdhash"
         )) {
             _ = try DoryRendererReleaseIdentityV1.decode(
-                entitlementDictionary: dictionary
+                identityDictionary: dictionary
             )
         }
     }
@@ -137,7 +137,7 @@ struct DoryRendererReleaseIdentityTests {
     @Test("production pre-spawn selects identity only for RawHV hardware 3D")
     func productionPreSpawnSelection() throws {
         let identity = try DoryRendererReleaseIdentityV1.decode(
-            entitlementDictionary: fixture()
+            identityDictionary: fixture()
         )
         let selected = try DoryProductionRendererReleaseIdentityAuthority.resolve(
             backend: .doryHypervisor,
@@ -165,7 +165,7 @@ struct DoryRendererReleaseIdentityTests {
     @Test("production pre-spawn rejects typed tuple drift")
     func productionPreSpawnRejectsTupleDrift() throws {
         let canonical = try DoryRendererReleaseIdentityV1.decode(
-            entitlementDictionary: fixture()
+            identityDictionary: fixture()
         )
         let drifted = DoryRendererReleaseIdentityV1(
             runnerCodeDirectoryHash: canonical.runnerCodeDirectoryHash,
@@ -204,7 +204,7 @@ struct DoryRendererReleaseIdentityTests {
 
     private struct RejectingProvider: DoryRendererReleaseIdentityProviding {
         func loadReleaseIdentity() throws -> DoryRendererReleaseIdentityV1 {
-            throw DoryRendererReleaseIdentityError.entitlementUnavailable
+            throw DoryRendererReleaseIdentityError.embeddedIdentityUnavailable
         }
     }
 }
