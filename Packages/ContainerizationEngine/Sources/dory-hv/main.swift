@@ -223,10 +223,28 @@ do {
     fail("application launch authority handoff failed: \(error)")
 }
 guard let command = arguments.first else {
-    fail("usage: dory-hv <smoke|madvtest|desktop|agent-ping|data-drive|engine|usb|renderer-qualify> [options]")
+    fail("usage: dory-hv <desktop|agent-ping|data-drive|engine|usb|renderer-qualify|lzfse> [options]")
 }
 
 switch command {
+case "lzfse":
+    let operation = arguments.dropFirst().first
+    let paths = Array(arguments.dropFirst(2))
+    guard let operation, paths.count == 2 else {
+        fail("usage: dory-hv lzfse <compress|decompress> <input> <output>")
+    }
+    do {
+        switch operation {
+        case "compress":
+            try LZFSE.compress(source: paths[0], destination: paths[1])
+        case "decompress":
+            try LZFSE.decompress(source: paths[0], destination: paths[1])
+        default:
+            fail("usage: dory-hv lzfse <compress|decompress> <input> <output>")
+        }
+    } catch {
+        fail("lzfse \(operation) failed: \(error)")
+    }
 case "data-drive":
     guard arguments.count >= 2 else {
         fail("usage: dory-hv data-drive <resolve|prepare|id|selected-path|select|bind-existing|recover-existing|capacity|grow|backup|verify-backup|restore> [paths]")
