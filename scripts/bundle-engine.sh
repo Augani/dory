@@ -131,12 +131,18 @@ have_developer_id() {
 # engine that boots nowhere. Ad-hoc is only allowed on a dev machine with no Developer ID identity, or
 # explicitly via DORY_ALLOW_ADHOC_SIGN=1. Transient timestamp/keychain hiccups are retried first.
 codesign_helper() {
-  local path="$1" entitlements="${2:-}" id="${DORY_SIGN_ID:-Developer ID Application}"
+  local path="$1" entitlements="${2:-}" requirement="${3:-}"
+  local adhoc_requirement="${4:-$requirement}" id="${5:-${DORY_SIGN_ID:-Developer ID Application}}"
   local base=(--force --options runtime --timestamp)
   [ -n "$entitlements" ] && base+=(--entitlements "$entitlements")
+  [ -n "$requirement" ] && base+=(--requirements "=designated => $requirement")
 
   if [ "$id" = "-" ]; then
-    codesign "${base[@]}" -s - "$path"
+    local adhoc_base=(--force --options runtime)
+    [ -n "$entitlements" ] && adhoc_base+=(--entitlements "$entitlements")
+    [ -n "$adhoc_requirement" ] \
+      && adhoc_base+=(--requirements "=designated => $adhoc_requirement")
+    codesign "${adhoc_base[@]}" -s - "$path"
     return
   fi
 
@@ -155,7 +161,11 @@ codesign_helper() {
   rm -f "$err"
   if [ "${DORY_ALLOW_ADHOC_SIGN:-0}" = "1" ] || ! have_developer_id; then
     echo "    WARNING: ad-hoc signing $(basename "$path") — NOT distributable and its entitlements will be denied at launch." >&2
-    codesign --force ${entitlements:+--entitlements "$entitlements"} -s - "$path"
+    local adhoc_base=(--force --options runtime)
+    [ -n "$entitlements" ] && adhoc_base+=(--entitlements "$entitlements")
+    [ -n "$adhoc_requirement" ] \
+      && adhoc_base+=(--requirements "=designated => $adhoc_requirement")
+    codesign "${adhoc_base[@]}" -s - "$path"
     return
   fi
   echo "    A Developer ID identity is present but signing failed; refusing to ship an ad-hoc helper. Set DORY_ALLOW_ADHOC_SIGN=1 only for a throwaway local build." >&2
@@ -185,6 +195,77 @@ sign_runtime_payload() {
 
 sign_runtime_payload_with_entitlements() {
   codesign_helper "$1" "$2"
+}
+
+developer_id_designated_requirement() {
+  local identifier="$1" expected_team="${DORY_RENDERER_EXPECTED_TEAM:-864H636QW4}"
+  printf '%s\n' \
+    "identifier \"$identifier\" and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] /* exists */ and certificate leaf[field.1.2.840.113635.100.6.1.13] /* exists */ and certificate leaf[subject.OU] = \"$expected_team\""
+}
+
+test_designated_requirement() {
+  printf 'identifier "%s"\n' "$1"
+}
+
+read_designated_requirement() {
+  local payload="$1" evidence
+  evidence="$(codesign -d -r- "$payload" 2>&1)" \
+    || { echo "    ERROR: could not read the designated requirement for $(basename "$payload")" >&2; return 1; }
+  printf '%s\n' "$evidence" | sed -n 's/^designated => //p' | tail -1
+}
+
+verify_designated_requirement() {
+  local payload="$1" expected="$2" label="$3" actual
+  actual="$(read_designated_requirement "$payload")" || return 1
+  [ "$actual" = "$expected" ] \
+    || { echo "    ERROR: $label designated requirement is not canonical" >&2; return 1; }
+  codesign --verify --strict "-R=$expected" "$payload" >/dev/null \
+    || { echo "    ERROR: $label does not satisfy its canonical designated requirement" >&2; return 1; }
+}
+
+# Xcode 26 emits a valid Developer ID signature with an Apple Development compatibility branch in
+# the designated requirement. That requirement is intentionally broader than the exact Developer ID
+# identity recorded by the optional-component inventory. Normalize only the Xcode-owned filesystem
+# worker and its enclosing runner, inside-out, before doryd records any runner/worker Code Directory
+# hashes. The qualified renderer worker and its signed inventory are never mutated here.
+canonicalize_xcode_runner_signatures() {
+  local sign_id="${DORY_SIGN_ID:-Developer ID Application}"
+  local expected_team="${DORY_RENDERER_EXPECTED_TEAM:-864H636QW4}"
+  local fs_identifier=com.pythonxi.Dory.HVRunner.FSWorker
+  local runner_identifier=com.pythonxi.Dory.HVRunner
+  local fs_requirement runner_requirement fs_test_requirement runner_test_requirement
+
+  fs_test_requirement="$(test_designated_requirement "$fs_identifier")"
+  runner_test_requirement="$(test_designated_requirement "$runner_identifier")"
+  if [ "$sign_id" = - ]; then
+    fs_requirement="$fs_test_requirement"
+    runner_requirement="$runner_test_requirement"
+  else
+    [ "$expected_team" = 864H636QW4 ] \
+      || { echo "    ERROR: canonical runner signing requires Dory team 864H636QW4" >&2; return 1; }
+    fs_requirement="$(developer_id_designated_requirement "$fs_identifier")"
+    runner_requirement="$(developer_id_designated_requirement "$runner_identifier")"
+  fi
+
+  echo "==> Canonicalizing the Xcode runner signature graph before release identity binding…"
+  codesign_helper \
+    "$FS_WORKER_XPC" \
+    "$REPO_ROOT/Packages/ContainerizationEngine/DoryFSWorker.entitlements" \
+    "$fs_requirement" \
+    "$fs_test_requirement" \
+    "$sign_id"
+  codesign_helper \
+    "$HV_RUNNER_APP" \
+    "$REPO_ROOT/Packages/ContainerizationEngine/dory-hv.entitlements" \
+    "$runner_requirement" \
+    "$runner_test_requirement" \
+    "$sign_id"
+
+  verify_designated_requirement "$FS_WORKER_XPC" "$fs_requirement" 'filesystem worker'
+  verify_designated_requirement "$HV_RUNNER_APP" "$runner_requirement" 'Hypervisor.framework runner'
+  codesign --verify --strict --verbose=2 "$RENDERER_WORKER_XPC"
+  codesign --verify --deep --strict --verbose=2 "$HV_RUNNER_APP"
+  echo "    canonicalized filesystem worker + runner; renderer worker bytes remain qualified"
 }
 
 normalize_darwin_arch() {
@@ -726,12 +807,10 @@ macho_has_arches "$FS_WORKER_EXECUTABLE" "$(swiftpm_helper_arches)" \
   || { echo "    ERROR: filesystem worker does not contain every requested helper architecture" >&2; exit 1; }
 macho_has_arches "$RENDERER_WORKER_EXECUTABLE" "$(swiftpm_helper_arches)" \
   || { echo "    ERROR: renderer worker does not contain every requested helper architecture" >&2; exit 1; }
-# Xcode owns this nested signature graph.  Mutating or repairing it here would split packaging
-# authority from the Release target and make the archived candidate differ from its renderer
-# inventory.  The final outer Dory.app is signed later after bundle-engine adds outer helpers.
-codesign --verify --strict --verbose=2 "$FS_WORKER_XPC"
-codesign --verify --strict --verbose=2 "$RENDERER_WORKER_XPC"
-codesign --verify --deep --strict --verbose=2 "$HV_RUNNER_APP"
+# Xcode owns the qualified renderer worker and its inventory. Release assembly owns the exact outer
+# requirement policy consumed by component verification, so normalize those enclosing signatures
+# now, before renderer release identity and doryd bind this graph. The final Dory.app is signed later.
+canonicalize_xcode_runner_signatures
 
 echo "==> Bundling gvproxy (userspace networking for the dory-hv engine)…"
 # gvproxy (gvisor-tap-vsock, Apache-2.0) gives the HV engine NAT/DNS with no restricted
