@@ -47,6 +47,10 @@ class ReleaseCandidateWorkflowTests(unittest.TestCase):
 
     def test_candidate_builds_every_modular_guest_from_its_commit(self) -> None:
         source = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn(
+            "sudo apt-get install -y binutils e2fsprogs file patchelf protobuf-compiler zstd",
+            source,
+        )
         self.assertIn("DORY_EXPERIMENTAL_GPU=0 guest/kernel/build.sh arm64", source)
         self.assertIn("DORY_EXPERIMENTAL_GPU=1 guest/kernel/build.sh arm64", source)
         self.assertIn("DORY_KERNEL_PROFILE=accelerated-desktop guest/kernel/build.sh arm64", source)

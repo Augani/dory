@@ -1033,12 +1033,29 @@ manifest = {
         "graphics": "hardware-accelerated-3d",
         "devices": {
             "networkAttachment": "shared-nat",
+            "networkInterface": {
+                "id": "nic0",
+                "macAddress": "02:00:00:00:00:01",
+                "maximumTransmissionUnit": 1500,
+            },
+            "display": {
+                "widthPixels": 1920,
+                "heightPixels": 1080,
+                "backingScaleFactor": 2,
+                "guestUIScaleFactor": 2,
+            },
             "audioInput": True,
             "audioOutput": True,
+            "cameraInput": True,
             "keyboard": True,
             "pointer": True,
             "directorySharing": True,
             "clipboard": True,
+            "clipboardPolicy": {
+                "text": "bidirectional",
+                "image": "bidirectional",
+                "files": "off",
+            },
             "clockSynchronization": True,
             "dynamicDisplay": True,
             "gracefulShutdown": True,
@@ -1073,6 +1090,18 @@ elif mutation == "wrong-media":
     manifest["records"][0]["immutableArtifactSHA256"] = "d" * 64
 elif mutation == "wrong-release":
     manifest["catalogReleaseVersion"] = "9.8.6"
+elif mutation == "missing-network-interface":
+    del manifest["records"][0]["devices"]["networkInterface"]
+elif mutation == "missing-display":
+    del manifest["records"][0]["devices"]["display"]
+elif mutation == "missing-clipboard-policy":
+    del manifest["records"][0]["devices"]["clipboardPolicy"]
+elif mutation == "contradictory-clipboard-policy":
+    manifest["records"][0]["devices"]["clipboardPolicy"] = {
+        "text": "off",
+        "image": "off",
+        "files": "off",
+    }
 elif mutation != "none":
     raise SystemExit(f"unknown qualification mutation: {mutation}")
 pathlib.Path(destination).write_text(
@@ -1329,7 +1358,9 @@ grep -Fq 'final component output cannot be a symbolic link' "$TMP/indirect-final
   || { echo "component packaging mutated the symlink target" >&2; exit 1; }
 
 # Authenticated evidence must bind this inventory, SBOM, runtime helper, and packaged media.
-for mutation in wrong-inventory wrong-helper wrong-media wrong-release; do
+for mutation in wrong-inventory wrong-helper wrong-media wrong-release \
+  missing-network-interface missing-display missing-clipboard-policy \
+  contradictory-clipboard-policy; do
   manifest="$TMP/$mutation.json"
   signature="$TMP/$mutation.json.sig"
   write_qualification "$manifest" "$mutation"
@@ -1349,6 +1380,17 @@ grep -Fq 'bundled media digest is not inventory-bound' "$TMP/wrong-media.out" \
   || { echo "component packaging rejected media mismatch for the wrong reason" >&2; exit 1; }
 grep -Fq 'release does not match' "$TMP/wrong-release.out" \
   || { echo "component packaging rejected release mismatch for the wrong reason" >&2; exit 1; }
+grep -Fq 'omit the production network interface contract' \
+  "$TMP/missing-network-interface.out" \
+  || { echo "component packaging rejected the missing NIC contract for the wrong reason" >&2; exit 1; }
+grep -Fq 'graphical qualification omits its exact display contract' \
+  "$TMP/missing-display.out" \
+  || { echo "component packaging rejected the missing display contract for the wrong reason" >&2; exit 1; }
+grep -Fq 'omit the typed clipboard policy' "$TMP/missing-clipboard-policy.out" \
+  || { echo "component packaging rejected the missing clipboard policy for the wrong reason" >&2; exit 1; }
+grep -Fq 'clipboard boolean contradicts its typed policy' \
+  "$TMP/contradictory-clipboard-policy.out" \
+  || { echo "component packaging rejected contradictory clipboard authority for the wrong reason" >&2; exit 1; }
 
 printf '{"bomFormat":"CycloneDX","specVersion":"1.6","components":[{"name":"changed"}]}\n' \
   > "$TMP/other.cdx.json"

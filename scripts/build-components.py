@@ -516,6 +516,92 @@ def boolean_value(value: object, label: str) -> bool:
     return value
 
 
+def bounded_integer_value(
+    value: object,
+    label: str,
+    *,
+    minimum: int,
+    maximum: int,
+) -> int:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or not minimum <= value <= maximum
+    ):
+        fail(f"{label} must be an integer from {minimum} through {maximum}")
+    return value
+
+
+def validate_network_interface(value: object, label: str) -> dict:
+    interface = exact_keys(
+        value,
+        {"id", "macAddress", "maximumTransmissionUnit"},
+        set(),
+        label,
+    )
+    if interface["id"] != "nic0":
+        fail(f"{label} id must be nic0")
+    mac = nonempty_string(interface["macAddress"], f"{label} MAC address", 17)
+    if re.fullmatch(r"[0-9a-f]{2}(?::[0-9a-f]{2}){5}", mac) is None:
+        fail(f"{label} MAC address must be canonical lowercase hexadecimal")
+    octets = bytes(int(part, 16) for part in mac.split(":"))
+    if (
+        octets[0] & 0x01
+        or not octets[0] & 0x02
+        or all(value == 0 for value in octets)
+        or all(value == 0xFF for value in octets)
+    ):
+        fail(f"{label} MAC address must be a locally administered unicast address")
+    bounded_integer_value(
+        interface["maximumTransmissionUnit"],
+        f"{label} MTU",
+        minimum=1_280,
+        maximum=9_000,
+    )
+    return interface
+
+
+def validate_display(value: object, label: str) -> dict:
+    display = exact_keys(
+        value,
+        {"widthPixels", "heightPixels", "backingScaleFactor", "guestUIScaleFactor"},
+        {"id"},
+        label,
+    )
+    identifier = display.get("id", "display-0")
+    if (
+        not isinstance(identifier, str)
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,62}", identifier) is None
+    ):
+        fail(f"{label} id is invalid")
+    for field in ("widthPixels", "heightPixels"):
+        bounded_integer_value(
+            display[field], f"{label} {field}", minimum=1, maximum=16_384
+        )
+    bounded_integer_value(
+        display["backingScaleFactor"],
+        f"{label} backing scale",
+        minimum=1,
+        maximum=4,
+    )
+    bounded_integer_value(
+        display["guestUIScaleFactor"],
+        f"{label} guest UI scale",
+        minimum=1,
+        maximum=2,
+    )
+    return display
+
+
+def validate_clipboard_policy(value: object, label: str) -> dict:
+    policy = exact_keys(value, {"text", "image", "files"}, set(), label)
+    directions = {"off", "host-to-guest", "guest-to-host", "bidirectional"}
+    for field in ("text", "image", "files"):
+        if policy[field] not in directions:
+            fail(f"{label} {field} direction is unsupported")
+    return policy
+
+
 def validate_qualification_record(value: object, index: int) -> dict:
     label = f"qualification record {index}"
     required = {
@@ -586,15 +672,61 @@ def validate_qualification_record(value: object, index: int) -> dict:
             "directorySharing", "clipboard", "clockSynchronization", "dynamicDisplay",
             "gracefulShutdown",
         },
-        set(),
+        {
+            "networkInterface", "display", "displays", "cameraInput", "clipboardPolicy",
+            "intelApplicationTranslation", "removableUSBHotplug",
+        },
         f"{label} devices",
     )
     if devices["networkAttachment"] not in {
         "disconnected", "shared-nat", "bridged", "isolated",
     }:
         fail(f"{label} network attachment is unsupported")
-    for key in set(devices) - {"networkAttachment"}:
+    for key in (
+        "audioInput", "audioOutput", "keyboard", "pointer", "directorySharing",
+        "clipboard", "clockSynchronization", "dynamicDisplay", "gracefulShutdown",
+    ):
         boolean_value(devices[key], f"{label} device {key}")
+    for key in ("cameraInput", "intelApplicationTranslation", "removableUSBHotplug"):
+        if key in devices:
+            boolean_value(devices[key], f"{label} device {key}")
+
+    if "networkInterface" not in devices:
+        fail(f"{label} devices omit the production network interface contract")
+    validate_network_interface(
+        devices["networkInterface"], f"{label} network interface"
+    )
+
+    if "display" in devices and "displays" in devices:
+        fail(f"{label} devices cannot contain both display and displays")
+    if "display" in devices:
+        display_values = [validate_display(devices["display"], f"{label} display")]
+    elif "displays" in devices:
+        raw_displays = devices["displays"]
+        if not isinstance(raw_displays, list) or not 1 <= len(raw_displays) <= 16:
+            fail(f"{label} displays must contain from 1 through 16 entries")
+        display_values = [
+            validate_display(display, f"{label} display {display_index}")
+            for display_index, display in enumerate(raw_displays)
+        ]
+    else:
+        display_values = []
+    display_ids = [display.get("id", "display-0") for display in display_values]
+    if len(set(display_ids)) != len(display_ids):
+        fail(f"{label} display identifiers must be unique")
+    if record["graphics"] != "none" and not display_values:
+        fail(f"{label} graphical qualification omits its exact display contract")
+
+    if "clipboardPolicy" not in devices:
+        fail(f"{label} devices omit the typed clipboard policy")
+    clipboard_policy = validate_clipboard_policy(
+        devices["clipboardPolicy"], f"{label} clipboard policy"
+    )
+    clipboard_enabled = any(
+        clipboard_policy[field] != "off" for field in ("text", "image", "files")
+    )
+    if devices["clipboard"] != clipboard_enabled:
+        fail(f"{label} clipboard boolean contradicts its typed policy")
 
     components = record["components"]
     if not isinstance(components, list) or not components:
