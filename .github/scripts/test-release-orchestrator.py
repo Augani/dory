@@ -45,9 +45,17 @@ class ReleaseOrchestratorTests(unittest.TestCase):
             "scripts/generate-release-sbom.py",
             "scripts/verify-release-sbom.py",
             "scripts/generate-appcast.sh",
+            "scripts/build-dory-ffi-xcframework.sh",
+            "generated DoryFFI static library must contain arm64 and x86_64",
             "write_release_manifest",
         ):
             self.assertIn(contract, source)
+
+        ffi = source.index("  prepare_release_ffi_bridge\n")
+        renderer = source.index("  prepare_release_renderer_host\n")
+        archive = source.index('  archive_variant "$VARIANT" "$ARCHIVE"')
+        self.assertLess(ffi, renderer)
+        self.assertLess(renderer, archive)
 
     def test_missing_metadata_fails_before_release_mutation(self) -> None:
         result = subprocess.run(
