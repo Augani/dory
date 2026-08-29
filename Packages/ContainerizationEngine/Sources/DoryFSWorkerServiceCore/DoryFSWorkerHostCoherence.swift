@@ -57,7 +57,7 @@ final class DoryFSWorkerHostCoherence: @unchecked Sendable {
         }
 
         func contains(_ path: String) -> Bool {
-            path == root || path.hasPrefix(root + "/")
+            hostFS.acceptsEventPath(path)
         }
 
         func relativePath(_ path: String) -> String? {
@@ -948,42 +948,49 @@ final class DoryFSWorkerHostCoherence: @unchecked Sendable {
                 ? [change.path]
                 : endpoint.hostFS.knownIdentityAliasHostPaths(forHostPath: change.path)
             for aliasPath in aliasPaths {
-                guard let snapshot = endpoint.hostFS.invalidationSnapshot(forHostPath: aliasPath),
-                      !snapshot.nodeIDs.isEmpty || !snapshot.parentNodeIDs.isEmpty else { continue }
-                let pathIsMissing: Bool
-                do {
-                    pathIsMissing = try endpoint.hostFS.eventPathIsMissing(
-                        forHostPath: aliasPath
+                if let snapshot = endpoint.hostFS.invalidationSnapshot(forHostPath: aliasPath),
+                   !snapshot.nodeIDs.isEmpty || !snapshot.parentNodeIDs.isEmpty {
+                    let pathIsMissing: Bool
+                    do {
+                        pathIsMissing = try endpoint.hostFS.eventPathIsMissing(
+                            forHostPath: aliasPath
+                        )
+                    } catch {
+                        throw DoryFSWorkerHostCoherenceError.capabilityAuthorityUnavailable
+                    }
+                    let planned = Self.plannedInvalidations(
+                        change: Change(
+                            path: aliasPath,
+                            flags: change.flags,
+                            eventID: change.eventID,
+                            directoryAggregate: false
+                        ),
+                        snapshot: snapshot,
+                        pathIsMissing: pathIsMissing,
+                        permitsContentInvalidation: aliasPath == change.path
                     )
-                } catch {
-                    throw DoryFSWorkerHostCoherenceError.capabilityAuthorityUnavailable
-                }
-                let planned = Self.plannedInvalidations(
-                    change: Change(
-                        path: aliasPath,
-                        flags: change.flags,
-                        eventID: change.eventID,
-                        directoryAggregate: false
-                    ),
-                    snapshot: snapshot,
-                    pathIsMissing: pathIsMissing,
-                    permitsContentInvalidation: aliasPath == change.path
-                )
-                endpoint.hostFS.reconcileHostInvalidation(
-                    forHostPath: aliasPath,
-                    staleNodeIDs: snapshot.staleNodeIDs
-                )
-                for (key, invalidation) in planned {
-                    if case .delete(_, let childNodeID, _) = invalidation {
-                        deletedNodeIDs.insert(childNodeID)
-                        invalidations.removeValue(forKey: "i:\(childNodeID)")
+                    endpoint.hostFS.reconcileHostInvalidation(
+                        forHostPath: aliasPath,
+                        staleNodeIDs: snapshot.staleNodeIDs
+                    )
+                    for (key, invalidation) in planned {
+                        if case .delete(_, let childNodeID, _) = invalidation {
+                            deletedNodeIDs.insert(childNodeID)
+                            invalidations.removeValue(forKey: "i:\(childNodeID)")
+                        }
+                        if case .inode(let nodeID, _, _) = invalidation,
+                           deletedNodeIDs.contains(nodeID) {
+                            continue
+                        }
+                        invalidations[key] = Self.merge(
+                            invalidation,
+                            preserving: invalidations[key]
+                        )
                     }
-                    if case .inode(let nodeID, _, _) = invalidation,
-                       deletedNodeIDs.contains(nodeID) {
-                        continue
-                    }
-                    invalidations[key] = Self.merge(invalidation, preserving: invalidations[key])
                 }
+                // A newly created host path has no guest inode snapshot yet. Watcher delivery must
+                // still name it so Linux can discover the namespace mutation; invalidation and
+                // nudge planning intentionally have different preconditions.
                 if endpoint.watcherNudgesEnabled {
                     do {
                         if let relative = try endpoint.hostFS

@@ -606,7 +606,7 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
         #expect(trustFloor.activationCount == 0)
     }
 
-    @Test("activated production graph publishes a headless create plan through XPC authority")
+    @Test("activated production graph publishes and runs a headless create plan through XPC authority")
     func activatedGraphPlansHeadlessCreate() throws {
         try withProductionIntegrationTestStack {
         let fixture = try ProductionTrustFixture()
@@ -673,22 +673,12 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
         #expect(try context.planning.resourceLedger.snapshot().leases.first {
             $0.binding.machineID == "qualified-headless"
         }?.state == .running)
-        let snapshot = try context.machineManager.snapshot(
-            id: "qualified-headless",
-            snapshotID: "running-admission"
-        )
-        #expect(snapshot.machineID == "qualified-headless")
-        #expect(context.machineManager.status(id: "qualified-headless")?.state == .running)
+        // Snapshot and restore authority has dedicated resolved-plan and lifecycle-journal suites.
+        // Keep this production-composition case focused on XPC planning and admission transitions;
+        // hashing its policy-minimum 16 GiB disk here made an unrelated path dominate the suite.
+        let restopped = try context.machineManager.stop(id: "qualified-headless")
+        #expect(restopped.state == .stopped)
         #expect(try context.planning.plans.read(id: "qualified-headless").planRevision == 2)
-        #expect(try context.planning.resourceLedger.snapshot().leases.first {
-            $0.binding.machineID == "qualified-headless"
-        }?.state == .running)
-        let restored = try context.machineManager.restoreSnapshot(
-            machineID: "qualified-headless",
-            snapshotID: snapshot.id
-        )
-        #expect(restored.state == .stopped)
-        #expect(restored.runtimeIdentity.mode == .requiresReplanning)
         #expect(try context.planning.resourceLedger.snapshot().leases.first {
             $0.binding.machineID == "qualified-headless"
         }?.state == .stopped)

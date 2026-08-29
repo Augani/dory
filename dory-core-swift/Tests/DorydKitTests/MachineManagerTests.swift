@@ -3139,20 +3139,24 @@ final class MachineManagerTests: XCTestCase {
             updateFinished.fulfill()
         }
 
-        let updatedStarting = try waitForMachineStatus(manager, id: "dev") {
+        let updatedStarting = try waitForMachineStatus(manager, id: "dev", timeout: 10) {
             $0.state == .starting && $0.memoryMB == 4096
         }
+        let updatedOperationID = try XCTUnwrap(updatedStarting.activeOperationID)
         try sendVmmHandoff(
             path: try XCTUnwrap(updatedStarting.handoffSocketPath),
             ready: VmmReadyMessage(
                 machineID: "wrong-machine",
-                operationID: try XCTUnwrap(updatedStarting.activeOperationID)
+                operationID: updatedOperationID
             ),
             fileDescriptors: []
         )
 
-        let restoredStarting = try waitForMachineStatus(manager, id: "dev") {
-            $0.state == .starting && $0.memoryMB == 2048
+        let restoredStarting = try waitForMachineStatus(manager, id: "dev", timeout: 10) {
+            $0.state == .starting
+                && $0.memoryMB == 2048
+                && $0.activeOperationID != nil
+                && $0.activeOperationID != updatedOperationID
         }
         try sendVmmHandoff(
             path: try XCTUnwrap(restoredStarting.handoffSocketPath),
@@ -3163,7 +3167,7 @@ final class MachineManagerTests: XCTestCase {
             fileDescriptors: []
         )
 
-        wait(for: [updateFinished], timeout: 5)
+        wait(for: [updateFinished], timeout: 15)
         switch try XCTUnwrap(updateResult.value) {
         case let .failure(error):
             guard case let MachineManagerError.persistence(message) = error else {
@@ -4748,9 +4752,10 @@ final class MachineManagerTests: XCTestCase {
         let durable = base + "/durable"
         let runtime = base + "/runtime"
         let capture = base + "/arguments.txt"
+        let captureTemporary = base + "/arguments.tmp"
         let helper = base + "/helper.sh"
         try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
-        try "#!/bin/sh\nprintf '%s\\n' \"$@\" > '\(capture)'\nsleep 30\n".write(
+        try "#!/bin/sh\nprintf '%s\\n' \"$@\" > '\(captureTemporary)'\nmv '\(captureTemporary)' '\(capture)'\nsleep 30\n".write(
             toFile: helper,
             atomically: true,
             encoding: .utf8

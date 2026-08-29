@@ -187,6 +187,33 @@ struct HostFSTests {
         #expect(fcntl(fileFD, F_GETFD) >= 0)
     }
 
+    @Test func eventPathsAcceptTheFSEventsSystemAliasWithoutWideningRootAuthority() throws {
+        let baseName = "dory-hostfs-event-alias-\(UUID().uuidString)"
+        let base = URL(fileURLWithPath: "/private/tmp").appendingPathComponent(
+            baseName,
+            isDirectory: true
+        )
+        let root = base.appendingPathComponent("share", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try Data("created".utf8).write(to: root.appendingPathComponent("created.txt"))
+
+        let rootFD = Darwin.open(root.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+        #expect(rootFD >= 0)
+        guard rootFD >= 0 else { return }
+        defer { Darwin.close(rootFD) }
+        let fs = try HostFS(
+            rootDirectoryFileDescriptor: rootFD,
+            eventRootPath: root.path
+        )
+        let eventPath = "/tmp/\(baseName)/share/created.txt"
+
+        #expect(fs.acceptsEventPath(eventPath))
+        #expect(try fs.nearestEventNudgeRelativePath(forHostPath: eventPath) == "created.txt")
+        #expect(fs.invalidationSnapshot(forHostPath: eventPath) != nil)
+        #expect(!fs.acceptsEventPath("/tmp/\(baseName)-outside/created.txt"))
+    }
+
     @Test func lookupGetattrAndReadUseHostIdentity() throws {
         let root = try TestHostFSRoot()
         try root.write("hello dory", to: "hello.txt")

@@ -3884,7 +3884,20 @@ public final class MachineManager: @unchecked Sendable {
         journalLifecycle: Bool
     ) throws -> DoryMachineStatus {
         let started = try startImplementation(id: id, journalLifecycle: journalLifecycle)
-        guard started.state == .starting else { return started }
+        switch started.state {
+        case .running:
+            return started
+        case .failed:
+            throw MachineManagerError.persistence(
+                "vmm ready handoff failed for \(id): \(started.lastError ?? "unknown error")"
+            )
+        case .starting:
+            break
+        default:
+            throw MachineManagerError.persistence(
+                "vmm ready handoff for \(id) ended in unexpected state \(started.state.rawValue)"
+            )
+        }
 
         let handoffReadyTimeout = handoffReadyTimeout(
             displayMode: started.displayMode,

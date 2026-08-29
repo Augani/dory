@@ -135,7 +135,11 @@ prepare_swift() {
 run_swift() {
   prepare_swift
   swift test --no-parallel --package-path dory-core-swift
-  swift test --no-parallel --package-path Packages/ContainerizationEngine
+  # SwiftPM's --no-parallel serializes XCTest workers, but Swift Testing still schedules suites
+  # concurrently inside the test process. The DoryHV package has bounded concurrency fixtures whose
+  # one-second safety deadlines must not be consumed by hundreds of unrelated runnable tests.
+  SWT_EXPERIMENTAL_MAXIMUM_PARALLELIZATION_WIDTH=1 \
+    swift test --no-parallel --package-path Packages/ContainerizationEngine
 }
 
 run_app_xcodebuild() {

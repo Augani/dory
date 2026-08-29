@@ -314,7 +314,7 @@ final class HostFS: @unchecked Sendable {
         try self.init(
             ownedRootFD: fd,
             rootPath: root,
-            hostEventRootPaths: Array(Set([root, suppliedRoot])).sorted { $0.count > $1.count },
+            hostEventRootPaths: Self.hostEventRootSpellings([root, suppliedRoot]),
             invalidRootDescription: rootPath,
             guestUID: guestUID,
             guestGID: guestGID,
@@ -352,7 +352,7 @@ final class HostFS: @unchecked Sendable {
         try self.init(
             ownedRootFD: fd,
             rootPath: standardizedRoot,
-            hostEventRootPaths: [standardizedRoot],
+            hostEventRootPaths: Self.hostEventRootSpellings([standardizedRoot]),
             invalidRootDescription: eventRootPath,
             guestUID: guestUID,
             guestGID: guestGID,
@@ -550,6 +550,13 @@ final class HostFS: @unchecked Sendable {
                 relativePath = ""
             }
         }
+    }
+
+    /// FSEvents can report a protected system-volume alias even when its stream was created with
+    /// the canonical data-volume spelling. Admission remains descriptor-confined; this check only
+    /// recognizes the bounded lexical spellings that can name the already-pinned share root.
+    func acceptsEventPath(_ hostPath: String) -> Bool {
+        eventRelativePath(forHostPath: hostPath) != nil
     }
 
     public var resourceSnapshot: FuseResourceSnapshot {
@@ -903,6 +910,30 @@ final class HostFS: @unchecked Sendable {
                 return rootPath + "/" + relativePath
             }.sorted()
         }
+    }
+
+    private static func hostEventRootSpellings(_ roots: [String]) -> [String] {
+        let systemAliases = [
+            (canonical: "/private/tmp", alias: "/tmp"),
+            (canonical: "/private/var", alias: "/var"),
+            (canonical: "/private/etc", alias: "/etc"),
+        ]
+        var spellings = Set(roots)
+        for root in roots {
+            for pair in systemAliases {
+                for (source, target) in [
+                    (pair.canonical, pair.alias),
+                    (pair.alias, pair.canonical),
+                ] {
+                    if root == source {
+                        spellings.insert(target)
+                    } else if root.hasPrefix(source + "/") {
+                        spellings.insert(target + root.dropFirst(source.count))
+                    }
+                }
+            }
+        }
+        return spellings.sorted { $0.count > $1.count }
     }
 
     private func eventRelativePath(forHostPath hostPath: String) -> String? {
