@@ -1,44 +1,16 @@
 :root {
-  --font:
-    -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Inter', 'Segoe UI', Roboto, sans-serif;
-  --mono: 'SF Mono', ui-monospace, 'JetBrains Mono', Menlo, Consolas, monospace;
-  color-scheme: light;
+  font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+  color: #050505;
+  background: #fff;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
 }
-
-* {
-  box-sizing: border-box;
-}
-
-html {
-  scroll-behavior: smooth;
-}
-
-body {
-  margin: 0;
-  min-width: 320px;
-  background: #fbfdff;
-  color: #101b2c;
-  font-family: var(--font);
-}
-
-a {
-  color: inherit;
-}
-
-button,
-input {
-  font: inherit;
-}
-
-::selection {
-  background: #147fe8;
-  color: #ffffff;
-}
-
-#root {
-  min-height: 100vh;
-}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body { margin: 0; min-width: 320px; background: #fff; }
+button, input { font: inherit; }
+a { color: inherit; }
+::selection { background: #050505; color: #fff; }
+:focus-visible { outline: 2px solid #147fe8; outline-offset: 3px; }
+#root { min-height: 100vh; }

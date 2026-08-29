@@ -316,13 +316,17 @@ class GitHubReleaseAuthority:
         os.replace(temporary, destination)
         return destination
 
-    def verify(self, version: str, appcast_bytes: bytes, signature: bytes, enclosure: ET.Element) -> None:
-        maximum_version, maximum_build = self.stable_ledger()
-        current_version, current_build = appcast_current_identity(
+    def authenticate(
+        self, version: str, appcast_bytes: bytes, signature: bytes, enclosure: ET.Element
+    ) -> None:
+        """Authenticate one transaction against its exact immutable release assets."""
+        current_version, _ = appcast_current_identity(
             appcast_bytes, f"v{version} appcast.xml"
         )
-        require(current_version == maximum_version, f"v{version} is not the maximum stable release")
-        require(current_build == maximum_build, f"v{version} does not carry the maximum stable build")
+        require(
+            current_version == semantic_version(version, f"v{version} release version"),
+            f"v{version} appcast disagrees with its release identity",
+        )
         release = self.release(version)
         appcast_asset = self.exact_asset(release, "appcast.xml", version)
         authoritative = self.appcast_cache.get(version)
@@ -365,6 +369,16 @@ class GitHubReleaseAuthority:
             result.returncode == 0,
             f"Sparkle Ed25519 signature does not authenticate {update_name}: {result.stdout.strip()}",
         )
+
+    def verify(self, version: str, appcast_bytes: bytes, signature: bytes, enclosure: ET.Element) -> None:
+        """Authenticate a transaction and require it to be the stable release maximum."""
+        self.authenticate(version, appcast_bytes, signature, enclosure)
+        maximum_version, maximum_build = self.stable_ledger()
+        current_version, current_build = appcast_current_identity(
+            appcast_bytes, f"v{version} appcast.xml"
+        )
+        require(current_version == maximum_version, f"v{version} is not the maximum stable release")
+        require(current_build == maximum_build, f"v{version} does not carry the maximum stable build")
 
 
 Authority = Callable[[str, bytes, bytes, ET.Element], None]
@@ -564,9 +578,16 @@ def transaction_files(root: pathlib.Path) -> tuple[bytes, ...]:
     )
 
 
-def preserve_metadata(live_root: pathlib.Path, checked_root: pathlib.Path, authority: Authority) -> None:
-    live_appcast, live_catalog = verify_root(live_root, "live", authority)
-    checked_appcast, checked_catalog = verify_root(checked_root, "checked-in", authority)
+def preserve_metadata(
+    live_root: pathlib.Path,
+    checked_root: pathlib.Path,
+    transaction_authority: Authority,
+    maximum_authority: Authority,
+) -> None:
+    live_appcast, live_catalog = verify_root(live_root, "live", transaction_authority)
+    checked_appcast, checked_catalog = verify_root(
+        checked_root, "checked-in", transaction_authority
+    )
     live_semver = semantic_version(live_catalog[0], "live catalog release")
     checked_semver = semantic_version(checked_catalog[0], "checked-in catalog release")
     if live_appcast[0] > checked_appcast[0]:
@@ -586,7 +607,14 @@ def preserve_metadata(live_root: pathlib.Path, checked_root: pathlib.Path, autho
         shutil.copyfile(live_root / "appcast.xml", checked_root / "appcast.xml")
         for name in CATALOG_NAMES:
             shutil.copyfile(live_root / "components" / "arm64" / name, checked_root / "components" / "arm64" / name)
-        selected_appcast, selected_catalog = verify_root(checked_root, "preserved live", authority)
+        selected_label = "preserved live"
+    else:
+        selected_label = "retained checked-in"
+
+    selected_appcast, selected_catalog = verify_root(
+        checked_root, selected_label, maximum_authority
+    )
+    if preserve_live:
         print(f"Preserved live signed release metadata for {selected_catalog[0]} ({selected_appcast[0]}).")
     else:
         print(f"Checked-in release metadata {checked_catalog[0]} ({checked_appcast[0]}) is newer; retaining it.")
@@ -608,7 +636,12 @@ def main() -> None:
         appcast, catalog = verify_root(arguments.root, arguments.label, authority)
         print(f"Verified {arguments.label} signed release metadata for {catalog[0]} ({appcast[0]}).")
     else:
-        preserve_metadata(arguments.live_root, arguments.checked_root, authority)
+        preserve_metadata(
+            arguments.live_root,
+            arguments.checked_root,
+            github_authority.authenticate,
+            github_authority.verify,
+        )
 
 
 if __name__ == "__main__":

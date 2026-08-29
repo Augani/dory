@@ -5,13 +5,15 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && vite build && node scripts/build-sites-worker.mjs",
     "lint": "oxlint",
     "preview": "vite preview"
   },
   "dependencies": {
     "@heroicons/react": "^2.2.0",
+    "@openai/sites-vite-plugin": "^0.2.0",
     "@paper-design/shaders-react": "^0.0.77",
+    "animejs": "^4.5.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "three": "^0.185.1"

@@ -9,6 +9,7 @@ import io
 import json
 import re
 import shutil
+import subprocess
 import tempfile
 from pathlib import Path
 from types import ModuleType
@@ -384,6 +385,9 @@ require(pages_verifier_source, '"-in",\n                    str(update_path)', "
 require(pages_verifier_source, "appcast_bytes == authoritative", "Pages verifier does not bind appcast bytes to the exact release asset")
 require(pages_verifier_source, "digest == f\"sha256:{actual}\"", "Pages verifier does not authenticate authoritative GitHub assets")
 require(pages_verifier_source, "self.stable_ledger()", "Pages verifier does not compare against all stable release maxima")
+require(pages_verifier_source, "def authenticate(", "Pages verifier cannot authenticate a non-maximum stable transaction")
+require(pages_verifier_source, "github_authority.authenticate", "Pages preservation still applies the maximum check before selecting a transaction")
+require(pages_verifier_source, "maximum_authority", "Pages preservation does not reverify the selected stable maximum")
 require(pages_verifier_source, "AFetajNbqZty68rRY7OMWYNt6suUsrokQmYMhDJtnP4=", "Pages verifier does not pin the production key")
 require(pages_verifier_source, "catalog JSON repeats key", "Pages verifier does not reject duplicate catalog keys")
 require(pages_verifier_source, "appcast and catalog versions differ", "Pages verifier does not bind appcast and catalog release identity")
@@ -477,11 +481,256 @@ with tempfile.TemporaryDirectory(prefix="dory-pages-contract-") as temporary:
     )
     expect_failure(
         lambda: pages_verifier.preserve_metadata(
-            appcast_tamper_root, checked_root, lambda version, raw, signature, enclosure: None
+            appcast_tamper_root,
+            checked_root,
+            lambda version, raw, signature, enclosure: None,
+            lambda version, raw, signature, enclosure: None,
         ),
         "equal release identity has two different signed metadata transactions",
         "Pages preservation accepted two byte-distinct equal-identity transactions",
     )
+
+    fixture_key = temporary_root / "preservation-key.pem"
+    key_result = subprocess.run(
+        ["openssl", "genpkey", "-algorithm", "ED25519", "-out", str(fixture_key)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    if key_result.returncode != 0:
+        raise SystemExit(
+            f"release workflow contract: could not generate preservation fixture key: {key_result.stdout.strip()}"
+        )
+    public_result = subprocess.run(
+        [
+            "openssl",
+            "pkey",
+            "-in",
+            str(fixture_key),
+            "-pubout",
+            "-outform",
+            "DER",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    public_prefix = bytes.fromhex("302a300506032b6570032100")
+    if public_result.returncode != 0 or not public_result.stdout.startswith(public_prefix):
+        raise SystemExit(
+            "release workflow contract: could not derive preservation fixture public key"
+        )
+
+    def sign_fixture(path: Path, label: str) -> bytes:
+        signature_path = temporary_root / f"{label}.signature"
+        result = subprocess.run(
+            [
+                "openssl",
+                "pkeyutl",
+                "-sign",
+                "-inkey",
+                str(fixture_key),
+                "-rawin",
+                "-in",
+                str(path),
+                "-out",
+                str(signature_path),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        if result.returncode != 0:
+            raise SystemExit(
+                f"release workflow contract: could not sign {label}: {result.stdout.strip()}"
+            )
+        signature = signature_path.read_bytes()
+        if len(signature) != 64:
+            raise SystemExit(
+                f"release workflow contract: {label} fixture signature is not Ed25519"
+            )
+        return signature
+
+    authority_cache = temporary_root / "preservation-authority-cache"
+    authority_cache.mkdir()
+
+    def write_preservation_transaction(
+        root: Path, version: str, build: int
+    ) -> tuple[bytes, dict[str, object]]:
+        shutil.copytree("website/public", root)
+        catalog_root = root / "components" / "arm64"
+        catalog_path = catalog_root / "catalog.json"
+        catalog = json.loads(
+            catalog_path.read_text(encoding="utf-8").replace("0.4.5", version)
+        )
+        catalog_bytes = (
+            json.dumps(catalog, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+        ).encode("utf-8")
+        catalog_path.write_bytes(catalog_bytes)
+        (catalog_root / "catalog.json.sha256").write_text(
+            hashlib.sha256(catalog_bytes).hexdigest() + "\n", encoding="ascii"
+        )
+        catalog_signature = sign_fixture(catalog_path, f"catalog-{version}")
+        (catalog_root / "catalog.json.sig").write_text(
+            base64.b64encode(catalog_signature).decode("ascii") + "\n",
+            encoding="ascii",
+        )
+
+        update_bytes = f"authenticated update fixture for {version}\n".encode("utf-8")
+        update_digest = hashlib.sha256(update_bytes).hexdigest()
+        update_path = authority_cache / f"{update_digest}.app-update.zip"
+        update_path.write_bytes(update_bytes)
+        update_signature = sign_fixture(update_path, f"update-{version}")
+        update_name = f"Dory-{version}-app-update.zip"
+        appcast = (
+            '<?xml version="1.0" encoding="utf-8"?>\n'
+            '<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" '
+            'xmlns:dory="https://augani.github.io/dory/appcast"><channel><item>'
+            f"<sparkle:version>{build}</sparkle:version>"
+            f"<sparkle:shortVersionString>{version}</sparkle:shortVersionString>"
+            "<sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>"
+            "<dory:dataSchemaVersion>1</dory:dataSchemaVersion>"
+            "<dory:minimumReadableDataSchema>1</dory:minimumReadableDataSchema>"
+            "<dory:maximumReadableDataSchema>1</dory:maximumReadableDataSchema>"
+            "<dory:componentCatalogSchema>1</dory:componentCatalogSchema>"
+            f'<enclosure url="https://github.com/Augani/dory/releases/download/v{version}/{update_name}" '
+            f'sparkle:edSignature="{base64.b64encode(update_signature).decode("ascii")}" '
+            f'length="{len(update_bytes)}" type="application/octet-stream" />'
+            "</item></channel></rss>\n"
+        ).encode("utf-8")
+        (root / "appcast.xml").write_bytes(appcast)
+        appcast_digest = hashlib.sha256(appcast).hexdigest()
+        release = {
+            "tag_name": f"v{version}",
+            "draft": False,
+            "prerelease": False,
+            "assets": [
+                {
+                    "name": "appcast.xml",
+                    "size": len(appcast),
+                    "digest": f"sha256:{appcast_digest}",
+                    "browser_download_url": f"https://github.com/Augani/dory/releases/download/v{version}/appcast.xml",
+                },
+                {
+                    "name": update_name,
+                    "size": len(update_bytes),
+                    "digest": f"sha256:{update_digest}",
+                    "browser_download_url": f"https://github.com/Augani/dory/releases/download/v{version}/{update_name}",
+                },
+            ],
+        }
+        return appcast, release
+
+    fixture_roots = temporary_root / "preservation-transactions"
+    fixture_roots.mkdir()
+    older_root = fixture_roots / "older"
+    newer_root = fixture_roots / "newer"
+    older_appcast, older_release = write_preservation_transaction(
+        older_root, "0.4.5", 49
+    )
+    newer_appcast, newer_release = write_preservation_transaction(
+        newer_root, "0.5.0", 51
+    )
+    preservation_authority = pages_verifier.GitHubReleaseAuthority.__new__(
+        pages_verifier.GitHubReleaseAuthority
+    )
+    preservation_authority.repository = "Augani/dory"
+    preservation_authority.token = "fixture"
+    preservation_authority.cache = {
+        "0.4.5": older_release,
+        "0.5.0": newer_release,
+    }
+    preservation_authority.appcast_cache = {
+        "0.4.5": older_appcast,
+        "0.5.0": newer_appcast,
+    }
+    preservation_authority.ledger = ((0, 5, 0), 51)
+    preservation_authority.cache_root = authority_cache
+
+    production_public_key = pages_verifier.PUBLIC_KEY_BASE64
+    pages_verifier.PUBLIC_KEY_BASE64 = base64.b64encode(
+        public_result.stdout.removeprefix(public_prefix)
+    ).decode("ascii")
+    try:
+        live_newer_root = temporary_root / "live-newer"
+        checked_older_root = temporary_root / "checked-older"
+        shutil.copytree(newer_root, live_newer_root)
+        shutil.copytree(older_root, checked_older_root)
+        candidate_calls: list[str] = []
+        maximum_calls: list[str] = []
+
+        def authenticate_candidate(version, raw, signature, enclosure):
+            preservation_authority.authenticate(version, raw, signature, enclosure)
+            candidate_calls.append(version)
+
+        def authenticate_maximum(version, raw, signature, enclosure):
+            preservation_authority.verify(version, raw, signature, enclosure)
+            maximum_calls.append(version)
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            pages_verifier.preserve_metadata(
+                live_newer_root,
+                checked_older_root,
+                authenticate_candidate,
+                authenticate_maximum,
+            )
+        if candidate_calls != ["0.5.0", "0.4.5"] or maximum_calls != ["0.5.0"]:
+            raise SystemExit(
+                "release workflow contract: live-newer preservation did not authenticate both exact release transactions and the selected maximum"
+            )
+        if pages_verifier.transaction_files(
+            checked_older_root
+        ) != pages_verifier.transaction_files(live_newer_root):
+            raise SystemExit(
+                "release workflow contract: live-newer preservation did not copy the complete signed transaction"
+            )
+
+        live_older_root = temporary_root / "live-older"
+        checked_newer_root = temporary_root / "checked-newer"
+        shutil.copytree(older_root, live_older_root)
+        shutil.copytree(newer_root, checked_newer_root)
+        checked_newer_before = pages_verifier.transaction_files(checked_newer_root)
+        candidate_calls.clear()
+        maximum_calls.clear()
+        with contextlib.redirect_stdout(io.StringIO()):
+            pages_verifier.preserve_metadata(
+                live_older_root,
+                checked_newer_root,
+                authenticate_candidate,
+                authenticate_maximum,
+            )
+        if candidate_calls != ["0.4.5", "0.5.0"] or maximum_calls != ["0.5.0"]:
+            raise SystemExit(
+                "release workflow contract: checked-newer preservation did not authenticate both exact release transactions and the selected maximum"
+            )
+        if pages_verifier.transaction_files(checked_newer_root) != checked_newer_before:
+            raise SystemExit(
+                "release workflow contract: checked-newer preservation changed the retained signed transaction"
+            )
+
+        preservation_authority.ledger = ((0, 5, 1), 52)
+        expect_failure(
+            lambda: pages_verifier.preserve_metadata(
+                live_newer_root,
+                checked_older_root,
+                authenticate_candidate,
+                authenticate_maximum,
+            ),
+            "is not the maximum stable release",
+            "Pages preservation accepted a selected transaction below the stable maximum",
+        )
+        preservation_authority.ledger = ((0, 5, 0), 52)
+        expect_failure(
+            lambda: pages_verifier.preserve_metadata(
+                live_newer_root,
+                checked_older_root,
+                authenticate_candidate,
+                authenticate_maximum,
+            ),
+            "does not carry the maximum stable build",
+            "Pages preservation accepted a selected transaction below the stable build maximum",
+        )
+    finally:
+        pages_verifier.PUBLIC_KEY_BASE64 = production_public_key
 
 
 def pages_authority_fixture(releases):
@@ -646,6 +895,23 @@ require(
 )
 require(publisher, "case \"$tag_status\" in", "publisher treats every git lookup failure as tag absence")
 require(publisher, "could not prove release v$VERSION is absent", "publisher treats ambiguous GitHub responses as absence")
+if re.search(
+    r"(?m)-H\s+[\"'][^\"'\n]*Authorization:\s*Bearer[^\"'\n]*gh\s+auth\s+token",
+    publisher,
+):
+    raise SystemExit(
+        "release workflow contract: publisher exposes the GitHub token in curl process arguments"
+    )
+require(
+    publisher,
+    "emit_github_auth_header",
+    "publisher does not isolate and validate the GitHub authorization header",
+)
+require(
+    publisher,
+    "-H @-",
+    "publisher does not pass the GitHub authorization header to curl over standard input",
+)
 require(publisher, 'gh run watch "$RUN_ID"', "publisher does not wait for the complete workflow")
 require(publisher, ".github/scripts/verify-public-release.py", "publisher skips independent live verification")
 

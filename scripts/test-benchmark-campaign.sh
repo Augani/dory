@@ -108,7 +108,7 @@ dry_work="$TMP_ROOT/dry-work"
 : > "$MUTATION_LOG"
 safe_env CAMPAIGN_WORKDIR="$TMP_ROOT/ignored-env-work" "$HARNESS" \
   --engines orbstack,colima,podman,dory \
-  --profiles default,pinned \
+  --profiles pinned,default \
   --dory-app "$TMP_ROOT/Release Build/Dory.app" \
   --metrics memory,build \
   --pinned-cpus 4 \
@@ -122,7 +122,7 @@ safe_env CAMPAIGN_WORKDIR="$TMP_ROOT/ignored-env-work" "$HARNESS" \
 assert_no_mutation dry-run "$dry_work"
 [ ! -e "$TMP_ROOT/ignored-env-work" ] || fail 'CLI --work did not safely override CAMPAIGN_WORKDIR'
 grep -Fq 'no installs, starts, measurements, files, or purge commands are executed' "$TMP_ROOT/dry.err"
-grep -Fq 'engines=orbstack,colima,podman,dory profiles=default,pinned pinned=4cpu/5GB runs=3' "$TMP_ROOT/dry.err"
+grep -Fq 'engines=orbstack,colima,podman,dory profiles=pinned,default pinned=4cpu/5GB runs=3' "$TMP_ROOT/dry.err"
 awk -F '\t' '
   NR == 1 {
     if ($0 != "engine\tprofile\tresult\tresult_dir\tdetail") exit 1
@@ -142,5 +142,34 @@ awk -F '\t' '
         count["dory/default"] != 1 || count["dory/pinned"] != 1) exit 1
   }
 ' "$TMP_ROOT/dry.tsv" || fail 'dry-run did not honor the requested engine/profile matrix'
+
+# The profile lifecycle itself is part of benchmark validity. In particular, every default profile
+# must have its own RESET/INSTALL after the preceding pinned/default profile was stopped and purged;
+# otherwise OrbStack and Colima silently retain the prior VM's CPU/RAM configuration.
+awk '
+  index($0, "LIFECYCLE ") {
+    sub(/^.*LIFECYCLE /, "")
+    print
+  }
+' "$TMP_ROOT/dry.err" > "$TMP_ROOT/lifecycle.actual"
+while IFS= read -r engine; do
+  for profile in pinned default; do
+    for phase in RESET INSTALL START MEASURE STOP PURGE; do
+      printf '%s/%s %s\n' "$engine" "$profile" "$phase"
+    done
+  done
+done <<'EOF' > "$TMP_ROOT/lifecycle.expected"
+orbstack
+colima
+podman
+dory
+EOF
+diff -u "$TMP_ROOT/lifecycle.expected" "$TMP_ROOT/lifecycle.actual" \
+  || fail 'dry-run lifecycle is not a fresh reset/install/start/measure/stop/purge cycle per profile'
+
+# The destructive competitor reset must not be generalized to Dory: Dory's signed app and all of
+# its user data remain outside purge_dory even though its processes are stopped between samples.
+grep -Fq 'purge_dory() { assert_mutation_authorized; :; }' "$HARNESS" \
+  || fail 'Dory user-data purge protection changed'
 
 echo 'benchmark-campaign offline safety tests passed'

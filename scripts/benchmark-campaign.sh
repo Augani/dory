@@ -1,6 +1,7 @@
 #!/bin/bash
-# Full competitive benchmark campaign: for each engine, INSTALL -> START (per VM profile) -> MEASURE
-# -> STOP -> UNINSTALL + PURGE, so every engine is measured in isolation with nothing else installed.
+# Full competitive benchmark campaign: for every competitor/profile pair, RESET -> INSTALL -> START
+# -> MEASURE -> STOP -> UNINSTALL + PURGE. Both pinned and default therefore start from a new VM and
+# new engine configuration instead of allowing the default run to inherit the pinned run's settings.
 # Dory is measured last against a signed Release Dory.app.
 #
 # The actual measurement is delegated to scripts/benchmark-compare.sh (same probe for every engine).
@@ -12,10 +13,11 @@
 #              Dory reclaim RAM dynamically, so "pinned" is a ceiling; Colima/Podman reserve it.
 #   default -- each engine exactly as it installs, i.e. the out-of-the-box experience.
 #
-# SAFETY: engines are installed and PURGED one at a time (only one competitor VM exists at any moment),
-# which keeps disk and memory bounded on a 16 GB / limited-disk Mac. A live campaign is disabled unless
-# the operator supplies the exact destructive-purge confirmation token. --dry-run never creates a result
-# directory and never invokes an engine, package manager, Docker API, app, or removal command.
+# SAFETY: engines are reset, installed, and PURGED one profile at a time (only one competitor VM exists
+# at any moment), which keeps disk and memory bounded on a 16 GB / limited-disk Mac. A live campaign is
+# disabled unless the operator supplies the exact destructive-purge confirmation token. Dory's user data
+# is never purged. --dry-run never creates a result directory and never invokes an engine, package
+# manager, Docker API, app, or removal command.
 #
 # Usage:
 #   scripts/benchmark-campaign.sh --dory-app release-build/export-arm64/Dory.app \
@@ -62,7 +64,8 @@ Options:
   --dry-run              Validate and print the complete lifecycle plan without mutations
   --confirm-destructive-purge $PURGE_TOKEN
                          Required for every live run. Selected competitors are installed,
-                         stopped, uninstalled, and their VM/application data is permanently deleted.
+                         stopped, uninstalled, and their VM/application data is permanently deleted
+                         before and after every profile. Dory user data is never deleted.
   -h, --help             Show this help without creating files or invoking engine commands
 
 Without --dry-run or the exact confirmation token above, the campaign exits before creating its
@@ -252,7 +255,8 @@ measure() {
   mkdir -p "$out"
   local dory_app_args=()
   [ "$engine" = "dory" ] && dory_app_args=(--dory-app "$DORY_APP")
-  # shellcheck disable=SC2086 -- extra_env is an internal, intentionally word-split env assignment list.
+  # extra_env is an internal, intentionally word-split environment assignment list.
+  # shellcheck disable=SC2086
   if env "$sockenv=$sock" $extra_env BENCH_WORKDIR="$out" BENCH_BUILD_JOBS="$jobs" \
        METRICS="$METRICS" BENCH_RUNS="$RUNS" BENCH_MEMORY_COUNT="$MEMORY_COUNT" \
        "$COMPARE" --engines "$engine" --metrics "$METRICS" "${dory_app_args[@]}" \
@@ -282,7 +286,12 @@ purge_orbstack() {
   run osascript -e 'quit app "OrbStack"' 2>/dev/null || true
   brewq uninstall --cask --zap orbstack 2>/dev/null || brewq uninstall --cask orbstack 2>/dev/null || true
   run rm -rf "$HOME/.orbstack" "$HOME/Library/Application Support/OrbStack" \
-      "$HOME/Library/Caches/dev.orbstack.OrbStack" "$HOME/Library/Group Containers/HUAQ24HBR6.dev.orbstack" 2>/dev/null || true
+      "$HOME/Library/Caches/dev.orbstack.OrbStack" \
+      "$HOME/Library/Containers/dev.orbstack.OrbStack" \
+      "$HOME/Library/Group Containers/HUAQ24HBR6.dev.orbstack" \
+      "$HOME/Library/Preferences/dev.orbstack.OrbStack.plist" \
+      "$HOME/Library/Saved Application State/dev.orbstack.OrbStack.savedState" 2>/dev/null || return 1
+  verify_competitor_purged orbstack
 }
 
 # ---- Colima --------------------------------------------------------------------------------------
@@ -301,7 +310,8 @@ purge_colima() {
   assert_mutation_authorized
   run colima delete -f 2>/dev/null || true
   brewq uninstall colima 2>/dev/null || true
-  run rm -rf "$HOME/.colima" "$HOME/.lima/colima" 2>/dev/null || true
+  run rm -rf "$HOME/.colima" "$HOME/.lima/colima" 2>/dev/null || return 1
+  verify_competitor_purged colima
 }
 
 # ---- Podman --------------------------------------------------------------------------------------
@@ -328,7 +338,8 @@ purge_podman() {
   run podman machine stop 2>/dev/null || true
   run podman machine rm -f 2>/dev/null || true
   brewq uninstall podman 2>/dev/null || true
-  run rm -rf "$HOME/.local/share/containers" "$HOME/.config/containers" 2>/dev/null || true
+  run rm -rf "$HOME/.local/share/containers" "$HOME/.config/containers" 2>/dev/null || return 1
+  verify_competitor_purged podman
 }
 
 # ---- Dory (signed Release app) -------------------------------------------------------------------
@@ -348,16 +359,83 @@ start_dory() {
   return 0
 }
 stop_dory() { run osascript -e 'quit app "Dory"' 2>/dev/null || true; run pkill -f 'dory-hv|doryd' 2>/dev/null || true; }
-purge_dory() { assert_mutation_authorized; :; }  # do not uninstall the user's Dory; it is the product under test
+purge_dory() { assert_mutation_authorized; :; }  # Invariant: never delete the user's Dory app or data.
 
 engine_defined() { type "install_$1" >/dev/null 2>&1; }
 
-run_engine() {
-  local engine="$1" profile sockenv sock
-  if ! engine_defined "$engine"; then
-    record "$engine" "-" "UNKNOWN_ENGINE" "" "no recipe"
-    return
+# A cleanup command can be unavailable when the competitor is not installed, so the purge recipes
+# intentionally tolerate stop/uninstall failures. This postcondition is what prevents a failed purge
+# from silently contaminating the next profile with a previous VM or pinned configuration.
+verify_competitor_purged() {
+  local engine="$1" path package_kind package_name
+  local paths=()
+  [ "$DRY_RUN" = 1 ] && return 0
+  case "$engine" in
+    orbstack)
+      package_kind=cask
+      package_name=orbstack
+      paths=(
+        "$HOME/.orbstack"
+        "$HOME/Library/Application Support/OrbStack"
+        "$HOME/Library/Caches/dev.orbstack.OrbStack"
+        "$HOME/Library/Containers/dev.orbstack.OrbStack"
+        "$HOME/Library/Group Containers/HUAQ24HBR6.dev.orbstack"
+        "$HOME/Library/Preferences/dev.orbstack.OrbStack.plist"
+        "$HOME/Library/Saved Application State/dev.orbstack.OrbStack.savedState"
+        "/Applications/OrbStack.app"
+      )
+      ;;
+    colima)
+      package_kind=formula
+      package_name=colima
+      paths=("$HOME/.colima" "$HOME/.lima/colima")
+      ;;
+    podman)
+      package_kind=formula
+      package_name=podman
+      paths=("$HOME/.local/share/containers" "$HOME/.config/containers")
+      ;;
+    *) return 0 ;;
+  esac
+
+  if brew list "--$package_kind" "$package_name" >/dev/null 2>&1; then
+    log "purge verification failed: Homebrew still reports $package_name installed"
+    return 1
   fi
+  for path in "${paths[@]}"; do
+    if [ -e "$path" ] || [ -L "$path" ]; then
+      log "purge verification failed: state remains at $path"
+      return 1
+    fi
+  done
+}
+
+reset_profile_state() {
+  local engine="$1"
+  if [ "$engine" = dory ]; then
+    # Dory is the product under test. Stop its processes so the launch is clean, but preserve every
+    # user-owned app, preference, image, volume, container, machine, and support-data path.
+    stop_dory
+    return 0
+  fi
+  "purge_$engine"
+}
+
+finish_profile() {
+  local engine="$1" profile="$2"
+  log "LIFECYCLE $engine/$profile STOP"
+  "stop_$engine" || true
+  log "LIFECYCLE $engine/$profile PURGE"
+  if ! "purge_$engine"; then
+    record "$engine" "$profile" "PURGE_FAILED" "" \
+      "engine package, VM, or configuration remained after measurement"
+    return 1
+  fi
+  return 0
+}
+
+run_profile() {
+  local engine="$1" profile="$2" sockenv sock
   case "$engine" in
     orbstack) sockenv="ORBSTACK_SOCK"; sock="$HOME/.orbstack/run/docker.sock" ;;
     colima)   sockenv="COLIMA_SOCK";   sock="$HOME/.colima/default/docker.sock" ;;
@@ -365,32 +443,50 @@ run_engine() {
     dory)     sockenv="DORY_SOCK";     sock="$HOME/.dory/dory.sock" ;;
   esac
 
-  log "===== ENGINE $engine (disk free $(disk_free_gb)G) ====="
-  if ! "install_$engine"; then
-    record "$engine" "-" "INSTALL_FAILED" "" "install recipe returned non-zero"
-    "purge_$engine" 2>/dev/null || true
+  log "LIFECYCLE $engine/$profile RESET"
+  if ! reset_profile_state "$engine"; then
+    record "$engine" "$profile" "RESET_FAILED" "" \
+      "could not prove the previous engine package, VM, and configuration were removed"
     return
   fi
 
-  local OLD_IFS="$IFS" profiles
+  log "LIFECYCLE $engine/$profile INSTALL"
+  if ! "install_$engine"; then
+    record "$engine" "$profile" "INSTALL_FAILED" "" "install recipe returned non-zero"
+    finish_profile "$engine" "$profile" || true
+    return
+  fi
+
+  log "LIFECYCLE $engine/$profile START"
+  if ! "start_$engine" "$profile"; then
+    record "$engine" "$profile" "START_FAILED" "" "start/socket-wait failed"
+    finish_profile "$engine" "$profile" || true
+    return
+  fi
+  [ "$engine" = "podman" ] && sock="${PODMAN_SOCK:-}"
+
+  log "LIFECYCLE $engine/$profile MEASURE"
+  measure "$engine" "$profile" "$sockenv" "$sock"
+  finish_profile "$engine" "$profile" || true
+}
+
+run_engine() {
+  local engine="$1" profile
+  local old_ifs="$IFS" profiles
+  if ! engine_defined "$engine"; then
+    record "$engine" "-" "UNKNOWN_ENGINE" "" "no recipe"
+    return
+  fi
+
+  log "===== ENGINE $engine (disk free $(disk_free_gb)G) ====="
   IFS=','
   read -r -a profiles <<< "$PROFILES"
-  IFS="$OLD_IFS"
+  IFS="$old_ifs"
   for profile in "${profiles[@]}"; do
-    if ! "start_$engine" "$profile"; then
-      record "$engine" "$profile" "START_FAILED" "" "start/socket-wait failed"
-      "stop_$engine" 2>/dev/null || true
-      continue
-    fi
-    [ "$engine" = "podman" ] && sock="${PODMAN_SOCK:-}"
-    measure "$engine" "$profile" "$sockenv" "$sock"
-    "stop_$engine" 2>/dev/null || true
+    run_profile "$engine" "$profile"
   done
 
-  log "purging $engine ..."
-  assert_mutation_authorized
-  "purge_$engine" 2>/dev/null || true
-  log "disk free after $engine purge: $(disk_free_gb)G"
+  log "disk free after $engine profiles: $(disk_free_gb)G"
 }
 
 log "campaign $RUN_ID engines=$ENGINES profiles=$PROFILES pinned=${PINNED_CPUS}cpu/${PINNED_MEM_GB}GB runs=$RUNS"

@@ -27,6 +27,16 @@ die() {
   exit 1
 }
 
+emit_github_auth_header() {
+  local token
+  token="$(gh auth token)" || die "could not read the GitHub authentication token"
+  [ -n "$token" ] || die "GitHub returned an empty authentication token"
+  case "$token" in
+    *$'\r'*|*$'\n'*) die "GitHub returned an invalid authentication token" ;;
+  esac
+  printf 'Authorization: Bearer %s\n' "$token"
+}
+
 if [ "${1:-}" = "--check" ]; then
   [ "$#" -eq 1 ] || { usage >&2; exit 64; }
   exec python3 .github/scripts/verify-release-workflow-contract.py
@@ -85,12 +95,15 @@ case "$tag_status" in
   *) die "could not prove tag v$VERSION is absent: $(<"$RELEASE_METADATA_TMP/tag-ref.err")" ;;
 esac
 
-release_status="$(curl -sS --retry 3 --retry-delay 2 --connect-timeout 15 --max-time 60 \
-  -H 'Accept: application/vnd.github+json' \
-  -H "Authorization: Bearer $(gh auth token)" \
-  -H 'X-GitHub-Api-Version: 2022-11-28' \
-  -o "$RELEASE_METADATA_TMP/requested-release.json" -w '%{http_code}' \
-  "https://api.github.com/repos/$REPOSITORY/releases/tags/v$VERSION")"
+release_status="$(
+  emit_github_auth_header \
+    | curl -sS --retry 3 --retry-delay 2 --connect-timeout 15 --max-time 60 \
+      -H 'Accept: application/vnd.github+json' \
+      -H @- \
+      -H 'X-GitHub-Api-Version: 2022-11-28' \
+      -o "$RELEASE_METADATA_TMP/requested-release.json" -w '%{http_code}' \
+      "https://api.github.com/repos/$REPOSITORY/releases/tags/v$VERSION"
+)"
 case "$release_status" in
   404) ;;
   200) die "release v$VERSION already exists" ;;
