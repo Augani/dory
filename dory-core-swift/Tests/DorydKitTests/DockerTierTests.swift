@@ -663,10 +663,18 @@ final class DockerTierTests: XCTestCase {
         }
         XCTAssertEqual(launchPublished.wait(timeout: .now() + 1), .success)
 
-        let statusStartedAt = ProcessInfo.processInfo.systemUptime
-        let status = tier.status()
-        let elapsed = ProcessInfo.processInfo.systemUptime - statusStartedAt
-        XCTAssertLessThan(elapsed, 0.1)
+        let statusFinished = DispatchSemaphore(value: 0)
+        let statusResult = LockedDockerTierStatusBox()
+        DispatchQueue.global(qos: .userInitiated).async {
+            statusResult.set(tier.status())
+            statusFinished.signal()
+        }
+        XCTAssertEqual(
+            statusFinished.wait(timeout: .now() + 1),
+            .success,
+            "status must return unknown instead of blocking behind the helper's launch reservation"
+        )
+        let status = try XCTUnwrap(statusResult.value)
         XCTAssertEqual(status.state, .starting)
         XCTAssertNil(status.hvPID, "contended exact observation must fail closed, never guess a PID")
 
@@ -3604,6 +3612,23 @@ private final class LockedBoolBox: @unchecked Sendable {
     }
 
     func set(_ value: Bool) {
+        lock.lock()
+        stored = value
+        lock.unlock()
+    }
+}
+
+private final class LockedDockerTierStatusBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: DockerTierStatus?
+
+    var value: DockerTierStatus? {
+        lock.lock()
+        defer { lock.unlock() }
+        return stored
+    }
+
+    func set(_ value: DockerTierStatus) {
         lock.lock()
         stored = value
         lock.unlock()
