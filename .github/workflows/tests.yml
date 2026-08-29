@@ -57,6 +57,7 @@ jobs:
           bash scripts/test-app-update-payload.sh
           bash scripts/test-verify-macos-deployment-targets.sh
           python3 .github/scripts/test-release-orchestrator.py
+          python3 .github/scripts/test-release-candidate-workflow.py
           bash scripts/test-dmg-distribution-signing.sh
           python3 .github/scripts/test-ci-umbrella.py
           python3 .github/scripts/test-interrupted-upgrade-rollback-gate.py
