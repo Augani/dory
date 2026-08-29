@@ -149,6 +149,11 @@ CID="$(docker_cmd create --privileged --platform linux/arm64 \
       "$DORY_DESKTOP_SUITE" /rootfs "$DORY_DESKTOP_MIRROR"
 
     cp -a --no-preserve=ownership /tmp/rootfs-overlay/. /rootfs/
+    # Git records only the executable bit, so a tracked NetworkManager profile arrives as 0644.
+    # NetworkManager requires system connection profiles to be root-private, and the image must
+    # establish that boundary before mke2fs captures the tree.
+    chmod 0600 \
+      /rootfs/etc/NetworkManager/system-connections/dory-wired.nmconnection
     /tmp/install-graphics-pack.sh /tmp/dory-mesa-venus-arm64.tar.zst /rootfs 0
     install -m0755 /tmp/dory-agent /rootfs/usr/bin/dory-agent
     chmod 0755 /rootfs/usr/lib/dory/clipboard /rootfs/usr/lib/dory/configure-machine /rootfs/usr/lib/dory/first-boot \
