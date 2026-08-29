@@ -11,6 +11,7 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github" / "workflows" / "release-candidate.yml"
 RELEASE = ROOT / "scripts" / "release.sh"
+DESKTOP_BUILD = ROOT / "guest" / "desktop" / "build.sh"
 
 
 class ReleaseCandidateWorkflowTests(unittest.TestCase):
@@ -70,6 +71,18 @@ class ReleaseCandidateWorkflowTests(unittest.TestCase):
             )
         self.assertIn('guest/desktop/build.sh arm64 "$distro"', source)
         self.assertIn('guest/desktop/verify-build.sh arm64 "$distro"', source)
+
+    def test_desktop_builder_makes_the_network_profile_private(self) -> None:
+        source = DESKTOP_BUILD.read_text(encoding="utf-8")
+        overlay_copy = "cp -a --no-preserve=ownership /tmp/rootfs-overlay/. /rootfs/"
+        private_profile = (
+            "chmod 0600 \\\n"
+            "      /rootfs/etc/NetworkManager/system-connections/dory-wired.nmconnection"
+        )
+        self.assertIn(overlay_copy, source)
+        self.assertIn(private_profile, source)
+        self.assertLess(source.index(overlay_copy), source.index(private_profile))
+        self.assertLess(source.index(private_profile), source.index("mke2fs -q"))
 
     def test_release_script_keeps_publication_blocked_after_staging(self) -> None:
         subprocess.run(["bash", "-n", str(RELEASE)], cwd=ROOT, check=True)
