@@ -784,6 +784,12 @@ UI tests, gvproxy, and a compile-only app build. Public CLI/repository contracts
 live-engine, network, filesystem, migration, compatibility, performance, endurance, and notarization
 gates against the exact candidate.
 
+Release operators use one command surface: [`scripts/dory-release.sh`](scripts/dory-release.sh).
+Its clearly separated `check`, `candidate`, `status`, and `publish` actions coordinate the private
+signed candidate and the qualification-gated GitHub, Pages, component-catalog, and Homebrew release.
+See the [release guide](docs/releasing.md); the lower-level release scripts and workflows are
+implementation details, not separate operator steps.
+
 | Path | Contents |
 |---|---|
 | `Dory/` | Native SwiftUI app and runtime integration |
