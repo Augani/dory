@@ -29,3 +29,7 @@ Developer ID receipt is recorded in
 [`phase-0a-vzmac-device-api-sdk27-engineering-evidence-2026-08-30.json`](phase-0a-vzmac-device-api-sdk27-engineering-evidence-2026-08-30.json).
 The gate closes only after the exact notarized candidates pass physical USB and in-guest camera
 qualification on the frozen minimum-host matrix.
+
+The implemented host relay, guest client, Camera Extension bundle, installer lifecycle, and
+in-guest qualification executable are recorded separately in
+[`phase-0a-vzmac-camera-bridge-engineering-evidence-2026-08-30.json`](phase-0a-vzmac-camera-bridge-engineering-evidence-2026-08-30.json).

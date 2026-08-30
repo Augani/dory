@@ -1,0 +1,58 @@
+{
+  "schema": "dory.phase0a.vzmac-camera-bridge-engineering-evidence@1",
+  "status": "IMPLEMENTED_UNSIGNED_BUNDLE_VALIDATED_IN_GUEST_QUALIFICATION_PENDING",
+  "collectedAt": "2026-08-30T13:56:02Z",
+  "sourceCommit": "8cfbe874fb94df8a0162a4b39c063e16002e4074",
+  "toolchain": {
+    "xcodeVersion": "26.6",
+    "xcodeBuild": "17F109",
+    "sdkVersion": "26.5",
+    "targetArchitecture": "arm64",
+    "deploymentTarget": "14.0"
+  },
+  "implementation": {
+    "transport": "bounded versioned VirtIO socket protocol on port 1030",
+    "hostCapture": "AVFoundation",
+    "hostRelay": "VZVirtioSocketDevice listener",
+    "guestClient": "AF_VSOCK host CID 2",
+    "guestCamera": "CoreMediaIO Camera Extension",
+    "format": "1280x720 32BGRA at 30 fps from bounded JPEG frames",
+    "containingAppBundleIdentifier": "com.pythonxi.Dory.GuestTools",
+    "systemExtensionBundleIdentifier": "com.pythonxi.Dory.GuestTools.CameraExtension",
+    "systemExtensionBundleType": "SYSX",
+    "embeddedPath": "Contents/Library/SystemExtensions/DoryCameraExtension.systemextension"
+  },
+  "validation": {
+    "swiftCameraBridgeContractTests": 5,
+    "hostVZSocketEndToEndTests": 1,
+    "guestVSOCKClientTests": 2,
+    "jpegPixelBufferTests": 1,
+    "xcodeEmbeddedBinaryValidation": "passed",
+    "unsignedApplicationExecutableSHA256": "b488ff557711ffff4a39492f62938fa4fea6e8f327e3083474c28eb38eaf46a0",
+    "unsignedSystemExtensionExecutableSHA256": "4184ec15aa208b5a9612d790769bf7ecc4450a08da3df3a06b619d2874dfe8d6",
+    "expandedSystemExtensionInfoPlistSHA256": "aa50a461fe6e9831c59c9ffd5d8c15f5ab5b6b219227a92b54c8493f84733366",
+    "qualificationExecutable": "dory-vzmac-camera-qualification",
+    "qualificationContract": "visibility, authorization, 30 frames, 1280x720, first-frame latency, median/p95 cadence, clean stop"
+  },
+  "signing": {
+    "attempted": true,
+    "completed": false,
+    "blocker": "the locally cached wildcard profile lacks App Groups and System Extension capabilities, and Xcode could not refresh profiles because the saved Apple account login was rejected",
+    "requiredAppEntitlements": [
+      "com.apple.developer.system-extension.install",
+      "com.apple.security.application-groups"
+    ],
+    "requiredExtensionEntitlements": [
+      "com.apple.security.app-sandbox",
+      "com.apple.security.application-groups",
+      "com.apple.security.network.client"
+    ]
+  },
+  "releaseGateClosed": false,
+  "openRequirements": [
+    "refresh the Apple developer account and issue matching app and extension provisioning profiles",
+    "Developer ID sign and notarize the exact containing app and embedded system extension",
+    "activate and approve the extension inside a restore-image-backed VZMac guest",
+    "pass application visibility, latency, permission revoke, sleep-wake, update, rollback, and uninstall qualification"
+  ]
+}
