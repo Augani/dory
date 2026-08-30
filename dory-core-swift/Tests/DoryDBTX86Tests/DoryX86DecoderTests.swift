@@ -693,4 +693,38 @@ import Testing
         == .storeX87StatusWord(.register(.rax, width: .word))
     )
   }
+
+  @Test func decodesX87ArithmeticComparisonsAndPopForms() throws {
+    #expect(
+      try decoder.decode([0xD8, 0xC1], at: 0x1000, mode: .long64).operation
+        == .x87Binary(.add, destination: 0, source: .register(1), pop: false)
+    )
+    #expect(
+      try decoder.decode([0xDC, 0xE1], at: 0x1000, mode: .long64).operation
+        == .x87Binary(.subtractReverse, destination: 1, source: .register(0), pop: false)
+    )
+    #expect(
+      try decoder.decode([0xDE, 0xF9], at: 0x1000, mode: .long64).operation
+        == .x87Binary(.divide, destination: 1, source: .register(0), pop: true)
+    )
+    #expect(
+      try decoder.decode([0xD8, 0x10], at: 0x1000, mode: .long64).operation
+        == .compareX87(
+          source: .memory(.init(base: .rax, width: .word), format: .float32),
+          popCount: 0,
+          ordered: true,
+          setIntegerFlags: false
+        )
+    )
+    #expect(
+      try decoder.decode([0xDB, 0xE9], at: 0x1000, mode: .long64).operation
+        == .compareX87(
+          source: .register(1), popCount: 0, ordered: false, setIntegerFlags: true)
+    )
+    #expect(
+      try decoder.decode([0xDF, 0xF1], at: 0x1000, mode: .long64).operation
+        == .compareX87(
+          source: .register(1), popCount: 1, ordered: true, setIntegerFlags: true)
+    )
+  }
 }

@@ -391,6 +391,53 @@ import Testing
     #expect(state.floatingPoint.x87TagWord & (3 << 14) != 3 << 14)
   }
 
+  @Test func x87ArithmeticComparisonsAndPopFormsPreserveOperandDirection() throws {
+    var bytes = [UInt8](repeating: 0, count: 0x200)
+    bytes.replaceSubrange(
+      0..<22,
+      with: [
+        0xD9, 0x03,
+        0xD9, 0x43, 0x04,
+        0xD8, 0xC1,
+        0xD9, 0xC0,
+        0xD8, 0xE1,
+        0xD8, 0xD2,
+        0xD8, 0xD9,
+        0xDE, 0xF9,
+        0xDB, 0xE8,
+        0xDD, 0x5B, 0x08,
+      ])
+    bytes.replaceSubrange(
+      0x100..<0x104,
+      with: littleEndian(UInt64(Float(2).bitPattern)).prefix(4)
+    )
+    bytes.replaceSubrange(
+      0x104..<0x108,
+      with: littleEndian(UInt64(Float(5).bitPattern)).prefix(4)
+    )
+    let memory = DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: bytes)
+    var state = try DoryX86ArchitecturalState(registers: .init(rbx: 0x1100), rip: 0x1000)
+
+    for _ in 0..<5 {
+      _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    }
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    #expect(state.floatingPoint.x87StatusWord & 0x0100 != 0)
+    #expect(state.floatingPoint.x87StatusWord & 0x4000 == 0)
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    #expect(state.rflags.contains(.zero))
+    #expect(!state.rflags.contains(.carry))
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+
+    let result = Double(
+      bitPattern: try memoryInteger(bytes: try memory.read(at: 0x1108, byteCount: 8)))
+    #expect(abs(result - (2.0 / 7.0)) < 0.000_000_000_001)
+    #expect(state.floatingPoint.x87TagWord == 0xFFFF)
+    #expect((state.floatingPoint.x87StatusWord >> 11) & 7 == 0)
+  }
+
   @Test func movdquLoadsLowVectorAndPreservesUpperVector() throws {
     var bytes = [UInt8](repeating: 0, count: 0x30)
     bytes.replaceSubrange(0..<8, with: [0xF3, 0x0F, 0x6F, 0x35, 0x08, 0, 0, 0])

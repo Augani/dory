@@ -189,6 +189,10 @@ public enum DoryX87Operand: Codable, Sendable, Hashable {
   case memory(DoryX86MemoryOperand, format: DoryX87MemoryFormat)
 }
 
+public enum DoryX87BinaryOperation: String, Codable, Sendable, Hashable {
+  case add, multiply, subtract, subtractReverse, divide, divideReverse
+}
+
 public enum DoryX86StringOperation: String, Codable, Sendable, Hashable {
   case move, compare, store, load, scan, input, output
 }
@@ -266,6 +270,18 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
     truncate: Bool
   )
   case exchangeX87(UInt8)
+  case x87Binary(
+    DoryX87BinaryOperation,
+    destination: UInt8,
+    source: DoryX87Operand,
+    pop: Bool
+  )
+  case compareX87(
+    source: DoryX87Operand,
+    popCount: UInt8,
+    ordered: Bool,
+    setIntegerFlags: Bool
+  )
   case storeX87StatusWord(DoryX86Operand)
   case saveFloatingPointState(DoryX86MemoryOperand)
   case restoreFloatingPointState(DoryX86MemoryOperand)

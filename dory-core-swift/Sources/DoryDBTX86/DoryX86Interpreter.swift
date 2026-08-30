@@ -558,6 +558,68 @@ public struct DoryX86Interpreter: Sendable {
         let secondTag = x87Tag(second, state: state.floatingPoint)
         setX87Tag(first, secondTag, state: &state.floatingPoint)
         setX87Tag(second, firstTag, state: &state.floatingPoint)
+      case .x87Binary(let operation, let destination, let source, let pop):
+        let lhs = readX87Register(destination, state: state.floatingPoint)
+        let rhs = try readX87(
+          source,
+          instruction: instruction,
+          state: state,
+          memory: executionMemory
+        )
+        let result: Double =
+          switch operation {
+          case .add: lhs + rhs
+          case .multiply: lhs * rhs
+          case .subtract: lhs - rhs
+          case .subtractReverse: rhs - lhs
+          case .divide: lhs / rhs
+          case .divideReverse: rhs / lhs
+          }
+        updateX87ArithmeticStatus(
+          operation: operation,
+          lhs: lhs,
+          rhs: rhs,
+          result: result,
+          state: &state.floatingPoint
+        )
+        writeX87Register(destination, value: result, state: &state.floatingPoint)
+        if pop { popX87(state: &state.floatingPoint) }
+      case .compareX87(let source, let popCount, let ordered, let setIntegerFlags):
+        let lhs = readX87Register(0, state: state.floatingPoint)
+        let rhs = try readX87(
+          source,
+          instruction: instruction,
+          state: state,
+          memory: executionMemory
+        )
+        let relation = floatingComparison(lhs, rhs)
+        if relation == .unordered, ordered { state.floatingPoint.x87StatusWord |= 1 }
+        if setIntegerFlags {
+          state.rflags.remove([.overflow, .sign, .zero, .auxiliaryCarry, .parity, .carry])
+          switch relation {
+          case .greater:
+            break
+          case .less:
+            state.rflags.insert(.carry)
+          case .equal:
+            state.rflags.insert(.zero)
+          case .unordered:
+            state.rflags.insert([.zero, .parity, .carry])
+          }
+        } else {
+          state.floatingPoint.x87StatusWord &= ~UInt16(0x4500)
+          switch relation {
+          case .greater:
+            break
+          case .less:
+            state.floatingPoint.x87StatusWord |= 0x0100
+          case .equal:
+            state.floatingPoint.x87StatusWord |= 0x4000
+          case .unordered:
+            state.floatingPoint.x87StatusWord |= 0x4500
+          }
+        }
+        for _ in 0..<popCount { popX87(state: &state.floatingPoint) }
       case .storeX87StatusWord(let destination):
         try write(
           UInt64(state.floatingPoint.x87StatusWord),
@@ -1782,6 +1844,46 @@ public struct DoryX86Interpreter: Sendable {
     let physical = physicalX87Register(logical, state: state)
     guard x87Tag(physical, state: state) != 3 else { return .nan }
     return decodeX87Extended(state.x87[physical].bytes)
+  }
+
+  private func writeX87Register(
+    _ logical: UInt8,
+    value: Double,
+    state: inout DoryX86FloatingPointState
+  ) {
+    let physical = physicalX87Register(logical, state: state)
+    state.x87[physical] = try! .init(bytes: encodeX87Extended(value), expectedByteCount: 10)
+    let tag: UInt16 = value == 0 ? 1 : (value.isFinite ? 0 : 2)
+    setX87Tag(physical, tag, state: &state)
+  }
+
+  private func updateX87ArithmeticStatus(
+    operation: DoryX87BinaryOperation,
+    lhs: Double,
+    rhs: Double,
+    result: Double,
+    state: inout DoryX86FloatingPointState
+  ) {
+    if lhs.isNaN || rhs.isNaN { state.x87StatusWord |= 1 }
+    let numerator: Double
+    let denominator: Double
+    switch operation {
+    case .divide:
+      (numerator, denominator) = (lhs, rhs)
+    case .divideReverse:
+      (numerator, denominator) = (rhs, lhs)
+    default:
+      return
+    }
+    if denominator == 0 {
+      if numerator == 0 || numerator.isNaN {
+        state.x87StatusWord |= 1
+      } else if numerator.isFinite {
+        state.x87StatusWord |= 1 << 2
+      }
+    } else if result.isInfinite, numerator.isFinite, denominator.isFinite {
+      state.x87StatusWord |= 1 << 3
+    }
   }
 
   private func pushX87(_ value: Double, state: inout DoryX86FloatingPointState) {

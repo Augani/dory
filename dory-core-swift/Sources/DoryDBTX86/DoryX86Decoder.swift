@@ -489,6 +489,95 @@ public struct DoryX86Decoder: Sendable {
         DoryX86Condition(rawValue: opcode - 0x70)!,
         relative: Int64(try cursor.readSigned(byteCount: 1))
       )
+    case 0xD8, 0xDA, 0xDC, 0xDE:
+      let operands = try decodeModRM(
+        cursor: &cursor, width: .word, prefixes: prefixes, mode: mode)
+      if case .memory(let memory) = operands.rm {
+        let format: DoryX87MemoryFormat =
+          switch opcode {
+          case 0xD8: .float32
+          case 0xDA: .signedInteger32
+          case 0xDC: .float64
+          default: .signedInteger16
+          }
+        let source = DoryX87Operand.memory(memory, format: format)
+        if operands.group == 2 || operands.group == 3 {
+          operation = .compareX87(
+            source: source,
+            popCount: operands.group == 3 ? 1 : 0,
+            ordered: true,
+            setIntegerFlags: false
+          )
+        } else {
+          operation = .x87Binary(
+            try x87BinaryOperation(group: operands.group, address: address),
+            destination: 0,
+            source: source,
+            pop: false
+          )
+        }
+      } else if case .register = operands.rm {
+        let register = vectorRegister(operands.rm)
+        switch opcode {
+        case 0xD8:
+          if operands.group == 2 || operands.group == 3 {
+            operation = .compareX87(
+              source: .register(register),
+              popCount: operands.group == 3 ? 1 : 0,
+              ordered: true,
+              setIntegerFlags: false
+            )
+          } else {
+            operation = .x87Binary(
+              try x87BinaryOperation(group: operands.group, address: address),
+              destination: 0,
+              source: .register(register),
+              pop: false
+            )
+          }
+        case 0xDC:
+          let binary: DoryX87BinaryOperation =
+            switch operands.group {
+            case 0: .add
+            case 1: .multiply
+            case 4: .subtractReverse
+            case 5: .subtract
+            case 6: .divideReverse
+            case 7: .divide
+            default:
+              throw DoryX86DecodeError.invalidEncoding(
+                address: address, detail: "unsupported DC x87 register instruction")
+            }
+          operation = .x87Binary(
+            binary, destination: register, source: .register(0), pop: false)
+        case 0xDE where operands.group == 3 && register == 1:
+          operation = .compareX87(
+            source: .register(1), popCount: 2, ordered: true, setIntegerFlags: false)
+        case 0xDE:
+          let binary: DoryX87BinaryOperation =
+            switch operands.group {
+            case 0: .add
+            case 1: .multiply
+            case 4: .subtractReverse
+            case 5: .subtract
+            case 6: .divideReverse
+            case 7: .divide
+            default:
+              throw DoryX86DecodeError.invalidEncoding(
+                address: address, detail: "unsupported DE x87 register instruction")
+            }
+          operation = .x87Binary(
+            binary, destination: register, source: .register(0), pop: true)
+        case 0xDA where operands.group == 5 && register == 1:
+          operation = .compareX87(
+            source: .register(1), popCount: 2, ordered: false, setIntegerFlags: false)
+        default:
+          throw DoryX86DecodeError.invalidEncoding(
+            address: address, detail: "unsupported x87 register arithmetic instruction")
+        }
+      } else {
+        preconditionFailure("ModRM x87 operand must be register or memory")
+      }
     case 0xD9:
       let operands = try decodeModRM(
         cursor: &cursor, width: .word, prefixes: prefixes, mode: mode)
@@ -525,8 +614,29 @@ public struct DoryX86Decoder: Sendable {
       if case .register = operands.rm {
         if opcode == 0xDB, operands.group == 4, vectorRegister(operands.rm) == 3 {
           operation = .initializeFloatingPoint
+        } else if opcode == 0xDB, operands.group == 5 || operands.group == 6 {
+          operation = .compareX87(
+            source: .register(vectorRegister(operands.rm)),
+            popCount: 0,
+            ordered: operands.group == 6,
+            setIntegerFlags: true
+          )
+        } else if opcode == 0xDD, operands.group == 4 || operands.group == 5 {
+          operation = .compareX87(
+            source: .register(vectorRegister(operands.rm)),
+            popCount: operands.group == 5 ? 1 : 0,
+            ordered: false,
+            setIntegerFlags: false
+          )
         } else if opcode == 0xDF, operands.group == 4, vectorRegister(operands.rm) == 0 {
           operation = .storeX87StatusWord(.register(.rax, width: .word))
+        } else if opcode == 0xDF, operands.group == 5 || operands.group == 6 {
+          operation = .compareX87(
+            source: .register(vectorRegister(operands.rm)),
+            popCount: 1,
+            ordered: operands.group == 6,
+            setIntegerFlags: true
+          )
         } else {
           throw DoryX86DecodeError.invalidEncoding(
             address: address, detail: "unsupported register x87 instruction")
@@ -1360,6 +1470,23 @@ public struct DoryX86Decoder: Sendable {
     case 7: .arithmeticShiftRight
     default:
       throw DoryX86DecodeError.invalidEncoding(address: address, detail: "invalid shift group")
+    }
+  }
+
+  private func x87BinaryOperation(
+    group: UInt8,
+    address: UInt64
+  ) throws -> DoryX87BinaryOperation {
+    switch group {
+    case 0: .add
+    case 1: .multiply
+    case 4: .subtract
+    case 5: .subtractReverse
+    case 6: .divide
+    case 7: .divideReverse
+    default:
+      throw DoryX86DecodeError.invalidEncoding(
+        address: address, detail: "x87 group is not a binary arithmetic operation")
     }
   }
 
