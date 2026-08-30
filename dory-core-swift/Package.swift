@@ -27,6 +27,7 @@ let package = Package(
         ),
         .executable(name: "dory-network-helper", targets: ["dory-network-helper"]),
         .executable(name: "dory-dataplane-proxy", targets: ["dory-dataplane-proxy"]),
+        .executable(name: "dory-jit-probe", targets: ["dory-jit-probe"]),
     ],
     targets: [
         .binaryTarget(name: "DoryFFI", path: "artifacts/DoryFFI.xcframework"),
@@ -112,6 +113,13 @@ let package = Package(
         .executableTarget(
             name: "dory-dataplane-proxy",
             dependencies: ["DorydKit", "DoryCore"]
+        ),
+        // Phase 0A release-configuration probe. This intentionally has no dependency on Dory,
+        // DBT, Foundation, or dynamically loaded code: the signed executable proves the narrow
+        // MAP_JIT/callback-allowlist publication contract before the translator is implemented.
+        .executableTarget(
+            name: "dory-jit-probe",
+            path: "Sources/dory-jit-probe"
         ),
         .testTarget(
             name: "DoryCoreTests",
