@@ -29,6 +29,8 @@
 		D0D100000000000000000002 /* DoryRendererWorkerContracts in Frameworks */ = {isa = PBXBuildFile; productRef = D0D700000000000000000001 /* DoryRendererWorkerContracts */; };
 		D0D100000000000000000003 /* DoryRendererWorkerServiceCore in Frameworks */ = {isa = PBXBuildFile; productRef = D0D700000000000000000002 /* DoryRendererWorkerServiceCore */; };
 		D0D100000000000000000004 /* DoryRendererWorkerVirglBackend in Frameworks */ = {isa = PBXBuildFile; productRef = D0D700000000000000000003 /* DoryRendererWorkerVirglBackend */; };
+		D0F100000000000000000001 /* DoryCameraExtension.systemextension in Embed System Extensions */ = {isa = PBXBuildFile; fileRef = D0F200000000000000000002 /* DoryCameraExtension.systemextension */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		D0F100000000000000000002 /* DoryMacGuestCameraExtensionCore in Frameworks */ = {isa = PBXBuildFile; productRef = D0F700000000000000000001 /* DoryMacGuestCameraExtensionCore */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -76,6 +78,17 @@
 			name = "Embed Renderer Worker";
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		D0F400000000000000000007 /* Embed System Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = Contents/Library/SystemExtensions;
+			dstSubfolderSpec = 1;
+			files = (
+				D0F100000000000000000001 /* DoryCameraExtension.systemextension in Embed System Extensions */,
+			);
+			name = "Embed System Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -85,6 +98,13 @@
 				Info.plist,
 			);
 			target = AA100000000000000000000A /* DoryStorageProvider */;
+		};
+		D0F900000000000000000001 /* Exceptions for "DoryCameraExtension" folder in "DoryCameraExtension" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = D0F500000000000000000002 /* DoryCameraExtension */;
 		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
@@ -117,6 +137,13 @@
 			remoteGlobalIDString = D0D500000000000000000001;
 			remoteInfo = DoryRendererWorker;
 		};
+		D0F800000000000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 3E705CE72FE37C790094B33C /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = D0F500000000000000000002;
+			remoteInfo = DoryCameraExtension;
+		};
 		3E705CFD2FE37C7B0094B33C /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 3E705CE72FE37C790094B33C /* Project object */;
@@ -144,6 +171,8 @@
 		D0B200000000000000000004 /* AVFoundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AVFoundation.framework; path = System/Library/Frameworks/AVFoundation.framework; sourceTree = SDKROOT; };
 		D0C200000000000000000001 /* DoryFSWorker.xpc */ = {isa = PBXFileReference; explicitFileType = "wrapper.xpc-service"; includeInIndex = 0; path = DoryFSWorker.xpc; sourceTree = BUILT_PRODUCTS_DIR; };
 		D0D200000000000000000001 /* DoryRendererWorker.xpc */ = {isa = PBXFileReference; explicitFileType = "wrapper.xpc-service"; includeInIndex = 0; path = DoryRendererWorker.xpc; sourceTree = BUILT_PRODUCTS_DIR; };
+		D0F200000000000000000001 /* DoryGuestTools.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = DoryGuestTools.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		D0F200000000000000000002 /* DoryCameraExtension.systemextension */ = {isa = PBXFileReference; explicitFileType = "wrapper.system-extension"; includeInIndex = 0; path = DoryCameraExtension.systemextension; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -191,6 +220,19 @@
 			isa = PBXFileSystemSynchronizedRootGroup;
 			name = "DoryRendererWorker Sources";
 			path = Packages/ContainerizationEngine/Sources/DoryRendererWorkerXPCService;
+			sourceTree = "<group>";
+		};
+		D0F300000000000000000001 /* DoryGuestTools */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = GuestTools/DoryGuestTools;
+			sourceTree = "<group>";
+		};
+		D0F300000000000000000002 /* DoryCameraExtension */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				D0F900000000000000000001 /* Exceptions for "DoryCameraExtension" folder in "DoryCameraExtension" target */,
+			);
+			path = GuestTools/DoryCameraExtension;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -257,6 +299,21 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		D0F400000000000000000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D0F400000000000000000002 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D0F100000000000000000002 /* DoryMacGuestCameraExtensionCore in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -267,6 +324,8 @@
 				D0B300000000000000000001 /* DoryHVRunner Sources */,
 				D0C300000000000000000001 /* DoryFSWorker Sources */,
 				D0D300000000000000000001 /* DoryRendererWorker Sources */,
+				D0F300000000000000000001 /* DoryGuestTools */,
+				D0F300000000000000000002 /* DoryCameraExtension */,
 				AA1000000000000000000004 /* DoryStorageShared */,
 				AA1000000000000000000005 /* DoryStorageProvider */,
 				3E705CFF2FE37C7B0094B33C /* DoryTests */,
@@ -293,6 +352,8 @@
 				D0B200000000000000000001 /* DoryHVRunner.app */,
 				D0C200000000000000000001 /* DoryFSWorker.xpc */,
 				D0D200000000000000000001 /* DoryRendererWorker.xpc */,
+				D0F200000000000000000001 /* DoryGuestTools.app */,
+				D0F200000000000000000002 /* DoryCameraExtension.systemextension */,
 				AA1000000000000000000003 /* DoryStorageProvider.appex */,
 				3E705CFC2FE37C7B0094B33C /* DoryTests.xctest */,
 				3E705D062FE37C7B0094B33C /* DoryUITests.xctest */,
@@ -439,6 +500,53 @@
 			productReference = D0D200000000000000000001 /* DoryRendererWorker.xpc */;
 			productType = "com.apple.product-type.xpc-service";
 		};
+		D0F500000000000000000001 /* DoryGuestTools */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = D0F600000000000000000003 /* Build configuration list for PBXNativeTarget "DoryGuestTools" */;
+			buildPhases = (
+				D0F400000000000000000005 /* Sources */,
+				D0F400000000000000000001 /* Frameworks */,
+				D0F400000000000000000003 /* Resources */,
+				D0F400000000000000000007 /* Embed System Extensions */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				D0F800000000000000000002 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				D0F300000000000000000001 /* DoryGuestTools */,
+			);
+			name = DoryGuestTools;
+			packageProductDependencies = (
+			);
+			productName = DoryGuestTools;
+			productReference = D0F200000000000000000001 /* DoryGuestTools.app */;
+			productType = "com.apple.product-type.application";
+		};
+		D0F500000000000000000002 /* DoryCameraExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = D0F600000000000000000006 /* Build configuration list for PBXNativeTarget "DoryCameraExtension" */;
+			buildPhases = (
+				D0F400000000000000000006 /* Sources */,
+				D0F400000000000000000002 /* Frameworks */,
+				D0F400000000000000000004 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				D0F300000000000000000002 /* DoryCameraExtension */,
+			);
+			name = DoryCameraExtension;
+			packageProductDependencies = (
+				D0F700000000000000000001 /* DoryMacGuestCameraExtensionCore */,
+			);
+			productName = DoryCameraExtension;
+			productReference = D0F200000000000000000002 /* DoryCameraExtension.systemextension */;
+			productType = "com.apple.product-type.system-extension";
+		};
 		3E705CFB2FE37C7B0094B33C /* DoryTests */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 3E705D112FE37C7B0094B33C /* Build configuration list for PBXNativeTarget "DoryTests" */;
@@ -503,6 +611,12 @@
 					D0D500000000000000000001 = {
 						CreatedOnToolsVersion = 27.0;
 					};
+					D0F500000000000000000001 = {
+						CreatedOnToolsVersion = 27.0;
+					};
+					D0F500000000000000000002 = {
+						CreatedOnToolsVersion = 27.0;
+					};
 					3E705CEE2FE37C790094B33C = {
 						CreatedOnToolsVersion = 27.0;
 					};
@@ -540,6 +654,8 @@
 				D0B500000000000000000001 /* DoryHVRunner */,
 				D0C500000000000000000001 /* DoryFSWorker */,
 				D0D500000000000000000001 /* DoryRendererWorker */,
+				D0F500000000000000000001 /* DoryGuestTools */,
+				D0F500000000000000000002 /* DoryCameraExtension */,
 				AA100000000000000000000A /* DoryStorageProvider */,
 				3E705CFB2FE37C7B0094B33C /* DoryTests */,
 				3E705D052FE37C7B0094B33C /* DoryUITests */,
@@ -571,6 +687,20 @@
 			);
 		};
 		D0B400000000000000000002 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D0F400000000000000000003 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D0F400000000000000000004 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -694,6 +824,20 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		D0F400000000000000000005 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D0F400000000000000000006 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -717,6 +861,11 @@
 			target = D0D500000000000000000001 /* DoryRendererWorker */;
 			targetProxy = D0D800000000000000000001 /* PBXContainerItemProxy */;
 		};
+		D0F800000000000000000002 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = D0F500000000000000000002 /* DoryCameraExtension */;
+			targetProxy = D0F800000000000000000001 /* PBXContainerItemProxy */;
+		};
 		3E705CFE2FE37C7B0094B33C /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = 3E705CEE2FE37C790094B33C /* Dory */;
@@ -730,6 +879,116 @@
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
+		D0F600000000000000000001 /* Debug configuration for PBXNativeTarget "DoryGuestTools" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = GuestTools/DoryGuestTools/DoryGuestTools.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 864H636QW4;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "Dory Guest Tools";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.pythonxi.Dory.GuestTools;
+				PRODUCT_NAME = DoryGuestTools;
+				REGISTER_APP_GROUPS = YES;
+				SKIP_INSTALL = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		D0F600000000000000000002 /* Release configuration for PBXNativeTarget "DoryGuestTools" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = GuestTools/DoryGuestTools/DoryGuestTools.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 864H636QW4;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "Dory Guest Tools";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.pythonxi.Dory.GuestTools;
+				PRODUCT_NAME = DoryGuestTools;
+				REGISTER_APP_GROUPS = YES;
+				SKIP_INSTALL = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		D0F600000000000000000004 /* Debug configuration for PBXNativeTarget "DoryCameraExtension" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = GuestTools/DoryCameraExtension/DoryCameraExtension.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 864H636QW4;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = GuestTools/DoryCameraExtension/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@executable_path/../../../../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.pythonxi.Dory.GuestTools.CameraExtension;
+				PRODUCT_NAME = DoryCameraExtension;
+				REGISTER_APP_GROUPS = YES;
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		D0F600000000000000000005 /* Release configuration for PBXNativeTarget "DoryCameraExtension" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = GuestTools/DoryCameraExtension/DoryCameraExtension.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 864H636QW4;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = GuestTools/DoryCameraExtension/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@executable_path/../../../../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.pythonxi.Dory.GuestTools.CameraExtension;
+				PRODUCT_NAME = DoryCameraExtension;
+				REGISTER_APP_GROUPS = YES;
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
 		AA100000000000000000000C /* Debug configuration for PBXNativeTarget "DoryStorageProvider" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -1258,6 +1517,24 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		D0F600000000000000000003 /* Build configuration list for PBXNativeTarget "DoryGuestTools" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D0F600000000000000000001 /* Debug configuration for PBXNativeTarget "DoryGuestTools" */,
+				D0F600000000000000000002 /* Release configuration for PBXNativeTarget "DoryGuestTools" */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		D0F600000000000000000006 /* Build configuration list for PBXNativeTarget "DoryCameraExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D0F600000000000000000004 /* Debug configuration for PBXNativeTarget "DoryCameraExtension" */,
+				D0F600000000000000000005 /* Release configuration for PBXNativeTarget "DoryCameraExtension" */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		AA100000000000000000000E /* Build configuration list for PBXNativeTarget "DoryStorageProvider" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
@@ -1433,6 +1710,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = D0B700000000000000000000 /* XCLocalSwiftPackageReference "ContainerizationEngine" */;
 			productName = DoryRendererWorkerVirglBackend;
+		};
+		D0F700000000000000000001 /* DoryMacGuestCameraExtensionCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA00000000000000000000D1 /* XCLocalSwiftPackageReference "dory-core-swift" */;
+			productName = DoryMacGuestCameraExtensionCore;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
