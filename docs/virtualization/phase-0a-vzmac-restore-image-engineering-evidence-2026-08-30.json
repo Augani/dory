@@ -1,0 +1,69 @@
+{
+  "schema": "dory.phase0a.vzmac-restore-image-engineering-evidence@1",
+  "status": "SIGNED_METADATA_DISCOVERY_PASSED_INSTALL_AND_GUEST_QUALIFICATION_PENDING",
+  "collectedAt": "2026-08-30T14:09:31Z",
+  "sourceCommit": "192959afcffd583b02ae42eabd03d14f84af4c44",
+  "host": {
+    "operatingSystem": "macOS 27.0",
+    "buildVersion": "26A5421a",
+    "architecture": "arm64"
+  },
+  "toolchain": {
+    "xcodeVersion": "26.6",
+    "xcodeBuild": "17F109",
+    "sdkVersion": "26.5",
+    "configuration": "release"
+  },
+  "candidate": {
+    "product": "dory-vzmac-qualification",
+    "bundleIdentifier": "com.pythonxi.Dory.VZMacQualification",
+    "sha256": "1a338637d8cf3a9b43a051262e625f3be0466a26b7b84e4a4ee562642d05a29c",
+    "codeDirectorySHA256": "5f64c73508e1172c85b1ef6fe81cd9cc9f55b8436115c24b1ac50d5a8c2cba06",
+    "signingAuthority": "Developer ID Application: Augustus Otu (864H636QW4)",
+    "teamIdentifier": "864H636QW4",
+    "secureTimestamp": "2026-08-30T14:09:00Z",
+    "hardenedRuntime": true,
+    "notarized": false,
+    "entitlements": [
+      "com.apple.security.virtualization",
+      "com.apple.security.device.camera",
+      "com.apple.security.device.audio-input"
+    ]
+  },
+  "operation": {
+    "command": "dory-vzmac-qualification latest",
+    "api": "VZMacOSRestoreImage.latestSupported",
+    "exitCode": 0,
+    "downloadAttempted": false,
+    "restoreAttempted": false
+  },
+  "resolvedRestoreImage": {
+    "url": "https://updates.cdn-apple.com/2026SummerFCS/fullrestores/140-75212/A2A24B94-1FC1-45A3-93F7-C51B02AF1F4D/UniversalMac_26.6.2_25G83_Restore.ipsw",
+    "operatingSystemVersion": "26.6.2",
+    "buildVersion": "25G83",
+    "mostFeaturefulSupportedConfigurationAvailable": true,
+    "minimumCPUCount": 2,
+    "minimumMemoryBytes": 4294967296
+  },
+  "interpretation": {
+    "passed": [
+      "the release-built and Developer ID-signed Dory qualification executable loaded Virtualization.framework on the macOS 27 arm64 host",
+      "Apple's restore-image service returned a current supported macOS image and compatible configuration requirements",
+      "Dory can use the returned requirements as the fail-closed admission floor before allocating machine artifacts"
+    ],
+    "notProven": [
+      "IPSW download integrity and provenance receipt",
+      "VZMacOSInstaller restore completion",
+      "first boot, reboot, shutdown, update, recovery, and sustained workload",
+      "guest camera extension activation and AVFoundation capture",
+      "notarization and Gatekeeper acceptance of the qualification candidate"
+    ]
+  },
+  "releaseGateClosed": false,
+  "openRequirements": [
+    "download the exact resolved IPSW and bind its SHA-256 to the machine manifest",
+    "prepare and install a machine bundle using the persisted platform identity tuple",
+    "run the physical guest lifecycle and device qualification matrix",
+    "notarize the exact qualification candidate and verify Gatekeeper acceptance"
+  ]
+}
