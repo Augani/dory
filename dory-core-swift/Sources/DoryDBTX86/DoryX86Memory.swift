@@ -9,6 +9,7 @@ public enum DoryX86MemoryAccessKind: String, Codable, Sendable, Hashable {
 public enum DoryX86MemoryError: Error, Sendable, Equatable, CustomStringConvertible {
   case unmapped(address: UInt64, byteCount: Int, access: DoryX86MemoryAccessKind)
   case addressOverflow(address: UInt64, byteCount: Int)
+  case pageFault(address: UInt64, errorCode: UInt32)
 
   public var description: String {
     switch self {
@@ -16,6 +17,8 @@ public enum DoryX86MemoryError: Error, Sendable, Equatable, CustomStringConverti
       "x86 \(access.rawValue) touches unmapped memory at 0x\(String(address, radix: 16)) for \(byteCount) bytes"
     case .addressOverflow(let address, let byteCount):
       "x86 memory access overflows at 0x\(String(address, radix: 16)) for \(byteCount) bytes"
+    case .pageFault(let address, let errorCode):
+      "x86 page fault at 0x\(String(address, radix: 16)) with error code 0x\(String(errorCode, radix: 16))"
     }
   }
 }
@@ -81,7 +84,8 @@ public final class DoryX86ByteArrayMemory: DoryX86Memory, @unchecked Sendable {
     access: DoryX86MemoryAccessKind
   ) throws -> Int {
     guard byteCount >= 0,
-          !address.addingReportingOverflow(UInt64(byteCount)).overflow else {
+      !address.addingReportingOverflow(UInt64(byteCount)).overflow
+    else {
       throw DoryX86MemoryError.addressOverflow(address: address, byteCount: byteCount)
     }
     guard address >= baseAddress else {

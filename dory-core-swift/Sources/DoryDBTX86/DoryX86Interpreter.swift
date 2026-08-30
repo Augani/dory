@@ -49,15 +49,27 @@ public struct DoryX86Interpreter: Sendable {
   public func step(
     state: inout DoryX86ArchitecturalState,
     memory: any DoryX86Memory,
-    mode: DoryX86ExecutionMode
+    mode: DoryX86ExecutionMode,
+    pagingUnit: DoryX86PagingUnit? = nil
   ) -> DoryX86InterpreterResult {
     let originalRIP = state.rip
+    let executionMemory: any DoryX86Memory =
+      if let pagingUnit {
+        DoryX86TranslatedMemory(
+          physicalMemory: memory,
+          pagingUnit: pagingUnit,
+          context: .init(state: state, mode: mode)
+        )
+      } else {
+        memory
+      }
     let instruction: DoryX86DecodedInstruction
     do {
-      let bytes = try memory.instructionBytes(at: originalRIP, maximumCount: 15)
-      instruction = try decoder.decode(bytes, at: originalRIP, mode: mode)
+      instruction = try decodeInstruction(at: originalRIP, memory: executionMemory, mode: mode)
     } catch let error as DoryX86MemoryError {
-      return .exception(pageFault(for: error, instructionPointer: originalRIP))
+      let fault = pageFault(for: error, instructionPointer: originalRIP)
+      if fault.kind == .pageFault { state.control.cr2 = fault.linearAddress ?? 0 }
+      return .exception(fault)
     } catch {
       return .exception(.init(kind: .invalidOpcode, vector: 6, instructionPointer: originalRIP))
     }
@@ -71,37 +83,51 @@ public struct DoryX86Interpreter: Sendable {
         state.rip = nextRIP
         return .halted(instruction)
       case .move(let destination, let source):
-        let value = try read(source, instruction: instruction, state: state, memory: memory)
-        try write(value, to: destination, instruction: instruction, state: &state, memory: memory)
+        let value = try read(
+          source, instruction: instruction, state: state, memory: executionMemory)
+        try write(
+          value, to: destination, instruction: instruction, state: &state, memory: executionMemory)
       case .loadEffectiveAddress(let destination, let source):
         let address = effectiveAddress(source, instruction: instruction, state: state)
-        try write(address, to: destination, instruction: instruction, state: &state, memory: memory)
+        try write(
+          address, to: destination, instruction: instruction, state: &state, memory: executionMemory
+        )
       case .alu(let operation, let destination, let source):
-        let lhs = try read(destination, instruction: instruction, state: state, memory: memory)
-        let rhs = try read(source, instruction: instruction, state: state, memory: memory)
+        let lhs = try read(
+          destination, instruction: instruction, state: state, memory: executionMemory)
+        let rhs = try read(source, instruction: instruction, state: state, memory: executionMemory)
         let width = operandWidth(destination)
         let result = executeALU(operation, lhs: lhs, rhs: rhs, width: width, flags: &state.rflags)
         if operation != .compare, operation != .test {
-          try write(result, to: destination, instruction: instruction, state: &state, memory: memory)
+          try write(
+            result, to: destination, instruction: instruction, state: &state,
+            memory: executionMemory)
         }
       case .push(let operand):
-        let value = try read(operand, instruction: instruction, state: state, memory: memory)
+        let value = try read(
+          operand, instruction: instruction, state: state, memory: executionMemory)
         let width = operandWidth(operand)
         state.registers.rsp &-= UInt64(width.byteCount)
-        try memory.write(at: state.registers.rsp, bytes: littleEndian(value, width: width))
+        try executionMemory.write(at: state.registers.rsp, bytes: littleEndian(value, width: width))
       case .pop(let operand):
         let width = operandWidth(operand)
-        let value = fromLittleEndian(try memory.read(at: state.registers.rsp, byteCount: width.byteCount))
-        try write(value, to: operand, instruction: instruction, state: &state, memory: memory)
+        let value = fromLittleEndian(
+          try executionMemory.read(at: state.registers.rsp, byteCount: width.byteCount))
+        try write(
+          value, to: operand, instruction: instruction, state: &state, memory: executionMemory)
         state.registers.rsp &+= UInt64(width.byteCount)
       case .call(let relative):
-        let stackWidth: DoryX86OperandWidth = mode == .long64 ? .quadword : (mode == .real16 ? .word : .doubleword)
+        let stackWidth: DoryX86OperandWidth =
+          mode == .long64 ? .quadword : (mode == .real16 ? .word : .doubleword)
         state.registers.rsp &-= UInt64(stackWidth.byteCount)
-        try memory.write(at: state.registers.rsp, bytes: littleEndian(nextRIP, width: stackWidth))
+        try executionMemory.write(
+          at: state.registers.rsp, bytes: littleEndian(nextRIP, width: stackWidth))
         nextRIP = addRelative(nextRIP, relative)
       case .return:
-        let stackWidth: DoryX86OperandWidth = mode == .long64 ? .quadword : (mode == .real16 ? .word : .doubleword)
-        nextRIP = fromLittleEndian(try memory.read(at: state.registers.rsp, byteCount: stackWidth.byteCount))
+        let stackWidth: DoryX86OperandWidth =
+          mode == .long64 ? .quadword : (mode == .real16 ? .word : .doubleword)
+        nextRIP = fromLittleEndian(
+          try executionMemory.read(at: state.registers.rsp, byteCount: stackWidth.byteCount))
         state.registers.rsp &+= UInt64(stackWidth.byteCount)
       case .jump(let relative):
         nextRIP = addRelative(nextRIP, relative)
@@ -120,15 +146,19 @@ public struct DoryX86Interpreter: Sendable {
         let currentPrivilege = UInt64(state.cs.selector & 3)
         let ioPrivilege = (state.rflags.rawValue >> 12) & 3
         guard currentPrivilege <= ioPrivilege else {
-          return .exception(.init(
-            kind: .generalProtection,
-            vector: 13,
-            errorCode: 0,
-            instructionPointer: originalRIP
-          ))
+          return .exception(
+            .init(
+              kind: .generalProtection,
+              vector: 13,
+              errorCode: 0,
+              instructionPointer: originalRIP
+            ))
         }
-        if enabled { state.rflags.insert(.interruptEnable) }
-        else { state.rflags.remove(.interruptEnable) }
+        if enabled {
+          state.rflags.insert(.interruptEnable)
+        } else {
+          state.rflags.remove(.interruptEnable)
+        }
       case .syscall:
         return .exception(.init(kind: .invalidOpcode, vector: 6, instructionPointer: originalRIP))
       }
@@ -141,13 +171,36 @@ public struct DoryX86Interpreter: Sendable {
       return .exception(fault)
     } catch {
       state.rip = originalRIP
-      return .exception(.init(
-        kind: .generalProtection,
-        vector: 13,
-        errorCode: 0,
-        instructionPointer: originalRIP
-      ))
+      return .exception(
+        .init(
+          kind: .generalProtection,
+          vector: 13,
+          errorCode: 0,
+          instructionPointer: originalRIP
+        ))
     }
+  }
+
+  private func decodeInstruction(
+    at address: UInt64,
+    memory: any DoryX86Memory,
+    mode: DoryX86ExecutionMode
+  ) throws -> DoryX86DecodedInstruction {
+    for requestedByteCount in 1...15 {
+      let bytes = try memory.instructionBytes(at: address, maximumCount: requestedByteCount)
+      do {
+        return try decoder.decode(bytes, at: address, mode: mode)
+      } catch DoryX86DecodeError.truncated {
+        if bytes.count < requestedByteCount {
+          _ = try memory.instructionBytes(
+            at: address &+ UInt64(bytes.count),
+            maximumCount: 1
+          )
+        }
+        continue
+      }
+    }
+    throw DoryX86DecodeError.instructionTooLong(address: address)
   }
 
   private func read(
@@ -160,10 +213,11 @@ public struct DoryX86Interpreter: Sendable {
     case .register(let register, let width):
       return state.registers[register] & mask(width)
     case .memory(let operand):
-      return fromLittleEndian(try memory.read(
-        at: effectiveAddress(operand, instruction: instruction, state: state),
-        byteCount: operand.width.byteCount
-      ))
+      return fromLittleEndian(
+        try memory.read(
+          at: effectiveAddress(operand, instruction: instruction, state: state),
+          byteCount: operand.width.byteCount
+        ))
     case .immediate(let value, let width):
       return value & mask(width)
     case .relative(let value, _):
@@ -196,7 +250,8 @@ public struct DoryX86Interpreter: Sendable {
         bytes: littleEndian(value, width: target.width)
       )
     case .immediate, .relative:
-      throw DoryX86Exception(kind: .generalProtection, vector: 13, errorCode: 0, instructionPointer: state.rip)
+      throw DoryX86Exception(
+        kind: .generalProtection, vector: 13, errorCode: 0, instructionPointer: state.rip)
     }
   }
 
@@ -332,6 +387,14 @@ public struct DoryX86Interpreter: Sendable {
         kind: .generalProtection,
         vector: 13,
         errorCode: 0,
+        instructionPointer: instructionPointer,
+        linearAddress: address
+      )
+    case .pageFault(let address, let errorCode):
+      return .init(
+        kind: .pageFault,
+        vector: 14,
+        errorCode: errorCode,
         instructionPointer: instructionPointer,
         linearAddress: address
       )
