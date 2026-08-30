@@ -27,6 +27,7 @@ let package = Package(
             targets: ["DoryRendererWorkerVirglBackend"]
         ),
         .library(name: "DoryHV", targets: ["DoryHV"]),
+        .library(name: "DoryARMVirtQualification", targets: ["DoryARMVirtQualification"]),
         .executable(name: "dory-hv", targets: ["dory-hv"]),
         .executable(
             name: "dory-armvirt-uefi-smoke",
@@ -126,6 +127,7 @@ let package = Package(
                 .linkedFramework("IOUSBHost"),
             ]
         ),
+        .target(name: "DoryARMVirtQualification"),
         .executableTarget(
             name: "dory-hv",
             dependencies: [
@@ -148,6 +150,7 @@ let package = Package(
         .executableTarget(
             name: "dory-armvirt-uefi-smoke",
             dependencies: [
+                "DoryARMVirtQualification",
                 "DoryHV",
                 .product(name: "DoryFirmware", package: "dory-core-swift"),
                 .product(name: "DoryMachineARMVirt", package: "dory-core-swift"),
@@ -210,6 +213,10 @@ let package = Package(
                 .product(name: "DoryOperations", package: "dory-core-swift"),
                 .product(name: "DoryVMContracts", package: "dory-core-swift"),
             ]
+        ),
+        .testTarget(
+            name: "DoryARMVirtQualificationTests",
+            dependencies: ["DoryARMVirtQualification"]
         ),
     ]
 )

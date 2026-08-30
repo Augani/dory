@@ -1,5 +1,6 @@
 import CryptoKit
 import Darwin
+import DoryARMVirtQualification
 import DoryFirmware
 import DoryHV
 import DoryMachineARMVirt
@@ -15,6 +16,10 @@ import Foundation
   private struct Options {
     var firmwareBundle: String?
     var installerMedia: String?
+    var consoleScript: String?
+    var gvproxy: String?
+    var systemDiskBytes: UInt64 = 64 << 20
+    var memoryBytes: UInt64 = DoryARMVirtV1ABI.minimumMemoryBytes
     var timeoutSeconds: UInt64 = 15
     var expectedConsoleText = "UEFI Interactive Shell"
   }
@@ -26,6 +31,16 @@ import Foundation
     let device: DoryARMVirtUEFIBootDevice
   }
 
+  private struct AdmittedConsoleScript {
+    let sha256: String
+    let driver: DoryConsoleInteractionDriver
+  }
+
+  private struct AdmittedGVProxy {
+    let path: String
+    let sha256: String
+  }
+
   private struct Receipt: Codable {
     let schemaVersion: UInt32
     let machineABIIdentity: String
@@ -35,6 +50,13 @@ import Foundation
     let expectedConsoleText: String
     let installerMediaByteCount: UInt64?
     let installerMediaSHA256: String?
+    let systemDiskByteCount: UInt64
+    let memoryByteCount: UInt64
+    let consoleScriptSHA256: String?
+    let consoleScriptStepCount: Int?
+    let completedConsoleScriptStepCount: Int?
+    let installerDetachedAfterScriptStep: Bool
+    let gvproxySHA256: String?
     let consoleByteCount: Int
     let bootAttempts: Int
     let variableStoreGeneration: UInt64
@@ -45,7 +67,7 @@ import Foundation
     private let lock = NSLock()
     private let expected: [UInt8]
     private var bytes: [UInt8] = []
-    private var didMatch = false
+    private var latestMatchEnd: Int?
 
     init(expected: String) {
       self.expected = Array(expected.utf8)
@@ -57,23 +79,29 @@ import Foundation
       guard bytes.count < 1 << 20 else { return }
       bytes.append(byte)
       FileHandle.standardError.write(Data([byte]))
-      if !didMatch, bytes.count >= expected.count,
+      if bytes.count >= expected.count,
         bytes.suffix(expected.count).elementsEqual(expected)
       {
-        didMatch = true
+        latestMatchEnd = bytes.count
       }
     }
 
-    var matched: Bool {
+    func matched(afterByteOffset offset: Int) -> Bool {
       lock.lock()
       defer { lock.unlock() }
-      return didMatch
+      return latestMatchEnd.map { $0 > offset } ?? false
     }
 
     var byteCount: Int {
       lock.lock()
       defer { lock.unlock() }
       return bytes.count
+    }
+
+    func nextInput(using driver: DoryConsoleInteractionDriver) -> [UInt8]? {
+      lock.lock()
+      defer { lock.unlock() }
+      return driver.nextInput(consoleBytes: bytes)
     }
   }
 
@@ -125,9 +153,35 @@ import Foundation
           fail("--installer-media requires a path")
         }
         options.installerMedia = value
+      case "--console-script":
+        guard let value = iterator.next() else {
+          fail("--console-script requires a path")
+        }
+        options.consoleScript = value
+      case "--gvproxy":
+        guard let value = iterator.next() else {
+          fail("--gvproxy requires a path")
+        }
+        options.gvproxy = value
+      case "--system-disk-bytes":
+        guard let value = iterator.next().flatMap(UInt64.init),
+          ((UInt64(64) << 20)...(UInt64(64) << 30)).contains(value),
+          value.isMultiple(of: 512)
+        else {
+          fail("--system-disk-bytes must be a 512-byte-aligned value within 64 MiB...64 GiB")
+        }
+        options.systemDiskBytes = value
+      case "--memory-bytes":
+        guard let value = iterator.next().flatMap(UInt64.init),
+          (DoryARMVirtV1ABI.minimumMemoryBytes...(UInt64(16) << 30)).contains(value),
+          value.isMultiple(of: 16 << 10)
+        else {
+          fail("--memory-bytes must be a 16-KiB-aligned value within 1...16 GiB")
+        }
+        options.memoryBytes = value
       case "--timeout-sec":
-        guard let value = iterator.next().flatMap(UInt64.init), (1...120).contains(value) else {
-          fail("--timeout-sec must be within 1...120")
+        guard let value = iterator.next().flatMap(UInt64.init), (1...900).contains(value) else {
+          fail("--timeout-sec must be within 1...900")
         }
         options.timeoutSeconds = value
       case "--expect":
@@ -142,7 +196,7 @@ import Foundation
     return options
   }
 
-  private func createSystemDisk(at path: String) throws {
+  private func createSystemDisk(at path: String, byteCount: UInt64) throws {
     let descriptor = path.withCString {
       open($0, O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC, mode_t(0o600))
     }
@@ -150,13 +204,13 @@ import Foundation
       throw CocoaError(.fileWriteUnknown, userInfo: [NSFilePathErrorKey: path])
     }
     defer { close(descriptor) }
-    guard ftruncate(descriptor, 64 << 20) == 0 else {
+    guard ftruncate(descriptor, off_t(byteCount)) == 0 else {
       throw CocoaError(.fileWriteUnknown, userInfo: [NSFilePathErrorKey: path])
     }
   }
 
-  private func attachBlockDevice(
-    _ backend: VirtioBlk,
+  private func attachVirtioDevice(
+    _ backend: VirtioDeviceBackend,
     slot: Int,
     to machine: Machine
   ) throws {
@@ -206,6 +260,60 @@ import Foundation
     )
   }
 
+  private func admitConsoleScript(at suppliedPath: String) throws -> AdmittedConsoleScript {
+    let path = URL(fileURLWithPath: suppliedPath).resolvingSymlinksInPath().path
+    var fileStatus = stat()
+    guard lstat(path, &fileStatus) == 0,
+      fileStatus.st_mode & S_IFMT == S_IFREG,
+      fileStatus.st_uid == geteuid(),
+      fileStatus.st_mode & 0o077 == 0,
+      fileStatus.st_size > 0,
+      fileStatus.st_size <= 1 << 20
+    else {
+      fail("--console-script must name a private, owned regular file no larger than 1 MiB")
+    }
+    let data = try Data(contentsOf: URL(fileURLWithPath: path), options: .mappedIfSafe)
+    let script = try JSONDecoder().decode(DoryConsoleInteractionScript.self, from: data)
+    return AdmittedConsoleScript(
+      sha256: SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined(),
+      driver: try DoryConsoleInteractionDriver(script: script)
+    )
+  }
+
+  private func admitGVProxy(at suppliedPath: String) throws -> AdmittedGVProxy {
+    let path = URL(fileURLWithPath: suppliedPath).resolvingSymlinksInPath().path
+    var fileStatus = stat()
+    guard lstat(path, &fileStatus) == 0,
+      fileStatus.st_mode & S_IFMT == S_IFREG,
+      fileStatus.st_uid == geteuid(),
+      fileStatus.st_mode & 0o022 == 0,
+      fileStatus.st_mode & 0o111 != 0,
+      fileStatus.st_size > 0,
+      UInt64(fileStatus.st_size) <= 256 << 20
+    else {
+      fail("--gvproxy must name an owned, non-writable executable no larger than 256 MiB")
+    }
+    let data = try Data(contentsOf: URL(fileURLWithPath: path), options: .mappedIfSafe)
+    return AdmittedGVProxy(
+      path: path,
+      sha256: SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    )
+  }
+
+  private func stopSidecar(_ process: Process) {
+    if process.isRunning {
+      process.terminate()
+      let deadline = DispatchTime.now() + .seconds(2)
+      while process.isRunning, DispatchTime.now() < deadline {
+        usleep(10_000)
+      }
+    }
+    if process.isRunning {
+      kill(process.processIdentifier, SIGKILL)
+    }
+    process.waitUntilExit()
+  }
+
   private func runBoot(
     artifacts: DoryVerifiedFirmwareArtifacts,
     variableStore: DoryUEFIVariableStoreFile,
@@ -213,6 +321,10 @@ import Foundation
     systemDevice: DoryARMVirtUEFIBootDevice,
     installerMedia: InstallerMedia?,
     capture: ConsoleCapture,
+    consoleScript: AdmittedConsoleScript?,
+    gvproxy: AdmittedGVProxy?,
+    memoryBytes: UInt64,
+    acceptExpectedConsoleMatch: Bool,
     timeoutSeconds: UInt64,
     attempt: Int
   ) throws -> BootResult {
@@ -229,23 +341,23 @@ import Foundation
         uefiLaunchPlan: launchPlan,
         artifacts: artifacts,
         variableStore: variableStore,
-        memoryBytes: DoryARMVirtV1ABI.minimumMemoryBytes,
+        memoryBytes: memoryBytes,
         cpuCount: 1
       )
     )
-    machine.attachConsole(
-      PL011(baseAddress: GuestLayout.uartBase, sink: capture.append) { [weak machine] asserted in
-        machine?.setGSI(GuestLayout.uartIRQ, asserted: asserted)
-      }
-    )
+    let console = PL011(baseAddress: GuestLayout.uartBase, sink: capture.append) {
+      [weak machine] asserted in
+      machine?.setGSI(GuestLayout.uartIRQ, asserted: asserted)
+    }
+    machine.attachConsole(console)
     machine.bus.attach(PL031(baseAddress: GuestLayout.rtcBase))
-    try attachBlockDevice(
+    try attachVirtioDevice(
       VirtioBlk(path: systemDiskPath, identity: "dory-uefi-smoke-system"),
       slot: systemDevice.virtioSlot,
       to: machine
     )
     if let installerMedia {
-      try attachBlockDevice(
+      try attachVirtioDevice(
         VirtioBlk(
           path: installerMedia.path,
           identity: "dory-uefi-smoke-installer",
@@ -257,6 +369,66 @@ import Foundation
         to: machine
       )
     }
+    var networkSidecar: Process?
+    var networkPaths: [String] = []
+    var networkSocketRoot: URL?
+    defer {
+      if let networkSidecar {
+        stopSidecar(networkSidecar)
+      }
+      networkPaths.forEach { unlink($0) }
+      if let networkSocketRoot {
+        try? FileManager.default.removeItem(at: networkSocketRoot)
+      }
+    }
+    if let gvproxy {
+      let socketRoot = URL(
+        fileURLWithPath: "/tmp/dory-av-\(getpid())-\(attempt)",
+        isDirectory: true
+      )
+      try FileManager.default.createDirectory(
+        at: socketRoot,
+        withIntermediateDirectories: false,
+        attributes: [.posixPermissions: 0o700]
+      )
+      networkSocketRoot = socketRoot
+      let remotePath = socketRoot.appendingPathComponent("gv.sock").path
+      let localPath = socketRoot.appendingPathComponent("vm.sock").path
+      let apiPath = socketRoot.appendingPathComponent("api.sock").path
+      networkPaths = [remotePath, localPath, apiPath]
+      networkPaths.forEach { unlink($0) }
+      let process = Process()
+      process.executableURL = URL(fileURLWithPath: gvproxy.path)
+      process.arguments = [
+        "-mtu", "1500",
+        "-listen-vfkit", "unixgram://\(remotePath)",
+        "-listen", "unix://\(apiPath)",
+        "-ssh-port", "-1",
+      ]
+      process.standardOutput = FileHandle.standardError
+      process.standardError = FileHandle.standardError
+      try process.run()
+      networkSidecar = process
+      let readyDeadline = DispatchTime.now() + .seconds(5)
+      while process.isRunning,
+        !FileManager.default.fileExists(atPath: remotePath),
+        DispatchTime.now() < readyDeadline
+      {
+        usleep(20_000)
+      }
+      guard process.isRunning, FileManager.default.fileExists(atPath: remotePath) else {
+        throw CocoaError(.executableLoad)
+      }
+      guard let networkSlot = DoryARMVirtV1ABI.virtioSlots.first(where: { $0.role == .network })
+      else {
+        throw VMError.invalidConfiguration("\(DoryARMVirtV1ABI.identity) has no network slot")
+      }
+      try attachVirtioDevice(
+        VirtioNet(socketPath: localPath, remotePath: remotePath, maximumTransmissionUnit: 1_500),
+        slot: networkSlot.index,
+        to: machine
+      )
+    }
     try machine.loadBootPayload()
 
     let completion = RunnerCompletion()
@@ -264,22 +436,39 @@ import Foundation
       machine: machine,
       threadName: "dory-armvirt-uefi-smoke.vcpu0.boot\(attempt)"
     )
+    let consoleStartOffset = capture.byteCount
     try runner.start(completion: completion.publish)
     let deadline = DispatchTime.now() + .seconds(Int(timeoutSeconds))
     while DispatchTime.now() < deadline {
-      if capture.matched {
+      if let input = consoleScript.flatMap({ capture.nextInput(using: $0.driver) }),
+        !console.receive(input)
+      {
+        throw CocoaError(.fileWriteOutOfSpace)
+      }
+      let matchedConsole =
+        acceptExpectedConsoleMatch
+        && capture.matched(afterByteOffset: consoleStartOffset)
+        && consoleScript?.driver.isComplete != false
+      if matchedConsole {
         return BootResult(
           reason: try runner.stopAndWait(GuestStopReason.powerOff),
           matchedConsole: true
         )
       }
       if completion.wait(milliseconds: 25) {
-        return BootResult(reason: try completion.value().get(), matchedConsole: capture.matched)
+        return BootResult(
+          reason: try completion.value().get(),
+          matchedConsole: acceptExpectedConsoleMatch
+            && capture.matched(afterByteOffset: consoleStartOffset)
+            && consoleScript?.driver.isComplete != false
+        )
       }
     }
     return BootResult(
       reason: try runner.stopAndWait(GuestStopReason.powerOff),
-      matchedConsole: capture.matched
+      matchedConsole: acceptExpectedConsoleMatch
+        && capture.matched(afterByteOffset: consoleStartOffset)
+        && consoleScript?.driver.isComplete != false
     )
   }
 
@@ -316,7 +505,7 @@ import Foundation
     )
     try variableStore.initialize(template)
     let systemDiskPath = temporaryRoot.appendingPathComponent("system.raw").path
-    try createSystemDisk(at: systemDiskPath)
+    try createSystemDisk(at: systemDiskPath, byteCount: options.systemDiskBytes)
     let systemDevice = try DoryARMVirtUEFIBootDevice(
       logicalID: "system",
       kind: .systemDisk,
@@ -324,19 +513,39 @@ import Foundation
       readOnly: false
     )
     let installerMedia = try options.installerMedia.map(admitInstallerMedia)
+    let consoleScript = try options.consoleScript.map(admitConsoleScript)
+    let gvproxy = try options.gvproxy.map(admitGVProxy)
+    if consoleScript?.driver.inputContains(options.expectedConsoleText) == true {
+      fail("--expect must not occur in console-script input because guest echo could forge success")
+    }
+    if consoleScript?.driver.containsInstallerDetachStep == true, installerMedia == nil {
+      fail("a console script that detaches installer media requires --installer-media")
+    }
     let capture = ConsoleCapture(expected: options.expectedConsoleText)
     let maximumBootAttempts = 4
     var finalResult: BootResult?
     var bootAttempts = 0
+    var installerDetachExecuted = false
     while bootAttempts < maximumBootAttempts {
       bootAttempts += 1
+      let detachInstaller = consoleScript?.driver.shouldDetachInstaller == true
+      if detachInstaller, installerMedia != nil {
+        installerDetachExecuted = true
+      }
+      let attachedInstaller = detachInstaller ? nil : installerMedia
+      let acceptExpectedConsoleMatch =
+        consoleScript?.driver.containsInstallerDetachStep != true || installerDetachExecuted
       let result = try runBoot(
         artifacts: artifacts,
         variableStore: variableStore,
         systemDiskPath: systemDiskPath,
         systemDevice: systemDevice,
-        installerMedia: installerMedia,
+        installerMedia: attachedInstaller,
         capture: capture,
+        consoleScript: consoleScript,
+        gvproxy: gvproxy,
+        memoryBytes: options.memoryBytes,
+        acceptExpectedConsoleMatch: acceptExpectedConsoleMatch,
         timeoutSeconds: options.timeoutSeconds,
         attempt: bootAttempts
       )
@@ -357,7 +566,7 @@ import Foundation
     }
     let generation = try variableStore.load().snapshot.generation
     let receipt = Receipt(
-      schemaVersion: 1,
+      schemaVersion: 2,
       machineABIIdentity: DoryARMVirtV1ABI.identity,
       firmwareABIIdentity: DoryARMVirtV1ABI.firmwareABIIdentity,
       buildIdentifier: artifacts.manifest.buildIdentifier,
@@ -365,6 +574,13 @@ import Foundation
       expectedConsoleText: options.expectedConsoleText,
       installerMediaByteCount: installerMedia?.byteCount,
       installerMediaSHA256: installerMedia?.sha256,
+      systemDiskByteCount: options.systemDiskBytes,
+      memoryByteCount: options.memoryBytes,
+      consoleScriptSHA256: consoleScript?.sha256,
+      consoleScriptStepCount: consoleScript?.driver.stepCount,
+      completedConsoleScriptStepCount: consoleScript?.driver.completedStepCount,
+      installerDetachedAfterScriptStep: installerDetachExecuted,
+      gvproxySHA256: gvproxy?.sha256,
       consoleByteCount: capture.byteCount,
       bootAttempts: bootAttempts,
       variableStoreGeneration: generation,

@@ -74,3 +74,37 @@ gate proves immutable-media admission, UEFI enumeration, execution of the
 image's own AArch64 bootloader, Linux kernel and initramfs bring-up, VirtIO disk
 discovery, and arrival at the distribution's login prompt. Distribution install
 and reboot qualification remain separate gates.
+
+Qualify an installer-driven persistent-disk boot and firmware reset with a
+private, bounded console-interaction document. The checked-in Alpine fixture
+uses the distribution's own installer, requests network packages through
+Dory's pinned gvproxy payload, marks the exact command after which removable
+media must detach, and emits its final marker only from the installed guest:
+
+```sh
+gvproxy_root="$(mktemp -d /tmp/dory-gvproxy.XXXXXX)"
+scripts/build-gvproxy.sh \
+  --output "$gvproxy_root/gvproxy" \
+  --provenance "$gvproxy_root/provenance.txt"
+install_script="$gvproxy_root/alpine-3.24-install.json"
+cp Firmware/DoryARMVirt/qualification/alpine-3.24-install.json "$install_script"
+chmod 600 "$install_script"
+chmod 600 /absolute/path/to/alpine-standard-aarch64.iso
+"$runner" \
+  --firmware-bundle /absolute/path/to/dory-armvirt-firmware \
+  --installer-media /absolute/path/to/alpine-standard-aarch64.iso \
+  --console-script "$install_script" \
+  --gvproxy "$gvproxy_root/gvproxy" \
+  --memory-bytes 4294967296 \
+  --system-disk-bytes 4294967296 \
+  --expect DORY_INSTALLED_DISK_READY \
+  --timeout-sec 300
+```
+
+The runner accepts only an owned, private console document with bounded steps,
+wait markers, and inputs. It refuses a success marker present in guest input so
+terminal echo cannot forge qualification. Receipt schema 2 binds memory and
+disk sizes, completed step count, console-document SHA-256, installer-detach
+boundary, and the admitted gvproxy SHA-256. The documented install qualification
+succeeds only after a guest reset and a second UEFI boot with the installer
+absent.

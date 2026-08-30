@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "steps": [
+    {
+      "waitFor": "localhost login:",
+      "send": "root\n"
+    },
+    {
+      "waitFor": "localhost:~#",
+      "send": "ip link set eth0 up && udhcpc -i eth0 -n -q && printf 'https://dl-cdn.alpinelinux.org/alpine/v3.24/main\\n' > /etc/apk/repositories && apk add --no-cache dosfstools e2fsprogs grub-efi sfdisk && ERASE_DISKS=/dev/vda setup-disk -m sys -s 0 /dev/vda\n"
+    },
+    {
+      "waitFor": "Installation is complete",
+      "send": "reboot\n",
+      "detachInstallerAfterSend": true
+    },
+    {
+      "waitFor": "localhost login:",
+      "send": "root\n"
+    },
+    {
+      "waitFor": "localhost:~#",
+      "send": "printf 'DORY_%s\\n' INSTALLED_DISK_READY\n"
+    }
+  ]
+}
