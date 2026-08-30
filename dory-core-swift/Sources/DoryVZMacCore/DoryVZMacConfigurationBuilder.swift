@@ -28,6 +28,18 @@ public enum DoryVZMacConfigurationBuilder {
             let path: String
             let readOnly: Bool
         }
+        struct LegacyDescriptor: Codable {
+            let schema: String
+            let display: String
+            let network: String
+            let audio: String
+            let input: String
+            let entropy: String
+            let cameraSocketPort: UInt32
+            let clipboard: String
+            let xhciEnabled: Bool
+            let sharedDirectories: [SharedDirectory]
+        }
         struct Descriptor: Codable {
             let schema: String
             let display: String
@@ -39,45 +51,59 @@ public enum DoryVZMacConfigurationBuilder {
             let clipboard: String
             let xhciEnabled: Bool
             let sharedDirectories: [SharedDirectory]
-            let usbMassStorage: USBMassStorage?
+            let usbMassStorage: USBMassStorage
         }
         struct USBMassStorage: Codable {
             let path: String
             let readOnly: Bool
             let byteCount: UInt64
         }
-        let descriptor = Descriptor(
-            schema: "dory.vzmac-configuration@2",
-            display: "1920x1080@144ppi-auto-resize",
-            network: "virtio-nat",
-            audio: "virtio-host-input-output",
-            input: "mac-keyboard-trackpad",
-            entropy: "virtio",
-            cameraSocketPort: 1_030,
-            clipboard: "spice-bidirectional",
-            xhciEnabled: ProcessInfo.processInfo.isOperatingSystemAtLeast(
-                OperatingSystemVersion(majorVersion: 15, minorVersion: 0, patchVersion: 0)
-            ),
-            sharedDirectories: sharedDirectories
-                .sorted { $0.name < $1.name }
-                .map {
-                    SharedDirectory(
-                        name: $0.name,
-                        path: $0.url.path,
-                        readOnly: $0.readOnly
-                    )
-                },
-            usbMassStorage: usbMassStorage.map {
-                USBMassStorage(
-                    path: $0.url.path,
-                    readOnly: $0.readOnly,
-                    byteCount: $0.byteCount
-                )
+        let mappedShares = sharedDirectories
+            .sorted { $0.name < $1.name }
+            .map {
+                SharedDirectory(name: $0.name, path: $0.url.path, readOnly: $0.readOnly)
             }
+        let xhciEnabled = ProcessInfo.processInfo.isOperatingSystemAtLeast(
+            OperatingSystemVersion(majorVersion: 15, minorVersion: 0, patchVersion: 0)
         )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
-        return SHA256.hash(data: try encoder.encode(descriptor))
+        let encoded: Data
+        if let usbMassStorage {
+            encoded = try encoder.encode(Descriptor(
+                schema: "dory.vzmac-configuration@2",
+                display: "1920x1080@144ppi-auto-resize",
+                network: "virtio-nat",
+                audio: "virtio-host-input-output",
+                input: "mac-keyboard-trackpad",
+                entropy: "virtio",
+                cameraSocketPort: 1_030,
+                clipboard: "spice-bidirectional",
+                xhciEnabled: xhciEnabled,
+                sharedDirectories: mappedShares,
+                usbMassStorage: USBMassStorage(
+                    path: usbMassStorage.url.path,
+                    readOnly: usbMassStorage.readOnly,
+                    byteCount: usbMassStorage.byteCount
+                )
+            ))
+        } else {
+            // Adding an optional device must not invalidate a saved state whose effective device
+            // configuration did not change. Preserve the exact pre-USB descriptor in that case.
+            encoded = try encoder.encode(LegacyDescriptor(
+                schema: "dory.vzmac-configuration@1",
+                display: "1920x1080@144ppi-auto-resize",
+                network: "virtio-nat",
+                audio: "virtio-host-input-output",
+                input: "mac-keyboard-trackpad",
+                entropy: "virtio",
+                cameraSocketPort: 1_030,
+                clipboard: "spice-bidirectional",
+                xhciEnabled: xhciEnabled,
+                sharedDirectories: mappedShares
+            ))
+        }
+        return SHA256.hash(data: encoded)
             .map { String(format: "%02x", $0) }
             .joined()
     }

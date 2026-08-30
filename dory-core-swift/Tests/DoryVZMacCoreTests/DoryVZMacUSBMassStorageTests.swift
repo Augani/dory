@@ -3,6 +3,18 @@ import XCTest
 @testable import DoryVZMacCore
 
 final class DoryVZMacUSBMassStorageTests: XCTestCase {
+    func testNoUSBPreservesThePreUSBConfigurationFingerprint() throws {
+        let hasXHCI = ProcessInfo.processInfo.isOperatingSystemAtLeast(
+            OperatingSystemVersion(majorVersion: 15, minorVersion: 0, patchVersion: 0)
+        )
+        XCTAssertEqual(
+            try DoryVZMacConfigurationBuilder.fingerprint(),
+            hasXHCI
+                ? "c2a0604de611f227075125e822434283bbe418ff7cc663421dde2cafc325bd1f"
+                : "2f3024611af8d685e0de857cd3f92b143f7f894a1d246c80ff01f733ffd14ee9"
+        )
+    }
+
     func testAcceptsDirectNonEmptyImageAndBindsFingerprint() throws {
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
