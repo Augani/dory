@@ -1,0 +1,116 @@
+import DoryMachinePC
+import Testing
+
+@Suite struct DoryPCXHCITests {
+  @Test func publishesXHCI12PCIAndProtocolCapabilities() throws {
+    let xhci = try DoryPCXHCIController()
+    let machine = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024,
+      pciFunctions: [xhci]
+    )
+    try xhci.writeConfiguration(offset: 4, bytes: [2, 0])
+
+    #expect(try xhci.readConfiguration(offset: 0, byteCount: 4) == [0xF4, 0x1A, 0, 0x11])
+    #expect(try xhci.readConfiguration(offset: 9, byteCount: 3) == [0x30, 0x03, 0x0C])
+    #expect(try read8(machine, DoryPCV1ABI.xhciBARAddress) == 0x40)
+    #expect(try read16(machine, DoryPCV1ABI.xhciBARAddress + 2) == 0x0120)
+    #expect(try read32(machine, DoryPCV1ABI.xhciBARAddress + 0x14) == 0x2000)
+    #expect(try read32(machine, DoryPCV1ABI.xhciBARAddress + 0x18) == 0x1000)
+    #expect(try read32(machine, DoryPCV1ABI.xhciBARAddress + 0x104) == 0x2042_5355)
+    #expect(try read32(machine, DoryPCV1ABI.xhciBARAddress + 0x114) == 0x2042_5355)
+  }
+
+  @Test func portConnectResetAndDisconnectProduceEventsAndMSI() throws {
+    let xhci = try DoryPCXHCIController()
+    let machine = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024,
+      pciFunctions: [xhci]
+    )
+    let bar = DoryPCV1ABI.xhciBARAddress
+
+    try xhci.writeConfiguration(offset: 4, bytes: [2, 0])
+    try xhci.writeConfiguration(offset: 0x54, bytes: littleEndian(UInt32(0xFEE0_0000)))
+    try xhci.writeConfiguration(offset: 0x5C, bytes: [0x76, 0])
+    try xhci.writeConfiguration(offset: 0x52, bytes: [1, 0])
+
+    try machine.physicalMemory.write(
+      at: 0x1000,
+      bytes: littleEndian(UInt64(0x2000)) + littleEndian(UInt32(16)) + [0, 0, 0, 0]
+    )
+    try write32(machine, bar + 0x1028, 1)
+    try write64(machine, bar + 0x1030, 0x1000)
+    try write64(machine, bar + 0x1038, 0x2000)
+    try write32(machine, bar + 0x1020, 2)
+    try write32(machine, bar + 0x40, 5)
+
+    try xhci.connect(port: 1, speed: .high)
+    let connected = try read32(machine, bar + 0x440)
+    #expect(connected & 1 != 0)
+    #expect((connected >> 10) & 0xF == 3)
+    #expect(connected & (1 << 17) != 0)
+    #expect(try read32(machine, 0x2000) == 1 << 24)
+    #expect(try read32(machine, 0x2008) == 1 << 24)
+    #expect((try read32(machine, 0x200C) >> 10) & 0x3F == 34)
+    #expect(machine.localAPIC.snapshot().interruptRequest.contains(0x76))
+
+    try write32(machine, bar + 0x440, 1 << 4)
+    let reset = try read32(machine, bar + 0x440)
+    #expect(reset & (1 << 1) != 0)
+    #expect(reset & (1 << 4) == 0)
+    #expect(reset & (1 << 21) != 0)
+
+    try xhci.disconnect(port: 1)
+    let disconnected = try xhci.portState(1)
+    #expect(!disconnected.connected)
+    #expect(!disconnected.enabled)
+    #expect(disconnected.statusChangePending)
+  }
+
+  @Test func hostControllerResetPreservesAttachmentButClearsRuntimeState() throws {
+    let xhci = try DoryPCXHCIController()
+    let machine = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024,
+      pciFunctions: [xhci]
+    )
+    let bar = DoryPCV1ABI.xhciBARAddress
+    try xhci.writeConfiguration(offset: 4, bytes: [2, 0])
+    try xhci.connect(port: 5, speed: .superSpeed)
+    try write32(machine, bar + 0x78, 12)
+    try write32(machine, bar + 0x40, 1 << 1)
+
+    #expect(try read32(machine, bar + 0x40) == 0)
+    #expect(try read32(machine, bar + 0x44) & 1 != 0)
+    #expect(try read32(machine, bar + 0x78) == 0)
+    #expect(try xhci.portState(5).connected)
+  }
+}
+
+private func read8(_ machine: DoryPCDirectKernelMachine, _ address: UInt64) throws -> UInt8 {
+  try machine.physicalMemory.read(at: address, byteCount: 1)[0]
+}
+
+private func read16(_ machine: DoryPCDirectKernelMachine, _ address: UInt64) throws -> UInt16 {
+  let bytes = try machine.physicalMemory.read(at: address, byteCount: 2)
+  return UInt16(bytes[0]) | UInt16(bytes[1]) << 8
+}
+
+private func read32(_ machine: DoryPCDirectKernelMachine, _ address: UInt64) throws -> UInt32 {
+  let bytes = try machine.physicalMemory.read(at: address, byteCount: 4)
+  return bytes.enumerated().reduce(0) { $0 | UInt32($1.element) << UInt32($1.offset * 8) }
+}
+
+private func write32(_ machine: DoryPCDirectKernelMachine, _ address: UInt64, _ value: UInt32)
+  throws
+{
+  try machine.physicalMemory.write(at: address, bytes: littleEndian(value))
+}
+
+private func write64(_ machine: DoryPCDirectKernelMachine, _ address: UInt64, _ value: UInt64)
+  throws
+{
+  try machine.physicalMemory.write(at: address, bytes: littleEndian(value))
+}
+
+private func littleEndian<T: FixedWidthInteger>(_ value: T) -> [UInt8] {
+  (0..<MemoryLayout<T>.size).map { UInt8(truncatingIfNeeded: value >> T($0 * 8)) }
+}

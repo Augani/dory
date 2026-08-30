@@ -37,6 +37,7 @@ The IOAPIC exposes GSIs 0...23. PCI INTx uses level-triggered, active-low GSIs 1
 | VirtIO relative pointer | `0000:00:04.0` | `0xd0004000` |
 | VirtIO absolute tablet | `0000:00:05.0` | `0xd0005000` |
 | VirtIO sound | `0000:00:06.0` | `0xd0006000` |
+| xHCI USB controller | `0000:00:07.0` | `0xd0008000` |
 
 ## Boot contract
 
