@@ -58,6 +58,26 @@ import Testing
           minimumCaptureByteCount: 192_000
         ))
     #expect(
+      workstationGate.guestTools
+        == DoryARMVirtGuestToolsExpectation(
+          byteCount: 1_402_368,
+          sha256: "3d166dbea0ae6bcf60cc400a23ff134cab6bd9cc9d17b7348c691298dfcd5fbe",
+          agentSHA256: "74b952b176f2aea7c576bac815a9eb2e3c8f8a2625c14767500b8a45f6b5fd9c"
+        ))
+    #expect(
+      workstationGate.camera
+        == DoryARMVirtCameraExpectation(
+          busID: "255-1",
+          busNumber: 255,
+          deviceNumber: 1,
+          vendorID: 0xD0F1,
+          productID: 0xCA01,
+          widthPixels: 1_280,
+          heightPixels: 720,
+          minimumHostFrameRequestCount: 1,
+          minimumJPEGByteCount: 1_024
+        ))
+    #expect(
       try matrix.gate(id: "opensuse-installer-boot").mediaID == "opensuse-tumbleweed-20260806-arm64"
     )
     #expect(matrix.gates.filter { $0.gvproxySHA256 != nil }.count == 10)
@@ -79,6 +99,9 @@ import Testing
       #expect(target.guestArchitecture == media.guestArchitecture)
       #expect(driver.stepCount == gate.receipt.consoleScriptStepCount)
       #expect(!driver.inputContains(gate.expectedConsoleText))
+      if let guestTools = gate.guestTools {
+        #expect(driver.inputContains(guestTools.agentSHA256))
+      }
     }
   }
 

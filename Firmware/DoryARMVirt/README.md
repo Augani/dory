@@ -27,7 +27,7 @@ The runner rejects a missing pair of matrix/gate options, a caller-supplied
 console script, media, fixture, or network-sidecar drift, guest-tuple mismatch, and any observed
 boot/transition/action receipt that differs from the selected gate.
 Before emitting a matrix-selected receipt, the runner decodes it through the
-shared schema-10 verifier, recomputes the matrix digest, and fails closed on
+shared schema-11 verifier, recomputes the matrix digest, and fails closed on
 unknown fields or any platform, host, guest, media, firmware, sidecar, resource,
 lifecycle, snapshot, or monotonic-timing mismatch.
 
@@ -82,7 +82,7 @@ embedded UEFI interactive shell. Console output is written to standard error;
 a successful run writes one canonical JSON receipt to standard output with the
 machine and firmware ABI identities, build identifier, firmware SHA-256, boot
 attempt count, each boot's monotonic duration, the total qualification duration,
-variable-store generation, and final stop reason. Receipt schema 10 identifies
+variable-store generation, and final stop reason. Receipt schema 11 identifies
 these measurements as Dispatch uptime nanoseconds so wall-clock adjustment cannot
 distort performance evidence, while also binding UTC start/end, host boot session,
 physical memory, power source, Low Power Mode, and thermal state at both boundaries.
@@ -95,7 +95,7 @@ population variance separately for each semantic boot attempt and the complete
 qualification. This timing campaign is necessary performance evidence; it does
 not by itself qualify CPU, storage, network, display, energy, or release support.
 
-Build `dory-armvirt-timing-campaign`, collect at least nine schema-10 runner
+Build `dory-armvirt-timing-campaign`, collect at least nine schema-11 runner
 receipts in chronological order, and aggregate them without rewriting raw evidence:
 
 ```sh
@@ -155,7 +155,7 @@ chmod 600 /absolute/path/to/alpine-standard-aarch64.iso
 
 The runner accepts only an owned, private console document with bounded steps,
 wait markers, and inputs. It refuses a success marker present in guest input so
-terminal echo cannot forge qualification. Receipt schema 10 binds the exact host
+terminal echo cannot forge qualification. Receipt schema 11 binds the exact host
 model/OS build, guest family/version/build/architecture, execution engine, CPU,
 machine, firmware and device ABIs, runner SHA-256, memory and disk sizes,
 completed step count, console-document SHA-256, applied installer media
@@ -267,22 +267,54 @@ cell. It pins Fedora Workstation 44 release 1.7's official ARM64 live ISO,
 selects `Start Fedora-Workstation-Live` from the stock GRUB menu, brings up the
 live system through NetworkManager and the completed GNOME Display Manager
 service, and simultaneously requires Dory's VirtIO GPU to publish at least two
-non-empty frames across its two declared independent 1024×768 scanouts. After that completed
-service milestone, the runner submits one bounded keyboard frame and one
-absolute-pointer frame through the ABI's distinct VirtIO input slots and waits
-for the stock guest drivers to consume both. The fixture then logs into Fedora's
-serial console as the live user, verifies GDM remains active, and exercises the
-stock ALSA playback and capture tools against Dory's two-direction VirtIO sound
-device. Receipt schema 10 binds
+non-empty frames across its two declared independent 1024×768 scanouts. After
+that completed service milestone, the runner submits one bounded keyboard frame
+and one absolute-pointer frame through the ABI's distinct VirtIO input slots and
+waits for the stock guest drivers to consume both. The fixture then logs into
+Fedora's serial console as the live user, verifies GDM remains active, and
+exercises the stock ALSA playback and capture tools against Dory's two-direction
+VirtIO sound device. It also reads a matrix-pinned, read-only Dory Tools raw
+block image, verifies the static ARM64 agent digest before execution, negotiates
+the production `usb-vhci@1` channel over VirtIO vsock, and attaches Dory's UVC
+1.1 camera through the production USB/IP manager. Fedora's stock `uvcvideo`,
+USB, and FFmpeg paths must enumerate vendor/product `d0f1:ca01` and save an
+identified 1280×720 MJPEG frame. Receipt schema 11 binds
 the scanout count, content-frame count, final pre-stop frame dimensions, exact
 RGBA byte count, non-zero byte count, and SHA-256, plus submitted, published,
 dropped, and rejected keyboard/pointer frame and event counts, as well as
 configured/started playback and capture streams, completed periods, transferred
-bytes, and a zero device-fault total. This gate proves software VirtIO display,
-input, speaker, and microphone transport through the stock graphical live guest;
+bytes, and a zero device-fault total, plus the guest-tools media digest, exact
+USB identity, negotiated camera dimensions, host frame requests, JPEG bytes, and
+camera fault total. This gate proves software VirtIO display, input, speaker,
+microphone, standard UVC camera, and core USB attach/data delivery through the
+stock graphical live guest;
 it does not yet claim physical-layout/IME/gesture naturalness, host route or TCC
-behavior, 3D acceleration, display performance, camera, or USB support.
+behavior, 3D acceleration, display performance, a physical Mac camera/TCC path,
+or broad physical USB passthrough and device-family support.
 The 2,689,781,760-byte image has SHA-256
 `162ba3c552a2d241c7c63ec26777af0255ee1b5a135adc0be986ceed999933ef`;
 qualification requires Fedora's OpenPGP-verified release checksum file signed
 by the Fedora 44 primary key.
+
+Build the exact guest-tools image from the locked Rust workspace. The image is
+the 1,402,336-byte static agent followed only by zero padding to a 512-byte
+boundary, so rebuilding it from an identical agent produces identical bytes:
+
+```sh
+cd dory-core
+CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER="$(rustc --print sysroot)/lib/rustlib/aarch64-apple-darwin/bin/rust-lld" \
+RUSTFLAGS='-C linker-flavor=ld.lld' \
+  cargo build --locked -p dory-agent --release \
+    --target aarch64-unknown-linux-musl
+install -m 0600 \
+  target/aarch64-unknown-linux-musl/release/dory-agent \
+  /absolute/path/to/dory-armvirt-tools.raw
+truncate -s 1402368 /absolute/path/to/dory-armvirt-tools.raw
+chmod 0400 /absolute/path/to/dory-armvirt-tools.raw
+```
+
+Pass that immutable image to the matrix-selected desktop gate with
+`--guest-tools-media /absolute/path/to/dory-armvirt-tools.raw`. The runner binds
+its exact byte count and SHA-256 before attaching it at the fixed auxiliary
+VirtIO block slot; Fedora extracts only the matrix-pinned agent length and
+verifies the agent SHA-256 before execution.

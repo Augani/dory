@@ -1,3 +1,4 @@
+import CoreGraphics
 import CryptoKit
 import Darwin
 import DoryARMVirtQualification
@@ -8,6 +9,8 @@ import DoryOperations
 import DorydKit
 import Foundation
 import IOKit.ps
+import ImageIO
+import UniformTypeIdentifiers
 
 #if !arch(arm64)
   FileHandle.standardError.write(
@@ -18,6 +21,7 @@ import IOKit.ps
   private struct Options {
     var firmwareBundle: String?
     var installerMedia: String?
+    var guestToolsMedia: String?
     var consoleScript: String?
     var gvproxy: String?
     var compatibilityMatrix: String?
@@ -33,6 +37,12 @@ import IOKit.ps
     let byteCount: UInt64
     let sha256: String
     let device: DoryARMVirtUEFIBootDevice
+  }
+
+  private struct AdmittedGuestToolsMedia {
+    let path: String
+    let byteCount: UInt64
+    let sha256: String
   }
 
   private struct AdmittedConsoleScript {
@@ -445,6 +455,209 @@ import IOKit.ps
     }
   }
 
+  private struct CameraQualificationSnapshot {
+    let usbBusID: String?
+    let usbDeviceID: UInt32?
+    let usbVendorID: UInt16?
+    let usbProductID: UInt16?
+    let widthPixels: UInt32?
+    let heightPixels: UInt32?
+    let hostFrameRequestCount: UInt64
+    let jpegByteCount: UInt64
+    let deviceFaultCount: UInt64
+  }
+
+  private final class CameraQualificationCapture: DoryUVCCameraFrameSource, @unchecked Sendable {
+    private let lock = NSLock()
+    private let jpeg: Data
+    private var usbBusID: String?
+    private var usbDeviceID: UInt32?
+    private var usbVendorID: UInt16?
+    private var usbProductID: UInt16?
+    private var widthPixels: UInt32?
+    private var heightPixels: UInt32?
+    private var hostFrameRequestCount: UInt64 = 0
+    private var jpegByteCount: UInt64 = 0
+    private var deviceFaultCount: UInt64 = 0
+    private var stopped = false
+
+    init(expectation: DoryARMVirtCameraExpectation) throws {
+      jpeg = try Self.makeJPEG(
+        width: Int(expectation.widthPixels),
+        height: Int(expectation.heightPixels)
+      )
+    }
+
+    func recordAttachment() {
+      let descriptor = DoryVirtualUVCCamera.descriptor()
+      lock.lock()
+      usbBusID = descriptor.busID
+      usbDeviceID = descriptor.busNumber << 16 | descriptor.deviceNumber
+      usbVendorID = descriptor.vendorID
+      usbProductID = descriptor.productID
+      lock.unlock()
+    }
+
+    func recordDeviceFault() {
+      lock.lock()
+      deviceFaultCount &+= 1
+      lock.unlock()
+    }
+
+    func nextJPEGFrame(width: Int, height: Int, timeout _: TimeInterval) -> Data? {
+      lock.lock()
+      defer { lock.unlock() }
+      guard !stopped, width > 0, height > 0 else {
+        deviceFaultCount &+= 1
+        return nil
+      }
+      widthPixels = UInt32(width)
+      heightPixels = UInt32(height)
+      hostFrameRequestCount &+= 1
+      jpegByteCount &+= UInt64(jpeg.count)
+      return jpeg
+    }
+
+    func stop() {
+      lock.lock()
+      stopped = true
+      lock.unlock()
+    }
+
+    func satisfies(_ expectation: DoryARMVirtCameraExpectation) -> Bool {
+      let snapshot = self.snapshot
+      return snapshot.usbBusID == expectation.busID
+        && snapshot.usbDeviceID
+          == UInt32(expectation.busNumber) << 16 | UInt32(expectation.deviceNumber)
+        && snapshot.usbVendorID == expectation.vendorID
+        && snapshot.usbProductID == expectation.productID
+        && snapshot.widthPixels == expectation.widthPixels
+        && snapshot.heightPixels == expectation.heightPixels
+        && snapshot.hostFrameRequestCount >= expectation.minimumHostFrameRequestCount
+        && snapshot.jpegByteCount >= expectation.minimumJPEGByteCount
+        && snapshot.deviceFaultCount == 0
+    }
+
+    var snapshot: CameraQualificationSnapshot {
+      lock.lock()
+      defer { lock.unlock() }
+      return CameraQualificationSnapshot(
+        usbBusID: usbBusID,
+        usbDeviceID: usbDeviceID,
+        usbVendorID: usbVendorID,
+        usbProductID: usbProductID,
+        widthPixels: widthPixels,
+        heightPixels: heightPixels,
+        hostFrameRequestCount: hostFrameRequestCount,
+        jpegByteCount: jpegByteCount,
+        deviceFaultCount: deviceFaultCount
+      )
+    }
+
+    private static func makeJPEG(width: Int, height: Int) throws -> Data {
+      guard
+        let context = CGContext(
+          data: nil,
+          width: width,
+          height: height,
+          bitsPerComponent: 8,
+          bytesPerRow: width * 4,
+          space: CGColorSpaceCreateDeviceRGB(),
+          bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        )
+      else {
+        throw VMError.invalidConfiguration("camera qualification could not create a frame")
+      }
+      context.setFillColor(red: 0.05, green: 0.15, blue: 0.35, alpha: 1)
+      context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+      context.setFillColor(red: 0.95, green: 0.55, blue: 0.10, alpha: 1)
+      context.fill(
+        CGRect(
+          x: width / 8,
+          y: height / 4,
+          width: width * 3 / 4,
+          height: height / 2
+        )
+      )
+      guard let image = context.makeImage() else {
+        throw VMError.invalidConfiguration("camera qualification could not publish a frame")
+      }
+      let data = NSMutableData()
+      guard
+        let destination = CGImageDestinationCreateWithData(
+          data,
+          UTType.jpeg.identifier as CFString,
+          1,
+          nil
+        )
+      else {
+        throw VMError.invalidConfiguration("camera qualification could not create JPEG output")
+      }
+      CGImageDestinationAddImage(
+        destination,
+        image,
+        [kCGImageDestinationLossyCompressionQuality: 0.85] as CFDictionary
+      )
+      guard CGImageDestinationFinalize(destination), data.length > 1_024 else {
+        throw VMError.invalidConfiguration("camera qualification produced an invalid JPEG frame")
+      }
+      return data as Data
+    }
+  }
+
+  private final class CameraQualificationCoordinator: @unchecked Sendable {
+    private let completion = DispatchGroup()
+    private let state = NSLock()
+    private var task: Task<Void, Never>?
+
+    func start(
+      vsock: VirtioVsock,
+      handler: UsbControlHandler,
+      capture: CameraQualificationCapture,
+      timeoutSeconds: UInt64
+    ) {
+      state.lock()
+      precondition(task == nil)
+      completion.enter()
+      task = Task.detached {
+        defer { self.completion.leave() }
+        let deadline =
+          DispatchTime.now().uptimeNanoseconds
+          &+ timeoutSeconds * 1_000_000_000
+        while !Task.isCancelled, DispatchTime.now().uptimeNanoseconds < deadline {
+          do {
+            let channel = AgentChannel(
+              connection: try vsock.connectForServiceIfCapacity(
+                port: VsockPorts.agent,
+                service: .agentRPC
+              )
+            )
+            try await channel.requireCapability("usb-vhci", version: 1)
+            _ = try await handler.attach(busID: DoryVirtualUVCCamera.busID)
+            capture.recordAttachment()
+            return
+          } catch {
+            do {
+              try await Task.sleep(for: .milliseconds(250))
+            } catch {
+              return
+            }
+          }
+        }
+        if !Task.isCancelled { capture.recordDeviceFault() }
+      }
+      state.unlock()
+    }
+
+    func stop() {
+      state.lock()
+      let task = task
+      state.unlock()
+      task?.cancel()
+      _ = completion.wait(timeout: .now() + .seconds(10))
+    }
+  }
+
   private final class RunnerCompletion: @unchecked Sendable {
     private let lock = NSLock()
     private let signal = DispatchSemaphore(value: 0)
@@ -494,6 +707,11 @@ import IOKit.ps
           fail("--installer-media requires a path")
         }
         options.installerMedia = value
+      case "--guest-tools-media":
+        guard let value = iterator.next() else {
+          fail("--guest-tools-media requires a path")
+        }
+        options.guestToolsMedia = value
       case "--console-script":
         guard let value = iterator.next() else {
           fail("--console-script requires a path")
@@ -634,6 +852,36 @@ import IOKit.ps
     )
   }
 
+  private func admitGuestToolsMedia(at suppliedPath: String) throws
+    -> AdmittedGuestToolsMedia
+  {
+    let path = URL(fileURLWithPath: suppliedPath).resolvingSymlinksInPath().path
+    var fileStatus = stat()
+    guard lstat(path, &fileStatus) == 0,
+      fileStatus.st_mode & S_IFMT == S_IFREG,
+      fileStatus.st_uid == geteuid(),
+      fileStatus.st_mode & 0o022 == 0,
+      fileStatus.st_size >= 512,
+      fileStatus.st_size % 512 == 0,
+      UInt64(fileStatus.st_size) <= 1 << 30
+    else {
+      fail(
+        "--guest-tools-media must name an owned, non-writable, 512-byte-aligned regular file no larger than 1 GiB"
+      )
+    }
+    let handle = try FileHandle(forReadingFrom: URL(fileURLWithPath: path))
+    defer { try? handle.close() }
+    var hasher = SHA256()
+    while let chunk = try handle.read(upToCount: 1 << 20), !chunk.isEmpty {
+      hasher.update(data: chunk)
+    }
+    return AdmittedGuestToolsMedia(
+      path: path,
+      byteCount: UInt64(fileStatus.st_size),
+      sha256: hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    )
+  }
+
   private func admitQualificationGate(options: inout Options) throws
     -> AdmittedQualificationGate?
   {
@@ -771,6 +1019,7 @@ import IOKit.ps
     systemDiskPath: String,
     systemDevice: DoryARMVirtUEFIBootDevice,
     installerMedia: InstallerMedia?,
+    guestToolsMedia: AdmittedGuestToolsMedia?,
     capture: ConsoleCapture,
     consoleScript: AdmittedConsoleScript?,
     displayExpectation: DoryARMVirtDisplayExpectation?,
@@ -779,6 +1028,8 @@ import IOKit.ps
     inputCapture: InputQualificationCapture?,
     audioExpectation: DoryARMVirtAudioExpectation?,
     audioCapture: AudioQualificationCapture?,
+    cameraExpectation: DoryARMVirtCameraExpectation?,
+    cameraCapture: CameraQualificationCapture?,
     gvproxy: AdmittedGVProxy?,
     memoryBytes: UInt64,
     appliedInstallerMediaTransitionCount: Int,
@@ -890,6 +1141,114 @@ import IOKit.ps
         to: machine
       )
     }
+    if let guestToolsMedia {
+      guard
+        let guestToolsSlot = DoryARMVirtV1ABI.virtioSlots.first(where: {
+          $0.role == .auxiliaryStorage && $0.index == 13
+        })
+      else {
+        throw VMError.invalidConfiguration(
+          "\(DoryARMVirtV1ABI.identity) has no guest-tools storage slot"
+        )
+      }
+      try attachVirtioDevice(
+        VirtioBlk(
+          path: guestToolsMedia.path,
+          identity: "dory-uefi-smoke-guest-tools",
+          readOnly: true,
+          queueCount: 1,
+          discard: false
+        ),
+        slot: guestToolsSlot.index,
+        to: machine
+      )
+    }
+    var cameraVsock: VirtioVsock?
+    var cameraUSBIPManager: UsbipManager?
+    var cameraCoordinator: CameraQualificationCoordinator?
+    var cameraControlHandler: UsbControlHandler?
+    if cameraExpectation != nil, let cameraCapture {
+      guard guestToolsMedia != nil,
+        let vsockSlot = DoryARMVirtV1ABI.virtioSlots.first(where: { $0.role == .vsock })
+      else {
+        throw VMError.invalidConfiguration("camera qualification requires Dory Tools and vsock")
+      }
+      let vsock = VirtioVsock(guestCID: 3)
+      try attachVirtioDevice(vsock, slot: vsockSlot.index, to: machine)
+      let manager = UsbipManager(log: {
+        FileHandle.standardError.write(Data("dory-armvirt-uefi-smoke: \($0)\n".utf8))
+      })
+      try manager.attachListener(to: vsock)
+      let handler = UsbControlHandler(
+        manager: manager,
+        allowedOpenModes: [.userAuthorized],
+        ensureSupported: {
+          let channel = AgentChannel(
+            connection: try vsock.connectForServiceIfCapacity(
+              port: VsockPorts.agent,
+              service: .agentRPC
+            )
+          )
+          try await channel.requireCapability("usb-vhci", version: 1)
+        },
+        openDevice: { busID, _ in
+          guard busID == DoryVirtualUVCCamera.busID else {
+            throw HostUsbOpenError.notFound(busID)
+          }
+          return HostUsbDevice(
+            descriptor: DoryVirtualUVCCamera.descriptor(),
+            backend: DoryVirtualUVCCameraBackend(frameSource: cameraCapture),
+            timeout: 5,
+            maxConcurrentRequests: 8,
+            maxInFlightBytes: 16 << 20,
+            shutdownTimeout: 2
+          )
+        },
+        notifyAttach: { request in
+          let channel = AgentChannel(
+            connection: try vsock.connectForServiceIfCapacity(
+              port: VsockPorts.agent,
+              service: .agentRPC
+            )
+          )
+          try await channel.requireCapability("usb-vhci", version: 1)
+          try await channel.usbVhciAttach(request)
+        },
+        notifyDetach: { request in
+          let channel = AgentChannel(
+            connection: try vsock.connectForServiceIfCapacity(
+              port: VsockPorts.agent,
+              service: .agentRPC
+            )
+          )
+          try await channel.requireCapability("usb-vhci", version: 1)
+          try await channel.usbVhciDetach(request)
+        },
+        trace: {
+          FileHandle.standardError.write(Data("dory-armvirt-uefi-smoke: camera \($0)\n".utf8))
+        }
+      )
+      cameraVsock = vsock
+      cameraUSBIPManager = manager
+      cameraControlHandler = handler
+      cameraCoordinator = CameraQualificationCoordinator()
+    }
+    defer {
+      cameraCoordinator?.stop()
+      if let cameraUSBIPManager {
+        if case .authorityRetained(let busIDs) =
+          cameraUSBIPManager.stopAfterGuestExecutionEnded()
+        {
+          FileHandle.standardError.write(
+            Data(
+              "dory-armvirt-uefi-smoke: camera USB authority retained: \(busIDs.joined(separator: ","))\n"
+                .utf8
+            )
+          )
+        }
+      }
+      _ = cameraVsock?.quiesce()
+    }
     var networkSidecar: Process?
     var networkPaths: [String] = []
     var networkSocketRoot: URL?
@@ -963,6 +1322,14 @@ import IOKit.ps
     )
     let consoleStartOffset = capture.byteCount
     try runner.start(completion: completion.publish)
+    if let cameraCoordinator, let cameraControlHandler, let cameraCapture, let cameraVsock {
+      cameraCoordinator.start(
+        vsock: cameraVsock,
+        handler: cameraControlHandler,
+        capture: cameraCapture,
+        timeoutSeconds: timeoutSeconds
+      )
+    }
     let deadline = DispatchTime.now() + .seconds(Int(timeoutSeconds))
     while DispatchTime.now() < deadline {
       if let input = consoleScript.flatMap({ capture.nextInput(using: $0.driver) }),
@@ -985,6 +1352,7 @@ import IOKit.ps
         && displayExpectation.map { displayCapture?.satisfies($0) == true } != false
         && inputExpectation.map { inputCapture?.satisfies($0) == true } != false
         && audioExpectation.map { audioCapture?.satisfies($0) == true } != false
+        && cameraExpectation.map { cameraCapture?.satisfies($0) == true } != false
       if matchedConsole {
         return result(
           reason: try runner.stopAndWait(GuestStopReason.powerOff),
@@ -1002,6 +1370,7 @@ import IOKit.ps
             && displayExpectation.map { displayCapture?.satisfies($0) == true } != false
             && inputExpectation.map { inputCapture?.satisfies($0) == true } != false
             && audioExpectation.map { audioCapture?.satisfies($0) == true } != false
+            && cameraExpectation.map { cameraCapture?.satisfies($0) == true } != false
         )
       }
     }
@@ -1015,6 +1384,7 @@ import IOKit.ps
         && displayExpectation.map { displayCapture?.satisfies($0) == true } != false
         && inputExpectation.map { inputCapture?.satisfies($0) == true } != false
         && audioExpectation.map { audioCapture?.satisfies($0) == true } != false
+        && cameraExpectation.map { cameraCapture?.satisfies($0) == true } != false
     )
   }
 
@@ -1066,6 +1436,7 @@ import IOKit.ps
       readOnly: false
     )
     let installerMedia = try options.installerMedia.map(admitInstallerMedia)
+    let guestToolsMedia = try options.guestToolsMedia.map(admitGuestToolsMedia)
     let consoleScript = try options.consoleScript.map {
       try admitConsoleScript(at: $0, matrixOwned: qualification != nil)
     }
@@ -1085,10 +1456,22 @@ import IOKit.ps
           == qualification.media.guestBuild,
         consoleScript?.driver.qualificationTarget?.guestArchitecture
           == qualification.media.guestArchitecture,
-        gvproxy?.sha256 == qualification.gate.gvproxySHA256
+        gvproxy?.sha256 == qualification.gate.gvproxySHA256,
+        (qualification.gate.guestTools == nil && guestToolsMedia == nil)
+          || (guestToolsMedia?.byteCount == qualification.gate.guestTools?.byteCount
+            && guestToolsMedia?.sha256 == qualification.gate.guestTools?.sha256)
       else {
-        fail("qualification gate media, fixture, sidecar, or guest tuple does not match the matrix")
+        fail(
+          "qualification gate media, guest tools, fixture, sidecar, or guest tuple does not match the matrix"
+        )
       }
+      if let guestTools = qualification.gate.guestTools,
+        consoleScript?.driver.inputContains(guestTools.agentSHA256) != true
+      {
+        fail("qualification fixture does not verify the matrix-pinned guest agent")
+      }
+    } else if guestToolsMedia != nil {
+      fail("--guest-tools-media is admitted only through a compatibility-matrix gate")
     }
     if consoleScript?.driver.inputContains(options.expectedConsoleText) == true {
       fail("--expect must not occur in console-script input because guest echo could forge success")
@@ -1102,6 +1485,9 @@ import IOKit.ps
     }
     let inputCapture = qualification?.gate.input.map { _ in InputQualificationCapture() }
     let audioCapture = qualification?.gate.audio.map { _ in AudioQualificationCapture() }
+    let cameraCapture = try qualification?.gate.camera.map {
+      try CameraQualificationCapture(expectation: $0)
+    }
     let maximumBootAttempts = 4
     var finalResult: BootResult?
     var bootAttempts = 0
@@ -1122,6 +1508,7 @@ import IOKit.ps
         systemDiskPath: systemDiskPath,
         systemDevice: systemDevice,
         installerMedia: attachedInstaller,
+        guestToolsMedia: guestToolsMedia,
         capture: capture,
         consoleScript: consoleScript,
         displayExpectation: qualification?.gate.display,
@@ -1130,6 +1517,8 @@ import IOKit.ps
         inputCapture: inputCapture,
         audioExpectation: qualification?.gate.audio,
         audioCapture: audioCapture,
+        cameraExpectation: qualification?.gate.camera,
+        cameraCapture: cameraCapture,
         gvproxy: gvproxy,
         memoryBytes: options.memoryBytes,
         appliedInstallerMediaTransitionCount: appliedInstallerMediaTransitionCount,
@@ -1209,6 +1598,7 @@ import IOKit.ps
     let displaySnapshot = displayCapture?.snapshot
     let inputSnapshot = inputCapture?.snapshot
     let audioSnapshot = audioCapture?.snapshot
+    let cameraSnapshot = cameraCapture?.snapshot
     let receipt = DoryARMVirtQualificationReceipt(
       machineABIIdentity: DoryARMVirtV1ABI.identity,
       firmwareABIIdentity: DoryARMVirtV1ABI.firmwareABIIdentity,
@@ -1281,6 +1671,17 @@ import IOKit.ps
       audioCompletedPlaybackPeriodCount: audioSnapshot?.device.completedPlaybackPeriods,
       audioCompletedCapturePeriodCount: audioSnapshot?.device.completedCapturePeriods,
       audioDeviceFaultCount: audioSnapshot.map { AudioQualificationCapture.faultCount($0.device) },
+      guestToolsMediaByteCount: guestToolsMedia?.byteCount,
+      guestToolsMediaSHA256: guestToolsMedia?.sha256,
+      cameraUSBBusID: cameraSnapshot?.usbBusID,
+      cameraUSBDeviceID: cameraSnapshot?.usbDeviceID,
+      cameraUSBVendorID: cameraSnapshot?.usbVendorID,
+      cameraUSBProductID: cameraSnapshot?.usbProductID,
+      cameraWidthPixels: cameraSnapshot?.widthPixels,
+      cameraHeightPixels: cameraSnapshot?.heightPixels,
+      cameraHostFrameRequestCount: cameraSnapshot?.hostFrameRequestCount,
+      cameraJPEGByteCount: cameraSnapshot?.jpegByteCount,
+      cameraDeviceFaultCount: cameraSnapshot?.deviceFaultCount,
       consoleByteCount: capture.byteCount,
       bootAttempts: bootAttempts,
       timingClockIdentity: "dispatch-uptime-nanoseconds",

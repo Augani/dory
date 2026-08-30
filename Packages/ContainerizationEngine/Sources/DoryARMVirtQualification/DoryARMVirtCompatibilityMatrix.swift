@@ -31,6 +31,24 @@ public struct DoryARMVirtAudioExpectation: Codable, Equatable, Sendable {
   public let minimumCaptureByteCount: UInt64
 }
 
+public struct DoryARMVirtGuestToolsExpectation: Codable, Equatable, Sendable {
+  public let byteCount: UInt64
+  public let sha256: String
+  public let agentSHA256: String
+}
+
+public struct DoryARMVirtCameraExpectation: Codable, Equatable, Sendable {
+  public let busID: String
+  public let busNumber: UInt16
+  public let deviceNumber: UInt16
+  public let vendorID: UInt16
+  public let productID: UInt16
+  public let widthPixels: UInt32
+  public let heightPixels: UInt32
+  public let minimumHostFrameRequestCount: UInt64
+  public let minimumJPEGByteCount: UInt64
+}
+
 public struct DoryARMVirtCompatibilityMedia: Codable, Equatable, Sendable {
   public let guestFamily: String
   public let guestVersion: String
@@ -64,12 +82,14 @@ public struct DoryARMVirtCompatibilityGate: Codable, Equatable, Sendable {
   public let display: DoryARMVirtDisplayExpectation?
   public let input: DoryARMVirtInputExpectation?
   public let audio: DoryARMVirtAudioExpectation?
+  public let guestTools: DoryARMVirtGuestToolsExpectation?
+  public let camera: DoryARMVirtCameraExpectation?
   public let receipt: DoryARMVirtQualificationReceiptExpectation
 }
 
 public struct DoryARMVirtCompatibilityMatrix: Codable, Equatable, Sendable {
-  public static let currentSchemaVersion: UInt32 = 5
-  public static let identity = "dory.compatibility.armvirt@5"
+  public static let currentSchemaVersion: UInt32 = 6
+  public static let identity = "dory.compatibility.armvirt@6"
 
   public let schemaVersion: UInt32
   public let matrixIdentity: String
@@ -163,6 +183,37 @@ public struct DoryARMVirtCompatibilityMatrix: Codable, Equatable, Sendable {
           (1...10_000).contains(audio.minimumCompletedCapturePeriodCount),
           (1...(1 << 30)).contains(audio.minimumPlaybackByteCount),
           (1...(1 << 30)).contains(audio.minimumCaptureByteCount)
+        else {
+          throw DoryARMVirtCompatibilityMatrixError.invalidGate(gate.gateID)
+        }
+      }
+      if let guestTools = gate.guestTools {
+        guard gate.kind == .desktopLiveBoot,
+          (512...(1 << 30)).contains(guestTools.byteCount),
+          guestTools.byteCount.isMultiple(of: 512),
+          Self.isSHA256(guestTools.sha256),
+          Self.isSHA256(guestTools.agentSHA256)
+        else {
+          throw DoryARMVirtCompatibilityMatrixError.invalidGate(gate.gateID)
+        }
+      }
+      if let camera = gate.camera {
+        guard gate.kind == .desktopLiveBoot,
+          gate.guestTools != nil,
+          !camera.busID.isEmpty,
+          camera.busID.utf8.count < 32,
+          camera.busID.utf8.allSatisfy({
+            (48...57).contains($0) || $0 == 45 || $0 == 46
+          }),
+          camera.busNumber > 0,
+          camera.deviceNumber > 0,
+          camera.busID == "\(camera.busNumber)-\(camera.deviceNumber)",
+          camera.vendorID > 0,
+          camera.productID > 0,
+          (160...3_840).contains(camera.widthPixels),
+          (120...2_160).contains(camera.heightPixels),
+          (1...10_000).contains(camera.minimumHostFrameRequestCount),
+          (1...UInt64(32 << 20)).contains(camera.minimumJPEGByteCount)
         else {
           throw DoryARMVirtCompatibilityMatrixError.invalidGate(gate.gateID)
         }

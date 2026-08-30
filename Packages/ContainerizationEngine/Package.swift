@@ -162,8 +162,11 @@ let package = Package(
                 .product(name: "DorydKit", package: "dory-core-swift"),
             ],
             linkerSettings: [
+                .linkedFramework("CoreGraphics"),
                 .linkedFramework("Hypervisor"),
+                .linkedFramework("ImageIO"),
                 .linkedFramework("IOKit"),
+                .linkedFramework("UniformTypeIdentifiers"),
             ]
         ),
         .executableTarget(

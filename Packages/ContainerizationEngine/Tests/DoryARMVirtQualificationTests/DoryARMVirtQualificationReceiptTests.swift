@@ -5,7 +5,7 @@ import Testing
 @testable import DoryARMVirtQualification
 
 @Suite struct DoryARMVirtQualificationReceiptTests {
-  @Test func verifiesExactSchemaTenReceiptAgainstCheckedInMatrix() throws {
+  @Test func verifiesExactSchemaElevenReceiptAgainstCheckedInMatrix() throws {
     let fixture = try Fixture()
     let receipt = fixture.receipt()
 
@@ -27,9 +27,9 @@ import Testing
     }
 
     object = try fixture.object(fixture.receipt())
-    object["schemaVersion"] = 9
+    object["schemaVersion"] = 10
     #expect(
-      throws: DoryARMVirtQualificationReceiptError.unsupportedSchemaVersion(9)
+      throws: DoryARMVirtQualificationReceiptError.unsupportedSchemaVersion(10)
     ) {
       try fixture.verify(object)
     }
@@ -183,6 +183,52 @@ import Testing
       try fixture.verify(object)
     }
   }
+
+  @Test func rejectsMissingOrFaultedDesktopCameraEvidence() throws {
+    let fixture = try Fixture(gateID: "fedora-workstation-live-boot")
+    var object = try fixture.object(fixture.receipt())
+    object.removeValue(forKey: "cameraUSBBusID")
+    #expect(throws: DoryARMVirtQualificationReceiptError.invalidField("camera")) {
+      try fixture.verify(object)
+    }
+
+    object = try fixture.object(fixture.receipt())
+    object["cameraUSBProductID"] = 1
+    #expect(throws: DoryARMVirtQualificationReceiptError.invalidField("camera")) {
+      try fixture.verify(object)
+    }
+
+    object = try fixture.object(fixture.receipt())
+    object["cameraDeviceFaultCount"] = 1
+    #expect(throws: DoryARMVirtQualificationReceiptError.invalidField("camera")) {
+      try fixture.verify(object)
+    }
+
+    object = try fixture.object(fixture.receipt())
+    object["guestToolsMediaSHA256"] = String(repeating: "f", count: 64)
+    #expect(throws: DoryARMVirtQualificationReceiptError.invalidField("guestTools")) {
+      try fixture.verify(object)
+    }
+  }
+
+  @Test func rejectsCameraAndGuestToolsEvidenceForOrdinaryGate() throws {
+    let fixture = try Fixture()
+    var object = try fixture.object(fixture.receipt())
+    object["cameraUSBBusID"] = "255-1"
+    #expect(
+      throws: DoryARMVirtQualificationReceiptError.invalidField("unexpectedCamera")
+    ) {
+      try fixture.verify(object)
+    }
+
+    object = try fixture.object(fixture.receipt())
+    object["guestToolsMediaByteCount"] = 512
+    #expect(
+      throws: DoryARMVirtQualificationReceiptError.invalidField("unexpectedGuestTools")
+    ) {
+      try fixture.verify(object)
+    }
+  }
 }
 
 private struct Fixture {
@@ -289,6 +335,19 @@ private struct Fixture {
       audioCompletedPlaybackPeriodCount: gate.audio?.minimumCompletedPlaybackPeriodCount,
       audioCompletedCapturePeriodCount: gate.audio?.minimumCompletedCapturePeriodCount,
       audioDeviceFaultCount: gate.audio.map { _ in 0 },
+      guestToolsMediaByteCount: gate.guestTools?.byteCount,
+      guestToolsMediaSHA256: gate.guestTools?.sha256,
+      cameraUSBBusID: gate.camera?.busID,
+      cameraUSBDeviceID: gate.camera.map {
+        UInt32($0.busNumber) << 16 | UInt32($0.deviceNumber)
+      },
+      cameraUSBVendorID: gate.camera?.vendorID,
+      cameraUSBProductID: gate.camera?.productID,
+      cameraWidthPixels: gate.camera?.widthPixels,
+      cameraHeightPixels: gate.camera?.heightPixels,
+      cameraHostFrameRequestCount: gate.camera?.minimumHostFrameRequestCount,
+      cameraJPEGByteCount: gate.camera?.minimumJPEGByteCount,
+      cameraDeviceFaultCount: gate.camera.map { _ in 0 },
       consoleByteCount: 4_096,
       bootAttempts: gate.receipt.bootAttempts,
       bootDurationNanoseconds: [4_000_000_000],

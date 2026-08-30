@@ -2,7 +2,7 @@ import CryptoKit
 import Foundation
 
 public struct DoryARMVirtQualificationReceipt: Codable, Equatable, Sendable {
-  public static let currentSchemaVersion: UInt32 = 10
+  public static let currentSchemaVersion: UInt32 = 11
   public static let timingClockIdentity = "dispatch-uptime-nanoseconds"
 
   public let schemaVersion: UInt32
@@ -77,6 +77,17 @@ public struct DoryARMVirtQualificationReceipt: Codable, Equatable, Sendable {
   public let audioCompletedPlaybackPeriodCount: UInt64?
   public let audioCompletedCapturePeriodCount: UInt64?
   public let audioDeviceFaultCount: UInt64?
+  public let guestToolsMediaByteCount: UInt64?
+  public let guestToolsMediaSHA256: String?
+  public let cameraUSBBusID: String?
+  public let cameraUSBDeviceID: UInt32?
+  public let cameraUSBVendorID: UInt16?
+  public let cameraUSBProductID: UInt16?
+  public let cameraWidthPixels: UInt32?
+  public let cameraHeightPixels: UInt32?
+  public let cameraHostFrameRequestCount: UInt64?
+  public let cameraJPEGByteCount: UInt64?
+  public let cameraDeviceFaultCount: UInt64?
   public let consoleByteCount: Int
   public let bootAttempts: Int
   public let timingClockIdentity: String
@@ -158,6 +169,17 @@ public struct DoryARMVirtQualificationReceipt: Codable, Equatable, Sendable {
     audioCompletedPlaybackPeriodCount: UInt64? = nil,
     audioCompletedCapturePeriodCount: UInt64? = nil,
     audioDeviceFaultCount: UInt64? = nil,
+    guestToolsMediaByteCount: UInt64? = nil,
+    guestToolsMediaSHA256: String? = nil,
+    cameraUSBBusID: String? = nil,
+    cameraUSBDeviceID: UInt32? = nil,
+    cameraUSBVendorID: UInt16? = nil,
+    cameraUSBProductID: UInt16? = nil,
+    cameraWidthPixels: UInt32? = nil,
+    cameraHeightPixels: UInt32? = nil,
+    cameraHostFrameRequestCount: UInt64? = nil,
+    cameraJPEGByteCount: UInt64? = nil,
+    cameraDeviceFaultCount: UInt64? = nil,
     consoleByteCount: Int,
     bootAttempts: Int,
     timingClockIdentity: String = Self.timingClockIdentity,
@@ -238,6 +260,17 @@ public struct DoryARMVirtQualificationReceipt: Codable, Equatable, Sendable {
     self.audioCompletedPlaybackPeriodCount = audioCompletedPlaybackPeriodCount
     self.audioCompletedCapturePeriodCount = audioCompletedCapturePeriodCount
     self.audioDeviceFaultCount = audioDeviceFaultCount
+    self.guestToolsMediaByteCount = guestToolsMediaByteCount
+    self.guestToolsMediaSHA256 = guestToolsMediaSHA256
+    self.cameraUSBBusID = cameraUSBBusID
+    self.cameraUSBDeviceID = cameraUSBDeviceID
+    self.cameraUSBVendorID = cameraUSBVendorID
+    self.cameraUSBProductID = cameraUSBProductID
+    self.cameraWidthPixels = cameraWidthPixels
+    self.cameraHeightPixels = cameraHeightPixels
+    self.cameraHostFrameRequestCount = cameraHostFrameRequestCount
+    self.cameraJPEGByteCount = cameraJPEGByteCount
+    self.cameraDeviceFaultCount = cameraDeviceFaultCount
     self.consoleByteCount = consoleByteCount
     self.bootAttempts = bootAttempts
     self.timingClockIdentity = timingClockIdentity
@@ -335,6 +368,8 @@ public enum DoryARMVirtQualificationReceiptVerifier {
     try validateDisplay(receipt, gate: gate)
     try validateInput(receipt, gate: gate)
     try validateAudio(receipt, gate: gate)
+    try validateGuestTools(receipt, gate: gate)
+    try validateCamera(receipt, gate: gate)
     try validateTimings(receipt)
     guard let qualificationStartedAt = timestamp(receipt.qualificationStartedAt),
       let qualificationCompletedAt = timestamp(receipt.qualificationCompletedAt),
@@ -478,6 +513,60 @@ public enum DoryARMVirtQualificationReceiptVerifier {
     }
   }
 
+  private static func validateGuestTools(
+    _ receipt: DoryARMVirtQualificationReceipt,
+    gate: DoryARMVirtCompatibilityGate
+  ) throws {
+    guard let guestTools = gate.guestTools else {
+      guard receipt.guestToolsMediaByteCount == nil,
+        receipt.guestToolsMediaSHA256 == nil
+      else {
+        throw DoryARMVirtQualificationReceiptError.invalidField("unexpectedGuestTools")
+      }
+      return
+    }
+    guard receipt.guestToolsMediaByteCount == guestTools.byteCount,
+      receipt.guestToolsMediaSHA256 == guestTools.sha256
+    else {
+      throw DoryARMVirtQualificationReceiptError.invalidField("guestTools")
+    }
+  }
+
+  private static func validateCamera(
+    _ receipt: DoryARMVirtQualificationReceipt,
+    gate: DoryARMVirtCompatibilityGate
+  ) throws {
+    guard let camera = gate.camera else {
+      guard receipt.cameraUSBBusID == nil,
+        receipt.cameraUSBDeviceID == nil,
+        receipt.cameraUSBVendorID == nil,
+        receipt.cameraUSBProductID == nil,
+        receipt.cameraWidthPixels == nil,
+        receipt.cameraHeightPixels == nil,
+        receipt.cameraHostFrameRequestCount == nil,
+        receipt.cameraJPEGByteCount == nil,
+        receipt.cameraDeviceFaultCount == nil
+      else {
+        throw DoryARMVirtQualificationReceiptError.invalidField("unexpectedCamera")
+      }
+      return
+    }
+    let expectedDeviceID = UInt32(camera.busNumber) << 16 | UInt32(camera.deviceNumber)
+    guard receipt.cameraUSBBusID == camera.busID,
+      receipt.cameraUSBDeviceID == expectedDeviceID,
+      receipt.cameraUSBVendorID == camera.vendorID,
+      receipt.cameraUSBProductID == camera.productID,
+      receipt.cameraWidthPixels == camera.widthPixels,
+      receipt.cameraHeightPixels == camera.heightPixels,
+      receipt.cameraHostFrameRequestCount.map({ $0 >= camera.minimumHostFrameRequestCount })
+        == true,
+      receipt.cameraJPEGByteCount.map({ $0 >= camera.minimumJPEGByteCount }) == true,
+      receipt.cameraDeviceFaultCount == 0
+    else {
+      throw DoryARMVirtQualificationReceiptError.invalidField("camera")
+    }
+  }
+
   private static func validateSnapshot(
     _ receipt: DoryARMVirtQualificationReceipt,
     gate: DoryARMVirtCompatibilityGate
@@ -570,6 +659,10 @@ public enum DoryARMVirtQualificationReceiptVerifier {
     "audioPlaybackByteCount", "audioCaptureByteCount",
     "audioCompletedPlaybackPeriodCount", "audioCompletedCapturePeriodCount",
     "audioDeviceFaultCount",
+    "guestToolsMediaByteCount", "guestToolsMediaSHA256",
+    "cameraUSBBusID", "cameraUSBDeviceID", "cameraUSBVendorID", "cameraUSBProductID",
+    "cameraWidthPixels", "cameraHeightPixels",
+    "cameraHostFrameRequestCount", "cameraJPEGByteCount", "cameraDeviceFaultCount",
   ]
   private static let requiredKeys: Set<String> = [
     "schemaVersion", "machineABIIdentity", "firmwareABIIdentity", "executionEngineIdentity",
