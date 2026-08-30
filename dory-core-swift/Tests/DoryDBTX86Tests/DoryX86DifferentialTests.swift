@@ -124,4 +124,40 @@ import Testing
       }
     #endif
   }
+
+  @Test func nativeCarryArithmeticMatchesX86CarryAndBorrowConventions() throws {
+    #if arch(arm64)
+      let cases: [([UInt8], UInt64, UInt64, Bool)] = [
+        ([0x48, 0x11, 0xD8], UInt64.max, 0, false),
+        ([0x48, 0x11, 0xD8], UInt64.max, 0, true),
+        ([0x48, 0x11, 0xD8], 0x7FFF_FFFF_FFFF_FFFF, 0, true),
+        ([0x48, 0x19, 0xD8], 0, 0, false),
+        ([0x48, 0x19, 0xD8], 0, 0, true),
+        ([0x48, 0x19, 0xD8], 0x8000_0000_0000_0000, 0, true),
+        ([0x11, 0xD8], 0xFFFF_FFFF, 0, true),
+        ([0x19, 0xD8], 0, 0, true),
+      ]
+      for (index, testCase) in cases.enumerated() {
+        let (bytes, rax, rbx, carry) = testCase
+        let address = UInt64(0x8000 + index * 0x10)
+        let memory = DoryX86ByteArrayMemory(baseAddress: address, bytes: bytes)
+        var flags: DoryX86RFLAGS = [.reservedOne, .direction, .interruptEnable]
+        if carry { flags.insert(.carry) }
+        let state = try DoryX86ArchitecturalState(
+          registers: .init(rax: rax, rbx: rbx),
+          rip: address,
+          rflags: flags,
+          cs: .init(selector: 0, attributes: 0xA09A, limit: .max)
+        )
+
+        let result = try DoryX86DifferentialHarness().compare(
+          bytes: bytes,
+          initialState: state,
+          memory: memory,
+          mode: .long64
+        )
+        #expect(result.agrees, "carry case \(index) diverged")
+      }
+    #endif
+  }
 }

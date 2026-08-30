@@ -153,8 +153,6 @@ public struct DoryARM64BaselineEmitter: Sendable {
     into words: inout [UInt32]
   ) -> Bool {
     guard
-      operation != .addWithCarry,
-      operation != .subtractWithBorrow,
       case .register(let target) = destination,
       target.bank == "x86.gpr",
       target.index < 16,
@@ -169,8 +167,16 @@ public struct DoryARM64BaselineEmitter: Sendable {
     case .add:
       words.append(encodeAddSubtractSetFlags(add: true, is64Bit: is64Bit, 9, 10, 11))
       arithmetic = true
+    case .addWithCarry:
+      emitARMCarryFromX86(inverted: false, into: &words)
+      words.append(encodeAddSubtractCarrySetFlags(add: true, is64Bit: is64Bit, 9, 10, 11))
+      arithmetic = true
     case .subtract, .compare:
       words.append(encodeAddSubtractSetFlags(add: false, is64Bit: is64Bit, 9, 10, 11))
+      arithmetic = true
+    case .subtractWithBorrow:
+      emitARMCarryFromX86(inverted: true, into: &words)
+      words.append(encodeAddSubtractCarrySetFlags(add: false, is64Bit: is64Bit, 9, 10, 11))
       arithmetic = true
     case .and, .test:
       words.append(encodeLogical(.andSetFlags, is64Bit: is64Bit, 9, 10, 11))
@@ -183,8 +189,6 @@ public struct DoryARM64BaselineEmitter: Sendable {
       words.append(encodeLogical(.xor, is64Bit: is64Bit, 9, 10, 11))
       words.append(encodeLogical(.andSetFlags, is64Bit: is64Bit, 11, 11, 31))
       arithmetic = false
-    case .addWithCarry, .subtractWithBorrow:
-      return false
     }
 
     if writesDestination {
@@ -193,12 +197,21 @@ public struct DoryARM64BaselineEmitter: Sendable {
       )
     }
     emitX86ArithmeticFlags(
-      subtraction: operation == .subtract || operation == .compare,
+      subtraction: operation == .subtract || operation == .subtractWithBorrow
+        || operation == .compare,
       includesAuxiliaryCarry: arithmetic,
       resultRegister: 11,
       into: &words
     )
     return true
+  }
+
+  private func emitARMCarryFromX86(inverted: Bool, into words: inout [UInt32]) {
+    words.append(encodeLoad64(register: 12, base: 0, byteOffset: Self.rflagsOffset))
+    emitImmediate(1, register: 15, into: &words)
+    emitFlag(DoryX86RFLAGS.carry, from: 12, into: 12, words: &words)
+    if inverted { invertBoolean(12, words: &words) }
+    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, 12, 15, 31))
   }
 
   private func load(
@@ -539,6 +552,23 @@ public struct DoryARM64BaselineEmitter: Sendable {
       case (true, false): 0x2B00_0000
       case (false, true): 0xEB00_0000
       case (false, false): 0x6B00_0000
+      }
+    return base | right << 16 | left << 5 | destination
+  }
+
+  private func encodeAddSubtractCarrySetFlags(
+    add: Bool,
+    is64Bit: Bool,
+    _ left: UInt32,
+    _ right: UInt32,
+    _ destination: UInt32
+  ) -> UInt32 {
+    let base: UInt32 =
+      switch (add, is64Bit) {
+      case (true, true): 0xBA00_0000
+      case (true, false): 0x3A00_0000
+      case (false, true): 0xFA00_0000
+      case (false, false): 0x7A00_0000
       }
     return base | right << 16 | left << 5 | destination
   }
