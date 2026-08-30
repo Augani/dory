@@ -2194,7 +2194,7 @@ struct MachineManagerResolvedPlanIntegrationTests {
                 RawHVLinuxMachineBackend.backendDescriptor.implementationIdentifier,
             backendRuntimeBuildIdentifier: runtime,
             virtualHardwareABIVersion: request.definition.virtualHardwareABIVersion,
-            rawHVVirtualHardwareTopology: try DoryRawHVVirtualHardwareTopologyPlanner.resolve(
+            armVirtTopology: try DoryARMVirtV1TopologyPlanner.resolve(
                 definition: request.definition,
                 resolvedDevices: devices
             ),

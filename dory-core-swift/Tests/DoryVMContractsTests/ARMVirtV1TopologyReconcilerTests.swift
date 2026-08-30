@@ -1,7 +1,7 @@
 import Testing
 @testable import DoryVMContracts
 
-@Suite struct RawHVVirtualHardwareTopologyReconcilerTests {
+@Suite struct ARMVirtV1TopologyReconcilerTests {
     @Test func firstAllocationUsesFixedSlotsAndLowestFreeRangeSlotsDeterministically() throws {
         let requests = try [
             request("share.z", .directoryShare),
@@ -15,7 +15,7 @@ import Testing
             request("usb.primary", .usbController),
         ]
 
-        let topology = try DoryRawHVVirtualHardwareTopologyReconciler.reconcile(
+        let topology = try DoryARMVirtV1TopologyReconciler.reconcile(
             requestedDevices: requests
         )
         #expect(assignments(topology) == [
@@ -30,7 +30,7 @@ import Testing
             "usb.primary": 30,
         ])
 
-        let reordered = try DoryRawHVVirtualHardwareTopologyReconciler.reconcile(
+        let reordered = try DoryARMVirtV1TopologyReconciler.reconcile(
             requestedDevices: requests.reversed()
         )
         #expect(reordered == topology)
@@ -38,7 +38,7 @@ import Testing
     }
 
     @Test func addAndRemoveNeverRenumberSurvivorsAndReuseOnlyVacatedSlots() throws {
-        let previous = try DoryRawHVVirtualHardwareTopologyReconciler.reconcile(
+        let previous = try DoryARMVirtV1TopologyReconciler.reconcile(
             requestedDevices: [
                 request("net.alpha", .network),
                 request("net.beta", .network),
@@ -57,7 +57,7 @@ import Testing
             "share.beta": 21,
         ])
 
-        let reconciled = try DoryRawHVVirtualHardwareTopologyReconciler.reconcile(
+        let reconciled = try DoryARMVirtV1TopologyReconciler.reconcile(
             requestedDevices: [
                 request("net.beta", .network),
                 request("net.gamma", .network),
@@ -83,13 +83,13 @@ import Testing
     }
 
     @Test func fixedSingletonReplacementUsesItsABIIdentityWithoutMovingOtherDevices() throws {
-        let previous = try DoryRawHVVirtualHardwareTopologyReconciler.reconcile(
+        let previous = try DoryARMVirtV1TopologyReconciler.reconcile(
             requestedDevices: [
                 request("graphics.old", .graphics),
                 request("net.primary", .network),
             ]
         )
-        let reconciled = try DoryRawHVVirtualHardwareTopologyReconciler.reconcile(
+        let reconciled = try DoryARMVirtV1TopologyReconciler.reconcile(
             requestedDevices: [
                 request("graphics.new", .graphics),
                 request("net.primary", .network),
@@ -102,8 +102,8 @@ import Testing
 
     @Test func rejectsLogicalIDRoleMutation() throws {
         let logicalID = try DoryVirtualDeviceID("device.stable")
-        let previous = try DoryRawHVVirtualHardwareTopologyReconciler.reconcile(
-            requestedDevices: [DoryRawHVVirtualDeviceRequest(logicalID: logicalID, role: .network)]
+        let previous = try DoryARMVirtV1TopologyReconciler.reconcile(
+            requestedDevices: [DoryARMVirtV1DeviceRequest(logicalID: logicalID, role: .network)]
         )
 
         #expect(throws: DoryVMContractError.roleMutation(
@@ -111,9 +111,9 @@ import Testing
             previous: .network,
             requested: .directoryShare
         )) {
-            try DoryRawHVVirtualHardwareTopologyReconciler.reconcile(
+            try DoryARMVirtV1TopologyReconciler.reconcile(
                 requestedDevices: [
-                    DoryRawHVVirtualDeviceRequest(logicalID: logicalID, role: .directoryShare),
+                    DoryARMVirtV1DeviceRequest(logicalID: logicalID, role: .directoryShare),
                 ],
                 previousTopology: previous
             )
@@ -123,24 +123,24 @@ import Testing
     @Test func rejectsDuplicateIDsAndEveryRoleCapacityOverflow() throws {
         let duplicate = try request("net.same", .network)
         #expect(throws: DoryVMContractError.duplicateLogicalDeviceID(duplicate.logicalID)) {
-            try DoryRawHVVirtualHardwareTopologyReconciler.reconcile(
+            try DoryARMVirtV1TopologyReconciler.reconcile(
                 requestedDevices: [duplicate, duplicate]
             )
         }
 
         let graphics = try (0..<2).map { try request("graphics.\($0)", .graphics) }
         #expect(throws: DoryVMContractError.roleCapacityExceeded(role: .graphics, maximum: 1)) {
-            try DoryRawHVVirtualHardwareTopologyReconciler.reconcile(requestedDevices: graphics)
+            try DoryARMVirtV1TopologyReconciler.reconcile(requestedDevices: graphics)
         }
 
         let networks = try (0..<5).map { try request("net.\($0)", .network) }
         #expect(throws: DoryVMContractError.roleCapacityExceeded(role: .network, maximum: 4)) {
-            try DoryRawHVVirtualHardwareTopologyReconciler.reconcile(requestedDevices: networks)
+            try DoryARMVirtV1TopologyReconciler.reconcile(requestedDevices: networks)
         }
 
         let shares = try (0..<11).map { try request("share.\($0)", .directoryShare) }
         #expect(throws: DoryVMContractError.roleCapacityExceeded(role: .directoryShare, maximum: 10)) {
-            try DoryRawHVVirtualHardwareTopologyReconciler.reconcile(requestedDevices: shares)
+            try DoryARMVirtV1TopologyReconciler.reconcile(requestedDevices: shares)
         }
 
         let storage = try (0..<9).map {
@@ -150,19 +150,19 @@ import Testing
             )
         }
         #expect(throws: DoryVMContractError.auxiliaryStorageCapacityExceeded(maximum: 8)) {
-            try DoryRawHVVirtualHardwareTopologyReconciler.reconcile(requestedDevices: storage)
+            try DoryARMVirtV1TopologyReconciler.reconcile(requestedDevices: storage)
         }
     }
 
     private func request(
         _ logicalID: String,
         _ role: DoryVirtualDeviceRole
-    ) throws -> DoryRawHVVirtualDeviceRequest {
-        try DoryRawHVVirtualDeviceRequest(logicalID: logicalID, role: role)
+    ) throws -> DoryARMVirtV1DeviceRequest {
+        try DoryARMVirtV1DeviceRequest(logicalID: logicalID, role: role)
     }
 
     private func assignments(
-        _ topology: DoryRawHVVirtualHardwareTopology
+        _ topology: DoryARMVirtV1Topology
     ) -> [String: Int] {
         Dictionary(uniqueKeysWithValues: topology.occupiedSlots.map {
             ($0.logicalID.rawValue, $0.mmioSlot)

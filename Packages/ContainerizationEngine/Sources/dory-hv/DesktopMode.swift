@@ -1013,7 +1013,7 @@ enum DesktopMode {
         var resolvedPlanRevision: UInt64? = nil
         var resolvedDevices: DoryVirtualMachineDeviceCapabilityRequest?
         var resolvedPortForwards: [DoryVMPortForward]?
-        var rawHVVirtualHardwareTopology: DoryRawHVVirtualHardwareTopology?
+        var armVirtTopology: DoryARMVirtV1Topology?
         var resolvedSystemDiskLogicalID: DoryVirtualDeviceID? = nil
         var displayPresentation: DoryMachineDisplayPresentation = .windowed
 
@@ -1204,7 +1204,7 @@ enum DesktopMode {
     @MainActor
     private final class Controller: NSObject, NSApplicationDelegate, NSWindowDelegate {
         private struct MaterializedVirtioBackend {
-            let request: DoryRawHVVirtualDeviceRequest
+            let request: DoryARMVirtV1DeviceRequest
             let backend: any VirtioDeviceBackend
         }
 
@@ -1263,7 +1263,7 @@ enum DesktopMode {
             let virtualHardwareAttachmentMode = try RawHVVirtualHardwareAttachmentPlan.launchMode(
                 diskAuthority: configuration.rootDisk.virtualHardwareDiskAuthorityKind,
                 bootAuthority: configuration.rawHVBootAuthorityKind,
-                topology: configuration.rawHVVirtualHardwareTopology,
+                topology: configuration.armVirtTopology,
                 resolvedGraphics: configuration.resolvedGraphics,
                 resolvedDevices: configuration.resolvedDevices,
                 resolvedPortForwards: configuration.resolvedPortForwards,
@@ -1803,7 +1803,7 @@ enum DesktopMode {
                     }
                     for entry in shareBackends {
                         materialized.append(MaterializedVirtioBackend(
-                            request: DoryRawHVVirtualDeviceRequest(
+                            request: DoryARMVirtV1DeviceRequest(
                                 logicalID: try DoryVirtualDeviceID.derived(
                                     namespace: .directoryShare,
                                     stableID: entry.share.tag
@@ -1820,7 +1820,7 @@ enum DesktopMode {
                         )
                     }
                     materialized.append(MaterializedVirtioBackend(
-                        request: DoryRawHVVirtualDeviceRequest(
+                        request: DoryARMVirtV1DeviceRequest(
                             logicalID: try DoryVirtualDeviceID.derived(
                                 namespace: .network,
                                 stableID: networkInterface.id
@@ -1829,7 +1829,7 @@ enum DesktopMode {
                         ),
                         backend: network
                     ))
-                    guard let topology = configuration.rawHVVirtualHardwareTopology else {
+                    guard let topology = configuration.armVirtTopology else {
                         throw VMError.invalidConfiguration(
                             "resolved RawHV preflight lost its durable topology"
                         )
@@ -2913,7 +2913,7 @@ enum DesktopMode {
 
         private static func singletonMaterialization(
             role: DoryVirtualDeviceRole,
-            authorizedDevices: [DoryRawHVVirtualDeviceRequest],
+            authorizedDevices: [DoryARMVirtV1DeviceRequest],
             backend: any VirtioDeviceBackend
         ) throws -> MaterializedVirtioBackend {
             let matches = authorizedDevices.filter { $0.role == role }

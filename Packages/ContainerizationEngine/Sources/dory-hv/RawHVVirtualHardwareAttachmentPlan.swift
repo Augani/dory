@@ -25,7 +25,7 @@ enum RawHVVirtualHardwareAttachmentMode: Equatable, Sendable {
 }
 
 struct RawHVVirtualHardwareAttachmentAssignment: Equatable, Sendable {
-    let request: DoryRawHVVirtualDeviceRequest
+    let request: DoryARMVirtV1DeviceRequest
     let mmioSlot: Int
 }
 
@@ -38,7 +38,7 @@ enum RawHVVirtualHardwareAttachmentPlan {
     static func launchMode(
         diskAuthority: RawHVVirtualHardwareDiskAuthorityKind,
         bootAuthority: RawHVVirtualHardwareBootAuthorityKind,
-        topology: DoryRawHVVirtualHardwareTopology?,
+        topology: DoryARMVirtV1Topology?,
         resolvedGraphics: DoryGraphicsAccelerationLevel?,
         resolvedDevices: DoryVirtualMachineDeviceCapabilityRequest?,
         resolvedPortForwards: [DoryVMPortForward]?,
@@ -90,9 +90,9 @@ enum RawHVVirtualHardwareAttachmentPlan {
         resolvedDevices: DoryVirtualMachineDeviceCapabilityRequest,
         networkStableID: String,
         directoryShareStableIDs: [String]
-    ) throws -> [DoryRawHVVirtualDeviceRequest] {
+    ) throws -> [DoryARMVirtV1DeviceRequest] {
         var requests = [
-            DoryRawHVVirtualDeviceRequest(
+            DoryARMVirtV1DeviceRequest(
                 logicalID: systemDiskLogicalID,
                 role: .systemDisk
             ),
@@ -110,7 +110,7 @@ enum RawHVVirtualHardwareAttachmentPlan {
         if resolvedDevices.audioInput || resolvedDevices.audioOutput {
             requests.append(try canonicalFixedRequest(.audio))
         }
-        requests.append(DoryRawHVVirtualDeviceRequest(
+        requests.append(DoryARMVirtV1DeviceRequest(
             logicalID: try DoryVirtualDeviceID.derived(
                 namespace: .network,
                 stableID: networkStableID
@@ -118,7 +118,7 @@ enum RawHVVirtualHardwareAttachmentPlan {
             role: .network
         ))
         for stableID in directoryShareStableIDs {
-            requests.append(DoryRawHVVirtualDeviceRequest(
+            requests.append(DoryARMVirtV1DeviceRequest(
                 logicalID: try DoryVirtualDeviceID.derived(
                     namespace: .directoryShare,
                     stableID: stableID
@@ -131,10 +131,10 @@ enum RawHVVirtualHardwareAttachmentPlan {
 
     static func canonicalFixedRequest(
         _ role: DoryVirtualDeviceRole
-    ) throws -> DoryRawHVVirtualDeviceRequest {
+    ) throws -> DoryARMVirtV1DeviceRequest {
         switch role {
         case .graphics, .entropy, .balloon, .vsock, .keyboard, .pointer, .audio:
-            return try DoryRawHVVirtualDeviceRequest(
+            return try DoryARMVirtV1DeviceRequest(
                 logicalID: "rawhv-\(role.rawValue)",
                 role: role
             )
@@ -145,10 +145,10 @@ enum RawHVVirtualHardwareAttachmentPlan {
     }
 
     static func assignments(
-        topology: DoryRawHVVirtualHardwareTopology,
-        materializedDevices: [DoryRawHVVirtualDeviceRequest]
+        topology: DoryARMVirtV1Topology,
+        materializedDevices: [DoryARMVirtV1DeviceRequest]
     ) throws -> [RawHVVirtualHardwareAttachmentAssignment] {
-        var materializedByID = [DoryVirtualDeviceID: DoryRawHVVirtualDeviceRequest]()
+        var materializedByID = [DoryVirtualDeviceID: DoryARMVirtV1DeviceRequest]()
         for request in materializedDevices {
             guard materializedByID.updateValue(request, forKey: request.logicalID) == nil else {
                 throw RawHVVirtualHardwareAttachmentPlanError.duplicateMaterializedDevice(
@@ -157,14 +157,14 @@ enum RawHVVirtualHardwareAttachmentPlan {
             }
         }
         let authorized = topology.occupiedSlots.map {
-            DoryRawHVVirtualDeviceRequest(logicalID: $0.logicalID, role: $0.role)
+            DoryARMVirtV1DeviceRequest(logicalID: $0.logicalID, role: $0.role)
         }
         guard Set(materializedDevices) == Set(authorized) else {
             throw RawHVVirtualHardwareAttachmentPlanError.materializedDeviceSetMismatch
         }
         return topology.occupiedSlots.map {
             RawHVVirtualHardwareAttachmentAssignment(
-                request: DoryRawHVVirtualDeviceRequest(
+                request: DoryARMVirtV1DeviceRequest(
                     logicalID: $0.logicalID,
                     role: $0.role
                 ),

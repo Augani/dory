@@ -5,14 +5,14 @@ import Testing
 
 @Suite struct RawHVVirtualHardwareAttachmentPlanTests {
     @Test func assignmentsFollowAuthorizedSlotsNotMaterializationOrder() throws {
-        let topology = try DoryRawHVVirtualHardwareTopology(occupiedSlots: [
+        let topology = try DoryARMVirtV1Topology(occupiedSlots: [
             try .init(logicalID: "system", role: .systemDisk, mmioSlot: 0),
             try .init(logicalID: "graphics", role: .graphics, mmioSlot: 1),
             try .init(logicalID: "share-b", role: .directoryShare, mmioSlot: 23),
             try .init(logicalID: "share-a", role: .directoryShare, mmioSlot: 27),
         ])
         let materialized = topology.occupiedSlots.reversed().map {
-            DoryRawHVVirtualDeviceRequest(logicalID: $0.logicalID, role: $0.role)
+            DoryARMVirtV1DeviceRequest(logicalID: $0.logicalID, role: $0.role)
         }
 
         let assignments = try RawHVVirtualHardwareAttachmentPlan.assignments(
@@ -26,15 +26,15 @@ import Testing
     }
 
     @Test func missingSubstitutedAndDuplicateFunctionsFailClosed() throws {
-        let topology = try DoryRawHVVirtualHardwareTopology(occupiedSlots: [
+        let topology = try DoryARMVirtV1Topology(occupiedSlots: [
             try .init(logicalID: "system", role: .systemDisk, mmioSlot: 0),
             try .init(logicalID: "network", role: .network, mmioSlot: 8),
         ])
-        let system = DoryRawHVVirtualDeviceRequest(
+        let system = DoryARMVirtV1DeviceRequest(
             logicalID: try DoryVirtualDeviceID("system"),
             role: .systemDisk
         )
-        let network = DoryRawHVVirtualDeviceRequest(
+        let network = DoryARMVirtV1DeviceRequest(
             logicalID: try DoryVirtualDeviceID("network"),
             role: .network
         )
@@ -55,7 +55,7 @@ import Testing
                 topology: topology,
                 materializedDevices: [
                     system,
-                    DoryRawHVVirtualDeviceRequest(
+                    DoryARMVirtV1DeviceRequest(
                         logicalID: network.logicalID,
                         role: .directoryShare
                     ),
@@ -73,7 +73,7 @@ import Testing
             networkStableID: try #require(devices.networkInterface).id,
             directoryShareStableIDs: ["workspace"]
         )
-        let topology = try DoryRawHVVirtualHardwareTopologyReconciler.reconcile(
+        let topology = try DoryARMVirtV1TopologyReconciler.reconcile(
             requestedDevices: expected
         )
 
@@ -116,7 +116,7 @@ import Testing
             networkStableID: try #require(devices.networkInterface).id,
             directoryShareStableIDs: []
         )
-        let staleDiskTopology = try DoryRawHVVirtualHardwareTopologyReconciler.reconcile(
+        let staleDiskTopology = try DoryARMVirtV1TopologyReconciler.reconcile(
             requestedDevices: staleDiskDevices
         )
         #expect(throws: RawHVVirtualHardwareAttachmentPlanError.materializedDeviceSetMismatch) {
@@ -141,11 +141,11 @@ import Testing
         let graphicsIndex = try #require(
             substitutedFixedDevices.firstIndex(where: { $0.role == .graphics })
         )
-        substitutedFixedDevices[graphicsIndex] = try DoryRawHVVirtualDeviceRequest(
+        substitutedFixedDevices[graphicsIndex] = try DoryARMVirtV1DeviceRequest(
             logicalID: "substituted-graphics",
             role: .graphics
         )
-        let substitutedFixedTopology = try DoryRawHVVirtualHardwareTopologyReconciler.reconcile(
+        let substitutedFixedTopology = try DoryARMVirtV1TopologyReconciler.reconcile(
             requestedDevices: substitutedFixedDevices
         )
         #expect(throws: RawHVVirtualHardwareAttachmentPlanError.materializedDeviceSetMismatch) {
@@ -182,7 +182,7 @@ import Testing
             networkStableID: try #require(devices.networkInterface).id,
             directoryShareStableIDs: []
         )
-        let topology = try DoryRawHVVirtualHardwareTopologyReconciler.reconcile(
+        let topology = try DoryARMVirtV1TopologyReconciler.reconcile(
             requestedDevices: expected
         )
         #expect(throws: RawHVVirtualHardwareAttachmentPlanError.incompleteLaunchAuthority) {
@@ -256,7 +256,7 @@ import Testing
             networkStableID: try #require(devices.networkInterface).id,
             directoryShareStableIDs: []
         )
-        let topology = try DoryRawHVVirtualHardwareTopologyReconciler.reconcile(
+        let topology = try DoryARMVirtV1TopologyReconciler.reconcile(
             requestedDevices: expected
         )
 

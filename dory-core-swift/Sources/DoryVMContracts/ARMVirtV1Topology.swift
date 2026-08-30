@@ -1,20 +1,6 @@
 import CryptoKit
 import Foundation
 
-public enum DoryVMContractHardwareABIVersion: String, Codable, Sendable, Hashable {
-    case rawHVARM64V1 = "raw-hv-arm64-v1"
-}
-
-public enum DoryVMContractBackend: String, Codable, Sendable, Hashable {
-    case rawHV = "raw-hv"
-    case virtualizationFramework = "virtualization-framework"
-}
-
-public enum DoryVMContractArchitecture: String, Codable, Sendable, Hashable {
-    case arm64
-    case x86_64 = "x86-64"
-}
-
 /// A guest-stable function. Display count is deliberately absent: ABI v1 represents every display
 /// through the one `graphics` device instead of allocating one MMIO function per scanout.
 public enum DoryVirtualDeviceRole: String, CaseIterable, Codable, Sendable, Hashable {
@@ -36,9 +22,7 @@ public enum DoryVirtualDeviceRole: String, CaseIterable, Codable, Sendable, Hash
 public enum DoryVMContractError: Error, Equatable, Sendable, CustomStringConvertible {
     case invalidLogicalDeviceID(String)
     case unsupportedSchemaVersion(UInt32)
-    case incompatibleABI(DoryVMContractHardwareABIVersion)
-    case incompatibleBackend(DoryVMContractBackend)
-    case incompatibleArchitecture(DoryVMContractArchitecture)
+    case incompatibleMachineABI(String)
     case unknownFields(type: String, fields: [String])
     case nonCanonicalOccupiedSlotOrder
     case invalidDerivationStableIDLength(actual: Int, maximum: Int)
@@ -63,12 +47,8 @@ public enum DoryVMContractError: Error, Equatable, Sendable, CustomStringConvert
             "invalid logical virtual-device ID: \(value)"
         case .unsupportedSchemaVersion(let version):
             "unsupported virtual-hardware topology schema version: \(version)"
-        case .incompatibleABI(let abi):
-            "incompatible virtual-hardware ABI: \(abi.rawValue)"
-        case .incompatibleBackend(let backend):
-            "incompatible virtualization backend: \(backend.rawValue)"
-        case .incompatibleArchitecture(let architecture):
-            "incompatible guest architecture: \(architecture.rawValue)"
+        case .incompatibleMachineABI(let identity):
+            "incompatible machine ABI: \(identity)"
         case .unknownFields(let type, let fields):
             "unknown fields in \(type): \(fields.joined(separator: ", "))"
         case .nonCanonicalOccupiedSlotOrder:
@@ -189,9 +169,9 @@ public struct DoryVirtualDeviceID: Codable, Sendable, Hashable, Comparable, Cust
     }
 }
 
-/// The complete RawHV ARM64 ABI-v1 slot policy. Slot 31 is intentionally absent from every role
+/// The complete DoryARMVirt-v1 slot policy. Slot 31 is intentionally absent from every role
 /// range so it remains a hard reservation rather than an accidentally allocatable future device.
-public enum DoryRawHVARM64ABIV1SlotPolicy {
+public enum DoryARMVirtV1SlotPolicy {
     public static let slotCount = 32
     public static let maximumOccupiedSlots = 31
     public static let reservedSlot = 31
@@ -258,7 +238,7 @@ public enum DoryRawHVARM64ABIV1SlotPolicy {
     }
 }
 
-public struct DoryRawHVVirtualDeviceSlot: Codable, Sendable, Hashable {
+public struct DoryARMVirtV1DeviceSlot: Codable, Sendable, Hashable {
     public let logicalID: DoryVirtualDeviceID
     public let role: DoryVirtualDeviceRole
     public let mmioSlot: Int
@@ -268,7 +248,7 @@ public struct DoryRawHVVirtualDeviceSlot: Codable, Sendable, Hashable {
         role: DoryVirtualDeviceRole,
         mmioSlot: Int
     ) throws {
-        try DoryRawHVARM64ABIV1SlotPolicy.validate(role: role, slot: mmioSlot)
+        try DoryARMVirtV1SlotPolicy.validate(role: role, slot: mmioSlot)
         self.logicalID = logicalID
         self.role = role
         self.mmioSlot = mmioSlot
@@ -292,7 +272,7 @@ public struct DoryRawHVVirtualDeviceSlot: Codable, Sendable, Hashable {
         try rejectUnknownDoryVMContractFields(
             in: decoder,
             allowed: Set(CodingKeys.allCases.map(\.rawValue)),
-            type: "DoryRawHVVirtualDeviceSlot"
+            type: "DoryARMVirtV1DeviceSlot"
         )
         let container = try decoder.container(keyedBy: CodingKeys.self)
         try self.init(
@@ -310,49 +290,40 @@ public struct DoryRawHVVirtualDeviceSlot: Codable, Sendable, Hashable {
     }
 }
 
-/// Versioned, self-validating RawHV ARM64 virtual-hardware topology. `occupiedSlots` is stored in
+/// Versioned, self-validating DoryARMVirt-v1 topology. `occupiedSlots` is stored in
 /// slot order, so equality, hashing, encoded bytes, and fingerprints do not depend on caller order.
-public struct DoryRawHVVirtualHardwareTopology: Codable, Sendable, Hashable {
-    public static let currentSchemaVersion: UInt32 = 1
-    public static let canonicalFingerprintEncodingVersion: UInt16 = 1
+public struct DoryARMVirtV1Topology: Codable, Sendable, Hashable {
+    public static let currentSchemaVersion: UInt32 = 2
+    public static let canonicalFingerprintEncodingVersion: UInt16 = 2
+    public static let requiredMachineABIIdentity = "dory.armvirt@1"
 
     public let schemaVersion: UInt32
-    public let abiVersion: DoryVMContractHardwareABIVersion
-    public let backend: DoryVMContractBackend
-    public let architecture: DoryVMContractArchitecture
-    public let occupiedSlots: [DoryRawHVVirtualDeviceSlot]
+    public let machineABIIdentity: String
+    public let occupiedSlots: [DoryARMVirtV1DeviceSlot]
 
     public init(
         schemaVersion: UInt32 = Self.currentSchemaVersion,
-        abiVersion: DoryVMContractHardwareABIVersion = .rawHVARM64V1,
-        backend: DoryVMContractBackend = .rawHV,
-        architecture: DoryVMContractArchitecture = .arm64,
-        occupiedSlots: [DoryRawHVVirtualDeviceSlot]
+        machineABIIdentity: String = Self.requiredMachineABIIdentity,
+        occupiedSlots: [DoryARMVirtV1DeviceSlot]
     ) throws {
         guard schemaVersion == Self.currentSchemaVersion else {
             throw DoryVMContractError.unsupportedSchemaVersion(schemaVersion)
         }
-        guard abiVersion == .rawHVARM64V1 else {
-            throw DoryVMContractError.incompatibleABI(abiVersion)
+        guard machineABIIdentity == Self.requiredMachineABIIdentity else {
+            throw DoryVMContractError.incompatibleMachineABI(machineABIIdentity)
         }
-        guard backend == .rawHV else {
-            throw DoryVMContractError.incompatibleBackend(backend)
-        }
-        guard architecture == .arm64 else {
-            throw DoryVMContractError.incompatibleArchitecture(architecture)
-        }
-        guard occupiedSlots.count <= DoryRawHVARM64ABIV1SlotPolicy.maximumOccupiedSlots else {
+        guard occupiedSlots.count <= DoryARMVirtV1SlotPolicy.maximumOccupiedSlots else {
             throw DoryVMContractError.tooManyDevices(
                 actual: occupiedSlots.count,
-                maximum: DoryRawHVARM64ABIV1SlotPolicy.maximumOccupiedSlots
+                maximum: DoryARMVirtV1SlotPolicy.maximumOccupiedSlots
             )
         }
-        try DoryRawHVARM64ABIV1SlotPolicy.validateRoleCounts(occupiedSlots.map(\.role))
+        try DoryARMVirtV1SlotPolicy.validateRoleCounts(occupiedSlots.map(\.role))
 
         var logicalIDs = Set<DoryVirtualDeviceID>()
         var mmioSlots = Set<Int>()
         for device in occupiedSlots {
-            try DoryRawHVARM64ABIV1SlotPolicy.validate(role: device.role, slot: device.mmioSlot)
+            try DoryARMVirtV1SlotPolicy.validate(role: device.role, slot: device.mmioSlot)
             guard logicalIDs.insert(device.logicalID).inserted else {
                 throw DoryVMContractError.duplicateLogicalDeviceID(device.logicalID)
             }
@@ -362,9 +333,7 @@ public struct DoryRawHVVirtualHardwareTopology: Codable, Sendable, Hashable {
         }
 
         self.schemaVersion = schemaVersion
-        self.abiVersion = abiVersion
-        self.backend = backend
-        self.architecture = architecture
+        self.machineABIIdentity = machineABIIdentity
         self.occupiedSlots = occupiedSlots.sorted(by: Self.deviceOrder)
     }
 
@@ -377,16 +346,16 @@ public struct DoryRawHVVirtualHardwareTopology: Codable, Sendable, Hashable {
     /// Explicit ABI fingerprint stream, independent of JSONEncoder implementation details.
     ///
     /// Layout, all integers big-endian:
-    /// `"DORYVHW\0"[8] | formatVersion:u16 | schemaVersion:u32 | abi:u8 | backend:u8 |
-    /// architecture:u8 | deviceCount:u8 | repeated(slot:u8, role:u8, idLength:u8, id:UTF8)`.
+    /// `"DORYVHW\0"[8] | formatVersion:u16 | schemaVersion:u32 | machineIDLength:u8 |
+    /// machineID:UTF8 | deviceCount:u8 | repeated(slot:u8, role:u8, idLength:u8, id:UTF8)`.
     /// Devices are already sorted by slot and logical IDs are bounded to 64 ASCII bytes.
     public func canonicalFingerprintInput() -> Data {
         var data = Data("DORYVHW\0".utf8)
         data.appendBigEndian(Self.canonicalFingerprintEncodingVersion)
         data.appendBigEndian(schemaVersion)
-        data.append(1) // raw-hv-arm64-v1
-        data.append(1) // raw-hv
-        data.append(1) // arm64
+        let machineIdentity = Array(machineABIIdentity.utf8)
+        data.append(UInt8(machineIdentity.count))
+        data.append(contentsOf: machineIdentity)
         data.append(UInt8(occupiedSlots.count))
         for device in occupiedSlots {
             let logicalID = Array(device.logicalID.rawValue.utf8)
@@ -406,9 +375,7 @@ public struct DoryRawHVVirtualHardwareTopology: Codable, Sendable, Hashable {
 
     private enum CodingKeys: String, CodingKey, CaseIterable {
         case schemaVersion
-        case abiVersion
-        case backend
-        case architecture
+        case machineABIIdentity
         case occupiedSlots
     }
 
@@ -416,11 +383,11 @@ public struct DoryRawHVVirtualHardwareTopology: Codable, Sendable, Hashable {
         try rejectUnknownDoryVMContractFields(
             in: decoder,
             allowed: Set(CodingKeys.allCases.map(\.rawValue)),
-            type: "DoryRawHVVirtualHardwareTopology"
+            type: "DoryARMVirtV1Topology"
         )
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let occupiedSlots = try container.decode(
-            [DoryRawHVVirtualDeviceSlot].self,
+            [DoryARMVirtV1DeviceSlot].self,
             forKey: .occupiedSlots
         )
         guard occupiedSlots == occupiedSlots.sorted(by: Self.deviceOrder) else {
@@ -428,9 +395,7 @@ public struct DoryRawHVVirtualHardwareTopology: Codable, Sendable, Hashable {
         }
         try self.init(
             schemaVersion: container.decode(UInt32.self, forKey: .schemaVersion),
-            abiVersion: container.decode(DoryVMContractHardwareABIVersion.self, forKey: .abiVersion),
-            backend: container.decode(DoryVMContractBackend.self, forKey: .backend),
-            architecture: container.decode(DoryVMContractArchitecture.self, forKey: .architecture),
+            machineABIIdentity: container.decode(String.self, forKey: .machineABIIdentity),
             occupiedSlots: occupiedSlots
         )
     }
@@ -438,15 +403,13 @@ public struct DoryRawHVVirtualHardwareTopology: Codable, Sendable, Hashable {
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(schemaVersion, forKey: .schemaVersion)
-        try container.encode(abiVersion, forKey: .abiVersion)
-        try container.encode(backend, forKey: .backend)
-        try container.encode(architecture, forKey: .architecture)
+        try container.encode(machineABIIdentity, forKey: .machineABIIdentity)
         try container.encode(occupiedSlots, forKey: .occupiedSlots)
     }
 
     private static func deviceOrder(
-        _ lhs: DoryRawHVVirtualDeviceSlot,
-        _ rhs: DoryRawHVVirtualDeviceSlot
+        _ lhs: DoryARMVirtV1DeviceSlot,
+        _ rhs: DoryARMVirtV1DeviceSlot
     ) -> Bool {
         if lhs.mmioSlot != rhs.mmioSlot { return lhs.mmioSlot < rhs.mmioSlot }
         if lhs.role != rhs.role { return lhs.role.rawValue < rhs.role.rawValue }

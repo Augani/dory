@@ -878,7 +878,7 @@ struct DoryResolvedMachinePlanRepositoryTests {
             let migrated = try repository.read(id: plan.machineID)
             #expect(migrated.sourceSchemaVersion == 4)
             #expect(migrated.migrationDisposition == .requiresReplanning)
-            #expect(migrated.rawHVVirtualHardwareTopology == nil)
+            #expect(migrated.armVirtTopology == nil)
             #expect(Set(migrated.validate().map(\.code)) == [.legacyPlanRequiresReplanning])
 
             let start = DoryResolvedMachinePlanStartValidator.revalidate(
@@ -1063,7 +1063,7 @@ struct DoryResolvedMachinePlanRepositoryTests {
         planObject["schemaVersion"] = 4
         planObject["sourceSchemaVersion"] = 4
         planObject["migrationDisposition"] = "current"
-        planObject.removeValue(forKey: "rawHVVirtualHardwareTopology")
+        planObject.removeValue(forKey: "armVirtTopology")
         mutate(&planObject)
         let canonicalPlan = try repositoryCanonicalJSON(planObject)
         return try JSONSerialization.data(
@@ -1128,7 +1128,7 @@ private func supportedPlan() -> DoryResolvedMachinePlan {
         backendImplementationIdentifier: "dory.raw-hv-linux.compatibility.v1",
         backendRuntimeBuildIdentifier: "raw-runtime-1",
         virtualHardwareABIVersion: 1,
-        rawHVVirtualHardwareTopology: supportedRawHVTopology(),
+        armVirtTopology: supportedRawHVTopology(),
         bootMedia: DoryResolvedMachineBootMedia(
             resolverReference: DoryVMResolverReference(
                 namespace: "artifact",
@@ -1193,9 +1193,9 @@ private func supportedPlan() -> DoryResolvedMachinePlan {
     )
 }
 
-private func supportedRawHVTopology() -> DoryRawHVVirtualHardwareTopology {
-    try! DoryRawHVVirtualHardwareTopology(occupiedSlots: [
-        DoryRawHVVirtualDeviceSlot(
+private func supportedRawHVTopology() -> DoryARMVirtV1Topology {
+    try! DoryARMVirtV1Topology(occupiedSlots: [
+        DoryARMVirtV1DeviceSlot(
             logicalID: DoryVirtualDeviceID.derived(
                 namespace: .systemDisk,
                 stableID: "workspace-one-system-disk"
@@ -1203,27 +1203,27 @@ private func supportedRawHVTopology() -> DoryRawHVVirtualHardwareTopology {
             role: .systemDisk,
             mmioSlot: 0
         ),
-        DoryRawHVVirtualDeviceSlot(
+        DoryARMVirtV1DeviceSlot(
             logicalID: "rawhv-graphics",
             role: .graphics,
             mmioSlot: 1
         ),
-        DoryRawHVVirtualDeviceSlot(
+        DoryARMVirtV1DeviceSlot(
             logicalID: "rawhv-entropy",
             role: .entropy,
             mmioSlot: 2
         ),
-        DoryRawHVVirtualDeviceSlot(
+        DoryARMVirtV1DeviceSlot(
             logicalID: "rawhv-balloon",
             role: .balloon,
             mmioSlot: 3
         ),
-        DoryRawHVVirtualDeviceSlot(
+        DoryARMVirtV1DeviceSlot(
             logicalID: "rawhv-vsock",
             role: .vsock,
             mmioSlot: 4
         ),
-        DoryRawHVVirtualDeviceSlot(
+        DoryARMVirtV1DeviceSlot(
             logicalID: DoryVirtualDeviceID.derived(
                 namespace: .network,
                 stableID: "nic0"

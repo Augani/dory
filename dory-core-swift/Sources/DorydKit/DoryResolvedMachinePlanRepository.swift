@@ -575,7 +575,7 @@ public final class DoryResolvedMachinePlanRepository: @unchecked Sendable {
             modern.formUnion(["launchArtifacts", "portForwards"])
         case DoryResolvedMachinePlan.currentSchemaVersion:
             modern.formUnion([
-                "launchArtifacts", "portForwards", "rawHVVirtualHardwareTopology",
+                "launchArtifacts", "portForwards", "armVirtTopology",
             ])
         default:
             return false
@@ -590,7 +590,7 @@ public final class DoryResolvedMachinePlanRepository: @unchecked Sendable {
         guard (2...4).contains(persistedSchemaVersion),
               plan.sourceSchemaVersion == persistedSchemaVersion,
               plan.migrationDisposition == .requiresReplanning,
-              plan.rawHVVirtualHardwareTopology == nil else {
+              plan.armVirtTopology == nil else {
             return false
         }
         var allowed: Set<DoryResolvedMachinePlanValidationCode> = [

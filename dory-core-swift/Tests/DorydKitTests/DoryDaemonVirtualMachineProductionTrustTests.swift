@@ -1806,7 +1806,7 @@ private final class ProductionTrustFixture: @unchecked Sendable {
                 RawHVLinuxMachineBackend.backendDescriptor.implementationIdentifier,
             backendRuntimeBuildIdentifier: runtimeBuildIdentifier,
             virtualHardwareABIVersion: 1,
-            rawHVVirtualHardwareTopology: productionTrustRawHVTopology(),
+            armVirtTopology: productionTrustRawHVTopology(),
             bootMedia: DoryResolvedMachineBootMedia(
                 resolverReference: mediaReference,
                 media: media
@@ -2164,9 +2164,9 @@ private func productionTrustDesktopDevices()
     )
 }
 
-private func productionTrustRawHVTopology() -> DoryRawHVVirtualHardwareTopology {
-    try! DoryRawHVVirtualHardwareTopology(occupiedSlots: [
-        DoryRawHVVirtualDeviceSlot(
+private func productionTrustRawHVTopology() -> DoryARMVirtV1Topology {
+    try! DoryARMVirtV1Topology(occupiedSlots: [
+        DoryARMVirtV1DeviceSlot(
             logicalID: DoryVirtualDeviceID.derived(
                 namespace: .systemDisk,
                 stableID: "qualified-linux-system-disk"
@@ -2174,27 +2174,27 @@ private func productionTrustRawHVTopology() -> DoryRawHVVirtualHardwareTopology 
             role: .systemDisk,
             mmioSlot: 0
         ),
-        DoryRawHVVirtualDeviceSlot(
+        DoryARMVirtV1DeviceSlot(
             logicalID: "rawhv-graphics",
             role: .graphics,
             mmioSlot: 1
         ),
-        DoryRawHVVirtualDeviceSlot(
+        DoryARMVirtV1DeviceSlot(
             logicalID: "rawhv-entropy",
             role: .entropy,
             mmioSlot: 2
         ),
-        DoryRawHVVirtualDeviceSlot(
+        DoryARMVirtV1DeviceSlot(
             logicalID: "rawhv-balloon",
             role: .balloon,
             mmioSlot: 3
         ),
-        DoryRawHVVirtualDeviceSlot(
+        DoryARMVirtV1DeviceSlot(
             logicalID: "rawhv-vsock",
             role: .vsock,
             mmioSlot: 4
         ),
-        DoryRawHVVirtualDeviceSlot(
+        DoryARMVirtV1DeviceSlot(
             logicalID: DoryVirtualDeviceID.derived(
                 namespace: .network,
                 stableID: "nic0"

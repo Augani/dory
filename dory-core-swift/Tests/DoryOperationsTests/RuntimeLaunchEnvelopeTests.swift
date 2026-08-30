@@ -140,7 +140,7 @@ final class RuntimeLaunchEnvelopeTests: XCTestCase {
     func testSystemDiskLogicalIDMustMatchIndependentTopologyIdentity() throws {
         let envelope = makeEnvelope()
         let topologyDisk = try XCTUnwrap(
-            envelope.rawHVVirtualHardwareTopology.occupiedSlots.first {
+            envelope.armVirtTopology.occupiedSlots.first {
                 $0.role == .systemDisk
             }
         )
@@ -571,7 +571,7 @@ final class RuntimeLaunchEnvelopeTests: XCTestCase {
             planRevision: 9,
             executionComponentBuildIdentifier: buildIdentifier,
             virtualHardwareABIVersion: 1,
-            rawHVVirtualHardwareTopology: makeTopology(
+            armVirtTopology: makeTopology(
                 systemDiskLogicalID: topologySystemDiskLogicalID,
                 networkInterface: devices.networkInterface!,
                 graphicsLogicalID: topologyGraphicsLogicalID,
@@ -608,7 +608,7 @@ final class RuntimeLaunchEnvelopeTests: XCTestCase {
             platform: envelope.platform,
             executionComponentBuildIdentifier: envelope.executionComponentBuildIdentifier,
             virtualHardwareABIVersion: envelope.virtualHardwareABIVersion,
-            rawHVVirtualHardwareTopology: envelope.rawHVVirtualHardwareTopology,
+            armVirtTopology: envelope.armVirtTopology,
             graphics: envelope.graphics,
             devices: envelope.devices,
             portForwards: envelope.portForwards,
@@ -632,7 +632,7 @@ final class RuntimeLaunchEnvelopeTests: XCTestCase {
             platform: envelope.platform,
             executionComponentBuildIdentifier: envelope.executionComponentBuildIdentifier,
             virtualHardwareABIVersion: envelope.virtualHardwareABIVersion,
-            rawHVVirtualHardwareTopology: envelope.rawHVVirtualHardwareTopology,
+            armVirtTopology: envelope.armVirtTopology,
             graphics: envelope.graphics,
             devices: envelope.devices,
             portForwards: envelope.portForwards,
@@ -656,7 +656,7 @@ final class RuntimeLaunchEnvelopeTests: XCTestCase {
             platform: platform,
             executionComponentBuildIdentifier: envelope.executionComponentBuildIdentifier,
             virtualHardwareABIVersion: envelope.virtualHardwareABIVersion,
-            rawHVVirtualHardwareTopology: envelope.rawHVVirtualHardwareTopology,
+            armVirtTopology: envelope.armVirtTopology,
             graphics: envelope.graphics,
             devices: envelope.devices,
             portForwards: envelope.portForwards,
@@ -671,34 +671,34 @@ final class RuntimeLaunchEnvelopeTests: XCTestCase {
         networkInterface: DoryVirtualMachineNetworkInterfaceCapabilityRequest,
         graphicsLogicalID: DoryVirtualDeviceID?,
         networkLogicalID: DoryVirtualDeviceID?
-    ) -> DoryRawHVVirtualHardwareTopology {
+    ) -> DoryARMVirtV1Topology {
         let canonicalNetworkLogicalID = try! DoryVirtualDeviceID.derived(
             namespace: .network,
             stableID: networkInterface.id
         )
-        return try! DoryRawHVVirtualHardwareTopologyReconciler.reconcile(
+        return try! DoryARMVirtV1TopologyReconciler.reconcile(
             requestedDevices: [
-                DoryRawHVVirtualDeviceRequest(
+                DoryARMVirtV1DeviceRequest(
                     logicalID: systemDiskLogicalID,
                     role: .systemDisk
                 ),
-                DoryRawHVVirtualDeviceRequest(
+                DoryARMVirtV1DeviceRequest(
                     logicalID: graphicsLogicalID ?? fixedLogicalID(for: .graphics),
                     role: .graphics
                 ),
-                DoryRawHVVirtualDeviceRequest(
+                DoryARMVirtV1DeviceRequest(
                     logicalID: fixedLogicalID(for: .entropy),
                     role: .entropy
                 ),
-                DoryRawHVVirtualDeviceRequest(
+                DoryARMVirtV1DeviceRequest(
                     logicalID: fixedLogicalID(for: .balloon),
                     role: .balloon
                 ),
-                DoryRawHVVirtualDeviceRequest(
+                DoryARMVirtV1DeviceRequest(
                     logicalID: fixedLogicalID(for: .vsock),
                     role: .vsock
                 ),
-                DoryRawHVVirtualDeviceRequest(
+                DoryARMVirtV1DeviceRequest(
                     logicalID: networkLogicalID ?? canonicalNetworkLogicalID,
                     role: .network
                 ),

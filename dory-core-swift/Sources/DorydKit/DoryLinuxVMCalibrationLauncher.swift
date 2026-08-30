@@ -129,7 +129,7 @@ public enum DoryLinuxVMCalibrationLauncher {
         let verdict: String
         let definition: DoryVirtualMachineDefinition
         let devices: DoryVirtualMachineDeviceCapabilityRequest
-        let topology: DoryRawHVVirtualHardwareTopology
+        let topology: DoryARMVirtV1Topology
         let executionResources: RuntimeLaunchEnvelope.RawHVExecutionResources
         let runnerExecutable: ArtifactRecord
         let rendererWorkerExecutable: ArtifactRecord
@@ -357,7 +357,7 @@ public enum DoryLinuxVMCalibrationLauncher {
             throw DoryLinuxVMCalibrationError.definitionRejected
         }
         let devices = DoryDaemonVirtualMachinePlanningCoordinator.devices(for: definition)
-        let topology = try DoryRawHVVirtualHardwareTopologyPlanner.resolve(
+        let topology = try DoryARMVirtV1TopologyPlanner.resolve(
             definition: definition,
             resolvedDevices: devices
         )
@@ -459,7 +459,7 @@ public enum DoryLinuxVMCalibrationLauncher {
             executionComponentBuildIdentifier: runtimeBuildIdentifier,
             virtualHardwareABIVersion:
                 DoryVirtualMachineDefinition.currentVirtualHardwareABIVersion,
-            rawHVVirtualHardwareTopology: topology,
+            armVirtTopology: topology,
             graphics: .hardwareAccelerated3D,
             devices: devices,
             portForwards: [],

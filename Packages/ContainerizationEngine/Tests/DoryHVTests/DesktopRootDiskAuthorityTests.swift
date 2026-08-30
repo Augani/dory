@@ -77,7 +77,7 @@ import Testing
             planRevision: 1,
             executionComponentBuildIdentifier: "raw-runtime-1",
             virtualHardwareABIVersion: 1,
-            rawHVVirtualHardwareTopology: makeTopology(),
+            armVirtTopology: makeTopology(),
             graphics: .software,
             devices: makeDevices(),
             portForwards: [],
@@ -91,15 +91,15 @@ import Testing
         )
     }
 
-    private func makeTopology() -> DoryRawHVVirtualHardwareTopology {
-        try! DoryRawHVVirtualHardwareTopologyReconciler.reconcile(
+    private func makeTopology() -> DoryARMVirtV1Topology {
+        try! DoryARMVirtV1TopologyReconciler.reconcile(
             requestedDevices: [
                 try! .init(logicalID: "system-disk", role: .systemDisk),
                 try! .init(logicalID: "rawhv-graphics", role: .graphics),
                 try! .init(logicalID: "rawhv-entropy", role: .entropy),
                 try! .init(logicalID: "rawhv-balloon", role: .balloon),
                 try! .init(logicalID: "rawhv-vsock", role: .vsock),
-                DoryRawHVVirtualDeviceRequest(
+                DoryARMVirtV1DeviceRequest(
                     logicalID: try! DoryVirtualDeviceID.derived(
                         namespace: .network,
                         stableID: makeDevices().networkInterface!.id

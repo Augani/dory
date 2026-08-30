@@ -83,7 +83,7 @@ struct DoryDaemonVirtualMachineRuntimePlanningTests {
         #expect(result.resolvedPlan.portForwards == fixture.definition.portForwards)
         #expect(result.backendPlan.portForwards == fixture.definition.portForwards)
         #expect(result.backendPlan.backend.identity == .doryHypervisor)
-        let topology = try #require(result.resolvedPlan.rawHVVirtualHardwareTopology)
+        let topology = try #require(result.resolvedPlan.armVirtTopology)
         #expect(topology.occupiedSlots.map(\.role) == [
             .systemDisk, .graphics, .entropy, .balloon, .vsock, .network,
         ])
@@ -109,13 +109,13 @@ struct DoryDaemonVirtualMachineRuntimePlanningTests {
             ),
         ]
         let devices = DoryDaemonVirtualMachinePlanningCoordinator.devices(for: definition)
-        let first = try DoryRawHVVirtualHardwareTopologyPlanner.resolve(
+        let first = try DoryARMVirtV1TopologyPlanner.resolve(
             definition: definition,
             resolvedDevices: devices
         )
         var reordered = definition
         reordered.shares.reverse()
-        #expect(try DoryRawHVVirtualHardwareTopologyPlanner.resolve(
+        #expect(try DoryARMVirtV1TopologyPlanner.resolve(
             definition: reordered,
             resolvedDevices: devices
         ) == first)
@@ -135,7 +135,7 @@ struct DoryDaemonVirtualMachineRuntimePlanningTests {
                 guestMountPath: "/workspace/new"
             ),
         ]
-        let reconciled = try DoryRawHVVirtualHardwareTopologyPlanner.resolve(
+        let reconciled = try DoryARMVirtV1TopologyPlanner.resolve(
             definition: definition,
             resolvedDevices: DoryDaemonVirtualMachinePlanningCoordinator.devices(for: definition),
             previousTopology: first
@@ -143,7 +143,7 @@ struct DoryDaemonVirtualMachineRuntimePlanningTests {
         #expect(reconciled.occupiedSlots.first {
             $0.logicalID == survivorID
         }?.mmioSlot == survivorSlot)
-        try DoryRawHVVirtualHardwareTopologyPlanner.validate(
+        try DoryARMVirtV1TopologyPlanner.validate(
             reconciled,
             definition: definition,
             resolvedDevices: DoryDaemonVirtualMachinePlanningCoordinator.devices(for: definition)
@@ -156,7 +156,7 @@ struct DoryDaemonVirtualMachineRuntimePlanningTests {
         var definition = fixture.definition
         definition.networkMode = .disconnected
         definition.integrations.append(.removableUSBHotplug)
-        let topology = try DoryRawHVVirtualHardwareTopologyPlanner.resolve(
+        let topology = try DoryARMVirtV1TopologyPlanner.resolve(
             definition: definition,
             resolvedDevices: DoryDaemonVirtualMachinePlanningCoordinator.devices(for: definition)
         )
@@ -169,8 +169,8 @@ struct DoryDaemonVirtualMachineRuntimePlanningTests {
             artifact: .init(namespace: "artifact", identifier: "data-disk"),
             capacityBytes: 4 * 1_024 * 1_024
         ))
-        #expect(throws: DoryRawHVVirtualHardwareTopologyPlanningError.self) {
-            _ = try DoryRawHVVirtualHardwareTopologyPlanner.resolve(
+        #expect(throws: DoryARMVirtV1TopologyPlanningError.self) {
+            _ = try DoryARMVirtV1TopologyPlanner.resolve(
                 definition: definition,
                 resolvedDevices: DoryDaemonVirtualMachinePlanningCoordinator.devices(for: definition)
             )

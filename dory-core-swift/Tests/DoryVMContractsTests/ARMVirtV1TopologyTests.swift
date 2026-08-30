@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import DoryVMContracts
 
-@Suite struct RawHVVirtualHardwareTopologyTests {
+@Suite struct ARMVirtV1TopologyTests {
     @Test func canonicalFingerprintHasGoldenVersionedBytesAndDigest() throws {
         let topology = try goldenTopology()
         let canonicalJSON = String(decoding: try topology.canonicalJSONData(), as: UTF8.self)
@@ -15,7 +15,7 @@ import Testing
 
     @Test func inputOrderCannotChangeCanonicalEncodingOrFingerprint() throws {
         let expected = try goldenTopology()
-        let reversed = try DoryRawHVVirtualHardwareTopology(
+        let reversed = try DoryARMVirtV1Topology(
             occupiedSlots: expected.occupiedSlots.reversed()
         )
 
@@ -28,7 +28,7 @@ import Testing
     @Test func JSONRoundTripPreservesCanonicalTopology() throws {
         let expected = try goldenTopology()
         let decoded = try JSONDecoder().decode(
-            DoryRawHVVirtualHardwareTopology.self,
+            DoryARMVirtV1Topology.self,
             from: expected.canonicalJSONData()
         )
 
@@ -109,123 +109,116 @@ import Testing
 
     @Test func rejectsDuplicateLogicalIDsAndMMIOSlots() throws {
         let duplicatedID = try DoryVirtualDeviceID("net.same")
-        let first = try DoryRawHVVirtualDeviceSlot(
+        let first = try DoryARMVirtV1DeviceSlot(
             logicalID: duplicatedID,
             role: .network,
             mmioSlot: 8
         )
-        let secondID = try DoryRawHVVirtualDeviceSlot(
+        let secondID = try DoryARMVirtV1DeviceSlot(
             logicalID: duplicatedID,
             role: .network,
             mmioSlot: 9
         )
         #expect(throws: DoryVMContractError.duplicateLogicalDeviceID(duplicatedID)) {
-            try DoryRawHVVirtualHardwareTopology(occupiedSlots: [first, secondID])
+            try DoryARMVirtV1Topology(occupiedSlots: [first, secondID])
         }
 
-        let secondSlot = try DoryRawHVVirtualDeviceSlot(
+        let secondSlot = try DoryARMVirtV1DeviceSlot(
             logicalID: "net.other",
             role: .network,
             mmioSlot: 8
         )
         #expect(throws: DoryVMContractError.duplicateMMIOSlot(8)) {
-            try DoryRawHVVirtualHardwareTopology(occupiedSlots: [first, secondSlot])
+            try DoryARMVirtV1Topology(occupiedSlots: [first, secondSlot])
         }
     }
 
     @Test func rejectsOutOfRangeReservedAndRoleMismatchedSlots() throws {
         #expect(throws: DoryVMContractError.mmioSlotOutOfRange(-1)) {
-            try DoryRawHVVirtualDeviceSlot(logicalID: "net.low", role: .network, mmioSlot: -1)
+            try DoryARMVirtV1DeviceSlot(logicalID: "net.low", role: .network, mmioSlot: -1)
         }
         #expect(throws: DoryVMContractError.mmioSlotOutOfRange(32)) {
-            try DoryRawHVVirtualDeviceSlot(logicalID: "net.high", role: .network, mmioSlot: 32)
+            try DoryARMVirtV1DeviceSlot(logicalID: "net.high", role: .network, mmioSlot: 32)
         }
         #expect(throws: DoryVMContractError.reservedMMIOSlot(31)) {
-            try DoryRawHVVirtualDeviceSlot(logicalID: "net.reserved", role: .network, mmioSlot: 31)
+            try DoryARMVirtV1DeviceSlot(logicalID: "net.reserved", role: .network, mmioSlot: 31)
         }
         #expect(throws: DoryVMContractError.roleSlotMismatch(role: .graphics, slot: 2)) {
-            try DoryRawHVVirtualDeviceSlot(logicalID: "graphics.primary", role: .graphics, mmioSlot: 2)
+            try DoryARMVirtV1DeviceSlot(logicalID: "graphics.primary", role: .graphics, mmioSlot: 2)
         }
         #expect(throws: DoryVMContractError.roleSlotMismatch(role: .network, slot: 12)) {
-            try DoryRawHVVirtualDeviceSlot(logicalID: "net.wrong-range", role: .network, mmioSlot: 12)
+            try DoryARMVirtV1DeviceSlot(logicalID: "net.wrong-range", role: .network, mmioSlot: 12)
         }
     }
 
-    @Test func rejectsWrongSchemaBackendAndArchitecture() throws {
-        #expect(throws: DoryVMContractError.unsupportedSchemaVersion(2)) {
-            try DoryRawHVVirtualHardwareTopology(schemaVersion: 2, occupiedSlots: [])
+    @Test func rejectsWrongSchemaAndMachineABI() throws {
+        #expect(throws: DoryVMContractError.unsupportedSchemaVersion(1)) {
+            try DoryARMVirtV1Topology(schemaVersion: 1, occupiedSlots: [])
         }
-        #expect(throws: DoryVMContractError.incompatibleBackend(.virtualizationFramework)) {
-            try DoryRawHVVirtualHardwareTopology(
-                backend: .virtualizationFramework,
+        #expect(throws: DoryVMContractError.incompatibleMachineABI("dory.pc@1")) {
+            try DoryARMVirtV1Topology(
+                machineABIIdentity: "dory.pc@1",
                 occupiedSlots: []
             )
-        }
-        #expect(throws: DoryVMContractError.incompatibleArchitecture(.x86_64)) {
-            try DoryRawHVVirtualHardwareTopology(architecture: .x86_64, occupiedSlots: [])
         }
     }
 
     @Test func rejectsPerRoleAndSharedStorageCapacityOverflow() throws {
-        let graphics = try DoryRawHVVirtualDeviceSlot(
+        let graphics = try DoryARMVirtV1DeviceSlot(
             logicalID: "graphics.one",
             role: .graphics,
             mmioSlot: 1
         )
-        let secondGraphics = try DoryRawHVVirtualDeviceSlot(
+        let secondGraphics = try DoryARMVirtV1DeviceSlot(
             logicalID: "graphics.two",
             role: .graphics,
             mmioSlot: 1
         )
         #expect(throws: DoryVMContractError.roleCapacityExceeded(role: .graphics, maximum: 1)) {
-            try DoryRawHVVirtualHardwareTopology(occupiedSlots: [graphics, secondGraphics])
+            try DoryARMVirtV1Topology(occupiedSlots: [graphics, secondGraphics])
         }
 
-        var storage = [DoryRawHVVirtualDeviceSlot]()
+        var storage = [DoryARMVirtV1DeviceSlot]()
         for index in 0..<9 {
-            storage.append(try DoryRawHVVirtualDeviceSlot(
+            storage.append(try DoryARMVirtV1DeviceSlot(
                 logicalID: "storage.\(index)",
                 role: index.isMultiple(of: 2) ? .auxiliaryBlock : .removableStorage,
                 mmioSlot: 12 + (index % 8)
             ))
         }
         #expect(throws: DoryVMContractError.auxiliaryStorageCapacityExceeded(maximum: 8)) {
-            try DoryRawHVVirtualHardwareTopology(occupiedSlots: storage)
+            try DoryARMVirtV1Topology(occupiedSlots: storage)
         }
 
         let repeated = Array(repeating: graphics, count: 32)
         #expect(throws: DoryVMContractError.tooManyDevices(actual: 32, maximum: 31)) {
-            try DoryRawHVVirtualHardwareTopology(occupiedSlots: repeated)
+            try DoryARMVirtV1Topology(occupiedSlots: repeated)
         }
     }
 
     @Test func strictDecodeRejectsUnknownFieldsAndUnknownEnums() throws {
         let unknownTopologyField = Data(#"""
         {
-          "schemaVersion": 1,
-          "abiVersion": "raw-hv-arm64-v1",
-          "backend": "raw-hv",
-          "architecture": "arm64",
+          "schemaVersion": 2,
+          "machineABIIdentity": "dory.armvirt@1",
           "occupiedSlots": [],
           "future": true
         }
         """#.utf8)
         #expect(throws: DoryVMContractError.unknownFields(
-            type: "DoryRawHVVirtualHardwareTopology",
+            type: "DoryARMVirtV1Topology",
             fields: ["future"]
         )) {
             try JSONDecoder().decode(
-                DoryRawHVVirtualHardwareTopology.self,
+                DoryARMVirtV1Topology.self,
                 from: unknownTopologyField
             )
         }
 
         let unknownSlotField = Data(#"""
         {
-          "schemaVersion": 1,
-          "abiVersion": "raw-hv-arm64-v1",
-          "backend": "raw-hv",
-          "architecture": "arm64",
+          "schemaVersion": 2,
+          "machineABIIdentity": "dory.armvirt@1",
           "occupiedSlots": [{
             "logicalID": "net.primary",
             "role": "network",
@@ -235,11 +228,11 @@ import Testing
         }
         """#.utf8)
         #expect(throws: DoryVMContractError.unknownFields(
-            type: "DoryRawHVVirtualDeviceSlot",
+            type: "DoryARMVirtV1DeviceSlot",
             fields: ["future"]
         )) {
             try JSONDecoder().decode(
-                DoryRawHVVirtualHardwareTopology.self,
+                DoryARMVirtV1Topology.self,
                 from: unknownSlotField
             )
         }
@@ -251,7 +244,7 @@ import Testing
         }
         """#.utf8)
         #expect(throws: DecodingError.self) {
-            try JSONDecoder().decode(DoryRawHVVirtualDeviceRequest.self, from: unknownRole)
+            try JSONDecoder().decode(DoryARMVirtV1DeviceRequest.self, from: unknownRole)
         }
 
         let unknownRequestField = Data(#"""
@@ -262,20 +255,18 @@ import Testing
         }
         """#.utf8)
         #expect(throws: DoryVMContractError.unknownFields(
-            type: "DoryRawHVVirtualDeviceRequest",
+            type: "DoryARMVirtV1DeviceRequest",
             fields: ["future"]
         )) {
-            try JSONDecoder().decode(DoryRawHVVirtualDeviceRequest.self, from: unknownRequestField)
+            try JSONDecoder().decode(DoryARMVirtV1DeviceRequest.self, from: unknownRequestField)
         }
     }
 
     @Test func strictDecodeRejectsNonCanonicalSlotOrder() {
         let reorderedSlots = Data(#"""
         {
-          "schemaVersion": 1,
-          "abiVersion": "raw-hv-arm64-v1",
-          "backend": "raw-hv",
-          "architecture": "arm64",
+          "schemaVersion": 2,
+          "machineABIIdentity": "dory.armvirt@1",
           "occupiedSlots": [
             {"logicalID": "net.second", "role": "network", "mmioSlot": 9},
             {"logicalID": "net.first", "role": "network", "mmioSlot": 8}
@@ -285,14 +276,14 @@ import Testing
 
         #expect(throws: DoryVMContractError.nonCanonicalOccupiedSlotOrder) {
             try JSONDecoder().decode(
-                DoryRawHVVirtualHardwareTopology.self,
+                DoryARMVirtV1Topology.self,
                 from: reorderedSlots
             )
         }
     }
 
-    private func goldenTopology() throws -> DoryRawHVVirtualHardwareTopology {
-        try DoryRawHVVirtualHardwareTopology(occupiedSlots: [
+    private func goldenTopology() throws -> DoryARMVirtV1Topology {
+        try DoryARMVirtV1Topology(occupiedSlots: [
             slot("usb.primary", .usbController, 30),
             slot("share.workspace", .directoryShare, 20),
             slot("disk.data", .auxiliaryBlock, 12),
@@ -308,13 +299,13 @@ import Testing
         _ logicalID: String,
         _ role: DoryVirtualDeviceRole,
         _ mmioSlot: Int
-    ) throws -> DoryRawHVVirtualDeviceSlot {
-        try DoryRawHVVirtualDeviceSlot(logicalID: logicalID, role: role, mmioSlot: mmioSlot)
+    ) throws -> DoryARMVirtV1DeviceSlot {
+        try DoryARMVirtV1DeviceSlot(logicalID: logicalID, role: role, mmioSlot: mmioSlot)
     }
 
-    private static let goldenFingerprintInputHex = "444f5259564857000001000000010101010800010b73797374656d2e726f6f7401021067726170686963732e7072696d61727902030f656e74726f70792e7072696d61727908090e6e65742e6d616e6167656d656e7409090d6e65742e776f726b73706163650c0a096469736b2e64617461140c0f73686172652e776f726b73706163651e0d0b7573622e7072696d617279"
-    private static let goldenFingerprintSHA256 = "7e91e1f8e863c41d33a27577814d730316848a795b672d6ec9176f6f0266f1ce"
-    private static let goldenJSON = #"{"abiVersion":"raw-hv-arm64-v1","architecture":"arm64","backend":"raw-hv","occupiedSlots":[{"logicalID":"system.root","mmioSlot":0,"role":"system-disk"},{"logicalID":"graphics.primary","mmioSlot":1,"role":"graphics"},{"logicalID":"entropy.primary","mmioSlot":2,"role":"entropy"},{"logicalID":"net.management","mmioSlot":8,"role":"network"},{"logicalID":"net.workspace","mmioSlot":9,"role":"network"},{"logicalID":"disk.data","mmioSlot":12,"role":"auxiliary-block"},{"logicalID":"share.workspace","mmioSlot":20,"role":"directory-share"},{"logicalID":"usb.primary","mmioSlot":30,"role":"usb-controller"}],"schemaVersion":1}"#
+    private static let goldenFingerprintInputHex = "444f5259564857000002000000020e646f72792e61726d7669727440310800010b73797374656d2e726f6f7401021067726170686963732e7072696d61727902030f656e74726f70792e7072696d61727908090e6e65742e6d616e6167656d656e7409090d6e65742e776f726b73706163650c0a096469736b2e64617461140c0f73686172652e776f726b73706163651e0d0b7573622e7072696d617279"
+    private static let goldenFingerprintSHA256 = "bd2271dd361fd02fa7bf8ddc8dac858490c95685bd2366ff18342fd08a660051"
+    private static let goldenJSON = #"{"machineABIIdentity":"dory.armvirt@1","occupiedSlots":[{"logicalID":"system.root","mmioSlot":0,"role":"system-disk"},{"logicalID":"graphics.primary","mmioSlot":1,"role":"graphics"},{"logicalID":"entropy.primary","mmioSlot":2,"role":"entropy"},{"logicalID":"net.management","mmioSlot":8,"role":"network"},{"logicalID":"net.workspace","mmioSlot":9,"role":"network"},{"logicalID":"disk.data","mmioSlot":12,"role":"auxiliary-block"},{"logicalID":"share.workspace","mmioSlot":20,"role":"directory-share"},{"logicalID":"usb.primary","mmioSlot":30,"role":"usb-controller"}],"schemaVersion":2}"#
 }
 
 private extension Data {

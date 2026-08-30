@@ -1,6 +1,6 @@
 import Foundation
 
-public struct DoryRawHVVirtualDeviceRequest: Codable, Sendable, Hashable {
+public struct DoryARMVirtV1DeviceRequest: Codable, Sendable, Hashable {
     public let logicalID: DoryVirtualDeviceID
     public let role: DoryVirtualDeviceRole
 
@@ -22,7 +22,7 @@ public struct DoryRawHVVirtualDeviceRequest: Codable, Sendable, Hashable {
         try rejectUnknownDoryVMContractFields(
             in: decoder,
             allowed: Set(CodingKeys.allCases.map(\.rawValue)),
-            type: "DoryRawHVVirtualDeviceRequest"
+            type: "DoryARMVirtV1DeviceRequest"
         )
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.init(
@@ -41,19 +41,19 @@ public struct DoryRawHVVirtualDeviceRequest: Codable, Sendable, Hashable {
 /// Reconciles requested logical devices with an optional prior topology. Existing logical IDs keep
 /// their exact slots, absent devices disappear without compaction, and new devices receive the
 /// lowest free slot in their role range using an order independent of request-array ordering.
-public enum DoryRawHVVirtualHardwareTopologyReconciler {
+public enum DoryARMVirtV1TopologyReconciler {
     public static func reconcile(
-        requestedDevices: [DoryRawHVVirtualDeviceRequest],
-        previousTopology: DoryRawHVVirtualHardwareTopology? = nil
-    ) throws -> DoryRawHVVirtualHardwareTopology {
-        guard requestedDevices.count <= DoryRawHVARM64ABIV1SlotPolicy.maximumOccupiedSlots else {
+        requestedDevices: [DoryARMVirtV1DeviceRequest],
+        previousTopology: DoryARMVirtV1Topology? = nil
+    ) throws -> DoryARMVirtV1Topology {
+        guard requestedDevices.count <= DoryARMVirtV1SlotPolicy.maximumOccupiedSlots else {
             throw DoryVMContractError.tooManyDevices(
                 actual: requestedDevices.count,
-                maximum: DoryRawHVARM64ABIV1SlotPolicy.maximumOccupiedSlots
+                maximum: DoryARMVirtV1SlotPolicy.maximumOccupiedSlots
             )
         }
 
-        var requestedByID = [DoryVirtualDeviceID: DoryRawHVVirtualDeviceRequest]()
+        var requestedByID = [DoryVirtualDeviceID: DoryARMVirtV1DeviceRequest]()
         for request in requestedDevices {
             guard requestedByID.updateValue(request, forKey: request.logicalID) == nil else {
                 throw DoryVMContractError.duplicateLogicalDeviceID(request.logicalID)
@@ -73,9 +73,9 @@ public enum DoryRawHVVirtualHardwareTopologyReconciler {
                 )
             }
         }
-        try DoryRawHVARM64ABIV1SlotPolicy.validateRoleCounts(requestedDevices.map(\.role))
+        try DoryARMVirtV1SlotPolicy.validateRoleCounts(requestedDevices.map(\.role))
 
-        var assignments = [DoryRawHVVirtualDeviceSlot]()
+        var assignments = [DoryARMVirtV1DeviceSlot]()
         var occupiedSlots = Set<Int>()
         for previous in previousTopology?.occupiedSlots ?? [] {
             guard requestedByID[previous.logicalID] != nil else { continue }
@@ -87,11 +87,11 @@ public enum DoryRawHVVirtualHardwareTopologyReconciler {
             .filter { previousByID[$0.logicalID] == nil }
             .sorted(by: allocationOrder)
         for request in newRequests {
-            let allowed = DoryRawHVARM64ABIV1SlotPolicy.allowedSlots(for: request.role)
+            let allowed = DoryARMVirtV1SlotPolicy.allowedSlots(for: request.role)
             guard let slot = allowed.first(where: { !occupiedSlots.contains($0) }) else {
                 throw DoryVMContractError.noAvailableSlot(request.role)
             }
-            assignments.append(try DoryRawHVVirtualDeviceSlot(
+            assignments.append(try DoryARMVirtV1DeviceSlot(
                 logicalID: request.logicalID,
                 role: request.role,
                 mmioSlot: slot
@@ -99,15 +99,15 @@ public enum DoryRawHVVirtualHardwareTopologyReconciler {
             occupiedSlots.insert(slot)
         }
 
-        return try DoryRawHVVirtualHardwareTopology(occupiedSlots: assignments)
+        return try DoryARMVirtV1Topology(occupiedSlots: assignments)
     }
 
     private static func allocationOrder(
-        _ lhs: DoryRawHVVirtualDeviceRequest,
-        _ rhs: DoryRawHVVirtualDeviceRequest
+        _ lhs: DoryARMVirtV1DeviceRequest,
+        _ rhs: DoryARMVirtV1DeviceRequest
     ) -> Bool {
-        let lhsRange = DoryRawHVARM64ABIV1SlotPolicy.allowedSlots(for: lhs.role)
-        let rhsRange = DoryRawHVARM64ABIV1SlotPolicy.allowedSlots(for: rhs.role)
+        let lhsRange = DoryARMVirtV1SlotPolicy.allowedSlots(for: lhs.role)
+        let rhsRange = DoryARMVirtV1SlotPolicy.allowedSlots(for: rhs.role)
         if lhsRange.lowerBound != rhsRange.lowerBound {
             return lhsRange.lowerBound < rhsRange.lowerBound
         }

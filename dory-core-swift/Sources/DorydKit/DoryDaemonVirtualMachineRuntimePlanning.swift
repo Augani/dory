@@ -454,12 +454,12 @@ public final class DoryDaemonVirtualMachinePlanningCoordinator: @unchecked Senda
         }
 
         let timing: (revision: UInt64, created: Int64, updated: Int64)
-        let previousRawHVTopology: DoryRawHVVirtualHardwareTopology?
+        let previousARMVirtTopology: DoryARMVirtV1Topology?
         switch input.publication {
         case .create:
             let timestamp = now()
             timing = (1, timestamp, timestamp)
-            previousRawHVTopology = nil
+            previousARMVirtTopology = nil
         case let .replace(expected):
             let current: DoryResolvedMachinePlan
             do { current = try plans.read(id: definition.identity.id) }
@@ -469,26 +469,26 @@ public final class DoryDaemonVirtualMachinePlanningCoordinator: @unchecked Senda
             }
             timing = (expected + 1, current.createdAtUnixMilliseconds,
                       max(now(), current.createdAtUnixMilliseconds))
-            previousRawHVTopology = current.backend == .doryHypervisor
-                ? current.rawHVVirtualHardwareTopology : nil
+            previousARMVirtTopology = current.backend == .doryHypervisor
+                ? current.armVirtTopology : nil
         }
 
-        let rawHVVirtualHardwareTopology: DoryRawHVVirtualHardwareTopology?
+        let armVirtTopology: DoryARMVirtV1Topology?
         if selected.request.backend == .doryHypervisor {
             do {
-                rawHVVirtualHardwareTopology = try DoryRawHVVirtualHardwareTopologyPlanner.resolve(
+                armVirtTopology = try DoryARMVirtV1TopologyPlanner.resolve(
                     definition: definition,
                     resolvedDevices: selected.request.devices,
-                    previousTopology: previousRawHVTopology
+                    previousTopology: previousARMVirtTopology
                 )
             } catch {
                 throw failure(
                     .virtualHardwareTopologyRejected,
-                    "RawHV cannot materialize the requested virtual hardware: \(error)"
+                    "DoryARMVirt-v1 cannot materialize the requested virtual hardware: \(error)"
                 )
             }
         } else {
-            rawHVVirtualHardwareTopology = nil
+            armVirtTopology = nil
         }
 
         let plan: DoryResolvedMachinePlan
@@ -502,7 +502,7 @@ public final class DoryDaemonVirtualMachinePlanningCoordinator: @unchecked Senda
                 updatedAtUnixMilliseconds: timing.updated,
                 backendDescriptor: backend.descriptor,
                 backendRuntimeBuildIdentifier: runtime.runtimeBuildIdentifier,
-                rawHVVirtualHardwareTopology: rawHVVirtualHardwareTopology,
+                armVirtTopology: armVirtTopology,
                 resolverReference: snapshot.media.reference,
                 launchArtifacts: snapshot.launchArtifacts,
                 portForwards: definition.portForwards,

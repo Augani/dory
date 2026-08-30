@@ -192,7 +192,7 @@ final class RuntimeDiskAuthorityIntegrationTests: XCTestCase {
             planRevision: 1,
             executionComponentBuildIdentifier: "test-runtime",
             virtualHardwareABIVersion: 1,
-            rawHVVirtualHardwareTopology: topology,
+            armVirtTopology: topology,
             graphics: .software,
             devices: makeDevices(),
             portForwards: [],
@@ -210,7 +210,7 @@ final class RuntimeDiskAuthorityIntegrationTests: XCTestCase {
         return (envelope, kernel)
     }
 
-    private func makeTopology() -> DoryRawHVVirtualHardwareTopology {
+    private func makeTopology() -> DoryARMVirtV1Topology {
         let network = DoryVirtualMachineNetworkInterfaceCapabilityRequest.stable(
             machineID: "authority-test"
         )
@@ -218,7 +218,7 @@ final class RuntimeDiskAuthorityIntegrationTests: XCTestCase {
             namespace: .network,
             stableID: network.id
         )
-        return try! DoryRawHVVirtualHardwareTopologyReconciler.reconcile(
+        return try! DoryARMVirtV1TopologyReconciler.reconcile(
             requestedDevices: [
                 try! .init(logicalID: "system-disk", role: .systemDisk),
                 try! .init(logicalID: "rawhv-graphics", role: .graphics),

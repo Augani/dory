@@ -45,11 +45,31 @@ import Testing
     }
 
     private func targetDeclaration(named name: String, in manifest: String) -> String? {
-        let targetPrefix = ".target(\n            name: \"\(name)\""
-        guard let start = manifest.range(of: targetPrefix) else { return nil }
-        guard let end = manifest[start.upperBound...].range(of: "\n        ),") else {
-            return nil
+        var searchStart = manifest.startIndex
+        while let start = manifest.range(
+            of: ".target(",
+            range: searchStart..<manifest.endIndex
+        ) {
+            var depth = 0
+            var cursor = start.lowerBound
+            declarationLoop: while cursor < manifest.endIndex {
+                switch manifest[cursor] {
+                case "(": depth += 1
+                case ")":
+                    depth -= 1
+                    if depth == 0 {
+                        let declaration = String(manifest[start.lowerBound...cursor])
+                        if declaration.contains("name: \"\(name)\"") {
+                            return declaration
+                        }
+                        searchStart = manifest.index(after: cursor)
+                        break declarationLoop
+                    }
+                default: break
+                }
+                cursor = manifest.index(after: cursor)
+            }
         }
-        return String(manifest[start.lowerBound..<end.upperBound])
+        return nil
     }
 }

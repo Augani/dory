@@ -1085,7 +1085,7 @@ private struct DoryQualificationBootstrapLaunchPlan: Codable, Sendable {
     let verdict: String
     let definition: DoryVirtualMachineDefinition
     let devices: DoryVirtualMachineDeviceCapabilityRequest
-    let topology: DoryRawHVVirtualHardwareTopology
+    let topology: DoryARMVirtV1Topology
     let executionResources: RuntimeLaunchEnvelope.RawHVExecutionResources
     let backendRuntimeBuildIdentifier: String
     let backendExecutableSHA256: String
@@ -3536,8 +3536,8 @@ public final class MachineManager: @unchecked Sendable {
             if launchBinding?.backend.identity == .doryHypervisor {
                 guard let resolvedPlan,
                       let launchBinding,
-                      let rawHVVirtualHardwareTopology =
-                        resolvedPlan.rawHVVirtualHardwareTopology,
+                      let armVirtTopology =
+                        resolvedPlan.armVirtTopology,
                       let admittedVirtualCPUCount =
                         resolvedPlan.resourceAdmission?.admittedVirtualCPUCount,
                       let admittedMemoryBytes =
@@ -3585,7 +3585,7 @@ public final class MachineManager: @unchecked Sendable {
                     memoryMB: admittedMemoryBytes / bytesPerMiB,
                     virtualCPUCount: UInt16(admittedVirtualCPUCount)
                 )
-                let systemDiskSlots = rawHVVirtualHardwareTopology.occupiedSlots.filter {
+                let systemDiskSlots = armVirtTopology.occupiedSlots.filter {
                     $0.role == .systemDisk
                 }
                 guard systemDiskSlots.count == 1 else {
@@ -3641,7 +3641,7 @@ public final class MachineManager: @unchecked Sendable {
                     planRevision: resolvedPlan.planRevision,
                     executionComponentBuildIdentifier: resolvedPlan.backendRuntimeBuildIdentifier,
                     virtualHardwareABIVersion: resolvedPlan.virtualHardwareABIVersion,
-                    rawHVVirtualHardwareTopology: rawHVVirtualHardwareTopology,
+                    armVirtTopology: armVirtTopology,
                     graphics: launchBinding.graphics,
                     devices: launchBinding.devices,
                     portForwards: launchBinding.portForwards,
@@ -7719,7 +7719,7 @@ public final class MachineManager: @unchecked Sendable {
         }
         let bootArtifactSHA256 = try Self.fileSHA256(path: machine.kernelPath)
         let devices = DoryDaemonVirtualMachinePlanningCoordinator.devices(for: definition)
-        let topology = try DoryRawHVVirtualHardwareTopologyPlanner.resolve(
+        let topology = try DoryARMVirtV1TopologyPlanner.resolve(
             definition: definition,
             resolvedDevices: devices
         )
@@ -7808,7 +7808,7 @@ public final class MachineManager: @unchecked Sendable {
             planRevision: definition.lifecycle.revision,
             executionComponentBuildIdentifier: runtimeBuildIdentifier,
             virtualHardwareABIVersion: definition.virtualHardwareABIVersion,
-            rawHVVirtualHardwareTopology: topology,
+            armVirtTopology: topology,
             graphics: .hardwareAccelerated3D,
             devices: devices,
             portForwards: definition.portForwards,

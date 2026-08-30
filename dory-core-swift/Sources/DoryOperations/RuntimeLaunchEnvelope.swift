@@ -165,7 +165,7 @@ public struct RuntimeLaunchEnvelope: Codable, Sendable, Equatable {
     public let platform: DoryVirtualizationPlatformComposition
     public let executionComponentBuildIdentifier: String
     public let virtualHardwareABIVersion: UInt16
-    public let rawHVVirtualHardwareTopology: DoryRawHVVirtualHardwareTopology
+    public let armVirtTopology: DoryARMVirtV1Topology
     public let graphics: DoryGraphicsAccelerationLevel
     public let devices: DoryVirtualMachineDeviceCapabilityRequest
     public let portForwards: [DoryVMPortForward]
@@ -183,7 +183,7 @@ public struct RuntimeLaunchEnvelope: Codable, Sendable, Equatable {
         platform: DoryVirtualizationPlatformComposition,
         executionComponentBuildIdentifier: String,
         virtualHardwareABIVersion: UInt16,
-        rawHVVirtualHardwareTopology: DoryRawHVVirtualHardwareTopology,
+        armVirtTopology: DoryARMVirtV1Topology,
         graphics: DoryGraphicsAccelerationLevel,
         devices: DoryVirtualMachineDeviceCapabilityRequest,
         portForwards: [DoryVMPortForward],
@@ -200,7 +200,7 @@ public struct RuntimeLaunchEnvelope: Codable, Sendable, Equatable {
         self.platform = platform
         self.executionComponentBuildIdentifier = executionComponentBuildIdentifier
         self.virtualHardwareABIVersion = virtualHardwareABIVersion
-        self.rawHVVirtualHardwareTopology = rawHVVirtualHardwareTopology
+        self.armVirtTopology = armVirtTopology
         self.graphics = graphics
         self.devices = devices
         self.portForwards = portForwards
@@ -216,7 +216,7 @@ public struct RuntimeLaunchEnvelope: Codable, Sendable, Equatable {
         planRevision: UInt64,
         executionComponentBuildIdentifier: String,
         virtualHardwareABIVersion: UInt16,
-        rawHVVirtualHardwareTopology: DoryRawHVVirtualHardwareTopology,
+        armVirtTopology: DoryARMVirtV1Topology,
         graphics: DoryGraphicsAccelerationLevel,
         devices: DoryVirtualMachineDeviceCapabilityRequest,
         portForwards: [DoryVMPortForward],
@@ -274,7 +274,7 @@ public struct RuntimeLaunchEnvelope: Codable, Sendable, Equatable {
             platform: .arm64LinuxV1,
             executionComponentBuildIdentifier: executionComponentBuildIdentifier,
             virtualHardwareABIVersion: virtualHardwareABIVersion,
-            rawHVVirtualHardwareTopology: rawHVVirtualHardwareTopology,
+            armVirtTopology: armVirtTopology,
             graphics: graphics,
             devices: devices,
             portForwards: portForwards,
@@ -305,13 +305,11 @@ public struct RuntimeLaunchEnvelope: Codable, Sendable, Equatable {
             throw RuntimeLaunchEnvelopeError.invalidPlatform(platform)
         }
         guard virtualHardwareABIVersion == 1,
-              rawHVVirtualHardwareTopology.abiVersion == .rawHVARM64V1,
-              rawHVVirtualHardwareTopology.backend == .rawHV,
-              rawHVVirtualHardwareTopology.architecture == .arm64 else {
+              armVirtTopology.machineABIIdentity == platform.machineModel.rawValue else {
             throw RuntimeLaunchEnvelopeError.invalidVirtualHardwareTopology
         }
         let roleCounts = Dictionary(
-            grouping: rawHVVirtualHardwareTopology.occupiedSlots,
+            grouping: armVirtTopology.occupiedSlots,
             by: \.role
         ).mapValues(\.count)
         func count(_ role: DoryVirtualDeviceRole) -> Int {
@@ -340,7 +338,7 @@ public struct RuntimeLaunchEnvelope: Codable, Sendable, Equatable {
             .graphics, .entropy, .balloon, .vsock, .keyboard, .pointer, .audio,
         ]
         guard fixedRoles.allSatisfy({ role in
-            let matches = rawHVVirtualHardwareTopology.occupiedSlots.filter {
+            let matches = armVirtTopology.occupiedSlots.filter {
                 $0.role == role
             }
             return matches.isEmpty
@@ -352,7 +350,7 @@ public struct RuntimeLaunchEnvelope: Codable, Sendable, Equatable {
             namespace: .network,
             stableID: networkInterface.id
         ),
-        rawHVVirtualHardwareTopology.occupiedSlots.contains(where: {
+        armVirtTopology.occupiedSlots.contains(where: {
             $0.role == .network && $0.logicalID == expectedNetworkID
         }) else {
             throw RuntimeLaunchEnvelopeError.invalidVirtualHardwareTopology
@@ -415,7 +413,7 @@ public struct RuntimeLaunchEnvelope: Codable, Sendable, Equatable {
         guard systemDisk.access == .readWrite,
               systemDisk.contentSHA256 == nil,
               let systemDiskLogicalID = systemDisk.logicalDeviceID,
-              rawHVVirtualHardwareTopology.occupiedSlots.contains(where: {
+              armVirtTopology.occupiedSlots.contains(where: {
                   $0.role == .systemDisk && $0.logicalID == systemDiskLogicalID
               }) else {
             throw RuntimeLaunchEnvelopeError.invalidSystemDiskAccess

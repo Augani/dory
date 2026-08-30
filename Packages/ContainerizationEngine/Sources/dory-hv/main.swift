@@ -621,8 +621,8 @@ case "desktop":
             resolvedPlanRevision: runtimeLaunchEnvelope?.planRevision,
             resolvedDevices: resolvedDevices,
             resolvedPortForwards: resolvedPortForwards,
-            rawHVVirtualHardwareTopology:
-                runtimeLaunchEnvelope?.rawHVVirtualHardwareTopology,
+            armVirtTopology:
+                runtimeLaunchEnvelope?.armVirtTopology,
             resolvedSystemDiskLogicalID: resolvedSystemDiskLogicalID,
             displayPresentation: displayPresentation
         ))

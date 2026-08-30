@@ -512,7 +512,7 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
     public var virtualHardwareABIVersion: UInt16
     /// Exact guest-visible addresses selected by the resolver. RawHV plans require this field;
     /// other backends must omit it until their own versioned topology contract is introduced.
-    public var rawHVVirtualHardwareTopology: DoryRawHVVirtualHardwareTopology?
+    public var armVirtTopology: DoryARMVirtV1Topology?
     public var bootMedia: DoryResolvedMachineBootMedia
     public var launchArtifacts: [DoryResolvedMachineLaunchArtifact]
     public var components: [DoryResolvedBackendComponentEvidence]
@@ -538,7 +538,7 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
         backendImplementationIdentifier: String,
         backendRuntimeBuildIdentifier: String,
         virtualHardwareABIVersion: UInt16,
-        rawHVVirtualHardwareTopology: DoryRawHVVirtualHardwareTopology? = nil,
+        armVirtTopology: DoryARMVirtV1Topology? = nil,
         bootMedia: DoryResolvedMachineBootMedia,
         launchArtifacts: [DoryResolvedMachineLaunchArtifact],
         components: [DoryResolvedBackendComponentEvidence],
@@ -566,7 +566,7 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
         self.backendImplementationIdentifier = backendImplementationIdentifier
         self.backendRuntimeBuildIdentifier = backendRuntimeBuildIdentifier
         self.virtualHardwareABIVersion = virtualHardwareABIVersion
-        self.rawHVVirtualHardwareTopology = rawHVVirtualHardwareTopology
+        self.armVirtTopology = armVirtTopology
         self.bootMedia = bootMedia
         self.launchArtifacts = launchArtifacts
         self.components = components
@@ -592,7 +592,7 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
         updatedAtUnixMilliseconds: Int64,
         backendDescriptor: MachineBackendDescriptor,
         backendRuntimeBuildIdentifier: String,
-        rawHVVirtualHardwareTopology: DoryRawHVVirtualHardwareTopology? = nil,
+        armVirtTopology: DoryARMVirtV1Topology? = nil,
         resolverReference: DoryVMResolverReference?,
         launchArtifacts: [DoryResolvedMachineLaunchArtifact],
         portForwards: [DoryVMPortForward] = [],
@@ -637,7 +637,7 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
             backendImplementationIdentifier: backendDescriptor.implementationIdentifier,
             backendRuntimeBuildIdentifier: backendRuntimeBuildIdentifier,
             virtualHardwareABIVersion: selectedCapability.request.virtualHardwareABIVersion,
-            rawHVVirtualHardwareTopology: rawHVVirtualHardwareTopology,
+            armVirtTopology: armVirtTopology,
             bootMedia: DoryResolvedMachineBootMedia(
                 resolverReference: resolverReference,
                 media: selectedCapability.request.bootMedia,
@@ -680,7 +680,7 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
         case backendRuntimeBuildIdentifier
         case backendRuntimeBuildID
         case virtualHardwareABIVersion
-        case rawHVVirtualHardwareTopology
+        case armVirtTopology
         case bootMedia
         case launchArtifacts
         case components
@@ -727,7 +727,7 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
                 UInt16.self,
                 forKey: .virtualHardwareABIVersion
             )
-            rawHVVirtualHardwareTopology = nil
+            armVirtTopology = nil
             bootMedia = DoryResolvedMachineBootMedia(
                 resolverReference: nil,
                 media: try container.decode(DoryBootMedia.self, forKey: .bootMedia)
@@ -790,10 +790,10 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
                 UInt16.self,
                 forKey: .virtualHardwareABIVersion
             )
-            rawHVVirtualHardwareTopology = persistedSchema == Self.currentSchemaVersion
+            armVirtTopology = persistedSchema == Self.currentSchemaVersion
                 ? try container.decodeIfPresent(
-                    DoryRawHVVirtualHardwareTopology.self,
-                    forKey: .rawHVVirtualHardwareTopology
+                    DoryARMVirtV1Topology.self,
+                    forKey: .armVirtTopology
                 ) : nil
             bootMedia = try container.decode(DoryResolvedMachineBootMedia.self, forKey: .bootMedia)
             launchArtifacts = persistedSchema >= 4
@@ -860,8 +860,8 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
         try container.encode(backendRuntimeBuildIdentifier, forKey: .backendRuntimeBuildIdentifier)
         try container.encode(virtualHardwareABIVersion, forKey: .virtualHardwareABIVersion)
         try container.encodeIfPresent(
-            rawHVVirtualHardwareTopology,
-            forKey: .rawHVVirtualHardwareTopology
+            armVirtTopology,
+            forKey: .armVirtTopology
         )
         try container.encode(bootMedia, forKey: .bootMedia)
         try container.encode(launchArtifacts, forKey: .launchArtifacts)
@@ -949,7 +949,7 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
     private func validateVirtualHardwareTopology(
         into issues: inout [DoryResolvedMachinePlanValidationIssue]
     ) {
-        func reject(_ field: String = "rawHVVirtualHardwareTopology") {
+        func reject(_ field: String = "armVirtTopology") {
             issues.append(DoryResolvedMachinePlanValidationIssue(
                 code: .invalidVirtualHardwareTopology,
                 field: field
@@ -957,14 +957,12 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
         }
 
         guard backend == .doryHypervisor else {
-            if rawHVVirtualHardwareTopology != nil { reject() }
+            if armVirtTopology != nil { reject() }
             return
         }
-        guard let topology = rawHVVirtualHardwareTopology,
+        guard let topology = armVirtTopology,
               virtualHardwareABIVersion == 1,
-              topology.abiVersion == .rawHVARM64V1,
-              topology.backend == .rawHV,
-              topology.architecture == .arm64 else {
+              topology.machineABIIdentity == DoryMachineModelIdentity.armVirtV1.rawValue else {
             reject()
             return
         }
@@ -974,7 +972,7 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
         for role in [
             DoryVirtualDeviceRole.systemDisk, .entropy, .balloon, .vsock,
         ] where count(role) != 1 {
-            reject("rawHVVirtualHardwareTopology.occupiedSlots")
+            reject("armVirtTopology.occupiedSlots")
         }
         if devices.displays.isEmpty
             || devices.networkInterface?.isValid != true {
@@ -989,11 +987,11 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
             (.network, true),
         ]
         for (role, expected) in expectations where count(role) != (expected ? 1 : 0) {
-            reject("rawHVVirtualHardwareTopology.occupiedSlots")
+            reject("armVirtTopology.occupiedSlots")
         }
         let shareCount = count(.directoryShare)
         if devices.directorySharing != (shareCount > 0) {
-            reject("rawHVVirtualHardwareTopology.occupiedSlots")
+            reject("armVirtTopology.occupiedSlots")
         }
         // These roles are reserved in ABI v1 but the current resolved RawHV runtime has no
         // descriptor-backed implementation for them. Persisting an address would falsely claim
@@ -1001,7 +999,7 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
         if count(.auxiliaryBlock) != 0
             || count(.removableStorage) != 0
             || count(.usbController) != 0 {
-            reject("rawHVVirtualHardwareTopology.occupiedSlots")
+            reject("armVirtTopology.occupiedSlots")
         }
     }
 
@@ -1613,7 +1611,7 @@ public struct DoryResolvedMachineRuntimeEvidence: Codable, Sendable, Equatable, 
     public var backendImplementationIdentifier: String
     public var backendRuntimeBuildIdentifier: String
     public var virtualHardwareABIVersion: UInt16
-    public var rawHVVirtualHardwareTopology: DoryRawHVVirtualHardwareTopology?
+    public var armVirtTopology: DoryARMVirtV1Topology?
     public var bootMedia: DoryResolvedMachineBootMedia
     public var launchArtifacts: [DoryResolvedMachineLaunchArtifact]
     public var components: [DoryResolvedBackendComponentEvidence]
@@ -1633,7 +1631,7 @@ public struct DoryResolvedMachineRuntimeEvidence: Codable, Sendable, Equatable, 
         backendImplementationIdentifier: String,
         backendRuntimeBuildIdentifier: String,
         virtualHardwareABIVersion: UInt16,
-        rawHVVirtualHardwareTopology: DoryRawHVVirtualHardwareTopology? = nil,
+        armVirtTopology: DoryARMVirtV1Topology? = nil,
         bootMedia: DoryResolvedMachineBootMedia,
         launchArtifacts: [DoryResolvedMachineLaunchArtifact],
         components: [DoryResolvedBackendComponentEvidence],
@@ -1652,7 +1650,7 @@ public struct DoryResolvedMachineRuntimeEvidence: Codable, Sendable, Equatable, 
         self.backendImplementationIdentifier = backendImplementationIdentifier
         self.backendRuntimeBuildIdentifier = backendRuntimeBuildIdentifier
         self.virtualHardwareABIVersion = virtualHardwareABIVersion
-        self.rawHVVirtualHardwareTopology = rawHVVirtualHardwareTopology
+        self.armVirtTopology = armVirtTopology
         self.bootMedia = bootMedia
         self.launchArtifacts = launchArtifacts
         self.components = components
@@ -1673,7 +1671,7 @@ public struct DoryResolvedMachineRuntimeEvidence: Codable, Sendable, Equatable, 
         backendImplementationIdentifier = plan.backendImplementationIdentifier
         backendRuntimeBuildIdentifier = plan.backendRuntimeBuildIdentifier
         virtualHardwareABIVersion = plan.virtualHardwareABIVersion
-        rawHVVirtualHardwareTopology = plan.rawHVVirtualHardwareTopology
+        armVirtTopology = plan.armVirtTopology
         bootMedia = plan.bootMedia
         launchArtifacts = plan.launchArtifacts
         components = plan.components
@@ -1832,10 +1830,10 @@ public enum DoryResolvedMachinePlanStartValidator {
             field: "virtualHardwareABIVersion"
         )
         compare(
-            runtime.rawHVVirtualHardwareTopology,
-            plan.rawHVVirtualHardwareTopology,
+            runtime.armVirtTopology,
+            plan.armVirtTopology,
             code: .virtualHardwareTopologyMismatch,
-            field: "rawHVVirtualHardwareTopology"
+            field: "armVirtTopology"
         )
         compare(runtime.bootMedia, plan.bootMedia, code: .bootMediaEvidenceMismatch, field: "bootMedia")
         compare(

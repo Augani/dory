@@ -240,7 +240,7 @@ public final class DoryDaemonVirtualMachineStartEvidenceCollector:
             backendImplementationIdentifier: backend.descriptor.implementationIdentifier,
             backendRuntimeBuildIdentifier: runtime.runtimeBuildIdentifier,
             virtualHardwareABIVersion: exactRequest.virtualHardwareABIVersion,
-            rawHVVirtualHardwareTopology: plan.rawHVVirtualHardwareTopology,
+            armVirtTopology: plan.armVirtTopology,
             bootMedia: DoryResolvedMachineBootMedia(
                 resolverReference: snapshot.media.reference,
                 media: exactRequest.bootMedia,
@@ -428,14 +428,14 @@ public final class DoryDaemonVirtualMachineLaunchPlanResolver:
             throw failure(.planRepositoryRejected, "The durable plan record could not be read.")
         }
         if plan.backend == .doryHypervisor {
-            guard let topology = plan.rawHVVirtualHardwareTopology else {
+            guard let topology = plan.armVirtTopology else {
                 throw failure(
                     .virtualHardwareTopologyMismatch,
                     "The RawHV plan has no durable virtual-hardware topology."
                 )
             }
             do {
-                try DoryRawHVVirtualHardwareTopologyPlanner.validate(
+                try DoryARMVirtV1TopologyPlanner.validate(
                     topology,
                     definition: request.definition,
                     resolvedDevices: plan.devices

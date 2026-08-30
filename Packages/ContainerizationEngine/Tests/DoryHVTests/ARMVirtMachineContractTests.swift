@@ -1,4 +1,5 @@
 import DoryMachineARMVirt
+import DoryVMContracts
 import Testing
 
 @testable import DoryHV
@@ -6,6 +7,7 @@ import Testing
 #if arch(arm64)
   @Suite struct ARMVirtMachineContractTests {
     @Test func liveGuestLayoutIsAnExactProjectionOfTheFrozenABI() {
+        #expect(DoryARMVirtV1Topology.requiredMachineABIIdentity == DoryARMVirtV1ABI.identity)
       #expect(GuestLayout.gicDistributorBase == DoryARMVirtV1ABI.gicDistributorBase)
       #expect(GuestLayout.gicRedistributorBase == DoryARMVirtV1ABI.gicRedistributorBase)
       #expect(GuestLayout.uartBase == DoryARMVirtV1ABI.uartBase)
