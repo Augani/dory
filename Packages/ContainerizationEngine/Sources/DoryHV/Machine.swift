@@ -239,7 +239,7 @@ public enum MachineARMVirtBoot: Sendable {
     case uefi(
         launchPlan: DoryARMVirtUEFILaunchPlan,
         artifacts: DoryVerifiedFirmwareArtifacts,
-        variableStore: DoryUEFIVariableStoreFile
+        variableStore: DoryUEFIVariableStoreAuthority
     )
 }
 
@@ -278,6 +278,22 @@ public struct MachineConfiguration {
         uefiLaunchPlan: DoryARMVirtUEFILaunchPlan,
         artifacts: DoryVerifiedFirmwareArtifacts,
         variableStore: DoryUEFIVariableStoreFile,
+        memoryBytes: UInt64,
+        cpuCount: Int
+    ) {
+        self.boot = .uefi(
+            launchPlan: uefiLaunchPlan,
+            artifacts: artifacts,
+            variableStore: DoryUEFIVariableStoreAuthority(file: variableStore)
+        )
+        self.memoryBytes = memoryBytes
+        self.cpuCount = cpuCount
+    }
+
+    public init(
+        uefiLaunchPlan: DoryARMVirtUEFILaunchPlan,
+        artifacts: DoryVerifiedFirmwareArtifacts,
+        variableStore: DoryUEFIVariableStoreAuthority,
         memoryBytes: UInt64,
         cpuCount: Int
     ) {

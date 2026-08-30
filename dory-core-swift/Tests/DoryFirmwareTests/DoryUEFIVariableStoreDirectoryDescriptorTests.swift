@@ -46,6 +46,38 @@ import Testing
     #expect(try store.load().source == .primary)
   }
 
+  @Test func variableBridgePersistsThroughDirectoryCapability() throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("dory-uefi-bridge-dirfd-\(UUID().uuidString)", isDirectory: true).path
+    defer { try? FileManager.default.removeItem(atPath: directory) }
+    try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: false)
+    #expect(chmod(directory, 0o700) == 0)
+    let descriptor = directory.withCString {
+      open($0, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
+    }
+    #expect(descriptor >= 3)
+    guard descriptor >= 3 else { return }
+    let store = try DoryUEFIVariableStoreDirectoryDescriptor(
+      inheritedDescriptor: descriptor
+    )
+    #expect(close(descriptor) == 0)
+    try store.initialize(DoryUEFIVariableStoreSnapshot())
+
+    let service = DoryUEFIVariableBridgeService(store: store)
+    let vendor = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+    let response = service.execute(.init(
+      command: .set,
+      vendor: vendor,
+      name: "BootOrder",
+      attributes: [.nonVolatile, .bootServiceAccess],
+      data: Data([0, 1])
+    ))
+
+    #expect(response.status == .success)
+    #expect(response.generation == 2)
+    #expect(try store.load().snapshot.variable(for: .init(vendor: vendor, name: "BootOrder"))?.data == Data([0, 1]))
+  }
+
   @Test func rejectsPublicOrNonDirectoryCapabilities() throws {
     let directory = FileManager.default.temporaryDirectory
       .appendingPathComponent("dory-uefi-unsafe-dirfd-\(UUID().uuidString)", isDirectory: true).path

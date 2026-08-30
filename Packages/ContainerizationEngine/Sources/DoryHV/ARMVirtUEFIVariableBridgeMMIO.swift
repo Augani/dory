@@ -22,7 +22,11 @@ final class ARMVirtUEFIVariableBridgeMMIO: MMIODevice, @unchecked Sendable {
     private var name = [UInt8](repeating: 0, count: DoryUEFIVariableBridgeV1ABI.nameByteCount)
     private var data = [UInt8](repeating: 0, count: DoryUEFIVariableBridgeV1ABI.dataByteCount)
 
-    init(store: DoryUEFIVariableStoreFile) throws {
+    convenience init(store: DoryUEFIVariableStoreFile) throws {
+        try self.init(store: DoryUEFIVariableStoreAuthority(file: store))
+    }
+
+    init(store: DoryUEFIVariableStoreAuthority) throws {
         try DoryUEFIVariableBridgeV1ABI.validateLayout()
         self.service = DoryUEFIVariableBridgeService(store: store)
         let initial = service.execute(.init(command: .reset))

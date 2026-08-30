@@ -99,9 +99,17 @@ public struct DoryUEFIVariableBridgeResponse: Sendable, Equatable {
 
 /// Transport-independent execution of bridge requests against the crash-safe per-VM store.
 public struct DoryUEFIVariableBridgeService: Sendable {
-  public let store: DoryUEFIVariableStoreFile
+  public let store: DoryUEFIVariableStoreAuthority
 
   public init(store: DoryUEFIVariableStoreFile) {
+    self.store = DoryUEFIVariableStoreAuthority(file: store)
+  }
+
+  public init(store: DoryUEFIVariableStoreDirectoryDescriptor) {
+    self.store = DoryUEFIVariableStoreAuthority(directoryDescriptor: store)
+  }
+
+  public init(store: DoryUEFIVariableStoreAuthority) {
     self.store = store
   }
 
