@@ -4,6 +4,7 @@ import IOKit
 import IOKit.usb
 import IOUSBHost
 import DoryHVUSBShim
+import DoryVMContracts
 
 public struct HostUsbDeviceCandidate: Codable, Equatable, Sendable {
     public var descriptor: UsbipDeviceDescriptor
@@ -12,6 +13,7 @@ public struct HostUsbDeviceCandidate: Codable, Equatable, Sendable {
     public var serialNumber: String?
     public var locationID: UInt32?
     public var interfaces: [HostUsbInterfaceIdentity]
+    public var identityToken: DoryUSBPhysicalIdentityToken?
     public var captureDecision: HostUsbCaptureDecision
 
     public init(
@@ -21,6 +23,7 @@ public struct HostUsbDeviceCandidate: Codable, Equatable, Sendable {
         serialNumber: String? = nil,
         locationID: UInt32? = nil,
         interfaces: [HostUsbInterfaceIdentity] = [],
+        identityToken: DoryUSBPhysicalIdentityToken? = nil,
         captureDecision: HostUsbCaptureDecision = .allowed
     ) {
         self.descriptor = descriptor
@@ -29,6 +32,7 @@ public struct HostUsbDeviceCandidate: Codable, Equatable, Sendable {
         self.serialNumber = serialNumber
         self.locationID = locationID
         self.interfaces = interfaces
+        self.identityToken = identityToken
         self.captureDecision = captureDecision
     }
 }
@@ -54,6 +58,7 @@ public struct HostUsbInterfaceIdentity: Codable, Equatable, Hashable, Sendable {
 
 public enum HostUsbCaptureBlockReason: String, Codable, Equatable, Sendable {
     case usbHub = "usb-hub"
+    case unstableIdentity = "stable-identity-unavailable"
     case internalHostDevice = "internal-host-device"
     case storageRequiresHostEject = "storage-requires-host-eject"
     case hostSecurityDevice = "host-security-device"
@@ -75,7 +80,8 @@ public enum HostUsbCapturePolicy: Sendable {
     public static func evaluate(
         descriptor: UsbipDeviceDescriptor,
         interfaces: [HostUsbInterfaceIdentity],
-        builtIn: Bool
+        builtIn: Bool,
+        identityAvailable: Bool = true
     ) -> HostUsbCaptureDecision {
         let identities = [(descriptor.deviceClass, descriptor.deviceSubClass, descriptor.deviceProtocol)]
             + interfaces.map { ($0.interfaceClass, $0.interfaceSubClass, $0.interfaceProtocol) }
@@ -84,6 +90,9 @@ public enum HostUsbCapturePolicy: Sendable {
         }
         if builtIn {
             return .blocked(.internalHostDevice)
+        }
+        if !identityAvailable {
+            return .blocked(.unstableIdentity)
         }
         if identities.contains(where: { $0.0 == 0x08 }) {
             return .blocked(.storageRequiresHostEject)
@@ -259,18 +268,33 @@ public enum HostUsbDiscovery: Sendable {
                 ? declaredInterfaceCount
                 : UInt8(clamping: interfaces.count)
         )
+        let serialNumber = string(
+            properties,
+            keys: ["USB Serial Number", "kUSBSerialNumberString", "iSerialNumber"]
+        ) ?? ""
+        let identityToken = locationID.flatMap { locationID in
+            try? DoryUSBPhysicalIdentity(
+                locationID: locationID,
+                vendorID: vendorID,
+                productID: productID,
+                bcdDevice: descriptor.bcdDevice,
+                serialNumber: serialNumber
+            ).token
+        }
         let decision = HostUsbCapturePolicy.evaluate(
             descriptor: descriptor,
             interfaces: interfaces,
-            builtIn: bool(properties, keys: ["Built-In", "built-in", "Builtin"])
+            builtIn: bool(properties, keys: ["Built-In", "built-in", "Builtin"]),
+            identityAvailable: identityToken != nil
         )
         return HostUsbDeviceCandidate(
             descriptor: descriptor,
             vendorName: string(properties, keys: ["USB Vendor Name", "kUSBVendorString", "iManufacturer"]),
             productName: string(properties, keys: ["USB Product Name", "kUSBProductString", "iProduct"]),
-            serialNumber: string(properties, keys: ["USB Serial Number", "kUSBSerialNumberString", "iSerialNumber"]),
+            serialNumber: serialNumber.isEmpty ? nil : serialNumber,
             locationID: locationID,
             interfaces: interfaces,
+            identityToken: identityToken,
             captureDecision: decision
         )
     }

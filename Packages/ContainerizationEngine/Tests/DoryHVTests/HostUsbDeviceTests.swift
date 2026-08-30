@@ -33,6 +33,8 @@ struct HostUsbDeviceTests {
         #expect(candidate.vendorName == "Raspberry Pi")
         #expect(candidate.productName == "RP2 Boot")
         #expect(candidate.serialNumber == "E0C9125B0D9B")
+        #expect(candidate.identityToken?.rawValue
+            == "e9128805c12c8acc17adde2b0b333cdd9e70d80d5a1778660e2bd6909a9f116c")
     }
 
     @Test func discoveryRejectsEntriesWithoutVendorAndProductIDs() {
@@ -44,6 +46,7 @@ struct HostUsbDeviceTests {
             "DoryBusID": "3-2",
             "idVendor": "4660",
             "idProduct": "0xabcd",
+            "locationID": 0x0102_0000,
         ]))
 
         #expect(candidate.descriptor.busID == "3-2")

@@ -1,4 +1,5 @@
 import CoreFoundation
+import DoryVMContracts
 import Foundation
 import IOKit
 
@@ -8,6 +9,7 @@ public struct DoryHostUSBDevice: Equatable, Sendable {
     public var busID: String
     public var vendorID: UInt16
     public var productID: UInt16
+    public var identityToken: DoryUSBPhysicalIdentityToken
     public var vendorName: String
     public var productName: String
     public var deviceClass: UInt8
@@ -17,6 +19,7 @@ public struct DoryHostUSBDevice: Equatable, Sendable {
         busID: String,
         vendorID: UInt16,
         productID: UInt16,
+        identityToken: DoryUSBPhysicalIdentityToken,
         vendorName: String = "",
         productName: String = "",
         deviceClass: UInt8 = 0,
@@ -25,6 +28,7 @@ public struct DoryHostUSBDevice: Equatable, Sendable {
         self.busID = busID
         self.vendorID = vendorID
         self.productID = productID
+        self.identityToken = identityToken
         self.vendorName = vendorName
         self.productName = productName
         self.deviceClass = deviceClass
@@ -42,6 +46,7 @@ public struct DoryHostUSBDevice: Equatable, Sendable {
             "busID": busID,
             "vendorID": vendorID,
             "productID": productID,
+            "identityToken": identityToken.rawValue,
             "vendorName": vendorName,
             "productName": productName,
             "deviceClass": deviceClass,
@@ -161,10 +166,27 @@ public struct IOKitDoryHostUSBDiscovery: DoryHostUSBDiscovering, Sendable {
         )
         let busNumber = locationID.map { max(1, ($0 >> 24) & 0xff) } ?? 0
         let busID = properties["DoryBusID"] as? String ?? "\(busNumber)-\(deviceNumber)"
+        let serialNumber = boundedName(
+            properties,
+            keys: ["USB Serial Number", "kUSBSerialNumberString", "iSerialNumber"],
+            maximumUTF8Bytes: DoryUSBPhysicalIdentity.maximumSerialNumberUTF8Bytes
+        )
+        guard let locationID,
+              let identity = try? DoryUSBPhysicalIdentity(
+                  locationID: locationID,
+                  vendorID: vendorID,
+                  productID: productID,
+                  bcdDevice: uint16(
+                      properties,
+                      keys: ["bcdDevice", "USB Product Revision"]
+                  ) ?? 0,
+                  serialNumber: serialNumber
+              ) else { return nil }
         let candidate = DoryHostUSBDevice(
             busID: busID,
             vendorID: vendorID,
             productID: productID,
+            identityToken: identity.token,
             vendorName: boundedName(
                 properties,
                 keys: ["USB Vendor Name", "kUSBVendorString", "iManufacturer"]
@@ -182,10 +204,17 @@ public struct IOKitDoryHostUSBDiscovery: DoryHostUSBDiscovering, Sendable {
         return candidate.isValid ? candidate : nil
     }
 
-    private static func boundedName(_ properties: [String: Any], keys: [String]) -> String {
+    private static func boundedName(
+        _ properties: [String: Any],
+        keys: [String],
+        maximumUTF8Bytes: Int = 128
+    ) -> String {
         for key in keys {
             guard let value = properties[key] as? String, !value.isEmpty else { continue }
-            if DoryHostUSBDevice.isValidDisplayName(value) { return value }
+            if value.utf8.count <= maximumUTF8Bytes,
+               value.unicodeScalars.allSatisfy({
+                   !CharacterSet.controlCharacters.contains($0)
+               }) { return value }
         }
         return ""
     }

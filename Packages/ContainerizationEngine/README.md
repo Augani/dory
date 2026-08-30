@@ -22,6 +22,8 @@ The full process, storage, networking, and trust-boundary contract is documented
 - `dory-hv usb list` reports each exact interface tuple and its capture decision. Hubs, built-in
   host devices, storage that has not passed an eject transaction, smart-card/security devices, and
   host Bluetooth controllers are rejected before authorization or open.
+- Physical discovery also issues an opaque identity token over stable topology, VID/PID, device
+  revision, and serial identity; the serial itself never crosses the public control plane.
 - The same Rust `DoryCore` guest handshake, multiplexing, protobuf, Docker dataplane, and half-close
   behavior used by doryd and the VZ fallback.
 

@@ -2,6 +2,7 @@ import DoryCore
 @testable import DorydKit
 import CryptoKit
 import DoryOperations
+import DoryVMContracts
 import XCTest
 
 final class DorydServiceTests: XCTestCase {
@@ -13,6 +14,9 @@ final class DorydServiceTests: XCTestCase {
                     busID: "3-2",
                     vendorID: 0x05ac,
                     productID: 0x12a8,
+                    identityToken: DoryUSBPhysicalIdentityToken(
+                        rawValue: String(repeating: "a", count: 64)
+                    )!,
                     vendorName: "Example Vendor",
                     productName: "Example Device",
                     deviceClass: 3,
@@ -37,9 +41,16 @@ final class DorydServiceTests: XCTestCase {
             let row = rows.firstObject as? NSDictionary
             XCTAssertEqual(
                 Set(row?.allKeys.compactMap { $0 as? String } ?? []),
-                ["busID", "vendorID", "productID", "vendorName", "productName", "deviceClass", "speed"]
+                [
+                    "busID", "vendorID", "productID", "identityToken", "vendorName",
+                    "productName", "deviceClass", "speed",
+                ]
             )
             XCTAssertEqual(row?["busID"] as? String, "3-2")
+            XCTAssertEqual(
+                row?["identityToken"] as? String,
+                String(repeating: "a", count: 64)
+            )
             discovered.fulfill()
         }
         wait(for: [discovered], timeout: 5)

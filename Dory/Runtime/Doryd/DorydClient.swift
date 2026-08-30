@@ -797,6 +797,7 @@ nonisolated struct DorydHostUSBDevice: Sendable, Equatable, Identifiable {
     var busID: String
     var vendorID: UInt16
     var productID: UInt16
+    var identityToken: String
     var vendorName: String
     var productName: String
     var deviceClass: UInt8
@@ -3314,7 +3315,8 @@ nonisolated final class DorydClient: @unchecked Sendable {
         from dictionary: NSDictionary
     ) -> DorydHostUSBDevice? {
         let expectedKeys: Set<String> = [
-            "busID", "vendorID", "productID", "vendorName", "productName", "deviceClass", "speed",
+            "busID", "vendorID", "productID", "identityToken", "vendorName", "productName",
+            "deviceClass", "speed",
         ]
         guard let keys = dictionary.allKeys as? [String],
               Set(keys) == expectedKeys,
@@ -3323,6 +3325,8 @@ nonisolated final class DorydClient: @unchecked Sendable {
               isValidUSBBusID(busID),
               let vendorID = exactUnsignedInteger(dictionary["vendorID"], maximum: UInt64(UInt16.max)),
               let productID = exactUnsignedInteger(dictionary["productID"], maximum: UInt64(UInt16.max)),
+              let identityToken = dictionary["identityToken"] as? String,
+              identityToken.isLowercaseSHA256,
               let vendorName = dictionary["vendorName"] as? String,
               isValidUSBDisplayName(vendorName),
               let productName = dictionary["productName"] as? String,
@@ -3335,6 +3339,7 @@ nonisolated final class DorydClient: @unchecked Sendable {
             busID: busID,
             vendorID: UInt16(vendorID),
             productID: UInt16(productID),
+            identityToken: identityToken,
             vendorName: vendorName,
             productName: productName,
             deviceClass: UInt8(deviceClass),

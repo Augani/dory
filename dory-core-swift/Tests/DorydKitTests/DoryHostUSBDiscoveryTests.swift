@@ -1,4 +1,5 @@
 @testable import DorydKit
+import DoryVMContracts
 import Testing
 
 struct DoryHostUSBDiscoveryTests {
@@ -19,6 +20,13 @@ struct DoryHostUSBDiscoveryTests {
             busID: "3-2",
             vendorID: 0x05ac,
             productID: 0x12a8,
+            identityToken: try DoryUSBPhysicalIdentity(
+                locationID: 0x0300_0000,
+                vendorID: 0x05ac,
+                productID: 0x12a8,
+                bcdDevice: 0,
+                serialNumber: "private-serial"
+            ).token,
             vendorName: "Example Vendor",
             productName: "Example Device",
             deviceClass: 3,
@@ -44,19 +52,37 @@ struct DoryHostUSBDiscoveryTests {
             "USB Address": 3,
             "DoryBusID": "../device",
         ]) == nil)
+        #expect(IOKitDoryHostUSBDiscovery.device(from: [
+            "idVendor": 1,
+            "idProduct": 2,
+            "USB Address": 3,
+        ]) == nil)
     }
 
     @Test func publicProjectionIsSortedBoundedAndRejectsDuplicates() throws {
-        let first = DoryHostUSBDevice(busID: "1-2", vendorID: 1, productID: 2)
-        let second = DoryHostUSBDevice(busID: "1-1", vendorID: 1, productID: 3)
+        let first = DoryHostUSBDevice(
+            busID: "1-2", vendorID: 1, productID: 2, identityToken: fixtureUSBToken("a")
+        )
+        let second = DoryHostUSBDevice(
+            busID: "1-1", vendorID: 1, productID: 3, identityToken: fixtureUSBToken("b")
+        )
         #expect(try DoryHostUSBProjection.validated([first, second]).map(\.busID) == ["1-1", "1-2"])
         #expect(throws: DoryHostUSBDiscoveryError.duplicateBusID("1-2")) {
             try DoryHostUSBProjection.validated([first, first])
         }
         #expect(throws: DoryHostUSBDiscoveryError.invalidDeviceProjection) {
             try DoryHostUSBProjection.validated([
-                DoryHostUSBDevice(busID: "../device", vendorID: 1, productID: 2),
+                DoryHostUSBDevice(
+                    busID: "../device",
+                    vendorID: 1,
+                    productID: 2,
+                    identityToken: fixtureUSBToken("c")
+                ),
             ])
         }
     }
+}
+
+private func fixtureUSBToken(_ digit: Character) -> DoryUSBPhysicalIdentityToken {
+    DoryUSBPhysicalIdentityToken(rawValue: String(repeating: digit, count: 64))!
 }
