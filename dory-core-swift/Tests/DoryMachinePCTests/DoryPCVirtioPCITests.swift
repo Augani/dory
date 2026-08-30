@@ -8,10 +8,11 @@ import Testing
     let function = try makeFunction()
     #expect(try function.readConfiguration(offset: 0, byteCount: 4) == [0xF4, 0x1A, 0x42, 0x10])
     #expect(try function.readConfiguration(offset: 0x50, byteCount: 2) == [0x05, 0x60])
-    #expect(try function.readConfiguration(offset: 0x60, byteCount: 4) == [0x09, 0x70, 16, 1])
-    #expect(try function.readConfiguration(offset: 0x70, byteCount: 4) == [0x09, 0x84, 20, 2])
-    #expect(try function.readConfiguration(offset: 0x84, byteCount: 4) == [0x09, 0x94, 16, 3])
-    #expect(try function.readConfiguration(offset: 0x94, byteCount: 4) == [0x09, 0, 16, 4])
+    #expect(try function.readConfiguration(offset: 0x60, byteCount: 4) == [0x11, 0x70, 2, 0])
+    #expect(try function.readConfiguration(offset: 0x70, byteCount: 4) == [0x09, 0x80, 16, 1])
+    #expect(try function.readConfiguration(offset: 0x80, byteCount: 4) == [0x09, 0x94, 20, 2])
+    #expect(try function.readConfiguration(offset: 0x94, byteCount: 4) == [0x09, 0xA4, 16, 3])
+    #expect(try function.readConfiguration(offset: 0xA4, byteCount: 4) == [0x09, 0, 16, 4])
   }
 
   @Test func programsFeaturesStatusAndSplitQueueThroughTheCommonRegion() throws {
@@ -66,6 +67,48 @@ import Testing
     #expect(try read8(machine, 0xD000_0200) == 0)
   }
 
+  @Test func msixRoutesConfigurationAndPerQueueEvents() throws {
+    let function = try makeFunction()
+    let machine = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024,
+      pciFunctions: [function]
+    )
+    try function.writeConfiguration(offset: 4, bytes: [2, 0])
+    try writeMSIXEntry(machine, at: 0xD000_0800, vector: 0x80)
+    try writeMSIXEntry(machine, at: 0xD000_0810, vector: 0x81)
+    try writeMSIXEntry(machine, at: 0xD000_0820, vector: 0x82)
+    try function.writeConfiguration(offset: 0x62, bytes: [2, 0x80])
+    try write16(machine, 0xD000_0010, 0)
+    try write16(machine, 0xD000_0016, 1)
+    try write16(machine, 0xD000_001A, 2)
+
+    function.transport.signalConfigurationChange()
+    #expect(function.transport.signalQueueInterrupt(queue: 1))
+    let pending = machine.localAPIC.snapshot().interruptRequest
+    #expect(pending.contains(0x80))
+    #expect(pending.contains(0x82))
+  }
+
+  @Test func enabledUnmappedMSIXEventDoesNotFallBackToMSI() throws {
+    let function = try makeFunction()
+    let machine = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024,
+      pciFunctions: [function]
+    )
+    try function.writeConfiguration(offset: 4, bytes: [2, 0])
+    try function.writeConfiguration(offset: 0x54, bytes: littleEndian(UInt32(0xFEE0_0000)))
+    try function.writeConfiguration(offset: 0x5C, bytes: [0x72, 0])
+    try function.writeConfiguration(offset: 0x52, bytes: [1, 0])
+    try function.writeConfiguration(offset: 0x62, bytes: [2, 0x80])
+
+    #expect(!function.transport.signalQueueInterrupt(queue: 0))
+    #expect(!machine.localAPIC.snapshot().interruptRequest.contains(0x72))
+
+    try write16(machine, 0xD000_0016, 0)
+    try write16(machine, 0xD000_001A, 3)
+    #expect(try read16(machine, 0xD000_001A) == UInt16.max)
+  }
+
   @Test func zeroStatusResetsEnabledQueues() throws {
     let function = try makeFunction()
     try function.transport.writeBAR(offset: 0x16, bytes: littleEndian(UInt16(0)))
@@ -103,6 +146,11 @@ import Testing
     uint32(try machine.physicalMemory.read(at: address, byteCount: 4))
   }
 
+  private func read16(_ machine: DoryPCDirectKernelMachine, _ address: UInt64) throws -> UInt16 {
+    let bytes = try machine.physicalMemory.read(at: address, byteCount: 2)
+    return UInt16(bytes[0]) | UInt16(bytes[1]) << 8
+  }
+
   private func write8(_ machine: DoryPCDirectKernelMachine, _ address: UInt64, _ value: UInt8)
     throws
   {
@@ -125,6 +173,19 @@ import Testing
     throws
   {
     try machine.physicalMemory.write(at: address, bytes: littleEndian(value))
+  }
+
+  private func writeMSIXEntry(
+    _ machine: DoryPCDirectKernelMachine,
+    at address: UInt64,
+    vector: UInt32
+  ) throws {
+    try machine.physicalMemory.write(
+      at: address,
+      bytes: littleEndian(UInt64(0xFEE0_0000))
+        + littleEndian(vector)
+        + littleEndian(UInt32(0))
+    )
   }
 }
 

@@ -11,6 +11,11 @@ public protocol DoryPCVirtioGuestMemoryConsumer: AnyObject, Sendable {
   func connectGuestMemory(_ memory: any DoryVirtioGuestMemory)
 }
 
+public enum DoryPCVirtioPCIInterrupt: Sendable, Hashable {
+  case queue(UInt16)
+  case configuration
+}
+
 public struct DoryPCVirtioPCIQueueSnapshot: Sendable, Hashable {
   public let size: UInt16
   public let enabled: Bool
@@ -36,6 +41,7 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
 
   public let deviceState: DoryVirtioDeviceState
   public let queueCount: Int
+  public let msixVectorCount: Int
 
   private let lock = NSLock()
   private var deviceFeatureSelect: UInt32 = 0
@@ -46,7 +52,7 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
   private var isrStatus: UInt8 = 0
   private var deviceConfiguration: [UInt8]
   private var notifySink: (@Sendable (UInt16) -> Void)?
-  private var interruptSink: (@Sendable () -> Bool)?
+  private var interruptSink: (@Sendable (DoryPCVirtioPCIInterrupt) -> Bool)?
   private var guestMemory: (any DoryVirtioGuestMemory)?
   private var queueProcessor:
     (@Sendable (UInt16, DoryVirtioDescriptorChain, any DoryVirtioGuestMemory) throws -> UInt32)?
@@ -56,13 +62,18 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
   public init(
     queueCount: Int,
     maximumQueueSize: UInt16 = 256,
+    msixVectorCount: Int = 2048,
     offeredFeatures: DoryVirtioFeatures,
     deviceConfiguration: [UInt8] = []
   ) throws {
     guard (1...65_535).contains(queueCount) else {
       throw DoryPCVirtioPCIError.invalidQueueCount(queueCount)
     }
+    guard (1...2048).contains(msixVectorCount) else {
+      throw DoryPCVirtioPCIError.invalidQueueCount(msixVectorCount)
+    }
     self.queueCount = queueCount
+    self.msixVectorCount = msixVectorCount
     deviceState = .init(offeredFeatures: offeredFeatures)
     queues = (0..<queueCount).map {
       .init(
@@ -79,7 +90,9 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
     lock.withLock { notifySink = sink }
   }
 
-  public func connectInterruptSink(_ sink: @escaping @Sendable () -> Bool) {
+  public func connectInterruptSink(
+    _ sink: @escaping @Sendable (DoryPCVirtioPCIInterrupt) -> Bool
+  ) {
     lock.withLock { interruptSink = sink }
   }
 
@@ -134,12 +147,12 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
   }
 
   @discardableResult
-  public func signalQueueInterrupt() -> Bool {
-    let sink = lock.withLock {
+  public func signalQueueInterrupt(queue: UInt16? = nil) -> Bool {
+    let delivery = lock.withLock {
       isrStatus |= 1
-      return interruptSink
+      return (interruptSink, queue ?? selectedQueue)
     }
-    return sink?() ?? false
+    return delivery.0?(.queue(delivery.1)) ?? false
   }
 
   public func signalConfigurationChange() {
@@ -147,7 +160,7 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
       isrStatus |= 2
       return interruptSink
     }
-    _ = sink?()
+    _ = sink?(.configuration)
   }
 
   public func updateDeviceConfiguration(_ bytes: [UInt8], signalChange: Bool = true) {
@@ -235,7 +248,7 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
           memory: memory,
           eventIndexNegotiated: snapshot.negotiatedFeatures.contains(.eventIndex)
         )
-        if notify { _ = signalQueueInterrupt() }
+        if notify { _ = signalQueueInterrupt(queue: index) }
       }
     } catch {
       deviceState.markDeviceNeedsReset()
@@ -250,7 +263,11 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
     case (0x0C, 4):
       let page = lock.withLock { driverFeatureSelect }
       deviceState.writeDriverFeatures(page: page, value: uint32(bytes))
-    case (0x10, 2): lock.withLock { configurationMSIXVector = uint16(bytes) }
+    case (0x10, 2):
+      lock.withLock {
+        let vector = uint16(bytes)
+        configurationMSIXVector = Int(vector) < msixVectorCount ? vector : .max
+      }
     case (0x14, 1):
       let status = DoryVirtioDeviceStatus(rawValue: bytes[0])
       deviceState.writeStatus(status)
@@ -267,7 +284,11 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
       }
     case (0x16, 2): lock.withLock { selectedQueue = uint16(bytes) }
     case (0x18, 2): try updateSelectedQueue { if !$0.enabled { $0.size = uint16(bytes) } }
-    case (0x1A, 2): try updateSelectedQueue { $0.msixVector = uint16(bytes) }
+    case (0x1A, 2):
+      try updateSelectedQueue {
+        let vector = uint16(bytes)
+        $0.msixVector = Int(vector) < msixVectorCount ? vector : .max
+      }
     case (0x1C, 2):
       let enable = uint16(bytes) & 1 != 0
       try updateSelectedQueue { queue in
@@ -314,6 +335,18 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
       put(queue.deviceAddress, at: 0x30, in: &bytes)
     }
     return bytes
+  }
+
+  fileprivate func msixVector(for interrupt: DoryPCVirtioPCIInterrupt) -> UInt16 {
+    lock.withLock {
+      switch interrupt {
+      case .configuration:
+        return configurationMSIXVector
+      case .queue(let index):
+        guard queues.indices.contains(Int(index)) else { return .max }
+        return queues[Int(index)].msixVector
+      }
+    }
   }
 
   private func updateSelectedQueue(_ update: (inout QueueRegisters) -> Void) throws {
@@ -580,6 +613,10 @@ public final class DoryPCVirtioPCIFunction: DoryPCPCIFunction, DoryPCPCIMSIContr
     offeredFeatures: DoryVirtioFeatures = [],
     deviceConfiguration: [UInt8] = []
   ) throws {
+    guard (1...63).contains(queueCount) else {
+      throw DoryPCVirtioPCIError.invalidQueueCount(queueCount)
+    }
+    let msixVectorCount = queueCount + 1
     configurationFunction = try .init(
       address: address,
       vendorID: 0x1AF4,
@@ -588,8 +625,16 @@ public final class DoryPCVirtioPCIFunction: DoryPCPCIFunction, DoryPCPCIMSIContr
       revisionID: 1,
       subsystemVendorID: 0x1AF4,
       subsystemID: virtioDeviceID,
+      interruptPin: 1,
       supportsMSI: true,
       msiNextCapabilityOffset: 0x60,
+      msixVectorCount: msixVectorCount,
+      msixCapabilityOffset: 0x60,
+      msixNextCapabilityOffset: 0x70,
+      msixTableBAR: 0,
+      msixTableOffset: 0x800,
+      msixPendingBAR: 0,
+      msixPendingOffset: 0xC00,
       bars: [
         .init(
           index: 0,
@@ -602,12 +647,18 @@ public final class DoryPCVirtioPCIFunction: DoryPCPCIFunction, DoryPCPCIMSIContr
     transport = try .init(
       queueCount: queueCount,
       maximumQueueSize: maximumQueueSize,
+      msixVectorCount: msixVectorCount,
       offeredFeatures: offeredFeatures,
       deviceConfiguration: deviceConfiguration
     )
     capabilities = Self.makeCapabilities(deviceConfigurationLength: deviceConfiguration.count)
-    transport.connectInterruptSink { [configurationFunction] in
-      configurationFunction.raiseMSI()
+    transport.connectInterruptSink { [configurationFunction, transport] interrupt in
+      if configurationFunction.msixState?.enabled == true {
+        let vector = transport.msixVector(for: interrupt)
+        guard vector != .max else { return false }
+        return configurationFunction.raiseMSIX(vector: vector)
+      }
+      return configurationFunction.raiseMSI()
     }
   }
 
@@ -630,21 +681,31 @@ public final class DoryPCVirtioPCIFunction: DoryPCPCIFunction, DoryPCPCIMSIContr
   }
 
   public func readBAR(offset: UInt64, byteCount: Int) throws -> [UInt8] {
-    try transport.readBAR(offset: offset, byteCount: byteCount)
+    if let bytes = configurationFunction.readMSIXBAR(
+      bar: barIndex,
+      offset: offset,
+      byteCount: byteCount
+    ) {
+      return bytes
+    }
+    return try transport.readBAR(offset: offset, byteCount: byteCount)
   }
 
   public func writeBAR(offset: UInt64, bytes: [UInt8]) throws {
+    if configurationFunction.writeMSIXBAR(bar: barIndex, offset: offset, bytes: bytes) {
+      return
+    }
     try transport.writeBAR(offset: offset, bytes: bytes)
   }
 
   private static func makeCapabilities(deviceConfigurationLength: Int) -> [UInt8: UInt8] {
     var result: [UInt8: UInt8] = [:]
-    addCapability(at: 0x60, next: 0x70, type: 1, offset: 0, length: 0x40, to: &result)
+    addCapability(at: 0x70, next: 0x80, type: 1, offset: 0, length: 0x40, to: &result)
     addCapability(
-      at: 0x70, next: 0x84, type: 2, offset: 0x100, length: 0x100, to: &result, notify: true)
-    addCapability(at: 0x84, next: 0x94, type: 3, offset: 0x200, length: 1, to: &result)
+      at: 0x80, next: 0x94, type: 2, offset: 0x100, length: 0x100, to: &result, notify: true)
+    addCapability(at: 0x94, next: 0xA4, type: 3, offset: 0x200, length: 1, to: &result)
     addCapability(
-      at: 0x94,
+      at: 0xA4,
       next: 0,
       type: 4,
       offset: 0x300,
