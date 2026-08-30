@@ -473,7 +473,7 @@ private func createSparseFile(at url: URL, size: UInt64) throws {
 }
 
 private func cloneFile(from source: URL, to destination: URL) throws {
-    guard clonefile(source.path, destination.path, 0) == 0 else {
+    guard copyfile(source.path, destination.path, nil, copyfile_flags_t(COPYFILE_CLONE)) == 0 else {
         throw DoryVZMacMachineBundleError.filesystem("clone \(source.lastPathComponent)", errno)
     }
 }
