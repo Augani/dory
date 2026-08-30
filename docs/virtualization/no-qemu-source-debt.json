@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "policy": "No new QEMU production dependency or identity may be introduced. Counts are temporary Phase 0B removal ceilings, not approvals.",
+  "entries": [
+    {"category": "persisted-identity", "path": "Dory/Models/Models.swift", "maximumOccurrences": 1, "disposition": "legacy decode/display only; remove production selection in Phase 0B"},
+    {"category": "executable-or-helper", "path": "Packages/ContainerizationEngine/Sources/DoryHV/BinfmtRegistration.swift", "maximumOccurrences": 4, "disposition": "retire under the separate application-translation decision; never use for a whole guest"},
+    {"category": "control-protocol", "path": "Packages/ContainerizationEngine/Sources/dory-hv/EngineMode.swift", "maximumOccurrences": 1, "disposition": "replace the gvproxy named compatibility port with Dory framing in Phase 0B"},
+    {"category": "control-protocol", "path": "dory-core-swift/Sources/DoryCore/DirectIPBridge.swift", "maximumOccurrences": 8, "disposition": "replace the gvproxy named compatibility framing with Dory framing in Phase 0B"},
+    {"category": "persisted-identity", "path": "dory-core-swift/Sources/DoryOperations/DoryVirtualMachineBackendPlanner.swift", "maximumOccurrences": 1, "disposition": "remove disabled experimental Windows planning in Phase 0B"},
+    {"category": "persisted-identity", "path": "dory-core-swift/Sources/DoryOperations/DoryVirtualMachineCapabilities.swift", "maximumOccurrences": 12, "disposition": "make decode-only, migrate or reject, then remove production selection in Phase 0B"},
+    {"category": "persisted-identity", "path": "dory-core-swift/Sources/DoryOperations/DoryVirtualMachineQualificationManifest.swift", "maximumOccurrences": 1, "disposition": "remove legacy qualification vocabulary in Phase 0B"},
+    {"category": "control-protocol", "path": "dory-core-swift/Sources/DoryVMMKit/DoryVMMGVProxyNetwork.swift", "maximumOccurrences": 1, "disposition": "replace the gvproxy named compatibility port with Dory framing in Phase 0B"},
+    {"category": "persisted-identity", "path": "dory-core-swift/Sources/DorydKit/DoryDaemonVirtualMachineProductionActivation.swift", "maximumOccurrences": 1, "disposition": "remove disabled experimental Windows activation in Phase 0B"},
+    {"category": "persisted-identity", "path": "dory-core-swift/Sources/DorydKit/DoryDaemonVirtualMachineProductionTrust.swift", "maximumOccurrences": 3, "disposition": "retain rejection only until legacy decoder migration is complete"},
+    {"category": "persisted-identity", "path": "dory-core-swift/Sources/DorydKit/DoryResolvedMachinePlan.swift", "maximumOccurrences": 1, "disposition": "remove disabled experimental Windows resolution in Phase 0B"},
+    {"category": "persisted-identity", "path": "scripts/build-components.py", "maximumOccurrences": 1, "disposition": "remove legacy qualification-manifest acceptance in Phase 0B"}
+  ]
+}

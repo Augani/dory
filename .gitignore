@@ -162,6 +162,9 @@ docs/
 !/docs/container-engine-performance-qualification.md
 !/docs/linux-and-macos-virtualization-delivery-plan.md
 !/docs/linux-and-macos-virtualization-evidence-2026-08-29.md
+!/docs/virtualization/
+/docs/virtualization/*
+!/docs/virtualization/no-qemu-source-debt.json
 !/docs/architecture-gates/
 /docs/architecture-gates/*
 !/docs/architecture-gates/virtiofs-worker-xpc.json

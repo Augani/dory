@@ -726,6 +726,11 @@ jobs:
             > "$candidate_root/evidence/sparkle-verification.txt"
           printf 'app=%s\n' "$candidate_root/extracted/Dory.app" >> "$GITHUB_OUTPUT"
 
+      - name: Reject prohibited runtime artifacts
+        run: |
+          python3 .github/scripts/verify-no-qemu-production.py \
+            --artifact-root "${{ steps.sparkle_candidate.outputs.app }}"
+
       - name: Resolve the exact release-build Sparkle source checkout
         id: sparkle_source
         run: |
