@@ -1218,22 +1218,22 @@ private func healthSupportedRawHVTopology() -> DoryARMVirtV1Topology {
             mmioSlot: 0
         ),
         DoryARMVirtV1DeviceSlot(
-            logicalID: "rawhv-graphics",
+            logicalID: "armvirt-graphics",
             role: .graphics,
             mmioSlot: 1
         ),
         DoryARMVirtV1DeviceSlot(
-            logicalID: "rawhv-entropy",
+            logicalID: "armvirt-entropy",
             role: .entropy,
             mmioSlot: 2
         ),
         DoryARMVirtV1DeviceSlot(
-            logicalID: "rawhv-balloon",
+            logicalID: "armvirt-balloon",
             role: .balloon,
             mmioSlot: 3
         ),
         DoryARMVirtV1DeviceSlot(
-            logicalID: "rawhv-vsock",
+            logicalID: "armvirt-vsock",
             role: .vsock,
             mmioSlot: 4
         ),

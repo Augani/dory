@@ -135,7 +135,7 @@ enum RawHVVirtualHardwareAttachmentPlan {
         switch role {
         case .graphics, .entropy, .balloon, .vsock, .keyboard, .pointer, .audio:
             return try DoryARMVirtV1DeviceRequest(
-                logicalID: "rawhv-\(role.rawValue)",
+                logicalID: "armvirt-\(role.rawValue)",
                 role: role
             )
         case .systemDisk, .network, .auxiliaryBlock, .removableStorage,

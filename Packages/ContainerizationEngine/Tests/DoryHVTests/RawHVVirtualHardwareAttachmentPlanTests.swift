@@ -102,7 +102,7 @@ import Testing
             .audio,
         ] {
             let request = try RawHVVirtualHardwareAttachmentPlan.canonicalFixedRequest(role)
-            #expect(request.logicalID.rawValue == "rawhv-\(role.rawValue)")
+            #expect(request.logicalID.rawValue == "armvirt-\(role.rawValue)")
             #expect(assignments.contains(where: { $0.request == request }))
         }
     }

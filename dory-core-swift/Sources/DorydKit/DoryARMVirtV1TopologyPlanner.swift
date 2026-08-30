@@ -155,7 +155,7 @@ public enum DoryARMVirtV1TopologyPlanner {
         _ role: DoryVirtualDeviceRole
     ) throws -> DoryARMVirtV1DeviceRequest {
         try DoryARMVirtV1DeviceRequest(
-            logicalID: "rawhv-\(role.rawValue)",
+            logicalID: "armvirt-\(role.rawValue)",
             role: role
         )
     }

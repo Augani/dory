@@ -709,7 +709,7 @@ final class RuntimeLaunchEnvelopeTests: XCTestCase {
     private func fixedLogicalID(
         for role: DoryVirtualDeviceRole
     ) -> DoryVirtualDeviceID {
-        try! DoryVirtualDeviceID("rawhv-\(role.rawValue)")
+        try! DoryVirtualDeviceID("armvirt-\(role.rawValue)")
     }
 
     private func makeDevices() -> DoryVirtualMachineDeviceCapabilityRequest {

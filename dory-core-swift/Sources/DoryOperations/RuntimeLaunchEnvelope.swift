@@ -343,7 +343,7 @@ public struct RuntimeLaunchEnvelope: Codable, Sendable, Equatable {
             }
             return matches.isEmpty
                 || (matches.count == 1
-                    && matches[0].logicalID.rawValue == "rawhv-\(role.rawValue)")
+                    && matches[0].logicalID.rawValue == "armvirt-\(role.rawValue)")
         }),
         let networkInterface = devices.networkInterface,
         let expectedNetworkID = try? DoryVirtualDeviceID.derived(

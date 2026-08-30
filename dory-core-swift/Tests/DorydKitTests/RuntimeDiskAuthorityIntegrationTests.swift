@@ -221,10 +221,10 @@ final class RuntimeDiskAuthorityIntegrationTests: XCTestCase {
         return try! DoryARMVirtV1TopologyReconciler.reconcile(
             requestedDevices: [
                 try! .init(logicalID: "system-disk", role: .systemDisk),
-                try! .init(logicalID: "rawhv-graphics", role: .graphics),
-                try! .init(logicalID: "rawhv-entropy", role: .entropy),
-                try! .init(logicalID: "rawhv-balloon", role: .balloon),
-                try! .init(logicalID: "rawhv-vsock", role: .vsock),
+                try! .init(logicalID: "armvirt-graphics", role: .graphics),
+                try! .init(logicalID: "armvirt-entropy", role: .entropy),
+                try! .init(logicalID: "armvirt-balloon", role: .balloon),
+                try! .init(logicalID: "armvirt-vsock", role: .vsock),
                 .init(logicalID: networkLogicalID, role: .network),
             ]
         )
