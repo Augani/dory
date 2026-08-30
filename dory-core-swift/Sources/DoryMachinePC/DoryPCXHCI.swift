@@ -45,11 +45,20 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
 {
   private struct Slot {
     struct Endpoint {
+      enum State: UInt32 {
+        case disabled = 0
+        case running = 1
+        case halted = 2
+        case stopped = 3
+        case error = 4
+      }
+
       var type: DoryPCUSBTransferType
       var direction: DoryPCUSBTransferDirection
       var number: UInt8
       var dequeueAddress: UInt64
       var cycle: Bool
+      var state: State
     }
 
     var addressed = false
@@ -163,7 +172,7 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
     do {
       try connect(port: port, speed: device.speed)
     } catch {
-      lock.withLock { devices.removeValue(forKey: port - 1) }
+      _ = lock.withLock { devices.removeValue(forKey: port - 1) }
       throw error
     }
   }
@@ -443,6 +452,7 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
       let result = executeCommand(
         type: type,
         parameter: uint64(Array(bytes[0..<8])),
+        status: uint32(Array(bytes[8..<12])),
         control: control,
         memory: memory
       )
@@ -473,9 +483,15 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
         return (guestMemory, endpoint, devices[Int(slot.rootPort) - 1])
       }
       guard let memory = state.memory, var endpoint = state.endpoint, let device = state.device,
+        endpoint.state != .halted, endpoint.state != .error,
         endpoint.dequeueAddress != 0,
         let bytes = try? memory.read(at: endpoint.dequeueAddress, byteCount: 16), bytes.count == 16
       else { return }
+      if endpoint.state == .stopped {
+        endpoint.state = .running
+        guard updateEndpointContext(slotID: slotID, dci: dci, endpoint: endpoint, memory: memory)
+        else { return }
+      }
       let control = uint32(Array(bytes[12..<16]))
       guard control & 1 == (endpoint.cycle ? 1 : 0) else { return }
       let trbType = UInt8((control >> 10) & 0x3F)
@@ -541,9 +557,15 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
           return
         }
       }
-      endpoint.dequeueAddress &+= 16
-      lock.withLock { slots[slotID]?.endpoints[dci] = endpoint }
-      guard control & (1 << 5) != 0 else { continue }
+      let halted = result.status == .stalled || result.status == .transactionError
+      if halted {
+        endpoint.state = .halted
+      } else {
+        endpoint.dequeueAddress &+= 16
+      }
+      guard updateEndpointContext(slotID: slotID, dci: dci, endpoint: endpoint, memory: memory)
+      else { return }
+      guard halted || control & (1 << 5) != 0 else { continue }
       let residual = endpoint.direction == .in ? requestedBytes - response.count : 0
       let completion = completionCode(
         status: result.status,
@@ -638,9 +660,15 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
       }
     }
     var updated = endpoint
-    updated.dequeueAddress = nextAddress + 16
-    lock.withLock { slots[slotID]?.endpoints[dci] = updated }
-    guard nextControl & (1 << 5) != 0 else { return }
+    let halted = result.status == .stalled || result.status == .transactionError
+    if halted {
+      updated.state = .halted
+    } else {
+      updated.dequeueAddress = nextAddress + 16
+    }
+    guard updateEndpointContext(slotID: slotID, dci: dci, endpoint: updated, memory: memory)
+    else { return }
+    guard halted || nextControl & (1 << 5) != 0 else { return }
     let residual = setup.direction == .in ? requestedBytes - response.count : 0
     postTransferEvent(
       trbAddress: nextAddress,
@@ -690,6 +718,7 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
   private func executeCommand(
     type: UInt8,
     parameter: UInt64,
+    status: UInt32,
     control: UInt32,
     memory: any DoryVirtioGuestMemory
   ) -> (completionCode: UInt8, slotID: UInt8) {
@@ -717,9 +746,46 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
         memory: memory
       )
     case 12:
+      if control & (1 << 9) != 0 {
+        return deconfigureEndpoints(
+          slotID: UInt8(truncatingIfNeeded: control >> 24),
+          memory: memory
+        )
+      }
       return configureEndpoints(
         slotID: UInt8(truncatingIfNeeded: control >> 24),
         inputContextAddress: parameter & ~UInt64(0xF),
+        memory: memory
+      )
+    case 13:
+      return evaluateContext(
+        slotID: UInt8(truncatingIfNeeded: control >> 24),
+        inputContextAddress: parameter & ~UInt64(0xF),
+        memory: memory
+      )
+    case 14:
+      return resetEndpoint(
+        slotID: UInt8(truncatingIfNeeded: control >> 24),
+        dci: UInt8(truncatingIfNeeded: control >> 16),
+        memory: memory
+      )
+    case 15:
+      return stopEndpoint(
+        slotID: UInt8(truncatingIfNeeded: control >> 24),
+        dci: UInt8(truncatingIfNeeded: control >> 16),
+        memory: memory
+      )
+    case 16:
+      return setTransferRingDequeuePointer(
+        slotID: UInt8(truncatingIfNeeded: control >> 24),
+        dci: UInt8(truncatingIfNeeded: control >> 16),
+        streamID: UInt16(truncatingIfNeeded: status >> 16),
+        parameter: parameter,
+        memory: memory
+      )
+    case 17:
+      return resetDevice(
+        slotID: UInt8(truncatingIfNeeded: control >> 24),
         memory: memory
       )
     case 23:
@@ -790,7 +856,8 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
             direction: .out,
             number: 0,
             dequeueAddress: endpoint0Pointer & ~UInt64(0xF),
-            cycle: endpoint0Pointer & 1 != 0
+            cycle: endpoint0Pointer & 1 != 0,
+            state: .running
           )
         ]
       )
@@ -832,7 +899,8 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
         direction: decoded.direction,
         number: dci / 2,
         dequeueAddress: pointer & ~UInt64(0xF),
-        cycle: pointer & 1 != 0
+        cycle: pointer & 1 != 0,
+        state: .running
       )
       writes.append((slot.outputContextAddress + UInt64(dci) * 32, context))
     }
@@ -847,6 +915,209 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
     }
     lock.withLock { slots[slotID]?.endpoints = endpoints }
     return (1, slotID)
+  }
+
+  private func deconfigureEndpoints(
+    slotID: UInt8,
+    memory: any DoryVirtioGuestMemory
+  ) -> (completionCode: UInt8, slotID: UInt8) {
+    guard var slot = lock.withLock({ slots[slotID] }) else { return (11, slotID) }
+    guard slot.addressed, var endpoint0 = slot.endpoints[1] else { return (19, slotID) }
+    endpoint0.state = .stopped
+    var slotContext: [UInt8]
+    var endpoint0Context: [UInt8]
+    do {
+      slotContext = try memory.read(at: slot.outputContextAddress, byteCount: 32)
+      endpoint0Context = try memory.read(at: slot.outputContextAddress + 32, byteCount: 32)
+      guard slotContext.count == 32, endpoint0Context.count == 32 else { return (17, slotID) }
+      var entries = uint32(Array(slotContext[0..<4]))
+      entries = (entries & 0x07FF_FFFF) | UInt32(1) << 27
+      put(entries, at: 0, in: &slotContext)
+      var state = uint32(Array(slotContext[12..<16]))
+      state = (state & 0x07FF_FFFF) | UInt32(2) << 27
+      put(state, at: 12, in: &slotContext)
+      try memory.validate(at: slot.outputContextAddress, byteCount: 1_024, deviceWillWrite: true)
+      try memory.write(at: slot.outputContextAddress, bytes: slotContext)
+      try memory.write(
+        at: slot.outputContextAddress + 32,
+        bytes: endpointContextBytes(endpoint0, existing: endpoint0Context)
+      )
+      try memory.write(
+        at: slot.outputContextAddress + 64,
+        bytes: [UInt8](repeating: 0, count: 960)
+      )
+      memory.synchronize()
+    } catch {
+      return (17, slotID)
+    }
+    slot.endpoints = [1: endpoint0]
+    lock.withLock { slots[slotID] = slot }
+    return (1, slotID)
+  }
+
+  private func evaluateContext(
+    slotID: UInt8,
+    inputContextAddress: UInt64,
+    memory: any DoryVirtioGuestMemory
+  ) -> (completionCode: UInt8, slotID: UInt8) {
+    guard let slot = lock.withLock({ slots[slotID] }) else { return (11, slotID) }
+    guard inputContextAddress != 0,
+      let input = try? memory.read(at: inputContextAddress, byteCount: 1_056), input.count == 1_056,
+      let output = try? memory.read(at: slot.outputContextAddress, byteCount: 1_024),
+      output.count == 1_024
+    else { return (17, slotID) }
+    let dropFlags = uint32(Array(input[0..<4]))
+    let addFlags = uint32(Array(input[4..<8]))
+    guard dropFlags == 0, addFlags != 0 else { return (17, slotID) }
+    var writes: [(UInt64, [UInt8])] = []
+    for contextID in 0...31 where addFlags & (UInt32(1) << UInt32(contextID)) != 0 {
+      if contextID > 0, slot.endpoints[UInt8(contextID)] == nil { return (12, slotID) }
+      let inputOffset = 32 + contextID * 32
+      let outputOffset = contextID * 32
+      var context = Array(input[inputOffset..<(inputOffset + 32)])
+      if contextID == 0 {
+        let oldState = uint32(Array(output[12..<16])) & 0xF800_0000
+        var newState = uint32(Array(context[12..<16])) & 0x07FF_FFFF
+        newState |= oldState
+        put(newState, at: 12, in: &context)
+      } else {
+        let oldContext = Array(output[outputOffset..<(outputOffset + 32)])
+        var state = uint32(Array(context[0..<4]))
+        state = (state & ~UInt32(0x7)) | (uint32(Array(oldContext[0..<4])) & 0x7)
+        put(state, at: 0, in: &context)
+        context.replaceSubrange(8..<16, with: oldContext[8..<16])
+      }
+      writes.append((slot.outputContextAddress + UInt64(outputOffset), context))
+    }
+    do {
+      for write in writes {
+        try memory.validate(at: write.0, byteCount: 32, deviceWillWrite: true)
+      }
+      for write in writes { try memory.write(at: write.0, bytes: write.1) }
+      memory.synchronize()
+    } catch {
+      return (17, slotID)
+    }
+    return (1, slotID)
+  }
+
+  private func resetEndpoint(
+    slotID: UInt8,
+    dci: UInt8,
+    memory: any DoryVirtioGuestMemory
+  ) -> (completionCode: UInt8, slotID: UInt8) {
+    guard let slot = lock.withLock({ slots[slotID] }) else { return (11, slotID) }
+    guard var endpoint = slot.endpoints[dci] else { return (12, slotID) }
+    guard endpoint.state == .halted else { return (19, slotID) }
+    endpoint.state = .stopped
+    guard updateEndpointContext(slotID: slotID, dci: dci, endpoint: endpoint, memory: memory)
+    else { return (17, slotID) }
+    return (1, slotID)
+  }
+
+  private func stopEndpoint(
+    slotID: UInt8,
+    dci: UInt8,
+    memory: any DoryVirtioGuestMemory
+  ) -> (completionCode: UInt8, slotID: UInt8) {
+    guard let slot = lock.withLock({ slots[slotID] }) else { return (11, slotID) }
+    guard var endpoint = slot.endpoints[dci] else { return (12, slotID) }
+    guard endpoint.state == .running || endpoint.state == .stopped else { return (19, slotID) }
+    endpoint.state = .stopped
+    guard updateEndpointContext(slotID: slotID, dci: dci, endpoint: endpoint, memory: memory)
+    else { return (17, slotID) }
+    return (1, slotID)
+  }
+
+  private func setTransferRingDequeuePointer(
+    slotID: UInt8,
+    dci: UInt8,
+    streamID: UInt16,
+    parameter: UInt64,
+    memory: any DoryVirtioGuestMemory
+  ) -> (completionCode: UInt8, slotID: UInt8) {
+    guard let slot = lock.withLock({ slots[slotID] }) else { return (11, slotID) }
+    guard var endpoint = slot.endpoints[dci] else { return (12, slotID) }
+    guard streamID == 0, parameter & 0xE == 0, parameter & ~UInt64(0xF) != 0 else {
+      return (17, slotID)
+    }
+    guard endpoint.state == .stopped || endpoint.state == .error else { return (19, slotID) }
+    endpoint.dequeueAddress = parameter & ~UInt64(0xF)
+    endpoint.cycle = parameter & 1 != 0
+    guard updateEndpointContext(slotID: slotID, dci: dci, endpoint: endpoint, memory: memory)
+    else { return (17, slotID) }
+    return (1, slotID)
+  }
+
+  private func resetDevice(
+    slotID: UInt8,
+    memory: any DoryVirtioGuestMemory
+  ) -> (completionCode: UInt8, slotID: UInt8) {
+    guard var slot = lock.withLock({ slots[slotID] }) else { return (11, slotID) }
+    guard var endpoint0 = slot.endpoints[1] else { return (19, slotID) }
+    endpoint0.state = .stopped
+    var slotContext: [UInt8]
+    var endpoint0Context: [UInt8]
+    do {
+      slotContext = try memory.read(at: slot.outputContextAddress, byteCount: 32)
+      endpoint0Context = try memory.read(at: slot.outputContextAddress + 32, byteCount: 32)
+      guard slotContext.count == 32, endpoint0Context.count == 32 else { return (17, slotID) }
+      var entries = uint32(Array(slotContext[0..<4]))
+      entries = (entries & 0x07FF_FFFF) | UInt32(1) << 27
+      put(entries, at: 0, in: &slotContext)
+      var state = uint32(Array(slotContext[12..<16]))
+      state = (state & 0x07FF_FF00) | UInt32(1) << 27
+      put(state, at: 12, in: &slotContext)
+      try memory.validate(at: slot.outputContextAddress, byteCount: 1_024, deviceWillWrite: true)
+      try memory.write(at: slot.outputContextAddress, bytes: slotContext)
+      try memory.write(
+        at: slot.outputContextAddress + 32,
+        bytes: endpointContextBytes(endpoint0, existing: endpoint0Context)
+      )
+      try memory.write(
+        at: slot.outputContextAddress + 64,
+        bytes: [UInt8](repeating: 0, count: 960)
+      )
+      memory.synchronize()
+    } catch {
+      return (17, slotID)
+    }
+    slot.addressed = false
+    slot.deviceAddress = 0
+    slot.endpoints = [1: endpoint0]
+    lock.withLock { slots[slotID] = slot }
+    return (1, slotID)
+  }
+
+  private func updateEndpointContext(
+    slotID: UInt8,
+    dci: UInt8,
+    endpoint: Slot.Endpoint,
+    memory: any DoryVirtioGuestMemory
+  ) -> Bool {
+    guard let slot = lock.withLock({ slots[slotID] }) else { return false }
+    let address = slot.outputContextAddress + UInt64(dci) * 32
+    do {
+      let existing = try memory.read(at: address, byteCount: 32)
+      guard existing.count == 32 else { return false }
+      let bytes = endpointContextBytes(endpoint, existing: existing)
+      try memory.validate(at: address, byteCount: 32, deviceWillWrite: true)
+      try memory.write(at: address, bytes: bytes)
+      memory.synchronize()
+    } catch {
+      return false
+    }
+    lock.withLock { slots[slotID]?.endpoints[dci] = endpoint }
+    return true
+  }
+
+  private func endpointContextBytes(_ endpoint: Slot.Endpoint, existing: [UInt8]?) -> [UInt8] {
+    var bytes = existing ?? [UInt8](repeating: 0, count: 32)
+    var state = uint32(Array(bytes[0..<4]))
+    state = (state & ~UInt32(0x7)) | endpoint.state.rawValue
+    put(state, at: 0, in: &bytes)
+    put(endpoint.dequeueAddress | (endpoint.cycle ? 1 : 0), at: 8, in: &bytes)
+    return bytes
   }
 
   private func decodeEndpoint(

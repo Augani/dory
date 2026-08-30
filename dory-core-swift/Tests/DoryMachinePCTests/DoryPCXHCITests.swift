@@ -227,6 +227,76 @@ import Testing
     #expect(usbDevice.transfers[1].setup?.request == 6)
     #expect(try read64(machine, 0x2050) == 0x7020)
     #expect(try read32(machine, 0x2058) >> 24 == 1)
+
+    usbDevice.enqueue(try .init(status: .stalled))
+    try machine.physicalMemory.write(
+      at: 0x9010,
+      bytes: littleEndian(UInt64(0xA100)) + littleEndian(UInt32(8))
+        + littleEndian(UInt32(1 << 10 | 1))
+    )
+    try write32(machine, bar + 0x2004, 3)
+    #expect(try read32(machine, 0x6060) & 0x7 == 2)
+    #expect(try read32(machine, 0x2068) >> 24 == 6)
+
+    try machine.physicalMemory.write(
+      at: 0x3030,
+      bytes: [UInt8](repeating: 0, count: 12)
+        + littleEndian(UInt32(1 << 24 | 3 << 16 | 14 << 10 | 1))
+    )
+    try write32(machine, bar + 0x2000, 0)
+    #expect(try read32(machine, 0x6060) & 0x7 == 3)
+    #expect(try read32(machine, 0x2078) >> 24 == 1)
+
+    try machine.physicalMemory.write(
+      at: 0x3040,
+      bytes: littleEndian(UInt64(0x9101)) + [UInt8](repeating: 0, count: 4)
+        + littleEndian(UInt32(1 << 24 | 3 << 16 | 16 << 10 | 1))
+    )
+    try write32(machine, bar + 0x2000, 0)
+    #expect(try read64(machine, 0x6068) == 0x9101)
+    #expect(try read32(machine, 0x2088) >> 24 == 1)
+
+    try write32(machine, bar + 0x2004, 3)
+    #expect(try read32(machine, 0x6060) & 0x7 == 1)
+    try machine.physicalMemory.write(
+      at: 0x3050,
+      bytes: [UInt8](repeating: 0, count: 12)
+        + littleEndian(UInt32(1 << 24 | 3 << 16 | 15 << 10 | 1))
+    )
+    try write32(machine, bar + 0x2000, 0)
+    #expect(try read32(machine, 0x6060) & 0x7 == 3)
+    #expect(try read32(machine, 0x2098) >> 24 == 1)
+
+    var evaluateInput = [UInt8](repeating: 0, count: 1_056)
+    evaluateInput.replaceSubrange(4..<8, with: littleEndian(UInt32(1 << 3)))
+    evaluateInput.replaceSubrange(
+      128..<160,
+      with: try machine.physicalMemory.read(
+        at: 0x6060,
+        byteCount: 32
+      ))
+    evaluateInput.replaceSubrange(148..<152, with: littleEndian(UInt32(4_096)))
+    try machine.physicalMemory.write(at: 0xC000, bytes: evaluateInput)
+    try machine.physicalMemory.write(
+      at: 0x3060,
+      bytes: littleEndian(UInt64(0xC000)) + [UInt8](repeating: 0, count: 4)
+        + littleEndian(UInt32(1 << 24 | 13 << 10 | 1))
+    )
+    try write32(machine, bar + 0x2000, 0)
+    #expect(try read32(machine, 0x6074) == 4_096)
+    #expect(try read32(machine, 0x6060) & 0x7 == 3)
+    #expect(try read32(machine, 0x20A8) >> 24 == 1)
+
+    try machine.physicalMemory.write(
+      at: 0x3070,
+      bytes: [UInt8](repeating: 0, count: 12)
+        + littleEndian(UInt32(1 << 24 | 17 << 10 | 1))
+    )
+    try write32(machine, bar + 0x2000, 0)
+    #expect(xhci.slotStates == [.init(slotID: 1, addressed: false)])
+    #expect(try read32(machine, 0x600C) >> 27 == 1)
+    #expect(try read32(machine, 0x6060) == 0)
+    #expect(try read32(machine, 0x20B8) >> 24 == 1)
   }
 
   @Test func authorizedDeviceCapabilityFollowsPortResetDetachAndControllerReset() throws {
