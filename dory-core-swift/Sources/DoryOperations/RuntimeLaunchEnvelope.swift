@@ -1,3 +1,4 @@
+import DoryFirmware
 import DoryVMContracts
 import DoryRendererWorkerWireContracts
 import Foundation
@@ -6,18 +7,31 @@ import Foundation
 ///
 /// This contract contains resolved identity and named object-authority slots, never host paths.
 public struct RuntimeLaunchEnvelope: Codable, Sendable, Equatable {
-    public static let currentSchemaVersion: UInt16 = 6
+    public static let currentSchemaVersion: UInt16 = 7
     public static let maximumEncodedArgumentBytes = 65_536
     public static let systemDiskSlotName = "systemDisk"
     public static let linuxKernelSlotName = "linuxKernel"
     public static let linuxInitrdSlotName = "linuxInitrd"
     public static let rendererBootstrapSlotName = "rendererBootstrap"
+    public static let firmwareCodeSlotName = "firmwareCode"
+    public static let variableStoreTemplateSlotName = "variableStoreTemplate"
+    public static let firmwareSBOMSlotName = "firmwareSBOM"
+    public static let installerMediaSlotName = "installerMedia"
+    public static let variableStoreDirectorySlotName = "variableStoreDirectory"
     public static let systemDiskDescriptor: Int32 = 3
     public static let linuxKernelDescriptor: Int32 = 4
     public static let linuxInitrdDescriptor: Int32 = 5
     public static let rendererBootstrapDescriptor: Int32 = 6
+    public static let firmwareCodeDescriptor: Int32 = 4
+    public static let variableStoreTemplateDescriptor: Int32 = 5
+    public static let firmwareSBOMDescriptor: Int32 = 6
+    public static let installerMediaDescriptor: Int32 = 7
+    public static let variableStoreDirectoryDescriptor: Int32 = 8
+    public static let uefiRendererBootstrapDescriptor: Int32 = 9
     public static let maximumLinuxKernelBytes: UInt64 = 256 * 1_024 * 1_024
     public static let maximumLinuxInitrdBytes: UInt64 = 512 * 1_024 * 1_024
+    public static let maximumFirmwareSBOMBytes: UInt64 = 16 * 1_024 * 1_024
+    public static let maximumInstallerMediaBytes: UInt64 = 32 * 1_024 * 1_024 * 1_024
     private static let zeroOperationID = UUID(
         uuidString: "00000000-0000-0000-0000-000000000000"
     )!
@@ -65,6 +79,18 @@ public struct RuntimeLaunchEnvelope: Codable, Sendable, Equatable {
         public var capacityBytes: UInt64 { byteCount }
     }
 
+    public struct InheritedDirectoryDescriptorSlot: Codable, Sendable, Equatable {
+        public let name: String
+        public let descriptor: Int32
+        public let access: DescriptorAccess
+
+        public init(name: String, descriptor: Int32, access: DescriptorAccess) {
+            self.name = name
+            self.descriptor = descriptor
+            self.access = access
+        }
+    }
+
     /// Immutable direct-boot policy. Resolved helpers derive their command line from this value;
     /// split CLI flags are accepted only by the explicitly legacy pathname launch mode.
     public enum LinuxDirectBootProfile: String, Codable, Sendable, Equatable {
@@ -89,12 +115,68 @@ public struct RuntimeLaunchEnvelope: Codable, Sendable, Equatable {
         }
     }
 
+    public enum ARMVirtBoot: Codable, Sendable, Equatable {
+        case linuxDirect(LinuxDirectBoot)
+        case uefi(DoryARMVirtUEFILaunchPlan)
+
+        private enum ProtocolKind: String, Codable {
+            case linuxDirect = "linux-direct"
+            case uefi
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case `protocol`, linuxDirectBoot, uefiLaunchPlan
+        }
+
+        public func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            switch self {
+            case .linuxDirect(let policy):
+                try container.encode(ProtocolKind.linuxDirect, forKey: .protocol)
+                try container.encode(policy, forKey: .linuxDirectBoot)
+            case .uefi(let launchPlan):
+                try container.encode(ProtocolKind.uefi, forKey: .protocol)
+                try container.encode(launchPlan, forKey: .uefiLaunchPlan)
+            }
+        }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            switch try container.decode(ProtocolKind.self, forKey: .protocol) {
+            case .linuxDirect:
+                guard !container.contains(.uefiLaunchPlan) else {
+                    throw RuntimeLaunchEnvelopeError.invalidBootProtocol
+                }
+                self = .linuxDirect(
+                    try container.decode(LinuxDirectBoot.self, forKey: .linuxDirectBoot)
+                )
+            case .uefi:
+                guard !container.contains(.linuxDirectBoot) else {
+                    throw RuntimeLaunchEnvelopeError.invalidBootProtocol
+                }
+                self = .uefi(
+                    try container.decode(DoryARMVirtUEFILaunchPlan.self, forKey: .uefiLaunchPlan)
+                )
+            }
+        }
+    }
+
     public struct ResolvedARMVirtResources: Sendable, Equatable {
         public let systemDisk: InheritedFileDescriptorSlot
         public let linuxKernel: InheritedFileDescriptorSlot
         public let linuxInitrd: InheritedFileDescriptorSlot?
         /// Exact one-shot renderer authority. It is present only for a resolved hardware-3D
         /// launch and is consumed before the VM or its vCPUs start.
+        public let rendererBootstrap: InheritedFileDescriptorSlot?
+    }
+
+    public struct ResolvedARMVirtUEFIResources: Sendable, Equatable {
+        public let systemDisk: InheritedFileDescriptorSlot
+        public let firmwareCode: InheritedFileDescriptorSlot
+        public let variableStoreTemplate: InheritedFileDescriptorSlot
+        public let firmwareSBOM: InheritedFileDescriptorSlot
+        public let installerMedia: InheritedFileDescriptorSlot?
+        public let variableStoreDirectory: InheritedDirectoryDescriptorSlot
         public let rendererBootstrap: InheritedFileDescriptorSlot?
     }
 
@@ -170,8 +252,16 @@ public struct RuntimeLaunchEnvelope: Codable, Sendable, Equatable {
     public let devices: DoryVirtualMachineDeviceCapabilityRequest
     public let portForwards: [DoryVMPortForward]
     public let executionResources: ARMVirtExecutionResources
-    public let linuxDirectBoot: LinuxDirectBoot
+    public let boot: ARMVirtBoot
     public let inheritedFileDescriptors: [InheritedFileDescriptorSlot]
+    public let inheritedDirectoryDescriptors: [InheritedDirectoryDescriptorSlot]
+
+    public var linuxDirectBoot: LinuxDirectBoot {
+        guard case .linuxDirect(let policy) = boot else {
+            preconditionFailure("UEFI launch has no Linux direct-boot policy")
+        }
+        return policy
+    }
 
     public init(
         kind: Kind = .resolvedVirtualMachine,
@@ -189,7 +279,8 @@ public struct RuntimeLaunchEnvelope: Codable, Sendable, Equatable {
         portForwards: [DoryVMPortForward],
         executionResources: ARMVirtExecutionResources,
         linuxDirectBoot: LinuxDirectBoot,
-        inheritedFileDescriptors: [InheritedFileDescriptorSlot]
+        inheritedFileDescriptors: [InheritedFileDescriptorSlot],
+        inheritedDirectoryDescriptors: [InheritedDirectoryDescriptorSlot] = []
     ) {
         self.kind = kind
         self.schemaVersion = schemaVersion
@@ -205,8 +296,47 @@ public struct RuntimeLaunchEnvelope: Codable, Sendable, Equatable {
         self.devices = devices
         self.portForwards = portForwards
         self.executionResources = executionResources
-        self.linuxDirectBoot = linuxDirectBoot
+        self.boot = .linuxDirect(linuxDirectBoot)
         self.inheritedFileDescriptors = inheritedFileDescriptors
+        self.inheritedDirectoryDescriptors = inheritedDirectoryDescriptors
+    }
+
+    public init(
+        kind: Kind = .resolvedVirtualMachine,
+        schemaVersion: UInt16 = RuntimeLaunchEnvelope.currentSchemaVersion,
+        machineID: String,
+        operationID: UUID,
+        resolvedPlanSHA256: String,
+        planRevision: UInt64,
+        platform: DoryVirtualizationPlatformComposition,
+        executionComponentBuildIdentifier: String,
+        virtualHardwareABIVersion: UInt16,
+        armVirtTopology: DoryARMVirtV1Topology,
+        graphics: DoryGraphicsAccelerationLevel,
+        devices: DoryVirtualMachineDeviceCapabilityRequest,
+        portForwards: [DoryVMPortForward],
+        executionResources: ARMVirtExecutionResources,
+        boot: ARMVirtBoot,
+        inheritedFileDescriptors: [InheritedFileDescriptorSlot],
+        inheritedDirectoryDescriptors: [InheritedDirectoryDescriptorSlot]
+    ) {
+        self.kind = kind
+        self.schemaVersion = schemaVersion
+        self.machineID = machineID
+        self.operationID = operationID
+        self.resolvedPlanSHA256 = resolvedPlanSHA256
+        self.planRevision = planRevision
+        self.platform = platform
+        self.executionComponentBuildIdentifier = executionComponentBuildIdentifier
+        self.virtualHardwareABIVersion = virtualHardwareABIVersion
+        self.armVirtTopology = armVirtTopology
+        self.graphics = graphics
+        self.devices = devices
+        self.portForwards = portForwards
+        self.executionResources = executionResources
+        self.boot = boot
+        self.inheritedFileDescriptors = inheritedFileDescriptors
+        self.inheritedDirectoryDescriptors = inheritedDirectoryDescriptors
     }
 
     public static func resolvedARMVirt(
@@ -287,7 +417,106 @@ public struct RuntimeLaunchEnvelope: Codable, Sendable, Equatable {
         )
     }
 
+    public static func resolvedARMVirtUEFI(
+        machineID: String,
+        operationID: UUID,
+        resolvedPlanSHA256: String,
+        planRevision: UInt64,
+        executionComponentBuildIdentifier: String,
+        virtualHardwareABIVersion: UInt16,
+        armVirtTopology: DoryARMVirtV1Topology,
+        graphics: DoryGraphicsAccelerationLevel,
+        devices: DoryVirtualMachineDeviceCapabilityRequest,
+        portForwards: [DoryVMPortForward],
+        executionResources: ARMVirtExecutionResources,
+        systemDiskCapacityBytes: UInt64,
+        systemDiskLogicalID: DoryVirtualDeviceID,
+        launchPlan: DoryARMVirtUEFILaunchPlan,
+        firmwareSBOMByteCount: UInt64,
+        installerMediaByteCount: UInt64? = nil,
+        installerMediaSHA256: String? = nil,
+        installerMediaLogicalID: DoryVirtualDeviceID? = nil,
+        rendererBootstrapByteCount: UInt64? = nil,
+        rendererBootstrapSHA256: String? = nil
+    ) -> Self {
+        var fileSlots = [
+            InheritedFileDescriptorSlot(
+                name: systemDiskSlotName,
+                descriptor: systemDiskDescriptor,
+                access: .readWrite,
+                byteCount: systemDiskCapacityBytes,
+                logicalDeviceID: systemDiskLogicalID
+            ),
+            InheritedFileDescriptorSlot(
+                name: firmwareCodeSlotName,
+                descriptor: firmwareCodeDescriptor,
+                access: .readOnly,
+                byteCount: launchPlan.firmware.firmwareCodeByteCount,
+                contentSHA256: launchPlan.firmware.firmwareCodeSHA256
+            ),
+            InheritedFileDescriptorSlot(
+                name: variableStoreTemplateSlotName,
+                descriptor: variableStoreTemplateDescriptor,
+                access: .readOnly,
+                byteCount: launchPlan.firmware.variableStoreTemplateByteCount,
+                contentSHA256: launchPlan.firmware.variableStoreTemplateSHA256
+            ),
+            InheritedFileDescriptorSlot(
+                name: firmwareSBOMSlotName,
+                descriptor: firmwareSBOMDescriptor,
+                access: .readOnly,
+                byteCount: firmwareSBOMByteCount,
+                contentSHA256: launchPlan.firmware.sbomSHA256
+            ),
+        ]
+        if installerMediaByteCount != nil || installerMediaSHA256 != nil
+            || installerMediaLogicalID != nil {
+            fileSlots.append(InheritedFileDescriptorSlot(
+                name: installerMediaSlotName,
+                descriptor: installerMediaDescriptor,
+                access: .readOnly,
+                byteCount: installerMediaByteCount ?? 0,
+                contentSHA256: installerMediaSHA256,
+                logicalDeviceID: installerMediaLogicalID
+            ))
+        }
+        if rendererBootstrapByteCount != nil || rendererBootstrapSHA256 != nil {
+            fileSlots.append(InheritedFileDescriptorSlot(
+                name: rendererBootstrapSlotName,
+                descriptor: uefiRendererBootstrapDescriptor,
+                access: .readOnly,
+                byteCount: rendererBootstrapByteCount ?? 0,
+                contentSHA256: rendererBootstrapSHA256
+            ))
+        }
+        return Self(
+            machineID: machineID,
+            operationID: operationID,
+            resolvedPlanSHA256: resolvedPlanSHA256,
+            planRevision: planRevision,
+            platform: .arm64LinuxV1,
+            executionComponentBuildIdentifier: executionComponentBuildIdentifier,
+            virtualHardwareABIVersion: virtualHardwareABIVersion,
+            armVirtTopology: armVirtTopology,
+            graphics: graphics,
+            devices: devices,
+            portForwards: portForwards,
+            executionResources: executionResources,
+            boot: .uefi(launchPlan),
+            inheritedFileDescriptors: fileSlots,
+            inheritedDirectoryDescriptors: [InheritedDirectoryDescriptorSlot(
+                name: variableStoreDirectorySlotName,
+                descriptor: variableStoreDirectoryDescriptor,
+                access: .readWrite
+            )]
+        )
+    }
+
     public func validatedResolvedARMVirtResources() throws -> ResolvedARMVirtResources {
+        guard case .linuxDirect(let linuxDirectBoot) = boot,
+              inheritedDirectoryDescriptors.isEmpty else {
+            throw RuntimeLaunchEnvelopeError.invalidBootProtocol
+        }
         guard kind == .resolvedVirtualMachine else {
             throw RuntimeLaunchEnvelopeError.invalidKind
         }
@@ -473,11 +702,138 @@ public struct RuntimeLaunchEnvelope: Codable, Sendable, Equatable {
     }
 
     public func validatedResolvedARMVirtSystemDisk() throws -> InheritedFileDescriptorSlot {
-        try validatedResolvedARMVirtResources().systemDisk
+        switch boot {
+        case .linuxDirect:
+            return try validatedResolvedARMVirtResources().systemDisk
+        case .uefi:
+            return try validatedResolvedARMVirtUEFIResources().systemDisk
+        }
+    }
+
+    public func validatedResolvedARMVirtUEFIResources() throws -> ResolvedARMVirtUEFIResources {
+        guard case .uefi(let launchPlan) = boot else {
+            throw RuntimeLaunchEnvelopeError.invalidBootProtocol
+        }
+        guard kind == .resolvedVirtualMachine,
+              schemaVersion == Self.currentSchemaVersion,
+              Self.isSafeMachineIdentifier(machineID),
+              operationID != Self.zeroOperationID,
+              Self.isSafeEvidenceIdentifier(executionComponentBuildIdentifier),
+              planRevision > 0,
+              virtualHardwareABIVersion == 1,
+              platform == .arm64LinuxV1,
+              armVirtTopology.machineABIIdentity == platform.machineModel.rawValue,
+              executionResources.isValid,
+              Self.isLowercaseSHA256(resolvedPlanSHA256) else {
+            throw RuntimeLaunchEnvelopeError.invalidBootProtocol
+        }
+        var names: Set<String> = []
+        var descriptors: Set<Int32> = []
+        for slot in inheritedFileDescriptors {
+            guard !slot.name.isEmpty, slot.descriptor >= 3, slot.byteCount > 0,
+                  names.insert(slot.name).inserted,
+                  descriptors.insert(slot.descriptor).inserted else {
+                throw RuntimeLaunchEnvelopeError.invalidResolvedARMVirtSlots
+            }
+        }
+        guard inheritedDirectoryDescriptors == [InheritedDirectoryDescriptorSlot(
+            name: Self.variableStoreDirectorySlotName,
+            descriptor: Self.variableStoreDirectoryDescriptor,
+            access: .readWrite
+        )], descriptors.insert(Self.variableStoreDirectoryDescriptor).inserted else {
+            throw RuntimeLaunchEnvelopeError.invalidVariableStoreDirectoryAuthority
+        }
+        var expectedNames = [
+            Self.systemDiskSlotName,
+            Self.firmwareCodeSlotName,
+            Self.variableStoreTemplateSlotName,
+            Self.firmwareSBOMSlotName,
+        ]
+        let installer = inheritedFileDescriptors.first { $0.name == Self.installerMediaSlotName }
+        let removablePlan = launchPlan.bootDevices.first { $0.kind == .removableMedia }
+        if installer != nil || removablePlan != nil { expectedNames.append(Self.installerMediaSlotName) }
+        let renderer = inheritedFileDescriptors.first { $0.name == Self.rendererBootstrapSlotName }
+        if graphics == .hardwareAccelerated3D { expectedNames.append(Self.rendererBootstrapSlotName) }
+        guard inheritedFileDescriptors.map(\.name) == expectedNames,
+              (graphics == .hardwareAccelerated3D) == (renderer != nil),
+              (installer != nil) == (removablePlan != nil) else {
+            throw RuntimeLaunchEnvelopeError.invalidResolvedARMVirtSlots
+        }
+        let systemDisk = inheritedFileDescriptors[0]
+        let firmwareCode = inheritedFileDescriptors[1]
+        let variableTemplate = inheritedFileDescriptors[2]
+        let sbom = inheritedFileDescriptors[3]
+        guard systemDisk.descriptor == Self.systemDiskDescriptor,
+              systemDisk.access == .readWrite,
+              systemDisk.contentSHA256 == nil,
+              let systemID = systemDisk.logicalDeviceID,
+              launchPlan.bootDevices.contains(where: {
+                  $0.kind == .systemDisk && $0.logicalID == systemID.rawValue
+              }),
+              armVirtTopology.occupiedSlots.contains(where: {
+                  $0.role == .systemDisk && $0.logicalID == systemID
+              }) else {
+            throw RuntimeLaunchEnvelopeError.invalidSystemDiskAccess
+        }
+        guard Self.matchesImmutable(
+            firmwareCode,
+            name: Self.firmwareCodeSlotName,
+            descriptor: Self.firmwareCodeDescriptor,
+            byteCount: launchPlan.firmware.firmwareCodeByteCount,
+            sha256: launchPlan.firmware.firmwareCodeSHA256
+        ), Self.matchesImmutable(
+            variableTemplate,
+            name: Self.variableStoreTemplateSlotName,
+            descriptor: Self.variableStoreTemplateDescriptor,
+            byteCount: launchPlan.firmware.variableStoreTemplateByteCount,
+            sha256: launchPlan.firmware.variableStoreTemplateSHA256
+        ), sbom.name == Self.firmwareSBOMSlotName,
+           sbom.descriptor == Self.firmwareSBOMDescriptor,
+           sbom.access == .readOnly,
+           sbom.logicalDeviceID == nil,
+           sbom.byteCount <= Self.maximumFirmwareSBOMBytes,
+           sbom.contentSHA256 == launchPlan.firmware.sbomSHA256 else {
+            throw RuntimeLaunchEnvelopeError.invalidFirmwareAuthority
+        }
+        if let installer, let removablePlan {
+            guard installer.descriptor == Self.installerMediaDescriptor,
+                  installer.access == .readOnly,
+                  installer.byteCount <= Self.maximumInstallerMediaBytes,
+                  Self.isLowercaseSHA256(installer.contentSHA256),
+                  installer.logicalDeviceID?.rawValue == removablePlan.logicalID,
+                  armVirtTopology.occupiedSlots.contains(where: {
+                      ($0.role == .auxiliaryBlock || $0.role == .removableStorage)
+                          && $0.logicalID == installer.logicalDeviceID
+                          && $0.mmioSlot == removablePlan.virtioSlot
+                  }) else {
+                throw RuntimeLaunchEnvelopeError.invalidInstallerMediaAuthority
+            }
+        }
+        if let renderer {
+            guard renderer.descriptor == Self.uefiRendererBootstrapDescriptor,
+                  renderer.access == .readOnly,
+                  renderer.logicalDeviceID == nil,
+                  renderer.byteCount == UInt64(DoryRendererWorkerBootstrapCodec.fixedByteCount),
+                  Self.isLowercaseSHA256(renderer.contentSHA256) else {
+                throw RuntimeLaunchEnvelopeError.invalidRendererBootstrapAuthority
+            }
+        }
+        return ResolvedARMVirtUEFIResources(
+            systemDisk: systemDisk,
+            firmwareCode: firmwareCode,
+            variableStoreTemplate: variableTemplate,
+            firmwareSBOM: sbom,
+            installerMedia: installer,
+            variableStoreDirectory: inheritedDirectoryDescriptors[0],
+            rendererBootstrap: renderer
+        )
     }
 
     public func encodedArgument() throws -> String {
-        _ = try validatedResolvedARMVirtResources()
+        switch boot {
+        case .linuxDirect: _ = try validatedResolvedARMVirtResources()
+        case .uefi: _ = try validatedResolvedARMVirtUEFIResources()
+        }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         let data = try encoder.encode(self)
@@ -498,7 +854,10 @@ public struct RuntimeLaunchEnvelope: Codable, Sendable, Equatable {
             throw RuntimeLaunchEnvelopeError.argumentTooLarge(data.count)
         }
         let envelope = try JSONDecoder().decode(Self.self, from: data)
-        _ = try envelope.validatedResolvedARMVirtResources()
+        switch envelope.boot {
+        case .linuxDirect: _ = try envelope.validatedResolvedARMVirtResources()
+        case .uefi: _ = try envelope.validatedResolvedARMVirtUEFIResources()
+        }
         // Unknown keys, duplicate-key spellings, whitespace, and alternate UUID/JSON forms are
         // not accepted at this authority boundary. Both sides consume one exact representation.
         guard try envelope.encodedArgument() == value else {
@@ -539,6 +898,18 @@ public struct RuntimeLaunchEnvelope: Codable, Sendable, Equatable {
         return suffix.dropFirst().allSatisfy { (48...57).contains($0) }
     }
 
+    private static func matchesImmutable(
+        _ slot: InheritedFileDescriptorSlot,
+        name: String,
+        descriptor: Int32,
+        byteCount: UInt64,
+        sha256: String
+    ) -> Bool {
+        slot.name == name && slot.descriptor == descriptor && slot.access == .readOnly
+            && slot.byteCount == byteCount && slot.contentSHA256 == sha256
+            && slot.logicalDeviceID == nil
+    }
+
     /// Matches the resolved-plan evidence identifier grammar. Production build identities are
     /// normally `sha256:<lowercase digest>`, while already-valid persisted plans may use another
     /// bounded identifier (for example a signed release/build label).
@@ -577,6 +948,10 @@ public enum RuntimeLaunchEnvelopeError: Error, CustomStringConvertible, Equatabl
     case invalidLinuxInitrdAuthority
     case invalidRendererBootstrapAuthority
     case invalidLinuxDirectBoot
+    case invalidBootProtocol
+    case invalidFirmwareAuthority
+    case invalidInstallerMediaAuthority
+    case invalidVariableStoreDirectoryAuthority
     case invalidEncoding
     case argumentTooLarge(Int)
     case nonCanonicalEncoding
@@ -619,6 +994,14 @@ public enum RuntimeLaunchEnvelopeError: Error, CustomStringConvertible, Equatabl
             return "resolved DoryARMVirt-v1 hardware-3D launch requires one exact renderer bootstrap blob"
         case .invalidLinuxDirectBoot:
             return "resolved DoryARMVirt-v1 direct-boot policy is invalid"
+        case .invalidBootProtocol:
+            return "resolved DoryARMVirt-v1 boot protocol union is invalid"
+        case .invalidFirmwareAuthority:
+            return "resolved DoryARMVirt-v1 firmware artifacts do not match their manifest"
+        case .invalidInstallerMediaAuthority:
+            return "resolved DoryARMVirt-v1 installer media authority is invalid"
+        case .invalidVariableStoreDirectoryAuthority:
+            return "resolved DoryARMVirt-v1 variable-store directory authority is invalid"
         case .invalidEncoding:
             return "runtime launch envelope is not valid UTF-8 JSON"
         case .argumentTooLarge(let byteCount):

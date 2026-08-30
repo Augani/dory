@@ -1,3 +1,5 @@
+import CryptoKit
+import DoryFirmware
 import DoryVMContracts
 import DoryRendererWorkerWireContracts
 import Foundation
@@ -24,7 +26,7 @@ final class RuntimeLaunchEnvelopeTests: XCTestCase {
         let resources = try decoded.validatedResolvedARMVirtResources()
 
         XCTAssertEqual(decoded.schemaVersion, RuntimeLaunchEnvelope.currentSchemaVersion)
-        XCTAssertEqual(decoded.schemaVersion, 6)
+        XCTAssertEqual(decoded.schemaVersion, 7)
         XCTAssertEqual(decoded.platform, .arm64LinuxV1)
         XCTAssertEqual(decoded.executionResources.memoryMB, 8_192)
         XCTAssertEqual(decoded.executionResources.virtualCPUCount, 4)
@@ -52,6 +54,76 @@ final class RuntimeLaunchEnvelopeTests: XCTestCase {
         XCTAssertNil(resources.rendererBootstrap)
         XCTAssertEqual(decoded.linuxDirectBoot.profile, .managedKernel)
         XCTAssertEqual(decoded.linuxDirectBoot.rootDevice, "/dev/vda")
+    }
+
+    func testCanonicalUEFIRoundTripPinsFirmwareAndVariableDirectoryAuthorities() throws {
+        let direct = makeEnvelope(graphics: .software)
+        let firmware = Data(repeating: 0xa5, count: 4_096)
+        let variableTemplate = Data(#"{"generation":1,"variables":[]}"#.utf8)
+        let sbom = Data(#"{"bomFormat":"CycloneDX","specVersion":"1.6"}"#.utf8)
+        let digest: (Data) -> String = { data in
+            SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        }
+        let manifest = try DoryFirmwareArtifactManifest(
+            buildIdentifier: "dory-armvirt-fw-test.1",
+            source: DoryFirmwareSourcePin(
+                repository: "https://github.com/tianocore/edk2.git",
+                revision: String(repeating: "a", count: 40)
+            ),
+            sourceDateEpoch: 1_788_048_000,
+            platformConfigurationSHA256: digest(Data("DoryARMVirt.dsc".utf8)),
+            toolchainSHA256: digest(Data("clang-17F109".utf8)),
+            firmwareCodeSHA256: digest(firmware),
+            firmwareCodeByteCount: UInt64(firmware.count),
+            variableStoreTemplateSHA256: digest(variableTemplate),
+            variableStoreTemplateByteCount: UInt64(variableTemplate.count),
+            sbomSHA256: digest(sbom),
+            secureBootPolicy: .userManagedKeys,
+            reproducible: true
+        )
+        let systemDisk = try DoryARMVirtUEFIBootDevice(
+            logicalID: Self.topologySystemDiskID.rawValue,
+            kind: .systemDisk,
+            virtioSlot: 0,
+            readOnly: false
+        )
+        let launchPlan = try DoryARMVirtUEFILaunchPlan(
+            firmware: manifest,
+            variableStoreGeneration: 1,
+            bootDevices: [systemDisk],
+            bootOrder: [systemDisk.logicalID]
+        )
+        let envelope = RuntimeLaunchEnvelope.resolvedARMVirtUEFI(
+            machineID: direct.machineID,
+            operationID: direct.operationID,
+            resolvedPlanSHA256: direct.resolvedPlanSHA256,
+            planRevision: direct.planRevision,
+            executionComponentBuildIdentifier: direct.executionComponentBuildIdentifier,
+            virtualHardwareABIVersion: direct.virtualHardwareABIVersion,
+            armVirtTopology: direct.armVirtTopology,
+            graphics: direct.graphics,
+            devices: direct.devices,
+            portForwards: direct.portForwards,
+            executionResources: direct.executionResources,
+            systemDiskCapacityBytes: Self.diskByteCount,
+            systemDiskLogicalID: Self.topologySystemDiskID,
+            launchPlan: launchPlan,
+            firmwareSBOMByteCount: UInt64(sbom.count)
+        )
+
+        let decoded = try canonicalRoundTrip(envelope)
+        let resources = try decoded.validatedResolvedARMVirtUEFIResources()
+        XCTAssertEqual(resources.firmwareCode.contentSHA256, manifest.firmwareCodeSHA256)
+        XCTAssertEqual(
+            resources.variableStoreTemplate.contentSHA256,
+            manifest.variableStoreTemplateSHA256
+        )
+        XCTAssertEqual(resources.firmwareSBOM.contentSHA256, manifest.sbomSHA256)
+        XCTAssertEqual(
+            resources.variableStoreDirectory.descriptor,
+            RuntimeLaunchEnvelope.variableStoreDirectoryDescriptor
+        )
+        XCTAssertNil(resources.installerMedia)
     }
 
     func testCanonicalThreeSlotRoundTripUsesFixedAuthorityLayout() throws {
@@ -459,9 +531,11 @@ final class RuntimeLaunchEnvelopeTests: XCTestCase {
         var unknownNested = try XCTUnwrap(
             JSONSerialization.jsonObject(with: data) as? [String: Any]
         )
-        var directBoot = try XCTUnwrap(unknownNested["linuxDirectBoot"] as? [String: Any])
+        var boot = try XCTUnwrap(unknownNested["boot"] as? [String: Any])
+        var directBoot = try XCTUnwrap(boot["linuxDirectBoot"] as? [String: Any])
         directBoot["unexpectedAuthority"] = true
-        unknownNested["linuxDirectBoot"] = directBoot
+        boot["linuxDirectBoot"] = directBoot
+        unknownNested["boot"] = boot
         let unknownNestedJSON = try canonicalJSONString(unknownNested)
 
         let prettyData = try JSONSerialization.data(

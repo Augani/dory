@@ -70,6 +70,7 @@ let package = Package(
       name: "DoryOperations",
       dependencies: [
         "DoryExecutionContracts",
+        "DoryFirmware",
         "DoryRendererWorkerWireContracts",
         "DoryVMContracts",
       ],
@@ -181,7 +182,7 @@ let package = Package(
     ),
     .testTarget(
       name: "DoryOperationsTests",
-      dependencies: ["DoryOperations", "DoryCore", "DoryVMContracts"]
+      dependencies: ["DoryOperations", "DoryCore", "DoryFirmware", "DoryVMContracts"]
     ),
     .testTarget(
       name: "DorydKitTests",
