@@ -14,8 +14,17 @@ private enum Command {
         diskBytes: UInt64
     )
     case install(ipsw: URL, machine: URL)
-    case run(machine: URL, guestTools: URL?, suspendOnExit: Bool)
-    case resume(machine: URL, guestTools: URL?)
+    case run(
+        machine: URL,
+        guestTools: URL?,
+        usbMassStorage: DoryVZMacUSBMassStorage?,
+        suspendOnExit: Bool
+    )
+    case resume(
+        machine: URL,
+        guestTools: URL?,
+        usbMassStorage: DoryVZMacUSBMassStorage?
+    )
     case clone(machine: URL, destination: URL)
     case export(machine: URL, destination: URL)
     case `import`(source: URL, machine: URL)
@@ -45,6 +54,20 @@ private func parseCommand(_ arguments: [String]) throws -> Command {
         let value = values[index + 1]
         values.removeSubrange(index ... index + 1)
         return value
+    }
+    func takeUSBMassStorage() throws -> DoryVZMacUSBMassStorage? {
+        let readOnly = values.contains("--usb-disk-read-only")
+        values.removeAll { $0 == "--usb-disk-read-only" }
+        guard values.contains("--usb-disk") else {
+            if readOnly {
+                throw CommandError.usage("--usb-disk-read-only requires --usb-disk\n\n\(usage)")
+            }
+            return nil
+        }
+        return try DoryVZMacUSBMassStorage(
+            url: URL(fileURLWithPath: take("--usb-disk")),
+            readOnly: readOnly
+        )
     }
     switch verb {
     case "latest":
@@ -80,17 +103,28 @@ private func parseCommand(_ arguments: [String]) throws -> Command {
         let guestTools = values.contains("--guest-tools")
             ? URL(fileURLWithPath: try take("--guest-tools"), isDirectory: true)
             : nil
+        let usbMassStorage = try takeUSBMassStorage()
         let suspendOnExit = values.contains("--suspend-on-exit")
         values.removeAll { $0 == "--suspend-on-exit" }
         guard values.isEmpty else { throw CommandError.usage(usage) }
-        return .run(machine: machine, guestTools: guestTools, suspendOnExit: suspendOnExit)
+        return .run(
+            machine: machine,
+            guestTools: guestTools,
+            usbMassStorage: usbMassStorage,
+            suspendOnExit: suspendOnExit
+        )
     case "resume":
         let machine = URL(fileURLWithPath: try take("--machine"), isDirectory: true)
         let guestTools = values.contains("--guest-tools")
             ? URL(fileURLWithPath: try take("--guest-tools"), isDirectory: true)
             : nil
+        let usbMassStorage = try takeUSBMassStorage()
         guard values.isEmpty else { throw CommandError.usage(usage) }
-        return .resume(machine: machine, guestTools: guestTools)
+        return .resume(
+            machine: machine,
+            guestTools: guestTools,
+            usbMassStorage: usbMassStorage
+        )
     case "clone":
         let machine = URL(fileURLWithPath: try take("--machine"), isDirectory: true)
         let destination = URL(
@@ -132,8 +166,8 @@ Usage:
   dory-vzmac-qualification latest
   dory-vzmac-qualification prepare --ipsw <file> [--source-url <https-url>] --machine <bundle> [--cpus N] [--memory-gib N] [--disk-gib N]
   dory-vzmac-qualification install --ipsw <file> --machine <bundle>
-  dory-vzmac-qualification run --machine <bundle> [--guest-tools <directory>] [--suspend-on-exit]
-  dory-vzmac-qualification resume --machine <bundle> [--guest-tools <directory>]
+  dory-vzmac-qualification run --machine <bundle> [--guest-tools <directory>] [--usb-disk <image> [--usb-disk-read-only]] [--suspend-on-exit]
+  dory-vzmac-qualification resume --machine <bundle> [--guest-tools <directory>] [--usb-disk <image> [--usb-disk-read-only]]
   dory-vzmac-qualification clone --machine <bundle> --destination <bundle>
   dory-vzmac-qualification export --machine <bundle> --destination <dorymachine>
   dory-vzmac-qualification import --source <dorymachine> --machine <bundle>
@@ -220,13 +254,21 @@ private final class QualificationAppDelegate: NSObject, NSApplicationDelegate,
                 self?.window?.title = "Dory — Installing macOS \(Int(fraction * 100))%"
             }
             window?.title = "Dory — macOS installation complete"
-        case .run(let machine, let guestTools, _):
-            let runtime = try makeRuntime(machine: machine, guestTools: guestTools)
+        case .run(let machine, let guestTools, let usbMassStorage, _):
+            let runtime = try makeRuntime(
+                machine: machine,
+                guestTools: guestTools,
+                usbMassStorage: usbMassStorage
+            )
             show(runtime: runtime, title: "Dory — macOS")
             try await runtime.start()
             window?.title = "Dory — macOS running"
-        case .resume(let machine, let guestTools):
-            let runtime = try makeRuntime(machine: machine, guestTools: guestTools)
+        case .resume(let machine, let guestTools, let usbMassStorage):
+            let runtime = try makeRuntime(
+                machine: machine,
+                guestTools: guestTools,
+                usbMassStorage: usbMassStorage
+            )
             show(runtime: runtime, title: "Dory — Restoring macOS")
             try await runtime.restoreSuspendedState()
             window?.title = "Dory — macOS resumed"
@@ -304,12 +346,20 @@ private final class QualificationAppDelegate: NSObject, NSApplicationDelegate,
         }
     }
 
-    private func makeRuntime(machine: URL, guestTools: URL? = nil) throws -> DoryVZMacRuntime {
+    private func makeRuntime(
+        machine: URL,
+        guestTools: URL? = nil,
+        usbMassStorage: DoryVZMacUSBMassStorage? = nil
+    ) throws -> DoryVZMacRuntime {
         let bundle = try DoryVZMacMachineBundle.load(from: machine)
         let shares = try guestTools.map {
             [try DoryVZMacSharedDirectory(name: "Dory Guest Tools", url: $0, readOnly: true)]
         } ?? []
-        let runtime = try DoryVZMacRuntime(bundle: bundle, sharedDirectories: shares) { message in
+        let runtime = try DoryVZMacRuntime(
+            bundle: bundle,
+            sharedDirectories: shares,
+            usbMassStorage: usbMassStorage
+        ) { message in
             FileHandle.standardError.write(Data("\(message)\n".utf8))
         }
         runtime.virtualMachine.delegate = self
@@ -357,7 +407,7 @@ private final class QualificationAppDelegate: NSObject, NSApplicationDelegate,
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let runtime, runtime.virtualMachine.state == .running else { return .terminateNow }
-        if case .run(_, _, let suspendOnExit) = command, suspendOnExit {
+        if case .run(_, _, _, let suspendOnExit) = command, suspendOnExit {
             awaitingTermination = true
             window?.title = "Dory — Suspending macOS"
             Task { @MainActor in

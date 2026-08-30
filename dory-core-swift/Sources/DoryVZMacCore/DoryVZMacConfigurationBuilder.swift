@@ -20,7 +20,8 @@ public enum DoryVZMacConfigurationError: Error, Sendable, CustomStringConvertibl
 
 public enum DoryVZMacConfigurationBuilder {
     public static func fingerprint(
-        sharedDirectories: [DoryVZMacSharedDirectory] = []
+        sharedDirectories: [DoryVZMacSharedDirectory] = [],
+        usbMassStorage: DoryVZMacUSBMassStorage? = nil
     ) throws -> String {
         struct SharedDirectory: Codable {
             let name: String
@@ -38,9 +39,15 @@ public enum DoryVZMacConfigurationBuilder {
             let clipboard: String
             let xhciEnabled: Bool
             let sharedDirectories: [SharedDirectory]
+            let usbMassStorage: USBMassStorage?
+        }
+        struct USBMassStorage: Codable {
+            let path: String
+            let readOnly: Bool
+            let byteCount: UInt64
         }
         let descriptor = Descriptor(
-            schema: "dory.vzmac-configuration@1",
+            schema: "dory.vzmac-configuration@2",
             display: "1920x1080@144ppi-auto-resize",
             network: "virtio-nat",
             audio: "virtio-host-input-output",
@@ -59,7 +66,14 @@ public enum DoryVZMacConfigurationBuilder {
                         path: $0.url.path,
                         readOnly: $0.readOnly
                     )
-                }
+                },
+            usbMassStorage: usbMassStorage.map {
+                USBMassStorage(
+                    path: $0.url.path,
+                    readOnly: $0.readOnly,
+                    byteCount: $0.byteCount
+                )
+            }
         )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
@@ -70,7 +84,8 @@ public enum DoryVZMacConfigurationBuilder {
 
     public static func makeConfiguration(
         for bundle: DoryVZMacMachineBundle,
-        sharedDirectories: [DoryVZMacSharedDirectory] = []
+        sharedDirectories: [DoryVZMacSharedDirectory] = [],
+        usbMassStorage: DoryVZMacUSBMassStorage? = nil
     ) throws -> VZVirtualMachineConfiguration {
         let configuration = VZVirtualMachineConfiguration()
         configuration.bootLoader = VZMacOSBootLoader()
@@ -89,9 +104,22 @@ public enum DoryVZMacConfigurationBuilder {
             cachingMode: .automatic,
             synchronizationMode: .full
         )
-        configuration.storageDevices = [
+        var storageDevices: [VZStorageDeviceConfiguration] = [
             VZVirtioBlockDeviceConfiguration(attachment: diskAttachment),
         ]
+        if let usbMassStorage {
+            guard #available(macOS 15.0, *) else {
+                throw DoryVZMacUSBMassStorageError.requiresMacOS15
+            }
+            let attachment = try VZDiskImageStorageDeviceAttachment(
+                url: usbMassStorage.url,
+                readOnly: usbMassStorage.readOnly,
+                cachingMode: .automatic,
+                synchronizationMode: usbMassStorage.readOnly ? .none : .full
+            )
+            storageDevices.append(VZUSBMassStorageDeviceConfiguration(attachment: attachment))
+        }
+        configuration.storageDevices = storageDevices
 
         let network = VZVirtioNetworkDeviceConfiguration()
         guard let macAddress = VZMACAddress(string: bundle.manifest.macAddress) else {
@@ -167,6 +195,7 @@ public final class DoryVZMacRuntime {
     public init(
         bundle: DoryVZMacMachineBundle,
         sharedDirectories: [DoryVZMacSharedDirectory] = [],
+        usbMassStorage: DoryVZMacUSBMassStorage? = nil,
         camera: DoryMacCameraBackend? = nil,
         log: @escaping @Sendable (String) -> Void = { _ in }
     ) throws {
@@ -174,11 +203,13 @@ public final class DoryVZMacRuntime {
         machineLease = try DoryVZMacMachineLease(rootURL: bundle.rootURL)
         let configuration = try DoryVZMacConfigurationBuilder.makeConfiguration(
             for: bundle,
-            sharedDirectories: sharedDirectories
+            sharedDirectories: sharedDirectories,
+            usbMassStorage: usbMassStorage
         )
         self.configuration = configuration
         configurationSHA256 = try DoryVZMacConfigurationBuilder.fingerprint(
-            sharedDirectories: sharedDirectories
+            sharedDirectories: sharedDirectories,
+            usbMassStorage: usbMassStorage
         )
         virtualMachine = VZVirtualMachine(configuration: configuration)
         cameraBridge = DoryVZMacCameraBridge(
