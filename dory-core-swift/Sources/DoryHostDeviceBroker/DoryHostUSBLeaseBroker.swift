@@ -65,6 +65,13 @@ public protocol DoryHostUSBTransferCapability: AnyObject, Sendable {
   func close()
 }
 
+/// Optional edge for platform transports that can observe physical removal independently of a
+/// guest transfer. The lease broker uses it to revoke ownership immediately on unplug or capture
+/// termination.
+public protocol DoryHostUSBRevocationNotifying: AnyObject, Sendable {
+  func setRevocationHandler(_ handler: (@Sendable () -> Void)?)
+}
+
 public final class DoryHostUSBLeaseDevice: DoryPCUSBDevice, @unchecked Sendable {
   public let leaseID: UUID
   public let machineID: String
@@ -100,6 +107,9 @@ public final class DoryHostUSBLeaseDevice: DoryPCUSBDevice, @unchecked Sendable 
     self.transferTimeout = transferTimeout
     self.maximumOutstandingTransfers = maximumOutstandingTransfers
     self.releaseHandler = releaseHandler
+    (capability as? any DoryHostUSBRevocationNotifying)?.setRevocationHandler {
+      [weak self] in self?.surpriseRemove()
+    }
   }
 
   public var isActive: Bool {
@@ -163,6 +173,7 @@ public final class DoryHostUSBLeaseDevice: DoryPCUSBDevice, @unchecked Sendable 
     released = true
     condition.unlock()
     capability.close()
+    (capability as? any DoryHostUSBRevocationNotifying)?.setRevocationHandler(nil)
     if notify { releaseHandler(leaseID, identityToken, machineID) }
   }
 
