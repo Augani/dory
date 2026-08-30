@@ -94,7 +94,11 @@ public final class DoryVZMacCameraBridge: NSObject,
                 try DoryVZMacCameraSession(
                     connection: connectionBox.connection,
                     frameProvider: { [camera] width, height, timeout in
-                        camera.nextJPEGFrame(width: width, height: height, timeout: timeout)
+                        try camera.nextJPEGFrameOrThrow(
+                            width: width,
+                            height: height,
+                            timeout: timeout
+                        )
                     }
                 ).run()
             } catch {
@@ -115,7 +119,7 @@ public final class DoryVZMacCameraBridge: NSObject,
 }
 
 struct DoryVZMacCameraSession: @unchecked Sendable {
-    typealias FrameProvider = @Sendable (Int, Int, TimeInterval) -> Data?
+    typealias FrameProvider = @Sendable (Int, Int, TimeInterval) throws -> Data
 
     let descriptor: Int32
     let frameProvider: FrameProvider
@@ -176,12 +180,19 @@ struct DoryVZMacCameraSession: @unchecked Sendable {
         let interval = UInt64(1_000_000_000 / request.maximumFramesPerSecond)
         while !cancellation.isCancelled {
             let started = DispatchTime.now().uptimeNanoseconds
-            guard let jpeg = frameProvider(
-                Int(request.widthPixels),
-                Int(request.heightPixels),
-                min(2, max(0.05, Double(interval) / 1_000_000_000 * 2))
-            ) else {
-                try writeError("host camera frame timed out", sequence: sequence, to: descriptor)
+            let jpeg: Data
+            do {
+                jpeg = try frameProvider(
+                    Int(request.widthPixels),
+                    Int(request.heightPixels),
+                    min(2, max(0.05, Double(interval) / 1_000_000_000 * 2))
+                )
+            } catch {
+                try writeError(
+                    String(String(describing: error).prefix(1_024)),
+                    sequence: sequence,
+                    to: descriptor
+                )
                 break
             }
             let frame = try DoryCameraBridgeV1.JPEGFrame(

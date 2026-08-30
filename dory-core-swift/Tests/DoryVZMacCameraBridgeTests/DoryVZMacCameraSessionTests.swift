@@ -60,6 +60,52 @@ final class DoryVZMacCameraSessionTests: XCTestCase {
         close(sockets[1])
     }
 
+    func testHostCameraFailureIsReturnedToGuestWithoutTimeoutMasking() throws {
+        var sockets = [Int32](repeating: -1, count: 2)
+        XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &sockets), 0)
+        let completed = expectation(description: "failed host camera session stopped")
+        let session = DoryVZMacCameraSession(
+            ownedDescriptor: sockets[0],
+            frameProvider: { _, _, _ in
+                throw SimulatedCameraFailure.permissionDenied
+            }
+        )
+        DispatchQueue.global(qos: .userInitiated).async {
+            defer { completed.fulfill() }
+            do {
+                try session.run()
+            } catch {
+                XCTFail("camera session failed before reporting the host error: \(error)")
+            }
+        }
+
+        let request = try DoryCameraBridgeV1.StartRequest(
+            widthPixels: 1_280,
+            heightPixels: 720,
+            maximumFramesPerSecond: 30
+        )
+        try writeAll(
+            DoryCameraBridgeV1.encode(
+                try DoryCameraBridgeV1.Message(
+                    kind: .start,
+                    sequence: 0,
+                    payload: request.encode()
+                )
+            ),
+            to: sockets[1]
+        )
+
+        var decoder = DoryCameraBridgeV1.Decoder()
+        let message = try readMessage(from: sockets[1], decoder: &decoder)
+        XCTAssertEqual(message.kind, .error)
+        XCTAssertEqual(
+            String(decoding: message.payload, as: UTF8.self),
+            SimulatedCameraFailure.permissionDenied.description
+        )
+        wait(for: [completed], timeout: 2)
+        close(sockets[1])
+    }
+
     private func readMessage(
         from descriptor: Int32,
         decoder: inout DoryCameraBridgeV1.Decoder
@@ -88,4 +134,10 @@ final class DoryVZMacCameraSessionTests: XCTestCase {
             }
         }
     }
+}
+
+private enum SimulatedCameraFailure: Error, CustomStringConvertible {
+    case permissionDenied
+
+    var description: String { "Mac camera permission was denied for this test." }
 }

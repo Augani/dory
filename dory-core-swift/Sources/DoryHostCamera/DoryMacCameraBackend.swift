@@ -5,7 +5,7 @@ import CoreVideo
 import Foundation
 import ImageIO
 
-public enum DoryMacCameraError: Error, CustomStringConvertible {
+public enum DoryMacCameraError: Error, Sendable, CustomStringConvertible {
     case permissionDenied
     case permissionRestricted
     case permissionTimedOut
@@ -14,6 +14,8 @@ public enum DoryMacCameraError: Error, CustomStringConvertible {
     case cannotAttachInput
     case cannotAttachOutput
     case startFailed
+    case unsupportedDimensions(Int, Int)
+    case frameTimedOut
 
     public var description: String {
         switch self {
@@ -33,6 +35,10 @@ public enum DoryMacCameraError: Error, CustomStringConvertible {
             "The Mac camera output could not be attached to the capture session."
         case .startFailed:
             "The Mac camera capture session did not start."
+        case .unsupportedDimensions(let width, let height):
+            "The requested Mac camera frame size is unsupported: \(width)x\(height)."
+        case .frameTimedOut:
+            "The Mac camera opened but did not deliver a frame before the deadline."
         }
     }
 }
@@ -51,6 +57,7 @@ public final class DoryMacCameraBackend: NSObject,
     AVCaptureVideoDataOutputSampleBufferDelegate, @unchecked Sendable
 {
     private let condition = NSCondition()
+    private let preparationLock = NSLock()
     private let captureQueue = DispatchQueue(
         label: "com.dory.desktop.camera.capture",
         qos: .userInitiated
@@ -74,6 +81,7 @@ public final class DoryMacCameraBackend: NSObject,
     private var idleGeneration: UInt64 = 0
     private var waitingConsumers = 0
     private var prepared = false
+    private var cameraIdentity: DoryMacCameraIdentity?
     private var captureRunning = false
     private var stopped = false
 
@@ -86,6 +94,17 @@ public final class DoryMacCameraBackend: NSObject,
     public func prepareAndAuthorize(permissionTimeout: TimeInterval = 60) throws
         -> DoryMacCameraIdentity
     {
+        preparationLock.lock()
+        defer { preparationLock.unlock() }
+        condition.lock()
+        if let cameraIdentity {
+            condition.unlock()
+            return cameraIdentity
+        }
+        let mayPrepare = !stopped
+        condition.unlock()
+        guard mayPrepare else { throw DoryMacCameraError.startFailed }
+
         try Self.requireAuthorization(timeout: permissionTimeout)
         guard let device = AVCaptureDevice.default(for: .video) else {
             throw DoryMacCameraError.unavailable
@@ -135,24 +154,37 @@ public final class DoryMacCameraBackend: NSObject,
             condition.broadcast()
             condition.unlock()
         }
-        log("Dory camera: host capture ready (\(device.localizedName))")
-        return DoryMacCameraIdentity(
+        let identity = DoryMacCameraIdentity(
             localizedName: device.localizedName,
             modelID: device.modelID,
             uniqueID: device.uniqueID
         )
+        condition.lock()
+        cameraIdentity = identity
+        condition.unlock()
+        log("Dory camera: host capture ready (\(device.localizedName))")
+        return identity
     }
 
     public func nextJPEGFrame(width: Int, height: Int, timeout: TimeInterval) -> Data? {
+        try? nextJPEGFrameOrThrow(width: width, height: height, timeout: timeout)
+    }
+
+    public func nextJPEGFrameOrThrow(
+        width: Int,
+        height: Int,
+        timeout: TimeInterval
+    ) throws -> Data {
         guard (width == 640 && height == 480) || (width == 1_280 && height == 720) else {
-            return nil
+            throw DoryMacCameraError.unsupportedDimensions(width, height)
         }
-        guard ensureCaptureRunning() else { return nil }
+        _ = try prepareAndAuthorize()
+        guard ensureCaptureRunning() else { throw DoryMacCameraError.startFailed }
         let deadline = Date().addingTimeInterval(max(0.001, min(timeout, 2)))
         condition.lock()
         guard captureRunning, !stopped else {
             condition.unlock()
-            return nil
+            throw DoryMacCameraError.startFailed
         }
         if requestedWidth != width || requestedHeight != height {
             requestedWidth = width
@@ -172,10 +204,14 @@ public final class DoryMacCameraBackend: NSObject,
             }
         }
         while !stopped, captureRunning, generation == deliveredGeneration {
-            guard condition.wait(until: deadline) else { return nil }
+            guard condition.wait(until: deadline) else {
+                throw DoryMacCameraError.frameTimedOut
+            }
         }
         guard !stopped, captureRunning,
-              generation != deliveredGeneration, let latestJPEG else { return nil }
+              generation != deliveredGeneration, let latestJPEG else {
+            throw DoryMacCameraError.frameTimedOut
+        }
         deliveredGeneration = generation
         return latestJPEG
     }
@@ -188,6 +224,7 @@ public final class DoryMacCameraBackend: NSObject,
         }
         stopped = true
         prepared = false
+        cameraIdentity = nil
         captureRunning = false
         idleGeneration &+= 1
         latestJPEG = nil
