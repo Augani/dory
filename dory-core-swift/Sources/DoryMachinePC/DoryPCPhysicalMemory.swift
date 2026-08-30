@@ -1,4 +1,5 @@
 import DoryDBTX86
+import DoryVirtio
 import Foundation
 
 public enum DoryPCPhysicalMemoryError: Error, Sendable, Equatable {
@@ -111,6 +112,23 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, @unchecked Sendable {
     for device in devices { device.synchronize() }
   }
 
+  /// VirtIO DMA is deliberately RAM-only. A descriptor can never trigger an APIC, PCI, or other
+  /// MMIO register read as a side effect of validation or device processing.
+  public func validateDMA(at address: UInt64, byteCount: Int, deviceWillWrite: Bool) throws {
+    guard try resolve(address: address, byteCount: byteCount) == nil else {
+      throw DoryX86MemoryError.unmapped(
+        address: address,
+        byteCount: byteCount,
+        access: deviceWillWrite ? .write : .read
+      )
+    }
+    if deviceWillWrite {
+      try ram.validateWrite(at: address, byteCount: byteCount)
+    } else {
+      _ = try ram.read(at: address, byteCount: byteCount)
+    }
+  }
+
   private func resolve(
     address: UInt64,
     byteCount: Int
@@ -137,6 +155,12 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, @unchecked Sendable {
       }
       return (mapping.device, address - mapping.lowerBound)
     }
+  }
+}
+
+extension DoryPCPhysicalMemoryBus: DoryVirtioGuestMemory {
+  public func validate(at address: UInt64, byteCount: Int, deviceWillWrite: Bool) throws {
+    try validateDMA(at: address, byteCount: byteCount, deviceWillWrite: deviceWillWrite)
   }
 }
 

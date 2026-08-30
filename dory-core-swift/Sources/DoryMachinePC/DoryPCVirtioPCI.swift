@@ -7,6 +7,10 @@ public enum DoryPCVirtioPCIError: Error, Sendable, Equatable {
   case invalidQueue(UInt16)
 }
 
+public protocol DoryPCVirtioGuestMemoryConsumer: AnyObject, Sendable {
+  func connectGuestMemory(_ memory: any DoryVirtioGuestMemory)
+}
+
 public struct DoryPCVirtioPCIQueueSnapshot: Sendable, Hashable {
   public let size: UInt16
   public let enabled: Bool
@@ -43,6 +47,10 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
   private var deviceConfiguration: [UInt8]
   private var notifySink: (@Sendable (UInt16) -> Void)?
   private var interruptSink: (@Sendable () -> Bool)?
+  private var guestMemory: (any DoryVirtioGuestMemory)?
+  private var queueProcessor:
+    (@Sendable (UInt16, DoryVirtioDescriptorChain, any DoryVirtioGuestMemory) throws -> UInt32)?
+  private let processingLocks: [NSLock]
 
   public init(
     queueCount: Int,
@@ -62,6 +70,7 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
         queue: .init(maximumSize: maximumQueueSize)
       )
     }
+    processingLocks = (0..<queueCount).map { _ in NSLock() }
     self.deviceConfiguration = deviceConfiguration
   }
 
@@ -71,6 +80,21 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
 
   public func connectInterruptSink(_ sink: @escaping @Sendable () -> Bool) {
     lock.withLock { interruptSink = sink }
+  }
+
+  public func connectQueueProcessor(
+    memory: any DoryVirtioGuestMemory,
+    processor:
+      @escaping @Sendable (
+        UInt16,
+        DoryVirtioDescriptorChain,
+        any DoryVirtioGuestMemory
+      ) throws -> UInt32
+  ) {
+    lock.withLock {
+      guestMemory = memory
+      queueProcessor = processor
+    }
   }
 
   public func queue(at index: UInt16) throws -> DoryVirtioSplitQueue {
@@ -154,6 +178,7 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
       }
       let sink = lock.withLock { notifySink }
       sink?(queue)
+      drain(queue: queue)
       return
     }
     if offset >= 0x300, offset + UInt64(bytes.count) <= 0x300 + UInt64(deviceConfiguration.count) {
@@ -163,6 +188,36 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
           with: bytes
         )
       }
+    }
+  }
+
+  private func drain(queue index: UInt16) {
+    let snapshot = deviceState.snapshot()
+    guard snapshot.status.contains(.driverOK) else { return }
+    let processing = lock.withLock { (guestMemory, queueProcessor) }
+    guard let memory = processing.0, let processor = processing.1 else { return }
+    let processingLock = processingLocks[Int(index)]
+    processingLock.lock()
+    defer { processingLock.unlock() }
+    do {
+      let queue = try queue(at: index)
+      while let chain = try queue.popAvailable(
+        memory: memory,
+        allowIndirectDescriptors: snapshot.negotiatedFeatures.contains(.indirectDescriptors)
+      ) {
+        let bytesWritten = try processor(index, chain, memory)
+        memory.synchronize()
+        let notify = try queue.complete(
+          chain,
+          bytesWritten: bytesWritten,
+          memory: memory,
+          eventIndexNegotiated: snapshot.negotiatedFeatures.contains(.eventIndex)
+        )
+        if notify { _ = signalQueueInterrupt() }
+      }
+    } catch {
+      deviceState.markDeviceNeedsReset()
+      signalConfigurationChange()
     }
   }
 
@@ -253,6 +308,71 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
       throw DoryPCVirtioPCIError.invalidBARAccess(
         offset: offset, byteCount: byteCount, write: write)
     }
+  }
+}
+
+public final class DoryPCVirtioBlockPCIDevice: DoryPCPCIFunction, DoryPCPCIMSIControllable,
+  DoryPCPCIBARMemoryDevice, DoryPCVirtioGuestMemoryConsumer, @unchecked Sendable
+{
+  public let pciFunction: DoryPCVirtioPCIFunction
+  public let blockDevice: DoryVirtioBlockDevice
+
+  public var pciAddress: DoryPCPCIAddress { pciFunction.pciAddress }
+  public var configurationFunction: DoryPCPCIConfigurationFunction {
+    pciFunction.configurationFunction
+  }
+  public var barIndex: Int { pciFunction.barIndex }
+  public var transport: DoryPCVirtioPCITransport { pciFunction.transport }
+
+  public init(
+    address: DoryPCPCIAddress,
+    initialBARAddress: UInt64,
+    storage: any DoryVirtioBlockStorage,
+    identifier: String,
+    maximumQueueSize: UInt16 = 256
+  ) throws {
+    blockDevice = try .init(storage: storage, identifier: identifier)
+    pciFunction = try .init(
+      address: address,
+      virtioDeviceID: 2,
+      classCode: 0x010000,
+      initialBARAddress: initialBARAddress,
+      queueCount: 1,
+      maximumQueueSize: maximumQueueSize,
+      offeredFeatures: blockDevice.offeredFeatures.union([
+        .indirectDescriptors, .eventIndex,
+      ]),
+      deviceConfiguration: blockDevice.configuration
+    )
+  }
+
+  public func connectGuestMemory(_ memory: any DoryVirtioGuestMemory) {
+    transport.connectQueueProcessor(memory: memory) { [blockDevice] queue, chain, memory in
+      guard queue == 0 else { throw DoryPCVirtioPCIError.invalidQueue(queue) }
+      return try blockDevice.process(chain, memory: memory).bytesWritten
+    }
+  }
+
+  public func readConfiguration(offset: Int, byteCount: Int) throws -> [UInt8] {
+    try pciFunction.readConfiguration(offset: offset, byteCount: byteCount)
+  }
+
+  public func writeConfiguration(offset: Int, bytes: [UInt8]) throws {
+    try pciFunction.writeConfiguration(offset: offset, bytes: bytes)
+  }
+
+  public func connectMSISink(
+    _ sink: @escaping @Sendable (_ messageAddress: UInt64, _ messageData: UInt16) -> Bool
+  ) {
+    pciFunction.connectMSISink(sink)
+  }
+
+  public func readBAR(offset: UInt64, byteCount: Int) throws -> [UInt8] {
+    try pciFunction.readBAR(offset: offset, byteCount: byteCount)
+  }
+
+  public func writeBAR(offset: UInt64, bytes: [UInt8]) throws {
+    try pciFunction.writeBAR(offset: offset, bytes: bytes)
   }
 }
 

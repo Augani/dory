@@ -106,6 +106,9 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           }
         }
       }
+      if let memoryConsumer = function as? any DoryPCVirtioGuestMemoryConsumer {
+        memoryConsumer.connectGuestMemory(physicalMemory)
+      }
     }
     pciExpress.seal()
     pciBARWindow.seal()
