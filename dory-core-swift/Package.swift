@@ -51,6 +51,10 @@ let package = Package(
       targets: ["dory-phase0a-hv-throughput"]
     ),
     .executable(
+      name: "dory-phase0a-storage-baseline",
+      targets: ["dory-phase0a-storage-baseline"]
+    ),
+    .executable(
       name: "dory-firmware-bundler",
       targets: ["dory-firmware-bundler"]
     ),
@@ -210,6 +214,10 @@ let package = Package(
         "DoryPhase0AQualification",
       ],
       linkerSettings: [.linkedFramework("Hypervisor")]
+    ),
+    .executableTarget(
+      name: "dory-phase0a-storage-baseline",
+      dependencies: ["DoryPhase0AQualification"]
     ),
     .executableTarget(
       name: "dory-firmware-bundler",
