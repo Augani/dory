@@ -244,10 +244,10 @@ explicit migration or compatibility decision.
   position-balanced observations across five rounds and evaluates paired round medians. Its signed
   result is 4.05% median Dory overhead against the non-relaxing 3% budget, so it remains a
   reproducible optimization baseline rather than a pass; low/mid/high matrix and workload-campaign
-  closure also remain stop gates. A separate 10,000,000-iteration sustained guest loop passes the
-  Dory-versus-minimal-HV overhead gate at -0.21% median overhead (100.21% normalized throughput),
-  proving that the open lifecycle result is not a sustained-vCPU throughput failure. Host-native
-  CPU normalization and the remaining section 7 dimensions are still unmeasured.
+  closure also remain stop gates. A separate 10,000,000-iteration host-native/minimal-HV/Dory loop
+  passes at 0.39% median Dory overhead, 99.61% Dory/minimal-HV throughput, and 95.99% Dory/host-native
+  throughput. This closes the sustained CPU dimension only for the available unassigned host; the
+  low/middle/high references and remaining section 7 dimensions are still unmeasured.
 
 ## ADR-018 — Compatibility ledger and release receipts
 

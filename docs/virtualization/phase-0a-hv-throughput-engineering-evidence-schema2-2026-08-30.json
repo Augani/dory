@@ -1,0 +1,79 @@
+{
+  "schema": "dory.phase0a.hv-throughput-engineering-evidence@2",
+  "verdict": "host-native-cpu-and-orchestration-pass-current-host-only",
+  "startedAt": "2026-08-30T12:24:28Z",
+  "finishedAt": "2026-08-30T12:24:30Z",
+  "toolchain": {
+    "xcodeVersion": "26.6",
+    "xcodeBuild": "17F109",
+    "sdkVersion": "26.5"
+  },
+  "host": {
+    "architecture": "arm64",
+    "hardwareModel": "Mac14,10",
+    "chip": "Apple M2 Pro",
+    "physicalMemoryBytes": 17179869184,
+    "osProductVersion": "27.0",
+    "osBuildVersion": "26A5421a",
+    "firmwareVersion": "20457.1.29",
+    "bootSessionIdentifier": "D8A1C440-174D-4AE8-A564-A56EFB3DE487",
+    "powerSource": "ac",
+    "lowPowerModeEnabled": false,
+    "thermalState": "nominal"
+  },
+  "candidate": {
+    "sha256": "3fcc85679ce07adde8b95a44c239a9fbd1aff727379d71d2e2be857865b80d51",
+    "entryPointSourceSHA256": "11a7210d52b37ef96764bb1769bdf8ebf85c10c3fb1e20422844e46eb26f7323",
+    "hostNativeAssemblySHA256": "10e2f439dd6f18a89e52751ddb810b9e1a084defca3a160c0ad9e4082da46f5d",
+    "minimalHarnessSourceSHA256": "eb2fc144fd5c343783ab7626efa4f03fea776c92aa08cddd852e8dedba5516b1",
+    "metricSummarySourceSHA256": "91adab264979fa058e1f51210039c3f16b2d006e81a5ab92fa630a0917b5d71b",
+    "hardenedRuntime": true,
+    "hypervisorEntitlement": true,
+    "teamIdentifier": "864H636QW4",
+    "signingAuthority": "Developer ID Application: Augustus Otu (864H636QW4)",
+    "notarization": "not-submitted-engineering-calibration"
+  },
+  "policy": {
+    "workload": "ARM64 10,000,000-iteration add/subs/branch loop",
+    "guestLoopIterationsPerExecution": 10000000,
+    "roundCount": 5,
+    "warmupCountPerHarnessPerRound": 2,
+    "sampleCountPerHarnessPerRound": 20,
+    "rawObservationCount": 300,
+    "order": "three-way position-balanced by round and sample parity",
+    "clock": "CLOCK_MONOTONIC_RAW",
+    "percentileMethod": "R-7 linear interpolation",
+    "inferenceUnit": "round median",
+    "orchestrationMedianOverheadBudgetPercent": 3,
+    "cpuThroughputOfHostNativeMedianBudgetPercent": 95
+  },
+  "rounds": [
+    {"round": 1, "hostNativeMedianMicroseconds": 2950.062, "minimalHVMedianMicroseconds": 3045.6255, "doryMedianMicroseconds": 3057.6040000000003, "doryOfHostNativeThroughputPercent": 96.48280156619364, "doryOfMinimalThroughputPercent": 99.60823900021062, "doryOverheadPercent": 0.39330180286447636},
+    {"round": 2, "hostNativeMedianMicroseconds": 2922.792, "minimalHVMedianMicroseconds": 3088.1875, "doryMedianMicroseconds": 3087.1875, "doryOfHostNativeThroughputPercent": 94.67491041603401, "doryOfMinimalThroughputPercent": 100.0323919425043, "doryOverheadPercent": -0.03238145352248978},
+    {"round": 3, "hostNativeMedianMicroseconds": 2985.2709999999997, "minimalHVMedianMicroseconds": 2947.437, "doryMedianMicroseconds": 3109.8540000000003, "doryOfHostNativeThroughputPercent": 95.99392768920984, "doryOfMinimalThroughputPercent": 94.77734324505265, "doryOverheadPercent": 5.510448569384185},
+    {"round": 4, "hostNativeMedianMicroseconds": 3003.208, "minimalHVMedianMicroseconds": 3078.958, "doryMedianMicroseconds": 3067.688, "doryOfHostNativeThroughputPercent": 97.89809133132182, "doryOfMinimalThroughputPercent": 100.36737764727053, "doryOverheadPercent": -0.3660329241256255},
+    {"round": 5, "hostNativeMedianMicroseconds": 3006.6459999999997, "minimalHVMedianMicroseconds": 3027.8545, "doryMedianMicroseconds": 3142.125, "doryOfHostNativeThroughputPercent": 95.68830011536778, "doryOfMinimalThroughputPercent": 96.36327326252137, "doryOverheadPercent": 3.7739759291604003}
+  ],
+  "pairedRoundMedians": {
+    "doryOfHostNativeThroughputPercent": 95.99392768920984,
+    "doryOfMinimalThroughputPercent": 99.60823900021062,
+    "doryOverheadPercent": 0.39330180286447636
+  },
+  "correctness": {
+    "hostNativeExecutions": 110,
+    "minimalHVExecutions": 110,
+    "doryContractExecutions": 110,
+    "expectedCounterAndHypercallNumber": 10000000,
+    "validityBlockers": []
+  },
+  "receipt": {
+    "file": "phase-0a-hv-throughput-engineering-receipt-schema2-2026-08-30.json.gz",
+    "uncompressedSHA256": "1cd83ee420caa603c20656c462d3c2e65e44dbb92d69fa9c41369bdb0e5554e8",
+    "deterministicGzipSHA256": "ea7232e0057aa2be5c002709a4d9f9f659cfd19554c62ee5225df93d75833cf3",
+    "compressedBytes": 7009
+  },
+  "orchestrationBudgetPass": true,
+  "cpuThroughputBudgetPass": true,
+  "referenceMatrixComplete": false,
+  "releaseGateClosed": false
+}
