@@ -637,5 +637,19 @@ import Testing
           count: .vector(.register(1))
         )
     )
+    #expect(
+      try decoder.decode([0x66, 0x0F, 0xE5, 0xC1], at: 0x1000, mode: .long64).operation
+        == .vectorIntegerBinary(
+          .multiplyHighSigned, laneWidth: .word, destination: 0, source: .register(1))
+    )
+    #expect(
+      try decoder.decode([0x66, 0x0F, 0xF4, 0xC1], at: 0x1000, mode: .long64).operation
+        == .vectorIntegerBinary(
+          .multiplyUnsignedDoubleword,
+          laneWidth: .doubleword,
+          destination: 0,
+          source: .register(1)
+        )
+    )
   }
 }

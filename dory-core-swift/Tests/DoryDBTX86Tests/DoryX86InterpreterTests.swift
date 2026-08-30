@@ -797,6 +797,40 @@ import Testing
     #expect(Array(state.floatingPoint.ymm[3].bytes[0..<16]) == Array(repeating: 0, count: 16))
   }
 
+  @Test func sse2PackedMultipliesProduceArchitecturalLaneResults() throws {
+    let memory = DoryX86ByteArrayMemory(
+      baseAddress: 0x1000,
+      bytes: [
+        0x66, 0x0F, 0xD5, 0xC1,
+        0x66, 0x0F, 0xE5, 0xD1,
+        0x66, 0x0F, 0xE4, 0xD9,
+        0x66, 0x0F, 0xF4, 0xE1,
+        0x66, 0x0F, 0xF5, 0xE9,
+      ] + .init(repeating: 0, count: 16)
+    )
+    var floatingPoint = try DoryX86FloatingPointState()
+    floatingPoint.ymm[0] = try vectorRegister(words: [2, 0, 0xFFFF, 0, 0x8000, 0, 7, 0])
+    floatingPoint.ymm[1] = try vectorRegister(doublewords: [3, 4, 5, 6])
+    floatingPoint.ymm[2] = try vectorRegister(words: [0x8000, 0, 0x7FFF, 0, 0xFFFF, 0, 1, 0])
+    floatingPoint.ymm[3] = try vectorRegister(words: [0xFFFF, 0, 0x8000, 0, 0x1234, 0, 1, 0])
+    floatingPoint.ymm[4] = try vectorRegister(doublewords: [2, 99, 4, 99])
+    floatingPoint.ymm[5] = try vectorRegister(words: [2, 7, 0xFFFF, 8, 3, 9, 0xFFFE, 10])
+    var state = try DoryX86ArchitecturalState(rip: 0x1000, floatingPoint: floatingPoint)
+
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    #expect(vectorWords(state.floatingPoint.ymm[0]) == [6, 0, 0xFFFC, 0, 0x8000, 0, 42, 0])
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    #expect(vectorWords(state.floatingPoint.ymm[2])[0] == 0xFFFE)
+    #expect(vectorWords(state.floatingPoint.ymm[2])[2] == 1)
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    #expect(vectorWords(state.floatingPoint.ymm[3])[0] == 2)
+    #expect(vectorWords(state.floatingPoint.ymm[3])[2] == 2)
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    #expect(vectorQuadwords(state.floatingPoint.ymm[4]) == [6, 20])
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    #expect(vectorDoublewords(state.floatingPoint.ymm[5]) == [6, 0xFFFF_FFFC, 15, 0xFFFF_FFF4])
+  }
+
   @Test func byteExtendMoveUsesTheWideModRMDestinationRegister() throws {
     var bytes = [UInt8](repeating: 0, count: 0x20)
     bytes.replaceSubrange(0..<4, with: [0x0F, 0xB6, 0x71, 0x02])
@@ -1824,6 +1858,46 @@ import Testing
 
   private func memoryInteger(bytes: [UInt8]) throws -> UInt64 {
     bytes.enumerated().reduce(0) { $0 | UInt64($1.element) << UInt64($1.offset * 8) }
+  }
+
+  private func vectorRegister(words: [UInt16]) throws -> DoryX86RegisterBytes {
+    var bytes = [UInt8](repeating: 0, count: 32)
+    for (lane, value) in words.enumerated() {
+      bytes.replaceSubrange(lane * 2..<lane * 2 + 2, with: littleEndian(UInt64(value)).prefix(2))
+    }
+    return try .init(bytes: bytes, expectedByteCount: 32)
+  }
+
+  private func vectorRegister(doublewords: [UInt32]) throws -> DoryX86RegisterBytes {
+    var bytes = [UInt8](repeating: 0, count: 32)
+    for (lane, value) in doublewords.enumerated() {
+      bytes.replaceSubrange(lane * 4..<lane * 4 + 4, with: littleEndian(UInt64(value)).prefix(4))
+    }
+    return try .init(bytes: bytes, expectedByteCount: 32)
+  }
+
+  private func vectorWords(_ register: DoryX86RegisterBytes) -> [UInt16] {
+    stride(from: 0, to: 16, by: 2).map {
+      UInt16(register.bytes[$0]) | UInt16(register.bytes[$0 + 1]) << 8
+    }
+  }
+
+  private func vectorDoublewords(_ register: DoryX86RegisterBytes) -> [UInt32] {
+    var values: [UInt32] = []
+    for offset in stride(from: 0, to: 16, by: 4) {
+      let low = UInt32(register.bytes[offset]) | UInt32(register.bytes[offset + 1]) << 8
+      let high = UInt32(register.bytes[offset + 2]) | UInt32(register.bytes[offset + 3]) << 8
+      values.append(low | high << 16)
+    }
+    return values
+  }
+
+  private func vectorQuadwords(_ register: DoryX86RegisterBytes) -> [UInt64] {
+    stride(from: 0, to: 16, by: 8).map { offset in
+      register.bytes[offset..<offset + 8].enumerated().reduce(0) {
+        $0 | UInt64($1.element) << UInt64($1.offset * 8)
+      }
+    }
   }
 }
 

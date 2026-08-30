@@ -1685,6 +1685,41 @@ public struct DoryX86Interpreter: Sendable {
     destination: inout [UInt8],
     source: [UInt8]
   ) {
+    if operation == .multiplyUnsignedDoubleword {
+      for offset in stride(from: 0, to: 16, by: 8) {
+        let lhs = UInt32(fromLittleEndian(Array(destination[offset..<offset + 4])))
+        let rhs = UInt32(fromLittleEndian(Array(source[offset..<offset + 4])))
+        replaceLittleEndian(UInt64(lhs) * UInt64(rhs), in: &destination, at: offset)
+      }
+      return
+    }
+    if operation == .multiplyAddWords {
+      for offset in stride(from: 0, to: 16, by: 4) {
+        let lhsLow = Int32(
+          Int16(
+            bitPattern: UInt16(
+              fromLittleEndian(
+                Array(destination[offset..<offset + 2])))))
+        let lhsHigh = Int32(
+          Int16(
+            bitPattern: UInt16(
+              fromLittleEndian(
+                Array(destination[offset + 2..<offset + 4])))))
+        let rhsLow = Int32(
+          Int16(
+            bitPattern: UInt16(
+              fromLittleEndian(
+                Array(source[offset..<offset + 2])))))
+        let rhsHigh = Int32(
+          Int16(
+            bitPattern: UInt16(
+              fromLittleEndian(
+                Array(source[offset + 2..<offset + 4])))))
+        let result = lhsLow &* rhsLow &+ lhsHigh &* rhsHigh
+        replaceLittleEndian(UInt32(bitPattern: result), in: &destination, at: offset)
+      }
+      return
+    }
     let byteCount = Int(laneWidth.rawValue)
     let laneMask = byteCount == 8 ? UInt64.max : (UInt64(1) << UInt64(byteCount * 8)) - 1
     let signBit = UInt64(1) << UInt64(byteCount * 8 - 1)
@@ -1697,11 +1732,25 @@ public struct DoryX86Interpreter: Sendable {
         case .subtract: (lhs &- rhs) & laneMask
         case .equal: lhs == rhs ? laneMask : 0
         case .greaterThan: (lhs ^ signBit) > (rhs ^ signBit) ? laneMask : 0
+        case .multiplyLow: (lhs &* rhs) & laneMask
+        case .multiplyHighUnsigned: (lhs * rhs) >> UInt64(byteCount * 8)
+        case .multiplyHighSigned:
+          UInt64(
+            bitPattern: signedVectorLane(lhs, bitCount: byteCount * 8)
+              * signedVectorLane(rhs, bitCount: byteCount * 8))
+            >> UInt64(byteCount * 8) & laneMask
+        case .multiplyUnsignedDoubleword, .multiplyAddWords:
+          preconditionFailure("wide packed multiply handled before lane loop")
         }
       for index in 0..<byteCount {
         destination[offset + index] = UInt8(truncatingIfNeeded: result >> UInt64(index * 8))
       }
     }
+  }
+
+  private func signedVectorLane(_ value: UInt64, bitCount: Int) -> Int64 {
+    let signBit = UInt64(1) << UInt64(bitCount - 1)
+    return Int64(bitPattern: (value ^ signBit) &- signBit)
   }
 
   private func executeVectorIntegerShift(

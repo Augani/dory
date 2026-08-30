@@ -774,7 +774,7 @@ public struct DoryX86Decoder: Sendable {
           destination: vectorRegister(operands.reg),
           source: vectorOperand(operands.rm)
         )
-      case 0x64...0x66, 0x74...0x76, 0xD4, 0xF8...0xFE:
+      case 0x64...0x66, 0x74...0x76, 0xD4, 0xD5, 0xE4, 0xE5, 0xF4, 0xF5, 0xF8...0xFE:
         guard prefixes.operandSizeOverride, prefixes.repeatPrefix == nil else {
           throw DoryX86DecodeError.invalidEncoding(
             address: address, detail: "packed integer XMM operation requires 66 prefix")
@@ -791,6 +791,11 @@ public struct DoryX86Decoder: Sendable {
         case 0x75: (integerOperation, laneWidth) = (.equal, .word)
         case 0x76: (integerOperation, laneWidth) = (.equal, .doubleword)
         case 0xD4: (integerOperation, laneWidth) = (.add, .quadword)
+        case 0xD5: (integerOperation, laneWidth) = (.multiplyLow, .word)
+        case 0xE4: (integerOperation, laneWidth) = (.multiplyHighUnsigned, .word)
+        case 0xE5: (integerOperation, laneWidth) = (.multiplyHighSigned, .word)
+        case 0xF4: (integerOperation, laneWidth) = (.multiplyUnsignedDoubleword, .doubleword)
+        case 0xF5: (integerOperation, laneWidth) = (.multiplyAddWords, .word)
         case 0xF8: (integerOperation, laneWidth) = (.subtract, .byte)
         case 0xF9: (integerOperation, laneWidth) = (.subtract, .word)
         case 0xFA: (integerOperation, laneWidth) = (.subtract, .doubleword)
