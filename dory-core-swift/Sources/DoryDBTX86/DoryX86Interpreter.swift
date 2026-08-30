@@ -1385,6 +1385,7 @@ public struct DoryX86Interpreter: Sendable {
   ) -> UInt64? {
     switch index {
     case 0x10: state.tsc
+    case 0x17: 0  // IA32_PLATFORM_ID: Dory's single virtual platform is ID zero.
     case 0x1B: state.modelSpecific.apicBase
     case 0x174: state.modelSpecific.systemEnterCS
     case 0x175: state.modelSpecific.systemEnterStackPointer

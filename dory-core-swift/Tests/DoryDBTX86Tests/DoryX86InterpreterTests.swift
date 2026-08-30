@@ -418,6 +418,38 @@ import Testing
     #expect(state.rip == 0x6004)
   }
 
+  @Test func platformIdentityMSRIsStableAndReadOnly() throws {
+    let memory = DoryX86ByteArrayMemory(
+      baseAddress: 0x6800,
+      bytes: [0x0F, 0x32, 0x0F, 0x30] + .init(repeating: 0, count: 16)
+    )
+    var state = try DoryX86ArchitecturalState(
+      registers: .init(rax: .max, rcx: 0x17, rdx: .max),
+      rip: 0x6800,
+      cs: .init(selector: 0, attributes: 0xA09B, limit: .max)
+    )
+
+    let read = interpreter.step(state: &state, memory: memory, mode: .long64)
+    guard case .retired = read else {
+      Issue.record("IA32_PLATFORM_ID unexpectedly faulted: \(read)")
+      return
+    }
+    #expect(state.registers.rax == 0)
+    #expect(state.registers.rdx == 0)
+
+    state.registers.rax = 1
+    let write = interpreter.step(state: &state, memory: memory, mode: .long64)
+    #expect(
+      write
+        == .exception(
+          .init(
+            kind: .generalProtection,
+            vector: 13,
+            errorCode: 0,
+            instructionPointer: 0x6802
+          )))
+  }
+
   @Test func syscallAndSysretPerformArchitecturalRegisterTransitions() throws {
     let syscallMemory = DoryX86ByteArrayMemory(
       baseAddress: 0x7000,
