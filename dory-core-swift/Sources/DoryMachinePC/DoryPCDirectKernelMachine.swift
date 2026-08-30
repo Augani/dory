@@ -33,6 +33,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   public let ioAPIC: DoryPCIOAPIC
   public let legacyPIC: DoryPCPIC8259Pair
   public let legacyPIT: DoryPCPIT8254
+  public let rtc: DoryPCRTC146818
   public let pagingUnit: DoryX86PagingUnit
   public let interpreter: DoryX86Interpreter
   public let bootLayout: DoryPCPVHBootLayout
@@ -47,6 +48,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     memoryBytes: Int,
     bootLayout: DoryPCPVHBootLayout = .init(),
     acpiLayout: DoryPCACPILayout = .init(),
+    initialRTCDate: Date = Date(),
     interpreter: DoryX86Interpreter = .init()
   ) throws {
     guard memoryBytes >= 1024 * 1024 else {
@@ -71,9 +73,15 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       if asserted { try? legacyPIC.raise(irq: 4) }
       try? ioAPIC.setAsserted(asserted, pin: 4)
     }
+    rtc = DoryPCRTC146818(initialDate: initialRTCDate)
+    rtc.connectInterruptSink { [legacyPIC, ioAPIC] asserted in
+      if asserted { try? legacyPIC.raise(irq: 8) }
+      try? ioAPIC.setAsserted(asserted, pin: 8)
+    }
     try ioBus.attach(DoryPCPIC8259Port(pair: legacyPIC, slave: false))
     try ioBus.attach(DoryPCPIC8259Port(pair: legacyPIC, slave: true))
     try ioBus.attach(legacyPIT)
+    try ioBus.attach(rtc)
     try ioBus.attach(serial)
     ioBus.seal()
     try physicalMemory.attach(
@@ -129,6 +137,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       for completed in 0..<maximumInstructions {
         localAPIC.advanceTimer(by: 1)
         legacyPIT.advance(by: 1)
+        rtc.advance(by: 1)
         let interruptsEnabled = state.rflags.contains(.interruptEnable)
         let vector =
           localAPIC.acknowledge(
@@ -175,6 +184,17 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
               && apic.softwareEnabled
             if pit.armed, pit.current > 0, picAcceptsTimer || ioAPICAcceptsTimer {
               legacyPIT.advance(by: UInt64(pit.current))
+              continue
+            }
+            let pic = legacyPIC.snapshot()
+            let picAcceptsRTC = pic.masterMask & (1 << 2) == 0 && pic.slaveMask & 1 == 0
+            let ioAPICAcceptsRTC =
+              ((try? ioAPIC.route(for: 8)).map { !$0.masked } ?? false)
+              && apic.softwareEnabled
+            if let rtcTicks = rtc.ticksUntilNextInterrupt(), rtcTicks > 0,
+              picAcceptsRTC || ioAPICAcceptsRTC
+            {
+              rtc.advance(by: rtcTicks)
               continue
             }
           }
