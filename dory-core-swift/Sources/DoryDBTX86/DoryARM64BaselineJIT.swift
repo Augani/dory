@@ -338,14 +338,21 @@ public struct DoryARM64BaselineEmitter: Sendable {
     operand: DoryIROperand,
     into words: inout [UInt32]
   ) -> Bool {
-    guard
-      case .register(let target) = operand,
-      target.bank == "x86.gpr",
-      target.index < 16,
-      target.width == .i32 || target.width == .i64,
-      load(target, into: 9, words: &words)
-    else { return false }
-    let is64Bit = target.width == .i64
+    let width: DoryIRIntegerWidth
+    switch operand {
+    case .register(let target)
+    where target.bank == "x86.gpr" && target.index < 16
+      && (target.width == .i32 || target.width == .i64):
+      guard load(target, into: 9, words: &words) else { return false }
+      width = target.width
+    case .memory(let address, let memoryWidth) where memoryWidth == .i32 || memoryWidth == .i64:
+      guard emitMemoryAddress(address, into: 12, words: &words) else { return false }
+      emitMemoryRead(addressRegister: 12, width: memoryWidth, resultRegister: 9, words: &words)
+      width = memoryWidth
+    default:
+      return false
+    }
+    let is64Bit = width == .i64
 
     switch operation {
     case .increment, .decrement:
@@ -358,7 +365,6 @@ public struct DoryARM64BaselineEmitter: Sendable {
           10,
           11
         ))
-      words.append(encodeStore64(register: 11, base: 0, byteOffset: Int(target.index) * 8))
       emitX86ArithmeticFlags(
         subtraction: operation == .decrement,
         includesAuxiliaryCarry: true,
@@ -369,18 +375,25 @@ public struct DoryARM64BaselineEmitter: Sendable {
     case .bitwiseNot:
       emitImmediate(is64Bit ? UInt64.max : UInt64(UInt32.max), register: 10, into: &words)
       words.append(encodeLogical(.xor, is64Bit: is64Bit, 9, 10, 11))
-      words.append(encodeStore64(register: 11, base: 0, byteOffset: Int(target.index) * 8))
     case .negate:
       words.append(encodeLogical(.or, left: 31, right: 9, destination: 10))
       emitImmediate(0, register: 9, into: &words)
       words.append(encodeAddSubtractSetFlags(add: false, is64Bit: is64Bit, 9, 10, 11))
-      words.append(encodeStore64(register: 11, base: 0, byteOffset: Int(target.index) * 8))
       emitX86ArithmeticFlags(
         subtraction: true,
         includesAuxiliaryCarry: true,
         resultRegister: 11,
         into: &words
       )
+    }
+    switch operand {
+    case .register(let target):
+      words.append(encodeStore64(register: 11, base: 0, byteOffset: Int(target.index) * 8))
+    case .memory(let address, _):
+      guard emitMemoryAddress(address, into: 12, words: &words) else { return false }
+      emitMemoryWrite(addressRegister: 12, valueRegister: 11, width: width, words: &words)
+    default:
+      return false
     }
     return true
   }

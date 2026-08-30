@@ -139,6 +139,35 @@ import Testing
     #endif
   }
 
+  @Test func executorPerformsNativeUnaryMemoryUpdates() throws {
+    #if arch(arm64)
+      let memory = DoryX86ByteArrayMemory(byteCount: 0x100)
+      try memory.write(at: 0x80, bytes: [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x7F])
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
+      var state = try DoryX86ArchitecturalState(
+        registers: .init(rax: 0x80),
+        rip: 0x6000,
+        rflags: [.reservedOne, .carry]
+      )
+
+      let execution = try #require(
+        executor.execute(
+          bytes: [0x48, 0xFF, 0x00],
+          at: state.rip,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 1,
+          state: &state,
+          memory: memory
+        )
+      )
+      #expect(execution.exitCode == .dispatch)
+      #expect(try memory.read(at: 0x80, byteCount: 8) == [0, 0, 0, 0, 0, 0, 0, 0x80])
+      #expect(state.rflags.contains(.overflow))
+      #expect(state.rflags.contains(.carry))
+    #endif
+  }
+
   @Test func boundedCacheEvictsAndInvalidatesDeterministically() throws {
     let emitter = DoryARM64BaselineEmitter()
     let translator = DoryX86IRTranslator()
