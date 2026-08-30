@@ -3,6 +3,34 @@ import Testing
 @testable import DoryDBTX86
 
 @Suite struct DoryX86InterruptTests {
+  @Test func realModeInterruptAndIRETRoundTripSegmentedFrames() throws {
+    let memory = DoryX86ByteArrayMemory(byteCount: 0x500)
+    try memory.write(at: 0x40, bytes: [0, 2, 0, 0])
+    try memory.write(at: 0x100, bytes: [0xCD, 0x10])
+    try memory.write(at: 0x200, bytes: [0xCF])
+    var state = try DoryX86ArchitecturalState(
+      registers: .init(rsp: 0xCAFE_0080),
+      rip: 0x100,
+      rflags: [.reservedOne, .interruptEnable],
+      cs: .init(selector: 0, attributes: 0x9B, limit: 0xffff),
+      ss: .init(selector: 0x30, attributes: 0x93, limit: 0xffff, base: 0x300),
+      idtr: .init(limit: 0x3ff)
+    )
+    let interpreter = DoryX86Interpreter()
+
+    _ = interpreter.step(state: &state, memory: memory, mode: .real16)
+    #expect(state.rip == 0x200)
+    #expect(state.cs.selector == 0)
+    #expect(state.registers.rsp == 0xCAFE_007A)
+    #expect(!state.rflags.contains(.interruptEnable))
+    #expect(try memory.read(at: 0x37A, byteCount: 6) == [2, 1, 0, 0, 2, 2])
+
+    _ = interpreter.step(state: &state, memory: memory, mode: .real16)
+    #expect(state.rip == 0x102)
+    #expect(state.registers.rsp == 0xCAFE_0080)
+    #expect(state.rflags.contains(.interruptEnable))
+  }
+
   @Test func softwareInterruptSwitchesPrivilegeStacksAndIRETRestoresUserState() throws {
     let memory = DoryX86ByteArrayMemory(byteCount: 0x10_000)
     try installSegments(memory)

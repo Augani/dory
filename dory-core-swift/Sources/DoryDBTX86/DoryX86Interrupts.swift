@@ -30,13 +30,22 @@ public struct DoryX86InterruptDelivery: Sendable {
     pagingUnit: DoryX86PagingUnit? = nil,
     mode: DoryX86ExecutionMode
   ) throws {
-    guard mode == .long64 else {
-      throw DoryX86InterruptDeliveryError.invalidGate(vector: vector)
-    }
     if source == .externalMaskable {
       guard state.rflags.contains(.interruptEnable), UInt64(vector >> 4) > state.control.cr8 else {
         return
       }
+    }
+    if mode == .real16 {
+      try deliverRealMode(
+        vector: vector,
+        returnInstructionPointer: returnInstructionPointer,
+        state: &state,
+        memory: physicalMemory
+      )
+      return
+    }
+    guard mode == .long64 else {
+      throw DoryX86InterruptDeliveryError.invalidGate(vector: vector)
     }
 
     let original = state
@@ -177,6 +186,10 @@ public struct DoryX86InterruptDelivery: Sendable {
     pagingUnit: DoryX86PagingUnit? = nil,
     mode: DoryX86ExecutionMode
   ) throws {
+    if mode == .real16 {
+      try interruptReturnRealMode(state: &state, memory: physicalMemory)
+      return
+    }
     guard mode == .long64 else { throw DoryX86InterruptDeliveryError.invalidReturnFrame }
     let memory = translatedMemory(
       physicalMemory: physicalMemory,
@@ -240,6 +253,92 @@ public struct DoryX86InterruptDelivery: Sendable {
     let interruptStackTable: UInt8
     let descriptorPrivilegeLevel: UInt8
     let isInterruptGate: Bool
+  }
+
+  private func deliverRealMode(
+    vector: UInt8,
+    returnInstructionPointer: UInt64?,
+    state: inout DoryX86ArchitecturalState,
+    memory: any DoryX86Memory
+  ) throws {
+    let gateOffset = Int(vector) * 4
+    guard gateOffset + 3 <= Int(state.idtr.limit) else {
+      throw DoryX86InterruptDeliveryError.invalidIDTLimit(vector: vector)
+    }
+    let gate = try memory.read(at: state.idtr.base &+ UInt64(gateOffset), byteCount: 4)
+    let targetOffset = UInt16(gate[0]) | UInt16(gate[1]) << 8
+    let targetSegment = UInt16(gate[2]) | UInt16(gate[3]) << 8
+
+    let oldStack = UInt16(truncatingIfNeeded: state.registers.rsp)
+    let flagsStack = oldStack &- 2
+    let codeStack = flagsStack &- 2
+    let instructionStack = codeStack &- 2
+    let stackOffsets = [flagsStack, codeStack, instructionStack]
+    for offset in stackOffsets {
+      guard UInt32(offset) + 1 <= state.ss.limit else {
+        throw DoryX86InterruptDeliveryError.invalidTaskState
+      }
+      try memory.validateWrite(at: state.ss.base &+ UInt64(offset), byteCount: 2)
+    }
+    try memory.write(
+      at: state.ss.base &+ UInt64(flagsStack),
+      bytes: littleEndian16(UInt16(truncatingIfNeeded: state.rflags.rawValue))
+    )
+    try memory.write(
+      at: state.ss.base &+ UInt64(codeStack),
+      bytes: littleEndian16(state.cs.selector)
+    )
+    try memory.write(
+      at: state.ss.base &+ UInt64(instructionStack),
+      bytes: littleEndian16(
+        UInt16(truncatingIfNeeded: returnInstructionPointer ?? state.rip)
+      )
+    )
+
+    state.registers.rsp =
+      (state.registers.rsp & ~UInt64(0xffff)) | UInt64(instructionStack)
+    state.cs = .init(
+      selector: targetSegment,
+      attributes: 0x009B,
+      limit: 0xffff,
+      base: UInt64(targetSegment) << 4
+    )
+    state.rip = UInt64(targetOffset)
+    state.rflags.remove([.interruptEnable, .trap])
+  }
+
+  private func interruptReturnRealMode(
+    state: inout DoryX86ArchitecturalState,
+    memory: any DoryX86Memory
+  ) throws {
+    let stack = UInt16(truncatingIfNeeded: state.registers.rsp)
+    let codeStack = stack &+ 2
+    let flagsStack = codeStack &+ 2
+    for offset in [stack, codeStack, flagsStack] {
+      guard UInt32(offset) + 1 <= state.ss.limit else {
+        throw DoryX86InterruptDeliveryError.invalidReturnFrame
+      }
+    }
+    let instructionPointer = try read16(memory, state.ss.base &+ UInt64(stack))
+    let codeSelector = try read16(memory, state.ss.base &+ UInt64(codeStack))
+    let flags = try read16(memory, state.ss.base &+ UInt64(flagsStack))
+    let requestedFlags = DoryX86RFLAGS(
+      rawValue: (state.rflags.rawValue & ~UInt64(0xffff)) | UInt64(flags) | 2
+    )
+    guard let validatedFlags = try? requestedFlags.validated() else {
+      throw DoryX86InterruptDeliveryError.invalidReturnFrame
+    }
+
+    let nextStack = flagsStack &+ 2
+    state.registers.rsp = (state.registers.rsp & ~UInt64(0xffff)) | UInt64(nextStack)
+    state.rip = UInt64(instructionPointer)
+    state.cs = .init(
+      selector: codeSelector,
+      attributes: 0x009B,
+      limit: 0xffff,
+      base: UInt64(codeSelector) << 4
+    )
+    state.rflags = validatedFlags
   }
 
   private struct CodeSegment {
@@ -353,6 +452,15 @@ public struct DoryX86InterruptDelivery: Sendable {
 
   private func read64(_ memory: any DoryX86Memory, _ address: UInt64) throws -> UInt64 {
     fromLittleEndian(try memory.read(at: address, byteCount: 8))
+  }
+
+  private func read16(_ memory: any DoryX86Memory, _ address: UInt64) throws -> UInt16 {
+    let bytes = try memory.read(at: address, byteCount: 2)
+    return UInt16(bytes[0]) | UInt16(bytes[1]) << 8
+  }
+
+  private func littleEndian16(_ value: UInt16) -> [UInt8] {
+    [UInt8(truncatingIfNeeded: value), UInt8(truncatingIfNeeded: value >> 8)]
   }
 
   private func littleEndian(_ value: UInt64) -> [UInt8] {
