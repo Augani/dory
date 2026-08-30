@@ -239,5 +239,6 @@ public enum DoryFirmwareError: Error, Equatable, Sendable {
   case tooManyVariables(actual: Int)
   case storeDataTooLarge(actual: Int)
   case nonCanonicalVariables
+  case invalidVariableBridgeLayout
   case unknownFields(type: String, fields: [String])
 }
