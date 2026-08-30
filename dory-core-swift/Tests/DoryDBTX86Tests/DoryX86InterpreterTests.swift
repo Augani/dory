@@ -604,6 +604,31 @@ import Testing
     #expect(protectedState.rip == 0x1234_5678)
   }
 
+  @Test func machineStatusTransitionsPreserveProtectedMode() throws {
+    let memory = DoryX86ByteArrayMemory(
+      baseAddress: 0x11_000,
+      bytes: [0x0F, 0x01, 0xF0, 0x0F, 0x01, 0xE3, 0x0F, 0x06]
+        + [UInt8](repeating: 0, count: 16)
+    )
+    var control = DoryX86ControlState()
+    control.cr0 = 0x19
+    var state = try DoryX86ArchitecturalState(
+      registers: .init(rax: 0, rbx: 0),
+      rip: 0x11_000,
+      cs: .init(selector: 0, attributes: 0x9A, limit: .max),
+      control: control
+    )
+
+    _ = interpreter.step(state: &state, memory: memory, mode: .protected32)
+    #expect(state.control.cr0 & 1 == 1)
+    #expect(state.control.cr0 & 0xE == 0)
+    _ = interpreter.step(state: &state, memory: memory, mode: .protected32)
+    #expect(state.registers.rbx & 0xffff == 0x11)
+    state.control.cr0 |= 1 << 3
+    _ = interpreter.step(state: &state, memory: memory, mode: .protected32)
+    #expect(state.control.cr0 & (1 << 3) == 0)
+  }
+
   private func readQuadword(_ memory: DoryX86ByteArrayMemory, at address: UInt64) -> UInt64 {
     try! memory.read(at: address, byteCount: 8).enumerated().reduce(0) {
       $0 | UInt64($1.element) << UInt64($1.offset * 8)

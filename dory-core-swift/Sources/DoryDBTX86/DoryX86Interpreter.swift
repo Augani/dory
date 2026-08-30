@@ -579,6 +579,32 @@ public struct DoryX86Interpreter: Sendable {
         else { return generalProtection(at: originalRIP) }
         state.cs = loaded
         nextRIP = offset & instructionPointerMask(mode)
+      case .machineStatusWord(let load, let operand):
+        if load {
+          guard currentPrivilegeLevel(state) == 0 else {
+            return generalProtection(at: originalRIP)
+          }
+          let requested = try read(
+            operand, instruction: instruction, state: state, memory: executionMemory)
+          let preservedPE = state.control.cr0 & 1
+          state.control.cr0 =
+            (state.control.cr0 & ~UInt64(0xF)) | (requested & 0xE) | preservedPE
+            | (requested & 1)
+          pagingUnit?.invalidateAll()
+        } else {
+          try write(
+            state.control.cr0 & 0xffff,
+            to: operand,
+            instruction: instruction,
+            state: &state,
+            memory: executionMemory
+          )
+        }
+      case .clearTaskSwitched:
+        guard currentPrivilegeLevel(state) == 0 else {
+          return generalProtection(at: originalRIP)
+        }
+        state.control.cr0 &= ~(1 << 3)
       case .readModelSpecificRegister:
         guard currentPrivilegeLevel(state) == 0,
           let value = readModelSpecificRegister(

@@ -331,4 +331,19 @@ import Testing
         == .farJump(offset: 0x200, selector: 0x5678)
     )
   }
+
+  @Test func decodesMachineStatusTransitions() throws {
+    #expect(
+      try decoder.decode([0x0F, 0x01, 0xE0], at: 0x400, mode: .real16).operation
+        == .machineStatusWord(load: false, operand: .register(.rax, width: .word))
+    )
+    #expect(
+      try decoder.decode([0x0F, 0x01, 0xF0], at: 0x400, mode: .real16).operation
+        == .machineStatusWord(load: true, operand: .register(.rax, width: .word))
+    )
+    #expect(
+      try decoder.decode([0x0F, 0x06], at: 0x400, mode: .protected32).operation
+        == .clearTaskSwitched
+    )
+  }
 }

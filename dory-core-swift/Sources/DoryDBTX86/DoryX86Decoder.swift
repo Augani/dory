@@ -402,6 +402,8 @@ public struct DoryX86Decoder: Sendable {
       switch second {
       case 0x05:
         operation = .syscall
+      case 0x06:
+        operation = .clearTaskSwitched
       case 0x07:
         operation = .sysret
       case 0x20, 0x22:
@@ -436,18 +438,27 @@ public struct DoryX86Decoder: Sendable {
             prefixes: prefixes,
             mode: mode
           )
-          guard case .memory(let memory) = operands.rm else {
-            throw DoryX86DecodeError.invalidEncoding(
-              address: address,
-              detail: "0F 01 system-table instruction requires memory"
-            )
-          }
           switch operands.group {
-          case 0: operation = .descriptorTable(.global, load: false, address: memory)
-          case 1: operation = .descriptorTable(.interrupt, load: false, address: memory)
-          case 2: operation = .descriptorTable(.global, load: true, address: memory)
-          case 3: operation = .descriptorTable(.interrupt, load: true, address: memory)
-          case 7: operation = .invalidatePage(memory)
+          case 4:
+            operation = .machineStatusWord(
+              load: false, operand: resizedOperand(operands.rm, to: .word))
+          case 6:
+            operation = .machineStatusWord(
+              load: true, operand: resizedOperand(operands.rm, to: .word))
+          case 0, 1, 2, 3, 7:
+            guard case .memory(let memory) = operands.rm else {
+              throw DoryX86DecodeError.invalidEncoding(
+                address: address,
+                detail: "0F 01 system-table instruction requires memory"
+              )
+            }
+            switch operands.group {
+            case 0: operation = .descriptorTable(.global, load: false, address: memory)
+            case 1: operation = .descriptorTable(.interrupt, load: false, address: memory)
+            case 2: operation = .descriptorTable(.global, load: true, address: memory)
+            case 3: operation = .descriptorTable(.interrupt, load: true, address: memory)
+            default: operation = .invalidatePage(memory)
+            }
           default:
             throw DoryX86DecodeError.invalidEncoding(
               address: address,
