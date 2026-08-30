@@ -605,6 +605,23 @@ public struct DoryX86Interpreter: Sendable {
           return generalProtection(at: originalRIP)
         }
         state.control.cr0 &= ~(1 << 3)
+      case .loadSystemSegment(let task, let source):
+        guard currentPrivilegeLevel(state) == 0 else {
+          return generalProtection(at: originalRIP)
+        }
+        let selector = UInt16(
+          truncatingIfNeeded: try read(
+            source, instruction: instruction, state: state, memory: executionMemory))
+        guard
+          let loaded = try loadSystemSegment(
+            task: task,
+            selector: selector,
+            mode: mode,
+            state: state,
+            memory: executionMemory
+          )
+        else { return generalProtection(at: originalRIP) }
+        if task { state.tr = loaded } else { state.ldtr = loaded }
       case .readModelSpecificRegister:
         guard currentPrivilegeLevel(state) == 0,
           let value = readModelSpecificRegister(
@@ -1493,6 +1510,53 @@ public struct DoryX86Interpreter: Sendable {
     var limit = UInt32(raw & 0xffff) | UInt32((raw >> 48) & 0x0f) << 16
     if raw & (1 << 55) != 0 { limit = (limit << 12) | 0xfff }
     let attributes = UInt16(access) | UInt16((raw >> 48) & 0xf0) << 8
+    return .init(selector: selector, attributes: attributes, limit: limit, base: base)
+  }
+
+  private func loadSystemSegment(
+    task: Bool,
+    selector: UInt16,
+    mode: DoryX86ExecutionMode,
+    state: DoryX86ArchitecturalState,
+    memory: any DoryX86Memory
+  ) throws -> DoryX86SegmentState? {
+    if selector & 0xfffc == 0 {
+      return task ? nil : .init(selector: 0)
+    }
+    guard selector & 4 == 0 else { return nil }
+    let offset = UInt64(selector >> 3) * 8
+    let descriptorBytes = mode == .long64 ? 16 : 8
+    guard offset + UInt64(descriptorBytes - 1) <= UInt64(state.gdtr.limit) else { return nil }
+    let bytes = try memory.read(at: state.gdtr.base &+ offset, byteCount: descriptorBytes)
+    let raw = bytes.prefix(8).enumerated().reduce(UInt64(0)) {
+      $0 | UInt64($1.element) << UInt64($1.offset * 8)
+    }
+    let access = UInt8(truncatingIfNeeded: raw >> 40)
+    let type = access & 0x0f
+    guard access & 0x80 != 0, access & 0x10 == 0 else { return nil }
+    if task {
+      guard type == 1 || type == 9 else { return nil }
+    } else {
+      guard type == 2 else { return nil }
+    }
+    var base = (raw >> 16) & 0xffff
+    base |= ((raw >> 32) & 0xff) << 16
+    base |= ((raw >> 56) & 0xff) << 24
+    if mode == .long64 {
+      base |= UInt64(bytes[8]) << 32
+      base |= UInt64(bytes[9]) << 40
+      base |= UInt64(bytes[10]) << 48
+      base |= UInt64(bytes[11]) << 56
+    }
+    var limit = UInt32(raw & 0xffff) | UInt32((raw >> 48) & 0x0f) << 16
+    if raw & (1 << 55) != 0 { limit = (limit << 12) | 0xfff }
+    var attributes = UInt16(access) | UInt16((raw >> 48) & 0xf0) << 8
+    if task {
+      let busyAccess = access | 2
+      try memory.validateWrite(at: state.gdtr.base &+ offset &+ 5, byteCount: 1)
+      try memory.write(at: state.gdtr.base &+ offset &+ 5, bytes: [busyAccess])
+      attributes = (attributes & 0xff00) | UInt16(busyAccess)
+    }
     return .init(selector: selector, attributes: attributes, limit: limit, base: base)
   }
 

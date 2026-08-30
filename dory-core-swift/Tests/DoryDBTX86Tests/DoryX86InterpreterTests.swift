@@ -629,6 +629,28 @@ import Testing
     #expect(state.control.cr0 & (1 << 3) == 0)
   }
 
+  @Test func systemSegmentLoadsValidateDescriptorsAndMarkTasksBusy() throws {
+    var bytes = [UInt8](repeating: 0, count: 0x500)
+    bytes.replaceSubrange(0x100..<0x106, with: [0x0F, 0x00, 0xD0, 0x0F, 0x00, 0xDB])
+    bytes.replaceSubrange(0x208..<0x210, with: [0xFF, 0, 0, 0x30, 0, 0x82, 0, 0])
+    bytes.replaceSubrange(0x210..<0x218, with: [0x67, 0, 0, 0x40, 0, 0x89, 0, 0])
+    let memory = DoryX86ByteArrayMemory(bytes: bytes)
+    var state = try DoryX86ArchitecturalState(
+      registers: .init(rax: 8, rbx: 16),
+      rip: 0x100,
+      cs: .init(selector: 0, attributes: 0x9A, limit: .max),
+      gdtr: .init(limit: 0x17, base: 0x200)
+    )
+
+    _ = interpreter.step(state: &state, memory: memory, mode: .protected32)
+    #expect(state.ldtr.selector == 8)
+    #expect(state.ldtr.base == 0x3000)
+    _ = interpreter.step(state: &state, memory: memory, mode: .protected32)
+    #expect(state.tr.selector == 16)
+    #expect(state.tr.base == 0x4000)
+    #expect(try memory.read(at: 0x215, byteCount: 1) == [0x8B])
+  }
+
   private func readQuadword(_ memory: DoryX86ByteArrayMemory, at address: UInt64) -> UInt64 {
     try! memory.read(at: address, byteCount: 8).enumerated().reduce(0) {
       $0 | UInt64($1.element) << UInt64($1.offset * 8)

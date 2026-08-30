@@ -406,6 +406,14 @@ public struct DoryX86Decoder: Sendable {
         operation = .clearTaskSwitched
       case 0x07:
         operation = .sysret
+      case 0x00:
+        let operands = try decodeModRM(
+          cursor: &cursor, width: .word, prefixes: prefixes, mode: mode)
+        guard operands.group == 2 || operands.group == 3 else {
+          throw DoryX86DecodeError.invalidEncoding(
+            address: address, detail: "unsupported 0F 00 system instruction")
+        }
+        operation = .loadSystemSegment(task: operands.group == 3, source: operands.rm)
       case 0x20, 0x22:
         let operands = try decodeControlRegisterModRM(cursor: &cursor, prefixes: prefixes)
         operation =

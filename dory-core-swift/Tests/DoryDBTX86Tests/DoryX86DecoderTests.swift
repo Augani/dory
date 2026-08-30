@@ -346,4 +346,15 @@ import Testing
         == .clearTaskSwitched
     )
   }
+
+  @Test func decodesSystemSegmentLoads() throws {
+    #expect(
+      try decoder.decode([0x0F, 0x00, 0xD0], at: 0x500, mode: .protected32).operation
+        == .loadSystemSegment(task: false, source: .register(.rax, width: .word))
+    )
+    #expect(
+      try decoder.decode([0x0F, 0x00, 0xDB], at: 0x500, mode: .protected32).operation
+        == .loadSystemSegment(task: true, source: .register(.rbx, width: .word))
+    )
+  }
 }
