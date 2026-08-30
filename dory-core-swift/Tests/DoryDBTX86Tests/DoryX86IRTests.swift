@@ -39,6 +39,24 @@ import Testing
     #expect(block.terminator == .exit(.interpreter, resumeAt: 0x2000))
   }
 
+  @Test func endsNativeBlockBeforeAnInterpreterInstruction() throws {
+    let block = try DoryX86IRTranslator().translate(
+      [
+        0xB8, 1, 0, 0, 0,
+        0x48, 0x8B, 0x08,
+        0x90,
+      ],
+      at: 0x2400,
+      mode: .long64
+    )
+
+    #expect(block.guestByteCount == 5)
+    #expect(block.guestInstructionCount == 1)
+    #expect(block.statements.count == 1)
+    #expect(block.terminator == .next(0x2405))
+    #expect(DoryARM64BaselineEmitter().compile(block).tier == .baseline)
+  }
+
   @Test func instructionBudgetCreatesAStableResumeBoundary() throws {
     let block = try DoryX86IRTranslator(instructionBudget: 2).translate(
       [0x90, 0x90, 0x90],

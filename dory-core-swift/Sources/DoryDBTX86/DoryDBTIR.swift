@@ -141,6 +141,12 @@ public struct DoryX86IRTranslator: Sendable {
       offset += Int(instruction.length)
       instructionCount += 1
       let lowering = lower(instruction)
+      if instructionCount > 1, requiresJITFallback(lowering) {
+        offset -= Int(instruction.length)
+        instructionCount -= 1
+        terminator = .next(instructionAddress)
+        break
+      }
       statements.append(contentsOf: lowering.statements)
       if let end = lowering.terminator {
         terminator = end
@@ -250,6 +256,60 @@ public struct DoryX86IRTranslator: Sendable {
     default:
       return fallback(instruction, reason: .interpreter)
     }
+  }
+
+  private func requiresJITFallback(
+    _ lowering: (statements: [DoryIRStatement], terminator: DoryIRTerminator?)
+  ) -> Bool {
+    lowering.statements.contains { !isBaselineJITSupported($0) }
+  }
+
+  private func isBaselineJITSupported(_ statement: DoryIRStatement) -> Bool {
+    switch statement {
+    case .copy(let destination, let source):
+      guard case .register(let target) = destination, isJITGeneralRegister(target) else {
+        return false
+      }
+      switch source {
+      case .register(let register):
+        return isJITGeneralRegister(register) && register.width == target.width
+      case .immediate(_, let width):
+        return width == target.width
+      case .memory:
+        return false
+      }
+    case .binary(_, let destination, let source, _):
+      guard case .register(let target) = destination, isJITGeneralRegister(target) else {
+        return false
+      }
+      switch source {
+      case .register(let register):
+        return isJITGeneralRegister(register) && register.width == target.width
+      case .immediate(_, let width):
+        return width == target.width
+      case .memory:
+        return false
+      }
+    case .unary(_, let operand):
+      guard case .register(let register) = operand else { return false }
+      return isJITGeneralRegister(register)
+    case .effectiveAddress(let destination, let address):
+      guard case .register(let target) = destination, isJITGeneralRegister(target),
+        address.segment == nil,
+        address.addressWidth == .i32 || address.addressWidth == .i64,
+        address.scale == 1 || address.scale == 2 || address.scale == 4 || address.scale == 8
+      else { return false }
+      return [address.base, address.index].compactMap { $0 }.allSatisfy {
+        isJITGeneralRegister($0) && $0.width == address.addressWidth
+      }
+    case .helper:
+      return false
+    }
+  }
+
+  private func isJITGeneralRegister(_ register: DoryIRRegister) -> Bool {
+    register.bank == "x86.gpr" && register.index < 16
+      && (register.width == .i32 || register.width == .i64)
   }
 
   private func fallback(
