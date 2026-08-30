@@ -33,6 +33,13 @@ public struct DoryVirtioDescriptor: Sendable, Hashable {
   public let flags: UInt16
   public let next: UInt16
 
+  public init(address: UInt64, length: UInt32, flags: UInt16, next: UInt16) {
+    self.address = address
+    self.length = length
+    self.flags = flags
+    self.next = next
+  }
+
   public var deviceWillWrite: Bool { flags & Self.writeFlag != 0 }
 }
 
@@ -41,6 +48,18 @@ public struct DoryVirtioDescriptorChain: Sendable, Hashable {
   public let descriptors: [DoryVirtioDescriptor]
   public let readableByteCount: UInt64
   public let writableByteCount: UInt64
+
+  public init(
+    headIndex: UInt16,
+    descriptors: [DoryVirtioDescriptor],
+    readableByteCount: UInt64,
+    writableByteCount: UInt64
+  ) {
+    self.headIndex = headIndex
+    self.descriptors = descriptors
+    self.readableByteCount = readableByteCount
+    self.writableByteCount = writableByteCount
+  }
 }
 
 public struct DoryVirtioSplitQueueSnapshot: Sendable, Hashable {
