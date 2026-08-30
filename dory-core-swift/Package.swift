@@ -94,8 +94,13 @@ let package = Package(
       dependencies: []
     ),
     .target(
+      name: "DoryJITRuntimeC",
+      dependencies: [],
+      publicHeadersPath: "include"
+    ),
+    .target(
       name: "DoryDBTX86",
-      dependencies: ["DoryExecutionContracts"]
+      dependencies: ["DoryExecutionContracts", "DoryJITRuntimeC"]
     ),
     .target(
       name: "DoryMachineARMVirt",

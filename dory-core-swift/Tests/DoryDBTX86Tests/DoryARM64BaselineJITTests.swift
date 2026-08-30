@@ -51,4 +51,23 @@ import Testing
     #expect(cache.residentBlockCount == 0)
     #expect(cache.residentByteCount == 0)
   }
+
+  @Test func publishesAndExecutesThroughTheGuardedMAPJITRegion() throws {
+    #if arch(arm64)
+      let block = try DoryX86IRTranslator().translate(
+        [0x48, 0xB8, 0x78, 0x56, 0x34, 0x12, 0, 0, 0, 0],
+        at: 0x4000,
+        mode: .long64
+      )
+      let compiled = DoryARM64BaselineEmitter().compile(block)
+      let region = try DoryJITExecutableRegion(minimumCapacity: 4096)
+      try region.publish(compiled, at: 0)
+      var context = [UInt64](repeating: 0, count: DoryJITExecutableRegion.contextWordCount)
+
+      let exit = try region.execute(at: 0, context: &context)
+      #expect(exit == .dispatch)
+      #expect(context[0] == 0x1234_5678)
+      #expect(context[16] == 0x400A)
+    #endif
+  }
 }

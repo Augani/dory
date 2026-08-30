@@ -1,3 +1,4 @@
+import DoryJITRuntimeC
 import Foundation
 
 public enum DoryJITExitCode: UInt32, Codable, Sendable, Hashable {
@@ -290,5 +291,75 @@ public final class DoryJITCodeCache: @unchecked Sendable {
       }
       return lhs.key.guestStart < rhs.key.guestStart
     }?.key
+  }
+}
+
+public enum DoryJITRuntimeError: Error, Sendable, Equatable {
+  case unavailable(Int32)
+  case publicationFailed(Int32)
+  case invalidOffset(Int)
+  case invalidContextWordCount(Int)
+  case executionFailed(Int32)
+  case invalidExitCode(UInt32)
+}
+
+public final class DoryJITExecutableRegion: @unchecked Sendable {
+  public static let contextWordCount = 18
+
+  private let lock = NSLock()
+  private let region: OpaquePointer
+  public let capacity: Int
+
+  public init(minimumCapacity: Int) throws {
+    guard minimumCapacity > 0 else { throw DoryJITRuntimeError.unavailable(22) }
+    var created: OpaquePointer?
+    let result = dory_jit_region_create(minimumCapacity, &created)
+    guard result == 0, let created else {
+      throw DoryJITRuntimeError.unavailable(result)
+    }
+    region = created
+    capacity = dory_jit_region_capacity(created)
+  }
+
+  deinit {
+    dory_jit_region_destroy(region)
+  }
+
+  public func publish(_ block: DoryARM64CompiledBlock, at offset: Int) throws {
+    let bytes = block.machineBytes
+    guard offset >= 0, offset.isMultiple(of: 4), offset <= capacity,
+      bytes.count <= capacity - offset
+    else {
+      throw DoryJITRuntimeError.invalidOffset(offset)
+    }
+    let result = lock.withLock {
+      bytes.withUnsafeBytes { buffer in
+        dory_jit_region_publish(
+          region,
+          offset,
+          buffer.bindMemory(to: UInt8.self).baseAddress,
+          bytes.count
+        )
+      }
+    }
+    guard result == 0 else { throw DoryJITRuntimeError.publicationFailed(result) }
+  }
+
+  public func execute(at offset: Int, context: inout [UInt64]) throws -> DoryJITExitCode {
+    guard offset >= 0, offset.isMultiple(of: 4), offset < capacity else {
+      throw DoryJITRuntimeError.invalidOffset(offset)
+    }
+    guard context.count == Self.contextWordCount else {
+      throw DoryJITRuntimeError.invalidContextWordCount(context.count)
+    }
+    var rawExit: UInt32 = 0
+    let result = context.withUnsafeMutableBufferPointer { buffer in
+      dory_jit_region_execute(region, offset, buffer.baseAddress, &rawExit)
+    }
+    guard result == 0 else { throw DoryJITRuntimeError.executionFailed(result) }
+    guard let exit = DoryJITExitCode(rawValue: rawExit) else {
+      throw DoryJITRuntimeError.invalidExitCode(rawExit)
+    }
+    return exit
   }
 }
