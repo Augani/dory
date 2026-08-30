@@ -166,6 +166,21 @@ import Testing
     #expect(try read32(machine, 0x600C) & 0xFF == 1)
     #expect(try read32(machine, 0x600C) >> 27 == 2)
     #expect(try read32(machine, 0x6020) & 0x7 == 1)
+
+    var configureInput = [UInt8](repeating: 0, count: 1_056)
+    configureInput.replaceSubrange(4..<8, with: littleEndian(UInt32(1 << 3)))
+    configureInput.replaceSubrange(132..<136, with: littleEndian(UInt32(512 << 16 | 6 << 3)))
+    configureInput.replaceSubrange(136..<144, with: littleEndian(UInt64(0x9001)))
+    try machine.physicalMemory.write(at: 0x8000, bytes: configureInput)
+    try machine.physicalMemory.write(
+      at: 0x3020,
+      bytes: littleEndian(UInt64(0x8000)) + [UInt8](repeating: 0, count: 4)
+        + littleEndian(UInt32(1 << 24 | 12 << 10 | 1))
+    )
+    try write32(machine, bar + 0x2000, 0)
+    #expect(try read32(machine, 0x2038) >> 24 == 1)
+    #expect(try read32(machine, 0x203C) >> 24 == 1)
+    #expect(try read32(machine, 0x6060) & 0x7 == 1)
   }
 
   @Test func authorizedDeviceCapabilityFollowsPortResetDetachAndControllerReset() throws {

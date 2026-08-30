@@ -44,10 +44,19 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
   @unchecked Sendable
 {
   private struct Slot {
+    struct Endpoint {
+      var type: DoryPCUSBTransferType
+      var direction: DoryPCUSBTransferDirection
+      var number: UInt8
+      var dequeueAddress: UInt64
+      var cycle: Bool
+    }
+
     var addressed = false
     var rootPort: UInt8 = 0
     var deviceAddress: UInt8 = 0
     var outputContextAddress: UInt64 = 0
+    var endpoints: [UInt8: Endpoint] = [:]
   }
 
   public static let barBytes: UInt64 = 0x4000
@@ -474,6 +483,12 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
         blockSetAddressRequest: control & (1 << 9) != 0,
         memory: memory
       )
+    case 12:
+      return configureEndpoints(
+        slotID: UInt8(truncatingIfNeeded: control >> 24),
+        inputContextAddress: parameter & ~UInt64(0xF),
+        memory: memory
+      )
     case 23:
       return (1, 0)
     default:
@@ -530,14 +545,93 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
       return (17, slotID)
     }
     lock.withLock {
+      let endpoint0Pointer = uint64(Array(output[40..<48]))
       slots[slotID] = .init(
         addressed: !blockSetAddressRequest,
         rootPort: rootPort,
         deviceAddress: deviceAddress,
-        outputContextAddress: outputContextAddress
+        outputContextAddress: outputContextAddress,
+        endpoints: [
+          1: .init(
+            type: .control,
+            direction: .out,
+            number: 0,
+            dequeueAddress: endpoint0Pointer & ~UInt64(0xF),
+            cycle: endpoint0Pointer & 1 != 0
+          )
+        ]
       )
     }
     return (1, slotID)
+  }
+
+  private func configureEndpoints(
+    slotID: UInt8,
+    inputContextAddress: UInt64,
+    memory: any DoryVirtioGuestMemory
+  ) -> (completionCode: UInt8, slotID: UInt8) {
+    guard let slot = lock.withLock({ slots[slotID] }) else { return (11, slotID) }
+    guard slot.addressed else { return (19, slotID) }
+    guard inputContextAddress != 0,
+      let input = try? memory.read(at: inputContextAddress, byteCount: 1_056), input.count == 1_056
+    else { return (17, slotID) }
+    let dropFlags = uint32(Array(input[0..<4]))
+    let addFlags = uint32(Array(input[4..<8]))
+    var endpoints = slot.endpoints
+    var writes: [(address: UInt64, bytes: [UInt8])] = []
+    for dci in UInt8(2)...31 {
+      let flag = UInt32(1) << UInt32(dci)
+      if dropFlags & flag != 0 { endpoints.removeValue(forKey: dci) }
+      guard addFlags & flag != 0 else { continue }
+      let offset = 32 + Int(dci) * 32
+      var context = Array(input[offset..<(offset + 32)])
+      let context1 = uint32(Array(context[4..<8]))
+      let endpointType = UInt8((context1 >> 3) & 0x7)
+      let pointer = uint64(Array(context[8..<16]))
+      guard let decoded = decodeEndpoint(type: endpointType, dci: dci),
+        pointer & ~UInt64(0xF) != 0
+      else { return (17, slotID) }
+      var context0 = uint32(Array(context[0..<4]))
+      context0 = (context0 & ~UInt32(0x7)) | 1
+      put(context0, at: 0, in: &context)
+      endpoints[dci] = .init(
+        type: decoded.type,
+        direction: decoded.direction,
+        number: dci / 2,
+        dequeueAddress: pointer & ~UInt64(0xF),
+        cycle: pointer & 1 != 0
+      )
+      writes.append((slot.outputContextAddress + UInt64(dci) * 32, context))
+    }
+    do {
+      for write in writes {
+        try memory.validate(at: write.address, byteCount: 32, deviceWillWrite: true)
+      }
+      for write in writes { try memory.write(at: write.address, bytes: write.bytes) }
+      memory.synchronize()
+    } catch {
+      return (17, slotID)
+    }
+    lock.withLock { slots[slotID]?.endpoints = endpoints }
+    return (1, slotID)
+  }
+
+  private func decodeEndpoint(
+    type: UInt8,
+    dci: UInt8
+  ) -> (type: DoryPCUSBTransferType, direction: DoryPCUSBTransferDirection)? {
+    let decoded: (type: DoryPCUSBTransferType, direction: DoryPCUSBTransferDirection)? =
+      switch type {
+      case 1: (.isochronous, .out)
+      case 2: (.bulk, .out)
+      case 3: (.interrupt, .out)
+      case 5: (.isochronous, .in)
+      case 6: (.bulk, .in)
+      case 7: (.interrupt, .in)
+      default: nil
+      }
+    guard let decoded, (dci & 1 != 0) == (decoded.direction == .in) else { return nil }
+    return decoded
   }
 
   private func postEvent(_ event: [UInt8]) throws {
