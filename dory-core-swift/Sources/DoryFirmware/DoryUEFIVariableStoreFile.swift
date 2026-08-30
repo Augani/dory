@@ -243,7 +243,7 @@ public struct DoryUEFIVariableStoreFile: Sendable, Equatable {
     return Int(status.st_size)
   }
 
-  private static func canonicalData(_ snapshot: DoryUEFIVariableStoreSnapshot) throws -> Data {
+  static func canonicalData(_ snapshot: DoryUEFIVariableStoreSnapshot) throws -> Data {
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
     let data = try encoder.encode(snapshot) + Data("\n".utf8)
@@ -253,7 +253,7 @@ public struct DoryUEFIVariableStoreFile: Sendable, Equatable {
     return data
   }
 
-  private static func decodeCanonical(
+  static func decodeCanonical(
     _ data: Data,
     path: String
   ) throws -> DoryUEFIVariableStoreSnapshot {
