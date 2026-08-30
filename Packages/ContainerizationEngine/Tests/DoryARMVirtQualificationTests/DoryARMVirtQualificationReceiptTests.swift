@@ -5,7 +5,7 @@ import Testing
 @testable import DoryARMVirtQualification
 
 @Suite struct DoryARMVirtQualificationReceiptTests {
-  @Test func verifiesExactSchemaEightReceiptAgainstCheckedInMatrix() throws {
+  @Test func verifiesExactSchemaNineReceiptAgainstCheckedInMatrix() throws {
     let fixture = try Fixture()
     let receipt = fixture.receipt()
 
@@ -27,9 +27,9 @@ import Testing
     }
 
     object = try fixture.object(fixture.receipt())
-    object["schemaVersion"] = 7
+    object["schemaVersion"] = 8
     #expect(
-      throws: DoryARMVirtQualificationReceiptError.unsupportedSchemaVersion(7)
+      throws: DoryARMVirtQualificationReceiptError.unsupportedSchemaVersion(8)
     ) {
       try fixture.verify(object)
     }
@@ -115,6 +115,38 @@ import Testing
     object["displayContentFrameCount"] = 1
     #expect(
       throws: DoryARMVirtQualificationReceiptError.invalidField("unexpectedDisplay")
+    ) {
+      try fixture.verify(object)
+    }
+  }
+
+  @Test func rejectsMissingOrFaultedDesktopInputEvidence() throws {
+    let fixture = try Fixture(gateID: "fedora-workstation-live-boot")
+    var object = try fixture.object(fixture.receipt())
+    object.removeValue(forKey: "keyboardInputPublishedFrameCount")
+    #expect(throws: DoryARMVirtQualificationReceiptError.invalidField("input")) {
+      try fixture.verify(object)
+    }
+
+    object = try fixture.object(fixture.receipt())
+    object["pointerInputPublishedEventCount"] = 2
+    #expect(throws: DoryARMVirtQualificationReceiptError.invalidField("input")) {
+      try fixture.verify(object)
+    }
+
+    object = try fixture.object(fixture.receipt())
+    object["keyboardInputDroppedFrameCount"] = 1
+    #expect(throws: DoryARMVirtQualificationReceiptError.invalidField("input")) {
+      try fixture.verify(object)
+    }
+  }
+
+  @Test func rejectsInputEvidenceForNonInputGate() throws {
+    let fixture = try Fixture()
+    var object = try fixture.object(fixture.receipt())
+    object["keyboardInputPublishedFrameCount"] = 1
+    #expect(
+      throws: DoryARMVirtQualificationReceiptError.invalidField("unexpectedInput")
     ) {
       try fixture.verify(object)
     }
@@ -206,6 +238,16 @@ private struct Fixture {
       },
       displayContentFrameNonZeroByteCount: gate.display.map { _ in 1_024 },
       displayContentFrameSHA256: gate.display.map { _ in String(repeating: "3", count: 64) },
+      keyboardInputSubmittedFrameCount: gate.input.map { _ in 1 },
+      keyboardInputPublishedFrameCount: gate.input?.keyboardMinimumPublishedFrameCount,
+      keyboardInputPublishedEventCount: gate.input?.keyboardMinimumPublishedEventCount,
+      keyboardInputDroppedFrameCount: gate.input.map { _ in 0 },
+      keyboardInputRejectedFrameCount: gate.input.map { _ in 0 },
+      pointerInputSubmittedFrameCount: gate.input.map { _ in 1 },
+      pointerInputPublishedFrameCount: gate.input?.pointerMinimumPublishedFrameCount,
+      pointerInputPublishedEventCount: gate.input?.pointerMinimumPublishedEventCount,
+      pointerInputDroppedFrameCount: gate.input.map { _ in 0 },
+      pointerInputRejectedFrameCount: gate.input.map { _ in 0 },
       consoleByteCount: 4_096,
       bootAttempts: gate.receipt.bootAttempts,
       bootDurationNanoseconds: [4_000_000_000],

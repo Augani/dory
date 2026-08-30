@@ -2,7 +2,7 @@ import CryptoKit
 import Foundation
 
 public struct DoryARMVirtQualificationReceipt: Codable, Equatable, Sendable {
-  public static let currentSchemaVersion: UInt32 = 8
+  public static let currentSchemaVersion: UInt32 = 9
   public static let timingClockIdentity = "dispatch-uptime-nanoseconds"
 
   public let schemaVersion: UInt32
@@ -58,6 +58,16 @@ public struct DoryARMVirtQualificationReceipt: Codable, Equatable, Sendable {
   public let displayContentFrameByteCount: Int?
   public let displayContentFrameNonZeroByteCount: Int?
   public let displayContentFrameSHA256: String?
+  public let keyboardInputSubmittedFrameCount: UInt64?
+  public let keyboardInputPublishedFrameCount: UInt64?
+  public let keyboardInputPublishedEventCount: UInt64?
+  public let keyboardInputDroppedFrameCount: UInt64?
+  public let keyboardInputRejectedFrameCount: UInt64?
+  public let pointerInputSubmittedFrameCount: UInt64?
+  public let pointerInputPublishedFrameCount: UInt64?
+  public let pointerInputPublishedEventCount: UInt64?
+  public let pointerInputDroppedFrameCount: UInt64?
+  public let pointerInputRejectedFrameCount: UInt64?
   public let consoleByteCount: Int
   public let bootAttempts: Int
   public let timingClockIdentity: String
@@ -120,6 +130,16 @@ public struct DoryARMVirtQualificationReceipt: Codable, Equatable, Sendable {
     displayContentFrameByteCount: Int? = nil,
     displayContentFrameNonZeroByteCount: Int? = nil,
     displayContentFrameSHA256: String? = nil,
+    keyboardInputSubmittedFrameCount: UInt64? = nil,
+    keyboardInputPublishedFrameCount: UInt64? = nil,
+    keyboardInputPublishedEventCount: UInt64? = nil,
+    keyboardInputDroppedFrameCount: UInt64? = nil,
+    keyboardInputRejectedFrameCount: UInt64? = nil,
+    pointerInputSubmittedFrameCount: UInt64? = nil,
+    pointerInputPublishedFrameCount: UInt64? = nil,
+    pointerInputPublishedEventCount: UInt64? = nil,
+    pointerInputDroppedFrameCount: UInt64? = nil,
+    pointerInputRejectedFrameCount: UInt64? = nil,
     consoleByteCount: Int,
     bootAttempts: Int,
     timingClockIdentity: String = Self.timingClockIdentity,
@@ -181,6 +201,16 @@ public struct DoryARMVirtQualificationReceipt: Codable, Equatable, Sendable {
     self.displayContentFrameByteCount = displayContentFrameByteCount
     self.displayContentFrameNonZeroByteCount = displayContentFrameNonZeroByteCount
     self.displayContentFrameSHA256 = displayContentFrameSHA256
+    self.keyboardInputSubmittedFrameCount = keyboardInputSubmittedFrameCount
+    self.keyboardInputPublishedFrameCount = keyboardInputPublishedFrameCount
+    self.keyboardInputPublishedEventCount = keyboardInputPublishedEventCount
+    self.keyboardInputDroppedFrameCount = keyboardInputDroppedFrameCount
+    self.keyboardInputRejectedFrameCount = keyboardInputRejectedFrameCount
+    self.pointerInputSubmittedFrameCount = pointerInputSubmittedFrameCount
+    self.pointerInputPublishedFrameCount = pointerInputPublishedFrameCount
+    self.pointerInputPublishedEventCount = pointerInputPublishedEventCount
+    self.pointerInputDroppedFrameCount = pointerInputDroppedFrameCount
+    self.pointerInputRejectedFrameCount = pointerInputRejectedFrameCount
     self.consoleByteCount = consoleByteCount
     self.bootAttempts = bootAttempts
     self.timingClockIdentity = timingClockIdentity
@@ -276,6 +306,7 @@ public enum DoryARMVirtQualificationReceiptVerifier {
     }
     try validateSnapshot(receipt, gate: gate)
     try validateDisplay(receipt, gate: gate)
+    try validateInput(receipt, gate: gate)
     try validateTimings(receipt)
     guard let qualificationStartedAt = timestamp(receipt.qualificationStartedAt),
       let qualificationCompletedAt = timestamp(receipt.qualificationCompletedAt),
@@ -336,6 +367,49 @@ public enum DoryARMVirtQualificationReceiptVerifier {
       receipt.displayContentFrameSHA256.map(isSHA256) == true
     else {
       throw DoryARMVirtQualificationReceiptError.invalidField("display")
+    }
+  }
+
+  private static func validateInput(
+    _ receipt: DoryARMVirtQualificationReceipt,
+    gate: DoryARMVirtCompatibilityGate
+  ) throws {
+    guard let input = gate.input else {
+      guard receipt.keyboardInputSubmittedFrameCount == nil,
+        receipt.keyboardInputPublishedFrameCount == nil,
+        receipt.keyboardInputPublishedEventCount == nil,
+        receipt.keyboardInputDroppedFrameCount == nil,
+        receipt.keyboardInputRejectedFrameCount == nil,
+        receipt.pointerInputSubmittedFrameCount == nil,
+        receipt.pointerInputPublishedFrameCount == nil,
+        receipt.pointerInputPublishedEventCount == nil,
+        receipt.pointerInputDroppedFrameCount == nil,
+        receipt.pointerInputRejectedFrameCount == nil
+      else {
+        throw DoryARMVirtQualificationReceiptError.invalidField("unexpectedInput")
+      }
+      return
+    }
+    guard receipt.keyboardInputSubmittedFrameCount.map({ $0 >= 1 }) == true,
+      receipt.keyboardInputPublishedFrameCount.map({
+        $0 >= input.keyboardMinimumPublishedFrameCount
+      }) == true,
+      receipt.keyboardInputPublishedEventCount.map({
+        $0 >= input.keyboardMinimumPublishedEventCount
+      }) == true,
+      receipt.keyboardInputDroppedFrameCount == 0,
+      receipt.keyboardInputRejectedFrameCount == 0,
+      receipt.pointerInputSubmittedFrameCount.map({ $0 >= 1 }) == true,
+      receipt.pointerInputPublishedFrameCount.map({
+        $0 >= input.pointerMinimumPublishedFrameCount
+      }) == true,
+      receipt.pointerInputPublishedEventCount.map({
+        $0 >= input.pointerMinimumPublishedEventCount
+      }) == true,
+      receipt.pointerInputDroppedFrameCount == 0,
+      receipt.pointerInputRejectedFrameCount == 0
+    else {
+      throw DoryARMVirtQualificationReceiptError.invalidField("input")
     }
   }
 
@@ -421,6 +495,11 @@ public enum DoryARMVirtQualificationReceiptVerifier {
     "displayScanoutCount", "displayContentFrameCount", "displayContentFrameWidthPixels",
     "displayContentFrameHeightPixels", "displayContentFrameByteCount",
     "displayContentFrameNonZeroByteCount", "displayContentFrameSHA256",
+    "keyboardInputSubmittedFrameCount", "keyboardInputPublishedFrameCount",
+    "keyboardInputPublishedEventCount", "keyboardInputDroppedFrameCount",
+    "keyboardInputRejectedFrameCount", "pointerInputSubmittedFrameCount",
+    "pointerInputPublishedFrameCount", "pointerInputPublishedEventCount",
+    "pointerInputDroppedFrameCount", "pointerInputRejectedFrameCount",
   ]
   private static let requiredKeys: Set<String> = [
     "schemaVersion", "machineABIIdentity", "firmwareABIIdentity", "executionEngineIdentity",

@@ -17,6 +17,13 @@ public struct DoryARMVirtDisplayExpectation: Codable, Equatable, Sendable {
   public let minimumContentFrameCount: UInt64
 }
 
+public struct DoryARMVirtInputExpectation: Codable, Equatable, Sendable {
+  public let keyboardMinimumPublishedFrameCount: UInt64
+  public let keyboardMinimumPublishedEventCount: UInt64
+  public let pointerMinimumPublishedFrameCount: UInt64
+  public let pointerMinimumPublishedEventCount: UInt64
+}
+
 public struct DoryARMVirtCompatibilityMedia: Codable, Equatable, Sendable {
   public let guestFamily: String
   public let guestVersion: String
@@ -48,12 +55,13 @@ public struct DoryARMVirtCompatibilityGate: Codable, Equatable, Sendable {
   public let timeoutSeconds: UInt64
   public let gvproxySHA256: String?
   public let display: DoryARMVirtDisplayExpectation?
+  public let input: DoryARMVirtInputExpectation?
   public let receipt: DoryARMVirtQualificationReceiptExpectation
 }
 
 public struct DoryARMVirtCompatibilityMatrix: Codable, Equatable, Sendable {
-  public static let currentSchemaVersion: UInt32 = 3
-  public static let identity = "dory.compatibility.armvirt@3"
+  public static let currentSchemaVersion: UInt32 = 4
+  public static let identity = "dory.compatibility.armvirt@4"
 
   public let schemaVersion: UInt32
   public let matrixIdentity: String
@@ -127,6 +135,16 @@ public struct DoryARMVirtCompatibilityMatrix: Codable, Equatable, Sendable {
           (640...7680).contains(display.widthPixels),
           (480...4320).contains(display.heightPixels),
           (1...10_000).contains(display.minimumContentFrameCount)
+        else {
+          throw DoryARMVirtCompatibilityMatrixError.invalidGate(gate.gateID)
+        }
+      }
+      if let input = gate.input {
+        guard gate.kind == .desktopLiveBoot,
+          (1...100).contains(input.keyboardMinimumPublishedFrameCount),
+          (1...1_000).contains(input.keyboardMinimumPublishedEventCount),
+          (1...100).contains(input.pointerMinimumPublishedFrameCount),
+          (1...1_000).contains(input.pointerMinimumPublishedEventCount)
         else {
           throw DoryARMVirtCompatibilityMatrixError.invalidGate(gate.gateID)
         }

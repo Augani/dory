@@ -158,6 +158,60 @@ import IOKit.ps
     }
   }
 
+  private struct InputQualificationSnapshot {
+    let keyboard: VirtioInputStatistics
+    let pointer: VirtioInputStatistics
+  }
+
+  private final class InputQualificationCapture: @unchecked Sendable {
+    let keyboard = VirtioInput(profile: .keyboard)
+    let pointer = VirtioInput(profile: .absolutePointer)
+
+    private let lock = NSLock()
+    private var submitted = false
+
+    func submitOnce() {
+      lock.lock()
+      guard !submitted else {
+        lock.unlock()
+        return
+      }
+      submitted = true
+      lock.unlock()
+      keyboard.send(frame: [
+        VirtioInputEvent(type: 1, code: 1, value: 1),
+        VirtioInputEvent(type: 1, code: 1, value: 0),
+      ])
+      pointer.send(frame: [
+        VirtioInputEvent(type: 3, code: 0, value: 16_384),
+        VirtioInputEvent(type: 3, code: 1, value: 16_384),
+      ])
+    }
+
+    func satisfies(_ expectation: DoryARMVirtInputExpectation) -> Bool {
+      let snapshot = self.snapshot
+      return snapshot.keyboard.publishedFrames
+        >= expectation.keyboardMinimumPublishedFrameCount
+        && snapshot.keyboard.publishedEvents
+          >= expectation.keyboardMinimumPublishedEventCount
+        && snapshot.pointer.publishedFrames
+          >= expectation.pointerMinimumPublishedFrameCount
+        && snapshot.pointer.publishedEvents
+          >= expectation.pointerMinimumPublishedEventCount
+        && snapshot.keyboard.droppedFrames == 0
+        && snapshot.keyboard.rejectedFrames == 0
+        && snapshot.pointer.droppedFrames == 0
+        && snapshot.pointer.rejectedFrames == 0
+    }
+
+    var snapshot: InputQualificationSnapshot {
+      InputQualificationSnapshot(
+        keyboard: keyboard.statistics,
+        pointer: pointer.statistics
+      )
+    }
+  }
+
   private final class RunnerCompletion: @unchecked Sendable {
     private let lock = NSLock()
     private let signal = DispatchSemaphore(value: 0)
@@ -488,6 +542,8 @@ import IOKit.ps
     consoleScript: AdmittedConsoleScript?,
     displayExpectation: DoryARMVirtDisplayExpectation?,
     displayCapture: DisplayQualificationCapture?,
+    inputExpectation: DoryARMVirtInputExpectation?,
+    inputCapture: InputQualificationCapture?,
     gvproxy: AdmittedGVProxy?,
     memoryBytes: UInt64,
     appliedInstallerMediaTransitionCount: Int,
@@ -559,6 +615,17 @@ import IOKit.ps
         slot: graphicsSlot.index,
         to: machine
       )
+    }
+    if inputExpectation != nil, let inputCapture {
+      guard let keyboardSlot = DoryARMVirtV1ABI.virtioSlots.first(where: {
+        $0.role == .keyboard
+      }), let pointerSlot = DoryARMVirtV1ABI.virtioSlots.first(where: {
+        $0.role == .pointer
+      }) else {
+        throw VMError.invalidConfiguration("\(DoryARMVirtV1ABI.identity) has no input slots")
+      }
+      try attachVirtioDevice(inputCapture.keyboard, slot: keyboardSlot.index, to: machine)
+      try attachVirtioDevice(inputCapture.pointer, slot: pointerSlot.index, to: machine)
     }
     if let installerMedia {
       try attachVirtioDevice(
@@ -649,13 +716,16 @@ import IOKit.ps
       {
         throw CocoaError(.fileWriteOutOfSpace)
       }
-      let matchedConsole =
+      let consoleMilestoneReached =
         (consoleScript?.driver.installerMediaTransitionCount ?? 0)
         == appliedInstallerMediaTransitionCount
         && capture.matched(afterByteOffset: consoleStartOffset)
         && consoleScript?.driver.isComplete != false
         && consoleScript?.driver.pendingHostAction == nil
+      if consoleMilestoneReached { inputCapture?.submitOnce() }
+      let matchedConsole = consoleMilestoneReached
         && displayExpectation.map { displayCapture?.satisfies($0) == true } != false
+        && inputExpectation.map { inputCapture?.satisfies($0) == true } != false
       if matchedConsole {
         return result(
           reason: try runner.stopAndWait(GuestStopReason.powerOff),
@@ -671,6 +741,7 @@ import IOKit.ps
             && consoleScript?.driver.isComplete != false
             && consoleScript?.driver.pendingHostAction == nil
             && displayExpectation.map { displayCapture?.satisfies($0) == true } != false
+            && inputExpectation.map { inputCapture?.satisfies($0) == true } != false
         )
       }
     }
@@ -682,6 +753,7 @@ import IOKit.ps
         && consoleScript?.driver.isComplete != false
         && consoleScript?.driver.pendingHostAction == nil
         && displayExpectation.map { displayCapture?.satisfies($0) == true } != false
+        && inputExpectation.map { inputCapture?.satisfies($0) == true } != false
     )
   }
 
@@ -767,6 +839,7 @@ import IOKit.ps
     let displayCapture = qualification?.gate.display.map { _ in
       DisplayQualificationCapture()
     }
+    let inputCapture = qualification?.gate.input.map { _ in InputQualificationCapture() }
     let maximumBootAttempts = 4
     var finalResult: BootResult?
     var bootAttempts = 0
@@ -791,6 +864,8 @@ import IOKit.ps
         consoleScript: consoleScript,
         displayExpectation: qualification?.gate.display,
         displayCapture: displayCapture,
+        inputExpectation: qualification?.gate.input,
+        inputCapture: inputCapture,
         gvproxy: gvproxy,
         memoryBytes: options.memoryBytes,
         appliedInstallerMediaTransitionCount: appliedInstallerMediaTransitionCount,
@@ -868,6 +943,7 @@ import IOKit.ps
     let hostLowPowerModeEnabledAtEnd = processInfo.isLowPowerModeEnabled
     let hostThermalStateAtEnd = thermalState(processInfo.thermalState)
     let displaySnapshot = displayCapture?.snapshot
+    let inputSnapshot = inputCapture?.snapshot
     let receipt = DoryARMVirtQualificationReceipt(
       machineABIIdentity: DoryARMVirtV1ABI.identity,
       firmwareABIIdentity: DoryARMVirtV1ABI.firmwareABIIdentity,
@@ -921,6 +997,16 @@ import IOKit.ps
       displayContentFrameByteCount: displaySnapshot?.contentFrameByteCount,
       displayContentFrameNonZeroByteCount: displaySnapshot?.contentFrameNonZeroByteCount,
       displayContentFrameSHA256: displaySnapshot?.contentFrameSHA256,
+      keyboardInputSubmittedFrameCount: inputSnapshot?.keyboard.submittedFrames,
+      keyboardInputPublishedFrameCount: inputSnapshot?.keyboard.publishedFrames,
+      keyboardInputPublishedEventCount: inputSnapshot?.keyboard.publishedEvents,
+      keyboardInputDroppedFrameCount: inputSnapshot?.keyboard.droppedFrames,
+      keyboardInputRejectedFrameCount: inputSnapshot?.keyboard.rejectedFrames,
+      pointerInputSubmittedFrameCount: inputSnapshot?.pointer.submittedFrames,
+      pointerInputPublishedFrameCount: inputSnapshot?.pointer.publishedFrames,
+      pointerInputPublishedEventCount: inputSnapshot?.pointer.publishedEvents,
+      pointerInputDroppedFrameCount: inputSnapshot?.pointer.droppedFrames,
+      pointerInputRejectedFrameCount: inputSnapshot?.pointer.rejectedFrames,
       consoleByteCount: capture.byteCount,
       bootAttempts: bootAttempts,
       timingClockIdentity: "dispatch-uptime-nanoseconds",
