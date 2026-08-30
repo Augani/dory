@@ -11,6 +11,7 @@ let package = Package(
   products: [
     .library(name: "DoryExecutionContracts", targets: ["DoryExecutionContracts"]),
     .library(name: "DoryMachineARMVirt", targets: ["DoryMachineARMVirt"]),
+    .library(name: "DoryFirmware", targets: ["DoryFirmware"]),
     .library(name: "DoryNativeHVArm64", targets: ["DoryNativeHVArm64"]),
     .library(name: "DoryVMContracts", targets: ["DoryVMContracts"]),
     .library(
@@ -45,6 +46,10 @@ let package = Package(
     .target(
       name: "DoryMachineARMVirt",
       dependencies: ["DoryExecutionContracts"]
+    ),
+    .target(
+      name: "DoryFirmware",
+      dependencies: ["DoryMachineARMVirt"]
     ),
     .target(
       name: "DoryNativeHVArm64",
@@ -157,6 +162,10 @@ let package = Package(
     .testTarget(
       name: "DoryMachineARMVirtTests",
       dependencies: ["DoryMachineARMVirt"]
+    ),
+    .testTarget(
+      name: "DoryFirmwareTests",
+      dependencies: ["DoryFirmware", "DoryMachineARMVirt"]
     ),
     .testTarget(
       name: "DoryNativeHVArm64Tests",
