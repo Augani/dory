@@ -1099,6 +1099,13 @@ public struct DoryX86Interpreter: Sendable {
     case .highByteRegister(let register):
       return (state.registers[register] >> 8) & 0xff
     case .memory(let operand):
+      try validateSegmentAccess(
+        operand,
+        byteCount: operand.width.byteCount,
+        write: false,
+        instruction: instruction,
+        state: state
+      )
       return fromLittleEndian(
         try memory.read(
           at: effectiveAddress(operand, instruction: instruction, state: state),
@@ -1134,6 +1141,13 @@ public struct DoryX86Interpreter: Sendable {
       state.registers[register] =
         (state.registers[register] & ~UInt64(0xff00)) | ((value & 0xff) << 8)
     case .memory(let target):
+      try validateSegmentAccess(
+        target,
+        byteCount: target.width.byteCount,
+        write: true,
+        instruction: instruction,
+        state: state
+      )
       try memory.write(
         at: effectiveAddress(target, instruction: instruction, state: state),
         bytes: littleEndian(value, width: target.width)
@@ -1151,9 +1165,61 @@ public struct DoryX86Interpreter: Sendable {
     memory: any DoryX86Memory
   ) throws {
     guard case .memory(let target) = operand else { return }
+    try validateSegmentAccess(
+      target,
+      byteCount: target.width.byteCount,
+      write: true,
+      instruction: instruction,
+      state: state
+    )
     try memory.validateWrite(
       at: effectiveAddress(target, instruction: instruction, state: state),
       byteCount: target.width.byteCount
+    )
+  }
+
+  private func validateSegmentAccess(
+    _ operand: DoryX86MemoryOperand,
+    byteCount: Int,
+    write: Bool,
+    instruction: DoryX86DecodedInstruction,
+    state: DoryX86ArchitecturalState
+  ) throws {
+    guard !operand.ignoresLegacySegmentBase else { return }
+    let segment = segmentState(operand.segment, state: state)
+    let offset = effectiveOffset(
+      operand,
+      instruction: instruction,
+      state: state
+    )
+    let lastResult = offset.addingReportingOverflow(UInt64(max(0, byteCount - 1)))
+    guard !lastResult.overflow else { throw segmentProtection(at: instruction.address) }
+    let protectedMode = state.control.cr0 & 1 != 0
+    if protectedMode {
+      let access = UInt8(truncatingIfNeeded: segment.attributes)
+      let type = access & 0x0f
+      let executable = type & 8 != 0
+      if write, executable || type & 2 == 0 { throw segmentProtection(at: instruction.address) }
+      if !write, executable, type & 2 == 0 { throw segmentProtection(at: instruction.address) }
+      if !executable, type & 4 != 0 {
+        let maximum: UInt64 = segment.attributes & 0x4000 != 0 ? 0xffff_ffff : 0xffff
+        guard offset > UInt64(segment.limit), lastResult.partialValue <= maximum else {
+          throw segmentProtection(at: instruction.address)
+        }
+        return
+      }
+    }
+    guard lastResult.partialValue <= UInt64(segment.limit) else {
+      throw segmentProtection(at: instruction.address)
+    }
+  }
+
+  private func segmentProtection(at instructionPointer: UInt64) -> DoryX86Exception {
+    .init(
+      kind: .generalProtection,
+      vector: 13,
+      errorCode: 0,
+      instructionPointer: instructionPointer
     )
   }
 

@@ -674,6 +674,39 @@ import Testing
     #expect(state.registers.rsp & 0xffff == 0x80)
   }
 
+  @Test func protectedSegmentsRejectCrossLimitAndReadOnlyWrites() throws {
+    var bytes = [UInt8](repeating: 0, count: 0x300)
+    bytes.replaceSubrange(0x100..<0x106, with: [0x66, 0x8B, 0x07, 0x66, 0x89, 0x07])
+    bytes.replaceSubrange(0x20E..<0x210, with: [0x34, 0x12])
+    let memory = DoryX86ByteArrayMemory(bytes: bytes)
+    var state = try DoryX86ArchitecturalState(
+      registers: .init(rdi: 0x0E),
+      rip: 0x100,
+      cs: .init(selector: 8, attributes: 0xC09A, limit: .max),
+      ds: .init(selector: 16, attributes: 0x4091, limit: 0x0F, base: 0x200)
+    )
+    state.control.cr0 |= 1
+
+    _ = interpreter.step(state: &state, memory: memory, mode: .protected32)
+    #expect(state.registers.rax & 0xffff == 0x1234)
+    let writeResult = interpreter.step(state: &state, memory: memory, mode: .protected32)
+    guard case .exception(let exception) = writeResult else {
+      Issue.record("read-only segment write did not fault")
+      return
+    }
+    #expect(exception.kind == .generalProtection)
+    #expect(state.rip == 0x103)
+
+    state.registers.rdi = 0x0F
+    state.rip = 0x100
+    let limitResult = interpreter.step(state: &state, memory: memory, mode: .protected32)
+    guard case .exception(let exception) = limitResult else {
+      Issue.record("cross-limit word read did not fault")
+      return
+    }
+    #expect(exception.kind == .generalProtection)
+  }
+
   private func readQuadword(_ memory: DoryX86ByteArrayMemory, at address: UInt64) -> UInt64 {
     try! memory.read(at: address, byteCount: 8).enumerated().reduce(0) {
       $0 | UInt64($1.element) << UInt64($1.offset * 8)
