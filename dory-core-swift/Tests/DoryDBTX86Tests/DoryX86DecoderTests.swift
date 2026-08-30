@@ -595,5 +595,10 @@ import Testing
         == .vectorFloatingCompare(
           format: .scalarDouble, destination: 0, source: .register(1), quiet: true)
     )
+    #expect(
+      try decoder.decode([0x66, 0x0F, 0x6D, 0xC1], at: 0x1000, mode: .long64).operation
+        == .vectorIntegerInterleave(
+          high: true, laneWidth: .quadword, destination: 0, source: .register(1))
+    )
   }
 }

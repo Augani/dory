@@ -263,6 +263,12 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
     source: DoryX86VectorOperand,
     quiet: Bool
   )
+  case vectorIntegerInterleave(
+    high: Bool,
+    laneWidth: DoryX86VectorLaneWidth,
+    destination: UInt8,
+    source: DoryX86VectorOperand
+  )
   case processorPause
   case string(DoryX86StringOperation, width: DoryX86OperandWidth)
   case input(port: DoryX86IOPort, width: DoryX86OperandWidth)

@@ -723,6 +723,26 @@ public struct DoryX86Decoder: Sendable {
           destination: vectorRegister(operands.reg),
           source: vectorOperand(operands.rm)
         )
+      case 0x60...0x62, 0x68...0x6A, 0x6C, 0x6D:
+        guard prefixes.operandSizeOverride, prefixes.repeatPrefix == nil else {
+          throw DoryX86DecodeError.invalidEncoding(
+            address: address, detail: "packed integer interleave requires 66 prefix")
+        }
+        let operands = try decodeModRM(
+          cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
+        let laneWidth: DoryX86VectorLaneWidth =
+          switch second {
+          case 0x60, 0x68: .byte
+          case 0x61, 0x69: .word
+          case 0x62, 0x6A: .doubleword
+          default: .quadword
+          }
+        operation = .vectorIntegerInterleave(
+          high: second == 0x68 || second == 0x69 || second == 0x6A || second == 0x6D,
+          laneWidth: laneWidth,
+          destination: vectorRegister(operands.reg),
+          source: vectorOperand(operands.rm)
+        )
       case 0x64...0x66, 0x74...0x76, 0xD4, 0xF8...0xFE:
         guard prefixes.operandSizeOverride, prefixes.repeatPrefix == nil else {
           throw DoryX86DecodeError.invalidEncoding(

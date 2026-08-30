@@ -662,6 +662,27 @@ import Testing
     #expect(state.rflags.contains([.zero, .parity, .carry]))
   }
 
+  @Test func sse2InterleavesLowAndHighPackedLanes() throws {
+    let memory = DoryX86ByteArrayMemory(
+      baseAddress: 0x1000,
+      bytes: [0x66, 0x0F, 0x60, 0xC1, 0x66, 0x0F, 0x6D, 0xC1]
+        + .init(repeating: 0, count: 16)
+    )
+    var floatingPoint = try DoryX86FloatingPointState()
+    floatingPoint.ymm[0] = try .init(bytes: Array(0..<32), expectedByteCount: 32)
+    floatingPoint.ymm[1] = try .init(bytes: Array(0x40..<0x60), expectedByteCount: 32)
+    var state = try DoryX86ArchitecturalState(rip: 0x1000, floatingPoint: floatingPoint)
+
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    #expect(state.floatingPoint.ymm[0].bytes[0..<8] == [0, 0x40, 1, 0x41, 2, 0x42, 3, 0x43][...])
+    #expect(state.floatingPoint.ymm[0].bytes[16..<32] == Array(16..<32)[...])
+
+    state.floatingPoint.ymm[0] = try .init(bytes: Array(0..<32), expectedByteCount: 32)
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    #expect(
+      Array(state.floatingPoint.ymm[0].bytes[0..<16]) == Array(8..<16) + Array(0x48..<0x50))
+  }
+
   @Test func byteExtendMoveUsesTheWideModRMDestinationRegister() throws {
     var bytes = [UInt8](repeating: 0, count: 0x20)
     bytes.replaceSubrange(0..<4, with: [0x0F, 0xB6, 0x71, 0x02])

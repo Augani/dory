@@ -752,6 +752,29 @@ public struct DoryX86Interpreter: Sendable {
         case .unordered:
           state.rflags.insert([.zero, .parity, .carry])
         }
+      case .vectorIntegerInterleave(let high, let laneWidth, let destination, let source):
+        let rhs = try readVectorBytes(
+          source,
+          byteCount: 16,
+          instruction: instruction,
+          state: state,
+          memory: executionMemory
+        )
+        var registerBytes = state.floatingPoint.ymm[Int(destination)].bytes
+        let lhs = Array(registerBytes.prefix(16))
+        let laneBytes = Int(laneWidth.rawValue)
+        let lanesPerInput = 8 / laneBytes
+        let inputOffset = high ? 8 : 0
+        var result: [UInt8] = []
+        result.reserveCapacity(16)
+        for lane in 0..<lanesPerInput {
+          let offset = inputOffset + lane * laneBytes
+          result += lhs[offset..<offset + laneBytes]
+          result += rhs[offset..<offset + laneBytes]
+        }
+        registerBytes.replaceSubrange(0..<16, with: result)
+        state.floatingPoint.ymm[Int(destination)] = try .init(
+          bytes: registerBytes, expectedByteCount: 32)
       case .processorPause:
         break
       case .string(let operation, let width):
