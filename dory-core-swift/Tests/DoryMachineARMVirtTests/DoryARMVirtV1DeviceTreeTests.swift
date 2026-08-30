@@ -18,6 +18,14 @@ import Testing
     #expect(first.contains(bytes: Array("console=ttyAMA0".utf8) + [0]))
   }
 
+  @Test func cpuNodesUseCanonicalTwoCellMPIDREncoding() throws {
+    let tree = try DoryARMVirtV1DeviceTree.build(configuration: fixture())
+
+    #expect(tree.propertyCells(at: "/cpus", named: "#address-cells") == [2])
+    #expect(tree.propertyCells(at: "/cpus/cpu@0", named: "reg") == [0, 0])
+    #expect(tree.propertyCells(at: "/cpus/cpu@3", named: "reg") == [0, 3])
+  }
+
   @Test func deviceAssignmentsMustMatchFrozenSlots() {
     var invalid = fixtureDevices()
     invalid[0] = DoryARMVirtV1MMIODevice(
@@ -105,5 +113,50 @@ extension Array where Element == UInt8 {
 
   fileprivate func readBigEndianUInt32(at offset: Int) -> UInt32 {
     self[offset..<(offset + 4)].reduce(0) { ($0 << 8) | UInt32($1) }
+  }
+
+  fileprivate func propertyCells(at expectedPath: String, named expectedName: String) -> [UInt32]? {
+    let structureOffset = Int(readBigEndianUInt32(at: 8))
+    let stringsOffset = Int(readBigEndianUInt32(at: 12))
+    var offset = structureOffset
+    var nodeStack: [String] = []
+
+    while offset + 4 <= count {
+      let token = readBigEndianUInt32(at: offset)
+      offset += 4
+      switch token {
+      case 1:
+        let name = nullTerminatedString(at: offset)
+        nodeStack.append(name)
+        offset += name.utf8.count + 1
+        offset = (offset + 3) & ~3
+      case 2:
+        _ = nodeStack.popLast()
+      case 3:
+        let byteCount = Int(readBigEndianUInt32(at: offset))
+        let nameOffset = Int(readBigEndianUInt32(at: offset + 4))
+        offset += 8
+        let name = nullTerminatedString(at: stringsOffset + nameOffset)
+        let path = "/" + nodeStack.filter { !$0.isEmpty }.joined(separator: "/")
+        if path == expectedPath, name == expectedName, byteCount.isMultiple(of: 4) {
+          return stride(from: offset, to: offset + byteCount, by: 4).map {
+            readBigEndianUInt32(at: $0)
+          }
+        }
+        offset = (offset + byteCount + 3) & ~3
+      case 4:
+        continue
+      case 9:
+        return nil
+      default:
+        return nil
+      }
+    }
+    return nil
+  }
+
+  private func nullTerminatedString(at offset: Int) -> String {
+    let end = self[offset...].firstIndex(of: 0) ?? count
+    return String(decoding: self[offset..<end], as: UTF8.self)
   }
 }

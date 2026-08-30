@@ -2,7 +2,7 @@
   INF_VERSION   = 0x0001001B
   BASE_NAME     = DoryPlatformPeiLib
   FILE_GUID     = 6978646d-b01e-43bc-8170-f2e181a476bd
-  MODULE_TYPE   = PEIM
+  MODULE_TYPE   = BASE
   VERSION_STRING = 1.0
   LIBRARY_CLASS = PlatformPeiLib|PEIM
 
@@ -37,3 +37,6 @@
   gArmTokenSpaceGuid.PcdFvBaseAddress
   gArmTokenSpaceGuid.PcdFvSize
   gUefiOvmfPkgTokenSpaceGuid.PcdDeviceTreeInitialBaseAddress
+
+[Depex]
+  gEfiPeiMemoryDiscoveredPpiGuid

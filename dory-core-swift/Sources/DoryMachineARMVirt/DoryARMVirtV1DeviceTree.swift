@@ -130,14 +130,14 @@ public enum DoryARMVirtV1DeviceTree {
     fdt.endNode()
 
     fdt.beginNode("cpus")
-    fdt.property("#address-cells", cells: [1])
+    fdt.property("#address-cells", cells: [2])
     fdt.property("#size-cells", cells: [0])
     for cpu in 0..<configuration.vCPUCount {
       fdt.beginNode("cpu@\(cpu)")
       fdt.property("device_type", string: "cpu")
       fdt.property("compatible", string: "arm,arm-v8")
       fdt.property("enable-method", string: "psci")
-      fdt.property("reg", cells: [UInt32(cpu)])
+      fdt.property("reg", cells: [0, UInt32(cpu)])
       fdt.endNode()
     }
     fdt.endNode()

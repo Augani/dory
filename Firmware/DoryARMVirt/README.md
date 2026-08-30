@@ -65,11 +65,12 @@ chmod 600 /absolute/path/to/installer.iso
 "$runner" \
   --firmware-bundle /absolute/path/to/dory-armvirt-firmware \
   --installer-media /absolute/path/to/installer.iso \
-  --expect "GNU GRUB" \
+  --expect "localhost login:" \
   --timeout-sec 60
 ```
 
 The resulting receipt also binds the installer byte count and SHA-256. This
-gate proves immutable-media admission, UEFI enumeration, and execution of the
-image's own AArch64 bootloader; distribution install and reboot qualification
-remain separate gates.
+gate proves immutable-media admission, UEFI enumeration, execution of the
+image's own AArch64 bootloader, Linux kernel and initramfs bring-up, VirtIO disk
+discovery, and arrival at the distribution's login prompt. Distribution install
+and reboot qualification remain separate gates.
