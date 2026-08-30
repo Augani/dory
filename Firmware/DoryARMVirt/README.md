@@ -77,7 +77,10 @@ across firmware-requested resets, and requires the serial console to reach the
 embedded UEFI interactive shell. Console output is written to standard error;
 a successful run writes one canonical JSON receipt to standard output with the
 machine and firmware ABI identities, build identifier, firmware SHA-256, boot
-attempt count, variable-store generation, and final stop reason.
+attempt count, each boot's monotonic duration, the total qualification duration,
+variable-store generation, and final stop reason. Receipt schema 6 identifies
+these measurements as Dispatch uptime nanoseconds so wall-clock adjustment cannot
+distort performance evidence.
 
 To qualify an exact, private, read-only installer image through the removable
 VirtIO block path, add the media and a console marker owned by that image:

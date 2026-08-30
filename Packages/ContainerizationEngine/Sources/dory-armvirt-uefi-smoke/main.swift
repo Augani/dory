@@ -89,6 +89,9 @@ import Foundation
     let gvproxySHA256: String?
     let consoleByteCount: Int
     let bootAttempts: Int
+    let timingClockIdentity: String
+    let bootDurationNanoseconds: [UInt64]
+    let qualificationDurationNanoseconds: UInt64
     let variableStoreGeneration: UInt64
     let stopReason: String
   }
@@ -161,6 +164,7 @@ import Foundation
   private struct BootResult {
     let reason: GuestStopReason
     let matchedConsole: Bool
+    let elapsedNanoseconds: UInt64
   }
 
   private func fail(_ message: String) -> Never {
@@ -436,6 +440,15 @@ import Foundation
     timeoutSeconds: UInt64,
     attempt: Int
   ) throws -> BootResult {
+    let bootStarted = DispatchTime.now().uptimeNanoseconds
+    func result(reason: GuestStopReason, matchedConsole: Bool) -> BootResult {
+      BootResult(
+        reason: reason,
+        matchedConsole: matchedConsole,
+        elapsedNanoseconds: DispatchTime.now().uptimeNanoseconds &- bootStarted
+      )
+    }
+
     let generation = try variableStore.load().snapshot.generation
     let bootDevices = [systemDevice] + (installerMedia.map { [$0.device] } ?? [])
     let launchPlan = try DoryARMVirtUEFILaunchPlan(
@@ -569,13 +582,13 @@ import Foundation
         && consoleScript?.driver.isComplete != false
         && consoleScript?.driver.pendingHostAction == nil
       if matchedConsole {
-        return BootResult(
+        return result(
           reason: try runner.stopAndWait(GuestStopReason.powerOff),
           matchedConsole: true
         )
       }
       if completion.wait(milliseconds: 25) {
-        return BootResult(
+        return result(
           reason: try completion.value().get(),
           matchedConsole: (consoleScript?.driver.installerMediaTransitionCount ?? 0)
             == appliedInstallerMediaTransitionCount
@@ -585,7 +598,7 @@ import Foundation
         )
       }
     }
-    return BootResult(
+    return result(
       reason: try runner.stopAndWait(GuestStopReason.powerOff),
       matchedConsole: (consoleScript?.driver.installerMediaTransitionCount ?? 0)
         == appliedInstallerMediaTransitionCount
@@ -610,6 +623,7 @@ import Foundation
 
   do {
     let qualification = try admitQualificationGate(options: &options)
+    let qualificationStarted = DispatchTime.now().uptimeNanoseconds
     let canonicalBundle = URL(fileURLWithPath: firmwareBundle).standardizedFileURL.path
     let artifacts = try DoryARMVirtFirmwareBundle(directory: canonicalBundle).loadVerified()
     let template = try DoryUEFIVariableStoreSnapshot.decodeCanonicalTemplate(
@@ -670,6 +684,7 @@ import Foundation
     let maximumBootAttempts = 4
     var finalResult: BootResult?
     var bootAttempts = 0
+    var bootDurationNanoseconds: [UInt64] = []
     var installerMediaAttachedForFinalBoot = installerMedia != nil
     var coldSnapshotManifest: DoryARMVirtColdSnapshotManifest?
     while bootAttempts < maximumBootAttempts {
@@ -694,6 +709,7 @@ import Foundation
         timeoutSeconds: options.timeoutSeconds,
         attempt: bootAttempts
       )
+      bootDurationNanoseconds.append(result.elapsedNanoseconds)
       if result.matchedConsole {
         finalResult = result
         break
@@ -757,8 +773,10 @@ import Foundation
       }
     }
     let generation = try variableStore.load().snapshot.generation
+    let qualificationDurationNanoseconds =
+      DispatchTime.now().uptimeNanoseconds &- qualificationStarted
     let receipt = Receipt(
-      schemaVersion: 5,
+      schemaVersion: 6,
       machineABIIdentity: DoryARMVirtV1ABI.identity,
       firmwareABIIdentity: DoryARMVirtV1ABI.firmwareABIIdentity,
       executionEngineIdentity: DoryExecutionEngineIdentity.nativeARM64.rawValue,
@@ -796,6 +814,9 @@ import Foundation
       gvproxySHA256: gvproxy?.sha256,
       consoleByteCount: capture.byteCount,
       bootAttempts: bootAttempts,
+      timingClockIdentity: "dispatch-uptime-nanoseconds",
+      bootDurationNanoseconds: bootDurationNanoseconds,
+      qualificationDurationNanoseconds: qualificationDurationNanoseconds,
       variableStoreGeneration: generation,
       stopReason: describe(finalResult.reason)
     )
