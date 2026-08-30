@@ -628,7 +628,7 @@ public final class DoryPCVirtioPCIFunction: DoryPCPCIFunction, DoryPCPCIMSIContr
       revisionID: 1,
       subsystemVendorID: 0x1AF4,
       subsystemID: virtioDeviceID,
-      interruptLine: UInt8(16 + Int(address.device) % 8),
+      interruptLine: DoryPCV1ABI.interruptLine(device: address.device, pin: 1),
       interruptPin: 1,
       supportsMSI: true,
       msiNextCapabilityOffset: 0x60,

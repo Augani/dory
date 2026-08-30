@@ -12,11 +12,11 @@ public struct DoryPCACPILayout: Codable, Sendable, Hashable {
   public let dsdt: UInt64
 
   public init(
-    rsdp: UInt64 = 0x0009_E000,
-    xsdt: UInt64 = 0x0009_E100,
-    madt: UInt64 = 0x0009_E200,
-    hpet: UInt64 = 0x0009_E300,
-    mcfg: UInt64 = 0x0009_E400,
+    rsdp: UInt64 = DoryPCV1ABI.acpiBase,
+    xsdt: UInt64 = DoryPCV1ABI.acpiBase + 0x100,
+    madt: UInt64 = DoryPCV1ABI.acpiBase + 0x200,
+    hpet: UInt64 = DoryPCV1ABI.acpiBase + 0x300,
+    mcfg: UInt64 = DoryPCV1ABI.acpiBase + 0x400,
     fadt: UInt64? = nil,
     facs: UInt64? = nil,
     dsdt: UInt64? = nil
@@ -107,7 +107,7 @@ public enum DoryPCACPIBuilder {
 
   private static func makeMADT(processorCount: UInt8) -> [UInt8] {
     var body: [UInt8] = []
-    append(UInt32(0xFEE0_0000), to: &body)
+    append(UInt32(DoryPCV1ABI.localAPICBase), to: &body)
     append(UInt32(1), to: &body)
     for processor in 0..<processorCount {
       body += [0, 8, processor, processor]
@@ -115,7 +115,7 @@ public enum DoryPCACPIBuilder {
     }
     // IOAPIC ID 0 at the frozen DoryPC-v1 address, GSI base 0.
     body += [1, 12, 0, 0]
-    append(UInt32(0xFEC0_0000), to: &body)
+    append(UInt32(DoryPCV1ABI.ioAPICBase), to: &body)
     append(UInt32(0), to: &body)
     // ISA IRQ0 is wired to IOAPIC input/GSI 2.
     body += [2, 10, 0, 0]
@@ -135,7 +135,7 @@ public enum DoryPCACPIBuilder {
     append(eventTimerBlockID, to: &body)
     // ACPI Generic Address Structure: system memory, 64-bit register, QWord access.
     body += [0, 64, 0, 4]
-    append(UInt64(0xFED0_0000), to: &body)
+    append(DoryPCV1ABI.hpetBase, to: &body)
     body += [0]
     append(UInt16(128), to: &body)
     body += [0]
@@ -150,7 +150,7 @@ public enum DoryPCACPIBuilder {
 
   private static func makeMCFG() -> [UInt8] {
     var body = [UInt8](repeating: 0, count: 8)
-    append(UInt64(0xE000_0000), to: &body)
+    append(DoryPCV1ABI.pcieECAMBase, to: &body)
     append(UInt16(0), to: &body)
     body += [0, 0xFF]
     append(UInt32(0), to: &body)

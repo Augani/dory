@@ -45,7 +45,7 @@ public final class DoryPCHPET: DoryPCMMIODevice, @unchecked Sendable {
   private var timers: [Timer]
 
   public init(
-    baseAddress: UInt64 = 0xFED0_0000,
+    baseAddress: UInt64 = DoryPCV1ABI.hpetBase,
     timerCount: Int = 3,
     interruptSink: @escaping @Sendable (_ timer: Int, _ route: Int, _ asserted: Bool) -> Void = {
       _, _, _ in

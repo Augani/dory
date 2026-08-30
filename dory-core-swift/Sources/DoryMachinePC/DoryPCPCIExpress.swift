@@ -752,7 +752,7 @@ public final class DoryPCPCIExpressECAM: DoryPCMMIODevice, @unchecked Sendable {
   private var isSealed = false
 
   public init(
-    baseAddress: UInt64 = 0xE000_0000,
+    baseAddress: UInt64 = DoryPCV1ABI.pcieECAMBase,
     segment: UInt16 = 0,
     startBus: UInt8 = 0,
     endBus: UInt8 = 0xFF
@@ -839,7 +839,10 @@ public final class DoryPCPCIBARWindow: DoryPCMMIODevice, @unchecked Sendable {
   private var devices: [any DoryPCPCIBARMemoryDevice] = []
   private var isSealed = false
 
-  public init(baseAddress: UInt64 = 0xD000_0000, byteCount: UInt64 = 0x1000_0000) {
+  public init(
+    baseAddress: UInt64 = DoryPCV1ABI.pcieMMIOBase,
+    byteCount: UInt64 = DoryPCV1ABI.pcieMMIOBytes
+  ) {
     precondition(byteCount > 0 && baseAddress <= UInt64.max - byteCount)
     self.baseAddress = baseAddress
     self.byteCount = byteCount

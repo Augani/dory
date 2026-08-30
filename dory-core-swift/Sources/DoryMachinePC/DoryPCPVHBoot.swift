@@ -2,15 +2,15 @@ import DoryDBTX86
 import Foundation
 
 public enum DoryPCV1Layout {
-  public static let pvhStartInfo: UInt64 = 0x0009_0000
-  public static let pvhCommandLine: UInt64 = 0x0009_1000
-  public static let pvhModules: UInt64 = 0x0009_2000
-  public static let pvhMemoryMap: UInt64 = 0x0009_3000
-  public static let lowRAMEnd: UInt64 = pvhStartInfo
-  public static let lowReservedEnd: UInt64 = 0x000A_0000
-  public static let highRAMStart: UInt64 = 0x0010_0000
-  public static let initrd: UInt64 = 0x1000_0000
-  public static let mmioHoleStart: UInt64 = 0xD000_0000
+  public static let pvhStartInfo = DoryPCV1ABI.pvhStartInfo
+  public static let pvhCommandLine = DoryPCV1ABI.pvhCommandLine
+  public static let pvhModules = DoryPCV1ABI.pvhModules
+  public static let pvhMemoryMap = DoryPCV1ABI.pvhMemoryMap
+  public static let lowRAMEnd = DoryPCV1ABI.lowRAMEnd
+  public static let lowReservedEnd = DoryPCV1ABI.lowReservedEnd
+  public static let highRAMStart = DoryPCV1ABI.highRAMStart
+  public static let initrd = DoryPCV1ABI.directKernelInitrd
+  public static let mmioHoleStart = DoryPCV1ABI.mmioHoleStart
 }
 
 public struct DoryPCPVHBootLayout: Codable, Sendable, Hashable {

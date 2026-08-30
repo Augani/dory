@@ -180,7 +180,7 @@ public final class DoryPCLocalAPICMMIO: DoryPCMMIODevice, @unchecked Sendable {
 
   public init(
     apic: DoryPCLocalAPIC,
-    baseAddress: UInt64 = 0xFEE0_0000,
+    baseAddress: UInt64 = DoryPCV1ABI.localAPICBase,
     onEndOfInterrupt: @escaping @Sendable (UInt8) throws -> Void = { _ in },
     onInterruptCommand: @escaping @Sendable (_ high: UInt32, _ low: UInt32) throws -> Void = {
       _, _ in
@@ -305,7 +305,7 @@ public final class DoryPCIOAPICMMIO: DoryPCMMIODevice, @unchecked Sendable {
   public init(
     ioAPIC: DoryPCIOAPIC,
     ioAPICID: UInt8 = 0,
-    baseAddress: UInt64 = 0xFEC0_0000
+    baseAddress: UInt64 = DoryPCV1ABI.ioAPICBase
   ) {
     self.ioAPIC = ioAPIC
     self.ioAPICID = ioAPICID & 0x0F

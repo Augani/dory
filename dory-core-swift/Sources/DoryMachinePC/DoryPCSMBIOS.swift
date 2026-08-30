@@ -6,8 +6,8 @@ public struct DoryPCSMBIOSLayout: Codable, Sendable, Hashable {
   public let structureTable: UInt64
 
   public init(
-    entryPoint: UInt64 = 0x000F_0000,
-    structureTable: UInt64 = 0x000F_1000
+    entryPoint: UInt64 = DoryPCV1ABI.smbiosBase,
+    structureTable: UInt64 = DoryPCV1ABI.smbiosBase + 0x1000
   ) {
     self.entryPoint = entryPoint
     self.structureTable = structureTable
