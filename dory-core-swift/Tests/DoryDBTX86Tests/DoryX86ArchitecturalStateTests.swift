@@ -64,7 +64,6 @@ import Testing
     let profile = DoryX86CPUProfile.compatibleV1
     #expect(profile.identifier == "dory.x86_64.compat-v1")
     #expect(profile.supports(.longMode))
-    #expect(profile.supports(.longMode))
     #expect(!profile.supports(.sse42))
     #expect(!profile.supports(.syscall))
     #expect(!profile.supports(.avx))
@@ -74,5 +73,18 @@ import Testing
     #expect(profile.cpuid(leaf: 7).ebx & (1 << 5) == 0)
     #expect(profile.cpuid(leaf: 0x8000_0001).edx & (1 << 29) != 0)
     #expect(profile.cpuid(leaf: 0x8000_0008).eax == 40 | (48 << 8))
+  }
+
+  @Test func modelSpecificStateHasDeterministicArchitecturalDefaults() throws {
+    var msrs = DoryX86ModelSpecificRegisterState()
+    #expect(msrs.apicBase == 0xfee0_0900)
+    #expect(msrs.pageAttributeTable == 0x0007_0406_0007_0406)
+    msrs.longStar = 0xffff_8000_0000_1000
+    let state = try DoryX86ArchitecturalState(modelSpecific: msrs)
+    let restored = try JSONDecoder().decode(
+      DoryX86ArchitecturalState.self,
+      from: JSONEncoder().encode(state)
+    )
+    #expect(restored.modelSpecific == msrs)
   }
 }

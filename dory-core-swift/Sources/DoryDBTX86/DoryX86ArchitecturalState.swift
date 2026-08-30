@@ -225,6 +225,49 @@ public struct DoryX86DebugState: Codable, Sendable, Hashable {
   }
 }
 
+public struct DoryX86ModelSpecificRegisterState: Codable, Sendable, Hashable {
+  public var apicBase: UInt64
+  public var systemEnterCS: UInt64
+  public var systemEnterStackPointer: UInt64
+  public var systemEnterInstructionPointer: UInt64
+  public var pageAttributeTable: UInt64
+  public var star: UInt64
+  public var longStar: UInt64
+  public var compatibilityStar: UInt64
+  public var syscallFlagMask: UInt64
+  public var fsBase: UInt64
+  public var gsBase: UInt64
+  public var kernelGSBase: UInt64
+
+  public init(
+    apicBase: UInt64 = 0xfee0_0900,
+    systemEnterCS: UInt64 = 0,
+    systemEnterStackPointer: UInt64 = 0,
+    systemEnterInstructionPointer: UInt64 = 0,
+    pageAttributeTable: UInt64 = 0x0007_0406_0007_0406,
+    star: UInt64 = 0,
+    longStar: UInt64 = 0,
+    compatibilityStar: UInt64 = 0,
+    syscallFlagMask: UInt64 = 0,
+    fsBase: UInt64 = 0,
+    gsBase: UInt64 = 0,
+    kernelGSBase: UInt64 = 0
+  ) {
+    self.apicBase = apicBase
+    self.systemEnterCS = systemEnterCS
+    self.systemEnterStackPointer = systemEnterStackPointer
+    self.systemEnterInstructionPointer = systemEnterInstructionPointer
+    self.pageAttributeTable = pageAttributeTable
+    self.star = star
+    self.longStar = longStar
+    self.compatibilityStar = compatibilityStar
+    self.syscallFlagMask = syscallFlagMask
+    self.fsBase = fsBase
+    self.gsBase = gsBase
+    self.kernelGSBase = kernelGSBase
+  }
+}
+
 /// Fixed-width byte payload used for x87 (10-byte) and YMM (32-byte) state. Arrays are validated
 /// on every construction and decode so malformed snapshots cannot alter architectural shape.
 public struct DoryX86RegisterBytes: Codable, Sendable, Hashable {
@@ -240,8 +283,12 @@ public struct DoryX86RegisterBytes: Codable, Sendable, Hashable {
     self.bytes = bytes
   }
 
-  public static func x87Zero() -> Self { try! Self(bytes: .init(repeating: 0, count: 10), expectedByteCount: 10) }
-  public static func ymmZero() -> Self { try! Self(bytes: .init(repeating: 0, count: 32), expectedByteCount: 32) }
+  public static func x87Zero() -> Self {
+    try! Self(bytes: .init(repeating: 0, count: 10), expectedByteCount: 10)
+  }
+  public static func ymmZero() -> Self {
+    try! Self(bytes: .init(repeating: 0, count: 32), expectedByteCount: 32)
+  }
 }
 
 public struct DoryX86FloatingPointState: Codable, Sendable, Hashable {
@@ -317,6 +364,7 @@ public struct DoryX86ArchitecturalState: Codable, Sendable, Hashable {
   public var idtr: DoryX86DescriptorTableState
   public var control: DoryX86ControlState
   public var debug: DoryX86DebugState
+  public var modelSpecific: DoryX86ModelSpecificRegisterState
   public var floatingPoint: DoryX86FloatingPointState
   public var tsc: UInt64
   public var tscAux: UInt32
@@ -325,7 +373,8 @@ public struct DoryX86ArchitecturalState: Codable, Sendable, Hashable {
     registers: DoryX86GeneralRegisters = .init(),
     rip: UInt64 = 0xfff0,
     rflags: DoryX86RFLAGS = .reset,
-    cs: DoryX86SegmentState = .init(selector: 0xf000, attributes: 0x0093, limit: 0xffff, base: 0xffff_0000),
+    cs: DoryX86SegmentState = .init(
+      selector: 0xf000, attributes: 0x0093, limit: 0xffff, base: 0xffff_0000),
     ds: DoryX86SegmentState = .init(),
     es: DoryX86SegmentState = .init(),
     fs: DoryX86SegmentState = .init(),
@@ -337,6 +386,7 @@ public struct DoryX86ArchitecturalState: Codable, Sendable, Hashable {
     idtr: DoryX86DescriptorTableState = .init(),
     control: DoryX86ControlState = .init(),
     debug: DoryX86DebugState = .init(),
+    modelSpecific: DoryX86ModelSpecificRegisterState = .init(),
     floatingPoint: DoryX86FloatingPointState = try! .init(),
     tsc: UInt64 = 0,
     tscAux: UInt32 = 0
@@ -363,6 +413,7 @@ public struct DoryX86ArchitecturalState: Codable, Sendable, Hashable {
     self.idtr = idtr
     self.control = control
     self.debug = debug
+    self.modelSpecific = modelSpecific
     self.floatingPoint = floatingPoint
     self.tsc = tsc
     self.tscAux = tscAux
@@ -372,7 +423,7 @@ public struct DoryX86ArchitecturalState: Codable, Sendable, Hashable {
 
   private enum CodingKeys: String, CodingKey {
     case registers, rip, rflags, cs, ds, es, fs, gs, ss, tr, ldtr, gdtr, idtr
-    case control, debug, floatingPoint, tsc, tscAux
+    case control, debug, modelSpecific, floatingPoint, tsc, tscAux
   }
 
   public init(from decoder: Decoder) throws {
@@ -393,6 +444,7 @@ public struct DoryX86ArchitecturalState: Codable, Sendable, Hashable {
       idtr: values.decode(DoryX86DescriptorTableState.self, forKey: .idtr),
       control: values.decode(DoryX86ControlState.self, forKey: .control),
       debug: values.decode(DoryX86DebugState.self, forKey: .debug),
+      modelSpecific: values.decode(DoryX86ModelSpecificRegisterState.self, forKey: .modelSpecific),
       floatingPoint: values.decode(DoryX86FloatingPointState.self, forKey: .floatingPoint),
       tsc: values.decode(UInt64.self, forKey: .tsc),
       tscAux: values.decode(UInt32.self, forKey: .tscAux)
