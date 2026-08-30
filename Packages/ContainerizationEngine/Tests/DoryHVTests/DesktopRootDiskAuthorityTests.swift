@@ -75,7 +75,7 @@ import Testing
             operationID: UUID(uuidString: "33333333-3333-3333-3333-333333333333")!,
             resolvedPlanSHA256: String(repeating: "c", count: 64),
             planRevision: 1,
-            backendRuntimeBuildIdentifier: "raw-runtime-1",
+            executionComponentBuildIdentifier: "raw-runtime-1",
             virtualHardwareABIVersion: 1,
             rawHVVirtualHardwareTopology: makeTopology(),
             graphics: .software,
