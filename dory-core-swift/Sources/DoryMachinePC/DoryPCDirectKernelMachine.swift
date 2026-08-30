@@ -48,6 +48,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   public let interpreters: [DoryX86Interpreter]
   public let bootLayout: DoryPCPVHBootLayout
   public let acpiLayout: DoryPCACPILayout
+  public let smbios: DoryPCSMBIOSTables
   public let memoryByteCount: Int
   public let processorCount: Int
 
@@ -63,6 +64,8 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     processorCount: Int = 1,
     bootLayout: DoryPCPVHBootLayout = .init(),
     acpiLayout: DoryPCACPILayout = .init(),
+    smbiosLayout: DoryPCSMBIOSLayout = .init(),
+    smbiosIdentity: DoryPCSMBIOSIdentity = .init(),
     initialRTCDate: Date = Date(),
     pciFunctions: [any DoryPCPCIFunction] = [],
     interpreter: DoryX86Interpreter = .init()
@@ -178,6 +181,13 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     self.interpreter = interpreters[0]
     self.bootLayout = bootLayout
     self.acpiLayout = acpiLayout
+    smbios = try DoryPCSMBIOSBuilder.build(
+      layout: smbiosLayout,
+      identity: smbiosIdentity,
+      processorCount: processorCount,
+      memoryBytes: memoryBytes,
+      cpuProfile: interpreter.profile
+    )
     loadedStates = [DoryX86ArchitecturalState?](repeating: nil, count: processorCount)
     haltedProcessors = [Bool](repeating: false, count: processorCount)
   }
@@ -206,6 +216,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       do {
         try bootImage.install(into: memory)
         try acpi.install(into: memory)
+        try smbios.install(into: memory)
       } catch {
         // The machine cannot safely retry a partially loaded kernel with another payload.
         throw error
