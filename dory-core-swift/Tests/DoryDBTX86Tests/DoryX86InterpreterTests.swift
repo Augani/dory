@@ -651,6 +651,29 @@ import Testing
     #expect(try memory.read(at: 0x215, byteCount: 1) == [0x8B])
   }
 
+  @Test func realModeFarCallAndReturnUseSegmentedStackFrames() throws {
+    var bytes = [UInt8](repeating: 0, count: 0x500)
+    bytes.replaceSubrange(0x100..<0x105, with: [0x9A, 0x20, 0, 0x20, 0])
+    bytes.replaceSubrange(0x220..<0x221, with: [0xCB])
+    let memory = DoryX86ByteArrayMemory(bytes: bytes)
+    var state = try DoryX86ArchitecturalState(
+      registers: .init(rsp: 0x80),
+      rip: 0x100,
+      cs: .init(selector: 0, attributes: 0x93, limit: 0xffff, base: 0),
+      ss: .init(selector: 0x30, attributes: 0x93, limit: 0xffff, base: 0x300)
+    )
+
+    _ = interpreter.step(state: &state, memory: memory, mode: .real16)
+    #expect(state.cs.selector == 0x20)
+    #expect(state.rip == 0x20)
+    #expect(state.registers.rsp & 0xffff == 0x7C)
+    #expect(try memory.read(at: 0x37C, byteCount: 4) == [0x05, 0x01, 0, 0])
+    _ = interpreter.step(state: &state, memory: memory, mode: .real16)
+    #expect(state.cs.selector == 0)
+    #expect(state.rip == 0x105)
+    #expect(state.registers.rsp & 0xffff == 0x80)
+  }
+
   private func readQuadword(_ memory: DoryX86ByteArrayMemory, at address: UInt64) -> UInt64 {
     try! memory.read(at: address, byteCount: 8).enumerated().reduce(0) {
       $0 | UInt64($1.element) << UInt64($1.offset * 8)

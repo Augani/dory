@@ -164,6 +164,16 @@ public struct DoryX86Decoder: Sendable {
       operation = .signExtendAccumulator(width: width, intoHighHalf: false)
     case 0x99:
       operation = .signExtendAccumulator(width: width, intoHighHalf: true)
+    case 0x9A:
+      guard mode != .long64 else {
+        throw DoryX86DecodeError.invalidEncoding(
+          address: address, detail: "immediate far call is invalid in 64-bit mode")
+      }
+      operation = .farCall(
+        offset: try cursor.readUnsigned(byteCount: width == .word ? 2 : 4),
+        selector: UInt16(try cursor.readUnsigned(byteCount: 2)),
+        width: width
+      )
     case 0x8C, 0x8E:
       let operands = try decodeModRM(
         cursor: &cursor, width: .word, prefixes: prefixes, mode: mode)
@@ -374,6 +384,11 @@ public struct DoryX86Decoder: Sendable {
         relative: Int64(try cursor.readSigned(byteCount: width == .word ? 2 : 4)))
     case 0xC3:
       operation = .return
+    case 0xCA, 0xCB:
+      operation = .farReturn(
+        popBytes: opcode == 0xCA ? UInt16(try cursor.readUnsigned(byteCount: 2)) : 0,
+        width: width
+      )
     case 0xCF:
       operation = .interruptReturn
     case 0xCD:

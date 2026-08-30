@@ -357,4 +357,15 @@ import Testing
         == .loadSystemSegment(task: true, source: .register(.rbx, width: .word))
     )
   }
+
+  @Test func decodesFarCallAndReturnFrames() throws {
+    #expect(
+      try decoder.decode([0x9A, 0x34, 0x12, 0x78, 0x56], at: 0x600, mode: .real16).operation
+        == .farCall(offset: 0x1234, selector: 0x5678, width: .word)
+    )
+    #expect(
+      try decoder.decode([0xCA, 8, 0], at: 0x600, mode: .protected32).operation
+        == .farReturn(popBytes: 8, width: .doubleword)
+    )
+  }
 }
