@@ -1403,14 +1403,14 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
                 code: .unsupportedSupportTier,
                 field: "supportTier"
             ))
-        case .supported:
+        case .supported, .preview, .deprecated:
             if experimentalAuthorization != nil {
                 issues.append(DoryResolvedMachinePlanValidationIssue(
                     code: .invalidExperimentalAuthorization,
                     field: "experimentalAuthorization"
                 ))
             }
-        case .experimental:
+        case .research, .experimental:
             guard let authorization = experimentalAuthorization else {
                 issues.append(DoryResolvedMachinePlanValidationIssue(
                     code: .missingExperimentalAuthorization,

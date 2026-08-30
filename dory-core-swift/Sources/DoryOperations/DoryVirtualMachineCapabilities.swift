@@ -446,8 +446,11 @@ public struct DoryVirtualMachineDeviceCapabilityRequest: Codable, Sendable, Equa
 
 /// Product maturity is independent of whether the required host component is installed.
 public enum DoryCapabilitySupportTier: String, Codable, Sendable, CaseIterable, Hashable {
-    case supported
+    case research
     case experimental
+    case preview
+    case supported
+    case deprecated
     case unsupported
 }
 
@@ -457,6 +460,8 @@ public enum DoryCapabilityAvailabilityState: String, Codable, Sendable, CaseIter
 }
 
 public enum DoryCapabilityReasonCode: String, Codable, Sendable, CaseIterable, Hashable {
+    case unsupportedHostArchitecture = "unsupported-host-architecture"
+    case translationConsentRequired = "translation-consent-required"
     case hostOperatingSystemUnsupported = "host-os-unsupported"
     case guestArchitectureRequiresEmulation = "guest-architecture-requires-emulation"
     case backendDoesNotSupportGuest = "backend-does-not-support-guest"
