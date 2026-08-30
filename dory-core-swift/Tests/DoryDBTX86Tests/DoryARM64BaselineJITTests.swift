@@ -105,4 +105,103 @@ import Testing
       #expect(executor.residentBlockCount == 2)
     #endif
   }
+
+  @Test func optimizingTierPropagatesConstantsAndEliminatesExactSelfCopies() throws {
+    let translated = try DoryX86IRTranslator().translate(
+      [
+        0x48, 0xB8, 1, 0, 0, 0, 0, 0, 0, 0,  // mov rax,1
+        0x48, 0x89, 0xC3,  // mov rbx,rax
+        0x48, 0x89, 0xC9,  // mov rcx,rcx
+        0xF4,
+      ],
+      at: 0x6000,
+      mode: .long64
+    )
+    let result = DoryIROptimizer().optimize(translated)
+
+    #expect(result.metrics.propagatedConstants == 1)
+    #expect(result.metrics.eliminatedStatements == 1)
+    #expect(result.block.guestInstructionCount == translated.guestInstructionCount)
+    #expect(result.block.guestByteCount == translated.guestByteCount)
+    #expect(result.block.statements.count == 2)
+    guard case .copy(_, .immediate(let value, width: .i64)) = result.block.statements[1]
+    else {
+      Issue.record("expected propagated immediate")
+      return
+    }
+    #expect(value == 1)
+    #expect(DoryARM64BaselineEmitter().compile(result.block, tier: .optimizing).tier == .optimizing)
+  }
+
+  @Test func optimizingExecutorPublishesAnOptimizingBlock() throws {
+    #if arch(arm64)
+      let executor = try DoryARM64BaselineExecutor(
+        maximumCodeBytes: 4096,
+        optimization: .optimizing
+      )
+      var state = try DoryX86ArchitecturalState(rip: 0x7000)
+      let execution = try #require(
+        executor.execute(
+          bytes: [0xB8, 1, 0, 0, 0, 0x83, 0xC0, 2, 0xF4],
+          at: state.rip,
+          mode: .long64,
+          addressSpaceID: 9,
+          maximumInstructions: 3,
+          state: &state
+        )
+      )
+      #expect(execution.block.tier == .optimizing)
+      #expect(execution.exitCode == .halt)
+      #expect(state.registers.rax == 3)
+    #endif
+  }
+
+  @Test func optimizingAndBaselineTiersHaveExactArchitecturalParity() throws {
+    #if arch(arm64)
+      let bytes: [UInt8] = [
+        0x48, 0xB8, 1, 0, 0, 0, 0, 0, 0, 0,  // mov rax,1
+        0x48, 0x89, 0xC3,  // mov rbx,rax
+        0x48, 0x83, 0xC3, 2,  // add rbx,2
+        0x48, 0x89, 0xC9,  // mov rcx,rcx
+        0xF4,
+      ]
+      let baseline = try DoryARM64BaselineExecutor(
+        maximumCodeBytes: 4096,
+        optimization: .baseline
+      )
+      let optimizing = try DoryARM64BaselineExecutor(
+        maximumCodeBytes: 4096,
+        optimization: .optimizing
+      )
+      var baselineState = try DoryX86ArchitecturalState(rip: 0x8000)
+      baselineState.registers.rcx = 0xfeed_face
+      var optimizingState = baselineState
+
+      let baselineExecution = try #require(
+        baseline.execute(
+          bytes: bytes,
+          at: 0x8000,
+          mode: .long64,
+          addressSpaceID: 11,
+          maximumInstructions: 5,
+          state: &baselineState
+        )
+      )
+      let optimizingExecution = try #require(
+        optimizing.execute(
+          bytes: bytes,
+          at: 0x8000,
+          mode: .long64,
+          addressSpaceID: 11,
+          maximumInstructions: 5,
+          state: &optimizingState
+        )
+      )
+
+      #expect(baselineExecution.exitCode == optimizingExecution.exitCode)
+      #expect(baselineExecution.block.guestInstructionCount == 5)
+      #expect(optimizingExecution.block.guestInstructionCount == 5)
+      #expect(baselineState == optimizingState)
+    #endif
+  }
 }

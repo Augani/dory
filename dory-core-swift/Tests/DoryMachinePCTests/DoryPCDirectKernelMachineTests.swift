@@ -117,6 +117,37 @@ import Testing
     #endif
   }
 
+  @Test func optimizingJITMatchesTheDirectKernelArchitecturalResult() throws {
+    #if arch(arm64)
+      let layout = DoryPCPVHBootLayout(
+        startInfo: 0x90000,
+        commandLine: 0x91000,
+        modules: 0x92000,
+        memoryMap: 0x93000,
+        initrd: 0x180000
+      )
+      let machine = try DoryPCDirectKernelMachine(
+        memoryBytes: 2 * 1024 * 1024,
+        bootLayout: layout,
+        executionTier: .optimizingJIT,
+        baselineJITMaximumCodeBytes: 4096
+      )
+      // mov eax,1; mov ebx,eax; add ebx,2; hlt
+      try machine.load(
+        kernel: makeELF(code: [0xB8, 1, 0, 0, 0, 0x89, 0xC3, 0x83, 0xC3, 2, 0xF4]),
+        commandLine: "x"
+      )
+
+      #expect(try machine.run(maximumInstructions: 8) == .halted(instructionCount: 4))
+      #expect(machine.state?.registers.rax == 1)
+      #expect(machine.state?.registers.rbx == 3)
+      #expect(machine.executionStatistics.optimizingJITInstructions == 4)
+      #expect(machine.executionStatistics.optimizingJITBlocks == 1)
+      #expect(machine.executionStatistics.baselineJITInstructions == 0)
+      #expect(machine.executionStatistics.interpreterInstructions == 0)
+    #endif
+  }
+
   @Test func directKernelCanProgramTheStandardLocalAPICWindow() throws {
     let layout = DoryPCPVHBootLayout(
       startInfo: 0x90000,

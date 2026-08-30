@@ -53,7 +53,7 @@ private struct Arguments {
           + "[--system-disk /absolute/disk] [--installer-media /absolute/iso] "
           + "[--variable-store-directory /absolute/directory] "
           + "[--processor-count count] [--exception-policy stop|deliver] "
-          + "[--execution-tier interpreter|baseline-jit] "
+          + "[--execution-tier interpreter|baseline-jit|optimizing-jit] "
           + "[--max-instructions count] [--memory-bytes count]"
       )
     }
@@ -79,6 +79,7 @@ private struct Arguments {
     switch tierText {
     case "interpreter": executionTier = .interpreter
     case "baseline-jit": executionTier = .baselineJIT
+    case "optimizing-jit": executionTier = .optimizingJIT
     default: throw SmokeError.usage("invalid execution tier: \(tierText)")
     }
     firmwareBundle = URL(fileURLWithPath: bundle, isDirectory: true).standardizedFileURL
@@ -277,6 +278,8 @@ private func run() throws {
     "interpreterInstructions": executionStatistics.interpreterInstructions,
     "baselineJITInstructions": executionStatistics.baselineJITInstructions,
     "baselineJITBlocks": executionStatistics.baselineJITBlocks,
+    "optimizingJITInstructions": executionStatistics.optimizingJITInstructions,
+    "optimizingJITBlocks": executionStatistics.optimizingJITBlocks,
     "persistentSystemDisk": arguments.systemDisk?.path ?? "in-memory",
     "installerMedia": arguments.installerMedia?.path ?? "none",
     "variableStoreDirectory": ownsVariableDirectory ? "temporary" : variableDirectory.path,

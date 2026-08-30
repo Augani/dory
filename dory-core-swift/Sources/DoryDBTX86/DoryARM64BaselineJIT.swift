@@ -11,7 +11,13 @@ public enum DoryJITExitCode: UInt32, Codable, Sendable, Hashable {
 
 public enum DoryARM64CompilationTier: String, Codable, Sendable, Hashable {
   case baseline
+  case optimizing
   case interpreterFallback
+}
+
+public enum DoryARM64JITOptimization: String, Codable, Sendable, Hashable {
+  case baseline
+  case optimizing
 }
 
 public struct DoryARM64CompiledBlock: Codable, Sendable, Hashable {
@@ -60,7 +66,11 @@ public struct DoryARM64BaselineEmitter: Sendable {
 
   public init() {}
 
-  public func compile(_ block: DoryIRBasicBlock) -> DoryARM64CompiledBlock {
+  public func compile(
+    _ block: DoryIRBasicBlock,
+    tier: DoryARM64CompilationTier = .baseline
+  ) -> DoryARM64CompiledBlock {
+    precondition(tier != .interpreterFallback)
     var words: [UInt32] = []
     for statement in block.statements {
       guard emit(statement, into: &words) else {
@@ -77,7 +87,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
       guestByteCount: block.guestByteCount,
       guestInstructionCount: block.guestInstructionCount,
       machineWords: words,
-      tier: .baseline,
+      tier: tier,
       exitCode: exit
     )
   }
@@ -913,6 +923,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   private let lock = NSLock()
   private let decoder: DoryX86Decoder
   private let emitter: DoryARM64BaselineEmitter
+  private let optimization: DoryARM64JITOptimization
+  private let optimizer: DoryIROptimizer
   private let region: DoryJITExecutableRegion
   private var entries: [DoryJITBlockKey: ResidentBlock] = [:]
   private var nextOffset = 0
@@ -920,11 +932,15 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   public init(
     maximumCodeBytes: Int = 16 * 1024 * 1024,
     decoder: DoryX86Decoder = .init(),
-    emitter: DoryARM64BaselineEmitter = .init()
+    emitter: DoryARM64BaselineEmitter = .init(),
+    optimization: DoryARM64JITOptimization = .baseline,
+    optimizer: DoryIROptimizer = .init()
   ) throws {
     self.maximumCodeBytes = max(4_096, maximumCodeBytes)
     self.decoder = decoder
     self.emitter = emitter
+    self.optimization = optimization
+    self.optimizer = optimizer
     region = try DoryJITExecutableRegion(minimumCapacity: self.maximumCodeBytes)
   }
 
@@ -962,12 +978,17 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       if let cached = entries[key], cached.block.guestInstructionCount <= maximumInstructions {
         resident = cached
       } else {
-        let block = try DoryX86IRTranslator(
+        let translated = try DoryX86IRTranslator(
           decoder: decoder,
           instructionBudget: maximumInstructions
         ).translate(bytes, at: guestStart, mode: mode)
-        let compiled = emitter.compile(block)
-        guard compiled.tier == .baseline,
+        let block =
+          optimization == .optimizing ? optimizer.optimize(translated).block : translated
+        let compiled = emitter.compile(
+          block,
+          tier: optimization == .optimizing ? .optimizing : .baseline
+        )
+        guard compiled.tier != .interpreterFallback,
           compiled.guestInstructionCount > 0,
           compiled.guestInstructionCount <= maximumInstructions
         else { return nil }

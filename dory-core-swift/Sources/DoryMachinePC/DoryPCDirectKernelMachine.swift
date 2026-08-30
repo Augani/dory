@@ -12,21 +12,28 @@ public enum DoryPCMachineError: Error, Sendable, Equatable {
 public enum DoryPCExecutionTier: String, Codable, Sendable, Hashable {
   case interpreter
   case baselineJIT
+  case optimizingJIT
 }
 
 public struct DoryPCExecutionStatistics: Codable, Sendable, Hashable {
   public let interpreterInstructions: UInt64
   public let baselineJITInstructions: UInt64
   public let baselineJITBlocks: UInt64
+  public let optimizingJITInstructions: UInt64
+  public let optimizingJITBlocks: UInt64
 
   public init(
     interpreterInstructions: UInt64,
     baselineJITInstructions: UInt64,
-    baselineJITBlocks: UInt64
+    baselineJITBlocks: UInt64,
+    optimizingJITInstructions: UInt64,
+    optimizingJITBlocks: UInt64
   ) {
     self.interpreterInstructions = interpreterInstructions
     self.baselineJITInstructions = baselineJITInstructions
     self.baselineJITBlocks = baselineJITBlocks
+    self.optimizingJITInstructions = optimizingJITInstructions
+    self.optimizingJITBlocks = optimizingJITBlocks
   }
 }
 
@@ -87,6 +94,8 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   private var interpreterInstructionCount: UInt64 = 0
   private var baselineJITInstructionCount: UInt64 = 0
   private var baselineJITBlockCount: UInt64 = 0
+  private var optimizingJITInstructionCount: UInt64 = 0
+  private var optimizingJITBlockCount: UInt64 = 0
 
   public init(
     memoryBytes: Int,
@@ -110,13 +119,22 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     }
     self.processorCount = processorCount
     self.executionTier = executionTier
-    baselineJIT =
-      executionTier == .baselineJIT
-      ? try DoryARM64BaselineExecutor(
+    baselineJIT = switch executionTier {
+    case .interpreter:
+      nil
+    case .baselineJIT:
+      try DoryARM64BaselineExecutor(
         maximumCodeBytes: baselineJITMaximumCodeBytes,
-        decoder: interpreter.decoder
+        decoder: interpreter.decoder,
+        optimization: .baseline
       )
-      : nil
+    case .optimizingJIT:
+      try DoryARM64BaselineExecutor(
+        maximumCodeBytes: baselineJITMaximumCodeBytes,
+        decoder: interpreter.decoder,
+        optimization: .optimizing
+      )
+    }
     firmwareConfiguration = DoryPCFirmwareConfiguration(
       totalRAMBytes: UInt64(memoryBytes),
       processorCount: processorCount,
@@ -315,7 +333,9 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       .init(
         interpreterInstructions: interpreterInstructionCount,
         baselineJITInstructions: baselineJITInstructionCount,
-        baselineJITBlocks: baselineJITBlockCount
+        baselineJITBlocks: baselineJITBlockCount,
+        optimizingJITInstructions: optimizingJITInstructionCount,
+        optimizingJITBlocks: optimizingJITBlockCount
       )
     }
   }
@@ -352,10 +372,14 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           maximumInstructions: remaining
         )
         completed += execution.instructionCount
-        if execution.usedBaselineJIT {
+        switch execution.jitTier {
+        case .baseline:
           baselineJITInstructionCount &+= execution.instructionCount
           baselineJITBlockCount &+= 1
-        } else {
+        case .optimizing:
+          optimizingJITInstructionCount &+= execution.instructionCount
+          optimizingJITBlockCount &+= 1
+        case .interpreterFallback, nil:
           interpreterInstructionCount &+= execution.instructionCount
         }
         if execution.instructionCount > 1 {
@@ -403,7 +427,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   private struct ProcessorExecution {
     let result: ProcessorResult
     let instructionCount: UInt64
-    let usedBaselineJIT: Bool
+    let jitTier: DoryARM64CompilationTier?
   }
 
   private func execute(
@@ -438,9 +462,9 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         let count = UInt64(execution.block.guestInstructionCount)
         switch execution.exitCode {
         case .dispatch:
-          return .init(result: .retired, instructionCount: count, usedBaselineJIT: true)
+          return .init(result: .retired, instructionCount: count, jitTier: execution.block.tier)
         case .halt:
-          return .init(result: .halted, instructionCount: count, usedBaselineJIT: true)
+          return .init(result: .halted, instructionCount: count, jitTier: execution.block.tier)
         case .interpreter, .system, .portIO:
           throw DoryPCMachineError.unexpectedJITExit(execution.exitCode)
         }
@@ -461,7 +485,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       case .halted: .halted
       case .exception(let exception): .exception(exception)
       }
-    return .init(result: machineResult, instructionCount: 1, usedBaselineJIT: false)
+    return .init(result: machineResult, instructionCount: 1, jitTier: nil)
   }
 
   private func baselineInstructionBudget(maximumInstructions: UInt64) -> Int {
