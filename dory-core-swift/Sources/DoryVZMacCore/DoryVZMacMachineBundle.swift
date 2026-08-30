@@ -30,6 +30,7 @@ public enum DoryVZMacMachineBundleError: Error, Sendable, Equatable, CustomStrin
 public enum DoryVZMacMachineInstallationState: String, Codable, Sendable, Equatable {
     case prepared
     case installing
+    case installFailed = "install-failed"
     case stopped
 }
 
@@ -259,6 +260,27 @@ public struct DoryVZMacMachineBundle: Sendable {
             )
         }
         return identifier
+    }
+
+    public func updatingInstallationState(
+        _ installationState: DoryVZMacMachineInstallationState
+    ) throws -> Self {
+        let updated = DoryVZMacMachineManifest(
+            createdAt: manifest.createdAt,
+            installationState: installationState,
+            restoreImageBuild: manifest.restoreImageBuild,
+            restoreImageVersion: manifest.restoreImageVersion,
+            restoreImageSHA256: manifest.restoreImageSHA256,
+            hardwareModelSHA256: manifest.hardwareModelSHA256,
+            machineIdentifierSHA256: manifest.machineIdentifierSHA256,
+            macAddress: manifest.macAddress,
+            resources: manifest.resources
+        )
+        try updated.validate()
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        try encoder.encode(updated).write(to: manifestURL, options: [.atomic])
+        return try Self.load(from: rootURL)
     }
 }
 
