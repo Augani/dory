@@ -149,7 +149,7 @@ private final class QualificationAppDelegate: NSObject, NSApplicationDelegate,
                 try await execute()
             } catch {
                 FileHandle.standardError.write(Data("Dory VZMac qualification failed: \(error)\n".utf8))
-                NSApp.terminate(nil)
+                exit(EXIT_FAILURE)
             }
         }
     }
