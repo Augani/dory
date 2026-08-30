@@ -8,3 +8,7 @@
 
 [Guids]
   gDoryARMVirtTokenSpaceGuid = { 0x75a1d42f, 0x7181, 0x4a2d, { 0x91, 0x24, 0x66, 0xea, 0xe7, 0x24, 0xe7, 0x44 } }
+
+[PcdsFixedAtBuild]
+  gDoryARMVirtTokenSpaceGuid.PcdVariableBridgeBase|0x04000000|UINT64|0x00000001
+  gDoryARMVirtTokenSpaceGuid.PcdVariableBridgeSize|0x04000000|UINT64|0x00000002

@@ -10,7 +10,7 @@
 #include <Library/MemoryAllocationLib.h>
 #include <Library/PcdLib.h>
 
-#define DORY_MEMORY_MAP_ENTRIES  5
+#define DORY_MEMORY_MAP_ENTRIES  6
 #define DORY_PERIPHERAL_BASE     0x08000000
 #define DORY_PERIPHERAL_SIZE     0x18000000
 
@@ -87,15 +87,20 @@ ArmVirtGetMemoryMap (
   Map[0].Length       = *(UINT64 *)GET_GUID_HOB_DATA (MemorySizeHob);
   Map[0].Attributes   = ARM_MEMORY_REGION_ATTRIBUTE_WRITE_BACK;
 
-  Map[1].PhysicalBase = DORY_PERIPHERAL_BASE;
-  Map[1].VirtualBase  = DORY_PERIPHERAL_BASE;
-  Map[1].Length       = DORY_PERIPHERAL_SIZE;
+  Map[1].PhysicalBase = FixedPcdGet64 (PcdVariableBridgeBase);
+  Map[1].VirtualBase  = Map[1].PhysicalBase;
+  Map[1].Length       = FixedPcdGet64 (PcdVariableBridgeSize);
   Map[1].Attributes   = ARM_MEMORY_REGION_ATTRIBUTE_DEVICE;
 
-  Map[2].PhysicalBase = FixedPcdGet64 (PcdFvBaseAddress);
-  Map[2].VirtualBase  = Map[2].PhysicalBase;
-  Map[2].Length       = FixedPcdGet32 (PcdFvSize);
-  Map[2].Attributes   = ARM_MEMORY_REGION_ATTRIBUTE_WRITE_BACK_RO;
+  Map[2].PhysicalBase = DORY_PERIPHERAL_BASE;
+  Map[2].VirtualBase  = DORY_PERIPHERAL_BASE;
+  Map[2].Length       = DORY_PERIPHERAL_SIZE;
+  Map[2].Attributes   = ARM_MEMORY_REGION_ATTRIBUTE_DEVICE;
+
+  Map[3].PhysicalBase = FixedPcdGet64 (PcdFvBaseAddress);
+  Map[3].VirtualBase  = Map[3].PhysicalBase;
+  Map[3].Length       = FixedPcdGet32 (PcdFvSize);
+  Map[3].Attributes   = ARM_MEMORY_REGION_ATTRIBUTE_WRITE_BACK_RO;
 
   *VirtualMemoryMap = Map;
 }

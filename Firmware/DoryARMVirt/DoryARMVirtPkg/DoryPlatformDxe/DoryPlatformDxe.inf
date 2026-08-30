@@ -20,7 +20,6 @@
   UefiDriverEntryPoint
 
 [Guids]
-  gEdkiiNvVarStoreFormattedGuid
   gEdkiiPlatformHasDeviceTreeGuid
 
 [Depex]

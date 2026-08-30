@@ -33,6 +33,8 @@
   gArmVirtSystemMemorySizeGuid
 
 [FixedPcd]
+  gDoryARMVirtTokenSpaceGuid.PcdVariableBridgeBase
+  gDoryARMVirtTokenSpaceGuid.PcdVariableBridgeSize
   gArmTokenSpaceGuid.PcdFdBaseAddress
   gArmTokenSpaceGuid.PcdFvBaseAddress
   gArmTokenSpaceGuid.PcdSystemMemoryBase
