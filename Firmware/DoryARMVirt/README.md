@@ -153,3 +153,12 @@ bytes with SHA-256
 the digest must match Debian's signed `SHA256SUMS` before the private local file
 is passed to the runner. Run this gate with
 `--expect "Select a language"` and an 8 GiB system disk.
+
+`debian-13.6-install.json` extends that cell through the stock text installer,
+DHCP and Debian mirror access, Debian's own small-disk partitioning recipe,
+base-system and current-kernel installation, GRUB EFI installation, explicit
+installer detach, firmware reset, and a disk-only serial login. Run it with
+`--expect DORY_DEBIAN_INSTALLED_READY`, the pinned gvproxy artifact, 4 GiB of
+RAM, an 8 GiB system disk, and a 600-second per-boot timeout. The qualifying
+receipt must report two boot attempts, one media transition, installer media
+absent for the final boot, and all 27 interaction steps complete.

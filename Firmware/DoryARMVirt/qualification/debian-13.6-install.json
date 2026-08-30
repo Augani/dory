@@ -1,0 +1,114 @@
+{
+  "schemaVersion": 1,
+  "steps": [
+    {
+      "waitFor": "*Install",
+      "send": "\n"
+    },
+    {
+      "waitFor": "Select a language",
+      "send": "\r"
+    },
+    {
+      "waitFor": "Select your location",
+      "send": "\r"
+    },
+    {
+      "waitFor": "Configure the keyboard",
+      "send": "\r"
+    },
+    {
+      "waitFor": "Please enter the hostname",
+      "send": "\u0015dory-debian\r"
+    },
+    {
+      "waitFor": "Domain name:",
+      "send": "\u0015dory.invalid\r"
+    },
+    {
+      "waitFor": "To allow direct password-based access",
+      "send": "doryqualify\r"
+    },
+    {
+      "waitFor": "Re-enter password to verify",
+      "send": "doryqualify\r"
+    },
+    {
+      "waitFor": "Full name for the new user:",
+      "send": "Dory Qualification\r"
+    },
+    {
+      "waitFor": "Username for your account",
+      "send": "\u0015dory\r"
+    },
+    {
+      "waitFor": "Choose a password for the new user",
+      "send": "doryqualify\r"
+    },
+    {
+      "waitFor": "Re-enter password to verify",
+      "send": "doryqualify\r"
+    },
+    {
+      "waitFor": "Select your time zone:",
+      "send": "\r"
+    },
+    {
+      "waitFor": "Partitioning method:",
+      "send": "\r"
+    },
+    {
+      "waitFor": "Select disk to partition:",
+      "send": "\r"
+    },
+    {
+      "waitFor": "Partitioning scheme:",
+      "send": "\u001b[B\u001b[B\r"
+    },
+    {
+      "waitFor": "Finish partitioning and write changes to disk",
+      "send": "\r"
+    },
+    {
+      "waitFor": "Write the changes to disks?",
+      "send": "\t\r"
+    },
+    {
+      "waitFor": "Debian archive mirror country:",
+      "send": "\r"
+    },
+    {
+      "waitFor": "Debian archive mirror:",
+      "send": "\r"
+    },
+    {
+      "waitFor": "HTTP proxy information",
+      "send": "\r"
+    },
+    {
+      "waitFor": "Participate in the package usage survey?",
+      "send": "\r"
+    },
+    {
+      "waitFor": "Choose software to install:",
+      "send": "\r"
+    },
+    {
+      "waitFor": "Installation is complete, so it is time to boot",
+      "send": "\r",
+      "installerMediaAfterSend": "detached"
+    },
+    {
+      "waitFor": "dory-debian login:",
+      "send": "root\r"
+    },
+    {
+      "waitFor": "Password:",
+      "send": "doryqualify\r"
+    },
+    {
+      "waitFor": "root@dory-debian:~#",
+      "send": "test \"$(uname -m)\" = aarch64 && test -d /sys/firmware/efi && test -b /dev/vda && ip link show eth0 >/dev/null && printf 'DORY_%s\\n' DEBIAN_INSTALLED_READY\r"
+    }
+  ]
+}
