@@ -20,6 +20,7 @@
 		D0B100000000000000000007 /* AppKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D0B200000000000000000002 /* AppKit.framework */; };
 		D0B100000000000000000008 /* AVFAudio.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D0B200000000000000000003 /* AVFAudio.framework */; };
 		D0B100000000000000000009 /* AVFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D0B200000000000000000004 /* AVFoundation.framework */; };
+		D0B10000000000000000000A /* DoryHostCamera in Frameworks */ = {isa = PBXBuildFile; productRef = D0B700000000000000000007 /* DoryHostCamera */; };
 		D0B10000000000000000000B /* DoryHVRunner.app in Embed Linux VM Runner */ = {isa = PBXBuildFile; fileRef = D0B200000000000000000001 /* DoryHVRunner.app */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		D0C100000000000000000001 /* DoryFSWorker.xpc in Embed Filesystem Worker */ = {isa = PBXBuildFile; fileRef = D0C200000000000000000001 /* DoryFSWorker.xpc */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		D0C100000000000000000002 /* DoryFSWorkerContracts in Frameworks */ = {isa = PBXBuildFile; productRef = D0C700000000000000000001 /* DoryFSWorkerContracts */; };
@@ -233,6 +234,7 @@
 				D0B100000000000000000007 /* AppKit.framework in Frameworks */,
 				D0B100000000000000000008 /* AVFAudio.framework in Frameworks */,
 				D0B100000000000000000009 /* AVFoundation.framework in Frameworks */,
+				D0B10000000000000000000A /* DoryHostCamera in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -384,6 +386,7 @@
 				D0B700000000000000000004 /* DoryOperations */,
 				D0B700000000000000000005 /* DoryVMContracts */,
 				D0B700000000000000000006 /* DoryVMMKit */,
+				D0B700000000000000000007 /* DoryHostCamera */,
 			);
 			productName = DoryHVRunner;
 			productReference = D0B200000000000000000001 /* DoryHVRunner.app */;
@@ -1400,6 +1403,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = AA00000000000000000000D1 /* XCLocalSwiftPackageReference "dory-core-swift" */;
 			productName = DoryVMMKit;
+		};
+		D0B700000000000000000007 /* DoryHostCamera */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA00000000000000000000D1 /* XCLocalSwiftPackageReference "dory-core-swift" */;
+			productName = DoryHostCamera;
 		};
 		D0C700000000000000000001 /* DoryFSWorkerContracts */ = {
 			isa = XCSwiftPackageProductDependency;
