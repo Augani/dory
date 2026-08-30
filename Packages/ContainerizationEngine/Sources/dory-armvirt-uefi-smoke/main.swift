@@ -57,6 +57,11 @@ import Foundation
     let completedConsoleScriptStepCount: Int?
     let installerMediaTransitionCount: Int
     let installerMediaAttachedForFinalBoot: Bool
+    let coldSnapshotActionCount: Int
+    let completedColdSnapshotActionCount: Int
+    let coldSnapshotABIIdentity: String?
+    let coldSnapshotSystemDiskSHA256: String?
+    let coldSnapshotVariableStoreGeneration: UInt64?
     let gvproxySHA256: String?
     let consoleByteCount: Int
     let bootAttempts: Int
@@ -451,6 +456,7 @@ import Foundation
         == appliedInstallerMediaTransitionCount
         && capture.matched(afterByteOffset: consoleStartOffset)
         && consoleScript?.driver.isComplete != false
+        && consoleScript?.driver.pendingHostAction == nil
       if matchedConsole {
         return BootResult(
           reason: try runner.stopAndWait(GuestStopReason.powerOff),
@@ -464,6 +470,7 @@ import Foundation
             == appliedInstallerMediaTransitionCount
             && capture.matched(afterByteOffset: consoleStartOffset)
             && consoleScript?.driver.isComplete != false
+            && consoleScript?.driver.pendingHostAction == nil
         )
       }
     }
@@ -473,6 +480,7 @@ import Foundation
         == appliedInstallerMediaTransitionCount
         && capture.matched(afterByteOffset: consoleStartOffset)
         && consoleScript?.driver.isComplete != false
+        && consoleScript?.driver.pendingHostAction == nil
     )
   }
 
@@ -504,11 +512,11 @@ import Foundation
     )
     defer { try? FileManager.default.removeItem(at: temporaryRoot) }
 
-    let variableStore = try DoryUEFIVariableStoreFile(
+    var variableStore = try DoryUEFIVariableStoreFile(
       directory: temporaryRoot.appendingPathComponent("variables", isDirectory: true).path
     )
     try variableStore.initialize(template)
-    let systemDiskPath = temporaryRoot.appendingPathComponent("system.raw").path
+    var systemDiskPath = temporaryRoot.appendingPathComponent("system.raw").path
     try createSystemDisk(at: systemDiskPath, byteCount: options.systemDiskBytes)
     let systemDevice = try DoryARMVirtUEFIBootDevice(
       logicalID: "system",
@@ -530,6 +538,7 @@ import Foundation
     var finalResult: BootResult?
     var bootAttempts = 0
     var installerMediaAttachedForFinalBoot = installerMedia != nil
+    var coldSnapshotManifest: DoryARMVirtColdSnapshotManifest?
     while bootAttempts < maximumBootAttempts {
       bootAttempts += 1
       let attachedInstaller =
@@ -556,6 +565,42 @@ import Foundation
         finalResult = result
         break
       }
+      if let hostAction = consoleScript?.driver.pendingHostAction {
+        guard case .powerOff = result.reason else {
+          fail("console host action \(hostAction.rawValue) requires a guest power-off boundary")
+        }
+        switch hostAction {
+        case .captureColdSnapshot:
+          coldSnapshotManifest = try DoryARMVirtColdSnapshotStore.capture(
+            firmware: artifacts.manifest,
+            systemDiskPath: systemDiskPath,
+            variableStore: variableStore,
+            destinationDirectory: temporaryRoot.appendingPathComponent(
+              "cold-snapshot",
+              isDirectory: true
+            ).path
+          )
+        case .restoreColdSnapshot:
+          guard coldSnapshotManifest != nil else {
+            fail("cold snapshot restore requires an earlier captured snapshot")
+          }
+          let restore = try DoryARMVirtColdSnapshotStore.restore(
+            bundleDirectory: temporaryRoot.appendingPathComponent(
+              "cold-snapshot",
+              isDirectory: true
+            ).path,
+            expectedFirmware: artifacts.manifest,
+            destinationDirectory: temporaryRoot.appendingPathComponent(
+              "cold-restore",
+              isDirectory: true
+            ).path
+          )
+          systemDiskPath = restore.systemDiskPath
+          variableStore = restore.variableStore
+        }
+        try consoleScript?.driver.completeHostAction(hostAction)
+        continue
+      }
       guard case .reset = result.reason else {
         fail(
           "console did not emit \(String(reflecting: options.expectedConsoleText)); boot stopped with \(describe(result.reason))"
@@ -569,7 +614,7 @@ import Foundation
     }
     let generation = try variableStore.load().snapshot.generation
     let receipt = Receipt(
-      schemaVersion: 3,
+      schemaVersion: 4,
       machineABIIdentity: DoryARMVirtV1ABI.identity,
       firmwareABIIdentity: DoryARMVirtV1ABI.firmwareABIIdentity,
       buildIdentifier: artifacts.manifest.buildIdentifier,
@@ -584,6 +629,11 @@ import Foundation
       completedConsoleScriptStepCount: consoleScript?.driver.completedStepCount,
       installerMediaTransitionCount: consoleScript?.driver.installerMediaTransitionCount ?? 0,
       installerMediaAttachedForFinalBoot: installerMediaAttachedForFinalBoot,
+      coldSnapshotActionCount: consoleScript?.driver.hostActionCount ?? 0,
+      completedColdSnapshotActionCount: consoleScript?.driver.completedHostActionCount ?? 0,
+      coldSnapshotABIIdentity: coldSnapshotManifest?.snapshotABIIdentity,
+      coldSnapshotSystemDiskSHA256: coldSnapshotManifest?.systemDiskSHA256,
+      coldSnapshotVariableStoreGeneration: coldSnapshotManifest?.variableStoreGeneration,
       gvproxySHA256: gvproxy?.sha256,
       consoleByteCount: capture.byteCount,
       bootAttempts: bootAttempts,

@@ -103,9 +103,10 @@ chmod 600 /absolute/path/to/alpine-standard-aarch64.iso
 
 The runner accepts only an owned, private console document with bounded steps,
 wait markers, and inputs. It refuses a success marker present in guest input so
-terminal echo cannot forge qualification. Receipt schema 3 binds memory and
+terminal echo cannot forge qualification. Receipt schema 4 binds memory and
 disk sizes, completed step count, console-document SHA-256, applied installer
-media transitions, final-boot media state, and the admitted gvproxy SHA-256.
+media transitions, final-boot media state, cold-snapshot actions and authority,
+and the admitted gvproxy SHA-256.
 The documented install qualification
 succeeds only after a guest reset and a second UEFI boot with the installer
 absent.
@@ -125,3 +126,12 @@ verifies the sentinel. Run it with
 `--expect DORY_RECOVERY_READY`; its receipt must report three boot attempts,
 two applied media transitions, installer media attached for the final boot,
 and all ten steps complete.
+
+`alpine-3.24-cold-snapshot.json` exercises the mandatory stopped-VM snapshot
+baseline. After installation it writes a base sentinel and powers off, captures
+the disk plus canonical NVRAM generation, boots and replaces that sentinel with
+post-snapshot state, powers off again, restores into fresh storage authority,
+and performs a fourth UEFI boot. Run it with
+`--expect DORY_COLD_SNAPSHOT_RESTORED`; success requires all nine interaction
+steps, both host actions, the pre-snapshot sentinel present, and the
+post-snapshot sentinel absent.

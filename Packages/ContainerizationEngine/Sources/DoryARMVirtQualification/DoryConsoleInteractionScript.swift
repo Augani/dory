@@ -5,25 +5,34 @@ public enum DoryInstallerMediaState: String, Codable, Equatable, Sendable {
   case detached
 }
 
+public enum DoryConsoleAfterGuestStopAction: String, Codable, Equatable, Sendable {
+  case captureColdSnapshot = "capture-cold-snapshot"
+  case restoreColdSnapshot = "restore-cold-snapshot"
+}
+
 public struct DoryConsoleInteractionStep: Codable, Equatable, Sendable {
   public let waitFor: String
   public let send: String
   public let installerMediaAfterSend: DoryInstallerMediaState?
+  public let afterGuestStop: DoryConsoleAfterGuestStopAction?
 
   public init(
     waitFor: String,
     send: String,
-    installerMediaAfterSend: DoryInstallerMediaState? = nil
+    installerMediaAfterSend: DoryInstallerMediaState? = nil,
+    afterGuestStop: DoryConsoleAfterGuestStopAction? = nil
   ) {
     self.waitFor = waitFor
     self.send = send
     self.installerMediaAfterSend = installerMediaAfterSend
+    self.afterGuestStop = afterGuestStop
   }
 
   private enum CodingKeys: String, CodingKey {
     case waitFor
     case send
     case installerMediaAfterSend
+    case afterGuestStop
   }
 
   public init(from decoder: any Decoder) throws {
@@ -33,6 +42,10 @@ public struct DoryConsoleInteractionStep: Codable, Equatable, Sendable {
     installerMediaAfterSend = try container.decodeIfPresent(
       DoryInstallerMediaState.self,
       forKey: .installerMediaAfterSend
+    )
+    afterGuestStop = try container.decodeIfPresent(
+      DoryConsoleAfterGuestStopAction.self,
+      forKey: .afterGuestStop
     )
   }
 }
@@ -54,6 +67,9 @@ public enum DoryConsoleInteractionScriptError: Error, Equatable, Sendable {
   case invalidInput(step: Int)
   case inputBudgetExceeded
   case redundantInstallerMediaTransition(step: Int, state: DoryInstallerMediaState)
+  case invalidColdSnapshotActionSequence(step: Int, action: DoryConsoleAfterGuestStopAction)
+  case hostActionNotPending
+  case hostActionMismatch
 }
 
 public final class DoryConsoleInteractionDriver {
@@ -69,6 +85,9 @@ public final class DoryConsoleInteractionDriver {
   public let containsInstallerMediaTransition: Bool
   public private(set) var installerMediaState = DoryInstallerMediaState.attached
   public private(set) var installerMediaTransitionCount = 0
+  public let hostActionCount: Int
+  public private(set) var completedHostActionCount = 0
+  public private(set) var pendingHostAction: DoryConsoleAfterGuestStopAction?
 
   public init(script: DoryConsoleInteractionScript) throws {
     guard script.schemaVersion == 1 else {
@@ -81,6 +100,7 @@ public final class DoryConsoleInteractionDriver {
     var totalInputBytes = 0
     var configuredInstallerMediaState = DoryInstallerMediaState.attached
     var containsInstallerMediaTransition = false
+    var configuredHostActions: [DoryConsoleAfterGuestStopAction] = []
     for (index, step) in script.steps.enumerated() {
       guard !step.waitFor.isEmpty,
         step.waitFor.utf8.count <= Self.maximumWaitMarkerBytes
@@ -106,9 +126,22 @@ public final class DoryConsoleInteractionDriver {
         configuredInstallerMediaState = requestedState
         containsInstallerMediaTransition = true
       }
+      if let action = step.afterGuestStop {
+        configuredHostActions.append(action)
+        let expected: [DoryConsoleAfterGuestStopAction] =
+          configuredHostActions.count == 1
+          ? [.captureColdSnapshot] : [.captureColdSnapshot, .restoreColdSnapshot]
+        guard configuredHostActions == expected else {
+          throw DoryConsoleInteractionScriptError.invalidColdSnapshotActionSequence(
+            step: index,
+            action: action
+          )
+        }
+      }
     }
     steps = script.steps
     self.containsInstallerMediaTransition = containsInstallerMediaTransition
+    hostActionCount = configuredHostActions.count
   }
 
   public var completedStepCount: Int { nextStepIndex }
@@ -120,7 +153,7 @@ public final class DoryConsoleInteractionDriver {
   }
 
   public func nextInput(consoleBytes: [UInt8]) -> [UInt8]? {
-    guard nextStepIndex < steps.count else { return nil }
+    guard pendingHostAction == nil, nextStepIndex < steps.count else { return nil }
     let step = steps[nextStepIndex]
     let marker = Array(step.waitFor.utf8)
     guard consoleBytes.count >= marker.count else { return nil }
@@ -135,10 +168,22 @@ public final class DoryConsoleInteractionDriver {
           installerMediaState = installerMediaAfterSend
           installerMediaTransitionCount += 1
         }
+        pendingHostAction = step.afterGuestStop
         return Array(step.send.utf8)
       }
     }
     searchOffset = max(searchOffset, lastStart + 1)
     return nil
+  }
+
+  public func completeHostAction(_ action: DoryConsoleAfterGuestStopAction) throws {
+    guard let pendingHostAction else {
+      throw DoryConsoleInteractionScriptError.hostActionNotPending
+    }
+    guard pendingHostAction == action else {
+      throw DoryConsoleInteractionScriptError.hostActionMismatch
+    }
+    self.pendingHostAction = nil
+    completedHostActionCount += 1
   }
 }

@@ -122,4 +122,50 @@ import Testing
     #expect(driver.installerMediaState == .attached)
     #expect(driver.installerMediaTransitionCount == 2)
   }
+
+  @Test func hostActionsBlockFurtherInputUntilAcknowledged() throws {
+    let driver = try DoryConsoleInteractionDriver(
+      script: DoryConsoleInteractionScript(steps: [
+        DoryConsoleInteractionStep(
+          waitFor: "snapshot-now",
+          send: "poweroff\n",
+          afterGuestStop: .captureColdSnapshot
+        ),
+        DoryConsoleInteractionStep(
+          waitFor: "restore-now",
+          send: "poweroff\n",
+          afterGuestStop: .restoreColdSnapshot
+        ),
+      ]))
+    let console = Array("snapshot-now restore-now".utf8)
+
+    #expect(driver.hostActionCount == 2)
+    #expect(driver.nextInput(consoleBytes: console) == Array("poweroff\n".utf8))
+    #expect(driver.pendingHostAction == .captureColdSnapshot)
+    #expect(driver.nextInput(consoleBytes: console) == nil)
+    try driver.completeHostAction(.captureColdSnapshot)
+    #expect(driver.nextInput(consoleBytes: console) == Array("poweroff\n".utf8))
+    #expect(driver.pendingHostAction == .restoreColdSnapshot)
+    try driver.completeHostAction(.restoreColdSnapshot)
+    #expect(driver.completedHostActionCount == 2)
+    #expect(driver.isComplete)
+  }
+
+  @Test func rejectsRestoreWithoutEarlierCapture() {
+    #expect(
+      throws: DoryConsoleInteractionScriptError.invalidColdSnapshotActionSequence(
+        step: 0,
+        action: .restoreColdSnapshot
+      )
+    ) {
+      try DoryConsoleInteractionDriver(
+        script: DoryConsoleInteractionScript(steps: [
+          DoryConsoleInteractionStep(
+            waitFor: "stop",
+            send: "poweroff\n",
+            afterGuestStop: .restoreColdSnapshot
+          )
+        ]))
+    }
+  }
 }
