@@ -798,6 +798,19 @@ public struct DoryX86Decoder: Sendable {
           source: vectorOperand(operands.rm),
           requiresAlignment: alignedVector
         )
+      case 0x70:
+        guard prefixes.operandSizeOverride, prefixes.repeatPrefix == nil else {
+          throw DoryX86DecodeError.invalidEncoding(
+            address: address, detail: "PSHUFD requires 66 prefix")
+        }
+        let operands = try decodeModRM(
+          cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
+        operation = .vectorShuffle(
+          format: .packedDoublewords,
+          destination: vectorRegister(operands.reg),
+          source: vectorOperand(operands.rm),
+          control: try cursor.readByte()
+        )
       case 0x7F:
         let alignedVector = prefixes.operandSizeOverride && prefixes.repeatPrefix == nil
         let unalignedVector = prefixes.repeatPrefix == 0xF3 && !prefixes.operandSizeOverride
@@ -842,6 +855,19 @@ public struct DoryX86Decoder: Sendable {
           cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
         operation = .moveVectorToInteger(
           destination: operands.rm, source: vectorRegister(operands.reg))
+      case 0xC6:
+        guard prefixes.repeatPrefix == nil else {
+          throw DoryX86DecodeError.invalidEncoding(
+            address: address, detail: "packed floating shuffle rejects repeat prefixes")
+        }
+        let operands = try decodeModRM(
+          cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
+        operation = .vectorShuffle(
+          format: prefixes.operandSizeOverride ? .packedDouble : .packedSingle,
+          destination: vectorRegister(operands.reg),
+          source: vectorOperand(operands.rm),
+          control: try cursor.readByte()
+        )
       case 0xA3, 0xAB, 0xB3, 0xBB:
         let operands = try decodeModRM(
           cursor: &cursor, width: width, prefixes: prefixes, mode: mode)

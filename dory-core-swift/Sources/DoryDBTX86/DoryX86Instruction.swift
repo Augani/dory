@@ -155,6 +155,10 @@ public enum DoryX86VectorLaneWidth: UInt8, Codable, Sendable, Hashable {
   case quadword = 8
 }
 
+public enum DoryX86VectorShuffleFormat: String, Codable, Sendable, Hashable {
+  case packedSingle, packedDouble, packedDoublewords
+}
+
 public enum DoryX86StringOperation: String, Codable, Sendable, Hashable {
   case move, compare, store, load, scan, input, output
 }
@@ -268,6 +272,12 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
     laneWidth: DoryX86VectorLaneWidth,
     destination: UInt8,
     source: DoryX86VectorOperand
+  )
+  case vectorShuffle(
+    format: DoryX86VectorShuffleFormat,
+    destination: UInt8,
+    source: DoryX86VectorOperand,
+    control: UInt8
   )
   case processorPause
   case string(DoryX86StringOperation, width: DoryX86OperandWidth)

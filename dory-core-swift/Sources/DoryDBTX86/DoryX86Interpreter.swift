@@ -775,6 +775,22 @@ public struct DoryX86Interpreter: Sendable {
         registerBytes.replaceSubrange(0..<16, with: result)
         state.floatingPoint.ymm[Int(destination)] = try .init(
           bytes: registerBytes, expectedByteCount: 32)
+      case .vectorShuffle(let format, let destination, let source, let control):
+        let rhs = try readVectorBytes(
+          source,
+          byteCount: 16,
+          instruction: instruction,
+          state: state,
+          memory: executionMemory
+        )
+        var registerBytes = state.floatingPoint.ymm[Int(destination)].bytes
+        let lhs = Array(registerBytes.prefix(16))
+        registerBytes.replaceSubrange(
+          0..<16,
+          with: shuffleVector(format: format, lhs: lhs, rhs: rhs, control: control)
+        )
+        state.floatingPoint.ymm[Int(destination)] = try .init(
+          bytes: registerBytes, expectedByteCount: 32)
       case .processorPause:
         break
       case .string(let operation, let width):
@@ -1627,6 +1643,32 @@ public struct DoryX86Interpreter: Sendable {
     if lhs < rhs { return .less }
     if lhs > rhs { return .greater }
     return .equal
+  }
+
+  private func shuffleVector(
+    format: DoryX86VectorShuffleFormat,
+    lhs: [UInt8],
+    rhs: [UInt8],
+    control: UInt8
+  ) -> [UInt8] {
+    switch format {
+    case .packedDoublewords:
+      return (0..<4).flatMap { lane -> [UInt8] in
+        let sourceLane = Int(control >> UInt8(lane * 2) & 3)
+        return Array(rhs[sourceLane * 4..<sourceLane * 4 + 4])
+      }
+    case .packedSingle:
+      return (0..<4).flatMap { lane -> [UInt8] in
+        let sourceLane = Int(control >> UInt8(lane * 2) & 3)
+        let bytes = lane < 2 ? lhs : rhs
+        return Array(bytes[sourceLane * 4..<sourceLane * 4 + 4])
+      }
+    case .packedDouble:
+      let lhsLane = Int(control & 1)
+      let rhsLane = Int(control >> 1 & 1)
+      return Array(lhs[lhsLane * 8..<lhsLane * 8 + 8])
+        + Array(rhs[rhsLane * 8..<rhsLane * 8 + 8])
+    }
   }
 
   private func currentPrivilegeLevel(_ state: DoryX86ArchitecturalState) -> UInt8 {

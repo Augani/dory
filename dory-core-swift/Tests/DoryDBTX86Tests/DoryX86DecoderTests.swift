@@ -600,5 +600,10 @@ import Testing
         == .vectorIntegerInterleave(
           high: true, laneWidth: .quadword, destination: 0, source: .register(1))
     )
+    #expect(
+      try decoder.decode([0x66, 0x0F, 0x70, 0xC1, 0x1B], at: 0x1000, mode: .long64).operation
+        == .vectorShuffle(
+          format: .packedDoublewords, destination: 0, source: .register(1), control: 0x1B)
+    )
   }
 }

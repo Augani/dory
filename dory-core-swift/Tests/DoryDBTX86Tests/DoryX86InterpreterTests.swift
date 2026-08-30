@@ -683,6 +683,36 @@ import Testing
       Array(state.floatingPoint.ymm[0].bytes[0..<16]) == Array(8..<16) + Array(0x48..<0x50))
   }
 
+  @Test func sseShufflesSelectArchitecturalSourceLanes() throws {
+    let memory = DoryX86ByteArrayMemory(
+      baseAddress: 0x1000,
+      bytes: [
+        0x66, 0x0F, 0x70, 0xC1, 0x1B,
+        0x0F, 0xC6, 0xC1, 0x4E,
+        0x66, 0x0F, 0xC6, 0xC1, 0x01,
+      ] + .init(repeating: 0, count: 16)
+    )
+    var floatingPoint = try DoryX86FloatingPointState()
+    floatingPoint.ymm[0] = try .init(bytes: Array(0..<32), expectedByteCount: 32)
+    floatingPoint.ymm[1] = try .init(bytes: Array(0x40..<0x60), expectedByteCount: 32)
+    var state = try DoryX86ArchitecturalState(rip: 0x1000, floatingPoint: floatingPoint)
+
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    #expect(
+      Array(state.floatingPoint.ymm[0].bytes[0..<16])
+        == Array(0x4C..<0x50) + Array(0x48..<0x4C) + Array(0x44..<0x48) + Array(0x40..<0x44))
+
+    state.floatingPoint.ymm[0] = try .init(bytes: Array(0..<32), expectedByteCount: 32)
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    #expect(Array(state.floatingPoint.ymm[0].bytes[0..<8]) == Array(8..<16))
+    #expect(Array(state.floatingPoint.ymm[0].bytes[8..<16]) == Array(0x40..<0x48))
+
+    state.floatingPoint.ymm[0] = try .init(bytes: Array(0..<32), expectedByteCount: 32)
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    #expect(Array(state.floatingPoint.ymm[0].bytes[0..<8]) == Array(8..<16))
+    #expect(Array(state.floatingPoint.ymm[0].bytes[8..<16]) == Array(0x40..<0x48))
+  }
+
   @Test func byteExtendMoveUsesTheWideModRMDestinationRegister() throws {
     var bytes = [UInt8](repeating: 0, count: 0x20)
     bytes.replaceSubrange(0..<4, with: [0x0F, 0xB6, 0x71, 0x02])
