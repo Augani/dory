@@ -98,6 +98,47 @@ import Testing
     #endif
   }
 
+  @Test func executorPerformsNativeMemoryALUAndReadModifyWrite() throws {
+    #if arch(arm64)
+      let memory = DoryX86ByteArrayMemory(byteCount: 0x100)
+      try memory.write(at: 0x80, bytes: [5, 0, 0, 0, 0, 0, 0, 0])
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
+      var state = try DoryX86ArchitecturalState(
+        registers: .init(rax: 0x80, rbx: 3), rip: 0x4000)
+
+      let source = try #require(
+        executor.execute(
+          bytes: [0x48, 0x03, 0x18],
+          at: state.rip,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 1,
+          state: &state,
+          memory: memory
+        )
+      )
+      #expect(source.exitCode == .dispatch)
+      #expect(state.registers.rbx == 8)
+
+      state.rip = 0x5000
+      state.registers.rbx = 3
+      let destination = try #require(
+        executor.execute(
+          bytes: [0x48, 0x01, 0x18],
+          at: state.rip,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 1,
+          state: &state,
+          memory: memory
+        )
+      )
+      #expect(destination.exitCode == .dispatch)
+      #expect(try memory.read(at: 0x80, byteCount: 8) == [8, 0, 0, 0, 0, 0, 0, 0])
+      #expect(!state.rflags.contains(.zero))
+    #endif
+  }
+
   @Test func boundedCacheEvictsAndInvalidatesDeterministically() throws {
     let emitter = DoryARM64BaselineEmitter()
     let translator = DoryX86IRTranslator()

@@ -182,10 +182,19 @@ public struct DoryARM64BaselineEmitter: Sendable {
   }
 
   private func requiresMemoryCallbacks(_ statement: DoryIRStatement) -> Bool {
-    guard case .copy(let destination, let source) = statement else { return false }
-    if case .memory = destination { return true }
-    if case .memory = source { return true }
-    return false
+    switch statement {
+    case .copy(let destination, let source),
+      .binary(_, let destination, let source, _):
+      if case .memory = destination { return true }
+      if case .memory = source { return true }
+      return false
+    case .unary(let operation, let operand):
+      _ = operation
+      if case .memory = operand { return true }
+      return false
+    case .effectiveAddress, .helper:
+      return false
+    }
   }
 
   private func emitMemoryPrologue(into words: inout [UInt32]) {
@@ -244,16 +253,26 @@ public struct DoryARM64BaselineEmitter: Sendable {
     writesDestination: Bool,
     into words: inout [UInt32]
   ) -> Bool {
-    guard
-      case .register(let target) = destination,
-      target.bank == "x86.gpr",
-      target.index < 16,
-      target.width == .i32 || target.width == .i64,
-      load(target, into: 9, words: &words),
-      load(source, matching: target.width, into: 10, words: &words)
-    else { return false }
+    let width: DoryIRIntegerWidth
+    let registerTarget: DoryIRRegister?
+    switch destination {
+    case .register(let target)
+    where target.bank == "x86.gpr" && target.index < 16
+      && (target.width == .i32 || target.width == .i64):
+      width = target.width
+      registerTarget = target
+    case .memory(let address, let memoryWidth) where memoryWidth == .i32 || memoryWidth == .i64:
+      guard emitMemoryAddress(address, into: 12, words: &words) else { return false }
+      emitMemoryRead(addressRegister: 12, width: memoryWidth, resultRegister: 9, words: &words)
+      width = memoryWidth
+      registerTarget = nil
+    default:
+      return false
+    }
+    guard load(source, matching: width, into: 10, words: &words) else { return false }
+    if let registerTarget, !load(registerTarget, into: 9, words: &words) { return false }
 
-    let is64Bit = target.width == .i64
+    let is64Bit = width == .i64
     let arithmetic: Bool
     switch operation {
     case .add:
@@ -283,11 +302,6 @@ public struct DoryARM64BaselineEmitter: Sendable {
       arithmetic = false
     }
 
-    if writesDestination {
-      words.append(
-        encodeStore64(register: 11, base: 0, byteOffset: Int(target.index) * 8)
-      )
-    }
     emitX86ArithmeticFlags(
       subtraction: operation == .subtract || operation == .subtractWithBorrow
         || operation == .compare,
@@ -295,6 +309,19 @@ public struct DoryARM64BaselineEmitter: Sendable {
       resultRegister: 11,
       into: &words
     )
+    if writesDestination {
+      switch destination {
+      case .register(let target):
+        words.append(
+          encodeStore64(register: 11, base: 0, byteOffset: Int(target.index) * 8)
+        )
+      case .memory(let address, _):
+        guard emitMemoryAddress(address, into: 12, words: &words) else { return false }
+        emitMemoryWrite(addressRegister: 12, valueRegister: 11, width: width, words: &words)
+      default:
+        return false
+      }
+    }
     return true
   }
 
@@ -460,6 +487,15 @@ public struct DoryARM64BaselineEmitter: Sendable {
     case .immediate(let value, let immediateWidth) where immediateWidth == width:
       emitImmediate(
         width == .i32 ? value & 0xFFFF_FFFF : value, register: hostRegister, into: &words)
+      return true
+    case .memory(let address, let memoryWidth) where memoryWidth == width:
+      guard emitMemoryAddress(address, into: 12, words: &words) else { return false }
+      emitMemoryRead(
+        addressRegister: 12,
+        width: memoryWidth,
+        resultRegister: hostRegister,
+        words: &words
+      )
       return true
     default:
       return false
