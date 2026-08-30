@@ -29,6 +29,7 @@ let package = Package(
     .library(name: "DoryNativeHVArm64", targets: ["DoryNativeHVArm64"]),
     .library(name: "DoryPhase0AQualification", targets: ["DoryPhase0AQualification"]),
     .library(name: "DoryHostCamera", targets: ["DoryHostCamera"]),
+    .library(name: "DoryHostDeviceBroker", targets: ["DoryHostDeviceBroker"]),
     .library(name: "DoryVZMacCompatibility", targets: ["DoryVZMacCompatibility"]),
     .library(name: "DoryVMContracts", targets: ["DoryVMContracts"]),
     .library(
@@ -148,6 +149,10 @@ let package = Package(
         .linkedFramework("CoreImage"),
         .linkedFramework("ImageIO"),
       ]
+    ),
+    .target(
+      name: "DoryHostDeviceBroker",
+      dependencies: ["DoryMachinePC", "DoryVMContracts"]
     ),
     .target(
       name: "DoryVZMacCameraBridge",
@@ -417,6 +422,10 @@ let package = Package(
     .testTarget(
       name: "DoryHostCameraTests",
       dependencies: ["DoryHostCamera"]
+    ),
+    .testTarget(
+      name: "DoryHostDeviceBrokerTests",
+      dependencies: ["DoryHostDeviceBroker", "DoryMachinePC", "DoryVMContracts"]
     ),
     .testTarget(
       name: "DoryMacGuestCameraTests",
