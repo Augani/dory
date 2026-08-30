@@ -64,10 +64,11 @@ public struct DoryARMVirtUEFIBootDevice: Codable, Sendable, Hashable, Comparable
 
   private static func isSafeLogicalID(_ value: String) -> Bool {
     let bytes = Array(value.utf8)
-    return (1...128).contains(bytes.count) && bytes.allSatisfy {
-      (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0)
-        || $0 == 45 || $0 == 46 || $0 == 58 || $0 == 95
-    }
+    return (1...128).contains(bytes.count)
+      && bytes.allSatisfy {
+        (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0)
+          || $0 == 45 || $0 == 46 || $0 == 58 || $0 == 95
+      }
   }
 }
 
@@ -99,7 +100,9 @@ public struct DoryARMVirtUEFILaunchPlan: Codable, Sendable, Hashable {
       variableStoreGeneration: variableStoreGeneration,
       bootDevices: bootDevices,
       bootOrder: bootOrder,
-      initialCPUState: .uefi
+      initialCPUState: try .uefi(
+        deviceTreeAddress: DoryARMVirtV1ABI.ramBase + DoryARMVirtV1ABI.dtbOffset
+      )
     )
   }
 
@@ -153,7 +156,12 @@ public struct DoryARMVirtUEFILaunchPlan: Codable, Sendable, Hashable {
     else {
       throw DoryARMVirtUEFILaunchPlanError.invalidBootOrder
     }
-    guard initialCPUState == .uefi else {
+    guard
+      initialCPUState
+        == (try DoryARMVirtV1InitialCPUState.uefi(
+          deviceTreeAddress: DoryARMVirtV1ABI.ramBase + DoryARMVirtV1ABI.dtbOffset
+        ))
+    else {
       throw DoryARMVirtUEFILaunchPlanError.invalidInitialCPUState
     }
     self.schemaVersion = schemaVersion

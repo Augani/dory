@@ -21,7 +21,7 @@ This file is the checked-in projection of `DoryARMVirtV1ABI`. Changes are ABI ch
 | RAM | `0x80000000` | `0x0000000b80000000` maximum before DAX |
 | DAX window | `0x0000000c00000000` | variable, admitted separately |
 
-Direct Linux boot places the FDT at RAM + `0x10000000`, passes its address in `x0`, and places the initrd at RAM + `0x14000000`. UEFI begins at `0x00000000`, uses firmware ABI `dory.edk2.armvirt@1`, and persists variables as `dory.uefi.variables.armvirt@1`. The minimum RAM size is `0x40000000` bytes. The machine exposes 1...256 vCPUs subject to host admission.
+Both boot protocols place the FDT at RAM + `0x10000000` and pass its address in `x0`. Direct Linux places the initrd at RAM + `0x14000000`. UEFI begins at `0x00000000`, uses firmware ABI `dory.edk2.armvirt@1`, and persists variables as `dory.uefi.variables.armvirt@1`. The minimum RAM size is `0x40000000` bytes. The machine exposes 1...256 vCPUs subject to host admission.
 
 ## Interrupt map
 

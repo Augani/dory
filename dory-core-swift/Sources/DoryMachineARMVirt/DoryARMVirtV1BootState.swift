@@ -38,15 +38,20 @@ public struct DoryARMVirtV1InitialCPUState: Codable, Sendable, Hashable {
     )
   }
 
-  public static let uefi = Self(
-    bootProtocol: .uefi,
-    programCounter: DoryARMVirtV1ABI.uefiResetAddress,
-    pstate: resetPSTATE,
-    x0: 0,
-    x1: 0,
-    x2: 0,
-    x3: 0
-  )
+  public static func uefi(deviceTreeAddress: UInt64) throws -> Self {
+    guard deviceTreeAddress == DoryARMVirtV1ABI.ramBase + DoryARMVirtV1ABI.dtbOffset else {
+      throw DoryARMVirtV1BootStateError.invalidUEFIState
+    }
+    return Self(
+      bootProtocol: .uefi,
+      programCounter: DoryARMVirtV1ABI.uefiResetAddress,
+      pstate: resetPSTATE,
+      x0: deviceTreeAddress,
+      x1: 0,
+      x2: 0,
+      x3: 0
+    )
+  }
 
   private init(
     bootProtocol: DoryARMVirtV1BootProtocol,
@@ -94,16 +99,16 @@ public struct DoryARMVirtV1InitialCPUState: Codable, Sendable, Hashable {
       }
       self = expected
     case .uefi:
-      guard programCounter == Self.uefi.programCounter,
-        pstate == Self.uefi.pstate,
-        x0 == 0,
+      let expected = try Self.uefi(deviceTreeAddress: x0)
+      guard programCounter == expected.programCounter,
+        pstate == expected.pstate,
         x1 == 0,
         x2 == 0,
         x3 == 0
       else {
         throw DoryARMVirtV1BootStateError.invalidUEFIState
       }
-      self = .uefi
+      self = expected
     }
   }
 }

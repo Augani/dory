@@ -13,13 +13,17 @@ import Testing
     #expect(direct.x0 == DoryARMVirtV1ABI.ramBase + DoryARMVirtV1ABI.dtbOffset)
     #expect(direct.x1 == 0 && direct.x2 == 0 && direct.x3 == 0)
     #expect(direct.pstate == DoryARMVirtV1InitialCPUState.resetPSTATE)
-    #expect(DoryARMVirtV1InitialCPUState.uefi.bootProtocol == .uefi)
-    #expect(DoryARMVirtV1InitialCPUState.uefi.programCounter == DoryARMVirtV1ABI.uefiResetAddress)
-    #expect(DoryARMVirtV1InitialCPUState.uefi.x0 == 0)
+    let uefi = try DoryARMVirtV1InitialCPUState.uefi(
+      deviceTreeAddress: DoryARMVirtV1ABI.ramBase + DoryARMVirtV1ABI.dtbOffset
+    )
+    #expect(uefi.bootProtocol == .uefi)
+    #expect(uefi.programCounter == DoryARMVirtV1ABI.uefiResetAddress)
+    #expect(uefi.x0 == DoryARMVirtV1ABI.ramBase + DoryARMVirtV1ABI.dtbOffset)
   }
 
   @Test func decoderRejectsSubstitutedUEFIRegisters() throws {
-    let data = Data(#"""
+    let data = Data(
+      #"""
       {
         "bootProtocol":"uefi",
         "programCounter":4,
@@ -34,7 +38,8 @@ import Testing
       _ = try JSONDecoder().decode(DoryARMVirtV1InitialCPUState.self, from: data)
     }
 
-    let unknown = Data(#"""
+    let unknown = Data(
+      #"""
       {
         "bootProtocol":"uefi",
         "programCounter":0,

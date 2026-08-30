@@ -29,7 +29,12 @@ import Testing
     encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
     let encoded = try encoder.encode(plan)
 
-    #expect(plan.initialCPUState == .uefi)
+    #expect(
+      plan.initialCPUState
+        == (try DoryARMVirtV1InitialCPUState.uefi(
+          deviceTreeAddress: DoryARMVirtV1ABI.ramBase + DoryARMVirtV1ABI.dtbOffset
+        ))
+    )
     #expect(plan.bootDevices.map(\.virtioSlot) == [0, 12])
     #expect(plan.bootOrder == ["installer-iso", "system-disk"])
     #expect(try JSONDecoder().decode(DoryARMVirtUEFILaunchPlan.self, from: encoded) == plan)
@@ -101,10 +106,12 @@ import Testing
     let data = try JSONEncoder().encode(plan)
     var object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
     object["future"] = true
-    #expect(throws: DoryFirmwareError.unknownFields(
-      type: "DoryARMVirtUEFILaunchPlan",
-      fields: ["future"]
-    )) {
+    #expect(
+      throws: DoryFirmwareError.unknownFields(
+        type: "DoryARMVirtUEFILaunchPlan",
+        fields: ["future"]
+      )
+    ) {
       _ = try JSONDecoder().decode(
         DoryARMVirtUEFILaunchPlan.self,
         from: JSONSerialization.data(withJSONObject: object)

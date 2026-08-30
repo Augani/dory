@@ -12,26 +12,26 @@ import Synchronization
 /// class to input and presentation. Revision changes require a new runtime-envelope identity and
 /// matched physical responsiveness/workload calibration before release qualification.
 public enum RawHVSchedulingPolicy {
-    public static let revision: UInt16 = 1
-    public static let vCPUThreadQualityOfService: QualityOfService = .userInitiated
-    public static let machineOwnerThreadQualityOfService: QualityOfService = .userInitiated
-    public static let machineOwnerThreadStackSize = 1 << 21
-    public static let blockIOWorkerDispatchQoS: DispatchQoS = .userInitiated
-    public static let networkIOWorkerDispatchQoS: DispatchQoS = .userInitiated
-    public static let fileSystemWorkerDispatchQoS: DispatchQoS = .userInitiated
+  public static let revision: UInt16 = 1
+  public static let vCPUThreadQualityOfService: QualityOfService = .userInitiated
+  public static let machineOwnerThreadQualityOfService: QualityOfService = .userInitiated
+  public static let machineOwnerThreadStackSize = 1 << 21
+  public static let blockIOWorkerDispatchQoS: DispatchQoS = .userInitiated
+  public static let networkIOWorkerDispatchQoS: DispatchQoS = .userInitiated
+  public static let fileSystemWorkerDispatchQoS: DispatchQoS = .userInitiated
 
-    static func applyToCurrentVCPUThread() {
-        applyUserInitiated(to: vCPUThreadQualityOfService)
-    }
+  static func applyToCurrentVCPUThread() {
+    applyUserInitiated(to: vCPUThreadQualityOfService)
+  }
 
-    static func applyToCurrentMachineOwnerThread() {
-        applyUserInitiated(to: machineOwnerThreadQualityOfService)
-    }
+  static func applyToCurrentMachineOwnerThread() {
+    applyUserInitiated(to: machineOwnerThreadQualityOfService)
+  }
 
-    private static func applyUserInitiated(to qualityOfService: QualityOfService) {
-        Thread.current.qualityOfService = qualityOfService
-        _ = pthread_set_qos_class_self_np(QOS_CLASS_USER_INITIATED, 0)
-    }
+  private static func applyUserInitiated(to qualityOfService: QualityOfService) {
+    Thread.current.qualityOfService = qualityOfService
+    _ = pthread_set_qos_class_self_np(QOS_CLASS_USER_INITIATED, 0)
+  }
 }
 
 /// Guest-visible identity of one occupied virtio-mmio slot.
@@ -39,182 +39,182 @@ public enum RawHVSchedulingPolicy {
 /// This intentionally carries only the low-level bus identity. Product device roles belong to the
 /// resolved virtual-hardware topology contract and must not be inferred from attachment order.
 public struct VirtioMMIOSlotIdentity: Equatable, Sendable {
-    public let slot: Int
-    public let baseAddress: UInt64
-    public let size: UInt64
-    public let interrupt: UInt32
+  public let slot: Int
+  public let baseAddress: UInt64
+  public let size: UInt64
+  public let interrupt: UInt32
 
-    init(slot: Int, baseAddress: UInt64, size: UInt64, interrupt: UInt32) {
-        self.slot = slot
-        self.baseAddress = baseAddress
-        self.size = size
-        self.interrupt = interrupt
-    }
+  init(slot: Int, baseAddress: UInt64, size: UInt64, interrupt: UInt32) {
+    self.slot = slot
+    self.baseAddress = baseAddress
+    self.size = size
+    self.interrupt = interrupt
+  }
 }
 
 /// Canonical low-level input for the eventual virtual-hardware ABI fingerprint. The resolved
 /// topology layer will prefix device roles and capabilities; this layer contributes stable
 /// slot/MMIO/IRQ identities in a fixed byte order independent of attachment order.
 enum VirtioMMIOLayoutCanonicalizer {
-    static func fingerprintInput(for identities: [VirtioMMIOSlotIdentity]) -> [UInt8] {
-        let sorted = identities.sorted { lhs, rhs in
-            if lhs.slot != rhs.slot { return lhs.slot < rhs.slot }
-            if lhs.baseAddress != rhs.baseAddress { return lhs.baseAddress < rhs.baseAddress }
-            if lhs.interrupt != rhs.interrupt { return lhs.interrupt < rhs.interrupt }
-            return lhs.size < rhs.size
-        }
-        var bytes = Array("dory.virtio-mmio.layout".utf8)
-        bytes.append(0)
-        appendBigEndian(UInt32(1), to: &bytes)
-        appendBigEndian(UInt32(sorted.count), to: &bytes)
-        for identity in sorted {
-            appendBigEndian(UInt32(identity.slot), to: &bytes)
-            appendBigEndian(identity.baseAddress, to: &bytes)
-            appendBigEndian(identity.size, to: &bytes)
-            appendBigEndian(identity.interrupt, to: &bytes)
-        }
-        return bytes
+  static func fingerprintInput(for identities: [VirtioMMIOSlotIdentity]) -> [UInt8] {
+    let sorted = identities.sorted { lhs, rhs in
+      if lhs.slot != rhs.slot { return lhs.slot < rhs.slot }
+      if lhs.baseAddress != rhs.baseAddress { return lhs.baseAddress < rhs.baseAddress }
+      if lhs.interrupt != rhs.interrupt { return lhs.interrupt < rhs.interrupt }
+      return lhs.size < rhs.size
     }
+    var bytes = Array("dory.virtio-mmio.layout".utf8)
+    bytes.append(0)
+    appendBigEndian(UInt32(1), to: &bytes)
+    appendBigEndian(UInt32(sorted.count), to: &bytes)
+    for identity in sorted {
+      appendBigEndian(UInt32(identity.slot), to: &bytes)
+      appendBigEndian(identity.baseAddress, to: &bytes)
+      appendBigEndian(identity.size, to: &bytes)
+      appendBigEndian(identity.interrupt, to: &bytes)
+    }
+    return bytes
+  }
 
-    private static func appendBigEndian<T: FixedWidthInteger>(_ value: T, to bytes: inout [UInt8]) {
-        withUnsafeBytes(of: value.bigEndian) { bytes.append(contentsOf: $0) }
-    }
+  private static func appendBigEndian<T: FixedWidthInteger>(_ value: T, to bytes: inout [UInt8]) {
+    withUnsafeBytes(of: value.bigEndian) { bytes.append(contentsOf: $0) }
+  }
 }
 
 /// Owns the one-to-one relationship between stable virtio slots and attached MMIO devices.
 /// Configuration is serialized even though normal callers attach before vCPU startup, so duplicate
 /// concurrent requests cannot leak a second device into `MMIOBus`.
 final class VirtioMMIOSlotOwnership {
-    private struct Attachment {
-        let device: MMIODevice
-        let identity: VirtioMMIOSlotIdentity
-    }
+  private struct Attachment {
+    let device: MMIODevice
+    let identity: VirtioMMIOSlotIdentity
+  }
 
-    private struct State {
-        var attachmentsBySlot: [Int: Attachment] = [:]
-        var attachedDeviceIdentities: Set<ObjectIdentifier> = []
-    }
+  private struct State {
+    var attachmentsBySlot: [Int: Attachment] = [:]
+    var attachedDeviceIdentities: Set<ObjectIdentifier> = []
+  }
 
-    private let lock = NSLock()
-    private var state = State()
-    private let maximumSlots: Int
-    private let baseAddress: UInt64
-    private let slotSize: UInt64
-    private let firstInterrupt: UInt32
+  private let lock = NSLock()
+  private var state = State()
+  private let maximumSlots: Int
+  private let baseAddress: UInt64
+  private let slotSize: UInt64
+  private let firstInterrupt: UInt32
 
-    init(maximumSlots: Int, baseAddress: UInt64, slotSize: UInt64, firstInterrupt: UInt32) {
-        precondition(maximumSlots > 0)
-        precondition(slotSize > 0)
-        self.maximumSlots = maximumSlots
-        self.baseAddress = baseAddress
-        self.slotSize = slotSize
-        self.firstInterrupt = firstInterrupt
-    }
+  init(maximumSlots: Int, baseAddress: UInt64, slotSize: UInt64, firstInterrupt: UInt32) {
+    precondition(maximumSlots > 0)
+    precondition(slotSize > 0)
+    self.maximumSlots = maximumSlots
+    self.baseAddress = baseAddress
+    self.slotSize = slotSize
+    self.firstInterrupt = firstInterrupt
+  }
 
-    var identities: [VirtioMMIOSlotIdentity] {
-        lock.lock()
-        defer { lock.unlock() }
-        return state.attachmentsBySlot.values.map(\.identity).sorted { $0.slot < $1.slot }
-    }
+  var identities: [VirtioMMIOSlotIdentity] {
+    lock.lock()
+    defer { lock.unlock() }
+    return state.attachmentsBySlot.values.map(\.identity).sorted { $0.slot < $1.slot }
+  }
 
-    var fingerprintInput: [UInt8] {
-        VirtioMMIOLayoutCanonicalizer.fingerprintInput(for: identities)
-    }
+  var fingerprintInput: [UInt8] {
+    VirtioMMIOLayoutCanonicalizer.fingerprintInput(for: identities)
+  }
 
-    @discardableResult
-    func attach(
-        _ device: MMIODevice,
-        at slot: Int,
-        attachToBus: (MMIODevice) -> Void
-    ) throws -> VirtioMMIOSlotIdentity {
-        let slotIdentity = try identity(for: slot)
-        lock.lock()
-        defer { lock.unlock() }
-        return try attachLocked(
-            device,
-            identity: slotIdentity,
-            attachToBus: attachToBus
-        )
-    }
+  @discardableResult
+  func attach(
+    _ device: MMIODevice,
+    at slot: Int,
+    attachToBus: (MMIODevice) -> Void
+  ) throws -> VirtioMMIOSlotIdentity {
+    let slotIdentity = try identity(for: slot)
+    lock.lock()
+    defer { lock.unlock() }
+    return try attachLocked(
+      device,
+      identity: slotIdentity,
+      attachToBus: attachToBus
+    )
+  }
 
-    private func attachLocked(
-        _ device: MMIODevice,
-        identity slotIdentity: VirtioMMIOSlotIdentity,
-        attachToBus: (MMIODevice) -> Void
-    ) throws -> VirtioMMIOSlotIdentity {
-        let slot = slotIdentity.slot
-        guard device.baseAddress == slotIdentity.baseAddress else {
-            throw VMError.invalidConfiguration(
-                "virtio slot \(slot) requires MMIO base 0x\(String(slotIdentity.baseAddress, radix: 16)), got 0x\(String(device.baseAddress, radix: 16))"
-            )
-        }
-        guard device.size == slotIdentity.size else {
-            throw VMError.invalidConfiguration(
-                "virtio slot \(slot) requires MMIO size 0x\(String(slotIdentity.size, radix: 16)), got 0x\(String(device.size, radix: 16))"
-            )
-        }
-        guard state.attachmentsBySlot[slot] == nil else {
-            throw VMError.invalidConfiguration("virtio slot \(slot) is already occupied")
-        }
-        let deviceIdentity = ObjectIdentifier(device)
-        guard !state.attachedDeviceIdentities.contains(deviceIdentity) else {
-            throw VMError.invalidConfiguration("virtio MMIO device is already attached")
-        }
-        attachToBus(device)
-        state.attachmentsBySlot[slot] = Attachment(device: device, identity: slotIdentity)
-        state.attachedDeviceIdentities.insert(deviceIdentity)
-        return slotIdentity
+  private func attachLocked(
+    _ device: MMIODevice,
+    identity slotIdentity: VirtioMMIOSlotIdentity,
+    attachToBus: (MMIODevice) -> Void
+  ) throws -> VirtioMMIOSlotIdentity {
+    let slot = slotIdentity.slot
+    guard device.baseAddress == slotIdentity.baseAddress else {
+      throw VMError.invalidConfiguration(
+        "virtio slot \(slot) requires MMIO base 0x\(String(slotIdentity.baseAddress, radix: 16)), got 0x\(String(device.baseAddress, radix: 16))"
+      )
     }
+    guard device.size == slotIdentity.size else {
+      throw VMError.invalidConfiguration(
+        "virtio slot \(slot) requires MMIO size 0x\(String(slotIdentity.size, radix: 16)), got 0x\(String(device.size, radix: 16))"
+      )
+    }
+    guard state.attachmentsBySlot[slot] == nil else {
+      throw VMError.invalidConfiguration("virtio slot \(slot) is already occupied")
+    }
+    let deviceIdentity = ObjectIdentifier(device)
+    guard !state.attachedDeviceIdentities.contains(deviceIdentity) else {
+      throw VMError.invalidConfiguration("virtio MMIO device is already attached")
+    }
+    attachToBus(device)
+    state.attachmentsBySlot[slot] = Attachment(device: device, identity: slotIdentity)
+    state.attachedDeviceIdentities.insert(deviceIdentity)
+    return slotIdentity
+  }
 
-    private func identity(for slot: Int) throws -> VirtioMMIOSlotIdentity {
-        guard slot >= 0, slot < maximumSlots else {
-            throw VMError.invalidConfiguration(
-                "virtio slot \(slot) is outside 0..<\(maximumSlots)"
-            )
-        }
-        guard let unsignedSlot = UInt64(exactly: slot) else {
-            throw VMError.invalidConfiguration("virtio slot \(slot) cannot be represented")
-        }
-        let (offset, offsetOverflow) = unsignedSlot.multipliedReportingOverflow(by: slotSize)
-        let (address, addressOverflow) = baseAddress.addingReportingOverflow(offset)
-        guard !offsetOverflow, !addressOverflow else {
-            throw VMError.invalidConfiguration("virtio slot \(slot) MMIO address overflows")
-        }
-        guard let interruptOffset = UInt32(exactly: slot) else {
-            throw VMError.invalidConfiguration("virtio slot \(slot) interrupt cannot be represented")
-        }
-        let (interrupt, interruptOverflow) = firstInterrupt.addingReportingOverflow(interruptOffset)
-        guard !interruptOverflow else {
-            throw VMError.invalidConfiguration("virtio slot \(slot) interrupt overflows")
-        }
-        return VirtioMMIOSlotIdentity(
-            slot: slot,
-            baseAddress: address,
-            size: slotSize,
-            interrupt: interrupt
-        )
+  private func identity(for slot: Int) throws -> VirtioMMIOSlotIdentity {
+    guard slot >= 0, slot < maximumSlots else {
+      throw VMError.invalidConfiguration(
+        "virtio slot \(slot) is outside 0..<\(maximumSlots)"
+      )
     }
+    guard let unsignedSlot = UInt64(exactly: slot) else {
+      throw VMError.invalidConfiguration("virtio slot \(slot) cannot be represented")
+    }
+    let (offset, offsetOverflow) = unsignedSlot.multipliedReportingOverflow(by: slotSize)
+    let (address, addressOverflow) = baseAddress.addingReportingOverflow(offset)
+    guard !offsetOverflow, !addressOverflow else {
+      throw VMError.invalidConfiguration("virtio slot \(slot) MMIO address overflows")
+    }
+    guard let interruptOffset = UInt32(exactly: slot) else {
+      throw VMError.invalidConfiguration("virtio slot \(slot) interrupt cannot be represented")
+    }
+    let (interrupt, interruptOverflow) = firstInterrupt.addingReportingOverflow(interruptOffset)
+    guard !interruptOverflow else {
+      throw VMError.invalidConfiguration("virtio slot \(slot) interrupt overflows")
+    }
+    return VirtioMMIOSlotIdentity(
+      slot: slot,
+      baseAddress: address,
+      size: slotSize,
+      interrupt: interrupt
+    )
+  }
 }
 
 enum VirtioMMIODeviceTree {
-    static func appendNodes(
-        for identities: [VirtioMMIOSlotIdentity],
-        to fdt: FDTBuilder
-    ) {
-        for identity in identities.sorted(by: { $0.slot < $1.slot }) {
-            fdt.beginNode("virtio_mmio@\(String(identity.baseAddress, radix: 16))")
-            fdt.property("compatible", string: "virtio,mmio")
-            fdt.property("reg", cells64: [identity.baseAddress, identity.size])
-            fdt.property("interrupts", cells: [0, identity.interrupt, 1])
-            fdt.endNode()
-        }
+  static func appendNodes(
+    for identities: [VirtioMMIOSlotIdentity],
+    to fdt: FDTBuilder
+  ) {
+    for identity in identities.sorted(by: { $0.slot < $1.slot }) {
+      fdt.beginNode("virtio_mmio@\(String(identity.baseAddress, radix: 16))")
+      fdt.property("compatible", string: "virtio,mmio")
+      fdt.property("reg", cells64: [identity.baseAddress, identity.size])
+      fdt.property("interrupts", cells: [0, identity.interrupt, 1])
+      fdt.endNode()
     }
+  }
 }
 
 #if arch(arm64)
-/// Device-wiring view of the frozen `dory.armvirt@1` machine ABI. The ABI package is the sole
-/// authority for guest-visible addresses and interrupt assignments.
-public enum GuestLayout {
+  /// Device-wiring view of the frozen `dory.armvirt@1` machine ABI. The ABI package is the sole
+  /// authority for guest-visible addresses and interrupt assignments.
+  public enum GuestLayout {
     public static let firmwareCodeBase = DoryARMVirtV1ABI.firmwareCodeBase
     public static let firmwareCodeBytes = DoryARMVirtV1ABI.firmwareCodeBytes
     public static let firmwareVariableBase = DoryARMVirtV1ABI.firmwareVariableBase
@@ -232,384 +232,400 @@ public enum GuestLayout {
     public static let dtbOffset = DoryARMVirtV1ABI.dtbOffset
     public static let initrdOffset = DoryARMVirtV1ABI.initrdOffset
     public static let daxWindowBase = DoryARMVirtV1ABI.daxWindowBase
-}
+  }
 
-public enum MachineARMVirtBoot: Sendable {
+  public enum MachineARMVirtBoot: Sendable {
     case directLinux(payload: MachineBootPayload, commandLine: String)
     case uefi(
-        launchPlan: DoryARMVirtUEFILaunchPlan,
-        artifacts: DoryVerifiedFirmwareArtifacts,
-        variableStore: DoryUEFIVariableStoreAuthority
+      launchPlan: DoryARMVirtUEFILaunchPlan,
+      artifacts: DoryVerifiedFirmwareArtifacts,
+      variableStore: DoryUEFIVariableStoreAuthority
     )
-}
+  }
 
-public struct MachineConfiguration {
+  public struct MachineConfiguration {
     public let boot: MachineARMVirtBoot
     public var memoryBytes: UInt64
     public var cpuCount: Int
 
     public init(
-        kernelPath: String,
-        initrdPath: String? = nil,
-        commandLine: String,
-        memoryBytes: UInt64,
-        cpuCount: Int
+      kernelPath: String,
+      initrdPath: String? = nil,
+      commandLine: String,
+      memoryBytes: UInt64,
+      cpuCount: Int
     ) {
-        self.boot = .directLinux(
-            payload: .legacyPaths(kernel: kernelPath, initrd: initrdPath),
-            commandLine: commandLine
-        )
-        self.memoryBytes = memoryBytes
-        self.cpuCount = cpuCount
+      self.boot = .directLinux(
+        payload: .legacyPaths(kernel: kernelPath, initrd: initrdPath),
+        commandLine: commandLine
+      )
+      self.memoryBytes = memoryBytes
+      self.cpuCount = cpuCount
     }
 
     public init(
-        bootPayload: MachineBootPayload,
-        commandLine: String,
-        memoryBytes: UInt64,
-        cpuCount: Int
+      bootPayload: MachineBootPayload,
+      commandLine: String,
+      memoryBytes: UInt64,
+      cpuCount: Int
     ) {
-        self.boot = .directLinux(payload: bootPayload, commandLine: commandLine)
-        self.memoryBytes = memoryBytes
-        self.cpuCount = cpuCount
+      self.boot = .directLinux(payload: bootPayload, commandLine: commandLine)
+      self.memoryBytes = memoryBytes
+      self.cpuCount = cpuCount
     }
 
     public init(
-        uefiLaunchPlan: DoryARMVirtUEFILaunchPlan,
-        artifacts: DoryVerifiedFirmwareArtifacts,
-        variableStore: DoryUEFIVariableStoreFile,
-        memoryBytes: UInt64,
-        cpuCount: Int
+      uefiLaunchPlan: DoryARMVirtUEFILaunchPlan,
+      artifacts: DoryVerifiedFirmwareArtifacts,
+      variableStore: DoryUEFIVariableStoreFile,
+      memoryBytes: UInt64,
+      cpuCount: Int
     ) {
-        self.boot = .uefi(
-            launchPlan: uefiLaunchPlan,
-            artifacts: artifacts,
-            variableStore: DoryUEFIVariableStoreAuthority(file: variableStore)
-        )
-        self.memoryBytes = memoryBytes
-        self.cpuCount = cpuCount
+      self.boot = .uefi(
+        launchPlan: uefiLaunchPlan,
+        artifacts: artifacts,
+        variableStore: DoryUEFIVariableStoreAuthority(file: variableStore)
+      )
+      self.memoryBytes = memoryBytes
+      self.cpuCount = cpuCount
     }
 
     public init(
-        uefiLaunchPlan: DoryARMVirtUEFILaunchPlan,
-        artifacts: DoryVerifiedFirmwareArtifacts,
-        variableStore: DoryUEFIVariableStoreAuthority,
-        memoryBytes: UInt64,
-        cpuCount: Int
+      uefiLaunchPlan: DoryARMVirtUEFILaunchPlan,
+      artifacts: DoryVerifiedFirmwareArtifacts,
+      variableStore: DoryUEFIVariableStoreAuthority,
+      memoryBytes: UInt64,
+      cpuCount: Int
     ) {
-        self.boot = .uefi(
-            launchPlan: uefiLaunchPlan,
-            artifacts: artifacts,
-            variableStore: variableStore
-        )
-        self.memoryBytes = memoryBytes
-        self.cpuCount = cpuCount
+      self.boot = .uefi(
+        launchPlan: uefiLaunchPlan,
+        artifacts: artifacts,
+        variableStore: variableStore
+      )
+      self.memoryBytes = memoryBytes
+      self.cpuCount = cpuCount
     }
 
     func validateDoryARMVirtV1() throws {
+      do {
+        try DoryARMVirtV1ABI.validateMemoryBytes(memoryBytes)
+        try DoryARMVirtV1ABI.validateVCPUCount(cpuCount)
+      } catch {
+        throw VMError.invalidConfiguration(
+          "\(DoryARMVirtV1ABI.identity) resource admission failed: \(error)"
+        )
+      }
+      if case .uefi(let launchPlan, let artifacts, let variableStore) = boot {
+        guard launchPlan.firmware == artifacts.manifest else {
+          throw VMError.invalidConfiguration(
+            "UEFI launch plan and verified firmware manifest differ"
+          )
+        }
         do {
-            try DoryARMVirtV1ABI.validateMemoryBytes(memoryBytes)
-            try DoryARMVirtV1ABI.validateVCPUCount(cpuCount)
-        } catch {
+          let load = try variableStore.load()
+          guard load.source == .primary else {
+            throw VMError.invalidConfiguration("UEFI variable-store recovery is required")
+          }
+          guard load.snapshot.generation == launchPlan.variableStoreGeneration else {
             throw VMError.invalidConfiguration(
-                "\(DoryARMVirtV1ABI.identity) resource admission failed: \(error)"
+              "UEFI launch generation \(launchPlan.variableStoreGeneration) does not match store generation \(load.snapshot.generation)"
             )
+          }
+        } catch let error as VMError {
+          throw error
+        } catch {
+          throw VMError.invalidConfiguration("UEFI variable-store admission failed: \(error)")
         }
-        if case .uefi(let launchPlan, let artifacts, let variableStore) = boot {
-            guard launchPlan.firmware == artifacts.manifest else {
-                throw VMError.invalidConfiguration(
-                    "UEFI launch plan and verified firmware manifest differ"
-                )
-            }
-            do {
-                let load = try variableStore.load()
-                guard load.source == .primary else {
-                    throw VMError.invalidConfiguration("UEFI variable-store recovery is required")
-                }
-                guard load.snapshot.generation == launchPlan.variableStoreGeneration else {
-                    throw VMError.invalidConfiguration(
-                        "UEFI launch generation \(launchPlan.variableStoreGeneration) does not match store generation \(load.snapshot.generation)"
-                    )
-                }
-            } catch let error as VMError {
-                throw error
-            } catch {
-                throw VMError.invalidConfiguration("UEFI variable-store admission failed: \(error)")
-            }
-        }
+      }
     }
-}
+  }
 
-public enum GuestStopReason: Sendable {
+  public enum GuestStopReason: Sendable {
     case powerOff
     case reset
     case crash(String)
-}
+  }
 
-/// One-way, lock-free publication from stop ownership into each vCPU's exit loop.
-///
-/// `Machine` remains single-run: the condition-protected stop reason, vCPU handles, wakeups, and
-/// joins own the lifecycle. This signal only removes that global condition from the common path
-/// after a vCPU exit. A releasing request paired with an acquiring read also makes state published
-/// before the stop request visible before a vCPU leaves its loop.
-final class VCPUStopSignal: Sendable {
+  /// One-way, lock-free publication from stop ownership into each vCPU's exit loop.
+  ///
+  /// `Machine` remains single-run: the condition-protected stop reason, vCPU handles, wakeups, and
+  /// joins own the lifecycle. This signal only removes that global condition from the common path
+  /// after a vCPU exit. A releasing request paired with an acquiring read also makes state published
+  /// before the stop request visible before a vCPU leaves its loop.
+  final class VCPUStopSignal: Sendable {
     private let requested = Atomic<Bool>(false)
 
     var isRequested: Bool {
-        requested.load(ordering: .acquiring)
+      requested.load(ordering: .acquiring)
     }
 
     func request() {
-        requested.store(true, ordering: .releasing)
+      requested.store(true, ordering: .releasing)
     }
-}
+  }
 
-/// The virtual machine: RAM, GIC, devices, and the vCPU threads. SMP: secondaries are created
-/// eagerly, parked, and released by PSCI CPU_ON. Thread-shared state is guarded by
-/// `teamCondition`; devices serialize their own guest-facing surfaces.
-public final class Machine: @unchecked Sendable {
+  /// The virtual machine: RAM, GIC, devices, and the vCPU threads. SMP: secondaries are created
+  /// eagerly, parked, and released by PSCI CPU_ON. Thread-shared state is guarded by
+  /// `teamCondition`; devices serialize their own guest-facing surfaces.
+  public final class Machine: @unchecked Sendable {
     public let configuration: MachineConfiguration
     public let memory: GuestMemory
     public let bus = MMIOBus()
     private var entryPoint: UInt64 = 0
     private var dtbAddress: UInt64 = 0
-    private var initialPstate: UInt64 = DoryARMVirtV1InitialCPUState.uefi.pstate
+    private var initialPstate: UInt64 = DoryARMVirtV1InitialCPUState.resetPSTATE
     private let firmwareCode: ARMVirtFirmwareCodeMemory?
     private let variableBridge: ARMVirtUEFIVariableBridgeMMIO?
     private var sysregLogCount = 0
     private let redistributorMMIO: GICRedistributorMMIO
     private let virtioSlotOwnership = VirtioMMIOSlotOwnership(
-        maximumSlots: GuestLayout.virtioSlotCount,
-        baseAddress: GuestLayout.virtioBase,
-        slotSize: GuestLayout.virtioSlotSize,
-        firstInterrupt: GuestLayout.virtioFirstIRQ
+      maximumSlots: GuestLayout.virtioSlotCount,
+      baseAddress: GuestLayout.virtioBase,
+      slotSize: GuestLayout.virtioSlotSize,
+      firstInterrupt: GuestLayout.virtioFirstIRQ
     )
 
     public init(configuration: MachineConfiguration) throws {
-        try configuration.validateDoryARMVirtV1()
-        try hvCreateVM()
-        self.configuration = configuration
-        switch configuration.boot {
-        case .directLinux:
-            self.firmwareCode = nil
-            self.variableBridge = nil
-        case .uefi(_, let artifacts, let variableStore):
-            self.firmwareCode = try ARMVirtFirmwareCodeMemory(artifacts: artifacts)
-            self.variableBridge = try ARMVirtUEFIVariableBridgeMMIO(store: variableStore)
-        }
-        self.memory = try GuestMemory(guestBase: GuestLayout.ramBase, size: configuration.memoryBytes)
-        try memory.mapIntoGuest()
-        try firmwareCode?.mapIntoGuest()
-        try Self.createGIC()
+      try configuration.validateDoryARMVirtV1()
+      try hvCreateVM()
+      self.configuration = configuration
+      switch configuration.boot {
+      case .directLinux:
+        self.firmwareCode = nil
+        self.variableBridge = nil
+      case .uefi(_, let artifacts, let variableStore):
+        self.firmwareCode = try ARMVirtFirmwareCodeMemory(artifacts: artifacts)
+        self.variableBridge = try ARMVirtUEFIVariableBridgeMMIO(store: variableStore)
+      }
+      self.memory = try GuestMemory(guestBase: GuestLayout.ramBase, size: configuration.memoryBytes)
+      try memory.mapIntoGuest()
+      try firmwareCode?.mapIntoGuest()
+      try Self.createGIC()
 
-        var redistributorStride = 0
-        try hvCheck(hv_gic_get_redistributor_size(&redistributorStride), "hv_gic_get_redistributor_size")
-        let redistributorRegionSize = try Self.gicRedistributorRegionSize()
-        let distributorSize = try Self.gicDistributorSize()
-        try Self.validateGICLayout(
-            distributorBytes: distributorSize,
-            redistributorBytes: redistributorRegionSize
-        )
-        self.redistributorMMIO = GICRedistributorMMIO(
-            baseAddress: GuestLayout.gicRedistributorBase,
-            size: redistributorRegionSize,
-            stride: UInt64(redistributorStride)
-        )
-        bus.attach(GICDistributorMMIO(
-            baseAddress: GuestLayout.gicDistributorBase,
-            size: distributorSize
+      var redistributorStride = 0
+      try hvCheck(
+        hv_gic_get_redistributor_size(&redistributorStride), "hv_gic_get_redistributor_size")
+      let redistributorRegionSize = try Self.gicRedistributorRegionSize()
+      let distributorSize = try Self.gicDistributorSize()
+      try Self.validateGICLayout(
+        distributorBytes: distributorSize,
+        redistributorBytes: redistributorRegionSize
+      )
+      self.redistributorMMIO = GICRedistributorMMIO(
+        baseAddress: GuestLayout.gicRedistributorBase,
+        size: redistributorRegionSize,
+        stride: UInt64(redistributorStride)
+      )
+      bus.attach(
+        GICDistributorMMIO(
+          baseAddress: GuestLayout.gicDistributorBase,
+          size: distributorSize
         ))
-        bus.attach(redistributorMMIO)
-        if let variableBridge { bus.attach(variableBridge) }
+      bus.attach(redistributorMMIO)
+      if let variableBridge { bus.attach(variableBridge) }
     }
 
     deinit {
-        try? firmwareCode?.unmapFromGuest()
-        hv_vm_destroy()
+      try? firmwareCode?.unmapFromGuest()
+      hv_vm_destroy()
     }
 
     private static func createGIC() throws {
-        let config = hv_gic_config_create()
-        try hvCheck(hv_gic_config_set_distributor_base(config, GuestLayout.gicDistributorBase), "gic set distributor base")
-        try hvCheck(hv_gic_config_set_redistributor_base(config, GuestLayout.gicRedistributorBase), "gic set redistributor base")
-        try hvCheck(hv_gic_create(config), "hv_gic_create")
+      let config = hv_gic_config_create()
+      try hvCheck(
+        hv_gic_config_set_distributor_base(config, GuestLayout.gicDistributorBase),
+        "gic set distributor base")
+      try hvCheck(
+        hv_gic_config_set_redistributor_base(config, GuestLayout.gicRedistributorBase),
+        "gic set redistributor base")
+      try hvCheck(hv_gic_create(config), "hv_gic_create")
     }
 
     public static func gicDistributorSize() throws -> UInt64 {
-        var size = 0
-        try hvCheck(hv_gic_get_distributor_size(&size), "hv_gic_get_distributor_size")
-        return UInt64(size)
+      var size = 0
+      try hvCheck(hv_gic_get_distributor_size(&size), "hv_gic_get_distributor_size")
+      return UInt64(size)
     }
 
     public static func gicRedistributorRegionSize() throws -> UInt64 {
-        var size = 0
-        try hvCheck(hv_gic_get_redistributor_region_size(&size), "hv_gic_get_redistributor_region_size")
-        return UInt64(size)
+      var size = 0
+      try hvCheck(
+        hv_gic_get_redistributor_region_size(&size), "hv_gic_get_redistributor_region_size")
+      return UInt64(size)
     }
 
     public static func reservedIntid(_ interrupt: hv_gic_intid_t) throws -> UInt32 {
-        var intid: UInt32 = 0
-        try hvCheck(hv_gic_get_intid(interrupt, &intid), "hv_gic_get_intid")
-        return intid
+      var intid: UInt32 = 0
+      try hvCheck(hv_gic_get_intid(interrupt, &intid), "hv_gic_get_intid")
+      return intid
     }
 
     static func validateGICLayout(
-        distributorBytes: UInt64,
-        redistributorBytes: UInt64
+      distributorBytes: UInt64,
+      redistributorBytes: UInt64
     ) throws {
-        guard distributorBytes > 0,
-              distributorBytes <= DoryARMVirtV1ABI.gicDistributorReservedBytes else {
-            throw VMError.invalidConfiguration(
-                "host GIC distributor size \(distributorBytes) exceeds the \(DoryARMVirtV1ABI.identity) reservation"
-            )
-        }
-        guard redistributorBytes > 0,
-              redistributorBytes <= DoryARMVirtV1ABI.gicRedistributorReservedBytes else {
-            throw VMError.invalidConfiguration(
-                "host GIC redistributor size \(redistributorBytes) exceeds the \(DoryARMVirtV1ABI.identity) reservation"
-            )
-        }
+      guard distributorBytes > 0,
+        distributorBytes <= DoryARMVirtV1ABI.gicDistributorReservedBytes
+      else {
+        throw VMError.invalidConfiguration(
+          "host GIC distributor size \(distributorBytes) exceeds the \(DoryARMVirtV1ABI.identity) reservation"
+        )
+      }
+      guard redistributorBytes > 0,
+        redistributorBytes <= DoryARMVirtV1ABI.gicRedistributorReservedBytes
+      else {
+        throw VMError.invalidConfiguration(
+          "host GIC redistributor size \(redistributorBytes) exceeds the \(DoryARMVirtV1ABI.identity) reservation"
+        )
+      }
     }
 
     static func validateTimerInterrupts(
-        virtual: UInt32,
-        physical: UInt32,
-        hypervisor: UInt32
+      virtual: UInt32,
+      physical: UInt32,
+      hypervisor: UInt32
     ) throws {
-        let expectedVirtual = 16 + DoryARMVirtV1ABI.virtualTimerPPI
-        let expectedPhysical = 16 + DoryARMVirtV1ABI.nonsecurePhysicalTimerPPI
-        let expectedHypervisor = 16 + DoryARMVirtV1ABI.hypervisorPhysicalTimerPPI
-        guard virtual == expectedVirtual,
-              physical == expectedPhysical,
-              hypervisor == expectedHypervisor else {
-            throw VMError.invalidConfiguration(
-                "host architectural timer INTIDs \(virtual)/\(physical)/\(hypervisor) do not match \(DoryARMVirtV1ABI.identity) \(expectedVirtual)/\(expectedPhysical)/\(expectedHypervisor)"
-            )
-        }
+      let expectedVirtual = 16 + DoryARMVirtV1ABI.virtualTimerPPI
+      let expectedPhysical = 16 + DoryARMVirtV1ABI.nonsecurePhysicalTimerPPI
+      let expectedHypervisor = 16 + DoryARMVirtV1ABI.hypervisorPhysicalTimerPPI
+      guard virtual == expectedVirtual,
+        physical == expectedPhysical,
+        hypervisor == expectedHypervisor
+      else {
+        throw VMError.invalidConfiguration(
+          "host architectural timer INTIDs \(virtual)/\(physical)/\(hypervisor) do not match \(DoryARMVirtV1ABI.identity) \(expectedVirtual)/\(expectedPhysical)/\(expectedHypervisor)"
+        )
+      }
     }
 
     /// Pulses a guest system interrupt. On arm64 these are GIC SPIs declared edge-triggered in the DTB.
     public func raiseGSI(_ gsi: UInt32) {
-        setGSI(gsi, asserted: true)
+      setGSI(gsi, asserted: true)
     }
 
     /// Drives a level-sensitive guest system interrupt. UART input uses this to keep the PL011
     /// receive line asserted until the guest has drained the pending bytes.
     public func setGSI(_ gsi: UInt32, asserted: Bool) {
-        let intid = 32 + gsi
-        _ = hv_gic_set_spi(intid, asserted)
+      let intid = 32 + gsi
+      _ = hv_gic_set_spi(intid, asserted)
     }
 
     /// Compatibility spelling for arm64 callers; new shared engine code should use `raiseGSI`.
     public func raiseSPI(_ spi: UInt32) {
-        raiseGSI(spi)
+      raiseGSI(spi)
     }
 
     public func requestStop(_ reason: GuestStopReason) {
-        stopAll(reason)
+      stopAll(reason)
     }
 
     public func loadBootPayload() throws {
-        switch configuration.boot {
-        case .directLinux(let bootPayload, let commandLine):
-            try loadDirectLinuxBootPayload(bootPayload, commandLine: commandLine)
-        case .uefi(let launchPlan, _, let variableStore):
-            let load = try variableStore.load()
-            guard load.source == .primary,
-                  load.snapshot.generation == launchPlan.variableStoreGeneration else {
-                throw VMError.bootFailure("UEFI variable-store generation changed after admission")
-            }
-            let attachedSlots = Set(attachedVirtioSlots.map(\.slot))
-            let requiredSlots = Set(launchPlan.bootDevices.map(\.virtioSlot))
-            guard requiredSlots.isSubset(of: attachedSlots) else {
-                throw VMError.bootFailure("UEFI boot devices are not attached at their frozen slots")
-            }
-            let state = launchPlan.initialCPUState
-            entryPoint = state.programCounter
-            dtbAddress = state.x0
-            initialPstate = state.pstate
+      switch configuration.boot {
+      case .directLinux(let bootPayload, let commandLine):
+        try loadDirectLinuxBootPayload(bootPayload, commandLine: commandLine)
+      case .uefi(let launchPlan, _, let variableStore):
+        let load = try variableStore.load()
+        guard load.source == .primary,
+          load.snapshot.generation == launchPlan.variableStoreGeneration
+        else {
+          throw VMError.bootFailure("UEFI variable-store generation changed after admission")
         }
+        let attachedSlots = Set(attachedVirtioSlots.map(\.slot))
+        let requiredSlots = Set(launchPlan.bootDevices.map(\.virtioSlot))
+        guard requiredSlots.isSubset(of: attachedSlots) else {
+          throw VMError.bootFailure("UEFI boot devices are not attached at their frozen slots")
+        }
+        let state = launchPlan.initialCPUState
+        dtbAddress = state.x0
+        let dtb = try buildDeviceTree(commandLine: "", initrdRange: nil)
+        try memory.write(dtb, at: dtbAddress)
+        entryPoint = state.programCounter
+        initialPstate = state.pstate
+      }
     }
 
     private func loadDirectLinuxBootPayload(
-        _ bootPayload: MachineBootPayload,
-        commandLine: String
+      _ bootPayload: MachineBootPayload,
+      commandLine: String
     ) throws {
-        try bootPayload.consumeForGuestLoad { kernelData, loadInitrd in
-            let kernel = try KernelImage(data: kernelData)
-            entryPoint = try kernel.load(into: memory)
-            dtbAddress = GuestLayout.ramBase + GuestLayout.dtbOffset
-            let (kernelEndOffset, kernelEndOverflowed) =
-                kernel.textOffset.addingReportingOverflow(kernel.imageSize)
-            guard !kernelEndOverflowed,
-                  kernelEndOffset < GuestLayout.dtbOffset else {
-                throw VMError.bootFailure("kernel image overlaps DTB placement")
-            }
-            let initrdRange = try loadInitrdIfPresent(try loadInitrd())
-            let dtb = try buildDeviceTree(
-                commandLine: commandLine,
-                initrdRange: initrdRange
-            )
-            try memory.write(dtb, at: dtbAddress)
-            let state = try DoryARMVirtV1InitialCPUState.directLinux(
-                entryPoint: entryPoint,
-                deviceTreeAddress: dtbAddress
-            )
-            initialPstate = state.pstate
+      try bootPayload.consumeForGuestLoad { kernelData, loadInitrd in
+        let kernel = try KernelImage(data: kernelData)
+        entryPoint = try kernel.load(into: memory)
+        dtbAddress = GuestLayout.ramBase + GuestLayout.dtbOffset
+        let (kernelEndOffset, kernelEndOverflowed) =
+          kernel.textOffset.addingReportingOverflow(kernel.imageSize)
+        guard !kernelEndOverflowed,
+          kernelEndOffset < GuestLayout.dtbOffset
+        else {
+          throw VMError.bootFailure("kernel image overlaps DTB placement")
         }
+        let initrdRange = try loadInitrdIfPresent(try loadInitrd())
+        let dtb = try buildDeviceTree(
+          commandLine: commandLine,
+          initrdRange: initrdRange
+        )
+        try memory.write(dtb, at: dtbAddress)
+        let state = try DoryARMVirtV1InitialCPUState.directLinux(
+          entryPoint: entryPoint,
+          deviceTreeAddress: dtbAddress
+        )
+        initialPstate = state.pstate
+      }
     }
 
     private func loadInitrdIfPresent(_ data: Data?) throws -> Range<UInt64>? {
-        guard let data else { return nil }
-        guard !data.isEmpty else {
-            throw VMError.bootFailure("initrd is empty")
-        }
-        let start = GuestLayout.ramBase + GuestLayout.initrdOffset
-        let (end, overflowed) = start.addingReportingOverflow(UInt64(data.count))
-        guard !overflowed,
-              end > start,
-              end <= GuestLayout.ramBase + configuration.memoryBytes else {
-            throw VMError.bootFailure("initrd does not fit in guest memory")
-        }
-        try copyBootData(data, at: start)
-        return start..<end
+      guard let data else { return nil }
+      guard !data.isEmpty else {
+        throw VMError.bootFailure("initrd is empty")
+      }
+      let start = GuestLayout.ramBase + GuestLayout.initrdOffset
+      let (end, overflowed) = start.addingReportingOverflow(UInt64(data.count))
+      guard !overflowed,
+        end > start,
+        end <= GuestLayout.ramBase + configuration.memoryBytes
+      else {
+        throw VMError.bootFailure("initrd does not fit in guest memory")
+      }
+      try copyBootData(data, at: start)
+      return start..<end
     }
 
     private func buildDeviceTree(
-        commandLine: String,
-        initrdRange: Range<UInt64>?
+      commandLine: String,
+      initrdRange: Range<UInt64>?
     ) throws -> [UInt8] {
-        let virtualTimer = try Self.reservedIntid(HV_GIC_INT_EL1_VIRTUAL_TIMER)
-        let physicalTimer = try Self.reservedIntid(HV_GIC_INT_EL1_PHYSICAL_TIMER)
-        let hypTimer = try Self.reservedIntid(HV_GIC_INT_EL2_PHYSICAL_TIMER)
-        try Self.validateTimerInterrupts(
-            virtual: virtualTimer,
-            physical: physicalTimer,
-            hypervisor: hypTimer
-        )
-        let distributorSize = try Self.gicDistributorSize()
-        let redistributorSize = try Self.gicRedistributorRegionSize()
-        return try DoryARMVirtV1DeviceTree.build(configuration: .init(
-            commandLine: commandLine,
-            memoryBytes: configuration.memoryBytes,
-            vCPUCount: configuration.cpuCount,
-            initrdRange: initrdRange,
-            gicDistributorBytes: distributorSize,
-            gicRedistributorRegionBytes: redistributorSize,
-            gicRedistributorStride: redistributorMMIO.stride,
-            virtioDevices: attachedVirtioSlots.map {
-                DoryARMVirtV1MMIODevice(
-                    slot: $0.slot,
-                    baseAddress: $0.baseAddress,
-                    byteCount: $0.size,
-                    spi: $0.interrupt
-                )
-            }
+      let virtualTimer = try Self.reservedIntid(HV_GIC_INT_EL1_VIRTUAL_TIMER)
+      let physicalTimer = try Self.reservedIntid(HV_GIC_INT_EL1_PHYSICAL_TIMER)
+      let hypTimer = try Self.reservedIntid(HV_GIC_INT_EL2_PHYSICAL_TIMER)
+      try Self.validateTimerInterrupts(
+        virtual: virtualTimer,
+        physical: physicalTimer,
+        hypervisor: hypTimer
+      )
+      let distributorSize = try Self.gicDistributorSize()
+      let redistributorSize = try Self.gicRedistributorRegionSize()
+      return try DoryARMVirtV1DeviceTree.build(
+        configuration: .init(
+          commandLine: commandLine,
+          memoryBytes: configuration.memoryBytes,
+          vCPUCount: configuration.cpuCount,
+          initrdRange: initrdRange,
+          gicDistributorBytes: distributorSize,
+          gicRedistributorRegionBytes: redistributorSize,
+          gicRedistributorStride: redistributorMMIO.stride,
+          virtioDevices: attachedVirtioSlots.map {
+            DoryARMVirtV1MMIODevice(
+              slot: $0.slot,
+              baseAddress: $0.baseAddress,
+              byteCount: $0.size,
+              spi: $0.interrupt
+            )
+          }
         ))
     }
 
     public func attachConsole(_ uart: PL011) {
-        bus.attach(uart)
+      bus.attach(uart)
     }
 
     // MARK: SMP team
@@ -629,301 +645,317 @@ public final class Machine: @unchecked Sendable {
     /// up front so the kernel's redistributor walk sees all GIC frames, then parked until PSCI
     /// CPU_ON. The calling thread becomes the boot CPU. Returns when the guest stops.
     public func run() throws -> GuestStopReason {
-        // Attachment is a cold boot operation. Freeze the sorted routing table before any vCPU
-        // can read it concurrently, and give each vCPU its own hot lookup cache in `runLoop`.
-        bus.seal()
-        let count = max(1, configuration.cpuCount)
-        teamHandles = Array(repeating: nil, count: count)
-        secondaryStarts = Array(repeating: nil, count: count)
-        cpuStarted = Array(repeating: false, count: count)
-        cpuStarted[0] = true
+      // Attachment is a cold boot operation. Freeze the sorted routing table before any vCPU
+      // can read it concurrently, and give each vCPU its own hot lookup cache in `runLoop`.
+      bus.seal()
+      let count = max(1, configuration.cpuCount)
+      teamHandles = Array(repeating: nil, count: count)
+      secondaryStarts = Array(repeating: nil, count: count)
+      cpuStarted = Array(repeating: false, count: count)
+      cpuStarted[0] = true
 
-        for index in 1..<count {
-            let thread = Thread { [self] in cpuMain(index: index) }
-            thread.name = "dory-hv.vcpu\(index)"
-            thread.qualityOfService = RawHVSchedulingPolicy.vCPUThreadQualityOfService
-            thread.stackSize = 1 << 21
-            thread.start()
-        }
+      for index in 1..<count {
+        let thread = Thread { [self] in cpuMain(index: index) }
+        thread.name = "dory-hv.vcpu\(index)"
+        thread.qualityOfService = RawHVSchedulingPolicy.vCPUThreadQualityOfService
+        thread.stackSize = 1 << 21
+        thread.start()
+      }
 
-        teamCondition.lock()
-        while registeredCPUs < count - 1, stopReason == nil {
-            teamCondition.wait()
-        }
-        let abortedDuringBringup = stopReason != nil
-        teamCondition.unlock()
+      teamCondition.lock()
+      while registeredCPUs < count - 1, stopReason == nil {
+        teamCondition.wait()
+      }
+      let abortedDuringBringup = stopReason != nil
+      teamCondition.unlock()
 
-        if !abortedDuringBringup {
-            cpuMain(index: 0)
-        }
+      if !abortedDuringBringup {
+        cpuMain(index: 0)
+      }
 
-        // The guest has stopped (or bring-up failed). Wake every secondary, cancel any still
-        // running under Hypervisor.framework, and JOIN them all before returning so the caller
-        // (and Machine.deinit -> hv_vm_destroy) never races a live vCPU thread.
-        let terminalReason = stopReason
-            ?? .crash("boot CPU exited without a published stop reason")
-        stopAll(terminalReason)
-        teamCondition.lock()
-        while finishedSecondaries < count - 1 {
-            teamCondition.wait()
-        }
-        defer { teamCondition.unlock() }
-        return stopReason ?? terminalReason
+      // The guest has stopped (or bring-up failed). Wake every secondary, cancel any still
+      // running under Hypervisor.framework, and JOIN them all before returning so the caller
+      // (and Machine.deinit -> hv_vm_destroy) never races a live vCPU thread.
+      let terminalReason =
+        stopReason
+        ?? .crash("boot CPU exited without a published stop reason")
+      stopAll(terminalReason)
+      teamCondition.lock()
+      while finishedSecondaries < count - 1 {
+        teamCondition.wait()
+      }
+      defer { teamCondition.unlock() }
+      return stopReason ?? terminalReason
     }
 
     private func cpuMain(index: Int) {
-        RawHVSchedulingPolicy.applyToCurrentVCPUThread()
-        defer {
-            if index != 0 {
-                teamCondition.lock()
-                finishedSecondaries += 1
-                teamCondition.broadcast()
-                teamCondition.unlock()
-            }
+      RawHVSchedulingPolicy.applyToCurrentVCPUThread()
+      defer {
+        if index != 0 {
+          teamCondition.lock()
+          finishedSecondaries += 1
+          teamCondition.broadcast()
+          teamCondition.unlock()
         }
-        do {
-            let vcpu = try VCPU()
-            try vcpu.writeSystem(HV_SYS_REG_MPIDR_EL1, 0x8000_0000 | UInt64(index))
-            register(vcpu: vcpu, index: index)
+      }
+      do {
+        let vcpu = try VCPU()
+        try vcpu.writeSystem(HV_SYS_REG_MPIDR_EL1, 0x8000_0000 | UInt64(index))
+        register(vcpu: vcpu, index: index)
 
-            if index == 0 {
-                try vcpu.write(HV_REG_CPSR, initialPstate)
-                try vcpu.write(HV_REG_PC, entryPoint)
-                try vcpu.write(HV_REG_X0, dtbAddress)
-                try vcpu.write(HV_REG_X1, 0)
-                try vcpu.write(HV_REG_X2, 0)
-                try vcpu.write(HV_REG_X3, 0)
-            } else {
-                guard let start = parkUntilStarted(index: index) else { return }
-                try vcpu.write(HV_REG_CPSR, 0x3C5)
-                try vcpu.write(HV_REG_PC, start.entry)
-                try vcpu.write(HV_REG_X0, start.context)
-            }
-
-            runLoop(vcpu: vcpu, index: index)
-        } catch {
-            stopAll(.crash("cpu\(index) failed: \(error)"))
+        if index == 0 {
+          try vcpu.write(HV_REG_CPSR, initialPstate)
+          try vcpu.write(HV_REG_PC, entryPoint)
+          try vcpu.write(HV_REG_X0, dtbAddress)
+          try vcpu.write(HV_REG_X1, 0)
+          try vcpu.write(HV_REG_X2, 0)
+          try vcpu.write(HV_REG_X3, 0)
+        } else {
+          guard let start = parkUntilStarted(index: index) else { return }
+          try vcpu.write(HV_REG_CPSR, 0x3C5)
+          try vcpu.write(HV_REG_PC, start.entry)
+          try vcpu.write(HV_REG_X0, start.context)
         }
+
+        runLoop(vcpu: vcpu, index: index)
+      } catch {
+        stopAll(.crash("cpu\(index) failed: \(error)"))
+      }
     }
 
     private func register(vcpu: VCPU, index: Int) {
-        // Map this vCPU to its redistributor frame by the base the GIC actually assigned it,
-        // rather than assuming creation order.
-        var redistributorBase: hv_ipa_t = 0
-        var frameIndex = index
-        if hv_gic_get_redistributor_base(vcpu.handle, &redistributorBase) == HV_SUCCESS,
-           redistributorMMIO.stride > 0 {
-            frameIndex = Int((redistributorBase - GuestLayout.gicRedistributorBase) / redistributorMMIO.stride)
-        }
-        teamCondition.lock()
-        teamHandles[index] = vcpu.handle
-        redistributorMMIO.setHandle(vcpu.handle, at: frameIndex)
-        if index != 0 { registeredCPUs += 1 }
-        teamCondition.broadcast()
-        teamCondition.unlock()
+      // Map this vCPU to its redistributor frame by the base the GIC actually assigned it,
+      // rather than assuming creation order.
+      var redistributorBase: hv_ipa_t = 0
+      var frameIndex = index
+      if hv_gic_get_redistributor_base(vcpu.handle, &redistributorBase) == HV_SUCCESS,
+        redistributorMMIO.stride > 0
+      {
+        frameIndex = Int(
+          (redistributorBase - GuestLayout.gicRedistributorBase) / redistributorMMIO.stride)
+      }
+      teamCondition.lock()
+      teamHandles[index] = vcpu.handle
+      redistributorMMIO.setHandle(vcpu.handle, at: frameIndex)
+      if index != 0 { registeredCPUs += 1 }
+      teamCondition.broadcast()
+      teamCondition.unlock()
     }
 
     private func parkUntilStarted(index: Int) -> (entry: UInt64, context: UInt64)? {
-        teamCondition.lock()
-        defer { teamCondition.unlock() }
-        while secondaryStarts[index] == nil, stopReason == nil {
-            teamCondition.wait()
-        }
-        return secondaryStarts[index]
+      teamCondition.lock()
+      defer { teamCondition.unlock() }
+      while secondaryStarts[index] == nil, stopReason == nil {
+        teamCondition.wait()
+      }
+      return secondaryStarts[index]
     }
 
     private func stopAll(_ reason: GuestStopReason) {
-        teamCondition.lock()
-        let publishesReason = stopReason == nil
-        if publishesReason { stopReason = reason }
-        stopSignal.request()
-        // Cancel running vCPUs exactly once: a second pass could touch a handle a finished thread
-        // has already destroyed.
-        var handles: [hv_vcpu_t] = []
-        if !vcpusExited {
-            vcpusExited = true
-            handles = teamHandles.compactMap { $0 }
-        }
-        teamCondition.broadcast()
-        teamCondition.unlock()
-        if publishesReason {
-            FileHandle.standardError.write(
-                Data("dory-hv: guest stop reason: \(reason)\n".utf8)
-            )
-        }
-        if !handles.isEmpty {
-            hv_vcpus_exit(&handles, UInt32(handles.count))
-        }
+      teamCondition.lock()
+      let publishesReason = stopReason == nil
+      if publishesReason { stopReason = reason }
+      stopSignal.request()
+      // Cancel running vCPUs exactly once: a second pass could touch a handle a finished thread
+      // has already destroyed.
+      var handles: [hv_vcpu_t] = []
+      if !vcpusExited {
+        vcpusExited = true
+        handles = teamHandles.compactMap { $0 }
+      }
+      teamCondition.broadcast()
+      teamCondition.unlock()
+      if publishesReason {
+        FileHandle.standardError.write(
+          Data("dory-hv: guest stop reason: \(reason)\n".utf8)
+        )
+      }
+      if !handles.isEmpty {
+        hv_vcpus_exit(&handles, UInt32(handles.count))
+      }
     }
 
     private func startSecondary(mpidr: UInt64, entry: UInt64, context: UInt64) -> Int64 {
-        let index = Int(mpidr & 0xFF)
-        teamCondition.lock()
-        defer { teamCondition.unlock() }
-        guard index > 0, index < cpuStarted.count else { return -2 }  // INVALID_PARAMETERS
-        guard !cpuStarted[index] else { return -4 }  // ALREADY_ON
-        cpuStarted[index] = true
-        secondaryStarts[index] = (entry: entry, context: context)
-        teamCondition.broadcast()
-        return 0
+      let index = Int(mpidr & 0xFF)
+      teamCondition.lock()
+      defer { teamCondition.unlock() }
+      guard index > 0, index < cpuStarted.count else { return -2 }  // INVALID_PARAMETERS
+      guard !cpuStarted[index] else { return -4 }  // ALREADY_ON
+      cpuStarted[index] = true
+      secondaryStarts[index] = (entry: entry, context: context)
+      teamCondition.broadcast()
+      return 0
     }
 
     private func runLoop(vcpu: VCPU, index: Int) {
-        var mmioRouteCache = MMIORouteCache()
-        while true {
-            if stopSignal.isRequested { return }
+      var mmioRouteCache = MMIORouteCache()
+      while true {
+        if stopSignal.isRequested { return }
 
-            do {
-                let event = try vcpu.run()
-                switch event {
-                case .canceled:
-                    if !stopSignal.isRequested {
-                        stopAll(.crash(
-                            "cpu\(index) Hypervisor run was canceled without a stop request"
-                        ))
-                    }
-                    return
-                case .vtimerActivated:
-                    // With the in-kernel GIC the timer PPI is delivered by the GIC itself; unmask
-                    // and continue so the vtimer can fire again.
-                    try vcpu.setVTimerMask(false)
-                case .exception(let syndrome, _, let physicalAddress):
-                    if let stop = try handleException(
-                        vcpu: vcpu,
-                        syndrome: syndrome,
-                        physicalAddress: physicalAddress,
-                        mmioRouteCache: &mmioRouteCache
-                    ) {
-                        stopAll(stop)
-                        return
-                    }
-                case .unknown(let raw):
-                    stopAll(.crash("unknown exit reason \(raw)"))
-                    return
-                }
-            } catch {
-                stopAll(.crash("\(error)"))
-                return
+        do {
+          let event = try vcpu.run()
+          switch event {
+          case .canceled:
+            if !stopSignal.isRequested {
+              stopAll(
+                .crash(
+                  "cpu\(index) Hypervisor run was canceled without a stop request"
+                ))
             }
+            return
+          case .vtimerActivated:
+            // With the in-kernel GIC the timer PPI is delivered by the GIC itself; unmask
+            // and continue so the vtimer can fire again.
+            try vcpu.setVTimerMask(false)
+          case .exception(let syndrome, _, let physicalAddress):
+            if let stop = try handleException(
+              vcpu: vcpu,
+              syndrome: syndrome,
+              physicalAddress: physicalAddress,
+              mmioRouteCache: &mmioRouteCache
+            ) {
+              stopAll(stop)
+              return
+            }
+          case .unknown(let raw):
+            stopAll(.crash("unknown exit reason \(raw)"))
+            return
+          }
+        } catch {
+          stopAll(.crash("\(error)"))
+          return
         }
+      }
     }
 
     private func handleException(
-        vcpu: VCPU,
-        syndrome: UInt64,
-        physicalAddress: UInt64,
-        mmioRouteCache: inout MMIORouteCache
+      vcpu: VCPU,
+      syndrome: UInt64,
+      physicalAddress: UInt64,
+      mmioRouteCache: inout MMIORouteCache
     ) throws -> GuestStopReason? {
-        guard let exceptionClass = ExceptionClass(syndrome: syndrome) else {
-            let pc = try vcpu.read(HV_REG_PC)
-            return .crash("unhandled exception class \(syndrome >> 26), syndrome 0x\(String(syndrome, radix: 16)), pc 0x\(String(pc, radix: 16))")
+      guard let exceptionClass = ExceptionClass(syndrome: syndrome) else {
+        let pc = try vcpu.read(HV_REG_PC)
+        return .crash(
+          "unhandled exception class \(syndrome >> 26), syndrome 0x\(String(syndrome, radix: 16)), pc 0x\(String(pc, radix: 16))"
+        )
+      }
+      switch exceptionClass {
+      case .dataAbortLowerEL:
+        try handleMMIO(
+          vcpu: vcpu,
+          syndrome: syndrome,
+          physicalAddress: physicalAddress,
+          routeCache: &mmioRouteCache
+        )
+        return nil
+      case .instructionAbortLowerEL:
+        guard restoreIfReleasedRAM(physicalAddress) else {
+          return .crash(
+            "instruction abort outside RAM at pa 0x\(String(physicalAddress, radix: 16))")
         }
-        switch exceptionClass {
-        case .dataAbortLowerEL:
-            try handleMMIO(
-                vcpu: vcpu,
-                syndrome: syndrome,
-                physicalAddress: physicalAddress,
-                routeCache: &mmioRouteCache
-            )
-            return nil
-        case .instructionAbortLowerEL:
-            guard restoreIfReleasedRAM(physicalAddress) else {
-                return .crash("instruction abort outside RAM at pa 0x\(String(physicalAddress, radix: 16))")
-            }
-            return nil
-        case .hvc64:
-            // HVC returns with PC already past the instruction; unknown hypercalls get
-            // SMCCC NOT_SUPPORTED.
-            try vcpu.write(HV_REG_X0, UInt64(bitPattern: -1))
-            return nil
-        case .smc64:
-            let result = try handleSMC(vcpu: vcpu)
-            try advancePC(vcpu)
-            return result
-        case .systemRegisterTrap:
-            try handleSystemRegisterTrap(vcpu: vcpu, syndrome: syndrome)
-            try advancePC(vcpu)
-            return nil
-        }
+        return nil
+      case .hvc64:
+        // HVC returns with PC already past the instruction; unknown hypercalls get
+        // SMCCC NOT_SUPPORTED.
+        try vcpu.write(HV_REG_X0, UInt64(bitPattern: -1))
+        return nil
+      case .smc64:
+        let result = try handleSMC(vcpu: vcpu)
+        try advancePC(vcpu)
+        return result
+      case .systemRegisterTrap:
+        try handleSystemRegisterTrap(vcpu: vcpu, syndrome: syndrome)
+        try advancePC(vcpu)
+        return nil
+      }
     }
 
     private func handleMMIO(
-        vcpu: VCPU,
-        syndrome: UInt64,
-        physicalAddress: UInt64,
-        routeCache: inout MMIORouteCache
+      vcpu: VCPU,
+      syndrome: UInt64,
+      physicalAddress: UInt64,
+      routeCache: inout MMIORouteCache
     ) throws {
-        if restoreIfReleasedRAM(physicalAddress) { return }
-        let abort = DataAbortInfo(syndrome: syndrome)
-        guard abort.isValid else {
-            let pc = try vcpu.read(HV_REG_PC)
-            throw VMError.unexpectedExit("data abort without syndrome info at pa 0x\(String(physicalAddress, radix: 16)), pc 0x\(String(pc, radix: 16))")
+      if restoreIfReleasedRAM(physicalAddress) { return }
+      let abort = DataAbortInfo(syndrome: syndrome)
+      guard abort.isValid else {
+        let pc = try vcpu.read(HV_REG_PC)
+        throw VMError.unexpectedExit(
+          "data abort without syndrome info at pa 0x\(String(physicalAddress, radix: 16)), pc 0x\(String(pc, radix: 16))"
+        )
+      }
+      guard let (device, offset) = bus.device(for: physicalAddress, cache: &routeCache) else {
+        let pc = try vcpu.read(HV_REG_PC)
+        throw VMError.unexpectedExit(
+          "guest touched unmapped pa 0x\(String(physicalAddress, radix: 16)), pc 0x\(String(pc, radix: 16))"
+        )
+      }
+      if abort.isWrite {
+        let value = abort.registerIndex == 31 ? 0 : try vcpu.read(registerFor(abort.registerIndex))
+        device.write(offset: offset, value: truncate(value, width: abort.width), width: abort.width)
+      } else {
+        var value = device.read(offset: offset, width: abort.width)
+        value = truncate(value, width: abort.width)
+        if abort.signExtend {
+          value = signExtend(value, width: abort.width, to64: abort.sixtyFourBit)
+        } else if !abort.sixtyFourBit {
+          value &= 0xFFFF_FFFF
         }
-        guard let (device, offset) = bus.device(for: physicalAddress, cache: &routeCache) else {
-            let pc = try vcpu.read(HV_REG_PC)
-            throw VMError.unexpectedExit("guest touched unmapped pa 0x\(String(physicalAddress, radix: 16)), pc 0x\(String(pc, radix: 16))")
+        if abort.registerIndex != 31 {
+          try vcpu.write(registerFor(abort.registerIndex), value)
         }
-        if abort.isWrite {
-            let value = abort.registerIndex == 31 ? 0 : try vcpu.read(registerFor(abort.registerIndex))
-            device.write(offset: offset, value: truncate(value, width: abort.width), width: abort.width)
-        } else {
-            var value = device.read(offset: offset, width: abort.width)
-            value = truncate(value, width: abort.width)
-            if abort.signExtend {
-                value = signExtend(value, width: abort.width, to64: abort.sixtyFourBit)
-            } else if !abort.sixtyFourBit {
-                value &= 0xFFFF_FFFF
-            }
-            if abort.registerIndex != 31 {
-                try vcpu.write(registerFor(abort.registerIndex), value)
-            }
-        }
-        try advancePC(vcpu)
+      }
+      try advancePC(vcpu)
     }
 
     private func handleSMC(vcpu: VCPU) throws -> GuestStopReason? {
-        let function = UInt32(truncatingIfNeeded: try vcpu.read(HV_REG_X0))
-        switch function {
-        case PSCI.version:
-            try vcpu.write(HV_REG_X0, 0x0001_0000)
-        case PSCI.features:
-            let queried = UInt32(truncatingIfNeeded: try vcpu.read(HV_REG_X1))
-            let supported: Set<UInt32> = [PSCI.version, PSCI.features, PSCI.systemOff, PSCI.systemReset, PSCI.cpuOn, PSCI.migrateInfoType]
-            try vcpu.write(HV_REG_X0, supported.contains(queried) ? 0 : UInt64(bitPattern: -1))
-        case PSCI.migrateInfoType:
-            try vcpu.write(HV_REG_X0, 2)  // migration not required
-        case PSCI.systemOff:
-            return .powerOff
-        case PSCI.systemReset:
-            return .reset
-        case PSCI.cpuOn:
-            let target = try vcpu.read(HV_REG_X1)
-            let entry = try vcpu.read(HV_REG_X2)
-            let context = try vcpu.read(HV_REG_X3)
-            let result = startSecondary(mpidr: target, entry: entry, context: context)
-            try vcpu.write(HV_REG_X0, UInt64(bitPattern: Int64(result)))
-        default:
-            try vcpu.write(HV_REG_X0, UInt64(bitPattern: -1))
-        }
-        return nil
+      let function = UInt32(truncatingIfNeeded: try vcpu.read(HV_REG_X0))
+      switch function {
+      case PSCI.version:
+        try vcpu.write(HV_REG_X0, 0x0001_0000)
+      case PSCI.features:
+        let queried = UInt32(truncatingIfNeeded: try vcpu.read(HV_REG_X1))
+        let supported: Set<UInt32> = [
+          PSCI.version, PSCI.features, PSCI.systemOff, PSCI.systemReset, PSCI.cpuOn,
+          PSCI.migrateInfoType,
+        ]
+        try vcpu.write(HV_REG_X0, supported.contains(queried) ? 0 : UInt64(bitPattern: -1))
+      case PSCI.migrateInfoType:
+        try vcpu.write(HV_REG_X0, 2)  // migration not required
+      case PSCI.systemOff:
+        return .powerOff
+      case PSCI.systemReset:
+        return .reset
+      case PSCI.cpuOn:
+        let target = try vcpu.read(HV_REG_X1)
+        let entry = try vcpu.read(HV_REG_X2)
+        let context = try vcpu.read(HV_REG_X3)
+        let result = startSecondary(mpidr: target, entry: entry, context: context)
+        try vcpu.write(HV_REG_X0, UInt64(bitPattern: Int64(result)))
+      default:
+        try vcpu.write(HV_REG_X0, UInt64(bitPattern: -1))
+      }
+      return nil
     }
 
     private func handleSystemRegisterTrap(vcpu: VCPU, syndrome: UInt64) throws {
-        // RAZ/WI for trapped system registers the hardware does not virtualize (debug, PMU).
-        let isRead = syndrome & 1 == 1
-        let registerIndex = Int((syndrome >> 5) & 0x1F)
-        if sysregLogCount < 8 {
-            sysregLogCount += 1
-            let encoding = String(format: "op0=%d op1=%d crn=%d crm=%d op2=%d",
-                                  Int((syndrome >> 20) & 0b11), Int((syndrome >> 14) & 0b111),
-                                  Int((syndrome >> 10) & 0b1111), Int((syndrome >> 1) & 0b1111),
-                                  Int((syndrome >> 17) & 0b111))
-            FileHandle.standardError.write(Data("dory-hv: sysreg trap (\(isRead ? "read" : "write")) \(encoding), RAZ/WI\n".utf8))
-        }
-        if isRead && registerIndex != 31 {
-            try vcpu.write(registerFor(registerIndex), 0)
-        }
+      // RAZ/WI for trapped system registers the hardware does not virtualize (debug, PMU).
+      let isRead = syndrome & 1 == 1
+      let registerIndex = Int((syndrome >> 5) & 0x1F)
+      if sysregLogCount < 8 {
+        sysregLogCount += 1
+        let encoding = String(
+          format: "op0=%d op1=%d crn=%d crm=%d op2=%d",
+          Int((syndrome >> 20) & 0b11), Int((syndrome >> 14) & 0b111),
+          Int((syndrome >> 10) & 0b1111), Int((syndrome >> 1) & 0b1111),
+          Int((syndrome >> 17) & 0b111))
+        FileHandle.standardError.write(
+          Data("dory-hv: sysreg trap (\(isRead ? "read" : "write")) \(encoding), RAZ/WI\n".utf8))
+      }
+      if isRead && registerIndex != 31 {
+        try vcpu.write(registerFor(registerIndex), 0)
+      }
     }
 
     /// A fault inside the RAM window MIGHT be the guest touching a page that free page reporting
@@ -931,51 +963,51 @@ public final class Machine: @unchecked Sendable {
     /// this returns false, so a genuine guest fault falls through to the crash path with a
     /// diagnostic instead of an unkillable refault loop.
     private func restoreIfReleasedRAM(_ physicalAddress: UInt64) -> Bool {
-        memory.restorePage(guestAddress: physicalAddress)
+      memory.restorePage(guestAddress: physicalAddress)
     }
 
     private func advancePC(_ vcpu: VCPU) throws {
-        let pc = try vcpu.read(HV_REG_PC)
-        try vcpu.write(HV_REG_PC, pc + 4)
+      let pc = try vcpu.read(HV_REG_PC)
+      try vcpu.write(HV_REG_PC, pc + 4)
     }
 
     private func registerFor(_ index: Int) -> hv_reg_t {
-        hv_reg_t(HV_REG_X0.rawValue + UInt32(index))
+      hv_reg_t(HV_REG_X0.rawValue + UInt32(index))
     }
 
     private func truncate(_ value: UInt64, width: Int) -> UInt64 {
-        switch width {
-        case 1: return value & 0xFF
-        case 2: return value & 0xFFFF
-        case 4: return value & 0xFFFF_FFFF
-        default: return value
-        }
+      switch width {
+      case 1: return value & 0xFF
+      case 2: return value & 0xFFFF
+      case 4: return value & 0xFFFF_FFFF
+      default: return value
+      }
     }
 
     private func signExtend(_ value: UInt64, width: Int, to64: Bool) -> UInt64 {
-        let bits = width * 8
-        let signBit = UInt64(1) << (bits - 1)
-        var extended = value
-        if value & signBit != 0 {
-            extended |= ~((UInt64(1) << bits) - 1)
-        }
-        return to64 ? extended : extended & 0xFFFF_FFFF
+      let bits = width * 8
+      let signBit = UInt64(1) << (bits - 1)
+      var extended = value
+      if value & signBit != 0 {
+        extended |= ~((UInt64(1) << bits) - 1)
+      }
+      return to64 ? extended : extended & 0xFFFF_FFFF
     }
-}
+  }
 
-enum PSCI {
+  enum PSCI {
     static let version: UInt32 = 0x8400_0000
     static let cpuOn: UInt32 = 0xC400_0003
     static let migrateInfoType: UInt32 = 0x8400_0006
     static let systemOff: UInt32 = 0x8400_0008
     static let systemReset: UInt32 = 0x8400_0009
     static let features: UInt32 = 0x8400_000A
-}
+  }
 #else
-/// Device-wiring view of the x86 guest layout. Every value is sourced from `X86GuestLayout`, the
-/// single source of truth also used to build the PVH boot plan, MPTABLE, and kernel command line,
-/// so the device model and the boot contract can never drift apart.
-public enum GuestLayout {
+  /// Device-wiring view of the x86 guest layout. Every value is sourced from `X86GuestLayout`, the
+  /// single source of truth also used to build the PVH boot plan, MPTABLE, and kernel command line,
+  /// so the device model and the boot contract can never drift apart.
+  public enum GuestLayout {
     public static let uartBase = X86GuestLayout.uartBase
     public static let uartIRQ = UInt32(X86GuestLayout.uartIRQ)
     public static let rtcBase = X86GuestLayout.rtcBase
@@ -985,47 +1017,47 @@ public enum GuestLayout {
     public static let virtioFirstIRQ = UInt32(X86GuestLayout.virtioFirstIRQ)
     public static let ramBase = X86GuestLayout.ramBase
     public static let daxWindowBase = X86GuestLayout.daxWindowBase
-}
+  }
 
-public struct MachineConfiguration {
+  public struct MachineConfiguration {
     public let bootPayload: MachineBootPayload
     public var commandLine: String
     public var memoryBytes: UInt64
     public var cpuCount: Int
 
     public init(
-        kernelPath: String,
-        initrdPath: String? = nil,
-        commandLine: String,
-        memoryBytes: UInt64,
-        cpuCount: Int
+      kernelPath: String,
+      initrdPath: String? = nil,
+      commandLine: String,
+      memoryBytes: UInt64,
+      cpuCount: Int
     ) {
-        self.bootPayload = .legacyPaths(kernel: kernelPath, initrd: initrdPath)
-        self.commandLine = commandLine
-        self.memoryBytes = memoryBytes
-        self.cpuCount = cpuCount
+      self.bootPayload = .legacyPaths(kernel: kernelPath, initrd: initrdPath)
+      self.commandLine = commandLine
+      self.memoryBytes = memoryBytes
+      self.cpuCount = cpuCount
     }
 
     public init(
-        bootPayload: MachineBootPayload,
-        commandLine: String,
-        memoryBytes: UInt64,
-        cpuCount: Int
+      bootPayload: MachineBootPayload,
+      commandLine: String,
+      memoryBytes: UInt64,
+      cpuCount: Int
     ) {
-        self.bootPayload = bootPayload
-        self.commandLine = commandLine
-        self.memoryBytes = memoryBytes
-        self.cpuCount = cpuCount
+      self.bootPayload = bootPayload
+      self.commandLine = commandLine
+      self.memoryBytes = memoryBytes
+      self.cpuCount = cpuCount
     }
-}
+  }
 
-public enum GuestStopReason: Sendable {
+  public enum GuestStopReason: Sendable {
     case powerOff
     case reset
     case crash(String)
-}
+  }
 
-public final class Machine: @unchecked Sendable {
+  public final class Machine: @unchecked Sendable {
     public let configuration: MachineConfiguration
     public let memory: GuestMemory
     public let bus = MMIOBus()
@@ -1035,306 +1067,307 @@ public final class Machine: @unchecked Sendable {
     private let stopLock = NSLock()
     private var stopReason: GuestStopReason?
     private let virtioSlotOwnership = VirtioMMIOSlotOwnership(
-        maximumSlots: GuestLayout.virtioSlotCount,
-        baseAddress: GuestLayout.virtioBase,
-        slotSize: GuestLayout.virtioSlotSize,
-        firstInterrupt: GuestLayout.virtioFirstIRQ
+      maximumSlots: GuestLayout.virtioSlotCount,
+      baseAddress: GuestLayout.virtioBase,
+      slotSize: GuestLayout.virtioSlotSize,
+      firstInterrupt: GuestLayout.virtioFirstIRQ
     )
 
     public init(configuration: MachineConfiguration) throws {
-        try hvCreateVM()
-        var configuration = configuration
-        if configuration.memoryBytes > X86GuestLayout.mmioHoleBase {
-            fputs(
-                "dory-hv: capping guest memory to \(X86GuestLayout.mmioHoleBase >> 20) MiB (x86 MMIO hole at 0x\(String(X86GuestLayout.mmioHoleBase, radix: 16)))\n",
-                stderr
-            )
-            configuration.memoryBytes = X86GuestLayout.mmioHoleBase
-        }
-        self.configuration = configuration
-        self.memory = try GuestMemory(guestBase: 0, size: configuration.memoryBytes)
-        try memory.mapIntoGuest()
+      try hvCreateVM()
+      var configuration = configuration
+      if configuration.memoryBytes > X86GuestLayout.mmioHoleBase {
+        fputs(
+          "dory-hv: capping guest memory to \(X86GuestLayout.mmioHoleBase >> 20) MiB (x86 MMIO hole at 0x\(String(X86GuestLayout.mmioHoleBase, radix: 16)))\n",
+          stderr
+        )
+        configuration.memoryBytes = X86GuestLayout.mmioHoleBase
+      }
+      self.configuration = configuration
+      self.memory = try GuestMemory(guestBase: 0, size: configuration.memoryBytes)
+      try memory.mapIntoGuest()
     }
 
     deinit {
-        hv_vm_destroy()
+      hv_vm_destroy()
     }
 
     public func loadBootPayload() throws {
-        try configuration.bootPayload.consumeForGuestLoad { kernelData, loadInitrd in
-            let kernel = try PVHKernelImage(data: kernelData)
-            entryPoint = try kernel.load(into: memory)
-            startInfoAddress = X86GuestLayout.pvhStartInfo
+      try configuration.bootPayload.consumeForGuestLoad { kernelData, loadInitrd in
+        let kernel = try PVHKernelImage(data: kernelData)
+        entryPoint = try kernel.load(into: memory)
+        startInfoAddress = X86GuestLayout.pvhStartInfo
 
-            let initrdData = try loadInitrd()
-            if let initrdData, initrdData.isEmpty {
-                throw VMError.bootFailure("initrd is empty")
-            }
-            let initrdAddress = X86GuestLayout.initrd
-            if let initrdData {
-                let (end, overflowed) = initrdAddress.addingReportingOverflow(UInt64(initrdData.count))
-                guard !overflowed, end <= configuration.memoryBytes else {
-                    throw VMError.bootFailure("initrd does not fit in guest memory")
-                }
-                try copyBootData(initrdData, at: initrdAddress)
-            }
-
-            let virtioDevices = try attachedVirtioSlots.map { identity -> X86VirtioMMIODevice in
-                guard let interrupt = UInt8(exactly: identity.interrupt) else {
-                    throw VMError.invalidConfiguration(
-                        "virtio slot \(identity.slot) interrupt \(identity.interrupt) exceeds x86 IOAPIC encoding"
-                    )
-                }
-                return X86VirtioMMIODevice(
-                    slot: identity.slot,
-                    baseAddress: identity.baseAddress,
-                    size: identity.size,
-                    irq: interrupt
-                )
-            }
-            let plan = X86BootPlanBuilder.build(
-                baseCommandLine: configuration.commandLine,
-                memoryBytes: configuration.memoryBytes,
-                virtioDevices: virtioDevices
-            )
-            let pvh = PVHBootBuilder.build(
-                commandLine: plan.commandLine,
-                commandLinePhysicalAddress: X86GuestLayout.pvhCommandLine,
-                modulesPhysicalAddress: X86GuestLayout.pvhModules,
-                memoryMapPhysicalAddress: X86GuestLayout.pvhMemoryMap,
-                modules: initrdData.map {
-                    [PVHModule(physicalAddress: initrdAddress, size: UInt64($0.count))]
-                } ?? [],
-                memoryMap: plan.memoryMap
-            )
-            try memory.write(Array(pvh.startInfo), at: X86GuestLayout.pvhStartInfo)
-            try memory.write(Array(pvh.commandLine), at: X86GuestLayout.pvhCommandLine)
-            if !pvh.modules.isEmpty {
-                try memory.write(Array(pvh.modules), at: X86GuestLayout.pvhModules)
-            }
-            try memory.write(Array(pvh.memoryMap), at: X86GuestLayout.pvhMemoryMap)
-
-            let mpTable = MPTableBuilder.build(
-                tablePhysicalAddress: UInt32(X86GuestLayout.mpConfigurationTable),
-                cpuCount: configuration.cpuCount,
-                virtioInterruptPins: plan.virtioDevices.map(\.irq)
-            )
-            try memory.write(Array(mpTable.floatingPointer), at: X86GuestLayout.mpFloatingPointer)
-            try memory.write(Array(mpTable.configurationTable), at: X86GuestLayout.mpConfigurationTable)
+        let initrdData = try loadInitrd()
+        if let initrdData, initrdData.isEmpty {
+          throw VMError.bootFailure("initrd is empty")
         }
+        let initrdAddress = X86GuestLayout.initrd
+        if let initrdData {
+          let (end, overflowed) = initrdAddress.addingReportingOverflow(UInt64(initrdData.count))
+          guard !overflowed, end <= configuration.memoryBytes else {
+            throw VMError.bootFailure("initrd does not fit in guest memory")
+          }
+          try copyBootData(initrdData, at: initrdAddress)
+        }
+
+        let virtioDevices = try attachedVirtioSlots.map { identity -> X86VirtioMMIODevice in
+          guard let interrupt = UInt8(exactly: identity.interrupt) else {
+            throw VMError.invalidConfiguration(
+              "virtio slot \(identity.slot) interrupt \(identity.interrupt) exceeds x86 IOAPIC encoding"
+            )
+          }
+          return X86VirtioMMIODevice(
+            slot: identity.slot,
+            baseAddress: identity.baseAddress,
+            size: identity.size,
+            irq: interrupt
+          )
+        }
+        let plan = X86BootPlanBuilder.build(
+          baseCommandLine: configuration.commandLine,
+          memoryBytes: configuration.memoryBytes,
+          virtioDevices: virtioDevices
+        )
+        let pvh = PVHBootBuilder.build(
+          commandLine: plan.commandLine,
+          commandLinePhysicalAddress: X86GuestLayout.pvhCommandLine,
+          modulesPhysicalAddress: X86GuestLayout.pvhModules,
+          memoryMapPhysicalAddress: X86GuestLayout.pvhMemoryMap,
+          modules: initrdData.map {
+            [PVHModule(physicalAddress: initrdAddress, size: UInt64($0.count))]
+          } ?? [],
+          memoryMap: plan.memoryMap
+        )
+        try memory.write(Array(pvh.startInfo), at: X86GuestLayout.pvhStartInfo)
+        try memory.write(Array(pvh.commandLine), at: X86GuestLayout.pvhCommandLine)
+        if !pvh.modules.isEmpty {
+          try memory.write(Array(pvh.modules), at: X86GuestLayout.pvhModules)
+        }
+        try memory.write(Array(pvh.memoryMap), at: X86GuestLayout.pvhMemoryMap)
+
+        let mpTable = MPTableBuilder.build(
+          tablePhysicalAddress: UInt32(X86GuestLayout.mpConfigurationTable),
+          cpuCount: configuration.cpuCount,
+          virtioInterruptPins: plan.virtioDevices.map(\.irq)
+        )
+        try memory.write(Array(mpTable.floatingPointer), at: X86GuestLayout.mpFloatingPointer)
+        try memory.write(Array(mpTable.configurationTable), at: X86GuestLayout.mpConfigurationTable)
+      }
     }
 
     public func attachConsole(_ uart: UART16550) {
-        pioBus.attach(uart)
+      pioBus.attach(uart)
     }
 
     public func attachRTC(_ rtc: CMOSRTC) {
-        pioBus.attach(rtc)
+      pioBus.attach(rtc)
     }
 
     public func attachResetController(_ controller: I8042) {
-        pioBus.attach(controller)
+      pioBus.attach(controller)
     }
 
     public func raiseGSI(_ gsi: UInt32) {
-        _ = hv_vm_ioapic_pulse_irq(Int32(gsi))
+      _ = hv_vm_ioapic_pulse_irq(Int32(gsi))
     }
 
     public func raiseSPI(_ spi: UInt32) {
-        raiseGSI(spi)
+      raiseGSI(spi)
     }
 
     public func requestStop(_ reason: GuestStopReason) {
-        stopLock.lock()
-        if stopReason == nil {
-            stopReason = reason
-        }
-        stopLock.unlock()
+      stopLock.lock()
+      if stopReason == nil {
+        stopReason = reason
+      }
+      stopLock.unlock()
     }
 
     public func run() throws -> GuestStopReason {
-        if entryPoint == 0 || startInfoAddress == 0 {
-            try loadBootPayload()
-        }
-        bus.seal()
-        let vcpu = try VCPU()
-        try vcpu.configurePVHEntry(entryPoint: entryPoint, startInfoAddress: startInfoAddress)
-        var executor = X86VMExitExecutor()
+      if entryPoint == 0 || startInfoAddress == 0 {
+        try loadBootPayload()
+      }
+      bus.seal()
+      let vcpu = try VCPU()
+      try vcpu.configurePVHEntry(entryPoint: entryPoint, startInfoAddress: startInfoAddress)
+      var executor = X86VMExitExecutor()
 
-        while true {
-            if let reason = currentStopReason() {
-                return reason
-            }
-            let state: X86VMExitState
-            switch try vcpu.run() {
-            case .vmExit(let exitState):
-                state = exitState
-            }
-            var registers = try vcpu.snapshotGeneralRegisters()
-            let action = try executor.execute(state: state, registers: &registers, pioBus: pioBus)
-            try vcpu.applyGeneralRegisters(registers)
-            switch action {
-            case .advanceRIP(let length):
-                try vcpu.advanceRIP(by: length)
-            case .writeMSR(let write, let length):
-                try vcpu.applyGuestMSRWrite(write)
-                try vcpu.advanceRIP(by: length)
-            case .controlRegister(let controlRegister):
-                try handleControlRegister(controlRegister, vcpu: vcpu, registers: &registers)
-                try vcpu.applyGeneralRegisters(registers)
-                try vcpu.advanceRIP(by: controlRegister.instructionLength)
-            case .invalidateTLB(let length):
-                try vcpu.invalidateTLB()
-                try vcpu.advanceRIP(by: length)
-            case .halted:
-                try vcpu.advanceRIP(by: state.instructionLength)
-                usleep(1_000)
-            case .eptViolation(let violation):
-                if memory.restorePage(guestAddress: violation.guestPhysicalAddress) {
-                    continue
-                }
-                let ripAdvance = try handleEPTViolation(violation, vcpu: vcpu, registers: &registers)
-                try vcpu.applyGeneralRegisters(registers)
-                try vcpu.advanceRIP(by: UInt32(ripAdvance))
-            case .eptMisconfiguration(let guestPhysicalAddress):
-                throw VMError.unexpectedExit(
-                    "x86 EPT misconfiguration at gpa 0x\(String(guestPhysicalAddress, radix: 16))"
-                )
-            }
+      while true {
+        if let reason = currentStopReason() {
+          return reason
         }
+        let state: X86VMExitState
+        switch try vcpu.run() {
+        case .vmExit(let exitState):
+          state = exitState
+        }
+        var registers = try vcpu.snapshotGeneralRegisters()
+        let action = try executor.execute(state: state, registers: &registers, pioBus: pioBus)
+        try vcpu.applyGeneralRegisters(registers)
+        switch action {
+        case .advanceRIP(let length):
+          try vcpu.advanceRIP(by: length)
+        case .writeMSR(let write, let length):
+          try vcpu.applyGuestMSRWrite(write)
+          try vcpu.advanceRIP(by: length)
+        case .controlRegister(let controlRegister):
+          try handleControlRegister(controlRegister, vcpu: vcpu, registers: &registers)
+          try vcpu.applyGeneralRegisters(registers)
+          try vcpu.advanceRIP(by: controlRegister.instructionLength)
+        case .invalidateTLB(let length):
+          try vcpu.invalidateTLB()
+          try vcpu.advanceRIP(by: length)
+        case .halted:
+          try vcpu.advanceRIP(by: state.instructionLength)
+          usleep(1_000)
+        case .eptViolation(let violation):
+          if memory.restorePage(guestAddress: violation.guestPhysicalAddress) {
+            continue
+          }
+          let ripAdvance = try handleEPTViolation(violation, vcpu: vcpu, registers: &registers)
+          try vcpu.applyGeneralRegisters(registers)
+          try vcpu.advanceRIP(by: UInt32(ripAdvance))
+        case .eptMisconfiguration(let guestPhysicalAddress):
+          throw VMError.unexpectedExit(
+            "x86 EPT misconfiguration at gpa 0x\(String(guestPhysicalAddress, radix: 16))"
+          )
+        }
+      }
     }
 
     private func currentStopReason() -> GuestStopReason? {
-        stopLock.lock()
-        defer { stopLock.unlock() }
-        return stopReason
+      stopLock.lock()
+      defer { stopLock.unlock() }
+      return stopReason
     }
 
     private func handleControlRegister(
-        _ exit: X86ControlRegisterExit,
-        vcpu: VCPU,
-        registers: inout X86RegisterState
+      _ exit: X86ControlRegisterExit,
+      vcpu: VCPU,
+      registers: inout X86RegisterState
     ) throws {
-        switch exit.access {
-        case .moveToCR:
-            try vcpu.write(controlRegister(exit.controlRegister), registers.read(exit.register))
-        case .moveFromCR:
-            registers.write(exit.register, value: try vcpu.read(controlRegister(exit.controlRegister)), width: 8)
-        case .clts:
-            let cr0 = try vcpu.read(HV_X86_CR0)
-            try vcpu.write(HV_X86_CR0, cr0 & ~(1 << 3))
-        case .lmsw:
-            let cr0 = try vcpu.read(HV_X86_CR0)
-            var lowBits = UInt64(exit.lmswSourceData & 0xF)
-            if cr0 & 1 != 0 {
-                lowBits |= 1
-            }
-            try vcpu.write(HV_X86_CR0, (cr0 & ~0xF) | lowBits)
+      switch exit.access {
+      case .moveToCR:
+        try vcpu.write(controlRegister(exit.controlRegister), registers.read(exit.register))
+      case .moveFromCR:
+        registers.write(
+          exit.register, value: try vcpu.read(controlRegister(exit.controlRegister)), width: 8)
+      case .clts:
+        let cr0 = try vcpu.read(HV_X86_CR0)
+        try vcpu.write(HV_X86_CR0, cr0 & ~(1 << 3))
+      case .lmsw:
+        let cr0 = try vcpu.read(HV_X86_CR0)
+        var lowBits = UInt64(exit.lmswSourceData & 0xF)
+        if cr0 & 1 != 0 {
+          lowBits |= 1
         }
+        try vcpu.write(HV_X86_CR0, (cr0 & ~0xF) | lowBits)
+      }
     }
 
     private func controlRegister(_ number: UInt8) throws -> hv_x86_reg_t {
-        switch number {
-        case 0:
-            return HV_X86_CR0
-        case 3:
-            return HV_X86_CR3
-        case 4:
-            return HV_X86_CR4
-        case 8:
-            return HV_X86_TPR
-        default:
-            throw VMError.unexpectedExit("unsupported x86 control register CR\(number)")
-        }
+      switch number {
+      case 0:
+        return HV_X86_CR0
+      case 3:
+        return HV_X86_CR3
+      case 4:
+        return HV_X86_CR4
+      case 8:
+        return HV_X86_TPR
+      default:
+        throw VMError.unexpectedExit("unsupported x86 control register CR\(number)")
+      }
     }
 
     private func handleEPTViolation(
-        _ violation: X86EPTViolation,
-        vcpu: VCPU,
-        registers: inout X86RegisterState
+      _ violation: X86EPTViolation,
+      vcpu: VCPU,
+      registers: inout X86RegisterState
     ) throws -> Int {
-        guard violation.read || violation.write else {
-            throw VMError.unexpectedExit(
-                "x86 EPT violation without read/write at gpa 0x\(String(violation.guestPhysicalAddress, radix: 16))"
-            )
-        }
-        let rip = try vcpu.read(HV_X86_RIP)
-        let cr0 = try vcpu.read(HV_X86_CR0)
-        let cr3 = try vcpu.read(HV_X86_CR3)
-        let instructionBytes: [UInt8]
-        do {
-            instructionBytes = try X86InstructionFetch.readBytes(
-                rip: rip,
-                cr0: cr0,
-                cr3: cr3,
-                count: 15,
-                memory: memory
-            )
-        } catch {
-            throw VMError.unexpectedExit(
-                "x86 MMIO instruction fetch failed at rip 0x\(String(rip, radix: 16)), gpa 0x\(String(violation.guestPhysicalAddress, radix: 16)): \(error)"
-            )
-        }
-        do {
-            let instruction = try X86MMIODecoder.decode(instructionBytes)
-            return try X86MMIOExecutor.execute(
-                instruction: instruction,
-                physicalAddress: violation.guestPhysicalAddress,
-                bus: bus,
-                registers: &registers
-            )
-        } catch {
-            let hexBytes = instructionBytes.map { String(format: "%02x", $0) }.joined(separator: " ")
-            throw VMError.unexpectedExit(
-                "x86 MMIO decode failed at rip 0x\(String(rip, radix: 16)), gpa 0x\(String(violation.guestPhysicalAddress, radix: 16)), bytes [\(hexBytes)]: \(error)"
-            )
-        }
+      guard violation.read || violation.write else {
+        throw VMError.unexpectedExit(
+          "x86 EPT violation without read/write at gpa 0x\(String(violation.guestPhysicalAddress, radix: 16))"
+        )
+      }
+      let rip = try vcpu.read(HV_X86_RIP)
+      let cr0 = try vcpu.read(HV_X86_CR0)
+      let cr3 = try vcpu.read(HV_X86_CR3)
+      let instructionBytes: [UInt8]
+      do {
+        instructionBytes = try X86InstructionFetch.readBytes(
+          rip: rip,
+          cr0: cr0,
+          cr3: cr3,
+          count: 15,
+          memory: memory
+        )
+      } catch {
+        throw VMError.unexpectedExit(
+          "x86 MMIO instruction fetch failed at rip 0x\(String(rip, radix: 16)), gpa 0x\(String(violation.guestPhysicalAddress, radix: 16)): \(error)"
+        )
+      }
+      do {
+        let instruction = try X86MMIODecoder.decode(instructionBytes)
+        return try X86MMIOExecutor.execute(
+          instruction: instruction,
+          physicalAddress: violation.guestPhysicalAddress,
+          bus: bus,
+          registers: &registers
+        )
+      } catch {
+        let hexBytes = instructionBytes.map { String(format: "%02x", $0) }.joined(separator: " ")
+        throw VMError.unexpectedExit(
+          "x86 MMIO decode failed at rip 0x\(String(rip, radix: 16)), gpa 0x\(String(violation.guestPhysicalAddress, radix: 16)), bytes [\(hexBytes)]: \(error)"
+        )
+      }
     }
-}
+  }
 #endif
 
 extension GuestStopReason: CustomStringConvertible {
-    public var description: String {
-        switch self {
-        case .powerOff:
-            "guest requested power off"
-        case .reset:
-            "guest requested reset"
-        case .crash(let detail):
-            "guest crash: \(detail)"
-        }
+  public var description: String {
+    switch self {
+    case .powerOff:
+      "guest requested power off"
+    case .reset:
+      "guest requested reset"
+    case .crash(let detail):
+      "guest crash: \(detail)"
     }
+  }
 }
 
-private extension Machine {
-    /// Copies immutable boot bytes directly into guest RAM without materializing a second
-    /// full-sized `[UInt8]` buffer.
-    func copyBootData(_ data: Data, at guestAddress: UInt64) throws {
-        guard !data.isEmpty else { return }
-        let destination = try memory.hostPointer(
-            at: guestAddress,
-            count: UInt64(data.count)
-        )
-        data.withUnsafeBytes { source in
-            destination.copyMemory(from: source.baseAddress!, byteCount: source.count)
-        }
+extension Machine {
+  /// Copies immutable boot bytes directly into guest RAM without materializing a second
+  /// full-sized `[UInt8]` buffer.
+  fileprivate func copyBootData(_ data: Data, at guestAddress: UInt64) throws {
+    guard !data.isEmpty else { return }
+    let destination = try memory.hostPointer(
+      at: guestAddress,
+      count: UInt64(data.count)
+    )
+    data.withUnsafeBytes { source in
+      destination.copyMemory(from: source.baseAddress!, byteCount: source.count)
     }
+  }
 }
 
-public extension Machine {
-    var attachedVirtioSlots: [VirtioMMIOSlotIdentity] {
-        virtioSlotOwnership.identities
-    }
+extension Machine {
+  public var attachedVirtioSlots: [VirtioMMIOSlotIdentity] {
+    virtioSlotOwnership.identities
+  }
 
-    var virtioMMIOLayoutFingerprintInput: [UInt8] {
-        virtioSlotOwnership.fingerprintInput
-    }
+  public var virtioMMIOLayoutFingerprintInput: [UInt8] {
+    virtioSlotOwnership.fingerprintInput
+  }
 
-    @discardableResult
-    func attachVirtioSlot(
-        _ device: MMIODevice,
-        at slot: Int
-    ) throws -> VirtioMMIOSlotIdentity {
-        try virtioSlotOwnership.attach(device, at: slot) { bus.attach($0) }
-    }
+  @discardableResult
+  public func attachVirtioSlot(
+    _ device: MMIODevice,
+    at slot: Int
+  ) throws -> VirtioMMIOSlotIdentity {
+    try virtioSlotOwnership.attach(device, at: slot) { bus.attach($0) }
+  }
 }
