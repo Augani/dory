@@ -109,6 +109,66 @@ import Testing
     #expect(try read16(machine, 0xD000_001A) == UInt16.max)
   }
 
+  @Test func intxFallbackRaisesIOAPICAndISRReadDeassertsIt() throws {
+    let function = try makeFunction()
+    let machine = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024,
+      pciFunctions: [function]
+    )
+    try machine.ioAPIC.configure(
+      pin: 17,
+      route: .init(
+        vector: 0x90,
+        destinationAPICID: 0,
+        masked: false,
+        levelTriggered: true,
+        activeLow: true
+      )
+    )
+    try machine.localAPIC.configureSpuriousVector(0xFF, softwareEnabled: true)
+    try function.writeConfiguration(offset: 4, bytes: [2, 0])
+
+    #expect(function.transport.signalQueueInterrupt(queue: 0))
+    #expect(function.configurationFunction.intxState.externallyAsserted)
+    #expect(try function.readConfiguration(offset: 6, byteCount: 1)[0] & 8 != 0)
+    #expect(machine.localAPIC.acknowledge(interruptsEnabled: true) == 0x90)
+
+    #expect(try read8(machine, 0xD000_0200) == 1)
+    #expect(!function.configurationFunction.intxState.externallyAsserted)
+    #expect(try function.readConfiguration(offset: 6, byteCount: 1)[0] & 8 == 0)
+    #expect(machine.localAPIC.endOfInterrupt() == 0x90)
+    try machine.ioAPIC.endOfInterrupt(vector: 0x90, destinationAPICID: 0)
+    #expect(machine.localAPIC.acknowledge(interruptsEnabled: true) == nil)
+  }
+
+  @Test func pciInterruptDisableDefersPendingINTxUntilReenabled() throws {
+    let function = try makeFunction()
+    let machine = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024,
+      pciFunctions: [function]
+    )
+    try machine.ioAPIC.configure(
+      pin: 17,
+      route: .init(
+        vector: 0x91,
+        destinationAPICID: 0,
+        masked: false,
+        levelTriggered: true
+      )
+    )
+    try function.writeConfiguration(offset: 4, bytes: [2, 4])
+
+    #expect(!function.transport.signalQueueInterrupt(queue: 0))
+    #expect(function.configurationFunction.intxState.asserted)
+    #expect(!function.configurationFunction.intxState.externallyAsserted)
+    #expect(!machine.localAPIC.snapshot().interruptRequest.contains(0x91))
+
+    try function.writeConfiguration(offset: 4, bytes: [2, 0])
+    #expect(function.configurationFunction.intxState.externallyAsserted)
+    #expect(machine.localAPIC.snapshot().interruptRequest.contains(0x91))
+    #expect(try read8(machine, 0xD000_0200) == 1)
+  }
+
   @Test func zeroStatusResetsEnabledQueues() throws {
     let function = try makeFunction()
     try function.transport.writeBAR(offset: 0x16, bytes: littleEndian(UInt16(0)))

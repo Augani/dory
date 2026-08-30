@@ -114,6 +114,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     pciExpress = DoryPCPCIExpressECAM()
     pciBARWindow = DoryPCPCIBARWindow()
     powerController = DoryPCPowerController()
+    let intxRouter = DoryPCPCIINTxRouter(ioAPIC: ioAPIC)
     for function in pciFunctions {
       try pciExpress.attach(function)
       if let barDevice = function as? any DoryPCPCIBARMemoryDevice {
@@ -130,6 +131,12 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           } catch {
             return false
           }
+        }
+      }
+      if let intxFunction = function as? any DoryPCPCIINTxControllable {
+        let source = ObjectIdentifier(intxFunction)
+        intxFunction.connectINTxSink { [intxRouter] line, asserted in
+          intxRouter.setAsserted(asserted, line: Int(line), source: source)
         }
       }
       if let memoryConsumer = function as? any DoryPCVirtioGuestMemoryConsumer {
@@ -424,5 +431,31 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       return .long64
     }
     return .protected32
+  }
+}
+
+private final class DoryPCPCIINTxRouter: @unchecked Sendable {
+  private let ioAPIC: DoryPCIOAPIC
+  private let lock = NSLock()
+  private var sourcesByLine: [Int: Set<ObjectIdentifier>] = [:]
+
+  init(ioAPIC: DoryPCIOAPIC) {
+    self.ioAPIC = ioAPIC
+  }
+
+  func setAsserted(_ asserted: Bool, line: Int, source: ObjectIdentifier) {
+    guard (0..<ioAPIC.pinCount).contains(line) else { return }
+    let transition: Bool? = lock.withLock {
+      let wasAsserted = !(sourcesByLine[line] ?? []).isEmpty
+      if asserted {
+        sourcesByLine[line, default: []].insert(source)
+      } else {
+        sourcesByLine[line]?.remove(source)
+        if sourcesByLine[line]?.isEmpty == true { sourcesByLine[line] = nil }
+      }
+      let isAsserted = !(sourcesByLine[line] ?? []).isEmpty
+      return wasAsserted == isAsserted ? nil : isAsserted
+    }
+    if let transition { try? ioAPIC.setAsserted(transition, pin: line) }
   }
 }

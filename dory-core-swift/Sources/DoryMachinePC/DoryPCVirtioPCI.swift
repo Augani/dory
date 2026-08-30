@@ -367,7 +367,8 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
 }
 
 public final class DoryPCVirtioBlockPCIDevice: DoryPCPCIFunction, DoryPCPCIMSIControllable,
-  DoryPCPCIBARMemoryDevice, DoryPCVirtioGuestMemoryConsumer, @unchecked Sendable
+  DoryPCPCIINTxControllable, DoryPCPCIBARMemoryDevice, DoryPCVirtioGuestMemoryConsumer,
+  @unchecked Sendable
 {
   public let pciFunction: DoryPCVirtioPCIFunction
   public let blockDevice: DoryVirtioBlockDevice
@@ -432,7 +433,8 @@ public final class DoryPCVirtioBlockPCIDevice: DoryPCPCIFunction, DoryPCPCIMSICo
 }
 
 public final class DoryPCVirtioEntropyPCIDevice: DoryPCPCIFunction, DoryPCPCIMSIControllable,
-  DoryPCPCIBARMemoryDevice, DoryPCVirtioGuestMemoryConsumer, @unchecked Sendable
+  DoryPCPCIINTxControllable, DoryPCPCIBARMemoryDevice, DoryPCVirtioGuestMemoryConsumer,
+  @unchecked Sendable
 {
   public let pciFunction: DoryPCVirtioPCIFunction
   public let entropyDevice: DoryVirtioEntropyDevice
@@ -500,7 +502,8 @@ public final class DoryPCVirtioEntropyPCIDevice: DoryPCPCIFunction, DoryPCPCIMSI
 }
 
 public final class DoryPCVirtioNetworkPCIDevice: DoryPCPCIFunction, DoryPCPCIMSIControllable,
-  DoryPCPCIBARMemoryDevice, DoryPCVirtioGuestMemoryConsumer, @unchecked Sendable
+  DoryPCPCIINTxControllable, DoryPCPCIBARMemoryDevice, DoryPCVirtioGuestMemoryConsumer,
+  @unchecked Sendable
 {
   public let pciFunction: DoryPCVirtioPCIFunction
   public let networkDevice: DoryVirtioNetworkDevice
@@ -594,7 +597,7 @@ public final class DoryPCVirtioNetworkPCIDevice: DoryPCPCIFunction, DoryPCPCIMSI
 }
 
 public final class DoryPCVirtioPCIFunction: DoryPCPCIFunction, DoryPCPCIMSIControllable,
-  DoryPCPCIBARMemoryDevice, @unchecked Sendable
+  DoryPCPCIINTxControllable, DoryPCPCIBARMemoryDevice, @unchecked Sendable
 {
   public let configurationFunction: DoryPCPCIConfigurationFunction
   public let transport: DoryPCVirtioPCITransport
@@ -625,6 +628,7 @@ public final class DoryPCVirtioPCIFunction: DoryPCPCIFunction, DoryPCPCIMSIContr
       revisionID: 1,
       subsystemVendorID: 0x1AF4,
       subsystemID: virtioDeviceID,
+      interruptLine: UInt8(16 + Int(address.device) % 8),
       interruptPin: 1,
       supportsMSI: true,
       msiNextCapabilityOffset: 0x60,
@@ -658,7 +662,10 @@ public final class DoryPCVirtioPCIFunction: DoryPCPCIFunction, DoryPCPCIMSIContr
         guard vector != .max else { return false }
         return configurationFunction.raiseMSIX(vector: vector)
       }
-      return configurationFunction.raiseMSI()
+      if configurationFunction.msiState?.enabled == true {
+        return configurationFunction.raiseMSI()
+      }
+      return configurationFunction.setINTx(asserted: true)
     }
   }
 
@@ -688,7 +695,11 @@ public final class DoryPCVirtioPCIFunction: DoryPCPCIFunction, DoryPCPCIMSIContr
     ) {
       return bytes
     }
-    return try transport.readBAR(offset: offset, byteCount: byteCount)
+    let bytes = try transport.readBAR(offset: offset, byteCount: byteCount)
+    if offset == 0x200, byteCount == 1 {
+      configurationFunction.setINTx(asserted: false)
+    }
+    return bytes
   }
 
   public func writeBAR(offset: UInt64, bytes: [UInt8]) throws {
@@ -696,6 +707,9 @@ public final class DoryPCVirtioPCIFunction: DoryPCPCIFunction, DoryPCPCIMSIContr
       return
     }
     try transport.writeBAR(offset: offset, bytes: bytes)
+    if offset == 0x14, bytes == [0] {
+      configurationFunction.setINTx(asserted: false)
+    }
   }
 
   private static func makeCapabilities(deviceConfigurationLength: Int) -> [UInt8: UInt8] {

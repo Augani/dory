@@ -65,6 +65,13 @@ public protocol DoryPCPCIMSIControllable: DoryPCPCIFunction {
   )
 }
 
+public protocol DoryPCPCIINTxControllable: DoryPCPCIFunction {
+  var interruptLine: UInt8 { get }
+  func connectINTxSink(
+    _ sink: @escaping @Sendable (_ interruptLine: UInt8, _ asserted: Bool) -> Void
+  )
+}
+
 public protocol DoryPCPCIBARMemoryDevice: AnyObject, Sendable {
   var configurationFunction: DoryPCPCIConfigurationFunction { get }
   var barIndex: Int { get }
@@ -86,6 +93,16 @@ extension DoryPCPCIBARMemoryDevice {
         write: true
       )
     }
+  }
+}
+
+extension DoryPCPCIINTxControllable where Self: DoryPCPCIBARMemoryDevice {
+  public var interruptLine: UInt8 { configurationFunction.interruptLine }
+
+  public func connectINTxSink(
+    _ sink: @escaping @Sendable (_ interruptLine: UInt8, _ asserted: Bool) -> Void
+  ) {
+    configurationFunction.connectINTxSink(sink)
   }
 }
 
@@ -113,6 +130,13 @@ public struct DoryPCPCIMSIMessage: Sendable, Hashable {
       vector: vector
     )
   }
+}
+
+public struct DoryPCPCIINTxState: Sendable, Hashable {
+  public let asserted: Bool
+  public let externallyAsserted: Bool
+  public let interruptLine: UInt8
+  public let interruptPin: UInt8
 }
 
 public struct DoryPCPCIMSIXEntry: Sendable, Hashable {
@@ -324,7 +348,9 @@ private final class DoryPCPCIMSIXController: @unchecked Sendable {
 }
 
 /// PCI type-0 configuration header with architectural BAR probing and programming behavior.
-public final class DoryPCPCIConfigurationFunction: DoryPCPCIMSIControllable, @unchecked Sendable {
+public final class DoryPCPCIConfigurationFunction: DoryPCPCIMSIControllable,
+  DoryPCPCIINTxControllable, @unchecked Sendable
+{
   private struct BARState {
     let kind: DoryPCPCIBARKind
     let size: UInt64
@@ -341,6 +367,9 @@ public final class DoryPCPCIConfigurationFunction: DoryPCPCIMSIControllable, @un
   private let supportsMSI: Bool
   private let msix: DoryPCPCIMSIXController?
   private let msixCapabilityOffset: Int
+  private let interruptPin: UInt8
+  private var intxAsserted = false
+  private var intxSink: (@Sendable (UInt8, Bool) -> Void)?
   private var msiSink: (@Sendable (UInt64, UInt16) -> Bool)?
 
   public init(
@@ -351,6 +380,7 @@ public final class DoryPCPCIConfigurationFunction: DoryPCPCIMSIControllable, @un
     revisionID: UInt8 = 0,
     subsystemVendorID: UInt16 = 0,
     subsystemID: UInt16 = 0,
+    interruptLine: UInt8 = 0xFF,
     interruptPin: UInt8 = 0,
     supportsMSI: Bool = false,
     msiNextCapabilityOffset: UInt8 = 0,
@@ -366,6 +396,7 @@ public final class DoryPCPCIConfigurationFunction: DoryPCPCIMSIControllable, @un
     pciAddress = address
     self.supportsMSI = supportsMSI
     self.msixCapabilityOffset = Int(msixCapabilityOffset)
+    self.interruptPin = interruptPin
     if msixVectorCount > 0 {
       let tableByteCount = UInt64(msixVectorCount * 16)
       let pendingByteCount = UInt64((msixVectorCount + 63) / 64 * 8)
@@ -404,7 +435,7 @@ public final class DoryPCPCIConfigurationFunction: DoryPCPCIMSIControllable, @un
     configuration[0x0E] = 0
     put(subsystemVendorID, at: 0x2C, in: &configuration)
     put(subsystemID, at: 0x2E, in: &configuration)
-    configuration[0x3C] = 0xFF
+    configuration[0x3C] = interruptLine
     configuration[0x3D] = interruptPin
     if supportsMSI {
       configuration[0x06] |= 1 << 4
@@ -447,6 +478,18 @@ public final class DoryPCPCIConfigurationFunction: DoryPCPCIMSIControllable, @un
     lock.withLock { get(UInt16.self, at: 0x04, in: configuration) }
   }
 
+  public var interruptLine: UInt8 { lock.withLock { configuration[0x3C] } }
+
+  public var intxState: DoryPCPCIINTxState {
+    let route = intxRoute()
+    return .init(
+      asserted: route.pending,
+      externallyAsserted: route.asserted,
+      interruptLine: route.line,
+      interruptPin: interruptPin
+    )
+  }
+
   public var msiState: DoryPCPCIMSIState? {
     lock.withLock {
       guard supportsMSI else { return nil }
@@ -466,6 +509,22 @@ public final class DoryPCPCIConfigurationFunction: DoryPCPCIMSIControllable, @un
   ) {
     lock.withLock { msiSink = sink }
     msix?.connectSink(sink)
+  }
+
+  public func connectINTxSink(
+    _ sink: @escaping @Sendable (_ interruptLine: UInt8, _ asserted: Bool) -> Void
+  ) {
+    lock.withLock { intxSink = sink }
+    let route = intxRoute()
+    if route.asserted { sink(route.line, true) }
+  }
+
+  @discardableResult
+  public func setINTx(asserted: Bool) -> Bool {
+    let previous = intxRoute()
+    lock.withLock { intxAsserted = asserted }
+    notifyINTxTransition(from: previous)
+    return intxRoute().asserted
   }
 
   @discardableResult
@@ -529,11 +588,21 @@ public final class DoryPCPCIConfigurationFunction: DoryPCPCIMSIControllable, @un
         }
       }
     }
+    let intx = intxState
+    for index in result.indices where offset + index == 0x06 {
+      if intx.asserted {
+        result[index] |= 1 << 3
+      } else {
+        result[index] &= ~(1 << 3)
+      }
+    }
     return result
   }
 
   public func writeConfiguration(offset: Int, bytes: [UInt8]) throws {
     try validate(offset: offset, byteCount: bytes.count)
+    let previousINTx = intxRoute()
+    defer { notifyINTxTransition(from: previousINTx) }
     if let msix {
       let controlOffset = msixCapabilityOffset + 2
       if offset < controlOffset + 2, offset + bytes.count > controlOffset {
@@ -617,6 +686,33 @@ public final class DoryPCPCIConfigurationFunction: DoryPCPCIMSIControllable, @un
 
   private func writableConfigurationByte(_ offset: Int) -> Bool {
     (0x04...0x05).contains(offset) || (0x0C...0x0D).contains(offset) || offset == 0x3C
+  }
+
+  private func intxRoute() -> (line: UInt8, pending: Bool, asserted: Bool) {
+    let configurationState = lock.withLock {
+      (
+        line: configuration[0x3C],
+        pending: intxAsserted,
+        interruptDisabled: get(UInt16.self, at: 0x04, in: configuration) & (1 << 10) != 0,
+        msiEnabled: supportsMSI && configuration[0x52] & 1 != 0
+      )
+    }
+    let asserted =
+      configurationState.pending
+      && !configurationState.interruptDisabled
+      && !configurationState.msiEnabled
+      && msix?.state.enabled != true
+      && configurationState.line != 0xFF
+      && interruptPin != 0
+    return (configurationState.line, configurationState.pending, asserted)
+  }
+
+  private func notifyINTxTransition(from previous: (line: UInt8, pending: Bool, asserted: Bool)) {
+    let current = intxRoute()
+    guard previous.line != current.line || previous.asserted != current.asserted else { return }
+    let sink = lock.withLock { intxSink }
+    if previous.asserted { sink?(previous.line, false) }
+    if current.asserted { sink?(current.line, true) }
   }
 
   private func typeBits(_ kind: DoryPCPCIBARKind) -> UInt32 {

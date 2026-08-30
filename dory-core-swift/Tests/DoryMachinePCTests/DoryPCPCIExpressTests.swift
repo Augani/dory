@@ -251,6 +251,72 @@ import Testing
     #expect(!machine.localAPIC.snapshot().interruptRequest.contains(0x62))
   }
 
+  @Test func intxPendingStateFollowsCommandMSIAndLineRouting() throws {
+    let function = try DoryPCPCIConfigurationFunction(
+      address: .init(bus: 0, device: 11, function: 0),
+      vendorID: 0x1AF4,
+      deviceID: 0x1044,
+      classCode: 0x000200,
+      interruptLine: 17,
+      interruptPin: 1,
+      supportsMSI: true
+    )
+    let recorder = INTxDeliveryRecorder()
+    function.connectINTxSink { recorder.append(line: $0, asserted: $1) }
+
+    #expect(function.setINTx(asserted: true))
+    #expect(recorder.values == [.init(line: 17, asserted: true)])
+    #expect(try function.readConfiguration(offset: 6, byteCount: 1)[0] & 8 != 0)
+
+    try function.writeConfiguration(offset: 0x52, bytes: [1, 0])
+    #expect(function.intxState.asserted)
+    #expect(!function.intxState.externallyAsserted)
+    #expect(recorder.values.last == .init(line: 17, asserted: false))
+
+    try function.writeConfiguration(offset: 0x52, bytes: [0, 0])
+    try function.writeConfiguration(offset: 0x3C, bytes: [18])
+    #expect(
+      recorder.values.suffix(3) == [
+        .init(line: 17, asserted: true),
+        .init(line: 17, asserted: false),
+        .init(line: 18, asserted: true),
+      ])
+    #expect(!function.setINTx(asserted: false))
+    #expect(try function.readConfiguration(offset: 6, byteCount: 1)[0] & 8 == 0)
+  }
+
+  @Test func machineAggregatesDevicesSharingAnINTxLine() throws {
+    let first = try makeINTxFunction(device: 12, line: 18)
+    let second = try makeINTxFunction(device: 13, line: 18)
+    let machine = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024,
+      pciFunctions: [first, second]
+    )
+    try machine.localAPIC.configureSpuriousVector(0xFF, softwareEnabled: true)
+    try machine.ioAPIC.configure(
+      pin: 18,
+      route: .init(
+        vector: 0x92,
+        destinationAPICID: 0,
+        masked: false,
+        levelTriggered: true
+      )
+    )
+
+    #expect(first.setINTx(asserted: true))
+    #expect(second.setINTx(asserted: true))
+    #expect(machine.localAPIC.acknowledge(interruptsEnabled: true) == 0x92)
+    #expect(!first.setINTx(asserted: false))
+    #expect(machine.localAPIC.endOfInterrupt() == 0x92)
+    try machine.ioAPIC.endOfInterrupt(vector: 0x92, destinationAPICID: 0)
+    #expect(machine.localAPIC.acknowledge(interruptsEnabled: true) == 0x92)
+
+    #expect(!second.setINTx(asserted: false))
+    #expect(machine.localAPIC.endOfInterrupt() == 0x92)
+    try machine.ioAPIC.endOfInterrupt(vector: 0x92, destinationAPICID: 0)
+    #expect(machine.localAPIC.acknowledge(interruptsEnabled: true) == nil)
+  }
+
   @Test func barWindowFollowsGuestAssignmentsAndMemorySpaceEnable() throws {
     let function = try DoryPCPCIConfigurationFunction(
       address: .init(bus: 0, device: 7, function: 0),
@@ -300,6 +366,19 @@ import Testing
       bars: [.init(index: 0, kind: .memory32(prefetchable: false), size: 0x1000)]
     )
   }
+
+  private func makeINTxFunction(device: UInt8, line: UInt8) throws
+    -> DoryPCPCIConfigurationFunction
+  {
+    try DoryPCPCIConfigurationFunction(
+      address: .init(bus: 0, device: device, function: 0),
+      vendorID: 0x1AF4,
+      deviceID: 0x1044,
+      classCode: 0x000200,
+      interruptLine: line,
+      interruptPin: 1
+    )
+  }
 }
 
 private struct MSIDelivery: Sendable, Hashable {
@@ -315,6 +394,22 @@ private final class MSIDeliveryRecorder: @unchecked Sendable {
 
   func append(address: UInt64, data: UInt16) {
     lock.withLock { storage.append(.init(address: address, data: data)) }
+  }
+}
+
+private struct INTxDelivery: Sendable, Hashable {
+  let line: UInt8
+  let asserted: Bool
+}
+
+private final class INTxDeliveryRecorder: @unchecked Sendable {
+  private let lock = NSLock()
+  private var storage: [INTxDelivery] = []
+
+  var values: [INTxDelivery] { lock.withLock { storage } }
+
+  func append(line: UInt8, asserted: Bool) {
+    lock.withLock { storage.append(.init(line: line, asserted: asserted)) }
   }
 }
 
