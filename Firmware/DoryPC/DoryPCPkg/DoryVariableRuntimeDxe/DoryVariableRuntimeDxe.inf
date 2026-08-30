@@ -1,0 +1,39 @@
+[Defines]
+  INF_VERSION    = 0x0001001B
+  BASE_NAME      = DoryVariableRuntimeDxe
+  FILE_GUID      = 15683d33-e302-41a0-9775-76d54035b8bd
+  MODULE_TYPE    = DXE_RUNTIME_DRIVER
+  VERSION_STRING = 1.0
+  ENTRY_POINT    = DoryVariableRuntimeDxeEntryPoint
+
+[Sources]
+  DoryVariableRuntimeDxe.c
+
+[Packages]
+  DoryPCPkg/DoryPCPkg.dec
+  MdePkg/MdePkg.dec
+
+[LibraryClasses]
+  BaseLib
+  BaseMemoryLib
+  DebugLib
+  DxeServicesTableLib
+  IoLib
+  PcdLib
+  UefiBootServicesTableLib
+  UefiDriverEntryPoint
+  UefiRuntimeLib
+
+[Protocols]
+  gEfiVariableArchProtocolGuid       ## PRODUCES
+  gEfiVariableWriteArchProtocolGuid  ## PRODUCES
+
+[Guids]
+  gEfiEventVirtualAddressChangeGuid
+
+[FixedPcd]
+  gDoryPCTokenSpaceGuid.PcdVariableBridgeBase
+  gDoryPCTokenSpaceGuid.PcdVariableBridgeSize
+
+[Depex]
+  TRUE

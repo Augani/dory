@@ -1,0 +1,31 @@
+[Defines]
+  INF_VERSION    = 0x0001001B
+  BASE_NAME      = DoryPlatformDxe
+  FILE_GUID      = be95827b-03b8-479e-bfdf-0170436b0565
+  MODULE_TYPE    = DXE_DRIVER
+  VERSION_STRING = 1.0
+  ENTRY_POINT    = DoryPlatformDxeEntryPoint
+
+[Sources]
+  DoryPlatformDxe.c
+
+[Packages]
+  DoryPCPkg/DoryPCPkg.dec
+  MdePkg/MdePkg.dec
+
+[LibraryClasses]
+  DebugLib
+  IoLib
+  PcdLib
+  UefiBootServicesTableLib
+  UefiDriverEntryPoint
+
+[Guids]
+  gEfiAcpi20TableGuid
+  gEfiSmbios3TableGuid
+
+[FixedPcd]
+  gDoryPCTokenSpaceGuid.PcdFirmwareConfigurationBase
+
+[Depex]
+  TRUE

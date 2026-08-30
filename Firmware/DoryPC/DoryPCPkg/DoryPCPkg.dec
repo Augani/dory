@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: BSD-2-Clause-Patent
+
+[Defines]
+  DEC_SPECIFICATION = 0x00010005
+  PACKAGE_NAME      = DoryPCPkg
+  PACKAGE_GUID      = 127a21d4-b0db-45cc-8399-45d44a451f89
+  PACKAGE_VERSION   = 1.0
+
+[Includes]
+  Include
+
+[Guids]
+  gDoryPCTokenSpaceGuid = { 0x127a21d4, 0xb0db, 0x45cc, { 0x83, 0x99, 0x45, 0xd4, 0x4a, 0x45, 0x1f, 0x89 } }
+
+[PcdsFixedAtBuild]
+  gDoryPCTokenSpaceGuid.PcdFirmwareConfigurationBase|0xFE900000|UINT64|0x00000001
+  gDoryPCTokenSpaceGuid.PcdFirmwareConfigurationSize|0x00001000|UINT64|0x00000002
+  gDoryPCTokenSpaceGuid.PcdVariableBridgeBase|0xFEA00000|UINT64|0x00000003
+  gDoryPCTokenSpaceGuid.PcdVariableBridgeSize|0x00200000|UINT64|0x00000004

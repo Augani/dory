@@ -1,0 +1,19 @@
+[Defines]
+  INF_VERSION    = 0x0001001B
+  BASE_NAME      = DoryPciHostBridgeLib
+  FILE_GUID      = f6a5f5bb-4c8d-49e8-a88c-e0ce522e123a
+  MODULE_TYPE    = DXE_DRIVER
+  VERSION_STRING = 1.0
+  LIBRARY_CLASS  = PciHostBridgeLib
+
+[Sources]
+  DoryPciHostBridgeLib.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+  OvmfPkg/OvmfPkg.dec
+
+[LibraryClasses]
+  BaseMemoryLib
+  PciHostBridgeUtilityLib

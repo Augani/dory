@@ -1,0 +1,38 @@
+[Defines]
+  INF_VERSION    = 0x0001001B
+  BASE_NAME      = DoryPlatformPei
+  FILE_GUID      = 96acbbf8-3a4d-40c5-a91e-7dc5a904db62
+  MODULE_TYPE    = PEIM
+  VERSION_STRING = 1.0
+  ENTRY_POINT    = DoryPlatformPeiEntryPoint
+
+[Sources]
+  DoryPlatformPei.c
+
+[Packages]
+  DoryPCPkg/DoryPCPkg.dec
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+  OvmfPkg/OvmfPkg.dec
+
+[LibraryClasses]
+  BaseLib
+  DebugLib
+  HobLib
+  IoLib
+  PcdLib
+  PeiServicesLib
+  PeimEntryPoint
+
+[FixedPcd]
+  gDoryPCTokenSpaceGuid.PcdFirmwareConfigurationBase
+  gDoryPCTokenSpaceGuid.PcdFirmwareConfigurationSize
+
+[Pcd]
+  gUefiOvmfPkgTokenSpaceGuid.PcdOvmfPeiMemFvBase
+  gUefiOvmfPkgTokenSpaceGuid.PcdOvmfPeiMemFvSize
+  gUefiOvmfPkgTokenSpaceGuid.PcdOvmfDxeMemFvBase
+  gUefiOvmfPkgTokenSpaceGuid.PcdOvmfDxeMemFvSize
+
+[Depex]
+  TRUE

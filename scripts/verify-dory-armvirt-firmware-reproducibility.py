@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build DoryARMVirt twice and require byte-identical firmware bundles."""
+"""Build a Dory firmware platform twice and require byte-identical bundles."""
 
 from __future__ import annotations
 
@@ -29,6 +29,12 @@ class VerificationFailure(RuntimeError):
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
+        "--platform",
+        choices=("armvirt", "pc"),
+        default="armvirt",
+        help="Dory firmware platform to verify (default: armvirt)",
+    )
+    parser.add_argument(
         "--edk2-source",
         type=Path,
         help="verified local EDK II checkout used instead of fetching the pinned source",
@@ -44,8 +50,15 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def build(destination: Path, local_source: Optional[Path]) -> None:
-    command: List[str] = [sys.executable, str(BUILDER), "--output", str(destination)]
+def build(destination: Path, local_source: Optional[Path], platform: str) -> None:
+    command: List[str] = [
+        sys.executable,
+        str(BUILDER),
+        "--platform",
+        platform,
+        "--output",
+        str(destination),
+    ]
     if local_source is not None:
         command.extend(["--edk2-source", str(local_source.resolve())])
     subprocess.run(command, cwd=REPOSITORY_ROOT, check=True)
@@ -59,12 +72,12 @@ def verify_bundle(directory: Path) -> None:
 
 def main() -> int:
     arguments = parse_arguments()
-    with tempfile.TemporaryDirectory(prefix="dory-armvirt-reproducibility.") as root:
+    with tempfile.TemporaryDirectory(prefix=f"dory-{arguments.platform}-reproducibility.") as root:
         root_path = Path(root)
         first = root_path / "first"
         second = root_path / "second"
-        build(first, arguments.edk2_source)
-        build(second, arguments.edk2_source)
+        build(first, arguments.edk2_source, arguments.platform)
+        build(second, arguments.edk2_source, arguments.platform)
         verify_bundle(first)
         verify_bundle(second)
 
@@ -77,7 +90,7 @@ def main() -> int:
                     f"{sha256(first_file)} != {sha256(second_file)}"
                 )
             print(f"{sha256(first_file)}  {name}")
-    print("DoryARMVirt firmware bundle is byte-for-byte reproducible")
+    print(f"Dory {arguments.platform} firmware bundle is byte-for-byte reproducible")
     return 0
 
 
@@ -85,5 +98,5 @@ if __name__ == "__main__":
     try:
         sys.exit(main())
     except (OSError, subprocess.CalledProcessError, VerificationFailure) as error:
-        print(f"verify-dory-armvirt-firmware-reproducibility: {error}", file=sys.stderr)
+        print(f"verify-dory-firmware-reproducibility: {error}", file=sys.stderr)
         sys.exit(2)

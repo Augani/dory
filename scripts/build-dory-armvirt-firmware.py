@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build and package the pinned DoryARMVirt firmware bundle."""
+"""Build and package a pinned Dory UEFI firmware bundle."""
 
 from __future__ import annotations
 
@@ -17,11 +17,6 @@ from typing import Any, Dict, Iterable, List, Optional
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
-FIRMWARE_ROOT = REPOSITORY_ROOT / "Firmware" / "DoryARMVirt"
-PLATFORM_ROOT = FIRMWARE_ROOT / "DoryARMVirtPkg"
-PATCH_ROOT = FIRMWARE_ROOT / "patches"
-SOURCE_LOCK_PATH = FIRMWARE_ROOT / "source.lock.json"
-TOOLCHAIN_LOCK_PATH = FIRMWARE_ROOT / "toolchain.lock.json"
 PACKAGE_ROOT = REPOSITORY_ROOT / "dory-core-swift"
 EXPECTED_BUNDLE_FILES = {
     "firmware-code.fd",
@@ -29,7 +24,57 @@ EXPECTED_BUNDLE_FILES = {
     "sbom.json",
     "variable-store-template.json",
 }
-EXPECTED_FIRMWARE_BYTES = 4 * 1024 * 1024
+
+
+PLATFORM_DEFINITIONS: Dict[str, Dict[str, Any]] = {
+    "armvirt": {
+        "directory": "DoryARMVirt",
+        "package": "DoryARMVirtPkg",
+        "outputDirectory": "DoryARMVirt-AArch64",
+        "artifact": "DORY_ARMVIRT_EFI.fd",
+        "expectedBytes": 4 * 1024 * 1024,
+        "firmwareABI": "dory.edk2.armvirt@1",
+        "machineABI": "dory.armvirt@1",
+        "platform": "dory-armvirt-v1",
+        "buildIdentifierPrefix": "dory-armvirt-v1-",
+        "displayName": "DoryARMVirt",
+        "stackCookies": True,
+    },
+    "pc": {
+        "directory": "DoryPC",
+        "package": "DoryPCPkg",
+        "outputDirectory": "DoryPC-X64",
+        "artifact": "OVMF_CODE.fd",
+        "expectedBytes": 0x37C000,
+        "firmwareABI": "dory.edk2.pc@1",
+        "machineABI": "dory.pc@1",
+        "platform": "dory-pc-v1",
+        "buildIdentifierPrefix": "dory-pc-v1-",
+        "displayName": "DoryPC",
+        "stackCookies": False,
+    },
+}
+
+PLATFORM: Dict[str, Any]
+FIRMWARE_ROOT: Path
+PLATFORM_ROOT: Path
+PATCH_ROOT: Path
+SOURCE_LOCK_PATH: Path
+TOOLCHAIN_LOCK_PATH: Path
+
+
+def configure_platform(name: str) -> None:
+    global PLATFORM, FIRMWARE_ROOT, PLATFORM_ROOT, PATCH_ROOT
+    global SOURCE_LOCK_PATH, TOOLCHAIN_LOCK_PATH
+    PLATFORM = PLATFORM_DEFINITIONS[name]
+    FIRMWARE_ROOT = REPOSITORY_ROOT / "Firmware" / PLATFORM["directory"]
+    PLATFORM_ROOT = FIRMWARE_ROOT / PLATFORM["package"]
+    PATCH_ROOT = FIRMWARE_ROOT / "patches"
+    SOURCE_LOCK_PATH = FIRMWARE_ROOT / "source.lock.json"
+    TOOLCHAIN_LOCK_PATH = FIRMWARE_ROOT / "toolchain.lock.json"
+
+
+configure_platform("armvirt")
 
 
 class BuildFailure(RuntimeError):
@@ -39,6 +84,12 @@ class BuildFailure(RuntimeError):
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument(
+        "--platform",
+        choices=tuple(PLATFORM_DEFINITIONS),
+        default="armvirt",
+        help="Dory firmware platform to build (default: armvirt)",
+    )
     parser.add_argument(
         "--edk2-source",
         type=Path,
@@ -140,9 +191,13 @@ def verify_toolchain(toolchain: Dict[str, Any]) -> Dict[str, str]:
     if platform.machine() != toolchain["host"]["architecture"]:
         raise BuildFailure("host architecture does not match the firmware toolchain lock")
     if toolchain["compilerFamily"] != "CLANGDWARF":
-        raise BuildFailure("DoryARMVirt requires the pinned CLANGDWARF toolchain")
+        raise BuildFailure("Dory firmware requires the pinned CLANGDWARF toolchain")
 
-    for name in ("compiler", "llvmAr", "iasl", "make", "python"):
+    tool_names = ["compiler", "llvmAr", "iasl", "make", "python"]
+    if PLATFORM["platform"] == "dory-pc-v1":
+        require_keys(toolchain, ["nasm"], TOOLCHAIN_LOCK_PATH)
+        tool_names.append("nasm")
+    for name in tool_names:
         verify_tool(name, toolchain[name])
 
     compiler_output = tool_version([toolchain["compiler"]["executable"], "--version"])
@@ -160,6 +215,10 @@ def verify_toolchain(toolchain: Dict[str, Any]) -> Dict[str, str]:
     make_output = tool_version([toolchain["make"]["executable"], "--version"])
     if f"Make {toolchain['make']['version']}" not in make_output.splitlines()[0]:
         raise BuildFailure("make version does not match the firmware toolchain lock")
+    if "nasm" in toolchain:
+        nasm_output = tool_version([toolchain["nasm"]["executable"], "-v"])
+        if f"NASM version {toolchain['nasm']['version']}" not in nasm_output:
+            raise BuildFailure("NASM version does not match the firmware toolchain lock")
 
     developer_directory = Path(toolchain["xcodeDeveloperDirectory"])
     if not developer_directory.is_dir():
@@ -196,6 +255,8 @@ def verify_toolchain(toolchain: Dict[str, Any]) -> Dict[str, str]:
         str(Path(toolchain["compiler"]["executable"]).parent),
         str(Path(toolchain["iasl"]["executable"]).parent),
     ]
+    if "nasm" in toolchain:
+        executable_directories.append(str(Path(toolchain["nasm"]["executable"]).parent))
     environment["PATH"] = os.pathsep.join(executable_directories + [environment["PATH"]])
     return environment
 
@@ -227,6 +288,7 @@ def prepare_source(
                 "--exclude=/Build",
                 "--exclude=/Conf",
                 "--exclude=/DoryARMVirtPkg",
+                "--exclude=/DoryPCPkg",
                 f"{local_source}/",
                 f"{source}/",
             ]
@@ -285,8 +347,8 @@ def platform_inventory(destination: Path) -> str:
                 )
     inventory = {
         "files": files,
-        "firmwareABI": "dory.edk2.armvirt@1",
-        "machineABI": "dory.armvirt@1",
+        "firmwareABI": PLATFORM["firmwareABI"],
+        "machineABI": PLATFORM["machineABI"],
         "schemaVersion": 1,
     }
     encoded = json.dumps(inventory, sort_keys=True, separators=(",", ":")) + "\n"
@@ -301,7 +363,7 @@ def write_reproducible_stack_cookies(
 ) -> None:
     """Provide EDK II's supported pre-generated stack-cookie pools."""
     seed = hashlib.sha256()
-    seed.update(b"dory-armvirt-stack-cookies-v1\0")
+    seed.update((PLATFORM["platform"] + "-stack-cookies-v1\0").encode("ascii"))
     seed.update(str(source_lock["revision"]).encode("ascii"))
     seed.update(sha256(TOOLCHAIN_LOCK_PATH).encode("ascii"))
     for input_root in (PLATFORM_ROOT, PATCH_ROOT):
@@ -313,7 +375,7 @@ def write_reproducible_stack_cookies(
     build_root = (
         source
         / "Build"
-        / "DoryARMVirt-AArch64"
+        / PLATFORM["outputDirectory"]
         / f"{toolchain['buildTarget']}_{toolchain['compilerFamily']}"
     )
     build_root.mkdir(parents=True, exist_ok=True)
@@ -337,8 +399,9 @@ def build_firmware(
     toolchain: Dict[str, Any],
     environment: Dict[str, str],
 ) -> Path:
-    shutil.copytree(PLATFORM_ROOT, source / "DoryARMVirtPkg")
-    write_reproducible_stack_cookies(source, source_lock, toolchain)
+    shutil.copytree(PLATFORM_ROOT, source / PLATFORM["package"])
+    if PLATFORM["stackCookies"]:
+        write_reproducible_stack_cookies(source, source_lock, toolchain)
     environment = environment.copy()
     environment["SOURCE_DATE_EPOCH"] = str(source_lock["sourceDateEpoch"])
     environment["PYTHON_COMMAND"] = toolchain["python"]["executable"]
@@ -374,13 +437,20 @@ def build_firmware(
     firmware = (
         source
         / "Build"
-        / "DoryARMVirt-AArch64"
-        / "RELEASE_CLANGDWARF"
+        / PLATFORM["outputDirectory"]
+        / f"{toolchain['buildTarget']}_{toolchain['compilerFamily']}"
         / "FV"
-        / "DORY_ARMVIRT_EFI.fd"
+        / PLATFORM["artifact"]
     )
-    if not firmware.is_file() or firmware.stat().st_size != EXPECTED_FIRMWARE_BYTES:
-        raise BuildFailure("firmware build did not produce the frozen 4 MiB code image")
+    if not firmware.is_file() or firmware.stat().st_size != PLATFORM["expectedBytes"]:
+        raise BuildFailure(
+            "firmware build did not produce the frozen "
+            f"{PLATFORM['expectedBytes']}-byte code image"
+        )
+    if firmware.stat().st_size % 4096 != 0:
+        raise BuildFailure("firmware code image is not 4 KiB aligned")
+    if PLATFORM["platform"] == "dory-pc-v1" and firmware.read_bytes()[-16:] == b"\xff" * 16:
+        raise BuildFailure("DoryPC firmware reset vector is empty")
     return firmware
 
 
@@ -397,7 +467,9 @@ def package_bundle(
     identifier_seed = (
         source_lock["revision"] + ":" + platform_digest + ":" + toolchain_digest
     ).encode("utf-8")
-    build_identifier = "dory-armvirt-v1-" + hashlib.sha256(identifier_seed).hexdigest()[:20]
+    build_identifier = PLATFORM["buildIdentifierPrefix"] + hashlib.sha256(
+        identifier_seed
+    ).hexdigest()[:20]
 
     swift_scratch = workspace / "swift-build"
     run(
@@ -441,7 +513,7 @@ def package_bundle(
             "--firmware-code",
             str(firmware),
             "--platform",
-            "dory-armvirt-v1",
+            PLATFORM["platform"],
             "--platform-configuration",
             str(configuration),
             "--toolchain-descriptor",
@@ -487,6 +559,7 @@ def publish(bundle: Path, destination: Path) -> None:
 
 def main() -> int:
     arguments = parse_arguments()
+    configure_platform(arguments.platform)
     source_lock = load_json(SOURCE_LOCK_PATH)
     toolchain = load_json(TOOLCHAIN_LOCK_PATH)
     require_keys(
@@ -496,7 +569,9 @@ def main() -> int:
     )
     environment = verify_toolchain(toolchain)
 
-    workspace = Path(tempfile.mkdtemp(prefix="dory-armvirt-firmware."))
+    workspace = Path(
+        tempfile.mkdtemp(prefix=f"{PLATFORM['platform']}-firmware.")
+    )
     try:
         source = prepare_source(workspace, source_lock, arguments.edk2_source)
         apply_source_patches(source)
@@ -515,7 +590,7 @@ def main() -> int:
             environment,
         )
         publish(bundle, arguments.output)
-        print(f"DoryARMVirt bundle: {arguments.output.resolve()}")
+        print(f"{PLATFORM['displayName']} bundle: {arguments.output.resolve()}")
         print(f"firmware sha256: {sha256(arguments.output.resolve() / 'firmware-code.fd')}")
         return 0
     finally:
@@ -529,5 +604,5 @@ if __name__ == "__main__":
     try:
         sys.exit(main())
     except BuildFailure as error:
-        print(f"build-dory-armvirt-firmware: {error}", file=sys.stderr)
+        print(f"build-dory-firmware: {error}", file=sys.stderr)
         sys.exit(2)

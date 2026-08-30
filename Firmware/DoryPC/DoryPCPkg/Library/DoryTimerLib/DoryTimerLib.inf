@@ -1,0 +1,16 @@
+[Defines]
+  INF_VERSION    = 0x0001001B
+  BASE_NAME      = DoryTimerLib
+  FILE_GUID      = 28d75a71-29d9-4be6-903b-d5faf01c37be
+  MODULE_TYPE    = BASE
+  VERSION_STRING = 1.0
+  LIBRARY_CLASS  = TimerLib
+
+[Sources]
+  DoryTimerLib.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+
+[LibraryClasses]
+  BaseLib

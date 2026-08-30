@@ -1,0 +1,26 @@
+[Defines]
+  INF_VERSION    = 0x0001001B
+  BASE_NAME      = DoryPlatformBootManagerLib
+  FILE_GUID      = 4fb44a5d-9c91-4735-ab21-34a8346b34f3
+  MODULE_TYPE    = DXE_DRIVER
+  VERSION_STRING = 1.0
+  LIBRARY_CLASS  = PlatformBootManagerLib|DXE_DRIVER
+
+[Sources]
+  DoryPlatformBootManagerLib.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+
+[LibraryClasses]
+  UefiBootManagerLib
+
+[FixedPcd]
+  gEfiMdePkgTokenSpaceGuid.PcdUartDefaultBaudRate
+  gEfiMdePkgTokenSpaceGuid.PcdUartDefaultDataBits
+  gEfiMdePkgTokenSpaceGuid.PcdUartDefaultParity
+  gEfiMdePkgTokenSpaceGuid.PcdUartDefaultStopBits
+
+[Guids]
+  gEdkiiSerialPortLibVendorGuid

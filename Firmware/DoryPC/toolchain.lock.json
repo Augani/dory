@@ -1,0 +1,46 @@
+{
+  "architecture": "X64",
+  "buildTarget": "RELEASE",
+  "compiler": {
+    "executable": "/opt/homebrew/opt/llvm/bin/clang",
+    "name": "Homebrew clang",
+    "sha256": "c1fb4c7bf40a58caa391a325fc43f800e7ac16bfb18370dd1d64d9f0e68af01a",
+    "version": "21.1.8"
+  },
+  "compilerFamily": "CLANGDWARF",
+  "configuration": "DoryPCPkg/DoryPC.dsc",
+  "firmwareABI": "dory.edk2.pc@1",
+  "host": {
+    "architecture": "arm64",
+    "macOSSDK": "26.5",
+    "xcodeBuild": "17F109",
+    "xcodeVersion": "26.6"
+  },
+  "iasl": {
+    "executable": "/opt/homebrew/bin/iasl",
+    "sha256": "793ab3e466cef890e075e7275a125b4edb7040671e983ead1cf4f85d7e17a42f",
+    "version": "20251212"
+  },
+  "llvmAr": {
+    "executable": "/opt/homebrew/opt/llvm/bin/llvm-ar",
+    "sha256": "9b62c79f080b3e7e0be32def0ff8bf5a6c80055d014d98f104cca07f871f4b09",
+    "version": "21.1.8"
+  },
+  "machineABI": "dory.pc@1",
+  "make": {
+    "executable": "/usr/bin/make",
+    "version": "3.81"
+  },
+  "nasm": {
+    "executable": "/opt/homebrew/bin/nasm",
+    "sha256": "4a35962ae78b3051bf568da70e3de7ecb8e99cb7925741eefb08d7f17cd1822b",
+    "version": "3.02"
+  },
+  "python": {
+    "executable": "/usr/bin/python3",
+    "version": "3.9.6"
+  },
+  "schemaVersion": 1,
+  "sourceDateEpochEnvironment": "SOURCE_DATE_EPOCH",
+  "xcodeDeveloperDirectory": "/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer"
+}
