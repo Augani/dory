@@ -3,6 +3,7 @@ import Foundation
 
 public enum DoryPCMachineError: Error, Sendable, Equatable {
   case invalidMemorySize(Int)
+  case invalidProcessorCount(Int)
   case alreadyLoaded
   case notLoaded
 }
@@ -23,15 +24,16 @@ public enum DoryPCExceptionPolicy: Sendable, Hashable {
   case deliver
 }
 
-/// Phase-4 uniprocessor direct-kernel machine. It deliberately exposes only the PVH boot and
-/// serial-console surface required to bring the interpreter to Linux; the Phase-5 PC devices are
-/// added behind the same sealed buses rather than hidden in this loop.
+/// Deterministic direct-kernel DoryPC machine shared by interpreter and translated execution tiers.
 public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   public let memory: DoryX86ByteArrayMemory
   public let physicalMemory: DoryPCPhysicalMemoryBus
+  public let physicalMemories: [DoryPCPhysicalMemoryBus]
   public let ioBus: DoryPCPortIOBus
   public let serial: DoryPCUART16550
   public let localAPIC: DoryPCLocalAPIC
+  public let localAPICs: [DoryPCLocalAPIC]
+  public let multiprocessorController: DoryPCMultiprocessorController
   public let ioAPIC: DoryPCIOAPIC
   public let legacyPIC: DoryPCPIC8259Pair
   public let legacyPIT: DoryPCPIT8254
@@ -41,17 +43,24 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   public let pciBARWindow: DoryPCPCIBARWindow
   public let powerController: DoryPCPowerController
   public let pagingUnit: DoryX86PagingUnit
+  public let pagingUnits: [DoryX86PagingUnit]
   public let interpreter: DoryX86Interpreter
+  public let interpreters: [DoryX86Interpreter]
   public let bootLayout: DoryPCPVHBootLayout
   public let acpiLayout: DoryPCACPILayout
   public let memoryByteCount: Int
+  public let processorCount: Int
 
   private let lock = NSLock()
-  private var loadedState: DoryX86ArchitecturalState?
+  private var loadedStates: [DoryX86ArchitecturalState?]
+  private var haltedProcessors: [Bool]
+  private var pendingNMIs: Set<Int> = []
+  private var roundRobinCursor = 0
   private var consumedPayload = false
 
   public init(
     memoryBytes: Int,
+    processorCount: Int = 1,
     bootLayout: DoryPCPVHBootLayout = .init(),
     acpiLayout: DoryPCACPILayout = .init(),
     initialRTCDate: Date = Date(),
@@ -61,13 +70,23 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     guard memoryBytes >= 1024 * 1024 else {
       throw DoryPCMachineError.invalidMemorySize(memoryBytes)
     }
-    memory = DoryX86ByteArrayMemory(byteCount: memoryBytes)
-    physicalMemory = DoryPCPhysicalMemoryBus(ram: memory)
+    guard (1...255).contains(processorCount) else {
+      throw DoryPCMachineError.invalidProcessorCount(processorCount)
+    }
+    self.processorCount = processorCount
+    let sharedMemory = DoryX86ByteArrayMemory(byteCount: memoryBytes)
+    memory = sharedMemory
+    physicalMemories = (0..<processorCount).map {
+      _ in DoryPCPhysicalMemoryBus(ram: sharedMemory)
+    }
+    physicalMemory = physicalMemories[0]
     memoryByteCount = memoryBytes
     ioBus = DoryPCPortIOBus()
-    localAPIC = DoryPCLocalAPIC(apicID: 0)
+    localAPICs = (0..<processorCount).map { DoryPCLocalAPIC(apicID: UInt32($0)) }
+    localAPIC = localAPICs[0]
+    multiprocessorController = try .init(localAPICs: localAPICs)
     ioAPIC = DoryPCIOAPIC()
-    try ioAPIC.attach(localAPIC)
+    for apic in localAPICs { try ioAPIC.attach(apic) }
     ioAPIC.seal()
     legacyPIC = DoryPCPIC8259Pair()
     legacyPIT = DoryPCPIT8254 { [legacyPIC, ioAPIC] in
@@ -98,12 +117,12 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         try pciBARWindow.attach(barDevice)
       }
       if let msiFunction = function as? any DoryPCPCIMSIControllable {
-        msiFunction.connectMSISink { [localAPIC] address, data in
+        msiFunction.connectMSISink { [localAPICs] address, data in
           guard let message = DoryPCPCIMSIMessage.decode(address: address, data: data),
-            message.destinationAPICID == localAPIC.apicID
+            let target = localAPICs.first(where: { $0.apicID == message.destinationAPICID })
           else { return false }
           do {
-            try localAPIC.inject(vector: message.vector)
+            try target.inject(vector: message.vector)
             return true
           } catch {
             return false
@@ -124,19 +143,43 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     try ioBus.attach(DoryPCACPIPMControlPort(controller: powerController))
     try ioBus.attach(DoryPCResetControlPort(controller: powerController))
     ioBus.seal()
-    try physicalMemory.attach(
-      DoryPCLocalAPICMMIO(apic: localAPIC) { [ioAPIC] vector in
-        try ioAPIC.endOfInterrupt(vector: vector, destinationAPICID: 0)
-      })
-    try physicalMemory.attach(DoryPCIOAPICMMIO(ioAPIC: ioAPIC))
-    try physicalMemory.attach(hpet)
-    try physicalMemory.attach(pciExpress)
-    try physicalMemory.attach(pciBARWindow)
-    physicalMemory.seal()
-    pagingUnit = DoryX86PagingUnit()
-    self.interpreter = interpreter
+    for (index, bus) in physicalMemories.enumerated() {
+      let apic = localAPICs[index]
+      try bus.attach(
+        DoryPCLocalAPICMMIO(
+          apic: apic,
+          onEndOfInterrupt: { [ioAPIC] vector in
+            try ioAPIC.endOfInterrupt(vector: vector, destinationAPICID: apic.apicID)
+          },
+          onInterruptCommand: { [multiprocessorController] high, low in
+            try multiprocessorController.handleInterruptCommand(
+              sourceAPICID: apic.apicID,
+              high: high,
+              low: low
+            )
+          }
+        ))
+      try bus.attach(DoryPCIOAPICMMIO(ioAPIC: ioAPIC))
+      try bus.attach(hpet)
+      try bus.attach(pciExpress)
+      try bus.attach(pciBARWindow)
+      bus.seal()
+    }
+    pagingUnits = (0..<processorCount).map { _ in DoryX86PagingUnit() }
+    pagingUnit = pagingUnits[0]
+    interpreters = (0..<processorCount).map {
+      DoryX86Interpreter(
+        profile: interpreter.profile,
+        decoder: interpreter.decoder,
+        processorID: UInt32($0),
+        logicalProcessorCount: UInt16(processorCount)
+      )
+    }
+    self.interpreter = interpreters[0]
     self.bootLayout = bootLayout
     self.acpiLayout = acpiLayout
+    loadedStates = [DoryX86ArchitecturalState?](repeating: nil, count: processorCount)
+    haltedProcessors = [Bool](repeating: false, count: processorCount)
   }
 
   public func load(
@@ -147,7 +190,10 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     try lock.withLock {
       guard !consumedPayload else { throw DoryPCMachineError.alreadyLoaded }
       let kernelImage = try DoryPCPVHKernelImage(data: kernel)
-      let acpi = try DoryPCACPIBuilder.build(layout: acpiLayout)
+      let acpi = try DoryPCACPIBuilder.build(
+        layout: acpiLayout,
+        processorCount: UInt8(processorCount)
+      )
       let bootImage = try DoryPCPVHBootBuilder.build(
         commandLine: commandLine,
         initrd: initrd,
@@ -164,11 +210,17 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         // The machine cannot safely retry a partially loaded kernel with another payload.
         throw error
       }
-      loadedState = try bootImage.initialState(entryPoint: kernelImage.physicalEntryPoint)
+      loadedStates[0] = try bootImage.initialState(entryPoint: kernelImage.physicalEntryPoint)
+      for index in 1..<processorCount { loadedStates[index] = applicationProcessorResetState() }
+      haltedProcessors = [Bool](repeating: false, count: processorCount)
     }
   }
 
-  public var state: DoryX86ArchitecturalState? { lock.withLock { loadedState } }
+  public var state: DoryX86ArchitecturalState? { state(forProcessor: 0) }
+
+  public func state(forProcessor index: Int) -> DoryX86ArchitecturalState? {
+    lock.withLock { loadedStates.indices.contains(index) ? loadedStates[index] : nil }
+  }
 
   public func run(
     maximumInstructions: UInt64,
@@ -176,94 +228,54 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   ) throws -> DoryPCMachineStop {
     guard maximumInstructions > 0 else { return .instructionBudget(0) }
     return try lock.withLock {
-      guard var state = loadedState else { throw DoryPCMachineError.notLoaded }
-      for completed in 0..<maximumInstructions {
+      guard loadedStates[0] != nil else { throw DoryPCMachineError.notLoaded }
+      var completed: UInt64 = 0
+      while completed < maximumInstructions {
         if let stop = powerStop(instructionCount: completed) { return stop }
-        localAPIC.advanceTimer(by: 1)
+        applyProcessorEvents()
+        for apic in localAPICs { apic.advanceTimer(by: 1) }
         legacyPIT.advance(by: 1)
         rtc.advance(by: 1)
         hpet.advance(by: 1)
-        let interruptsEnabled = state.rflags.contains(.interruptEnable)
-        let vector =
-          localAPIC.acknowledge(
-            interruptsEnabled: interruptsEnabled,
-            externalPriority: UInt8(truncatingIfNeeded: state.control.cr8) << 4
-          ) ?? legacyPIC.acknowledge(interruptsEnabled: interruptsEnabled)
-        if let vector {
-          do {
-            try DoryX86InterruptDelivery().deliver(
-              vector: vector,
-              source: .externalMaskable,
-              state: &state,
-              physicalMemory: physicalMemory,
-              pagingUnit: pagingUnit,
-              mode: executionMode(state)
-            )
-          } catch {
-            loadedState = state
-            return .tripleFault(instructionCount: completed)
-          }
+        if let stop = deliverPendingInterrupts(instructionCount: completed) { return stop }
+        guard let processor = nextRunnableProcessor() else {
+          if advanceToNextInterrupt() { continue }
+          return .halted(instructionCount: completed)
         }
-        let result = interpreter.step(
+        guard var state = loadedStates[processor] else { continue }
+        let result = interpreters[processor].step(
           state: &state,
-          memory: physicalMemory,
+          memory: physicalMemories[processor],
           mode: executionMode(state),
-          pagingUnit: pagingUnit,
+          pagingUnit: pagingUnits[processor],
           ioBus: ioBus
         )
-        loadedState = state
-        if let stop = powerStop(instructionCount: completed + 1) { return stop }
+        completed += 1
+        loadedStates[processor] = state
+        if let stop = powerStop(instructionCount: completed) { return stop }
         switch result {
         case .retired, .yielded:
+          haltedProcessors[processor] = false
           continue
         case .halted:
-          let apic = localAPIC.snapshot()
-          if state.rflags.contains(.interruptEnable) {
-            if apic.softwareEnabled, !apic.timer.masked, apic.timer.currentCount > 0 {
-              localAPIC.advanceTimer(by: UInt64(apic.timer.currentCount))
-              continue
-            }
-            let pit = legacyPIT.snapshot()
-            let picAcceptsTimer = legacyPIC.snapshot().masterMask & 1 == 0
-            let ioAPICAcceptsTimer =
-              ((try? ioAPIC.route(for: 2)).map { !$0.masked } ?? false)
-              && apic.softwareEnabled
-            if pit.armed, pit.current > 0, picAcceptsTimer || ioAPICAcceptsTimer {
-              legacyPIT.advance(by: UInt64(pit.current))
-              continue
-            }
-            let pic = legacyPIC.snapshot()
-            let picAcceptsRTC = pic.masterMask & (1 << 2) == 0 && pic.slaveMask & 1 == 0
-            let ioAPICAcceptsRTC =
-              ((try? ioAPIC.route(for: 8)).map { !$0.masked } ?? false)
-              && apic.softwareEnabled
-            if let rtcTicks = rtc.ticksUntilNextInterrupt(), rtcTicks > 0,
-              picAcceptsRTC || ioAPICAcceptsRTC
-            {
-              rtc.advance(by: rtcTicks)
-              continue
-            }
-            if let hpetTicks = hpet.ticksUntilNextInterrupt(), hpetTicks > 0 {
-              hpet.advance(by: hpetTicks)
-              continue
-            }
-          }
-          return .halted(instructionCount: completed + 1)
+          haltedProcessors[processor] = true
+          continue
         case .exception(let exception):
           guard exceptionPolicy == .deliver else {
-            return .exception(exception, instructionCount: completed)
+            return .exception(exception, instructionCount: completed - 1)
           }
           do {
             try DoryX86InterruptDelivery().deliverException(
               exception,
               state: &state,
-              physicalMemory: physicalMemory,
-              pagingUnit: pagingUnit,
+              physicalMemory: physicalMemories[processor],
+              pagingUnit: pagingUnits[processor],
               mode: executionMode(state)
             )
+            loadedStates[processor] = state
           } catch {
-            loadedState = state
-            return .tripleFault(instructionCount: completed)
+            loadedStates[processor] = state
+            return .tripleFault(instructionCount: completed - 1)
           }
         }
       }
@@ -277,6 +289,122 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     case .reset: return .reset(instructionCount: instructionCount)
     case nil: return nil
     }
+  }
+
+  private func applyProcessorEvents() {
+    for event in multiprocessorController.drainEvents() {
+      switch event {
+      case .initialize(let apicID):
+        guard let index = processorIndex(apicID) else { continue }
+        loadedStates[index] = applicationProcessorResetState()
+        haltedProcessors[index] = true
+        pendingNMIs.remove(index)
+      case .startup(let apicID, let vector):
+        guard let index = processorIndex(apicID) else { continue }
+        var state = applicationProcessorResetState()
+        state.rip = 0
+        state.cs = .init(
+          selector: UInt16(vector) << 8,
+          attributes: 0x0093,
+          limit: 0xFFFF,
+          base: UInt64(vector) << 12
+        )
+        loadedStates[index] = state
+        haltedProcessors[index] = false
+      case .nonMaskableInterrupt(let apicID):
+        if let index = processorIndex(apicID) { pendingNMIs.insert(index) }
+      }
+    }
+  }
+
+  private func deliverPendingInterrupts(instructionCount: UInt64) -> DoryPCMachineStop? {
+    for index in loadedStates.indices {
+      guard var state = loadedStates[index],
+        multiprocessorController.snapshot().lifecycles[localAPICs[index].apicID] == .running
+      else { continue }
+      let source: DoryX86InterruptSource
+      let vector: UInt8?
+      if pendingNMIs.remove(index) != nil {
+        source = .nonMaskable
+        vector = 2
+      } else {
+        source = .externalMaskable
+        let enabled = state.rflags.contains(.interruptEnable)
+        vector =
+          localAPICs[index].acknowledge(
+            interruptsEnabled: enabled,
+            externalPriority: UInt8(truncatingIfNeeded: state.control.cr8) << 4
+          ) ?? (index == 0 ? legacyPIC.acknowledge(interruptsEnabled: enabled) : nil)
+      }
+      guard let vector else { continue }
+      do {
+        try DoryX86InterruptDelivery().deliver(
+          vector: vector,
+          source: source,
+          state: &state,
+          physicalMemory: physicalMemories[index],
+          pagingUnit: pagingUnits[index],
+          mode: executionMode(state)
+        )
+        loadedStates[index] = state
+        haltedProcessors[index] = false
+      } catch {
+        loadedStates[index] = state
+        return .tripleFault(instructionCount: instructionCount)
+      }
+    }
+    return nil
+  }
+
+  private func nextRunnableProcessor() -> Int? {
+    let lifecycles = multiprocessorController.snapshot().lifecycles
+    for displacement in 0..<processorCount {
+      let index = (roundRobinCursor + displacement) % processorCount
+      guard loadedStates[index] != nil, !haltedProcessors[index],
+        lifecycles[localAPICs[index].apicID] == .running
+      else { continue }
+      roundRobinCursor = (index + 1) % processorCount
+      return index
+    }
+    return nil
+  }
+
+  private func advanceToNextInterrupt() -> Bool {
+    var deadlines: [UInt64] = []
+    for (index, apic) in localAPICs.enumerated() {
+      guard let state = loadedStates[index], state.rflags.contains(.interruptEnable) else {
+        continue
+      }
+      let timer = apic.snapshot().timer
+      if !timer.masked, timer.currentCount > 0 { deadlines.append(UInt64(timer.currentCount)) }
+    }
+    let bspAcceptsInterrupts = loadedStates[0]?.rflags.contains(.interruptEnable) == true
+    if bspAcceptsInterrupts {
+      let pit = legacyPIT.snapshot()
+      let picAcceptsTimer = legacyPIC.snapshot().masterMask & 1 == 0
+      let ioAPICAcceptsTimer = (try? ioAPIC.route(for: 2)).map { !$0.masked } ?? false
+      if pit.armed, pit.current > 0, picAcceptsTimer || ioAPICAcceptsTimer {
+        deadlines.append(UInt64(pit.current))
+      }
+      if let ticks = rtc.ticksUntilNextInterrupt(), ticks > 0 { deadlines.append(ticks) }
+      if let ticks = hpet.ticksUntilNextInterrupt(), ticks > 0 { deadlines.append(ticks) }
+    }
+    guard let ticks = deadlines.min() else { return false }
+    for apic in localAPICs { apic.advanceTimer(by: ticks) }
+    legacyPIT.advance(by: ticks)
+    rtc.advance(by: ticks)
+    hpet.advance(by: ticks)
+    return true
+  }
+
+  private func applicationProcessorResetState() -> DoryX86ArchitecturalState {
+    var state = DoryX86ArchitecturalState.reset()
+    state.modelSpecific.apicBase &= ~(1 << 8)
+    return state
+  }
+
+  private func processorIndex(_ apicID: UInt32) -> Int? {
+    localAPICs.firstIndex(where: { $0.apicID == apicID })
   }
 
   private func executionMode(_ state: DoryX86ArchitecturalState) -> DoryX86ExecutionMode {

@@ -28,6 +28,37 @@ import Testing
     #expect(machine.state?.registers.rbx == layout.startInfo)
   }
 
+  @Test func startupIPIExecutesApplicationProcessorFromItsRealModeVector() throws {
+    let layout = DoryPCPVHBootLayout(
+      startInfo: 0x90000,
+      commandLine: 0x91000,
+      modules: 0x92000,
+      memoryMap: 0x93000,
+      initrd: 0x180000
+    )
+    let machine = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024,
+      processorCount: 2,
+      bootLayout: layout
+    )
+    try machine.load(kernel: makeELF(code: [0xF4]), commandLine: "x")
+
+    // AP startup vector 8 targets physical address 0x8000 in real mode:
+    // mov al,'A'; mov dx,0x3f8; out dx,al; hlt
+    try machine.memory.write(
+      at: 0x8000,
+      bytes: [0xB0, UInt8(ascii: "A"), 0xBA, 0xF8, 0x03, 0xEE, 0xF4]
+    )
+    try machine.physicalMemory.write(at: 0xFEE0_0310, bytes: [0, 0, 0, 1])
+    try machine.physicalMemory.write(at: 0xFEE0_0300, bytes: [8, 6, 0, 0])
+
+    #expect(try machine.run(maximumInstructions: 16) == .halted(instructionCount: 5))
+    #expect(machine.serial.drainTransmittedBytes() == [UInt8(ascii: "A")])
+    #expect(machine.state(forProcessor: 1)?.cs.base == 0x8000)
+    #expect(try machine.physicalMemories[0].read(at: 0xFEE0_0020, byteCount: 4) == [0, 0, 0, 0])
+    #expect(try machine.physicalMemories[1].read(at: 0xFEE0_0020, byteCount: 4) == [0, 0, 0, 1])
+  }
+
   @Test func stopsOnBudgetAndReportsPreciseExceptions() throws {
     let layout = DoryPCPVHBootLayout(
       startInfo: 0x90000,
