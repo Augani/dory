@@ -52,6 +52,30 @@ public struct DoryX86Interpreter: Sendable {
     mode: DoryX86ExecutionMode,
     pagingUnit: DoryX86PagingUnit? = nil
   ) -> DoryX86InterpreterResult {
+    var candidate = state
+    let result = executeStep(
+      state: &candidate,
+      memory: memory,
+      mode: mode,
+      pagingUnit: pagingUnit
+    )
+    switch result {
+    case .retired, .halted:
+      state = candidate
+    case .exception(let exception):
+      if exception.kind == .pageFault {
+        state.control.cr2 = exception.linearAddress ?? 0
+      }
+    }
+    return result
+  }
+
+  private func executeStep(
+    state: inout DoryX86ArchitecturalState,
+    memory: any DoryX86Memory,
+    mode: DoryX86ExecutionMode,
+    pagingUnit: DoryX86PagingUnit?
+  ) -> DoryX86InterpreterResult {
     let originalRIP = state.rip
     let executionMemory: any DoryX86Memory =
       if let pagingUnit {

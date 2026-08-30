@@ -84,6 +84,30 @@ import Testing
     #expect(state.control.cr2 == 0xDEAD_0000)
   }
 
+  @Test func faultingStackWriteDoesNotLeakTheSpeculativeStackPointer() throws {
+    let memory = DoryX86ByteArrayMemory(
+      baseAddress: 0x4800,
+      bytes: [0x50] + .init(repeating: 0, count: 16)
+    )
+    let registers = DoryX86GeneralRegisters(rax: 7, rsp: 0x5000)
+    var state = try DoryX86ArchitecturalState(registers: registers, rip: 0x4800)
+    let result = interpreter.step(state: &state, memory: memory, mode: .long64)
+    #expect(
+      result
+        == .exception(
+          .init(
+            kind: .pageFault,
+            vector: 14,
+            errorCode: 2,
+            instructionPointer: 0x4800,
+            linearAddress: 0x4FF8
+          )))
+    #expect(state.rip == 0x4800)
+    #expect(state.registers.rsp == 0x5000)
+    #expect(state.registers.rax == 7)
+    #expect(state.control.cr2 == 0x4FF8)
+  }
+
   @Test func executesControlMSRAndTimestampInstructionsAtRingZero() throws {
     // mov cr3,rbx; mov rcx,cr3; rdtscp
     let memory = DoryX86ByteArrayMemory(
