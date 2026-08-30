@@ -159,6 +159,14 @@ public enum DoryCPUExitReason: Codable, Sendable, Hashable {
   case cancelled(DoryExecutionCancellationRequest)
 }
 
+/// Machine-model response to one restartable execution exit. The engine validates the response
+/// against the pending token before changing architectural state or advancing the guest PC.
+public enum DoryCPUExitResponse: Codable, Sendable, Hashable {
+  case completedWrite
+  case readValue([UInt8])
+  case hypercallResult([UInt64])
+}
+
 public struct DoryCPUExit: Codable, Sendable, Hashable {
   public let vcpu: DoryVCPUIdentifier
   public let retiredInstructions: UInt64
@@ -271,5 +279,47 @@ public struct DoryInterruptAcknowledgement: Codable, Sendable, Hashable {
     self.vcpu = vcpu
     self.vector = interrupt.vector
     self.deliveryGeneration = interrupt.deliveryGeneration
+  }
+}
+
+public enum DoryExecutionTraceKind: String, Codable, Sendable, Hashable {
+  case enteredGuest
+  case exitedGuest
+  case interruptInjected
+  case interruptAcknowledged
+  case cancellationObserved
+  case snapshotBoundary
+}
+
+/// A sequence-bearing trace marker. It carries no host timestamp and therefore cannot alter or be
+/// mistaken for guest-visible clock ordering.
+public struct DoryExecutionTracePoint: Codable, Sendable, Hashable {
+  public let sequence: UInt64
+  public let executionGeneration: UInt64
+  public let vcpu: DoryVCPUIdentifier
+  public let kind: DoryExecutionTraceKind
+  public let programCounter: UInt64?
+
+  public init(
+    sequence: UInt64,
+    executionGeneration: UInt64,
+    vcpu: DoryVCPUIdentifier,
+    kind: DoryExecutionTraceKind,
+    programCounter: UInt64? = nil
+  ) throws {
+    guard sequence > 0 else {
+      throw DoryExecutionContractError.invalidGeneration(type: "trace sequence", value: sequence)
+    }
+    guard executionGeneration > 0 else {
+      throw DoryExecutionContractError.invalidGeneration(
+        type: "execution",
+        value: executionGeneration
+      )
+    }
+    self.sequence = sequence
+    self.executionGeneration = executionGeneration
+    self.vcpu = vcpu
+    self.kind = kind
+    self.programCounter = programCounter
   }
 }

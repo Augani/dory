@@ -155,6 +155,37 @@ public struct DoryGuestMemoryRegion: Codable, Sendable, Hashable {
   }
 }
 
+/// Process-local authority for one guest mapping. The host pointer is intentionally neither
+/// codable nor part of snapshot state; durable contracts carry only `DoryGuestMemoryRegion`.
+public struct DoryGuestMemoryMapping: @unchecked Sendable {
+  public let region: DoryGuestMemoryRegion
+  public let hostAddress: UnsafeMutableRawPointer
+  public let hostByteCount: UInt64
+
+  public init(
+    region: DoryGuestMemoryRegion,
+    hostAddress: UnsafeMutableRawPointer,
+    hostByteCount: UInt64
+  ) throws {
+    guard hostByteCount >= region.range.byteCount else {
+      throw DoryExecutionContractError.backingTooSmall(
+        required: region.range.byteCount,
+        actual: hostByteCount
+      )
+    }
+    let address = UInt(bitPattern: hostAddress)
+    guard UInt64(address).isMultiple(of: region.pageSize) else {
+      throw DoryExecutionContractError.unalignedHostAddress(
+        address: address,
+        pageSize: region.pageSize
+      )
+    }
+    self.region = region
+    self.hostAddress = hostAddress
+    self.hostByteCount = hostByteCount
+  }
+}
+
 public struct DoryDirtyPageSet: Codable, Sendable, Hashable {
   public let regionID: UInt32
   public let mappingGeneration: UInt64

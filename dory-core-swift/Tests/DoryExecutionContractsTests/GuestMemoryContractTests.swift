@@ -108,6 +108,43 @@ import Testing
     }
   }
 
+  @Test func processLocalBackingChecksBoundsAndAlignment() throws {
+    let memory = UnsafeMutableRawPointer.allocate(byteCount: 0x2_000, alignment: 0x1_000)
+    defer { memory.deallocate() }
+    let mappedRegion = try region(id: 8, base: 0x8_000, byteCount: 0x2_000)
+    let mapping = try DoryGuestMemoryMapping(
+      region: mappedRegion,
+      hostAddress: memory,
+      hostByteCount: 0x2_000
+    )
+    #expect(mapping.region == mappedRegion)
+
+    #expect(
+      throws: DoryExecutionContractError.backingTooSmall(
+        required: 0x2_000,
+        actual: 0x1_000
+      )
+    ) {
+      try DoryGuestMemoryMapping(
+        region: mappedRegion,
+        hostAddress: memory,
+        hostByteCount: 0x1_000
+      )
+    }
+    #expect(
+      throws: DoryExecutionContractError.unalignedHostAddress(
+        address: UInt(bitPattern: memory + 1),
+        pageSize: 0x1_000
+      )
+    ) {
+      try DoryGuestMemoryMapping(
+        region: mappedRegion,
+        hostAddress: memory + 1,
+        hostByteCount: 0x2_000
+      )
+    }
+  }
+
   private func region(id: UInt32, base: UInt64, byteCount: UInt64) throws -> DoryGuestMemoryRegion {
     try DoryGuestMemoryRegion(
       id: id,

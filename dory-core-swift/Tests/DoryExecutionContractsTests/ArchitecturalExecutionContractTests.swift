@@ -85,4 +85,38 @@ import Testing
     #expect(!cancellation.applies(to: 7))
     #expect(!cancellation.applies(to: 9))
   }
+
+  @Test func restartTokensCannotCrossVCPUOrExecutionBoundaries() throws {
+    let token = try DoryExecutionResumeToken(
+      vcpu: DoryVCPUIdentifier(3),
+      executionGeneration: 4,
+      sequence: 5
+    )
+    let read = try DoryArchitecturalMemoryAccess(
+      address: DoryGuestPhysicalAddress(0x2_000),
+      widthBytes: 8,
+      direction: .read
+    )
+    #expect(
+      throws: DoryExecutionContractError.vcpuMismatch(
+        expected: DoryVCPUIdentifier(2),
+        actual: DoryVCPUIdentifier(3)
+      )
+    ) {
+      try DoryCPUExit(
+        vcpu: DoryVCPUIdentifier(2),
+        retiredInstructions: 1,
+        reason: .memoryMappedIO(read, resume: token)
+      )
+    }
+
+    let trace = try DoryExecutionTracePoint(
+      sequence: 1,
+      executionGeneration: 4,
+      vcpu: DoryVCPUIdentifier(3),
+      kind: .exitedGuest,
+      programCounter: 0x1_000
+    )
+    #expect(trace.programCounter == 0x1_000)
+  }
 }

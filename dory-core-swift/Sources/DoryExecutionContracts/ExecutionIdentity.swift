@@ -27,6 +27,8 @@ public enum DoryExecutionContractError: Error, Equatable, Sendable, CustomString
   case duplicateVCPU(DoryVCPUIdentifier)
   case incompleteVCPUQuiescence(expected: [DoryVCPUIdentifier], actual: [DoryVCPUIdentifier])
   case nonCanonicalCollection(type: String)
+  case backingTooSmall(required: UInt64, actual: UInt64)
+  case unalignedHostAddress(address: UInt, pageSize: UInt64)
 
   public var description: String {
     switch self {
@@ -76,6 +78,10 @@ public enum DoryExecutionContractError: Error, Equatable, Sendable, CustomString
       "snapshot quiescence mismatch: expected \(expected.map(\.rawValue)), got \(actual.map(\.rawValue))"
     case .nonCanonicalCollection(let type):
       "\(type) must be strictly ordered and duplicate-free"
+    case .backingTooSmall(let required, let actual):
+      "guest memory backing has \(actual) bytes; requires \(required)"
+    case .unalignedHostAddress(let address, let pageSize):
+      "host address \(address) is not aligned to page size \(pageSize)"
     }
   }
 }
