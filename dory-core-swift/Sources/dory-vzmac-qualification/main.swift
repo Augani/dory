@@ -23,7 +23,8 @@ private enum Command {
     case resume(
         machine: URL,
         guestTools: URL?,
-        usbMassStorage: DoryVZMacUSBMassStorage?
+        usbMassStorage: DoryVZMacUSBMassStorage?,
+        suspendOnExit: Bool
     )
     case clone(machine: URL, destination: URL)
     case export(machine: URL, destination: URL)
@@ -119,11 +120,14 @@ private func parseCommand(_ arguments: [String]) throws -> Command {
             ? URL(fileURLWithPath: try take("--guest-tools"), isDirectory: true)
             : nil
         let usbMassStorage = try takeUSBMassStorage()
+        let suspendOnExit = values.contains("--suspend-on-exit")
+        values.removeAll { $0 == "--suspend-on-exit" }
         guard values.isEmpty else { throw CommandError.usage(usage) }
         return .resume(
             machine: machine,
             guestTools: guestTools,
-            usbMassStorage: usbMassStorage
+            usbMassStorage: usbMassStorage,
+            suspendOnExit: suspendOnExit
         )
     case "clone":
         let machine = URL(fileURLWithPath: try take("--machine"), isDirectory: true)
@@ -167,7 +171,7 @@ Usage:
   dory-vzmac-qualification prepare --ipsw <file> [--source-url <https-url>] --machine <bundle> [--cpus N] [--memory-gib N] [--disk-gib N]
   dory-vzmac-qualification install --ipsw <file> --machine <bundle>
   dory-vzmac-qualification run --machine <bundle> [--guest-tools <directory>] [--usb-disk <image> [--usb-disk-read-only]] [--suspend-on-exit]
-  dory-vzmac-qualification resume --machine <bundle> [--guest-tools <directory>] [--usb-disk <image> [--usb-disk-read-only]]
+  dory-vzmac-qualification resume --machine <bundle> [--guest-tools <directory>] [--usb-disk <image> [--usb-disk-read-only]] [--suspend-on-exit]
   dory-vzmac-qualification clone --machine <bundle> --destination <bundle>
   dory-vzmac-qualification export --machine <bundle> --destination <dorymachine>
   dory-vzmac-qualification import --source <dorymachine> --machine <bundle>
@@ -263,7 +267,7 @@ private final class QualificationAppDelegate: NSObject, NSApplicationDelegate,
             show(runtime: runtime, title: "Dory — macOS")
             try await runtime.start()
             window?.title = "Dory — macOS running"
-        case .resume(let machine, let guestTools, let usbMassStorage):
+        case .resume(let machine, let guestTools, let usbMassStorage, _):
             let runtime = try makeRuntime(
                 machine: machine,
                 guestTools: guestTools,
@@ -407,7 +411,14 @@ private final class QualificationAppDelegate: NSObject, NSApplicationDelegate,
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let runtime, runtime.virtualMachine.state == .running else { return .terminateNow }
-        if case .run(_, _, _, let suspendOnExit) = command, suspendOnExit {
+        let suspendOnExit: Bool
+        switch command {
+        case .run(_, _, _, let enabled), .resume(_, _, _, let enabled):
+            suspendOnExit = enabled
+        default:
+            suspendOnExit = false
+        }
+        if suspendOnExit {
             awaitingTermination = true
             window?.title = "Dory — Suspending macOS"
             Task { @MainActor in
