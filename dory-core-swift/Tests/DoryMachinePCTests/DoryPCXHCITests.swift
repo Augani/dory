@@ -167,6 +167,24 @@ import Testing
     #expect(try read32(machine, 0x600C) >> 27 == 2)
     #expect(try read32(machine, 0x6020) & 0x7 == 1)
   }
+
+  @Test func authorizedDeviceCapabilityFollowsPortResetDetachAndControllerReset() throws {
+    let xhci = try DoryPCXHCIController()
+    let device = DoryPCUSBRecordingDevice(speed: .high)
+    let machine = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024,
+      pciFunctions: [xhci]
+    )
+    let bar = DoryPCV1ABI.xhciBARAddress
+    try xhci.writeConfiguration(offset: 4, bytes: [2, 0])
+    try xhci.connect(port: 2, device: device)
+    try write32(machine, bar + 0x450, 1 << 4)
+    #expect(device.resetCount == 1)
+    try write32(machine, bar + 0x40, 1 << 1)
+    #expect(device.cancellationCount == 1)
+    try xhci.disconnect(port: 2)
+    #expect(device.cancellationCount == 2)
+  }
 }
 
 private func read8(_ machine: DoryPCDirectKernelMachine, _ address: UInt64) throws -> UInt8 {

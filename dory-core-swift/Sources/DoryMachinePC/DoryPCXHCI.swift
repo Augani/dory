@@ -3,6 +3,7 @@ import Foundation
 
 public enum DoryPCXHCIError: Error, Sendable, Equatable {
   case invalidPort(Int)
+  case portAlreadyConnected(Int)
   case invalidBARAccess(offset: UInt64, byteCount: Int, write: Bool)
   case invalidRegisterWrite(offset: UInt64, byteCount: Int)
   case eventRingUnavailable
@@ -98,6 +99,7 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
   private var eventRingEnqueueIndex: UInt32 = 0
   private var eventRingCycle = true
   private var ports = [UInt32](repeating: portPower, count: portCount)
+  private var devices: [Int: any DoryPCUSBDevice] = [:]
   private var slots: [UInt8: Slot] = [:]
 
   public init(
@@ -143,17 +145,33 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
     if shouldSignal { postPortStatusChange(port: port) }
   }
 
-  public func disconnect(port: Int) throws {
-    let shouldSignal = try lock.withLock {
+  public func connect(port: Int, device: any DoryPCUSBDevice) throws {
+    try lock.withLock {
       let index = try portIndex(port)
+      guard devices[index] == nil else { throw DoryPCXHCIError.portAlreadyConnected(port) }
+      devices[index] = device
+    }
+    do {
+      try connect(port: port, speed: device.speed)
+    } catch {
+      lock.withLock { devices.removeValue(forKey: port - 1) }
+      throw error
+    }
+  }
+
+  public func disconnect(port: Int) throws {
+    let result = try lock.withLock {
+      let index = try portIndex(port)
+      let device = devices.removeValue(forKey: index)
       let old = ports[index]
       var value = old & Self.portChangeMask
       value |= Self.portPower | Self.portConnectChange
       if old & Self.portEnabled != 0 { value |= Self.portEnableChange }
       ports[index] = value
-      return old & Self.portConnectStatus != 0
+      return (old & Self.portConnectStatus != 0, device)
     }
-    if shouldSignal { postPortStatusChange(port: port) }
+    result.1?.cancelAll()
+    if result.0 { postPortStatusChange(port: port) }
   }
 
   public func portState(_ port: Int) throws -> DoryPCXHCIPortState {
@@ -332,26 +350,27 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
   }
 
   private func writePort(_ port: Int, value: UInt32) throws {
-    let changed = try lock.withLock {
+    let result = try lock.withLock {
       let index = try portIndex(port)
       var current = ports[index]
       current &= ~(value & Self.portChangeMask)
       guard value & Self.portReset != 0 else {
         ports[index] = current
-        return false
+        return (false, nil as (any DoryPCUSBDevice)?)
       }
       if current & Self.portConnectStatus != 0 {
         current |= Self.portEnabled | Self.portResetChange
       }
       current &= ~Self.portReset
       ports[index] = current
-      return true
+      return (true, devices[index])
     }
-    if changed { postPortStatusChange(port: port) }
+    result.1?.reset()
+    if result.0 { postPortStatusChange(port: port) }
   }
 
   private func resetController() {
-    lock.withLock {
+    let connectedDevices = lock.withLock {
       usbCommand = 0
       usbStatus = Self.usbStatusHalted
       deviceNotificationControl = 0
@@ -371,7 +390,9 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
         let attachment = ports[index] & (Self.portConnectStatus | (0xF << 10))
         ports[index] = Self.portPower | attachment
       }
+      return Array(devices.values)
     }
+    for device in connectedDevices { device.cancelAll() }
     configurationFunction.setINTx(asserted: false)
   }
 
