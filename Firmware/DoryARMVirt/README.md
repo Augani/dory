@@ -30,3 +30,29 @@ pool for each clean build. The reviewed patch uses EDK's own debug-zeroing
 operation, while the builder supplies EDK's supported pre-generated cookie
 pools derived from all pinned inputs. Stack protection remains enabled and the
 release bundle is byte-for-byte reproducible.
+
+On an Apple-silicon development Mac, qualify the resulting bundle with the
+Hypervisor.framework smoke runner. SwiftPM does not apply executable
+entitlements, so the development runner is deliberately signed before launch:
+
+```sh
+export DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer
+swift build \
+  --package-path Packages/ContainerizationEngine \
+  --product dory-armvirt-uefi-smoke
+runner="$(swift build \
+  --package-path Packages/ContainerizationEngine \
+  --show-bin-path)/dory-armvirt-uefi-smoke"
+codesign --force --sign - \
+  --entitlements Packages/ContainerizationEngine/dory-armvirt-uefi-smoke.entitlements \
+  "$runner"
+"$runner" \
+  --firmware-bundle /absolute/path/to/dory-armvirt-firmware
+```
+
+The runner creates private zero-state NVRAM and disk resources, preserves them
+across firmware-requested resets, and requires the serial console to reach the
+embedded UEFI interactive shell. Console output is written to standard error;
+a successful run writes one canonical JSON receipt to standard output with the
+machine and firmware ABI identities, build identifier, firmware SHA-256, boot
+attempt count, variable-store generation, and final stop reason.

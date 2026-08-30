@@ -29,6 +29,10 @@ let package = Package(
         .library(name: "DoryHV", targets: ["DoryHV"]),
         .executable(name: "dory-hv", targets: ["dory-hv"]),
         .executable(
+            name: "dory-armvirt-uefi-smoke",
+            targets: ["dory-armvirt-uefi-smoke"]
+        ),
+        .executable(
             name: "dory-renderer-worker",
             targets: ["DoryRendererWorkerXPCService"]
         ),
@@ -140,6 +144,16 @@ let package = Package(
                 .linkedFramework("AVFAudio"),
                 .linkedFramework("AVFoundation"),
             ]
+        ),
+        .executableTarget(
+            name: "dory-armvirt-uefi-smoke",
+            dependencies: [
+                "DoryHV",
+                .product(name: "DoryFirmware", package: "dory-core-swift"),
+                .product(name: "DoryMachineARMVirt", package: "dory-core-swift"),
+                .product(name: "DorydKit", package: "dory-core-swift"),
+            ],
+            linkerSettings: [.linkedFramework("Hypervisor")]
         ),
         .executableTarget(
             name: "DoryRendererWorkerXPCService",
