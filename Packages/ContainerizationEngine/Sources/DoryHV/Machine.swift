@@ -1,4 +1,5 @@
 import Darwin
+import DoryMachineARMVirt
 import Foundation
 import Hypervisor
 import Synchronization
@@ -210,29 +211,22 @@ enum VirtioMMIODeviceTree {
 }
 
 #if arch(arm64)
-/// Guest physical layout, modeled on QEMU's virt machine so every address is one Linux has been
-/// booting on for a decade.
+/// Device-wiring view of the frozen `dory.armvirt@1` machine ABI. The ABI package is the sole
+/// authority for guest-visible addresses and interrupt assignments.
 public enum GuestLayout {
-    // The in-kernel GIC sizes its redistributor region for the architectural vCPU maximum (32 MiB
-    // observed), so the UART and virtio windows sit safely above the whole span.
-    public static let gicDistributorBase: UInt64 = 0x0800_0000
-    public static let gicRedistributorBase: UInt64 = 0x080A_0000
-    public static let uartBase: UInt64 = 0x0C00_0000
-    public static let uartIRQ: UInt32 = 1  // SPI number (intid 32 + 1)
-    public static let rtcBase: UInt64 = 0x0C09_0000
-    public static let virtioBase: UInt64 = 0x0C10_0000
-    public static let virtioSlotSize: UInt64 = 0x200
-    /// QEMU's arm64 `virt` platform reserves 32 virtio-mmio transports. Dory preserves that
-    /// bounded window while allowing holes within it.
-    public static let virtioSlotCount = 32
-    public static let virtioFirstIRQ: UInt32 = 16  // SPI numbers 16... (intid 48...)
-    public static let ramBase: UInt64 = 0x8000_0000
-    public static let dtbOffset: UInt64 = 256 << 20
-    /// Direct-boot initrds live beyond the kernel/DTB reservation while remaining well inside
-    /// the minimum supported 1-GiB guest. Keeping this deterministic also makes the DTB contract
-    /// straightforward to test and diagnose.
-    public static let initrdOffset: UInt64 = 320 << 20
-    public static let daxWindowBase: UInt64 = 0xC_0000_0000
+    public static let gicDistributorBase = DoryARMVirtV1ABI.gicDistributorBase
+    public static let gicRedistributorBase = DoryARMVirtV1ABI.gicRedistributorBase
+    public static let uartBase = DoryARMVirtV1ABI.uartBase
+    public static let uartIRQ = DoryARMVirtV1ABI.uartSPI
+    public static let rtcBase = DoryARMVirtV1ABI.rtcBase
+    public static let virtioBase = DoryARMVirtV1ABI.virtioBase
+    public static let virtioSlotSize = DoryARMVirtV1ABI.virtioSlotBytes
+    public static let virtioSlotCount = DoryARMVirtV1ABI.virtioSlotCount
+    public static let virtioFirstIRQ = DoryARMVirtV1ABI.virtioFirstSPI
+    public static let ramBase = DoryARMVirtV1ABI.ramBase
+    public static let dtbOffset = DoryARMVirtV1ABI.dtbOffset
+    public static let initrdOffset = DoryARMVirtV1ABI.initrdOffset
+    public static let daxWindowBase = DoryARMVirtV1ABI.daxWindowBase
 }
 
 public struct MachineConfiguration {
@@ -264,6 +258,17 @@ public struct MachineConfiguration {
         self.commandLine = commandLine
         self.memoryBytes = memoryBytes
         self.cpuCount = cpuCount
+    }
+
+    func validateDoryARMVirtV1() throws {
+        do {
+            try DoryARMVirtV1ABI.validateMemoryBytes(memoryBytes)
+            try DoryARMVirtV1ABI.validateVCPUCount(cpuCount)
+        } catch {
+            throw VMError.invalidConfiguration(
+                "\(DoryARMVirtV1ABI.identity) resource admission failed: \(error)"
+            )
+        }
     }
 }
 
@@ -310,6 +315,7 @@ public final class Machine: @unchecked Sendable {
     )
 
     public init(configuration: MachineConfiguration) throws {
+        try configuration.validateDoryARMVirtV1()
         try hvCreateVM()
         self.configuration = configuration
         self.memory = try GuestMemory(guestBase: GuestLayout.ramBase, size: configuration.memoryBytes)
@@ -318,14 +324,20 @@ public final class Machine: @unchecked Sendable {
 
         var redistributorStride = 0
         try hvCheck(hv_gic_get_redistributor_size(&redistributorStride), "hv_gic_get_redistributor_size")
+        let redistributorRegionSize = try Self.gicRedistributorRegionSize()
+        let distributorSize = try Self.gicDistributorSize()
+        try Self.validateGICLayout(
+            distributorBytes: distributorSize,
+            redistributorBytes: redistributorRegionSize
+        )
         self.redistributorMMIO = GICRedistributorMMIO(
             baseAddress: GuestLayout.gicRedistributorBase,
-            size: try Self.gicRedistributorRegionSize(),
+            size: redistributorRegionSize,
             stride: UInt64(redistributorStride)
         )
         bus.attach(GICDistributorMMIO(
             baseAddress: GuestLayout.gicDistributorBase,
-            size: try Self.gicDistributorSize()
+            size: distributorSize
         ))
         bus.attach(redistributorMMIO)
     }
@@ -357,6 +369,41 @@ public final class Machine: @unchecked Sendable {
         var intid: UInt32 = 0
         try hvCheck(hv_gic_get_intid(interrupt, &intid), "hv_gic_get_intid")
         return intid
+    }
+
+    static func validateGICLayout(
+        distributorBytes: UInt64,
+        redistributorBytes: UInt64
+    ) throws {
+        guard distributorBytes > 0,
+              distributorBytes <= DoryARMVirtV1ABI.gicDistributorReservedBytes else {
+            throw VMError.invalidConfiguration(
+                "host GIC distributor size \(distributorBytes) exceeds the \(DoryARMVirtV1ABI.identity) reservation"
+            )
+        }
+        guard redistributorBytes > 0,
+              redistributorBytes <= DoryARMVirtV1ABI.gicRedistributorReservedBytes else {
+            throw VMError.invalidConfiguration(
+                "host GIC redistributor size \(redistributorBytes) exceeds the \(DoryARMVirtV1ABI.identity) reservation"
+            )
+        }
+    }
+
+    static func validateTimerInterrupts(
+        virtual: UInt32,
+        physical: UInt32,
+        hypervisor: UInt32
+    ) throws {
+        let expectedVirtual = 16 + DoryARMVirtV1ABI.virtualTimerPPI
+        let expectedPhysical = 16 + DoryARMVirtV1ABI.nonsecurePhysicalTimerPPI
+        let expectedHypervisor = 16 + DoryARMVirtV1ABI.hypervisorPhysicalTimerPPI
+        guard virtual == expectedVirtual,
+              physical == expectedPhysical,
+              hypervisor == expectedHypervisor else {
+            throw VMError.invalidConfiguration(
+                "host architectural timer INTIDs \(virtual)/\(physical)/\(hypervisor) do not match \(DoryARMVirtV1ABI.identity) \(expectedVirtual)/\(expectedPhysical)/\(expectedHypervisor)"
+            )
+        }
     }
 
     /// Pulses a guest system interrupt. On arm64 these are GIC SPIs declared edge-triggered in the DTB.
@@ -419,6 +466,11 @@ public final class Machine: @unchecked Sendable {
         let virtualTimer = try Self.reservedIntid(HV_GIC_INT_EL1_VIRTUAL_TIMER)
         let physicalTimer = try Self.reservedIntid(HV_GIC_INT_EL1_PHYSICAL_TIMER)
         let hypTimer = try Self.reservedIntid(HV_GIC_INT_EL2_PHYSICAL_TIMER)
+        try Self.validateTimerInterrupts(
+            virtual: virtualTimer,
+            physical: physicalTimer,
+            hypervisor: hypTimer
+        )
         let distributorSize = try Self.gicDistributorSize()
         let redistributorSize = try Self.gicRedistributorRegionSize()
 
@@ -482,10 +534,10 @@ public final class Machine: @unchecked Sendable {
         fdt.property("compatible", string: "arm,armv8-timer")
         // Cells per interrupt: type (1 = PPI), number (intid - 16), flags (4 = level high).
         fdt.property("interrupts", cells: [
-            1, 13, 4,
-            1, physicalTimer - 16, 4,
-            1, virtualTimer - 16, 4,
-            1, hypTimer - 16, 4,
+            1, DoryARMVirtV1ABI.securePhysicalTimerPPI, 4,
+            1, DoryARMVirtV1ABI.nonsecurePhysicalTimerPPI, 4,
+            1, DoryARMVirtV1ABI.virtualTimerPPI, 4,
+            1, DoryARMVirtV1ABI.hypervisorPhysicalTimerPPI, 4,
         ])
         fdt.endNode()
 

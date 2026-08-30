@@ -111,6 +111,7 @@ let package = Package(
                 "DoryRendererWorkerMetalTransport",
                 "DoryHVUSBShim",
                 .product(name: "DoryCore", package: "dory-core-swift"),
+                .product(name: "DoryMachineARMVirt", package: "dory-core-swift"),
                 .product(name: "DoryVMContracts", package: "dory-core-swift"),
             ],
             linkerSettings: [
@@ -188,6 +189,7 @@ let package = Package(
                 "DoryVirglRendererShim",
                 "dory-hv",
                 .product(name: "DoryCore", package: "dory-core-swift"),
+                .product(name: "DoryMachineARMVirt", package: "dory-core-swift"),
                 .product(name: "DoryOperations", package: "dory-core-swift"),
                 .product(name: "DoryVMContracts", package: "dory-core-swift"),
             ]
