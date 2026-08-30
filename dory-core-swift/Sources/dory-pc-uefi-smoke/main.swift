@@ -20,6 +20,11 @@ private struct Arguments {
   let firmwareBundle: URL
   let maximumInstructions: UInt64
   let memoryBytes: Int
+  let processorCount: Int
+  let systemDisk: URL?
+  let installerMedia: URL?
+  let variableStoreDirectory: URL?
+  let exceptionPolicy: DoryPCExceptionPolicy
 
   init(_ values: [String]) throws {
     var options: [String: String] = [:]
@@ -29,7 +34,12 @@ private struct Arguments {
         throw SmokeError.usage("missing value for \(values[index])")
       }
       let name = values[index]
-      guard ["--firmware-bundle", "--max-instructions", "--memory-bytes"].contains(name)
+      guard
+        [
+          "--firmware-bundle", "--max-instructions", "--memory-bytes", "--processor-count",
+          "--system-disk", "--installer-media", "--variable-store-directory",
+          "--exception-policy",
+        ].contains(name)
       else { throw SmokeError.usage("unknown option: \(name)") }
       guard options.updateValue(values[index + 1], forKey: name) == nil else {
         throw SmokeError.usage("duplicate option: \(name)")
@@ -39,20 +49,46 @@ private struct Arguments {
     guard let bundle = options["--firmware-bundle"], bundle.hasPrefix("/") else {
       throw SmokeError.usage(
         "usage: dory-pc-uefi-smoke --firmware-bundle /absolute/bundle "
+          + "[--system-disk /absolute/disk] [--installer-media /absolute/iso] "
+          + "[--variable-store-directory /absolute/directory] "
+          + "[--processor-count count] [--exception-policy stop|deliver] "
           + "[--max-instructions count] [--memory-bytes count]"
       )
     }
     let instructionText = options["--max-instructions"] ?? "1000000"
     let memoryText = options["--memory-bytes"] ?? "268435456"
+    let processorText = options["--processor-count"] ?? "1"
     guard let maximumInstructions = UInt64(instructionText), maximumInstructions > 0 else {
       throw SmokeError.invalidNumber(instructionText)
     }
     guard let memoryBytes = Int(memoryText), memoryBytes >= 128 * 1024 * 1024 else {
       throw SmokeError.invalidNumber(memoryText)
     }
+    guard let processorCount = Int(processorText), (1...255).contains(processorCount) else {
+      throw SmokeError.invalidNumber(processorText)
+    }
+    let policyText = options["--exception-policy"] ?? "stop"
+    switch policyText {
+    case "stop": exceptionPolicy = .stop
+    case "deliver": exceptionPolicy = .deliver
+    default: throw SmokeError.usage("invalid exception policy: \(policyText)")
+    }
     firmwareBundle = URL(fileURLWithPath: bundle, isDirectory: true).standardizedFileURL
     self.maximumInstructions = maximumInstructions
     self.memoryBytes = memoryBytes
+    self.processorCount = processorCount
+    systemDisk = try options["--system-disk"].map { try Self.absoluteURL($0) }
+    installerMedia = try options["--installer-media"].map { try Self.absoluteURL($0) }
+    variableStoreDirectory = try options["--variable-store-directory"].map {
+      try Self.absoluteURL($0, isDirectory: true)
+    }
+  }
+
+  private static func absoluteURL(_ path: String, isDirectory: Bool = false) throws -> URL {
+    guard path.hasPrefix("/"), path != "/", !path.utf8.contains(0) else {
+      throw SmokeError.usage("path must be absolute and narrowly scoped: \(path)")
+    }
+    return URL(fileURLWithPath: path, isDirectory: isDirectory).standardizedFileURL
   }
 }
 
@@ -102,6 +138,22 @@ private func pageTableTrace(
   return trace
 }
 
+private func prepareVariableStore(
+  directory: URL,
+  initial: DoryUEFIVariableStoreSnapshot
+) throws -> (file: DoryUEFIVariableStoreFile, generation: UInt64) {
+  let file = try DoryUEFIVariableStoreFile(directory: directory.path)
+  do {
+    let loaded = try file.load()
+    return (file, loaded.snapshot.generation)
+  } catch DoryUEFIVariableStoreFileError.storeNotInitialized,
+    DoryUEFIVariableStoreFileError.unsafePath
+  {
+    try file.initialize(initial)
+    return (file, initial.generation)
+  }
+}
+
 private func run() throws {
   let arguments = try Arguments(CommandLine.arguments)
   let artifacts = try loadArtifacts(from: arguments.firmwareBundle)
@@ -109,13 +161,20 @@ private func run() throws {
     throw SmokeError.usage("firmware bundle is not DoryPC-v1")
   }
 
-  let variableDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(
-    "dory-pc-uefi-smoke-\(UUID().uuidString)",
-    isDirectory: true
+  let ownsVariableDirectory = arguments.variableStoreDirectory == nil
+  let variableDirectory =
+    arguments.variableStoreDirectory
+    ?? FileManager.default.temporaryDirectory.appendingPathComponent(
+      "dory-pc-uefi-smoke-\(UUID().uuidString)",
+      isDirectory: true
+    )
+  defer {
+    if ownsVariableDirectory { try? FileManager.default.removeItem(at: variableDirectory) }
+  }
+  let variable = try prepareVariableStore(
+    directory: variableDirectory,
+    initial: artifacts.initialVariableStore
   )
-  defer { try? FileManager.default.removeItem(at: variableDirectory) }
-  let variableFile = try DoryUEFIVariableStoreFile(directory: variableDirectory.path)
-  try variableFile.initialize(artifacts.initialVariableStore)
 
   let systemDevice = try DoryPCUEFIBootDevice(
     logicalID: "system-disk",
@@ -123,33 +182,70 @@ private func run() throws {
     pciAddress: DoryPCUEFIBootDevice.systemDiskAddress,
     readOnly: false
   )
+  var devices = [systemDevice]
+  var storages: [DoryPCUEFIBootStorage] = []
+  if let disk = arguments.systemDisk {
+    storages.append(
+      .init(
+        logicalID: systemDevice.logicalID,
+        storage: try DoryVirtioFileBlockStorage(existingFileURL: disk)
+      ))
+  } else {
+    storages.append(
+      .init(
+        logicalID: systemDevice.logicalID,
+        storage: DoryVirtioInMemoryBlockStorage(byteCount: 64 * 1024 * 1024)
+      ))
+  }
+  var bootOrder = [systemDevice.logicalID]
+  if let installer = arguments.installerMedia {
+    let installerDevice = try DoryPCUEFIBootDevice(
+      logicalID: "installer-media",
+      kind: .removableMedia,
+      pciAddress: DoryPCUEFIBootDevice.removableMediaAddress,
+      readOnly: true
+    )
+    devices.append(installerDevice)
+    storages.append(
+      .init(
+        logicalID: installerDevice.logicalID,
+        storage: try DoryVirtioFileBlockStorage(existingFileURL: installer, readOnly: true)
+      ))
+    bootOrder = [installerDevice.logicalID, systemDevice.logicalID]
+  }
+  devices.sort()
   let plan = try DoryPCUEFILaunchPlan(
     firmware: artifacts.manifest,
-    variableStoreGeneration: artifacts.initialVariableStore.generation,
-    bootDevices: [systemDevice],
-    bootOrder: [systemDevice.logicalID]
+    variableStoreGeneration: variable.generation,
+    bootDevices: devices,
+    bootOrder: bootOrder
   )
-  let storage = DoryVirtioInMemoryBlockStorage(byteCount: 64 * 1024 * 1024)
   let composed = try DoryPCUEFIMachine(
     plan: plan,
     firmware: artifacts,
-    variableStore: .init(file: variableFile),
-    bootStorage: [.init(logicalID: systemDevice.logicalID, storage: storage)],
-    memoryBytes: arguments.memoryBytes
+    variableStore: .init(file: variable.file),
+    bootStorage: storages,
+    memoryBytes: arguments.memoryBytes,
+    processorCount: arguments.processorCount
   )
-  let stop = try composed.machine.run(maximumInstructions: arguments.maximumInstructions)
+  let stop = try composed.machine.run(
+    maximumInstructions: arguments.maximumInstructions,
+    exceptionPolicy: arguments.exceptionPolicy
+  )
   let state = composed.machine.state
   let rip = state.map { hexadecimal($0.cs.base &+ $0.rip) } ?? "unavailable"
-  let pageTrace = state.map {
-    pageTableTrace(
-      memory: composed.machine.memory,
-      cr3: $0.control.cr3,
-      linearAddress: $0.cs.base &+ $0.rip
-    )
-  } ?? []
-  let physicalInstructionBytes: String = state.flatMap {
-    try? composed.machine.memory.read(at: $0.cs.base &+ $0.rip, byteCount: 16)
-  }.map(hexadecimalBytes) ?? "unmapped"
+  let pageTrace =
+    state.map {
+      pageTableTrace(
+        memory: composed.machine.memory,
+        cr3: $0.control.cr3,
+        linearAddress: $0.cs.base &+ $0.rip
+      )
+    } ?? []
+  let physicalInstructionBytes: String =
+    state.flatMap {
+      try? composed.machine.memory.read(at: $0.cs.base &+ $0.rip, byteCount: 16)
+    }.map(hexadecimalBytes) ?? "unmapped"
   let payload: [String: Any] = [
     "cr0": state.map { hexadecimal($0.control.cr0) } ?? "unavailable",
     "cr3": state.map { hexadecimal($0.control.cr3) } ?? "unavailable",
@@ -164,6 +260,12 @@ private func run() throws {
     "instructionPointer": rip,
     "machineABIIdentity": artifacts.manifest.machineABIIdentity,
     "maximumInstructions": arguments.maximumInstructions,
+    "processorCount": arguments.processorCount,
+    "bootOrder": bootOrder,
+    "exceptionPolicy": arguments.exceptionPolicy == .stop ? "stop" : "deliver",
+    "persistentSystemDisk": arguments.systemDisk?.path ?? "in-memory",
+    "installerMedia": arguments.installerMedia?.path ?? "none",
+    "variableStoreDirectory": ownsVariableDirectory ? "temporary" : variableDirectory.path,
     "pageTableTrace": pageTrace,
     "physicalInstructionBytes": physicalInstructionBytes,
     "rax": state.map { hexadecimal($0.registers.rax) } ?? "unavailable",
