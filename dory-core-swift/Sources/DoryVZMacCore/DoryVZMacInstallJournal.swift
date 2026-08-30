@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 public enum DoryVZMacInstallPhase: String, Codable, Sendable, Equatable {
@@ -22,6 +23,7 @@ public enum DoryVZMacInstallJournalError: Error, Sendable, Equatable,
 public struct DoryVZMacInstallJournal: Codable, Sendable, Equatable {
     public static let schema = "dory.vzmac-install-operation@1"
     public static let maximumErrorUTF8Bytes = 4_096
+    public static let maximumJournalBytes = 1_048_576
 
     public let schema: String
     public let operationID: UUID
@@ -106,6 +108,29 @@ public struct DoryVZMacInstallJournal: Codable, Sendable, Equatable {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         try encoder.encode(self).write(to: url, options: [.atomic])
     }
+
+    public static func load(from url: URL) throws -> Self {
+        var status = stat()
+        guard lstat(url.path, &status) == 0,
+              (status.st_mode & S_IFMT) == S_IFREG,
+              status.st_size > 0,
+              UInt64(status.st_size) <= UInt64(maximumJournalBytes) else {
+            throw DoryVZMacInstallJournalError.invalid(
+                "journal is not a bounded direct regular file"
+            )
+        }
+        let journal: Self
+        do {
+            journal = try JSONDecoder().decode(
+                Self.self,
+                from: Data(contentsOf: url, options: [.mappedIfSafe])
+            )
+        } catch {
+            throw DoryVZMacInstallJournalError.invalid("journal JSON cannot be decoded")
+        }
+        try journal.validate()
+        return journal
+    }
 }
 
 private func isInstallJournalSHA256(_ digest: String) -> Bool {
@@ -113,9 +138,7 @@ private func isInstallJournalSHA256(_ digest: String) -> Bool {
 }
 
 func lastObservedInstallProgress(from url: URL) -> Double {
-    guard let data = try? Data(contentsOf: url),
-          let journal = try? JSONDecoder().decode(DoryVZMacInstallJournal.self, from: data),
-          (try? journal.validate()) != nil else {
+    guard let journal = try? DoryVZMacInstallJournal.load(from: url) else {
         return 0
     }
     return journal.progress

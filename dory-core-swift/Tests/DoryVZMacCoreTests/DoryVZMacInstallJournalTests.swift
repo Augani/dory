@@ -23,6 +23,7 @@ final class DoryVZMacInstallJournalTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: url) }
         try journal(phase: .installing, progress: 0.42).write(to: url)
         XCTAssertEqual(lastObservedInstallProgress(from: url), 0.42)
+        XCTAssertEqual(try DoryVZMacInstallJournal.load(from: url).progress, 0.42)
     }
 
     private func journal(

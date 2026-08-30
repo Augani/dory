@@ -17,6 +17,7 @@ private enum Command {
     case run(machine: URL, suspendOnExit: Bool)
     case resume(machine: URL)
     case clone(machine: URL, destination: URL)
+    case status(machine: URL)
 }
 
 private enum CommandError: Error, CustomStringConvertible {
@@ -89,6 +90,10 @@ private func parseCommand(_ arguments: [String]) throws -> Command {
         )
         guard values.isEmpty else { throw CommandError.usage(usage) }
         return .clone(machine: machine, destination: destination)
+    case "status":
+        let machine = URL(fileURLWithPath: try take("--machine"), isDirectory: true)
+        guard values.isEmpty else { throw CommandError.usage(usage) }
+        return .status(machine: machine)
     default:
         throw CommandError.usage(usage)
     }
@@ -102,7 +107,21 @@ Usage:
   dory-vzmac-qualification run --machine <bundle> [--suspend-on-exit]
   dory-vzmac-qualification resume --machine <bundle>
   dory-vzmac-qualification clone --machine <bundle> --destination <bundle>
+  dory-vzmac-qualification status --machine <bundle>
 """
+
+private struct MachineStatus: Codable {
+    static let schema = "dory.vzmac-machine-status@1"
+
+    let schema: String
+    let inspectedAt: String
+    let manifest: DoryVZMacMachineManifest
+    let configurationValid: Bool
+    let saveRestoreSupported: Bool
+    let saveRestoreError: String?
+    let installJournal: DoryVZMacInstallJournal?
+    let suspendedStatePresent: Bool
+}
 
 @MainActor
 private final class QualificationAppDelegate: NSObject, NSApplicationDelegate,
@@ -186,6 +205,39 @@ private final class QualificationAppDelegate: NSObject, NSApplicationDelegate,
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
             FileHandle.standardOutput.write(try encoder.encode(clone.manifest))
+            FileHandle.standardOutput.write(Data([0x0a]))
+            NSApp.terminate(nil)
+        case .status(let machine):
+            let bundle = try DoryVZMacMachineBundle.load(from: machine)
+            let configuration = try DoryVZMacConfigurationBuilder.makeConfiguration(for: bundle)
+            let saveRestoreSupported: Bool
+            let saveRestoreError: String?
+            do {
+                try configuration.validateSaveRestoreSupport()
+                saveRestoreSupported = true
+                saveRestoreError = nil
+            } catch {
+                saveRestoreSupported = false
+                saveRestoreError = String(String(describing: error).prefix(1_024))
+            }
+            let journal = FileManager.default.fileExists(atPath: bundle.installJournalURL.path)
+                ? try DoryVZMacInstallJournal.load(from: bundle.installJournalURL)
+                : nil
+            let receipt = MachineStatus(
+                schema: MachineStatus.schema,
+                inspectedAt: ISO8601DateFormatter().string(from: Date()),
+                manifest: bundle.manifest,
+                configurationValid: true,
+                saveRestoreSupported: saveRestoreSupported,
+                saveRestoreError: saveRestoreError,
+                installJournal: journal,
+                suspendedStatePresent: FileManager.default.fileExists(
+                    atPath: bundle.suspendedStateURL.path
+                )
+            )
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+            FileHandle.standardOutput.write(try encoder.encode(receipt))
             FileHandle.standardOutput.write(Data([0x0a]))
             NSApp.terminate(nil)
         }
