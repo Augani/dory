@@ -1,0 +1,128 @@
+{
+  "schema": "dory.phase0a.host-storage-baseline-engineering-evidence@1",
+  "verdict": "safe-host-storage-baseline-complete-current-host-only",
+  "startedAt": "2026-08-30T12:36:24Z",
+  "finishedAt": "2026-08-30T12:36:29Z",
+  "toolchain": {
+    "xcodeVersion": "26.6",
+    "xcodeBuild": "17F109",
+    "sdkVersion": "26.5",
+    "swiftVersion": "6.3.3"
+  },
+  "host": {
+    "architecture": "arm64",
+    "hardwareModel": "Mac14,10",
+    "marketingModel": "MacBook Pro",
+    "chip": "Apple M2 Pro",
+    "performanceCoreCount": 8,
+    "efficiencyCoreCount": 4,
+    "physicalMemoryBytes": 17179869184,
+    "osProductVersion": "27.0",
+    "osBuildVersion": "26A5421a",
+    "firmwareVersion": "20457.1.29",
+    "bootSessionIdentifier": "D8A1C440-174D-4AE8-A564-A56EFB3DE487",
+    "powerSource": "ac",
+    "lowPowerModeEnabled": false,
+    "thermalState": "nominal"
+  },
+  "target": {
+    "directoryClass": "system-data-temporary",
+    "device": "/dev/disk3s5",
+    "fileSystemType": "apfs",
+    "busProtocol": "Apple Fabric",
+    "internalDevice": true,
+    "solidState": true,
+    "freeBytesBefore": 212243902464,
+    "temporaryFileUnlinkedImmediately": true
+  },
+  "candidate": {
+    "gitCommit": "0bbb54a3ce4c0431f6ad91f1b2be1bf594f76973",
+    "sha256": "b93bf5bc0f1cecf233c4ac5cdbadf4afb3eb20c1e2584e5312c6946c59bf7b34",
+    "entryPointSourceSHA256": "1aa2f27d08f2bb66d95e935f81324b8a451214d66bafffa9adda3c12e032861e",
+    "blockScheduleSourceSHA256": "b8f85b0ad80e93856b206c03c1ccfe3da3809a095505039990d592a6dd29ba07",
+    "metricSummarySourceSHA256": "91adab264979fa058e1f51210039c3f16b2d006e81a5ab92fa630a0917b5d71b",
+    "packageManifestSHA256": "b78f3808e273bdd8bb9074234abfc507246e4c5daf9ae215a322da22efeb7072",
+    "hardenedRuntime": true,
+    "teamIdentifier": "864H636QW4",
+    "signingAuthority": "Developer ID Application: Augustus Otu (864H636QW4)",
+    "notarization": "not-submitted-engineering-calibration"
+  },
+  "policy": {
+    "roundCount": 5,
+    "fileBytes": 134217728,
+    "sequentialChunkBytes": 1048576,
+    "randomBlockBytes": 4096,
+    "randomOperationsPerKindPerRound": 2000,
+    "uncachedIO": true,
+    "writeDurability": "sequential and random batches end in fsync",
+    "temporaryFileLifecycle": "0600 O_EXCL file unlinked immediately after open",
+    "clock": "CLOCK_MONOTONIC_RAW",
+    "percentileMethod": "R-7 linear interpolation"
+  },
+  "aggregate": {
+    "sequentialWriteMiBPerSecond": {
+      "median": 5176.449178289245,
+      "p95": 5546.739538348981,
+      "sampleCount": 5
+    },
+    "sequentialReadMiBPerSecond": {
+      "median": 1364.711025105885,
+      "p95": 1523.0025124841857,
+      "sampleCount": 5
+    },
+    "randomReadIOPS": {
+      "median": 12540.161198630743,
+      "p95": 12842.113111944216,
+      "sampleCount": 5
+    },
+    "randomWriteIOPSIncludingFinalSync": {
+      "median": 7624.347135732158,
+      "p95": 7997.777419631847,
+      "sampleCount": 5
+    },
+    "randomReadLatencyMicroseconds": {
+      "median": 76.834,
+      "p95": 100.37704999999997,
+      "p99": 146.62625000000003,
+      "maximum": 4508.25,
+      "sampleCount": 10000
+    },
+    "randomWriteSubmissionLatencyMicroseconds": {
+      "median": 112.458,
+      "p95": 155.667,
+      "p99": 374.2180900000066,
+      "maximum": 2057.041,
+      "sampleCount": 10000
+    },
+    "randomWriteFinalSyncMicroseconds": {
+      "median": 1437.167,
+      "p95": 1922.0836,
+      "sampleCount": 5
+    }
+  },
+  "correctness": {
+    "sequentialReadbackChecks": 160,
+    "randomReadChecks": 10000,
+    "durableRandomWriteReadbackChecks": 10000,
+    "rawLatencyObservationCount": 20000,
+    "validityBlockers": []
+  },
+  "receipt": {
+    "file": "phase-0a-host-storage-baseline-engineering-receipt-schema1-2026-08-30.json.gz",
+    "uncompressedSHA256": "dc632e39b2b3a527dd2587ba9f263de14545c7a7747e5d57832007f5f5f4bf43",
+    "deterministicGzipSHA256": "cf299568c1f425773e9c862702db28745250718ef916aeb2047a35a86c9fc05e",
+    "uncompressedBytes": 2113119,
+    "compressedBytes": 202416
+  },
+  "hostStorageBaselineComplete": true,
+  "doryVirtualStorageQualified": false,
+  "referenceMatrixComplete": false,
+  "releaseGateClosed": false,
+  "openGates": [
+    "Dory sequential virtual storage has not been compared with the 90% host-baseline budget",
+    "Dory 4 KiB random storage has not been compared with the 80% host-baseline and bounded-p99 budgets",
+    "the candidate has not been assigned to a frozen low, mid, or high physical tier",
+    "the low, mid, and high physical reference hosts have not completed the same campaign",
+    "energy, temperature, pressure, and throttling campaigns remain unmeasured"
+  ]
+}

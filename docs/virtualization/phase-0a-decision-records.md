@@ -247,7 +247,15 @@ explicit migration or compatibility decision.
   closure also remain stop gates. A separate 10,000,000-iteration host-native/minimal-HV/Dory loop
   passes at 0.39% median Dory overhead, 99.61% Dory/minimal-HV throughput, and 95.99% Dory/host-native
   throughput. This closes the sustained CPU dimension only for the available unassigned host; the
-  low/middle/high references and remaining section 7 dimensions are still unmeasured.
+  low/middle/high references and remaining section 7 dimensions are still unmeasured. The signed
+  host-storage campaign now freezes a safe comparator on that same host: five uncached 128 MiB
+  rounds retain 20,000 raw latency observations and pass 20,160 deterministic read/write checks.
+  Median results are 5,176.45 MiB/s sequential write, 1,364.71 MiB/s sequential read, 12,540.16
+  random-read IOPS, and 7,624.35 random-write IOPS including the final durability sync; random-read
+  p99 is 146.63 microseconds and random-write-submission p99 is 374.22 microseconds. This is a host
+  baseline only: no Dory virtual-storage path has been compared, so the 90% sequential, 80% random,
+  and bounded-p99 budgets remain open. Tier assignment, the other two physical hosts, and the
+  energy/temperature/pressure/throttling campaigns also remain stop gates.
 
 ## ADR-018 — Compatibility ledger and release receipts
 
