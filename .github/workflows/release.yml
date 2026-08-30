@@ -643,6 +643,78 @@ jobs:
           security list-keychains -d user -s "$KEYCHAIN" login.keychain
           rm -f "$RUNNER_TEMP/cert.p12"
 
+      - name: Build, sign, execute, and notarize the JIT entitlement probe
+        env:
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID || '864H636QW4' }}
+          NOTARY_PASSWORD: ${{ secrets.NOTARY_APPLE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/dory-jit-probe"
+          rm -rf "$root"
+          mkdir -p "$root/evidence"
+          xcrun clang \
+            -std=c17 -O2 -Wall -Wextra -Werror \
+            -mmacosx-version-min=14.0 \
+            dory-core-swift/Sources/dory-jit-probe/main.c \
+            -o "$root/dory-jit-probe"
+          codesign --force --options runtime --timestamp \
+            --entitlements Config/DoryJITProbe.entitlements \
+            --sign "Developer ID Application" \
+            "$root/dory-jit-probe"
+          codesign --verify --strict --verbose=4 "$root/dory-jit-probe"
+          codesign -d --entitlements :- "$root/dory-jit-probe" \
+            > "$root/evidence/entitlements.plist"
+          "$root/dory-jit-probe" > "$root/evidence/execution.json"
+          python3 - "$root/evidence/execution.json" "$root/evidence/entitlements.plist" <<'PY'
+          import json
+          import plistlib
+          import sys
+
+          with open(sys.argv[1], encoding="utf-8") as handle:
+              receipt = json.load(handle)
+          expected_receipt = {
+              "schemaVersion": 1,
+              "status": "PASS",
+              "hostArchitecture": "arm64",
+              "mapJITRegions": 1,
+              "guardPages": 0,
+              "codePages": 1,
+              "writeAPI": "pthread_jit_write_with_callback_np",
+              "instructionCachePublication": "sys_icache_invalidate",
+              "generatedResult": 42,
+          }
+          if receipt != expected_receipt:
+              raise SystemExit(f"JIT probe receipt differs: {receipt!r}")
+          with open(sys.argv[2], "rb") as handle:
+              entitlements = plistlib.load(handle)
+          expected_entitlements = {
+              "com.apple.security.app-sandbox": True,
+              "com.apple.security.cs.allow-jit": True,
+              "com.apple.security.cs.jit-write-allowlist": True,
+          }
+          if entitlements != expected_entitlements:
+              raise SystemExit(f"JIT probe entitlements differ: {entitlements!r}")
+          PY
+          ditto -c -k --keepParent "$root/dory-jit-probe" "$root/dory-jit-probe.zip"
+          xcrun notarytool submit "$root/dory-jit-probe.zip" \
+            --apple-id "$NOTARY_APPLE_ID" \
+            --team-id "$NOTARY_TEAM_ID" \
+            --password "$NOTARY_PASSWORD" \
+            --wait --output-format json \
+            > "$root/evidence/notarization.json"
+          python3 - "$root/evidence/notarization.json" <<'PY'
+          import json
+          import sys
+
+          with open(sys.argv[1], encoding="utf-8") as handle:
+              receipt = json.load(handle)
+          if receipt.get("status") != "Accepted" or not receipt.get("id"):
+              raise SystemExit(f"JIT probe notarization failed: {receipt!r}")
+          PY
+          shasum -a 256 "$root/dory-jit-probe" "$root/dory-jit-probe.zip" \
+            > "$root/evidence/sha256.txt"
+
       - name: Build, sign, and notarize
         id: build
         env:
@@ -848,6 +920,7 @@ jobs:
           if-no-files-found: warn
           path: |
             ${{ runner.temp }}/dory-arm64-host-facts.txt
+            ${{ runner.temp }}/dory-jit-probe/evidence
             ${{ runner.temp }}/dory-release-direct-dmg/evidence
             ${{ runner.temp }}/dory-release-live-*
 

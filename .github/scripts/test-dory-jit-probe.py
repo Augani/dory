@@ -45,6 +45,19 @@ class DoryJITProbeTests(unittest.TestCase):
             },
         )
 
+    def test_release_workflow_requires_the_signed_notarized_probe(self) -> None:
+        workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+        for contract in (
+            "Build, sign, execute, and notarize the JIT entitlement probe",
+            "Config/DoryJITProbe.entitlements",
+            'codesign --verify --strict --verbose=4 "$root/dory-jit-probe"',
+            '"$root/dory-jit-probe" > "$root/evidence/execution.json"',
+            'xcrun notarytool submit "$root/dory-jit-probe.zip"',
+            'receipt.get("status") != "Accepted"',
+            "dory-jit-probe/evidence",
+        ):
+            self.assertIn(contract, workflow, contract)
+
     @unittest.skipUnless(
         platform.system() == "Darwin" and platform.machine() == "arm64",
         "the product JIT probe executes only on Apple silicon",
