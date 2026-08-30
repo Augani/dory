@@ -4,7 +4,6 @@ import Foundation
 public enum DoryPCMachineError: Error, Sendable, Equatable {
   case invalidMemorySize(Int)
   case invalidProcessorCount(Int)
-  case unexpectedJITExit(DoryJITExitCode)
   case alreadyLoaded
   case notLoaded
 }
@@ -466,7 +465,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         case .halt:
           return .init(result: .halted, instructionCount: count, jitTier: execution.block.tier)
         case .interpreter, .system, .portIO:
-          throw DoryPCMachineError.unexpectedJITExit(execution.exitCode)
+          break
         }
       }
     }

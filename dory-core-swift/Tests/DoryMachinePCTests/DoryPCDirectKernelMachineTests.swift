@@ -148,6 +148,27 @@ import Testing
     #endif
   }
 
+  @Test func jitTiersFallBackToTheInterpreterForUnsupportedBlocks() throws {
+    #if arch(arm64)
+      for tier in [DoryPCExecutionTier.baselineJIT, .optimizingJIT] {
+        let machine = try DoryPCDirectKernelMachine(
+          memoryBytes: 2 * 1024 * 1024,
+          executionTier: tier,
+          baselineJITMaximumCodeBytes: 4096
+        )
+        // mov dword ptr [0x100],1; hlt. Memory IR deliberately remains interpreter-backed.
+        try machine.load(
+          kernel: makeELF(code: [0xC7, 0x04, 0x25, 0, 1, 0, 0, 1, 0, 0, 0, 0xF4]),
+          commandLine: "x"
+        )
+
+        #expect(try machine.run(maximumInstructions: 4) == .halted(instructionCount: 2))
+        #expect(try machine.memory.read(at: 0x100, byteCount: 4) == [1, 0, 0, 0])
+        #expect(machine.executionStatistics.interpreterInstructions == 1)
+      }
+    #endif
+  }
+
   @Test func directKernelCanProgramTheStandardLocalAPICWindow() throws {
     let layout = DoryPCPVHBootLayout(
       startInfo: 0x90000,
