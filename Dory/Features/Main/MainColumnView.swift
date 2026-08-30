@@ -132,8 +132,8 @@ struct MainColumnView: View {
             } else {
                 MissingComponentView(
                     component: .linuxDesktop,
-                    title: "Choose a Linux desktop",
-                    message: "Install the Desktop runtime, then choose Debian, Ubuntu, or Kali independently. You only download the distributions you want."
+                    title: "Add a desktop runtime",
+                    message: "Install the desktop runtime and guest OS images you want. Optional desktop payloads stay separate from Docker Core."
                 )
             }
         case .machines:
@@ -143,8 +143,8 @@ struct MainColumnView: View {
             } else {
                 MissingComponentView(
                     component: .linuxMachines,
-                    title: "Add headless Linux machines",
-                    message: "Install Linux Machines for VPS-style servers, terminals, snapshots, and persistent disks without adding graphical desktop images."
+                    title: "Add headless VMs",
+                    message: "Install Linux Machines for terminal, service, snapshot, and persistent-disk workflows without adding graphical desktop images."
                 )
             }
         case .components: ComponentsView()

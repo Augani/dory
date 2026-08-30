@@ -28,7 +28,7 @@ struct MachinesView: View {
             TableEmptyState(
                 glyph: .machines,
                 title: "No matches",
-                message: "No \(displayMode == .desktop ? "desktops" : "servers") match \u{201C}\(store.filter)\u{201D}."
+                message: "No \(displayMode == .desktop ? "desktops" : "headless VMs") match \u{201C}\(store.filter)\u{201D}."
             )
         } else {
             machineGrid
@@ -42,7 +42,7 @@ struct MachinesView: View {
                     .frame(width: 78, height: 78)
                     .background(p.accentSoft, in: RoundedRectangle(cornerRadius: 20))
                 VStack(spacing: 8) {
-                    Text(displayMode == .desktop ? "No Linux desktops yet" : "No Linux servers yet")
+                    Text(displayMode == .desktop ? "No desktops yet" : "No headless VMs yet")
                         .font(.system(size: 22, weight: .bold)).foregroundStyle(p.text)
                     Text(emptyMessage)
                         .font(.system(size: 13.5)).foregroundStyle(p.text2)
@@ -54,7 +54,7 @@ struct MachinesView: View {
                     Button { store.activeSheet = displayMode == .desktop ? .newDesktop : .newMachine } label: {
                         HStack(spacing: 7) {
                             Image(systemName: "plus").font(.system(size: 12, weight: .bold))
-                            Text(displayMode == .desktop ? "Create a desktop" : "Create a server")
+                            Text(displayMode == .desktop ? "Create a desktop" : "Create a headless VM")
                         }
                         .foregroundStyle(.white)
                         .padding(.horizontal, 20).padding(.vertical, 10)
@@ -74,7 +74,7 @@ struct MachinesView: View {
         HStack(spacing: 8) {
             featurePill("Isolated VM", "rectangle.stack.badge.person.crop")
             if displayMode == .desktop {
-                featurePill("Graphical Linux", "display")
+                featurePill("Graphical VM", "display")
                 featurePill("Desktop console", "macwindow")
             } else {
                 featurePill("Headless Linux", "terminal")
@@ -86,8 +86,8 @@ struct MachinesView: View {
 
     private var emptyMessage: String {
         displayMode == .desktop
-            ? "Create an interactive graphical Linux VM for desktop and GUI applications. It has its own display, terminal, user, resources, folders, snapshots, and persistent disk."
-            : "Create a user-managed headless Linux server VM for terminals, services, and VPS-style workflows. For coding agents, use a policy-enforced Agent Sandbox instead."
+            ? "Create an interactive graphical VM for desktop and GUI applications. It has its own display, terminal, user, resources, folders, snapshots, and persistent disk."
+            : "Create a user-managed headless VM for terminals, services, and VPS-style workflows. For coding agents, use a policy-enforced Agent Sandbox instead."
     }
 
     private var matchingMachines: [Machine] {

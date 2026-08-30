@@ -1291,7 +1291,7 @@ struct SettingsView: View {
             groupLabel("AGENT SANDBOXES")
             VStack(spacing: 0) {
                 machinePolicyRow("Linux Desktops", "Interactive graphical VMs for desktop and GUI applications. They have a display and are managed by the user.", divider: true)
-                machinePolicyRow("Linux Servers", "General-purpose headless VMs for terminals and long-running services. They are user-managed and are not Agent Sandboxes.", divider: true)
+                machinePolicyRow("Headless VMs", "General-purpose headless VMs for terminals and long-running services. They are user-managed and are not Agent Sandboxes.", divider: true)
                 machinePolicyRow("Agent Sandboxes", "Dedicated headless VMs for coding agents and Linux CLI applications. They have no desktop/display, deny host sharing and network access by default, and expose typed profiles, templates, limits, reset, and persistent attach.", divider: true)
                 machinePolicyRow("Persistent agent terminal", "`dory sandbox attach NAME` enters the Sandbox as its non-root workload identity and reconnects to its tmux session. `use`, `current`, and `switch` remember which Sandbox an agent works in.", divider: false)
             }

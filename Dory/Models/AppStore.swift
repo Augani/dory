@@ -4026,7 +4026,7 @@ final class AppStore {
         case .desktops:
             machineSubtitle(for: .desktop, noun: "desktop")
         case .machines:
-            machineSubtitle(for: .headless, noun: "server")
+            machineSubtitle(for: .headless, noun: "headless VM")
         case .components: "Docker Core with optional, removable feature packs"
         case .health: healthSubtitle
         case .settings: "Dory v\(AppInfo.version)"
@@ -5246,7 +5246,7 @@ final class AppStore {
             activeSheet = .newDesktop
         case .machines:
             guard AppInfo.componentAvailable(.linuxMachines) else {
-                actionError = "Install Linux Machines in Components before creating a server."
+                actionError = "Install Linux Machines in Components before creating a headless VM."
                 self.section = .components
                 return
             }
@@ -6771,7 +6771,7 @@ final class AppStore {
                 return message
             }
         } else if !AppInfo.componentAvailable(.linuxMachines) {
-            let message = "Install Linux Machines in Components before creating a server."
+            let message = "Install Linux Machines in Components before creating a headless VM."
             actionError = message
             section = .components
             return message

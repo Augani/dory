@@ -241,7 +241,7 @@ struct NewMachineSheet: View {
                 .frame(width: 36, height: 36)
                 .background(p.accentSoft, in: RoundedRectangle(cornerRadius: 10))
             VStack(alignment: .leading, spacing: 1) {
-                Text(displayMode == .desktop ? "New Linux desktop" : "New Linux server")
+                Text(displayMode == .desktop ? "New desktop" : "New headless VM")
                     .font(.system(size: 15, weight: .bold)).foregroundStyle(p.text)
                 Text(headerSubtitle).font(.system(size: 11.5)).foregroundStyle(p.text3)
             }
@@ -435,14 +435,14 @@ struct NewMachineSheet: View {
 
     private var serverTypeSection: some View {
         VStack(alignment: .leading, spacing: 9) {
-            sectionLabel("SERVER IMAGE")
+            sectionLabel("HEADLESS VM IMAGE")
             HStack(spacing: 10) {
                 Image(systemName: "terminal.fill")
                     .font(.system(size: 14, weight: .semibold)).foregroundStyle(p.accent)
                     .frame(width: 34, height: 34)
                     .background(p.accentSoft, in: RoundedRectangle(cornerRadius: 9))
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Dory Linux Server").font(.system(size: 12.5, weight: .semibold)).foregroundStyle(p.text)
+                    Text("Dory Linux").font(.system(size: 12.5, weight: .semibold)).foregroundStyle(p.text)
                     Text("User-managed headless VM for terminals, tools, and local services — Agent Sandboxes are created from the Dory CLI or MCP")
                         .font(.system(size: 10.5)).foregroundStyle(p.text3)
                 }

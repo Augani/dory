@@ -23,7 +23,7 @@ struct DoryCommands: Commands {
                 store.presentPrimary(for: .desktops)
             }
             .keyboardShortcut("d", modifiers: [.command, .option])
-            Button("New Server") {
+            Button("New Headless VM") {
                 openMain(.machines)
                 store.presentPrimary(for: .machines)
             }
@@ -49,7 +49,7 @@ struct DoryCommands: Commands {
             Button("Build Activity") { store.section = .builds }
             Button("Kubernetes") { store.section = .kubernetes }.keyboardShortcut("6", modifiers: .command)
             Button("Desktops") { store.section = .desktops }.keyboardShortcut("7", modifiers: .command)
-            Button("Servers") { store.section = .machines }.keyboardShortcut("8", modifiers: .command)
+            Button("Headless VMs") { store.section = .machines }.keyboardShortcut("8", modifiers: .command)
             Button("Components") { store.section = .components }.keyboardShortcut("9", modifiers: .command)
             Button("Health") { store.section = .health }
             Button("Settings") { store.section = .settings }.keyboardShortcut(",", modifiers: .command)
@@ -132,12 +132,12 @@ struct DoryCommands: Commands {
                 }
             }
 
-            Menu("Linux Machines") {
+            Menu("Virtual Machines") {
                 Button("New Desktop") {
                     openMain(.desktops)
                     store.presentPrimary(for: .desktops)
                 }
-                Button("New Server") {
+                Button("New Headless VM") {
                     openMain(.machines)
                     store.presentPrimary(for: .machines)
                 }
@@ -148,7 +148,7 @@ struct DoryCommands: Commands {
                 } else {
                     ForEach(store.machines, id: \.id) { machine in
                         Menu("\(machine.name) (\(machine.status.rawValue))") {
-                            Button(machine.displayMode == .desktop ? "Show in Desktops" : "Show in Servers") {
+                            Button(machine.displayMode == .desktop ? "Show in Desktops" : "Show in Headless VMs") {
                                 openMain(machine.displayMode == .desktop ? .desktops : .machines)
                             }
                             if machine.displayMode == .desktop {

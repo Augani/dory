@@ -64,7 +64,7 @@ struct SidebarView: View {
                     "Kubernetes",
                     trailing: AppInfo.componentAvailable(.kubernetes) ? nil : "Get"
                 )
-                sectionLabel("LINUX").padding(.top, 6)
+                sectionLabel("VIRTUAL MACHINES").padding(.top, 6)
                 row(
                     .desktops,
                     .machines,
@@ -74,7 +74,7 @@ struct SidebarView: View {
                 row(
                     .machines,
                     .machines,
-                    "Servers",
+                    "Headless VMs",
                     trailing: !AppInfo.componentAvailable(.linuxMachines) && serverCount == 0 ? "Get" : "\(serverCount)"
                 )
                 sectionLabel("SYSTEM").padding(.top, 6)

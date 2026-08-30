@@ -49,7 +49,7 @@ final class DoryScreensUITests: XCTestCase {
         nav("networks"); assertText("Networks")
         nav("kubernetes"); assertText("Kubernetes")
         nav("desktops"); assertText("Desktops")
-        nav("machines"); assertText("Linux Servers")
+        nav("machines"); assertText("Headless VMs")
         nav("settings"); assertText("STARTUP")
     }
 
@@ -161,6 +161,6 @@ final class DoryScreensUITests: XCTestCase {
         app.buttons["customize-machine"].click()
         XCTAssertTrue(app.buttons["new-machine-advanced-toggle"].waitForExistence(timeout: 4))
         app.buttons["Cancel"].firstMatch.click()
-        assertText("Linux Servers")
+        assertText("Headless VMs")
     }
 }

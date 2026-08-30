@@ -15,7 +15,7 @@ enum AppSection: String, CaseIterable, Identifiable, Sendable {
         case .builds: "Build Activity"
         case .kubernetes: "Kubernetes"
         case .desktops: "Desktops"
-        case .machines: "Linux Servers"
+        case .machines: "Headless VMs"
         case .components: "Components"
         case .health: "Health"
         case .settings: "Settings"
@@ -32,7 +32,7 @@ enum AppSection: String, CaseIterable, Identifiable, Sendable {
         case .builds: nil
         case .kubernetes: nil
         case .desktops: "New Desktop"
-        case .machines: "New Server"
+        case .machines: "New Headless VM"
         case .components: nil
         case .health: nil
         case .settings: nil
