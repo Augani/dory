@@ -361,7 +361,8 @@ public struct DoryX86Decoder: Sendable {
     case 0xC9:
       operation = .leave(width: stackWidth(mode: mode, prefixes: prefixes))
     case 0xE8:
-      operation = .call(relative: Int64(try cursor.readSigned(byteCount: 4)))
+      operation = .call(
+        relative: Int64(try cursor.readSigned(byteCount: width == .word ? 2 : 4)))
     case 0xC3:
       operation = .return
     case 0xCF:
@@ -369,7 +370,8 @@ public struct DoryX86Decoder: Sendable {
     case 0xCD:
       operation = .softwareInterrupt(vector: try cursor.readByte())
     case 0xE9:
-      operation = .jump(relative: Int64(try cursor.readSigned(byteCount: 4)))
+      operation = .jump(
+        relative: Int64(try cursor.readSigned(byteCount: width == .word ? 2 : 4)))
     case 0xEB:
       operation = .jump(relative: Int64(try cursor.readSigned(byteCount: 1)))
     case 0x70...0x7F:
@@ -462,7 +464,7 @@ public struct DoryX86Decoder: Sendable {
       case 0x80...0x8F:
         operation = .conditionalJump(
           DoryX86Condition(rawValue: second - 0x80)!,
-          relative: Int64(try cursor.readSigned(byteCount: 4))
+          relative: Int64(try cursor.readSigned(byteCount: width == .word ? 2 : 4))
         )
       case 0x90...0x9F:
         let operands = try decodeModRM(
@@ -659,7 +661,10 @@ public struct DoryX86Decoder: Sendable {
           scale: memory.scale,
           displacement: memory.displacement,
           ripRelative: memory.ripRelative,
-          width: width
+          width: width,
+          addressWidth: memory.addressWidth,
+          segment: memory.segment,
+          ignoresLegacySegmentBase: memory.ignoresLegacySegmentBase
         ))
     case .immediate(let value, _):
       .immediate(value, width: width)
@@ -734,18 +739,28 @@ public struct DoryX86Decoder: Sendable {
       )
     }
 
-    guard mode != .real16 else {
-      throw DoryX86DecodeError.invalidEncoding(
-        address: cursor.address,
-        detail: "16-bit ModRM memory addressing is not implemented"
-      )
-    }
+    let addressWidth = addressWidth(mode: mode, prefixes: prefixes)
     var base: DoryX86GeneralRegister?
     var index: DoryX86GeneralRegister?
     var scale: UInt8 = 1
     var ripRelative = false
     var displacement: Int64 = 0
-    if rmBits == 4 {
+    if addressWidth == .word {
+      switch rmBits {
+      case 0: (base, index) = (.rbx, .rsi)
+      case 1: (base, index) = (.rbx, .rdi)
+      case 2: (base, index) = (.rbp, .rsi)
+      case 3: (base, index) = (.rbp, .rdi)
+      case 4: base = .rsi
+      case 5: base = .rdi
+      case 6 where modeBits == 0:
+        displacement = Int64(try cursor.readUnsigned(byteCount: 2))
+      case 6: base = .rbp
+      default: base = .rbx
+      }
+      if modeBits == 1 { displacement = Int64(try cursor.readSigned(byteCount: 1)) }
+      if modeBits == 2 { displacement = Int64(try cursor.readSigned(byteCount: 2)) }
+    } else if rmBits == 4 {
       let sib = try cursor.readByte()
       scale = UInt8(1 << (sib >> 6))
       let indexBits = (sib >> 3) & 7
@@ -764,8 +779,13 @@ public struct DoryX86Decoder: Sendable {
     } else {
       base = register(Int(rmBits), extensionBit: prefixes.rex?.b == true)
     }
-    if modeBits == 1 { displacement = Int64(try cursor.readSigned(byteCount: 1)) }
-    if modeBits == 2 { displacement = Int64(try cursor.readSigned(byteCount: 4)) }
+    if addressWidth != .word {
+      if modeBits == 1 { displacement = Int64(try cursor.readSigned(byteCount: 1)) }
+      if modeBits == 2 { displacement = Int64(try cursor.readSigned(byteCount: 4)) }
+    }
+    let defaultSegment: DoryX86SegmentRegister =
+      base == .rbp || base == .rsp || base == .r12 || base == .r13 ? .ss : .ds
+    let segment = segmentRegister(prefixes.segmentOverride) ?? defaultSegment
     return ModRMOperands(
       rm: .memory(
         .init(
@@ -774,11 +794,37 @@ public struct DoryX86Decoder: Sendable {
           scale: scale,
           displacement: displacement,
           ripRelative: ripRelative,
-          width: width
+          width: width,
+          addressWidth: addressWidth,
+          segment: segment,
+          ignoresLegacySegmentBase: mode == .long64
         )),
       reg: regOperand,
       group: regBits
     )
+  }
+
+  private func addressWidth(
+    mode: DoryX86ExecutionMode,
+    prefixes: DoryX86InstructionPrefixes
+  ) -> DoryX86OperandWidth {
+    switch (mode, prefixes.addressSizeOverride) {
+    case (.real16, false), (.protected32, true): .word
+    case (.real16, true), (.protected32, false), (.long64, true): .doubleword
+    case (.long64, false): .quadword
+    }
+  }
+
+  private func segmentRegister(_ prefix: UInt8?) -> DoryX86SegmentRegister? {
+    switch prefix {
+    case 0x2E: .cs
+    case 0x36: .ss
+    case 0x3E: .ds
+    case 0x26: .es
+    case 0x64: .fs
+    case 0x65: .gs
+    default: nil
+    }
   }
 }
 

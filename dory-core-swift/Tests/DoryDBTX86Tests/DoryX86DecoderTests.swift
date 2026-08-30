@@ -253,4 +253,42 @@ import Testing
         == .string(.store, width: .quadword)
     )
   }
+
+  @Test func decodesRealModeAddressingAndRelativeWidths() throws {
+    #expect(
+      try decoder.decode([0x8B, 0x42, 0xFE], at: 0x100, mode: .real16).operation
+        == .move(
+          destination: .register(.rax, width: .word),
+          source: .memory(
+            .init(
+              base: .rbp,
+              index: .rsi,
+              displacement: -2,
+              width: .word,
+              addressWidth: .word,
+              segment: .ss,
+              ignoresLegacySegmentBase: false
+            ))
+        )
+    )
+    #expect(
+      try decoder.decode([0x26, 0x8B, 0x00], at: 0x100, mode: .real16).operation
+        == .move(
+          destination: .register(.rax, width: .word),
+          source: .memory(
+            .init(
+              base: .rbx,
+              index: .rsi,
+              width: .word,
+              addressWidth: .word,
+              segment: .es,
+              ignoresLegacySegmentBase: false
+            ))
+        )
+    )
+    #expect(
+      try decoder.decode([0xE9, 0xFC, 0xFF], at: 0x100, mode: .real16).operation
+        == .jump(relative: -4)
+    )
+  }
 }

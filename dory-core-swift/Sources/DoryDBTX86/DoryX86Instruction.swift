@@ -40,6 +40,10 @@ public struct DoryX86InstructionPrefixes: Codable, Sendable, Hashable {
   public init() {}
 }
 
+public enum DoryX86SegmentRegister: String, Codable, Sendable, Hashable {
+  case cs, ds, es, fs, gs, ss
+}
+
 public struct DoryX86MemoryOperand: Codable, Sendable, Hashable {
   public let base: DoryX86GeneralRegister?
   public let index: DoryX86GeneralRegister?
@@ -47,6 +51,9 @@ public struct DoryX86MemoryOperand: Codable, Sendable, Hashable {
   public let displacement: Int64
   public let ripRelative: Bool
   public let width: DoryX86OperandWidth
+  public let addressWidth: DoryX86OperandWidth
+  public let segment: DoryX86SegmentRegister
+  public let ignoresLegacySegmentBase: Bool
 
   public init(
     base: DoryX86GeneralRegister?,
@@ -54,7 +61,10 @@ public struct DoryX86MemoryOperand: Codable, Sendable, Hashable {
     scale: UInt8 = 1,
     displacement: Int64 = 0,
     ripRelative: Bool = false,
-    width: DoryX86OperandWidth
+    width: DoryX86OperandWidth,
+    addressWidth: DoryX86OperandWidth = .quadword,
+    segment: DoryX86SegmentRegister = .ds,
+    ignoresLegacySegmentBase: Bool = true
   ) {
     self.base = base
     self.index = index
@@ -62,6 +72,9 @@ public struct DoryX86MemoryOperand: Codable, Sendable, Hashable {
     self.displacement = displacement
     self.ripRelative = ripRelative
     self.width = width
+    self.addressWidth = addressWidth
+    self.segment = segment
+    self.ignoresLegacySegmentBase = ignoresLegacySegmentBase
   }
 }
 

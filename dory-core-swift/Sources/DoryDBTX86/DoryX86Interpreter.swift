@@ -97,7 +97,12 @@ public struct DoryX86Interpreter: Sendable {
       }
     let instruction: DoryX86DecodedInstruction
     do {
-      instruction = try decodeInstruction(at: originalRIP, memory: executionMemory, mode: mode)
+      instruction = try decodeInstruction(
+        at: originalRIP,
+        memoryAddress: instructionFetchAddress(state: state, mode: mode),
+        memory: executionMemory,
+        mode: mode
+      )
     } catch let error as DoryX86MemoryError {
       let fault = pageFault(for: error, instructionPointer: originalRIP)
       if fault.kind == .pageFault { state.control.cr2 = fault.linearAddress ?? 0 }
@@ -107,7 +112,7 @@ public struct DoryX86Interpreter: Sendable {
     }
 
     do {
-      var nextRIP = instruction.nextInstructionAddress
+      var nextRIP = instruction.nextInstructionAddress & instructionPointerMask(mode)
       switch instruction.operation {
       case .noOperation:
         break
@@ -120,7 +125,7 @@ public struct DoryX86Interpreter: Sendable {
         try write(
           value, to: destination, instruction: instruction, state: &state, memory: executionMemory)
       case .loadEffectiveAddress(let destination, let source):
-        let address = effectiveAddress(source, instruction: instruction, state: state)
+        let address = effectiveOffset(source, instruction: instruction, state: state)
         try write(
           address, to: destination, instruction: instruction, state: &state, memory: executionMemory
         )
@@ -666,7 +671,7 @@ public struct DoryX86Interpreter: Sendable {
         state.ss = .init(selector: (selector &+ 8) | 3, attributes: 0xC0F3, limit: .max, base: 0)
         nextRIP = state.registers.rcx
       }
-      state.rip = nextRIP
+      state.rip = nextRIP & instructionPointerMask(mode)
       return .retired(instruction)
     } catch let partial as DoryX86PartialMemoryFault {
       state.rip = originalRIP
@@ -877,17 +882,19 @@ public struct DoryX86Interpreter: Sendable {
 
   private func decodeInstruction(
     at address: UInt64,
+    memoryAddress: UInt64,
     memory: any DoryX86Memory,
     mode: DoryX86ExecutionMode
   ) throws -> DoryX86DecodedInstruction {
     for requestedByteCount in 1...15 {
-      let bytes = try memory.instructionBytes(at: address, maximumCount: requestedByteCount)
+      let bytes = try memory.instructionBytes(
+        at: memoryAddress, maximumCount: requestedByteCount)
       do {
         return try decoder.decode(bytes, at: address, mode: mode)
       } catch DoryX86DecodeError.truncated {
         if bytes.count < requestedByteCount {
           _ = try memory.instructionBytes(
-            at: address &+ UInt64(bytes.count),
+            at: memoryAddress &+ UInt64(bytes.count),
             maximumCount: 1
           )
         }
@@ -895,6 +902,25 @@ public struct DoryX86Interpreter: Sendable {
       }
     }
     throw DoryX86DecodeError.instructionTooLong(address: address)
+  }
+
+  private func instructionFetchAddress(
+    state: DoryX86ArchitecturalState,
+    mode: DoryX86ExecutionMode
+  ) -> UInt64 {
+    switch mode {
+    case .real16: state.cs.base &+ (state.rip & 0xffff)
+    case .protected32: state.cs.base &+ (state.rip & 0xffff_ffff)
+    case .long64: state.rip
+    }
+  }
+
+  private func instructionPointerMask(_ mode: DoryX86ExecutionMode) -> UInt64 {
+    switch mode {
+    case .real16: 0xffff
+    case .protected32: 0xffff_ffff
+    case .long64: .max
+    }
   }
 
   private func read(
@@ -1290,12 +1316,43 @@ public struct DoryX86Interpreter: Sendable {
     instruction: DoryX86DecodedInstruction,
     state: DoryX86ArchitecturalState
   ) -> UInt64 {
-    var address = operand.ripRelative ? instruction.nextInstructionAddress : 0
-    if let base = operand.base { address &+= state.registers[base] }
-    if let index = operand.index { address &+= state.registers[index] &* UInt64(operand.scale) }
-    address &+= UInt64(bitPattern: operand.displacement)
-    if instruction.prefixes.addressSizeOverride { address &= 0xffff_ffff }
-    return address
+    let offset = effectiveOffset(operand, instruction: instruction, state: state)
+    let segmentBase: UInt64
+    if operand.ignoresLegacySegmentBase,
+      operand.segment != .fs,
+      operand.segment != .gs
+    {
+      segmentBase = 0
+    } else {
+      segmentBase = segmentState(operand.segment, state: state).base
+    }
+    return segmentBase &+ offset
+  }
+
+  private func effectiveOffset(
+    _ operand: DoryX86MemoryOperand,
+    instruction: DoryX86DecodedInstruction,
+    state: DoryX86ArchitecturalState
+  ) -> UInt64 {
+    var offset = operand.ripRelative ? instruction.nextInstructionAddress : 0
+    if let base = operand.base { offset &+= state.registers[base] }
+    if let index = operand.index { offset &+= state.registers[index] &* UInt64(operand.scale) }
+    offset &+= UInt64(bitPattern: operand.displacement)
+    return offset & mask(operand.addressWidth)
+  }
+
+  private func segmentState(
+    _ register: DoryX86SegmentRegister,
+    state: DoryX86ArchitecturalState
+  ) -> DoryX86SegmentState {
+    switch register {
+    case .cs: state.cs
+    case .ds: state.ds
+    case .es: state.es
+    case .fs: state.fs
+    case .gs: state.gs
+    case .ss: state.ss
+    }
   }
 
   private func executeALU(

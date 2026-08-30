@@ -526,6 +526,24 @@ import Testing
     #expect(try memory.read(at: 0x12_000, byteCount: Int(count)) == Array(bytes[0x100..<0x1101]))
   }
 
+  @Test func realModeFetchAndDataAccessUseSegmentBases() throws {
+    var bytes = [UInt8](repeating: 0, count: 0x300)
+    bytes.replaceSubrange(0x110..<0x113, with: [0x8B, 0x42, 0xFE])
+    bytes.replaceSubrange(0x23E..<0x240, with: [0xEF, 0xBE])
+    let memory = DoryX86ByteArrayMemory(bytes: bytes)
+    let registers = DoryX86GeneralRegisters(rbp: 0x30, rsi: 0x10)
+    var state = try DoryX86ArchitecturalState(
+      registers: registers,
+      rip: 0x10,
+      cs: .init(selector: 0x10, attributes: 0x93, limit: 0xffff, base: 0x100),
+      ss: .init(selector: 0x20, attributes: 0x93, limit: 0xffff, base: 0x200)
+    )
+
+    _ = interpreter.step(state: &state, memory: memory, mode: .real16)
+    #expect(state.registers.rax == 0xBEEF)
+    #expect(state.rip == 0x13)
+  }
+
   private func readQuadword(_ memory: DoryX86ByteArrayMemory, at address: UInt64) -> UInt64 {
     try! memory.read(at: address, byteCount: 8).enumerated().reduce(0) {
       $0 | UInt64($1.element) << UInt64($1.offset * 8)
