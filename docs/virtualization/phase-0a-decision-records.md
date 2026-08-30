@@ -255,7 +255,13 @@ explicit migration or compatibility decision.
   p99 is 146.63 microseconds and random-write-submission p99 is 374.22 microseconds. This is a host
   baseline only: no Dory virtual-storage path has been compared, so the 90% sequential, 80% random,
   and bounded-p99 budgets remain open. Tier assignment, the other two physical hosts, and the
-  energy/temperature/pressure/throttling campaigns also remain stop gates.
+  energy/temperature/pressure/throttling campaigns also remain stop gates. A separate signed
+  host-network campaign freezes the local TCP/IPv4 loopback comparator without external traffic.
+  Five correctness-checked 256 MiB transfers per direction produce medians of 9,770.00 MiB/s upload
+  and 5,322.30 MiB/s download; 10,000 retained 64-byte exchanges measure 15.71 microseconds median,
+  23.25 microseconds p95, and 34.04 microseconds p99 round trip. This does not qualify a physical
+  network link, and no Dory NAT or virtual path has been compared, so the 90% network budget remains
+  open alongside the physical-tier matrix.
 
 ## ADR-018 — Compatibility ledger and release receipts
 

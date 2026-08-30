@@ -1,0 +1,109 @@
+{
+  "schema": "dory.phase0a.host-network-baseline-engineering-evidence@1",
+  "verdict": "tcp-loopback-host-network-baseline-complete-current-host-only",
+  "startedAt": "2026-08-30T12:43:50Z",
+  "finishedAt": "2026-08-30T12:43:51Z",
+  "toolchain": {
+    "xcodeVersion": "26.6",
+    "xcodeBuild": "17F109",
+    "sdkVersion": "26.5",
+    "swiftVersion": "6.3.3"
+  },
+  "host": {
+    "architecture": "arm64",
+    "hardwareModel": "Mac14,10",
+    "marketingModel": "MacBook Pro",
+    "chip": "Apple M2 Pro",
+    "performanceCoreCount": 8,
+    "efficiencyCoreCount": 4,
+    "physicalMemoryBytes": 17179869184,
+    "osProductVersion": "27.0",
+    "osBuildVersion": "26A5421a",
+    "firmwareVersion": "20457.1.29",
+    "bootSessionIdentifier": "D8A1C440-174D-4AE8-A564-A56EFB3DE487",
+    "powerSource": "ac",
+    "lowPowerModeEnabled": false,
+    "thermalState": "nominal"
+  },
+  "target": {
+    "addressFamily": "IPv4",
+    "transport": "TCP",
+    "address": "127.0.0.1",
+    "interface": "lo0",
+    "listenerPortPolicy": "kernel-assigned ephemeral port per connection",
+    "externalNetworkTraffic": false
+  },
+  "candidate": {
+    "gitCommit": "529b2050895e8aa60fda0c71a309f314ad20b89c",
+    "sha256": "2fb7123d3acd61bd8340fc389d749e7d337f1e0880227d17356d4e6b8b8a7d47",
+    "entryPointSourceSHA256": "32ed3088fa8588452b9be2a282f23ab765cdfa545d26d115403955e17922ffe7",
+    "bytePatternSourceSHA256": "52b157de99323af80d4a9071dbfbc29721c737aecf322ea728a3b6d415e2940a",
+    "metricSummarySourceSHA256": "91adab264979fa058e1f51210039c3f16b2d006e81a5ab92fa630a0917b5d71b",
+    "packageManifestSHA256": "7cfe47f4c7055a6c7a354e191388738fdd9ceb5a70e554492a96c029c87b84d0",
+    "hardenedRuntime": true,
+    "teamIdentifier": "864H636QW4",
+    "signingAuthority": "Developer ID Application: Augustus Otu (864H636QW4)",
+    "notarization": "not-submitted-engineering-calibration"
+  },
+  "policy": {
+    "workload": "correctness-checked bidirectional TCP stream and ping-pong",
+    "roundCount": 5,
+    "warmupTransferBytesPerDirection": 33554432,
+    "measuredTransferBytesPerDirectionPerRound": 268435456,
+    "streamChunkBytes": 1048576,
+    "warmupPingCount": 200,
+    "measuredPingCountPerRound": 2000,
+    "pingBytes": 64,
+    "directionOrder": "upload first in odd rounds and download first in even rounds",
+    "clock": "CLOCK_MONOTONIC_RAW",
+    "percentileMethod": "R-7 linear interpolation"
+  },
+  "aggregate": {
+    "uploadMiBPerSecond": {
+      "median": 9769.99784029618,
+      "p95": 10839.350685216661,
+      "minimum": 7825.326246563009,
+      "maximum": 10853.32117987472,
+      "sampleCount": 5
+    },
+    "downloadMiBPerSecond": {
+      "median": 5322.296000240501,
+      "p95": 5353.956669259145,
+      "minimum": 4688.87011509253,
+      "maximum": 5358.610008380573,
+      "sampleCount": 5
+    },
+    "pingRoundTripMicroseconds": {
+      "median": 15.708,
+      "p95": 23.25,
+      "p99": 34.042830000000016,
+      "maximum": 136.625,
+      "sampleCount": 10000
+    }
+  },
+  "correctness": {
+    "measuredUploadBytes": 1342177280,
+    "measuredDownloadBytes": 1342177280,
+    "measuredPingExchanges": 10000,
+    "rawLatencyObservationCount": 10000,
+    "validityBlockers": []
+  },
+  "receipt": {
+    "file": "phase-0a-host-network-baseline-engineering-receipt-schema1-2026-08-30.json.gz",
+    "uncompressedSHA256": "db35156b742993cd488ac60c3ca006ff1dcd4ef5b1ee1831f7a4d242bb3ea463",
+    "deterministicGzipSHA256": "db891088de7f2f866d55836d3daba52ddfccd84e4c56321c5656bd9dbaeaff3b",
+    "uncompressedBytes": 568060,
+    "compressedBytes": 52893
+  },
+  "hostNetworkBaselineComplete": true,
+  "doryVirtualNetworkQualified": false,
+  "referenceMatrixComplete": false,
+  "releaseGateClosed": false,
+  "openGates": [
+    "Dory NAT or virtual networking has not been compared with the 90% host-network budget",
+    "the TCP loopback comparator does not qualify an external physical network link",
+    "the candidate has not been assigned to a frozen low, mid, or high physical tier",
+    "the low, mid, and high physical reference hosts have not completed the same campaign",
+    "energy, temperature, pressure, and throttling campaigns remain unmeasured"
+  ]
+}
