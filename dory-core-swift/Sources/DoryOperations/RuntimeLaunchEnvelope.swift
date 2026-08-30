@@ -727,6 +727,53 @@ public struct RuntimeLaunchEnvelope: Codable, Sendable, Equatable {
               Self.isLowercaseSHA256(resolvedPlanSHA256) else {
             throw RuntimeLaunchEnvelopeError.invalidBootProtocol
         }
+        let roleCounts = Dictionary(
+            grouping: armVirtTopology.occupiedSlots,
+            by: \.role
+        ).mapValues(\.count)
+        func count(_ role: DoryVirtualDeviceRole) -> Int {
+            roleCounts[role, default: 0]
+        }
+        let hasRemovableBootDevice = launchPlan.bootDevices.contains {
+            $0.kind == .removableMedia
+        }
+        guard (devices.displays.isEmpty ? graphics == .none : graphics != .none),
+              devices.networkInterface?.isValid == true,
+              devices.networkAttachment != .bridged,
+              count(.systemDisk) == 1,
+              count(.graphics) == (devices.displays.isEmpty ? 0 : 1),
+              count(.entropy) == 1,
+              count(.balloon) == 1,
+              count(.vsock) == 1,
+              count(.keyboard) == (devices.keyboard ? 1 : 0),
+              count(.pointer) == (devices.pointer ? 1 : 0),
+              count(.audio) == (devices.audioInput || devices.audioOutput ? 1 : 0),
+              count(.network) == 1,
+              devices.directorySharing == (count(.directoryShare) > 0),
+              count(.auxiliaryBlock) == 0,
+              count(.removableStorage) == (hasRemovableBootDevice ? 1 : 0),
+              count(.usbController) == 0 else {
+            throw RuntimeLaunchEnvelopeError.invalidVirtualHardwareTopology
+        }
+        let fixedRoles: [DoryVirtualDeviceRole] = [
+            .graphics, .entropy, .balloon, .vsock, .keyboard, .pointer, .audio,
+        ]
+        guard fixedRoles.allSatisfy({ role in
+            let matches = armVirtTopology.occupiedSlots.filter { $0.role == role }
+            return matches.isEmpty
+                || (matches.count == 1
+                    && matches[0].logicalID.rawValue == "armvirt-\(role.rawValue)")
+        }),
+        let networkInterface = devices.networkInterface,
+        let expectedNetworkID = try? DoryVirtualDeviceID.derived(
+            namespace: .network,
+            stableID: networkInterface.id
+        ),
+        armVirtTopology.occupiedSlots.contains(where: {
+            $0.role == .network && $0.logicalID == expectedNetworkID
+        }) else {
+            throw RuntimeLaunchEnvelopeError.invalidVirtualHardwareTopology
+        }
         var names: Set<String> = []
         var descriptors: Set<Int32> = []
         for slot in inheritedFileDescriptors {

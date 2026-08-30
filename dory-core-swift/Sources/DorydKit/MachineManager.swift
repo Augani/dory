@@ -3575,37 +3575,16 @@ public final class MachineManager: @unchecked Sendable {
                         resolvedPlan.resourceAdmission?.admittedVirtualCPUCount,
                       let admittedMemoryBytes =
                         resolvedPlan.resourceAdmission?.admittedMemoryBytes,
-                      let admittedStorageBytes = resolvedPlan.resourceAdmission?.admittedStorageBytes,
-                      let expectedBootArtifactSHA256 =
-                        resolvedPlan.bootMedia.media.artifactSHA256 else {
+                      let admittedStorageBytes =
+                        resolvedPlan.resourceAdmission?.admittedStorageBytes else {
                     throw MachineManagerError.persistence(
-                        "resolved DoryARMVirt-v1 launch is missing topology, boot digest, or admitted resources"
+                        "resolved DoryARMVirt-v1 launch is missing topology or admitted resources"
                     )
                 }
                 guard resolvedPlan.graphics == launchBinding.graphics else {
                     throw MachineManagerError.persistence(
                         "resolved DoryARMVirt-v1 launch graphics changed after plan revalidation"
                     )
-                }
-                let rendererBootstrapRequest: RawHVRendererBootstrapRequest?
-                if launchBinding.graphics == .hardwareAccelerated3D {
-                    guard resolvedPlan.qualificationEvidence.graphics != nil,
-                          resolvedPlan.qualificationEvidence.runtime != nil,
-                          let rendererReleaseIdentity else {
-                        throw MachineManagerError.persistence(
-                            "accelerated raw-HV launch is missing signed guest or worker authority"
-                        )
-                    }
-                    rendererBootstrapRequest = RawHVRendererBootstrapRequest(
-                        workspaceID: operationID,
-                        generation: resolvedPlan.planRevision,
-                        runtimeBuildIdentifier: resolvedPlan.backendRuntimeBuildIdentifier,
-                        components: resolvedPlan.components,
-                        rendererWorkerCodeDirectoryHash:
-                            rendererReleaseIdentity.rendererWorkerCodeDirectoryHash
-                    )
-                } else {
-                    rendererBootstrapRequest = nil
                 }
                 let bytesPerMiB: UInt64 = 1_048_576
                 guard admittedMemoryBytes.isMultiple(of: bytesPerMiB),
@@ -3628,10 +3607,9 @@ public final class MachineManager: @unchecked Sendable {
                 }
                 let managedMachineDirectory = machineStateDirectory(id: launchMachine.id)
                 guard launchMachine.rootfsPath
-                        == managedMachineDirectory + "/rootfs.ext4",
-                      launchMachine.kernelPath == managedMachineDirectory + "/kernel" else {
+                        == managedMachineDirectory + "/rootfs.ext4" else {
                     throw MachineManagerError.persistence(
-                        "resolved DoryARMVirt-v1 launch paths do not match managed machine storage"
+                        "resolved DoryARMVirt-v1 system disk is outside managed machine storage"
                     )
                 }
                 guard let machineStateBroker else {
@@ -3648,59 +3626,169 @@ public final class MachineManager: @unchecked Sendable {
                         "resolved DoryARMVirt-v1 machine-directory authority is unavailable: \(error)"
                     )
                 }
-                let admittedResources = try machineDirectoryLease.withBorrowedDescriptor {
-                    machineDirectoryDescriptor in
-                    try Self.admitResolvedARMVirtResources(
-                        machineDirectoryDescriptor: machineDirectoryDescriptor,
-                        machineDirectoryGeneration: machineDirectoryLease.generation,
-                        expectedDiskCapacityBytes: admittedStorageBytes,
-                        mediaKind: resolvedPlan.bootMedia.media.kind,
-                        expectedArtifactSHA256: expectedBootArtifactSHA256,
-                        machineBootMode: launchMachine.bootMode,
-                        installerISOPath: launchMachine.installerISOPath,
-                        rendererBootstrapRequest: rendererBootstrapRequest
+                let planSHA256 = try Self.canonicalResolvedPlanSHA256(resolvedPlan)
+                switch resolvedPlan.bootMedia.media.kind {
+                case .linuxKernel, .installedLinuxBootBundle:
+                    guard let expectedBootArtifactSHA256 =
+                            resolvedPlan.bootMedia.media.artifactSHA256,
+                          launchMachine.kernelPath == managedMachineDirectory + "/kernel",
+                          launchMachine.installerISOPath == nil else {
+                        throw MachineManagerError.persistence(
+                            "resolved direct-Linux launch is missing its managed immutable boot authority"
+                        )
+                    }
+                    let rendererBootstrapRequest: RawHVRendererBootstrapRequest?
+                    if launchBinding.graphics == .hardwareAccelerated3D {
+                        guard resolvedPlan.qualificationEvidence.graphics != nil,
+                              resolvedPlan.qualificationEvidence.runtime != nil,
+                              let rendererReleaseIdentity else {
+                            throw MachineManagerError.persistence(
+                                "accelerated raw-HV launch is missing signed guest or worker authority"
+                            )
+                        }
+                        rendererBootstrapRequest = RawHVRendererBootstrapRequest(
+                            workspaceID: operationID,
+                            generation: resolvedPlan.planRevision,
+                            runtimeBuildIdentifier:
+                                resolvedPlan.backendRuntimeBuildIdentifier,
+                            components: resolvedPlan.components,
+                            rendererWorkerCodeDirectoryHash:
+                                rendererReleaseIdentity.rendererWorkerCodeDirectoryHash
+                        )
+                    } else {
+                        rendererBootstrapRequest = nil
+                    }
+                    let admitted = try machineDirectoryLease.withBorrowedDescriptor {
+                        descriptor in
+                        try Self.admitResolvedARMVirtResources(
+                            machineDirectoryDescriptor: descriptor,
+                            machineDirectoryGeneration: machineDirectoryLease.generation,
+                            expectedDiskCapacityBytes: admittedStorageBytes,
+                            mediaKind: resolvedPlan.bootMedia.media.kind,
+                            expectedArtifactSHA256: expectedBootArtifactSHA256,
+                            machineBootMode: launchMachine.bootMode,
+                            installerISOPath: nil,
+                            rendererBootstrapRequest: rendererBootstrapRequest
+                        )
+                    }
+                    var transferred = false
+                    defer { if !transferred { admitted.close() } }
+                    let envelope = RuntimeLaunchEnvelope.resolvedARMVirt(
+                        machineID: launchMachine.id,
+                        operationID: operationID,
+                        resolvedPlanSHA256: planSHA256,
+                        planRevision: resolvedPlan.planRevision,
+                        executionComponentBuildIdentifier:
+                            resolvedPlan.backendRuntimeBuildIdentifier,
+                        virtualHardwareABIVersion: resolvedPlan.virtualHardwareABIVersion,
+                        armVirtTopology: armVirtTopology,
+                        graphics: launchBinding.graphics,
+                        devices: launchBinding.devices,
+                        portForwards: launchBinding.portForwards,
+                        executionResources: executionResources,
+                        systemDiskCapacityBytes: admitted.disk.capacityBytes,
+                        systemDiskLogicalID: systemDiskSlots[0].logicalID,
+                        linuxRootDevice: admitted.boot.rootDevice,
+                        genericGuest: admitted.boot.genericGuest,
+                        linuxKernelByteCount: admitted.boot.kernel.byteCount,
+                        linuxKernelSHA256: admitted.boot.kernel.sha256,
+                        linuxInitrdByteCount: admitted.boot.initrd?.byteCount,
+                        linuxInitrdSHA256: admitted.boot.initrd?.sha256,
+                        rendererBootstrapByteCount: admitted.rendererBootstrap?.byteCount,
+                        rendererBootstrapSHA256: admitted.rendererBootstrap?.sha256
+                    )
+                    _ = try envelope.validatedResolvedARMVirtResources()
+                    runtimeLaunchAuthority = RawHVRuntimeLaunchAuthority(
+                        envelope: envelope,
+                        inheritedFileDescriptors: [admitted.disk.authority]
+                            + admitted.boot.authorities
+                            + (admitted.rendererBootstrap.map { [$0.authority] } ?? [])
+                    )
+                    transferred = true
+
+                case .installerISO, .virtualDisk:
+                    guard launchMachine.bootMode == .efi,
+                          launchBinding.graphics == .none
+                            || launchBinding.graphics == .software,
+                          let firmwareBundlePath =
+                            configuration.armVirtFirmwareBundlePath else {
+                        throw MachineManagerError.persistence(
+                            "resolved UEFI launch requires software graphics and configured ARMVirt firmware"
+                        )
+                    }
+                    let installerSHA256: String?
+                    if resolvedPlan.bootMedia.media.kind == .installerISO {
+                        guard launchMachine.installerISOPath
+                                == managedMachineDirectory + "/installer.iso",
+                              let digest = resolvedPlan.bootMedia.media.artifactSHA256 else {
+                            throw MachineManagerError.persistence(
+                                "resolved UEFI installer is missing managed immutable media"
+                            )
+                        }
+                        installerSHA256 = digest
+                    } else {
+                        guard launchMachine.installerISOPath == nil,
+                              resolvedPlan.bootMedia.media.artifactSHA256 == nil else {
+                            throw MachineManagerError.persistence(
+                                "resolved UEFI disk boot retained installer or immutable-media authority"
+                            )
+                        }
+                        installerSHA256 = nil
+                    }
+                    let admitted = try machineDirectoryLease.withBorrowedDescriptor {
+                        descriptor in
+                        try Self.admitResolvedARMVirtUEFIResources(
+                            machineDirectoryDescriptor: descriptor,
+                            machineDirectoryGeneration: machineDirectoryLease.generation,
+                            expectedDiskCapacityBytes: admittedStorageBytes,
+                            firmwareBundlePath: firmwareBundlePath,
+                            topology: armVirtTopology,
+                            mediaKind: resolvedPlan.bootMedia.media.kind,
+                            expectedInstallerSHA256: installerSHA256
+                        )
+                    }
+                    var transferred = false
+                    defer { if !transferred { admitted.close() } }
+                    let removableDevice = admitted.boot.launchPlan.bootDevices.first {
+                        $0.kind == .removableMedia
+                    }
+                    let removableLogicalID = try removableDevice.map {
+                        try DoryVirtualDeviceID($0.logicalID)
+                    }
+                    let envelope = RuntimeLaunchEnvelope.resolvedARMVirtUEFI(
+                        machineID: launchMachine.id,
+                        operationID: operationID,
+                        resolvedPlanSHA256: planSHA256,
+                        planRevision: resolvedPlan.planRevision,
+                        executionComponentBuildIdentifier:
+                            resolvedPlan.backendRuntimeBuildIdentifier,
+                        virtualHardwareABIVersion: resolvedPlan.virtualHardwareABIVersion,
+                        armVirtTopology: armVirtTopology,
+                        graphics: launchBinding.graphics,
+                        devices: launchBinding.devices,
+                        portForwards: launchBinding.portForwards,
+                        executionResources: executionResources,
+                        systemDiskCapacityBytes: admitted.disk.capacityBytes,
+                        systemDiskLogicalID: systemDiskSlots[0].logicalID,
+                        launchPlan: admitted.boot.launchPlan,
+                        firmwareSBOMByteCount: admitted.boot.firmwareSBOM.byteCount,
+                        installerMediaByteCount: admitted.boot.installerMedia?.byteCount,
+                        installerMediaSHA256: admitted.boot.installerMedia?.sha256,
+                        installerMediaLogicalID: removableLogicalID
+                    )
+                    _ = try envelope.validatedResolvedARMVirtUEFIResources()
+                    runtimeLaunchAuthority = RawHVRuntimeLaunchAuthority(
+                        envelope: envelope,
+                        inheritedFileDescriptors: [admitted.disk.authority]
+                            + admitted.boot.authorities
+                    )
+                    transferred = true
+
+                case .macOSRestoreImage:
+                    throw MachineManagerError.persistence(
+                        "DoryARMVirt-v1 cannot boot macOS restore media"
                     )
                 }
-                var authorityTransferred = false
-                defer {
-                    if !authorityTransferred {
-                        admittedResources.close()
-                    }
-                }
-                let envelope = RuntimeLaunchEnvelope.resolvedARMVirt(
-                    machineID: launchMachine.id,
-                    operationID: operationID,
-                    resolvedPlanSHA256: try Self.canonicalResolvedPlanSHA256(resolvedPlan),
-                    planRevision: resolvedPlan.planRevision,
-                    executionComponentBuildIdentifier: resolvedPlan.backendRuntimeBuildIdentifier,
-                    virtualHardwareABIVersion: resolvedPlan.virtualHardwareABIVersion,
-                    armVirtTopology: armVirtTopology,
-                    graphics: launchBinding.graphics,
-                    devices: launchBinding.devices,
-                    portForwards: launchBinding.portForwards,
-                    executionResources: executionResources,
-                    systemDiskCapacityBytes: admittedResources.disk.capacityBytes,
-                    systemDiskLogicalID: systemDiskSlots[0].logicalID,
-                    linuxRootDevice: admittedResources.boot.rootDevice,
-                    genericGuest: admittedResources.boot.genericGuest,
-                    linuxKernelByteCount: admittedResources.boot.kernel.byteCount,
-                    linuxKernelSHA256: admittedResources.boot.kernel.sha256,
-                    linuxInitrdByteCount: admittedResources.boot.initrd?.byteCount,
-                    linuxInitrdSHA256: admittedResources.boot.initrd?.sha256,
-                    rendererBootstrapByteCount:
-                        admittedResources.rendererBootstrap?.byteCount,
-                    rendererBootstrapSHA256:
-                        admittedResources.rendererBootstrap?.sha256
-                )
-                _ = try envelope.validatedResolvedARMVirtResources()
-                runtimeLaunchAuthority = RawHVRuntimeLaunchAuthority(
-                    envelope: envelope,
-                    inheritedFileDescriptors: [admittedResources.disk.authority]
-                        + admittedResources.boot.authorities
-                        + (admittedResources.rendererBootstrap.map {
-                            [$0.authority]
-                        } ?? [])
-                )
 #if DEBUG
                 let stateAuthorityTestHook = managerStateLock.withLock {
                     rawHVStateAuthorityPreFinalRevalidationTestHook
@@ -3717,7 +3805,6 @@ public final class MachineManager: @unchecked Sendable {
                         "resolved DoryARMVirt-v1 machine-directory authority changed before spawn: \(error)"
                     )
                 }
-                authorityTransferred = true
             } else if let bootstrapAuthority = try qualificationBootstrapRuntimeAuthority(
                 machine: launchMachine,
                 definition: qualificationBootstrapDefinition,
