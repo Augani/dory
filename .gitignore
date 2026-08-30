@@ -161,6 +161,7 @@ docs/
 !/docs/linux-iso-and-gpu-recovery-review.md
 !/docs/container-engine-performance-qualification.md
 !/docs/linux-and-macos-virtualization-delivery-plan.md
+!/docs/linux-and-macos-virtualization-evidence-2026-08-29.md
 !/docs/architecture-gates/
 /docs/architecture-gates/*
 !/docs/architecture-gates/virtiofs-worker-xpc.json
