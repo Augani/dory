@@ -68,6 +68,31 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
     var endpoints: [UInt8: Endpoint] = [:]
   }
 
+  private struct TransferSegment {
+    let trbAddress: UInt64
+    let bufferAddress: UInt64
+    let byteCount: Int
+    let control: UInt32
+  }
+
+  private struct TransferDescriptor {
+    let segments: [TransferSegment]
+    let eventData: UInt64?
+    let eventDataControl: UInt32?
+    let nextDequeueAddress: UInt64
+    let nextCycle: Bool
+
+    var requestedBytes: Int { segments.reduce(0) { $0 + $1.byteCount } }
+    var interruptOnCompletion: Bool {
+      eventDataControl.map { ($0 & (1 << 5)) != 0 }
+        ?? (((segments.last?.control ?? 0) & (1 << 5)) != 0)
+    }
+    var interruptOnShortPacket: Bool {
+      segments.contains { $0.control & (1 << 2) != 0 }
+    }
+    var eventPointer: UInt64 { eventData ?? segments.last?.trbAddress ?? 0 }
+  }
+
   public static let barBytes: UInt64 = 0x4000
   public static let capabilityBytes: UInt8 = 0x40
   public static let operationalOffset: UInt64 = 0x40
@@ -514,7 +539,7 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
         )
         return
       }
-      guard trbType == 1 || trbType == 5 else {
+      guard trbType == 1 || trbType == 5 || trbType == 7 else {
         postTransferEvent(
           trbAddress: endpoint.dequeueAddress,
           completionCode: 5,
@@ -524,15 +549,52 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
         )
         return
       }
-      let bufferAddress = uint64(Array(bytes[0..<8]))
-      let requestedBytes = Int(uint32(Array(bytes[8..<12])) & 0x1_FFFF)
-      let oldDequeue = endpoint.dequeueAddress
+      guard
+        let descriptor = collectTransferDescriptor(
+          endpoint: endpoint,
+          memory: memory,
+          firstTRB: bytes
+        )
+      else {
+        postTransferEvent(
+          trbAddress: endpoint.dequeueAddress,
+          completionCode: 5,
+          residualBytes: 0,
+          slotID: slotID,
+          dci: dci
+        )
+        return
+      }
+      if descriptor.segments.isEmpty {
+        endpoint.dequeueAddress = descriptor.nextDequeueAddress
+        endpoint.cycle = descriptor.nextCycle
+        guard updateEndpointContext(slotID: slotID, dci: dci, endpoint: endpoint, memory: memory)
+        else { return }
+        if descriptor.interruptOnCompletion {
+          postTransferEvent(
+            trbAddress: descriptor.eventPointer,
+            completionCode: 1,
+            residualBytes: 0,
+            slotID: slotID,
+            dci: dci,
+            eventData: descriptor.eventData != nil
+          )
+        }
+        continue
+      }
+      let requestedBytes = descriptor.requestedBytes
       let payload: [UInt8]
       if endpoint.direction == .out {
-        guard let read = try? memory.read(at: bufferAddress, byteCount: requestedBytes),
-          read.count == requestedBytes
-        else { return }
-        payload = read
+        var gathered: [UInt8] = []
+        gathered.reserveCapacity(requestedBytes)
+        for segment in descriptor.segments {
+          guard
+            let read = try? memory.read(at: segment.bufferAddress, byteCount: segment.byteCount),
+            read.count == segment.byteCount
+          else { return }
+          gathered += read
+        }
+        payload = gathered
       } else {
         payload = []
       }
@@ -550,8 +612,23 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
       let response = Array(result.payload.prefix(requestedBytes))
       if endpoint.direction == .in, !response.isEmpty {
         do {
-          try memory.validate(at: bufferAddress, byteCount: response.count, deviceWillWrite: true)
-          try memory.write(at: bufferAddress, bytes: response)
+          var responseOffset = 0
+          var writes: [(address: UInt64, bytes: [UInt8])] = []
+          for segment in descriptor.segments where responseOffset < response.count {
+            let count = min(segment.byteCount, response.count - responseOffset)
+            writes.append(
+              (
+                segment.bufferAddress,
+                Array(response[responseOffset..<(responseOffset + count)])
+              )
+            )
+            responseOffset += count
+          }
+          for write in writes {
+            try memory.validate(
+              at: write.address, byteCount: write.bytes.count, deviceWillWrite: true)
+          }
+          for write in writes { try memory.write(at: write.address, bytes: write.bytes) }
           memory.synchronize()
         } catch {
           return
@@ -561,22 +638,29 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
       if halted {
         endpoint.state = .halted
       } else {
-        endpoint.dequeueAddress &+= 16
+        endpoint.dequeueAddress = descriptor.nextDequeueAddress
+        endpoint.cycle = descriptor.nextCycle
       }
       guard updateEndpointContext(slotID: slotID, dci: dci, endpoint: endpoint, memory: memory)
       else { return }
-      guard halted || control & (1 << 5) != 0 else { continue }
+      let shortResponse = endpoint.direction == .in && response.count < requestedBytes
+      guard
+        halted || descriptor.interruptOnCompletion
+          || shortResponse && descriptor.interruptOnShortPacket
+      else { continue }
       let residual = endpoint.direction == .in ? requestedBytes - response.count : 0
+      let transferred = endpoint.direction == .in ? response.count : (halted ? 0 : requestedBytes)
       let completion = completionCode(
         status: result.status,
-        shortResponse: endpoint.direction == .in && response.count < requestedBytes
+        shortResponse: shortResponse
       )
       postTransferEvent(
-        trbAddress: oldDequeue,
+        trbAddress: descriptor.eventPointer,
         completionCode: completion,
-        residualBytes: residual,
+        residualBytes: descriptor.eventData == nil ? residual : transferred,
         slotID: slotID,
-        dci: dci
+        dci: dci,
+        eventData: descriptor.eventData != nil
       )
     }
   }
@@ -682,6 +766,75 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
     )
   }
 
+  private func collectTransferDescriptor(
+    endpoint: Slot.Endpoint,
+    memory: any DoryVirtioGuestMemory,
+    firstTRB: [UInt8]
+  ) -> TransferDescriptor? {
+    var address = endpoint.dequeueAddress
+    var cycle = endpoint.cycle
+    var bytes = firstTRB
+    var segments: [TransferSegment] = []
+    var totalBytes = 0
+    var eventData: UInt64?
+    var eventDataControl: UInt32?
+    for _ in 0..<4_096 {
+      let control = uint32(Array(bytes[12..<16]))
+      guard control & 1 == (cycle ? 1 : 0) else { return nil }
+      let type = UInt8((control >> 10) & 0x3F)
+      if type == 6 {
+        let target = uint64(Array(bytes[0..<8])) & ~UInt64(0xF)
+        guard target != 0, control & (1 << 4) != 0 else { return nil }
+        address = target
+        if control & 2 != 0 { cycle.toggle() }
+        guard let linked = try? memory.read(at: address, byteCount: 16), linked.count == 16
+        else { return nil }
+        bytes = linked
+        continue
+      }
+      if type == 7 {
+        guard eventData == nil else { return nil }
+        eventData = uint64(Array(bytes[0..<8]))
+        eventDataControl = control
+        address &+= 16
+        return .init(
+          segments: segments,
+          eventData: eventData,
+          eventDataControl: eventDataControl,
+          nextDequeueAddress: address,
+          nextCycle: cycle
+        )
+      }
+      guard type == 1 || type == 5 else { return nil }
+      let byteCount = Int(uint32(Array(bytes[8..<12])) & 0x1_FFFF)
+      guard totalBytes <= DoryPCUSBDeviceLimits.maximumTransferBytes - byteCount else { return nil }
+      segments.append(
+        .init(
+          trbAddress: address,
+          bufferAddress: uint64(Array(bytes[0..<8])),
+          byteCount: byteCount,
+          control: control
+        )
+      )
+      totalBytes += byteCount
+      address &+= 16
+      guard control & (1 << 4) != 0 else {
+        return .init(
+          segments: segments,
+          eventData: nil,
+          eventDataControl: nil,
+          nextDequeueAddress: address,
+          nextCycle: cycle
+        )
+      }
+      guard let next = try? memory.read(at: address, byteCount: 16), next.count == 16 else {
+        return nil
+      }
+      bytes = next
+    }
+    return nil
+  }
+
   private func completionCode(status: DoryPCUSBTransferStatus, shortResponse: Bool) -> UInt8 {
     switch status {
     case .success: shortResponse ? 13 : 1
@@ -698,7 +851,8 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
     completionCode: UInt8,
     residualBytes: Int,
     slotID: UInt8,
-    dci: UInt8
+    dci: UInt8,
+    eventData: Bool = false
   ) {
     var event = [UInt8](repeating: 0, count: 16)
     put(trbAddress, at: 0, in: &event)
@@ -708,7 +862,8 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
       in: &event
     )
     put(
-      UInt32(slotID) << 24 | UInt32(dci) << 16 | UInt32(32) << 10,
+      UInt32(slotID) << 24 | UInt32(dci) << 16 | UInt32(32) << 10
+        | (eventData ? UInt32(1 << 2) : 0),
       at: 12,
       in: &event
     )
