@@ -57,6 +57,30 @@ import Testing
     #expect(count == 0)
   }
 
+  @Test func directKernelCanProgramTheStandardLocalAPICWindow() throws {
+    let layout = DoryPCPVHBootLayout(
+      startInfo: 0x90000,
+      commandLine: 0x91000,
+      modules: 0x92000,
+      memoryMap: 0x93000,
+      initrd: 0x180000
+    )
+    let machine = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024,
+      bootLayout: layout
+    )
+    // mov dword ptr [0xfee000f0],0x1ff; hlt
+    let code: [UInt8] = [
+      0xC7, 0x04, 0x25, 0xF0, 0x00, 0xE0, 0xFE, 0xFF, 0x01, 0x00, 0x00,
+      0xF4,
+    ]
+
+    try machine.load(kernel: makeELF(code: code), commandLine: "x")
+    #expect(try machine.run(maximumInstructions: 4) == .halted(instructionCount: 2))
+    #expect(machine.localAPIC.snapshot().softwareEnabled)
+    #expect(try machine.physicalMemory.read(at: 0xFEE0_0020, byteCount: 4) == [0, 0, 0, 0])
+  }
+
   private func makeELF(code: [UInt8]) -> Data {
     let segmentOffset = 0x200
     var data = Data(repeating: 0, count: segmentOffset + code.count)

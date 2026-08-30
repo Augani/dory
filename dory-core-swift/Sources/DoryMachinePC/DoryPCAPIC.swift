@@ -80,11 +80,14 @@ public final class DoryPCLocalAPIC: @unchecked Sendable {
 
   /// Selects and acknowledges the highest deliverable vector. Acknowledgement atomically moves
   /// the vector from IRR to ISR; callers then perform architectural IDT delivery.
-  public func acknowledge(interruptsEnabled: Bool) -> UInt8? {
+  public func acknowledge(
+    interruptsEnabled: Bool,
+    externalPriority: UInt8 = 0
+  ) -> UInt8? {
     lock.withLock {
       guard softwareEnabled, interruptsEnabled else { return nil }
       let processorPriority = max(
-        taskPriority & 0xF0,
+        max(taskPriority & 0xF0, externalPriority & 0xF0),
         inService.max().map { $0 & 0xF0 } ?? 0
       )
       guard
@@ -105,6 +108,7 @@ public final class DoryPCLocalAPIC: @unchecked Sendable {
     lock.withLock {
       guard let vector = inService.max() else { return nil }
       inService.remove(vector)
+      if !interruptRequest.contains(vector) { levelTriggered.remove(vector) }
       return vector
     }
   }

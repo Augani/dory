@@ -18,8 +18,11 @@ public enum DoryPCMachineStop: Sendable, Hashable {
 /// added behind the same sealed buses rather than hidden in this loop.
 public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   public let memory: DoryX86ByteArrayMemory
+  public let physicalMemory: DoryPCPhysicalMemoryBus
   public let ioBus: DoryPCPortIOBus
   public let serial: DoryPCUART16550
+  public let localAPIC: DoryPCLocalAPIC
+  public let ioAPIC: DoryPCIOAPIC
   public let pagingUnit: DoryX86PagingUnit
   public let interpreter: DoryX86Interpreter
   public let bootLayout: DoryPCPVHBootLayout
@@ -38,11 +41,22 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       throw DoryPCMachineError.invalidMemorySize(memoryBytes)
     }
     memory = DoryX86ByteArrayMemory(byteCount: memoryBytes)
+    physicalMemory = DoryPCPhysicalMemoryBus(ram: memory)
     memoryByteCount = memoryBytes
     ioBus = DoryPCPortIOBus()
     serial = DoryPCUART16550()
     try ioBus.attach(serial)
     ioBus.seal()
+    localAPIC = DoryPCLocalAPIC(apicID: 0)
+    ioAPIC = DoryPCIOAPIC()
+    try ioAPIC.attach(localAPIC)
+    ioAPIC.seal()
+    try physicalMemory.attach(
+      DoryPCLocalAPICMMIO(apic: localAPIC) { [ioAPIC] vector in
+        try ioAPIC.endOfInterrupt(vector: vector, destinationAPICID: 0)
+      })
+    try physicalMemory.attach(DoryPCIOAPICMMIO(ioAPIC: ioAPIC))
+    physicalMemory.seal()
     pagingUnit = DoryX86PagingUnit()
     self.interpreter = interpreter
     self.bootLayout = bootLayout
@@ -81,9 +95,23 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     return try lock.withLock {
       guard var state = loadedState else { throw DoryPCMachineError.notLoaded }
       for completed in 0..<maximumInstructions {
+        localAPIC.advanceTimer(by: 1)
+        if let vector = localAPIC.acknowledge(
+          interruptsEnabled: state.rflags.contains(.interruptEnable),
+          externalPriority: UInt8(truncatingIfNeeded: state.control.cr8) << 4
+        ) {
+          try DoryX86InterruptDelivery().deliver(
+            vector: vector,
+            source: .externalMaskable,
+            state: &state,
+            physicalMemory: physicalMemory,
+            pagingUnit: pagingUnit,
+            mode: executionMode(state)
+          )
+        }
         let result = interpreter.step(
           state: &state,
-          memory: memory,
+          memory: physicalMemory,
           mode: executionMode(state),
           pagingUnit: pagingUnit,
           ioBus: ioBus
