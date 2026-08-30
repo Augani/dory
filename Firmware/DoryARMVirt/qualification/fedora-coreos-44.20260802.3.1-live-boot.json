@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "qualificationTarget": {
+    "guestFamily": "fedora-coreos",
+    "guestVersion": "44",
+    "guestBuild": "44.20260802.3.1",
+    "guestArchitecture": "arm64"
+  },
+  "steps": [
+    {
+      "waitFor": "*Fedora CoreOS (Live)",
+      "send": "\n"
+    }
+  ]
+}

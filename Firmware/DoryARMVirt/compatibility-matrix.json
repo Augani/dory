@@ -45,6 +45,16 @@
       "byteCount": 1257783296,
       "sha256": "a93ebd0322cda5a439039710b727ac1899a06e1c11876cfdf7f27c25b8262cc3"
     },
+    "fedora-coreos-44.20260802.3.1-arm64": {
+      "guestFamily": "fedora-coreos",
+      "guestVersion": "44",
+      "guestBuild": "44.20260802.3.1",
+      "guestArchitecture": "arm64",
+      "sourceURL": "https://builds.coreos.fedoraproject.org/prod/streams/stable/builds/44.20260802.3.1/aarch64/fedora-coreos-44.20260802.3.1-live-iso.aarch64.iso",
+      "checksumURL": "https://builds.coreos.fedoraproject.org/streams/stable.json",
+      "byteCount": 871133184,
+      "sha256": "c204c2ca547e3e862fca2bcd4e2d2f29272a4e9bf5f8bbfaaa32620f5d89d577"
+    },
     "opensuse-tumbleweed-20260806-arm64": {
       "guestFamily": "opensuse-tumbleweed",
       "guestVersion": "20260806",
@@ -65,6 +75,7 @@
     {"gateID":"alpine-baseline-devices","kind":"baseline-devices","mediaID":"alpine-3.24.1-arm64","consoleScriptPath":"qualification/alpine-3.24-device-baseline.json","consoleScriptSHA256":"fb0812cac3e8b53ac4b5fc8bbe4d3ad65c5ba8ee8a3a3111d164257bf4d60889","expectedConsoleText":"DORY_DEVICE_BASELINE_READY","memoryByteCount":4294967296,"systemDiskByteCount":4294967296,"timeoutSeconds":300,"gvproxySHA256":"56e0cde99ff2b589e467294145d66796ab4d990ae89a3633b0ef037dfcba03cd","receipt":{"bootAttempts":2,"consoleScriptStepCount":5,"installerMediaTransitionCount":1,"installerMediaAttachedForFinalBoot":false,"coldSnapshotActionCount":0}},
     {"gateID":"debian-installer-boot","kind":"installer-boot","mediaID":"debian-13.6.0-arm64","consoleScriptPath":"qualification/debian-13.6-installer-boot.json","consoleScriptSHA256":"5dd666e523a09c2486016d70f96f43d0158cc77cdab09d8afcde7d9731e8bb08","expectedConsoleText":"Select a language","memoryByteCount":4294967296,"systemDiskByteCount":8589934592,"timeoutSeconds":180,"receipt":{"bootAttempts":1,"consoleScriptStepCount":1,"installerMediaTransitionCount":0,"installerMediaAttachedForFinalBoot":true,"coldSnapshotActionCount":0}},
     {"gateID":"fedora-installer-boot","kind":"installer-boot","mediaID":"fedora-server-44-1.7-arm64","consoleScriptPath":"qualification/fedora-44-installer-boot.json","consoleScriptSHA256":"4006f28145cc8014bbe8e1e4a8bebec5f0880bead704f731f5358d4bf6fe7ef1","expectedConsoleText":"Starting installer, one moment...","memoryByteCount":4294967296,"systemDiskByteCount":8589934592,"timeoutSeconds":180,"receipt":{"bootAttempts":1,"consoleScriptStepCount":1,"installerMediaTransitionCount":0,"installerMediaAttachedForFinalBoot":true,"coldSnapshotActionCount":0}},
+    {"gateID":"fedora-coreos-live-boot","kind":"installer-boot","mediaID":"fedora-coreos-44.20260802.3.1-arm64","consoleScriptPath":"qualification/fedora-coreos-44.20260802.3.1-live-boot.json","consoleScriptSHA256":"dabe3330ab36f697d45d0d91b2db7b5ddef12cdfe9474b040d38e4471f08995e","expectedConsoleText":"Welcome to the CoreOS live environment.","memoryByteCount":4294967296,"systemDiskByteCount":8589934592,"timeoutSeconds":180,"gvproxySHA256":"56e0cde99ff2b589e467294145d66796ab4d990ae89a3633b0ef037dfcba03cd","receipt":{"bootAttempts":1,"consoleScriptStepCount":1,"installerMediaTransitionCount":0,"installerMediaAttachedForFinalBoot":true,"coldSnapshotActionCount":0}},
     {"gateID":"opensuse-installer-boot","kind":"installer-boot","mediaID":"opensuse-tumbleweed-20260806-arm64","consoleScriptPath":"qualification/opensuse-tumbleweed-20260806-installer-boot.json","consoleScriptSHA256":"d1174e8e3265af7b903d978dfbd9b451cc427d64bd9f1123225440256e26848c","expectedConsoleText":"Language, Keyboard and License Agreement","memoryByteCount":4294967296,"systemDiskByteCount":8589934592,"timeoutSeconds":180,"gvproxySHA256":"56e0cde99ff2b589e467294145d66796ab4d990ae89a3633b0ef037dfcba03cd","receipt":{"bootAttempts":1,"consoleScriptStepCount":1,"installerMediaTransitionCount":0,"installerMediaAttachedForFinalBoot":true,"coldSnapshotActionCount":0}},
     {"gateID":"debian-update","kind":"guest-update","mediaID":"debian-13.6.0-arm64","consoleScriptPath":"qualification/debian-13.6-install.json","consoleScriptSHA256":"14d2949f9c34c8a8610be449c4d87742bc21aa09de4c8a8cb1a41583e9770eda","expectedConsoleText":"DORY_DEBIAN_UPDATED_READY","memoryByteCount":4294967296,"systemDiskByteCount":8589934592,"timeoutSeconds":600,"gvproxySHA256":"56e0cde99ff2b589e467294145d66796ab4d990ae89a3633b0ef037dfcba03cd","receipt":{"bootAttempts":3,"consoleScriptStepCount":30,"installerMediaTransitionCount":1,"installerMediaAttachedForFinalBoot":false,"coldSnapshotActionCount":0}}
   ]

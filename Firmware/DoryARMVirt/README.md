@@ -250,3 +250,14 @@ image has SHA-256
 Its detached signature must verify against the Archboot project key fingerprint
 `5B7E 3FB7 1B7F 1032 9A1C 03AB 771D F662 7EDF 681F`, which Archboot publishes
 on its own release page.
+
+`fedora-coreos-44.20260802.3.1-live-boot.json` is the immutable-Linux cell. It
+pins the stable Fedora CoreOS 44.20260802.3.1 ARM64 live ISO, selects the stock
+`Fedora CoreOS (Live)` GRUB entry, and requires the live environment's own
+welcome message after Ignition, NetworkManager, the serial getty, and automatic
+`core` login complete. The qualifying console also reports the deterministic
+gvproxy lease on `eth0`. The 871,133,184-byte image has SHA-256
+`c204c2ca547e3e862fca2bcd4e2d2f29272a4e9bf5f8bbfaaa32620f5d89d577`,
+which must match Fedora's stable stream metadata. Its detached signature must
+also verify against Fedora 44 primary key fingerprint
+`36F6 12DC F27F 7D1A 48A8 35E4 DBFC F71C 6D9F 90A6`.
