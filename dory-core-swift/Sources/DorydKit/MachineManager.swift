@@ -7,9 +7,10 @@ import Foundation
 
 public struct MachineManagerConfiguration: Sendable, Equatable {
     public var vmmExecutablePath: String
-    /// Raw-Hypervisor helper used only for accelerated Linux desktops. EFI installers and
-    /// headless machines retain the established Virtualization.framework helper.
+    /// Raw-Hypervisor helper used for resolved native DoryARMVirt workloads.
     public var acceleratedDesktopExecutablePath: String?
+    /// Verified DoryARMVirt UEFI release bundle resolved only by the trusted daemon.
+    public var armVirtFirmwareBundlePath: String?
     public var stateDirectory: String
     public var runtimeDirectory: String
     /// Home used to derive durable mutation authority. The daemon supplies the Dory user home so
@@ -39,6 +40,7 @@ public struct MachineManagerConfiguration: Sendable, Equatable {
     public init(
         vmmExecutablePath: String,
         acceleratedDesktopExecutablePath: String? = nil,
+        armVirtFirmwareBundlePath: String? = nil,
         stateDirectory: String,
         runtimeDirectory: String? = nil,
         lifecycleJournalHome: String? = nil,
@@ -60,6 +62,7 @@ public struct MachineManagerConfiguration: Sendable, Equatable {
     ) {
         self.vmmExecutablePath = vmmExecutablePath
         self.acceleratedDesktopExecutablePath = acceleratedDesktopExecutablePath
+        self.armVirtFirmwareBundlePath = armVirtFirmwareBundlePath
         self.stateDirectory = stateDirectory
         self.runtimeDirectory = runtimeDirectory ?? stateDirectory
         self.lifecycleJournalHome = lifecycleJournalHome

@@ -1018,6 +1018,7 @@ final class DorydConfigurationTests: XCTestCase {
             "DORYD_VMM_HELPER": helper,
             "DORYD_MACHINE_STATE_DIR": directory + "/machines",
             "DORYD_MACHINE_LOG_DIR": directory + "/logs",
+            "DORYD_ARMVIRT_FIRMWARE_BUNDLE": directory + "/firmware",
             "DORYD_VMM_ARGS": "--foreground --verbose",
             "DORYD_VMM_PASS_MACHINE_ARGS": "0",
             "DORYD_VMM_READY_HANDOFF": "0",
@@ -1025,6 +1026,7 @@ final class DorydConfigurationTests: XCTestCase {
 
         XCTAssertEqual(env.machineManagerConfiguration(), MachineManagerConfiguration(
             vmmExecutablePath: helper,
+            armVirtFirmwareBundlePath: directory + "/firmware",
             stateDirectory: directory + "/machines",
             runtimeDirectory: directory + "/home/.dory/machines",
             lifecycleJournalHome: directory + "/home",
