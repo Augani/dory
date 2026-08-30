@@ -95,6 +95,10 @@ let package = Package(
       name: "dory-pc-uefi-smoke",
       targets: ["dory-pc-uefi-smoke"]
     ),
+    .executable(
+      name: "dory-x86-decode-audit",
+      targets: ["dory-x86-decode-audit"]
+    ),
   ],
   targets: [
     .binaryTarget(name: "DoryFFI", path: "artifacts/DoryFFI.xcframework"),
@@ -374,6 +378,12 @@ let package = Package(
     .executableTarget(
       name: "dory-pc-uefi-smoke",
       dependencies: ["DoryDBTX86", "DoryFirmware", "DoryMachinePC", "DoryVirtio"]
+    ),
+    // Phase 4 conformance helper. It checks every instruction emitted in linked x86 firmware
+    // modules against Dory's decoder so bring-up can close common ISA gaps in batches.
+    .executableTarget(
+      name: "dory-x86-decode-audit",
+      dependencies: ["DoryDBTX86"]
     ),
     .testTarget(
       name: "DoryCoreTests",
