@@ -489,20 +489,85 @@ public struct DoryX86Decoder: Sendable {
         DoryX86Condition(rawValue: opcode - 0x70)!,
         relative: Int64(try cursor.readSigned(byteCount: 1))
       )
-    case 0xDB:
-      guard try cursor.readByte() == 0xE3 else {
-        throw DoryX86DecodeError.invalidEncoding(
-          address: address, detail: "unsupported DB x87 instruction")
-      }
-      operation = .initializeFloatingPoint
     case 0xD9:
       let operands = try decodeModRM(
         cursor: &cursor, width: .word, prefixes: prefixes, mode: mode)
-      guard operands.group == 5, case .memory = operands.rm else {
-        throw DoryX86DecodeError.invalidEncoding(
-          address: address, detail: "unsupported D9 x87 instruction")
+      switch operands.rm {
+      case .memory(let memory):
+        switch operands.group {
+        case 0: operation = .loadX87(.memory(memory, format: .float32))
+        case 2:
+          operation = .storeX87(
+            destination: memory, format: .float32, pop: false, truncate: false)
+        case 3:
+          operation = .storeX87(
+            destination: memory, format: .float32, pop: true, truncate: false)
+        case 5: operation = .loadX87ControlWord(operands.rm)
+        case 7: operation = .storeX87ControlWord(operands.rm)
+        default:
+          throw DoryX86DecodeError.invalidEncoding(
+            address: address, detail: "unsupported D9 x87 memory instruction")
+        }
+      case .register:
+        switch operands.group {
+        case 0: operation = .loadX87(.register(vectorRegister(operands.rm)))
+        case 1: operation = .exchangeX87(vectorRegister(operands.rm))
+        default:
+          throw DoryX86DecodeError.invalidEncoding(
+            address: address, detail: "unsupported D9 x87 register instruction")
+        }
+      default:
+        preconditionFailure("ModRM x87 operand must be register or memory")
       }
-      operation = .loadX87ControlWord(operands.rm)
+    case 0xDB, 0xDD, 0xDF:
+      let operands = try decodeModRM(
+        cursor: &cursor, width: .word, prefixes: prefixes, mode: mode)
+      if case .register = operands.rm {
+        if opcode == 0xDB, operands.group == 4, vectorRegister(operands.rm) == 3 {
+          operation = .initializeFloatingPoint
+        } else if opcode == 0xDF, operands.group == 4, vectorRegister(operands.rm) == 0 {
+          operation = .storeX87StatusWord(.register(.rax, width: .word))
+        } else {
+          throw DoryX86DecodeError.invalidEncoding(
+            address: address, detail: "unsupported register x87 instruction")
+        }
+      } else if case .memory(let memory) = operands.rm {
+        let format: DoryX87MemoryFormat
+        switch opcode {
+        case 0xDB:
+          format = operands.group == 5 || operands.group == 7 ? .extended80 : .signedInteger32
+        case 0xDD:
+          if operands.group == 1 {
+            format = .signedInteger64
+          } else if operands.group == 7 {
+            format = .signedInteger16
+          } else {
+            format = .float64
+          }
+        default:
+          format = operands.group == 5 || operands.group == 7 ? .signedInteger64 : .signedInteger16
+        }
+        switch (opcode, operands.group) {
+        case (0xDB, 0), (0xDB, 5), (0xDD, 0), (0xDF, 0), (0xDF, 5):
+          operation = .loadX87(.memory(memory, format: format))
+        case (0xDB, 1), (0xDD, 1), (0xDF, 1):
+          operation = .storeX87(
+            destination: memory, format: format, pop: true, truncate: true)
+        case (0xDB, 2), (0xDD, 2), (0xDF, 2):
+          operation = .storeX87(
+            destination: memory, format: format, pop: false, truncate: false)
+        case (0xDB, 3), (0xDD, 3), (0xDF, 3), (0xDB, 7), (0xDF, 7):
+          operation = .storeX87(
+            destination: memory, format: format, pop: true, truncate: false)
+        case (0xDD, 7):
+          operation = .storeX87StatusWord(operands.rm)
+        default:
+          throw DoryX86DecodeError.invalidEncoding(
+            address: address, detail: "unsupported x87 memory instruction")
+        }
+      } else {
+        preconditionFailure("ModRM x87 operand must be register or memory")
+      }
     case 0x0F:
       let second = try cursor.readByte()
       switch second {

@@ -652,4 +652,45 @@ import Testing
         )
     )
   }
+
+  @Test func decodesX87StackDataTransfers() throws {
+    #expect(
+      try decoder.decode([0xD9, 0x00], at: 0x1000, mode: .long64).operation
+        == .loadX87(
+          .memory(
+            .init(base: .rax, width: .word),
+            format: .float32
+          ))
+    )
+    #expect(
+      try decoder.decode([0xD9, 0x18], at: 0x1000, mode: .long64).operation
+        == .storeX87(
+          destination: .init(base: .rax, width: .word),
+          format: .float32,
+          pop: true,
+          truncate: false
+        )
+    )
+    #expect(
+      try decoder.decode([0xD9, 0xC3], at: 0x1000, mode: .long64).operation
+        == .loadX87(.register(3))
+    )
+    #expect(
+      try decoder.decode([0xD9, 0xCB], at: 0x1000, mode: .long64).operation
+        == .exchangeX87(3)
+    )
+    #expect(
+      try decoder.decode([0xDB, 0x7B, 0x20], at: 0x1000, mode: .long64).operation
+        == .storeX87(
+          destination: .init(base: .rbx, displacement: 0x20, width: .word),
+          format: .extended80,
+          pop: true,
+          truncate: false
+        )
+    )
+    #expect(
+      try decoder.decode([0xDF, 0xE0], at: 0x1000, mode: .long64).operation
+        == .storeX87StatusWord(.register(.rax, width: .word))
+    )
+  }
 }

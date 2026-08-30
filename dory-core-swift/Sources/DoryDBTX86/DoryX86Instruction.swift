@@ -170,6 +170,25 @@ public enum DoryX86VectorShuffleFormat: String, Codable, Sendable, Hashable {
   case packedSingle, packedDouble, packedDoublewords
 }
 
+public enum DoryX87MemoryFormat: String, Codable, Sendable, Hashable {
+  case float32, float64, extended80
+  case signedInteger16, signedInteger32, signedInteger64
+
+  public var byteCount: Int {
+    switch self {
+    case .float32, .signedInteger32: 4
+    case .float64, .signedInteger64: 8
+    case .extended80: 10
+    case .signedInteger16: 2
+    }
+  }
+}
+
+public enum DoryX87Operand: Codable, Sendable, Hashable {
+  case register(UInt8)
+  case memory(DoryX86MemoryOperand, format: DoryX87MemoryFormat)
+}
+
 public enum DoryX86StringOperation: String, Codable, Sendable, Hashable {
   case move, compare, store, load, scan, input, output
 }
@@ -238,6 +257,16 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
   case waitForCoprocessor
   case initializeFloatingPoint
   case loadX87ControlWord(DoryX86Operand)
+  case storeX87ControlWord(DoryX86Operand)
+  case loadX87(DoryX87Operand)
+  case storeX87(
+    destination: DoryX86MemoryOperand,
+    format: DoryX87MemoryFormat,
+    pop: Bool,
+    truncate: Bool
+  )
+  case exchangeX87(UInt8)
+  case storeX87StatusWord(DoryX86Operand)
   case saveFloatingPointState(DoryX86MemoryOperand)
   case restoreFloatingPointState(DoryX86MemoryOperand)
   case loadMXCSR(DoryX86Operand)

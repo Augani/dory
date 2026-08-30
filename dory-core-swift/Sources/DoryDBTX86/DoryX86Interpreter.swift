@@ -518,6 +518,54 @@ public struct DoryX86Interpreter: Sendable {
           truncatingIfNeeded: try read(
             source, instruction: instruction, state: state, memory: executionMemory)
         )
+      case .storeX87ControlWord(let destination):
+        try write(
+          UInt64(state.floatingPoint.x87ControlWord),
+          to: destination,
+          instruction: instruction,
+          state: &state,
+          memory: executionMemory
+        )
+      case .loadX87(let source):
+        let value = try readX87(
+          source,
+          instruction: instruction,
+          state: state,
+          memory: executionMemory
+        )
+        pushX87(value, state: &state.floatingPoint)
+      case .storeX87(let destination, let format, let pop, let truncate):
+        let value = readX87Register(0, state: state.floatingPoint)
+        let bytes = storeX87Bytes(
+          value,
+          format: format,
+          truncate: truncate,
+          floatingPoint: &state.floatingPoint
+        )
+        try writeX87Memory(
+          bytes,
+          to: destination,
+          instruction: instruction,
+          state: state,
+          memory: executionMemory
+        )
+        if pop { popX87(state: &state.floatingPoint) }
+      case .exchangeX87(let register):
+        let first = physicalX87Register(0, state: state.floatingPoint)
+        let second = physicalX87Register(register, state: state.floatingPoint)
+        state.floatingPoint.x87.swapAt(first, second)
+        let firstTag = x87Tag(first, state: state.floatingPoint)
+        let secondTag = x87Tag(second, state: state.floatingPoint)
+        setX87Tag(first, secondTag, state: &state.floatingPoint)
+        setX87Tag(second, firstTag, state: &state.floatingPoint)
+      case .storeX87StatusWord(let destination):
+        try write(
+          UInt64(state.floatingPoint.x87StatusWord),
+          to: destination,
+          instruction: instruction,
+          state: &state,
+          memory: executionMemory
+        )
       case .saveFloatingPointState(let destination):
         let address = effectiveAddress(destination, instruction: instruction, state: state)
         guard address & 0xF == 0 else { return generalProtection(at: originalRIP) }
@@ -1598,6 +1646,207 @@ public struct DoryX86Interpreter: Sendable {
         byteCount: byteCount
       )
     }
+  }
+
+  private func readX87(
+    _ operand: DoryX87Operand,
+    instruction: DoryX86DecodedInstruction,
+    state: DoryX86ArchitecturalState,
+    memory: any DoryX86Memory
+  ) throws -> Double {
+    switch operand {
+    case .register(let register):
+      return readX87Register(register, state: state.floatingPoint)
+    case .memory(let memoryOperand, let format):
+      try validateSegmentAccess(
+        memoryOperand,
+        byteCount: format.byteCount,
+        write: false,
+        instruction: instruction,
+        state: state
+      )
+      let bytes = try memory.read(
+        at: effectiveAddress(memoryOperand, instruction: instruction, state: state),
+        byteCount: format.byteCount
+      )
+      switch format {
+      case .float32:
+        return Double(Float(bitPattern: UInt32(fromLittleEndian(bytes))))
+      case .float64:
+        return Double(bitPattern: fromLittleEndian(bytes))
+      case .extended80:
+        return decodeX87Extended(bytes)
+      case .signedInteger16:
+        return Double(Int16(bitPattern: UInt16(fromLittleEndian(bytes))))
+      case .signedInteger32:
+        return Double(Int32(bitPattern: UInt32(fromLittleEndian(bytes))))
+      case .signedInteger64:
+        return Double(Int64(bitPattern: fromLittleEndian(bytes)))
+      }
+    }
+  }
+
+  private func writeX87Memory(
+    _ bytes: [UInt8],
+    to memoryOperand: DoryX86MemoryOperand,
+    instruction: DoryX86DecodedInstruction,
+    state: DoryX86ArchitecturalState,
+    memory: any DoryX86Memory
+  ) throws {
+    try validateSegmentAccess(
+      memoryOperand,
+      byteCount: bytes.count,
+      write: true,
+      instruction: instruction,
+      state: state
+    )
+    let address = effectiveAddress(memoryOperand, instruction: instruction, state: state)
+    try memory.validateWrite(at: address, byteCount: bytes.count)
+    try memory.write(at: address, bytes: bytes)
+  }
+
+  private func storeX87Bytes(
+    _ value: Double,
+    format: DoryX87MemoryFormat,
+    truncate: Bool,
+    floatingPoint: inout DoryX86FloatingPointState
+  ) -> [UInt8] {
+    switch format {
+    case .float32:
+      return Array(littleEndian(UInt64(Float(value).bitPattern), width: .doubleword))
+    case .float64:
+      return littleEndian(value.bitPattern, width: .quadword)
+    case .extended80:
+      return encodeX87Extended(value)
+    case .signedInteger16, .signedInteger32, .signedInteger64:
+      let bitCount: Int =
+        switch format {
+        case .signedInteger16: 16
+        case .signedInteger32: 32
+        default: 64
+        }
+      let rule: FloatingPointRoundingRule =
+        if truncate {
+          .towardZero
+        } else {
+          switch (floatingPoint.x87ControlWord >> 10) & 3 {
+          case 0: .toNearestOrEven
+          case 1: .down
+          case 2: .up
+          default: .towardZero
+          }
+        }
+      let rounded = value.rounded(rule)
+      let lower = -Foundation.pow(2.0, Double(bitCount - 1))
+      let upper = Foundation.pow(2.0, Double(bitCount - 1))
+      let invalid = !rounded.isFinite || rounded < lower || rounded >= upper
+      if invalid { floatingPoint.x87StatusWord |= 1 }
+      let raw: UInt64
+      if invalid {
+        raw = UInt64(1) << UInt64(bitCount - 1)
+      } else {
+        raw = UInt64(bitPattern: Int64(rounded))
+      }
+      return (0..<(bitCount / 8)).map {
+        UInt8(truncatingIfNeeded: raw >> UInt64($0 * 8))
+      }
+    }
+  }
+
+  private func x87Top(_ state: DoryX86FloatingPointState) -> Int {
+    Int((state.x87StatusWord >> 11) & 7)
+  }
+
+  private func setX87Top(_ top: Int, state: inout DoryX86FloatingPointState) {
+    state.x87StatusWord = (state.x87StatusWord & ~(UInt16(7) << 11)) | UInt16(top & 7) << 11
+  }
+
+  private func physicalX87Register(_ logical: UInt8, state: DoryX86FloatingPointState) -> Int {
+    (x87Top(state) + Int(logical)) & 7
+  }
+
+  private func x87Tag(_ physical: Int, state: DoryX86FloatingPointState) -> UInt16 {
+    (state.x87TagWord >> UInt16(physical * 2)) & 3
+  }
+
+  private func setX87Tag(
+    _ physical: Int,
+    _ tag: UInt16,
+    state: inout DoryX86FloatingPointState
+  ) {
+    let shift = UInt16(physical * 2)
+    state.x87TagWord = (state.x87TagWord & ~(UInt16(3) << shift)) | (tag & 3) << shift
+  }
+
+  private func readX87Register(_ logical: UInt8, state: DoryX86FloatingPointState) -> Double {
+    let physical = physicalX87Register(logical, state: state)
+    guard x87Tag(physical, state: state) != 3 else { return .nan }
+    return decodeX87Extended(state.x87[physical].bytes)
+  }
+
+  private func pushX87(_ value: Double, state: inout DoryX86FloatingPointState) {
+    let top = (x87Top(state) + 7) & 7
+    if x87Tag(top, state: state) != 3 {
+      state.x87StatusWord |= 0x0241
+    } else {
+      state.x87StatusWord &= ~UInt16(0x0200)
+    }
+    setX87Top(top, state: &state)
+    state.x87[top] = try! .init(bytes: encodeX87Extended(value), expectedByteCount: 10)
+    let tag: UInt16 = value == 0 ? 1 : (value.isFinite ? 0 : 2)
+    setX87Tag(top, tag, state: &state)
+  }
+
+  private func popX87(state: inout DoryX86FloatingPointState) {
+    let top = x87Top(state)
+    setX87Tag(top, 3, state: &state)
+    setX87Top((top + 1) & 7, state: &state)
+  }
+
+  private func decodeX87Extended(_ bytes: [UInt8]) -> Double {
+    precondition(bytes.count == 10)
+    let significand = fromLittleEndian(Array(bytes[0..<8]))
+    let signAndExponent = UInt16(bytes[8]) | UInt16(bytes[9]) << 8
+    let negative = signAndExponent & 0x8000 != 0
+    let exponent = Int(signAndExponent & 0x7FFF)
+    if exponent == 0, significand == 0 { return negative ? -0.0 : 0.0 }
+    if exponent == 0x7FFF {
+      if significand == 0x8000_0000_0000_0000 {
+        return negative ? -.infinity : .infinity
+      }
+      return .nan
+    }
+    let unbiased = exponent == 0 ? -16_382 : exponent - 16_383
+    let magnitude = Double(significand) * Foundation.pow(2.0, Double(unbiased - 63))
+    return negative ? -magnitude : magnitude
+  }
+
+  private func encodeX87Extended(_ value: Double) -> [UInt8] {
+    let bits = value.bitPattern
+    let sign = UInt16((bits >> 63) << 15)
+    let doubleExponent = Int((bits >> 52) & 0x7FF)
+    let fraction = bits & 0x000F_FFFF_FFFF_FFFF
+    let significand: UInt64
+    let exponent: UInt16
+    if doubleExponent == 0x7FF {
+      exponent = 0x7FFF
+      significand = fraction == 0 ? 0x8000_0000_0000_0000 : 0xC000_0000_0000_0000
+    } else if doubleExponent == 0, fraction == 0 {
+      exponent = 0
+      significand = 0
+    } else if doubleExponent == 0 {
+      let highestBit = 63 - fraction.leadingZeroBitCount
+      significand = fraction << UInt64(63 - highestBit)
+      exponent = UInt16(highestBit - 1_074 + 16_383)
+    } else {
+      significand = ((UInt64(1) << 52) | fraction) << 11
+      exponent = UInt16(doubleExponent - 1_023 + 16_383)
+    }
+    var bytes = littleEndian(significand, width: .quadword)
+    let signAndExponent = sign | exponent
+    bytes.append(UInt8(truncatingIfNeeded: signAndExponent))
+    bytes.append(UInt8(truncatingIfNeeded: signAndExponent >> 8))
+    return bytes
   }
 
   private func writeVectorBytes(

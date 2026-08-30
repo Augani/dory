@@ -345,6 +345,52 @@ import Testing
     #expect(try memory.read(at: 0x1038, byteCount: 16) == Array(0..<16))
   }
 
+  @Test func x87LoadsStoresAndPopsUseArchitecturalStackOrder() throws {
+    var bytes = [UInt8](repeating: 0, count: 0x200)
+    bytes.replaceSubrange(
+      0..<20,
+      with: [
+        0xD9, 0x03,
+        0xD9, 0xC0,
+        0xDB, 0x7B, 0x20,
+        0xD9, 0xC0,
+        0xD9, 0x5B, 0x08,
+        0xDD, 0x43, 0x10,
+        0xDB, 0x5B, 0x18,
+        0xDF, 0xE0,
+      ])
+    bytes.replaceSubrange(
+      0x100..<0x104,
+      with: littleEndian(UInt64(Float(2.5).bitPattern)).prefix(4)
+    )
+    bytes.replaceSubrange(0x110..<0x118, with: littleEndian(Double(-42.75).bitPattern))
+    let memory = DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: bytes)
+    var state = try DoryX86ArchitecturalState(
+      registers: .init(rbx: 0x1100),
+      rip: 0x1000
+    )
+
+    for _ in 0..<8 {
+      let result = interpreter.step(state: &state, memory: memory, mode: .long64)
+      guard case .retired = result else {
+        Issue.record("x87 transfer unexpectedly failed: \(result)")
+        return
+      }
+    }
+
+    #expect(
+      Float(
+        bitPattern: UInt32(
+          try memoryInteger(bytes: try memory.read(at: 0x1108, byteCount: 4)))) == 2.5)
+    #expect(try memory.read(at: 0x1120, byteCount: 10)[8..<10] == [0, 0x40][...])
+    #expect(
+      UInt32(try memoryInteger(bytes: try memory.read(at: 0x1118, byteCount: 4)))
+        == 0xFFFF_FFD5)
+    #expect(state.registers.rax & 0xFFFF == UInt64(state.floatingPoint.x87StatusWord))
+    #expect((state.floatingPoint.x87StatusWord >> 11) & 7 == 7)
+    #expect(state.floatingPoint.x87TagWord & (3 << 14) != 3 << 14)
+  }
+
   @Test func movdquLoadsLowVectorAndPreservesUpperVector() throws {
     var bytes = [UInt8](repeating: 0, count: 0x30)
     bytes.replaceSubrange(0..<8, with: [0xF3, 0x0F, 0x6F, 0x35, 0x08, 0, 0, 0])
