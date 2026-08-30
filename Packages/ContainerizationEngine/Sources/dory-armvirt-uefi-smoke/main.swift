@@ -19,6 +19,8 @@ import Foundation
     var installerMedia: String?
     var consoleScript: String?
     var gvproxy: String?
+    var compatibilityMatrix: String?
+    var qualificationGate: String?
     var systemDiskBytes: UInt64 = 64 << 20
     var memoryBytes: UInt64 = DoryARMVirtV1ABI.minimumMemoryBytes
     var timeoutSeconds: UInt64 = 15
@@ -42,6 +44,12 @@ import Foundation
     let sha256: String
   }
 
+  private struct AdmittedQualificationGate {
+    let matrixSHA256: String
+    let gate: DoryARMVirtCompatibilityGate
+    let media: DoryARMVirtCompatibilityMedia
+  }
+
   private struct Receipt: Codable {
     let schemaVersion: UInt32
     let machineABIIdentity: String
@@ -59,6 +67,8 @@ import Foundation
     let guestArchitecture: String?
     let guestVCPUCount: Int
     let runnerSHA256: String
+    let compatibilityMatrixSHA256: String?
+    let qualificationGateID: String?
     let buildIdentifier: String
     let firmwareCodeSHA256: String
     let expectedConsoleText: String
@@ -183,6 +193,16 @@ import Foundation
           fail("--gvproxy requires a path")
         }
         options.gvproxy = value
+      case "--compatibility-matrix":
+        guard let value = iterator.next() else {
+          fail("--compatibility-matrix requires a path")
+        }
+        options.compatibilityMatrix = value
+      case "--qualification-gate":
+        guard let value = iterator.next(), !value.isEmpty else {
+          fail("--qualification-gate requires an identifier")
+        }
+        options.qualificationGate = value
       case "--system-disk-bytes":
         guard let value = iterator.next().flatMap(UInt64.init),
           ((UInt64(64) << 20)...(UInt64(64) << 30)).contains(value),
@@ -280,13 +300,16 @@ import Foundation
     )
   }
 
-  private func admitConsoleScript(at suppliedPath: String) throws -> AdmittedConsoleScript {
+  private func admitConsoleScript(
+    at suppliedPath: String,
+    matrixOwned: Bool = false
+  ) throws -> AdmittedConsoleScript {
     let path = URL(fileURLWithPath: suppliedPath).resolvingSymlinksInPath().path
     var fileStatus = stat()
     guard lstat(path, &fileStatus) == 0,
       fileStatus.st_mode & S_IFMT == S_IFREG,
       fileStatus.st_uid == geteuid(),
-      fileStatus.st_mode & 0o077 == 0,
+      fileStatus.st_mode & (matrixOwned ? 0o022 : 0o077) == 0,
       fileStatus.st_size > 0,
       fileStatus.st_size <= 1 << 20
     else {
@@ -297,6 +320,52 @@ import Foundation
     return AdmittedConsoleScript(
       sha256: SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined(),
       driver: try DoryConsoleInteractionDriver(script: script)
+    )
+  }
+
+  private func admitQualificationGate(options: inout Options) throws
+    -> AdmittedQualificationGate?
+  {
+    guard options.compatibilityMatrix != nil || options.qualificationGate != nil else {
+      return nil
+    }
+    guard let suppliedPath = options.compatibilityMatrix,
+      let gateID = options.qualificationGate,
+      options.consoleScript == nil
+    else {
+      fail(
+        "--compatibility-matrix and --qualification-gate are required together and own --console-script"
+      )
+    }
+    let path = URL(fileURLWithPath: suppliedPath).standardizedFileURL.path
+    var status = stat()
+    guard suppliedPath == path, lstat(path, &status) == 0,
+      status.st_mode & S_IFMT == S_IFREG, status.st_uid == geteuid(),
+      status.st_mode & 0o022 == 0, status.st_size > 0, status.st_size <= 1 << 20
+    else {
+      fail("--compatibility-matrix must name an owned, non-writable regular file")
+    }
+    let data = try Data(contentsOf: URL(fileURLWithPath: path), options: .mappedIfSafe)
+    let matrix = try JSONDecoder().decode(DoryARMVirtCompatibilityMatrix.self, from: data)
+      .validated()
+    let gate = try matrix.gate(id: gateID)
+    guard let media = matrix.media[gate.mediaID] else {
+      fail("qualification gate references unavailable media")
+    }
+    let matrixRoot = URL(fileURLWithPath: path).deletingLastPathComponent()
+    let fixtureURL = matrixRoot.appendingPathComponent(gate.consoleScriptPath).standardizedFileURL
+    guard fixtureURL.path.hasPrefix(matrixRoot.path + "/") else {
+      fail("qualification gate fixture escapes the matrix directory")
+    }
+    options.consoleScript = fixtureURL.path
+    options.memoryBytes = gate.memoryByteCount
+    options.systemDiskBytes = gate.systemDiskByteCount
+    options.timeoutSeconds = gate.timeoutSeconds
+    options.expectedConsoleText = gate.expectedConsoleText
+    return AdmittedQualificationGate(
+      matrixSHA256: SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined(),
+      gate: gate,
+      media: media
     )
   }
 
@@ -534,12 +603,13 @@ import Foundation
     }
   }
 
-  private let options = parseOptions(CommandLine.arguments.dropFirst())
+  private var options = parseOptions(CommandLine.arguments.dropFirst())
   guard let firmwareBundle = options.firmwareBundle else {
     fail("--firmware-bundle is required")
   }
 
   do {
+    let qualification = try admitQualificationGate(options: &options)
     let canonicalBundle = URL(fileURLWithPath: firmwareBundle).standardizedFileURL.path
     let artifacts = try DoryARMVirtFirmwareBundle(directory: canonicalBundle).loadVerified()
     let template = try DoryUEFIVariableStoreSnapshot.decodeCanonicalTemplate(
@@ -567,8 +637,29 @@ import Foundation
       readOnly: false
     )
     let installerMedia = try options.installerMedia.map(admitInstallerMedia)
-    let consoleScript = try options.consoleScript.map(admitConsoleScript)
+    let consoleScript = try options.consoleScript.map {
+      try admitConsoleScript(at: $0, matrixOwned: qualification != nil)
+    }
     let gvproxy = try options.gvproxy.map(admitGVProxy)
+    if let qualification {
+      guard let installerMedia,
+        installerMedia.byteCount == qualification.media.byteCount,
+        installerMedia.sha256 == qualification.media.sha256,
+        consoleScript?.sha256 == qualification.gate.consoleScriptSHA256,
+        consoleScript?.driver.stepCount
+          == qualification.gate.receipt.consoleScriptStepCount,
+        consoleScript?.driver.qualificationTarget?.guestFamily
+          == qualification.media.guestFamily,
+        consoleScript?.driver.qualificationTarget?.guestVersion
+          == qualification.media.guestVersion,
+        consoleScript?.driver.qualificationTarget?.guestBuild
+          == qualification.media.guestBuild,
+        consoleScript?.driver.qualificationTarget?.guestArchitecture
+          == qualification.media.guestArchitecture
+      else {
+        fail("qualification gate media, fixture, or guest tuple does not match the matrix")
+      }
+    }
     if consoleScript?.driver.inputContains(options.expectedConsoleText) == true {
       fail("--expect must not occur in console-script input because guest echo could forge success")
     }
@@ -654,6 +745,17 @@ import Foundation
         "console did not emit \(String(reflecting: options.expectedConsoleText)) after \(maximumBootAttempts) boot attempts"
       )
     }
+    if let expectation = qualification?.gate.receipt {
+      guard bootAttempts == expectation.bootAttempts,
+        consoleScript?.driver.completedStepCount == expectation.consoleScriptStepCount,
+        consoleScript?.driver.installerMediaTransitionCount
+          == expectation.installerMediaTransitionCount,
+        installerMediaAttachedForFinalBoot == expectation.installerMediaAttachedForFinalBoot,
+        consoleScript?.driver.completedHostActionCount == expectation.coldSnapshotActionCount
+      else {
+        fail("observed lifecycle receipt does not match the qualification gate")
+      }
+    }
     let generation = try variableStore.load().snapshot.generation
     let receipt = Receipt(
       schemaVersion: 5,
@@ -672,6 +774,8 @@ import Foundation
       guestArchitecture: consoleScript?.driver.qualificationTarget?.guestArchitecture,
       guestVCPUCount: 1,
       runnerSHA256: try runnerSHA256(),
+      compatibilityMatrixSHA256: qualification?.matrixSHA256,
+      qualificationGateID: qualification?.gate.gateID,
       buildIdentifier: artifacts.manifest.buildIdentifier,
       firmwareCodeSHA256: artifacts.manifest.firmwareCodeSHA256,
       expectedConsoleText: options.expectedConsoleText,

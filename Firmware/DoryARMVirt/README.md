@@ -12,6 +12,21 @@ receipt shape. Tests recompute every fixture digest and require its declared
 guest tuple to match the referenced media cell; a prose-only or stale filename
 cannot create a support claim.
 
+Run a named cell without restating its fixture, marker, resources, or expected
+lifecycle shape:
+
+```sh
+"$runner" \
+  --firmware-bundle /absolute/path/to/dory-armvirt-firmware \
+  --installer-media /absolute/path/to/pinned-installer.iso \
+  --compatibility-matrix /absolute/path/to/compatibility-matrix.json \
+  --qualification-gate debian-installer-boot
+```
+
+The runner rejects a missing pair of matrix/gate options, a caller-supplied
+console script, media or fixture drift, guest-tuple mismatch, and any observed
+boot/transition/action receipt that differs from the selected gate.
+
 Build a four-file, atomically published firmware bundle:
 
 ```sh
