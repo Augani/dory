@@ -3,6 +3,7 @@ import Darwin
 import DoryCore
 import DoryFSWorkerContracts
 import DoryHV
+import DoryHostCamera
 import DoryOperations
 import DoryVMContracts
 import DorydKit
@@ -73,6 +74,18 @@ private final class DoryDesktopCameraAttachment: @unchecked Sendable {
         backend.stop()
         log("dory-hv desktop: camera unavailable: \(detail)")
         return .unavailable(detail)
+    }
+}
+
+private struct DoryUVCCameraFrameSourceAdapter: DoryUVCCameraFrameSource {
+    let backend: DoryMacCameraBackend
+
+    func nextJPEGFrame(width: Int, height: Int, timeout: TimeInterval) -> Data? {
+        backend.nextJPEGFrame(width: width, height: height, timeout: timeout)
+    }
+
+    func stop() {
+        backend.stop()
     }
 }
 
@@ -1581,7 +1594,11 @@ enum DesktopMode {
                         }
                         return HostUsbDevice(
                             descriptor: DoryVirtualUVCCamera.descriptor(),
-                            backend: DoryVirtualUVCCameraBackend(frameSource: cameraBackend),
+                            backend: DoryVirtualUVCCameraBackend(
+                                frameSource: DoryUVCCameraFrameSourceAdapter(
+                                    backend: cameraBackend
+                                )
+                            ),
                             timeout: 5,
                             maxConcurrentRequests: 8,
                             maxInFlightBytes: 16 * 1_024 * 1_024,

@@ -1,6 +1,7 @@
 @preconcurrency import AVFoundation
 import CryptoKit
 import Darwin
+import DoryHostCamera
 import Foundation
 import ImageIO
 import Security

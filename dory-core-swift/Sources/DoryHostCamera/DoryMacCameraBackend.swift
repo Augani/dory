@@ -2,11 +2,10 @@
 import CoreImage
 import CoreMedia
 import CoreVideo
-import DoryHV
 import Foundation
 import ImageIO
 
-enum DoryMacCameraError: Error, CustomStringConvertible {
+public enum DoryMacCameraError: Error, CustomStringConvertible {
     case permissionDenied
     case permissionRestricted
     case permissionTimedOut
@@ -16,7 +15,7 @@ enum DoryMacCameraError: Error, CustomStringConvertible {
     case cannotAttachOutput
     case startFailed
 
-    var description: String {
+    public var description: String {
         switch self {
         case .permissionDenied:
             "Mac camera access is denied. Enable Dory Desktop in System Settings > Privacy & Security > Camera, or disable Camera for this desktop."
@@ -38,17 +37,17 @@ enum DoryMacCameraError: Error, CustomStringConvertible {
     }
 }
 
-struct DoryMacCameraIdentity: Sendable, Equatable {
-    let localizedName: String
-    let modelID: String
-    let uniqueID: String
+public struct DoryMacCameraIdentity: Sendable, Equatable {
+    public let localizedName: String
+    public let modelID: String
+    public let uniqueID: String
 }
 
-/// Permission-aware AVFoundation source for the standard UVC device exported to Linux. Capture and
-/// JPEG conversion run off the AppKit thread. The physical camera starts lazily on the first guest
-/// video read and stops after the guest stream goes idle, matching the privacy lifecycle of a local
-/// camera instead of holding the device for the VM's whole lifetime.
-final class DoryMacCameraBackend: NSObject, DoryUVCCameraFrameSource,
+/// Permission-aware AVFoundation source shared by Dory's guest camera transports. Capture and JPEG
+/// conversion run off the AppKit thread. The physical camera starts lazily on the first guest video
+/// read and stops after the guest stream goes idle, matching the privacy lifecycle of a local camera
+/// instead of holding the device for the VM's whole lifetime.
+public final class DoryMacCameraBackend: NSObject,
     AVCaptureVideoDataOutputSampleBufferDelegate, @unchecked Sendable
 {
     private let condition = NSCondition()
@@ -78,13 +77,13 @@ final class DoryMacCameraBackend: NSObject, DoryUVCCameraFrameSource,
     private var captureRunning = false
     private var stopped = false
 
-    init(log: @escaping @Sendable (String) -> Void) {
+    public init(log: @escaping @Sendable (String) -> Void) {
         self.log = log
         super.init()
     }
 
     @discardableResult
-    func prepareAndAuthorize(permissionTimeout: TimeInterval = 60) throws
+    public func prepareAndAuthorize(permissionTimeout: TimeInterval = 60) throws
         -> DoryMacCameraIdentity
     {
         try Self.requireAuthorization(timeout: permissionTimeout)
@@ -136,7 +135,7 @@ final class DoryMacCameraBackend: NSObject, DoryUVCCameraFrameSource,
             condition.broadcast()
             condition.unlock()
         }
-        log("dory-hv desktop: Dory UVC Camera ready (\(device.localizedName))")
+        log("Dory camera: host capture ready (\(device.localizedName))")
         return DoryMacCameraIdentity(
             localizedName: device.localizedName,
             modelID: device.modelID,
@@ -144,7 +143,7 @@ final class DoryMacCameraBackend: NSObject, DoryUVCCameraFrameSource,
         )
     }
 
-    func nextJPEGFrame(width: Int, height: Int, timeout: TimeInterval) -> Data? {
+    public func nextJPEGFrame(width: Int, height: Int, timeout: TimeInterval) -> Data? {
         guard (width == 640 && height == 480) || (width == 1_280 && height == 720) else {
             return nil
         }
@@ -181,7 +180,7 @@ final class DoryMacCameraBackend: NSObject, DoryUVCCameraFrameSource,
         return latestJPEG
     }
 
-    func stop() {
+    public func stop() {
         condition.lock()
         guard !stopped else {
             condition.unlock()
@@ -198,10 +197,10 @@ final class DoryMacCameraBackend: NSObject, DoryUVCCameraFrameSource,
         sessionQueue.sync {
             if session.isRunning { session.stopRunning() }
         }
-        log("dory-hv desktop: Mac camera stopped")
+        log("Dory camera: host capture stopped")
     }
 
-    func captureOutput(
+    public func captureOutput(
         _ output: AVCaptureOutput,
         didOutput sampleBuffer: CMSampleBuffer,
         from connection: AVCaptureConnection
@@ -288,7 +287,7 @@ final class DoryMacCameraBackend: NSObject, DoryUVCCameraFrameSource,
             condition.broadcast()
             condition.unlock()
             if didStart {
-                log("dory-hv desktop: Mac camera capture started")
+                log("Dory camera: host capture started")
             }
             return didStart
         }
@@ -311,7 +310,7 @@ final class DoryMacCameraBackend: NSObject, DoryUVCCameraFrameSource,
             self.condition.unlock()
             if shouldRelease, self.session.isRunning {
                 self.session.stopRunning()
-                self.log("dory-hv desktop: Mac camera capture released after guest stream idle")
+                self.log("Dory camera: host capture released after guest stream idle")
             }
         }
     }
