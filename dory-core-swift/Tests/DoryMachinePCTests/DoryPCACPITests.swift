@@ -15,15 +15,19 @@ import Testing
     #expect(Array(tables.xsdt.prefix(4)) == Array("XSDT".utf8))
     #expect(tables.xsdt.reduce(0, &+) == 0)
     #expect(read64(tables.xsdt, at: 36) == tables.layout.madt)
+    #expect(read64(tables.xsdt, at: 44) == tables.layout.hpet)
     #expect(Array(tables.madt.prefix(4)) == Array("APIC".utf8))
     #expect(tables.madt.reduce(0, &+) == 0)
     #expect(read32(tables.madt, at: 36) == 0xFEE0_0000)
     #expect(tables.madt.containsSubsequence([1, 12, 0, 0, 0, 0, 0xC0, 0xFE]))
+    #expect(Array(tables.hpet.prefix(4)) == Array("HPET".utf8))
+    #expect(tables.hpet.reduce(0, &+) == 0)
+    #expect(read64(tables.hpet, at: 44) == 0xFED0_0000)
   }
 
   @Test func installsAtomicallyAfterPreflightingEveryTable() throws {
     let tables = try DoryPCACPIBuilder.build(
-      layout: .init(rsdp: 0x100, xsdt: 0x200, madt: 0x300))
+      layout: .init(rsdp: 0x100, xsdt: 0x200, madt: 0x300, hpet: 0x400))
     let memory = DoryX86ByteArrayMemory(byteCount: 0x1000)
 
     try tables.install(into: memory)
@@ -31,6 +35,7 @@ import Testing
     #expect(try memory.read(at: 0x100, byteCount: 8) == Array("RSD PTR ".utf8))
     #expect(try memory.read(at: 0x200, byteCount: 4) == Array("XSDT".utf8))
     #expect(try memory.read(at: 0x300, byteCount: 4) == Array("APIC".utf8))
+    #expect(try memory.read(at: 0x400, byteCount: 4) == Array("HPET".utf8))
   }
 
   @Test func directKernelHandoffPublishesTheRSDPAddress() throws {

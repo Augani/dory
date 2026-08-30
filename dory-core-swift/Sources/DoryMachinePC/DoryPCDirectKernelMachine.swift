@@ -34,6 +34,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   public let legacyPIC: DoryPCPIC8259Pair
   public let legacyPIT: DoryPCPIT8254
   public let rtc: DoryPCRTC146818
+  public let hpet: DoryPCHPET
   public let pagingUnit: DoryX86PagingUnit
   public let interpreter: DoryX86Interpreter
   public let bootLayout: DoryPCPVHBootLayout
@@ -78,6 +79,10 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       if asserted { try? legacyPIC.raise(irq: 8) }
       try? ioAPIC.setAsserted(asserted, pin: 8)
     }
+    hpet = DoryPCHPET { [legacyPIC, ioAPIC] _, route, asserted in
+      if asserted, route < 16 { try? legacyPIC.raise(irq: UInt8(route)) }
+      try? ioAPIC.setAsserted(asserted, pin: route)
+    }
     try ioBus.attach(DoryPCPIC8259Port(pair: legacyPIC, slave: false))
     try ioBus.attach(DoryPCPIC8259Port(pair: legacyPIC, slave: true))
     try ioBus.attach(legacyPIT)
@@ -89,6 +94,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         try ioAPIC.endOfInterrupt(vector: vector, destinationAPICID: 0)
       })
     try physicalMemory.attach(DoryPCIOAPICMMIO(ioAPIC: ioAPIC))
+    try physicalMemory.attach(hpet)
     physicalMemory.seal()
     pagingUnit = DoryX86PagingUnit()
     self.interpreter = interpreter
@@ -138,6 +144,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         localAPIC.advanceTimer(by: 1)
         legacyPIT.advance(by: 1)
         rtc.advance(by: 1)
+        hpet.advance(by: 1)
         let interruptsEnabled = state.rflags.contains(.interruptEnable)
         let vector =
           localAPIC.acknowledge(
@@ -195,6 +202,10 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
               picAcceptsRTC || ioAPICAcceptsRTC
             {
               rtc.advance(by: rtcTicks)
+              continue
+            }
+            if let hpetTicks = hpet.ticksUntilNextInterrupt(), hpetTicks > 0 {
+              hpet.advance(by: hpetTicks)
               continue
             }
           }
