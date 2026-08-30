@@ -156,6 +156,8 @@ let package = Package(
       linkerSettings: [
         .linkedFramework("CoreGraphics"),
         .linkedFramework("ImageIO"),
+        .linkedFramework("IOKit"),
+        .linkedFramework("IOUSBHost"),
       ]
     ),
     .target(
