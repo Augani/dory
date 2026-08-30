@@ -16,6 +16,18 @@ public struct DoryPCHPETSnapshot: Sendable, Hashable {
   public let timers: [DoryPCHPETTimerSnapshot]
 }
 
+public struct DoryPCHPETInterruptDeadline: Sendable, Hashable {
+  public let timer: Int
+  public let route: Int
+  public let ticks: UInt64
+
+  public init(timer: Int, route: Int, ticks: UInt64) {
+    self.timer = timer
+    self.route = route
+    self.ticks = ticks
+  }
+}
+
 /// DoryPC-v1 high precision event timer at the PC-standard 0xFED0_0000 address.
 public final class DoryPCHPET: DoryPCMMIODevice, @unchecked Sendable {
   public static let femtosecondsPerTick: UInt32 = 100_000_000
@@ -110,6 +122,22 @@ public final class DoryPCHPET: DoryPCMMIODevice, @unchecked Sendable {
         }
         return timers[index].comparator &- mainCounter
       }.min()
+    }
+  }
+
+  /// Returns independently routable future timer expirations. Pending status is excluded because
+  /// advancing time cannot make an already asserted but blocked interrupt deliverable.
+  public func interruptDeadlines() -> [DoryPCHPETInterruptDeadline] {
+    lock.withLock {
+      guard generalConfiguration & 1 != 0 else { return [] }
+      return timers.indices.compactMap { index in
+        guard timers[index].armed, timers[index].configuration & (1 << 2) != 0 else {
+          return nil
+        }
+        let ticks = timers[index].comparator &- mainCounter
+        guard ticks > 0 else { return nil }
+        return .init(timer: index, route: interruptRouteLocked(timer: index), ticks: ticks)
+      }
     }
   }
 

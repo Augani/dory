@@ -507,24 +507,55 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   private func ticksUntilNextAcceptedInterrupt() -> UInt64? {
     var deadlines: [UInt64] = []
     for (index, apic) in localAPICs.enumerated() {
-      guard let state = loadedStates[index], state.rflags.contains(.interruptEnable) else {
-        continue
-      }
+      guard let state = loadedStates[index] else { continue }
       let timer = apic.snapshot().timer
-      if !timer.masked, timer.currentCount > 0 { deadlines.append(UInt64(timer.currentCount)) }
+      if !timer.masked, timer.currentCount > 0,
+        apic.canAccept(
+          vector: timer.vector,
+          interruptsEnabled: state.rflags.contains(.interruptEnable),
+          externalPriority: UInt8(truncatingIfNeeded: state.control.cr8) << 4
+        )
+      {
+        deadlines.append(UInt64(timer.currentCount))
+      }
     }
-    let bspAcceptsInterrupts = loadedStates[0]?.rflags.contains(.interruptEnable) == true
-    if bspAcceptsInterrupts {
+    if let bsp = loadedStates[0] {
+      let interruptsEnabled = bsp.rflags.contains(.interruptEnable)
       let pit = legacyPIT.snapshot()
-      let picAcceptsTimer = legacyPIC.snapshot().masterMask & 1 == 0
-      let ioAPICAcceptsTimer = (try? ioAPIC.route(for: 2)).map { !$0.masked } ?? false
+      let picAcceptsTimer = legacyPIC.canAccept(irq: 0, interruptsEnabled: interruptsEnabled)
+      let ioAPICAcceptsTimer = ioAPICCanAccept(pin: 2)
       if pit.armed, pit.current > 0, picAcceptsTimer || ioAPICAcceptsTimer {
         deadlines.append(UInt64(pit.current))
       }
-      if let ticks = rtc.ticksUntilNextInterrupt(), ticks > 0 { deadlines.append(ticks) }
-      if let ticks = hpet.ticksUntilNextInterrupt(), ticks > 0 { deadlines.append(ticks) }
+      if let ticks = rtc.ticksUntilNextInterrupt(), ticks > 0,
+        legacyPIC.canAccept(irq: 8, interruptsEnabled: interruptsEnabled)
+          || ioAPICCanAccept(pin: 8)
+      {
+        deadlines.append(ticks)
+      }
+      for deadline in hpet.interruptDeadlines()
+      where (deadline.route < 16
+        && legacyPIC.canAccept(
+          irq: UInt8(deadline.route),
+          interruptsEnabled: interruptsEnabled
+        )) || ioAPICCanAccept(pin: deadline.route)
+      {
+        deadlines.append(deadline.ticks)
+      }
     }
     return deadlines.min()
+  }
+
+  private func ioAPICCanAccept(pin: Int) -> Bool {
+    guard let route = try? ioAPIC.route(for: pin), !route.masked,
+      let index = processorIndex(route.destinationAPICID),
+      let state = loadedStates[index]
+    else { return false }
+    return localAPICs[index].canAccept(
+      vector: route.vector,
+      interruptsEnabled: state.rflags.contains(.interruptEnable),
+      externalPriority: UInt8(truncatingIfNeeded: state.control.cr8) << 4
+    )
   }
 
   private func powerStop(instructionCount: UInt64) -> DoryPCMachineStop? {

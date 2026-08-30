@@ -87,10 +87,7 @@ public final class DoryPCLocalAPIC: @unchecked Sendable {
   ) -> UInt8? {
     lock.withLock {
       guard softwareEnabled, interruptsEnabled else { return nil }
-      let processorPriority = max(
-        max(taskPriority & 0xF0, externalPriority & 0xF0),
-        inService.max().map { $0 & 0xF0 } ?? 0
-      )
+      let processorPriority = processorPriorityLocked(externalPriority: externalPriority)
       guard
         let vector =
           interruptRequest
@@ -100,6 +97,19 @@ public final class DoryPCLocalAPIC: @unchecked Sendable {
       interruptRequest.remove(vector)
       inService.insert(vector)
       return vector
+    }
+  }
+
+  /// Reports whether a future interrupt at `vector` could be acknowledged without mutating IRR.
+  /// Halted-vCPU clock advancement uses this to ignore timer deadlines that cannot wake a CPU.
+  public func canAccept(
+    vector: UInt8,
+    interruptsEnabled: Bool,
+    externalPriority: UInt8 = 0
+  ) -> Bool {
+    lock.withLock {
+      softwareEnabled && interruptsEnabled && vector >= 0x10
+        && vector & 0xF0 > processorPriorityLocked(externalPriority: externalPriority)
     }
   }
 
@@ -181,6 +191,13 @@ public final class DoryPCLocalAPIC: @unchecked Sendable {
   private func injectLocked(vector: UInt8, levelTriggered: Bool) {
     interruptRequest.insert(vector)
     if levelTriggered { self.levelTriggered.insert(vector) }
+  }
+
+  private func processorPriorityLocked(externalPriority: UInt8) -> UInt8 {
+    max(
+      max(taskPriority & 0xF0, externalPriority & 0xF0),
+      inService.max().map { $0 & 0xF0 } ?? 0
+    )
   }
 
   private func validate(_ vector: UInt8) throws {

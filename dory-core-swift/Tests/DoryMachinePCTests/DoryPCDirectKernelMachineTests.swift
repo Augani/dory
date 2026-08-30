@@ -310,6 +310,22 @@ import Testing
     #expect(machine.serial.drainTransmittedBytes() == [UInt8(ascii: "P")])
   }
 
+  @Test func haltedCPUStopsWhenPeriodicAPICTimerCannotBeDelivered() throws {
+    let machine = try DoryPCDirectKernelMachine(memoryBytes: 2 * 1024 * 1024)
+    try machine.load(kernel: makeELF(code: [0xFB, 0xF4]), commandLine: "x")
+    try machine.localAPIC.configureTimer(
+      vector: 0x30,
+      masked: false,
+      mode: .periodic,
+      initialCount: 1
+    )
+
+    let stop = try machine.run(maximumInstructions: 16, exceptionPolicy: .deliver)
+
+    #expect(stop == .halted(instructionCount: 2))
+    #expect(machine.localAPIC.snapshot().timer.currentCount == 1)
+  }
+
   private func installProtectedTables(
     machine: DoryPCDirectKernelMachine,
     vector: UInt8

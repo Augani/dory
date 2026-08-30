@@ -28,6 +28,7 @@ import Testing
     try write64(hpet, 0x10, 1)
 
     #expect(hpet.ticksUntilNextInterrupt() == 50)
+    #expect(hpet.interruptDeadlines() == [.init(timer: 0, route: 11, ticks: 50)])
     hpet.advance(by: 49)
     #expect(recorder.values.isEmpty)
     hpet.advance(by: 1)
@@ -56,6 +57,7 @@ import Testing
     #expect(recorder.values == [.init(timer: 0, route: 8, asserted: true)])
     #expect(hpet.snapshot().timers[0].comparator == 75)
     #expect(hpet.ticksUntilNextInterrupt() == 0)
+    #expect(hpet.interruptDeadlines() == [.init(timer: 0, route: 8, ticks: 15)])
 
     try write64(hpet, 0x20, 1)
     #expect(recorder.values.last == .init(timer: 0, route: 8, asserted: false))

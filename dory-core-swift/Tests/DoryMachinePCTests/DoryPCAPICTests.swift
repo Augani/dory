@@ -36,6 +36,18 @@ import Testing
     #expect(snapshot.inService.isEmpty)
   }
 
+  @Test func localAPICPredictsAcceptanceWithoutMutatingState() throws {
+    let apic = DoryPCLocalAPIC(apicID: 0)
+    #expect(!apic.canAccept(vector: 0x40, interruptsEnabled: true))
+    try apic.configureSpuriousVector(0xFF, softwareEnabled: true)
+    apic.setTaskPriority(0x30)
+    #expect(!apic.canAccept(vector: 0x30, interruptsEnabled: true))
+    #expect(apic.canAccept(vector: 0x40, interruptsEnabled: true))
+    #expect(!apic.canAccept(vector: 0x40, interruptsEnabled: false))
+    #expect(!apic.canAccept(vector: 0x40, interruptsEnabled: true, externalPriority: 0x40))
+    #expect(apic.snapshot().interruptRequest.isEmpty)
+  }
+
   @Test func periodicTimerRearmsAndCoalescesPendingExpirations() throws {
     let apic = DoryPCLocalAPIC(apicID: 0)
     try apic.configureSpuriousVector(0xFF, softwareEnabled: true)

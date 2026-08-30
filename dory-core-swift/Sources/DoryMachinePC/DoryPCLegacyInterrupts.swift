@@ -73,6 +73,17 @@ public final class DoryPCPIC8259Pair: @unchecked Sendable {
     }
   }
 
+  /// Reports whether a future assertion of `irq` could pass the cascaded priority resolvers.
+  public func canAccept(irq: UInt8, interruptsEnabled: Bool) -> Bool {
+    guard irq < 16, interruptsEnabled else { return false }
+    return lock.withLock {
+      if irq < 8 {
+        return isDeliverable(irq, by: master)
+      }
+      return isDeliverable(2, by: master) && isDeliverable(irq - 8, by: slave)
+    }
+  }
+
   public func snapshot() -> DoryPCPIC8259Snapshot {
     lock.withLock {
       .init(
@@ -154,6 +165,11 @@ public final class DoryPCPIC8259Pair: @unchecked Sendable {
     guard pending != 0 else { return nil }
     let servicePriority = lowestSetBit(chip.inService) ?? 8
     return (0..<servicePriority).first(where: { pending & (UInt8(1) << $0) != 0 })
+  }
+
+  private func isDeliverable(_ irq: UInt8, by chip: Chip) -> Bool {
+    chip.mask & (UInt8(1) << irq) == 0
+      && irq < (lowestSetBit(chip.inService) ?? 8)
   }
 
   private func lowestSetBit(_ value: UInt8) -> UInt8? {

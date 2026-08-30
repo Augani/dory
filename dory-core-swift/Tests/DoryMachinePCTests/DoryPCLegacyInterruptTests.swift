@@ -45,6 +45,25 @@ import Testing
     #expect(counter.value == 1)
   }
 
+  @Test func picPredictsCascadedPriorityAcceptance() throws {
+    let pair = DoryPCPIC8259Pair()
+    let master = DoryPCPIC8259Port(pair: pair, slave: false)
+    let slave = DoryPCPIC8259Port(pair: pair, slave: true)
+    try initialize(master, offset: 0x20, cascade: 4)
+    try initialize(slave, offset: 0x28, cascade: 2)
+    try master.write(portOffset: 1, value: 0xFA, width: .byte)
+    try slave.write(portOffset: 1, value: 0xFE, width: .byte)
+
+    #expect(pair.canAccept(irq: 0, interruptsEnabled: true))
+    #expect(pair.canAccept(irq: 8, interruptsEnabled: true))
+    #expect(!pair.canAccept(irq: 1, interruptsEnabled: true))
+    #expect(!pair.canAccept(irq: 8, interruptsEnabled: false))
+
+    try pair.raise(irq: 0)
+    #expect(pair.acknowledge(interruptsEnabled: true) == 0x20)
+    #expect(!pair.canAccept(irq: 8, interruptsEnabled: true))
+  }
+
   @Test func pitOneShotDisarmsAtTerminalCount() throws {
     let counter = LockedCounter()
     let pit = DoryPCPIT8254 { counter.increment() }
