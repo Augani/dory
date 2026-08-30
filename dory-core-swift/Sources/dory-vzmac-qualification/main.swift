@@ -14,7 +14,8 @@ private enum Command {
         diskBytes: UInt64
     )
     case install(ipsw: URL, machine: URL)
-    case run(machine: URL)
+    case run(machine: URL, suspendOnExit: Bool)
+    case resume(machine: URL)
 }
 
 private enum CommandError: Error, CustomStringConvertible {
@@ -71,8 +72,14 @@ private func parseCommand(_ arguments: [String]) throws -> Command {
         return .install(ipsw: ipsw, machine: machine)
     case "run":
         let machine = URL(fileURLWithPath: try take("--machine"), isDirectory: true)
+        let suspendOnExit = values.contains("--suspend-on-exit")
+        values.removeAll { $0 == "--suspend-on-exit" }
         guard values.isEmpty else { throw CommandError.usage(usage) }
-        return .run(machine: machine)
+        return .run(machine: machine, suspendOnExit: suspendOnExit)
+    case "resume":
+        let machine = URL(fileURLWithPath: try take("--machine"), isDirectory: true)
+        guard values.isEmpty else { throw CommandError.usage(usage) }
+        return .resume(machine: machine)
     default:
         throw CommandError.usage(usage)
     }
@@ -83,7 +90,8 @@ Usage:
   dory-vzmac-qualification latest
   dory-vzmac-qualification prepare --ipsw <file> [--source-url <https-url>] --machine <bundle> [--cpus N] [--memory-gib N] [--disk-gib N]
   dory-vzmac-qualification install --ipsw <file> --machine <bundle>
-  dory-vzmac-qualification run --machine <bundle>
+  dory-vzmac-qualification run --machine <bundle> [--suspend-on-exit]
+  dory-vzmac-qualification resume --machine <bundle>
 """
 
 @MainActor
@@ -152,11 +160,16 @@ private final class QualificationAppDelegate: NSObject, NSApplicationDelegate,
                 self?.window?.title = "Dory — Installing macOS \(Int(fraction * 100))%"
             }
             window?.title = "Dory — macOS installation complete"
-        case .run(let machine):
+        case .run(let machine, _):
             let runtime = try makeRuntime(machine: machine)
             show(runtime: runtime, title: "Dory — macOS")
             try await runtime.start()
             window?.title = "Dory — macOS running"
+        case .resume(let machine):
+            let runtime = try makeRuntime(machine: machine)
+            show(runtime: runtime, title: "Dory — Restoring macOS")
+            try await runtime.restoreSuspendedState()
+            window?.title = "Dory — macOS resumed"
         }
     }
 
@@ -207,6 +220,24 @@ private final class QualificationAppDelegate: NSObject, NSApplicationDelegate,
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let runtime, runtime.virtualMachine.state == .running else { return .terminateNow }
+        if case .run(_, let suspendOnExit) = command, suspendOnExit {
+            awaitingTermination = true
+            window?.title = "Dory — Suspending macOS"
+            Task { @MainActor in
+                do {
+                    try await runtime.suspend()
+                    NSApp.reply(toApplicationShouldTerminate: true)
+                } catch {
+                    awaitingTermination = false
+                    FileHandle.standardError.write(
+                        Data("VZMac suspension failed: \(error)\n".utf8)
+                    )
+                    window?.title = "Dory — Suspension failed"
+                    NSApp.reply(toApplicationShouldTerminate: false)
+                }
+            }
+            return .terminateLater
+        }
         do {
             try runtime.requestStop()
             awaitingTermination = true

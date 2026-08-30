@@ -131,7 +131,10 @@ let package = Package(
     .target(
       name: "DoryVZMacCore",
       dependencies: ["DoryHostCamera", "DoryVZMacCameraBridge"],
-      linkerSettings: [.linkedFramework("Virtualization")]
+      linkerSettings: [
+        .linkedFramework("IOKit"),
+        .linkedFramework("Virtualization"),
+      ]
     ),
     .target(
       name: "DoryMacGuestCamera",

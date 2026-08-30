@@ -82,6 +82,7 @@ public enum DoryVZMacConfigurationBuilder {
 @MainActor
 public final class DoryVZMacRuntime {
     public private(set) var bundle: DoryVZMacMachineBundle
+    public let configuration: VZVirtualMachineConfiguration
     public let virtualMachine: VZVirtualMachine
     public let cameraBridge: DoryVZMacCameraBridge
 
@@ -92,6 +93,7 @@ public final class DoryVZMacRuntime {
     ) throws {
         self.bundle = bundle
         let configuration = try DoryVZMacConfigurationBuilder.makeConfiguration(for: bundle)
+        self.configuration = configuration
         virtualMachine = VZVirtualMachine(configuration: configuration)
         cameraBridge = DoryVZMacCameraBridge(
             camera: camera ?? DoryMacCameraBackend(log: log),
@@ -143,6 +145,87 @@ public final class DoryVZMacRuntime {
             )
         }
         try await virtualMachine.start()
+    }
+
+    public func suspend() async throws {
+        guard virtualMachine.state == .running else {
+            throw DoryVZMacSavedStateError.invalidVirtualMachineState(
+                "VZMac must be running before suspension"
+            )
+        }
+        do {
+            try configuration.validateSaveRestoreSupport()
+        } catch {
+            throw DoryVZMacSavedStateError.saveRestoreUnsupported(String(describing: error))
+        }
+        guard !FileManager.default.fileExists(atPath: bundle.suspendedStateURL.path) else {
+            throw DoryVZMacSavedStateError.destinationExists(bundle.suspendedStateURL.path)
+        }
+        bundle = try bundle.updatingInstallationState(.suspending)
+        let staging = bundle.rootURL.appendingPathComponent(
+            ".\(DoryVZMacMachineBundle.suspendedStateDirectoryName).creating-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        var committedArtifact = false
+        do {
+            try await virtualMachine.pause()
+            try FileManager.default.createDirectory(
+                at: staging,
+                withIntermediateDirectories: false
+            )
+            let stateURL = staging.appendingPathComponent(DoryVZMacSavedStateArtifact.stateName)
+            try await virtualMachine.saveMachineStateTo(url: stateURL)
+            let receipt = try makeSavedStateReceipt(stateURL: stateURL, bundle: bundle)
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+            try encoder.encode(receipt).write(
+                to: staging.appendingPathComponent(DoryVZMacSavedStateArtifact.receiptName),
+                options: [.atomic]
+            )
+            try FileManager.default.moveItem(at: staging, to: bundle.suspendedStateURL)
+            committedArtifact = true
+            bundle = try bundle.updatingInstallationState(.suspended)
+        } catch {
+            try? FileManager.default.removeItem(at: staging)
+            if committedArtifact {
+                try? FileManager.default.removeItem(at: bundle.suspendedStateURL)
+            }
+            bundle = (try? bundle.updatingInstallationState(.stopped)) ?? bundle
+            if virtualMachine.state == .paused {
+                try? await virtualMachine.resume()
+            }
+            throw error
+        }
+    }
+
+    public func restoreSuspendedState() async throws {
+        guard bundle.manifest.installationState == .suspended,
+              virtualMachine.state == .stopped else {
+            throw DoryVZMacSavedStateError.invalidVirtualMachineState(
+                "VZMac must be stopped with a suspended-state manifest before restore"
+            )
+        }
+        do {
+            try configuration.validateSaveRestoreSupport()
+        } catch {
+            throw DoryVZMacSavedStateError.saveRestoreUnsupported(String(describing: error))
+        }
+        let artifact = try DoryVZMacSavedStateArtifact.load(
+            from: bundle.suspendedStateURL,
+            for: bundle
+        )
+        bundle = try bundle.updatingInstallationState(.restoring)
+        do {
+            try await virtualMachine.restoreMachineStateFrom(url: artifact.stateURL)
+            try await virtualMachine.resume()
+            try FileManager.default.removeItem(at: artifact.rootURL)
+            bundle = try bundle.updatingInstallationState(.stopped)
+        } catch {
+            if virtualMachine.state != .running {
+                bundle = (try? bundle.updatingInstallationState(.suspended)) ?? bundle
+            }
+            throw error
+        }
     }
 
     public func requestStop() throws {
