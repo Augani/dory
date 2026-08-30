@@ -5,6 +5,16 @@
   "firmwareABIIdentity": "dory.edk2.armvirt@1",
   "deviceABIIdentity": "dory.virtio@1",
   "media": {
+    "archboot-2026.08.30-arm64": {
+      "guestFamily": "archboot",
+      "guestVersion": "2026.08.30",
+      "guestBuild": "02.28-7.2.0-1-aarch64-ARCH",
+      "guestArchitecture": "arm64",
+      "sourceURL": "https://release.archboot.com/aarch64/2026.08/iso/archboot-2026.08.30-02.28-7.2.0-1-aarch64-ARCH-aarch64.iso",
+      "checksumURL": "https://release.archboot.com/aarch64/2026.08/iso/archboot-2026.08.30-02.28-7.2.0-1-aarch64-ARCH-aarch64.iso.sig",
+      "byteCount": 484624384,
+      "sha256": "aa9ab70fff89acf7b7b825c45d83a5e76fe1fcb4d16cd5d26702010cf5ce8c43"
+    },
     "alpine-3.24.1-arm64": {
       "guestFamily": "alpine",
       "guestVersion": "3.24.1",
@@ -47,6 +57,7 @@
     }
   },
   "gates": [
+    {"gateID":"archboot-installer-boot","kind":"installer-boot","mediaID":"archboot-2026.08.30-arm64","consoleScriptPath":"qualification/archboot-2026.08.30-installer-boot.json","consoleScriptSHA256":"6609aee4bac4e82a01df971c76d251967dda81a08ddf316d1aa60bf543ba2b99","expectedConsoleText":"Login on ttyAMA0","memoryByteCount":4294967296,"systemDiskByteCount":8589934592,"timeoutSeconds":180,"gvproxySHA256":"56e0cde99ff2b589e467294145d66796ab4d990ae89a3633b0ef037dfcba03cd","receipt":{"bootAttempts":1,"consoleScriptStepCount":1,"installerMediaTransitionCount":0,"installerMediaAttachedForFinalBoot":true,"coldSnapshotActionCount":0}},
     {"gateID":"alpine-install","kind":"install-reboot","mediaID":"alpine-3.24.1-arm64","consoleScriptPath":"qualification/alpine-3.24-install.json","consoleScriptSHA256":"2f3a829ab1315e97f902b1622be527ed144246246b60345da4803e33672c006d","expectedConsoleText":"DORY_INSTALLED_DISK_READY","memoryByteCount":4294967296,"systemDiskByteCount":4294967296,"timeoutSeconds":300,"gvproxySHA256":"56e0cde99ff2b589e467294145d66796ab4d990ae89a3633b0ef037dfcba03cd","receipt":{"bootAttempts":2,"consoleScriptStepCount":5,"installerMediaTransitionCount":1,"installerMediaAttachedForFinalBoot":false,"coldSnapshotActionCount":0}},
     {"gateID":"alpine-update","kind":"guest-update","mediaID":"alpine-3.24.1-arm64","consoleScriptPath":"qualification/alpine-3.24-install-update.json","consoleScriptSHA256":"3401b12125185676be14a3c45acb570b4dad75f913f0d3f8c7fd96fb9a5896e5","expectedConsoleText":"DORY_UPDATED_DISK_READY","memoryByteCount":4294967296,"systemDiskByteCount":4294967296,"timeoutSeconds":300,"gvproxySHA256":"56e0cde99ff2b589e467294145d66796ab4d990ae89a3633b0ef037dfcba03cd","receipt":{"bootAttempts":3,"consoleScriptStepCount":8,"installerMediaTransitionCount":1,"installerMediaAttachedForFinalBoot":false,"coldSnapshotActionCount":0}},
     {"gateID":"alpine-recovery","kind":"recovery","mediaID":"alpine-3.24.1-arm64","consoleScriptPath":"qualification/alpine-3.24-recovery.json","consoleScriptSHA256":"6f919b56fa9e9a3b6eeb280439df69e0b5692015d3472c01a553d4f7a24fcb76","expectedConsoleText":"DORY_RECOVERY_READY","memoryByteCount":4294967296,"systemDiskByteCount":4294967296,"timeoutSeconds":300,"gvproxySHA256":"56e0cde99ff2b589e467294145d66796ab4d990ae89a3633b0ef037dfcba03cd","receipt":{"bootAttempts":3,"consoleScriptStepCount":10,"installerMediaTransitionCount":2,"installerMediaAttachedForFinalBoot":true,"coldSnapshotActionCount":0}},

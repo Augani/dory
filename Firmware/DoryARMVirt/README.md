@@ -239,3 +239,14 @@ has SHA-256
 qualification requires the detached OpenPGP signature over openSUSE's checksum
 file to verify against the openSUSE Project Signing Key fingerprint
 `AD48 5664 E901 B867 051A B15F 35A2 F86E 29B7 00A4`.
+
+`archboot-2026.08.30-installer-boot.json` adds the representative Arch-family
+cell using Archboot's immutable 2026.08.30 aarch64 image. It selects
+`Launch UEFI Archboot - Arch Linux aarch64` from the stock GRUB menu, boots the
+image's kernel and initramfs, initializes systemd's serial getty, and requires
+the `Login on ttyAMA0` banner before qualification succeeds. The 484,624,384-byte
+image has SHA-256
+`aa9ab70fff89acf7b7b825c45d83a5e76fe1fcb4d16cd5d26702010cf5ce8c43`.
+Its detached signature must verify against the Archboot project key fingerprint
+`5B7E 3FB7 1B7F 1032 9A1C 03AB 771D F662 7EDF 681F`, which Archboot publishes
+on its own release page.

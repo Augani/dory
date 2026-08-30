@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "qualificationTarget": {
+    "guestFamily": "archboot",
+    "guestVersion": "2026.08.30",
+    "guestBuild": "02.28-7.2.0-1-aarch64-ARCH",
+    "guestArchitecture": "arm64"
+  },
+  "steps": [
+    {
+      "waitFor": "*Launch UEFI Archboot - Arch Linux aarch64",
+      "send": "\n"
+    }
+  ]
+}
