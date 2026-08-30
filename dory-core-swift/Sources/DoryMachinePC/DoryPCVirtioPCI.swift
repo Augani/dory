@@ -376,6 +376,74 @@ public final class DoryPCVirtioBlockPCIDevice: DoryPCPCIFunction, DoryPCPCIMSICo
   }
 }
 
+public final class DoryPCVirtioEntropyPCIDevice: DoryPCPCIFunction, DoryPCPCIMSIControllable,
+  DoryPCPCIBARMemoryDevice, DoryPCVirtioGuestMemoryConsumer, @unchecked Sendable
+{
+  public let pciFunction: DoryPCVirtioPCIFunction
+  public let entropyDevice: DoryVirtioEntropyDevice
+
+  public var pciAddress: DoryPCPCIAddress { pciFunction.pciAddress }
+  public var configurationFunction: DoryPCPCIConfigurationFunction {
+    pciFunction.configurationFunction
+  }
+  public var barIndex: Int { pciFunction.barIndex }
+  public var transport: DoryPCVirtioPCITransport { pciFunction.transport }
+
+  public init(
+    address: DoryPCPCIAddress,
+    initialBARAddress: UInt64,
+    source: any DoryVirtioEntropySource = DoryVirtioSystemEntropySource(),
+    maximumQueueSize: UInt16 = 256,
+    maximumRequestBytes: UInt64 = 1024 * 1024
+  ) throws {
+    entropyDevice = .init(
+      source: source,
+      maximumRequestBytes: maximumRequestBytes
+    )
+    pciFunction = try .init(
+      address: address,
+      virtioDeviceID: 4,
+      classCode: 0x088000,
+      initialBARAddress: initialBARAddress,
+      queueCount: 1,
+      maximumQueueSize: maximumQueueSize,
+      offeredFeatures: entropyDevice.offeredFeatures.union([
+        .indirectDescriptors, .eventIndex,
+      ]),
+      deviceConfiguration: entropyDevice.configuration
+    )
+  }
+
+  public func connectGuestMemory(_ memory: any DoryVirtioGuestMemory) {
+    transport.connectQueueProcessor(memory: memory) { [entropyDevice] queue, chain, memory in
+      guard queue == 0 else { throw DoryPCVirtioPCIError.invalidQueue(queue) }
+      return try entropyDevice.process(chain, memory: memory)
+    }
+  }
+
+  public func readConfiguration(offset: Int, byteCount: Int) throws -> [UInt8] {
+    try pciFunction.readConfiguration(offset: offset, byteCount: byteCount)
+  }
+
+  public func writeConfiguration(offset: Int, bytes: [UInt8]) throws {
+    try pciFunction.writeConfiguration(offset: offset, bytes: bytes)
+  }
+
+  public func connectMSISink(
+    _ sink: @escaping @Sendable (_ messageAddress: UInt64, _ messageData: UInt16) -> Bool
+  ) {
+    pciFunction.connectMSISink(sink)
+  }
+
+  public func readBAR(offset: UInt64, byteCount: Int) throws -> [UInt8] {
+    try pciFunction.readBAR(offset: offset, byteCount: byteCount)
+  }
+
+  public func writeBAR(offset: UInt64, bytes: [UInt8]) throws {
+    try pciFunction.writeBAR(offset: offset, bytes: bytes)
+  }
+}
+
 public final class DoryPCVirtioPCIFunction: DoryPCPCIFunction, DoryPCPCIMSIControllable,
   DoryPCPCIBARMemoryDevice, @unchecked Sendable
 {
