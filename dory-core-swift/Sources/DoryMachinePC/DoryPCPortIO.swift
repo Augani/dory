@@ -96,6 +96,8 @@ public final class DoryPCUART16550: DoryPCPortIODevice, @unchecked Sendable {
   private var transmitted: [UInt8] = []
   private var droppedReceivedByteCount = 0
   private var droppedTransmittedByteCount = 0
+  private var interruptSink: (@Sendable (Bool) -> Void)?
+  private var lastInterruptLevel = false
 
   public init(basePort: UInt16 = 0x3F8, queueCapacity: Int = 64 * 1024) {
     self.basePort = basePort
@@ -103,11 +105,23 @@ public final class DoryPCUART16550: DoryPCPortIODevice, @unchecked Sendable {
   }
 
   public func enqueueReceivedBytes(_ bytes: [UInt8]) {
-    lock.withLock {
+    let notification = lock.withLock {
       let available = max(0, queueCapacity - received.count)
       received.append(contentsOf: bytes.prefix(available))
       droppedReceivedByteCount += max(0, bytes.count - available)
+      return interruptNotificationLocked()
     }
+    notify(notification)
+  }
+
+  public func connectInterruptSink(_ sink: @escaping @Sendable (Bool) -> Void) {
+    let level = lock.withLock {
+      interruptSink = sink
+      let level = interruptLevelLocked()
+      lastInterruptLevel = level
+      return level
+    }
+    sink(level)
   }
 
   public func drainTransmittedBytes(maximumCount: Int = .max) -> [UInt8] {
@@ -125,7 +139,12 @@ public final class DoryPCUART16550: DoryPCPortIODevice, @unchecked Sendable {
 
   public func read(portOffset: UInt16, width: DoryX86OperandWidth) throws -> UInt32 {
     guard width == .byte else { throw DoryPCPortIOError.unsupportedWidth(width) }
-    return UInt32(lock.withLock { readByte(portOffset) })
+    let (value, notification) = lock.withLock {
+      let value = readByte(portOffset)
+      return (value, interruptNotificationLocked())
+    }
+    notify(notification)
+    return UInt32(value)
   }
 
   public func write(
@@ -134,7 +153,11 @@ public final class DoryPCUART16550: DoryPCPortIODevice, @unchecked Sendable {
     width: DoryX86OperandWidth
   ) throws {
     guard width == .byte else { throw DoryPCPortIOError.unsupportedWidth(width) }
-    lock.withLock { writeByte(portOffset, UInt8(truncatingIfNeeded: value)) }
+    let notification = lock.withLock {
+      writeByte(portOffset, UInt8(truncatingIfNeeded: value))
+      return interruptNotificationLocked()
+    }
+    notify(notification)
   }
 
   private var divisorLatchEnabled: Bool { lineControl & 0x80 != 0 }
@@ -173,5 +196,20 @@ public final class DoryPCUART16550: DoryPCPortIODevice, @unchecked Sendable {
     case 7: scratch = value
     default: break
     }
+  }
+
+  private func interruptLevelLocked() -> Bool {
+    interruptEnable & 1 != 0 && !received.isEmpty
+  }
+
+  private func interruptNotificationLocked() -> (sink: (@Sendable (Bool) -> Void), level: Bool)? {
+    let level = interruptLevelLocked()
+    guard level != lastInterruptLevel else { return nil }
+    lastInterruptLevel = level
+    return interruptSink.map { ($0, level) }
+  }
+
+  private func notify(_ notification: (sink: (@Sendable (Bool) -> Void), level: Bool)?) {
+    if let notification { notification.sink(notification.level) }
   }
 }

@@ -1,4 +1,5 @@
 import DoryDBTX86
+import Foundation
 import Testing
 
 @testable import DoryMachinePC
@@ -64,4 +65,31 @@ import Testing
     #expect(uart.dropCounts.received == 1)
     #expect(uart.dropCounts.transmitted == 1)
   }
+
+  @Test func receiveInterruptTracksTheEnabledFIFOLevel() throws {
+    let levels = LockedLevels()
+    let uart = DoryPCUART16550()
+    uart.connectInterruptSink { levels.append($0) }
+    try uart.write(portOffset: 1, value: 1, width: .byte)
+    uart.enqueueReceivedBytes([0x41, 0x42])
+    _ = try uart.read(portOffset: 0, width: .byte)
+    _ = try uart.read(portOffset: 0, width: .byte)
+
+    #expect(levels.values == [false, true, false])
+  }
+
+  @Test func machineRoutesUARTReceiveInterruptToLegacyIRQ4() throws {
+    let machine = try DoryPCDirectKernelMachine(memoryBytes: 2 * 1024 * 1024)
+    try machine.serial.write(portOffset: 1, value: 1, width: .byte)
+    machine.serial.enqueueReceivedBytes([0x41])
+
+    #expect(machine.legacyPIC.snapshot().masterRequest & (1 << 4) != 0)
+  }
+}
+
+private final class LockedLevels: @unchecked Sendable {
+  private let lock = NSLock()
+  private var storage: [Bool] = []
+  var values: [Bool] { lock.withLock { storage } }
+  func append(_ value: Bool) { lock.withLock { storage.append(value) } }
 }

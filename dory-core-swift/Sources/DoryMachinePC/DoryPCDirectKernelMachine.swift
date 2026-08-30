@@ -54,7 +54,6 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     physicalMemory = DoryPCPhysicalMemoryBus(ram: memory)
     memoryByteCount = memoryBytes
     ioBus = DoryPCPortIOBus()
-    serial = DoryPCUART16550()
     localAPIC = DoryPCLocalAPIC(apicID: 0)
     ioAPIC = DoryPCIOAPIC()
     try ioAPIC.attach(localAPIC)
@@ -64,6 +63,11 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       try? legacyPIC.raise(irq: 0)
       try? ioAPIC.setAsserted(true, pin: 2)
       try? ioAPIC.setAsserted(false, pin: 2)
+    }
+    serial = DoryPCUART16550()
+    serial.connectInterruptSink { [legacyPIC, ioAPIC] asserted in
+      if asserted { try? legacyPIC.raise(irq: 4) }
+      try? ioAPIC.setAsserted(asserted, pin: 4)
     }
     try ioBus.attach(DoryPCPIC8259Port(pair: legacyPIC, slave: false))
     try ioBus.attach(DoryPCPIC8259Port(pair: legacyPIC, slave: true))
