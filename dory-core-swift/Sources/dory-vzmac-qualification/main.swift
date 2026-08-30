@@ -4,6 +4,7 @@ import Foundation
 @preconcurrency import Virtualization
 
 private enum Command {
+    case latest
     case prepare(ipsw: URL, machine: URL, cpus: Int?, memoryBytes: UInt64?, diskBytes: UInt64)
     case install(ipsw: URL, machine: URL)
     case run(machine: URL)
@@ -33,6 +34,9 @@ private func parseCommand(_ arguments: [String]) throws -> Command {
         return value
     }
     switch verb {
+    case "latest":
+        guard values.isEmpty else { throw CommandError.usage(usage) }
+        return .latest
     case "prepare":
         let ipsw = URL(fileURLWithPath: try take("--ipsw"))
         let machine = URL(fileURLWithPath: try take("--machine"), isDirectory: true)
@@ -67,6 +71,7 @@ private func parseCommand(_ arguments: [String]) throws -> Command {
 
 private let usage = """
 Usage:
+  dory-vzmac-qualification latest
   dory-vzmac-qualification prepare --ipsw <file> --machine <bundle> [--cpus N] [--memory-gib N] [--disk-gib N]
   dory-vzmac-qualification install --ipsw <file> --machine <bundle>
   dory-vzmac-qualification run --machine <bundle>
@@ -99,6 +104,24 @@ private final class QualificationAppDelegate: NSObject, NSApplicationDelegate,
 
     private func execute() async throws {
         switch command {
+        case .latest:
+            let image = try await VZMacOSRestoreImage.latestSupported
+            let version = image.operatingSystemVersion
+            let requirements = image.mostFeaturefulSupportedConfiguration
+            let receipt: [String: Any] = [
+                "schema": "dory.vzmac-latest-restore-image@1",
+                "url": image.url.absoluteString,
+                "buildVersion": image.buildVersion,
+                "operatingSystemVersion": "\(version.majorVersion).\(version.minorVersion).\(version.patchVersion)",
+                "minimumCPUCount": requirements?.minimumSupportedCPUCount as Any,
+                "minimumMemoryBytes": requirements?.minimumSupportedMemorySize as Any,
+                "supportedConfigurationAvailable": requirements != nil,
+            ]
+            FileHandle.standardOutput.write(
+                try JSONSerialization.data(withJSONObject: receipt, options: [.prettyPrinted, .sortedKeys])
+            )
+            FileHandle.standardOutput.write(Data([0x0a]))
+            NSApp.terminate(nil)
         case .prepare(let ipsw, let machine, let cpus, let memoryBytes, let diskBytes):
             let bundle = try await DoryVZMacMachineBundle.prepare(
                 at: machine,
