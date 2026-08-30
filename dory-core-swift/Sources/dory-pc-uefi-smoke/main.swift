@@ -19,6 +19,7 @@ private enum SmokeError: Error, CustomStringConvertible {
 private struct Arguments {
   let firmwareBundle: URL
   let maximumInstructions: UInt64
+  let progressInstructions: UInt64
   let memoryBytes: Int
   let processorCount: Int
   let systemDisk: URL?
@@ -39,7 +40,7 @@ private struct Arguments {
         [
           "--firmware-bundle", "--max-instructions", "--memory-bytes", "--processor-count",
           "--system-disk", "--installer-media", "--variable-store-directory",
-          "--exception-policy", "--execution-tier",
+          "--exception-policy", "--execution-tier", "--progress-instructions",
         ].contains(name)
       else { throw SmokeError.usage("unknown option: \(name)") }
       guard options.updateValue(values[index + 1], forKey: name) == nil else {
@@ -54,14 +55,18 @@ private struct Arguments {
           + "[--variable-store-directory /absolute/directory] "
           + "[--processor-count count] [--exception-policy stop|deliver] "
           + "[--execution-tier interpreter|baseline-jit|optimizing-jit] "
-          + "[--max-instructions count] [--memory-bytes count]"
+          + "[--max-instructions count] [--progress-instructions count] [--memory-bytes count]"
       )
     }
     let instructionText = options["--max-instructions"] ?? "1000000"
+    let progressText = options["--progress-instructions"] ?? "10000000"
     let memoryText = options["--memory-bytes"] ?? "268435456"
     let processorText = options["--processor-count"] ?? "1"
     guard let maximumInstructions = UInt64(instructionText), maximumInstructions > 0 else {
       throw SmokeError.invalidNumber(instructionText)
+    }
+    guard let progressInstructions = UInt64(progressText), progressInstructions > 0 else {
+      throw SmokeError.invalidNumber(progressText)
     }
     guard let memoryBytes = Int(memoryText), memoryBytes >= 128 * 1024 * 1024 else {
       throw SmokeError.invalidNumber(memoryText)
@@ -84,6 +89,7 @@ private struct Arguments {
     }
     firmwareBundle = URL(fileURLWithPath: bundle, isDirectory: true).standardizedFileURL
     self.maximumInstructions = maximumInstructions
+    self.progressInstructions = progressInstructions
     self.memoryBytes = memoryBytes
     self.processorCount = processorCount
     systemDisk = try options["--system-disk"].map { try Self.absoluteURL($0) }
@@ -120,6 +126,41 @@ private func hexadecimal(_ value: UInt64) -> String { String(format: "0x%016llx"
 
 private func hexadecimalBytes(_ bytes: [UInt8]) -> String {
   bytes.map { String(format: "%02x", $0) }.joined()
+}
+
+private func runWithProgress(
+  machine: DoryPCDirectKernelMachine,
+  maximumInstructions: UInt64,
+  progressInstructions: UInt64,
+  exceptionPolicy: DoryPCExceptionPolicy
+) throws -> DoryPCMachineStop {
+  var completed: UInt64 = 0
+  while completed < maximumInstructions {
+    let chunk = min(progressInstructions, maximumInstructions - completed)
+    let stop = try machine.run(maximumInstructions: chunk, exceptionPolicy: exceptionPolicy)
+    switch stop {
+    case .instructionBudget(let count):
+      completed &+= count
+      let state = machine.state
+      let statistics = machine.executionStatistics
+      let payload: [String: Any] = [
+        "completedInstructions": completed,
+        "instructionPointer": state.map { hexadecimal($0.cs.base &+ $0.rip) } ?? "unavailable",
+        "interpreterInstructions": statistics.interpreterInstructions,
+        "baselineJITInstructions": statistics.baselineJITInstructions,
+        "optimizingJITInstructions": statistics.optimizingJITInstructions,
+      ]
+      let data = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
+      FileHandle.standardError.write(data + Data("\n".utf8))
+    case .halted(let count): return .halted(instructionCount: completed &+ count)
+    case .exception(let exception, let count):
+      return .exception(exception, instructionCount: completed &+ count)
+    case .tripleFault(let count): return .tripleFault(instructionCount: completed &+ count)
+    case .poweredOff(let count): return .poweredOff(instructionCount: completed &+ count)
+    case .reset(let count): return .reset(instructionCount: completed &+ count)
+    }
+  }
+  return .instructionBudget(completed)
 }
 
 private func pageTableTrace(
@@ -238,8 +279,10 @@ private func run() throws {
     processorCount: arguments.processorCount,
     executionTier: arguments.executionTier
   )
-  let stop = try composed.machine.run(
+  let stop = try runWithProgress(
+    machine: composed.machine,
     maximumInstructions: arguments.maximumInstructions,
+    progressInstructions: arguments.progressInstructions,
     exceptionPolicy: arguments.exceptionPolicy
   )
   let executionStatistics = composed.machine.executionStatistics
@@ -271,6 +314,7 @@ private func run() throws {
     "instructionPointer": rip,
     "machineABIIdentity": artifacts.manifest.machineABIIdentity,
     "maximumInstructions": arguments.maximumInstructions,
+    "progressInstructions": arguments.progressInstructions,
     "processorCount": arguments.processorCount,
     "bootOrder": bootOrder,
     "exceptionPolicy": arguments.exceptionPolicy == .stop ? "stop" : "deliver",
