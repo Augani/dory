@@ -21,15 +21,24 @@ import Testing
       from: matrixData
     ).validated()
 
-    #expect(matrix.gates.count == 11)
+    #expect(matrix.gates.count == 12)
     #expect(try matrix.gate(id: "archboot-installer-boot").mediaID == "archboot-2026.08.30-arm64")
     #expect(try matrix.gate(id: "debian-update").receipt.bootAttempts == 3)
     #expect(try matrix.gate(id: "debian-update").gvproxySHA256 != nil)
     #expect(try matrix.gate(id: "debian-installer-boot").gvproxySHA256 == nil)
     #expect(try matrix.gate(id: "fedora-installer-boot").mediaID == "fedora-server-44-1.7-arm64")
     #expect(try matrix.gate(id: "fedora-coreos-live-boot").mediaID == "fedora-coreos-44.20260802.3.1-arm64")
+    let workstationGate = try matrix.gate(id: "fedora-workstation-live-boot")
+    #expect(workstationGate.mediaID == "fedora-workstation-44-1.7-arm64")
+    #expect(workstationGate.kind == .desktopLiveBoot)
+    #expect(workstationGate.display == DoryARMVirtDisplayExpectation(
+      scanoutCount: 1,
+      widthPixels: 1_024,
+      heightPixels: 768,
+      minimumContentFrameCount: 2
+    ))
     #expect(try matrix.gate(id: "opensuse-installer-boot").mediaID == "opensuse-tumbleweed-20260806-arm64")
-    #expect(matrix.gates.filter { $0.gvproxySHA256 != nil }.count == 9)
+    #expect(matrix.gates.filter { $0.gvproxySHA256 != nil }.count == 10)
     #expect(throws: DoryARMVirtCompatibilityMatrixError.gateUnavailable("missing")) {
       try matrix.gate(id: "missing")
     }

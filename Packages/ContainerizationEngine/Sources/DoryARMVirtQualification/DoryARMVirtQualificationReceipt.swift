@@ -2,7 +2,7 @@ import CryptoKit
 import Foundation
 
 public struct DoryARMVirtQualificationReceipt: Codable, Equatable, Sendable {
-  public static let currentSchemaVersion: UInt32 = 7
+  public static let currentSchemaVersion: UInt32 = 8
   public static let timingClockIdentity = "dispatch-uptime-nanoseconds"
 
   public let schemaVersion: UInt32
@@ -51,6 +51,13 @@ public struct DoryARMVirtQualificationReceipt: Codable, Equatable, Sendable {
   public let coldSnapshotSystemDiskSHA256: String?
   public let coldSnapshotVariableStoreGeneration: UInt64?
   public let gvproxySHA256: String?
+  public let displayScanoutCount: Int?
+  public let displayContentFrameCount: UInt64?
+  public let displayContentFrameWidthPixels: UInt32?
+  public let displayContentFrameHeightPixels: UInt32?
+  public let displayContentFrameByteCount: Int?
+  public let displayContentFrameNonZeroByteCount: Int?
+  public let displayContentFrameSHA256: String?
   public let consoleByteCount: Int
   public let bootAttempts: Int
   public let timingClockIdentity: String
@@ -106,6 +113,13 @@ public struct DoryARMVirtQualificationReceipt: Codable, Equatable, Sendable {
     coldSnapshotSystemDiskSHA256: String?,
     coldSnapshotVariableStoreGeneration: UInt64?,
     gvproxySHA256: String?,
+    displayScanoutCount: Int? = nil,
+    displayContentFrameCount: UInt64? = nil,
+    displayContentFrameWidthPixels: UInt32? = nil,
+    displayContentFrameHeightPixels: UInt32? = nil,
+    displayContentFrameByteCount: Int? = nil,
+    displayContentFrameNonZeroByteCount: Int? = nil,
+    displayContentFrameSHA256: String? = nil,
     consoleByteCount: Int,
     bootAttempts: Int,
     timingClockIdentity: String = Self.timingClockIdentity,
@@ -160,6 +174,13 @@ public struct DoryARMVirtQualificationReceipt: Codable, Equatable, Sendable {
     self.coldSnapshotSystemDiskSHA256 = coldSnapshotSystemDiskSHA256
     self.coldSnapshotVariableStoreGeneration = coldSnapshotVariableStoreGeneration
     self.gvproxySHA256 = gvproxySHA256
+    self.displayScanoutCount = displayScanoutCount
+    self.displayContentFrameCount = displayContentFrameCount
+    self.displayContentFrameWidthPixels = displayContentFrameWidthPixels
+    self.displayContentFrameHeightPixels = displayContentFrameHeightPixels
+    self.displayContentFrameByteCount = displayContentFrameByteCount
+    self.displayContentFrameNonZeroByteCount = displayContentFrameNonZeroByteCount
+    self.displayContentFrameSHA256 = displayContentFrameSHA256
     self.consoleByteCount = consoleByteCount
     self.bootAttempts = bootAttempts
     self.timingClockIdentity = timingClockIdentity
@@ -254,6 +275,7 @@ public enum DoryARMVirtQualificationReceiptVerifier {
       throw DoryARMVirtQualificationReceiptError.invalidField("lifecycleReceipt")
     }
     try validateSnapshot(receipt, gate: gate)
+    try validateDisplay(receipt, gate: gate)
     try validateTimings(receipt)
     guard let qualificationStartedAt = timestamp(receipt.qualificationStartedAt),
       let qualificationCompletedAt = timestamp(receipt.qualificationCompletedAt),
@@ -279,6 +301,41 @@ public enum DoryARMVirtQualificationReceiptVerifier {
       receipt.stopReason == "power-off"
     else {
       throw DoryARMVirtQualificationReceiptError.invalidField("runtimeResult")
+    }
+  }
+
+  private static func validateDisplay(
+    _ receipt: DoryARMVirtQualificationReceipt,
+    gate: DoryARMVirtCompatibilityGate
+  ) throws {
+    guard let display = gate.display else {
+      guard receipt.displayScanoutCount == nil,
+        receipt.displayContentFrameCount == nil,
+        receipt.displayContentFrameWidthPixels == nil,
+        receipt.displayContentFrameHeightPixels == nil,
+        receipt.displayContentFrameByteCount == nil,
+        receipt.displayContentFrameNonZeroByteCount == nil,
+        receipt.displayContentFrameSHA256 == nil
+      else {
+        throw DoryARMVirtQualificationReceiptError.invalidField("unexpectedDisplay")
+      }
+      return
+    }
+    guard receipt.displayScanoutCount == display.scanoutCount,
+      receipt.displayContentFrameCount.map({ $0 >= display.minimumContentFrameCount }) == true,
+      receipt.displayContentFrameWidthPixels == display.widthPixels,
+      receipt.displayContentFrameHeightPixels == display.heightPixels,
+      receipt.displayContentFrameByteCount.map({
+        guard $0 > 0 else { return false }
+        return UInt64($0) == UInt64(display.widthPixels) * UInt64(display.heightPixels) * 4
+      }) == true,
+      receipt.displayContentFrameNonZeroByteCount.map({ $0 > 0 }) == true,
+      receipt.displayContentFrameNonZeroByteCount.map({
+        $0 <= (receipt.displayContentFrameByteCount ?? 0)
+      }) == true,
+      receipt.displayContentFrameSHA256.map(isSHA256) == true
+    else {
+      throw DoryARMVirtQualificationReceiptError.invalidField("display")
     }
   }
 
@@ -361,6 +418,9 @@ public enum DoryARMVirtQualificationReceiptVerifier {
     "installerMediaSHA256", "consoleScriptSHA256", "consoleScriptStepCount",
     "completedConsoleScriptStepCount", "coldSnapshotABIIdentity",
     "coldSnapshotSystemDiskSHA256", "coldSnapshotVariableStoreGeneration", "gvproxySHA256",
+    "displayScanoutCount", "displayContentFrameCount", "displayContentFrameWidthPixels",
+    "displayContentFrameHeightPixels", "displayContentFrameByteCount",
+    "displayContentFrameNonZeroByteCount", "displayContentFrameSHA256",
   ]
   private static let requiredKeys: Set<String> = [
     "schemaVersion", "machineABIIdentity", "firmwareABIIdentity", "executionEngineIdentity",

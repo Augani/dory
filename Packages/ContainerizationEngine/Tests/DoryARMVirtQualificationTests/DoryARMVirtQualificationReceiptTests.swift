@@ -5,7 +5,7 @@ import Testing
 @testable import DoryARMVirtQualification
 
 @Suite struct DoryARMVirtQualificationReceiptTests {
-  @Test func verifiesExactSchemaSevenReceiptAgainstCheckedInMatrix() throws {
+  @Test func verifiesExactSchemaEightReceiptAgainstCheckedInMatrix() throws {
     let fixture = try Fixture()
     let receipt = fixture.receipt()
 
@@ -27,9 +27,9 @@ import Testing
     }
 
     object = try fixture.object(fixture.receipt())
-    object["schemaVersion"] = 6
+    object["schemaVersion"] = 7
     #expect(
-      throws: DoryARMVirtQualificationReceiptError.unsupportedSchemaVersion(6)
+      throws: DoryARMVirtQualificationReceiptError.unsupportedSchemaVersion(7)
     ) {
       try fixture.verify(object)
     }
@@ -74,6 +74,51 @@ import Testing
       try fixture.verify(object)
     }
   }
+
+  @Test func verifiesDesktopContentFrameEvidence() throws {
+    let fixture = try Fixture(gateID: "fedora-workstation-live-boot")
+    let receipt = fixture.receipt()
+
+    #expect(try fixture.verify(fixture.object(receipt)) == receipt)
+  }
+
+  @Test func rejectsMissingOrDriftingDesktopContentFrameEvidence() throws {
+    let fixture = try Fixture(gateID: "fedora-workstation-live-boot")
+    var object = try fixture.object(fixture.receipt())
+    object.removeValue(forKey: "displayContentFrameSHA256")
+    #expect(throws: DoryARMVirtQualificationReceiptError.invalidField("display")) {
+      try fixture.verify(object)
+    }
+
+    object = try fixture.object(fixture.receipt())
+    object["displayContentFrameCount"] = 0
+    #expect(throws: DoryARMVirtQualificationReceiptError.invalidField("display")) {
+      try fixture.verify(object)
+    }
+
+    object = try fixture.object(fixture.receipt())
+    object["displayContentFrameWidthPixels"] = 800
+    #expect(throws: DoryARMVirtQualificationReceiptError.invalidField("display")) {
+      try fixture.verify(object)
+    }
+
+    object = try fixture.object(fixture.receipt())
+    object["displayContentFrameByteCount"] = 1
+    #expect(throws: DoryARMVirtQualificationReceiptError.invalidField("display")) {
+      try fixture.verify(object)
+    }
+  }
+
+  @Test func rejectsDisplayEvidenceForNonDesktopGate() throws {
+    let fixture = try Fixture()
+    var object = try fixture.object(fixture.receipt())
+    object["displayContentFrameCount"] = 1
+    #expect(
+      throws: DoryARMVirtQualificationReceiptError.invalidField("unexpectedDisplay")
+    ) {
+      try fixture.verify(object)
+    }
+  }
 }
 
 private struct Fixture {
@@ -82,7 +127,7 @@ private struct Fixture {
   let gate: DoryARMVirtCompatibilityGate
   let media: DoryARMVirtCompatibilityMedia
 
-  init() throws {
+  init(gateID: String = "debian-installer-boot") throws {
     let repository = URL(fileURLWithPath: #filePath)
       .deletingLastPathComponent()
       .deletingLastPathComponent()
@@ -100,7 +145,7 @@ private struct Fixture {
       DoryARMVirtCompatibilityMatrix.self,
       from: matrixData
     ).validated()
-    gate = try matrix.gate(id: "debian-installer-boot")
+    gate = try matrix.gate(id: gateID)
     media = try #require(matrix.media[gate.mediaID])
   }
 
@@ -152,6 +197,15 @@ private struct Fixture {
       coldSnapshotSystemDiskSHA256: nil,
       coldSnapshotVariableStoreGeneration: nil,
       gvproxySHA256: gate.gvproxySHA256,
+      displayScanoutCount: gate.display?.scanoutCount,
+      displayContentFrameCount: gate.display?.minimumContentFrameCount,
+      displayContentFrameWidthPixels: gate.display?.widthPixels,
+      displayContentFrameHeightPixels: gate.display?.heightPixels,
+      displayContentFrameByteCount: gate.display.map {
+        Int($0.widthPixels) * Int($0.heightPixels) * 4
+      },
+      displayContentFrameNonZeroByteCount: gate.display.map { _ in 1_024 },
+      displayContentFrameSHA256: gate.display.map { _ in String(repeating: "3", count: 64) },
       consoleByteCount: 4_096,
       bootAttempts: gate.receipt.bootAttempts,
       bootDurationNanoseconds: [4_000_000_000],

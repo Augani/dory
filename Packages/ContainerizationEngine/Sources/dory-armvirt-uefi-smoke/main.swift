@@ -94,6 +94,70 @@ import IOKit.ps
     }
   }
 
+  private struct DisplayQualificationSnapshot {
+    let scanoutCount: Int
+    let contentFrameCount: UInt64
+    let contentFrameWidthPixels: UInt32
+    let contentFrameHeightPixels: UInt32
+    let contentFrameByteCount: Int
+    let contentFrameNonZeroByteCount: Int
+    let contentFrameSHA256: String
+  }
+
+  private final class DisplayQualificationCapture: @unchecked Sendable {
+    private let lock = NSLock()
+    private var observedScanouts = Set<UInt32>()
+    private var contentFrameCount: UInt64 = 0
+    private var latestContentFrame: DisplayQualificationSnapshot?
+
+    func append(_ frame: VirtioGPUScanoutFrame) {
+      let nonZeroByteCount = frame.bytes.reduce(into: 0) { count, byte in
+        if byte != 0 { count += 1 }
+      }
+      guard nonZeroByteCount > 0 else { return }
+      let digest = SHA256.hash(data: frame.bytes)
+        .map { String(format: "%02x", $0) }.joined()
+      lock.lock()
+      defer { lock.unlock() }
+      observedScanouts.insert(frame.scanoutID)
+      contentFrameCount &+= 1
+      latestContentFrame = DisplayQualificationSnapshot(
+        scanoutCount: 0,
+        contentFrameCount: 0,
+        contentFrameWidthPixels: frame.width,
+        contentFrameHeightPixels: frame.height,
+        contentFrameByteCount: frame.bytes.count,
+        contentFrameNonZeroByteCount: nonZeroByteCount,
+        contentFrameSHA256: digest
+      )
+    }
+
+    func satisfies(_ expectation: DoryARMVirtDisplayExpectation) -> Bool {
+      lock.lock()
+      defer { lock.unlock() }
+      guard let latestContentFrame else { return false }
+      return observedScanouts.count == expectation.scanoutCount
+        && contentFrameCount >= expectation.minimumContentFrameCount
+        && latestContentFrame.contentFrameWidthPixels == expectation.widthPixels
+        && latestContentFrame.contentFrameHeightPixels == expectation.heightPixels
+    }
+
+    var snapshot: DisplayQualificationSnapshot? {
+      lock.lock()
+      defer { lock.unlock() }
+      guard let latestContentFrame else { return nil }
+      return DisplayQualificationSnapshot(
+        scanoutCount: observedScanouts.count,
+        contentFrameCount: contentFrameCount,
+        contentFrameWidthPixels: latestContentFrame.contentFrameWidthPixels,
+        contentFrameHeightPixels: latestContentFrame.contentFrameHeightPixels,
+        contentFrameByteCount: latestContentFrame.contentFrameByteCount,
+        contentFrameNonZeroByteCount: latestContentFrame.contentFrameNonZeroByteCount,
+        contentFrameSHA256: latestContentFrame.contentFrameSHA256
+      )
+    }
+  }
+
   private final class RunnerCompletion: @unchecked Sendable {
     private let lock = NSLock()
     private let signal = DispatchSemaphore(value: 0)
@@ -422,6 +486,8 @@ import IOKit.ps
     installerMedia: InstallerMedia?,
     capture: ConsoleCapture,
     consoleScript: AdmittedConsoleScript?,
+    displayExpectation: DoryARMVirtDisplayExpectation?,
+    displayCapture: DisplayQualificationCapture?,
     gvproxy: AdmittedGVProxy?,
     memoryBytes: UInt64,
     appliedInstallerMediaTransitionCount: Int,
@@ -474,6 +540,26 @@ import IOKit.ps
       slot: entropySlot.index,
       to: machine
     )
+    if let displayExpectation, let displayCapture {
+      guard let graphicsSlot = DoryARMVirtV1ABI.virtioSlots.first(where: {
+        $0.role == .graphics
+      }) else {
+        throw VMError.invalidConfiguration("\(DoryARMVirtV1ABI.identity) has no graphics slot")
+      }
+      let scanoutSize = VirtioGPUScanoutSize(
+        width: displayExpectation.widthPixels,
+        height: displayExpectation.heightPixels
+      )
+      try attachVirtioDevice(
+        VirtioGPU(
+          hostMemoryBase: GuestLayout.daxWindowBase,
+          scanoutSizes: Array(repeating: scanoutSize, count: displayExpectation.scanoutCount),
+          onScanoutFrame: displayCapture.append
+        ),
+        slot: graphicsSlot.index,
+        to: machine
+      )
+    }
     if let installerMedia {
       try attachVirtioDevice(
         VirtioBlk(
@@ -569,6 +655,7 @@ import IOKit.ps
         && capture.matched(afterByteOffset: consoleStartOffset)
         && consoleScript?.driver.isComplete != false
         && consoleScript?.driver.pendingHostAction == nil
+        && displayExpectation.map { displayCapture?.satisfies($0) == true } != false
       if matchedConsole {
         return result(
           reason: try runner.stopAndWait(GuestStopReason.powerOff),
@@ -583,6 +670,7 @@ import IOKit.ps
             && capture.matched(afterByteOffset: consoleStartOffset)
             && consoleScript?.driver.isComplete != false
             && consoleScript?.driver.pendingHostAction == nil
+            && displayExpectation.map { displayCapture?.satisfies($0) == true } != false
         )
       }
     }
@@ -593,6 +681,7 @@ import IOKit.ps
         && capture.matched(afterByteOffset: consoleStartOffset)
         && consoleScript?.driver.isComplete != false
         && consoleScript?.driver.pendingHostAction == nil
+        && displayExpectation.map { displayCapture?.satisfies($0) == true } != false
     )
   }
 
@@ -675,6 +764,9 @@ import IOKit.ps
       fail("a console script that transitions installer media requires --installer-media")
     }
     let capture = ConsoleCapture(expected: options.expectedConsoleText)
+    let displayCapture = qualification?.gate.display.map { _ in
+      DisplayQualificationCapture()
+    }
     let maximumBootAttempts = 4
     var finalResult: BootResult?
     var bootAttempts = 0
@@ -697,6 +789,8 @@ import IOKit.ps
         installerMedia: attachedInstaller,
         capture: capture,
         consoleScript: consoleScript,
+        displayExpectation: qualification?.gate.display,
+        displayCapture: displayCapture,
         gvproxy: gvproxy,
         memoryBytes: options.memoryBytes,
         appliedInstallerMediaTransitionCount: appliedInstallerMediaTransitionCount,
@@ -773,6 +867,7 @@ import IOKit.ps
     let hostPowerSourceAtEnd = hostPowerSource()
     let hostLowPowerModeEnabledAtEnd = processInfo.isLowPowerModeEnabled
     let hostThermalStateAtEnd = thermalState(processInfo.thermalState)
+    let displaySnapshot = displayCapture?.snapshot
     let receipt = DoryARMVirtQualificationReceipt(
       machineABIIdentity: DoryARMVirtV1ABI.identity,
       firmwareABIIdentity: DoryARMVirtV1ABI.firmwareABIIdentity,
@@ -819,6 +914,13 @@ import IOKit.ps
       coldSnapshotSystemDiskSHA256: coldSnapshotManifest?.systemDiskSHA256,
       coldSnapshotVariableStoreGeneration: coldSnapshotManifest?.variableStoreGeneration,
       gvproxySHA256: gvproxy?.sha256,
+      displayScanoutCount: displaySnapshot?.scanoutCount,
+      displayContentFrameCount: displaySnapshot?.contentFrameCount,
+      displayContentFrameWidthPixels: displaySnapshot?.contentFrameWidthPixels,
+      displayContentFrameHeightPixels: displaySnapshot?.contentFrameHeightPixels,
+      displayContentFrameByteCount: displaySnapshot?.contentFrameByteCount,
+      displayContentFrameNonZeroByteCount: displaySnapshot?.contentFrameNonZeroByteCount,
+      displayContentFrameSHA256: displaySnapshot?.contentFrameSHA256,
       consoleByteCount: capture.byteCount,
       bootAttempts: bootAttempts,
       timingClockIdentity: "dispatch-uptime-nanoseconds",

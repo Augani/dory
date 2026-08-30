@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "qualificationTarget": {
+    "guestFamily": "fedora-workstation",
+    "guestVersion": "44",
+    "guestBuild": "44-1.7",
+    "guestArchitecture": "arm64"
+  },
+  "steps": [
+    {
+      "waitFor": "*Test this media & start Fedora-Workstation-Live",
+      "send": "\u001b[A\n"
+    }
+  ]
+}

@@ -8,7 +8,7 @@ under `patches/`.
 `compatibility-matrix.json` is the machine-readable Phase 2 qualification
 authority. It pins each guest media digest and provenance URL to one bounded
 console fixture, expected marker, resource envelope, exact network-sidecar
-digest or required absence, gate kind, and exact receipt shape. Tests recompute every fixture digest and require its declared
+digest or required absence, optional display-frame contract, gate kind, and exact receipt shape. Tests recompute every fixture digest and require its declared
 guest tuple to match the referenced media cell; a prose-only or stale filename
 cannot create a support claim.
 
@@ -27,7 +27,7 @@ The runner rejects a missing pair of matrix/gate options, a caller-supplied
 console script, media, fixture, or network-sidecar drift, guest-tuple mismatch, and any observed
 boot/transition/action receipt that differs from the selected gate.
 Before emitting a matrix-selected receipt, the runner decodes it through the
-shared schema-7 verifier, recomputes the matrix digest, and fails closed on
+shared schema-8 verifier, recomputes the matrix digest, and fails closed on
 unknown fields or any platform, host, guest, media, firmware, sidecar, resource,
 lifecycle, snapshot, or monotonic-timing mismatch.
 
@@ -82,7 +82,7 @@ embedded UEFI interactive shell. Console output is written to standard error;
 a successful run writes one canonical JSON receipt to standard output with the
 machine and firmware ABI identities, build identifier, firmware SHA-256, boot
 attempt count, each boot's monotonic duration, the total qualification duration,
-variable-store generation, and final stop reason. Receipt schema 7 identifies
+variable-store generation, and final stop reason. Receipt schema 8 identifies
 these measurements as Dispatch uptime nanoseconds so wall-clock adjustment cannot
 distort performance evidence, while also binding UTC start/end, host boot session,
 physical memory, power source, Low Power Mode, and thermal state at both boundaries.
@@ -95,7 +95,7 @@ population variance separately for each semantic boot attempt and the complete
 qualification. This timing campaign is necessary performance evidence; it does
 not by itself qualify CPU, storage, network, display, energy, or release support.
 
-Build `dory-armvirt-timing-campaign`, collect at least nine schema-7 runner
+Build `dory-armvirt-timing-campaign`, collect at least nine schema-8 runner
 receipts in chronological order, and aggregate them without rewriting raw evidence:
 
 ```sh
@@ -155,7 +155,7 @@ chmod 600 /absolute/path/to/alpine-standard-aarch64.iso
 
 The runner accepts only an owned, private console document with bounded steps,
 wait markers, and inputs. It refuses a success marker present in guest input so
-terminal echo cannot forge qualification. Receipt schema 7 binds the exact host
+terminal echo cannot forge qualification. Receipt schema 8 binds the exact host
 model/OS build, guest family/version/build/architecture, execution engine, CPU,
 machine, firmware and device ABIs, runner SHA-256, memory and disk sizes,
 completed step count, console-document SHA-256, applied installer media
@@ -261,3 +261,18 @@ gvproxy lease on `eth0`. The 871,133,184-byte image has SHA-256
 which must match Fedora's stable stream metadata. Its detached signature must
 also verify against Fedora 44 primary key fingerprint
 `36F6 12DC F27F 7D1A 48A8 35E4 DBFC F71C 6D9F 90A6`.
+
+`fedora-workstation-44-live-boot.json` is the representative desktop-family
+cell. It pins Fedora Workstation 44 release 1.7's official ARM64 live ISO,
+selects `Start Fedora-Workstation-Live` from the stock GRUB menu, brings up the
+live system through NetworkManager and the completed GNOME Display Manager
+service, and simultaneously requires Dory's VirtIO GPU to publish at least two
+non-empty frames on its one declared 1024×768 scanout. Receipt schema 8 binds
+the scanout count, content-frame count, final pre-stop frame dimensions, exact
+RGBA byte count, non-zero byte count, and SHA-256. This gate proves a software
+VirtIO display path through the stock graphical live guest; it does not claim
+3D acceleration, display performance, input, audio, camera, or USB support.
+The 2,689,781,760-byte image has SHA-256
+`162ba3c552a2d241c7c63ec26777af0255ee1b5a135adc0be986ceed999933ef`;
+qualification requires Fedora's OpenPGP-verified release checksum file signed
+by the Fedora 44 primary key.

@@ -7,6 +7,14 @@ public enum DoryARMVirtQualificationGateKind: String, Codable, CaseIterable, Sen
   case recovery
   case coldSnapshot = "cold-snapshot"
   case baselineDevices = "baseline-devices"
+  case desktopLiveBoot = "desktop-live-boot"
+}
+
+public struct DoryARMVirtDisplayExpectation: Codable, Equatable, Sendable {
+  public let scanoutCount: Int
+  public let widthPixels: UInt32
+  public let heightPixels: UInt32
+  public let minimumContentFrameCount: UInt64
 }
 
 public struct DoryARMVirtCompatibilityMedia: Codable, Equatable, Sendable {
@@ -39,12 +47,13 @@ public struct DoryARMVirtCompatibilityGate: Codable, Equatable, Sendable {
   public let systemDiskByteCount: UInt64
   public let timeoutSeconds: UInt64
   public let gvproxySHA256: String?
+  public let display: DoryARMVirtDisplayExpectation?
   public let receipt: DoryARMVirtQualificationReceiptExpectation
 }
 
 public struct DoryARMVirtCompatibilityMatrix: Codable, Equatable, Sendable {
-  public static let currentSchemaVersion: UInt32 = 2
-  public static let identity = "dory.compatibility.armvirt@2"
+  public static let currentSchemaVersion: UInt32 = 3
+  public static let identity = "dory.compatibility.armvirt@3"
 
   public let schemaVersion: UInt32
   public let matrixIdentity: String
@@ -106,6 +115,21 @@ public struct DoryARMVirtCompatibilityMatrix: Codable, Equatable, Sendable {
       }
       guard (gate.kind == .coldSnapshot) == (gate.receipt.coldSnapshotActionCount == 2) else {
         throw DoryARMVirtCompatibilityMatrixError.invalidGate(gate.gateID)
+      }
+      guard (gate.kind == .desktopLiveBoot) == (gate.display != nil) else {
+        throw DoryARMVirtCompatibilityMatrixError.invalidGate(gate.gateID)
+      }
+      guard gate.kind != .desktopLiveBoot || gate.receipt.bootAttempts == 1 else {
+        throw DoryARMVirtCompatibilityMatrixError.invalidGate(gate.gateID)
+      }
+      if let display = gate.display {
+        guard (1...16).contains(display.scanoutCount),
+          (640...7680).contains(display.widthPixels),
+          (480...4320).contains(display.heightPixels),
+          (1...10_000).contains(display.minimumContentFrameCount)
+        else {
+          throw DoryARMVirtCompatibilityMatrixError.invalidGate(gate.gateID)
+        }
       }
     }
     return self
