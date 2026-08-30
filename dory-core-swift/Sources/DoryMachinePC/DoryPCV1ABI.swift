@@ -78,6 +78,7 @@ public enum DoryPCV1ABI {
   public static let keyboardPCIAddress = DoryPCPCIAddress(bus: 0, device: 3, function: 0)
   public static let pointerPCIAddress = DoryPCPCIAddress(bus: 0, device: 4, function: 0)
   public static let tabletPCIAddress = DoryPCPCIAddress(bus: 0, device: 5, function: 0)
+  public static let soundPCIAddress = DoryPCPCIAddress(bus: 0, device: 6, function: 0)
   public static let removableMediaPCIAddress = DoryPCPCIAddress(bus: 0, device: 12, function: 0)
   public static let systemDiskBARAddress = pcieMMIOBase
   public static let removableMediaBARAddress = pcieMMIOBase + 0x1000
@@ -85,6 +86,7 @@ public enum DoryPCV1ABI {
   public static let keyboardBARAddress = pcieMMIOBase + 0x3000
   public static let pointerBARAddress = pcieMMIOBase + 0x4000
   public static let tabletBARAddress = pcieMMIOBase + 0x5000
+  public static let soundBARAddress = pcieMMIOBase + 0x6000
 
   public static let regions: [DoryPCV1Region] = [
     fixedRegion(kind: .pvhHandoff, base: pvhStartInfo, byteCount: pvhHandoffBytes),
@@ -173,6 +175,7 @@ public enum DoryPCV1ABI {
     | VirtIO keyboard | `0000:00:03.0` | `0xd0003000` |
     | VirtIO relative pointer | `0000:00:04.0` | `0xd0004000` |
     | VirtIO absolute tablet | `0000:00:05.0` | `0xd0005000` |
+    | VirtIO sound | `0000:00:06.0` | `0xd0006000` |
 
     ## Boot contract
 

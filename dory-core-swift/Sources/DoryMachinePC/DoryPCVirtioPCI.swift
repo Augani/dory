@@ -772,6 +772,97 @@ public final class DoryPCVirtioInputPCIDevice: DoryPCPCIFunction, DoryPCPCIMSICo
   }
 }
 
+public final class DoryPCVirtioSoundPCIDevice: DoryPCPCIFunction, DoryPCPCIMSIControllable,
+  DoryPCPCIINTxControllable, DoryPCPCIBARMemoryDevice, DoryPCVirtioGuestMemoryConsumer,
+  @unchecked Sendable
+{
+  public let pciFunction: DoryPCVirtioPCIFunction
+  public let soundDevice: DoryVirtioSoundDevice
+
+  public var pciAddress: DoryPCPCIAddress { pciFunction.pciAddress }
+  public var configurationFunction: DoryPCPCIConfigurationFunction {
+    pciFunction.configurationFunction
+  }
+  public var barIndex: Int { pciFunction.barIndex }
+  public var transport: DoryPCVirtioPCITransport { pciFunction.transport }
+
+  public init(
+    address: DoryPCPCIAddress,
+    initialBARAddress: UInt64,
+    backend: any DoryVirtioSoundBackend,
+    maximumQueueSize: UInt16 = 256,
+    maximumBufferBytes: UInt32 = 16 * 1024 * 1024,
+    maximumPendingEvents: Int = 1_024
+  ) throws {
+    soundDevice = .init(
+      backend: backend,
+      maximumBufferBytes: maximumBufferBytes,
+      maximumPendingEvents: maximumPendingEvents
+    )
+    pciFunction = try .init(
+      address: address,
+      virtioDeviceID: 25,
+      classCode: 0x040100,
+      initialBARAddress: initialBARAddress,
+      queueCount: 4,
+      maximumQueueSize: maximumQueueSize,
+      offeredFeatures: soundDevice.offeredFeatures.union([
+        .indirectDescriptors, .eventIndex,
+      ]),
+      deviceConfiguration: soundDevice.configuration,
+      onReset: { [soundDevice] in soundDevice.reset() }
+    )
+    soundDevice.connectEventReadySink { [weak transport = pciFunction.transport] in
+      transport?.processQueue(DoryVirtioSoundDevice.eventQueue)
+    }
+  }
+
+  public func connectGuestMemory(_ memory: any DoryVirtioGuestMemory) {
+    transport.connectQueueProcessor(
+      memory: memory,
+      canProcess: { [soundDevice] queue in
+        queue != DoryVirtioSoundDevice.eventQueue || soundDevice.hasPendingEvent
+      },
+      processor: { [soundDevice] queue, chain, memory in
+        switch queue {
+        case DoryVirtioSoundDevice.controlQueue:
+          return try soundDevice.processControl(chain, memory: memory)
+        case DoryVirtioSoundDevice.eventQueue:
+          return try soundDevice.processEvent(chain, memory: memory)
+        case DoryVirtioSoundDevice.transmitQueue:
+          return try soundDevice.processTransmit(chain, memory: memory)
+        case DoryVirtioSoundDevice.receiveQueue:
+          return try soundDevice.processReceive(chain, memory: memory)
+        default:
+          throw DoryPCVirtioPCIError.invalidQueue(queue)
+        }
+      }
+    )
+  }
+
+  public func readConfiguration(offset: Int, byteCount: Int) throws -> [UInt8] {
+    try pciFunction.readConfiguration(offset: offset, byteCount: byteCount)
+  }
+
+  public func writeConfiguration(offset: Int, bytes: [UInt8]) throws {
+    try pciFunction.writeConfiguration(offset: offset, bytes: bytes)
+  }
+
+  public func connectMSISink(
+    _ sink: @escaping @Sendable (_ messageAddress: UInt64, _ messageData: UInt16) -> Bool
+  ) {
+    pciFunction.connectMSISink(sink)
+  }
+
+  public func readBAR(offset: UInt64, byteCount: Int) throws -> [UInt8] {
+    try pciFunction.readBAR(offset: offset, byteCount: byteCount)
+  }
+
+  public func writeBAR(offset: UInt64, bytes: [UInt8]) throws {
+    try pciFunction.writeBAR(offset: offset, bytes: bytes)
+  }
+}
+
 public final class DoryPCVirtioPCIFunction: DoryPCPCIFunction, DoryPCPCIMSIControllable,
   DoryPCPCIINTxControllable, DoryPCPCIBARMemoryDevice, @unchecked Sendable
 {
