@@ -1,0 +1,99 @@
+{
+  "schema": "dory.phase0a.host-inventory-engineering-evidence@1",
+  "verdict": "inventory-complete-reference-matrix-open",
+  "collectedAt": "2026-08-30T11:50:17Z",
+  "toolchain": {
+    "xcodeVersion": "26.6",
+    "xcodeBuild": "17F109",
+    "sdkVersion": "26.5"
+  },
+  "candidate": {
+    "sha256": "dc1669d6b42ee0fcfbe17be3617e9fce84e6f57b27e24b4f64932e899643c315",
+    "collectorSourceSHA256": "f72bb43752a3374316087ce5ca5877255a45ec6500aaebb48ecbbc763fa6e225",
+    "entryPointSourceSHA256": "b7919f303f9be7fd09209e8b9ad4169edca648807738cdc9da9eb13b072d4cab",
+    "receiptSHA256": "e0e92fda03db119c41327b0a91167de5cd113bb2f904443ad93f2334a0a49a61",
+    "hardenedRuntime": true,
+    "teamIdentifier": "864H636QW4",
+    "signingAuthority": "Developer ID Application: Augustus Otu (864H636QW4)",
+    "notarization": "not-submitted-engineering-probe"
+  },
+  "receipt": {
+    "schema": "dory.phase0a.host-qualification@1",
+    "collectedAt": "2026-08-30T11:50:17Z",
+    "host": {
+      "architecture": "arm64",
+      "hardwareModel": "Mac14,10",
+      "marketingModel": "MacBook Pro",
+      "chip": "Apple M2 Pro",
+      "firmwareVersion": "20457.1.29",
+      "osLoaderVersion": "20457.1.29",
+      "physicalMemoryBytes": 17179869184,
+      "physicalProcessorCount": 12,
+      "logicalProcessorCount": 12,
+      "performanceCoreCount": 8,
+      "efficiencyCoreCount": 4,
+      "osProductVersion": "27.0",
+      "osBuildVersion": "26A5421a",
+      "bootSessionIdentifier": "D8A1C440-174D-4AE8-A564-A56EFB3DE487",
+      "powerSource": "ac",
+      "lowPowerModeEnabled": false,
+      "thermalState": "nominal"
+    },
+    "rootStorage": {
+      "totalBytes": 994662584320,
+      "freeBytes": 212762259456,
+      "deviceIdentifier": "disk3s1s1",
+      "busProtocol": "Apple Fabric",
+      "internalDevice": true,
+      "solidState": true
+    },
+    "displays": [
+      {
+        "ordinal": 0,
+        "isMain": true,
+        "isBuiltIn": true,
+        "pixelWidth": 4112,
+        "pixelHeight": 2658,
+        "refreshRateHz": 120,
+        "rotationDegrees": 0
+      },
+      {
+        "ordinal": 1,
+        "isMain": false,
+        "isBuiltIn": false,
+        "pixelWidth": 1920,
+        "pixelHeight": 1080,
+        "refreshRateHz": 75,
+        "rotationDegrees": 0
+      }
+    ],
+    "referenceMatrix": {
+      "candidateTier": "unassigned",
+      "inventoryComplete": true,
+      "baselinesComplete": false,
+      "physicalMatrixComplete": false,
+      "blockers": [
+        "candidate has not been assigned to a frozen low/mid/high tier",
+        "candidate-bound native, minimal-harness, and Dory baselines have not completed",
+        "all three physical reference tiers have not completed the same campaign"
+      ]
+    }
+  },
+  "privacyExclusions": [
+    "hardware serial number",
+    "platform UUID",
+    "provisioning UDID",
+    "battery serial number",
+    "user identity",
+    "home-directory paths"
+  ],
+  "releaseGateClosed": false,
+  "openRequirements": [
+    "ADR-017 owner assignment of exact low, middle, and high reference machines",
+    "signed inventories for all three physical tiers",
+    "frozen workload, noise, invalidation, and sample-count policy",
+    "candidate-bound native and minimal-HV/VZ baseline campaigns",
+    "candidate-bound Dory campaign across every claimed tuple",
+    "release signing and notarization of the final collector and candidates"
+  ]
+}

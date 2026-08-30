@@ -237,6 +237,11 @@ explicit migration or compatibility decision.
   references with signed host/guest/workload metadata and statistical noise policy.
 - **Exit gate:** Reference models/workloads are frozen and every claimed tuple passes its exact
   throughput, latency, pacing, idle, memory, thermal, and lifecycle budget.
+- **Current evidence:** The 2026-08-30 signed host probe inventories the available `Mac14,10`
+  (Apple M2 Pro, 16 GiB) candidate, its exact firmware/macOS/boot/power/thermal/storage state, and
+  two-display topology without recording hardware serials or user identity. The candidate is not
+  yet assigned to a tier and has no completed baseline campaign; low/mid/high matrix closure
+  therefore remains a stop gate.
 
 ## ADR-018 — Compatibility ledger and release receipts
 

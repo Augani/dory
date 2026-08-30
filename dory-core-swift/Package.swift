@@ -13,6 +13,7 @@ let package = Package(
     .library(name: "DoryMachineARMVirt", targets: ["DoryMachineARMVirt"]),
     .library(name: "DoryFirmware", targets: ["DoryFirmware"]),
     .library(name: "DoryNativeHVArm64", targets: ["DoryNativeHVArm64"]),
+    .library(name: "DoryPhase0AQualification", targets: ["DoryPhase0AQualification"]),
     .library(name: "DoryVMContracts", targets: ["DoryVMContracts"]),
     .library(
       name: "DoryRendererWorkerWireContracts",
@@ -38,6 +39,10 @@ let package = Package(
     .executable(name: "dory-jit-probe", targets: ["dory-jit-probe"]),
     .executable(name: "dory-vzmac-device-probe", targets: ["dory-vzmac-device-probe"]),
     .executable(
+      name: "dory-phase0a-host-probe",
+      targets: ["dory-phase0a-host-probe"]
+    ),
+    .executable(
       name: "dory-firmware-bundler",
       targets: ["dory-firmware-bundler"]
     ),
@@ -60,6 +65,11 @@ let package = Package(
       name: "DoryNativeHVArm64",
       dependencies: ["DoryExecutionContracts"],
       linkerSettings: [.linkedFramework("Hypervisor")]
+    ),
+    .target(
+      name: "DoryPhase0AQualification",
+      dependencies: [],
+      linkerSettings: [.linkedFramework("CoreGraphics")]
     ),
     .target(
       name: "DoryVMContracts",
@@ -164,6 +174,12 @@ let package = Package(
       path: "Sources/dory-vzmac-device-probe",
       linkerSettings: [.linkedFramework("Virtualization")]
     ),
+    // Sanitized physical-host inventory for Phase 0A reference-candidate evidence. It records no
+    // hardware serial number, platform UUID, user name, or path outside the root volume.
+    .executableTarget(
+      name: "dory-phase0a-host-probe",
+      dependencies: ["DoryPhase0AQualification"]
+    ),
     .executableTarget(
       name: "dory-firmware-bundler",
       dependencies: ["DoryFirmware"]
@@ -187,6 +203,10 @@ let package = Package(
     .testTarget(
       name: "DoryNativeHVArm64Tests",
       dependencies: ["DoryExecutionContracts", "DoryNativeHVArm64"]
+    ),
+    .testTarget(
+      name: "DoryPhase0AQualificationTests",
+      dependencies: ["DoryPhase0AQualification"]
     ),
     .testTarget(
       name: "DoryVMContractsTests",
