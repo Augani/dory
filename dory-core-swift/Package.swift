@@ -14,6 +14,7 @@ let package = Package(
   platforms: [.macOS(.v14)],
   products: [
     .library(name: "DoryExecutionContracts", targets: ["DoryExecutionContracts"]),
+    .library(name: "DoryDBTX86", targets: ["DoryDBTX86"]),
     .library(name: "DoryMachineARMVirt", targets: ["DoryMachineARMVirt"]),
     .library(name: "DoryFirmware", targets: ["DoryFirmware"]),
     .library(name: "DoryCameraBridgeContracts", targets: ["DoryCameraBridgeContracts"]),
@@ -91,6 +92,10 @@ let package = Package(
     .target(
       name: "DoryExecutionContracts",
       dependencies: []
+    ),
+    .target(
+      name: "DoryDBTX86",
+      dependencies: ["DoryExecutionContracts"]
     ),
     .target(
       name: "DoryMachineARMVirt",
@@ -341,6 +346,10 @@ let package = Package(
     .testTarget(
       name: "DoryExecutionContractsTests",
       dependencies: ["DoryExecutionContracts"]
+    ),
+    .testTarget(
+      name: "DoryDBTX86Tests",
+      dependencies: ["DoryDBTX86"]
     ),
     .testTarget(
       name: "DoryMachineARMVirtTests",
