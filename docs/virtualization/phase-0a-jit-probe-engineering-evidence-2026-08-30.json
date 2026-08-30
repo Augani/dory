@@ -1,0 +1,57 @@
+{
+  "schema": "dory.phase0a.jit-probe-engineering-evidence@1",
+  "verdict": "engineering-pass-release-gate-open",
+  "collectedAt": "2026-08-30T11:39:13Z",
+  "host": {
+    "architecture": "arm64",
+    "hardwareModel": "Mac14,10",
+    "productVersion": "27.0",
+    "buildVersion": "26A5421a",
+    "minimumHostMatrixCovered": false
+  },
+  "candidate": {
+    "format": "Mach-O thin (arm64)",
+    "sha256": "5c08039ae9993acfa374da1d82511f6c34fa080e8fabe46076f8488f37ed3f03",
+    "sourceSHA256": "66ac0f764034f37815778d9a5b4bce099918362628d0a963b2a27e8cb4773c81",
+    "entitlementsSHA256": "49076be9b510cb9de34de5f3b62390f137163c12794c40d76bb5e5ccd61e7e1f",
+    "hardenedRuntime": true,
+    "teamIdentifier": "864H636QW4",
+    "signingAuthority": "Developer ID Application: Augustus Otu (864H636QW4)",
+    "entitlements": [
+      "com.apple.security.cs.allow-jit",
+      "com.apple.security.cs.jit-write-allowlist"
+    ],
+    "notarization": "unnotarized-developer-id",
+    "gatekeeperAssessment": "rejected-unnotarized-developer-id"
+  },
+  "campaign": {
+    "consecutiveRuns": 100,
+    "failedRuns": 0,
+    "runtimeReceiptSHA256": "e10e338c41e8dad46a39f8cf9706327c2890bdc48e5216a6d67e878d9f2fcd6a"
+  },
+  "runtimeReceipt": {
+    "schemaVersion": 2,
+    "status": "PASS",
+    "hostArchitecture": "arm64",
+    "mapJITRegions": 1,
+    "guardPages": 2,
+    "codePages": 1,
+    "writeAPI": "pthread_jit_write_with_callback_np",
+    "instructionCachePublication": "sys_icache_invalidate",
+    "hostileCallbackRejections": 6,
+    "reuseIterations": 1000,
+    "readerThreads": 4,
+    "readerExecutions": 342,
+    "readerFailures": 0,
+    "writeProtectionSignal": 10,
+    "leadingGuardSignal": 10,
+    "trailingGuardSignal": 10,
+    "postCrashResult": 42
+  },
+  "openRequirements": [
+    "notarize the exact Developer-ID candidate",
+    "pass the frozen minimum-host-OS matrix",
+    "pass the frozen low-mid-high physical Apple-silicon host matrix",
+    "attach release authority approval"
+  ]
+}
