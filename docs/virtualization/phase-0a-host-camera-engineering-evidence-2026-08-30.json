@@ -1,0 +1,55 @@
+{
+  "schema": "dory.phase0a.host-camera-engineering-evidence@1",
+  "status": "HOST_CAPTURE_PASSED_GUEST_BRIDGE_QUALIFICATION_PENDING",
+  "sourceCommit": "6d21bb3a3",
+  "candidate": {
+    "bundleIdentifier": "com.pythonxi.Dory.HVRunner",
+    "buildConfiguration": "Release",
+    "architecture": "arm64",
+    "deploymentTarget": "macOS 15.0",
+    "sdk": "macOS 26.5",
+    "xcode": "26.6 (17F109)",
+    "rendererPackaging": "disabled for isolated camera qualification",
+    "signingAuthority": "Developer ID Application: Augustus Otu (864H636QW4)",
+    "teamIdentifier": "864H636QW4",
+    "hardenedRuntime": true,
+    "secureTimestamp": "2026-08-30T13:27:32Z",
+    "cdhashSHA256": "4b4433ac6d5fb9712a6c6a44a945330d7b955f5264cbfccc28511799261f4a89",
+    "executableSHA256": "2aee98b9936a87ec9035eadf40669666203ab7da5671f224395a218d5a07ba75",
+    "cameraEntitlementPresent": true,
+    "usageDescriptionSHA256": "982d1e3a83deec45aea0cf521824b4928f36748779ec69604879c28bc0936427",
+    "notarized": false
+  },
+  "host": {
+    "model": "Mac14,10",
+    "osVersion": "27.0",
+    "osBuild": "26A5421a"
+  },
+  "captureReceipt": {
+    "schemaVersion": 1,
+    "qualificationIdentity": "dory.host-camera-qualification@1",
+    "authorizationStatus": "authorized",
+    "cameraLocalizedName": "FaceTime HD Camera",
+    "cameraModelID": "FaceTime HD Camera",
+    "cameraUniqueIDSHA256": "146fc64e51ae2b2b54c600ec60f2d5b8bbd8f3da2a032463d67acbad251c96f2",
+    "widthPixels": 1280,
+    "heightPixels": 720,
+    "capturedFrameCount": 30,
+    "jpegByteCount": 1726384,
+    "jpegStreamSHA256": "a5719c6a8ff8e2996ed32cc629f5bb63c1bb1822e01996912ffc5323bca079a7",
+    "captureDurationNanoseconds": 2445179916,
+    "minimumDeliveryNanoseconds": 24487209,
+    "medianDeliveryNanoseconds": 32749875,
+    "p95DeliveryNanoseconds": 48186167,
+    "maximumDeliveryNanoseconds": 1113275625,
+    "qualificationStartedAt": "2026-08-30T13:27:32.997Z",
+    "qualificationCompletedAt": "2026-08-30T13:27:35.442Z",
+    "stoppedAfterCapture": true
+  },
+  "decision": {
+    "hostCameraAccess": "passed without a camera extension using public AVFoundation capture",
+    "doryGuestApplicationConsumption": "viable over the versioned bounded camera bridge",
+    "systemWideGuestCamera": "requires a separately signed and authorized CoreMediaIO Camera Extension in the macOS guest",
+    "remainingGate": "notarization plus in-guest VZ virtio-socket relay, Camera Extension activation, application visibility, latency, revoke, sleep-wake, update, rollback, and uninstall qualification"
+  }
+}

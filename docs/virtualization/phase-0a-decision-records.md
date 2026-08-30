@@ -397,7 +397,12 @@ The following must remain visibly open until evidence is attached:
    one display, while `VZUSBPassthroughDeviceConfiguration` is available from macOS 27.0. The
    2026-08-30 engineering probe built with Xcode 26.6/macOS SDK 26.5 constructs the documented
    graphics, input, audio, and XHCI configurations but finds no public camera or physical-USB
-   declaration. Runtime-only USB class presence is not API authority, so this gate remains open.
+   declaration. The Developer ID Release host-camera probe separately passed TCC authorization and
+   captured 30 valid 1280x720 frames from the built-in camera through public AVFoundation without a
+   camera extension. This proves host capture, not system-wide guest camera registration: the
+   VZ virtio-socket relay and guest CoreMediaIO Camera Extension still require notarized in-guest
+   activation, visibility, latency, revoke, update, rollback, and uninstall evidence. Runtime-only
+   USB class presence is not API authority, so this aggregate gate remains open.
 4. Frozen low/mid/high physical Apple-silicon lab inventory and baseline evidence (ADR-017).
 5. Named staffing, paired ownership, release authority, and regression-ledger approvers beyond role
    assignments in the program manifest.
