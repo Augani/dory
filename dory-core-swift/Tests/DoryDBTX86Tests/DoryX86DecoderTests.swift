@@ -316,4 +316,19 @@ import Testing
         )
     )
   }
+
+  @Test func decodesSegmentLoadsAndFarControlTransfer() throws {
+    #expect(
+      try decoder.decode([0x8E, 0xD8], at: 0x300, mode: .real16).operation
+        == .writeSegment(.ds, source: .register(.rax, width: .word))
+    )
+    #expect(
+      try decoder.decode([0x8C, 0xC8], at: 0x300, mode: .real16).operation
+        == .readSegment(.cs, destination: .register(.rax, width: .word))
+    )
+    #expect(
+      try decoder.decode([0xEA, 0x00, 0x02, 0x78, 0x56], at: 0x300, mode: .real16).operation
+        == .farJump(offset: 0x200, selector: 0x5678)
+    )
+  }
 }

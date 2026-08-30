@@ -164,6 +164,15 @@ public struct DoryX86Decoder: Sendable {
       operation = .signExtendAccumulator(width: width, intoHighHalf: false)
     case 0x99:
       operation = .signExtendAccumulator(width: width, intoHighHalf: true)
+    case 0x8C, 0x8E:
+      let operands = try decodeModRM(
+        cursor: &cursor, width: .word, prefixes: prefixes, mode: mode)
+      let segment = try segmentRegister(
+        encoding: operands.group, address: address, allowCode: opcode == 0x8C)
+      operation =
+        opcode == 0x8C
+        ? .readSegment(segment, destination: operands.rm)
+        : .writeSegment(segment, source: operands.rm)
     case 0x86, 0x87, 0x88, 0x8A, 0x89, 0x8B, 0x8D,
       0x00, 0x02, 0x01, 0x03, 0x08, 0x0A, 0x09, 0x0B,
       0x10, 0x12, 0x11, 0x13, 0x18, 0x1A, 0x19, 0x1B,
@@ -374,6 +383,15 @@ public struct DoryX86Decoder: Sendable {
         relative: Int64(try cursor.readSigned(byteCount: width == .word ? 2 : 4)))
     case 0xEB:
       operation = .jump(relative: Int64(try cursor.readSigned(byteCount: 1)))
+    case 0xEA:
+      guard mode != .long64 else {
+        throw DoryX86DecodeError.invalidEncoding(
+          address: address, detail: "immediate far jump is invalid in 64-bit mode")
+      }
+      operation = .farJump(
+        offset: try cursor.readUnsigned(byteCount: width == .word ? 2 : 4),
+        selector: UInt16(try cursor.readUnsigned(byteCount: 2))
+      )
     case 0x70...0x7F:
       operation = .conditionalJump(
         DoryX86Condition(rawValue: opcode - 0x70)!,
@@ -836,6 +854,30 @@ public struct DoryX86Decoder: Sendable {
     case 0x65: .gs
     default: nil
     }
+  }
+
+  private func segmentRegister(
+    encoding: UInt8,
+    address: UInt64,
+    allowCode: Bool
+  ) throws -> DoryX86SegmentRegister {
+    let segment: DoryX86SegmentRegister =
+      switch encoding {
+      case 0: .es
+      case 1: .cs
+      case 2: .ss
+      case 3: .ds
+      case 4: .fs
+      case 5: .gs
+      default:
+        throw DoryX86DecodeError.invalidEncoding(
+          address: address, detail: "invalid segment-register encoding")
+      }
+    if segment == .cs, !allowCode {
+      throw DoryX86DecodeError.invalidEncoding(
+        address: address, detail: "MOV cannot load CS")
+    }
+    return segment
   }
 }
 

@@ -168,6 +168,9 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
     load: Bool,
     address: DoryX86MemoryOperand
   )
+  case readSegment(DoryX86SegmentRegister, destination: DoryX86Operand)
+  case writeSegment(DoryX86SegmentRegister, source: DoryX86Operand)
+  case farJump(offset: UInt64, selector: UInt16)
   case push(DoryX86Operand)
   case pop(DoryX86Operand)
   case call(relative: Int64)

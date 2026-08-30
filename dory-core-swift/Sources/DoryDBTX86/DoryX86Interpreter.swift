@@ -545,6 +545,40 @@ public struct DoryX86Interpreter: Sendable {
           try executionMemory.validateWrite(at: linearAddress, byteCount: byteCount)
           try executionMemory.write(at: linearAddress, bytes: bytes)
         }
+      case .readSegment(let segment, let destination):
+        try write(
+          UInt64(segmentState(segment, state: state).selector),
+          to: destination,
+          instruction: instruction,
+          state: &state,
+          memory: executionMemory
+        )
+      case .writeSegment(let segment, let source):
+        let selector = UInt16(
+          truncatingIfNeeded: try read(
+            source, instruction: instruction, state: state, memory: executionMemory))
+        guard
+          let loaded = try loadSegment(
+            segment,
+            selector: selector,
+            mode: mode,
+            state: state,
+            memory: executionMemory
+          )
+        else { return generalProtection(at: originalRIP) }
+        setSegment(segment, value: loaded, state: &state)
+      case .farJump(let offset, let selector):
+        guard
+          let loaded = try loadSegment(
+            .cs,
+            selector: selector,
+            mode: mode,
+            state: state,
+            memory: executionMemory
+          )
+        else { return generalProtection(at: originalRIP) }
+        state.cs = loaded
+        nextRIP = offset & instructionPointerMask(mode)
       case .readModelSpecificRegister:
         guard currentPrivilegeLevel(state) == 0,
           let value = readModelSpecificRegister(
@@ -1380,6 +1414,60 @@ public struct DoryX86Interpreter: Sendable {
     case .gs: state.gs
     case .ss: state.ss
     }
+  }
+
+  private func setSegment(
+    _ register: DoryX86SegmentRegister,
+    value: DoryX86SegmentState,
+    state: inout DoryX86ArchitecturalState
+  ) {
+    switch register {
+    case .cs: state.cs = value
+    case .ds: state.ds = value
+    case .es: state.es = value
+    case .fs: state.fs = value
+    case .gs: state.gs = value
+    case .ss: state.ss = value
+    }
+  }
+
+  private func loadSegment(
+    _ register: DoryX86SegmentRegister,
+    selector: UInt16,
+    mode: DoryX86ExecutionMode,
+    state: DoryX86ArchitecturalState,
+    memory: any DoryX86Memory
+  ) throws -> DoryX86SegmentState? {
+    if mode == .real16 {
+      return .init(selector: selector, attributes: 0x93, limit: 0xffff, base: UInt64(selector) << 4)
+    }
+    if selector & 0xfffc == 0 {
+      return register == .ss || register == .cs ? nil : .init(selector: selector)
+    }
+    let table =
+      selector & 4 == 0 ? state.gdtr : .init(limit: UInt16(state.ldtr.limit), base: state.ldtr.base)
+    let offset = UInt64(selector >> 3) * 8
+    guard offset + 7 <= UInt64(table.limit) else { return nil }
+    let bytes = try memory.read(at: table.base &+ offset, byteCount: 8)
+    let raw = bytes.enumerated().reduce(UInt64(0)) {
+      $0 | UInt64($1.element) << UInt64($1.offset * 8)
+    }
+    let access = UInt8(truncatingIfNeeded: raw >> 40)
+    let type = access & 0x0f
+    guard access & 0x80 != 0, access & 0x10 != 0 else { return nil }
+    let executable = type & 8 != 0
+    guard register == .cs ? executable : (!executable || type & 2 != 0) else { return nil }
+    let privilege = UInt8((access >> 5) & 3)
+    let current = UInt8(state.cs.selector & 3)
+    guard register == .cs ? privilege == current : max(current, UInt8(selector & 3)) <= privilege
+    else { return nil }
+    var base = (raw >> 16) & 0xffff
+    base |= ((raw >> 32) & 0xff) << 16
+    base |= ((raw >> 56) & 0xff) << 24
+    var limit = UInt32(raw & 0xffff) | UInt32((raw >> 48) & 0x0f) << 16
+    if raw & (1 << 55) != 0 { limit = (limit << 12) | 0xfff }
+    let attributes = UInt16(access) | UInt16((raw >> 48) & 0xf0) << 8
+    return .init(selector: selector, attributes: attributes, limit: limit, base: base)
   }
 
   private func executeALU(

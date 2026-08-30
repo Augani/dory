@@ -561,6 +561,49 @@ import Testing
     #expect(try memory.read(at: 0x190, byteCount: 6) == [0x34, 0x12, 0xEF, 0xCD, 0xAB, 0x00])
   }
 
+  @Test func segmentLoadsAndFarJumpsTransitionExecutionModes() throws {
+    var realBytes = [UInt8](repeating: 0, count: 0x200)
+    realBytes.replaceSubrange(
+      0x100..<0x10A,
+      with: [0xB8, 0x34, 0x12, 0x8E, 0xD8, 0xEA, 0x00, 0x02, 0x78, 0x56]
+    )
+    let realMemory = DoryX86ByteArrayMemory(bytes: realBytes)
+    var realState = try DoryX86ArchitecturalState(
+      rip: 0x100,
+      cs: .init(selector: 0, attributes: 0x93, limit: 0xffff, base: 0)
+    )
+    _ = interpreter.step(state: &realState, memory: realMemory, mode: .real16)
+    _ = interpreter.step(state: &realState, memory: realMemory, mode: .real16)
+    #expect(realState.ds.selector == 0x1234)
+    #expect(realState.ds.base == 0x1_2340)
+    _ = interpreter.step(state: &realState, memory: realMemory, mode: .real16)
+    #expect(realState.cs.selector == 0x5678)
+    #expect(realState.cs.base == 0x5_6780)
+    #expect(realState.rip == 0x200)
+
+    var protectedBytes = [UInt8](repeating: 0, count: 0x300)
+    protectedBytes.replaceSubrange(
+      0x100..<0x107,
+      with: [0xEA, 0x78, 0x56, 0x34, 0x12, 0x08, 0x00]
+    )
+    protectedBytes.replaceSubrange(
+      0x208..<0x210,
+      with: [0xFF, 0xFF, 0, 0, 0, 0x9A, 0xCF, 0]
+    )
+    let protectedMemory = DoryX86ByteArrayMemory(bytes: protectedBytes)
+    var protectedState = try DoryX86ArchitecturalState(
+      rip: 0x100,
+      cs: .init(selector: 0, attributes: 0x9A, limit: 0xffff, base: 0),
+      gdtr: .init(limit: 0x0F, base: 0x200)
+    )
+    _ = interpreter.step(
+      state: &protectedState, memory: protectedMemory, mode: .protected32)
+    #expect(protectedState.cs.selector == 8)
+    #expect(protectedState.cs.attributes == 0xC09A)
+    #expect(protectedState.cs.limit == .max)
+    #expect(protectedState.rip == 0x1234_5678)
+  }
+
   private func readQuadword(_ memory: DoryX86ByteArrayMemory, at address: UInt64) -> UInt64 {
     try! memory.read(at: address, byteCount: 8).enumerated().reduce(0) {
       $0 | UInt64($1.element) << UInt64($1.offset * 8)
