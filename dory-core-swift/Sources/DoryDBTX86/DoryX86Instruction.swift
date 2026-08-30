@@ -120,6 +120,11 @@ public enum DoryX86StringOperation: String, Codable, Sendable, Hashable {
   case move, compare, store, load, scan
 }
 
+public enum DoryX86IOPort: Codable, Sendable, Hashable {
+  case immediate(UInt8)
+  case dx
+}
+
 public enum DoryX86DescriptorTableRegister: String, Codable, Sendable, Hashable {
   case global, interrupt
 }
@@ -163,6 +168,8 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
   case memoryFence(DoryX86MemoryFence)
   case processorPause
   case string(DoryX86StringOperation, width: DoryX86OperandWidth)
+  case input(port: DoryX86IOPort, width: DoryX86OperandWidth)
+  case output(port: DoryX86IOPort, width: DoryX86OperandWidth)
   case descriptorTable(
     DoryX86DescriptorTableRegister,
     load: Bool,

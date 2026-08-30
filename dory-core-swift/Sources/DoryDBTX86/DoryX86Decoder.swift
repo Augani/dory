@@ -297,6 +297,21 @@ public struct DoryX86Decoder: Sendable {
         default: .scan
         }
       operation = .string(stringOperation, width: elementWidth)
+    case 0xE4, 0xE5, 0xE6, 0xE7:
+      let port = DoryX86IOPort.immediate(UInt8(try cursor.readUnsigned(byteCount: 1)))
+      let ioWidth: DoryX86OperandWidth =
+        opcode & 1 == 0 ? .byte : ioOperandWidth(mode: mode, prefixes: prefixes)
+      operation =
+        opcode & 2 == 0
+        ? .input(port: port, width: ioWidth)
+        : .output(port: port, width: ioWidth)
+    case 0xEC, 0xED, 0xEE, 0xEF:
+      let ioWidth: DoryX86OperandWidth =
+        opcode & 1 == 0 ? .byte : ioOperandWidth(mode: mode, prefixes: prefixes)
+      operation =
+        opcode & 2 == 0
+        ? .input(port: .dx, width: ioWidth)
+        : .output(port: .dx, width: ioWidth)
     case 0xC6, 0xC7:
       let operandWidth: DoryX86OperandWidth = opcode == 0xC6 ? .byte : width
       let operands = try decodeModRM(
@@ -680,6 +695,18 @@ public struct DoryX86Decoder: Sendable {
   ) -> DoryX86OperandWidth {
     if mode == .long64 { return prefixes.operandSizeOverride ? .word : .quadword }
     return operandWidth(mode: mode, prefixes: prefixes)
+  }
+
+  private func ioOperandWidth(
+    mode: DoryX86ExecutionMode,
+    prefixes: DoryX86InstructionPrefixes
+  ) -> DoryX86OperandWidth {
+    switch (mode, prefixes.operandSizeOverride) {
+    case (.real16, false): .word
+    case (.real16, true): .doubleword
+    case (_, false): .doubleword
+    case (_, true): .word
+    }
   }
 
   private func register(_ lowBits: Int, extensionBit: Bool) -> DoryX86GeneralRegister {

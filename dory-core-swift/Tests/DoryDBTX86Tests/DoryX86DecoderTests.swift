@@ -368,4 +368,23 @@ import Testing
         == .farReturn(popBytes: 8, width: .doubleword)
     )
   }
+
+  @Test func decodesScalarPortIOWithArchitecturalWidths() throws {
+    #expect(
+      try decoder.decode([0xE4, 0x60], at: 0x700, mode: .long64).operation
+        == .input(port: .immediate(0x60), width: .byte)
+    )
+    #expect(
+      try decoder.decode([0x66, 0xED], at: 0x700, mode: .long64).operation
+        == .input(port: .dx, width: .word)
+    )
+    #expect(
+      try decoder.decode([0x48, 0xEF], at: 0x700, mode: .long64).operation
+        == .output(port: .dx, width: .doubleword)
+    )
+    #expect(
+      try decoder.decode([0xE7, 0x80], at: 0x700, mode: .real16).operation
+        == .output(port: .immediate(0x80), width: .word)
+    )
+  }
 }

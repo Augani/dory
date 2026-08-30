@@ -57,14 +57,16 @@ public struct DoryX86Interpreter: Sendable {
     state: inout DoryX86ArchitecturalState,
     memory: any DoryX86Memory,
     mode: DoryX86ExecutionMode,
-    pagingUnit: DoryX86PagingUnit? = nil
+    pagingUnit: DoryX86PagingUnit? = nil,
+    ioBus: (any DoryX86IOBus)? = nil
   ) -> DoryX86InterpreterResult {
     var candidate = state
     let result = executeStep(
       state: &candidate,
       memory: memory,
       mode: mode,
-      pagingUnit: pagingUnit
+      pagingUnit: pagingUnit,
+      ioBus: ioBus
     )
     switch result {
     case .retired, .yielded, .halted:
@@ -82,7 +84,8 @@ public struct DoryX86Interpreter: Sendable {
     state: inout DoryX86ArchitecturalState,
     memory: any DoryX86Memory,
     mode: DoryX86ExecutionMode,
-    pagingUnit: DoryX86PagingUnit?
+    pagingUnit: DoryX86PagingUnit?,
+    ioBus: (any DoryX86IOBus)?
   ) -> DoryX86InterpreterResult {
     let originalRIP = state.rip
     let executionMemory: any DoryX86Memory =
@@ -443,6 +446,45 @@ public struct DoryX86Interpreter: Sendable {
           state.rip = originalRIP
           return .yielded(instruction)
         }
+      case .input(let portOperand, let width):
+        let port = ioPort(portOperand, state: state)
+        guard let ioBus,
+          try permitsPortIO(
+            port: port,
+            width: width,
+            mode: mode,
+            state: state,
+            memory: executionMemory
+          )
+        else {
+          return generalProtection(at: originalRIP)
+        }
+        let value = UInt64(try ioBus.read(port: port, width: width))
+        try write(
+          value,
+          to: .register(.rax, width: width),
+          instruction: instruction,
+          state: &state,
+          memory: executionMemory
+        )
+      case .output(let portOperand, let width):
+        let port = ioPort(portOperand, state: state)
+        guard let ioBus,
+          try permitsPortIO(
+            port: port,
+            width: width,
+            mode: mode,
+            state: state,
+            memory: executionMemory
+          )
+        else {
+          return generalProtection(at: originalRIP)
+        }
+        try ioBus.write(
+          port: port,
+          value: UInt32(truncatingIfNeeded: state.registers.rax & mask(width)),
+          width: width
+        )
       case .push(let operand):
         let value = try read(
           operand, instruction: instruction, state: state, memory: executionMemory)
@@ -860,6 +902,44 @@ public struct DoryX86Interpreter: Sendable {
 
   private func currentPrivilegeLevel(_ state: DoryX86ArchitecturalState) -> UInt8 {
     UInt8(state.cs.selector & 3)
+  }
+
+  private func ioPort(
+    _ operand: DoryX86IOPort,
+    state: DoryX86ArchitecturalState
+  ) -> UInt16 {
+    switch operand {
+    case .immediate(let port): UInt16(port)
+    case .dx: UInt16(truncatingIfNeeded: state.registers.rdx)
+    }
+  }
+
+  private func permitsPortIO(
+    port: UInt16,
+    width: DoryX86OperandWidth,
+    mode: DoryX86ExecutionMode,
+    state: DoryX86ArchitecturalState,
+    memory: any DoryX86Memory
+  ) throws -> Bool {
+    guard width != .quadword else { return false }
+    if mode == .real16 { return true }
+    let privilege = currentPrivilegeLevel(state)
+    let ioPrivilege = UInt8((state.rflags.rawValue >> 12) & 3)
+    if privilege <= ioPrivilege { return true }
+
+    let taskType = UInt8(truncatingIfNeeded: state.tr.attributes) & 0x0f
+    guard taskType == 0x9 || taskType == 0xB, state.tr.limit >= 0x67 else { return false }
+    let mapBaseBytes = try memory.read(at: state.tr.base &+ 0x66, byteCount: 2)
+    let mapBase = fromLittleEndian(mapBaseBytes)
+    for byteOffset in 0..<width.byteCount {
+      let bit = UInt32(port) + UInt32(byteOffset)
+      guard bit <= UInt32(UInt16.max) else { return false }
+      let bitmapOffset = mapBase + UInt64(bit / 8)
+      guard bitmapOffset <= UInt64(state.tr.limit) else { return false }
+      let permissions = try memory.read(at: state.tr.base &+ bitmapOffset, byteCount: 1)[0]
+      if permissions & (UInt8(1) << UInt8(bit & 7)) != 0 { return false }
+    }
+    return true
   }
 
   private func generalProtection(at instructionPointer: UInt64) -> DoryX86InterpreterResult {

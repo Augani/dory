@@ -1,4 +1,5 @@
 import Dispatch
+import Foundation
 import Testing
 
 @testable import DoryDBTX86
@@ -707,6 +708,71 @@ import Testing
     #expect(exception.kind == .generalProtection)
   }
 
+  @Test func scalarPortIOUsesTheDeviceBusAndAccumulatorWidths() throws {
+    let program: [UInt8] = [0xE4, 0x60, 0xE6, 0x61, 0x66, 0xED, 0xEF]
+    let memory = DoryX86ByteArrayMemory(
+      baseAddress: 0x1_000,
+      bytes: program + .init(repeating: 0, count: 16)
+    )
+    let bus = RecordingIOBus(readValues: [0x60: 0xA5, 0x64: 0xBEEF])
+    var state = try DoryX86ArchitecturalState(
+      registers: .init(rax: 0xAABB_CCDD_1122_3344, rdx: 0x64),
+      rip: 0x1_000,
+      cs: .init(selector: 0, attributes: 0xC09A, limit: .max)
+    )
+    state.control.cr0 |= 1
+
+    _ = interpreter.step(
+      state: &state, memory: memory, mode: .protected32, ioBus: bus)
+    #expect(state.registers.rax == 0xAABB_CCDD_1122_33A5)
+    _ = interpreter.step(
+      state: &state, memory: memory, mode: .protected32, ioBus: bus)
+    _ = interpreter.step(
+      state: &state, memory: memory, mode: .protected32, ioBus: bus)
+    #expect(state.registers.rax == 0xAABB_CCDD_1122_BEEF)
+    _ = interpreter.step(
+      state: &state, memory: memory, mode: .protected32, ioBus: bus)
+
+    #expect(
+      bus.events
+        == [
+          .read(port: 0x60, width: .byte),
+          .write(port: 0x61, value: 0xA5, width: .byte),
+          .read(port: 0x64, width: .word),
+          .write(port: 0x64, value: 0x1122_BEEF, width: .doubleword),
+        ]
+    )
+  }
+
+  @Test func tssIOBitmapControlsUnprivilegedPortAccess() throws {
+    var bytes = [UInt8](repeating: 0, count: 0x400)
+    bytes.replaceSubrange(0x100..<0x104, with: [0xE4, 0x60, 0xE4, 0x61])
+    bytes.replaceSubrange(0x266..<0x268, with: [0x68, 0])
+    bytes[0x274] = 0b0000_0010
+    let memory = DoryX86ByteArrayMemory(bytes: bytes)
+    let bus = RecordingIOBus(readValues: [0x60: 0x11, 0x61: 0x22])
+    var state = try DoryX86ArchitecturalState(
+      rip: 0x100,
+      cs: .init(selector: 3, attributes: 0xC0FA, limit: .max),
+      tr: .init(selector: 8, attributes: 0x008B, limit: 0x100, base: 0x200)
+    )
+    state.control.cr0 |= 1
+
+    _ = interpreter.step(
+      state: &state, memory: memory, mode: .protected32, ioBus: bus)
+    #expect(state.registers.rax == 0x11)
+    #expect(state.rip == 0x102)
+    let denied = interpreter.step(
+      state: &state, memory: memory, mode: .protected32, ioBus: bus)
+    guard case .exception(let exception) = denied else {
+      Issue.record("denied TSS I/O-bitmap port did not fault")
+      return
+    }
+    #expect(exception.kind == .generalProtection)
+    #expect(state.rip == 0x102)
+    #expect(bus.events == [.read(port: 0x60, width: .byte)])
+  }
+
   private func readQuadword(_ memory: DoryX86ByteArrayMemory, at address: UInt64) -> UInt64 {
     try! memory.read(at: address, byteCount: 8).enumerated().reduce(0) {
       $0 | UInt64($1.element) << UInt64($1.offset * 8)
@@ -715,5 +781,40 @@ import Testing
 
   private func littleEndian(_ value: UInt64) -> [UInt8] {
     (0..<8).map { UInt8(truncatingIfNeeded: value >> UInt64($0 * 8)) }
+  }
+}
+
+private enum IOEvent: Sendable, Hashable {
+  case read(port: UInt16, width: DoryX86OperandWidth)
+  case write(port: UInt16, value: UInt32, width: DoryX86OperandWidth)
+}
+
+private final class RecordingIOBus: DoryX86IOBus, @unchecked Sendable {
+  private let lock = NSLock()
+  private let readValues: [UInt16: UInt32]
+  private var recordedEvents: [IOEvent] = []
+
+  init(readValues: [UInt16: UInt32]) {
+    self.readValues = readValues
+  }
+
+  var events: [IOEvent] {
+    lock.withLock { recordedEvents }
+  }
+
+  func read(port: UInt16, width: DoryX86OperandWidth) throws -> UInt32 {
+    try lock.withLock {
+      recordedEvents.append(.read(port: port, width: width))
+      guard let value = readValues[port] else {
+        throw DoryX86IOBusError.unmappedPort(port, width: width)
+      }
+      return value
+    }
+  }
+
+  func write(port: UInt16, value: UInt32, width: DoryX86OperandWidth) {
+    lock.withLock {
+      recordedEvents.append(.write(port: port, value: value, width: width))
+    }
   }
 }
