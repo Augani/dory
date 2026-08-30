@@ -104,6 +104,13 @@ public protocol DoryPCUSBDevice: AnyObject, Sendable {
   func cancelAll()
 }
 
+/// Optional edge used by asynchronous devices to resume a transfer ring that previously returned
+/// `notReady`. The callback is controller-owned and must never be invoked while holding a device
+/// implementation's internal lock.
+public protocol DoryPCUSBTransferReadyNotifying: AnyObject, Sendable {
+  func setTransferReadyHandler(_ handler: (@Sendable () -> Void)?)
+}
+
 public final class DoryPCUSBRecordingDevice: DoryPCUSBDevice, @unchecked Sendable {
   public let speed: DoryPCXHCIPortSpeed
   private let lock = NSLock()

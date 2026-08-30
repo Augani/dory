@@ -11,7 +11,9 @@ public enum DoryPCUSBHIDError: Error, Sendable, Equatable {
 }
 
 /// USB HID 1.11 boot devices for firmware and stock Linux input paths.
-public final class DoryPCUSBHIDDevice: DoryPCUSBDevice, @unchecked Sendable {
+public final class DoryPCUSBHIDDevice: DoryPCUSBDevice, DoryPCUSBTransferReadyNotifying,
+  @unchecked Sendable
+{
   public let speed: DoryPCXHCIPortSpeed = .high
   public let profile: DoryPCUSBHIDProfile
   public let maximumQueuedReports: Int
@@ -21,6 +23,7 @@ public final class DoryPCUSBHIDDevice: DoryPCUSBDevice, @unchecked Sendable {
   private var configuration: UInt8 = 0
   private var idleRate: UInt8 = 0
   private var bootProtocol = true
+  private var transferReadyHandler: (@Sendable () -> Void)?
 
   public init(profile: DoryPCUSBHIDProfile, maximumQueuedReports: Int = 1_024) {
     precondition(maximumQueuedReports > 0)
@@ -37,12 +40,18 @@ public final class DoryPCUSBHIDDevice: DoryPCUSBDevice, @unchecked Sendable {
         actual: report.count
       )
     }
-    try lock.withLock {
+    let handler = try lock.withLock {
       guard reports.count < maximumQueuedReports else {
         throw DoryPCUSBHIDError.queueFull(maximum: maximumQueuedReports)
       }
       reports.append(report)
+      return transferReadyHandler
     }
+    handler?()
+  }
+
+  public func setTransferReadyHandler(_ handler: (@Sendable () -> Void)?) {
+    lock.withLock { transferReadyHandler = handler }
   }
 
   public func perform(_ transfer: DoryPCUSBTransfer) -> DoryPCUSBTransferResult {

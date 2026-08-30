@@ -7,7 +7,9 @@ public enum DoryPCUSBUVCError: Error, Sendable, Equatable {
 }
 
 /// UVC 1.1 YUY2 camera backed by frames from Dory's separately authorized media bridge.
-public final class DoryPCUSBUVCDevice: DoryPCUSBDevice, @unchecked Sendable {
+public final class DoryPCUSBUVCDevice: DoryPCUSBDevice, DoryPCUSBTransferReadyNotifying,
+  @unchecked Sendable
+{
   public let speed: DoryPCXHCIPortSpeed = .high
   public let width: UInt16
   public let height: UInt16
@@ -22,6 +24,7 @@ public final class DoryPCUSBUVCDevice: DoryPCUSBDevice, @unchecked Sendable {
   private var streamingAlternateSetting: UInt8 = 0
   private var probeControl: [UInt8]
   private var commitControl: [UInt8]
+  private var transferReadyHandler: (@Sendable () -> Void)?
 
   public init(
     width: UInt16 = 1_280,
@@ -50,12 +53,30 @@ public final class DoryPCUSBUVCDevice: DoryPCUSBDevice, @unchecked Sendable {
     guard bytes.count == frameByteCount else {
       throw DoryPCUSBUVCError.invalidFrameBytes(expected: frameByteCount, actual: bytes.count)
     }
-    try lock.withLock {
+    let handler = try lock.withLock {
       guard frames.count < maximumQueuedFrames else {
         throw DoryPCUSBUVCError.queueFull(maximum: maximumQueuedFrames)
       }
       frames.append(bytes)
+      return transferReadyHandler
     }
+    handler?()
+  }
+
+  public func enqueueNewestYUY2Frame(_ bytes: [UInt8]) throws {
+    guard bytes.count == frameByteCount else {
+      throw DoryPCUSBUVCError.invalidFrameBytes(expected: frameByteCount, actual: bytes.count)
+    }
+    let handler = lock.withLock {
+      if frames.count == maximumQueuedFrames { frames.removeFirst() }
+      frames.append(bytes)
+      return transferReadyHandler
+    }
+    handler?()
+  }
+
+  public func setTransferReadyHandler(_ handler: (@Sendable () -> Void)?) {
+    lock.withLock { transferReadyHandler = handler }
   }
 
   public func perform(_ transfer: DoryPCUSBTransfer) -> DoryPCUSBTransferResult {

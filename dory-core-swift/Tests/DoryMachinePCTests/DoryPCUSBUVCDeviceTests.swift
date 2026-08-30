@@ -1,9 +1,12 @@
 import DoryMachinePC
+import Foundation
 import Testing
 
 @Suite struct DoryPCUSBUVCDeviceTests {
   @Test func cameraEnumeratesAndPacketizesBoundedYUY2Frames() throws {
     let camera = try DoryPCUSBUVCDevice(width: 2, height: 1, framesPerSecond: 30)
+    let readiness = UVCReadinessCounter()
+    camera.setTransferReadyHandler { readiness.increment() }
     let descriptorSetup = try DoryPCUSBSetupPacket(bytes: [0x80, 6, 0, 2, 0, 0, 0xFF, 0])
     let descriptor = camera.perform(
       try .init(
@@ -20,6 +23,7 @@ import Testing
         try .init(type: .control, direction: .out, endpoint: 0, setup: setInterface)
       ).status == .success)
     try camera.enqueueYUY2Frame([1, 2, 3, 4])
+    #expect(readiness.value == 1)
     let packet = camera.perform(
       try .init(type: .isochronous, direction: .in, endpoint: 1, maximumResponseBytes: 6)
     )
@@ -31,4 +35,11 @@ import Testing
         try .init(type: .isochronous, direction: .in, endpoint: 1, maximumResponseBytes: 6)
       ).status == .notReady)
   }
+}
+
+private final class UVCReadinessCounter: @unchecked Sendable {
+  private let lock = NSLock()
+  private var count = 0
+  var value: Int { lock.withLock { count } }
+  func increment() { lock.withLock { count += 1 } }
 }

@@ -144,6 +144,7 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
   private var ports = [UInt32](repeating: portPower, count: portCount)
   private var devices: [Int: any DoryPCUSBDevice] = [:]
   private var slots: [UInt8: Slot] = [:]
+  private var processingEndpoints: Set<UInt16> = []
 
   public init(
     address: DoryPCPCIAddress = DoryPCV1ABI.xhciPCIAddress,
@@ -196,8 +197,13 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
     }
     do {
       try connect(port: port, speed: device.speed)
+      (device as? any DoryPCUSBTransferReadyNotifying)?.setTransferReadyHandler {
+        [weak self] in
+        self?.wakeTransfers(port: port)
+      }
     } catch {
       _ = lock.withLock { devices.removeValue(forKey: port - 1) }
+      (device as? any DoryPCUSBTransferReadyNotifying)?.setTransferReadyHandler(nil)
       throw error
     }
   }
@@ -213,6 +219,7 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
       ports[index] = value
       return (old & Self.portConnectStatus != 0, device)
     }
+    (result.1 as? any DoryPCUSBTransferReadyNotifying)?.setTransferReadyHandler(nil)
     result.1?.cancelAll()
     if result.0 { postPortStatusChange(port: port) }
   }
@@ -428,6 +435,7 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
       deviceContextBaseAddress = 0
       configuredSlots = 0
       slots.removeAll(keepingCapacity: true)
+      processingEndpoints.removeAll(keepingCapacity: true)
       interrupterManagement = 0
       interrupterModeration = 4_000
       eventRingSegmentTableSize = 0
@@ -495,6 +503,9 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
   }
 
   private func processTransferRing(slotID: UInt8, dci: UInt8) {
+    let executionKey = UInt16(slotID) << 8 | UInt16(dci)
+    guard lock.withLock({ processingEndpoints.insert(executionKey).inserted }) else { return }
+    defer { _ = lock.withLock { processingEndpoints.remove(executionKey) } }
     for _ in 0..<4_096 {
       let state = lock.withLock {
         () -> (
@@ -663,6 +674,16 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
         eventData: descriptor.eventData != nil
       )
     }
+  }
+
+  private func wakeTransfers(port: Int) {
+    let targets: [(UInt8, UInt8)] = lock.withLock {
+      slots.compactMap { slotID, slot -> [(UInt8, UInt8)]? in
+        guard slot.rootPort == UInt8(port) else { return nil }
+        return slot.endpoints.keys.sorted().map { (slotID, $0) }
+      }.flatMap { $0 }
+    }
+    for (slotID, dci) in targets { processTransferRing(slotID: slotID, dci: dci) }
   }
 
   private func processControlTransfer(

@@ -1,4 +1,5 @@
 import DoryMachinePC
+import Foundation
 import Testing
 
 @Suite struct DoryPCXHCITests {
@@ -341,6 +342,40 @@ import Testing
     try xhci.disconnect(port: 2)
     #expect(device.cancellationCount == 2)
   }
+
+  @Test func asynchronousDeviceReadinessIsScopedToItsAttachment() throws {
+    let xhci = try DoryPCXHCIController()
+    let device = ReadyNotifyingUSBDevice()
+
+    try xhci.connect(port: 3, device: device)
+    #expect(device.hasHandler)
+    device.signalReady()
+    try xhci.disconnect(port: 3)
+    #expect(!device.hasHandler)
+    #expect(device.cancellationCount == 1)
+  }
+}
+
+private final class ReadyNotifyingUSBDevice: DoryPCUSBDevice, DoryPCUSBTransferReadyNotifying,
+  @unchecked Sendable
+{
+  let speed: DoryPCXHCIPortSpeed = .high
+  private let lock = NSLock()
+  private var handler: (@Sendable () -> Void)?
+  private var cancellations = 0
+
+  var hasHandler: Bool { lock.withLock { handler != nil } }
+  var cancellationCount: Int { lock.withLock { cancellations } }
+
+  func perform(_ transfer: DoryPCUSBTransfer) -> DoryPCUSBTransferResult {
+    try! .init(status: .notReady)
+  }
+  func reset() {}
+  func cancelAll() { lock.withLock { cancellations += 1 } }
+  func setTransferReadyHandler(_ handler: (@Sendable () -> Void)?) {
+    lock.withLock { self.handler = handler }
+  }
+  func signalReady() { lock.withLock { handler }?() }
 }
 
 private func read8(_ machine: DoryPCDirectKernelMachine, _ address: UInt64) throws -> UInt8 {
