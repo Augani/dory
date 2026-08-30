@@ -702,6 +702,23 @@ public struct DoryX86Interpreter: Sendable {
         )
         state.floatingPoint.ymm[Int(destination)] = try .init(
           bytes: registerBytes, expectedByteCount: 32)
+      case .vectorIntegerBinary(let operation, let laneWidth, let destination, let source):
+        let rhs = try readVectorBytes(
+          source,
+          byteCount: 16,
+          instruction: instruction,
+          state: state,
+          memory: executionMemory
+        )
+        var registerBytes = state.floatingPoint.ymm[Int(destination)].bytes
+        executeVectorIntegerBinary(
+          operation,
+          laneWidth: laneWidth,
+          destination: &registerBytes,
+          source: rhs
+        )
+        state.floatingPoint.ymm[Int(destination)] = try .init(
+          bytes: registerBytes, expectedByteCount: 32)
       case .processorPause:
         break
       case .string(let operation, let width):
@@ -1516,6 +1533,31 @@ public struct DoryX86Interpreter: Sendable {
     case .maximum:
       if lhs.isNaN || rhs.isNaN || lhs == rhs { return rhs }
       return lhs > rhs ? lhs : rhs
+    }
+  }
+
+  private func executeVectorIntegerBinary(
+    _ operation: DoryX86VectorIntegerOperation,
+    laneWidth: DoryX86VectorLaneWidth,
+    destination: inout [UInt8],
+    source: [UInt8]
+  ) {
+    let byteCount = Int(laneWidth.rawValue)
+    let laneMask = byteCount == 8 ? UInt64.max : (UInt64(1) << UInt64(byteCount * 8)) - 1
+    let signBit = UInt64(1) << UInt64(byteCount * 8 - 1)
+    for offset in stride(from: 0, to: 16, by: byteCount) {
+      let lhs = fromLittleEndian(Array(destination[offset..<offset + byteCount]))
+      let rhs = fromLittleEndian(Array(source[offset..<offset + byteCount]))
+      let result: UInt64 =
+        switch operation {
+        case .add: (lhs &+ rhs) & laneMask
+        case .subtract: (lhs &- rhs) & laneMask
+        case .equal: lhs == rhs ? laneMask : 0
+        case .greaterThan: (lhs ^ signBit) > (rhs ^ signBit) ? laneMask : 0
+        }
+      for index in 0..<byteCount {
+        destination[offset + index] = UInt8(truncatingIfNeeded: result >> UInt64(index * 8))
+      }
     }
   }
 

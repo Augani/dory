@@ -580,5 +580,15 @@ import Testing
         == .vectorFloatingBinary(
           .add, format: .scalarDouble, destination: 0, source: .register(1))
     )
+    #expect(
+      try decoder.decode([0x66, 0x0F, 0xFC, 0xC1], at: 0x1000, mode: .long64).operation
+        == .vectorIntegerBinary(
+          .add, laneWidth: .byte, destination: 0, source: .register(1))
+    )
+    #expect(
+      try decoder.decode([0x66, 0x0F, 0x66, 0xC1], at: 0x1000, mode: .long64).operation
+        == .vectorIntegerBinary(
+          .greaterThan, laneWidth: .doubleword, destination: 0, source: .register(1))
+    )
   }
 }

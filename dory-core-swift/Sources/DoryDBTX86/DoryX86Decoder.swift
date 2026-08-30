@@ -708,6 +708,37 @@ public struct DoryX86Decoder: Sendable {
           destination: vectorRegister(operands.reg),
           source: vectorOperand(operands.rm)
         )
+      case 0x64...0x66, 0x74...0x76, 0xD4, 0xF8...0xFE:
+        guard prefixes.operandSizeOverride, prefixes.repeatPrefix == nil else {
+          throw DoryX86DecodeError.invalidEncoding(
+            address: address, detail: "packed integer XMM operation requires 66 prefix")
+        }
+        let operands = try decodeModRM(
+          cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
+        let integerOperation: DoryX86VectorIntegerOperation
+        let laneWidth: DoryX86VectorLaneWidth
+        switch second {
+        case 0x64: (integerOperation, laneWidth) = (.greaterThan, .byte)
+        case 0x65: (integerOperation, laneWidth) = (.greaterThan, .word)
+        case 0x66: (integerOperation, laneWidth) = (.greaterThan, .doubleword)
+        case 0x74: (integerOperation, laneWidth) = (.equal, .byte)
+        case 0x75: (integerOperation, laneWidth) = (.equal, .word)
+        case 0x76: (integerOperation, laneWidth) = (.equal, .doubleword)
+        case 0xD4: (integerOperation, laneWidth) = (.add, .quadword)
+        case 0xF8: (integerOperation, laneWidth) = (.subtract, .byte)
+        case 0xF9: (integerOperation, laneWidth) = (.subtract, .word)
+        case 0xFA: (integerOperation, laneWidth) = (.subtract, .doubleword)
+        case 0xFB: (integerOperation, laneWidth) = (.subtract, .quadword)
+        case 0xFC: (integerOperation, laneWidth) = (.add, .byte)
+        case 0xFD: (integerOperation, laneWidth) = (.add, .word)
+        default: (integerOperation, laneWidth) = (.add, .doubleword)
+        }
+        operation = .vectorIntegerBinary(
+          integerOperation,
+          laneWidth: laneWidth,
+          destination: vectorRegister(operands.reg),
+          source: vectorOperand(operands.rm)
+        )
       case 0x6E:
         guard prefixes.operandSizeOverride, prefixes.repeatPrefix == nil else {
           throw DoryX86DecodeError.invalidEncoding(

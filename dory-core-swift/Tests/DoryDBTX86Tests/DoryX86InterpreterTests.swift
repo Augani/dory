@@ -571,6 +571,63 @@ import Testing
     #expect(state.floatingPoint.ymm[0].bytes[16..<32] == Array(repeating: 0xAA, count: 16)[...])
   }
 
+  @Test func sse2PackedIntegerArithmeticAndComparisonsOperatePerLane() throws {
+    let memory = DoryX86ByteArrayMemory(
+      baseAddress: 0x1000,
+      bytes: [
+        0x66, 0x0F, 0xFC, 0xC1,
+        0x66, 0x0F, 0xF9, 0xC1,
+        0x66, 0x0F, 0x66, 0xC1,
+      ] + .init(repeating: 0, count: 16)
+    )
+    var floatingPoint = try DoryX86FloatingPointState()
+    floatingPoint.ymm[0] = try .init(
+      bytes: [0xFF, 1] + .init(repeating: 0, count: 14) + .init(repeating: 0xAA, count: 16),
+      expectedByteCount: 32
+    )
+    floatingPoint.ymm[1] = try .init(
+      bytes: [1, 2] + .init(repeating: 0, count: 30), expectedByteCount: 32)
+    var state = try DoryX86ArchitecturalState(
+      rip: 0x1000,
+      cs: .init(selector: 0x38, attributes: 0xA09B, limit: .max),
+      floatingPoint: floatingPoint
+    )
+
+    guard case .retired = interpreter.step(state: &state, memory: memory, mode: .long64) else {
+      Issue.record("PADDB unexpectedly faulted")
+      return
+    }
+    #expect(state.floatingPoint.ymm[0].bytes.prefix(2) == [0, 3][...])
+    #expect(state.floatingPoint.ymm[0].bytes[16..<32] == Array(repeating: 0xAA, count: 16)[...])
+
+    var words = [UInt8](repeating: 0, count: 32)
+    words.replaceSubrange(0..<2, with: [0, 0x80])
+    var wordSource = [UInt8](repeating: 0, count: 32)
+    wordSource.replaceSubrange(0..<2, with: [1, 0])
+    state.floatingPoint.ymm[0] = try .init(bytes: words, expectedByteCount: 32)
+    state.floatingPoint.ymm[1] = try .init(bytes: wordSource, expectedByteCount: 32)
+    guard case .retired = interpreter.step(state: &state, memory: memory, mode: .long64) else {
+      Issue.record("PSUBW unexpectedly faulted")
+      return
+    }
+    #expect(state.floatingPoint.ymm[0].bytes.prefix(2) == [0xFF, 0x7F][...])
+
+    var doublewords = [UInt8](repeating: 0, count: 32)
+    doublewords.replaceSubrange(0..<4, with: [0xFF, 0xFF, 0xFF, 0xFF])
+    doublewords.replaceSubrange(4..<8, with: [2, 0, 0, 0])
+    var doublewordSource = [UInt8](repeating: 0, count: 32)
+    doublewordSource.replaceSubrange(0..<4, with: [1, 0, 0, 0])
+    doublewordSource.replaceSubrange(4..<8, with: [1, 0, 0, 0])
+    state.floatingPoint.ymm[0] = try .init(bytes: doublewords, expectedByteCount: 32)
+    state.floatingPoint.ymm[1] = try .init(bytes: doublewordSource, expectedByteCount: 32)
+    guard case .retired = interpreter.step(state: &state, memory: memory, mode: .long64) else {
+      Issue.record("PCMPGTD unexpectedly faulted")
+      return
+    }
+    #expect(state.floatingPoint.ymm[0].bytes[0..<4] == [0, 0, 0, 0][...])
+    #expect(state.floatingPoint.ymm[0].bytes[4..<8] == [0xFF, 0xFF, 0xFF, 0xFF][...])
+  }
+
   @Test func byteExtendMoveUsesTheWideModRMDestinationRegister() throws {
     var bytes = [UInt8](repeating: 0, count: 0x20)
     bytes.replaceSubrange(0..<4, with: [0x0F, 0xB6, 0x71, 0x02])

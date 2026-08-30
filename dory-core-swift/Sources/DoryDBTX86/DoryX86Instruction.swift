@@ -144,6 +144,17 @@ public enum DoryX86VectorFloatingFormat: String, Codable, Sendable, Hashable {
   case packedSingle, packedDouble, scalarSingle, scalarDouble
 }
 
+public enum DoryX86VectorIntegerOperation: String, Codable, Sendable, Hashable {
+  case add, subtract, equal, greaterThan
+}
+
+public enum DoryX86VectorLaneWidth: UInt8, Codable, Sendable, Hashable {
+  case byte = 1
+  case word = 2
+  case doubleword = 4
+  case quadword = 8
+}
+
 public enum DoryX86StringOperation: String, Codable, Sendable, Hashable {
   case move, compare, store, load, scan, input, output
 }
@@ -237,6 +248,12 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
   case vectorFloatingBinary(
     DoryX86VectorFloatingOperation,
     format: DoryX86VectorFloatingFormat,
+    destination: UInt8,
+    source: DoryX86VectorOperand
+  )
+  case vectorIntegerBinary(
+    DoryX86VectorIntegerOperation,
+    laneWidth: DoryX86VectorLaneWidth,
     destination: UInt8,
     source: DoryX86VectorOperand
   )
