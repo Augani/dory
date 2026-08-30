@@ -24,7 +24,7 @@ public struct DoryIRMemoryAddress: Codable, Sendable, Hashable {
   public let index: DoryIRRegister?
   public let scale: UInt8
   public let displacement: Int64
-  public let instructionRelative: Bool
+  public let instructionRelativeBase: UInt64?
   public let addressWidth: DoryIRIntegerWidth
   public let segment: String?
 
@@ -33,7 +33,7 @@ public struct DoryIRMemoryAddress: Codable, Sendable, Hashable {
     index: DoryIRRegister? = nil,
     scale: UInt8 = 1,
     displacement: Int64 = 0,
-    instructionRelative: Bool = false,
+    instructionRelativeBase: UInt64? = nil,
     addressWidth: DoryIRIntegerWidth,
     segment: String? = nil
   ) {
@@ -41,7 +41,7 @@ public struct DoryIRMemoryAddress: Codable, Sendable, Hashable {
     self.index = index
     self.scale = scale
     self.displacement = displacement
-    self.instructionRelative = instructionRelative
+    self.instructionRelativeBase = instructionRelativeBase
     self.addressWidth = addressWidth
     self.segment = segment
   }
@@ -171,16 +171,47 @@ public struct DoryX86IRTranslator: Sendable {
     case .noOperation, .processorPause, .memoryFence:
       return ([], nil)
     case .move(let destination, let source):
-      return ([.copy(destination: operand(destination), source: operand(source))], nil)
+      return (
+        [
+          .copy(
+            destination: operand(
+              destination,
+              instructionRelativeBase: instruction.nextInstructionAddress
+            ),
+            source: operand(
+              source,
+              instructionRelativeBase: instruction.nextInstructionAddress
+            )
+          )
+        ],
+        nil
+      )
     case .loadEffectiveAddress(let destination, let source):
-      return ([.effectiveAddress(destination: operand(destination), address: address(source))], nil)
+      return (
+        [
+          .effectiveAddress(
+            destination: operand(destination),
+            address: address(
+              source,
+              instructionRelativeBase: instruction.nextInstructionAddress
+            )
+          )
+        ],
+        nil
+      )
     case .alu(let operation, let destination, let source):
       return (
         [
           .binary(
             DoryIRBinaryOperation(rawValue: operation.rawValue)!,
-            destination: operand(destination),
-            source: operand(source),
+            destination: operand(
+              destination,
+              instructionRelativeBase: instruction.nextInstructionAddress
+            ),
+            source: operand(
+              source,
+              instructionRelativeBase: instruction.nextInstructionAddress
+            ),
             writesDestination: operation != .compare && operation != .test
           )
         ],
@@ -191,7 +222,10 @@ public struct DoryX86IRTranslator: Sendable {
         [
           .unary(
             DoryIRUnaryOperation(rawValue: operation.rawValue)!,
-            operand: operand(source)
+            operand: operand(
+              source,
+              instructionRelativeBase: instruction.nextInstructionAddress
+            )
           )
         ],
         nil
@@ -228,14 +262,20 @@ public struct DoryX86IRTranslator: Sendable {
     )
   }
 
-  private func operand(_ source: DoryX86Operand) -> DoryIROperand {
+  private func operand(
+    _ source: DoryX86Operand,
+    instructionRelativeBase: UInt64? = nil
+  ) -> DoryIROperand {
     switch source {
     case .register(let generalRegister, let width):
       .register(irRegister(generalRegister, width: irWidth(width)))
     case .highByteRegister(let register):
       .register(.init(bank: "x86.high8", index: registerIndex(register), width: .i8))
     case .memory(let memory):
-      .memory(address(memory), width: irWidth(memory.width))
+      .memory(
+        address(memory, instructionRelativeBase: instructionRelativeBase),
+        width: irWidth(memory.width)
+      )
     case .immediate(let value, let width):
       .immediate(value, width: irWidth(width))
     case .relative(let value, let width):
@@ -243,13 +283,16 @@ public struct DoryX86IRTranslator: Sendable {
     }
   }
 
-  private func address(_ source: DoryX86MemoryOperand) -> DoryIRMemoryAddress {
+  private func address(
+    _ source: DoryX86MemoryOperand,
+    instructionRelativeBase: UInt64?
+  ) -> DoryIRMemoryAddress {
     .init(
       base: source.base.map { irRegister($0, width: irWidth(source.addressWidth)) },
       index: source.index.map { irRegister($0, width: irWidth(source.addressWidth)) },
       scale: source.scale,
       displacement: source.displacement,
-      instructionRelative: source.ripRelative,
+      instructionRelativeBase: source.ripRelative ? instructionRelativeBase : nil,
       addressWidth: irWidth(source.addressWidth),
       segment: source.ignoresLegacySegmentBase ? nil : source.segment.rawValue
     )

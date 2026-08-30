@@ -108,6 +108,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
       )
     case .unary(let operation, let operand):
       return emitUnary(operation, operand: operand, into: &words)
+    case .effectiveAddress(let destination, let address):
+      return emitEffectiveAddress(destination: destination, address: address, into: &words)
     default:
       return false
     }
@@ -265,6 +267,57 @@ public struct DoryARM64BaselineEmitter: Sendable {
         into: &words
       )
     }
+    return true
+  }
+
+  private func emitEffectiveAddress(
+    destination: DoryIROperand,
+    address: DoryIRMemoryAddress,
+    into words: inout [UInt32]
+  ) -> Bool {
+    guard
+      case .register(let target) = destination,
+      target.bank == "x86.gpr",
+      target.index < 16,
+      target.width == .i32 || target.width == .i64,
+      address.segment == nil,
+      address.addressWidth == .i32 || address.addressWidth == .i64,
+      address.scale == 1 || address.scale == 2 || address.scale == 4 || address.scale == 8
+    else { return false }
+    let addressIs64Bit = address.addressWidth == .i64
+    let displacement = UInt64(bitPattern: address.displacement)
+    emitImmediate(
+      addressIs64Bit ? displacement : displacement & 0xFFFF_FFFF,
+      register: 9,
+      into: &words
+    )
+    if let relativeBase = address.instructionRelativeBase {
+      emitImmediate(relativeBase, register: 10, into: &words)
+      words.append(encodeAdd(is64Bit: addressIs64Bit, left: 9, right: 10, destination: 9))
+    }
+    if let base = address.base {
+      guard base.width == address.addressWidth, load(base, into: 10, words: &words) else {
+        return false
+      }
+      words.append(encodeAdd(is64Bit: addressIs64Bit, left: 9, right: 10, destination: 9))
+    }
+    if let index = address.index {
+      guard index.width == address.addressWidth, load(index, into: 10, words: &words) else {
+        return false
+      }
+      words.append(
+        encodeAdd(
+          is64Bit: addressIs64Bit,
+          left: 9,
+          right: 10,
+          leftShift: UInt32(address.scale.trailingZeroBitCount),
+          destination: 9
+        ))
+    }
+    if target.width == .i32, addressIs64Bit {
+      words.append(encodeLogical(.or, is64Bit: false, 31, 9, 9))
+    }
+    words.append(encodeStore64(register: 9, base: 0, byteOffset: Int(target.index) * 8))
     return true
   }
 
@@ -634,6 +687,17 @@ public struct DoryARM64BaselineEmitter: Sendable {
       case (false, false): 0x7A00_0000
       }
     return base | right << 16 | left << 5 | destination
+  }
+
+  private func encodeAdd(
+    is64Bit: Bool,
+    left: UInt32,
+    right: UInt32,
+    leftShift: UInt32 = 0,
+    destination: UInt32
+  ) -> UInt32 {
+    let base: UInt32 = is64Bit ? 0x8B00_0000 : 0x0B00_0000
+    return base | right << 16 | leftShift << 10 | left << 5 | destination
   }
 
   private enum ARM64Condition: UInt32 {

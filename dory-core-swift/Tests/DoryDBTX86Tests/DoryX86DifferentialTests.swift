@@ -199,4 +199,32 @@ import Testing
       }
     #endif
   }
+
+  @Test func nativeEffectiveAddressesHandleScaledAndRIPRelativeForms() throws {
+    #if arch(arm64)
+      let cases: [([UInt8], UInt64, UInt64)] = [
+        ([0x48, 0x8D, 0x44, 0x8B, 0xF0], 0x1000, 3),
+        ([0x48, 0x8D, 0x05, 0x34, 0x12, 0x00, 0x00], 0, 0),
+        ([0x67, 0x48, 0x8D, 0x04, 0x8B], 0xFFFF_FFFF_0000_1000, 3),
+      ]
+      for (index, testCase) in cases.enumerated() {
+        let (bytes, rbx, rcx) = testCase
+        let address = UInt64(0xA000 + index * 0x100)
+        let memory = DoryX86ByteArrayMemory(baseAddress: address, bytes: bytes)
+        let state = try DoryX86ArchitecturalState(
+          registers: .init(rcx: rcx, rbx: rbx),
+          rip: address,
+          cs: .init(selector: 0, attributes: 0xA09A, limit: .max)
+        )
+
+        let result = try DoryX86DifferentialHarness().compare(
+          bytes: bytes,
+          initialState: state,
+          memory: memory,
+          mode: .long64
+        )
+        #expect(result.agrees, "effective-address case \(index) diverged")
+      }
+    #endif
+  }
 }
