@@ -1,0 +1,10 @@
+{
+  "architecture": "AARCH64",
+  "buildTarget": "RELEASE",
+  "compilerFamily": "CLANGPDB",
+  "configuration": "DoryARMVirtPkg/DoryARMVirt.dsc",
+  "firmwareABI": "dory.edk2.armvirt@1",
+  "machineABI": "dory.armvirt@1",
+  "schemaVersion": 1,
+  "sourceDateEpochEnvironment": "SOURCE_DATE_EPOCH"
+}

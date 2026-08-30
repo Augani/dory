@@ -36,6 +36,10 @@ let package = Package(
     .executable(name: "dory-network-helper", targets: ["dory-network-helper"]),
     .executable(name: "dory-dataplane-proxy", targets: ["dory-dataplane-proxy"]),
     .executable(name: "dory-jit-probe", targets: ["dory-jit-probe"]),
+    .executable(
+      name: "dory-firmware-bundler",
+      targets: ["dory-firmware-bundler"]
+    ),
   ],
   targets: [
     .binaryTarget(name: "DoryFFI", path: "artifacts/DoryFFI.xcframework"),
@@ -151,6 +155,10 @@ let package = Package(
     .executableTarget(
       name: "dory-jit-probe",
       path: "Sources/dory-jit-probe"
+    ),
+    .executableTarget(
+      name: "dory-firmware-bundler",
+      dependencies: ["DoryFirmware"]
     ),
     .testTarget(
       name: "DoryCoreTests",
