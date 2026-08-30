@@ -64,6 +64,30 @@ public protocol DoryPCPCIMSIControllable: DoryPCPCIFunction {
   )
 }
 
+public protocol DoryPCPCIBARMemoryDevice: AnyObject, Sendable {
+  var configurationFunction: DoryPCPCIConfigurationFunction { get }
+  var barIndex: Int { get }
+  func readBAR(offset: UInt64, byteCount: Int) throws -> [UInt8]
+  func writeBAR(offset: UInt64, bytes: [UInt8]) throws
+  func validateBARWrite(offset: UInt64, byteCount: Int) throws
+}
+
+extension DoryPCPCIBARMemoryDevice {
+  public func validateBARWrite(offset: UInt64, byteCount: Int) throws {
+    guard let bar = try configurationFunction.bar(at: barIndex),
+      byteCount > 0,
+      offset <= bar.size,
+      UInt64(byteCount) <= bar.size - offset
+    else {
+      throw DoryPCPhysicalMemoryError.unsupportedAccess(
+        offset: offset,
+        byteCount: byteCount,
+        write: true
+      )
+    }
+  }
+}
+
 public struct DoryPCPCIMSIState: Sendable, Hashable {
   public let enabled: Bool
   public let messageAddress: UInt64
@@ -401,6 +425,90 @@ public final class DoryPCPCIExpressECAM: DoryPCMMIODevice, @unchecked Sendable {
       function: functionNumber
     )
     return (lock.withLock { functions[address] }, register)
+  }
+}
+
+/// Frozen DoryPC PCI MMIO aperture. Routing is resolved from live BAR registers on every access,
+/// so firmware and the OS may size and relocate devices without mutating the sealed physical bus.
+public final class DoryPCPCIBARWindow: DoryPCMMIODevice, @unchecked Sendable {
+  public let baseAddress: UInt64
+  public let byteCount: UInt64
+
+  private let lock = NSLock()
+  private var devices: [any DoryPCPCIBARMemoryDevice] = []
+  private var isSealed = false
+
+  public init(baseAddress: UInt64 = 0xD000_0000, byteCount: UInt64 = 0x1000_0000) {
+    precondition(byteCount > 0 && baseAddress <= UInt64.max - byteCount)
+    self.baseAddress = baseAddress
+    self.byteCount = byteCount
+  }
+
+  public func attach(_ device: any DoryPCPCIBARMemoryDevice) throws {
+    try lock.withLock {
+      guard !isSealed else { throw DoryPCPCIError.sealed }
+      devices.append(device)
+    }
+  }
+
+  public func seal() { lock.withLock { isSealed = true } }
+
+  public func read(offset: UInt64, byteCount: Int) throws -> [UInt8] {
+    let resolved = try resolve(offset: offset, byteCount: byteCount, write: false)
+    return try resolved.device.readBAR(offset: resolved.barOffset, byteCount: byteCount)
+  }
+
+  public func write(offset: UInt64, bytes: [UInt8]) throws {
+    let resolved = try resolve(offset: offset, byteCount: bytes.count, write: true)
+    try resolved.device.writeBAR(offset: resolved.barOffset, bytes: bytes)
+  }
+
+  public func validateWrite(offset: UInt64, byteCount: Int) throws {
+    let resolved = try resolve(offset: offset, byteCount: byteCount, write: true)
+    try resolved.device.validateBARWrite(offset: resolved.barOffset, byteCount: byteCount)
+  }
+
+  private func resolve(
+    offset: UInt64,
+    byteCount: Int,
+    write: Bool
+  ) throws -> (device: any DoryPCPCIBARMemoryDevice, barOffset: UInt64) {
+    guard byteCount > 0, offset <= self.byteCount, UInt64(byteCount) <= self.byteCount - offset
+    else {
+      throw DoryPCPhysicalMemoryError.unsupportedAccess(
+        offset: offset,
+        byteCount: byteCount,
+        write: write
+      )
+    }
+    let (address, addressOverflow) = baseAddress.addingReportingOverflow(offset)
+    let (accessEnd, endOverflow) = address.addingReportingOverflow(UInt64(byteCount))
+    guard !addressOverflow, !endOverflow else {
+      throw DoryPCPhysicalMemoryError.unsupportedAccess(
+        offset: offset,
+        byteCount: byteCount,
+        write: write
+      )
+    }
+    let snapshot = lock.withLock { devices }
+    let matches = try snapshot.compactMap { device -> (any DoryPCPCIBARMemoryDevice, UInt64)? in
+      guard device.configurationFunction.command & 2 != 0,
+        let bar = try device.configurationFunction.bar(at: device.barIndex),
+        bar.address >= baseAddress,
+        bar.address < baseAddress + self.byteCount
+      else { return nil }
+      let (barEnd, overflow) = bar.address.addingReportingOverflow(bar.size)
+      guard !overflow, address >= bar.address, accessEnd <= barEnd else { return nil }
+      return (device, address - bar.address)
+    }
+    guard matches.count == 1, let match = matches.first else {
+      throw DoryPCPhysicalMemoryError.unsupportedAccess(
+        offset: offset,
+        byteCount: byteCount,
+        write: write
+      )
+    }
+    return match
   }
 }
 

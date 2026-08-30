@@ -143,6 +143,31 @@ import Testing
     #expect(!machine.localAPIC.snapshot().interruptRequest.contains(0x62))
   }
 
+  @Test func barWindowFollowsGuestAssignmentsAndMemorySpaceEnable() throws {
+    let function = try DoryPCPCIConfigurationFunction(
+      address: .init(bus: 0, device: 7, function: 0),
+      vendorID: 0x1AF4,
+      deviceID: 0x1044,
+      classCode: 0x000200,
+      bars: [
+        .init(index: 0, kind: .memory32(prefetchable: false), size: 0x1000, address: 0xD000_0000)
+      ]
+    )
+    let device = TestBARDevice(configurationFunction: function)
+    let window = DoryPCPCIBARWindow()
+    try window.attach(device)
+    window.seal()
+
+    #expect(throws: (any Error).self) { try window.read(offset: 0x20, byteCount: 4) }
+    try function.writeConfiguration(offset: 4, bytes: [2, 0])
+    try window.write(offset: 0x20, bytes: [1, 2, 3, 4])
+    #expect(try window.read(offset: 0x20, byteCount: 4) == [1, 2, 3, 4])
+
+    try function.writeConfiguration(offset: 0x10, bytes: littleEndian(UInt32(0xD001_0000)))
+    #expect(throws: (any Error).self) { try window.read(offset: 0x20, byteCount: 4) }
+    #expect(try window.read(offset: 0x1_0020, byteCount: 4) == [1, 2, 3, 4])
+  }
+
   private func read32(_ bytes: [UInt8]) -> UInt32 {
     bytes.enumerated().reduce(0) { $0 | UInt32($1.element) << UInt32($1.offset * 8) }
   }
@@ -165,5 +190,26 @@ private final class MSIDeliveryRecorder: @unchecked Sendable {
 
   func append(address: UInt64, data: UInt16) {
     lock.withLock { storage.append(.init(address: address, data: data)) }
+  }
+}
+
+private final class TestBARDevice: DoryPCPCIBARMemoryDevice, @unchecked Sendable {
+  let configurationFunction: DoryPCPCIConfigurationFunction
+  let barIndex = 0
+  private let lock = NSLock()
+  private var bytes = [UInt8](repeating: 0, count: 0x1000)
+
+  init(configurationFunction: DoryPCPCIConfigurationFunction) {
+    self.configurationFunction = configurationFunction
+  }
+
+  func readBAR(offset: UInt64, byteCount: Int) throws -> [UInt8] {
+    lock.withLock { Array(bytes[Int(offset)..<(Int(offset) + byteCount)]) }
+  }
+
+  func writeBAR(offset: UInt64, bytes: [UInt8]) throws {
+    lock.withLock {
+      self.bytes.replaceSubrange(Int(offset)..<(Int(offset) + bytes.count), with: bytes)
+    }
   }
 }
