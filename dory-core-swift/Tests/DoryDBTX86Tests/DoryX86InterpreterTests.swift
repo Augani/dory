@@ -748,6 +748,55 @@ import Testing
     #expect(state.registers.rdx == 0x8000_0000_0000_0000)
   }
 
+  @Test func sse2PackedShiftsHonorLaneWidthsAndSaturatingCounts() throws {
+    let memory = DoryX86ByteArrayMemory(
+      baseAddress: 0x1000,
+      bytes: [
+        0x66, 0x0F, 0x71, 0xF0, 0x04,
+        0x66, 0x0F, 0x72, 0xE2, 0xFF,
+        0x66, 0x0F, 0xD3, 0xD9,
+      ] + .init(repeating: 0, count: 16)
+    )
+    var floatingPoint = try DoryX86FloatingPointState()
+    var words = [UInt8](repeating: 0, count: 32)
+    for (lane, value) in [UInt16(0x8001), 0x7FFF, 0x1234, 0xFFFF].enumerated() {
+      words.replaceSubrange(
+        lane * 2..<lane * 2 + 2,
+        with: littleEndian(UInt64(value)).prefix(2)
+      )
+    }
+    var doublewords = [UInt8](repeating: 0, count: 32)
+    for (lane, value) in [UInt32(0x8000_0000), 0x7FFF_FFFF, 0xFFFF_FFFF, 1].enumerated() {
+      doublewords.replaceSubrange(
+        lane * 4..<lane * 4 + 4,
+        with: littleEndian(UInt64(value)).prefix(4)
+      )
+    }
+    var count = [UInt8](repeating: 0, count: 32)
+    count.replaceSubrange(0..<8, with: littleEndian(64))
+    floatingPoint.ymm[0] = try .init(bytes: words, expectedByteCount: 32)
+    floatingPoint.ymm[1] = try .init(bytes: count, expectedByteCount: 32)
+    floatingPoint.ymm[2] = try .init(bytes: doublewords, expectedByteCount: 32)
+    floatingPoint.ymm[3] = try .init(
+      bytes: Array(repeating: 0xFF, count: 32), expectedByteCount: 32)
+    var state = try DoryX86ArchitecturalState(rip: 0x1000, floatingPoint: floatingPoint)
+
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    #expect(
+      Array(state.floatingPoint.ymm[0].bytes[0..<8]) == [
+        0x10, 0, 0xF0, 0xFF, 0x40, 0x23, 0xF0, 0xFF,
+      ])
+    #expect(Array(state.floatingPoint.ymm[0].bytes[16..<32]) == Array(words[16..<32]))
+
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    #expect(
+      Array(state.floatingPoint.ymm[2].bytes[0..<16])
+        == [0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0])
+
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    #expect(Array(state.floatingPoint.ymm[3].bytes[0..<16]) == Array(repeating: 0, count: 16))
+  }
+
   @Test func byteExtendMoveUsesTheWideModRMDestinationRegister() throws {
     var bytes = [UInt8](repeating: 0, count: 0x20)
     bytes.replaceSubrange(0..<4, with: [0x0F, 0xB6, 0x71, 0x02])

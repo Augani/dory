@@ -148,6 +148,15 @@ public enum DoryX86VectorIntegerOperation: String, Codable, Sendable, Hashable {
   case add, subtract, equal, greaterThan
 }
 
+public enum DoryX86VectorShiftOperation: String, Codable, Sendable, Hashable {
+  case logicalLeft, logicalRight, arithmeticRight
+}
+
+public enum DoryX86VectorShiftCount: Codable, Sendable, Hashable {
+  case immediate(UInt8)
+  case vector(DoryX86VectorOperand)
+}
+
 public enum DoryX86VectorLaneWidth: UInt8, Codable, Sendable, Hashable {
   case byte = 1
   case word = 2
@@ -260,6 +269,12 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
     laneWidth: DoryX86VectorLaneWidth,
     destination: UInt8,
     source: DoryX86VectorOperand
+  )
+  case vectorIntegerShift(
+    DoryX86VectorShiftOperation,
+    laneWidth: DoryX86VectorLaneWidth,
+    destination: UInt8,
+    count: DoryX86VectorShiftCount
   )
   case vectorFloatingCompare(
     format: DoryX86VectorFloatingFormat,

@@ -842,6 +842,38 @@ public struct DoryX86Decoder: Sendable {
           source: vectorOperand(operands.rm),
           control: try cursor.readByte()
         )
+      case 0x71...0x73:
+        guard prefixes.operandSizeOverride, prefixes.repeatPrefix == nil else {
+          throw DoryX86DecodeError.invalidEncoding(
+            address: address, detail: "packed integer immediate shift requires 66 prefix")
+        }
+        let operands = try decodeModRM(
+          cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
+        guard case .register = operands.rm else {
+          throw DoryX86DecodeError.invalidEncoding(
+            address: address, detail: "packed integer immediate shift requires XMM destination")
+        }
+        let shiftOperation: DoryX86VectorShiftOperation
+        switch operands.group {
+        case 2: shiftOperation = .logicalRight
+        case 4 where second != 0x73: shiftOperation = .arithmeticRight
+        case 6: shiftOperation = .logicalLeft
+        default:
+          throw DoryX86DecodeError.invalidEncoding(
+            address: address, detail: "reserved packed integer immediate shift group")
+        }
+        let laneWidth: DoryX86VectorLaneWidth =
+          switch second {
+          case 0x71: .word
+          case 0x72: .doubleword
+          default: .quadword
+          }
+        operation = .vectorIntegerShift(
+          shiftOperation,
+          laneWidth: laneWidth,
+          destination: vectorRegister(operands.rm),
+          count: .immediate(try cursor.readByte())
+        )
       case 0x7F:
         let alignedVector = prefixes.operandSizeOverride && prefixes.repeatPrefix == nil
         let unalignedVector = prefixes.repeatPrefix == 0xF3 && !prefixes.operandSizeOverride
@@ -855,6 +887,31 @@ public struct DoryX86Decoder: Sendable {
           destination: vectorOperand(operands.rm),
           source: vectorOperand(operands.reg),
           requiresAlignment: alignedVector
+        )
+      case 0xD1...0xD3, 0xE1, 0xE2, 0xF1...0xF3:
+        guard prefixes.operandSizeOverride, prefixes.repeatPrefix == nil else {
+          throw DoryX86DecodeError.invalidEncoding(
+            address: address, detail: "packed integer variable shift requires 66 prefix")
+        }
+        let operands = try decodeModRM(
+          cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
+        let shiftOperation: DoryX86VectorShiftOperation =
+          switch second {
+          case 0xD1...0xD3: .logicalRight
+          case 0xE1, 0xE2: .arithmeticRight
+          default: .logicalLeft
+          }
+        let laneWidth: DoryX86VectorLaneWidth =
+          switch second {
+          case 0xD1, 0xE1, 0xF1: .word
+          case 0xD2, 0xE2, 0xF2: .doubleword
+          default: .quadword
+          }
+        operation = .vectorIntegerShift(
+          shiftOperation,
+          laneWidth: laneWidth,
+          destination: vectorRegister(operands.reg),
+          count: .vector(vectorOperand(operands.rm))
         )
       case 0x7E:
         if prefixes.operandSizeOverride, prefixes.repeatPrefix == nil {

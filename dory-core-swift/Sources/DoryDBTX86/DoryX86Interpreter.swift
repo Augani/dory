@@ -719,6 +719,30 @@ public struct DoryX86Interpreter: Sendable {
         )
         state.floatingPoint.ymm[Int(destination)] = try .init(
           bytes: registerBytes, expectedByteCount: 32)
+      case .vectorIntegerShift(let operation, let laneWidth, let destination, let countSource):
+        let count: UInt64
+        switch countSource {
+        case .immediate(let immediate):
+          count = UInt64(immediate)
+        case .vector(let source):
+          let bytes = try readVectorBytes(
+            source,
+            byteCount: 16,
+            instruction: instruction,
+            state: state,
+            memory: executionMemory
+          )
+          count = fromLittleEndian(Array(bytes.prefix(8)))
+        }
+        var registerBytes = state.floatingPoint.ymm[Int(destination)].bytes
+        executeVectorIntegerShift(
+          operation,
+          laneWidth: laneWidth,
+          destination: &registerBytes,
+          count: count
+        )
+        state.floatingPoint.ymm[Int(destination)] = try .init(
+          bytes: registerBytes, expectedByteCount: 32)
       case .vectorFloatingCompare(let format, let destination, let source, _):
         let byteCount = format == .scalarDouble ? 8 : 4
         let rhs = try readVectorBytes(
@@ -1674,6 +1698,39 @@ public struct DoryX86Interpreter: Sendable {
         case .equal: lhs == rhs ? laneMask : 0
         case .greaterThan: (lhs ^ signBit) > (rhs ^ signBit) ? laneMask : 0
         }
+      for index in 0..<byteCount {
+        destination[offset + index] = UInt8(truncatingIfNeeded: result >> UInt64(index * 8))
+      }
+    }
+  }
+
+  private func executeVectorIntegerShift(
+    _ operation: DoryX86VectorShiftOperation,
+    laneWidth: DoryX86VectorLaneWidth,
+    destination: inout [UInt8],
+    count: UInt64
+  ) {
+    let byteCount = Int(laneWidth.rawValue)
+    let bitCount = UInt64(byteCount * 8)
+    let laneMask = byteCount == 8 ? UInt64.max : (UInt64(1) << bitCount) - 1
+    let effectiveCount = operation == .arithmeticRight ? min(count, bitCount - 1) : count
+    for offset in stride(from: 0, to: 16, by: byteCount) {
+      let lane = fromLittleEndian(Array(destination[offset..<offset + byteCount]))
+      let result: UInt64
+      if operation != .arithmeticRight, effectiveCount >= bitCount {
+        result = 0
+      } else {
+        switch operation {
+        case .logicalLeft:
+          result = (lane << effectiveCount) & laneMask
+        case .logicalRight:
+          result = lane >> effectiveCount
+        case .arithmeticRight:
+          let signBit = UInt64(1) << (bitCount - 1)
+          let signedLane = Int64(bitPattern: (lane ^ signBit) &- signBit)
+          result = UInt64(bitPattern: signedLane >> effectiveCount) & laneMask
+        }
+      }
       for index in 0..<byteCount {
         destination[offset + index] = UInt8(truncatingIfNeeded: result >> UInt64(index * 8))
       }

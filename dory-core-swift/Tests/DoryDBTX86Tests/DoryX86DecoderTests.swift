@@ -622,5 +622,20 @@ import Testing
           truncate: true
         )
     )
+    #expect(
+      try decoder.decode([0x66, 0x0F, 0x71, 0xF0, 0x04], at: 0x1000, mode: .long64)
+        .operation
+        == .vectorIntegerShift(
+          .logicalLeft, laneWidth: .word, destination: 0, count: .immediate(4))
+    )
+    #expect(
+      try decoder.decode([0x66, 0x0F, 0xE2, 0xC1], at: 0x1000, mode: .long64).operation
+        == .vectorIntegerShift(
+          .arithmeticRight,
+          laneWidth: .doubleword,
+          destination: 0,
+          count: .vector(.register(1))
+        )
+    )
   }
 }
