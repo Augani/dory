@@ -46,6 +46,14 @@ public struct DoryARM64CompiledBlock: Codable, Sendable, Hashable {
 /// returns a DoryJITExitCode in w0. The layout is intentionally independent of Swift struct ABI.
 public struct DoryARM64BaselineEmitter: Sendable {
   private static let ripOffset = 16 * 8
+  private static let rflagsOffset = 17 * 8
+  private static let arithmeticFlagMask: UInt64 =
+    DoryX86RFLAGS.carry.rawValue
+    | DoryX86RFLAGS.parity.rawValue
+    | DoryX86RFLAGS.auxiliaryCarry.rawValue
+    | DoryX86RFLAGS.zero.rawValue
+    | DoryX86RFLAGS.sign.rawValue
+    | DoryX86RFLAGS.overflow.rawValue
 
   public init() {}
 
@@ -87,7 +95,28 @@ public struct DoryARM64BaselineEmitter: Sendable {
   }
 
   private func emit(_ statement: DoryIRStatement, into words: inout [UInt32]) -> Bool {
-    guard case .copy(let destination, let source) = statement,
+    switch statement {
+    case .copy(let destination, let source):
+      return emitCopy(destination: destination, source: source, into: &words)
+    case .binary(let operation, let destination, let source, let writesDestination):
+      return emitBinary(
+        operation,
+        destination: destination,
+        source: source,
+        writesDestination: writesDestination,
+        into: &words
+      )
+    default:
+      return false
+    }
+  }
+
+  private func emitCopy(
+    destination: DoryIROperand,
+    source: DoryIROperand,
+    into words: inout [UInt32]
+  ) -> Bool {
+    guard
       case .register(let target) = destination,
       target.bank == "x86.gpr",
       target.index < 16,
@@ -114,6 +143,163 @@ public struct DoryARM64BaselineEmitter: Sendable {
       encodeStore64(register: 9, base: 0, byteOffset: Int(target.index) * 8)
     )
     return true
+  }
+
+  private func emitBinary(
+    _ operation: DoryIRBinaryOperation,
+    destination: DoryIROperand,
+    source: DoryIROperand,
+    writesDestination: Bool,
+    into words: inout [UInt32]
+  ) -> Bool {
+    guard
+      operation != .addWithCarry,
+      operation != .subtractWithBorrow,
+      case .register(let target) = destination,
+      target.bank == "x86.gpr",
+      target.index < 16,
+      target.width == .i32 || target.width == .i64,
+      load(target, into: 9, words: &words),
+      load(source, matching: target.width, into: 10, words: &words)
+    else { return false }
+
+    let is64Bit = target.width == .i64
+    let arithmetic: Bool
+    switch operation {
+    case .add:
+      words.append(encodeAddSubtractSetFlags(add: true, is64Bit: is64Bit, 9, 10, 11))
+      arithmetic = true
+    case .subtract, .compare:
+      words.append(encodeAddSubtractSetFlags(add: false, is64Bit: is64Bit, 9, 10, 11))
+      arithmetic = true
+    case .and, .test:
+      words.append(encodeLogical(.andSetFlags, is64Bit: is64Bit, 9, 10, 11))
+      arithmetic = false
+    case .or:
+      words.append(encodeLogical(.or, is64Bit: is64Bit, 9, 10, 11))
+      words.append(encodeLogical(.andSetFlags, is64Bit: is64Bit, 11, 11, 31))
+      arithmetic = false
+    case .xor:
+      words.append(encodeLogical(.xor, is64Bit: is64Bit, 9, 10, 11))
+      words.append(encodeLogical(.andSetFlags, is64Bit: is64Bit, 11, 11, 31))
+      arithmetic = false
+    case .addWithCarry, .subtractWithBorrow:
+      return false
+    }
+
+    if writesDestination {
+      words.append(
+        encodeStore64(register: 11, base: 0, byteOffset: Int(target.index) * 8)
+      )
+    }
+    emitX86ArithmeticFlags(
+      subtraction: operation == .subtract || operation == .compare,
+      includesAuxiliaryCarry: arithmetic,
+      resultRegister: 11,
+      into: &words
+    )
+    return true
+  }
+
+  private func load(
+    _ register: DoryIRRegister,
+    into hostRegister: UInt32,
+    words: inout [UInt32]
+  ) -> Bool {
+    guard register.bank == "x86.gpr", register.index < 16,
+      register.width == .i32 || register.width == .i64
+    else { return false }
+    words.append(
+      register.width == .i64
+        ? encodeLoad64(register: hostRegister, base: 0, byteOffset: Int(register.index) * 8)
+        : encodeLoad32(register: hostRegister, base: 0, byteOffset: Int(register.index) * 8)
+    )
+    return true
+  }
+
+  private func load(
+    _ operand: DoryIROperand,
+    matching width: DoryIRIntegerWidth,
+    into hostRegister: UInt32,
+    words: inout [UInt32]
+  ) -> Bool {
+    switch operand {
+    case .register(let register) where register.width == width:
+      return load(register, into: hostRegister, words: &words)
+    case .immediate(let value, let immediateWidth) where immediateWidth == width:
+      emitImmediate(
+        width == .i32 ? value & 0xFFFF_FFFF : value, register: hostRegister, into: &words)
+      return true
+    default:
+      return false
+    }
+  }
+
+  private func emitX86ArithmeticFlags(
+    subtraction: Bool,
+    includesAuxiliaryCarry: Bool,
+    resultRegister: UInt32,
+    into words: inout [UInt32]
+  ) {
+    // Capture ARM NZCV before the flag-synthesis instructions. ARM C is the inverse of x86 CF
+    // after subtraction, while addition uses it directly.
+    words.append(
+      encodeConditionalSet(register: 13, condition: subtraction ? .carryClear : .carrySet))
+    words.append(encodeConditionalSet(register: 14, condition: .equal))
+    words.append(encodeLogical(.or, left: 13, right: 14, shiftAmount: 6, destination: 13))
+    words.append(encodeConditionalSet(register: 14, condition: .minus))
+    words.append(encodeLogical(.or, left: 13, right: 14, shiftAmount: 7, destination: 13))
+    words.append(encodeConditionalSet(register: 14, condition: .overflowSet))
+    words.append(encodeLogical(.or, left: 13, right: 14, shiftAmount: 11, destination: 13))
+
+    if includesAuxiliaryCarry {
+      words.append(encodeLogical(.xor, left: 9, right: 10, destination: 14))
+      words.append(encodeLogical(.xor, left: 14, right: resultRegister, destination: 14))
+      emitImmediate(DoryX86RFLAGS.auxiliaryCarry.rawValue, register: 15, into: &words)
+      words.append(encodeLogical(.and, left: 14, right: 15, destination: 14))
+      words.append(encodeLogical(.or, left: 13, right: 14, destination: 13))
+    }
+
+    // Fold the low byte to one parity bit. x86 PF is one for even parity.
+    words.append(
+      encodeLogical(
+        .xor,
+        left: resultRegister,
+        right: resultRegister,
+        shiftAmount: 4,
+        logicalRightShift: true,
+        destination: 14
+      ))
+    words.append(
+      encodeLogical(
+        .xor,
+        left: 14,
+        right: 14,
+        shiftAmount: 2,
+        logicalRightShift: true,
+        destination: 14
+      ))
+    words.append(
+      encodeLogical(
+        .xor,
+        left: 14,
+        right: 14,
+        shiftAmount: 1,
+        logicalRightShift: true,
+        destination: 14
+      ))
+    emitImmediate(1, register: 15, into: &words)
+    words.append(encodeLogical(.and, left: 14, right: 15, destination: 14))
+    words.append(encodeLogical(.xor, left: 14, right: 15, destination: 14))
+    words.append(encodeLogical(.or, left: 13, right: 14, shiftAmount: 2, destination: 13))
+
+    words.append(encodeLoad64(register: 12, base: 0, byteOffset: Self.rflagsOffset))
+    emitImmediate(~Self.arithmeticFlagMask, register: 15, into: &words)
+    words.append(encodeLogical(.and, left: 12, right: 15, destination: 12))
+    words.append(encodeLogical(.or, left: 12, right: 13, destination: 12))
+    emitImmediate(DoryX86RFLAGS.reservedOne.rawValue, register: 15, into: &words)
+    words.append(encodeLogical(.or, left: 12, right: 15, destination: 12))
+    words.append(encodeStore64(register: 12, base: 0, byteOffset: Self.rflagsOffset))
   }
 
   private func emit(
@@ -200,6 +386,79 @@ public struct DoryARM64BaselineEmitter: Sendable {
 
   private func encodeMoveWideZero32(register: UInt32, immediate: UInt16) -> UInt32 {
     0x5280_0000 | UInt32(immediate) << 5 | register
+  }
+
+  private enum LogicalOperation {
+    case and, or, xor, andSetFlags
+  }
+
+  private func encodeLogical(
+    _ operation: LogicalOperation,
+    is64Bit: Bool = true,
+    left: UInt32,
+    right: UInt32,
+    shiftAmount: UInt32 = 0,
+    logicalRightShift: Bool = false,
+    destination: UInt32
+  ) -> UInt32 {
+    let base: UInt32 =
+      switch (operation, is64Bit) {
+      case (.and, true): 0x8A00_0000
+      case (.and, false): 0x0A00_0000
+      case (.or, true): 0xAA00_0000
+      case (.or, false): 0x2A00_0000
+      case (.xor, true): 0xCA00_0000
+      case (.xor, false): 0x4A00_0000
+      case (.andSetFlags, true): 0xEA00_0000
+      case (.andSetFlags, false): 0x6A00_0000
+      }
+    let shift = logicalRightShift ? UInt32(1) << 22 : 0
+    return base | shift | shiftAmount << 10 | right << 16 | left << 5 | destination
+  }
+
+  private func encodeLogical(
+    _ operation: LogicalOperation,
+    is64Bit: Bool,
+    _ left: UInt32,
+    _ right: UInt32,
+    _ destination: UInt32
+  ) -> UInt32 {
+    encodeLogical(
+      operation,
+      is64Bit: is64Bit,
+      left: left,
+      right: right,
+      destination: destination
+    )
+  }
+
+  private func encodeAddSubtractSetFlags(
+    add: Bool,
+    is64Bit: Bool,
+    _ left: UInt32,
+    _ right: UInt32,
+    _ destination: UInt32
+  ) -> UInt32 {
+    let base: UInt32 =
+      switch (add, is64Bit) {
+      case (true, true): 0xAB00_0000
+      case (true, false): 0x2B00_0000
+      case (false, true): 0xEB00_0000
+      case (false, false): 0x6B00_0000
+      }
+    return base | right << 16 | left << 5 | destination
+  }
+
+  private enum ARM64Condition: UInt32 {
+    case equal = 0
+    case carrySet = 2
+    case carryClear = 3
+    case minus = 4
+    case overflowSet = 6
+  }
+
+  private func encodeConditionalSet(register: UInt32, condition: ARM64Condition) -> UInt32 {
+    0x9A9F_07E0 | ((condition.rawValue ^ 1) << 12) | register
   }
 }
 
