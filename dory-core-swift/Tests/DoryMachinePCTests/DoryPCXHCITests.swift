@@ -83,6 +83,47 @@ import Testing
     #expect(try read32(machine, bar + 0x78) == 0)
     #expect(try xhci.portState(5).connected)
   }
+
+  @Test func commandRingEnablesAndDisablesDeviceSlots() throws {
+    let xhci = try DoryPCXHCIController()
+    let machine = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024,
+      pciFunctions: [xhci]
+    )
+    let bar = DoryPCV1ABI.xhciBARAddress
+    try xhci.writeConfiguration(offset: 4, bytes: [2, 0])
+    try machine.physicalMemory.write(
+      at: 0x1000,
+      bytes: littleEndian(UInt64(0x2000)) + littleEndian(UInt32(16)) + [0, 0, 0, 0]
+    )
+    try machine.physicalMemory.write(
+      at: 0x3000,
+      bytes: [UInt8](repeating: 0, count: 12) + littleEndian(UInt32(9 << 10 | 1))
+    )
+    try machine.physicalMemory.write(
+      at: 0x3010,
+      bytes: [UInt8](repeating: 0, count: 12) + littleEndian(UInt32(1 << 24 | 10 << 10))
+    )
+    try write32(machine, bar + 0x1028, 1)
+    try write64(machine, bar + 0x1030, 0x1000)
+    try write64(machine, bar + 0x1038, 0x2000)
+    try write64(machine, bar + 0x58, 0x3001)
+    try write32(machine, bar + 0x78, 8)
+    try write32(machine, bar + 0x40, 1)
+
+    try write32(machine, bar + 0x2000, 0)
+    #expect(xhci.slotStates == [.init(slotID: 1, addressed: false)])
+    #expect(try read64(machine, 0x2000) == 0x3000)
+    #expect(try read32(machine, 0x2008) >> 24 == 1)
+    #expect(try read32(machine, 0x200C) >> 24 == 1)
+    #expect((try read32(machine, 0x200C) >> 10) & 0x3F == 33)
+
+    try write32(machine, 0x301C, 1 << 24 | 10 << 10 | 1)
+    try write32(machine, bar + 0x2000, 0)
+    #expect(xhci.slotStates.isEmpty)
+    #expect(try read64(machine, 0x2010) == 0x3010)
+    #expect(try read32(machine, 0x2018) >> 24 == 1)
+  }
 }
 
 private func read8(_ machine: DoryPCDirectKernelMachine, _ address: UInt64) throws -> UInt8 {
@@ -97,6 +138,11 @@ private func read16(_ machine: DoryPCDirectKernelMachine, _ address: UInt64) thr
 private func read32(_ machine: DoryPCDirectKernelMachine, _ address: UInt64) throws -> UInt32 {
   let bytes = try machine.physicalMemory.read(at: address, byteCount: 4)
   return bytes.enumerated().reduce(0) { $0 | UInt32($1.element) << UInt32($1.offset * 8) }
+}
+
+private func read64(_ machine: DoryPCDirectKernelMachine, _ address: UInt64) throws -> UInt64 {
+  let bytes = try machine.physicalMemory.read(at: address, byteCount: 8)
+  return bytes.enumerated().reduce(0) { $0 | UInt64($1.element) << UInt64($1.offset * 8) }
 }
 
 private func write32(_ machine: DoryPCDirectKernelMachine, _ address: UInt64, _ value: UInt32)

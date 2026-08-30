@@ -24,6 +24,16 @@ public struct DoryPCXHCIPortState: Sendable, Hashable {
   public let statusChangePending: Bool
 }
 
+public struct DoryPCXHCISlotState: Sendable, Hashable {
+  public let slotID: UInt8
+  public let addressed: Bool
+
+  public init(slotID: UInt8, addressed: Bool) {
+    self.slotID = slotID
+    self.addressed = addressed
+  }
+}
+
 /// A bounded xHCI 1.2 PCI function for the frozen DoryPC-v1 machine contract.
 ///
 /// The controller owns guest register and event-ring mechanics. Physical USB authority remains in
@@ -66,6 +76,8 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
   private var usbStatus: UInt32 = usbStatusHalted
   private var deviceNotificationControl: UInt32 = 0
   private var commandRingControl: UInt64 = 0
+  private var commandRingDequeueAddress: UInt64 = 0
+  private var commandRingCycle = true
   private var deviceContextBaseAddress: UInt64 = 0
   private var configuredSlots: UInt32 = 0
   private var interrupterManagement: UInt32 = 0
@@ -79,6 +91,7 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
   private var eventRingEnqueueIndex: UInt32 = 0
   private var eventRingCycle = true
   private var ports = [UInt32](repeating: portPower, count: portCount)
+  private var enabledSlots: Set<UInt8> = []
 
   public init(
     address: DoryPCPCIAddress = DoryPCV1ABI.xhciPCIAddress,
@@ -149,6 +162,12 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
     }
   }
 
+  public var slotStates: [DoryPCXHCISlotState] {
+    lock.withLock {
+      enabledSlots.sorted().map { .init(slotID: $0, addressed: false) }
+    }
+  }
+
   public func readConfiguration(offset: Int, byteCount: Int) throws -> [UInt8] {
     try configurationFunction.readConfiguration(offset: offset, byteCount: byteCount)
   }
@@ -187,7 +206,12 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
       return
     }
     if offset == Self.operationalOffset + 0x18, bytes.count == 8 {
-      lock.withLock { commandRingControl = uint64(bytes) & ~UInt64(0x30) }
+      lock.withLock {
+        let value = uint64(bytes)
+        commandRingControl = value & ~UInt64(0x30)
+        commandRingDequeueAddress = value & ~UInt64(0x3F)
+        commandRingCycle = value & 1 != 0
+      }
       return
     }
     if offset == Self.operationalOffset + 0x30, bytes.count == 8 {
@@ -242,6 +266,8 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
       offset % 4 == 0,
       bytes.count == 4
     {
+      let doorbell = Int((offset - Self.doorbellOffset) / 4)
+      if doorbell == 0, uint32(bytes) & 0xFF == 0 { processCommandRing() }
       return
     }
     throw DoryPCXHCIError.invalidRegisterWrite(offset: offset, byteCount: bytes.count)
@@ -321,8 +347,11 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
       usbStatus = Self.usbStatusHalted
       deviceNotificationControl = 0
       commandRingControl = 0
+      commandRingDequeueAddress = 0
+      commandRingCycle = true
       deviceContextBaseAddress = 0
       configuredSlots = 0
+      enabledSlots.removeAll(keepingCapacity: true)
       interrupterManagement = 0
       interrupterModeration = 4_000
       eventRingSegmentTableSize = 0
@@ -344,6 +373,67 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
     put(UInt32(1) << 24, at: 8, in: &event)
     put(UInt32(34) << 10, at: 12, in: &event)
     _ = try? postEvent(event)
+  }
+
+  private func processCommandRing() {
+    for _ in 0..<4_096 {
+      let state = lock.withLock {
+        (guestMemory, commandRingDequeueAddress, commandRingCycle, usbCommand & 1 != 0)
+      }
+      guard state.3, let memory = state.0, state.1 != 0,
+        let bytes = try? memory.read(at: state.1, byteCount: 16), bytes.count == 16
+      else { return }
+      let control = uint32(Array(bytes[12..<16]))
+      guard control & 1 == (state.2 ? 1 : 0) else { return }
+      let type = UInt8((control >> 10) & 0x3F)
+      if type == 6 {
+        let target = uint64(Array(bytes[0..<8])) & ~UInt64(0xF)
+        guard target != 0 else { return }
+        lock.withLock {
+          commandRingDequeueAddress = target
+          if control & 2 != 0 { commandRingCycle.toggle() }
+        }
+        continue
+      }
+
+      let result = executeCommand(type: type, control: control)
+      var event = [UInt8](repeating: 0, count: 16)
+      put(state.1, at: 0, in: &event)
+      put(UInt32(result.completionCode) << 24, at: 8, in: &event)
+      put(
+        UInt32(result.slotID) << 24 | UInt32(33) << 10,
+        at: 12,
+        in: &event
+      )
+      lock.withLock { commandRingDequeueAddress &+= 16 }
+      guard (try? postEvent(event)) != nil else { return }
+    }
+  }
+
+  private func executeCommand(type: UInt8, control: UInt32) -> (
+    completionCode: UInt8, slotID: UInt8
+  ) {
+    switch type {
+    case 9:
+      return lock.withLock {
+        let limit = UInt8(min(configuredSlots, UInt32(Self.maximumSlots)))
+        guard limit > 0,
+          let slot = (1...limit).first(where: { !enabledSlots.contains($0) })
+        else { return (9, 0) }
+        enabledSlots.insert(slot)
+        return (1, slot)
+      }
+    case 10:
+      let slot = UInt8(truncatingIfNeeded: control >> 24)
+      return lock.withLock {
+        guard enabledSlots.remove(slot) != nil else { return (11, slot) }
+        return (1, slot)
+      }
+    case 23:
+      return (1, 0)
+    default:
+      return (5, UInt8(truncatingIfNeeded: control >> 24))
+    }
   }
 
   private func postEvent(_ event: [UInt8]) throws {
