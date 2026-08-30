@@ -1,3 +1,4 @@
+import Dispatch
 import Testing
 
 @testable import DoryDBTX86
@@ -336,5 +337,103 @@ import Testing
           )))
     #expect(state.rip == 0xB300)
     #expect(state.registers == registers)
+  }
+
+  @Test func executesAtomicExchangeCompareExchangeAndBitOperations() throws {
+    let program: [UInt8] = [
+      0x48, 0x87, 0x0E,  // xchg [rsi],rcx
+      0xF0, 0x48, 0x0F, 0xC1, 0x0E,  // lock xadd [rsi],rcx
+      0xF0, 0x48, 0x0F, 0xAB, 0x0E,  // lock bts [rsi],rcx
+      0x48, 0x0F, 0xA3, 0x0E,  // bt [rsi],rcx
+    ]
+    var bytes = program + [UInt8](repeating: 0, count: 0x200)
+    let dataOffset = 0x100
+    bytes.replaceSubrange(dataOffset..<(dataOffset + 8), with: littleEndian(5))
+    let memory = DoryX86ByteArrayMemory(baseAddress: 0xB000, bytes: bytes)
+    let registers = DoryX86GeneralRegisters(rcx: 3, rsi: 0xB000 + UInt64(dataOffset))
+    var state = try DoryX86ArchitecturalState(registers: registers, rip: 0xB000)
+
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    #expect(readQuadword(memory, at: registers.rsi) == 3)
+    #expect(state.registers.rcx == 5)
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    #expect(readQuadword(memory, at: registers.rsi) == 8)
+    #expect(state.registers.rcx == 3)
+
+    state.registers.rcx = 65
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    #expect(readQuadword(memory, at: registers.rsi + 8) == 2)
+    #expect(!state.rflags.contains(.carry))
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    #expect(state.rflags.contains(.carry))
+  }
+
+  @Test func compareExchangePairsCommitOrRestoreArchitecturalAccumulators() throws {
+    let program: [UInt8] = [
+      0xF0, 0x48, 0x0F, 0xB1, 0x0E,  // lock cmpxchg [rsi],rcx
+      0xF0, 0x48, 0x0F, 0xC7, 0x0F,  // lock cmpxchg16b [rdi]
+      0xF0, 0x0F, 0xC7, 0x0E,  // lock cmpxchg8b [rsi]
+    ]
+    var bytes = program + [UInt8](repeating: 0, count: 0x240)
+    bytes.replaceSubrange(0x100..<0x108, with: littleEndian(9))
+    bytes.replaceSubrange(0x120..<0x128, with: littleEndian(0x1111))
+    bytes.replaceSubrange(0x128..<0x130, with: littleEndian(0x2222))
+    bytes.replaceSubrange(0x140..<0x148, with: littleEndian(0x3344_5566_7788_99AA))
+    let memory = DoryX86ByteArrayMemory(baseAddress: 0xC000, bytes: bytes)
+    let registers = DoryX86GeneralRegisters(
+      rax: 9,
+      rcx: 12,
+      rdx: 0x2222,
+      rbx: 0xAAAA,
+      rsi: 0xC100,
+      rdi: 0xC120
+    )
+    var state = try DoryX86ArchitecturalState(registers: registers, rip: 0xC000)
+
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    #expect(readQuadword(memory, at: 0xC100) == 12)
+    #expect(state.rflags.contains(.zero))
+
+    state.registers.rax = 0x1111
+    state.registers.rbx = 0xAAAA
+    state.registers.rcx = 0xBBBB
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    #expect(readQuadword(memory, at: 0xC120) == 0xAAAA)
+    #expect(readQuadword(memory, at: 0xC128) == 0xBBBB)
+    #expect(state.rflags.contains(.zero))
+
+    state.registers.rsi = 0xC140
+    state.registers.rax = 1
+    state.registers.rdx = 2
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    #expect(state.registers.rax == 0x7788_99AA)
+    #expect(state.registers.rdx == 0x3344_5566)
+    #expect(!state.rflags.contains(.zero))
+  }
+
+  @Test func lockedUpdatesSerializeAcrossVirtualCPUs() throws {
+    let iterations = 500
+    var bytes = [0xF0, 0x48, 0x01, 0x06] + [UInt8](repeating: 0, count: 0x100)
+    bytes.replaceSubrange(0x80..<0x88, with: littleEndian(0))
+    let memory = DoryX86ByteArrayMemory(baseAddress: 0xD000, bytes: bytes)
+
+    DispatchQueue.concurrentPerform(iterations: iterations) { _ in
+      var state = try! DoryX86ArchitecturalState(
+        registers: .init(rax: 1, rsi: 0xD080),
+        rip: 0xD000
+      )
+      _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    }
+    #expect(readQuadword(memory, at: 0xD080) == UInt64(iterations))
+  }
+
+  private func readQuadword(_ memory: DoryX86ByteArrayMemory, at address: UInt64) -> UInt64 {
+    try! memory.read(at: address, byteCount: 8).enumerated().reduce(0) {
+      $0 | UInt64($1.element) << UInt64($1.offset * 8)
+    }
+  }
+
+  private func littleEndian(_ value: UInt64) -> [UInt8] {
+    (0..<8).map { UInt8(truncatingIfNeeded: value >> UInt64($0 * 8)) }
   }
 }

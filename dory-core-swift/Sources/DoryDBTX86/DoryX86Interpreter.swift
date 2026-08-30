@@ -118,39 +118,73 @@ public struct DoryX86Interpreter: Sendable {
           address, to: destination, instruction: instruction, state: &state, memory: executionMemory
         )
       case .alu(let operation, let destination, let source):
-        let lhs = try read(
-          destination, instruction: instruction, state: state, memory: executionMemory)
-        let rhs = try read(source, instruction: instruction, state: state, memory: executionMemory)
-        let width = operandWidth(destination)
-        let result = executeALU(operation, lhs: lhs, rhs: rhs, width: width, flags: &state.rflags)
-        if operation != .compare, operation != .test {
-          try write(
-            result, to: destination, instruction: instruction, state: &state,
-            memory: executionMemory)
+        let execute = { (operationState: inout DoryX86ArchitecturalState) in
+          let lhs = try read(
+            destination, instruction: instruction, state: operationState, memory: executionMemory)
+          let rhs = try read(
+            source, instruction: instruction, state: operationState, memory: executionMemory)
+          let width = operandWidth(destination)
+          let result = executeALU(
+            operation, lhs: lhs, rhs: rhs, width: width, flags: &operationState.rflags)
+          if operation != .compare, operation != .test {
+            try preflightWrite(
+              to: destination,
+              instruction: instruction,
+              state: operationState,
+              memory: executionMemory
+            )
+            try write(
+              result, to: destination, instruction: instruction, state: &operationState,
+              memory: executionMemory)
+          }
+        }
+        if instruction.prefixes.lock {
+          try DoryX86AtomicGate.shared.withLock(state: &state, execute)
+        } else {
+          try execute(&state)
         }
       case .unary(let operation, let operand):
-        let value = try read(
-          operand, instruction: instruction, state: state, memory: executionMemory)
-        let width = operandWidth(operand)
-        let result: UInt64
-        switch operation {
-        case .increment:
-          let carry = state.rflags.contains(.carry)
-          result = executeALU(.add, lhs: value, rhs: 1, width: width, flags: &state.rflags)
-          setFlag(.carry, carry, in: &state.rflags)
-        case .decrement:
-          let carry = state.rflags.contains(.carry)
-          result = executeALU(
-            .subtract, lhs: value, rhs: 1, width: width, flags: &state.rflags)
-          setFlag(.carry, carry, in: &state.rflags)
-        case .bitwiseNot:
-          result = ~value & mask(width)
-        case .negate:
-          result = executeALU(
-            .subtract, lhs: 0, rhs: value, width: width, flags: &state.rflags)
+        let execute = { (operationState: inout DoryX86ArchitecturalState) in
+          let value = try read(
+            operand, instruction: instruction, state: operationState, memory: executionMemory)
+          let width = operandWidth(operand)
+          let result: UInt64
+          switch operation {
+          case .increment:
+            let carry = operationState.rflags.contains(.carry)
+            result = executeALU(
+              .add, lhs: value, rhs: 1, width: width, flags: &operationState.rflags)
+            setFlag(.carry, carry, in: &operationState.rflags)
+          case .decrement:
+            let carry = operationState.rflags.contains(.carry)
+            result = executeALU(
+              .subtract, lhs: value, rhs: 1, width: width, flags: &operationState.rflags)
+            setFlag(.carry, carry, in: &operationState.rflags)
+          case .bitwiseNot:
+            result = ~value & mask(width)
+          case .negate:
+            result = executeALU(
+              .subtract, lhs: 0, rhs: value, width: width, flags: &operationState.rflags)
+          }
+          try preflightWrite(
+            to: operand,
+            instruction: instruction,
+            state: operationState,
+            memory: executionMemory
+          )
+          try write(
+            result,
+            to: operand,
+            instruction: instruction,
+            state: &operationState,
+            memory: executionMemory
+          )
         }
-        try write(
-          result, to: operand, instruction: instruction, state: &state, memory: executionMemory)
+        if instruction.prefixes.lock {
+          try DoryX86AtomicGate.shared.withLock(state: &state, execute)
+        } else {
+          try execute(&state)
+        }
       case .shift(let operation, let destination, let countSource):
         let value = try read(
           destination, instruction: instruction, state: state, memory: executionMemory)
@@ -236,6 +270,154 @@ public struct DoryX86Interpreter: Sendable {
         }
       case .signExtendAccumulator(let width, let intoHighHalf):
         signExtendAccumulator(width: width, intoHighHalf: intoHighHalf, state: &state)
+      case .exchange(let lhs, let rhs):
+        let execute = { (operationState: inout DoryX86ArchitecturalState) in
+          let left = try read(
+            lhs, instruction: instruction, state: operationState, memory: executionMemory)
+          let right = try read(
+            rhs, instruction: instruction, state: operationState, memory: executionMemory)
+          try preflightWrite(
+            to: lhs, instruction: instruction, state: operationState, memory: executionMemory)
+          try preflightWrite(
+            to: rhs, instruction: instruction, state: operationState, memory: executionMemory)
+          try write(
+            right,
+            to: lhs,
+            instruction: instruction,
+            state: &operationState,
+            memory: executionMemory
+          )
+          try write(
+            left,
+            to: rhs,
+            instruction: instruction,
+            state: &operationState,
+            memory: executionMemory
+          )
+        }
+        if isMemory(lhs) || isMemory(rhs) {
+          try DoryX86AtomicGate.shared.withLock(state: &state, execute)
+        } else {
+          try execute(&state)
+        }
+      case .compareExchange(let destination, let source):
+        let execute = { (operationState: inout DoryX86ArchitecturalState) in
+          let destinationValue = try read(
+            destination,
+            instruction: instruction,
+            state: operationState,
+            memory: executionMemory
+          )
+          let sourceValue = try read(
+            source, instruction: instruction, state: operationState, memory: executionMemory)
+          let width = operandWidth(destination)
+          let accumulator = operationState.registers.rax & mask(width)
+          _ = executeALU(
+            .compare,
+            lhs: accumulator,
+            rhs: destinationValue,
+            width: width,
+            flags: &operationState.rflags
+          )
+          if accumulator == destinationValue & mask(width) {
+            try preflightWrite(
+              to: destination,
+              instruction: instruction,
+              state: operationState,
+              memory: executionMemory
+            )
+            try write(
+              sourceValue,
+              to: destination,
+              instruction: instruction,
+              state: &operationState,
+              memory: executionMemory
+            )
+          } else {
+            try writeAccumulator(
+              destinationValue,
+              width: width,
+              instruction: instruction,
+              state: &operationState,
+              memory: executionMemory
+            )
+          }
+        }
+        if instruction.prefixes.lock {
+          try DoryX86AtomicGate.shared.withLock(state: &state, execute)
+        } else {
+          try execute(&state)
+        }
+      case .exchangeAdd(let destination, let source):
+        let execute = { (operationState: inout DoryX86ArchitecturalState) in
+          let destinationValue = try read(
+            destination,
+            instruction: instruction,
+            state: operationState,
+            memory: executionMemory
+          )
+          let sourceValue = try read(
+            source, instruction: instruction, state: operationState, memory: executionMemory)
+          let result = executeALU(
+            .add,
+            lhs: destinationValue,
+            rhs: sourceValue,
+            width: operandWidth(destination),
+            flags: &operationState.rflags
+          )
+          try preflightWrite(
+            to: destination,
+            instruction: instruction,
+            state: operationState,
+            memory: executionMemory
+          )
+          try write(
+            destinationValue, to: source, instruction: instruction, state: &operationState,
+            memory: executionMemory)
+          try write(
+            result, to: destination, instruction: instruction, state: &operationState,
+            memory: executionMemory)
+        }
+        if instruction.prefixes.lock {
+          try DoryX86AtomicGate.shared.withLock(state: &state, execute)
+        } else {
+          try execute(&state)
+        }
+      case .bitTest(let operation, let base, let index):
+        let execute = { (operationState: inout DoryX86ArchitecturalState) in
+          try executeBitTest(
+            operation,
+            base: base,
+            index: index,
+            instruction: instruction,
+            state: &operationState,
+            memory: executionMemory
+          )
+        }
+        if instruction.prefixes.lock {
+          try DoryX86AtomicGate.shared.withLock(state: &state, execute)
+        } else {
+          try execute(&state)
+        }
+      case .compareExchangePair(let destination, let doubleQuadword):
+        let execute = { (operationState: inout DoryX86ArchitecturalState) in
+          try executeCompareExchangePair(
+            destination: destination,
+            doubleQuadword: doubleQuadword,
+            instruction: instruction,
+            state: &operationState,
+            memory: executionMemory
+          )
+        }
+        if instruction.prefixes.lock {
+          try DoryX86AtomicGate.shared.withLock(state: &state, execute)
+        } else {
+          try execute(&state)
+        }
+      case .memoryFence:
+        executionMemory.synchronize()
+      case .processorPause:
+        break
       case .push(let operand):
         let value = try read(
           operand, instruction: instruction, state: state, memory: executionMemory)
@@ -737,6 +919,154 @@ public struct DoryX86Interpreter: Sendable {
     case .immediate, .relative:
       throw DoryX86Exception(
         kind: .generalProtection, vector: 13, errorCode: 0, instructionPointer: state.rip)
+    }
+  }
+
+  private func preflightWrite(
+    to operand: DoryX86Operand,
+    instruction: DoryX86DecodedInstruction,
+    state: DoryX86ArchitecturalState,
+    memory: any DoryX86Memory
+  ) throws {
+    guard case .memory(let target) = operand else { return }
+    try memory.validateWrite(
+      at: effectiveAddress(target, instruction: instruction, state: state),
+      byteCount: target.width.byteCount
+    )
+  }
+
+  private func isMemory(_ operand: DoryX86Operand) -> Bool {
+    if case .memory = operand { return true }
+    return false
+  }
+
+  private func writeAccumulator(
+    _ value: UInt64,
+    width: DoryX86OperandWidth,
+    instruction: DoryX86DecodedInstruction,
+    state: inout DoryX86ArchitecturalState,
+    memory: any DoryX86Memory
+  ) throws {
+    try write(
+      value,
+      to: .register(.rax, width: width),
+      instruction: instruction,
+      state: &state,
+      memory: memory
+    )
+  }
+
+  private func executeBitTest(
+    _ operation: DoryX86BitOperation,
+    base: DoryX86Operand,
+    index: DoryX86Operand,
+    instruction: DoryX86DecodedInstruction,
+    state: inout DoryX86ArchitecturalState,
+    memory: any DoryX86Memory
+  ) throws {
+    let width = operandWidth(base)
+    let bitCount = Int64(width.rawValue)
+    let rawIndex = try read(
+      index, instruction: instruction, state: state, memory: memory)
+    let bitIndex: Int64
+    if case .immediate = index {
+      bitIndex = Int64(rawIndex)
+    } else {
+      bitIndex = signExtendedInt64(rawIndex, width: width)
+    }
+
+    if case .memory(let memoryOperand) = base {
+      var elementOffset = bitIndex / bitCount
+      var bitOffset = bitIndex % bitCount
+      if bitOffset < 0 {
+        bitOffset += bitCount
+        elementOffset -= 1
+      }
+      let baseAddress = effectiveAddress(
+        memoryOperand, instruction: instruction, state: state)
+      let address = baseAddress &+ UInt64(bitPattern: elementOffset * Int64(width.byteCount))
+      let value = fromLittleEndian(try memory.read(at: address, byteCount: width.byteCount))
+      let bit = UInt64(1) << UInt64(bitOffset)
+      setFlag(.carry, value & bit != 0, in: &state.rflags)
+      let result: UInt64 =
+        switch operation {
+        case .test: value
+        case .set: value | bit
+        case .reset: value & ~bit
+        case .complement: value ^ bit
+        }
+      if operation != .test {
+        try memory.validateWrite(at: address, byteCount: width.byteCount)
+        try memory.write(at: address, bytes: littleEndian(result, width: width))
+      }
+      return
+    }
+
+    let bitOffset = UInt64(bitPattern: bitIndex) & UInt64(width.rawValue - 1)
+    let bit = UInt64(1) << bitOffset
+    let value = try read(base, instruction: instruction, state: state, memory: memory)
+    setFlag(.carry, value & bit != 0, in: &state.rflags)
+    let result: UInt64 =
+      switch operation {
+      case .test: value
+      case .set: value | bit
+      case .reset: value & ~bit
+      case .complement: value ^ bit
+      }
+    if operation != .test {
+      try write(result, to: base, instruction: instruction, state: &state, memory: memory)
+    }
+  }
+
+  private func executeCompareExchangePair(
+    destination: DoryX86MemoryOperand,
+    doubleQuadword: Bool,
+    instruction: DoryX86DecodedInstruction,
+    state: inout DoryX86ArchitecturalState,
+    memory: any DoryX86Memory
+  ) throws {
+    let byteCount = doubleQuadword ? 16 : 8
+    let address = effectiveAddress(destination, instruction: instruction, state: state)
+    if doubleQuadword, address & 0xf != 0 {
+      throw DoryX86Exception(
+        kind: .generalProtection,
+        vector: 13,
+        errorCode: 0,
+        instructionPointer: state.rip,
+        linearAddress: address
+      )
+    }
+    let bytes = try memory.read(at: address, byteCount: byteCount)
+    let firstQuadword = fromLittleEndian(Array(bytes[0..<8]))
+    let memoryLow = doubleQuadword ? firstQuadword : firstQuadword & 0xffff_ffff
+    let memoryHigh =
+      doubleQuadword ? fromLittleEndian(Array(bytes[8..<16])) : firstQuadword >> 32
+    let expectedLow =
+      doubleQuadword ? state.registers.rax : UInt64(UInt32(truncatingIfNeeded: state.registers.rax))
+    let expectedHigh =
+      doubleQuadword ? state.registers.rdx : UInt64(UInt32(truncatingIfNeeded: state.registers.rdx))
+    let equal = memoryLow == expectedLow && memoryHigh == expectedHigh
+    setFlag(.zero, equal, in: &state.rflags)
+    if equal {
+      let replacement: [UInt8]
+      if doubleQuadword {
+        replacement =
+          littleEndian(state.registers.rbx, width: .quadword)
+          + littleEndian(state.registers.rcx, width: .quadword)
+      } else {
+        let value =
+          UInt64(UInt32(truncatingIfNeeded: state.registers.rbx))
+          | UInt64(UInt32(truncatingIfNeeded: state.registers.rcx)) << 32
+        replacement = littleEndian(value, width: .quadword)
+      }
+      try memory.validateWrite(at: address, byteCount: byteCount)
+      try memory.write(at: address, bytes: replacement)
+    } else if doubleQuadword {
+      state.registers.rax = memoryLow
+      state.registers.rdx = memoryHigh
+    } else {
+      state.registers.rax = UInt64(UInt32(truncatingIfNeeded: firstQuadword))
+      state.registers.rdx = UInt64(UInt32(truncatingIfNeeded: firstQuadword >> 32))
     }
   }
 
@@ -1304,5 +1634,21 @@ public struct DoryX86Interpreter: Sendable {
         linearAddress: address
       )
     }
+  }
+}
+
+private final class DoryX86AtomicGate: @unchecked Sendable {
+  static let shared = DoryX86AtomicGate()
+  private let lock = NSLock()
+
+  private init() {}
+
+  func withLock<State, Result>(
+    state: inout State,
+    _ operation: (inout State) throws -> Result
+  ) rethrows -> Result {
+    lock.lock()
+    defer { lock.unlock() }
+    return try operation(&state)
   }
 }

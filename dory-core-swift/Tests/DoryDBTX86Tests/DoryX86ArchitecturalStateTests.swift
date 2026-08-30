@@ -69,6 +69,8 @@ import Testing
     #expect(profile.supports(.msr))
     #expect(profile.supports(.tsc))
     #expect(profile.supports(.cmov))
+    #expect(profile.supports(.cmpxchg8b))
+    #expect(profile.supports(.cmpxchg16b))
     #expect(!profile.supports(.avx))
     #expect(!profile.supports(.avx2))
     #expect(profile.cpuid(leaf: 0).eax == 0xD)

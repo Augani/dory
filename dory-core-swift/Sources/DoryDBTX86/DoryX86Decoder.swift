@@ -63,7 +63,21 @@ public struct DoryX86Decoder: Sendable {
     let operation: DoryX86InstructionOperation
     switch opcode {
     case 0x90:
-      operation = .noOperation
+      if prefixes.repeatPrefix == 0xF3, prefixes.rex?.b != true {
+        operation = .processorPause
+      } else if prefixes.rex?.b == true {
+        operation = .exchange(
+          .register(.rax, width: width),
+          .register(.r8, width: width)
+        )
+      } else {
+        operation = .noOperation
+      }
+    case 0x91...0x97:
+      operation = .exchange(
+        .register(.rax, width: width),
+        .register(register(Int(opcode - 0x90), extensionBit: prefixes.rex?.b == true), width: width)
+      )
     case 0x9C:
       operation = .pushFlags(width: stackWidth(mode: mode, prefixes: prefixes))
     case 0x9D:
@@ -150,7 +164,7 @@ public struct DoryX86Decoder: Sendable {
       operation = .signExtendAccumulator(width: width, intoHighHalf: false)
     case 0x99:
       operation = .signExtendAccumulator(width: width, intoHighHalf: true)
-    case 0x88, 0x8A, 0x89, 0x8B, 0x8D,
+    case 0x86, 0x87, 0x88, 0x8A, 0x89, 0x8B, 0x8D,
       0x00, 0x02, 0x01, 0x03, 0x08, 0x0A, 0x09, 0x0B,
       0x10, 0x12, 0x11, 0x13, 0x18, 0x1A, 0x19, 0x1B,
       0x20, 0x22, 0x21, 0x23, 0x28, 0x2A, 0x29, 0x2B,
@@ -164,6 +178,8 @@ public struct DoryX86Decoder: Sendable {
         mode: mode
       )
       switch opcode {
+      case 0x86, 0x87:
+        operation = .exchange(operands.rm, operands.reg)
       case 0x88:
         operation = .move(destination: operands.rm, source: operands.reg)
       case 0x8A:
@@ -399,6 +415,31 @@ public struct DoryX86Decoder: Sendable {
         }
       case 0xA2:
         operation = .cpuid
+      case 0xAE:
+        let modRM = try cursor.readByte()
+        guard modRM >> 6 == 3, modRM & 7 == 0 else {
+          throw DoryX86DecodeError.invalidEncoding(
+            address: address, detail: "memory fence requires its fixed register encoding")
+        }
+        switch (modRM >> 3) & 7 {
+        case 5: operation = .memoryFence(.load)
+        case 6: operation = .memoryFence(.full)
+        case 7: operation = .memoryFence(.store)
+        default:
+          throw DoryX86DecodeError.invalidEncoding(
+            address: address, detail: "unsupported 0F AE group")
+        }
+      case 0xA3, 0xAB, 0xB3, 0xBB:
+        let operands = try decodeModRM(
+          cursor: &cursor, width: width, prefixes: prefixes, mode: mode)
+        let bitOperation: DoryX86BitOperation =
+          switch second {
+          case 0xA3: .test
+          case 0xAB: .set
+          case 0xB3: .reset
+          default: .complement
+          }
+        operation = .bitTest(bitOperation, base: operands.rm, index: operands.reg)
       case 0x40...0x4F:
         let operands = try decodeModRM(
           cursor: &cursor, width: width, prefixes: prefixes, mode: mode)
@@ -427,6 +468,11 @@ public struct DoryX86Decoder: Sendable {
           lhs: operands.reg,
           rhs: operands.rm
         )
+      case 0xB0, 0xB1:
+        let operandWidth: DoryX86OperandWidth = second == 0xB0 ? .byte : width
+        let operands = try decodeModRM(
+          cursor: &cursor, width: operandWidth, prefixes: prefixes, mode: mode)
+        operation = .compareExchange(destination: operands.rm, source: operands.reg)
       case 0xB6, 0xB7, 0xBE, 0xBF:
         let sourceWidth: DoryX86OperandWidth = second == 0xB6 || second == 0xBE ? .byte : .word
         let operands = try decodeModRM(
@@ -435,6 +481,44 @@ public struct DoryX86Decoder: Sendable {
           destination: resizedOperand(operands.reg, to: width),
           source: operands.rm,
           signed: second == 0xBE || second == 0xBF
+        )
+      case 0xBA:
+        let operands = try decodeModRM(
+          cursor: &cursor, width: width, prefixes: prefixes, mode: mode)
+        let bitOperation: DoryX86BitOperation =
+          switch operands.group {
+          case 4: .test
+          case 5: .set
+          case 6: .reset
+          case 7: .complement
+          default:
+            throw DoryX86DecodeError.invalidEncoding(
+              address: address, detail: "unsupported 0F BA bit group")
+          }
+        operation = .bitTest(
+          bitOperation,
+          base: operands.rm,
+          index: .immediate(try cursor.readUnsigned(byteCount: 1), width: .byte)
+        )
+      case 0xC0, 0xC1:
+        let operandWidth: DoryX86OperandWidth = second == 0xC0 ? .byte : width
+        let operands = try decodeModRM(
+          cursor: &cursor, width: operandWidth, prefixes: prefixes, mode: mode)
+        operation = .exchangeAdd(destination: operands.rm, source: operands.reg)
+      case 0xC7:
+        let operands = try decodeModRM(
+          cursor: &cursor,
+          width: prefixes.rex?.w == true ? .quadword : .doubleword,
+          prefixes: prefixes,
+          mode: mode
+        )
+        guard operands.group == 1, case .memory(let destination) = operands.rm else {
+          throw DoryX86DecodeError.invalidEncoding(
+            address: address, detail: "CMPXCHG8B/16B requires a memory /1 operand")
+        }
+        operation = .compareExchangePair(
+          destination: destination,
+          doubleQuadword: prefixes.rex?.w == true
         )
       default:
         throw DoryX86DecodeError.unsupportedOpcode(
@@ -445,6 +529,7 @@ public struct DoryX86Decoder: Sendable {
     default:
       throw DoryX86DecodeError.unsupportedOpcode(address: address, bytes: cursor.consumedBytes)
     }
+    try validateLockPrefix(prefixes, operation: operation, address: address)
     guard cursor.offset <= 15 else { throw DoryX86DecodeError.instructionTooLong(address: address) }
     return DoryX86DecodedInstruction(
       address: address,
@@ -452,6 +537,40 @@ public struct DoryX86Decoder: Sendable {
       prefixes: prefixes,
       operation: operation
     )
+  }
+
+  private func validateLockPrefix(
+    _ prefixes: DoryX86InstructionPrefixes,
+    operation: DoryX86InstructionOperation,
+    address: UInt64
+  ) throws {
+    guard prefixes.lock else { return }
+    let valid: Bool =
+      switch operation {
+      case .alu(let operation, let destination, _):
+        operation != .compare && operation != .test && isMemory(destination)
+      case .unary(_, let operand):
+        isMemory(operand)
+      case .compareExchange(let destination, _), .exchangeAdd(let destination, _):
+        isMemory(destination)
+      case .exchange(let lhs, let rhs):
+        isMemory(lhs) || isMemory(rhs)
+      case .bitTest(let operation, let base, _):
+        operation != .test && isMemory(base)
+      case .compareExchangePair:
+        true
+      default:
+        false
+      }
+    guard valid else {
+      throw DoryX86DecodeError.invalidEncoding(
+        address: address, detail: "LOCK requires a supported memory read-modify-write operand")
+    }
+  }
+
+  private func isMemory(_ operand: DoryX86Operand) -> Bool {
+    if case .memory = operand { return true }
+    return false
   }
 
   private func decodeControlRegisterModRM(

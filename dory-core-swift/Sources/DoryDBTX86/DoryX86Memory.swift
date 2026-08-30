@@ -29,6 +29,18 @@ public protocol DoryX86Memory: AnyObject, Sendable {
   func instructionBytes(at address: UInt64, maximumCount: Int) throws -> [UInt8]
   func read(at address: UInt64, byteCount: Int) throws -> [UInt8]
   func write(at address: UInt64, bytes: [UInt8]) throws
+  /// Proves that a complete write can commit before an instruction exposes any memory changes.
+  func validateWrite(at address: UInt64, byteCount: Int) throws
+  /// Joins prior and subsequent accesses at the memory implementation's ordering boundary.
+  func synchronize()
+}
+
+extension DoryX86Memory {
+  public func validateWrite(at address: UInt64, byteCount: Int) throws {
+    _ = try read(at: address, byteCount: byteCount)
+  }
+
+  public func synchronize() {}
 }
 
 /// Deterministic flat address space for interpreter conformance, firmware bring-up, and replay.
@@ -70,6 +82,18 @@ public final class DoryX86ByteArrayMemory: DoryX86Memory, @unchecked Sendable {
     defer { lock.unlock() }
     let offset = try checkedOffset(address: address, byteCount: bytes.count, access: .write)
     storage.replaceSubrange(offset..<(offset + bytes.count), with: bytes)
+  }
+
+  public func validateWrite(at address: UInt64, byteCount: Int) throws {
+    guard byteCount > 0 else { return }
+    lock.lock()
+    defer { lock.unlock() }
+    _ = try checkedOffset(address: address, byteCount: byteCount, access: .write)
+  }
+
+  public func synchronize() {
+    lock.lock()
+    lock.unlock()
   }
 
   public func snapshot() -> [UInt8] {

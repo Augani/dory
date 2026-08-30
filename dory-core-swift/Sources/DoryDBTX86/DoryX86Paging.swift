@@ -561,6 +561,10 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, @unchecked Sendable {
     }
   }
 
+  public func synchronize() {
+    physicalMemory.synchronize()
+  }
+
   private func readLinear(
     at address: UInt64,
     byteCount: Int,

@@ -95,6 +95,14 @@ public enum DoryX86AccumulatorArithmeticOperation: String, Codable, Sendable, Ha
   case unsignedMultiply, signedMultiply, unsignedDivide, signedDivide
 }
 
+public enum DoryX86BitOperation: String, Codable, Sendable, Hashable {
+  case test, set, reset, complement
+}
+
+public enum DoryX86MemoryFence: String, Codable, Sendable, Hashable {
+  case load, store, full
+}
+
 public enum DoryX86Condition: UInt8, Codable, Sendable, Hashable {
   case overflow = 0
   case notOverflow
@@ -126,6 +134,13 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
   case signedMultiply(destination: DoryX86Operand, lhs: DoryX86Operand, rhs: DoryX86Operand)
   case accumulatorArithmetic(DoryX86AccumulatorArithmeticOperation, source: DoryX86Operand)
   case signExtendAccumulator(width: DoryX86OperandWidth, intoHighHalf: Bool)
+  case exchange(DoryX86Operand, DoryX86Operand)
+  case compareExchange(destination: DoryX86Operand, source: DoryX86Operand)
+  case exchangeAdd(destination: DoryX86Operand, source: DoryX86Operand)
+  case bitTest(DoryX86BitOperation, base: DoryX86Operand, index: DoryX86Operand)
+  case compareExchangePair(destination: DoryX86MemoryOperand, doubleQuadword: Bool)
+  case memoryFence(DoryX86MemoryFence)
+  case processorPause
   case push(DoryX86Operand)
   case pop(DoryX86Operand)
   case call(relative: Int64)

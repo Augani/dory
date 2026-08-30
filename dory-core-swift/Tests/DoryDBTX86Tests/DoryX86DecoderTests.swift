@@ -185,4 +185,58 @@ import Testing
         )
     )
   }
+
+  @Test func decodesAtomicAndBitManipulationInstructions() throws {
+    #expect(
+      try decoder.decode([0x48, 0x87, 0x08], at: 0xA000, mode: .long64).operation
+        == .exchange(
+          .memory(.init(base: .rax, width: .quadword)),
+          .register(.rcx, width: .quadword)
+        )
+    )
+    #expect(
+      try decoder.decode([0xF0, 0x48, 0x0F, 0xB1, 0x08], at: 0xA000, mode: .long64)
+        .operation
+        == .compareExchange(
+          destination: .memory(.init(base: .rax, width: .quadword)),
+          source: .register(.rcx, width: .quadword)
+        )
+    )
+    #expect(
+      try decoder.decode([0xF0, 0x48, 0x0F, 0xC1, 0x08], at: 0xA000, mode: .long64)
+        .operation
+        == .exchangeAdd(
+          destination: .memory(.init(base: .rax, width: .quadword)),
+          source: .register(.rcx, width: .quadword)
+        )
+    )
+    #expect(
+      try decoder.decode([0xF0, 0x48, 0x0F, 0xAB, 0x08], at: 0xA000, mode: .long64)
+        .operation
+        == .bitTest(
+          .set,
+          base: .memory(.init(base: .rax, width: .quadword)),
+          index: .register(.rcx, width: .quadword)
+        )
+    )
+    #expect(
+      try decoder.decode([0xF0, 0x48, 0x0F, 0xC7, 0x08], at: 0xA000, mode: .long64)
+        .operation
+        == .compareExchangePair(
+          destination: .init(base: .rax, width: .quadword),
+          doubleQuadword: true
+        )
+    )
+    #expect(throws: DoryX86DecodeError.self) {
+      try decoder.decode([0xF0, 0x48, 0x89, 0x08], at: 0xA000, mode: .long64)
+    }
+    #expect(
+      try decoder.decode([0x0F, 0xAE, 0xF0], at: 0xA000, mode: .long64).operation
+        == .memoryFence(.full)
+    )
+    #expect(
+      try decoder.decode([0xF3, 0x90], at: 0xA000, mode: .long64).operation
+        == .processorPause
+    )
+  }
 }
