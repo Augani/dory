@@ -397,7 +397,9 @@ The following must remain visibly open until evidence is attached:
    one display, while `VZUSBPassthroughDeviceConfiguration` is available from macOS 27.0. The
    2026-08-30 engineering probe built with Xcode 26.6/macOS SDK 26.5 constructs the documented
    graphics, input, audio, and XHCI configurations but finds no public camera or physical-USB
-   declaration. The Developer ID Release host-camera probe separately passed TCC authorization and
+   declaration. The separate Developer ID macOS SDK 27.0 receipt compiles the typed public
+   AccessoryAccess USB-passthrough constructor and still finds no direct VZ camera-injection type.
+   The Developer ID Release host-camera probe separately passed TCC authorization and
    captured 30 valid 1280x720 frames from the built-in camera through public AVFoundation without a
    camera extension. This proves host capture, not system-wide guest camera registration: the
    VZ virtio-socket relay and guest CoreMediaIO Camera Extension still require notarized in-guest

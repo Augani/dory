@@ -1,0 +1,66 @@
+{
+  "schema": "dory.phase0a.vzmac-device-api-sdk27-engineering-evidence@1",
+  "verdict": "public-usb-declared-camera-bridge-runtime-qualification-pending",
+  "collectedAt": "2026-08-30T13:49:28Z",
+  "toolchain": {
+    "swiftVersion": "6.4",
+    "swiftBuild": "swiftlang-6.4.0.33.1 clang-2100.3.33.1",
+    "sdkVersion": "27.0",
+    "sdkMaximumAllowed": 270000,
+    "linkerBuildVersion": "27037.1",
+    "loadCommandMinimumMacOS": "14.0",
+    "loadCommandSDK": "27.0"
+  },
+  "host": {
+    "architecture": "arm64",
+    "hardwareModel": "Mac14,10",
+    "productVersion": "27.0",
+    "buildVersion": "26A5421a"
+  },
+  "candidate": {
+    "sha256": "f211e3cbe5f12cd7285b586021d8d40eb99ef9077672506b1d61dea4827d2443",
+    "runtimeReceiptSHA256": "eb34f2ca0f357da86f713b8560b71831cdb382d8f3736285dfc633d3d91fbfc1",
+    "candidateCDHashFullSHA256": "aa34bc34ab785a8eb057a1b73fef1213586681ea216f191d52095162d297c9d4",
+    "hardenedRuntime": true,
+    "secureTimestamp": "2026-08-30T13:49:28+00:00",
+    "teamIdentifier": "864H636QW4",
+    "signingAuthority": "Developer ID Application: Augustus Otu (864H636QW4)",
+    "notarization": "not-submitted-engineering-probe"
+  },
+  "sourceSHA256": {
+    "probe": "25d75adb24b89cdbdd5ff3975b68e5c03e65eabdcbe1bb71b22f9905b5d3c4ff",
+    "compatibilityResolver": "1ee02f8094ec68dee2b7d28d9df74ef4af45907ce71ae7ea95c6f27ef47a9dff",
+    "sdkInventoryImplementation": "c49ce250e7e325a00aa115931f44883986c936e013bea9d6abccae5ecf398718",
+    "sdkInventoryHeader": "ba3059f3451c504319017997bfeb706ef7e66101912861070fa69161ffd601b4"
+  },
+  "constructedPublicDevices": {
+    "configuredGuestDisplayCount": 1,
+    "macGraphicsDisplay": true,
+    "macKeyboard": true,
+    "macTrackpad": true,
+    "hostAudioInput": true,
+    "hostAudioOutput": true,
+    "xhciController": true
+  },
+  "publicSDKBoundary": {
+    "accessoryAccessDeclared": true,
+    "physicalUSBPassthroughDeclared": true,
+    "physicalUSBConfigurationConstructorCompiled": true,
+    "physicalUSBMinimumHostVersion": "27.0",
+    "virtioSocketDeclared": true,
+    "customVirtioDeclared": true,
+    "customVirtioGuestScope": "Linux virtual machines",
+    "cameraInjectionDeclared": false,
+    "cameraBridgeCandidate": "host AVFoundation capture -> VZ Virtio socket -> guest CoreMediaIO Camera Extension",
+    "cameraBridgeMinimumGuestVersion": "12.3"
+  },
+  "releaseGateClosed": false,
+  "openRequirements": [
+    "entitled physical-USB attach/detach and permission qualification on macOS 27",
+    "provisioned and notarized guest camera tools",
+    "restore-image-backed running-guest camera data-flow qualification",
+    "camera TCC permission and revocation qualification",
+    "guest camera update, rollback, and uninstall qualification",
+    "frozen minimum-host and physical-host matrix"
+  ]
+}

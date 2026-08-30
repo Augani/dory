@@ -831,14 +831,16 @@ bounded capability for the selected device, never ambient IOKit or USB access.
 - Release the lease and restore host access after normal detach, guest shutdown, permission revoke,
   runner crash, controller crash, or host wake.
 
-For VZMac, Dory uses USB passthrough only after the relevant public API is final on the minimum host
-OS and the exact device family passes attach/detach/save/restore testing. A beta API can inform
-research but cannot be a supported release dependency.
+For VZMac, Dory uses USB passthrough only when the relevant public API is available on the host OS
+and the exact device family passes attach/detach/save/restore testing. Prerelease API observations
+can inform research but cannot be a supported release dependency.
 
-The current VZ USB passthrough and AccessoryAccess surfaces are beta and use their own device,
-consent, UI-process, and entitlement rules. Phase 0 must prove the exact final process/authority
-split under release signing; the design must not assume that a headless USB broker can perform an
-operation the public API reserves for a UI-bearing app.
+The macOS 27 VZ USB passthrough and AccessoryAccess surfaces use their own device, consent,
+UI-process, and entitlement rules. Phase 0 must prove the exact process/authority split under
+release signing; the design must not assume that a headless USB broker can perform an operation the
+public API reserves for a UI-bearing app. Hosts before macOS 27 expose no equivalent public
+physical-passthrough API, so the capability remains unavailable there without changing other VZMac
+devices.
 
 ### 12.7 Camera, microphone, speakers, and media routing
 
@@ -1532,7 +1534,7 @@ Entitlements are assigned to the narrow responsible executable:
 | DoryHV ARM64 runner | `com.apple.security.hypervisor` |
 | VZMac runner | `com.apple.security.virtualization`; when it instantiates host audio input, also `com.apple.security.device.audio-input`, `NSMicrophoneUsageDescription`, and TCC authorization |
 | DoryDBT runner | `com.apple.security.cs.allow-jit` plus the Phase 0-selected JIT write-allowlist entitlement/API |
-| Host USB authority selected by the final API | `com.apple.security.device.usb` where required; if final AccessoryAccess is adopted, its current beta contract additionally uses `com.apple.developer.accessory-access.usb` in the UI-bearing process prescribed by the API |
+| Host USB authority selected by the public API | `com.apple.security.device.usb` where required; the macOS 27 AccessoryAccess contract additionally uses `com.apple.developer.accessory-access.usb` in the UI-bearing process prescribed by the API |
 | Camera capture service | `com.apple.security.device.camera` plus `NSCameraUsageDescription` |
 | Microphone capture service | `com.apple.security.device.audio-input` plus `NSMicrophoneUsageDescription` |
 
@@ -2289,8 +2291,8 @@ supported. Starting points include:
   <https://developer.apple.com/documentation/virtualization/audio>
   <https://developer.apple.com/documentation/virtualization/vzhostaudioinputstreamsource>
   <https://developer.apple.com/documentation/virtualization/vzhostaudiooutputstreamsink>
-- Apple Virtualization USB device and passthrough API status, including the currently beta
-  passthrough configuration and AccessoryAccess entitlement:
+- Apple Virtualization USB device and passthrough API status, including the macOS 27 passthrough
+  configuration and AccessoryAccess entitlement:
   <https://developer.apple.com/documentation/virtualization/usb-devices>,
   <https://developer.apple.com/documentation/virtualization/vzusbpassthroughdeviceconfiguration>,
   <https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.developer.accessory-access.usb>
