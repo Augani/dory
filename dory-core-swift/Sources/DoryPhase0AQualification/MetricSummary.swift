@@ -3,7 +3,10 @@ import Foundation
 public struct Phase0AMetricSummary: Codable, Equatable, Sendable {
     public var sampleCount: Int
     public var minimum: Double
+    public var lowerQuartile: Double
     public var median: Double
+    public var upperQuartile: Double
+    public var p90: Double
     public var p95: Double
     public var p99: Double
     public var maximum: Double
@@ -11,8 +14,11 @@ public struct Phase0AMetricSummary: Codable, Equatable, Sendable {
     public var variance: Double
     public var coefficientOfVariation: Double
 
-    public init(samples: [Double]) throws {
-        guard !samples.isEmpty, samples.allSatisfy({ $0.isFinite && $0 >= 0 }) else {
+    public init(samples: [Double], allowsNegativeValues: Bool = false) throws {
+        guard
+            !samples.isEmpty,
+            samples.allSatisfy({ $0.isFinite && (allowsNegativeValues || $0 >= 0) })
+        else {
             throw Phase0AMetricSummaryError.invalidSamples
         }
         let ordered = samples.sorted()
@@ -23,7 +29,10 @@ public struct Phase0AMetricSummary: Codable, Equatable, Sendable {
         } / Double(ordered.count)
         self.sampleCount = ordered.count
         self.minimum = ordered[0]
+        self.lowerQuartile = Self.percentile(ordered, probability: 0.25)
         self.median = Self.percentile(ordered, probability: 0.5)
+        self.upperQuartile = Self.percentile(ordered, probability: 0.75)
+        self.p90 = Self.percentile(ordered, probability: 0.9)
         self.p95 = Self.percentile(ordered, probability: 0.95)
         self.p99 = Self.percentile(ordered, probability: 0.99)
         self.maximum = ordered[ordered.count - 1]

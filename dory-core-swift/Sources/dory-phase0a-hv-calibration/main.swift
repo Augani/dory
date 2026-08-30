@@ -5,17 +5,42 @@ import DoryNativeHVArm64
 import DoryPhase0AQualification
 import Foundation
 
-private let warmupCount = 5
-private let sampleCount = 30
+private let warmupCount = 20
+private let sampleCount = 300
+private let roundCount = 5
 private let guestBase: UInt64 = 0x8000_0000
 
 private struct CampaignPolicy: Codable {
-    var warmupCount: Int
-    var sampleCountPerHarness: Int
+    var roundCount: Int
+    var warmupCountPerHarnessPerRound: Int
+    var sampleCountPerHarnessPerRound: Int
     var order: String
     var clock: String
     var percentileMethod: String
+    var inferenceUnit: String
     var orchestrationMedianOverheadBudgetPercent: Double
+}
+
+private struct LifecycleObservation: Codable {
+    var round: Int
+    var sample: Int
+    var harness: String
+    var position: String
+    var durationMicroseconds: Double
+}
+
+private struct RoundReceipt: Codable {
+    var round: Int
+    var minimalHVLifecycleMicroseconds: Phase0AMetricSummary
+    var doryContractLifecycleMicroseconds: Phase0AMetricSummary
+    var medianOverheadPercent: Double
+    var budgetPass: Bool
+}
+
+private struct AggregateReceipt: Codable {
+    var minimalHVRoundMediansMicroseconds: Phase0AMetricSummary
+    var doryContractRoundMediansMicroseconds: Phase0AMetricSummary
+    var pairedRoundOverheadPercent: Phase0AMetricSummary
 }
 
 private struct CorrectnessReceipt: Codable {
@@ -29,12 +54,12 @@ private struct CalibrationReceipt: Codable {
     var startedHost: Phase0AHostQualificationReceipt
     var finishedHost: Phase0AHostQualificationReceipt
     var policy: CampaignPolicy
-    var minimalHVLifecycleMicroseconds: Phase0AMetricSummary
-    var doryContractLifecycleMicroseconds: Phase0AMetricSummary
-    var medianOverheadPercent: Double
+    var observations: [LifecycleObservation]
+    var rounds: [RoundReceipt]
+    var aggregate: AggregateReceipt
     var correctness: CorrectnessReceipt
-    var contaminationBlockers: [String]
-    var releaseBudgetPass: Bool
+    var validityBlockers: [String]
+    var orchestrationBudgetPass: Bool
     var referenceMatrixComplete: Bool
 }
 
@@ -48,7 +73,6 @@ private func elapsedMicroseconds(_ operation: () throws -> Void) rethrows -> Dou
     let finish = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW)
     return Double(finish - start) / 1_000
 }
-
 
 @available(macOS 15.0, *)
 private func runMinimalHVWorkload() throws {
@@ -109,76 +133,148 @@ private func runDoryContractWorkload(generation: UInt64) throws {
 private func runCampaign() throws -> CalibrationReceipt {
     let startedHost = try Phase0AHostCollector.collect()
     var generation: UInt64 = 1
-    for iteration in 0..<warmupCount {
-        if iteration.isMultiple(of: 2) {
-            try runMinimalHVWorkload()
-            try runDoryContractWorkload(generation: generation)
-        } else {
-            try runDoryContractWorkload(generation: generation)
-            try runMinimalHVWorkload()
+    var observations: [LifecycleObservation] = []
+    observations.reserveCapacity(roundCount * sampleCount * 2)
+    var rounds: [RoundReceipt] = []
+    rounds.reserveCapacity(roundCount)
+
+    for roundIndex in 0..<roundCount {
+        for warmup in 0..<warmupCount {
+            if (roundIndex + warmup).isMultiple(of: 2) {
+                try runMinimalHVWorkload()
+                try runDoryContractWorkload(generation: generation)
+            } else {
+                try runDoryContractWorkload(generation: generation)
+                try runMinimalHVWorkload()
+            }
+            generation += 1
         }
-        generation += 1
+
+        var minimalSamples: [Double] = []
+        var dorySamples: [Double] = []
+        minimalSamples.reserveCapacity(sampleCount)
+        dorySamples.reserveCapacity(sampleCount)
+        for sampleIndex in 0..<sampleCount {
+            let minimalFirst = (roundIndex + sampleIndex).isMultiple(of: 2)
+            if minimalFirst {
+                let minimal = try elapsedMicroseconds(runMinimalHVWorkload)
+                let dory = try elapsedMicroseconds {
+                    try runDoryContractWorkload(generation: generation)
+                }
+                minimalSamples.append(minimal)
+                dorySamples.append(dory)
+                observations.append(
+                    LifecycleObservation(
+                        round: roundIndex + 1,
+                        sample: sampleIndex + 1,
+                        harness: "minimal-hv",
+                        position: "first",
+                        durationMicroseconds: minimal
+                    )
+                )
+                observations.append(
+                    LifecycleObservation(
+                        round: roundIndex + 1,
+                        sample: sampleIndex + 1,
+                        harness: "dory-contract",
+                        position: "second",
+                        durationMicroseconds: dory
+                    )
+                )
+            } else {
+                let dory = try elapsedMicroseconds {
+                    try runDoryContractWorkload(generation: generation)
+                }
+                let minimal = try elapsedMicroseconds(runMinimalHVWorkload)
+                dorySamples.append(dory)
+                minimalSamples.append(minimal)
+                observations.append(
+                    LifecycleObservation(
+                        round: roundIndex + 1,
+                        sample: sampleIndex + 1,
+                        harness: "dory-contract",
+                        position: "first",
+                        durationMicroseconds: dory
+                    )
+                )
+                observations.append(
+                    LifecycleObservation(
+                        round: roundIndex + 1,
+                        sample: sampleIndex + 1,
+                        harness: "minimal-hv",
+                        position: "second",
+                        durationMicroseconds: minimal
+                    )
+                )
+            }
+            generation += 1
+        }
+
+        let minimalSummary = try Phase0AMetricSummary(samples: minimalSamples)
+        let dorySummary = try Phase0AMetricSummary(samples: dorySamples)
+        let overhead = ((dorySummary.median / minimalSummary.median) - 1) * 100
+        rounds.append(
+            RoundReceipt(
+                round: roundIndex + 1,
+                minimalHVLifecycleMicroseconds: minimalSummary,
+                doryContractLifecycleMicroseconds: dorySummary,
+                medianOverheadPercent: overhead,
+                budgetPass: overhead <= 3
+            )
+        )
     }
 
-    var minimalSamples: [Double] = []
-    var dorySamples: [Double] = []
-    minimalSamples.reserveCapacity(sampleCount)
-    dorySamples.reserveCapacity(sampleCount)
-    for iteration in 0..<sampleCount {
-        if iteration.isMultiple(of: 2) {
-            minimalSamples.append(try elapsedMicroseconds(runMinimalHVWorkload))
-            dorySamples.append(try elapsedMicroseconds {
-                try runDoryContractWorkload(generation: generation)
-            })
-        } else {
-            dorySamples.append(try elapsedMicroseconds {
-                try runDoryContractWorkload(generation: generation)
-            })
-            minimalSamples.append(try elapsedMicroseconds(runMinimalHVWorkload))
-        }
-        generation += 1
-    }
-
-    let minimalSummary = try Phase0AMetricSummary(samples: minimalSamples)
-    let dorySummary = try Phase0AMetricSummary(samples: dorySamples)
-    let overhead = ((dorySummary.median / minimalSummary.median) - 1) * 100
+    let aggregate = AggregateReceipt(
+        minimalHVRoundMediansMicroseconds: try Phase0AMetricSummary(
+            samples: rounds.map(\.minimalHVLifecycleMicroseconds.median)
+        ),
+        doryContractRoundMediansMicroseconds: try Phase0AMetricSummary(
+            samples: rounds.map(\.doryContractLifecycleMicroseconds.median)
+        ),
+        pairedRoundOverheadPercent: try Phase0AMetricSummary(
+            samples: rounds.map(\.medianOverheadPercent),
+            allowsNegativeValues: true
+        )
+    )
     let finishedHost = try Phase0AHostCollector.collect()
-    var contamination: [String] = []
+    var validityBlockers: [String] = []
     if startedHost.host.bootSessionIdentifier != finishedHost.host.bootSessionIdentifier {
-        contamination.append("boot session changed during campaign")
+        validityBlockers.append("boot session changed during campaign")
     }
     if startedHost.host.powerSource != finishedHost.host.powerSource {
-        contamination.append("power source changed during campaign")
+        validityBlockers.append("power source changed during campaign")
     }
     if startedHost.host.lowPowerModeEnabled || finishedHost.host.lowPowerModeEnabled {
-        contamination.append("low-power mode was enabled")
+        validityBlockers.append("low-power mode was enabled")
     }
     if startedHost.host.thermalState != "nominal" || finishedHost.host.thermalState != "nominal" {
-        contamination.append("thermal state was not nominal")
+        validityBlockers.append("thermal state was not nominal")
     }
-    let pass = contamination.isEmpty && overhead <= 3
+    let pass = validityBlockers.isEmpty && aggregate.pairedRoundOverheadPercent.median <= 3
     return CalibrationReceipt(
-        schema: "dory.phase0a.hv-lifecycle-calibration@1",
+        schema: "dory.phase0a.hv-lifecycle-calibration@2",
         startedHost: startedHost,
         finishedHost: finishedHost,
         policy: CampaignPolicy(
-            warmupCount: warmupCount,
-            sampleCountPerHarness: sampleCount,
-            order: "alternating AB/BA",
+            roundCount: roundCount,
+            warmupCountPerHarnessPerRound: warmupCount,
+            sampleCountPerHarnessPerRound: sampleCount,
+            order: "position-balanced by round and sample parity",
             clock: "CLOCK_MONOTONIC_RAW",
             percentileMethod: "R-7 linear interpolation",
+            inferenceUnit: "round median",
             orchestrationMedianOverheadBudgetPercent: 3
         ),
-        minimalHVLifecycleMicroseconds: minimalSummary,
-        doryContractLifecycleMicroseconds: dorySummary,
-        medianOverheadPercent: overhead,
+        observations: observations,
+        rounds: rounds,
+        aggregate: aggregate,
         correctness: CorrectnessReceipt(
-            minimalHVIterations: warmupCount + sampleCount,
-            doryContractIterations: warmupCount + sampleCount,
+            minimalHVIterations: roundCount * (warmupCount + sampleCount),
+            doryContractIterations: roundCount * (warmupCount + sampleCount),
             expectedRegisterValue: 42
         ),
-        contaminationBlockers: contamination,
-        releaseBudgetPass: pass,
+        validityBlockers: validityBlockers,
+        orchestrationBudgetPass: pass,
         referenceMatrixComplete: false
     )
 }
@@ -190,7 +286,7 @@ if #available(macOS 15.0, *) {
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         FileHandle.standardOutput.write(try encoder.encode(receipt))
         FileHandle.standardOutput.write(Data([0x0a]))
-        exit(receipt.releaseBudgetPass ? EXIT_SUCCESS : 3)
+        exit(receipt.orchestrationBudgetPass ? EXIT_SUCCESS : 3)
     } catch {
         FileHandle.standardError.write(Data("dory Phase 0A HV calibration failed: \(error)\n".utf8))
         exit(EXIT_FAILURE)

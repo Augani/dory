@@ -60,6 +60,14 @@
       guard number == 42 else {
         throw DoryNativeHVArm64MinimalHarnessError.unexpectedRegister(number)
       }
+      // Match the execution contract's hypercall exit materialization exactly: X0 is the call
+      // number and X1...X7 are captured arguments even when this smoke workload leaves them zero.
+      for index in 1...7 {
+        let argument = try DoryARM64HypervisorRegisterBank.readGeneral(vcpu, index: index)
+        guard argument == 0 else {
+          throw DoryNativeHVArm64MinimalHarnessError.unexpectedRegister(argument)
+        }
+      }
       try DoryARM64HypervisorRegisterBank.writeGeneral(vcpu, index: 0, value: UInt64.max)
 
       try doryNativeHVCheck(hv_vcpu_destroy(vcpu), "hv_vcpu_destroy")
