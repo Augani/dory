@@ -32,6 +32,7 @@ The IOAPIC exposes GSIs 0...23. PCI INTx uses level-triggered, active-low GSIs 1
 |---|---:|---:|
 | System disk | `0000:00:01.0` | `0xd0000000` |
 | Removable installer media | `0000:00:0c.0` | `0xd0001000` |
+| VirtIO GPU | `0000:00:02.0` | `0xd0002000` |
 
 ## Boot contract
 

@@ -64,7 +64,8 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
     maximumQueueSize: UInt16 = 256,
     msixVectorCount: Int = 2048,
     offeredFeatures: DoryVirtioFeatures,
-    deviceConfiguration: [UInt8] = []
+    deviceConfiguration: [UInt8] = [],
+    onReset: @escaping @Sendable () -> Void = {}
   ) throws {
     guard (1...65_535).contains(queueCount) else {
       throw DoryPCVirtioPCIError.invalidQueueCount(queueCount)
@@ -74,7 +75,7 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
     }
     self.queueCount = queueCount
     self.msixVectorCount = msixVectorCount
-    deviceState = .init(offeredFeatures: offeredFeatures)
+    deviceState = .init(offeredFeatures: offeredFeatures, onReset: onReset)
     queues = (0..<queueCount).map {
       .init(
         size: maximumQueueSize,
@@ -596,6 +597,77 @@ public final class DoryPCVirtioNetworkPCIDevice: DoryPCPCIFunction, DoryPCPCIMSI
   }
 }
 
+public final class DoryPCVirtioGPUPCIDevice: DoryPCPCIFunction, DoryPCPCIMSIControllable,
+  DoryPCPCIINTxControllable, DoryPCPCIBARMemoryDevice, DoryPCVirtioGuestMemoryConsumer,
+  @unchecked Sendable
+{
+  public let pciFunction: DoryPCVirtioPCIFunction
+  public let gpuDevice: DoryVirtioGPUDevice
+
+  public var pciAddress: DoryPCPCIAddress { pciFunction.pciAddress }
+  public var configurationFunction: DoryPCPCIConfigurationFunction {
+    pciFunction.configurationFunction
+  }
+  public var barIndex: Int { pciFunction.barIndex }
+  public var transport: DoryPCVirtioPCITransport { pciFunction.transport }
+
+  public init(
+    address: DoryPCPCIAddress,
+    initialBARAddress: UInt64,
+    scanouts: [DoryVirtioGPUScanout],
+    displaySink: (any DoryVirtioGPUDisplaySink)? = nil,
+    maximumQueueSize: UInt16 = 256,
+    maximumResourceBytes: UInt64 = 256 * 1024 * 1024
+  ) throws {
+    gpuDevice = try .init(
+      scanouts: scanouts,
+      maximumResourceBytes: maximumResourceBytes,
+      displaySink: displaySink
+    )
+    pciFunction = try .init(
+      address: address,
+      virtioDeviceID: 16,
+      classCode: 0x030000,
+      initialBARAddress: initialBARAddress,
+      queueCount: 2,
+      maximumQueueSize: maximumQueueSize,
+      offeredFeatures: gpuDevice.offeredFeatures.union([
+        .indirectDescriptors, .eventIndex,
+      ]),
+      deviceConfiguration: gpuDevice.configuration,
+      onReset: { [gpuDevice] in gpuDevice.reset() }
+    )
+  }
+
+  public func connectGuestMemory(_ memory: any DoryVirtioGuestMemory) {
+    transport.connectQueueProcessor(memory: memory) { [gpuDevice] queue, chain, memory in
+      try gpuDevice.process(queue: queue, chain: chain, memory: memory)
+    }
+  }
+
+  public func readConfiguration(offset: Int, byteCount: Int) throws -> [UInt8] {
+    try pciFunction.readConfiguration(offset: offset, byteCount: byteCount)
+  }
+
+  public func writeConfiguration(offset: Int, bytes: [UInt8]) throws {
+    try pciFunction.writeConfiguration(offset: offset, bytes: bytes)
+  }
+
+  public func connectMSISink(
+    _ sink: @escaping @Sendable (_ messageAddress: UInt64, _ messageData: UInt16) -> Bool
+  ) {
+    pciFunction.connectMSISink(sink)
+  }
+
+  public func readBAR(offset: UInt64, byteCount: Int) throws -> [UInt8] {
+    try pciFunction.readBAR(offset: offset, byteCount: byteCount)
+  }
+
+  public func writeBAR(offset: UInt64, bytes: [UInt8]) throws {
+    try pciFunction.writeBAR(offset: offset, bytes: bytes)
+  }
+}
+
 public final class DoryPCVirtioPCIFunction: DoryPCPCIFunction, DoryPCPCIMSIControllable,
   DoryPCPCIINTxControllable, DoryPCPCIBARMemoryDevice, @unchecked Sendable
 {
@@ -614,7 +686,8 @@ public final class DoryPCVirtioPCIFunction: DoryPCPCIFunction, DoryPCPCIMSIContr
     queueCount: Int,
     maximumQueueSize: UInt16 = 256,
     offeredFeatures: DoryVirtioFeatures = [],
-    deviceConfiguration: [UInt8] = []
+    deviceConfiguration: [UInt8] = [],
+    onReset: @escaping @Sendable () -> Void = {}
   ) throws {
     guard (1...63).contains(queueCount) else {
       throw DoryPCVirtioPCIError.invalidQueueCount(queueCount)
@@ -653,7 +726,8 @@ public final class DoryPCVirtioPCIFunction: DoryPCPCIFunction, DoryPCPCIMSIContr
       maximumQueueSize: maximumQueueSize,
       msixVectorCount: msixVectorCount,
       offeredFeatures: offeredFeatures,
-      deviceConfiguration: deviceConfiguration
+      deviceConfiguration: deviceConfiguration,
+      onReset: onReset
     )
     capabilities = Self.makeCapabilities(deviceConfigurationLength: deviceConfiguration.count)
     transport.connectInterruptSink { [configurationFunction, transport] interrupt in

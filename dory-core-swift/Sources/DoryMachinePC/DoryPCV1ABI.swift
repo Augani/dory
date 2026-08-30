@@ -74,9 +74,11 @@ public enum DoryPCV1ABI {
   public static let pciINTxFirstGSI: UInt8 = 16
   public static let pciINTxLineCount: UInt8 = 8
   public static let systemDiskPCIAddress = DoryPCPCIAddress(bus: 0, device: 1, function: 0)
+  public static let displayPCIAddress = DoryPCPCIAddress(bus: 0, device: 2, function: 0)
   public static let removableMediaPCIAddress = DoryPCPCIAddress(bus: 0, device: 12, function: 0)
   public static let systemDiskBARAddress = pcieMMIOBase
   public static let removableMediaBARAddress = pcieMMIOBase + 0x1000
+  public static let displayBARAddress = pcieMMIOBase + 0x2000
 
   public static let regions: [DoryPCV1Region] = [
     fixedRegion(kind: .pvhHandoff, base: pvhStartInfo, byteCount: pvhHandoffBytes),
@@ -161,6 +163,7 @@ public enum DoryPCV1ABI {
     |---|---:|---:|
     | System disk | `0000:00:01.0` | `0xd0000000` |
     | Removable installer media | `0000:00:0c.0` | `0xd0001000` |
+    | VirtIO GPU | `0000:00:02.0` | `0xd0002000` |
 
     ## Boot contract
 
