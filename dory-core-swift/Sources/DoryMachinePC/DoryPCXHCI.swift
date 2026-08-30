@@ -42,6 +42,13 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
   DoryPCPCIINTxControllable, DoryPCPCIBARMemoryDevice, DoryPCVirtioGuestMemoryConsumer,
   @unchecked Sendable
 {
+  private struct Slot {
+    var addressed = false
+    var rootPort: UInt8 = 0
+    var deviceAddress: UInt8 = 0
+    var outputContextAddress: UInt64 = 0
+  }
+
   public static let barBytes: UInt64 = 0x4000
   public static let capabilityBytes: UInt8 = 0x40
   public static let operationalOffset: UInt64 = 0x40
@@ -91,7 +98,7 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
   private var eventRingEnqueueIndex: UInt32 = 0
   private var eventRingCycle = true
   private var ports = [UInt32](repeating: portPower, count: portCount)
-  private var enabledSlots: Set<UInt8> = []
+  private var slots: [UInt8: Slot] = [:]
 
   public init(
     address: DoryPCPCIAddress = DoryPCV1ABI.xhciPCIAddress,
@@ -164,7 +171,9 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
 
   public var slotStates: [DoryPCXHCISlotState] {
     lock.withLock {
-      enabledSlots.sorted().map { .init(slotID: $0, addressed: false) }
+      slots.keys.sorted().compactMap { slotID in
+        slots[slotID].map { .init(slotID: slotID, addressed: $0.addressed) }
+      }
     }
   }
 
@@ -351,7 +360,7 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
       commandRingCycle = true
       deviceContextBaseAddress = 0
       configuredSlots = 0
-      enabledSlots.removeAll(keepingCapacity: true)
+      slots.removeAll(keepingCapacity: true)
       interrupterManagement = 0
       interrupterModeration = 4_000
       eventRingSegmentTableSize = 0
@@ -396,7 +405,12 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
         continue
       }
 
-      let result = executeCommand(type: type, control: control)
+      let result = executeCommand(
+        type: type,
+        parameter: uint64(Array(bytes[0..<8])),
+        control: control,
+        memory: memory
+      )
       var event = [UInt8](repeating: 0, count: 16)
       put(state.1, at: 0, in: &event)
       put(UInt32(result.completionCode) << 24, at: 8, in: &event)
@@ -410,30 +424,99 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
     }
   }
 
-  private func executeCommand(type: UInt8, control: UInt32) -> (
-    completionCode: UInt8, slotID: UInt8
-  ) {
+  private func executeCommand(
+    type: UInt8,
+    parameter: UInt64,
+    control: UInt32,
+    memory: any DoryVirtioGuestMemory
+  ) -> (completionCode: UInt8, slotID: UInt8) {
     switch type {
     case 9:
       return lock.withLock {
         let limit = UInt8(min(configuredSlots, UInt32(Self.maximumSlots)))
         guard limit > 0,
-          let slot = (1...limit).first(where: { !enabledSlots.contains($0) })
+          let slot = (1...limit).first(where: { slots[$0] == nil })
         else { return (9, 0) }
-        enabledSlots.insert(slot)
+        slots[slot] = .init()
         return (1, slot)
       }
     case 10:
       let slot = UInt8(truncatingIfNeeded: control >> 24)
       return lock.withLock {
-        guard enabledSlots.remove(slot) != nil else { return (11, slot) }
+        guard slots.removeValue(forKey: slot) != nil else { return (11, slot) }
         return (1, slot)
       }
+    case 11:
+      return addressDevice(
+        slotID: UInt8(truncatingIfNeeded: control >> 24),
+        inputContextAddress: parameter & ~UInt64(0xF),
+        blockSetAddressRequest: control & (1 << 9) != 0,
+        memory: memory
+      )
     case 23:
       return (1, 0)
     default:
       return (5, UInt8(truncatingIfNeeded: control >> 24))
     }
+  }
+
+  private func addressDevice(
+    slotID: UInt8,
+    inputContextAddress: UInt64,
+    blockSetAddressRequest: Bool,
+    memory: any DoryVirtioGuestMemory
+  ) -> (completionCode: UInt8, slotID: UInt8) {
+    let controller = lock.withLock { (slots[slotID], deviceContextBaseAddress) }
+    guard controller.0 != nil else { return (11, slotID) }
+    guard inputContextAddress != 0, controller.1 != 0,
+      let input = try? memory.read(at: inputContextAddress, byteCount: 96), input.count == 96,
+      let dcbaaEntry = try? memory.read(
+        at: controller.1 + UInt64(slotID) * 8,
+        byteCount: 8
+      ), dcbaaEntry.count == 8
+    else { return (17, slotID) }
+
+    let addContextFlags = uint32(Array(input[4..<8]))
+    let slotContext0 = uint32(Array(input[32..<36]))
+    let slotContext1 = uint32(Array(input[36..<40]))
+    let rootPort = UInt8((slotContext1 >> 16) & 0xFF)
+    let speed = UInt8((slotContext0 >> 20) & 0xF)
+    let outputContextAddress = uint64(dcbaaEntry) & ~UInt64(0x3F)
+    guard addContextFlags & 3 == 3, slotContext0 >> 27 >= 1,
+      (1...Self.portCount).contains(Int(rootPort)), outputContextAddress != 0
+    else { return (17, slotID) }
+    let port = lock.withLock { ports[Int(rootPort) - 1] }
+    guard port & Self.portConnectStatus != 0, UInt8((port >> 10) & 0xF) == speed else {
+      return (22, slotID)
+    }
+
+    var output = [UInt8](repeating: 0, count: 64)
+    output.replaceSubrange(0..<32, with: input[32..<64])
+    output.replaceSubrange(32..<64, with: input[64..<96])
+    let deviceAddress = blockSetAddressRequest ? UInt8(0) : slotID
+    var outputSlot3 = uint32(Array(output[12..<16]))
+    outputSlot3 = (outputSlot3 & 0x07FF_FF00) | UInt32(deviceAddress)
+    outputSlot3 |= UInt32(blockSetAddressRequest ? 1 : 2) << 27
+    put(outputSlot3, at: 12, in: &output)
+    var endpoint0 = uint32(Array(output[32..<36]))
+    endpoint0 = (endpoint0 & ~UInt32(0x7)) | 1
+    put(endpoint0, at: 32, in: &output)
+    do {
+      try memory.validate(at: outputContextAddress, byteCount: output.count, deviceWillWrite: true)
+      try memory.write(at: outputContextAddress, bytes: output)
+      memory.synchronize()
+    } catch {
+      return (17, slotID)
+    }
+    lock.withLock {
+      slots[slotID] = .init(
+        addressed: !blockSetAddressRequest,
+        rootPort: rootPort,
+        deviceAddress: deviceAddress,
+        outputContextAddress: outputContextAddress
+      )
+    }
+    return (1, slotID)
   }
 
   private func postEvent(_ event: [UInt8]) throws {

@@ -124,6 +124,49 @@ import Testing
     #expect(try read64(machine, 0x2010) == 0x3010)
     #expect(try read32(machine, 0x2018) >> 24 == 1)
   }
+
+  @Test func addressDeviceConsumesInputContextAndPublishesOutputContext() throws {
+    let xhci = try DoryPCXHCIController()
+    let machine = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024,
+      pciFunctions: [xhci]
+    )
+    let bar = DoryPCV1ABI.xhciBARAddress
+    try xhci.writeConfiguration(offset: 4, bytes: [2, 0])
+    try xhci.connect(port: 1, speed: .high)
+    try machine.physicalMemory.write(
+      at: 0x1000,
+      bytes: littleEndian(UInt64(0x2000)) + littleEndian(UInt32(16)) + [0, 0, 0, 0]
+    )
+    try machine.physicalMemory.write(at: 0x4008, bytes: littleEndian(UInt64(0x6000)))
+    var input = [UInt8](repeating: 0, count: 96)
+    input.replaceSubrange(4..<8, with: littleEndian(UInt32(3)))
+    input.replaceSubrange(32..<36, with: littleEndian(UInt32(1 << 27 | 3 << 20)))
+    input.replaceSubrange(36..<40, with: littleEndian(UInt32(1 << 16)))
+    input.replaceSubrange(68..<72, with: littleEndian(UInt32(64 << 16 | 4 << 3)))
+    input.replaceSubrange(72..<80, with: littleEndian(UInt64(0x7001)))
+    try machine.physicalMemory.write(at: 0x5000, bytes: input)
+    let enable = [UInt8](repeating: 0, count: 12) + littleEndian(UInt32(9 << 10 | 1))
+    let address =
+      littleEndian(UInt64(0x5000)) + [UInt8](repeating: 0, count: 4)
+      + littleEndian(UInt32(1 << 24 | 11 << 10 | 1))
+    try machine.physicalMemory.write(at: 0x3000, bytes: enable + address)
+    try write32(machine, bar + 0x1028, 1)
+    try write64(machine, bar + 0x1030, 0x1000)
+    try write64(machine, bar + 0x1038, 0x2000)
+    try write64(machine, bar + 0x58, 0x3001)
+    try write64(machine, bar + 0x70, 0x4000)
+    try write32(machine, bar + 0x78, 8)
+    try write32(machine, bar + 0x40, 1)
+
+    try write32(machine, bar + 0x2000, 0)
+    #expect(xhci.slotStates == [.init(slotID: 1, addressed: true)])
+    #expect(try read32(machine, 0x2028) >> 24 == 1)
+    #expect(try read32(machine, 0x202C) >> 24 == 1)
+    #expect(try read32(machine, 0x600C) & 0xFF == 1)
+    #expect(try read32(machine, 0x600C) >> 27 == 2)
+    #expect(try read32(machine, 0x6020) & 0x7 == 1)
+  }
 }
 
 private func read8(_ machine: DoryPCDirectKernelMachine, _ address: UInt64) throws -> UInt8 {
