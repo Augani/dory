@@ -108,3 +108,9 @@ disk sizes, completed step count, console-document SHA-256, installer-detach
 boundary, and the admitted gvproxy SHA-256. The documented install qualification
 succeeds only after a guest reset and a second UEFI boot with the installer
 absent.
+
+The adjacent `alpine-3.24-install-update.json` fixture extends the same gate
+through `apk update`, a system upgrade, a second firmware reset, and a third
+UEFI boot from the updated persistent disk. Run the same command with that
+fixture and `--expect DORY_UPDATED_DISK_READY`; its qualifying receipt must
+report three boot attempts and all eight interaction steps complete.

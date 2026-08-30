@@ -53,4 +53,33 @@ import Testing
 
     #expect(script.steps == [DoryConsoleInteractionStep(waitFor: "# ", send: "id\n")])
   }
+
+  @Test func retainsCursorAndDetachAuthorityAcrossMultipleGuestResets() throws {
+    let driver = try DoryConsoleInteractionDriver(
+      script: DoryConsoleInteractionScript(steps: [
+        DoryConsoleInteractionStep(waitFor: "live login:", send: "root\n"),
+        DoryConsoleInteractionStep(
+          waitFor: "install complete",
+          send: "reboot\n",
+          detachInstallerAfterSend: true
+        ),
+        DoryConsoleInteractionStep(waitFor: "disk login:", send: "root\n"),
+        DoryConsoleInteractionStep(waitFor: "# ", send: "upgrade && reboot\n"),
+        DoryConsoleInteractionStep(waitFor: "updated login:", send: "root\n"),
+      ]))
+    var console = Array("live login:".utf8)
+
+    #expect(driver.nextInput(consoleBytes: console) == Array("root\n".utf8))
+    console.append(contentsOf: Array(" install complete".utf8))
+    #expect(driver.nextInput(consoleBytes: console) == Array("reboot\n".utf8))
+    #expect(driver.shouldDetachInstaller)
+    console.append(contentsOf: Array(" disk login:".utf8))
+    #expect(driver.nextInput(consoleBytes: console) == Array("root\n".utf8))
+    console.append(contentsOf: Array(" # ".utf8))
+    #expect(driver.nextInput(consoleBytes: console) == Array("upgrade && reboot\n".utf8))
+    console.append(contentsOf: Array(" updated login:".utf8))
+    #expect(driver.nextInput(consoleBytes: console) == Array("root\n".utf8))
+    #expect(driver.isComplete)
+    #expect(driver.completedStepCount == 5)
+  }
 }
