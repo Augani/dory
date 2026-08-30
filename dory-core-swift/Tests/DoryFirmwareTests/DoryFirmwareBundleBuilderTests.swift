@@ -63,6 +63,12 @@ import Testing
     #expect(bundle.manifest.platform == .pcV1)
     #expect(bundle.manifest.machineABIIdentity == DoryPCV1ABI.identity)
     #expect(bundle.manifest.firmwareABIIdentity == DoryPCV1ABI.firmwareABIIdentity)
+    let variables = try DoryUEFIVariableStoreSnapshot.decodeCanonicalTemplate(
+      bundle.variableStoreTemplate
+    )
+    #expect(variables.platform == .pcV1)
+    #expect(variables.machineABIIdentity == DoryPCV1ABI.identity)
+    #expect(variables.formatIdentity == DoryPCV1ABI.variableStoreFormatIdentity)
 
     let sbom = try #require(JSONSerialization.jsonObject(with: bundle.sbom) as? [String: Any])
     let metadata = try #require(sbom["metadata"] as? [String: Any])

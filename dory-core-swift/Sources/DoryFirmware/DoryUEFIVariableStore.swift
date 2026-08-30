@@ -1,4 +1,3 @@
-import DoryMachineARMVirt
 import Foundation
 
 struct DoryFirmwareAnyCodingKey: CodingKey {
@@ -140,10 +139,18 @@ public struct DoryUEFIVariableStoreSnapshot: Codable, Sendable, Hashable {
   public let variables: [DoryUEFIVariable]
 
   public init(generation: UInt64 = 1, variables: [DoryUEFIVariable] = []) throws {
+    try self.init(platform: .armVirtV1, generation: generation, variables: variables)
+  }
+
+  public init(
+    platform: DoryFirmwarePlatform,
+    generation: UInt64 = 1,
+    variables: [DoryUEFIVariable] = []
+  ) throws {
     try self.init(
       schemaVersion: Self.schemaVersion,
-      formatIdentity: DoryARMVirtV1ABI.variableStoreFormatIdentity,
-      machineABIIdentity: DoryARMVirtV1ABI.identity,
+      formatIdentity: platform.variableStoreFormatIdentity,
+      machineABIIdentity: platform.machineABIIdentity,
       generation: generation,
       variables: variables
     )
@@ -172,10 +179,14 @@ public struct DoryUEFIVariableStoreSnapshot: Codable, Sendable, Hashable {
     guard schemaVersion == Self.schemaVersion else {
       throw DoryFirmwareError.unsupportedSchemaVersion(schemaVersion)
     }
-    guard formatIdentity == DoryARMVirtV1ABI.variableStoreFormatIdentity else {
+    guard
+      let platform = DoryFirmwarePlatform.allCases.first(where: {
+        $0.variableStoreFormatIdentity == formatIdentity
+      })
+    else {
       throw DoryFirmwareError.incompatibleFormatIdentity(formatIdentity)
     }
-    guard machineABIIdentity == DoryARMVirtV1ABI.identity else {
+    guard machineABIIdentity == platform.machineABIIdentity else {
       throw DoryFirmwareError.incompatibleMachineABI(machineABIIdentity)
     }
     guard generation > 0 else { throw DoryFirmwareError.invalidGeneration(generation) }
@@ -201,17 +212,33 @@ public struct DoryUEFIVariableStoreSnapshot: Codable, Sendable, Hashable {
     variables.first { $0.key == key }
   }
 
+  public var platform: DoryFirmwarePlatform {
+    DoryFirmwarePlatform.allCases.first {
+      $0.variableStoreFormatIdentity == formatIdentity
+        && $0.machineABIIdentity == machineABIIdentity
+    }!
+  }
+
   public func setting(_ variable: DoryUEFIVariable) throws -> Self {
     guard generation < UInt64.max else { throw DoryFirmwareError.generationExhausted }
     var next = variables.filter { $0.key != variable.key }
     next.append(variable)
     next.sort()
-    return try Self(generation: generation + 1, variables: next)
+    return try Self(
+      schemaVersion: schemaVersion,
+      formatIdentity: formatIdentity,
+      machineABIIdentity: machineABIIdentity,
+      generation: generation + 1,
+      variables: next
+    )
   }
 
   public func deleting(_ key: DoryUEFIVariableKey) throws -> Self {
     guard generation < UInt64.max else { throw DoryFirmwareError.generationExhausted }
     return try Self(
+      schemaVersion: schemaVersion,
+      formatIdentity: formatIdentity,
+      machineABIIdentity: machineABIIdentity,
       generation: generation + 1,
       variables: variables.filter { $0.key != key }
     )

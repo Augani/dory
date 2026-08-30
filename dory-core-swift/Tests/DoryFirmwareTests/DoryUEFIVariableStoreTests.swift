@@ -1,5 +1,6 @@
 import DoryFirmware
 import DoryMachineARMVirt
+import DoryMachinePC
 import Foundation
 import Testing
 
@@ -47,6 +48,26 @@ import Testing
     #expect(try second.deleting(secureBoot.key).variables == [bootOrder])
   }
 
+  @Test func pcStoreRoundTripsAndPreservesPCIdentityAcrossMutations() throws {
+    let vendor = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+    let initial = try DoryUEFIVariableStoreSnapshot(platform: .pcV1)
+    let variable = try DoryUEFIVariable(
+      key: DoryUEFIVariableKey(vendor: vendor, name: "BootOrder"),
+      attributes: [.nonVolatile, .bootServiceAccess],
+      data: Data([0, 1])
+    )
+    let mutated = try initial.setting(variable)
+    let decoded = try DoryUEFIVariableStoreSnapshot.decodeCanonicalTemplate(
+      mutated.canonicalData()
+    )
+
+    #expect(decoded.platform == .pcV1)
+    #expect(decoded.formatIdentity == DoryPCV1ABI.variableStoreFormatIdentity)
+    #expect(decoded.machineABIIdentity == DoryPCV1ABI.identity)
+    #expect(decoded.generation == 2)
+    #expect(try decoded.deleting(variable.key).platform == .pcV1)
+  }
+
   @Test func invalidAndNoncanonicalStoresFailClosed() throws {
     #expect(throws: DoryFirmwareError.invalidVariableName) {
       _ = try DoryUEFIVariableKey(vendor: globalVendor, name: "")
@@ -69,7 +90,8 @@ import Testing
   }
 
   @Test func decodedIdentitySubstitutionIsRejected() throws {
-    let json = Data(#"""
+    let json = Data(
+      #"""
       {
         "schemaVersion":1,
         "formatIdentity":"dory.uefi.variables.armvirt@1",
@@ -84,7 +106,8 @@ import Testing
   }
 
   @Test func unknownFieldsAreRejectedAtEveryContractBoundary() throws {
-    let topLevel = Data(#"""
+    let topLevel = Data(
+      #"""
       {
         "schemaVersion":1,
         "formatIdentity":"dory.uefi.variables.armvirt@1",
@@ -94,14 +117,17 @@ import Testing
         "future":true
       }
       """#.utf8)
-    #expect(throws: DoryFirmwareError.unknownFields(
-      type: "DoryUEFIVariableStoreSnapshot",
-      fields: ["future"]
-    )) {
+    #expect(
+      throws: DoryFirmwareError.unknownFields(
+        type: "DoryUEFIVariableStoreSnapshot",
+        fields: ["future"]
+      )
+    ) {
       _ = try JSONDecoder().decode(DoryUEFIVariableStoreSnapshot.self, from: topLevel)
     }
 
-    let variable = Data(#"""
+    let variable = Data(
+      #"""
       {
         "key":{"vendor":"8BE4DF61-93CA-11D2-AA0D-00E098032B8C","name":"BootOrder"},
         "attributes":7,
@@ -109,24 +135,29 @@ import Testing
         "future":true
       }
       """#.utf8)
-    #expect(throws: DoryFirmwareError.unknownFields(
-      type: "DoryUEFIVariable",
-      fields: ["future"]
-    )) {
+    #expect(
+      throws: DoryFirmwareError.unknownFields(
+        type: "DoryUEFIVariable",
+        fields: ["future"]
+      )
+    ) {
       _ = try JSONDecoder().decode(DoryUEFIVariable.self, from: variable)
     }
 
-    let key = Data(#"""
+    let key = Data(
+      #"""
       {
         "vendor":"8BE4DF61-93CA-11D2-AA0D-00E098032B8C",
         "name":"BootOrder",
         "future":true
       }
       """#.utf8)
-    #expect(throws: DoryFirmwareError.unknownFields(
-      type: "DoryUEFIVariableKey",
-      fields: ["future"]
-    )) {
+    #expect(
+      throws: DoryFirmwareError.unknownFields(
+        type: "DoryUEFIVariableKey",
+        fields: ["future"]
+      )
+    ) {
       _ = try JSONDecoder().decode(DoryUEFIVariableKey.self, from: key)
     }
   }

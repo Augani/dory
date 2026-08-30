@@ -93,7 +93,7 @@ public struct DoryFirmwareBundle: Sendable {
 
 public enum DoryFirmwareBundleBuilder {
   public static func build(_ input: DoryFirmwareBundleBuildInput) throws -> DoryFirmwareBundle {
-    let variables = try DoryUEFIVariableStoreSnapshot().canonicalData()
+    let variables = try DoryUEFIVariableStoreSnapshot(platform: input.platform).canonicalData()
     let platformDigest = digest(input.platformConfiguration)
     let toolchainDigest = digest(input.toolchainDescriptor)
     let firmwareDigest = digest(input.firmwareCode)
