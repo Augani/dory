@@ -87,13 +87,37 @@ def verify_platform_contract() -> None:
         if binding.startswith("QemuFwCfgLib|") and not binding.endswith(
             "/QemuFwCfgLibNull.inf"
         ):
-            raise BuildFailure("DoryPC must bind the upstream fw_cfg interface to its null library")
+            raise BuildFailure(
+                "DoryPC must bind the upstream fw_cfg interface to its null library"
+            )
         if binding.startswith("QemuFwCfgS3Lib|") and not binding.endswith(
             "/BaseQemuFwCfgS3LibNull.inf"
         ):
-            raise BuildFailure("DoryPC must bind the upstream fw_cfg S3 interface to its null library")
+            raise BuildFailure(
+                "DoryPC must bind the upstream fw_cfg S3 interface to its null library"
+            )
         if binding.startswith(("QemuBootOrderLib|", "QemuLoadImageLib|")):
             raise BuildFailure("DoryPC must not bind a foreign machine boot or image policy")
+        if binding.startswith(
+            (
+                "CcExitLib|",
+                "CcProbeLib|",
+                "MemEncryptSevLib|",
+                "MemEncryptTdxLib|",
+                "TdxHelperLib|",
+                "TdxMailboxLib|",
+                "TdxMeasurementLib|",
+            )
+        ) and "Null" not in binding:
+            raise BuildFailure("DoryPC confidential-guest interfaces must bind null libraries")
+    forbidden_tokens = (
+        "TDX_GUEST_SUPPORTED",
+        "SecTdxHelperLib.inf",
+        "BaseIoLibIntrinsicSev.inf",
+    )
+    contents = "\n".join(lines)
+    if any(token in contents for token in forbidden_tokens):
+        raise BuildFailure("DoryPC must not compile a confidential-guest execution path")
 
 
 configure_platform("armvirt")
