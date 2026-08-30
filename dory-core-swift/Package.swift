@@ -27,6 +27,10 @@ let package = Package(
       name: "dory-linux-calibration",
       targets: ["dory-linux-calibration"]
     ),
+    .executable(
+      name: "dory-native-hv-smoke",
+      targets: ["dory-native-hv-smoke"]
+    ),
     .executable(name: "dory-network-helper", targets: ["dory-network-helper"]),
     .executable(name: "dory-dataplane-proxy", targets: ["dory-dataplane-proxy"]),
     .executable(name: "dory-jit-probe", targets: ["dory-jit-probe"]),
@@ -117,6 +121,10 @@ let package = Package(
     .executableTarget(
       name: "dory-linux-calibration",
       dependencies: ["DorydKit"]
+    ),
+    .executableTarget(
+      name: "dory-native-hv-smoke",
+      dependencies: ["DoryNativeHVArm64"]
     ),
     .executableTarget(
       name: "dory-network-helper",
