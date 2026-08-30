@@ -131,6 +131,7 @@ let package = Package(
                 .product(name: "DoryCore", package: "dory-core-swift"),
                 .product(name: "DorydKit", package: "dory-core-swift"),
                 .product(name: "DoryOperations", package: "dory-core-swift"),
+                .product(name: "DoryFirmware", package: "dory-core-swift"),
                 .product(name: "DoryVMContracts", package: "dory-core-swift"),
                 .product(name: "DoryVMMKit", package: "dory-core-swift"),
             ],
