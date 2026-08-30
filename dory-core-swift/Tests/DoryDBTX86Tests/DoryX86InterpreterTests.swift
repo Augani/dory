@@ -835,6 +835,38 @@ import Testing
     #expect(try memory.read(at: 0x215, byteCount: 1) == [0x8B])
   }
 
+  @Test func systemSegmentStoresExposeSelectorsAndHonorUMIP() throws {
+    let memory = DoryX86ByteArrayMemory(
+      baseAddress: 0x1_000,
+      bytes: [0x66, 0x0F, 0x00, 0xC8, 0x0F, 0x00, 0x01]
+        + [UInt8](repeating: 0, count: 32)
+    )
+    var state = try DoryX86ArchitecturalState(
+      registers: .init(rax: 0xFFFF_FFFF_FFFF_0000, rcx: 0x1_010),
+      rip: 0x1_000,
+      cs: .init(selector: 0, attributes: 0xA09A, limit: .max),
+      tr: .init(selector: 0x40),
+      ldtr: .init(selector: 0x28)
+    )
+
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    #expect(state.registers.rax == 0xFFFF_FFFF_FFFF_0040)
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    let storedLDTR = try memory.read(at: 0x1_010, byteCount: 2)
+    #expect(storedLDTR == [0x28, 0])
+
+    state.rip = 0x1_000
+    state.cs.selector = 3
+    state.control.cr4 |= 1 << 11
+    let result = interpreter.step(state: &state, memory: memory, mode: .long64)
+    guard case .exception(let exception) = result else {
+      Issue.record("UMIP did not reject STR outside ring zero")
+      return
+    }
+    #expect(exception.kind == .generalProtection)
+    #expect(state.rip == 0x1_000)
+  }
+
   @Test func realModeFarCallAndReturnUseSegmentedStackFrames() throws {
     var bytes = [UInt8](repeating: 0, count: 0x500)
     bytes.replaceSubrange(0x100..<0x105, with: [0x9A, 0x20, 0, 0x20, 0])

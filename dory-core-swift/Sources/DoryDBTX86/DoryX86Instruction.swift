@@ -209,6 +209,7 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
   case farReturn(popBytes: UInt16, width: DoryX86OperandWidth)
   case machineStatusWord(load: Bool, operand: DoryX86Operand)
   case clearTaskSwitched
+  case storeSystemSegment(task: Bool, destination: DoryX86Operand)
   case loadSystemSegment(task: Bool, source: DoryX86Operand)
   case push(DoryX86Operand)
   case pop(DoryX86Operand)

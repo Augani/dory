@@ -883,6 +883,17 @@ public struct DoryX86Interpreter: Sendable {
           return generalProtection(at: originalRIP)
         }
         state.control.cr0 &= ~(1 << 3)
+      case .storeSystemSegment(let task, let destination):
+        guard state.control.cr4 & (1 << 11) == 0 || currentPrivilegeLevel(state) == 0 else {
+          return generalProtection(at: originalRIP)
+        }
+        try write(
+          UInt64(task ? state.tr.selector : state.ldtr.selector),
+          to: destination,
+          instruction: instruction,
+          state: &state,
+          memory: executionMemory
+        )
       case .loadSystemSegment(let task, let source):
         guard currentPrivilegeLevel(state) == 0 else {
           return generalProtection(at: originalRIP)

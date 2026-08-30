@@ -513,11 +513,16 @@ public struct DoryX86Decoder: Sendable {
       case 0x00:
         let operands = try decodeModRM(
           cursor: &cursor, width: .word, prefixes: prefixes, mode: mode)
-        guard operands.group == 2 || operands.group == 3 else {
+        switch operands.group {
+        case 0, 1:
+          operation = .storeSystemSegment(
+            task: operands.group == 1, destination: operands.rm)
+        case 2, 3:
+          operation = .loadSystemSegment(task: operands.group == 3, source: operands.rm)
+        default:
           throw DoryX86DecodeError.invalidEncoding(
             address: address, detail: "unsupported 0F 00 system instruction")
         }
-        operation = .loadSystemSegment(task: operands.group == 3, source: operands.rm)
       case 0x20, 0x22:
         let operands = try decodeControlRegisterModRM(cursor: &cursor, prefixes: prefixes)
         operation =

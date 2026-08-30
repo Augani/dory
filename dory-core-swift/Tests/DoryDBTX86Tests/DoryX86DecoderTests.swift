@@ -360,6 +360,24 @@ import Testing
 
   @Test func decodesSystemSegmentLoads() throws {
     #expect(
+      try decoder.decode([0x66, 0x0F, 0x00, 0xC8], at: 0x500, mode: .long64).operation
+        == .storeSystemSegment(task: true, destination: .register(.rax, width: .word))
+    )
+    #expect(
+      try decoder.decode([0x0F, 0x00, 0x00], at: 0x500, mode: .protected32).operation
+        == .storeSystemSegment(
+          task: false,
+          destination: .memory(
+            .init(
+              base: .rax,
+              width: .word,
+              addressWidth: .doubleword,
+              ignoresLegacySegmentBase: false
+            )
+          )
+        )
+    )
+    #expect(
       try decoder.decode([0x0F, 0x00, 0xD0], at: 0x500, mode: .protected32).operation
         == .loadSystemSegment(task: false, source: .register(.rax, width: .word))
     )
