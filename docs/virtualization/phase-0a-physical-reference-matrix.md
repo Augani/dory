@@ -69,3 +69,28 @@ deterministic gzip receipt linked by
 The earlier schema-1 engineering receipt remains historical evidence but is superseded for future
 decisions: it had only one 30-sample batch and did not preserve raw observations or use independent
 round medians.
+
+## Sustained native-HV throughput calibration
+
+`dory-phase0a-hv-throughput` runs a fixed ARM64 loop for 10,000,000 guest iterations before the
+same complete hypercall exit and teardown. Five position-balanced rounds contain two warmups and
+20 retained measurements per harness. This isolates sustained guest execution from the deliberately
+short lifecycle calibration.
+
+| Round | Minimal HV median | Dory median | Dory/minimal throughput | Dory overhead |
+|---:|---:|---:|---:|---:|
+| 1 | 3,130.896 µs | 3,059.750 µs | 102.325% | -2.272% |
+| 2 | 3,202.875 µs | 3,159.542 µs | 101.372% | -1.353% |
+| 3 | 3,145.813 µs | 3,139.125 µs | 100.213% | -0.213% |
+| 4 | 3,082.313 µs | 3,149.917 µs | 97.854% | 2.193% |
+| 5 | 3,141.938 µs | 3,160.188 µs | 99.422% | 0.581% |
+
+The paired round median is 100.213% of minimal-HV throughput and -0.213% Dory overhead. Every
+round passes the 3% orchestration budget, all 220 executions return the exact 10,000,000 counter
+and hypercall ABI state, and the host remains uncontaminated. The exact 200 observations are in the
+deterministic gzip receipt linked by
+[`phase-0a-hv-throughput-engineering-evidence-2026-08-30.json`](phase-0a-hv-throughput-engineering-evidence-2026-08-30.json).
+
+This closes only the sustained Dory-versus-minimal-HV orchestration measurement on this available
+host. It does not claim the section 7 host-native 95% CPU budget: a separately frozen native host
+workload and all low/middle/high physical references remain required.

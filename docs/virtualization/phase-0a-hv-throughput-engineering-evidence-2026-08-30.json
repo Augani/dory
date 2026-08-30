@@ -1,0 +1,75 @@
+{
+  "schema": "dory.phase0a.hv-throughput-engineering-evidence@1",
+  "verdict": "dory-versus-minimal-hv-orchestration-pass",
+  "startedAt": "2026-08-30T12:18:49Z",
+  "finishedAt": "2026-08-30T12:18:51Z",
+  "toolchain": {
+    "xcodeVersion": "26.6",
+    "xcodeBuild": "17F109",
+    "sdkVersion": "26.5"
+  },
+  "host": {
+    "architecture": "arm64",
+    "hardwareModel": "Mac14,10",
+    "chip": "Apple M2 Pro",
+    "physicalMemoryBytes": 17179869184,
+    "osProductVersion": "27.0",
+    "osBuildVersion": "26A5421a",
+    "firmwareVersion": "20457.1.29",
+    "bootSessionIdentifier": "D8A1C440-174D-4AE8-A564-A56EFB3DE487",
+    "powerSource": "ac",
+    "lowPowerModeEnabled": false,
+    "thermalState": "nominal"
+  },
+  "candidate": {
+    "sha256": "a9534fd3b5adcdaaded6aed13c62a1b6dab08542dea9ca9a8ee9d04e9f0f9d2b",
+    "entryPointSourceSHA256": "c04737ce6c2a6d5992d15bbfc4bfc3c5e8c5be6f420fe9213c115cbaad7cab42",
+    "minimalHarnessSourceSHA256": "eb2fc144fd5c343783ab7626efa4f03fea776c92aa08cddd852e8dedba5516b1",
+    "metricSummarySourceSHA256": "91adab264979fa058e1f51210039c3f16b2d006e81a5ab92fa630a0917b5d71b",
+    "hardenedRuntime": true,
+    "hypervisorEntitlement": true,
+    "teamIdentifier": "864H636QW4",
+    "signingAuthority": "Developer ID Application: Augustus Otu (864H636QW4)",
+    "notarization": "not-submitted-engineering-calibration"
+  },
+  "policy": {
+    "workload": "ARM64 10,000,000-iteration add/subs/branch loop followed by HVC",
+    "guestLoopIterationsPerExecution": 10000000,
+    "roundCount": 5,
+    "warmupCountPerHarnessPerRound": 2,
+    "sampleCountPerHarnessPerRound": 20,
+    "rawObservationCount": 200,
+    "order": "position-balanced by round and sample parity",
+    "clock": "CLOCK_MONOTONIC_RAW",
+    "percentileMethod": "R-7 linear interpolation",
+    "inferenceUnit": "round median",
+    "orchestrationMedianOverheadBudgetPercent": 3
+  },
+  "rounds": [
+    {"round": 1, "minimalMedianMicroseconds": 3130.8955, "doryMedianMicroseconds": 3059.75, "doryOfMinimalThroughputPercent": 102.32520630770487, "doryOverheadPercent": -2.2723690394649054, "budgetPass": true},
+    {"round": 2, "minimalMedianMicroseconds": 3202.875, "doryMedianMicroseconds": 3159.5415000000003, "doryOfMinimalThroughputPercent": 101.37151229062825, "doryOverheadPercent": -1.3529563282987822, "budgetPass": true},
+    {"round": 3, "minimalMedianMicroseconds": 3145.8125, "doryMedianMicroseconds": 3139.125, "doryOfMinimalThroughputPercent": 100.21303707243261, "doryOverheadPercent": -0.2125841892992697, "budgetPass": true},
+    {"round": 4, "minimalMedianMicroseconds": 3082.3125, "doryMedianMicroseconds": 3149.9165000000003, "doryOfMinimalThroughputPercent": 97.85378437809382, "doryOverheadPercent": 2.1932883184297536, "budgetPass": true},
+    {"round": 5, "minimalMedianMicroseconds": 3141.9375, "doryMedianMicroseconds": 3160.188, "doryOfMinimalThroughputPercent": 99.42248689002047, "doryOverheadPercent": 0.5808676970818105, "budgetPass": true}
+  ],
+  "pairedRoundResult": {
+    "doryOfMinimalThroughputMedianPercent": 100.21303707243261,
+    "doryOverheadMedianPercent": -0.2125841892992697
+  },
+  "correctness": {
+    "minimalHVExecutions": 110,
+    "doryContractExecutions": 110,
+    "expectedCounterAndHypercallNumber": 10000000,
+    "validityBlockers": []
+  },
+  "receipt": {
+    "file": "phase-0a-hv-throughput-engineering-receipt-2026-08-30.json.gz",
+    "uncompressedSHA256": "4d8e9788fed67a476a3de4542c41550a70d4225d093d668c5528daf1061e9b8d",
+    "deterministicGzipSHA256": "ce57f040076c1ffc5f584a35d26388555fd9b016b8d8830376bece24fee8e46a",
+    "compressedBytes": 4374
+  },
+  "orchestrationBudgetPass": true,
+  "hostNativeCPUThroughputQualified": false,
+  "referenceMatrixComplete": false,
+  "releaseGateClosed": false
+}
