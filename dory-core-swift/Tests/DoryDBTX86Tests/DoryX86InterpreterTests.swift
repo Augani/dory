@@ -408,6 +408,64 @@ import Testing
     #expect(misalignedState.rip == 0x2000)
   }
 
+  @Test func fxsaveAndFXRSTORRoundTripArchitecturalFloatingPointState() throws {
+    var bytes = [UInt8](repeating: 0, count: 0x400)
+    bytes.replaceSubrange(0..<7, with: [0x0F, 0xAE, 0x05, 0xF9, 0, 0, 0])
+    bytes.replaceSubrange(7..<14, with: [0x0F, 0xAE, 0x0D, 0xF2, 0, 0, 0])
+    let memory = DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: bytes)
+    var floatingPoint = try DoryX86FloatingPointState()
+    floatingPoint.x87ControlWord = 0x027F
+    floatingPoint.x87StatusWord = 0x3800
+    floatingPoint.x87TagWord = 0xFFFC
+    floatingPoint.x87[0] = try .init(bytes: Array(0x20..<0x2A), expectedByteCount: 10)
+    floatingPoint.ymm[15] = try .init(bytes: Array(0x40..<0x60), expectedByteCount: 32)
+    floatingPoint.mxcsr = 0x1FA0
+    var state = try DoryX86ArchitecturalState(
+      rip: 0x1000,
+      cs: .init(selector: 0x38, attributes: 0xA09B, limit: .max),
+      floatingPoint: floatingPoint
+    )
+
+    guard case .retired = interpreter.step(state: &state, memory: memory, mode: .long64) else {
+      Issue.record("FXSAVE unexpectedly faulted")
+      return
+    }
+    #expect(try memory.read(at: 0x1100, byteCount: 2) == [0x7F, 0x02])
+    #expect(try memory.read(at: 0x1104, byteCount: 1) == [1])
+    #expect(try memory.read(at: 0x1290, byteCount: 16) == Array(0x40..<0x50))
+
+    state.floatingPoint = try .init()
+    guard case .retired = interpreter.step(state: &state, memory: memory, mode: .long64) else {
+      Issue.record("FXRSTOR unexpectedly faulted")
+      return
+    }
+    #expect(state.floatingPoint.x87ControlWord == 0x027F)
+    #expect(state.floatingPoint.x87StatusWord == 0x3800)
+    #expect(state.floatingPoint.x87TagWord == 0xFFFC)
+    #expect(state.floatingPoint.x87[0].bytes == Array(0x20..<0x2A))
+    #expect(
+      state.floatingPoint.ymm[15].bytes == Array(0x40..<0x50) + Array(repeating: 0, count: 16))
+    #expect(state.floatingPoint.mxcsr == 0x1FA0)
+  }
+
+  @Test func fxsaveRequiresSixteenByteAlignment() throws {
+    let memory = DoryX86ByteArrayMemory(
+      baseAddress: 0x1000,
+      bytes: [0x0F, 0xAE, 0x05, 0xFA, 0, 0, 0] + .init(repeating: 0, count: 0x200)
+    )
+    var state = try DoryX86ArchitecturalState(
+      rip: 0x1000,
+      cs: .init(selector: 0x38, attributes: 0xA09B, limit: .max)
+    )
+
+    #expect(
+      interpreter.step(state: &state, memory: memory, mode: .long64)
+        == .exception(
+          .init(kind: .generalProtection, vector: 13, errorCode: 0, instructionPointer: 0x1000)
+        )
+    )
+  }
+
   @Test func byteExtendMoveUsesTheWideModRMDestinationRegister() throws {
     var bytes = [UInt8](repeating: 0, count: 0x20)
     bytes.replaceSubrange(0..<4, with: [0x0F, 0xB6, 0x71, 0x02])

@@ -619,11 +619,19 @@ public struct DoryX86Decoder: Sendable {
         } else {
           let operands = try decodeModRM(
             cursor: &cursor, width: .doubleword, prefixes: prefixes, mode: mode)
-          guard operands.group == 2 || operands.group == 3, case .memory = operands.rm else {
+          guard case .memory(let memory) = operands.rm else {
             throw DoryX86DecodeError.invalidEncoding(
               address: address, detail: "unsupported 0F AE memory group")
           }
-          operation = operands.group == 2 ? .loadMXCSR(operands.rm) : .storeMXCSR(operands.rm)
+          switch operands.group {
+          case 0: operation = .saveFloatingPointState(memory)
+          case 1: operation = .restoreFloatingPointState(memory)
+          case 2: operation = .loadMXCSR(operands.rm)
+          case 3: operation = .storeMXCSR(operands.rm)
+          default:
+            throw DoryX86DecodeError.invalidEncoding(
+              address: address, detail: "unsupported 0F AE memory group")
+          }
         }
       case 0x6F:
         let alignedVector = prefixes.operandSizeOverride && prefixes.repeatPrefix == nil

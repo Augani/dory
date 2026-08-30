@@ -194,6 +194,8 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
   case waitForCoprocessor
   case initializeFloatingPoint
   case loadX87ControlWord(DoryX86Operand)
+  case saveFloatingPointState(DoryX86MemoryOperand)
+  case restoreFloatingPointState(DoryX86MemoryOperand)
   case loadMXCSR(DoryX86Operand)
   case storeMXCSR(DoryX86Operand)
   case moveVector128(

@@ -518,6 +518,40 @@ public struct DoryX86Interpreter: Sendable {
           truncatingIfNeeded: try read(
             source, instruction: instruction, state: state, memory: executionMemory)
         )
+      case .saveFloatingPointState(let destination):
+        let address = effectiveAddress(destination, instruction: instruction, state: state)
+        guard address & 0xF == 0 else { return generalProtection(at: originalRIP) }
+        try validateSegmentAccess(
+          destination,
+          byteCount: 512,
+          write: true,
+          instruction: instruction,
+          state: state
+        )
+        try executionMemory.validateWrite(at: address, byteCount: 512)
+        try executionMemory.write(
+          at: address,
+          bytes: floatingPointSaveArea(state.floatingPoint, mode: mode)
+        )
+      case .restoreFloatingPointState(let source):
+        let address = effectiveAddress(source, instruction: instruction, state: state)
+        guard address & 0xF == 0 else { return generalProtection(at: originalRIP) }
+        try validateSegmentAccess(
+          source,
+          byteCount: 512,
+          write: false,
+          instruction: instruction,
+          state: state
+        )
+        let bytes = try executionMemory.read(at: address, byteCount: 512)
+        guard
+          let restored = try restoredFloatingPointState(
+            from: bytes,
+            mode: mode,
+            mxcsrMask: state.floatingPoint.mxcsrMask
+          )
+        else { return generalProtection(at: originalRIP) }
+        state.floatingPoint = restored
       case .loadMXCSR(let source):
         let value = UInt32(
           truncatingIfNeeded: try read(
@@ -1212,6 +1246,83 @@ public struct DoryX86Interpreter: Sendable {
           errorCode: 0,
           instructionPointer: originalRIP
         ))
+    }
+  }
+
+  private func floatingPointSaveArea(
+    _ floatingPoint: DoryX86FloatingPointState,
+    mode: DoryX86ExecutionMode
+  ) -> [UInt8] {
+    var bytes = [UInt8](repeating: 0, count: 512)
+    replaceLittleEndian(floatingPoint.x87ControlWord, in: &bytes, at: 0)
+    replaceLittleEndian(floatingPoint.x87StatusWord, in: &bytes, at: 2)
+    var abridgedTag: UInt8 = 0
+    for index in 0..<8
+    where floatingPoint.x87TagWord & (UInt16(3) << UInt16(index * 2)) != UInt16(3)
+      << UInt16(index * 2)
+    {
+      abridgedTag |= UInt8(1) << UInt8(index)
+    }
+    bytes[4] = abridgedTag
+    replaceLittleEndian(floatingPoint.mxcsr, in: &bytes, at: 24)
+    replaceLittleEndian(floatingPoint.mxcsrMask, in: &bytes, at: 28)
+    for index in 0..<8 {
+      bytes.replaceSubrange(32 + index * 16..<42 + index * 16, with: floatingPoint.x87[index].bytes)
+    }
+    let vectorCount = mode == .long64 ? 16 : 8
+    for index in 0..<vectorCount {
+      bytes.replaceSubrange(
+        160 + index * 16..<176 + index * 16,
+        with: floatingPoint.ymm[index].bytes.prefix(16)
+      )
+    }
+    return bytes
+  }
+
+  private func restoredFloatingPointState(
+    from bytes: [UInt8],
+    mode: DoryX86ExecutionMode,
+    mxcsrMask: UInt32
+  ) throws -> DoryX86FloatingPointState? {
+    precondition(bytes.count == 512)
+    let mxcsr = UInt32(fromLittleEndian(Array(bytes[24..<28])))
+    guard mxcsr & ~mxcsrMask == 0 else { return nil }
+    let abridgedTag = bytes[4]
+    var tagWord: UInt16 = 0
+    var x87: [DoryX86RegisterBytes] = []
+    for index in 0..<8 {
+      tagWord |=
+        UInt16(abridgedTag & (UInt8(1) << UInt8(index)) == 0 ? 3 : 0)
+        << UInt16(index * 2)
+      x87.append(
+        try .init(bytes: Array(bytes[32 + index * 16..<42 + index * 16]), expectedByteCount: 10)
+      )
+    }
+    var ymm = [DoryX86RegisterBytes](repeating: .ymmZero(), count: 16)
+    let vectorCount = mode == .long64 ? 16 : 8
+    for index in 0..<vectorCount {
+      var register = ymm[index].bytes
+      register.replaceSubrange(0..<16, with: bytes[160 + index * 16..<176 + index * 16])
+      ymm[index] = try .init(bytes: register, expectedByteCount: 32)
+    }
+    return try .init(
+      x87: x87,
+      ymm: ymm,
+      x87ControlWord: UInt16(fromLittleEndian(Array(bytes[0..<2]))),
+      x87StatusWord: UInt16(fromLittleEndian(Array(bytes[2..<4]))),
+      x87TagWord: tagWord,
+      mxcsr: mxcsr,
+      mxcsrMask: mxcsrMask
+    )
+  }
+
+  private func replaceLittleEndian<T: FixedWidthInteger>(
+    _ value: T,
+    in bytes: inout [UInt8],
+    at offset: Int
+  ) {
+    for index in 0..<MemoryLayout<T>.size {
+      bytes[offset + index] = UInt8(truncatingIfNeeded: value >> T(index * 8))
     }
   }
 
