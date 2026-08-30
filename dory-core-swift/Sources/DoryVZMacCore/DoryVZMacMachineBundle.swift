@@ -178,6 +178,7 @@ public struct DoryVZMacMachineBundle: Sendable {
         guard restoreImageURL.isFileURL else {
             throw DoryVZMacMachineBundleError.invalidRestoreImage("URL is not a local file")
         }
+        try requireRegularFile(restoreImageURL, label: "restore image")
         guard !FileManager.default.fileExists(atPath: destination.path) else {
             throw DoryVZMacMachineBundleError.destinationExists(destination.path)
         }
@@ -195,6 +196,7 @@ public struct DoryVZMacMachineBundle: Sendable {
             requirements: requirements
         )
         let parent = destination.deletingLastPathComponent()
+        try requireDirectory(parent, label: "machine parent")
         let staging = parent.appendingPathComponent(
             ".\(destination.lastPathComponent).creating-\(UUID().uuidString)",
             isDirectory: true
@@ -364,6 +366,7 @@ public struct DoryVZMacMachineBundle: Sendable {
         let sourceLease = try DoryVZMacMachineLease(rootURL: rootURL)
         defer { withExtendedLifetime(sourceLease) {} }
         let parent = destination.deletingLastPathComponent()
+        try requireDirectory(parent, label: "clone parent")
         let staging = parent.appendingPathComponent(
             ".\(destination.lastPathComponent).cloning-\(UUID().uuidString)",
             isDirectory: true
