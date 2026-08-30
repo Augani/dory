@@ -969,18 +969,24 @@ public final class HvProcess: @unchecked Sendable {
             }
             return
         }
-        let slots = envelope.inheritedFileDescriptors
+        let slots = envelope.inheritedFileDescriptors.map { ($0.name, $0.descriptor) }
+            + envelope.inheritedDirectoryDescriptors.map { ($0.name, $0.descriptor) }
         let envelopeAuthorities = configuration.inheritedFileDescriptors.enumerated().compactMap {
             index, authority in
             index == dockerDiskIndex ? nil : authority
         }
         guard slots.count == envelopeAuthorities.count,
               zip(slots, envelopeAuthorities).allSatisfy({ slot, authority in
-                  slot.name == authority.name && slot.descriptor == authority.childDescriptor
+                  slot.0 == authority.name && slot.1 == authority.childDescriptor
               }) else {
             throw ProcessError.descriptorEnvelopeMismatch
         }
-        _ = try envelope.validatedResolvedARMVirtResources()
+        switch envelope.boot {
+        case .linuxDirect:
+            _ = try envelope.validatedResolvedARMVirtResources()
+        case .uefi:
+            _ = try envelope.validatedResolvedARMVirtUEFIResources()
+        }
     }
 
     /// The Docker engine disk is a daemon-admitted supplemental resource, not part of the signed
