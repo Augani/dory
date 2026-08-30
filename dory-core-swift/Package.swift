@@ -15,6 +15,7 @@ let package = Package(
   products: [
     .library(name: "DoryExecutionContracts", targets: ["DoryExecutionContracts"]),
     .library(name: "DoryDBTX86", targets: ["DoryDBTX86"]),
+    .library(name: "DoryMachinePC", targets: ["DoryMachinePC"]),
     .library(name: "DoryMachineARMVirt", targets: ["DoryMachineARMVirt"]),
     .library(name: "DoryFirmware", targets: ["DoryFirmware"]),
     .library(name: "DoryCameraBridgeContracts", targets: ["DoryCameraBridgeContracts"]),
@@ -101,6 +102,10 @@ let package = Package(
     .target(
       name: "DoryDBTX86",
       dependencies: ["DoryExecutionContracts", "DoryJITRuntimeC"]
+    ),
+    .target(
+      name: "DoryMachinePC",
+      dependencies: ["DoryDBTX86", "DoryExecutionContracts"]
     ),
     .target(
       name: "DoryMachineARMVirt",
@@ -355,6 +360,10 @@ let package = Package(
     .testTarget(
       name: "DoryDBTX86Tests",
       dependencies: ["DoryDBTX86"]
+    ),
+    .testTarget(
+      name: "DoryMachinePCTests",
+      dependencies: ["DoryMachinePC"]
     ),
     .testTarget(
       name: "DoryMachineARMVirtTests",
