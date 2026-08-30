@@ -267,6 +267,7 @@ private final class QualificationAppDelegate: NSObject, NSApplicationDelegate,
         view.autoresizingMask = [.width, .height]
         view.virtualMachine = runtime.virtualMachine
         view.capturesSystemKeys = true
+        view.automaticallyReconfiguresDisplay = true
         let window = NSWindow(
             contentRect: view.frame,
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -275,6 +276,8 @@ private final class QualificationAppDelegate: NSObject, NSApplicationDelegate,
         )
         window.title = title
         window.contentView = view
+        window.minSize = NSSize(width: 640, height: 400)
+        window.collectionBehavior.insert(.fullScreenPrimary)
         window.delegate = self
         window.center()
         window.makeKeyAndOrderFront(nil)
