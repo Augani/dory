@@ -64,7 +64,8 @@ enum RawHVVirtualHardwareAttachmentPlan {
               let resolvedSystemDiskLogicalID else {
             throw RawHVVirtualHardwareAttachmentPlanError.incompleteLaunchAuthority
         }
-        guard resolvedGraphics != .none,
+        guard (resolvedDevices.displays.isEmpty
+                ? resolvedGraphics == .none : resolvedGraphics != .none),
               resolvedDevices.directorySharing == !directoryShareStableIDs.isEmpty,
               let networkInterface = resolvedDevices.networkInterface,
               networkInterface.isValid else {
@@ -96,11 +97,13 @@ enum RawHVVirtualHardwareAttachmentPlan {
                 logicalID: systemDiskLogicalID,
                 role: .systemDisk
             ),
-            try canonicalFixedRequest(.graphics),
             try canonicalFixedRequest(.entropy),
             try canonicalFixedRequest(.balloon),
             try canonicalFixedRequest(.vsock),
         ]
+        if !resolvedDevices.displays.isEmpty {
+            requests.append(try canonicalFixedRequest(.graphics))
+        }
         if resolvedDevices.keyboard {
             requests.append(try canonicalFixedRequest(.keyboard))
         }

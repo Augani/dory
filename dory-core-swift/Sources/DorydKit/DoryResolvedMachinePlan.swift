@@ -974,12 +974,11 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
         ] where count(role) != 1 {
             reject("armVirtTopology.occupiedSlots")
         }
-        if devices.displays.isEmpty
-            || devices.networkInterface?.isValid != true {
+        if devices.networkInterface?.isValid != true {
             reject("devices")
         }
         let expectations: [(DoryVirtualDeviceRole, Bool)] = [
-            (.graphics, true),
+            (.graphics, !devices.displays.isEmpty),
             (.keyboard, devices.keyboard),
             (.pointer, devices.pointer),
             (.audio, devices.audioInput || devices.audioOutput),

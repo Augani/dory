@@ -11,7 +11,6 @@ public enum DoryARMVirtV1TopologyPlanningError:
     case incompatibleABI(UInt16)
     case unsupportedStorageTopology
     case readOnlySystemDisk
-    case headlessDisplayUnsupported
     case missingStableNetworkInterface
     case resolvedDeviceContractMismatch
     case topologyDeviceSetMismatch
@@ -26,8 +25,6 @@ public enum DoryARMVirtV1TopologyPlanningError:
             "DoryARMVirt-v1 currently materializes exactly one system disk and no data disks"
         case .readOnlySystemDisk:
             "DoryARMVirt-v1 requires its system disk to be writable"
-        case .headlessDisplayUnsupported:
-            "DoryARMVirt-v1 currently requires at least one resolved display"
         case .missingStableNetworkInterface:
             "DoryARMVirt-v1 requires one valid, stable network-interface identity"
         case .resolvedDeviceContractMismatch:
@@ -97,9 +94,6 @@ public enum DoryARMVirtV1TopologyPlanner {
         guard !systemDisk.readOnly else {
             throw DoryARMVirtV1TopologyPlanningError.readOnlySystemDisk
         }
-        guard !resolvedDevices.displays.isEmpty else {
-            throw DoryARMVirtV1TopologyPlanningError.headlessDisplayUnsupported
-        }
         guard let networkInterface = resolvedDevices.networkInterface,
               networkInterface.isValid else {
             throw DoryARMVirtV1TopologyPlanningError.missingStableNetworkInterface
@@ -116,11 +110,13 @@ public enum DoryARMVirtV1TopologyPlanner {
                 ),
                 role: .systemDisk
             ),
-            try fixedRequest(.graphics),
             try fixedRequest(.entropy),
             try fixedRequest(.balloon),
             try fixedRequest(.vsock),
         ]
+        if !resolvedDevices.displays.isEmpty {
+            requests.append(try fixedRequest(.graphics))
+        }
         if resolvedDevices.keyboard { requests.append(try fixedRequest(.keyboard)) }
         if resolvedDevices.pointer { requests.append(try fixedRequest(.pointer)) }
         if resolvedDevices.audioInput || resolvedDevices.audioOutput {

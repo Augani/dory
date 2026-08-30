@@ -8931,9 +8931,11 @@ public final class MachineManager: @unchecked Sendable {
             switch resolvedLaunchBinding.backend.identity {
             case .doryHypervisor:
                 guard runtimeLaunchEnvelope != nil,
-                      resolvedLaunchBinding.graphics != .none else {
+                      (machine.displayMode == .headless
+                        ? resolvedLaunchBinding.graphics == .none
+                        : resolvedLaunchBinding.graphics != .none) else {
                     throw MachineManagerError.persistence(
-                        "raw-Hypervisor desktop requires immutable resolved launch authority"
+                        "DoryHV requires immutable launch authority matching the display mode"
                     )
                 }
             case .appleVirtualizationFramework:

@@ -315,12 +315,11 @@ public struct RuntimeLaunchEnvelope: Codable, Sendable, Equatable {
         func count(_ role: DoryVirtualDeviceRole) -> Int {
             roleCounts[role, default: 0]
         }
-        guard graphics != .none,
-              devices.displays.isEmpty == false,
+        guard (devices.displays.isEmpty ? graphics == .none : graphics != .none),
               devices.networkInterface?.isValid == true,
               devices.networkAttachment != .bridged,
               count(.systemDisk) == 1,
-              count(.graphics) == 1,
+              count(.graphics) == (devices.displays.isEmpty ? 0 : 1),
               count(.entropy) == 1,
               count(.balloon) == 1,
               count(.vsock) == 1,

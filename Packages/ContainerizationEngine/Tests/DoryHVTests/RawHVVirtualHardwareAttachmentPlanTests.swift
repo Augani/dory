@@ -107,6 +107,44 @@ import Testing
         }
     }
 
+    @Test func headlessResolvedPreflightOmitsGraphicsFunction() throws {
+        var devices = resolvedDevices(directorySharing: false)
+        devices.displays = []
+        devices.keyboard = false
+        devices.pointer = false
+        devices.audioInput = false
+        devices.audioOutput = false
+        let diskID = try DoryVirtualDeviceID("headless-system-disk")
+        let expected = try RawHVVirtualHardwareAttachmentPlan.expectedResolvedDevices(
+            systemDiskLogicalID: diskID,
+            resolvedDevices: devices,
+            networkStableID: try #require(devices.networkInterface).id,
+            directoryShareStableIDs: []
+        )
+        let topology = try DoryARMVirtV1TopologyReconciler.reconcile(
+            requestedDevices: expected
+        )
+
+        let mode = try RawHVVirtualHardwareAttachmentPlan.launchMode(
+            diskAuthority: .resolvedDescriptor,
+            bootAuthority: .resolvedImmutableBytes,
+            topology: topology,
+            resolvedGraphics: DoryGraphicsAccelerationLevel.none,
+            resolvedDevices: devices,
+            resolvedPortForwards: [],
+            resolvedSystemDiskLogicalID: diskID,
+            directoryShareStableIDs: []
+        )
+
+        guard case .resolved(let assignments) = mode else {
+            Issue.record("headless authority must produce resolved assignments")
+            return
+        }
+        #expect(assignments.contains { $0.request.role == .graphics } == false)
+        #expect(assignments.contains { $0.request.role == .systemDisk })
+        #expect(assignments.contains { $0.request.role == .network })
+    }
+
     @Test func substitutedSingletonIdentityCannotSelfCertifyThroughTopology() throws {
         let devices = resolvedDevices(directorySharing: false)
         let expectedDiskID = try DoryVirtualDeviceID("expected-system-disk")

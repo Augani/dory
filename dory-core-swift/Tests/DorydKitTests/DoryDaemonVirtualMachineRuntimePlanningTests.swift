@@ -150,6 +150,34 @@ struct DoryDaemonVirtualMachineRuntimePlanningTests {
         )
     }
 
+    @Test("DoryARMVirt headless topology omits display-only functions")
+    func armVirtHeadlessTopology() throws {
+        let fixture = try Fixture()
+        var definition = fixture.definition
+        definition.display = .disabled
+        definition.input.keyboardEnabled = false
+        definition.input.pointerEnabled = false
+        definition.audio.inputEnabled = false
+        definition.audio.outputEnabled = false
+
+        let devices = DoryDaemonVirtualMachinePlanningCoordinator.devices(for: definition)
+        let topology = try DoryARMVirtV1TopologyPlanner.resolve(
+            definition: definition,
+            resolvedDevices: devices
+        )
+
+        #expect(devices.displays.isEmpty)
+        #expect(topology.occupiedSlots.contains { $0.role == .graphics } == false)
+        #expect(topology.occupiedSlots.contains { $0.role == .keyboard } == false)
+        #expect(topology.occupiedSlots.contains { $0.role == .pointer } == false)
+        #expect(topology.occupiedSlots.contains { $0.role == .audio } == false)
+        try DoryARMVirtV1TopologyPlanner.validate(
+            topology,
+            definition: definition,
+            resolvedDevices: devices
+        )
+    }
+
     @Test("RawHV refuses unmaterialized storage and does not mislabel USB/IP as xHCI")
     func rawHVMaterializationBoundary() throws {
         let fixture = try Fixture()

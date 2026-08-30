@@ -486,9 +486,6 @@ public final class RawHVLinuxMachineBackend: MachineBackend, @unchecked Sendable
             executableIsAvailable: executableIsAvailable,
             operations: operations,
             validateMachine: { machine, capability in
-                guard machine.displayMode == .desktop else {
-                    return "The current raw-HV machine path is implemented only for desktop Linux."
-                }
                 if let display = capability.request.devices.display, !display.isValid {
                     return "The raw-HV display geometry is outside the supported pixel bounds."
                 }
