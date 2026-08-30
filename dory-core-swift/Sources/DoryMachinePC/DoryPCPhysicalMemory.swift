@@ -173,16 +173,23 @@ public final class DoryPCLocalAPICMMIO: DoryPCMMIODevice, @unchecked Sendable {
   private var timerLVT: UInt32 = 1 << 16
   private var timerInitialCount: UInt32 = 0
   private var timerDivideConfiguration: UInt32 = 0
+  private var interruptCommandLow: UInt32 = 0
+  private var interruptCommandHigh: UInt32 = 0
   private let onEndOfInterrupt: @Sendable (UInt8) throws -> Void
+  private let onInterruptCommand: @Sendable (_ high: UInt32, _ low: UInt32) throws -> Void
 
   public init(
     apic: DoryPCLocalAPIC,
     baseAddress: UInt64 = 0xFEE0_0000,
-    onEndOfInterrupt: @escaping @Sendable (UInt8) throws -> Void = { _ in }
+    onEndOfInterrupt: @escaping @Sendable (UInt8) throws -> Void = { _ in },
+    onInterruptCommand: @escaping @Sendable (_ high: UInt32, _ low: UInt32) throws -> Void = {
+      _, _ in
+    }
   ) {
     self.apic = apic
     self.baseAddress = baseAddress
     self.onEndOfInterrupt = onEndOfInterrupt
+    self.onInterruptCommand = onInterruptCommand
   }
 
   public func read(offset: UInt64, byteCount: Int) throws -> [UInt8] {
@@ -208,6 +215,8 @@ public final class DoryPCLocalAPICMMIO: DoryPCMMIODevice, @unchecked Sendable {
       case 0x200...0x270:
         bitmapRegister(snapshot.interruptRequest, offset: offset, base: 0x200)
       case 0x280: 0
+      case 0x300: interruptCommandLow
+      case 0x310: interruptCommandHigh
       case 0x320: timerLVT
       case 0x380: timerInitialCount
       case 0x390: snapshot.timer.currentCount
@@ -232,6 +241,14 @@ public final class DoryPCLocalAPICMMIO: DoryPCMMIODevice, @unchecked Sendable {
     case 0xF0:
       try apic.configureSpuriousVector(
         UInt8(truncatingIfNeeded: value), softwareEnabled: value & (1 << 8) != 0)
+    case 0x300:
+      let high = lock.withLock {
+        interruptCommandLow = value & ~(1 << 12)
+        return interruptCommandHigh
+      }
+      try onInterruptCommand(high, value)
+    case 0x310:
+      lock.withLock { interruptCommandHigh = value }
     case 0x320:
       try lock.withLock {
         timerLVT = value & 0x0003_07FF

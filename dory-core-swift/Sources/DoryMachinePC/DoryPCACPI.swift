@@ -66,8 +66,12 @@ public struct DoryPCACPITables: Sendable, Hashable {
 
 /// DoryPC-v1 ACPI discovery and fixed-hardware contract for direct-kernel and firmware boot.
 public enum DoryPCACPIBuilder {
-  public static func build(layout: DoryPCACPILayout = .init()) throws -> DoryPCACPITables {
-    let madt = makeMADT()
+  public static func build(
+    layout: DoryPCACPILayout = .init(),
+    processorCount: UInt8 = 1
+  ) throws -> DoryPCACPITables {
+    precondition(processorCount > 0)
+    let madt = makeMADT(processorCount: processorCount)
     let hpet = makeHPET()
     let mcfg = makeMCFG()
     let dsdt = makeDSDT()
@@ -101,13 +105,14 @@ public enum DoryPCACPIBuilder {
     )
   }
 
-  private static func makeMADT() -> [UInt8] {
+  private static func makeMADT(processorCount: UInt8) -> [UInt8] {
     var body: [UInt8] = []
     append(UInt32(0xFEE0_0000), to: &body)
     append(UInt32(1), to: &body)
-    // Processor UID 0, local APIC ID 0, enabled.
-    body += [0, 8, 0, 0]
-    append(UInt32(1), to: &body)
+    for processor in 0..<processorCount {
+      body += [0, 8, processor, processor]
+      append(UInt32(1), to: &body)
+    }
     // IOAPIC ID 0 at the frozen DoryPC-v1 address, GSI base 0.
     body += [1, 12, 0, 0]
     append(UInt32(0xFEC0_0000), to: &body)

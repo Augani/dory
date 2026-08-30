@@ -72,7 +72,7 @@ public struct DoryX86CPUProfile: Codable, Sendable, Hashable {
   public static let compatibleV1 = Self(
     identifier: compatibleV1Identifier,
     features: [
-      .tsc, .msr, .cmpxchg8b, .cmov, .cmpxchg16b, .syscall, .executeDisable, .longMode,
+      .tsc, .msr, .cmpxchg8b, .apic, .cmov, .cmpxchg16b, .syscall, .executeDisable, .longMode,
       .invariantTSC,
     ],
     physicalAddressBits: 40,
@@ -82,7 +82,13 @@ public struct DoryX86CPUProfile: Codable, Sendable, Hashable {
 
   public func supports(_ feature: DoryX86Feature) -> Bool { features.contains(feature) }
 
-  public func cpuid(leaf: UInt32, subleaf: UInt32 = 0) -> DoryX86CPUIDResult {
+  public func cpuid(
+    leaf: UInt32,
+    subleaf: UInt32 = 0,
+    processorID: UInt32 = 0,
+    logicalProcessorCount: UInt16 = 1
+  ) -> DoryX86CPUIDResult {
+    let logicalCount = max(1, logicalProcessorCount)
     switch (leaf, subleaf) {
     case (0, _):
       // "DoryDoryDory" in architectural EBX, EDX, ECX order.
@@ -111,7 +117,13 @@ public struct DoryX86CPUProfile: Codable, Sendable, Hashable {
       set(.fxsave, bit: 24, in: &edx)
       set(.sse, bit: 25, in: &edx)
       set(.sse2, bit: 26, in: &edx)
-      return .init(eax: 0x0006_0f00, ebx: 8 << 8, ecx: ecx, edx: edx)
+      if logicalCount > 1 { edx |= 1 << 28 }
+      return .init(
+        eax: 0x0006_0f00,
+        ebx: 8 << 8 | UInt32(min(logicalCount, 255)) << 16 | (processorID & 0xFF) << 24,
+        ecx: ecx,
+        edx: edx
+      )
     case (7, 0):
       var ebx: UInt32 = 0
       set(.avx2, bit: 5, in: &ebx)
@@ -119,6 +131,18 @@ public struct DoryX86CPUProfile: Codable, Sendable, Hashable {
     case (0xD, _):
       guard supports(.xsave) else { return .init() }
       return subleaf == 0 ? .init(eax: supports(.avx) ? 0x7 : 0x3, ebx: 576, ecx: 576) : .init()
+    case (0xB, 0):
+      return .init(eax: 0, ebx: 1, ecx: 1 << 8, edx: processorID)
+    case (0xB, 1):
+      let shift = UInt32(16 - (logicalCount - 1).leadingZeroBitCount)
+      return .init(
+        eax: shift,
+        ebx: UInt32(logicalCount),
+        ecx: 2 << 8 | 1,
+        edx: processorID
+      )
+    case (0xB, _):
+      return .init(edx: processorID)
     case (0x8000_0000, _):
       return .init(eax: 0x8000_0008)
     case (0x8000_0001, _):

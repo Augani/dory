@@ -64,6 +64,16 @@ import Testing
     #expect(try memory.read(at: 0x800, byteCount: 4) == Array("DSDT".utf8))
   }
 
+  @Test func madtPublishesEveryEnabledLogicalProcessor() throws {
+    let tables = try DoryPCACPIBuilder.build(processorCount: 4)
+    for processor: UInt8 in 0..<4 {
+      #expect(
+        tables.madt.containsSubsequence([
+          0, 8, processor, processor, 1, 0, 0, 0,
+        ]))
+    }
+  }
+
   @Test func directKernelHandoffPublishesTheRSDPAddress() throws {
     let machine = try DoryPCDirectKernelMachine(memoryBytes: 2 * 1024 * 1024)
     try machine.load(kernel: makeMinimalELF(), commandLine: "x")

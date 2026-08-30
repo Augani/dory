@@ -45,13 +45,19 @@ public enum DoryX86InterpreterResult: Codable, Sendable, Hashable {
 public struct DoryX86Interpreter: Sendable {
   public let profile: DoryX86CPUProfile
   public let decoder: DoryX86Decoder
+  public let processorID: UInt32
+  public let logicalProcessorCount: UInt16
 
   public init(
     profile: DoryX86CPUProfile = .compatibleV1,
-    decoder: DoryX86Decoder = .init()
+    decoder: DoryX86Decoder = .init(),
+    processorID: UInt32 = 0,
+    logicalProcessorCount: UInt16 = 1
   ) {
     self.profile = profile
     self.decoder = decoder
+    self.processorID = processorID
+    self.logicalProcessorCount = max(1, logicalProcessorCount)
   }
 
   public func step(
@@ -641,7 +647,9 @@ public struct DoryX86Interpreter: Sendable {
       case .cpuid:
         let result = profile.cpuid(
           leaf: UInt32(truncatingIfNeeded: state.registers.rax),
-          subleaf: UInt32(truncatingIfNeeded: state.registers.rcx)
+          subleaf: UInt32(truncatingIfNeeded: state.registers.rcx),
+          processorID: processorID,
+          logicalProcessorCount: logicalProcessorCount
         )
         state.registers.rax = UInt64(result.eax)
         state.registers.rbx = UInt64(result.ebx)

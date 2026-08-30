@@ -71,6 +71,7 @@ import Testing
     #expect(profile.supports(.cmov))
     #expect(profile.supports(.cmpxchg8b))
     #expect(profile.supports(.cmpxchg16b))
+    #expect(profile.supports(.apic))
     #expect(!profile.supports(.avx))
     #expect(!profile.supports(.avx2))
     #expect(profile.cpuid(leaf: 0).eax == 0xD)
@@ -78,6 +79,17 @@ import Testing
     #expect(profile.cpuid(leaf: 7).ebx & (1 << 5) == 0)
     #expect(profile.cpuid(leaf: 0x8000_0001).edx & (1 << 29) != 0)
     #expect(profile.cpuid(leaf: 0x8000_0008).eax == 40 | (48 << 8))
+
+    let topology = profile.cpuid(
+      leaf: 1,
+      processorID: 3,
+      logicalProcessorCount: 4
+    )
+    #expect(topology.ebx >> 16 & 0xFF == 4)
+    #expect(topology.ebx >> 24 == 3)
+    #expect(topology.edx & (1 << 28) != 0)
+    #expect(profile.cpuid(leaf: 0xB, subleaf: 1, processorID: 3, logicalProcessorCount: 4).eax == 2)
+    #expect(profile.cpuid(leaf: 0xB, subleaf: 1, processorID: 3, logicalProcessorCount: 4).edx == 3)
   }
 
   @Test func modelSpecificStateHasDeterministicArchitecturalDefaults() throws {
