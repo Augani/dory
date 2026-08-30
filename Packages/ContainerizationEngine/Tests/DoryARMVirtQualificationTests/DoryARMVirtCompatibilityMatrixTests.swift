@@ -1,0 +1,50 @@
+import CryptoKit
+import Foundation
+import Testing
+
+@testable import DoryARMVirtQualification
+
+@Suite struct DoryARMVirtCompatibilityMatrixTests {
+  @Test func checkedInMatrixBindsEveryFixtureAndTarget() throws {
+    let repository = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+    let firmwareRoot = repository.appendingPathComponent("Firmware/DoryARMVirt")
+    let matrixData = try Data(
+      contentsOf: firmwareRoot.appendingPathComponent("compatibility-matrix.json")
+    )
+    let matrix = try JSONDecoder().decode(
+      DoryARMVirtCompatibilityMatrix.self,
+      from: matrixData
+    ).validated()
+
+    #expect(matrix.gates.count == 7)
+    #expect(try matrix.gate(id: "debian-update").receipt.bootAttempts == 3)
+    #expect(throws: DoryARMVirtCompatibilityMatrixError.gateUnavailable("missing")) {
+      try matrix.gate(id: "missing")
+    }
+    for gate in matrix.gates {
+      let fixtureData = try Data(
+        contentsOf: firmwareRoot.appendingPathComponent(gate.consoleScriptPath)
+      )
+      #expect(Self.digest(fixtureData) == gate.consoleScriptSHA256)
+      let script = try JSONDecoder().decode(DoryConsoleInteractionScript.self, from: fixtureData)
+      let driver = try DoryConsoleInteractionDriver(script: script)
+      let media = try #require(matrix.media[gate.mediaID])
+      let target = try #require(driver.qualificationTarget)
+      #expect(target.guestFamily == media.guestFamily)
+      #expect(target.guestVersion == media.guestVersion)
+      #expect(target.guestBuild == media.guestBuild)
+      #expect(target.guestArchitecture == media.guestArchitecture)
+      #expect(driver.stepCount == gate.receipt.consoleScriptStepCount)
+      #expect(!driver.inputContains(gate.expectedConsoleText))
+    }
+  }
+
+  private static func digest(_ data: Data) -> String {
+    SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+  }
+}

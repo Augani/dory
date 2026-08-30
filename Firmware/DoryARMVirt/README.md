@@ -5,6 +5,13 @@ exact EDK II revision in `source.lock.json`, the host toolchain in
 `toolchain.lock.json`, the `DoryARMVirtPkg` platform, and the reviewed patches
 under `patches/`.
 
+`compatibility-matrix.json` is the machine-readable Phase 2 qualification
+authority. It pins each guest media digest and provenance URL to one bounded
+console fixture, expected marker, resource envelope, gate kind, and exact
+receipt shape. Tests recompute every fixture digest and require its declared
+guest tuple to match the referenced media cell; a prose-only or stale filename
+cannot create a support claim.
+
 Build a four-file, atomically published firmware bundle:
 
 ```sh
