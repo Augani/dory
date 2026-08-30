@@ -108,7 +108,19 @@
     },
     {
       "waitFor": "root@dory-debian:~#",
-      "send": "test \"$(uname -m)\" = aarch64 && test -d /sys/firmware/efi && test -b /dev/vda && ip link show eth0 >/dev/null && printf 'DORY_%s\\n' DEBIAN_INSTALLED_READY\r"
+      "send": "test \"$(uname -m)\" = aarch64 && test -d /sys/firmware/efi && test -b /dev/vda && ip link show eth0 >/dev/null && apt-get update && DEBIAN_FRONTEND=noninteractive apt-get -y dist-upgrade && sync && reboot\r"
+    },
+    {
+      "waitFor": "dory-debian login:",
+      "send": "root\r"
+    },
+    {
+      "waitFor": "Password:",
+      "send": "doryqualify\r"
+    },
+    {
+      "waitFor": "root@dory-debian:~#",
+      "send": "test \"$(uname -m)\" = aarch64 && test -d /sys/firmware/efi && test -b /dev/vda && ip link show eth0 >/dev/null && printf 'DORY_%s\\n' DEBIAN_UPDATED_READY\r"
     }
   ]
 }
