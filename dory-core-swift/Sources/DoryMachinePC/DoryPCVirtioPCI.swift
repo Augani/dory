@@ -668,6 +668,110 @@ public final class DoryPCVirtioGPUPCIDevice: DoryPCPCIFunction, DoryPCPCIMSICont
   }
 }
 
+public final class DoryPCVirtioInputPCIDevice: DoryPCPCIFunction, DoryPCPCIMSIControllable,
+  DoryPCPCIINTxControllable, DoryPCPCIBARMemoryDevice, DoryPCVirtioGuestMemoryConsumer,
+  @unchecked Sendable
+{
+  public let pciFunction: DoryPCVirtioPCIFunction
+  public let inputDevice: DoryVirtioInputDevice
+
+  public var pciAddress: DoryPCPCIAddress { pciFunction.pciAddress }
+  public var configurationFunction: DoryPCPCIConfigurationFunction {
+    pciFunction.configurationFunction
+  }
+  public var barIndex: Int { pciFunction.barIndex }
+  public var transport: DoryPCVirtioPCITransport { pciFunction.transport }
+
+  public init(
+    address: DoryPCPCIAddress,
+    initialBARAddress: UInt64,
+    descriptor: DoryVirtioInputDescriptor,
+    statusSink: (any DoryVirtioInputStatusSink)? = nil,
+    maximumQueueSize: UInt16 = 256,
+    maximumPendingEvents: Int = 4_096
+  ) throws {
+    inputDevice = try .init(
+      descriptor: descriptor,
+      maximumPendingEvents: maximumPendingEvents,
+      statusSink: statusSink
+    )
+    pciFunction = try .init(
+      address: address,
+      virtioDeviceID: 18,
+      classCode: 0x098000,
+      initialBARAddress: initialBARAddress,
+      queueCount: 2,
+      maximumQueueSize: maximumQueueSize,
+      offeredFeatures: inputDevice.offeredFeatures.union([
+        .indirectDescriptors, .eventIndex,
+      ]),
+      deviceConfiguration: inputDevice.configuration(select: 0, subselect: 0),
+      onReset: { [inputDevice] in inputDevice.reset() }
+    )
+    inputDevice.connectEventReadySink { [weak transport = pciFunction.transport] in
+      transport?.processQueue(DoryVirtioInputDevice.eventQueue)
+    }
+  }
+
+  public func connectGuestMemory(_ memory: any DoryVirtioGuestMemory) {
+    transport.connectQueueProcessor(
+      memory: memory,
+      canProcess: { [inputDevice] queue in
+        queue != DoryVirtioInputDevice.eventQueue || inputDevice.hasPendingEvent
+      },
+      processor: { [inputDevice] queue, chain, memory in
+        switch queue {
+        case DoryVirtioInputDevice.eventQueue:
+          return try inputDevice.processEvent(chain, memory: memory)
+        case DoryVirtioInputDevice.statusQueue:
+          return try inputDevice.processStatus(chain, memory: memory)
+        default:
+          throw DoryPCVirtioPCIError.invalidQueue(queue)
+        }
+      }
+    )
+  }
+
+  @discardableResult
+  public func enqueue(_ events: [DoryVirtioInputEvent]) -> Bool {
+    inputDevice.enqueue(events)
+  }
+
+  @discardableResult
+  public func enqueueSynchronized(_ events: [DoryVirtioInputEvent]) -> Bool {
+    inputDevice.enqueueSynchronized(events)
+  }
+
+  public func readConfiguration(offset: Int, byteCount: Int) throws -> [UInt8] {
+    try pciFunction.readConfiguration(offset: offset, byteCount: byteCount)
+  }
+
+  public func writeConfiguration(offset: Int, bytes: [UInt8]) throws {
+    try pciFunction.writeConfiguration(offset: offset, bytes: bytes)
+  }
+
+  public func connectMSISink(
+    _ sink: @escaping @Sendable (_ messageAddress: UInt64, _ messageData: UInt16) -> Bool
+  ) {
+    pciFunction.connectMSISink(sink)
+  }
+
+  public func readBAR(offset: UInt64, byteCount: Int) throws -> [UInt8] {
+    try pciFunction.readBAR(offset: offset, byteCount: byteCount)
+  }
+
+  public func writeBAR(offset: UInt64, bytes: [UInt8]) throws {
+    try pciFunction.writeBAR(offset: offset, bytes: bytes)
+    let end = offset + UInt64(bytes.count)
+    guard offset < 0x302, end > 0x300 else { return }
+    let selection = try transport.readBAR(offset: 0x300, byteCount: 2)
+    transport.updateDeviceConfiguration(
+      inputDevice.configuration(select: selection[0], subselect: selection[1]),
+      signalChange: false
+    )
+  }
+}
+
 public final class DoryPCVirtioPCIFunction: DoryPCPCIFunction, DoryPCPCIMSIControllable,
   DoryPCPCIINTxControllable, DoryPCPCIBARMemoryDevice, @unchecked Sendable
 {
