@@ -203,7 +203,7 @@ let package = Package(
     ),
     .target(
       name: "DoryVMMKit",
-      dependencies: ["DoryCore", "DorydKit", "DoryOperations"],
+      dependencies: ["DoryCore", "DorydKit", "DoryOperations", "DoryVZMacCore"],
       linkerSettings: [
         .linkedFramework("AppKit"),
         .linkedFramework("AVFoundation"),
@@ -413,6 +413,7 @@ let package = Package(
         "DoryCore",
         "DoryRendererWorkerWireContracts",
         "DoryVMMKit",
+        "DoryVZMacCore",
         "DoryVMContracts",
       ]
     ),
