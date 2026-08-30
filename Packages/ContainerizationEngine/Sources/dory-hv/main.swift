@@ -524,7 +524,8 @@ case "desktop":
                         "resolved linuxInitrd is missing exact digest authority"
                     )
                 }
-                return MachineInheritedBootBlob(
+                return MachineInheritedImmutableBlob(
+                    name: RuntimeLaunchEnvelope.linuxInitrdSlotName,
                     descriptor: slot.descriptor,
                     byteCount: slot.byteCount,
                     sha256: sha256,
@@ -532,7 +533,8 @@ case "desktop":
                 )
             }
             bootPayload = try MachineBootPayload.inheritedReadOnlyDescriptors(
-                kernel: MachineInheritedBootBlob(
+                kernel: MachineInheritedImmutableBlob(
+                    name: RuntimeLaunchEnvelope.linuxKernelSlotName,
                     descriptor: resources.linuxKernel.descriptor,
                     byteCount: resources.linuxKernel.byteCount,
                     sha256: kernelSHA256,

@@ -180,7 +180,8 @@ struct MachineBootPayloadTests {
         let wrongDigest = try anonymousReadOnlyBlob(bytes)
         #expect(throws: (any Error).self) {
             _ = try MachineBootPayload.inheritedReadOnlyDescriptors(
-                kernel: MachineInheritedBootBlob(
+                kernel: MachineInheritedImmutableBlob(
+                    name: "linuxKernel",
                     descriptor: wrongDigest,
                     byteCount: UInt64(bytes.count),
                     sha256: String(repeating: "0", count: 64),
@@ -194,7 +195,8 @@ struct MachineBootPayloadTests {
         let wrongSize = try anonymousReadOnlyBlob(bytes)
         #expect(throws: (any Error).self) {
             _ = try MachineBootPayload.inheritedReadOnlyDescriptors(
-                kernel: MachineInheritedBootBlob(
+                kernel: MachineInheritedImmutableBlob(
+                    name: "linuxKernel",
                     descriptor: wrongSize,
                     byteCount: UInt64(bytes.count + 1),
                     sha256: digest(bytes),
@@ -208,7 +210,8 @@ struct MachineBootPayloadTests {
         let oversized = try anonymousReadOnlyBlob(bytes)
         #expect(throws: (any Error).self) {
             _ = try MachineBootPayload.inheritedReadOnlyDescriptors(
-                kernel: MachineInheritedBootBlob(
+                kernel: MachineInheritedImmutableBlob(
+                    name: "linuxKernel",
                     descriptor: oversized,
                     byteCount: 2_048,
                     sha256: digest(bytes),
@@ -224,8 +227,9 @@ struct MachineBootPayloadTests {
         _ descriptor: Int32,
         bytes: Data,
         maximum: UInt64
-    ) -> MachineInheritedBootBlob {
-        MachineInheritedBootBlob(
+    ) -> MachineInheritedImmutableBlob {
+        MachineInheritedImmutableBlob(
+            name: "linuxKernel",
             descriptor: descriptor,
             byteCount: UInt64(bytes.count),
             sha256: digest(bytes),

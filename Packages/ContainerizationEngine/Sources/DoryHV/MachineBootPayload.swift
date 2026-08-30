@@ -2,23 +2,26 @@ import CryptoKit
 import Darwin
 import Foundation
 
-/// Exact authority for one anonymous, read-only boot blob inherited from the daemon.
+/// Exact authority for one anonymous, read-only immutable blob inherited from the daemon.
 ///
 /// `maximumByteCount` is a local allocation ceiling, not caller-controlled evidence. The child
 /// validates the descriptor before allocating and uses `pread` so supervised restarts never share
 /// or depend on an open-file-description offset.
-public struct MachineInheritedBootBlob: Sendable, Equatable {
+public struct MachineInheritedImmutableBlob: Sendable, Equatable {
+    public let name: String
     public let descriptor: Int32
     public let byteCount: UInt64
     public let sha256: String
     public let maximumByteCount: UInt64
 
     public init(
+        name: String,
         descriptor: Int32,
         byteCount: UInt64,
         sha256: String,
         maximumByteCount: UInt64
     ) {
+        self.name = name
         self.descriptor = descriptor
         self.byteCount = byteCount
         self.sha256 = sha256
@@ -119,23 +122,13 @@ public enum MachineBootPayload: Sendable, Equatable {
     }
 
     public static func inheritedReadOnlyDescriptors(
-        kernel: MachineInheritedBootBlob,
-        initrd: MachineInheritedBootBlob?
+        kernel: MachineInheritedImmutableBlob,
+        initrd: MachineInheritedImmutableBlob?
     ) throws -> Self {
-        var descriptors = [kernel.descriptor]
-        if let initrd { descriptors.append(initrd.descriptor) }
-        let ownedDescriptors = Set(descriptors.filter { $0 >= 3 })
-        defer { ownedDescriptors.forEach { Darwin.close($0) } }
-        guard descriptors.allSatisfy({ $0 >= 3 }),
-              Set(descriptors).count == descriptors.count else {
-            throw VMError.invalidConfiguration(
-                "resolved boot descriptors must be unique inherited descriptors"
-            )
-        }
-        let kernelData = try readExactAnonymousBlob(kernel, kind: "linuxKernel")
-        let initrdData = try initrd.map {
-            try readExactAnonymousBlob($0, kind: "linuxInitrd")
-        }
+        let authorities = [kernel] + (initrd.map { [$0] } ?? [])
+        let bytes = try MachineInheritedImmutableBlobReader.readAndClose(authorities)
+        let kernelData = bytes[0]
+        let initrdData = bytes.count == 2 ? bytes[1] : nil
         return .immutableBytes(kernel: kernelData, initrd: initrdData)
     }
 
@@ -175,10 +168,36 @@ public enum MachineBootPayload: Sendable, Equatable {
         return data
     }
 
+}
+
+/// Validates, reads, hashes, and closes a complete set of transferred immutable capabilities.
+///
+/// All descriptors are retired even when one member fails validation, preventing partial
+/// admission from leaking authority into the runtime process.
+public enum MachineInheritedImmutableBlobReader {
+    public static func readAndClose(
+        _ authorities: [MachineInheritedImmutableBlob]
+    ) throws -> [Data] {
+        let descriptors = authorities.map(\.descriptor)
+        let ownedDescriptors = Set(descriptors.filter { $0 >= 3 })
+        defer { ownedDescriptors.forEach { Darwin.close($0) } }
+        guard !authorities.isEmpty,
+              descriptors.allSatisfy({ $0 >= 3 }),
+              Set(descriptors).count == descriptors.count else {
+            throw VMError.invalidConfiguration(
+                "resolved immutable descriptors must be unique inherited descriptors"
+            )
+        }
+        return try authorities.map(readExactAnonymousBlob)
+    }
+
     private static func readExactAnonymousBlob(
-        _ authority: MachineInheritedBootBlob,
-        kind: String
+        _ authority: MachineInheritedImmutableBlob
     ) throws -> Data {
+        let kind = authority.name
+        guard !kind.isEmpty else {
+            throw VMError.invalidConfiguration("resolved immutable blob name is empty")
+        }
         guard authority.byteCount > 0,
               authority.byteCount <= authority.maximumByteCount,
               let allocationCount = Int(exactly: authority.byteCount),
