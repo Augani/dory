@@ -8,7 +8,10 @@ final class MachineBackendTests: XCTestCase {
         XCTAssertEqual(raw.identity, .doryHypervisor)
         XCTAssertEqual(raw.guestFamilies, [.linux])
         XCTAssertEqual(raw.guestArchitectures, [.arm64])
-        XCTAssertEqual(raw.bootMediaKinds, [.linuxKernel, .installedLinuxBootBundle])
+        XCTAssertEqual(
+            raw.bootMediaKinds,
+            [.linuxKernel, .installedLinuxBootBundle, .installerISO, .virtualDisk]
+        )
         XCTAssertEqual(raw.lifecycle, .currentMachineManager)
 
         let vz = VirtualizationFrameworkLinuxMachineBackend.backendDescriptor
@@ -285,6 +288,23 @@ final class MachineBackendTests: XCTestCase {
         ))
 
         XCTAssertEqual(result.failure?.code, .machineConfigurationIncompatible)
+    }
+
+    func testRawAdapterPlansUEFIInstallerWithAttachedMedia() {
+        let backend = availableRawBackend(operations: recordingOperations().operations)
+        var machine = rawMachine()
+        machine.bootMode = .efi
+        machine.installerISOPath = "/fixture/installer.iso"
+        let result = backend.plan(MachineBackendPlanRequest(
+            machine: machine,
+            capabilityPlan: capabilityPlan(
+                backend: .doryHypervisor,
+                media: .installerISO
+            )
+        ))
+
+        XCTAssertTrue(result.isSuccess)
+        XCTAssertEqual(result.plan?.backend.identity, .doryHypervisor)
     }
 
     func testPauseAndResumeDispatchThroughTheSelectedBackend() {

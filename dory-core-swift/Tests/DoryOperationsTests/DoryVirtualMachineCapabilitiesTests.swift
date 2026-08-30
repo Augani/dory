@@ -312,14 +312,15 @@ struct VirtualMachineCapabilitiesTests {
             == .trustedGuestImageGraphicsQualificationUnavailable)
     }
 
-    @Test("native hypervisor rejects installer media while VZ accepts it")
-    func nativeHypervisorRejectsInstallerISO() {
+    @Test("native hypervisor admits installer media with exact runtime qualification")
+    func nativeHypervisorAdmitsInstallerISO() {
         let native = evaluate(
             family: .linux,
             media: .installerISO,
             source: .userProvided,
             backend: .doryHypervisor,
-            graphics: .software
+            graphics: .software,
+            mediaArtifactSHA256: Self.guestArtifactSHA256
         )
         let installer = evaluate(
             family: .linux,
@@ -329,8 +330,7 @@ struct VirtualMachineCapabilitiesTests {
             graphics: .software
         )
 
-        #expect(native.availability.reason?.code == .bootMediaDoesNotSupportBackend)
-        #expect(!native.availability.isUsable)
+        #expect(native.availability.isUsable)
         #expect(installer.availability.isUsable)
     }
 

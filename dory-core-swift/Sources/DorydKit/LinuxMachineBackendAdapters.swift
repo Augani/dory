@@ -464,7 +464,9 @@ public final class RawHVLinuxMachineBackend: MachineBackend, @unchecked Sendable
         implementationIdentifier: "dory.raw-hv-linux.compatibility.v1",
         guestFamilies: [.linux],
         guestArchitectures: [.arm64],
-        bootMediaKinds: [.linuxKernel, .installedLinuxBootBundle],
+        bootMediaKinds: [
+            .linuxKernel, .installedLinuxBootBundle, .installerISO, .virtualDisk,
+        ],
         lifecycle: .currentMachineManager
     )
 
@@ -489,21 +491,27 @@ public final class RawHVLinuxMachineBackend: MachineBackend, @unchecked Sendable
                 if let display = capability.request.devices.display, !display.isValid {
                     return "The raw-HV display geometry is outside the supported pixel bounds."
                 }
-                guard machine.installerISOPath == nil else {
-                    return "The raw-HV machine path cannot boot attached installer media."
-                }
                 switch capability.request.bootMedia.kind {
                 case .linuxKernel:
-                    guard machine.bootMode == .linuxKernel,
+                    guard machine.bootMode == .linuxKernel, machine.installerISOPath == nil,
                           !DoryInstalledLinuxBootBundle.isBundle(atPath: machine.kernelPath) else {
                         return "A raw-HV Linux-kernel plan requires one raw direct-boot kernel."
                     }
                 case .installedLinuxBootBundle:
-                    guard machine.bootMode == .efi,
+                    guard machine.bootMode == .efi, machine.installerISOPath == nil,
                           DoryInstalledLinuxBootBundle.isBundle(atPath: machine.kernelPath) else {
                         return "A raw-HV installed-Linux plan requires a verified boot bundle."
                     }
-                default:
+                case .installerISO:
+                    guard machine.bootMode == .efi,
+                          machine.installerISOPath?.isEmpty == false else {
+                        return "A raw-HV installer plan requires attached installer media."
+                    }
+                case .virtualDisk:
+                    guard machine.bootMode == .efi, machine.installerISOPath == nil else {
+                        return "A raw-HV virtual-disk plan cannot retain installer media."
+                    }
+                case .macOSRestoreImage:
                     return "The selected media is not implemented by the raw-HV adapter."
                 }
                 do {

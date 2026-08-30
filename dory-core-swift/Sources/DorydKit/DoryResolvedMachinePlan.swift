@@ -992,13 +992,28 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
         if devices.directorySharing != (shareCount > 0) {
             reject("armVirtTopology.occupiedSlots")
         }
-        // These roles are reserved in ABI v1 but the current resolved RawHV runtime has no
-        // descriptor-backed implementation for them. Persisting an address would falsely claim
-        // that the launch plan can materialize the function.
+        let expectedInstallerCount = bootMedia.media.kind == .installerISO ? 1 : 0
         if count(.auxiliaryBlock) != 0
-            || count(.removableStorage) != 0
+            || count(.removableStorage) != expectedInstallerCount
             || count(.usbController) != 0 {
             reject("armVirtTopology.occupiedSlots")
+        }
+        if expectedInstallerCount == 1 {
+            let installerUsages = launchArtifacts
+                .filter { $0.media.kind == .installerISO }
+                .flatMap(\.usages)
+                .filter { $0.kind == .boot && $0.readOnly }
+            guard installerUsages.count == 1,
+                  let expectedID = try? DoryVirtualDeviceID.derived(
+                    namespace: .removableStorage,
+                    stableID: installerUsages[0].identifier
+                  ),
+                  topology.occupiedSlots.contains(where: {
+                    $0.role == .removableStorage && $0.logicalID == expectedID
+                  }) else {
+                reject("armVirtTopology.occupiedSlots")
+                return
+            }
         }
     }
 
@@ -1076,6 +1091,8 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
         switch (guest.family, backend) {
         case (.linux, .doryHypervisor):
             runtimeCombinationIsImplemented = bootMedia.media.kind == .linuxKernel
+                || bootMedia.media.kind == .installerISO
+                || bootMedia.media.kind == .virtualDisk
                 || bootMedia.media.kind == .installedLinuxBootBundle
         case (.linux, .appleVirtualizationFramework):
             runtimeCombinationIsImplemented = bootMedia.media.kind == .linuxKernel

@@ -10,6 +10,7 @@ public enum DoryARMVirtV1TopologyPlanningError:
     case incompatibleGuest
     case incompatibleABI(UInt16)
     case unsupportedStorageTopology
+    case unsupportedBootTopology
     case readOnlySystemDisk
     case missingStableNetworkInterface
     case resolvedDeviceContractMismatch
@@ -23,6 +24,8 @@ public enum DoryARMVirtV1TopologyPlanningError:
             "DoryARMVirt-v1 does not implement virtual-hardware ABI \(version)"
         case .unsupportedStorageTopology:
             "DoryARMVirt-v1 currently materializes exactly one system disk and no data disks"
+        case .unsupportedBootTopology:
+            "DoryARMVirt-v1 materializes at most one removable Linux installer"
         case .readOnlySystemDisk:
             "DoryARMVirt-v1 requires its system disk to be writable"
         case .missingStableNetworkInterface:
@@ -139,6 +142,23 @@ public enum DoryARMVirtV1TopologyPlanner {
                     stableID: share.id
                 ),
                 role: .directoryShare
+            ))
+        }
+
+        let removableBootDevices = definition.boot.devices.filter(\.removable)
+        guard removableBootDevices.count <= 1,
+              removableBootDevices.allSatisfy({
+                  $0.kind == .installerISO && $0.role == .installer
+              }) else {
+            throw DoryARMVirtV1TopologyPlanningError.unsupportedBootTopology
+        }
+        if let installer = removableBootDevices.first {
+            requests.append(DoryARMVirtV1DeviceRequest(
+                logicalID: try DoryVirtualDeviceID.derived(
+                    namespace: .removableStorage,
+                    stableID: installer.id
+                ),
+                role: .removableStorage
             ))
         }
 

@@ -1379,6 +1379,8 @@ public enum DoryAppleSiliconCapabilityEvaluator {
         switch (request.guest.family, request.backend) {
         case (.linux, .doryHypervisor):
             return request.bootMedia.kind == .linuxKernel
+                || request.bootMedia.kind == .installerISO
+                || request.bootMedia.kind == .virtualDisk
                 || request.bootMedia.kind == .installedLinuxBootBundle
         case (.linux, .appleVirtualizationFramework):
             return request.bootMedia.kind == .linuxKernel

@@ -205,6 +205,36 @@ struct DoryDaemonVirtualMachineRuntimePlanningTests {
         }
     }
 
+    @Test("DoryARMVirt installer topology reserves the frozen removable slot")
+    func armVirtInstallerTopology() throws {
+        let fixture = try Fixture()
+        var definition = fixture.definition
+        definition.boot = DoryVMBootConfiguration(
+            phase: .install,
+            devices: [DoryVMBootMediaReference(
+                id: "linux-installer",
+                role: .installer,
+                kind: .installerISO,
+                source: .userProvided,
+                artifact: .init(namespace: "artifact", identifier: "linux-installer"),
+                removable: true
+            )],
+            order: ["linux-installer"]
+        )
+        let topology = try DoryARMVirtV1TopologyPlanner.resolve(
+            definition: definition,
+            resolvedDevices: DoryDaemonVirtualMachinePlanningCoordinator.devices(for: definition)
+        )
+        let installer = try #require(topology.occupiedSlots.first {
+            $0.role == .removableStorage
+        })
+        #expect(installer.mmioSlot == 12)
+        #expect(installer.logicalID == (try DoryVirtualDeviceID.derived(
+            namespace: .removableStorage,
+            stableID: "linux-installer"
+        )))
+    }
+
     @Test("canonical definition bytes cannot be substituted")
     func canonicalDefinitionBinding() throws {
         let fixture = try Fixture()
