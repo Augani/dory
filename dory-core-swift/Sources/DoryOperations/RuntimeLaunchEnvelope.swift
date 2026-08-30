@@ -6,7 +6,7 @@ import Foundation
 ///
 /// This contract contains resolved identity and named object-authority slots, never host paths.
 public struct RuntimeLaunchEnvelope: Codable, Sendable, Equatable {
-    public static let currentSchemaVersion: UInt16 = 5
+    public static let currentSchemaVersion: UInt16 = 6
     public static let maximumEncodedArgumentBytes = 65_536
     public static let systemDiskSlotName = "systemDisk"
     public static let linuxKernelSlotName = "linuxKernel"
@@ -162,8 +162,8 @@ public struct RuntimeLaunchEnvelope: Codable, Sendable, Equatable {
     public let operationID: UUID
     public let resolvedPlanSHA256: String
     public let planRevision: UInt64
-    public let backendIdentity: DoryVirtualizationBackendIdentity
-    public let backendRuntimeBuildIdentifier: String
+    public let platform: DoryVirtualizationPlatformComposition
+    public let executionComponentBuildIdentifier: String
     public let virtualHardwareABIVersion: UInt16
     public let rawHVVirtualHardwareTopology: DoryRawHVVirtualHardwareTopology
     public let graphics: DoryGraphicsAccelerationLevel
@@ -180,8 +180,8 @@ public struct RuntimeLaunchEnvelope: Codable, Sendable, Equatable {
         operationID: UUID,
         resolvedPlanSHA256: String,
         planRevision: UInt64,
-        backendIdentity: DoryVirtualizationBackendIdentity,
-        backendRuntimeBuildIdentifier: String,
+        platform: DoryVirtualizationPlatformComposition,
+        executionComponentBuildIdentifier: String,
         virtualHardwareABIVersion: UInt16,
         rawHVVirtualHardwareTopology: DoryRawHVVirtualHardwareTopology,
         graphics: DoryGraphicsAccelerationLevel,
@@ -197,8 +197,8 @@ public struct RuntimeLaunchEnvelope: Codable, Sendable, Equatable {
         self.operationID = operationID
         self.resolvedPlanSHA256 = resolvedPlanSHA256
         self.planRevision = planRevision
-        self.backendIdentity = backendIdentity
-        self.backendRuntimeBuildIdentifier = backendRuntimeBuildIdentifier
+        self.platform = platform
+        self.executionComponentBuildIdentifier = executionComponentBuildIdentifier
         self.virtualHardwareABIVersion = virtualHardwareABIVersion
         self.rawHVVirtualHardwareTopology = rawHVVirtualHardwareTopology
         self.graphics = graphics
@@ -214,7 +214,7 @@ public struct RuntimeLaunchEnvelope: Codable, Sendable, Equatable {
         operationID: UUID,
         resolvedPlanSHA256: String,
         planRevision: UInt64,
-        backendRuntimeBuildIdentifier: String,
+        executionComponentBuildIdentifier: String,
         virtualHardwareABIVersion: UInt16,
         rawHVVirtualHardwareTopology: DoryRawHVVirtualHardwareTopology,
         graphics: DoryGraphicsAccelerationLevel,
@@ -271,8 +271,8 @@ public struct RuntimeLaunchEnvelope: Codable, Sendable, Equatable {
             operationID: operationID,
             resolvedPlanSHA256: resolvedPlanSHA256,
             planRevision: planRevision,
-            backendIdentity: .doryHypervisor,
-            backendRuntimeBuildIdentifier: backendRuntimeBuildIdentifier,
+            platform: .arm64LinuxV1,
+            executionComponentBuildIdentifier: executionComponentBuildIdentifier,
             virtualHardwareABIVersion: virtualHardwareABIVersion,
             rawHVVirtualHardwareTopology: rawHVVirtualHardwareTopology,
             graphics: graphics,
@@ -296,13 +296,13 @@ public struct RuntimeLaunchEnvelope: Codable, Sendable, Equatable {
         }
         guard Self.isSafeMachineIdentifier(machineID),
               operationID != Self.zeroOperationID,
-              Self.isSafeEvidenceIdentifier(backendRuntimeBuildIdentifier),
+              Self.isSafeEvidenceIdentifier(executionComponentBuildIdentifier),
               planRevision > 0,
               virtualHardwareABIVersion > 0 else {
             throw RuntimeLaunchEnvelopeError.invalidIdentity
         }
-        guard backendIdentity == .doryHypervisor else {
-            throw RuntimeLaunchEnvelopeError.invalidBackend(backendIdentity)
+        guard platform == .arm64LinuxV1 else {
+            throw RuntimeLaunchEnvelopeError.invalidPlatform(platform)
         }
         guard virtualHardwareABIVersion == 1,
               rawHVVirtualHardwareTopology.abiVersion == .rawHVARM64V1,
@@ -565,7 +565,7 @@ public enum RuntimeLaunchEnvelopeError: Error, CustomStringConvertible, Equatabl
     case invalidKind
     case unsupportedSchemaVersion(UInt16)
     case invalidIdentity
-    case invalidBackend(DoryVirtualizationBackendIdentity)
+    case invalidPlatform(DoryVirtualizationPlatformComposition)
     case invalidVirtualHardwareTopology
     case invalidPlanSHA256
     case invalidExecutionResources
@@ -592,8 +592,8 @@ public enum RuntimeLaunchEnvelopeError: Error, CustomStringConvertible, Equatabl
             return "unsupported runtime launch envelope schema version \(version)"
         case .invalidIdentity:
             return "runtime launch envelope identity is incomplete"
-        case .invalidBackend(let backend):
-            return "runtime launch envelope backend \(backend.rawValue) is not raw-HV"
+        case .invalidPlatform(let platform):
+            return "runtime launch envelope platform \(platform.machineModel.rawValue) is not Dory ARMVirt v1"
         case .invalidVirtualHardwareTopology:
             return "runtime launch envelope virtual-hardware topology is not RawHV ARM64 ABI v1"
         case .invalidPlanSHA256:

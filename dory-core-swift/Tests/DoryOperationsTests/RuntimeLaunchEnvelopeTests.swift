@@ -24,7 +24,8 @@ final class RuntimeLaunchEnvelopeTests: XCTestCase {
         let resources = try decoded.validatedResolvedRawHVResources()
 
         XCTAssertEqual(decoded.schemaVersion, RuntimeLaunchEnvelope.currentSchemaVersion)
-        XCTAssertEqual(decoded.schemaVersion, 5)
+        XCTAssertEqual(decoded.schemaVersion, 6)
+        XCTAssertEqual(decoded.platform, .arm64LinuxV1)
         XCTAssertEqual(decoded.executionResources.memoryMB, 8_192)
         XCTAssertEqual(decoded.executionResources.virtualCPUCount, 4)
         XCTAssertEqual(decoded.executionResources.systemDiskQueueCount, 4)
@@ -512,6 +513,17 @@ final class RuntimeLaunchEnvelopeTests: XCTestCase {
         )
     }
 
+    func testRunnerCannotSubstituteExecutionOrMachineComposition() {
+        assertValidationError(
+            replacingPlatform(in: makeEnvelope(), with: .x86_64LinuxV1),
+            .invalidPlatform(.x86_64LinuxV1)
+        )
+        assertValidationError(
+            replacingPlatform(in: makeEnvelope(), with: .arm64MacOSV1),
+            .invalidPlatform(.arm64MacOSV1)
+        )
+    }
+
     private func canonicalRoundTrip(
         _ envelope: RuntimeLaunchEnvelope
     ) throws -> RuntimeLaunchEnvelope {
@@ -557,7 +569,7 @@ final class RuntimeLaunchEnvelopeTests: XCTestCase {
             operationID: operationID,
             resolvedPlanSHA256: Self.planDigest,
             planRevision: 9,
-            backendRuntimeBuildIdentifier: buildIdentifier,
+            executionComponentBuildIdentifier: buildIdentifier,
             virtualHardwareABIVersion: 1,
             rawHVVirtualHardwareTopology: makeTopology(
                 systemDiskLogicalID: topologySystemDiskLogicalID,
@@ -593,8 +605,8 @@ final class RuntimeLaunchEnvelopeTests: XCTestCase {
             operationID: envelope.operationID,
             resolvedPlanSHA256: envelope.resolvedPlanSHA256,
             planRevision: envelope.planRevision,
-            backendIdentity: envelope.backendIdentity,
-            backendRuntimeBuildIdentifier: envelope.backendRuntimeBuildIdentifier,
+            platform: envelope.platform,
+            executionComponentBuildIdentifier: envelope.executionComponentBuildIdentifier,
             virtualHardwareABIVersion: envelope.virtualHardwareABIVersion,
             rawHVVirtualHardwareTopology: envelope.rawHVVirtualHardwareTopology,
             graphics: envelope.graphics,
@@ -617,8 +629,32 @@ final class RuntimeLaunchEnvelopeTests: XCTestCase {
             operationID: envelope.operationID,
             resolvedPlanSHA256: digest,
             planRevision: envelope.planRevision,
-            backendIdentity: envelope.backendIdentity,
-            backendRuntimeBuildIdentifier: envelope.backendRuntimeBuildIdentifier,
+            platform: envelope.platform,
+            executionComponentBuildIdentifier: envelope.executionComponentBuildIdentifier,
+            virtualHardwareABIVersion: envelope.virtualHardwareABIVersion,
+            rawHVVirtualHardwareTopology: envelope.rawHVVirtualHardwareTopology,
+            graphics: envelope.graphics,
+            devices: envelope.devices,
+            portForwards: envelope.portForwards,
+            executionResources: envelope.executionResources,
+            linuxDirectBoot: envelope.linuxDirectBoot,
+            inheritedFileDescriptors: envelope.inheritedFileDescriptors
+        )
+    }
+
+    private func replacingPlatform(
+        in envelope: RuntimeLaunchEnvelope,
+        with platform: DoryVirtualizationPlatformComposition
+    ) -> RuntimeLaunchEnvelope {
+        RuntimeLaunchEnvelope(
+            kind: envelope.kind,
+            schemaVersion: envelope.schemaVersion,
+            machineID: envelope.machineID,
+            operationID: envelope.operationID,
+            resolvedPlanSHA256: envelope.resolvedPlanSHA256,
+            planRevision: envelope.planRevision,
+            platform: platform,
+            executionComponentBuildIdentifier: envelope.executionComponentBuildIdentifier,
             virtualHardwareABIVersion: envelope.virtualHardwareABIVersion,
             rawHVVirtualHardwareTopology: envelope.rawHVVirtualHardwareTopology,
             graphics: envelope.graphics,

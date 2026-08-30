@@ -353,7 +353,7 @@ final class RuntimeBootAuthorityIntegrationTests: XCTestCase {
             operationID: UUID(uuidString: "22222222-2222-2222-2222-222222222222")!,
             resolvedPlanSHA256: String(repeating: "a", count: 64),
             planRevision: 1,
-            backendRuntimeBuildIdentifier: "test-runtime",
+            executionComponentBuildIdentifier: "test-runtime",
             virtualHardwareABIVersion: 1,
             rawHVVirtualHardwareTopology: topology,
             graphics: .software,

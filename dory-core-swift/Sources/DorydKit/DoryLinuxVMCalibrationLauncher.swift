@@ -456,7 +456,7 @@ public enum DoryLinuxVMCalibrationLauncher {
             operationID: operationID,
             resolvedPlanSHA256: launchPlanSHA256,
             planRevision: 1,
-            backendRuntimeBuildIdentifier: runtimeBuildIdentifier,
+            executionComponentBuildIdentifier: runtimeBuildIdentifier,
             virtualHardwareABIVersion:
                 DoryVirtualMachineDefinition.currentVirtualHardwareABIVersion,
             rawHVVirtualHardwareTopology: topology,

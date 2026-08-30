@@ -190,7 +190,7 @@ final class RuntimeDiskAuthorityIntegrationTests: XCTestCase {
             operationID: UUID(uuidString: "11111111-1111-1111-1111-111111111111")!,
             resolvedPlanSHA256: String(repeating: "a", count: 64),
             planRevision: 1,
-            backendRuntimeBuildIdentifier: "test-runtime",
+            executionComponentBuildIdentifier: "test-runtime",
             virtualHardwareABIVersion: 1,
             rawHVVirtualHardwareTopology: topology,
             graphics: .software,
