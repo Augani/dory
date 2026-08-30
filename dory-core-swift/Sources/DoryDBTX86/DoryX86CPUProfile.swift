@@ -67,15 +67,11 @@ public struct DoryX86CPUProfile: Codable, Sendable, Hashable {
     self.virtualTSCFrequencyHz = virtualTSCFrequencyHz
   }
 
-  /// First frozen Linux profile. AVX/AVX2 remain absent until their interpreter and JIT state
-  /// transitions pass differential qualification; callers cannot add features dynamically.
+  /// Candidate Linux profile. Features are added only after their interpreter semantics and
+  /// conformance tests land; the identifier is frozen at the Phase 4 exit gate, not before it.
   public static let compatibleV1 = Self(
     identifier: compatibleV1Identifier,
-    features: [
-      .x87, .tsc, .msr, .cmpxchg8b, .apic, .sysenter, .cmov, .clflush, .mmx,
-      .fxsave, .sse, .sse2, .sse3, .ssse3, .sse41, .sse42, .popcnt, .cmpxchg16b,
-      .syscall, .executeDisable, .longMode, .lahf64, .invariantTSC,
-    ],
+    features: [.longMode],
     physicalAddressBits: 40,
     linearAddressBits: 48,
     virtualTSCFrequencyHz: 1_000_000_000

@@ -64,7 +64,9 @@ import Testing
     let profile = DoryX86CPUProfile.compatibleV1
     #expect(profile.identifier == "dory.x86_64.compat-v1")
     #expect(profile.supports(.longMode))
-    #expect(profile.supports(.sse42))
+    #expect(profile.supports(.longMode))
+    #expect(!profile.supports(.sse42))
+    #expect(!profile.supports(.syscall))
     #expect(!profile.supports(.avx))
     #expect(!profile.supports(.avx2))
     #expect(profile.cpuid(leaf: 0).eax == 0xD)
