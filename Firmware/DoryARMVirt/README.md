@@ -26,6 +26,10 @@ lifecycle shape:
 The runner rejects a missing pair of matrix/gate options, a caller-supplied
 console script, media, fixture, or network-sidecar drift, guest-tuple mismatch, and any observed
 boot/transition/action receipt that differs from the selected gate.
+Before emitting a matrix-selected receipt, the runner decodes it through the
+shared schema-6 verifier, recomputes the matrix digest, and fails closed on
+unknown fields or any platform, host, guest, media, firmware, sidecar, resource,
+lifecycle, snapshot, or monotonic-timing mismatch.
 
 Build a four-file, atomically published firmware bundle:
 

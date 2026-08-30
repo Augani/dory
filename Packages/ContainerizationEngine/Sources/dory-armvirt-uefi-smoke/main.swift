@@ -45,55 +45,10 @@ import Foundation
   }
 
   private struct AdmittedQualificationGate {
+    let matrixData: Data
     let matrixSHA256: String
     let gate: DoryARMVirtCompatibilityGate
     let media: DoryARMVirtCompatibilityMedia
-  }
-
-  private struct Receipt: Codable {
-    let schemaVersion: UInt32
-    let machineABIIdentity: String
-    let firmwareABIIdentity: String
-    let executionEngineIdentity: String
-    let cpuProfileIdentity: String
-    let deviceABIIdentity: String
-    let hostArchitecture: String
-    let hostHardwareModel: String
-    let hostOperatingSystemVersion: String
-    let hostOperatingSystemBuild: String
-    let guestFamily: String?
-    let guestVersion: String?
-    let guestBuild: String?
-    let guestArchitecture: String?
-    let guestVCPUCount: Int
-    let runnerSHA256: String
-    let compatibilityMatrixSHA256: String?
-    let qualificationGateID: String?
-    let buildIdentifier: String
-    let firmwareCodeSHA256: String
-    let expectedConsoleText: String
-    let installerMediaByteCount: UInt64?
-    let installerMediaSHA256: String?
-    let systemDiskByteCount: UInt64
-    let memoryByteCount: UInt64
-    let consoleScriptSHA256: String?
-    let consoleScriptStepCount: Int?
-    let completedConsoleScriptStepCount: Int?
-    let installerMediaTransitionCount: Int
-    let installerMediaAttachedForFinalBoot: Bool
-    let coldSnapshotActionCount: Int
-    let completedColdSnapshotActionCount: Int
-    let coldSnapshotABIIdentity: String?
-    let coldSnapshotSystemDiskSHA256: String?
-    let coldSnapshotVariableStoreGeneration: UInt64?
-    let gvproxySHA256: String?
-    let consoleByteCount: Int
-    let bootAttempts: Int
-    let timingClockIdentity: String
-    let bootDurationNanoseconds: [UInt64]
-    let qualificationDurationNanoseconds: UInt64
-    let variableStoreGeneration: UInt64
-    let stopReason: String
   }
 
   private final class ConsoleCapture: @unchecked Sendable {
@@ -367,6 +322,7 @@ import Foundation
     options.timeoutSeconds = gate.timeoutSeconds
     options.expectedConsoleText = gate.expectedConsoleText
     return AdmittedQualificationGate(
+      matrixData: data,
       matrixSHA256: SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined(),
       gate: gate,
       media: media
@@ -776,8 +732,7 @@ import Foundation
     let generation = try variableStore.load().snapshot.generation
     let qualificationDurationNanoseconds =
       DispatchTime.now().uptimeNanoseconds &- qualificationStarted
-    let receipt = Receipt(
-      schemaVersion: 6,
+    let receipt = DoryARMVirtQualificationReceipt(
       machineABIIdentity: DoryARMVirtV1ABI.identity,
       firmwareABIIdentity: DoryARMVirtV1ABI.firmwareABIIdentity,
       executionEngineIdentity: DoryExecutionEngineIdentity.nativeARM64.rawValue,
@@ -823,7 +778,15 @@ import Foundation
     )
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
-    FileHandle.standardOutput.write(try encoder.encode(receipt))
+    let receiptData = try encoder.encode(receipt)
+    if let qualification {
+      _ = try DoryARMVirtQualificationReceiptVerifier.verify(
+        receiptData: receiptData,
+        matrixData: qualification.matrixData,
+        gateID: qualification.gate.gateID
+      )
+    }
+    FileHandle.standardOutput.write(receiptData)
     FileHandle.standardOutput.write(Data("\n".utf8))
   } catch {
     fail(String(describing: error))
