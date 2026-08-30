@@ -70,4 +70,39 @@ import Testing
       #expect(context[16] == 0x400A)
     #endif
   }
+
+  @Test func boundedExecutorRecompilesChangedGuestCode() throws {
+    #if arch(arm64)
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
+      var state = try DoryX86ArchitecturalState(rip: 0x5000)
+      let first = try #require(
+        executor.execute(
+          bytes: [0x48, 0xB8, 1, 0, 0, 0, 0, 0, 0, 0],
+          at: state.rip,
+          mode: .long64,
+          addressSpaceID: 7,
+          maximumInstructions: 1,
+          state: &state
+        )
+      )
+      #expect(first.block.guestInstructionCount == 1)
+      #expect(state.registers.rax == 1)
+      #expect(state.rip == 0x500A)
+
+      state.rip = 0x5000
+      let second = try #require(
+        executor.execute(
+          bytes: [0x48, 0xB8, 2, 0, 0, 0, 0, 0, 0, 0],
+          at: state.rip,
+          mode: .long64,
+          addressSpaceID: 7,
+          maximumInstructions: 1,
+          state: &state
+        )
+      )
+      #expect(second.block.guestInstructionCount == 1)
+      #expect(state.registers.rax == 2)
+      #expect(executor.residentBlockCount == 2)
+    #endif
+  }
 }

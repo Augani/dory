@@ -25,6 +25,7 @@ private struct Arguments {
   let installerMedia: URL?
   let variableStoreDirectory: URL?
   let exceptionPolicy: DoryPCExceptionPolicy
+  let executionTier: DoryPCExecutionTier
 
   init(_ values: [String]) throws {
     var options: [String: String] = [:]
@@ -38,7 +39,7 @@ private struct Arguments {
         [
           "--firmware-bundle", "--max-instructions", "--memory-bytes", "--processor-count",
           "--system-disk", "--installer-media", "--variable-store-directory",
-          "--exception-policy",
+          "--exception-policy", "--execution-tier",
         ].contains(name)
       else { throw SmokeError.usage("unknown option: \(name)") }
       guard options.updateValue(values[index + 1], forKey: name) == nil else {
@@ -52,6 +53,7 @@ private struct Arguments {
           + "[--system-disk /absolute/disk] [--installer-media /absolute/iso] "
           + "[--variable-store-directory /absolute/directory] "
           + "[--processor-count count] [--exception-policy stop|deliver] "
+          + "[--execution-tier interpreter|baseline-jit] "
           + "[--max-instructions count] [--memory-bytes count]"
       )
     }
@@ -72,6 +74,12 @@ private struct Arguments {
     case "stop": exceptionPolicy = .stop
     case "deliver": exceptionPolicy = .deliver
     default: throw SmokeError.usage("invalid exception policy: \(policyText)")
+    }
+    let tierText = options["--execution-tier"] ?? "interpreter"
+    switch tierText {
+    case "interpreter": executionTier = .interpreter
+    case "baseline-jit": executionTier = .baselineJIT
+    default: throw SmokeError.usage("invalid execution tier: \(tierText)")
     }
     firmwareBundle = URL(fileURLWithPath: bundle, isDirectory: true).standardizedFileURL
     self.maximumInstructions = maximumInstructions
@@ -226,12 +234,14 @@ private func run() throws {
     variableStore: .init(file: variable.file),
     bootStorage: storages,
     memoryBytes: arguments.memoryBytes,
-    processorCount: arguments.processorCount
+    processorCount: arguments.processorCount,
+    executionTier: arguments.executionTier
   )
   let stop = try composed.machine.run(
     maximumInstructions: arguments.maximumInstructions,
     exceptionPolicy: arguments.exceptionPolicy
   )
+  let executionStatistics = composed.machine.executionStatistics
   let state = composed.machine.state
   let rip = state.map { hexadecimal($0.cs.base &+ $0.rip) } ?? "unavailable"
   let pageTrace =
@@ -263,6 +273,10 @@ private func run() throws {
     "processorCount": arguments.processorCount,
     "bootOrder": bootOrder,
     "exceptionPolicy": arguments.exceptionPolicy == .stop ? "stop" : "deliver",
+    "executionTier": arguments.executionTier.rawValue,
+    "interpreterInstructions": executionStatistics.interpreterInstructions,
+    "baselineJITInstructions": executionStatistics.baselineJITInstructions,
+    "baselineJITBlocks": executionStatistics.baselineJITBlocks,
     "persistentSystemDisk": arguments.systemDisk?.path ?? "in-memory",
     "installerMedia": arguments.installerMedia?.path ?? "none",
     "variableStoreDirectory": ownsVariableDirectory ? "temporary" : variableDirectory.path,

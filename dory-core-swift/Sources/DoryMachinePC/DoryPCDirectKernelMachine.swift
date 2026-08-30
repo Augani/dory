@@ -4,8 +4,30 @@ import Foundation
 public enum DoryPCMachineError: Error, Sendable, Equatable {
   case invalidMemorySize(Int)
   case invalidProcessorCount(Int)
+  case unexpectedJITExit(DoryJITExitCode)
   case alreadyLoaded
   case notLoaded
+}
+
+public enum DoryPCExecutionTier: String, Codable, Sendable, Hashable {
+  case interpreter
+  case baselineJIT
+}
+
+public struct DoryPCExecutionStatistics: Codable, Sendable, Hashable {
+  public let interpreterInstructions: UInt64
+  public let baselineJITInstructions: UInt64
+  public let baselineJITBlocks: UInt64
+
+  public init(
+    interpreterInstructions: UInt64,
+    baselineJITInstructions: UInt64,
+    baselineJITBlocks: UInt64
+  ) {
+    self.interpreterInstructions = interpreterInstructions
+    self.baselineJITInstructions = baselineJITInstructions
+    self.baselineJITBlocks = baselineJITBlocks
+  }
 }
 
 public enum DoryPCMachineStop: Sendable, Hashable {
@@ -53,6 +75,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   public let platformMMIODevices: [any DoryPCMMIODevice]
   public let memoryByteCount: Int
   public let processorCount: Int
+  public let executionTier: DoryPCExecutionTier
 
   private let lock = NSLock()
   private var loadedStates: [DoryX86ArchitecturalState?]
@@ -60,6 +83,10 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   private var pendingNMIs: Set<Int> = []
   private var roundRobinCursor = 0
   private var consumedPayload = false
+  private let baselineJIT: DoryARM64BaselineExecutor?
+  private var interpreterInstructionCount: UInt64 = 0
+  private var baselineJITInstructionCount: UInt64 = 0
+  private var baselineJITBlockCount: UInt64 = 0
 
   public init(
     memoryBytes: Int,
@@ -71,7 +98,9 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     initialRTCDate: Date = Date(),
     pciFunctions: [any DoryPCPCIFunction] = [],
     platformMMIODevices: [any DoryPCMMIODevice] = [],
-    interpreter: DoryX86Interpreter = .init()
+    interpreter: DoryX86Interpreter = .init(),
+    executionTier: DoryPCExecutionTier = .interpreter,
+    baselineJITMaximumCodeBytes: Int = 16 * 1024 * 1024
   ) throws {
     guard memoryBytes >= 1024 * 1024 else {
       throw DoryPCMachineError.invalidMemorySize(memoryBytes)
@@ -80,6 +109,14 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       throw DoryPCMachineError.invalidProcessorCount(processorCount)
     }
     self.processorCount = processorCount
+    self.executionTier = executionTier
+    baselineJIT =
+      executionTier == .baselineJIT
+      ? try DoryARM64BaselineExecutor(
+        maximumCodeBytes: baselineJITMaximumCodeBytes,
+        decoder: interpreter.decoder
+      )
+      : nil
     firmwareConfiguration = DoryPCFirmwareConfiguration(
       totalRAMBytes: UInt64(memoryBytes),
       processorCount: processorCount,
@@ -273,6 +310,16 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
 
   public var state: DoryX86ArchitecturalState? { state(forProcessor: 0) }
 
+  public var executionStatistics: DoryPCExecutionStatistics {
+    lock.withLock {
+      .init(
+        interpreterInstructions: interpreterInstructionCount,
+        baselineJITInstructions: baselineJITInstructionCount,
+        baselineJITBlocks: baselineJITBlockCount
+      )
+    }
+  }
+
   public func state(forProcessor index: Int) -> DoryX86ArchitecturalState? {
     lock.withLock { loadedStates.indices.contains(index) ? loadedStates[index] : nil }
   }
@@ -298,17 +345,25 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           return .halted(instructionCount: completed)
         }
         guard var state = loadedStates[processor] else { continue }
-        let result = interpreters[processor].step(
+        let remaining = maximumInstructions - completed
+        let execution = try execute(
+          processor: processor,
           state: &state,
-          memory: physicalMemories[processor],
-          mode: executionMode(state),
-          pagingUnit: pagingUnits[processor],
-          ioBus: ioBus
+          maximumInstructions: remaining
         )
-        completed += 1
+        completed += execution.instructionCount
+        if execution.usedBaselineJIT {
+          baselineJITInstructionCount &+= execution.instructionCount
+          baselineJITBlockCount &+= 1
+        } else {
+          interpreterInstructionCount &+= execution.instructionCount
+        }
+        if execution.instructionCount > 1 {
+          advanceClocks(by: execution.instructionCount - 1)
+        }
         loadedStates[processor] = state
         if let stop = powerStop(instructionCount: completed) { return stop }
-        switch result {
+        switch execution.result {
         case .retired, .yielded:
           haltedProcessors[processor] = false
           continue
@@ -336,6 +391,116 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       }
       return .instructionBudget(maximumInstructions)
     }
+  }
+
+  private enum ProcessorResult {
+    case retired
+    case yielded
+    case halted
+    case exception(DoryX86Exception)
+  }
+
+  private struct ProcessorExecution {
+    let result: ProcessorResult
+    let instructionCount: UInt64
+    let usedBaselineJIT: Bool
+  }
+
+  private func execute(
+    processor: Int,
+    state: inout DoryX86ArchitecturalState,
+    maximumInstructions: UInt64
+  ) throws -> ProcessorExecution {
+    let mode = executionMode(state)
+    if let baselineJIT,
+      mode == .long64 || (mode == .protected32 && state.cs.base == 0),
+      !state.rflags.contains(.trap)
+    {
+      let budget = baselineInstructionBudget(maximumInstructions: maximumInstructions)
+      let translatedMemory = DoryX86TranslatedMemory(
+        physicalMemory: physicalMemories[processor],
+        pagingUnit: pagingUnits[processor],
+        context: .init(state: state, mode: mode)
+      )
+      if let bytes = try? translatedMemory.instructionBytes(
+        at: state.rip,
+        maximumCount: budget * 15
+      ),
+        let execution = try baselineJIT.execute(
+          bytes: bytes,
+          at: state.rip,
+          mode: mode,
+          addressSpaceID: state.control.cr3,
+          maximumInstructions: budget,
+          state: &state
+        )
+      {
+        let count = UInt64(execution.block.guestInstructionCount)
+        switch execution.exitCode {
+        case .dispatch:
+          return .init(result: .retired, instructionCount: count, usedBaselineJIT: true)
+        case .halt:
+          return .init(result: .halted, instructionCount: count, usedBaselineJIT: true)
+        case .interpreter, .system, .portIO:
+          throw DoryPCMachineError.unexpectedJITExit(execution.exitCode)
+        }
+      }
+    }
+
+    let result = interpreters[processor].step(
+      state: &state,
+      memory: physicalMemories[processor],
+      mode: mode,
+      pagingUnit: pagingUnits[processor],
+      ioBus: ioBus
+    )
+    let machineResult: ProcessorResult =
+      switch result {
+      case .retired: .retired
+      case .yielded: .yielded
+      case .halted: .halted
+      case .exception(let exception): .exception(exception)
+      }
+    return .init(result: machineResult, instructionCount: 1, usedBaselineJIT: false)
+  }
+
+  private func baselineInstructionBudget(maximumInstructions: UInt64) -> Int {
+    var budget = Int(min(maximumInstructions, processorCount == 1 ? 64 : 1))
+    if let deadline = ticksUntilNextAcceptedInterrupt() {
+      budget = min(budget, Int(min(deadline, UInt64(Int.max))))
+    }
+    return max(1, budget)
+  }
+
+  private func advanceClocks(by ticks: UInt64) {
+    guard ticks > 0 else { return }
+    for apic in localAPICs { apic.advanceTimer(by: ticks) }
+    legacyPIT.advance(by: ticks)
+    rtc.advance(by: ticks)
+    hpet.advance(by: ticks)
+  }
+
+  private func ticksUntilNextAcceptedInterrupt() -> UInt64? {
+    var deadlines: [UInt64] = []
+    for (index, apic) in localAPICs.enumerated() {
+      guard let state = loadedStates[index], state.rflags.contains(.interruptEnable) else {
+        continue
+      }
+      let timer = apic.snapshot().timer
+      if !timer.masked, timer.currentCount > 0 { deadlines.append(UInt64(timer.currentCount)) }
+    }
+    let bspAcceptsInterrupts = loadedStates[0]?.rflags.contains(.interruptEnable) == true
+    if bspAcceptsInterrupts {
+      let pit = legacyPIT.snapshot()
+      let picAcceptsTimer = legacyPIC.snapshot().masterMask & 1 == 0
+      let ioAPICAcceptsTimer = (try? ioAPIC.route(for: 2)).map { !$0.masked } ?? false
+      if pit.armed, pit.current > 0, picAcceptsTimer || ioAPICAcceptsTimer {
+        deadlines.append(UInt64(pit.current))
+      }
+      if let ticks = rtc.ticksUntilNextInterrupt(), ticks > 0 { deadlines.append(ticks) }
+      if let ticks = hpet.ticksUntilNextInterrupt(), ticks > 0 { deadlines.append(ticks) }
+    }
+    return deadlines.min()
   }
 
   private func powerStop(instructionCount: UInt64) -> DoryPCMachineStop? {
@@ -425,30 +590,8 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   }
 
   private func advanceToNextInterrupt() -> Bool {
-    var deadlines: [UInt64] = []
-    for (index, apic) in localAPICs.enumerated() {
-      guard let state = loadedStates[index], state.rflags.contains(.interruptEnable) else {
-        continue
-      }
-      let timer = apic.snapshot().timer
-      if !timer.masked, timer.currentCount > 0 { deadlines.append(UInt64(timer.currentCount)) }
-    }
-    let bspAcceptsInterrupts = loadedStates[0]?.rflags.contains(.interruptEnable) == true
-    if bspAcceptsInterrupts {
-      let pit = legacyPIT.snapshot()
-      let picAcceptsTimer = legacyPIC.snapshot().masterMask & 1 == 0
-      let ioAPICAcceptsTimer = (try? ioAPIC.route(for: 2)).map { !$0.masked } ?? false
-      if pit.armed, pit.current > 0, picAcceptsTimer || ioAPICAcceptsTimer {
-        deadlines.append(UInt64(pit.current))
-      }
-      if let ticks = rtc.ticksUntilNextInterrupt(), ticks > 0 { deadlines.append(ticks) }
-      if let ticks = hpet.ticksUntilNextInterrupt(), ticks > 0 { deadlines.append(ticks) }
-    }
-    guard let ticks = deadlines.min() else { return false }
-    for apic in localAPICs { apic.advanceTimer(by: ticks) }
-    legacyPIT.advance(by: ticks)
-    rtc.advance(by: ticks)
-    hpet.advance(by: ticks)
+    guard let ticks = ticksUntilNextAcceptedInterrupt() else { return false }
+    advanceClocks(by: ticks)
     return true
   }
 

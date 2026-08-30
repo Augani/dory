@@ -88,6 +88,35 @@ import Testing
     #expect(count == 0)
   }
 
+  @Test func baselineJITExecutesDirectKernelBlocksWithPreciseAccounting() throws {
+    #if arch(arm64)
+      let layout = DoryPCPVHBootLayout(
+        startInfo: 0x90000,
+        commandLine: 0x91000,
+        modules: 0x92000,
+        memoryMap: 0x93000,
+        initrd: 0x180000
+      )
+      let machine = try DoryPCDirectKernelMachine(
+        memoryBytes: 2 * 1024 * 1024,
+        bootLayout: layout,
+        executionTier: .baselineJIT,
+        baselineJITMaximumCodeBytes: 4096
+      )
+      // mov eax,1; add eax,2; hlt
+      try machine.load(
+        kernel: makeELF(code: [0xB8, 1, 0, 0, 0, 0x83, 0xC0, 2, 0xF4]),
+        commandLine: "x"
+      )
+
+      #expect(try machine.run(maximumInstructions: 8) == .halted(instructionCount: 3))
+      #expect(machine.state?.registers.rax == 3)
+      #expect(machine.executionStatistics.baselineJITInstructions == 3)
+      #expect(machine.executionStatistics.baselineJITBlocks == 1)
+      #expect(machine.executionStatistics.interpreterInstructions == 0)
+    #endif
+  }
+
   @Test func directKernelCanProgramTheStandardLocalAPICWindow() throws {
     let layout = DoryPCPVHBootLayout(
       startInfo: 0x90000,

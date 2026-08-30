@@ -53,7 +53,9 @@ public final class DoryPCUEFIMachine: @unchecked Sendable {
     displaySink: (any DoryVirtioGPUDisplaySink)? = nil,
     soundBackend: any DoryVirtioSoundBackend = DoryVirtioInMemorySoundBackend(),
     networkBackend: any DoryVirtioNetworkBackend = DoryVirtioInMemoryNetworkBackend(),
-    interpreter: DoryX86Interpreter = .init()
+    interpreter: DoryX86Interpreter = .init(),
+    executionTier: DoryPCExecutionTier = .interpreter,
+    baselineJITMaximumCodeBytes: Int = 16 * 1024 * 1024
   ) throws {
     guard firmware.manifest.platform == .pcV1 else {
       throw DoryPCUEFIMachineError.incompatibleFirmwarePlatform(firmware.manifest.platform)
@@ -165,7 +167,9 @@ public final class DoryPCUEFIMachine: @unchecked Sendable {
       initialRTCDate: initialRTCDate,
       pciFunctions: pciFunctions,
       platformMMIODevices: [firmwareFlash, variableBridge],
-      interpreter: interpreter
+      interpreter: interpreter,
+      executionTier: executionTier,
+      baselineJITMaximumCodeBytes: baselineJITMaximumCodeBytes
     )
     try machine.loadUEFI()
 

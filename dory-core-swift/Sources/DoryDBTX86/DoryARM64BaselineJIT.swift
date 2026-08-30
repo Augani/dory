@@ -17,6 +17,7 @@ public enum DoryARM64CompilationTier: String, Codable, Sendable, Hashable {
 public struct DoryARM64CompiledBlock: Codable, Sendable, Hashable {
   public let guestStart: UInt64
   public let guestByteCount: UInt32
+  public let guestInstructionCount: UInt32
   public let machineWords: [UInt32]
   public let tier: DoryARM64CompilationTier
   public let exitCode: DoryJITExitCode
@@ -24,12 +25,14 @@ public struct DoryARM64CompiledBlock: Codable, Sendable, Hashable {
   public init(
     guestStart: UInt64,
     guestByteCount: UInt32,
+    guestInstructionCount: UInt32,
     machineWords: [UInt32],
     tier: DoryARM64CompilationTier,
     exitCode: DoryJITExitCode
   ) {
     self.guestStart = guestStart
     self.guestByteCount = guestByteCount
+    self.guestInstructionCount = guestInstructionCount
     self.machineWords = machineWords
     self.tier = tier
     self.exitCode = exitCode
@@ -72,6 +75,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
     return .init(
       guestStart: block.guestStart,
       guestByteCount: block.guestByteCount,
+      guestInstructionCount: block.guestInstructionCount,
       machineWords: words,
       tier: .baseline,
       exitCode: exit
@@ -88,6 +92,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
     return .init(
       guestStart: block.guestStart,
       guestByteCount: block.guestByteCount,
+      guestInstructionCount: block.guestInstructionCount,
       machineWords: words,
       tier: .interpreterFallback,
       exitCode: .interpreter
@@ -882,5 +887,142 @@ public final class DoryJITExecutableRegion: @unchecked Sendable {
       throw DoryJITRuntimeError.invalidExitCode(rawExit)
     }
     return exit
+  }
+}
+
+public struct DoryARM64BaselineExecution: Sendable, Hashable {
+  public let block: DoryARM64CompiledBlock
+  public let exitCode: DoryJITExitCode
+
+  public init(block: DoryARM64CompiledBlock, exitCode: DoryJITExitCode) {
+    self.block = block
+    self.exitCode = exitCode
+  }
+}
+
+/// Owns one bounded MAP_JIT region and dispatches exact, helper-free baseline blocks through it.
+/// Unsupported blocks never enter executable memory and return `nil` so the caller can execute
+/// the instruction at the unchanged guest RIP with the interpreter.
+public final class DoryARM64BaselineExecutor: @unchecked Sendable {
+  private struct ResidentBlock {
+    let block: DoryARM64CompiledBlock
+    let offset: Int
+  }
+
+  public let maximumCodeBytes: Int
+  private let lock = NSLock()
+  private let decoder: DoryX86Decoder
+  private let emitter: DoryARM64BaselineEmitter
+  private let region: DoryJITExecutableRegion
+  private var entries: [DoryJITBlockKey: ResidentBlock] = [:]
+  private var nextOffset = 0
+
+  public init(
+    maximumCodeBytes: Int = 16 * 1024 * 1024,
+    decoder: DoryX86Decoder = .init(),
+    emitter: DoryARM64BaselineEmitter = .init()
+  ) throws {
+    self.maximumCodeBytes = max(4_096, maximumCodeBytes)
+    self.decoder = decoder
+    self.emitter = emitter
+    region = try DoryJITExecutableRegion(minimumCapacity: self.maximumCodeBytes)
+  }
+
+  public var residentBlockCount: Int { lock.withLock { entries.count } }
+  public var residentByteCount: Int { lock.withLock { nextOffset } }
+
+  public func invalidateAll() {
+    lock.withLock {
+      entries.removeAll(keepingCapacity: true)
+      nextOffset = 0
+    }
+  }
+
+  public func execute(
+    bytes: [UInt8],
+    at guestStart: UInt64,
+    mode: DoryX86ExecutionMode,
+    addressSpaceID: UInt64,
+    maximumInstructions: Int,
+    state: inout DoryX86ArchitecturalState
+  ) throws -> DoryARM64BaselineExecution? {
+    guard !bytes.isEmpty, maximumInstructions > 0 else { return nil }
+    return try lock.withLock {
+      let generation = Self.fingerprint(
+        bytes: bytes,
+        mode: mode,
+        maximumInstructions: maximumInstructions
+      )
+      let key = DoryJITBlockKey(
+        guestStart: guestStart,
+        addressSpaceID: addressSpaceID,
+        codeGeneration: generation
+      )
+      let resident: ResidentBlock
+      if let cached = entries[key], cached.block.guestInstructionCount <= maximumInstructions {
+        resident = cached
+      } else {
+        let block = try DoryX86IRTranslator(
+          decoder: decoder,
+          instructionBudget: maximumInstructions
+        ).translate(bytes, at: guestStart, mode: mode)
+        let compiled = emitter.compile(block)
+        guard compiled.tier == .baseline,
+          compiled.guestInstructionCount > 0,
+          compiled.guestInstructionCount <= maximumInstructions
+        else { return nil }
+        let byteCount = compiled.machineBytes.count
+        guard byteCount <= region.capacity else { return nil }
+        if nextOffset > region.capacity - byteCount {
+          entries.removeAll(keepingCapacity: true)
+          nextOffset = 0
+        }
+        let offset = nextOffset
+        try region.publish(compiled, at: offset)
+        nextOffset += byteCount
+        resident = .init(block: compiled, offset: offset)
+        entries[key] = resident
+      }
+
+      var context = Self.executionContext(from: state)
+      let exit = try region.execute(at: resident.offset, context: &context)
+      Self.apply(context: context, to: &state)
+      return .init(block: resident.block, exitCode: exit)
+    }
+  }
+
+  private static func executionContext(from state: DoryX86ArchitecturalState) -> [UInt64] {
+    var context = DoryX86GeneralRegister.allCases.map { state.registers[$0] }
+    context.append(state.rip)
+    context.append(state.rflags.rawValue)
+    return context
+  }
+
+  private static func apply(context: [UInt64], to state: inout DoryX86ArchitecturalState) {
+    precondition(context.count == DoryJITExecutableRegion.contextWordCount)
+    for (index, register) in DoryX86GeneralRegister.allCases.enumerated() {
+      state.registers[register] = context[index]
+    }
+    state.rip = context[16]
+    state.rflags = DoryX86RFLAGS(rawValue: context[17])
+  }
+
+  private static func fingerprint(
+    bytes: [UInt8],
+    mode: DoryX86ExecutionMode,
+    maximumInstructions: Int
+  ) -> UInt64 {
+    var value: UInt64 = 0xcbf2_9ce4_8422_2325
+    for byte in bytes + Array(mode.rawValue.utf8) {
+      value ^= UInt64(byte)
+      value &*= 0x0000_0100_0000_01b3
+    }
+    var budget = UInt64(maximumInstructions)
+    for _ in 0..<8 {
+      value ^= UInt64(UInt8(truncatingIfNeeded: budget))
+      value &*= 0x0000_0100_0000_01b3
+      budget >>= 8
+    }
+    return value
   }
 }
