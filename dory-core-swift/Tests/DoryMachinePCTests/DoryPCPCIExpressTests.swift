@@ -119,6 +119,114 @@ import Testing
     #expect(recorder.values == [.init(address: 0xFEE0_0000, data: 0x52)])
   }
 
+  @Test func msixTableMasksQueuesAndDeliversPendingVectors() throws {
+    let function = try DoryPCPCIConfigurationFunction(
+      address: .init(bus: 0, device: 8, function: 0),
+      vendorID: 0x1AF4,
+      deviceID: 0x1044,
+      classCode: 0x000200,
+      supportsMSI: true,
+      msiNextCapabilityOffset: 0x60,
+      msixVectorCount: 2,
+      bars: [
+        .init(index: 0, kind: .memory32(prefetchable: false), size: 0x1000)
+      ]
+    )
+    let recorder = MSIDeliveryRecorder()
+    function.connectMSISink { address, data in
+      recorder.append(address: address, data: data)
+      return true
+    }
+
+    #expect(try function.readConfiguration(offset: 0x50, byteCount: 2) == [0x05, 0x60])
+    #expect(
+      try function.readConfiguration(offset: 0x60, byteCount: 12) == [
+        0x11, 0, 1, 0, 0, 8, 0, 0, 0, 12, 0, 0,
+      ])
+    #expect(
+      function.writeMSIXBAR(
+        bar: 0,
+        offset: 0x810,
+        bytes: littleEndian(UInt64(0xFEE0_1000))
+          + littleEndian(UInt32(0x66))
+          + littleEndian(UInt32(0))
+      ))
+    try function.writeConfiguration(offset: 0x62, bytes: [1, 0x80])
+
+    #expect(function.raiseMSIX(vector: 1))
+    #expect(recorder.values == [.init(address: 0xFEE0_1000, data: 0x66)])
+    #expect(function.msixState?.enabled == true)
+    #expect(function.msixState?.entries[1].masked == false)
+
+    #expect(function.writeMSIXBAR(bar: 0, offset: 0x81C, bytes: littleEndian(UInt32(1))))
+    #expect(!function.raiseMSIX(vector: 1))
+    #expect(function.msixState?.entries[1].pending == true)
+    #expect(function.readMSIXBAR(bar: 0, offset: 0xC00, byteCount: 8) == [2, 0, 0, 0, 0, 0, 0, 0])
+
+    #expect(function.writeMSIXBAR(bar: 0, offset: 0x81C, bytes: littleEndian(UInt32(0))))
+    #expect(recorder.values.count == 2)
+    #expect(function.msixState?.entries[1].pending == false)
+    #expect(!function.raiseMSIX(vector: 2))
+  }
+
+  @Test func msixFunctionMaskDefersDeliveryAndSuppressesMSI() throws {
+    let function = try makeMSIXFunction(device: 9)
+    let recorder = MSIDeliveryRecorder()
+    function.connectMSISink { address, data in
+      recorder.append(address: address, data: data)
+      return true
+    }
+    #expect(
+      function.writeMSIXBAR(
+        bar: 0,
+        offset: 0x800,
+        bytes: littleEndian(UInt64(0xFEE0_0000))
+          + littleEndian(UInt32(0x70))
+          + littleEndian(UInt32(0))
+      ))
+    try function.writeConfiguration(offset: 0x54, bytes: littleEndian(UInt32(0xFEE0_0000)))
+    try function.writeConfiguration(offset: 0x5C, bytes: [0x71, 0])
+    try function.writeConfiguration(offset: 0x52, bytes: [1, 0])
+    try function.writeConfiguration(offset: 0x62, bytes: [0, 0xC0])
+
+    #expect(!function.raiseMSI())
+    #expect(!function.raiseMSIX(vector: 0))
+    #expect(function.msixState?.entries[0].pending == true)
+    #expect(recorder.values.isEmpty)
+
+    try function.writeConfiguration(offset: 0x63, bytes: [0x80])
+    #expect(recorder.values == [.init(address: 0xFEE0_0000, data: 0x70)])
+
+    try function.writeConfiguration(offset: 0x63, bytes: [0])
+    #expect(function.raiseMSI())
+    #expect(recorder.values.last == .init(address: 0xFEE0_0000, data: 0x71))
+  }
+
+  @Test func msixRejectsMisalignedOrOutOfRangeTableRegions() throws {
+    #expect(throws: DoryPCPCIError.invalidMSIXConfiguration) {
+      try DoryPCPCIConfigurationFunction(
+        address: .init(bus: 0, device: 10, function: 0),
+        vendorID: 0x1AF4,
+        deviceID: 0x1044,
+        classCode: 0x000200,
+        msixVectorCount: 2,
+        msixTableOffset: 0xFF8,
+        bars: [.init(index: 0, kind: .memory32(prefetchable: false), size: 0x1000)]
+      )
+    }
+    #expect(throws: DoryPCPCIError.invalidMSIXConfiguration) {
+      try DoryPCPCIConfigurationFunction(
+        address: .init(bus: 0, device: 10, function: 0),
+        vendorID: 0x1AF4,
+        deviceID: 0x1044,
+        classCode: 0x000200,
+        msixVectorCount: 2,
+        msixTableOffset: 0x801,
+        bars: [.init(index: 0, kind: .memory32(prefetchable: false), size: 0x1000)]
+      )
+    }
+  }
+
   @Test func machineRoutesValidMSIMessagesAndRejectsInvalidDeliveryModes() throws {
     let function = try DoryPCPCIConfigurationFunction(
       address: .init(bus: 0, device: 6, function: 0),
@@ -174,6 +282,23 @@ import Testing
 
   private func littleEndian(_ value: UInt32) -> [UInt8] {
     (0..<4).map { UInt8(truncatingIfNeeded: value >> UInt32($0 * 8)) }
+  }
+
+  private func littleEndian(_ value: UInt64) -> [UInt8] {
+    (0..<8).map { UInt8(truncatingIfNeeded: value >> UInt64($0 * 8)) }
+  }
+
+  private func makeMSIXFunction(device: UInt8) throws -> DoryPCPCIConfigurationFunction {
+    try DoryPCPCIConfigurationFunction(
+      address: .init(bus: 0, device: device, function: 0),
+      vendorID: 0x1AF4,
+      deviceID: 0x1044,
+      classCode: 0x000200,
+      supportsMSI: true,
+      msiNextCapabilityOffset: 0x60,
+      msixVectorCount: 2,
+      bars: [.init(index: 0, kind: .memory32(prefetchable: false), size: 0x1000)]
+    )
   }
 }
 

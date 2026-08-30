@@ -48,6 +48,7 @@ public enum DoryPCPCIError: Error, Sendable, Equatable {
   case duplicateAddress(DoryPCPCIAddress)
   case addressOutsideHost(DoryPCPCIAddress)
   case invalidBAR(index: Int)
+  case invalidMSIXConfiguration
   case overlappingBAR(index: Int)
   case unsupportedConfigurationAccess(offset: Int, byteCount: Int)
 }
@@ -114,6 +115,214 @@ public struct DoryPCPCIMSIMessage: Sendable, Hashable {
   }
 }
 
+public struct DoryPCPCIMSIXEntry: Sendable, Hashable {
+  public let messageAddress: UInt64
+  public let messageData: UInt32
+  public let masked: Bool
+  public let pending: Bool
+}
+
+public struct DoryPCPCIMSIXState: Sendable, Hashable {
+  public let enabled: Bool
+  public let functionMasked: Bool
+  public let entries: [DoryPCPCIMSIXEntry]
+}
+
+private final class DoryPCPCIMSIXController: @unchecked Sendable {
+  private struct Entry {
+    var messageAddress: UInt64 = 0
+    var messageData: UInt32 = 0
+    var masked = true
+  }
+
+  let tableBAR: UInt8
+  let tableOffset: UInt32
+  let pendingBAR: UInt8
+  let pendingOffset: UInt32
+
+  private let lock = NSLock()
+  private var enabled = false
+  private var functionMasked = false
+  private var entries: [Entry]
+  private var pending: Set<Int> = []
+  private var sink: (@Sendable (UInt64, UInt16) -> Bool)?
+
+  init(
+    vectorCount: Int,
+    tableBAR: UInt8,
+    tableOffset: UInt32,
+    pendingBAR: UInt8,
+    pendingOffset: UInt32
+  ) {
+    precondition((1...2048).contains(vectorCount))
+    self.tableBAR = tableBAR
+    self.tableOffset = tableOffset
+    self.pendingBAR = pendingBAR
+    self.pendingOffset = pendingOffset
+    entries = .init(repeating: .init(), count: vectorCount)
+  }
+
+  var vectorCount: Int { entries.count }
+
+  var control: UInt16 {
+    lock.withLock {
+      UInt16(entries.count - 1) | (functionMasked ? 1 << 14 : 0) | (enabled ? 1 << 15 : 0)
+    }
+  }
+
+  var state: DoryPCPCIMSIXState {
+    lock.withLock {
+      .init(
+        enabled: enabled,
+        functionMasked: functionMasked,
+        entries: entries.enumerated().map { index, entry in
+          .init(
+            messageAddress: entry.messageAddress,
+            messageData: entry.messageData,
+            masked: entry.masked,
+            pending: pending.contains(index)
+          )
+        }
+      )
+    }
+  }
+
+  func connectSink(_ sink: @escaping @Sendable (UInt64, UInt16) -> Bool) {
+    lock.withLock { self.sink = sink }
+  }
+
+  func writeControl(_ value: UInt16) {
+    lock.withLock {
+      enabled = value & (1 << 15) != 0
+      functionMasked = value & (1 << 14) != 0
+    }
+    deliverPending()
+  }
+
+  func raise(vector: UInt16) -> Bool {
+    let delivery: (sink: @Sendable (UInt64, UInt16) -> Bool, address: UInt64, data: UInt16)? =
+      lock.withLock {
+        let index = Int(vector)
+        guard enabled, entries.indices.contains(index) else { return nil }
+        let entry = entries[index]
+        guard !functionMasked, !entry.masked, let sink else {
+          pending.insert(index)
+          return nil
+        }
+        return (sink, entry.messageAddress, UInt16(truncatingIfNeeded: entry.messageData))
+      }
+    guard let delivery else { return false }
+    let delivered = delivery.sink(delivery.address, delivery.data)
+    if delivered { lock.withLock { _ = pending.remove(Int(vector)) } }
+    return delivered
+  }
+
+  func readBAR(bar: Int, offset: UInt64, byteCount: Int) -> [UInt8]? {
+    lock.withLock {
+      if bar == Int(tableBAR),
+        let relative = relativeOffset(
+          offset: offset,
+          byteCount: byteCount,
+          base: UInt64(tableOffset),
+          length: entries.count * 16
+        )
+      {
+        let bytes = tableBytesLocked()
+        return Array(bytes[relative..<(relative + byteCount)])
+      }
+      let pendingByteCount = (entries.count + 63) / 64 * 8
+      if bar == Int(pendingBAR),
+        let relative = relativeOffset(
+          offset: offset,
+          byteCount: byteCount,
+          base: UInt64(pendingOffset),
+          length: pendingByteCount
+        )
+      {
+        let bytes = pendingBytesLocked(byteCount: pendingByteCount)
+        return Array(bytes[relative..<(relative + byteCount)])
+      }
+      return nil
+    }
+  }
+
+  func writeBAR(bar: Int, offset: UInt64, bytes: [UInt8]) -> Bool {
+    let handled = lock.withLock {
+      guard bar == Int(tableBAR),
+        let relative = relativeOffset(
+          offset: offset,
+          byteCount: bytes.count,
+          base: UInt64(tableOffset),
+          length: entries.count * 16
+        )
+      else {
+        let pendingByteCount = (entries.count + 63) / 64 * 8
+        return bar == Int(pendingBAR)
+          && relativeOffset(
+            offset: offset,
+            byteCount: bytes.count,
+            base: UInt64(pendingOffset),
+            length: pendingByteCount
+          ) != nil
+      }
+      var table = tableBytesLocked()
+      table.replaceSubrange(relative..<(relative + bytes.count), with: bytes)
+      for index in entries.indices {
+        let base = index * 16
+        entries[index].messageAddress = get(UInt64.self, at: base, in: table)
+        entries[index].messageData = get(UInt32.self, at: base + 8, in: table)
+        entries[index].masked = get(UInt32.self, at: base + 12, in: table) & 1 != 0
+      }
+      return true
+    }
+    if handled { deliverPending() }
+    return handled
+  }
+
+  private func deliverPending() {
+    let candidates: [(Int, @Sendable (UInt64, UInt16) -> Bool, UInt64, UInt16)] = lock.withLock {
+      guard enabled, !functionMasked, let sink else { return [] }
+      return pending.sorted().compactMap { index in
+        let entry = entries[index]
+        guard !entry.masked else { return nil }
+        return (index, sink, entry.messageAddress, UInt16(truncatingIfNeeded: entry.messageData))
+      }
+    }
+    for (index, sink, address, data) in candidates where sink(address, data) {
+      lock.withLock { _ = pending.remove(index) }
+    }
+  }
+
+  private func tableBytesLocked() -> [UInt8] {
+    var bytes = [UInt8](repeating: 0, count: entries.count * 16)
+    for (index, entry) in entries.enumerated() {
+      let base = index * 16
+      put(entry.messageAddress, at: base, in: &bytes)
+      put(entry.messageData, at: base + 8, in: &bytes)
+      put(UInt32(entry.masked ? 1 : 0), at: base + 12, in: &bytes)
+    }
+    return bytes
+  }
+
+  private func pendingBytesLocked(byteCount: Int) -> [UInt8] {
+    var bytes = [UInt8](repeating: 0, count: byteCount)
+    for index in pending { bytes[index / 8] |= 1 << UInt8(index % 8) }
+    return bytes
+  }
+
+  private func relativeOffset(
+    offset: UInt64,
+    byteCount: Int,
+    base: UInt64,
+    length: Int
+  ) -> Int? {
+    guard byteCount > 0, offset >= base, offset - base <= UInt64(length),
+      UInt64(byteCount) <= UInt64(length) - (offset - base)
+    else { return nil }
+    return Int(offset - base)
+  }
+}
+
 /// PCI type-0 configuration header with architectural BAR probing and programming behavior.
 public final class DoryPCPCIConfigurationFunction: DoryPCPCIMSIControllable, @unchecked Sendable {
   private struct BARState {
@@ -130,6 +339,8 @@ public final class DoryPCPCIConfigurationFunction: DoryPCPCIMSIControllable, @un
   private var bars: [Int: BARState] = [:]
   private var upperBARSlots: Set<Int> = []
   private let supportsMSI: Bool
+  private let msix: DoryPCPCIMSIXController?
+  private let msixCapabilityOffset: Int
   private var msiSink: (@Sendable (UInt64, UInt16) -> Bool)?
 
   public init(
@@ -143,10 +354,47 @@ public final class DoryPCPCIConfigurationFunction: DoryPCPCIMSIControllable, @un
     interruptPin: UInt8 = 0,
     supportsMSI: Bool = false,
     msiNextCapabilityOffset: UInt8 = 0,
+    msixVectorCount: Int = 0,
+    msixCapabilityOffset: UInt8 = 0x60,
+    msixNextCapabilityOffset: UInt8 = 0,
+    msixTableBAR: UInt8 = 0,
+    msixTableOffset: UInt32 = 0x800,
+    msixPendingBAR: UInt8 = 0,
+    msixPendingOffset: UInt32 = 0xC00,
     bars descriptors: [DoryPCPCIBARDescriptor] = []
   ) throws {
     pciAddress = address
     self.supportsMSI = supportsMSI
+    self.msixCapabilityOffset = Int(msixCapabilityOffset)
+    if msixVectorCount > 0 {
+      let tableByteCount = UInt64(msixVectorCount * 16)
+      let pendingByteCount = UInt64((msixVectorCount + 63) / 64 * 8)
+      let tableDescriptor = descriptors.first { $0.index == Int(msixTableBAR) }
+      let pendingDescriptor = descriptors.first { $0.index == Int(msixPendingBAR) }
+      let tableEnd = UInt64(msixTableOffset) + tableByteCount
+      let pendingEnd = UInt64(msixPendingOffset) + pendingByteCount
+      guard (1...2048).contains(msixVectorCount), msixCapabilityOffset >= 0x40,
+        msixCapabilityOffset <= 0xF4,
+        msixCapabilityOffset & 3 == 0,
+        msixTableBAR < 6, msixPendingBAR < 6,
+        msixTableOffset & 7 == 0, msixPendingOffset & 7 == 0,
+        let tableDescriptor, let pendingDescriptor,
+        tableEnd <= tableDescriptor.size,
+        pendingEnd <= pendingDescriptor.size,
+        msixTableBAR != msixPendingBAR
+          || tableEnd <= UInt64(msixPendingOffset)
+          || pendingEnd <= UInt64(msixTableOffset)
+      else { throw DoryPCPCIError.invalidMSIXConfiguration }
+      msix = .init(
+        vectorCount: msixVectorCount,
+        tableBAR: msixTableBAR,
+        tableOffset: msixTableOffset,
+        pendingBAR: msixPendingBAR,
+        pendingOffset: msixPendingOffset
+      )
+    } else {
+      msix = nil
+    }
     put(vendorID, at: 0x00, in: &configuration)
     put(deviceID, at: 0x02, in: &configuration)
     configuration[0x08] = revisionID
@@ -165,6 +413,16 @@ public final class DoryPCPCIConfigurationFunction: DoryPCPCIMSIControllable, @un
       configuration[0x51] = msiNextCapabilityOffset
       // One 64-bit message, no per-vector mask, one vector.
       put(UInt16(1 << 7), at: 0x52, in: &configuration)
+    }
+    if let msix {
+      configuration[0x06] |= 1 << 4
+      let capability = Int(msixCapabilityOffset)
+      configuration[capability] = 0x11
+      configuration[capability + 1] = msixNextCapabilityOffset
+      put(msix.control, at: capability + 2, in: &configuration)
+      put(msixTableOffset | UInt32(msixTableBAR), at: capability + 4, in: &configuration)
+      put(msixPendingOffset | UInt32(msixPendingBAR), at: capability + 8, in: &configuration)
+      if !supportsMSI { configuration[0x34] = msixCapabilityOffset }
     }
 
     for descriptor in descriptors.sorted(by: { $0.index < $1.index }) {
@@ -201,17 +459,21 @@ public final class DoryPCPCIConfigurationFunction: DoryPCPCIMSIControllable, @un
     }
   }
 
+  public var msixState: DoryPCPCIMSIXState? { msix?.state }
+
   public func connectMSISink(
     _ sink: @escaping @Sendable (_ messageAddress: UInt64, _ messageData: UInt16) -> Bool
   ) {
     lock.withLock { msiSink = sink }
+    msix?.connectSink(sink)
   }
 
   @discardableResult
   public func raiseMSI() -> Bool {
     let delivery: (sink: @Sendable (UInt64, UInt16) -> Bool, address: UInt64, data: UInt16)? =
       lock.withLock {
-        guard supportsMSI, configuration[0x52] & 1 != 0, let msiSink else { return nil }
+        guard supportsMSI, msix?.state.enabled != true, configuration[0x52] & 1 != 0, let msiSink
+        else { return nil }
         let address =
           UInt64(get(UInt32.self, at: 0x54, in: configuration))
           | UInt64(get(UInt32.self, at: 0x58, in: configuration)) << 32
@@ -219,6 +481,18 @@ public final class DoryPCPCIConfigurationFunction: DoryPCPCIMSIControllable, @un
       }
     guard let delivery else { return false }
     return delivery.sink(delivery.address, delivery.data)
+  }
+
+  @discardableResult
+  public func raiseMSIX(vector: UInt16) -> Bool { msix?.raise(vector: vector) ?? false }
+
+  public func readMSIXBAR(bar: Int, offset: UInt64, byteCount: Int) -> [UInt8]? {
+    msix?.readBAR(bar: bar, offset: offset, byteCount: byteCount)
+  }
+
+  @discardableResult
+  public func writeMSIXBAR(bar: Int, offset: UInt64, bytes: [UInt8]) -> Bool {
+    msix?.writeBAR(bar: bar, offset: offset, bytes: bytes) ?? false
   }
 
   public func bar(at index: Int) throws -> DoryPCPCIBARDescriptor? {
@@ -231,7 +505,7 @@ public final class DoryPCPCIConfigurationFunction: DoryPCPCIMSIControllable, @un
 
   public func readConfiguration(offset: Int, byteCount: Int) throws -> [UInt8] {
     try validate(offset: offset, byteCount: byteCount)
-    return lock.withLock {
+    var result = lock.withLock {
       var bytes = Array(configuration[offset..<(offset + byteCount)])
       for byteIndex in bytes.indices {
         let absoluteOffset = offset + byteIndex
@@ -243,10 +517,40 @@ public final class DoryPCPCIConfigurationFunction: DoryPCPCIMSIControllable, @un
       }
       return bytes
     }
+    if let msix {
+      let controlOffset = msixCapabilityOffset + 2
+      let control = msix.control
+      for index in result.indices {
+        let register = offset + index
+        if register == controlOffset {
+          result[index] = UInt8(truncatingIfNeeded: control)
+        } else if register == controlOffset + 1 {
+          result[index] = UInt8(truncatingIfNeeded: control >> 8)
+        }
+      }
+    }
+    return result
   }
 
   public func writeConfiguration(offset: Int, bytes: [UInt8]) throws {
     try validate(offset: offset, byteCount: bytes.count)
+    if let msix {
+      let controlOffset = msixCapabilityOffset + 2
+      if offset < controlOffset + 2, offset + bytes.count > controlOffset {
+        var controlBytes = [
+          UInt8(truncatingIfNeeded: msix.control),
+          UInt8(truncatingIfNeeded: msix.control >> 8),
+        ]
+        for (index, value) in bytes.enumerated() {
+          let register = offset + index
+          if (controlOffset..<(controlOffset + 2)).contains(register) {
+            controlBytes[register - controlOffset] = value
+          }
+        }
+        msix.writeControl(UInt16(controlBytes[0]) | UInt16(controlBytes[1]) << 8)
+        return
+      }
+    }
     try lock.withLock {
       if offset >= 0x10, offset < 0x28, bytes.count == 4, offset % 4 == 0 {
         try writeBARLocked(slot: (offset - 0x10) / 4, value: uint32(bytes))
