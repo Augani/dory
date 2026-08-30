@@ -49,6 +49,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   public let bootLayout: DoryPCPVHBootLayout
   public let acpiLayout: DoryPCACPILayout
   public let smbios: DoryPCSMBIOSTables
+  public let firmwareConfiguration: DoryPCFirmwareConfiguration
   public let platformMMIODevices: [any DoryPCMMIODevice]
   public let memoryByteCount: Int
   public let processorCount: Int
@@ -79,7 +80,13 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       throw DoryPCMachineError.invalidProcessorCount(processorCount)
     }
     self.processorCount = processorCount
-    self.platformMMIODevices = platformMMIODevices
+    firmwareConfiguration = DoryPCFirmwareConfiguration(
+      totalRAMBytes: UInt64(memoryBytes),
+      processorCount: processorCount,
+      acpiRSDPAddress: acpiLayout.rsdp,
+      smbiosEntryAddress: smbiosLayout.entryPoint
+    )
+    self.platformMMIODevices = [firmwareConfiguration] + platformMMIODevices
     let sharedMemory = DoryX86ByteArrayMemory(byteCount: memoryBytes)
     memory = sharedMemory
     physicalMemories = (0..<processorCount).map {
@@ -176,7 +183,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       try bus.attach(hpet)
       try bus.attach(pciExpress)
       try bus.attach(pciBARWindow)
-      for device in platformMMIODevices { try bus.attach(device) }
+      for device in self.platformMMIODevices { try bus.attach(device) }
       bus.seal()
     }
     pagingUnits = (0..<processorCount).map { _ in DoryX86PagingUnit() }

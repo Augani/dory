@@ -14,6 +14,7 @@ This file is the checked-in projection of `DoryPCV1ABI`. Guest-visible changes r
 | RAM above low reservations | `0x00100000` | to the PCI MMIO hole |
 | PCIe MMIO | `0xd0000000` | `0x10000000` |
 | PCIe ECAM | `0xe0000000` | `0x10000000` |
+| Firmware configuration | `0xfe900000` | `0x00001000` |
 | Firmware-variable bridge | `0xfea00000` | `0x00200000` |
 | IOAPIC | `0xfec00000` | `0x00001000` |
 | HPET | `0xfed00000` | `0x00000400` |

@@ -6,6 +6,7 @@ public enum DoryPCV1RegionKind: String, Codable, CaseIterable, Sendable, Hashabl
   case smbios = "smbios"
   case pcieMMIO = "pcie-mmio"
   case pcieECAM = "pcie-ecam"
+  case firmwareConfiguration = "firmware-configuration"
   case firmwareVariables = "firmware-variables"
   case ioAPIC = "io-apic"
   case hpet
@@ -56,6 +57,8 @@ public enum DoryPCV1ABI {
   public static let mmioHoleStart = pcieMMIOBase
   public static let above4GRAMStart: UInt64 = 0x1_0000_0000
 
+  public static let firmwareConfigurationBase: UInt64 = 0xFE90_0000
+  public static let firmwareConfigurationBytes: UInt64 = 0x0000_1000
   public static let firmwareVariableBase: UInt64 = 0xFEA0_0000
   public static let firmwareVariableBytes: UInt64 = 0x0020_0000
   public static let ioAPICBase: UInt64 = 0xFEC0_0000
@@ -81,6 +84,11 @@ public enum DoryPCV1ABI {
     fixedRegion(kind: .smbios, base: smbiosBase, byteCount: smbiosBytes),
     fixedRegion(kind: .pcieMMIO, base: pcieMMIOBase, byteCount: pcieMMIOBytes),
     fixedRegion(kind: .pcieECAM, base: pcieECAMBase, byteCount: pcieECAMBytes),
+    fixedRegion(
+      kind: .firmwareConfiguration,
+      base: firmwareConfigurationBase,
+      byteCount: firmwareConfigurationBytes
+    ),
     fixedRegion(
       kind: .firmwareVariables,
       base: firmwareVariableBase,
@@ -135,6 +143,7 @@ public enum DoryPCV1ABI {
     | RAM above low reservations | `0x00100000` | to the PCI MMIO hole |
     | PCIe MMIO | `0xd0000000` | `0x10000000` |
     | PCIe ECAM | `0xe0000000` | `0x10000000` |
+    | Firmware configuration | `0xfe900000` | `0x00001000` |
     | Firmware-variable bridge | `0xfea00000` | `0x00200000` |
     | IOAPIC | `0xfec00000` | `0x00001000` |
     | HPET | `0xfed00000` | `0x00000400` |
