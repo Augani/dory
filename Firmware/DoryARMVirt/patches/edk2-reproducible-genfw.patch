@@ -1,0 +1,8 @@
+diff --git a/BaseTools/Conf/build_rule.template b/BaseTools/Conf/build_rule.template
+index 40dec984da..955d4fb04e 100755
+--- a/BaseTools/Conf/build_rule.template
++++ b/BaseTools/Conf/build_rule.template
+@@ -418,2 +418,3 @@
+         "$(GENFW)" -e $(MODULE_TYPE) -o ${dst} ${src} $(GENFW_FLAGS)
++        "$(GENFW)" --zero --replace ${dst}
+         $(CP) ${dst} $(DEBUG_DIR)

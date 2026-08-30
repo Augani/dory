@@ -1,10 +1,41 @@
 {
   "architecture": "AARCH64",
   "buildTarget": "RELEASE",
-  "compilerFamily": "CLANGPDB",
+  "compiler": {
+    "executable": "/opt/homebrew/opt/llvm/bin/clang",
+    "name": "Homebrew clang",
+    "sha256": "c1fb4c7bf40a58caa391a325fc43f800e7ac16bfb18370dd1d64d9f0e68af01a",
+    "version": "21.1.8"
+  },
+  "compilerFamily": "CLANGDWARF",
   "configuration": "DoryARMVirtPkg/DoryARMVirt.dsc",
   "firmwareABI": "dory.edk2.armvirt@1",
+  "host": {
+    "architecture": "arm64",
+    "macOSSDK": "26.5",
+    "xcodeBuild": "17F109",
+    "xcodeVersion": "26.6"
+  },
+  "iasl": {
+    "executable": "/opt/homebrew/bin/iasl",
+    "sha256": "793ab3e466cef890e075e7275a125b4edb7040671e983ead1cf4f85d7e17a42f",
+    "version": "20251212"
+  },
+  "llvmAr": {
+    "executable": "/opt/homebrew/opt/llvm/bin/llvm-ar",
+    "sha256": "9b62c79f080b3e7e0be32def0ff8bf5a6c80055d014d98f104cca07f871f4b09",
+    "version": "21.1.8"
+  },
   "machineABI": "dory.armvirt@1",
+  "make": {
+    "executable": "/usr/bin/make",
+    "version": "3.81"
+  },
+  "python": {
+    "executable": "/usr/bin/python3",
+    "version": "3.9.6"
+  },
   "schemaVersion": 1,
-  "sourceDateEpochEnvironment": "SOURCE_DATE_EPOCH"
+  "sourceDateEpochEnvironment": "SOURCE_DATE_EPOCH",
+  "xcodeDeveloperDirectory": "/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer"
 }
