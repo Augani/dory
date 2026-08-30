@@ -152,7 +152,11 @@ let package = Package(
     ),
     .target(
       name: "DoryHostDeviceBroker",
-      dependencies: ["DoryMachinePC", "DoryVMContracts"]
+      dependencies: ["DoryHostCamera", "DoryMachinePC", "DoryVMContracts"],
+      linkerSettings: [
+        .linkedFramework("CoreGraphics"),
+        .linkedFramework("ImageIO"),
+      ]
     ),
     .target(
       name: "DoryVZMacCameraBridge",
@@ -425,7 +429,11 @@ let package = Package(
     ),
     .testTarget(
       name: "DoryHostDeviceBrokerTests",
-      dependencies: ["DoryHostDeviceBroker", "DoryMachinePC", "DoryVMContracts"]
+      dependencies: ["DoryHostDeviceBroker", "DoryMachinePC", "DoryVMContracts"],
+      linkerSettings: [
+        .linkedFramework("CoreGraphics"),
+        .linkedFramework("ImageIO"),
+      ]
     ),
     .testTarget(
       name: "DoryMacGuestCameraTests",

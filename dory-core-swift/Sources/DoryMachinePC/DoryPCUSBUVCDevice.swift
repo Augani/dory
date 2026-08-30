@@ -25,6 +25,7 @@ public final class DoryPCUSBUVCDevice: DoryPCUSBDevice, DoryPCUSBTransferReadyNo
   private var probeControl: [UInt8]
   private var commitControl: [UInt8]
   private var transferReadyHandler: (@Sendable () -> Void)?
+  private var frameDemandHandler: (@Sendable () -> Void)?
 
   public init(
     width: UInt16 = 1_280,
@@ -79,6 +80,10 @@ public final class DoryPCUSBUVCDevice: DoryPCUSBDevice, DoryPCUSBTransferReadyNo
     lock.withLock { transferReadyHandler = handler }
   }
 
+  public func setFrameDemandHandler(_ handler: (@Sendable () -> Void)?) {
+    lock.withLock { frameDemandHandler = handler }
+  }
+
   public func perform(_ transfer: DoryPCUSBTransfer) -> DoryPCUSBTransferResult {
     if transfer.type == .isochronous, transfer.direction == .in, transfer.endpoint == 1 {
       return nextVideoPacket(maximumBytes: transfer.maximumResponseBytes)
@@ -112,10 +117,14 @@ public final class DoryPCUSBUVCDevice: DoryPCUSBDevice, DoryPCUSBTransferReadyNo
   }
 
   private func nextVideoPacket(maximumBytes: Int) -> DoryPCUSBTransferResult {
-    lock.withLock {
+    var demandHandler: (@Sendable () -> Void)?
+    let packet = lock.withLock {
       guard streamingAlternateSetting == 1, maximumBytes > 2 else { return result(.notReady) }
       if activeFrame.isEmpty {
-        guard !frames.isEmpty else { return result(.notReady) }
+        guard !frames.isEmpty else {
+          demandHandler = frameDemandHandler
+          return result(.notReady)
+        }
         activeFrame = frames.removeFirst()
         activeOffset = 0
         frameIdentifier.toggle()
@@ -131,6 +140,8 @@ public final class DoryPCUSBUVCDevice: DoryPCUSBDevice, DoryPCUSBTransferReadyNo
       }
       return result(.success, packet)
     }
+    demandHandler?()
+    return packet
   }
 
   private func standardControl(_ setup: DoryPCUSBSetupPacket) -> DoryPCUSBTransferResult {
