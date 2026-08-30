@@ -139,7 +139,7 @@ import Testing
         #expect(sound.statistics.invalidPlaybackChains == 1)
     }
 
-    @Test func appliesBackpressureWithoutPoppingBeyondTheInflightPeriodCap() throws {
+    @Test func resumesPlaybackAfterBackpressureWithoutPoppingTheNextPeriod() throws {
         let host = HardenedSoundHost()
         host.acceptPlayback = true
         let scheduler = ManualSoundScheduler()
@@ -181,9 +181,50 @@ import Testing
 
         host.finishPlayback(at: 0, success: true, latency: 0)
         #expect(try ring.usedIndex() == 1)
-        sound.handleKick(queue: 2, transport: ring.transport)
         #expect(host.playbackCallCount == 2)
         #expect(!ring.queue.hasPending)
+    }
+
+    @Test func resumesCaptureAfterTheConfiguredBufferHasCapacity() throws {
+        let host = HardenedSoundHost()
+        host.acceptCapture = true
+        let scheduler = ManualSoundScheduler()
+        let sound = makeSound(
+            host: host,
+            scheduler: scheduler,
+            limits: testLimits(maximumPeriods: 4)
+        )
+        #expect(status(sound, setParameters(
+            streamID: 1,
+            bufferBytes: 16,
+            periodBytes: 16
+        )) == 0x8000)
+        #expect(status(sound, lifecycle(0x0102, streamID: 1)) == 0x8000)
+
+        let ring = try SoundTestRing(sound: sound, queueIndex: 3)
+        var header = [UInt8]()
+        header.appendLE(UInt32(1))
+        _ = try ring.submit(
+            head: 0,
+            slot: 0,
+            segments: [.readable(header), .writable(length: 24)]
+        )
+        _ = try ring.submit(
+            head: 2,
+            slot: 1,
+            segments: [.readable(header), .writable(length: 24)]
+        )
+
+        sound.handleKick(queue: 3, transport: ring.transport)
+        #expect(host.captureCallCount == 1)
+        #expect(ring.queue.hasPending)
+        #expect(try ring.usedIndex() == 0)
+
+        host.finishCapture(at: 0, data: Data(repeating: 0x5a, count: 16), latency: 0)
+        #expect(try ring.usedIndex() == 1)
+        #expect(host.captureCallCount == 2)
+        #expect(!ring.queue.hasPending)
+        #expect(sound.statistics.invalidCaptureChains == 0)
     }
 
     @Test func resetRevokesPendingCompletionAndCancelsItsWatchdog() throws {
@@ -544,6 +585,13 @@ private final class HardenedSoundHost: VirtioSoundHost, @unchecked Sendable {
             playbackCompletions.indices.contains(index) ? playbackCompletions[index] : nil
         }
         completion?(success, latency)
+    }
+
+    func finishCapture(at index: Int, data: Data?, latency: UInt32) {
+        let completion: (@Sendable (Data?, UInt32) -> Void)? = withLock {
+            captureCompletions.indices.contains(index) ? captureCompletions[index] : nil
+        }
+        completion?(data, latency)
     }
 
     private func withLock<T>(_ body: () -> T) -> T {

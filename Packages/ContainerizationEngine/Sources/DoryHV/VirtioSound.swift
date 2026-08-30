@@ -201,6 +201,12 @@ public final class VirtioSound: VirtioDeviceBackend, @unchecked Sendable {
         case capture
     }
 
+    private enum PeriodPreflight {
+        case proceed
+        case backpressure
+        case terminal
+    }
+
     private enum CompletionSource: Equatable {
         case host
         case hostRejected
@@ -477,13 +483,18 @@ public final class VirtioSound: VirtioDeviceBackend, @unchecked Sendable {
         var interrupt = false
         var handled = 0
         var copiedBytes = 0
-        while handled < limits.maximumChainsPerKick {
-            if lock.withLock({ pendingPlayback.count >= limits.maximumPeriodsPerStream }) {
+        drain: while handled < limits.maximumChainsPerKick {
+            switch preflightPlayback(queue) {
+            case .proceed:
+                break
+            case .backpressure:
                 lock.withLock {
                     statisticsState.backpressuredPeriods &+= 1
                     statisticsState.boundedDrainStops &+= 1
                 }
-                break
+                break drain
+            case .terminal:
+                break drain
             }
             guard let chain = pop(queue, queueIndex: 2) else { break }
             handled += 1
@@ -577,13 +588,18 @@ public final class VirtioSound: VirtioDeviceBackend, @unchecked Sendable {
         var interrupt = false
         var handled = 0
         var requestedBytes = 0
-        while handled < limits.maximumChainsPerKick {
-            if lock.withLock({ pendingCapture.count >= limits.maximumPeriodsPerStream }) {
+        drain: while handled < limits.maximumChainsPerKick {
+            switch preflightCapture(queue) {
+            case .proceed:
+                break
+            case .backpressure:
                 lock.withLock {
                     statisticsState.backpressuredPeriods &+= 1
                     statisticsState.boundedDrainStops &+= 1
                 }
-                break
+                break drain
+            case .terminal:
+                break drain
             }
             guard let chain = pop(queue, queueIndex: 3) else { break }
             handled += 1
@@ -765,6 +781,9 @@ public final class VirtioSound: VirtioDeviceBackend, @unchecked Sendable {
         watchdog?.cancel()
         if published { lock.withLock { statisticsState.completedPlaybackPeriods &+= 1 } }
         if interrupt { transport.notifyUsed() }
+        if published {
+            transport.withQueueLock { handleKick(queue: 2, transport: transport) }
+        }
     }
 
     private func completeCapture(
@@ -822,6 +841,9 @@ public final class VirtioSound: VirtioDeviceBackend, @unchecked Sendable {
         watchdog?.cancel()
         if published { lock.withLock { statisticsState.completedCapturePeriods &+= 1 } }
         if interrupt { transport.notifyUsed() }
+        if published {
+            transport.withQueueLock { handleKick(queue: 3, transport: transport) }
+        }
     }
 
     private func completePlaybackImmediately(
@@ -1117,6 +1139,81 @@ public final class VirtioSound: VirtioDeviceBackend, @unchecked Sendable {
             let (next, overflow) = total.addingReportingOverflow(value.payloadBytes)
             total = overflow ? Int.max : next
         }
+    }
+
+    private func preflightPlayback(_ queue: Virtqueue) -> PeriodPreflight {
+        let chain: VirtqueueChain?
+        do {
+            chain = try queue.peek()
+        } catch {
+            recordQueueFault(queue: 2, reason: "descriptor peek failed")
+            return .terminal
+        }
+        guard let chain else { return .proceed }
+        let request = chain.withLeaseHeld { access -> ([UInt8], Int)? in
+            guard let layout = Self.orderedLayout(access),
+                  !chain.containsZeroLengthDescriptor,
+                  layout.readableBytes > Self.pcmTransferHeaderSize,
+                  layout.readableBytes <= Self.pcmTransferHeaderSize + limits.maximumPeriodBytes,
+                  layout.writableBytes == Self.pcmStatusSize else { return nil }
+            let bytes = access.readBytes(
+                maximum: Self.pcmTransferHeaderSize + limits.maximumPeriodBytes
+            )
+            return bytes.count == layout.readableBytes
+                ? (bytes, layout.readableBytes - Self.pcmTransferHeaderSize)
+                : nil
+        } ?? nil
+        guard let (bytes, payloadBytes) = request else { return .proceed }
+        let streamID = Int(bytes.leUInt32(at: 0))
+        let saturated = lock.withLock {
+            guard streams.indices.contains(streamID),
+                  streams[streamID].direction == .output,
+                  streams[streamID].lifecycle == .prepared
+                    || streams[streamID].lifecycle == .running,
+                  let parameters = streams[streamID].parameters,
+                  payloadBytes <= parameters.periodBytes,
+                  payloadBytes % parameters.bytesPerFrame == 0 else { return false }
+            return pendingPlayback.count >= limits.maximumPeriodsPerStream
+                || Self.pendingBytes(pendingPlayback) > parameters.bufferBytes - payloadBytes
+        }
+        return saturated ? .backpressure : .proceed
+    }
+
+    private func preflightCapture(_ queue: Virtqueue) -> PeriodPreflight {
+        let chain: VirtqueueChain?
+        do {
+            chain = try queue.peek()
+        } catch {
+            recordQueueFault(queue: 3, reason: "descriptor peek failed")
+            return .terminal
+        }
+        guard let chain else { return .proceed }
+        let request = chain.withLeaseHeld { access -> (UInt32, Int)? in
+            guard let layout = Self.orderedLayout(access),
+                  !chain.containsZeroLengthDescriptor,
+                  layout.readableBytes == Self.pcmTransferHeaderSize,
+                  layout.writableBytes > Self.pcmStatusSize,
+                  layout.writableBytes <= limits.maximumPeriodBytes + Self.pcmStatusSize else {
+                return nil
+            }
+            let bytes = access.readBytes(maximum: Self.pcmTransferHeaderSize)
+            guard bytes.count == Self.pcmTransferHeaderSize else { return nil }
+            return (bytes.leUInt32(at: 0), layout.writableBytes - Self.pcmStatusSize)
+        } ?? nil
+        guard let (rawStreamID, payloadBytes) = request else { return .proceed }
+        let streamID = Int(rawStreamID)
+        let saturated = lock.withLock {
+            guard streams.indices.contains(streamID),
+                  streams[streamID].direction == .input,
+                  streams[streamID].lifecycle == .prepared
+                    || streams[streamID].lifecycle == .running,
+                  let parameters = streams[streamID].parameters,
+                  payloadBytes <= parameters.periodBytes,
+                  payloadBytes % parameters.bytesPerFrame == 0 else { return false }
+            return pendingCapture.count >= limits.maximumPeriodsPerStream
+                || Self.pendingBytes(pendingCapture) > parameters.bufferBytes - payloadBytes
+        }
+        return saturated ? .backpressure : .proceed
     }
 
     private func pop(_ queue: Virtqueue, queueIndex: Int) -> VirtqueueChain? {
