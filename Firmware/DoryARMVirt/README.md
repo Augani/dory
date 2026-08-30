@@ -87,6 +87,14 @@ these measurements as Dispatch uptime nanoseconds so wall-clock adjustment canno
 distort performance evidence, while also binding UTC start/end, host boot session,
 physical memory, power source, Low Power Mode, and thermal state at both boundaries.
 
+`DoryARMVirtTimingCampaign` accepts at least nine independently verified receipts
+for one exact matrix gate. It rejects duplicate or overlapping samples, tuple or
+boot-session drift, battery power, Low Power Mode, and non-nominal thermals, then
+publishes minimum, median, conservative nearest-rank p95/p99, maximum, mean, and
+population variance separately for each semantic boot attempt and the complete
+qualification. This timing campaign is necessary performance evidence; it does
+not by itself qualify CPU, storage, network, display, energy, or release support.
+
 To qualify an exact, private, read-only installer image through the removable
 VirtIO block path, add the media and a console marker owned by that image:
 
