@@ -1,35 +1,39 @@
 import Foundation
 
+public enum DoryInstallerMediaState: String, Codable, Equatable, Sendable {
+  case attached
+  case detached
+}
+
 public struct DoryConsoleInteractionStep: Codable, Equatable, Sendable {
   public let waitFor: String
   public let send: String
-  public let detachInstallerAfterSend: Bool
+  public let installerMediaAfterSend: DoryInstallerMediaState?
 
   public init(
     waitFor: String,
     send: String,
-    detachInstallerAfterSend: Bool = false
+    installerMediaAfterSend: DoryInstallerMediaState? = nil
   ) {
     self.waitFor = waitFor
     self.send = send
-    self.detachInstallerAfterSend = detachInstallerAfterSend
+    self.installerMediaAfterSend = installerMediaAfterSend
   }
 
   private enum CodingKeys: String, CodingKey {
     case waitFor
     case send
-    case detachInstallerAfterSend
+    case installerMediaAfterSend
   }
 
   public init(from decoder: any Decoder) throws {
     let container = try decoder.container(keyedBy: CodingKeys.self)
     waitFor = try container.decode(String.self, forKey: .waitFor)
     send = try container.decode(String.self, forKey: .send)
-    detachInstallerAfterSend =
-      try container.decodeIfPresent(
-        Bool.self,
-        forKey: .detachInstallerAfterSend
-      ) ?? false
+    installerMediaAfterSend = try container.decodeIfPresent(
+      DoryInstallerMediaState.self,
+      forKey: .installerMediaAfterSend
+    )
   }
 }
 
@@ -49,7 +53,7 @@ public enum DoryConsoleInteractionScriptError: Error, Equatable, Sendable {
   case invalidWaitMarker(step: Int)
   case invalidInput(step: Int)
   case inputBudgetExceeded
-  case multipleInstallerDetachSteps
+  case redundantInstallerMediaTransition(step: Int, state: DoryInstallerMediaState)
 }
 
 public final class DoryConsoleInteractionDriver {
@@ -62,8 +66,9 @@ public final class DoryConsoleInteractionDriver {
   private var nextStepIndex = 0
   private var searchOffset = 0
 
-  public let containsInstallerDetachStep: Bool
-  public private(set) var shouldDetachInstaller = false
+  public let containsInstallerMediaTransition: Bool
+  public private(set) var installerMediaState = DoryInstallerMediaState.attached
+  public private(set) var installerMediaTransitionCount = 0
 
   public init(script: DoryConsoleInteractionScript) throws {
     guard script.schemaVersion == 1 else {
@@ -74,7 +79,8 @@ public final class DoryConsoleInteractionDriver {
     }
 
     var totalInputBytes = 0
-    var detachStepCount = 0
+    var configuredInstallerMediaState = DoryInstallerMediaState.attached
+    var containsInstallerMediaTransition = false
     for (index, step) in script.steps.enumerated() {
       guard !step.waitFor.isEmpty,
         step.waitFor.utf8.count <= Self.maximumWaitMarkerBytes
@@ -90,15 +96,19 @@ public final class DoryConsoleInteractionDriver {
       guard totalInputBytes <= Self.maximumTotalInputBytes else {
         throw DoryConsoleInteractionScriptError.inputBudgetExceeded
       }
-      if step.detachInstallerAfterSend {
-        detachStepCount += 1
+      if let requestedState = step.installerMediaAfterSend {
+        guard requestedState != configuredInstallerMediaState else {
+          throw DoryConsoleInteractionScriptError.redundantInstallerMediaTransition(
+            step: index,
+            state: requestedState
+          )
+        }
+        configuredInstallerMediaState = requestedState
+        containsInstallerMediaTransition = true
       }
     }
-    guard detachStepCount <= 1 else {
-      throw DoryConsoleInteractionScriptError.multipleInstallerDetachSteps
-    }
     steps = script.steps
-    containsInstallerDetachStep = detachStepCount == 1
+    self.containsInstallerMediaTransition = containsInstallerMediaTransition
   }
 
   public var completedStepCount: Int { nextStepIndex }
@@ -121,8 +131,9 @@ public final class DoryConsoleInteractionDriver {
       where consoleBytes[offset..<(offset + marker.count)].elementsEqual(marker) {
         searchOffset = offset + marker.count
         nextStepIndex += 1
-        if step.detachInstallerAfterSend {
-          shouldDetachInstaller = true
+        if let installerMediaAfterSend = step.installerMediaAfterSend {
+          installerMediaState = installerMediaAfterSend
+          installerMediaTransitionCount += 1
         }
         return Array(step.send.utf8)
       }

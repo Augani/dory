@@ -103,9 +103,10 @@ chmod 600 /absolute/path/to/alpine-standard-aarch64.iso
 
 The runner accepts only an owned, private console document with bounded steps,
 wait markers, and inputs. It refuses a success marker present in guest input so
-terminal echo cannot forge qualification. Receipt schema 2 binds memory and
-disk sizes, completed step count, console-document SHA-256, installer-detach
-boundary, and the admitted gvproxy SHA-256. The documented install qualification
+terminal echo cannot forge qualification. Receipt schema 3 binds memory and
+disk sizes, completed step count, console-document SHA-256, applied installer
+media transitions, final-boot media state, and the admitted gvproxy SHA-256.
+The documented install qualification
 succeeds only after a guest reset and a second UEFI boot with the installer
 absent.
 
@@ -114,3 +115,13 @@ through `apk update`, a system upgrade, a second firmware reset, and a third
 UEFI boot from the updated persistent disk. Run the same command with that
 fixture and `--expect DORY_UPDATED_DISK_READY`; its qualifying receipt must
 report three boot attempts and all eight interaction steps complete.
+
+`alpine-3.24-recovery.json` proves recovery-media reattachment rather than
+another ordinary installed boot. It installs and boots the system disk, writes
+a durable sentinel, explicitly reattaches the immutable ISO for the next reset,
+selects that media through UEFI's serial boot manager, rejects an installed-root
+mount, mounts the persistent root read-only from the live environment, and
+verifies the sentinel. Run it with
+`--expect DORY_RECOVERY_READY`; its receipt must report three boot attempts,
+two applied media transitions, installer media attached for the final boot,
+and all ten steps complete.

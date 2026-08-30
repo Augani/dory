@@ -12,7 +12,7 @@
     {
       "waitFor": "Installation is complete",
       "send": "reboot\n",
-      "detachInstallerAfterSend": true
+      "installerMediaAfterSend": "detached"
     },
     {
       "waitFor": "localhost login:",

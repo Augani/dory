@@ -20,11 +20,20 @@
     },
     {
       "waitFor": "localhost:~#",
-      "send": "ip link set eth0 up && udhcpc -i eth0 -n -q && apk update && apk upgrade --available && sync && printf 'DORY_UPDATE_COMPLETE\\n' && reboot\n"
+      "send": "touch /root/DORY_RECOVERY_SENTINEL && sync && reboot\n",
+      "installerMediaAfterSend": "attached"
     },
     {
-      "waitFor": "DORY_UPDATE_COMPLETE",
-      "send": "\n"
+      "waitFor": "Press ESCAPE for boot options",
+      "send": "\u001b"
+    },
+    {
+      "waitFor": "Device Manager",
+      "send": "\u001b[B\u001b[B\r"
+    },
+    {
+      "waitFor": "UEFI Misc Device 2",
+      "send": "\u001b[B\u001b[B\r"
     },
     {
       "waitFor": "localhost login:",
@@ -32,7 +41,7 @@
     },
     {
       "waitFor": "localhost:~#",
-      "send": "printf 'DORY_%s\\n' UPDATED_DISK_READY\n"
+      "send": "! grep -q '^/dev/vda2 / ' /proc/mounts && mkdir -p /mnt/recovery && mount -o ro /dev/vda2 /mnt/recovery && test -f /mnt/recovery/root/DORY_RECOVERY_SENTINEL && printf 'DORY_%s\\n' RECOVERY_READY\n"
     }
   ]
 }

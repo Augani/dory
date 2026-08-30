@@ -55,7 +55,8 @@ import Foundation
     let consoleScriptSHA256: String?
     let consoleScriptStepCount: Int?
     let completedConsoleScriptStepCount: Int?
-    let installerDetachedAfterScriptStep: Bool
+    let installerMediaTransitionCount: Int
+    let installerMediaAttachedForFinalBoot: Bool
     let gvproxySHA256: String?
     let consoleByteCount: Int
     let bootAttempts: Int
@@ -324,7 +325,7 @@ import Foundation
     consoleScript: AdmittedConsoleScript?,
     gvproxy: AdmittedGVProxy?,
     memoryBytes: UInt64,
-    acceptExpectedConsoleMatch: Bool,
+    appliedInstallerMediaTransitionCount: Int,
     timeoutSeconds: UInt64,
     attempt: Int
   ) throws -> BootResult {
@@ -446,7 +447,8 @@ import Foundation
         throw CocoaError(.fileWriteOutOfSpace)
       }
       let matchedConsole =
-        acceptExpectedConsoleMatch
+        (consoleScript?.driver.installerMediaTransitionCount ?? 0)
+        == appliedInstallerMediaTransitionCount
         && capture.matched(afterByteOffset: consoleStartOffset)
         && consoleScript?.driver.isComplete != false
       if matchedConsole {
@@ -458,7 +460,8 @@ import Foundation
       if completion.wait(milliseconds: 25) {
         return BootResult(
           reason: try completion.value().get(),
-          matchedConsole: acceptExpectedConsoleMatch
+          matchedConsole: (consoleScript?.driver.installerMediaTransitionCount ?? 0)
+            == appliedInstallerMediaTransitionCount
             && capture.matched(afterByteOffset: consoleStartOffset)
             && consoleScript?.driver.isComplete != false
         )
@@ -466,7 +469,8 @@ import Foundation
     }
     return BootResult(
       reason: try runner.stopAndWait(GuestStopReason.powerOff),
-      matchedConsole: acceptExpectedConsoleMatch
+      matchedConsole: (consoleScript?.driver.installerMediaTransitionCount ?? 0)
+        == appliedInstallerMediaTransitionCount
         && capture.matched(afterByteOffset: consoleStartOffset)
         && consoleScript?.driver.isComplete != false
     )
@@ -518,23 +522,22 @@ import Foundation
     if consoleScript?.driver.inputContains(options.expectedConsoleText) == true {
       fail("--expect must not occur in console-script input because guest echo could forge success")
     }
-    if consoleScript?.driver.containsInstallerDetachStep == true, installerMedia == nil {
-      fail("a console script that detaches installer media requires --installer-media")
+    if consoleScript?.driver.containsInstallerMediaTransition == true, installerMedia == nil {
+      fail("a console script that transitions installer media requires --installer-media")
     }
     let capture = ConsoleCapture(expected: options.expectedConsoleText)
     let maximumBootAttempts = 4
     var finalResult: BootResult?
     var bootAttempts = 0
-    var installerDetachExecuted = false
+    var installerMediaAttachedForFinalBoot = installerMedia != nil
     while bootAttempts < maximumBootAttempts {
       bootAttempts += 1
-      let detachInstaller = consoleScript?.driver.shouldDetachInstaller == true
-      if detachInstaller, installerMedia != nil {
-        installerDetachExecuted = true
-      }
-      let attachedInstaller = detachInstaller ? nil : installerMedia
-      let acceptExpectedConsoleMatch =
-        consoleScript?.driver.containsInstallerDetachStep != true || installerDetachExecuted
+      let attachedInstaller =
+        consoleScript?.driver.installerMediaState == .detached
+        ? nil : installerMedia
+      installerMediaAttachedForFinalBoot = attachedInstaller != nil
+      let appliedInstallerMediaTransitionCount =
+        consoleScript?.driver.installerMediaTransitionCount ?? 0
       let result = try runBoot(
         artifacts: artifacts,
         variableStore: variableStore,
@@ -545,7 +548,7 @@ import Foundation
         consoleScript: consoleScript,
         gvproxy: gvproxy,
         memoryBytes: options.memoryBytes,
-        acceptExpectedConsoleMatch: acceptExpectedConsoleMatch,
+        appliedInstallerMediaTransitionCount: appliedInstallerMediaTransitionCount,
         timeoutSeconds: options.timeoutSeconds,
         attempt: bootAttempts
       )
@@ -566,7 +569,7 @@ import Foundation
     }
     let generation = try variableStore.load().snapshot.generation
     let receipt = Receipt(
-      schemaVersion: 2,
+      schemaVersion: 3,
       machineABIIdentity: DoryARMVirtV1ABI.identity,
       firmwareABIIdentity: DoryARMVirtV1ABI.firmwareABIIdentity,
       buildIdentifier: artifacts.manifest.buildIdentifier,
@@ -579,7 +582,8 @@ import Foundation
       consoleScriptSHA256: consoleScript?.sha256,
       consoleScriptStepCount: consoleScript?.driver.stepCount,
       completedConsoleScriptStepCount: consoleScript?.driver.completedStepCount,
-      installerDetachedAfterScriptStep: installerDetachExecuted,
+      installerMediaTransitionCount: consoleScript?.driver.installerMediaTransitionCount ?? 0,
+      installerMediaAttachedForFinalBoot: installerMediaAttachedForFinalBoot,
       gvproxySHA256: gvproxy?.sha256,
       consoleByteCount: capture.byteCount,
       bootAttempts: bootAttempts,

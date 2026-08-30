@@ -8,7 +8,11 @@ import Testing
     let driver = try DoryConsoleInteractionDriver(
       script: DoryConsoleInteractionScript(steps: [
         DoryConsoleInteractionStep(waitFor: "login: ", send: "root\n"),
-        DoryConsoleInteractionStep(waitFor: "# ", send: "reboot\n", detachInstallerAfterSend: true),
+        DoryConsoleInteractionStep(
+          waitFor: "# ",
+          send: "reboot\n",
+          installerMediaAfterSend: .detached
+        ),
         DoryConsoleInteractionStep(waitFor: "login: ", send: "root\n"),
       ]))
     var console = Array("guest login: ".utf8)
@@ -17,7 +21,8 @@ import Testing
     #expect(driver.nextInput(consoleBytes: console) == nil)
     console.append(contentsOf: Array("root\r\nguest:~# ".utf8))
     #expect(driver.nextInput(consoleBytes: console) == Array("reboot\n".utf8))
-    #expect(driver.shouldDetachInstaller)
+    #expect(driver.installerMediaState == .detached)
+    #expect(driver.installerMediaTransitionCount == 1)
     #expect(driver.inputContains("reboot"))
     #expect(!driver.inputContains("DORY_SUCCESS"))
     console.append(contentsOf: Array("rebooting\r\nguest login: ".utf8))
@@ -36,16 +41,24 @@ import Testing
           DoryConsoleInteractionStep(waitFor: "", send: "x")
         ]))
     }
-    #expect(throws: DoryConsoleInteractionScriptError.multipleInstallerDetachSteps) {
+    #expect(
+      throws: DoryConsoleInteractionScriptError.redundantInstallerMediaTransition(
+        step: 0,
+        state: .attached
+      )
+    ) {
       try DoryConsoleInteractionDriver(
         script: DoryConsoleInteractionScript(steps: [
-          DoryConsoleInteractionStep(waitFor: "a", send: "x", detachInstallerAfterSend: true),
-          DoryConsoleInteractionStep(waitFor: "b", send: "y", detachInstallerAfterSend: true),
+          DoryConsoleInteractionStep(
+            waitFor: "a",
+            send: "x",
+            installerMediaAfterSend: .attached
+          )
         ]))
     }
   }
 
-  @Test func omittedDetachFlagDecodesAsFalse() throws {
+  @Test func omittedMediaTransitionDecodesAsNil() throws {
     let script = try JSONDecoder().decode(
       DoryConsoleInteractionScript.self,
       from: Data(##"{"schemaVersion":1,"steps":[{"waitFor":"# ","send":"id\n"}]}"##.utf8)
@@ -61,7 +74,7 @@ import Testing
         DoryConsoleInteractionStep(
           waitFor: "install complete",
           send: "reboot\n",
-          detachInstallerAfterSend: true
+          installerMediaAfterSend: .detached
         ),
         DoryConsoleInteractionStep(waitFor: "disk login:", send: "root\n"),
         DoryConsoleInteractionStep(waitFor: "# ", send: "upgrade && reboot\n"),
@@ -72,7 +85,8 @@ import Testing
     #expect(driver.nextInput(consoleBytes: console) == Array("root\n".utf8))
     console.append(contentsOf: Array(" install complete".utf8))
     #expect(driver.nextInput(consoleBytes: console) == Array("reboot\n".utf8))
-    #expect(driver.shouldDetachInstaller)
+    #expect(driver.installerMediaState == .detached)
+    #expect(driver.installerMediaTransitionCount == 1)
     console.append(contentsOf: Array(" disk login:".utf8))
     #expect(driver.nextInput(consoleBytes: console) == Array("root\n".utf8))
     console.append(contentsOf: Array(" # ".utf8))
@@ -81,5 +95,31 @@ import Testing
     #expect(driver.nextInput(consoleBytes: console) == Array("root\n".utf8))
     #expect(driver.isComplete)
     #expect(driver.completedStepCount == 5)
+  }
+
+  @Test func appliesOrderedDetachAndReattachTransitions() throws {
+    let driver = try DoryConsoleInteractionDriver(
+      script: DoryConsoleInteractionScript(steps: [
+        DoryConsoleInteractionStep(
+          waitFor: "installed",
+          send: "reboot\n",
+          installerMediaAfterSend: .detached
+        ),
+        DoryConsoleInteractionStep(
+          waitFor: "recovery",
+          send: "reboot\n",
+          installerMediaAfterSend: .attached
+        ),
+      ]))
+
+    #expect(driver.containsInstallerMediaTransition)
+    #expect(driver.nextInput(consoleBytes: Array("installed".utf8)) == Array("reboot\n".utf8))
+    #expect(driver.installerMediaState == .detached)
+    #expect(driver.installerMediaTransitionCount == 1)
+    #expect(
+      driver.nextInput(consoleBytes: Array("installed recovery".utf8)) == Array("reboot\n".utf8)
+    )
+    #expect(driver.installerMediaState == .attached)
+    #expect(driver.installerMediaTransitionCount == 2)
   }
 }
