@@ -4,9 +4,11 @@ import PackageDescription
 
 let packageRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
 let doryVMMInfoPlist = packageRoot.appendingPathComponent("Sources/dory-vmm/Info.plist").path
-let doryVZMacCameraQualificationInfoPlist = packageRoot
+let doryVZMacCameraQualificationInfoPlist =
+  packageRoot
   .appendingPathComponent("Sources/dory-vzmac-camera-qualification/Info.plist").path
-let doryVZMacQualificationInfoPlist = packageRoot
+let doryVZMacQualificationInfoPlist =
+  packageRoot
   .appendingPathComponent("Sources/dory-vzmac-qualification/Info.plist").path
 
 let package = Package(
@@ -17,6 +19,7 @@ let package = Package(
     .library(name: "DoryDBTX86", targets: ["DoryDBTX86"]),
     .library(name: "DoryMachinePC", targets: ["DoryMachinePC"]),
     .library(name: "DoryMachineARMVirt", targets: ["DoryMachineARMVirt"]),
+    .library(name: "DoryVirtio", targets: ["DoryVirtio"]),
     .library(name: "DoryFirmware", targets: ["DoryFirmware"]),
     .library(name: "DoryCameraBridgeContracts", targets: ["DoryCameraBridgeContracts"]),
     .library(name: "DoryVZMacCameraBridge", targets: ["DoryVZMacCameraBridge"]),
@@ -110,6 +113,10 @@ let package = Package(
     .target(
       name: "DoryMachineARMVirt",
       dependencies: ["DoryExecutionContracts"]
+    ),
+    .target(
+      name: "DoryVirtio",
+      dependencies: []
     ),
     .target(
       name: "DoryFirmware",
@@ -368,6 +375,10 @@ let package = Package(
     .testTarget(
       name: "DoryMachineARMVirtTests",
       dependencies: ["DoryMachineARMVirt"]
+    ),
+    .testTarget(
+      name: "DoryVirtioTests",
+      dependencies: ["DoryVirtio"]
     ),
     .testTarget(
       name: "DoryFirmwareTests",
