@@ -1,4 +1,5 @@
 import Darwin
+import DoryFirmware
 import DoryMachineARMVirt
 import Foundation
 import Hypervisor
@@ -214,6 +215,10 @@ enum VirtioMMIODeviceTree {
 /// Device-wiring view of the frozen `dory.armvirt@1` machine ABI. The ABI package is the sole
 /// authority for guest-visible addresses and interrupt assignments.
 public enum GuestLayout {
+    public static let firmwareCodeBase = DoryARMVirtV1ABI.firmwareCodeBase
+    public static let firmwareCodeBytes = DoryARMVirtV1ABI.firmwareCodeBytes
+    public static let firmwareVariableBase = DoryARMVirtV1ABI.firmwareVariableBase
+    public static let firmwareVariableBytes = DoryARMVirtV1ABI.firmwareVariableBytes
     public static let gicDistributorBase = DoryARMVirtV1ABI.gicDistributorBase
     public static let gicRedistributorBase = DoryARMVirtV1ABI.gicRedistributorBase
     public static let uartBase = DoryARMVirtV1ABI.uartBase
@@ -229,9 +234,17 @@ public enum GuestLayout {
     public static let daxWindowBase = DoryARMVirtV1ABI.daxWindowBase
 }
 
+public enum MachineARMVirtBoot: Sendable {
+    case directLinux(payload: MachineBootPayload, commandLine: String)
+    case uefi(
+        launchPlan: DoryARMVirtUEFILaunchPlan,
+        artifacts: DoryVerifiedFirmwareArtifacts,
+        variableStore: DoryUEFIVariableStoreFile
+    )
+}
+
 public struct MachineConfiguration {
-    public let bootPayload: MachineBootPayload
-    public var commandLine: String
+    public let boot: MachineARMVirtBoot
     public var memoryBytes: UInt64
     public var cpuCount: Int
 
@@ -242,8 +255,10 @@ public struct MachineConfiguration {
         memoryBytes: UInt64,
         cpuCount: Int
     ) {
-        self.bootPayload = .legacyPaths(kernel: kernelPath, initrd: initrdPath)
-        self.commandLine = commandLine
+        self.boot = .directLinux(
+            payload: .legacyPaths(kernel: kernelPath, initrd: initrdPath),
+            commandLine: commandLine
+        )
         self.memoryBytes = memoryBytes
         self.cpuCount = cpuCount
     }
@@ -254,8 +269,23 @@ public struct MachineConfiguration {
         memoryBytes: UInt64,
         cpuCount: Int
     ) {
-        self.bootPayload = bootPayload
-        self.commandLine = commandLine
+        self.boot = .directLinux(payload: bootPayload, commandLine: commandLine)
+        self.memoryBytes = memoryBytes
+        self.cpuCount = cpuCount
+    }
+
+    public init(
+        uefiLaunchPlan: DoryARMVirtUEFILaunchPlan,
+        artifacts: DoryVerifiedFirmwareArtifacts,
+        variableStore: DoryUEFIVariableStoreFile,
+        memoryBytes: UInt64,
+        cpuCount: Int
+    ) {
+        self.boot = .uefi(
+            launchPlan: uefiLaunchPlan,
+            artifacts: artifacts,
+            variableStore: variableStore
+        )
         self.memoryBytes = memoryBytes
         self.cpuCount = cpuCount
     }
@@ -268,6 +298,28 @@ public struct MachineConfiguration {
             throw VMError.invalidConfiguration(
                 "\(DoryARMVirtV1ABI.identity) resource admission failed: \(error)"
             )
+        }
+        if case .uefi(let launchPlan, let artifacts, let variableStore) = boot {
+            guard launchPlan.firmware == artifacts.manifest else {
+                throw VMError.invalidConfiguration(
+                    "UEFI launch plan and verified firmware manifest differ"
+                )
+            }
+            do {
+                let load = try variableStore.load()
+                guard load.source == .primary else {
+                    throw VMError.invalidConfiguration("UEFI variable-store recovery is required")
+                }
+                guard load.snapshot.generation == launchPlan.variableStoreGeneration else {
+                    throw VMError.invalidConfiguration(
+                        "UEFI launch generation \(launchPlan.variableStoreGeneration) does not match store generation \(load.snapshot.generation)"
+                    )
+                }
+            } catch let error as VMError {
+                throw error
+            } catch {
+                throw VMError.invalidConfiguration("UEFI variable-store admission failed: \(error)")
+            }
         }
     }
 }
@@ -305,6 +357,9 @@ public final class Machine: @unchecked Sendable {
     public let bus = MMIOBus()
     private var entryPoint: UInt64 = 0
     private var dtbAddress: UInt64 = 0
+    private var initialPstate: UInt64 = DoryARMVirtV1InitialCPUState.uefi.pstate
+    private let firmwareCode: ARMVirtFirmwareCodeMemory?
+    private let variableBridge: ARMVirtUEFIVariableBridgeMMIO?
     private var sysregLogCount = 0
     private let redistributorMMIO: GICRedistributorMMIO
     private let virtioSlotOwnership = VirtioMMIOSlotOwnership(
@@ -318,8 +373,17 @@ public final class Machine: @unchecked Sendable {
         try configuration.validateDoryARMVirtV1()
         try hvCreateVM()
         self.configuration = configuration
+        switch configuration.boot {
+        case .directLinux:
+            self.firmwareCode = nil
+            self.variableBridge = nil
+        case .uefi(_, let artifacts, let variableStore):
+            self.firmwareCode = try ARMVirtFirmwareCodeMemory(artifacts: artifacts)
+            self.variableBridge = try ARMVirtUEFIVariableBridgeMMIO(store: variableStore)
+        }
         self.memory = try GuestMemory(guestBase: GuestLayout.ramBase, size: configuration.memoryBytes)
         try memory.mapIntoGuest()
+        try firmwareCode?.mapIntoGuest()
         try Self.createGIC()
 
         var redistributorStride = 0
@@ -340,9 +404,11 @@ public final class Machine: @unchecked Sendable {
             size: distributorSize
         ))
         bus.attach(redistributorMMIO)
+        if let variableBridge { bus.attach(variableBridge) }
     }
 
     deinit {
+        try? firmwareCode?.unmapFromGuest()
         hv_vm_destroy()
     }
 
@@ -428,7 +494,32 @@ public final class Machine: @unchecked Sendable {
     }
 
     public func loadBootPayload() throws {
-        try configuration.bootPayload.consumeForGuestLoad { kernelData, loadInitrd in
+        switch configuration.boot {
+        case .directLinux(let bootPayload, let commandLine):
+            try loadDirectLinuxBootPayload(bootPayload, commandLine: commandLine)
+        case .uefi(let launchPlan, _, let variableStore):
+            let load = try variableStore.load()
+            guard load.source == .primary,
+                  load.snapshot.generation == launchPlan.variableStoreGeneration else {
+                throw VMError.bootFailure("UEFI variable-store generation changed after admission")
+            }
+            let attachedSlots = Set(attachedVirtioSlots.map(\.slot))
+            let requiredSlots = Set(launchPlan.bootDevices.map(\.virtioSlot))
+            guard requiredSlots.isSubset(of: attachedSlots) else {
+                throw VMError.bootFailure("UEFI boot devices are not attached at their frozen slots")
+            }
+            let state = launchPlan.initialCPUState
+            entryPoint = state.programCounter
+            dtbAddress = state.x0
+            initialPstate = state.pstate
+        }
+    }
+
+    private func loadDirectLinuxBootPayload(
+        _ bootPayload: MachineBootPayload,
+        commandLine: String
+    ) throws {
+        try bootPayload.consumeForGuestLoad { kernelData, loadInitrd in
             let kernel = try KernelImage(data: kernelData)
             entryPoint = try kernel.load(into: memory)
             dtbAddress = GuestLayout.ramBase + GuestLayout.dtbOffset
@@ -439,8 +530,16 @@ public final class Machine: @unchecked Sendable {
                 throw VMError.bootFailure("kernel image overlaps DTB placement")
             }
             let initrdRange = try loadInitrdIfPresent(try loadInitrd())
-            let dtb = try buildDeviceTree(initrdRange: initrdRange)
+            let dtb = try buildDeviceTree(
+                commandLine: commandLine,
+                initrdRange: initrdRange
+            )
             try memory.write(dtb, at: dtbAddress)
+            let state = try DoryARMVirtV1InitialCPUState.directLinux(
+                entryPoint: entryPoint,
+                deviceTreeAddress: dtbAddress
+            )
+            initialPstate = state.pstate
         }
     }
 
@@ -460,7 +559,10 @@ public final class Machine: @unchecked Sendable {
         return start..<end
     }
 
-    private func buildDeviceTree(initrdRange: Range<UInt64>?) throws -> [UInt8] {
+    private func buildDeviceTree(
+        commandLine: String,
+        initrdRange: Range<UInt64>?
+    ) throws -> [UInt8] {
         let virtualTimer = try Self.reservedIntid(HV_GIC_INT_EL1_VIRTUAL_TIMER)
         let physicalTimer = try Self.reservedIntid(HV_GIC_INT_EL1_PHYSICAL_TIMER)
         let hypTimer = try Self.reservedIntid(HV_GIC_INT_EL2_PHYSICAL_TIMER)
@@ -472,7 +574,7 @@ public final class Machine: @unchecked Sendable {
         let distributorSize = try Self.gicDistributorSize()
         let redistributorSize = try Self.gicRedistributorRegionSize()
         return try DoryARMVirtV1DeviceTree.build(configuration: .init(
-            commandLine: configuration.commandLine,
+            commandLine: commandLine,
             memoryBytes: configuration.memoryBytes,
             vCPUCount: configuration.cpuCount,
             initrdRange: initrdRange,
@@ -569,7 +671,7 @@ public final class Machine: @unchecked Sendable {
             register(vcpu: vcpu, index: index)
 
             if index == 0 {
-                try vcpu.write(HV_REG_CPSR, 0x3C5)
+                try vcpu.write(HV_REG_CPSR, initialPstate)
                 try vcpu.write(HV_REG_PC, entryPoint)
                 try vcpu.write(HV_REG_X0, dtbAddress)
                 try vcpu.write(HV_REG_X1, 0)

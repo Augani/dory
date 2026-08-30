@@ -50,14 +50,14 @@ struct MachineBootPayloadTests {
         let initrdAddress = memory.guestBase + 0x20_000
 
         #expect(
-            copiedConfiguration.bootPayload.retainedImmutableByteCount
+            directLinuxPayload(copiedConfiguration).retainedImmutableByteCount
                 == UInt64(kernelBytes.count + initrdBytes.count)
         )
-        try configuration.bootPayload.consumeForGuestLoad { kernelData, loadInitrd in
+        try directLinuxPayload(configuration).consumeForGuestLoad { kernelData, loadInitrd in
             // Ownership has already left every retained payload/configuration copy while the
             // loader holds the sole temporary references.
             #expect(payload.retainedImmutableByteCount == 0)
-            #expect(copiedConfiguration.bootPayload.retainedImmutableByteCount == 0)
+            #expect(directLinuxPayload(copiedConfiguration).retainedImmutableByteCount == 0)
 
             let image = try KernelImage(data: kernelData)
             #expect(
@@ -87,8 +87,8 @@ struct MachineBootPayloadTests {
                 == Array(initrdBytes)
         )
         #expect(payload.retainedImmutableByteCount == 0)
-        #expect(configuration.bootPayload.retainedImmutableByteCount == 0)
-        #expect(copiedConfiguration.bootPayload.retainedImmutableByteCount == 0)
+        #expect(directLinuxPayload(configuration).retainedImmutableByteCount == 0)
+        #expect(directLinuxPayload(copiedConfiguration).retainedImmutableByteCount == 0)
         #expect(payload.immutableBytesWereConsumed)
         assertAlreadyConsumed(payload)
     }
@@ -288,4 +288,15 @@ struct MachineBootPayloadTests {
     private func temporaryDirectory() -> String {
         "/tmp/dory-machine-boot-payload-\(getpid())-\(UUID().uuidString)"
     }
+}
+
+private func directLinuxPayload(_ configuration: MachineConfiguration) -> MachineBootPayload {
+    #if arch(arm64)
+    guard case .directLinux(let payload, _) = configuration.boot else {
+        preconditionFailure("test requires direct Linux boot")
+    }
+    return payload
+    #else
+    return configuration.bootPayload
+    #endif
 }
