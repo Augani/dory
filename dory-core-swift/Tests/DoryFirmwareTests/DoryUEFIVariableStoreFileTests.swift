@@ -37,6 +37,19 @@ import Testing
     }
   }
 
+  @Test func coldSnapshotInitializationRetainsExactGeneration() throws {
+    let fixture = try Fixture()
+    defer { fixture.cleanup() }
+    let initial = try DoryUEFIVariableStoreSnapshot()
+    let generationTwo = try initial.setting(variable(name: "BootOrder", bytes: [0, 0]))
+
+    try fixture.store.initializeFromColdSnapshot(generationTwo)
+
+    #expect(try fixture.store.load().snapshot == generationTwo)
+    #expect(try fixture.store.load().source == .primary)
+    #expect(!FileManager.default.fileExists(atPath: fixture.store.backupPath))
+  }
+
   @Test func corruptPrimaryRequiresExplicitBackupRepair() throws {
     let fixture = try Fixture()
     defer { fixture.cleanup() }

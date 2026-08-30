@@ -83,6 +83,21 @@ public struct DoryUEFIVariableStoreFile: Sendable, Equatable {
         actual: snapshot.generation
       )
     }
+    try initializeUnpublishedStore(snapshot)
+  }
+
+  /// Initializes a fresh variable-store directory from a verified cold-snapshot generation.
+  /// Unlike first-boot initialization, a restore must retain the exact nonzero generation so a
+  /// later guest commit cannot silently reuse an earlier durability point.
+  public func initializeFromColdSnapshot(
+    _ snapshot: DoryUEFIVariableStoreSnapshot
+  ) throws {
+    try initializeUnpublishedStore(snapshot)
+  }
+
+  private func initializeUnpublishedStore(
+    _ snapshot: DoryUEFIVariableStoreSnapshot
+  ) throws {
     try prepare()
     try withExclusiveLock {
       guard try secureReadIfPresent(primaryPath) == nil,
@@ -272,7 +287,8 @@ public struct DoryUEFIVariableStoreFile: Sendable, Equatable {
 
   private func publish(_ data: Data, to destination: String) throws {
     _ = try secureReadIfPresent(destination)
-    let temporary = directory + "/." + URL(fileURLWithPath: destination).lastPathComponent
+    let temporary =
+      directory + "/." + URL(fileURLWithPath: destination).lastPathComponent
       + "." + UUID().uuidString.lowercased() + ".partial"
     let descriptor = temporary.withCString {
       Darwin.open(
