@@ -144,6 +144,7 @@ public struct DoryVZMacMachineBundle: Sendable {
     public static let auxiliaryStorageName = "auxiliary-storage"
     public static let hardwareModelName = "hardware-model.bin"
     public static let machineIdentifierName = "machine-identifier.bin"
+    public static let installJournalName = "install-operation.json"
     public static let suspendedStateDirectoryName = "suspended-state"
     public static let maximumManifestBytes = 1_048_576
 
@@ -161,6 +162,7 @@ public struct DoryVZMacMachineBundle: Sendable {
         rootURL.appendingPathComponent(Self.machineIdentifierName)
     }
     public var manifestURL: URL { rootURL.appendingPathComponent(Self.manifestName) }
+    public var installJournalURL: URL { rootURL.appendingPathComponent(Self.installJournalName) }
     public var suspendedStateURL: URL {
         rootURL.appendingPathComponent(Self.suspendedStateDirectoryName, isDirectory: true)
     }

@@ -115,25 +115,63 @@ public final class DoryVZMacRuntime {
                 "installation requires a prepared or failed-install machine"
             )
         }
-        try await bundle.validateRestoreImage(at: restoreImageURL)
-        bundle = try bundle.updatingInstallationState(.installing)
-        let installer = VZMacOSInstaller(
-            virtualMachine: virtualMachine,
-            restoringFromImageAt: restoreImageURL
+        let startedAt = ISO8601DateFormatter().string(from: Date())
+        var journal = DoryVZMacInstallJournal(
+            operationID: UUID(),
+            startedAt: startedAt,
+            updatedAt: startedAt,
+            phase: .validatingRestore,
+            progress: 0,
+            restoreImageSHA256: bundle.manifest.restoreImageSHA256,
+            machineIdentifierSHA256: bundle.manifest.machineIdentifierSHA256,
+            error: nil
         )
-        let progressMonitor = Task { @MainActor in
-            while !Task.isCancelled {
-                progress(installer.progress.fractionCompleted)
-                try? await Task.sleep(for: .seconds(1))
-            }
-        }
-        defer { progressMonitor.cancel() }
+        try journal.write(to: bundle.installJournalURL)
         do {
+            try await bundle.validateRestoreImage(at: restoreImageURL)
+            bundle = try bundle.updatingInstallationState(.installing)
+            journal = journal.updating(phase: .installing, progress: 0)
+            try journal.write(to: bundle.installJournalURL)
+            let installer = VZMacOSInstaller(
+                virtualMachine: virtualMachine,
+                restoringFromImageAt: restoreImageURL
+            )
+            let progressMonitor = Task { @MainActor in
+                var lastWrittenPercent = -1
+                while !Task.isCancelled {
+                    let fraction = installer.progress.fractionCompleted
+                    progress(fraction)
+                    let percent = Int(fraction * 100)
+                    if percent != lastWrittenPercent {
+                        lastWrittenPercent = percent
+                        let update = journal.updating(
+                            phase: .installing,
+                            progress: fraction
+                        )
+                        try? update.write(to: bundle.installJournalURL)
+                    }
+                    try? await Task.sleep(for: .seconds(1))
+                }
+            }
+            defer { progressMonitor.cancel() }
             try await installer.install()
             progress(1)
             bundle = try bundle.updatingInstallationState(.stopped)
+            journal = journal.updating(phase: .completed, progress: 1)
+            try journal.write(to: bundle.installJournalURL)
         } catch {
-            bundle = try bundle.updatingInstallationState(.installFailed)
+            if bundle.manifest.installationState == .installing {
+                bundle = try bundle.updatingInstallationState(.installFailed)
+            }
+            let detail = String(String(describing: error).prefix(
+                DoryVZMacInstallJournal.maximumErrorUTF8Bytes / 4
+            ))
+            journal = journal.updating(
+                phase: .failed,
+                progress: lastObservedInstallProgress(from: bundle.installJournalURL),
+                error: detail.isEmpty ? "unknown VZMac installation failure" : detail
+            )
+            try? journal.write(to: bundle.installJournalURL)
             throw error
         }
     }
