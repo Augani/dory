@@ -36,6 +36,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   public let pagingUnit: DoryX86PagingUnit
   public let interpreter: DoryX86Interpreter
   public let bootLayout: DoryPCPVHBootLayout
+  public let acpiLayout: DoryPCACPILayout
   public let memoryByteCount: Int
 
   private let lock = NSLock()
@@ -45,6 +46,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   public init(
     memoryBytes: Int,
     bootLayout: DoryPCPVHBootLayout = .init(),
+    acpiLayout: DoryPCACPILayout = .init(),
     interpreter: DoryX86Interpreter = .init()
   ) throws {
     guard memoryBytes >= 1024 * 1024 else {
@@ -83,6 +85,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     pagingUnit = DoryX86PagingUnit()
     self.interpreter = interpreter
     self.bootLayout = bootLayout
+    self.acpiLayout = acpiLayout
   }
 
   public func load(
@@ -93,16 +96,19 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     try lock.withLock {
       guard !consumedPayload else { throw DoryPCMachineError.alreadyLoaded }
       let kernelImage = try DoryPCPVHKernelImage(data: kernel)
+      let acpi = try DoryPCACPIBuilder.build(layout: acpiLayout)
       let bootImage = try DoryPCPVHBootBuilder.build(
         commandLine: commandLine,
         initrd: initrd,
         memoryMap: DoryPCPVHBootBuilder.memoryMap(memoryBytes: UInt64(memoryByteCount)),
-        layout: bootLayout
+        layout: bootLayout,
+        rsdpPhysicalAddress: acpiLayout.rsdp
       )
       consumedPayload = true
       try kernelImage.load(into: memory)
       do {
         try bootImage.install(into: memory)
+        try acpi.install(into: memory)
       } catch {
         // The machine cannot safely retry a partially loaded kernel with another payload.
         throw error
