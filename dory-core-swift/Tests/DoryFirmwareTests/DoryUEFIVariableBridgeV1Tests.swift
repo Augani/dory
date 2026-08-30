@@ -1,19 +1,29 @@
 import DoryFirmware
 import DoryMachineARMVirt
+import DoryMachinePC
 import Foundation
 import Testing
 
 @Suite struct DoryUEFIVariableBridgeV1Tests {
-  @Test func ABIIsFrozenInsideTheReservedVariableWindow() throws {
-    try DoryUEFIVariableBridgeV1ABI.validateLayout()
-    #expect(DoryUEFIVariableBridgeV1ABI.identity == "dory.uefi.variable-bridge.armvirt@1")
+  @Test func abiIsFrozenInsideTheReservedVariableWindow() throws {
+    let arm = try DoryUEFIVariableBridgeV1Binding(platform: .armVirtV1)
+    let pc = try DoryUEFIVariableBridgeV1Binding(platform: .pcV1)
     #expect(DoryUEFIVariableBridgeV1ABI.magic == 0x3152_4156_5952_4f44)
-    #expect(DoryUEFIVariableBridgeV1ABI.baseAddress == DoryARMVirtV1ABI.firmwareVariableBase)
-    #expect(DoryUEFIVariableBridgeV1ABI.byteCount == DoryARMVirtV1ABI.firmwareVariableBytes)
+    #expect(arm.identity == "dory.uefi.variable-bridge.armvirt@1")
+    #expect(arm.baseAddress == DoryARMVirtV1ABI.firmwareVariableBase)
+    #expect(arm.byteCount == DoryARMVirtV1ABI.firmwareVariableBytes)
+    #expect(pc.identity == DoryPCV1ABI.variableBridgeIdentity)
+    #expect(pc.baseAddress == DoryPCV1ABI.firmwareVariableBase)
+    #expect(pc.byteCount == DoryPCV1ABI.firmwareVariableBytes)
     #expect(
       DoryUEFIVariableBridgeV1ABI.dataOffset
         + UInt64(DoryUEFIVariableBridgeV1ABI.dataByteCount)
-        <= DoryUEFIVariableBridgeV1ABI.byteCount
+        <= arm.byteCount
+    )
+    #expect(
+      DoryUEFIVariableBridgeV1ABI.dataOffset
+        + UInt64(DoryUEFIVariableBridgeV1ABI.dataByteCount)
+        <= pc.byteCount
     )
   }
 
@@ -24,23 +34,25 @@ import Testing
     let firstVendor = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
     let secondVendor = UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
 
-    let firstSet = service.execute(.init(
-      command: .set,
-      vendor: firstVendor,
-      name: "BootOrder",
-      attributes: [.nonVolatile, .bootServiceAccess],
-      data: Data([0, 1])
-    ))
+    let firstSet = service.execute(
+      .init(
+        command: .set,
+        vendor: firstVendor,
+        name: "BootOrder",
+        attributes: [.nonVolatile, .bootServiceAccess],
+        data: Data([0, 1])
+      ))
     #expect(firstSet.status == .success)
     #expect(firstSet.generation == 2)
 
-    let secondSet = service.execute(.init(
-      command: .set,
-      vendor: secondVendor,
-      name: "DoryRecovery",
-      attributes: [.nonVolatile, .runtimeAccess],
-      data: Data([1])
-    ))
+    let secondSet = service.execute(
+      .init(
+        command: .set,
+        vendor: secondVendor,
+        name: "DoryRecovery",
+        attributes: [.nonVolatile, .runtimeAccess],
+        data: Data([1])
+      ))
     #expect(secondSet.status == .success)
     #expect(secondSet.generation == 3)
 
@@ -53,11 +65,12 @@ import Testing
         .variable?.key.vendor == secondVendor
     )
 
-    let deleted = service.execute(.init(
-      command: .delete,
-      vendor: firstVendor,
-      name: "BootOrder"
-    ))
+    let deleted = service.execute(
+      .init(
+        command: .delete,
+        vendor: firstVendor,
+        name: "BootOrder"
+      ))
     #expect(deleted.status == .success)
     #expect(deleted.generation == 4)
     #expect(
@@ -72,22 +85,27 @@ import Testing
     let service = DoryUEFIVariableBridgeService(store: fixture.store)
     #expect(service.execute(.init(command: .get)).status == .invalidRequest)
     #expect(
-      service.execute(.init(
-        command: .set,
-        vendor: UUID(),
-        name: "Broken",
-        attributes: [],
-        data: Data()
-      )).status == .invalidRequest
+      service.execute(
+        .init(
+          command: .set,
+          vendor: UUID(),
+          name: "Broken",
+          attributes: [],
+          data: Data()
+        )
+      ).status == .invalidRequest
     )
 
-    #expect(service.execute(.init(
-      command: .set,
-      vendor: UUID(),
-      name: "RecoverySeed",
-      attributes: [.nonVolatile],
-      data: Data([1])
-    )).status == .success)
+    #expect(
+      service.execute(
+        .init(
+          command: .set,
+          vendor: UUID(),
+          name: "RecoverySeed",
+          attributes: [.nonVolatile],
+          data: Data([1])
+        )
+      ).status == .success)
     let primary = try FileHandle(forWritingTo: URL(fileURLWithPath: fixture.store.primaryPath))
     try primary.truncate(atOffset: 0)
     try primary.write(contentsOf: Data("corrupt\n".utf8))
@@ -101,7 +119,8 @@ private final class StoreFixture {
   let store: DoryUEFIVariableStoreFile
 
   init() throws {
-    directory = FileManager.default.temporaryDirectory
+    directory =
+      FileManager.default.temporaryDirectory
       .appendingPathComponent("dory-uefi-bridge-\(UUID().uuidString)", isDirectory: true).path
     store = try DoryUEFIVariableStoreFile(directory: directory)
     try store.initialize(DoryUEFIVariableStoreSnapshot())

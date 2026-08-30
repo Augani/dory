@@ -1,4 +1,5 @@
 import DoryMachineARMVirt
+import DoryMachinePC
 import Foundation
 
 /// Frozen MMIO contract implemented by Dory's EDK II variable-runtime driver.
@@ -7,11 +8,8 @@ import Foundation
 /// names are UTF-8, and command publication is the final guest write for a request. The Dory EDK
 /// II port owns UTF-16 conversion at the UEFI protocol boundary.
 public enum DoryUEFIVariableBridgeV1ABI {
-  public static let identity = DoryFirmwareArtifactManifest.variableBridgeIdentity
   public static let version: UInt32 = 1
   public static let magic: UInt64 = 0x3152_4156_5952_4f44  // "DORYVAR1"
-  public static let baseAddress = DoryARMVirtV1ABI.firmwareVariableBase
-  public static let byteCount = DoryARMVirtV1ABI.firmwareVariableBytes
 
   public static let magicOffset: UInt64 = 0x0000
   public static let versionOffset: UInt64 = 0x0008
@@ -28,15 +26,33 @@ public enum DoryUEFIVariableBridgeV1ABI {
   public static let dataOffset: UInt64 = 0x2000
   public static let dataByteCount = DoryUEFIVariable.maximumDataBytes
 
-  public static func validateLayout() throws {
-    guard identity == "dory.uefi.variable-bridge.armvirt@1",
-      baseAddress == DoryARMVirtV1ABI.firmwareVariableBase,
-      byteCount == DoryARMVirtV1ABI.firmwareVariableBytes,
-      nameOffset + UInt64(nameByteCount) <= dataOffset,
+  public static func validateLayout(byteCount: UInt64) throws {
+    guard nameOffset + UInt64(nameByteCount) <= dataOffset,
       dataOffset + UInt64(dataByteCount) <= byteCount
     else {
       throw DoryFirmwareError.invalidVariableBridgeLayout
     }
+  }
+}
+
+public struct DoryUEFIVariableBridgeV1Binding: Sendable, Equatable {
+  public let platform: DoryFirmwarePlatform
+  public let identity: String
+  public let baseAddress: UInt64
+  public let byteCount: UInt64
+
+  public init(platform: DoryFirmwarePlatform) throws {
+    self.platform = platform
+    identity = platform.variableBridgeIdentity
+    switch platform {
+    case .armVirtV1:
+      baseAddress = DoryARMVirtV1ABI.firmwareVariableBase
+      byteCount = DoryARMVirtV1ABI.firmwareVariableBytes
+    case .pcV1:
+      baseAddress = DoryPCV1ABI.firmwareVariableBase
+      byteCount = DoryPCV1ABI.firmwareVariableBytes
+    }
+    try DoryUEFIVariableBridgeV1ABI.validateLayout(byteCount: byteCount)
   }
 }
 

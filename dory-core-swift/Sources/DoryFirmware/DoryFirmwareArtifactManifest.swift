@@ -116,7 +116,6 @@ public struct DoryFirmwareSourcePin: Codable, Sendable, Hashable {
 
 public struct DoryFirmwareArtifactManifest: Codable, Sendable, Hashable {
   public static let schemaVersion: UInt32 = 1
-  public static let variableBridgeIdentity = "dory.uefi.variable-bridge.armvirt@1"
 
   public let schemaVersion: UInt32
   public let firmwareABIIdentity: String

@@ -18,7 +18,7 @@ import Testing
     #expect(decoded.firmwareABIIdentity == DoryARMVirtV1ABI.firmwareABIIdentity)
     #expect(decoded.machineABIIdentity == DoryARMVirtV1ABI.identity)
     #expect(decoded.variableStoreFormatIdentity == DoryARMVirtV1ABI.variableStoreFormatIdentity)
-    #expect(decoded.variableBridgeIdentity == DoryFirmwareArtifactManifest.variableBridgeIdentity)
+    #expect(decoded.variableBridgeIdentity == DoryFirmwarePlatform.armVirtV1.variableBridgeIdentity)
     #expect(decoded.reproducible)
     #expect(try encoder.encode(decoded) == data)
   }
