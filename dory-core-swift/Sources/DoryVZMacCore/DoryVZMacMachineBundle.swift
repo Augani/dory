@@ -8,6 +8,7 @@ public enum DoryVZMacMachineBundleError: Error, Sendable, Equatable, CustomStrin
     case invalidRestoreImage(String)
     case unsupportedRestoreImage(String)
     case missingSupportedConfiguration
+    case restoreImageProvenanceMismatch(String)
     case invalidBundle(String)
     case invalidIdentity(String)
     case filesystem(String, Int32)
@@ -20,6 +21,8 @@ public enum DoryVZMacMachineBundleError: Error, Sendable, Equatable, CustomStrin
             "macOS restore image \(build) is not supported on this host"
         case .missingSupportedConfiguration:
             "the macOS restore image has no configuration supported by this host"
+        case .restoreImageProvenanceMismatch(let detail):
+            "macOS restore image provenance mismatch: \(detail)"
         case .invalidBundle(let detail): "invalid VZMac machine bundle: \(detail)"
         case .invalidIdentity(let detail): "invalid VZMac platform identity: \(detail)"
         case .filesystem(let operation, let code): "\(operation) failed with errno \(code)"
@@ -35,13 +38,15 @@ public enum DoryVZMacMachineInstallationState: String, Codable, Sendable, Equata
 }
 
 public struct DoryVZMacMachineManifest: Codable, Sendable, Equatable {
-    public static let schema = "dory.vzmac-machine@1"
+    public static let schema = "dory.vzmac-machine@2"
 
     public let schema: String
     public let createdAt: String
     public let installationState: DoryVZMacMachineInstallationState
     public let restoreImageBuild: String
     public let restoreImageVersion: String
+    public let restoreImageSourceURL: String
+    public let restoreImageBytes: UInt64
     public let restoreImageSHA256: String
     public let hardwareModelSHA256: String
     public let machineIdentifierSHA256: String
@@ -54,6 +59,8 @@ public struct DoryVZMacMachineManifest: Codable, Sendable, Equatable {
         installationState: DoryVZMacMachineInstallationState,
         restoreImageBuild: String,
         restoreImageVersion: String,
+        restoreImageSourceURL: String,
+        restoreImageBytes: UInt64,
         restoreImageSHA256: String,
         hardwareModelSHA256: String,
         machineIdentifierSHA256: String,
@@ -65,6 +72,8 @@ public struct DoryVZMacMachineManifest: Codable, Sendable, Equatable {
         self.installationState = installationState
         self.restoreImageBuild = restoreImageBuild
         self.restoreImageVersion = restoreImageVersion
+        self.restoreImageSourceURL = restoreImageSourceURL
+        self.restoreImageBytes = restoreImageBytes
         self.restoreImageSHA256 = restoreImageSHA256
         self.hardwareModelSHA256 = hardwareModelSHA256
         self.machineIdentifierSHA256 = machineIdentifierSHA256
@@ -81,6 +90,13 @@ public struct DoryVZMacMachineManifest: Codable, Sendable, Equatable {
         }
         guard !restoreImageBuild.isEmpty, !restoreImageVersion.isEmpty else {
             throw DoryVZMacMachineBundleError.invalidBundle("restore image identity is incomplete")
+        }
+        guard let sourceURL = URL(string: restoreImageSourceURL),
+              sourceURL.scheme == "https" || sourceURL.isFileURL,
+              restoreImageBytes > 0 else {
+            throw DoryVZMacMachineBundleError.invalidBundle(
+                "restore image source or byte count is invalid"
+            )
         }
         for digest in [restoreImageSHA256, hardwareModelSHA256, machineIdentifierSHA256] {
             guard digest.count == 64, digest.allSatisfy({ $0.isHexDigit && !$0.isUppercase }) else {
@@ -123,6 +139,7 @@ public struct DoryVZMacMachineBundle: Sendable {
     public static func prepare(
         at destination: URL,
         restoreImageURL: URL,
+        restoreImageSourceURL: URL? = nil,
         requestedCPUCount: Int? = nil,
         requestedMemoryBytes: UInt64? = nil,
         diskBytes: UInt64 = 80 * DoryVZMacResourcePlan.gibibyte
@@ -173,11 +190,20 @@ public struct DoryVZMacMachineBundle: Sendable {
             size: resources.diskBytes
         )
         let version = restoreImage.operatingSystemVersion
+        let restoreAttributes = try FileManager.default.attributesOfItem(
+            atPath: restoreImageURL.path
+        )
+        guard let restoreByteCount = restoreAttributes[.size] as? NSNumber,
+              restoreByteCount.uint64Value > 0 else {
+            throw DoryVZMacMachineBundleError.invalidRestoreImage("file size is invalid")
+        }
         let manifest = DoryVZMacMachineManifest(
             createdAt: ISO8601DateFormatter().string(from: Date()),
             installationState: .prepared,
             restoreImageBuild: restoreImage.buildVersion,
             restoreImageVersion: "\(version.majorVersion).\(version.minorVersion).\(version.patchVersion)",
+            restoreImageSourceURL: (restoreImageSourceURL ?? restoreImageURL).absoluteString,
+            restoreImageBytes: restoreByteCount.uint64Value,
             restoreImageSHA256: try sha256(of: restoreImageURL),
             hardwareModelSHA256: sha256(of: hardwareModelData),
             machineIdentifierSHA256: sha256(of: machineIdentifierData),
@@ -262,6 +288,39 @@ public struct DoryVZMacMachineBundle: Sendable {
         return identifier
     }
 
+    public func validateRestoreImage(at restoreImageURL: URL) async throws {
+        guard restoreImageURL.isFileURL else {
+            throw DoryVZMacMachineBundleError.restoreImageProvenanceMismatch(
+                "candidate URL is not a local file"
+            )
+        }
+        try requireRegularFile(restoreImageURL, label: "restore image")
+        let attributes = try FileManager.default.attributesOfItem(atPath: restoreImageURL.path)
+        guard let byteCount = attributes[.size] as? NSNumber,
+              byteCount.uint64Value == manifest.restoreImageBytes else {
+            throw DoryVZMacMachineBundleError.restoreImageProvenanceMismatch(
+                "byte count differs from the prepared machine manifest"
+            )
+        }
+        guard try sha256(of: restoreImageURL) == manifest.restoreImageSHA256 else {
+            throw DoryVZMacMachineBundleError.restoreImageProvenanceMismatch(
+                "SHA-256 differs from the prepared machine manifest"
+            )
+        }
+        let restoreImage = try await VZMacOSRestoreImage.image(from: restoreImageURL)
+        let version = restoreImage.operatingSystemVersion
+        let versionString = "\(version.majorVersion).\(version.minorVersion).\(version.patchVersion)"
+        guard restoreImage.buildVersion == manifest.restoreImageBuild,
+              versionString == manifest.restoreImageVersion else {
+            throw DoryVZMacMachineBundleError.restoreImageProvenanceMismatch(
+                "build identity differs from the prepared machine manifest"
+            )
+        }
+        guard restoreImage.isSupported else {
+            throw DoryVZMacMachineBundleError.unsupportedRestoreImage(restoreImage.buildVersion)
+        }
+    }
+
     public func updatingInstallationState(
         _ installationState: DoryVZMacMachineInstallationState
     ) throws -> Self {
@@ -270,6 +329,8 @@ public struct DoryVZMacMachineBundle: Sendable {
             installationState: installationState,
             restoreImageBuild: manifest.restoreImageBuild,
             restoreImageVersion: manifest.restoreImageVersion,
+            restoreImageSourceURL: manifest.restoreImageSourceURL,
+            restoreImageBytes: manifest.restoreImageBytes,
             restoreImageSHA256: manifest.restoreImageSHA256,
             hardwareModelSHA256: manifest.hardwareModelSHA256,
             machineIdentifierSHA256: manifest.machineIdentifierSHA256,

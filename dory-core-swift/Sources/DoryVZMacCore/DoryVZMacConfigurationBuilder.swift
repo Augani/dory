@@ -113,6 +113,7 @@ public final class DoryVZMacRuntime {
                 "installation requires a prepared or failed-install machine"
             )
         }
+        try await bundle.validateRestoreImage(at: restoreImageURL)
         bundle = try bundle.updatingInstallationState(.installing)
         let installer = VZMacOSInstaller(
             virtualMachine: virtualMachine,

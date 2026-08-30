@@ -5,7 +5,14 @@ import Foundation
 
 private enum Command {
     case latest
-    case prepare(ipsw: URL, machine: URL, cpus: Int?, memoryBytes: UInt64?, diskBytes: UInt64)
+    case prepare(
+        ipsw: URL,
+        source: URL?,
+        machine: URL,
+        cpus: Int?,
+        memoryBytes: UInt64?,
+        diskBytes: UInt64
+    )
     case install(ipsw: URL, machine: URL)
     case run(machine: URL)
 }
@@ -39,6 +46,7 @@ private func parseCommand(_ arguments: [String]) throws -> Command {
         return .latest
     case "prepare":
         let ipsw = URL(fileURLWithPath: try take("--ipsw"))
+        let source = values.contains("--source-url") ? URL(string: try take("--source-url")) : nil
         let machine = URL(fileURLWithPath: try take("--machine"), isDirectory: true)
         let cpus = values.contains("--cpus") ? Int(try take("--cpus")) : nil
         let memoryGiB = values.contains("--memory-gib") ? UInt64(try take("--memory-gib")) : nil
@@ -50,6 +58,7 @@ private func parseCommand(_ arguments: [String]) throws -> Command {
         }
         return .prepare(
             ipsw: ipsw,
+            source: source,
             machine: machine,
             cpus: cpus,
             memoryBytes: memoryGiB.map { $0 * DoryVZMacResourcePlan.gibibyte },
@@ -72,7 +81,7 @@ private func parseCommand(_ arguments: [String]) throws -> Command {
 private let usage = """
 Usage:
   dory-vzmac-qualification latest
-  dory-vzmac-qualification prepare --ipsw <file> --machine <bundle> [--cpus N] [--memory-gib N] [--disk-gib N]
+  dory-vzmac-qualification prepare --ipsw <file> [--source-url <https-url>] --machine <bundle> [--cpus N] [--memory-gib N] [--disk-gib N]
   dory-vzmac-qualification install --ipsw <file> --machine <bundle>
   dory-vzmac-qualification run --machine <bundle>
 """
@@ -122,10 +131,11 @@ private final class QualificationAppDelegate: NSObject, NSApplicationDelegate,
             )
             FileHandle.standardOutput.write(Data([0x0a]))
             NSApp.terminate(nil)
-        case .prepare(let ipsw, let machine, let cpus, let memoryBytes, let diskBytes):
+        case .prepare(let ipsw, let source, let machine, let cpus, let memoryBytes, let diskBytes):
             let bundle = try await DoryVZMacMachineBundle.prepare(
                 at: machine,
                 restoreImageURL: ipsw,
+                restoreImageSourceURL: source,
                 requestedCPUCount: cpus,
                 requestedMemoryBytes: memoryBytes,
                 diskBytes: diskBytes
