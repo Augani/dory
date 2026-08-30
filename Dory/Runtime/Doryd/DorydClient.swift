@@ -39,7 +39,7 @@ nonisolated protocol DorydControlXPC {
     func machineStats(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineDeviceTelemetry(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func hostUSBDevices(reply: @escaping (Bool, NSArray, String) -> Void)
-    func machineUSBAttach(_ machineID: String, busID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
+    func machineUSBAttach(_ machineID: String, busID: String, identityToken: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineUSBDetach(_ machineID: String, busID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineExec(_ machineID: String, request: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineTransfer(_ machineID: String, request: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void)
@@ -2459,10 +2459,16 @@ nonisolated final class DorydClient: @unchecked Sendable {
 
     func machineUSBAttach(
         _ machineID: String,
-        busID: String
+        busID: String,
+        identityToken: String
     ) async throws -> DorydMachineUSBAttachment {
         try await withTimeout(atLeast: 30).statusCommand { proxy, reply in
-            proxy.machineUSBAttach(machineID, busID: busID, reply: reply)
+            proxy.machineUSBAttach(
+                machineID,
+                busID: busID,
+                identityToken: identityToken,
+                reply: reply
+            )
         } decode: {
             Self.machineUSBAttachment(
                 from: $0,

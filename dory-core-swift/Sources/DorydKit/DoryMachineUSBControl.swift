@@ -45,6 +45,7 @@ public protocol DoryMachineUSBControlling: Sendable {
         machineID: String,
         socketPath: String,
         busID: String,
+        identityToken: DoryUSBPhysicalIdentityToken,
         mode: DoryMachineUSBOpenMode
     ) throws -> DoryMachineUSBAttachment
     func detach(socketPath: String, busID: String) throws
@@ -392,11 +393,12 @@ public struct UnixDoryMachineUSBController: DoryMachineUSBControlling, Sendable 
         machineID: String,
         socketPath: String,
         busID: String,
+        identityToken: DoryUSBPhysicalIdentityToken,
         mode: DoryMachineUSBOpenMode
     ) throws -> DoryMachineUSBAttachment {
         let busID = try DoryMachineUSBWireContract.validatedBusID(busID)
         let response = try send(
-            .attach(busID: busID, mode: mode),
+            .attach(busID: busID, identityToken: identityToken, mode: mode),
             socketPath: socketPath
         )
         guard case .attachSuccess(let attachment) = response else {

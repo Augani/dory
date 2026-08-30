@@ -1,4 +1,5 @@
 import Darwin
+import DoryVMContracts
 import Foundation
 import Testing
 @testable import DoryHV
@@ -53,6 +54,38 @@ struct HostUsbDeviceTests {
         #expect(candidate.descriptor.vendorID == 0x1234)
         #expect(candidate.descriptor.productID == 0xabcd)
         #expect(candidate.captureDecision == .allowed)
+    }
+
+    @Test func openValidationRejectsChangedPhysicalIdentityBeforeAuthorization() throws {
+        let candidate = try #require(HostUsbDiscovery.candidate(from: [
+            "DoryBusID": "3-2",
+            "idVendor": 0x1234,
+            "idProduct": 0xabcd,
+            "bcdDevice": 0x0100,
+            "locationID": 0x0102_0000,
+            "USB Serial Number": "selected-device",
+        ]))
+        let currentIdentity = try #require(candidate.identityToken)
+        try HostUsbDeviceFactory.validateOpenCandidate(
+            candidate,
+            busID: "3-2",
+            expectedIdentity: currentIdentity
+        )
+
+        let staleIdentity = DoryUSBPhysicalIdentityToken(
+            rawValue: String(repeating: "f", count: 64)
+        )!
+        #expect(throws: HostUsbOpenError.identityMismatch(
+            busID: "3-2",
+            expected: staleIdentity,
+            actual: currentIdentity
+        )) {
+            try HostUsbDeviceFactory.validateOpenCandidate(
+                candidate,
+                busID: "3-2",
+                expectedIdentity: staleIdentity
+            )
+        }
     }
 
     @Test func capturePolicyRefusesHostInfrastructureBeforeOpen() {

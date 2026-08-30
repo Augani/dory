@@ -616,10 +616,11 @@ private final class UsbControlServerSession: @unchecked Sendable {
             let response: DoryUSBControlV1.Response
             do {
                 switch request {
-                case let .attach(busID, mode):
+                case let .attach(busID, identityToken, mode):
                     response = .attachSuccess(
                         try await handler.attach(
                             busID: busID.rawValue,
+                            expectedIdentity: identityToken,
                             mode: Self.hostOpenMode(mode)
                         )
                     )

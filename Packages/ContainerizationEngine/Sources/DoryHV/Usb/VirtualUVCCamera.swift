@@ -1,4 +1,5 @@
 import Darwin
+import DoryVMContracts
 import Foundation
 
 /// Supplies already-compressed MJPEG frames to the virtual UVC transport. The runner owns the
@@ -15,6 +16,13 @@ public enum DoryVirtualUVCCamera {
     public static let deviceNumber: UInt32 = 1
     public static let deviceID = (busNumber << 16) | deviceNumber
     public static let speedHigh: UInt32 = 3
+    public static let identityToken = try! DoryUSBPhysicalIdentity(
+        locationID: 0xff00_0001,
+        vendorID: 0xD0F1,
+        productID: 0xCA01,
+        bcdDevice: 0x0100,
+        serialNumber: "dory-virtual-uvc@1"
+    ).token
 
     public static func descriptor() -> UsbipDeviceDescriptor {
         UsbipDeviceDescriptor(

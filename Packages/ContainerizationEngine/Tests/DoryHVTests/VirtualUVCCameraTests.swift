@@ -25,6 +25,8 @@ struct VirtualUVCCameraTests {
         #expect(try decodeUSBString(product) == "Dory Camera")
         #expect(DoryVirtualUVCCamera.descriptor().busID == DoryVirtualUVCCamera.busID)
         #expect(DoryVirtualUVCCamera.descriptor().interfaceCount == 2)
+        #expect(DoryVirtualUVCCamera.identityToken.rawValue
+            == "629f8a8479063587f191992ec80a93cbe21c8d589a0645066fe107775a722ed0")
     }
 
     @Test func probeCommitAcceptsTheAdvertisedMJPEGModes() throws {

@@ -1,7 +1,12 @@
 import DoryCore
+import DoryVMContracts
 import Foundation
 import XCTest
 @testable import DorydKit
+
+private let machineManagerUSBIdentityToken = DoryUSBPhysicalIdentityToken(
+    rawValue: String(repeating: "a", count: 64)
+)!
 
 final class MachineManagerUSBControlTests: XCTestCase {
     func testResolvedOnlyPublicRouteRejectsLegacyCompatibility() throws {
@@ -11,7 +16,11 @@ final class MachineManagerUSBControlTests: XCTestCase {
         defer { fixture.cleanup() }
 
         XCTAssertThrowsError(
-            try fixture.manager.attachResolvedUSBDevice(id: "desktop", busID: "3-2")
+            try fixture.manager.attachResolvedUSBDevice(
+                id: "desktop",
+                busID: "3-2",
+                identityToken: machineManagerUSBIdentityToken
+            )
         ) { error in
             XCTAssertEqual(error as? MachineManagerError, .usbUnavailable("desktop"))
         }
@@ -40,6 +49,7 @@ final class MachineManagerUSBControlTests: XCTestCase {
             machineID: "desktop",
             socketPath: "/private/tmp/runtime/u.sock",
             busID: "3-2",
+            identityToken: machineManagerUSBIdentityToken,
             mode: .userAuthorized,
             launchAuthorityRemainsValid: { false }
         )) { error in
@@ -68,6 +78,7 @@ final class MachineManagerUSBControlTests: XCTestCase {
             machineID: "desktop",
             socketPath: "/private/tmp/runtime/u.sock",
             busID: "3-2",
+            identityToken: machineManagerUSBIdentityToken,
             mode: .userAuthorized,
             launchAuthorityRemainsValid: { true }
         )) { error in
@@ -97,6 +108,7 @@ final class MachineManagerUSBControlTests: XCTestCase {
             machineID: "desktop",
             socketPath: "/private/tmp/runtime/u.sock",
             busID: "3-2",
+            identityToken: machineManagerUSBIdentityToken,
             mode: .userAuthorized,
             launchAuthorityRemainsValid: { true }
         )) { error in
@@ -121,6 +133,7 @@ final class MachineManagerUSBControlTests: XCTestCase {
             machineID: "desktop",
             socketPath: "/private/tmp/runtime/u.sock",
             busID: "3-2",
+            identityToken: machineManagerUSBIdentityToken,
             mode: .userAuthorized,
             launchAuthorityRemainsValid: { true }
         )) { error in
@@ -280,9 +293,11 @@ private final class TransactionUSBController: DoryMachineUSBControlling, @unchec
         machineID: String,
         socketPath: String,
         busID: String,
+        identityToken: DoryUSBPhysicalIdentityToken,
         mode: DoryMachineUSBOpenMode
     ) throws -> DoryMachineUSBAttachment {
         _ = socketPath
+        _ = identityToken
         _ = mode
         lock.lock()
         storedOperations.append("attach:\(busID)")
@@ -326,6 +341,7 @@ private final class RecordingUSBController: DoryMachineUSBControlling, @unchecke
         var machineID: String?
         var socketPath: String
         var busID: String
+        var identityToken: DoryUSBPhysicalIdentityToken?
         var mode: DoryMachineUSBOpenMode?
     }
 
@@ -342,6 +358,7 @@ private final class RecordingUSBController: DoryMachineUSBControlling, @unchecke
         machineID: String,
         socketPath: String,
         busID: String,
+        identityToken: DoryUSBPhysicalIdentityToken,
         mode: DoryMachineUSBOpenMode
     ) throws -> DoryMachineUSBAttachment {
         lock.lock()
@@ -350,6 +367,7 @@ private final class RecordingUSBController: DoryMachineUSBControlling, @unchecke
             machineID: machineID,
             socketPath: socketPath,
             busID: busID,
+            identityToken: identityToken,
             mode: mode
         ))
         lock.unlock()
@@ -370,6 +388,7 @@ private final class RecordingUSBController: DoryMachineUSBControlling, @unchecke
             machineID: nil,
             socketPath: socketPath,
             busID: busID,
+            identityToken: nil,
             mode: nil
         ))
         lock.unlock()

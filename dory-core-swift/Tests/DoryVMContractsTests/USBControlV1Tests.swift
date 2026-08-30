@@ -5,8 +5,12 @@ import Testing
 @Suite struct DoryUSBControlV1Tests {
     @Test func requestCodecUsesExactVersionOneShapes() throws {
         let busID = try DoryUSBControlV1.BusID("pci_1:USB.4")
+        let identityToken = DoryUSBPhysicalIdentityToken(
+            rawValue: String(repeating: "a", count: 64)
+        )!
         let attach = DoryUSBControlV1.Request.attach(
             busID: busID,
+            identityToken: identityToken,
             mode: .userAuthorized
         )
         let detach = DoryUSBControlV1.Request.detach(busID: busID)
@@ -14,7 +18,7 @@ import Testing
         let attachFrame = try DoryUSBControlV1.encodeRequest(attach)
         let detachFrame = try DoryUSBControlV1.encodeRequest(detach)
         #expect(String(decoding: attachFrame, as: UTF8.self)
-            == #"{"busid":"pci_1:USB.4","cmd":"attach","mode":"userAuthorized"}"#)
+            == #"{"busid":"pci_1:USB.4","cmd":"attach","identityToken":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","mode":"userAuthorized"}"#)
         #expect(String(decoding: detachFrame, as: UTF8.self)
             == #"{"busid":"pci_1:USB.4","cmd":"detach"}"#)
         #expect(try DoryUSBControlV1.decodeRequest(attachFrame) == attach)
@@ -76,6 +80,7 @@ import Testing
 
         for malformed in [
             #"{"cmd":"attach","busid":"3-2"}"#,
+            #"{"cmd":"attach","busid":"3-2","identityToken":"invalid","mode":"userAuthorized"}"#,
             #"{"cmd":"detach","busid":"3-2","mode":null}"#,
             #"{"cmd":"detach","busid":"3-2","future":true}"#,
         ] {

@@ -1,7 +1,12 @@
 import Darwin
+import DoryVMContracts
 import Foundation
 import Testing
 @testable import DoryHV
+
+private let usbipBridgeTestIdentityToken = DoryUSBPhysicalIdentityToken(
+    rawValue: String(repeating: "b", count: 64)
+)!
 
 struct UsbipBridgeTests {
     @Test func bridgeAnswersImportThenForwardsSubmitAndClosesOnEOF() throws {
@@ -189,8 +194,8 @@ struct UsbControlHandlerTests {
         let box = Box()
         let handler = UsbControlHandler(
             manager: manager,
-            openDevice: { busID, mode in
-                box.opened.append((busID, mode))
+            openDevice: { busID, identityToken, mode in
+                box.opened.append((busID, identityToken, mode))
                 if openFails { throw UsbControlError.notAttached(busID) }
                 return StubExportedDevice(descriptor: fixtureDescriptor(busID: busID))
             },
@@ -207,9 +212,13 @@ struct UsbControlHandlerTests {
         let manager = UsbipManager()
         let (handler, box) = makeHandler(manager: manager)
 
-        let outcome = try await handler.attach(busID: "3-2")
+        let outcome = try await handler.attach(
+            busID: "3-2",
+            expectedIdentity: usbipBridgeTestIdentityToken
+        )
 
         #expect(box.opened.map(\.0) == ["3-2"])
+        #expect(box.opened.map(\.1) == [usbipBridgeTestIdentityToken])
         #expect(manager.claimedBusIDs == ["3-2"])
         #expect(box.attachCalls.count == 1)
         #expect(box.attachCalls.first?.busid == "3-2")
@@ -220,17 +229,28 @@ struct UsbControlHandlerTests {
 
     @Test func attachAllocatesDistinctPortsAndRejectsDuplicate() async throws {
         let (handler, _) = makeHandler()
-        let a = try await handler.attach(busID: "3-2")
-        let b = try await handler.attach(busID: "1-4")
+        let a = try await handler.attach(
+            busID: "3-2",
+            expectedIdentity: usbipBridgeTestIdentityToken
+        )
+        let b = try await handler.attach(
+            busID: "1-4",
+            expectedIdentity: usbipBridgeTestIdentityToken
+        )
         #expect(Set([a.port, b.port]) == [0, 1])
-        await #expect(throws: UsbControlError.self) { _ = try await handler.attach(busID: "3-2") }
+        await #expect(throws: UsbControlError.self) {
+            _ = try await handler.attach(
+                busID: "3-2",
+                expectedIdentity: usbipBridgeTestIdentityToken
+            )
+        }
     }
 
     @Test func concurrentDuplicateAttachClaimsHostDeviceExactlyOnce() async {
         let manager = UsbipManager()
         let handler = UsbControlHandler(
             manager: manager,
-            openDevice: { busID, _ in
+            openDevice: { busID, _, _ in
                 StubExportedDevice(descriptor: fixtureDescriptor(busID: busID))
             },
             notifyAttach: { _ in await Task.yield() },
@@ -239,7 +259,12 @@ struct UsbControlHandlerTests {
 
         let successes = await withTaskGroup(of: Bool.self, returning: Int.self) { group in
             for _ in 0..<2 {
-                group.addTask { (try? await handler.attach(busID: "3-2")) != nil }
+                group.addTask {
+                    (try? await handler.attach(
+                        busID: "3-2",
+                        expectedIdentity: usbipBridgeTestIdentityToken
+                    )) != nil
+                }
             }
             var count = 0
             for await succeeded in group where succeeded { count += 1 }
@@ -255,7 +280,12 @@ struct UsbControlHandlerTests {
         let manager = UsbipManager()
         let (handler, _) = makeHandler(manager: manager, attachFails: true)
 
-        await #expect(throws: (any Error).self) { _ = try await handler.attach(busID: "3-2") }
+        await #expect(throws: (any Error).self) {
+            _ = try await handler.attach(
+                busID: "3-2",
+                expectedIdentity: usbipBridgeTestIdentityToken
+            )
+        }
         // The claim must be undone so the device returns to macOS.
         #expect(manager.claimedBusIDs.isEmpty)
         #expect(handler.attachedBusIDs.isEmpty)
@@ -267,8 +297,8 @@ struct UsbControlHandlerTests {
         let handler = UsbControlHandler(
             manager: manager,
             ensureSupported: { throw UsbControlError.guestAgentRPCUnavailable },
-            openDevice: { busID, mode in
-                box.opened.append((busID, mode))
+            openDevice: { busID, identityToken, mode in
+                box.opened.append((busID, identityToken, mode))
                 return StubExportedDevice(descriptor: fixtureDescriptor(busID: busID))
             },
             notifyAttach: { box.attachCalls.append($0) },
@@ -276,7 +306,10 @@ struct UsbControlHandlerTests {
         )
 
         await #expect(throws: UsbControlError.guestAgentRPCUnavailable) {
-            _ = try await handler.attach(busID: "3-2")
+            _ = try await handler.attach(
+                busID: "3-2",
+                expectedIdentity: usbipBridgeTestIdentityToken
+            )
         }
         await #expect(throws: UsbControlError.guestAgentRPCUnavailable) {
             try await handler.detach(busID: "3-2")
@@ -291,7 +324,10 @@ struct UsbControlHandlerTests {
     @Test func detachNotifiesGuestUnregistersAndFreesPort() async throws {
         let manager = UsbipManager()
         let (handler, box) = makeHandler(manager: manager)
-        _ = try await handler.attach(busID: "3-2")
+        _ = try await handler.attach(
+            busID: "3-2",
+            expectedIdentity: usbipBridgeTestIdentityToken
+        )
 
         try await handler.detach(busID: "3-2")
 
@@ -299,7 +335,10 @@ struct UsbControlHandlerTests {
         #expect(manager.claimedBusIDs.isEmpty)
         #expect(handler.attachedBusIDs.isEmpty)
         // Port is freed for reuse.
-        let again = try await handler.attach(busID: "3-2")
+        let again = try await handler.attach(
+            busID: "3-2",
+            expectedIdentity: usbipBridgeTestIdentityToken
+        )
         #expect(again.port == 0)
     }
 
@@ -309,7 +348,7 @@ struct UsbControlHandlerTests {
     }
 
     final class Box: @unchecked Sendable {
-        var opened: [(String, HostUsbOpenMode)] = []
+        var opened: [(String, DoryUSBPhysicalIdentityToken, HostUsbOpenMode)] = []
         var attachCalls: [UsbAgentAttachRequest] = []
         var detachCalls: [UsbAgentDetachRequest] = []
     }
@@ -352,7 +391,7 @@ struct UsbControlServerTests {
     private func makeServerHandler() -> UsbControlHandler {
         UsbControlHandler(
             manager: UsbipManager(),
-            openDevice: { busID, _ in
+            openDevice: { busID, _, _ in
                 StubExportedDevice(descriptor: fixtureDescriptor(busID: busID))
             },
             notifyAttach: { _ in },

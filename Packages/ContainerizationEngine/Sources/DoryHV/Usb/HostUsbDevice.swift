@@ -120,20 +120,28 @@ public enum HostUsbOpenMode: Hashable, Sendable {
 public enum HostUsbOpenError: Error, Equatable, Sendable {
     case notFound(String)
     case captureDenied(busID: String, reason: HostUsbCaptureBlockReason)
+    case identityMismatch(
+        busID: String,
+        expected: DoryUSBPhysicalIdentityToken,
+        actual: DoryUSBPhysicalIdentityToken?
+    )
     case authorizationFailed(kern_return_t)
     case openDeviceFailed
 }
 
 public enum HostUsbDeviceFactory: Sendable {
-    public static func open(busID: String, mode: HostUsbOpenMode = .userAuthorized) throws -> HostUsbDevice {
+    public static func open(
+        busID: String,
+        expectedIdentity: DoryUSBPhysicalIdentityToken,
+        mode: HostUsbOpenMode = .userAuthorized
+    ) throws -> HostUsbDevice {
         let (candidate, service) = try findService(busID: busID)
         defer { IOObjectRelease(service) }
-        guard candidate.captureDecision.allowed else {
-            throw HostUsbOpenError.captureDenied(
-                busID: busID,
-                reason: candidate.captureDecision.blockReason ?? .internalHostDevice
-            )
-        }
+        try validateOpenCandidate(
+            candidate,
+            busID: busID,
+            expectedIdentity: expectedIdentity
+        )
         let kr = IOServiceAuthorize(service, UInt32(kIOServiceInteractionAllowed))
         guard kr == KERN_SUCCESS else { throw HostUsbOpenError.authorizationFailed(kr) }
         guard let device = DoryIOUSBHostCreateDevice(service, options(for: mode), nil) else {
@@ -143,6 +151,26 @@ public enum HostUsbDeviceFactory: Sendable {
         let retained: [IOUSBHostObject] = [device] + opened.interfaces
         let backend = IOUSBHostDeviceBackend(controlObject: device, pipes: opened.pipes, retainedObjects: retained)
         return HostUsbDevice(descriptor: candidate.descriptor, backend: backend)
+    }
+
+    static func validateOpenCandidate(
+        _ candidate: HostUsbDeviceCandidate,
+        busID: String,
+        expectedIdentity: DoryUSBPhysicalIdentityToken
+    ) throws {
+        guard candidate.captureDecision.allowed else {
+            throw HostUsbOpenError.captureDenied(
+                busID: busID,
+                reason: candidate.captureDecision.blockReason ?? .internalHostDevice
+            )
+        }
+        guard candidate.identityToken == expectedIdentity else {
+            throw HostUsbOpenError.identityMismatch(
+                busID: busID,
+                expected: expectedIdentity,
+                actual: candidate.identityToken
+            )
+        }
     }
 
     private static func findService(busID: String) throws -> (HostUsbDeviceCandidate, io_service_t) {

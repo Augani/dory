@@ -923,6 +923,7 @@ struct DoryResolvedUSBControlTransaction {
         machineID: String,
         socketPath: String,
         busID: String,
+        identityToken: DoryUSBPhysicalIdentityToken,
         mode: DoryMachineUSBOpenMode,
         launchAuthorityRemainsValid: () -> Bool
     ) throws -> DoryMachineUSBAttachment {
@@ -932,6 +933,7 @@ struct DoryResolvedUSBControlTransaction {
                 machineID: machineID,
                 socketPath: socketPath,
                 busID: busID,
+                identityToken: identityToken,
                 mode: mode
             )
         } catch {
@@ -10077,6 +10079,7 @@ public final class MachineManager: @unchecked Sendable {
     public func attachResolvedUSBDevice(
         id: String,
         busID: String,
+        identityToken: DoryUSBPhysicalIdentityToken,
         mode: DoryMachineUSBOpenMode = .userAuthorized
     ) throws -> DoryMachineUSBAttachment {
         let mutationLease = mutationCoordinator.acquire(workspaceID: id)
@@ -10110,6 +10113,7 @@ public final class MachineManager: @unchecked Sendable {
             machineID: id,
             socketPath: socketPath,
             busID: busID,
+            identityToken: identityToken,
             mode: mode
         ) {
             lock.lock()

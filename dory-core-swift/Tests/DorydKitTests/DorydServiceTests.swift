@@ -82,7 +82,8 @@ final class DorydServiceTests: XCTestCase {
         let unavailable = expectation(description: "resolved USB authority required")
         proxy.machineUSBAttach(
             "missing",
-            busID: "3-2"
+            busID: "3-2",
+            identityToken: String(repeating: "a", count: 64)
         ) { ok, body, message in
             XCTAssertFalse(ok)
             XCTAssertEqual(body.count, 0)

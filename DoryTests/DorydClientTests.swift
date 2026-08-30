@@ -68,7 +68,13 @@ struct DorydClientTests {
             _ = try await client.hostUSBDevices()
         }
 
-        let attachment = try await client.machineUSBAttach("dev", busID: "3-2")
+        let identityToken = String(repeating: "a", count: 64)
+        let attachment = try await client.machineUSBAttach(
+            "dev",
+            busID: "3-2",
+            identityToken: identityToken
+        )
+        #expect(service.latestMachineUSBAttachIdentityToken == identityToken)
         #expect(attachment == DorydMachineUSBAttachment(
             machineID: "dev",
             busID: "3-2",
@@ -89,7 +95,11 @@ struct DorydClientTests {
             "unexpected": true,
         ])
         await #expect(throws: (any Error).self) {
-            _ = try await client.machineUSBAttach("dev", busID: "3-2")
+            _ = try await client.machineUSBAttach(
+                "dev",
+                busID: "3-2",
+                identityToken: identityToken
+            )
         }
 
         service.setMachineUSBAttachResponse([
@@ -101,7 +111,11 @@ struct DorydClientTests {
             "speed": 3,
         ])
         await #expect(throws: (any Error).self) {
-            _ = try await client.machineUSBAttach("dev", busID: "3-2")
+            _ = try await client.machineUSBAttach(
+                "dev",
+                busID: "3-2",
+                identityToken: identityToken
+            )
         }
 
         service.setMachineUSBAttachResponse([
@@ -113,7 +127,11 @@ struct DorydClientTests {
             "speed": 3,
         ])
         await #expect(throws: (any Error).self) {
-            _ = try await client.machineUSBAttach("dev", busID: "3-2")
+            _ = try await client.machineUSBAttach(
+                "dev",
+                busID: "3-2",
+                identityToken: identityToken
+            )
         }
 
         service.setMachineUSBDetachResponse([
@@ -4800,6 +4818,7 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     private var _machineFlightRecorderBatchOverride: NSDictionary?
     private var _machineDeviceTelemetryResponseOverride: NSDictionary?
     private var _machineUSBAttachResponseOverride: NSDictionary?
+    private var _latestMachineUSBAttachIdentityToken: String?
     private var _machineUSBDetachResponseOverride: NSDictionary?
     private var _hostUSBDevicesResponseOverride: NSArray?
     private var _machineSerialConsoleBatchOverride: NSDictionary?
@@ -4844,6 +4863,11 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     func setMachineUSBAttachResponse(_ response: NSDictionary?) {
         lock.lock(); defer { lock.unlock() }
         _machineUSBAttachResponseOverride = response
+    }
+
+    var latestMachineUSBAttachIdentityToken: String? {
+        lock.lock(); defer { lock.unlock() }
+        return _latestMachineUSBAttachIdentityToken
     }
 
     func setMachineUSBDetachResponse(_ response: NSDictionary?) {
@@ -5848,9 +5872,11 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     func machineUSBAttach(
         _ machineID: String,
         busID: String,
+        identityToken: String,
         reply: @escaping (Bool, NSDictionary, String) -> Void
     ) {
         lock.lock()
+        _latestMachineUSBAttachIdentityToken = identityToken
         let row = _machineUSBAttachResponseOverride ?? [
             "machineID": machineID,
             "busID": busID,

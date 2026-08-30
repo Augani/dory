@@ -633,7 +633,10 @@ import UniformTypeIdentifiers
               )
             )
             try await channel.requireCapability("usb-vhci", version: 1)
-            _ = try await handler.attach(busID: DoryVirtualUVCCamera.busID)
+            _ = try await handler.attach(
+                busID: DoryVirtualUVCCamera.busID,
+                expectedIdentity: DoryVirtualUVCCamera.identityToken
+            )
             capture.recordAttachment()
             return
           } catch {
@@ -1191,9 +1194,16 @@ import UniformTypeIdentifiers
           )
           try await channel.requireCapability("usb-vhci", version: 1)
         },
-        openDevice: { busID, _ in
+        openDevice: { busID, identityToken, _ in
           guard busID == DoryVirtualUVCCamera.busID else {
             throw HostUsbOpenError.notFound(busID)
+          }
+          guard identityToken == DoryVirtualUVCCamera.identityToken else {
+            throw HostUsbOpenError.identityMismatch(
+              busID: busID,
+              expected: identityToken,
+              actual: DoryVirtualUVCCamera.identityToken
+            )
           }
           return HostUsbDevice(
             descriptor: DoryVirtualUVCCamera.descriptor(),

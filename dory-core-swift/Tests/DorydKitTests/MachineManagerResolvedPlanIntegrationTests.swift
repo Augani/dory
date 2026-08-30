@@ -3,6 +3,7 @@ import Darwin
 import DoryCore
 import DoryOperations
 import DoryRendererWorkerWireContracts
+import DoryVMContracts
 import Foundation
 import Testing
 @testable import DorydKit
@@ -543,7 +544,10 @@ struct MachineManagerResolvedPlanIntegrationTests {
             #expect(throws: MachineManagerError.self) {
                 _ = try manager.attachResolvedUSBDevice(
                     id: "dev",
-                    busID: "3-2"
+                    busID: "3-2",
+                    identityToken: DoryUSBPhysicalIdentityToken(
+                        rawValue: String(repeating: "a", count: 64)
+                    )!
                 )
             }
             #expect(usb.callCount == 0)
@@ -2583,8 +2587,10 @@ private final class ResolvedPlanRecordingUSBController:
         machineID: String,
         socketPath: String,
         busID: String,
+        identityToken: DoryUSBPhysicalIdentityToken,
         mode: DoryMachineUSBOpenMode
     ) throws -> DoryMachineUSBAttachment {
+        _ = identityToken
         lock.withLock { calls += 1 }
         return DoryMachineUSBAttachment(
             machineID: machineID,

@@ -72,7 +72,8 @@ public final class UsbControlHandler: @unchecked Sendable {
     private let allowedOpenModes: Set<HostUsbOpenMode>
     private let ensureSupported: @Sendable () async throws -> Void
     private let openDevice:
-        @Sendable (String, HostUsbOpenMode) throws -> any UsbipExportedDevice
+        @Sendable (String, DoryUSBPhysicalIdentityToken, HostUsbOpenMode) throws
+            -> any UsbipExportedDevice
     private let notifyAttach: @Sendable (UsbAgentAttachRequest) async throws -> Void
     private let notifyDetach: @Sendable (UsbAgentDetachRequest) async throws -> Void
     private let trace: @Sendable (String) -> Void
@@ -111,7 +112,11 @@ public final class UsbControlHandler: @unchecked Sendable {
         manager: UsbipManager,
         allowedOpenModes: Set<HostUsbOpenMode> = [.userAuthorized],
         ensureSupported: @escaping @Sendable () async throws -> Void = {},
-        openDevice: @escaping @Sendable (String, HostUsbOpenMode) throws
+        openDevice: @escaping @Sendable (
+            String,
+            DoryUSBPhysicalIdentityToken,
+            HostUsbOpenMode
+        ) throws
             -> any UsbipExportedDevice,
         notifyAttach: @escaping @Sendable (UsbAgentAttachRequest) async throws -> Void,
         notifyDetach: @escaping @Sendable (UsbAgentDetachRequest) async throws -> Void,
@@ -128,6 +133,7 @@ public final class UsbControlHandler: @unchecked Sendable {
 
     public func attach(
         busID: String,
+        expectedIdentity: DoryUSBPhysicalIdentityToken,
         mode: HostUsbOpenMode = .userAuthorized
     ) async throws -> DoryUSBControlV1.Attachment {
         // Capability is checked before opening or claiming the host device. A missing guest RPC must
@@ -173,7 +179,7 @@ public final class UsbControlHandler: @unchecked Sendable {
         let device: any UsbipExportedDevice
         do {
             trace("attach \(busID): opening host device")
-            device = try openDevice(busID, mode)
+            device = try openDevice(busID, expectedIdentity, mode)
             trace("attach \(busID): host device opened")
         } catch {
             lock.withLock { rollbackLocked(busID, expected: .attaching(port: port)) }

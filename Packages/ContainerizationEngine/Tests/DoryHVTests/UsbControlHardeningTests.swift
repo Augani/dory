@@ -4,6 +4,10 @@ import Foundation
 import Testing
 @testable import DoryHV
 
+private let usbControlTestIdentityToken = DoryUSBPhysicalIdentityToken(
+    rawValue: String(repeating: "a", count: 64)
+)!
+
 @Suite(.serialized)
 struct UsbControlSocketHardeningTests {
     @Test func descriptorShutdownCannotRacePastOwnerClose() {
@@ -65,7 +69,11 @@ struct UsbControlSocketHardeningTests {
             #expect(waitUntil { server.activeSessionCount == 1 })
 
             let response = try sendRawControlRequest(
-                .attach(busID: try DoryUSBControlV1.BusID("3-2"), mode: .userAuthorized),
+                .attach(
+                    busID: try DoryUSBControlV1.BusID("3-2"),
+                    identityToken: usbControlTestIdentityToken,
+                    mode: .userAuthorized
+                ),
                 path: path,
                 timeout: 2
             )
@@ -189,7 +197,11 @@ struct UsbControlSocketHardeningTests {
 
             let busID = try DoryUSBControlV1.BusID("3-2")
             let attached = try sendRawControlRequest(
-                .attach(busID: busID, mode: .userAuthorized),
+                .attach(
+                    busID: busID,
+                    identityToken: usbControlTestIdentityToken,
+                    mode: .userAuthorized
+                ),
                 path: path,
                 timeout: 2
             )
@@ -232,7 +244,7 @@ struct UsbControlSocketHardeningTests {
             let handler = UsbControlHandler(
                 manager: UsbipManager(),
                 ensureSupported: { throw UsbHostileControlError() },
-                openDevice: { busID, _ in UsbControlTestDevice(busID: busID) },
+                openDevice: { busID, _, _ in UsbControlTestDevice(busID: busID) },
                 notifyAttach: { _ in },
                 notifyDetach: { _ in }
             )
@@ -243,6 +255,7 @@ struct UsbControlSocketHardeningTests {
             let response = try sendRawControlRequest(
                 .attach(
                     busID: try DoryUSBControlV1.BusID("3-2"),
+                    identityToken: usbControlTestIdentityToken,
                     mode: .userAuthorized
                 ),
                 path: path,
@@ -472,7 +485,7 @@ struct UsbControlSocketHardeningTests {
             let opens = UsbLockedCounter()
             let handler = UsbControlHandler(
                 manager: UsbipManager(),
-                openDevice: { busID, _ in
+                openDevice: { busID, _, _ in
                     opens.increment()
                     return UsbControlTestDevice(busID: busID)
                 },
@@ -502,7 +515,7 @@ struct UsbControlSocketHardeningTests {
             let opens = UsbLockedCounter()
             let handler = UsbControlHandler(
                 manager: UsbipManager(),
-                openDevice: { busID, _ in
+                openDevice: { busID, _, _ in
                     opens.increment()
                     return UsbControlTestDevice(busID: busID)
                 },
@@ -514,7 +527,11 @@ struct UsbControlSocketHardeningTests {
             defer { _ = server.stop() }
 
             let response = try sendRawControlRequest(
-                .attach(busID: try DoryUSBControlV1.BusID("3-2"), mode: .capture),
+                .attach(
+                    busID: try DoryUSBControlV1.BusID("3-2"),
+                    identityToken: usbControlTestIdentityToken,
+                    mode: .capture
+                ),
                 path: path,
                 timeout: 1
             )
@@ -850,7 +867,7 @@ struct UsbControlTransitionHardeningTests {
         let handler = UsbControlHandler(
             manager: UsbipManager(),
             ensureSupported: { supportChecks.increment() },
-            openDevice: { busID, _ in
+            openDevice: { busID, _, _ in
                 opens.increment()
                 return UsbControlTestDevice(busID: busID)
             },
@@ -858,7 +875,10 @@ struct UsbControlTransitionHardeningTests {
             notifyDetach: { _ in }
         )
         await #expect(throws: UsbControlError.invalidBusID("3/2")) {
-            _ = try await handler.attach(busID: "3/2")
+            _ = try await handler.attach(
+                busID: "3/2",
+                expectedIdentity: usbControlTestIdentityToken
+            )
         }
         await #expect(throws: UsbControlError.invalidBusID("3/2")) {
             try await handler.detach(busID: "3/2")
@@ -877,7 +897,7 @@ struct UsbControlTransitionHardeningTests {
         let manager = UsbipManager()
         let handler = UsbControlHandler(
             manager: manager,
-            openDevice: { _, _ in device },
+            openDevice: { _, _, _ in device },
             notifyAttach: { _ in notifications.increment() },
             notifyDetach: { _ in }
         )
@@ -887,7 +907,10 @@ struct UsbControlTransitionHardeningTests {
             busNumber: UInt32(UInt16.max) + 1,
             deviceNumber: 2
         )) {
-            _ = try await handler.attach(busID: "3-2")
+            _ = try await handler.attach(
+                busID: "3-2",
+                expectedIdentity: usbControlTestIdentityToken
+            )
         }
         #expect(device.shutdownCount == 1)
         #expect(notifications.value == 0)
@@ -902,7 +925,7 @@ struct UsbControlTransitionHardeningTests {
         let handler = UsbControlHandler(
             manager: manager,
             ensureSupported: { supportChecks.increment() },
-            openDevice: { busID, _ in
+            openDevice: { busID, _, _ in
                 opens.increment()
                 return UsbControlTestDevice(busID: busID)
             },
@@ -911,7 +934,11 @@ struct UsbControlTransitionHardeningTests {
         )
 
         await #expect(throws: UsbControlError.openModeNotAllowed(.capture)) {
-            _ = try await handler.attach(busID: "3-2", mode: .capture)
+            _ = try await handler.attach(
+                busID: "3-2",
+                expectedIdentity: usbControlTestIdentityToken,
+                mode: .capture
+            )
         }
         #expect(supportChecks.value == 0)
         #expect(opens.value == 0)
@@ -925,14 +952,19 @@ struct UsbControlTransitionHardeningTests {
         let handler = UsbControlHandler(
             manager: manager,
             ensureSupported: { await gate.block() },
-            openDevice: { busID, _ in
+            openDevice: { busID, _, _ in
                 opens.increment()
                 return UsbControlTestDevice(busID: busID)
             },
             notifyAttach: { _ in },
             notifyDetach: { _ in }
         )
-        let attaching = Task { try await handler.attach(busID: "3-2") }
+        let attaching = Task {
+            try await handler.attach(
+                busID: "3-2",
+                expectedIdentity: usbControlTestIdentityToken
+            )
+        }
         await gate.waitUntilBlocked()
         let stopping = Task.detached { manager.stop(timeout: 1) }
         #expect(waitUntil { manager.isStopped })
@@ -955,11 +987,16 @@ struct UsbControlTransitionHardeningTests {
         let manager = UsbipManager()
         let handler = UsbControlHandler(
             manager: manager,
-            openDevice: { busID, _ in UsbControlTestDevice(busID: busID) },
+            openDevice: { busID, _, _ in UsbControlTestDevice(busID: busID) },
             notifyAttach: { _ in await gate.block() },
             notifyDetach: { _ in }
         )
-        let attaching = Task { try await handler.attach(busID: "3-2") }
+        let attaching = Task {
+            try await handler.attach(
+                busID: "3-2",
+                expectedIdentity: usbControlTestIdentityToken
+            )
+        }
         await gate.waitUntilBlocked()
         do {
             try await handler.detach(busID: "3-2")
@@ -978,13 +1015,16 @@ struct UsbControlTransitionHardeningTests {
         let detachCalls = UsbLockedCounter()
         let handler = UsbControlHandler(
             manager: manager,
-            openDevice: { busID, _ in UsbControlTestDevice(busID: busID) },
+            openDevice: { busID, _, _ in UsbControlTestDevice(busID: busID) },
             notifyAttach: { _ in throw UsbTestRPCError("attach transport lost") },
             notifyDetach: { _ in detachCalls.increment() }
         )
 
         do {
-            _ = try await handler.attach(busID: "3-2")
+            _ = try await handler.attach(
+                busID: "3-2",
+                expectedIdentity: usbControlTestIdentityToken
+            )
             Issue.record("attach unexpectedly succeeded after its RPC failed")
         } catch let error as UsbControlError {
             #expect(error.failureDisposition == .rejected)
@@ -1009,7 +1049,7 @@ struct UsbControlTransitionHardeningTests {
             let detachCalls = UsbLockedCounter()
             let handler = UsbControlHandler(
                 manager: manager,
-                openDevice: { busID, _ in UsbControlTestDevice(busID: busID) },
+                openDevice: { busID, _, _ in UsbControlTestDevice(busID: busID) },
                 notifyAttach: { _ in throw UsbTestRPCError("attach reply lost") },
                 notifyDetach: { _ in
                     detachCalls.increment()
@@ -1024,7 +1064,11 @@ struct UsbControlTransitionHardeningTests {
             let busID = try DoryUSBControlV1.BusID("3-2")
 
             let attach = try sendRawControlRequest(
-                .attach(busID: busID, mode: .userAuthorized),
+                .attach(
+                    busID: busID,
+                    identityToken: usbControlTestIdentityToken,
+                    mode: .userAuthorized
+                ),
                 path: path,
                 timeout: 2
             )
@@ -1053,11 +1097,14 @@ struct UsbControlTransitionHardeningTests {
         let manager = UsbipManager()
         let handler = UsbControlHandler(
             manager: manager,
-            openDevice: { busID, _ in UsbControlTestDevice(busID: busID) },
+            openDevice: { busID, _, _ in UsbControlTestDevice(busID: busID) },
             notifyAttach: { _ in },
             notifyDetach: { request in throw UsbControlError.notAttached(request.busid) }
         )
-        _ = try await handler.attach(busID: "3-2")
+        _ = try await handler.attach(
+            busID: "3-2",
+            expectedIdentity: usbControlTestIdentityToken
+        )
         do {
             try await handler.detach(busID: "3-2")
             Issue.record("failed detach unexpectedly succeeded")
@@ -1080,22 +1127,31 @@ struct UsbControlTransitionHardeningTests {
         let manager = UsbipManager()
         let handler = UsbControlHandler(
             manager: manager,
-            openDevice: { busID, _ in UsbControlTestDevice(busID: busID) },
+            openDevice: { busID, _, _ in UsbControlTestDevice(busID: busID) },
             notifyAttach: { _ in },
             notifyDetach: { _ in await gate.block() }
         )
-        _ = try await handler.attach(busID: "3-2")
+        _ = try await handler.attach(
+            busID: "3-2",
+            expectedIdentity: usbControlTestIdentityToken
+        )
         let detaching = Task { try await handler.detach(busID: "3-2") }
         await gate.waitUntilBlocked()
         do {
-            _ = try await handler.attach(busID: "3-2")
+            _ = try await handler.attach(
+                busID: "3-2",
+                expectedIdentity: usbControlTestIdentityToken
+            )
             Issue.record("attach unexpectedly crossed a detach transition")
         } catch let error as UsbControlError {
             #expect(error == .transitionInProgress(busID: "3-2", operation: "detaching"))
         }
         await gate.release()
         try await detaching.value
-        let attachedAgain = try await handler.attach(busID: "3-2")
+        let attachedAgain = try await handler.attach(
+            busID: "3-2",
+            expectedIdentity: usbControlTestIdentityToken
+        )
         #expect(attachedAgain.port == 0)
     }
 
@@ -1105,11 +1161,16 @@ struct UsbControlTransitionHardeningTests {
         let manager = UsbipManager(stopWaitLimit: 1)
         let handler = UsbControlHandler(
             manager: manager,
-            openDevice: { busID, _ in UsbControlTestDevice(busID: busID) },
+            openDevice: { busID, _, _ in UsbControlTestDevice(busID: busID) },
             notifyAttach: { _ in await gate.block() },
             notifyDetach: { _ in detachCalls.increment() }
         )
-        let attaching = Task { try await handler.attach(busID: "3-2") }
+        let attaching = Task {
+            try await handler.attach(
+                busID: "3-2",
+                expectedIdentity: usbControlTestIdentityToken
+            )
+        }
         await gate.waitUntilBlocked()
         #expect(manager.claimedBusIDs == ["3-2"])
         let stopping = Task.detached { manager.stop(timeout: 1) }
@@ -1143,7 +1204,7 @@ struct UsbControlTransitionHardeningTests {
         let manager = UsbipManager(stopWaitLimit: 1)
         let handler = UsbControlHandler(
             manager: manager,
-            openDevice: { _, _ in
+            openDevice: { _, _, _ in
                 opens.increment()
                 return device
             },
@@ -1155,7 +1216,12 @@ struct UsbControlTransitionHardeningTests {
                 }
             }
         )
-        let attaching = Task { try await handler.attach(busID: "3-2") }
+        let attaching = Task {
+            try await handler.attach(
+                busID: "3-2",
+                expectedIdentity: usbControlTestIdentityToken
+            )
+        }
         await attachGate.waitUntilBlocked()
         #expect(manager.claimedBusIDs == ["3-2"])
 
@@ -1181,7 +1247,10 @@ struct UsbControlTransitionHardeningTests {
         #expect(detachCalls.value == 1)
 
         do {
-            _ = try await handler.attach(busID: "4-1")
+            _ = try await handler.attach(
+                busID: "4-1",
+                expectedIdentity: usbControlTestIdentityToken
+            )
             Issue.record("quiesced manager admitted a new attach")
         } catch let error as UsbipManagerError {
             #expect(error == .stopped)
@@ -1202,7 +1271,7 @@ struct UsbControlTransitionHardeningTests {
         let manager = UsbipManager(stopWaitLimit: 1)
         let handler = UsbControlHandler(
             manager: manager,
-            openDevice: { busID, _ in UsbControlTestDevice(busID: busID) },
+            openDevice: { busID, _, _ in UsbControlTestDevice(busID: busID) },
             notifyAttach: { _ in },
             notifyDetach: { request in
                 detachCalls.increment()
@@ -1212,7 +1281,10 @@ struct UsbControlTransitionHardeningTests {
                 }
             }
         )
-        _ = try await handler.attach(busID: "3-2")
+        _ = try await handler.attach(
+            busID: "3-2",
+            expectedIdentity: usbControlTestIdentityToken
+        )
         let detaching = Task { try await handler.detach(busID: "3-2") }
         await gate.waitUntilBlocked()
         let stopping = Task.detached { manager.stop(timeout: 1) }
@@ -1485,7 +1557,7 @@ private func guestVsockReadWrite(sourcePort: UInt32, payload: [UInt8]) -> [UInt8
 private func makeControlHandler() -> UsbControlHandler {
     UsbControlHandler(
         manager: UsbipManager(),
-        openDevice: { busID, _ in UsbControlTestDevice(busID: busID) },
+        openDevice: { busID, _, _ in UsbControlTestDevice(busID: busID) },
         notifyAttach: { _ in },
         notifyDetach: { _ in }
     )

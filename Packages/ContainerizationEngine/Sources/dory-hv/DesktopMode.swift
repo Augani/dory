@@ -51,7 +51,10 @@ private final class DoryDesktopCameraAttachment: @unchecked Sendable {
             return .unavailable(detail)
         }
         do {
-            let attachment = try await handler.attach(busID: DoryVirtualUVCCamera.busID)
+            let attachment = try await handler.attach(
+                busID: DoryVirtualUVCCamera.busID,
+                expectedIdentity: DoryVirtualUVCCamera.identityToken
+            )
             log(
                 "dory-hv desktop: Dory UVC Camera attached on Linux VHCI port "
                     + "\(attachment.port)"
@@ -1567,8 +1570,15 @@ enum DesktopMode {
                     }
                     Self.log("dory-hv desktop: USB camera confirmed Dory Tools usb-vhci@1")
                 },
-                openDevice: { busID, mode in
+                openDevice: { busID, identityToken, mode in
                     if busID == DoryVirtualUVCCamera.busID, let cameraBackend {
+                        guard identityToken == DoryVirtualUVCCamera.identityToken else {
+                            throw HostUsbOpenError.identityMismatch(
+                                busID: busID,
+                                expected: identityToken,
+                                actual: DoryVirtualUVCCamera.identityToken
+                            )
+                        }
                         return HostUsbDevice(
                             descriptor: DoryVirtualUVCCamera.descriptor(),
                             backend: DoryVirtualUVCCameraBackend(frameSource: cameraBackend),
@@ -1578,7 +1588,11 @@ enum DesktopMode {
                             shutdownTimeout: 2
                         )
                     }
-                    return try HostUsbDeviceFactory.open(busID: busID, mode: mode)
+                    return try HostUsbDeviceFactory.open(
+                        busID: busID,
+                        expectedIdentity: identityToken,
+                        mode: mode
+                    )
                 },
                 notifyAttach: { request in
                     Self.log("dory-hv desktop: USB camera requesting Linux VHCI attachment")

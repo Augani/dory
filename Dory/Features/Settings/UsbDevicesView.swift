@@ -6,7 +6,6 @@ struct UsbDevicesView: View {
     @State private var machine = UserDefaults.standard.string(forKey: "dev.dory.usb.lastMachine") ?? "default"
     @State private var busid = ""
     @State private var machines: [DorydMachineStatus] = []
-    @State private var remembered: [UsbAttachment] = UsbAttachmentStore().attachments()
     @State private var busy = false
     @State private var status = ""
 
@@ -80,10 +79,15 @@ struct UsbDevicesView: View {
                         .labelsHidden()
                         .frame(minWidth: 190)
                         .accessibilityIdentifier("usb-machine")
-                    TextField("bus id", text: $busid)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(size: 12, design: .monospaced))
-                        .accessibilityIdentifier("usb-busid")
+                    Text(selectedDevice?.displayName ?? "Select a live host USB device")
+                        .font(.system(size: 12))
+                        .foregroundStyle(selectedDevice == nil ? p.text3 : p.text2)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 10)
+                        .frame(height: 28)
+                        .background(p.bgInput, in: RoundedRectangle(cornerRadius: 6))
+                        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(p.border))
+                        .accessibilityIdentifier("usb-selected-device")
                 }
 
                 HStack(spacing: 10) {
@@ -94,7 +98,7 @@ struct UsbDevicesView: View {
                     .buttonStyle(.borderedProminent)
                     .disabled(
                         !attachmentIsAvailable ||
-                        busy || busid.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        busy || selectedDevice == nil
                     )
 
                     Button { Task { await detach() } } label: {
@@ -104,7 +108,7 @@ struct UsbDevicesView: View {
                     .buttonStyle(.bordered)
                     .disabled(
                         !attachmentIsAvailable ||
-                        busy || busid.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        busy || selectedDevice == nil
                     )
                 }
 
@@ -115,30 +119,6 @@ struct UsbDevicesView: View {
                         .textSelection(.enabled)
                 }
 
-                if !remembered.isEmpty {
-                    Divider()
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Legacy remembered entries (automatic replay is disabled)")
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(p.text3)
-                        ForEach(remembered) { attachment in
-                            HStack(spacing: 8) {
-                                Text("\(attachment.machine)  \(attachment.busID)  port \(attachment.port)")
-                                    .font(.system(size: 11.5, design: .monospaced))
-                                    .foregroundStyle(p.text2)
-                                    .lineLimit(1)
-                                Spacer(minLength: 0)
-                                Button {
-                                    forget(attachment)
-                                } label: {
-                                    Image(systemName: "trash")
-                                }
-                                .buttonStyle(.borderless)
-                                .help("Forget attachment")
-                            }
-                        }
-                    }
-                }
             }
             .padding(16)
             .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 11))
@@ -206,8 +186,8 @@ struct UsbDevicesView: View {
         }
         do {
             hostDevices = try await deviceScan
-            if busid.isEmpty, let first = hostDevices.first {
-                busid = first.busID
+            if !hostDevices.contains(where: { $0.busID == busid }) {
+                busid = hostDevices.first?.busID ?? ""
             }
         } catch {
             hostDevices = []
@@ -224,9 +204,14 @@ struct UsbDevicesView: View {
         busy = true
         defer { busy = false }
         do {
+            guard let selectedDevice else {
+                status = "Select a live host USB device."
+                return
+            }
             let attachment = try await DorydClient().machineUSBAttach(
                 cleanMachine(),
-                busID: cleanBusID()
+                busID: selectedDevice.busID,
+                identityToken: selectedDevice.identityToken
             )
             UserDefaults.standard.set(cleanMachine(), forKey: "dev.dory.usb.lastMachine")
             status = "Attached \(attachment.busID) on guest port \(attachment.port)."
@@ -244,21 +229,10 @@ struct UsbDevicesView: View {
         defer { busy = false }
         do {
             try await DorydClient().machineUSBDetach(cleanMachine(), busID: cleanBusID())
-            try? UsbAttachmentStore().forget(machine: cleanMachine(), busID: cleanBusID())
-            reloadRemembered()
             status = "Detached \(cleanBusID())."
         } catch {
             status = "Detach failed: \(error)"
         }
-    }
-
-    @MainActor private func forget(_ attachment: UsbAttachment) {
-        try? UsbAttachmentStore().forget(machine: attachment.machine, busID: attachment.busID)
-        reloadRemembered()
-    }
-
-    @MainActor private func reloadRemembered() {
-        remembered = UsbAttachmentStore().attachments()
     }
 
     private func cleanMachine() -> String { machine.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -266,6 +240,10 @@ struct UsbDevicesView: View {
 
     private var selectedMachine: DorydMachineStatus? {
         machines.first { $0.id == cleanMachine() }
+    }
+
+    private var selectedDevice: DorydHostUSBDevice? {
+        hostDevices.first { $0.busID == cleanBusID() }
     }
 
     private var attachmentIsAvailable: Bool {

@@ -1,7 +1,12 @@
 import Darwin
+import DoryVMContracts
 import Foundation
 import Testing
 @testable import DorydKit
+
+private let machineUSBIdentityToken = DoryUSBPhysicalIdentityToken(
+    rawValue: String(repeating: "a", count: 64)
+)!
 
 @Suite(.serialized)
 struct DoryMachineUSBControlTests {
@@ -17,6 +22,7 @@ struct DoryMachineUSBControlTests {
             machineID: "desktop",
             socketPath: server.path,
             busID: "3-2",
+            identityToken: machineUSBIdentityToken,
             mode: .capture
         )
 
@@ -30,6 +36,7 @@ struct DoryMachineUSBControlTests {
         ))
         #expect(server.request?["cmd"] as? String == "attach")
         #expect(server.request?["busid"] as? String == "3-2")
+        #expect(server.request?["identityToken"] as? String == machineUSBIdentityToken.rawValue)
         #expect(server.request?["mode"] as? String == "capture")
     }
 
@@ -235,6 +242,7 @@ struct DoryMachineUSBControlTests {
                 machineID: "desktop",
                 socketPath: path,
                 busID: "3-2",
+                identityToken: machineUSBIdentityToken,
                 mode: .userAuthorized
             )
         }

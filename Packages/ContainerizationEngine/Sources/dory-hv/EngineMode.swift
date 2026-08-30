@@ -1264,7 +1264,13 @@ enum EngineMode {
                 )
                 try await channel.requireCapability("usb-vhci", version: 1)
             },
-            openDevice: { busID, mode in try HostUsbDeviceFactory.open(busID: busID, mode: mode) },
+            openDevice: { busID, identityToken, mode in
+                try HostUsbDeviceFactory.open(
+                    busID: busID,
+                    expectedIdentity: identityToken,
+                    mode: mode
+                )
+            },
             notifyAttach: { request in
                 let channel = AgentChannel(
                     connection: try vsock.connectForServiceIfCapacity(

@@ -1,5 +1,6 @@
 import DoryCore
 import DoryOperations
+import DoryVMContracts
 import Foundation
 import ObjectiveC
 
@@ -1037,6 +1038,7 @@ public final class DorydService: NSObject, DorydControl {
     public func machineUSBAttach(
         _ machineID: String,
         busID: String,
+        identityToken: String,
         reply: @escaping (Bool, NSDictionary, String) -> Void
     ) {
         guard let machineManager else {
@@ -1044,9 +1046,16 @@ public final class DorydService: NSObject, DorydControl {
             return
         }
         do {
+            guard let identityToken = DoryUSBPhysicalIdentityToken(
+                rawValue: identityToken
+            ) else {
+                reply(false, [:], "USB physical identity token is invalid")
+                return
+            }
             let attachment = try machineManager.attachResolvedUSBDevice(
                 id: machineID,
                 busID: busID,
+                identityToken: identityToken,
                 mode: .userAuthorized
             )
             reply(true, attachment.xpcDictionary, "")

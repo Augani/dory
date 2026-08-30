@@ -59,7 +59,11 @@ public enum DoryUSBControlV1 {
     }
 
     public enum Request: Sendable, Equatable {
-        case attach(busID: BusID, mode: OpenMode)
+        case attach(
+            busID: BusID,
+            identityToken: DoryUSBPhysicalIdentityToken,
+            mode: OpenMode
+        )
         case detach(busID: BusID)
 
         public var operation: Operation {
@@ -71,7 +75,7 @@ public enum DoryUSBControlV1 {
 
         public var busID: BusID {
             switch self {
-            case .attach(let busID, _), .detach(let busID): busID
+            case .attach(let busID, _, _), .detach(let busID): busID
             }
         }
     }
@@ -148,10 +152,11 @@ public enum DoryUSBControlV1 {
     public static func encodeRequest(_ request: Request) throws -> Data {
         let encoded: Data
         switch request {
-        case .attach(let busID, let mode):
+        case .attach(let busID, let identityToken, let mode):
             encoded = try encodeJSON(AttachRequestWire(
                 cmd: Operation.attach.rawValue,
                 busid: busID.rawValue,
+                identityToken: identityToken.rawValue,
                 mode: mode
             ))
         case .detach(let busID):
@@ -174,7 +179,16 @@ public enum DoryUSBControlV1 {
             guard wire.cmd == Operation.attach.rawValue else {
                 throw CodecError.invalidRequestShape
             }
-            return .attach(busID: try BusID(wire.busid), mode: wire.mode)
+            guard let identityToken = DoryUSBPhysicalIdentityToken(
+                rawValue: wire.identityToken
+            ) else {
+                throw CodecError.invalidRequestShape
+            }
+            return .attach(
+                busID: try BusID(wire.busid),
+                identityToken: identityToken,
+                mode: wire.mode
+            )
         case Operation.detach.rawValue:
             try requireExactFields(fields, expected: detachRequestFields)
             let wire: DetachRequestWire = try decodeJSON(frame)
@@ -270,7 +284,9 @@ public enum DoryUSBControlV1 {
             && bytes.allSatisfy { (0x20...0x7e).contains($0) }
     }
 
-    private static let attachRequestFields: Set<String> = ["cmd", "busid", "mode"]
+    private static let attachRequestFields: Set<String> = [
+        "cmd", "busid", "identityToken", "mode",
+    ]
     private static let detachRequestFields: Set<String> = ["cmd", "busid"]
     private static let attachSuccessFields: Set<String> = [
         "ok", "port", "vsockPort", "deviceID", "speed",
@@ -328,6 +344,7 @@ public enum DoryUSBControlV1 {
     private struct AttachRequestWire: Codable {
         let cmd: String
         let busid: String
+        let identityToken: String
         let mode: OpenMode
     }
 
