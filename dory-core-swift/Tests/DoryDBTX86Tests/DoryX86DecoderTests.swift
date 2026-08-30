@@ -291,4 +291,29 @@ import Testing
         == .jump(relative: -4)
     )
   }
+
+  @Test func decodesDescriptorTableTransitions() throws {
+    #expect(
+      try decoder.decode([0x0F, 0x01, 0x10], at: 0x200, mode: .real16).operation
+        == .descriptorTable(
+          .global,
+          load: true,
+          address: .init(
+            base: .rbx,
+            index: .rsi,
+            width: .quadword,
+            addressWidth: .word,
+            ignoresLegacySegmentBase: false
+          )
+        )
+    )
+    #expect(
+      try decoder.decode([0x0F, 0x01, 0x09], at: 0x200, mode: .long64).operation
+        == .descriptorTable(
+          .interrupt,
+          load: false,
+          address: .init(base: .rcx, width: .quadword)
+        )
+    )
+  }
 }

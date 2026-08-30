@@ -544,6 +544,23 @@ import Testing
     #expect(state.rip == 0x13)
   }
 
+  @Test func descriptorTablesRoundTripAcrossRealModeLayouts() throws {
+    var bytes = [UInt8](repeating: 0, count: 0x300)
+    bytes.replaceSubrange(0x100..<0x106, with: [0x0F, 0x01, 0x10, 0x0F, 0x01, 0x01])
+    bytes.replaceSubrange(0x180..<0x186, with: [0x34, 0x12, 0xEF, 0xCD, 0xAB, 0x89])
+    let memory = DoryX86ByteArrayMemory(bytes: bytes)
+    var state = try DoryX86ArchitecturalState(
+      registers: .init(rbx: 0x100, rsi: 0x80, rdi: 0x90),
+      rip: 0x100,
+      cs: .init(selector: 0, attributes: 0x93, limit: 0xffff, base: 0)
+    )
+
+    _ = interpreter.step(state: &state, memory: memory, mode: .real16)
+    #expect(state.gdtr == .init(limit: 0x1234, base: 0xAB_CDEF))
+    _ = interpreter.step(state: &state, memory: memory, mode: .real16)
+    #expect(try memory.read(at: 0x190, byteCount: 6) == [0x34, 0x12, 0xEF, 0xCD, 0xAB, 0x00])
+  }
+
   private func readQuadword(_ memory: DoryX86ByteArrayMemory, at address: UInt64) -> UInt64 {
     try! memory.read(at: address, byteCount: 8).enumerated().reduce(0) {
       $0 | UInt64($1.element) << UInt64($1.offset * 8)

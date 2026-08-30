@@ -518,6 +518,33 @@ public struct DoryX86Interpreter: Sendable {
         pagingUnit?.invalidate(
           linearAddress: effectiveAddress(operand, instruction: instruction, state: state)
         )
+      case .descriptorTable(let table, let load, let address):
+        if load, currentPrivilegeLevel(state) != 0 {
+          return generalProtection(at: originalRIP)
+        }
+        let linearAddress = effectiveAddress(address, instruction: instruction, state: state)
+        let byteCount = mode == .long64 ? 10 : 6
+        if load {
+          let bytes = try executionMemory.read(at: linearAddress, byteCount: byteCount)
+          let limit = UInt16(bytes[0]) | UInt16(bytes[1]) << 8
+          var base: UInt64 = 0
+          for index in 0..<(byteCount - 2) {
+            base |= UInt64(bytes[index + 2]) << UInt64(index * 8)
+          }
+          if mode == .real16, !instruction.prefixes.operandSizeOverride {
+            base &= 0x00ff_ffff
+          }
+          let value = DoryX86DescriptorTableState(limit: limit, base: base)
+          if table == .global { state.gdtr = value } else { state.idtr = value }
+        } else {
+          let value = table == .global ? state.gdtr : state.idtr
+          var bytes = [UInt8(value.limit & 0xff), UInt8(value.limit >> 8)]
+          for index in 0..<(byteCount - 2) {
+            bytes.append(UInt8(truncatingIfNeeded: value.base >> UInt64(index * 8)))
+          }
+          try executionMemory.validateWrite(at: linearAddress, byteCount: byteCount)
+          try executionMemory.write(at: linearAddress, bytes: bytes)
+        }
       case .readModelSpecificRegister:
         guard currentPrivilegeLevel(state) == 0,
           let value = readModelSpecificRegister(
