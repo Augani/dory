@@ -12,6 +12,7 @@ public enum DoryPCPhysicalMemoryError: Error, Sendable, Equatable {
 public protocol DoryPCMMIODevice: AnyObject, Sendable {
   var baseAddress: UInt64 { get }
   var byteCount: UInt64 { get }
+  var allowsInstructionFetch: Bool { get }
   func read(offset: UInt64, byteCount: Int) throws -> [UInt8]
   func write(offset: UInt64, bytes: [UInt8]) throws
   func validateWrite(offset: UInt64, byteCount: Int) throws
@@ -19,6 +20,8 @@ public protocol DoryPCMMIODevice: AnyObject, Sendable {
 }
 
 extension DoryPCMMIODevice {
+  public var allowsInstructionFetch: Bool { false }
+
   public func validateWrite(offset: UInt64, byteCount: Int) throws {
     guard byteCount > 0, offset <= self.byteCount, UInt64(byteCount) <= self.byteCount - offset
     else {
@@ -70,11 +73,18 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, @unchecked Sendable {
   public func seal() { lock.withLock { isSealed = true } }
 
   public func instructionBytes(at address: UInt64, maximumCount: Int) throws -> [UInt8] {
-    if try resolve(address: address, byteCount: 1) != nil {
-      throw DoryX86MemoryError.unmapped(
-        address: address,
-        byteCount: maximumCount,
-        access: .instructionFetch
+    if let resolved = try resolve(address: address, byteCount: 1) {
+      guard resolved.device.allowsInstructionFetch else {
+        throw DoryX86MemoryError.unmapped(
+          address: address,
+          byteCount: maximumCount,
+          access: .instructionFetch
+        )
+      }
+      let available = resolved.device.byteCount - resolved.offset
+      return try resolved.device.read(
+        offset: resolved.offset,
+        byteCount: min(maximumCount, Int(available))
       )
     }
     return try ram.instructionBytes(at: address, maximumCount: maximumCount)
