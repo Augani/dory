@@ -535,6 +535,25 @@ public struct DoryX86Interpreter: Sendable {
           state: &state,
           memory: executionMemory
         )
+      case .loadVector128(let register, let source):
+        precondition(state.floatingPoint.ymm.indices.contains(Int(register)))
+        try validateSegmentAccess(
+          source,
+          byteCount: 16,
+          write: false,
+          instruction: instruction,
+          state: state
+        )
+        let bytes = try executionMemory.read(
+          at: effectiveAddress(source, instruction: instruction, state: state),
+          byteCount: 16
+        )
+        var registerBytes = state.floatingPoint.ymm[Int(register)].bytes
+        registerBytes.replaceSubrange(0..<16, with: bytes)
+        state.floatingPoint.ymm[Int(register)] = try .init(
+          bytes: registerBytes,
+          expectedByteCount: 32
+        )
       case .storeVector128(let register, let destination):
         precondition(state.floatingPoint.ymm.indices.contains(Int(register)))
         try validateSegmentAccess(

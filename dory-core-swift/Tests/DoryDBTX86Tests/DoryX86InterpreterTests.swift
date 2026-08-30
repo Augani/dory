@@ -278,6 +278,27 @@ import Testing
     #expect(try memory.read(at: 0x1038, byteCount: 16) == Array(0..<16))
   }
 
+  @Test func movdquLoadsLowVectorAndPreservesUpperVector() throws {
+    var bytes = [UInt8](repeating: 0, count: 0x30)
+    bytes.replaceSubrange(0..<8, with: [0xF3, 0x0F, 0x6F, 0x35, 0x08, 0, 0, 0])
+    bytes.replaceSubrange(0x10..<0x20, with: Array(0x80..<0x90))
+    let memory = DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: bytes)
+    var floatingPoint = try DoryX86FloatingPointState()
+    floatingPoint.ymm[6] = try .init(bytes: Array(0..<32), expectedByteCount: 32)
+    var state = try DoryX86ArchitecturalState(
+      rip: 0x1000,
+      cs: .init(selector: 0x38, attributes: 0xA09B, limit: .max),
+      floatingPoint: floatingPoint
+    )
+
+    let result = interpreter.step(state: &state, memory: memory, mode: .long64)
+    guard case .retired = result else {
+      Issue.record("MOVDQU load unexpectedly faulted: \(result)")
+      return
+    }
+    #expect(state.floatingPoint.ymm[6].bytes == Array(0x80..<0x90) + Array(16..<32))
+  }
+
   @Test func byteExtendMoveUsesTheWideModRMDestinationRegister() throws {
     var bytes = [UInt8](repeating: 0, count: 0x20)
     bytes.replaceSubrange(0..<4, with: [0x0F, 0xB6, 0x71, 0x02])

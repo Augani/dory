@@ -604,6 +604,23 @@ public struct DoryX86Decoder: Sendable {
           }
           operation = operands.group == 2 ? .loadMXCSR(operands.rm) : .storeMXCSR(operands.rm)
         }
+      case 0x6F:
+        guard prefixes.repeatPrefix == 0xF3 else {
+          throw DoryX86DecodeError.invalidEncoding(
+            address: address, detail: "unsupported 0F 6F mandatory prefix")
+        }
+        let operands = try decodeModRM(
+          cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
+        guard case .memory(let source) = operands.rm,
+          case .register(let destination, _) = operands.reg
+        else {
+          throw DoryX86DecodeError.invalidEncoding(
+            address: address, detail: "MOVDQU load requires a memory source")
+        }
+        operation = .loadVector128(
+          register: UInt8(DoryX86GeneralRegister.allCases.firstIndex(of: destination)!),
+          source: source
+        )
       case 0x7F:
         guard prefixes.repeatPrefix == 0xF3 else {
           throw DoryX86DecodeError.invalidEncoding(
