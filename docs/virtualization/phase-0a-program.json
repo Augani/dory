@@ -1,0 +1,88 @@
+{
+  "schemaVersion": 1,
+  "charter": "docs/linux-and-macos-virtualization-delivery-plan.md",
+  "phase": "0A",
+  "status": "in-progress",
+  "hostBoundary": "apple-silicon-only",
+  "workstreams": [
+    {
+      "area": "Packages/ContainerizationEngine",
+      "adrs": ["ADR-001", "ADR-002", "ADR-003", "ADR-004", "ADR-009", "ADR-019", "ADR-020", "ADR-021"],
+      "owners": ["virtualization-runtime", "machine-device", "host-integration"],
+      "testStrategy": "engine/machine contract, hostile-device, lifecycle, fake-screen/device, and physical-lab suites",
+      "exitGate": "native behavior preserved while engine, machine, device, runner, and authority boundaries are independently testable",
+      "dependencies": ["schema-and-control", "release-and-components"]
+    },
+    {
+      "area": "New DoryDBT packages",
+      "adrs": ["ADR-006", "ADR-007", "ADR-008", "ADR-017"],
+      "owners": ["dbt-runtime", "cpu-architecture", "product-security"],
+      "testStrategy": "spec vectors, physical differential execution, interpreter/JIT parity, litmus, invalidation, fuzz, and replay",
+      "exitGate": "G1 and JIT security gates pass with bounded cache and precise state on the signed release configuration",
+      "dependencies": ["execution-contracts", "qualification"]
+    },
+    {
+      "area": "New machine packages",
+      "adrs": ["ADR-004", "ADR-005", "ADR-009", "ADR-013", "ADR-014"],
+      "owners": ["arm-machine", "pc-machine", "intel-mac-platform"],
+      "testStrategy": "golden ABI tables and identical machine-visible traces across every eligible execution tier",
+      "exitGate": "each frozen model installs, reboots, recovers, and preserves its ABI on exact qualified media",
+      "dependencies": ["execution-contracts", "dbt-runtime", "firmware"]
+    },
+    {
+      "area": "New firmware package/tooling",
+      "adrs": ["ADR-004", "ADR-005", "ADR-010", "ADR-013"],
+      "owners": ["firmware", "supply-chain", "legal"],
+      "testStrategy": "two-builder reproducibility, provenance/SBOM, NVRAM recovery, update, and installer matrices",
+      "exitGate": "Dory platform firmware is reproducible, licensed, signed, provenance-bound, and contains no protected Apple material",
+      "dependencies": ["machine-packages", "release-and-components"]
+    },
+    {
+      "area": "dory-core-swift/Sources/DoryOperations",
+      "adrs": ["ADR-015", "ADR-018", "ADR-023", "ADR-025"],
+      "owners": ["control-plane", "migration", "operations"],
+      "testStrategy": "resolver golden matrix, dry-run migration, no-mutation failure, checkpoint chaos, and receipt tests",
+      "exitGate": "schema 7 writes only Dory identities and every legacy definition migrates losslessly or rejects before mutation",
+      "dependencies": ["architecture-contracts", "media-and-disk"]
+    },
+    {
+      "area": "dory-core-swift/Sources/DoryVMMKit",
+      "adrs": ["ADR-012", "ADR-014", "ADR-019", "ADR-021", "ADR-024"],
+      "owners": ["vzmac", "lifecycle", "host-integration"],
+      "testStrategy": "restore/update/recovery/clone, exact public API probes, permission loss, and saved-state compatibility",
+      "exitGate": "qualified ARM64 macOS tuples pass lifecycle and natural-device gates without generic Linux ownership",
+      "dependencies": ["schema-and-control", "desktop-experience"]
+    },
+    {
+      "area": "Media/image tooling",
+      "adrs": ["ADR-011", "ADR-023", "ADR-024", "ADR-025"],
+      "owners": ["media-storage", "parser-security", "backup"],
+      "testStrategy": "parser fuzz/corpora, descriptor authority, TOCTOU, disk-full/cancel/crash, and restore drills",
+      "exitGate": "all media and disk mutation is bounded, transactional, provenance-bound, and recoverable",
+      "dependencies": ["schema-and-control"]
+    },
+    {
+      "area": "DoryDesktopExperience/CLI",
+      "adrs": ["ADR-014", "ADR-019", "ADR-020", "ADR-021", "ADR-022", "ADR-025"],
+      "owners": ["desktop-experience", "accessibility-localization", "cli-api"],
+      "testStrategy": "deterministic projection/intent fixtures, UI journeys, accessibility/localization, physical screen/device chaos, and latency traces",
+      "exitGate": "all nine surfaces and CLI/API expose one durable truth and pass G3/G4/G8/G9 plus section 7 budgets",
+      "dependencies": ["schema-and-control", "host-integration", "qualification"]
+    },
+    {
+      "area": "Components/release/tests/qualification/documentation",
+      "adrs": ["ADR-016", "ADR-017", "ADR-018", "ADR-026"],
+      "owners": ["release", "qualification", "security", "legal", "support"],
+      "testStrategy": "source/artifact audit, signed receipts, physical matrix, clean install, upgrade/rollback, channel parity, and support drills",
+      "exitGate": "immutable release manifests and current signed G0-G9 receipts back every supported claim",
+      "dependencies": ["all-workstreams"]
+    }
+  ],
+  "stopGates": [
+    "counsel-approved-x86_64-macos-candidate-and-servicing-horizon",
+    "signed-notarized-jit-entitlement-probe",
+    "signed-final-public-vzmac-device-probes",
+    "frozen-physical-host-and-reference-baselines",
+    "named-staffing-lab-release-and-ledger-approvers"
+  ]
+}

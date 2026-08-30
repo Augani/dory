@@ -165,6 +165,8 @@ docs/
 !/docs/virtualization/
 /docs/virtualization/*
 !/docs/virtualization/no-qemu-source-debt.json
+!/docs/virtualization/phase-0a-decision-records.md
+!/docs/virtualization/phase-0a-program.json
 !/docs/architecture-gates/
 /docs/architecture-gates/*
 !/docs/architecture-gates/virtiofs-worker-xpc.json
