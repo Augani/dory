@@ -182,18 +182,26 @@ int dory_jit_region_execute(
     const dory_jit_region *region,
     size_t offset,
     uint64_t *context,
+    void *memory_context,
+    dory_jit_memory_read_function memory_read,
+    dory_jit_memory_write_function memory_write,
     uint32_t *exit_code_out
 ) {
     void *entry = dory_jit_region_entry(region, offset);
     if (entry == NULL || context == NULL || exit_code_out == NULL) {
         return EINVAL;
     }
-    typedef uint32_t (*dory_jit_function)(uint64_t *);
+    typedef uint32_t (*dory_jit_function)(
+        uint64_t *,
+        void *,
+        dory_jit_memory_read_function,
+        dory_jit_memory_write_function
+    );
     union {
         void *pointer;
         dory_jit_function function;
     } callable = {.pointer = entry};
-    *exit_code_out = callable.function(context);
+    *exit_code_out = callable.function(context, memory_context, memory_read, memory_write);
     return 0;
 }
 
@@ -235,11 +243,17 @@ int dory_jit_region_execute(
     const dory_jit_region *region,
     size_t offset,
     uint64_t *context,
+    void *memory_context,
+    dory_jit_memory_read_function memory_read,
+    dory_jit_memory_write_function memory_write,
     uint32_t *exit_code_out
 ) {
     (void)region;
     (void)offset;
     (void)context;
+    (void)memory_context;
+    (void)memory_read;
+    (void)memory_write;
     (void)exit_code_out;
     return ENOTSUP;
 }

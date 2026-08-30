@@ -141,13 +141,18 @@ public struct DoryX86IRTranslator: Sendable {
       offset += Int(instruction.length)
       instructionCount += 1
       let lowering = lower(instruction)
-      if instructionCount > 1, requiresJITFallback(lowering) {
+      let isolatesMemoryAccess = lowering.statements.contains(where: containsMemory)
+      if instructionCount > 1, requiresJITFallback(lowering) || isolatesMemoryAccess {
         offset -= Int(instruction.length)
         instructionCount -= 1
         terminator = .next(instructionAddress)
         break
       }
       statements.append(contentsOf: lowering.statements)
+      if isolatesMemoryAccess {
+        terminator = .next(instruction.nextInstructionAddress)
+        break
+      }
       if let end = lowering.terminator {
         terminator = end
         break
@@ -267,15 +272,27 @@ public struct DoryX86IRTranslator: Sendable {
   private func isBaselineJITSupported(_ statement: DoryIRStatement) -> Bool {
     switch statement {
     case .copy(let destination, let source):
-      guard case .register(let target) = destination, isJITGeneralRegister(target) else {
-        return false
-      }
-      switch source {
-      case .register(let register):
-        return isJITGeneralRegister(register) && register.width == target.width
-      case .immediate(_, let width):
-        return width == target.width
-      case .memory:
+      switch destination {
+      case .register(let target) where isJITGeneralRegister(target):
+        switch source {
+        case .register(let register):
+          return isJITGeneralRegister(register) && register.width == target.width
+        case .immediate(_, let width):
+          return width == target.width
+        case .memory(let address, let width):
+          return width == target.width && isJITMemoryAddress(address)
+        }
+      case .memory(let address, let width)
+      where (width == .i32 || width == .i64) && isJITMemoryAddress(address):
+        switch source {
+        case .register(let register):
+          return isJITGeneralRegister(register) && register.width == width
+        case .immediate(_, let immediateWidth):
+          return immediateWidth == width
+        case .memory:
+          return false
+        }
+      default:
         return false
       }
     case .binary(_, let destination, let source, _):
@@ -310,6 +327,32 @@ public struct DoryX86IRTranslator: Sendable {
   private func isJITGeneralRegister(_ register: DoryIRRegister) -> Bool {
     register.bank == "x86.gpr" && register.index < 16
       && (register.width == .i32 || register.width == .i64)
+  }
+
+  private func isJITMemoryAddress(_ address: DoryIRMemoryAddress) -> Bool {
+    address.segment == nil && (address.addressWidth == .i32 || address.addressWidth == .i64)
+      && (address.scale == 1 || address.scale == 2 || address.scale == 4 || address.scale == 8)
+      && [address.base, address.index].compactMap { $0 }.allSatisfy {
+        isJITGeneralRegister($0) && $0.width == address.addressWidth
+      }
+  }
+
+  private func containsMemory(_ statement: DoryIRStatement) -> Bool {
+    switch statement {
+    case .copy(let destination, let source):
+      return isMemory(destination) || isMemory(source)
+    case .binary(_, let destination, let source, _):
+      return isMemory(destination) || isMemory(source)
+    case .unary(_, let operand):
+      return isMemory(operand)
+    case .effectiveAddress, .helper:
+      return false
+    }
+  }
+
+  private func isMemory(_ operand: DoryIROperand) -> Bool {
+    if case .memory = operand { return true }
+    return false
   }
 
   private func fallback(

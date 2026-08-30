@@ -118,22 +118,23 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     }
     self.processorCount = processorCount
     self.executionTier = executionTier
-    baselineJIT = switch executionTier {
-    case .interpreter:
-      nil
-    case .baselineJIT:
-      try DoryARM64BaselineExecutor(
-        maximumCodeBytes: baselineJITMaximumCodeBytes,
-        decoder: interpreter.decoder,
-        optimization: .baseline
-      )
-    case .optimizingJIT:
-      try DoryARM64BaselineExecutor(
-        maximumCodeBytes: baselineJITMaximumCodeBytes,
-        decoder: interpreter.decoder,
-        optimization: .optimizing
-      )
-    }
+    baselineJIT =
+      switch executionTier {
+      case .interpreter:
+        nil
+      case .baselineJIT:
+        try DoryARM64BaselineExecutor(
+          maximumCodeBytes: baselineJITMaximumCodeBytes,
+          decoder: interpreter.decoder,
+          optimization: .baseline
+        )
+      case .optimizingJIT:
+        try DoryARM64BaselineExecutor(
+          maximumCodeBytes: baselineJITMaximumCodeBytes,
+          decoder: interpreter.decoder,
+          optimization: .optimizing
+        )
+      }
     firmwareConfiguration = DoryPCFirmwareConfiguration(
       totalRAMBytes: UInt64(memoryBytes),
       processorCount: processorCount,
@@ -455,7 +456,8 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           mode: mode,
           addressSpaceID: state.control.cr3,
           maximumInstructions: budget,
-          state: &state
+          state: &state,
+          memory: translatedMemory
         )
       {
         let count = UInt64(execution.block.guestInstructionCount)
@@ -533,7 +535,8 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         deadlines.append(ticks)
       }
       for deadline in hpet.interruptDeadlines()
-      where (deadline.route < 16
+      where
+        (deadline.route < 16
         && legacyPIC.canAccept(
           irq: UInt8(deadline.route),
           interruptsEnabled: interruptsEnabled

@@ -68,7 +68,7 @@ public struct DoryX86DifferentialHarness: Sendable {
         minimumCapacity: max(4096, compiled.machineBytes.count)
       )
       try region.publish(compiled, at: 0)
-      let jitExit = try region.execute(at: 0, context: &context)
+      let jitExit = try region.execute(at: 0, context: &context, memory: memory)
       var jitState = initialState
       try apply(context: context, to: &jitState)
       return .init(

@@ -31,9 +31,9 @@ import Testing
     #endif
   }
 
-  @Test func memoryIRIsRejectedInsteadOfSilentlyDiverging() throws {
+  @Test func nativeMemoryLoadAgreesWithInterpreter() throws {
     #if arch(arm64)
-      let bytes: [UInt8] = [0x48, 0x8B, 0x00]
+      let bytes: [UInt8] = [0x48, 0x8B, 0x00] + .init(repeating: 0, count: 8)
       let memory = DoryX86ByteArrayMemory(baseAddress: 0x2000, bytes: bytes)
       let state = try DoryX86ArchitecturalState(
         registers: .init(rax: 0x2000),
@@ -41,14 +41,15 @@ import Testing
         cs: .init(selector: 0, attributes: 0xA09A, limit: .max)
       )
 
-      #expect(throws: DoryX86DifferentialError.requiresBaselineJIT) {
-        try DoryX86DifferentialHarness().compare(
-          bytes: bytes,
-          initialState: state,
-          memory: memory,
-          mode: .long64
-        )
-      }
+      let result = try DoryX86DifferentialHarness().compare(
+        bytes: bytes,
+        initialState: state,
+        memory: memory,
+        mode: .long64
+      )
+      #expect(result.compiled.tier == .baseline)
+      #expect(result.compiled.requiresMemoryCallbacks)
+      #expect(result.agrees)
     #endif
   }
 

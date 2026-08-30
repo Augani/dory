@@ -22,7 +22,7 @@ import Testing
 
   @Test func unsupportedIRProducesAClosedInterpreterFallbackStub() throws {
     let block = try DoryX86IRTranslator().translate(
-      [0x48, 0x8B, 0x00],
+      [0x0F, 0xA2],
       at: 0x2000,
       mode: .long64
     )
@@ -31,6 +31,71 @@ import Testing
     #expect(compiled.tier == .interpreterFallback)
     #expect(compiled.exitCode == .interpreter)
     #expect(compiled.machineWords.last == 0xD65F_03C0)
+  }
+
+  @Test func executorLoadsAndStoresGuestMemoryThroughBoundedCallbacks() throws {
+    #if arch(arm64)
+      let memory = DoryX86ByteArrayMemory(byteCount: 0x100)
+      try memory.write(at: 0x80, bytes: [0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11])
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
+      var state = try DoryX86ArchitecturalState(registers: .init(rax: 0x80), rip: 0x1000)
+
+      let load = try #require(
+        executor.execute(
+          bytes: [0x48, 0x8B, 0x18],
+          at: state.rip,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 1,
+          state: &state,
+          memory: memory
+        )
+      )
+      #expect(load.block.requiresMemoryCallbacks)
+      #expect(load.exitCode == .dispatch)
+      #expect(state.registers.rbx == 0x1122_3344_5566_7788)
+
+      state.rip = 0x2000
+      state.registers.rax = 0x88
+      let store = try #require(
+        executor.execute(
+          bytes: [0x48, 0x89, 0x18],
+          at: state.rip,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 1,
+          state: &state,
+          memory: memory
+        )
+      )
+      #expect(store.exitCode == .dispatch)
+      #expect(
+        try memory.read(at: 0x88, byteCount: 8) == [0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11])
+    #endif
+  }
+
+  @Test func failedNativeMemoryAccessLeavesTheInstructionRestartable() throws {
+    #if arch(arm64)
+      let memory = DoryX86ByteArrayMemory(byteCount: 0x100)
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
+      let initial = try DoryX86ArchitecturalState(
+        registers: .init(rax: 0x1000, rbx: 0xCAFE), rip: 0x3000)
+      var state = initial
+
+      let execution = try #require(
+        executor.execute(
+          bytes: [0x48, 0x8B, 0x18],
+          at: state.rip,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 1,
+          state: &state,
+          memory: memory
+        )
+      )
+      #expect(execution.exitCode == .interpreter)
+      #expect(state == initial)
+    #endif
   }
 
   @Test func boundedCacheEvictsAndInvalidatesDeterministically() throws {

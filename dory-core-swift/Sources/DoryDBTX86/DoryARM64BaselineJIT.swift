@@ -27,6 +27,7 @@ public struct DoryARM64CompiledBlock: Codable, Sendable, Hashable {
   public let machineWords: [UInt32]
   public let tier: DoryARM64CompilationTier
   public let exitCode: DoryJITExitCode
+  public let requiresMemoryCallbacks: Bool
 
   public init(
     guestStart: UInt64,
@@ -34,7 +35,8 @@ public struct DoryARM64CompiledBlock: Codable, Sendable, Hashable {
     guestInstructionCount: UInt32,
     machineWords: [UInt32],
     tier: DoryARM64CompilationTier,
-    exitCode: DoryJITExitCode
+    exitCode: DoryJITExitCode,
+    requiresMemoryCallbacks: Bool = false
   ) {
     self.guestStart = guestStart
     self.guestByteCount = guestByteCount
@@ -42,6 +44,7 @@ public struct DoryARM64CompiledBlock: Codable, Sendable, Hashable {
     self.machineWords = machineWords
     self.tier = tier
     self.exitCode = exitCode
+    self.requiresMemoryCallbacks = requiresMemoryCallbacks
   }
 
   public var machineBytes: [UInt8] {
@@ -72,6 +75,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
   ) -> DoryARM64CompiledBlock {
     precondition(tier != .interpreterFallback)
     var words: [UInt32] = []
+    let usesMemory = block.statements.contains(where: requiresMemoryCallbacks)
+    if usesMemory { emitMemoryPrologue(into: &words) }
     for statement in block.statements {
       guard emit(statement, into: &words) else {
         return fallback(block)
@@ -80,6 +85,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
     guard let exit = emit(block.terminator, into: &words) else {
       return fallback(block)
     }
+    if usesMemory { emitMemoryEpilogue(into: &words) }
     words.append(encodeMoveWideZero32(register: 0, immediate: UInt16(exit.rawValue)))
     words.append(0xD65F_03C0)
     return .init(
@@ -88,7 +94,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
       guestInstructionCount: block.guestInstructionCount,
       machineWords: words,
       tier: tier,
-      exitCode: exit
+      exitCode: exit,
+      requiresMemoryCallbacks: usesMemory
     )
   }
 
@@ -135,33 +142,99 @@ public struct DoryARM64BaselineEmitter: Sendable {
     source: DoryIROperand,
     into words: inout [UInt32]
   ) -> Bool {
-    guard
-      case .register(let target) = destination,
-      target.bank == "x86.gpr",
-      target.index < 16,
-      target.width == .i32 || target.width == .i64
-    else { return false }
-
-    switch source {
-    case .register(let sourceRegister)
-    where sourceRegister.bank == "x86.gpr"
-      && sourceRegister.index < 16
-      && sourceRegister.width == target.width:
-      let sourceOffset = Int(sourceRegister.index) * 8
+    switch destination {
+    case .register(let target)
+    where target.bank == "x86.gpr" && target.index < 16
+      && (target.width == .i32 || target.width == .i64):
+      switch source {
+      case .register(let sourceRegister)
+      where sourceRegister.bank == "x86.gpr"
+        && sourceRegister.index < 16
+        && sourceRegister.width == target.width:
+        let sourceOffset = Int(sourceRegister.index) * 8
+        words.append(
+          target.width == .i64
+            ? encodeLoad64(register: 9, base: 0, byteOffset: sourceOffset)
+            : encodeLoad32(register: 9, base: 0, byteOffset: sourceOffset)
+        )
+      case .immediate(let value, let width) where width == target.width:
+        emitImmediate(
+          target.width == .i32 ? value & 0xffff_ffff : value, register: 9, into: &words)
+      case .memory(let address, let width) where width == target.width:
+        guard emitMemoryAddress(address, into: 9, words: &words) else { return false }
+        emitMemoryRead(addressRegister: 9, width: width, resultRegister: 9, words: &words)
+      default:
+        return false
+      }
       words.append(
-        target.width == .i64
-          ? encodeLoad64(register: 9, base: 0, byteOffset: sourceOffset)
-          : encodeLoad32(register: 9, base: 0, byteOffset: sourceOffset)
+        encodeStore64(register: 9, base: 0, byteOffset: Int(target.index) * 8)
       )
-    case .immediate(let value, let width) where width == target.width:
-      emitImmediate(target.width == .i32 ? value & 0xffff_ffff : value, register: 9, into: &words)
+      return true
+    case .memory(let address, let width) where width == .i32 || width == .i64:
+      guard emitMemoryAddress(address, into: 9, words: &words),
+        load(source, matching: width, into: 10, words: &words)
+      else { return false }
+      emitMemoryWrite(addressRegister: 9, valueRegister: 10, width: width, words: &words)
+      return true
     default:
       return false
     }
-    words.append(
-      encodeStore64(register: 9, base: 0, byteOffset: Int(target.index) * 8)
-    )
-    return true
+  }
+
+  private func requiresMemoryCallbacks(_ statement: DoryIRStatement) -> Bool {
+    guard case .copy(let destination, let source) = statement else { return false }
+    if case .memory = destination { return true }
+    if case .memory = source { return true }
+    return false
+  }
+
+  private func emitMemoryPrologue(into words: inout [UInt32]) {
+    words += [
+      0xA9BD_7BFD,  // stp x29,x30,[sp,#-48]!
+      0x9100_03FD,  // mov x29,sp
+      0xA901_53F3,  // stp x19,x20,[sp,#16]
+      0xA902_5BF5,  // stp x21,x22,[sp,#32]
+      0xAA00_03F3,  // mov x19,x0 (architectural context)
+      0xAA01_03F4,  // mov x20,x1 (memory context)
+      0xAA02_03F5,  // mov x21,x2 (read callback)
+      0xAA03_03F6,  // mov x22,x3 (write callback)
+    ]
+  }
+
+  private func emitMemoryEpilogue(into words: inout [UInt32]) {
+    words += [
+      0xA942_5BF5,  // ldp x21,x22,[sp,#32]
+      0xA941_53F3,  // ldp x19,x20,[sp,#16]
+      0xA8C3_7BFD,  // ldp x29,x30,[sp],#48
+    ]
+  }
+
+  private func emitMemoryRead(
+    addressRegister: UInt32,
+    width: DoryIRIntegerWidth,
+    resultRegister: UInt32,
+    words: inout [UInt32]
+  ) {
+    words.append(encodeLogical(.or, left: 31, right: 20, destination: 0))
+    words.append(encodeLogical(.or, left: 31, right: addressRegister, destination: 1))
+    words.append(encodeMoveWideZero32(register: 2, immediate: UInt16(width.rawValue / 8)))
+    words.append(0xD63F_0000 | 21 << 5)  // blr x21
+    words.append(encodeLogical(.or, left: 31, right: 0, destination: resultRegister))
+    words.append(encodeLogical(.or, left: 31, right: 19, destination: 0))
+  }
+
+  private func emitMemoryWrite(
+    addressRegister: UInt32,
+    valueRegister: UInt32,
+    width: DoryIRIntegerWidth,
+    words: inout [UInt32]
+  ) {
+    words.append(encodeLogical(.or, left: 31, right: 20, destination: 0))
+    words.append(encodeLogical(.or, left: 31, right: addressRegister, destination: 1))
+    words.append(encodeLogical(.or, left: 31, right: valueRegister, destination: 2))
+    words.append(encodeMoveWideZero32(register: 3, immediate: UInt16(width.rawValue / 8)))
+    words.append(0xD63F_0000 | 22 << 5)  // blr x22
+    words.append(encodeLogical(.or, left: 31, right: 19, destination: 0))
   }
 
   private func emitBinary(
@@ -295,7 +368,22 @@ public struct DoryARM64BaselineEmitter: Sendable {
       target.bank == "x86.gpr",
       target.index < 16,
       target.width == .i32 || target.width == .i64,
-      address.segment == nil,
+      emitMemoryAddress(address, into: 9, words: &words)
+    else { return false }
+    let addressIs64Bit = address.addressWidth == .i64
+    if target.width == .i32, addressIs64Bit {
+      words.append(encodeLogical(.or, is64Bit: false, 31, 9, 9))
+    }
+    words.append(encodeStore64(register: 9, base: 0, byteOffset: Int(target.index) * 8))
+    return true
+  }
+
+  private func emitMemoryAddress(
+    _ address: DoryIRMemoryAddress,
+    into resultRegister: UInt32,
+    words: inout [UInt32]
+  ) -> Bool {
+    guard address.segment == nil,
       address.addressWidth == .i32 || address.addressWidth == .i64,
       address.scale == 1 || address.scale == 2 || address.scale == 4 || address.scale == 8
     else { return false }
@@ -303,18 +391,30 @@ public struct DoryARM64BaselineEmitter: Sendable {
     let displacement = UInt64(bitPattern: address.displacement)
     emitImmediate(
       addressIs64Bit ? displacement : displacement & 0xFFFF_FFFF,
-      register: 9,
+      register: resultRegister,
       into: &words
     )
     if let relativeBase = address.instructionRelativeBase {
       emitImmediate(relativeBase, register: 10, into: &words)
-      words.append(encodeAdd(is64Bit: addressIs64Bit, left: 9, right: 10, destination: 9))
+      words.append(
+        encodeAdd(
+          is64Bit: addressIs64Bit,
+          left: resultRegister,
+          right: 10,
+          destination: resultRegister
+        ))
     }
     if let base = address.base {
       guard base.width == address.addressWidth, load(base, into: 10, words: &words) else {
         return false
       }
-      words.append(encodeAdd(is64Bit: addressIs64Bit, left: 9, right: 10, destination: 9))
+      words.append(
+        encodeAdd(
+          is64Bit: addressIs64Bit,
+          left: resultRegister,
+          right: 10,
+          destination: resultRegister
+        ))
     }
     if let index = address.index {
       guard index.width == address.addressWidth, load(index, into: 10, words: &words) else {
@@ -323,16 +423,12 @@ public struct DoryARM64BaselineEmitter: Sendable {
       words.append(
         encodeAdd(
           is64Bit: addressIs64Bit,
-          left: 9,
+          left: resultRegister,
           right: 10,
           leftShift: UInt32(address.scale.trailingZeroBitCount),
-          destination: 9
+          destination: resultRegister
         ))
     }
-    if target.width == .i32, addressIs64Bit {
-      words.append(encodeLogical(.or, is64Bit: false, 31, 9, 9))
-    }
-    words.append(encodeStore64(register: 9, base: 0, byteOffset: Int(target.index) * 8))
     return true
   }
 
@@ -839,6 +935,41 @@ public enum DoryJITRuntimeError: Error, Sendable, Equatable {
   case invalidExitCode(UInt32)
 }
 
+private final class DoryJITMemoryCallbackContext {
+  let memory: any DoryX86Memory
+  var failed = false
+
+  init(memory: any DoryX86Memory) { self.memory = memory }
+}
+
+private let doryJITMemoryRead: dory_jit_memory_read_function = { opaque, address, byteCount in
+  guard let opaque, byteCount == 4 || byteCount == 8 else { return 0 }
+  let context = Unmanaged<DoryJITMemoryCallbackContext>.fromOpaque(opaque).takeUnretainedValue()
+  do {
+    return try context.memory.read(at: address, byteCount: Int(byteCount)).enumerated().reduce(0) {
+      $0 | UInt64($1.element) << UInt64($1.offset * 8)
+    }
+  } catch {
+    context.failed = true
+    return 0
+  }
+}
+
+private let doryJITMemoryWrite: dory_jit_memory_write_function = {
+  opaque, address, value, byteCount in
+  guard let opaque, byteCount == 4 || byteCount == 8 else { return }
+  let context = Unmanaged<DoryJITMemoryCallbackContext>.fromOpaque(opaque).takeUnretainedValue()
+  let bytes = (0..<Int(byteCount)).map {
+    UInt8(truncatingIfNeeded: value >> UInt64($0 * 8))
+  }
+  do {
+    try context.memory.validateWrite(at: address, byteCount: bytes.count)
+    try context.memory.write(at: address, bytes: bytes)
+  } catch {
+    context.failed = true
+  }
+}
+
 public final class DoryJITExecutableRegion: @unchecked Sendable {
   public static let contextWordCount = 18
 
@@ -881,7 +1012,11 @@ public final class DoryJITExecutableRegion: @unchecked Sendable {
     guard result == 0 else { throw DoryJITRuntimeError.publicationFailed(result) }
   }
 
-  public func execute(at offset: Int, context: inout [UInt64]) throws -> DoryJITExitCode {
+  public func execute(
+    at offset: Int,
+    context: inout [UInt64],
+    memory: (any DoryX86Memory)? = nil
+  ) throws -> DoryJITExitCode {
     guard offset >= 0, offset.isMultiple(of: 4), offset < capacity else {
       throw DoryJITRuntimeError.invalidOffset(offset)
     }
@@ -889,10 +1024,20 @@ public final class DoryJITExecutableRegion: @unchecked Sendable {
       throw DoryJITRuntimeError.invalidContextWordCount(context.count)
     }
     var rawExit: UInt32 = 0
+    let memoryContext = memory.map(DoryJITMemoryCallbackContext.init)
     let result = context.withUnsafeMutableBufferPointer { buffer in
-      dory_jit_region_execute(region, offset, buffer.baseAddress, &rawExit)
+      dory_jit_region_execute(
+        region,
+        offset,
+        buffer.baseAddress,
+        memoryContext.map { Unmanaged.passUnretained($0).toOpaque() },
+        doryJITMemoryRead,
+        doryJITMemoryWrite,
+        &rawExit
+      )
     }
     guard result == 0 else { throw DoryJITRuntimeError.executionFailed(result) }
+    if memoryContext?.failed == true { return .interpreter }
     guard let exit = DoryJITExitCode(rawValue: rawExit) else {
       throw DoryJITRuntimeError.invalidExitCode(rawExit)
     }
@@ -960,7 +1105,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     mode: DoryX86ExecutionMode,
     addressSpaceID: UInt64,
     maximumInstructions: Int,
-    state: inout DoryX86ArchitecturalState
+    state: inout DoryX86ArchitecturalState,
+    memory: (any DoryX86Memory)? = nil
   ) throws -> DoryARM64BaselineExecution? {
     guard !bytes.isEmpty, maximumInstructions > 0 else { return nil }
     return try lock.withLock {
@@ -990,7 +1136,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
         )
         guard compiled.tier != .interpreterFallback,
           compiled.guestInstructionCount > 0,
-          compiled.guestInstructionCount <= maximumInstructions
+          compiled.guestInstructionCount <= maximumInstructions,
+          !compiled.requiresMemoryCallbacks || memory != nil
         else { return nil }
         let byteCount = compiled.machineBytes.count
         guard byteCount <= region.capacity else { return nil }
@@ -1006,7 +1153,10 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       }
 
       var context = Self.executionContext(from: state)
-      let exit = try region.execute(at: resident.offset, context: &context)
+      let exit = try region.execute(at: resident.offset, context: &context, memory: memory)
+      if exit == .interpreter, resident.block.requiresMemoryCallbacks {
+        return .init(block: resident.block, exitCode: exit)
+      }
       Self.apply(context: context, to: &state)
       return .init(block: resident.block, exitCode: exit)
     }
