@@ -31,6 +31,43 @@ import Testing
     #expect(state.rflags.contains(.interruptEnable))
   }
 
+  @Test func protectedModeInterruptAndIRETRoundTripThirtyTwoBitFrames() throws {
+    let memory = DoryX86ByteArrayMemory(byteCount: 0x6000)
+    try write64(memory, 0x1008, 0x00CF_9A00_0000_FFFF)
+    let gateTarget: UInt64 = 0x3100
+    let gate =
+      (gateTarget & 0xffff)
+      | UInt64(8) << 16
+      | UInt64(0x8E) << 40
+      | ((gateTarget >> 16) & 0xffff) << 48
+    try write64(memory, 0x2000 + 0x80 * 8, gate)
+    try memory.write(at: 0x3000, bytes: [0xCD, 0x80])
+    try memory.write(at: 0x3100, bytes: [0xCF])
+    var state = try DoryX86ArchitecturalState(
+      registers: .init(rsp: 0x4000),
+      rip: 0x3000,
+      rflags: [.reservedOne, .interruptEnable],
+      cs: .init(selector: 8, attributes: 0xC09A, limit: .max),
+      ss: .init(selector: 16, attributes: 0xC093, limit: .max),
+      gdtr: .init(limit: 0x17, base: 0x1000),
+      idtr: .init(limit: 0x7ff, base: 0x2000)
+    )
+    state.control.cr0 |= 1
+    let interpreter = DoryX86Interpreter()
+
+    _ = interpreter.step(state: &state, memory: memory, mode: .protected32)
+    #expect(state.rip == 0x3100)
+    #expect(state.registers.rsp == 0x3ff4)
+    #expect(!state.rflags.contains(.interruptEnable))
+    #expect(try memory.read(at: 0x3ff4, byteCount: 12) == [2, 0x30, 0, 0, 8, 0, 0, 0, 2, 2, 0, 0])
+
+    _ = interpreter.step(state: &state, memory: memory, mode: .protected32)
+    #expect(state.rip == 0x3002)
+    #expect(state.registers.rsp == 0x4000)
+    #expect(state.cs.selector == 8)
+    #expect(state.rflags.contains(.interruptEnable))
+  }
+
   @Test func softwareInterruptSwitchesPrivilegeStacksAndIRETRestoresUserState() throws {
     let memory = DoryX86ByteArrayMemory(byteCount: 0x10_000)
     try installSegments(memory)

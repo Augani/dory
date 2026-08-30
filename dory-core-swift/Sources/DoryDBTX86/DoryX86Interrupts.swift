@@ -44,6 +44,17 @@ public struct DoryX86InterruptDelivery: Sendable {
       )
       return
     }
+    if mode == .protected32 {
+      try deliverProtectedMode(
+        vector: vector,
+        source: source,
+        errorCode: errorCode,
+        returnInstructionPointer: returnInstructionPointer,
+        state: &state,
+        memory: physicalMemory
+      )
+      return
+    }
     guard mode == .long64 else {
       throw DoryX86InterruptDeliveryError.invalidGate(vector: vector)
     }
@@ -188,6 +199,10 @@ public struct DoryX86InterruptDelivery: Sendable {
   ) throws {
     if mode == .real16 {
       try interruptReturnRealMode(state: &state, memory: physicalMemory)
+      return
+    }
+    if mode == .protected32 {
+      try interruptReturnProtectedMode(state: &state, memory: physicalMemory)
       return
     }
     guard mode == .long64 else { throw DoryX86InterruptDeliveryError.invalidReturnFrame }
@@ -346,6 +361,218 @@ public struct DoryX86InterruptDelivery: Sendable {
     let descriptorPrivilegeLevel: UInt8
   }
 
+  private struct ProtectedGate {
+    let offset: UInt32
+    let selector: UInt16
+    let width: DoryX86OperandWidth
+    let descriptorPrivilegeLevel: UInt8
+    let isInterruptGate: Bool
+  }
+
+  private struct LegacySegment {
+    let segment: DoryX86SegmentState
+    let descriptorPrivilegeLevel: UInt8
+    let type: UInt8
+  }
+
+  private func deliverProtectedMode(
+    vector: UInt8,
+    source: DoryX86InterruptSource,
+    errorCode: UInt32?,
+    returnInstructionPointer: UInt64?,
+    state: inout DoryX86ArchitecturalState,
+    memory: any DoryX86Memory
+  ) throws {
+    let gate = try readProtectedGate(vector: vector, state: state, memory: memory)
+    let currentCPL = UInt8(state.cs.selector & 3)
+    if source == .software, currentCPL > gate.descriptorPrivilegeLevel {
+      throw DoryX86InterruptDeliveryError.privilegeViolation(vector: vector)
+    }
+    let code = try readLegacySegment(selector: gate.selector, state: state, memory: memory)
+    guard code.type & 8 != 0,
+      code.descriptorPrivilegeLevel == currentCPL,
+      UInt64(gate.offset) <= UInt64(code.segment.limit)
+    else {
+      throw DoryX86InterruptDeliveryError.invalidCodeSegment(selector: gate.selector)
+    }
+
+    let pointerWidth = state.ss.attributes & 0x4000 != 0 ? 32 : 16
+    let pointerMask: UInt64 = pointerWidth == 32 ? 0xffff_ffff : 0xffff
+    let oldStack = state.registers.rsp & pointerMask
+    var values: [UInt64] = [
+      state.rflags.rawValue,
+      UInt64(state.cs.selector),
+      returnInstructionPointer ?? state.rip,
+    ]
+    if let errorCode { values.append(UInt64(errorCode)) }
+    let finalStack = try writeProtectedFrame(
+      values,
+      width: gate.width,
+      stack: oldStack,
+      pointerMask: pointerMask,
+      segment: state.ss,
+      memory: memory
+    )
+
+    writeProtectedStackPointer(finalStack, pointerWidth: pointerWidth, state: &state)
+    state.cs = code.segment
+    state.cs.selector = (gate.selector & 0xfffc) | UInt16(currentCPL)
+    state.rip = UInt64(gate.offset)
+    state.rflags.remove([.trap, .nestedTask, .resume])
+    if gate.isInterruptGate { state.rflags.remove(.interruptEnable) }
+  }
+
+  private func interruptReturnProtectedMode(
+    state: inout DoryX86ArchitecturalState,
+    memory: any DoryX86Memory
+  ) throws {
+    let pointerWidth = state.ss.attributes & 0x4000 != 0 ? 32 : 16
+    let pointerMask: UInt64 = pointerWidth == 32 ? 0xffff_ffff : 0xffff
+    let stack = state.registers.rsp & pointerMask
+    let addresses = (0..<3).map { (stack &+ UInt64($0 * 4)) & pointerMask }
+    for address in addresses {
+      guard address + 3 <= UInt64(state.ss.limit) else {
+        throw DoryX86InterruptDeliveryError.invalidReturnFrame
+      }
+    }
+    let instructionPointer = try read32(memory, state.ss.base &+ addresses[0])
+    let codeSelector = UInt16(
+      truncatingIfNeeded: try read32(memory, state.ss.base &+ addresses[1]))
+    let flagsValue = try read32(memory, state.ss.base &+ addresses[2])
+    let targetCPL = UInt8(codeSelector & 3)
+    let currentCPL = UInt8(state.cs.selector & 3)
+    guard targetCPL == currentCPL else {
+      throw DoryX86InterruptDeliveryError.invalidReturnFrame
+    }
+    let code = try readLegacySegment(selector: codeSelector, state: state, memory: memory)
+    guard code.type & 8 != 0,
+      code.descriptorPrivilegeLevel == targetCPL,
+      instructionPointer <= code.segment.limit
+    else {
+      throw DoryX86InterruptDeliveryError.invalidReturnFrame
+    }
+    let requestedFlags = DoryX86RFLAGS(
+      rawValue: (state.rflags.rawValue & ~UInt64(0xffff_ffff)) | UInt64(flagsValue) | 2
+    )
+    guard let validatedFlags = try? requestedFlags.validated() else {
+      throw DoryX86InterruptDeliveryError.invalidReturnFrame
+    }
+
+    let nextStack = (stack &+ 12) & pointerMask
+    writeProtectedStackPointer(nextStack, pointerWidth: pointerWidth, state: &state)
+    state.rip = UInt64(instructionPointer)
+    state.cs = code.segment
+    state.cs.selector = codeSelector
+    state.rflags = validatedFlags
+  }
+
+  private func readProtectedGate(
+    vector: UInt8,
+    state: DoryX86ArchitecturalState,
+    memory: any DoryX86Memory
+  ) throws -> ProtectedGate {
+    let offset = Int(vector) * 8
+    guard offset + 7 <= Int(state.idtr.limit) else {
+      throw DoryX86InterruptDeliveryError.invalidIDTLimit(vector: vector)
+    }
+    let raw = try read64(memory, state.idtr.base &+ UInt64(offset))
+    let attributes = UInt8(truncatingIfNeeded: raw >> 40)
+    let type = attributes & 0x0f
+    guard attributes & 0x80 != 0,
+      attributes & 0x10 == 0,
+      type == 0x6 || type == 0x7 || type == 0xE || type == 0xF
+    else {
+      throw DoryX86InterruptDeliveryError.invalidGate(vector: vector)
+    }
+    let target = UInt32(raw & 0xffff) | UInt32((raw >> 48) & 0xffff) << 16
+    return .init(
+      offset: target,
+      selector: UInt16(truncatingIfNeeded: raw >> 16),
+      width: type == 0x6 || type == 0x7 ? .word : .doubleword,
+      descriptorPrivilegeLevel: (attributes >> 5) & 3,
+      isInterruptGate: type == 0x6 || type == 0xE
+    )
+  }
+
+  private func readLegacySegment(
+    selector: UInt16,
+    state: DoryX86ArchitecturalState,
+    memory: any DoryX86Memory
+  ) throws -> LegacySegment {
+    guard selector & 0xfff8 != 0 else {
+      throw DoryX86InterruptDeliveryError.invalidCodeSegment(selector: selector)
+    }
+    let table: DoryX86DescriptorTableState =
+      selector & 4 == 0
+      ? state.gdtr
+      : .init(limit: UInt16(truncatingIfNeeded: state.ldtr.limit), base: state.ldtr.base)
+    let offset = UInt64(selector & 0xfff8)
+    guard offset + 7 <= UInt64(table.limit) else {
+      throw DoryX86InterruptDeliveryError.invalidCodeSegment(selector: selector)
+    }
+    let raw = try read64(memory, table.base &+ offset)
+    let access = UInt8(truncatingIfNeeded: raw >> 40)
+    let flags = UInt8(truncatingIfNeeded: raw >> 52) & 0x0f
+    guard access & 0x80 != 0, access & 0x10 != 0 else {
+      throw DoryX86InterruptDeliveryError.invalidCodeSegment(selector: selector)
+    }
+    let base =
+      ((raw >> 16) & 0xffff)
+      | ((raw >> 32) & 0xff) << 16
+      | ((raw >> 56) & 0xff) << 24
+    var limit = UInt32(raw & 0xffff) | UInt32((raw >> 48) & 0x0f) << 16
+    if flags & 8 != 0 { limit = (limit << 12) | 0xfff }
+    return .init(
+      segment: .init(
+        selector: selector,
+        attributes: UInt16(access) | UInt16(flags) << 12,
+        limit: limit,
+        base: base
+      ),
+      descriptorPrivilegeLevel: (access >> 5) & 3,
+      type: access & 0x0f
+    )
+  }
+
+  private func writeProtectedFrame(
+    _ values: [UInt64],
+    width: DoryX86OperandWidth,
+    stack: UInt64,
+    pointerMask: UInt64,
+    segment: DoryX86SegmentState,
+    memory: any DoryX86Memory
+  ) throws -> UInt64 {
+    var offsets: [UInt64] = []
+    var next = stack
+    for _ in values {
+      next = (next &- UInt64(width.byteCount)) & pointerMask
+      guard next + UInt64(width.byteCount - 1) <= UInt64(segment.limit) else {
+        throw DoryX86InterruptDeliveryError.invalidTaskState
+      }
+      offsets.append(next)
+      try memory.validateWrite(at: segment.base &+ next, byteCount: width.byteCount)
+    }
+    for (value, offset) in zip(values, offsets) {
+      try memory.write(
+        at: segment.base &+ offset,
+        bytes: littleEndian(value, byteCount: width.byteCount)
+      )
+    }
+    return next
+  }
+
+  private func writeProtectedStackPointer(
+    _ value: UInt64,
+    pointerWidth: Int,
+    state: inout DoryX86ArchitecturalState
+  ) {
+    if pointerWidth == 32 {
+      state.registers.rsp = value & 0xffff_ffff
+    } else {
+      state.registers.rsp = (state.registers.rsp & ~UInt64(0xffff)) | (value & 0xffff)
+    }
+  }
+
   private func readGate(
     vector: UInt8,
     state: DoryX86ArchitecturalState,
@@ -407,7 +634,7 @@ public struct DoryX86InterruptDelivery: Sendable {
       | ((raw >> 32) & 0xff) << 16
       | ((raw >> 56) & 0xff) << 24
     let limit = UInt32(raw & 0xffff) | UInt32((raw >> 48) & 0x0f) << 16
-    let attributes = UInt16(access) | UInt16(flags) << 8
+    let attributes = UInt16(access) | UInt16(flags) << 12
     return .init(
       segment: .init(
         selector: selector,
@@ -459,12 +686,20 @@ public struct DoryX86InterruptDelivery: Sendable {
     return UInt16(bytes[0]) | UInt16(bytes[1]) << 8
   }
 
+  private func read32(_ memory: any DoryX86Memory, _ address: UInt64) throws -> UInt32 {
+    UInt32(truncatingIfNeeded: fromLittleEndian(try memory.read(at: address, byteCount: 4)))
+  }
+
   private func littleEndian16(_ value: UInt16) -> [UInt8] {
     [UInt8(truncatingIfNeeded: value), UInt8(truncatingIfNeeded: value >> 8)]
   }
 
   private func littleEndian(_ value: UInt64) -> [UInt8] {
     (0..<8).map { UInt8(truncatingIfNeeded: value >> UInt64($0 * 8)) }
+  }
+
+  private func littleEndian(_ value: UInt64, byteCount: Int) -> [UInt8] {
+    (0..<byteCount).map { UInt8(truncatingIfNeeded: value >> UInt64($0 * 8)) }
   }
 
   private func fromLittleEndian(_ bytes: [UInt8]) -> UInt64 {
