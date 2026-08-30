@@ -9,6 +9,7 @@ let package = Package(
     name: "dory-core-swift",
     platforms: [.macOS(.v14)],
     products: [
+        .library(name: "DoryExecutionContracts", targets: ["DoryExecutionContracts"]),
         .library(name: "DoryVMContracts", targets: ["DoryVMContracts"]),
         .library(
             name: "DoryRendererWorkerWireContracts",
@@ -32,6 +33,10 @@ let package = Package(
     targets: [
         .binaryTarget(name: "DoryFFI", path: "artifacts/DoryFFI.xcframework"),
         .target(
+            name: "DoryExecutionContracts",
+            dependencies: []
+        ),
+        .target(
             name: "DoryVMContracts",
             dependencies: []
         ),
@@ -44,6 +49,7 @@ let package = Package(
         .target(
             name: "DoryOperations",
             dependencies: [
+                "DoryExecutionContracts",
                 "DoryRendererWorkerWireContracts",
                 "DoryVMContracts",
             ],
@@ -124,6 +130,10 @@ let package = Package(
         .testTarget(
             name: "DoryCoreTests",
             dependencies: ["DoryCore"]
+        ),
+        .testTarget(
+            name: "DoryExecutionContractsTests",
+            dependencies: ["DoryExecutionContracts"]
         ),
         .testTarget(
             name: "DoryVMContractsTests",
