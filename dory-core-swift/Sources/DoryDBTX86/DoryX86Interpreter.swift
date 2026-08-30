@@ -423,6 +423,40 @@ public struct DoryX86Interpreter: Sendable {
         } else {
           try execute(&state)
         }
+      case .bitScan(let reverse, let destination, let source):
+        let value = try read(
+          source, instruction: instruction, state: state, memory: executionMemory)
+        let width = operandWidth(destination)
+        let masked = value & mask(width)
+        setFlag(.zero, masked == 0, in: &state.rflags)
+        if masked != 0 {
+          let index =
+            reverse
+            ? 63 - masked.leadingZeroBitCount
+            : masked.trailingZeroBitCount
+          try write(
+            UInt64(index),
+            to: destination,
+            instruction: instruction,
+            state: &state,
+            memory: executionMemory
+          )
+        }
+      case .byteSwap(let operand):
+        let value = try read(
+          operand, instruction: instruction, state: state, memory: executionMemory)
+        let width = operandWidth(operand)
+        let swapped =
+          width == .quadword
+          ? value.byteSwapped
+          : UInt64(UInt32(truncatingIfNeeded: value).byteSwapped)
+        try write(
+          swapped,
+          to: operand,
+          instruction: instruction,
+          state: &state,
+          memory: executionMemory
+        )
       case .compareExchangePair(let destination, let doubleQuadword):
         let execute = { (operationState: inout DoryX86ArchitecturalState) in
           try executeCompareExchangePair(
@@ -560,6 +594,25 @@ public struct DoryX86Interpreter: Sendable {
           operand, instruction: instruction, state: state, memory: executionMemory)
       case .conditionalJump(let condition, let relative):
         if evaluate(condition, flags: state.rflags) { nextRIP = addRelative(nextRIP, relative) }
+      case .loop(let condition, let relative, let counterWidth):
+        var count = stringRegister(.rcx, width: counterWidth, state: state)
+        if condition != .countZero {
+          count = (count &- 1) & mask(counterWidth)
+          writeStringRegister(
+            .rcx,
+            value: count,
+            width: counterWidth,
+            state: &state
+          )
+        }
+        let branches =
+          switch condition {
+          case .countNonzero: count != 0
+          case .countNonzeroAndZero: count != 0 && state.rflags.contains(.zero)
+          case .countNonzeroAndNotZero: count != 0 && !state.rflags.contains(.zero)
+          case .countZero: count == 0
+          }
+        if branches { nextRIP = addRelative(nextRIP, relative) }
       case .cpuid:
         let result = profile.cpuid(
           leaf: UInt32(truncatingIfNeeded: state.registers.rax),
@@ -862,6 +915,17 @@ public struct DoryX86Interpreter: Sendable {
         setFlag(.carry, !state.rflags.contains(.carry), in: &state.rflags)
       case .setDirection(let enabled):
         setFlag(.direction, enabled, in: &state.rflags)
+      case .flagByte(let load):
+        if load {
+          let value = (state.rflags.rawValue & 0xD5) | 2
+          state.registers.rax =
+            (state.registers.rax & ~UInt64(0xff00)) | ((value & 0xff) << 8)
+        } else {
+          let value = (state.registers.rax >> 8) & 0xff
+          state.rflags = DoryX86RFLAGS(
+            rawValue: (state.rflags.rawValue & ~UInt64(0xD5)) | (value & 0xD5) | 2
+          )
+        }
       case .setInterruptsEnabled(let enabled):
         let currentPrivilege = UInt64(state.cs.selector & 3)
         let ioPrivilege = (state.rflags.rawValue >> 12) & 3

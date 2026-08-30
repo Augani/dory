@@ -125,6 +125,13 @@ public enum DoryX86IOPort: Codable, Sendable, Hashable {
   case dx
 }
 
+public enum DoryX86LoopCondition: String, Codable, Sendable, Hashable {
+  case countNonzero
+  case countNonzeroAndZero
+  case countNonzeroAndNotZero
+  case countZero
+}
+
 public enum DoryX86DescriptorTableRegister: String, Codable, Sendable, Hashable {
   case global, interrupt
 }
@@ -164,6 +171,8 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
   case compareExchange(destination: DoryX86Operand, source: DoryX86Operand)
   case exchangeAdd(destination: DoryX86Operand, source: DoryX86Operand)
   case bitTest(DoryX86BitOperation, base: DoryX86Operand, index: DoryX86Operand)
+  case bitScan(reverse: Bool, destination: DoryX86Operand, source: DoryX86Operand)
+  case byteSwap(DoryX86Operand)
   case compareExchangePair(destination: DoryX86MemoryOperand, doubleQuadword: Bool)
   case memoryFence(DoryX86MemoryFence)
   case processorPause
@@ -191,6 +200,7 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
   case jump(relative: Int64)
   case jumpIndirect(DoryX86Operand)
   case conditionalJump(DoryX86Condition, relative: Int64)
+  case loop(DoryX86LoopCondition, relative: Int64, counterWidth: DoryX86OperandWidth)
   case cpuid
   case readControlRegister(index: UInt8, destination: DoryX86GeneralRegister)
   case writeControlRegister(index: UInt8, source: DoryX86GeneralRegister)
@@ -207,6 +217,7 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
   case setCarry(Bool)
   case complementCarry
   case setDirection(Bool)
+  case flagByte(load: Bool)
   case syscall
   case sysret
   case halt

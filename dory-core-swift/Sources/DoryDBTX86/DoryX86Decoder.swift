@@ -82,6 +82,10 @@ public struct DoryX86Decoder: Sendable {
       operation = .pushFlags(width: stackWidth(mode: mode, prefixes: prefixes))
     case 0x9D:
       operation = .popFlags(width: stackWidth(mode: mode, prefixes: prefixes))
+    case 0x9E:
+      operation = .flagByte(load: false)
+    case 0x9F:
+      operation = .flagByte(load: true)
     case 0xF4:
       operation = .halt
     case 0xF5:
@@ -290,6 +294,24 @@ public struct DoryX86Decoder: Sendable {
         destination: .register(.rax, width: operandWidth),
         source: .immediate(value, width: operandWidth)
       )
+    case 0xA0...0xA3:
+      let memoryWidth: DoryX86OperandWidth = opcode & 1 == 0 ? .byte : width
+      let memoryAddressWidth = addressWidth(mode: mode, prefixes: prefixes)
+      let absoluteAddress = try cursor.readUnsigned(byteCount: memoryAddressWidth.byteCount)
+      let memory = DoryX86Operand.memory(
+        .init(
+          base: nil,
+          displacement: Int64(bitPattern: absoluteAddress),
+          width: memoryWidth,
+          addressWidth: memoryAddressWidth,
+          segment: segmentRegister(prefixes.segmentOverride) ?? .ds,
+          ignoresLegacySegmentBase: mode == .long64
+        ))
+      let accumulator = DoryX86Operand.register(.rax, width: memoryWidth)
+      operation =
+        opcode & 2 == 0
+        ? .move(destination: accumulator, source: memory)
+        : .move(destination: memory, source: accumulator)
     case 0xA4...0xA7, 0xAA...0xAF:
       let elementWidth: DoryX86OperandWidth = opcode & 1 == 0 ? .byte : width
       let stringOperation: DoryX86StringOperation =
@@ -417,6 +439,19 @@ public struct DoryX86Decoder: Sendable {
         relative: Int64(try cursor.readSigned(byteCount: width == .word ? 2 : 4)))
     case 0xEB:
       operation = .jump(relative: Int64(try cursor.readSigned(byteCount: 1)))
+    case 0xE0...0xE3:
+      let condition: DoryX86LoopCondition =
+        switch opcode {
+        case 0xE0: .countNonzeroAndNotZero
+        case 0xE1: .countNonzeroAndZero
+        case 0xE2: .countNonzero
+        default: .countZero
+        }
+      operation = .loop(
+        condition,
+        relative: Int64(try cursor.readSigned(byteCount: 1)),
+        counterWidth: addressWidth(mode: mode, prefixes: prefixes)
+      )
     case 0xEA:
       guard mode != .long64 else {
         throw DoryX86DecodeError.invalidEncoding(
@@ -563,6 +598,14 @@ public struct DoryX86Decoder: Sendable {
           lhs: operands.reg,
           rhs: operands.rm
         )
+      case 0xBC, 0xBD:
+        let operands = try decodeModRM(
+          cursor: &cursor, width: width, prefixes: prefixes, mode: mode)
+        operation = .bitScan(
+          reverse: second == 0xBD,
+          destination: operands.reg,
+          source: operands.rm
+        )
       case 0xB0, 0xB1:
         let operandWidth: DoryX86OperandWidth = second == 0xB0 ? .byte : width
         let operands = try decodeModRM(
@@ -614,6 +657,11 @@ public struct DoryX86Decoder: Sendable {
         operation = .compareExchangePair(
           destination: destination,
           doubleQuadword: prefixes.rex?.w == true
+        )
+      case 0xC8...0xCF:
+        let target = register(Int(second - 0xC8), extensionBit: prefixes.rex?.b == true)
+        operation = .byteSwap(
+          .register(target, width: prefixes.rex?.w == true ? .quadword : .doubleword)
         )
       default:
         throw DoryX86DecodeError.unsupportedOpcode(

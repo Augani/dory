@@ -929,6 +929,70 @@ import Testing
     #expect(exception.kind == .generalProtection)
   }
 
+  @Test func executesAbsoluteMovesBitScansByteSwapsAndLoops() throws {
+    var bytes = [UInt8](repeating: 0, count: 0x500)
+    bytes.replaceSubrange(
+      0x100..<0x116,
+      with: [
+        0xA1, 0, 2, 0, 0,
+        0xA3, 4, 2, 0, 0,
+        0x0F, 0xBC, 0xC8,
+        0x0F, 0xBD, 0xD0,
+        0x0F, 0xCA,
+        0xE2, 0xFE,
+        0xE3, 2,
+      ]
+    )
+    bytes.replaceSubrange(0x200..<0x204, with: [0x10, 0, 0, 0x80])
+    let memory = DoryX86ByteArrayMemory(bytes: bytes)
+    var state = try DoryX86ArchitecturalState(
+      registers: .init(rcx: 2),
+      rip: 0x100,
+      cs: .init(selector: 8, attributes: 0xC09A, limit: .max),
+      ds: .init(selector: 16, attributes: 0xC093, limit: .max)
+    )
+    state.control.cr0 |= 1
+
+    for _ in 0..<5 {
+      _ = interpreter.step(state: &state, memory: memory, mode: .protected32)
+    }
+    #expect(state.registers.rax == 0x8000_0010)
+    #expect(try memory.read(at: 0x204, byteCount: 4) == [0x10, 0, 0, 0x80])
+    #expect(state.registers.rcx == 4)
+    #expect(state.registers.rdx == 0x1F00_0000)
+
+    state.registers.rcx = 2
+    _ = interpreter.step(state: &state, memory: memory, mode: .protected32)
+    #expect(state.registers.rcx == 1)
+    #expect(state.rip == 0x112)
+    _ = interpreter.step(state: &state, memory: memory, mode: .protected32)
+    #expect(state.registers.rcx == 0)
+    #expect(state.rip == 0x114)
+    _ = interpreter.step(state: &state, memory: memory, mode: .protected32)
+    #expect(state.rip == 0x118)
+  }
+
+  @Test func flagByteTransfersOnlyTheArchitecturalStatusBits() throws {
+    let memory = DoryX86ByteArrayMemory(
+      baseAddress: 0x100,
+      bytes: [0x9F, 0x9E] + .init(repeating: 0, count: 16)
+    )
+    var state = try DoryX86ArchitecturalState(
+      rip: 0x100,
+      rflags: [.reservedOne, .carry, .zero, .sign]
+    )
+
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    #expect((state.registers.rax >> 8) & 0xff == 0xC3)
+    state.registers.rax = (state.registers.rax & ~UInt64(0xff00)) | 0x1500
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    #expect(state.rflags.contains(.carry))
+    #expect(state.rflags.contains(.parity))
+    #expect(state.rflags.contains(.auxiliaryCarry))
+    #expect(!state.rflags.contains(.zero))
+    #expect(!state.rflags.contains(.sign))
+  }
+
   private func readQuadword(_ memory: DoryX86ByteArrayMemory, at address: UInt64) -> UInt64 {
     try! memory.read(at: address, byteCount: 8).enumerated().reduce(0) {
       $0 | UInt64($1.element) << UInt64($1.offset * 8)

@@ -398,4 +398,42 @@ import Testing
         == .string(.output, width: .word)
     )
   }
+
+  @Test func decodesFirmwareDataAndLoopPrimitives() throws {
+    #expect(
+      try decoder.decode([0xA1, 0x34, 0x12], at: 0x900, mode: .real16).operation
+        == .move(
+          destination: .register(.rax, width: .word),
+          source: .memory(
+            .init(
+              base: nil,
+              displacement: 0x1234,
+              width: .word,
+              addressWidth: .word,
+              segment: .ds,
+              ignoresLegacySegmentBase: false
+            ))
+        )
+    )
+    #expect(
+      try decoder.decode([0x67, 0xE2, 0xFE], at: 0x900, mode: .long64).operation
+        == .loop(.countNonzero, relative: -2, counterWidth: .doubleword)
+    )
+    #expect(
+      try decoder.decode([0x9F], at: 0x900, mode: .protected32).operation
+        == .flagByte(load: true)
+    )
+    #expect(
+      try decoder.decode([0x0F, 0xBD, 0xC8], at: 0x900, mode: .protected32).operation
+        == .bitScan(
+          reverse: true,
+          destination: .register(.rcx, width: .doubleword),
+          source: .register(.rax, width: .doubleword)
+        )
+    )
+    #expect(
+      try decoder.decode([0x48, 0x0F, 0xC9], at: 0x900, mode: .long64).operation
+        == .byteSwap(.register(.rcx, width: .quadword))
+    )
+  }
 }
