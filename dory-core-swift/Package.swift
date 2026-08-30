@@ -15,6 +15,7 @@ let package = Package(
     .library(name: "DoryCameraBridgeContracts", targets: ["DoryCameraBridgeContracts"]),
     .library(name: "DoryVZMacCameraBridge", targets: ["DoryVZMacCameraBridge"]),
     .library(name: "DoryMacGuestCamera", targets: ["DoryMacGuestCamera"]),
+    .library(name: "DoryMacGuestCameraExtensionCore", targets: ["DoryMacGuestCameraExtensionCore"]),
     .library(name: "DoryNativeHVArm64", targets: ["DoryNativeHVArm64"]),
     .library(name: "DoryPhase0AQualification", targets: ["DoryPhase0AQualification"]),
     .library(name: "DoryHostCamera", targets: ["DoryHostCamera"]),
@@ -113,6 +114,14 @@ let package = Package(
     .target(
       name: "DoryMacGuestCamera",
       dependencies: ["DoryCameraBridgeContracts"]
+    ),
+    .target(
+      name: "DoryMacGuestCameraExtensionCore",
+      dependencies: ["DoryCameraBridgeContracts", "DoryMacGuestCamera"],
+      linkerSettings: [
+        .linkedFramework("CoreMediaIO"),
+        .linkedFramework("ImageIO"),
+      ]
     ),
     .target(
       name: "DoryVZMacSDKInventory",
@@ -310,6 +319,10 @@ let package = Package(
     .testTarget(
       name: "DoryMacGuestCameraTests",
       dependencies: ["DoryCameraBridgeContracts", "DoryMacGuestCamera"]
+    ),
+    .testTarget(
+      name: "DoryMacGuestCameraExtensionCoreTests",
+      dependencies: ["DoryCameraBridgeContracts", "DoryMacGuestCameraExtensionCore"]
     ),
     .testTarget(
       name: "DoryVZMacCameraBridgeTests",
