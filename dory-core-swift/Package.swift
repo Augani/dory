@@ -6,6 +6,8 @@ let packageRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
 let doryVMMInfoPlist = packageRoot.appendingPathComponent("Sources/dory-vmm/Info.plist").path
 let doryVZMacCameraQualificationInfoPlist = packageRoot
   .appendingPathComponent("Sources/dory-vzmac-camera-qualification/Info.plist").path
+let doryVZMacQualificationInfoPlist = packageRoot
+  .appendingPathComponent("Sources/dory-vzmac-qualification/Info.plist").path
 
 let package = Package(
   name: "dory-core-swift",
@@ -50,6 +52,10 @@ let package = Package(
     .executable(
       name: "dory-vzmac-camera-qualification",
       targets: ["dory-vzmac-camera-qualification"]
+    ),
+    .executable(
+      name: "dory-vzmac-qualification",
+      targets: ["dory-vzmac-qualification"]
     ),
     .executable(
       name: "dory-macos-camera-extension-service",
@@ -265,6 +271,21 @@ let package = Package(
           "-Xlinker", "__TEXT",
           "-Xlinker", "__info_plist",
           "-Xlinker", doryVZMacCameraQualificationInfoPlist,
+        ]),
+      ]
+    ),
+    .executableTarget(
+      name: "dory-vzmac-qualification",
+      dependencies: ["DoryVZMacCore"],
+      exclude: ["Info.plist", "dory-vzmac-qualification.entitlements"],
+      linkerSettings: [
+        .linkedFramework("AppKit"),
+        .linkedFramework("Virtualization"),
+        .unsafeFlags([
+          "-Xlinker", "-sectcreate",
+          "-Xlinker", "__TEXT",
+          "-Xlinker", "__info_plist",
+          "-Xlinker", doryVZMacQualificationInfoPlist,
         ]),
       ]
     ),

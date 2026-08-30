@@ -103,7 +103,10 @@ public final class DoryVZMacRuntime {
         try cameraBridge.install(on: socket)
     }
 
-    public func install(from restoreImageURL: URL) async throws {
+    public func install(
+        from restoreImageURL: URL,
+        progress: @escaping @MainActor @Sendable (Double) -> Void = { _ in }
+    ) async throws {
         guard bundle.manifest.installationState == .prepared
                 || bundle.manifest.installationState == .installFailed else {
             throw DoryVZMacMachineBundleError.invalidBundle(
@@ -115,8 +118,16 @@ public final class DoryVZMacRuntime {
             virtualMachine: virtualMachine,
             restoringFromImageAt: restoreImageURL
         )
+        let progressMonitor = Task { @MainActor in
+            while !Task.isCancelled {
+                progress(installer.progress.fractionCompleted)
+                try? await Task.sleep(for: .seconds(1))
+            }
+        }
+        defer { progressMonitor.cancel() }
         do {
             try await installer.install()
+            progress(1)
             bundle = try bundle.updatingInstallationState(.stopped)
         } catch {
             bundle = try bundle.updatingInstallationState(.installFailed)

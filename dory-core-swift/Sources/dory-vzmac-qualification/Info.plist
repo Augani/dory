@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>com.pythonxi.Dory.VZMacQualification</string>
+	<key>CFBundleName</key>
+	<string>Dory VZMac Qualification</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Dory makes the Mac camera available to the macOS virtual machine when Dory Camera is installed in the guest.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Dory makes microphone input available to the macOS virtual machine.</string>
+</dict>
+</plist>
