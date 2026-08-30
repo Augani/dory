@@ -62,7 +62,8 @@ public final class DoryPCLocalAPIC: @unchecked Sendable {
   public init(apicID: UInt32) { self.apicID = apicID }
 
   public func configureSpuriousVector(_ vector: UInt8, softwareEnabled: Bool) throws {
-    try validate(vector)
+    // Unlike deliverable interrupt vectors, Intel permits the architectural reset/virtual-wire
+    // value 0x0f in the SVR. EDK II intentionally enables virtual-wire mode with SVR=0x10f.
     lock.withLock {
       spuriousVector = vector
       self.softwareEnabled = softwareEnabled

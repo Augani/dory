@@ -3,6 +3,18 @@ import Testing
 @testable import DoryMachinePC
 
 @Suite struct DoryPCAPICTests {
+  @Test func spuriousVectorAcceptsArchitecturalVirtualWireValue() throws {
+    let apic = DoryPCLocalAPIC(apicID: 0)
+
+    try apic.configureSpuriousVector(0x0F, softwareEnabled: true)
+
+    #expect(apic.snapshot().spuriousVector == 0x0F)
+    #expect(apic.snapshot().softwareEnabled)
+    #expect(throws: DoryPCAPICError.invalidVector(0x0F)) {
+      try apic.inject(vector: 0x0F)
+    }
+  }
+
   @Test func localAPICSelectsByPriorityAndTracksInServiceVectors() throws {
     let apic = DoryPCLocalAPIC(apicID: 3)
     try apic.configureSpuriousVector(0xFF, softwareEnabled: true)

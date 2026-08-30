@@ -28,7 +28,7 @@ import Testing
     let mmio = DoryPCLocalAPICMMIO(apic: local)
 
     try mmio.write(offset: 0x80, bytes: [0x30, 0, 0, 0])
-    try mmio.write(offset: 0xF0, bytes: [0xFF, 1, 0, 0])
+    try mmio.write(offset: 0xF0, bytes: [0x0F, 1, 0, 0])
     try mmio.write(offset: 0x320, bytes: [0x05, 0, 2, 0])
     #expect(try mmio.read(offset: 0x320, byteCount: 4) == [0x05, 0, 2, 0])
     try mmio.write(offset: 0x320, bytes: [0x52, 0, 2, 0])
@@ -37,6 +37,7 @@ import Testing
 
     let snapshot = local.snapshot()
     #expect(snapshot.softwareEnabled)
+    #expect(snapshot.spuriousVector == 0x0F)
     #expect(snapshot.taskPriority == 0x30)
     #expect(snapshot.timer.mode == .periodic)
     #expect(snapshot.interruptRequest == [0x52])
