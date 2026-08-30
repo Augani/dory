@@ -195,18 +195,22 @@ explicit migration or compatibility decision.
 - **Exit gate:** No UI, CLI, API, or receipt can overstate graphics mode; acceleration remains absent
   when entitlement, public API, driver, correctness, or performance evidence is missing.
 
-## ADR-015 — Definition schema and legacy decode window
+## ADR-015 revision 2 — Definition schema clean cut
 
 - **Status:** Accepted for Phase 0B.
+- **Supersedes:** ADR-015 revision 1 on 2026-08-30 after product confirmed the virtualization
+  feature has never shipped and has no user definitions requiring migration.
 - **Decision:** Schema 7 stores guest intent plus independently versioned engine, CPU, machine,
   firmware, device, snapshot, media, capability, consent, permission, backup, and qualification
-  identities. Old backend/distro-led values are decode-only; there is no dual write.
+  identities. Only schema 7 is readable or writable. Backend/distro-led values are rejected rather
+  than decoded, migrated, dual-written, or retained behind compatibility shims.
 - **Owners:** Control plane, migration, and compatibility.
 - **Dependencies:** ADR-001, ADR-006, ADR-016, ADR-018, ADR-025.
-- **Test strategy:** Golden resolution for every cell/error, dry-run migrations, byte-preservation,
-  rollback/downgrade fixtures, unsupported-no-mutation tests, and source gates against legacy writes.
+- **Test strategy:** Golden resolution for every cell/error, rejection fixtures for every obsolete
+  schema/backend value, unsupported-no-mutation tests, and source gates against legacy reads and
+  writes.
 - **Exit gate:** New definitions contain no prohibited identity; first boot pins all guest-visible
-  ABIs; every legacy fixture migrates losslessly or fails before mutation with a receipt.
+  ABIs; every obsolete fixture fails before mutation with a stable reason and recovery guidance.
 
 ## ADR-016 — Components, signing, activation, rollback, and no-QEMU audit
 
