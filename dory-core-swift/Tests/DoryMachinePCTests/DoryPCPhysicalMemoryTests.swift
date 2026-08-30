@@ -29,6 +29,8 @@ import Testing
 
     try mmio.write(offset: 0x80, bytes: [0x30, 0, 0, 0])
     try mmio.write(offset: 0xF0, bytes: [0xFF, 1, 0, 0])
+    try mmio.write(offset: 0x320, bytes: [0x05, 0, 2, 0])
+    #expect(try mmio.read(offset: 0x320, byteCount: 4) == [0x05, 0, 2, 0])
     try mmio.write(offset: 0x320, bytes: [0x52, 0, 2, 0])
     try mmio.write(offset: 0x380, bytes: [10, 0, 0, 0])
     local.advanceTimer(by: 10)
