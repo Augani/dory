@@ -17,6 +17,8 @@ private enum Command {
     case run(machine: URL, guestTools: URL?, suspendOnExit: Bool)
     case resume(machine: URL, guestTools: URL?)
     case clone(machine: URL, destination: URL)
+    case export(machine: URL, destination: URL)
+    case `import`(source: URL, machine: URL)
     case status(machine: URL)
     case recover(machine: URL, discardSavedState: Bool)
 }
@@ -97,6 +99,19 @@ private func parseCommand(_ arguments: [String]) throws -> Command {
         )
         guard values.isEmpty else { throw CommandError.usage(usage) }
         return .clone(machine: machine, destination: destination)
+    case "export":
+        let machine = URL(fileURLWithPath: try take("--machine"), isDirectory: true)
+        let destination = URL(
+            fileURLWithPath: try take("--destination"),
+            isDirectory: true
+        )
+        guard values.isEmpty else { throw CommandError.usage(usage) }
+        return .export(machine: machine, destination: destination)
+    case "import":
+        let source = URL(fileURLWithPath: try take("--source"), isDirectory: true)
+        let machine = URL(fileURLWithPath: try take("--machine"), isDirectory: true)
+        guard values.isEmpty else { throw CommandError.usage(usage) }
+        return .import(source: source, machine: machine)
     case "status":
         let machine = URL(fileURLWithPath: try take("--machine"), isDirectory: true)
         guard values.isEmpty else { throw CommandError.usage(usage) }
@@ -120,6 +135,8 @@ Usage:
   dory-vzmac-qualification run --machine <bundle> [--guest-tools <directory>] [--suspend-on-exit]
   dory-vzmac-qualification resume --machine <bundle> [--guest-tools <directory>]
   dory-vzmac-qualification clone --machine <bundle> --destination <bundle>
+  dory-vzmac-qualification export --machine <bundle> --destination <dorymachine>
+  dory-vzmac-qualification import --source <dorymachine> --machine <bundle>
   dory-vzmac-qualification status --machine <bundle>
   dory-vzmac-qualification recover --machine <bundle> [--discard-saved-state]
 """
@@ -219,6 +236,25 @@ private final class QualificationAppDelegate: NSObject, NSApplicationDelegate,
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
             FileHandle.standardOutput.write(try encoder.encode(clone.manifest))
+            FileHandle.standardOutput.write(Data([0x0a]))
+            NSApp.terminate(nil)
+        case .export(let machine, let destination):
+            let source = try DoryVZMacMachineBundle.load(from: machine)
+            let portable = try DoryVZMacPortableBundle.export(
+                machine: source,
+                to: destination
+            )
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+            FileHandle.standardOutput.write(try encoder.encode(portable.manifest))
+            FileHandle.standardOutput.write(Data([0x0a]))
+            NSApp.terminate(nil)
+        case .import(let source, let machine):
+            let portable = try DoryVZMacPortableBundle.load(from: source)
+            let restored = try portable.restore(to: machine)
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+            FileHandle.standardOutput.write(try encoder.encode(restored.manifest))
             FileHandle.standardOutput.write(Data([0x0a]))
             NSApp.terminate(nil)
         case .status(let machine):
