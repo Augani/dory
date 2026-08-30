@@ -1,0 +1,80 @@
+{
+  "schema": "dory.phase0a.hv-lifecycle-calibration-engineering-evidence@2",
+  "verdict": "orchestration-budget-miss",
+  "startedAt": "2026-08-30T12:11:15Z",
+  "finishedAt": "2026-08-30T12:11:16Z",
+  "toolchain": {
+    "xcodeVersion": "26.6",
+    "xcodeBuild": "17F109",
+    "sdkVersion": "26.5"
+  },
+  "host": {
+    "architecture": "arm64",
+    "hardwareModel": "Mac14,10",
+    "chip": "Apple M2 Pro",
+    "physicalMemoryBytes": 17179869184,
+    "osProductVersion": "27.0",
+    "osBuildVersion": "26A5421a",
+    "firmwareVersion": "20457.1.29",
+    "bootSessionIdentifier": "D8A1C440-174D-4AE8-A564-A56EFB3DE487",
+    "powerSource": "ac",
+    "lowPowerModeEnabled": false,
+    "thermalState": "nominal",
+    "activeDisplayCount": 2
+  },
+  "candidate": {
+    "sha256": "307476d852aabffac70b0ec289c274273f5e0cbfdcbba78c3bdadc9f0949f296",
+    "entryPointSourceSHA256": "b207211599d1ff998bc6ea2ac666aaf85765a540c17b6fe78dff5928adbc6bf0",
+    "minimalHarnessSourceSHA256": "8a031298770da872e97e8dc41d355f7ab55cc544ff10320c91b0431c7d0ebe68",
+    "metricSummarySourceSHA256": "18315dac73dd98f2beecc2911b83fd2a440afb68d94b30289ef5bbc936bf5d64",
+    "hardenedRuntime": true,
+    "hypervisorEntitlement": true,
+    "teamIdentifier": "864H636QW4",
+    "signingAuthority": "Developer ID Application: Augustus Otu (864H636QW4)",
+    "notarization": "not-submitted-engineering-calibration"
+  },
+  "policy": {
+    "roundCount": 5,
+    "warmupCountPerHarnessPerRound": 20,
+    "sampleCountPerHarnessPerRound": 300,
+    "rawObservationCount": 3000,
+    "order": "position-balanced by round and sample parity",
+    "clock": "CLOCK_MONOTONIC_RAW",
+    "percentileMethod": "R-7 linear interpolation",
+    "inferenceUnit": "round median",
+    "orchestrationMedianOverheadBudgetPercent": 3
+  },
+  "rounds": [
+    {"round": 1, "minimalMedianMicroseconds": 69.334, "doryMedianMicroseconds": 72.5415, "overheadPercent": 4.626157440793843, "budgetPass": false},
+    {"round": 2, "minimalMedianMicroseconds": 62.667, "doryMedianMicroseconds": 65.208, "overheadPercent": 4.05476566614007, "budgetPass": false},
+    {"round": 3, "minimalMedianMicroseconds": 62.7705, "doryMedianMicroseconds": 63.229, "overheadPercent": 0.730438661473154, "budgetPass": true},
+    {"round": 4, "minimalMedianMicroseconds": 61.0625, "doryMedianMicroseconds": 64.125, "overheadPercent": 5.015353121801436, "budgetPass": false},
+    {"round": 5, "minimalMedianMicroseconds": 61.0625, "doryMedianMicroseconds": 62.5, "overheadPercent": 2.3541453428863823, "budgetPass": true}
+  ],
+  "pairedRoundOverheadPercent": {
+    "minimum": 0.730438661473154,
+    "lowerQuartile": 2.3541453428863823,
+    "median": 4.05476566614007,
+    "upperQuartile": 4.626157440793843,
+    "p90": 4.859674849398399,
+    "p95": 4.937513985599917,
+    "p99": 4.999785294561132,
+    "maximum": 5.015353121801436,
+    "coefficientOfVariation": 0.47584469477672225
+  },
+  "correctness": {
+    "minimalHVIterations": 1600,
+    "doryContractIterations": 1600,
+    "expectedHypercallNumber": 42,
+    "validityBlockers": []
+  },
+  "receipt": {
+    "file": "phase-0a-hv-lifecycle-calibration-engineering-receipt-schema2-2026-08-30.json.gz",
+    "uncompressedSHA256": "a9a44349844695fa1bb067ec18208268380377244061f623084a66f243210fc1",
+    "deterministicGzipSHA256": "f2c1a06a7d67e466aa1010b58a858825f2e73fea55b8a0f49f614def8c5da890",
+    "compressedBytes": 21668
+  },
+  "orchestrationBudgetPass": false,
+  "referenceMatrixComplete": false,
+  "releaseGateClosed": false
+}

@@ -40,27 +40,32 @@ UDID, battery serial, user name, and home-directory paths. Successful collection
 does not close ADR-017: `baselinesComplete` and `physicalMatrixComplete` remain false until exact
 signed candidates complete the reproducible native, minimal-HV/VZ-harness, and Dory campaigns.
 
-## First lifecycle calibration
+## Lifecycle calibration
 
 The Developer-ID-signed, hardened-runtime `dory-phase0a-hv-calibration` candidate executes the same
-page, `mov x0, #42; hvc #0` program, vCPU lifecycle, and teardown through raw
-Hypervisor.framework and Dory's contract-backed engine. Five warmups precede 30 samples per
-harness. AB/BA order alternates, `CLOCK_MONOTONIC_RAW` times every lifecycle, and R-7 interpolation
-produces median/p95/p99 values.
+page, reset architectural state, `mov x0, #42; hvc #0` program, complete `X0...X7` hypercall exit,
+vCPU lifecycle, and teardown through raw Hypervisor.framework and Dory's contract-backed engine.
+Schema 2 freezes five rounds, 20 warmups per harness per round, and 300 measured samples per
+harness per round. Position alternates by round and sample parity, `CLOCK_MONOTONIC_RAW` times every
+lifecycle, and R-7 interpolation summarizes every raw observation. The inference unit is the round
+median; the budget statistic is the median of the five paired round-overhead values.
 
-The first clean run did not pass the 3% orchestration budget:
+The current signed run did not pass the 3% orchestration budget:
 
-| Harness | Median | p95 | p99 | Worst | CV |
-|---|---:|---:|---:|---:|---:|
-| Minimal Hypervisor.framework | 81.417 µs | 110.781 µs | 115.927 µs | 116.459 µs | 15.61% |
-| Dory execution contracts | 84.521 µs | 100.012 µs | 106.515 µs | 108.666 µs | 10.85% |
+| Round | Minimal HV median | Dory median | Dory overhead | Pass |
+|---:|---:|---:|---:|:---:|
+| 1 | 69.334 µs | 72.542 µs | 4.626% | No |
+| 2 | 62.667 µs | 65.208 µs | 4.055% | No |
+| 3 | 62.771 µs | 63.229 µs | 0.730% | Yes |
+| 4 | 61.063 µs | 64.125 µs | 5.015% | No |
+| 5 | 61.063 µs | 62.500 µs | 2.354% | Yes |
 
-Median overhead is 3.81%. Power remained AC, low-power mode stayed disabled, thermal state stayed
-nominal, the boot session did not change, and all 70 warmup/measured executions produced the
-expected register value. The exact receipt is
-[`phase-0a-hv-lifecycle-calibration-engineering-receipt-2026-08-30.json`](phase-0a-hv-lifecycle-calibration-engineering-receipt-2026-08-30.json).
-The signed candidate SHA-256 is
-`1736bf2693adb3980f1b6802d4ce110b648552c2acd7f1b10f1a1473ad792a31`; the receipt SHA-256 is
-`a9b255d630d2541c2cb5e7bdedc108d5dec1eaa43c14e92b72cacef7abbb9128`. It was signed by team
-`864H636QW4` with hardened runtime and `com.apple.security.hypervisor`, but was not submitted for
-notarization because it is engineering evidence, not a release candidate.
+The paired round-overhead median is 4.055%. Power remained AC, low-power mode stayed disabled,
+thermal state stayed nominal, the boot session did not change, and all 3,200 warmup/measured
+executions produced the expected ABI result. The exact 3,000 raw observations are retained in the
+deterministic gzip receipt linked by
+[`phase-0a-hv-lifecycle-calibration-engineering-evidence-schema2-2026-08-30.json`](phase-0a-hv-lifecycle-calibration-engineering-evidence-schema2-2026-08-30.json).
+
+The earlier schema-1 engineering receipt remains historical evidence but is superseded for future
+decisions: it had only one 30-sample batch and did not preserve raw observations or use independent
+round medians.

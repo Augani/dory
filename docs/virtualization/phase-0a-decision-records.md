@@ -240,10 +240,11 @@ explicit migration or compatibility decision.
 - **Current evidence:** The 2026-08-30 signed host probe inventories the available `Mac14,10`
   (Apple M2 Pro, 16 GiB) candidate, its exact firmware/macOS/boot/power/thermal/storage state, and
   two-display topology without recording hardware serials or user identity. The candidate is not
-  yet assigned to a tier. An exact two-instruction lifecycle calibration then measured a clean
-  30-sample raw-HV median of 81.417 µs and Dory-contract median of 84.521 µs: 3.81% overhead against
-  the non-relaxing 3% budget. This is a reproducible optimization baseline, not a pass; low/mid/high
-  matrix and workload-campaign closure remain stop gates.
+  yet assigned to a tier. The current schema-2 two-instruction lifecycle calibration retains 3,000
+  position-balanced observations across five rounds and evaluates paired round medians. Its signed
+  result is 4.05% median Dory overhead against the non-relaxing 3% budget, so it remains a
+  reproducible optimization baseline rather than a pass; low/mid/high matrix and workload-campaign
+  closure also remain stop gates.
 
 ## ADR-018 — Compatibility ledger and release receipts
 
