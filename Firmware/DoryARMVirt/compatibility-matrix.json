@@ -34,6 +34,16 @@
       "checksumURL": "https://dl.fedoraproject.org/pub/fedora/linux/releases/44/Server/aarch64/iso/Fedora-Server-44-1.7-aarch64-CHECKSUM",
       "byteCount": 1257783296,
       "sha256": "a93ebd0322cda5a439039710b727ac1899a06e1c11876cfdf7f27c25b8262cc3"
+    },
+    "opensuse-tumbleweed-20260806-arm64": {
+      "guestFamily": "opensuse-tumbleweed",
+      "guestVersion": "20260806",
+      "guestBuild": "Snapshot20260806",
+      "guestArchitecture": "arm64",
+      "sourceURL": "https://download.opensuse.org/ports/aarch64/tumbleweed/iso/openSUSE-Tumbleweed-NET-aarch64-Snapshot20260806-Media.iso",
+      "checksumURL": "https://download.opensuse.org/ports/aarch64/tumbleweed/iso/openSUSE-Tumbleweed-NET-aarch64-Snapshot20260806-Media.iso.sha256",
+      "byteCount": 447211520,
+      "sha256": "96ad94913acaa3deaa07677ad6864f3a6599b6b3e284ae077e05d2b5b8ceeada"
     }
   },
   "gates": [
@@ -44,6 +54,7 @@
     {"gateID":"alpine-baseline-devices","kind":"baseline-devices","mediaID":"alpine-3.24.1-arm64","consoleScriptPath":"qualification/alpine-3.24-device-baseline.json","consoleScriptSHA256":"fb0812cac3e8b53ac4b5fc8bbe4d3ad65c5ba8ee8a3a3111d164257bf4d60889","expectedConsoleText":"DORY_DEVICE_BASELINE_READY","memoryByteCount":4294967296,"systemDiskByteCount":4294967296,"timeoutSeconds":300,"gvproxySHA256":"56e0cde99ff2b589e467294145d66796ab4d990ae89a3633b0ef037dfcba03cd","receipt":{"bootAttempts":2,"consoleScriptStepCount":5,"installerMediaTransitionCount":1,"installerMediaAttachedForFinalBoot":false,"coldSnapshotActionCount":0}},
     {"gateID":"debian-installer-boot","kind":"installer-boot","mediaID":"debian-13.6.0-arm64","consoleScriptPath":"qualification/debian-13.6-installer-boot.json","consoleScriptSHA256":"5dd666e523a09c2486016d70f96f43d0158cc77cdab09d8afcde7d9731e8bb08","expectedConsoleText":"Select a language","memoryByteCount":4294967296,"systemDiskByteCount":8589934592,"timeoutSeconds":180,"receipt":{"bootAttempts":1,"consoleScriptStepCount":1,"installerMediaTransitionCount":0,"installerMediaAttachedForFinalBoot":true,"coldSnapshotActionCount":0}},
     {"gateID":"fedora-installer-boot","kind":"installer-boot","mediaID":"fedora-server-44-1.7-arm64","consoleScriptPath":"qualification/fedora-44-installer-boot.json","consoleScriptSHA256":"4006f28145cc8014bbe8e1e4a8bebec5f0880bead704f731f5358d4bf6fe7ef1","expectedConsoleText":"Starting installer, one moment...","memoryByteCount":4294967296,"systemDiskByteCount":8589934592,"timeoutSeconds":180,"receipt":{"bootAttempts":1,"consoleScriptStepCount":1,"installerMediaTransitionCount":0,"installerMediaAttachedForFinalBoot":true,"coldSnapshotActionCount":0}},
+    {"gateID":"opensuse-installer-boot","kind":"installer-boot","mediaID":"opensuse-tumbleweed-20260806-arm64","consoleScriptPath":"qualification/opensuse-tumbleweed-20260806-installer-boot.json","consoleScriptSHA256":"d1174e8e3265af7b903d978dfbd9b451cc427d64bd9f1123225440256e26848c","expectedConsoleText":"Language, Keyboard and License Agreement","memoryByteCount":4294967296,"systemDiskByteCount":8589934592,"timeoutSeconds":180,"gvproxySHA256":"56e0cde99ff2b589e467294145d66796ab4d990ae89a3633b0ef037dfcba03cd","receipt":{"bootAttempts":1,"consoleScriptStepCount":1,"installerMediaTransitionCount":0,"installerMediaAttachedForFinalBoot":true,"coldSnapshotActionCount":0}},
     {"gateID":"debian-update","kind":"guest-update","mediaID":"debian-13.6.0-arm64","consoleScriptPath":"qualification/debian-13.6-install.json","consoleScriptSHA256":"14d2949f9c34c8a8610be449c4d87742bc21aa09de4c8a8cb1a41583e9770eda","expectedConsoleText":"DORY_DEBIAN_UPDATED_READY","memoryByteCount":4294967296,"systemDiskByteCount":8589934592,"timeoutSeconds":600,"gvproxySHA256":"56e0cde99ff2b589e467294145d66796ab4d990ae89a3633b0ef037dfcba03cd","receipt":{"bootAttempts":3,"consoleScriptStepCount":30,"installerMediaTransitionCount":1,"installerMediaAttachedForFinalBoot":false,"coldSnapshotActionCount":0}}
   ]
 }

@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "qualificationTarget": {
+    "guestFamily": "opensuse-tumbleweed",
+    "guestVersion": "20260806",
+    "guestBuild": "Snapshot20260806",
+    "guestArchitecture": "arm64"
+  },
+  "steps": [
+    {
+      "waitFor": "*Installation",
+      "send": "\n"
+    }
+  ]
+}

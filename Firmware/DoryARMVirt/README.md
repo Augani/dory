@@ -226,3 +226,16 @@ emit `Starting installer, one moment...`. The 1,257,783,296-byte image has
 SHA-256 `a93ebd0322cda5a439039710b727ac1899a06e1c11876cfdf7f27c25b8262cc3`;
 qualification requires that digest from Fedora's OpenPGP-verified release
 checksum file, not the web page alone.
+
+`opensuse-tumbleweed-20260806-installer-boot.json` is the fourth independent
+distribution-family cell. It pins the immutable openSUSE Tumbleweed 20260806
+aarch64 NET snapshot, selects `Installation` from the image's stock GRUB menu,
+boots its stock kernel and linuxrc environment, discovers both VirtIO block
+devices, obtains the deterministic gvproxy DHCP lease, downloads the signed
+repository metadata, starts YaST, and requires the serial UI's
+`Language, Keyboard and License Agreement` screen. The 447,211,520-byte image
+has SHA-256
+`96ad94913acaa3deaa07677ad6864f3a6599b6b3e284ae077e05d2b5b8ceeada`;
+qualification requires the detached OpenPGP signature over openSUSE's checksum
+file to verify against the openSUSE Project Signing Key fingerprint
+`AD48 5664 E901 B867 051A B15F 35A2 F86E 29B7 00A4`.
