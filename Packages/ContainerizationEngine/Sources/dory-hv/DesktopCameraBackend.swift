@@ -38,6 +38,12 @@ enum DoryMacCameraError: Error, CustomStringConvertible {
     }
 }
 
+struct DoryMacCameraIdentity: Sendable, Equatable {
+    let localizedName: String
+    let modelID: String
+    let uniqueID: String
+}
+
 /// Permission-aware AVFoundation source for the standard UVC device exported to Linux. Capture and
 /// JPEG conversion run off the AppKit thread. The physical camera starts lazily on the first guest
 /// video read and stops after the guest stream goes idle, matching the privacy lifecycle of a local
@@ -77,7 +83,10 @@ final class DoryMacCameraBackend: NSObject, DoryUVCCameraFrameSource,
         super.init()
     }
 
-    func prepareAndAuthorize(permissionTimeout: TimeInterval = 60) throws {
+    @discardableResult
+    func prepareAndAuthorize(permissionTimeout: TimeInterval = 60) throws
+        -> DoryMacCameraIdentity
+    {
         try Self.requireAuthorization(timeout: permissionTimeout)
         guard let device = AVCaptureDevice.default(for: .video) else {
             throw DoryMacCameraError.unavailable
@@ -128,6 +137,11 @@ final class DoryMacCameraBackend: NSObject, DoryUVCCameraFrameSource,
             condition.unlock()
         }
         log("dory-hv desktop: Dory UVC Camera ready (\(device.localizedName))")
+        return DoryMacCameraIdentity(
+            localizedName: device.localizedName,
+            modelID: device.modelID,
+            uniqueID: device.uniqueID
+        )
     }
 
     func nextJPEGFrame(width: Int, height: Int, timeout: TimeInterval) -> Data? {

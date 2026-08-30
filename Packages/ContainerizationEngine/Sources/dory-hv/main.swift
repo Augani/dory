@@ -223,7 +223,7 @@ do {
     fail("application launch authority handoff failed: \(error)")
 }
 guard let command = arguments.first else {
-    fail("usage: dory-hv <smoke|madvtest|desktop|agent-ping|data-drive|engine|usb|renderer-qualify> [options]")
+    fail("usage: dory-hv <smoke|madvtest|desktop|agent-ping|camera-qualify|data-drive|engine|usb|renderer-qualify> [options]")
 }
 
 switch command {
@@ -357,6 +357,12 @@ case "renderer-qualify":
         try RendererBootstrapQualificationCommand.run(arguments.dropFirst())
     } catch {
         fail("renderer qualification failed: \(error)")
+    }
+case "camera-qualify":
+    do {
+        try DoryMacCameraQualificationCommand.run(arguments.dropFirst())
+    } catch {
+        fail("camera qualification failed: \(error)")
     }
 case "desktop":
     var machineID: String?
