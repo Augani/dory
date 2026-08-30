@@ -7,19 +7,28 @@ public struct DoryPCACPILayout: Codable, Sendable, Hashable {
   public let madt: UInt64
   public let hpet: UInt64
   public let mcfg: UInt64
+  public let fadt: UInt64
+  public let facs: UInt64
+  public let dsdt: UInt64
 
   public init(
     rsdp: UInt64 = 0x0009_E000,
     xsdt: UInt64 = 0x0009_E100,
     madt: UInt64 = 0x0009_E200,
     hpet: UInt64 = 0x0009_E300,
-    mcfg: UInt64 = 0x0009_E400
+    mcfg: UInt64 = 0x0009_E400,
+    fadt: UInt64? = nil,
+    facs: UInt64? = nil,
+    dsdt: UInt64? = nil
   ) {
     self.rsdp = rsdp
     self.xsdt = xsdt
     self.madt = madt
     self.hpet = hpet
     self.mcfg = mcfg
+    self.fadt = fadt ?? mcfg + 0x100
+    self.facs = facs ?? (fadt ?? mcfg + 0x100) + 0x140
+    self.dsdt = dsdt ?? (fadt ?? mcfg + 0x100) + 0x200
   }
 }
 
@@ -35,11 +44,14 @@ public struct DoryPCACPITables: Sendable, Hashable {
   public let madt: [UInt8]
   public let hpet: [UInt8]
   public let mcfg: [UInt8]
+  public let fadt: [UInt8]
+  public let facs: [UInt8]
+  public let dsdt: [UInt8]
 
   public func install(into memory: any DoryX86Memory) throws {
     let artifacts = [
       (layout.rsdp, rsdp), (layout.xsdt, xsdt), (layout.madt, madt), (layout.hpet, hpet),
-      (layout.mcfg, mcfg),
+      (layout.mcfg, mcfg), (layout.fadt, fadt), (layout.facs, facs), (layout.dsdt, dsdt),
     ]
     do {
       for artifact in artifacts {
@@ -52,14 +64,16 @@ public struct DoryPCACPITables: Sendable, Hashable {
   }
 }
 
-/// Minimal DoryPC-v1 ACPI discovery set for direct-kernel boot. Firmware phases extend the XSDT
-/// with FADT/MCFG and AML without changing the already frozen APIC topology described here.
+/// DoryPC-v1 ACPI discovery and fixed-hardware contract for direct-kernel and firmware boot.
 public enum DoryPCACPIBuilder {
   public static func build(layout: DoryPCACPILayout = .init()) throws -> DoryPCACPITables {
     let madt = makeMADT()
     let hpet = makeHPET()
     let mcfg = makeMCFG()
-    let xsdt = makeXSDT(tableAddresses: [layout.madt, layout.hpet, layout.mcfg])
+    let dsdt = makeDSDT()
+    let facs = makeFACS()
+    let fadt = makeFADT(facsAddress: layout.facs, dsdtAddress: layout.dsdt)
+    let xsdt = makeXSDT(tableAddresses: [layout.fadt, layout.madt, layout.hpet, layout.mcfg])
     let rsdp = makeRSDP(xsdtAddress: layout.xsdt)
     let ranges = [
       layout.rsdp..<(layout.rsdp + UInt64(rsdp.count)),
@@ -67,11 +81,24 @@ public enum DoryPCACPIBuilder {
       layout.madt..<(layout.madt + UInt64(madt.count)),
       layout.hpet..<(layout.hpet + UInt64(hpet.count)),
       layout.mcfg..<(layout.mcfg + UInt64(mcfg.count)),
+      layout.fadt..<(layout.fadt + UInt64(fadt.count)),
+      layout.facs..<(layout.facs + UInt64(facs.count)),
+      layout.dsdt..<(layout.dsdt + UInt64(dsdt.count)),
     ].sorted { $0.lowerBound < $1.lowerBound }
     guard !zip(ranges, ranges.dropFirst()).contains(where: { $0.0.overlaps($0.1) }) else {
       throw DoryPCACPIError.overlappingTables
     }
-    return .init(layout: layout, rsdp: rsdp, xsdt: xsdt, madt: madt, hpet: hpet, mcfg: mcfg)
+    return .init(
+      layout: layout,
+      rsdp: rsdp,
+      xsdt: xsdt,
+      madt: madt,
+      hpet: hpet,
+      mcfg: mcfg,
+      fadt: fadt,
+      facs: facs,
+      dsdt: dsdt
+    )
   }
 
   private static func makeMADT() -> [UInt8] {
@@ -125,6 +152,57 @@ public enum DoryPCACPIBuilder {
     return table(signature: "MCFG", revision: 1, body: body)
   }
 
+  private static func makeFADT(facsAddress: UInt64, dsdtAddress: UInt64) -> [UInt8] {
+    var body = [UInt8](repeating: 0, count: 240)
+    put(UInt32(truncatingIfNeeded: facsAddress), at: 0, in: &body)
+    put(UInt32(truncatingIfNeeded: dsdtAddress), at: 4, in: &body)
+    body[9] = 1  // Desktop preferred power-management profile.
+    put(UInt16(9), at: 10, in: &body)
+    put(UInt32(DoryPCPowerController.pm1ControlPort), at: 28, in: &body)
+    body[53] = 2  // PM1 control register width.
+    body[72] = 0x32  // RTC century register.
+    put(UInt16(0b1_0101), at: 73, in: &body)  // Legacy devices, no VGA probing, no ASPM.
+    put(UInt32((1 << 2) | (1 << 10)), at: 76, in: &body)  // C1 and RESET_REG.
+    putGAS(
+      spaceID: 1,
+      bitWidth: 8,
+      accessSize: 1,
+      address: UInt64(DoryPCPowerController.resetPort),
+      at: 80,
+      in: &body
+    )
+    body[92] = DoryPCPowerController.resetValue
+    body[95] = 6
+    put(facsAddress, at: 96, in: &body)
+    put(dsdtAddress, at: 104, in: &body)
+    putGAS(
+      spaceID: 1,
+      bitWidth: 16,
+      accessSize: 2,
+      address: UInt64(DoryPCPowerController.pm1ControlPort),
+      at: 136,
+      in: &body
+    )
+    return table(signature: "FACP", revision: 6, body: body)
+  }
+
+  private static func makeFACS() -> [UInt8] {
+    var bytes = [UInt8](repeating: 0, count: 64)
+    bytes.replaceSubrange(0..<4, with: Array("FACS".utf8))
+    put(UInt32(bytes.count), at: 4, in: &bytes)
+    bytes[32] = 2
+    return bytes
+  }
+
+  private static func makeDSDT() -> [UInt8] {
+    // Name (_S5, Package (4) { 5, 5, Zero, Zero }). ACPICA iasl round-trip is covered by tests.
+    table(
+      signature: "DSDT",
+      revision: 2,
+      body: [0x08, 0x5F, 0x53, 0x35, 0x5F, 0x12, 0x08, 0x04, 0x0A, 0x05, 0x0A, 0x05, 0, 0]
+    )
+  }
+
   private static func makeRSDP(xsdtAddress: UInt64) -> [UInt8] {
     var bytes = Array("RSD PTR ".utf8)
     bytes += [0]
@@ -161,5 +239,27 @@ public enum DoryPCACPIBuilder {
     for index in 0..<MemoryLayout<T>.size {
       bytes.append(UInt8(truncatingIfNeeded: value >> T(index * 8)))
     }
+  }
+
+  private static func put<T: FixedWidthInteger>(_ value: T, at offset: Int, in bytes: inout [UInt8])
+  {
+    for index in 0..<MemoryLayout<T>.size {
+      bytes[offset + index] = UInt8(truncatingIfNeeded: value >> T(index * 8))
+    }
+  }
+
+  private static func putGAS(
+    spaceID: UInt8,
+    bitWidth: UInt8,
+    accessSize: UInt8,
+    address: UInt64,
+    at offset: Int,
+    in bytes: inout [UInt8]
+  ) {
+    bytes[offset] = spaceID
+    bytes[offset + 1] = bitWidth
+    bytes[offset + 2] = 0
+    bytes[offset + 3] = accessSize
+    put(address, at: offset + 4, in: &bytes)
   }
 }

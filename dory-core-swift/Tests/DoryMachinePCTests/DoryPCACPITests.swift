@@ -14,9 +14,10 @@ import Testing
     #expect(read64(tables.rsdp, at: 24) == tables.layout.xsdt)
     #expect(Array(tables.xsdt.prefix(4)) == Array("XSDT".utf8))
     #expect(tables.xsdt.reduce(0, &+) == 0)
-    #expect(read64(tables.xsdt, at: 36) == tables.layout.madt)
-    #expect(read64(tables.xsdt, at: 44) == tables.layout.hpet)
-    #expect(read64(tables.xsdt, at: 52) == tables.layout.mcfg)
+    #expect(read64(tables.xsdt, at: 36) == tables.layout.fadt)
+    #expect(read64(tables.xsdt, at: 44) == tables.layout.madt)
+    #expect(read64(tables.xsdt, at: 52) == tables.layout.hpet)
+    #expect(read64(tables.xsdt, at: 60) == tables.layout.mcfg)
     #expect(Array(tables.madt.prefix(4)) == Array("APIC".utf8))
     #expect(tables.madt.reduce(0, &+) == 0)
     #expect(read32(tables.madt, at: 36) == 0xFEE0_0000)
@@ -27,6 +28,23 @@ import Testing
     #expect(Array(tables.mcfg.prefix(4)) == Array("MCFG".utf8))
     #expect(tables.mcfg.reduce(0, &+) == 0)
     #expect(read64(tables.mcfg, at: 44) == 0xE000_0000)
+    #expect(Array(tables.fadt.prefix(4)) == Array("FACP".utf8))
+    #expect(tables.fadt.count == 276)
+    #expect(tables.fadt.reduce(0, &+) == 0)
+    #expect(read32(tables.fadt, at: 40) == UInt32(tables.layout.dsdt))
+    #expect(read32(tables.fadt, at: 112) & (1 << 10) != 0)
+    #expect(tables.fadt[116] == 1)
+    #expect(read64(tables.fadt, at: 120) == UInt64(DoryPCPowerController.resetPort))
+    #expect(tables.fadt[128] == DoryPCPowerController.resetValue)
+    #expect(read64(tables.fadt, at: 132) == tables.layout.facs)
+    #expect(read64(tables.fadt, at: 140) == tables.layout.dsdt)
+    #expect(Array(tables.facs.prefix(4)) == Array("FACS".utf8))
+    #expect(Array(tables.dsdt.prefix(4)) == Array("DSDT".utf8))
+    #expect(tables.dsdt.reduce(0, &+) == 0)
+    #expect(
+      tables.dsdt.suffix(14) == [
+        0x08, 0x5F, 0x53, 0x35, 0x5F, 0x12, 0x08, 0x04, 0x0A, 0x05, 0x0A, 0x05, 0, 0,
+      ])
   }
 
   @Test func installsAtomicallyAfterPreflightingEveryTable() throws {
@@ -41,6 +59,9 @@ import Testing
     #expect(try memory.read(at: 0x300, byteCount: 4) == Array("APIC".utf8))
     #expect(try memory.read(at: 0x400, byteCount: 4) == Array("HPET".utf8))
     #expect(try memory.read(at: 0x500, byteCount: 4) == Array("MCFG".utf8))
+    #expect(try memory.read(at: 0x600, byteCount: 4) == Array("FACP".utf8))
+    #expect(try memory.read(at: 0x740, byteCount: 4) == Array("FACS".utf8))
+    #expect(try memory.read(at: 0x800, byteCount: 4) == Array("DSDT".utf8))
   }
 
   @Test func directKernelHandoffPublishesTheRSDPAddress() throws {

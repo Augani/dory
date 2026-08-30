@@ -11,6 +11,8 @@ public enum DoryPCMachineStop: Sendable, Hashable {
   case halted(instructionCount: UInt64)
   case exception(DoryX86Exception, instructionCount: UInt64)
   case tripleFault(instructionCount: UInt64)
+  case poweredOff(instructionCount: UInt64)
+  case reset(instructionCount: UInt64)
   case instructionBudget(UInt64)
 }
 
@@ -37,6 +39,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   public let hpet: DoryPCHPET
   public let pciExpress: DoryPCPCIExpressECAM
   public let pciBARWindow: DoryPCPCIBARWindow
+  public let powerController: DoryPCPowerController
   public let pagingUnit: DoryX86PagingUnit
   public let interpreter: DoryX86Interpreter
   public let bootLayout: DoryPCPVHBootLayout
@@ -88,6 +91,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     }
     pciExpress = DoryPCPCIExpressECAM()
     pciBARWindow = DoryPCPCIBARWindow()
+    powerController = DoryPCPowerController()
     for function in pciFunctions {
       try pciExpress.attach(function)
       if let barDevice = function as? any DoryPCPCIBARMemoryDevice {
@@ -117,6 +121,8 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     try ioBus.attach(legacyPIT)
     try ioBus.attach(rtc)
     try ioBus.attach(serial)
+    try ioBus.attach(DoryPCACPIPMControlPort(controller: powerController))
+    try ioBus.attach(DoryPCResetControlPort(controller: powerController))
     ioBus.seal()
     try physicalMemory.attach(
       DoryPCLocalAPICMMIO(apic: localAPIC) { [ioAPIC] vector in
@@ -172,6 +178,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     return try lock.withLock {
       guard var state = loadedState else { throw DoryPCMachineError.notLoaded }
       for completed in 0..<maximumInstructions {
+        if let stop = powerStop(instructionCount: completed) { return stop }
         localAPIC.advanceTimer(by: 1)
         legacyPIT.advance(by: 1)
         rtc.advance(by: 1)
@@ -205,6 +212,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           ioBus: ioBus
         )
         loadedState = state
+        if let stop = powerStop(instructionCount: completed + 1) { return stop }
         switch result {
         case .retired, .yielded:
           continue
@@ -260,6 +268,14 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         }
       }
       return .instructionBudget(maximumInstructions)
+    }
+  }
+
+  private func powerStop(instructionCount: UInt64) -> DoryPCMachineStop? {
+    switch powerController.consumeRequestedAction() {
+    case .powerOff: return .poweredOff(instructionCount: instructionCount)
+    case .reset: return .reset(instructionCount: instructionCount)
+    case nil: return nil
     }
   }
 
