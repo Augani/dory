@@ -55,6 +55,10 @@ let package = Package(
       targets: ["dory-phase0a-storage-baseline"]
     ),
     .executable(
+      name: "dory-phase0a-network-baseline",
+      targets: ["dory-phase0a-network-baseline"]
+    ),
+    .executable(
       name: "dory-firmware-bundler",
       targets: ["dory-firmware-bundler"]
     ),
@@ -217,6 +221,10 @@ let package = Package(
     ),
     .executableTarget(
       name: "dory-phase0a-storage-baseline",
+      dependencies: ["DoryPhase0AQualification"]
+    ),
+    .executableTarget(
+      name: "dory-phase0a-network-baseline",
       dependencies: ["DoryPhase0AQualification"]
     ),
     .executableTarget(
