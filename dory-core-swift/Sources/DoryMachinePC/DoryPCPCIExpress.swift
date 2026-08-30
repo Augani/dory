@@ -58,8 +58,40 @@ public protocol DoryPCPCIFunction: AnyObject, Sendable {
   func writeConfiguration(offset: Int, bytes: [UInt8]) throws
 }
 
+public protocol DoryPCPCIMSIControllable: DoryPCPCIFunction {
+  func connectMSISink(
+    _ sink: @escaping @Sendable (_ messageAddress: UInt64, _ messageData: UInt16) -> Bool
+  )
+}
+
+public struct DoryPCPCIMSIState: Sendable, Hashable {
+  public let enabled: Bool
+  public let messageAddress: UInt64
+  public let messageData: UInt16
+}
+
+public struct DoryPCPCIMSIMessage: Sendable, Hashable {
+  public let destinationAPICID: UInt32
+  public let vector: UInt8
+
+  public static func decode(address: UInt64, data: UInt16) -> Self? {
+    guard address >> 32 == 0,
+      address & 0xFFF0_0000 == 0xFEE0_0000,
+      address & (1 << 2) == 0,
+      data & 0x0700 == 0,
+      data & (1 << 15) == 0
+    else { return nil }
+    let vector = UInt8(truncatingIfNeeded: data)
+    guard vector >= 0x10 else { return nil }
+    return .init(
+      destinationAPICID: UInt32(truncatingIfNeeded: address >> 12) & 0xFF,
+      vector: vector
+    )
+  }
+}
+
 /// PCI type-0 configuration header with architectural BAR probing and programming behavior.
-public final class DoryPCPCIConfigurationFunction: DoryPCPCIFunction, @unchecked Sendable {
+public final class DoryPCPCIConfigurationFunction: DoryPCPCIMSIControllable, @unchecked Sendable {
   private struct BARState {
     let kind: DoryPCPCIBARKind
     let size: UInt64
@@ -73,6 +105,8 @@ public final class DoryPCPCIConfigurationFunction: DoryPCPCIFunction, @unchecked
   private var configuration = [UInt8](repeating: 0, count: 4096)
   private var bars: [Int: BARState] = [:]
   private var upperBARSlots: Set<Int> = []
+  private let supportsMSI: Bool
+  private var msiSink: (@Sendable (UInt64, UInt16) -> Bool)?
 
   public init(
     address: DoryPCPCIAddress,
@@ -83,9 +117,11 @@ public final class DoryPCPCIConfigurationFunction: DoryPCPCIFunction, @unchecked
     subsystemVendorID: UInt16 = 0,
     subsystemID: UInt16 = 0,
     interruptPin: UInt8 = 0,
+    supportsMSI: Bool = false,
     bars descriptors: [DoryPCPCIBARDescriptor] = []
   ) throws {
     pciAddress = address
+    self.supportsMSI = supportsMSI
     put(vendorID, at: 0x00, in: &configuration)
     put(deviceID, at: 0x02, in: &configuration)
     configuration[0x08] = revisionID
@@ -97,6 +133,14 @@ public final class DoryPCPCIConfigurationFunction: DoryPCPCIFunction, @unchecked
     put(subsystemID, at: 0x2E, in: &configuration)
     configuration[0x3C] = 0xFF
     configuration[0x3D] = interruptPin
+    if supportsMSI {
+      configuration[0x06] |= 1 << 4
+      configuration[0x34] = 0x50
+      configuration[0x50] = 0x05
+      configuration[0x51] = 0
+      // One 64-bit message, no per-vector mask, one vector.
+      put(UInt16(1 << 7), at: 0x52, in: &configuration)
+    }
 
     for descriptor in descriptors.sorted(by: { $0.index < $1.index }) {
       guard bars[descriptor.index] == nil, !upperBARSlots.contains(descriptor.index) else {
@@ -118,6 +162,38 @@ public final class DoryPCPCIConfigurationFunction: DoryPCPCIFunction, @unchecked
 
   public var command: UInt16 {
     lock.withLock { get(UInt16.self, at: 0x04, in: configuration) }
+  }
+
+  public var msiState: DoryPCPCIMSIState? {
+    lock.withLock {
+      guard supportsMSI else { return nil }
+      return .init(
+        enabled: get(UInt16.self, at: 0x52, in: configuration) & 1 != 0,
+        messageAddress: UInt64(get(UInt32.self, at: 0x54, in: configuration))
+          | UInt64(get(UInt32.self, at: 0x58, in: configuration)) << 32,
+        messageData: get(UInt16.self, at: 0x5C, in: configuration)
+      )
+    }
+  }
+
+  public func connectMSISink(
+    _ sink: @escaping @Sendable (_ messageAddress: UInt64, _ messageData: UInt16) -> Bool
+  ) {
+    lock.withLock { msiSink = sink }
+  }
+
+  @discardableResult
+  public func raiseMSI() -> Bool {
+    let delivery: (sink: @Sendable (UInt64, UInt16) -> Bool, address: UInt64, data: UInt16)? =
+      lock.withLock {
+        guard supportsMSI, configuration[0x52] & 1 != 0, let msiSink else { return nil }
+        let address =
+          UInt64(get(UInt32.self, at: 0x54, in: configuration))
+          | UInt64(get(UInt32.self, at: 0x58, in: configuration)) << 32
+        return (msiSink, address, get(UInt16.self, at: 0x5C, in: configuration))
+      }
+    guard let delivery else { return false }
+    return delivery.sink(delivery.address, delivery.data)
   }
 
   public func bar(at index: Int) throws -> DoryPCPCIBARDescriptor? {
@@ -149,6 +225,20 @@ public final class DoryPCPCIConfigurationFunction: DoryPCPCIFunction, @unchecked
     try lock.withLock {
       if offset >= 0x10, offset < 0x28, bytes.count == 4, offset % 4 == 0 {
         try writeBARLocked(slot: (offset - 0x10) / 4, value: uint32(bytes))
+        return
+      }
+      if supportsMSI, offset < 0x5E, offset + bytes.count > 0x52 {
+        for (index, value) in bytes.enumerated() {
+          let register = offset + index
+          switch register {
+          case 0x52:
+            configuration[register] = (configuration[register] & 0xFE) | (value & 1)
+          case 0x54...0x5D:
+            configuration[register] = value
+          default:
+            break
+          }
+        }
         return
       }
       for (index, value) in bytes.enumerated() where writableConfigurationByte(offset + index) {

@@ -86,7 +86,22 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       try? ioAPIC.setAsserted(asserted, pin: route)
     }
     pciExpress = DoryPCPCIExpressECAM()
-    for function in pciFunctions { try pciExpress.attach(function) }
+    for function in pciFunctions {
+      try pciExpress.attach(function)
+      if let msiFunction = function as? any DoryPCPCIMSIControllable {
+        msiFunction.connectMSISink { [localAPIC] address, data in
+          guard let message = DoryPCPCIMSIMessage.decode(address: address, data: data),
+            message.destinationAPICID == localAPIC.apicID
+          else { return false }
+          do {
+            try localAPIC.inject(vector: message.vector)
+            return true
+          } catch {
+            return false
+          }
+        }
+      }
+    }
     pciExpress.seal()
     try ioBus.attach(DoryPCPIC8259Port(pair: legacyPIC, slave: false))
     try ioBus.attach(DoryPCPIC8259Port(pair: legacyPIC, slave: true))

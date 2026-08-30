@@ -1,4 +1,5 @@
 import DoryMachinePC
+import Foundation
 import Testing
 
 @Suite struct DoryPCPCIExpressTests {
@@ -92,11 +93,77 @@ import Testing
     #expect(machine.pciExpress.byteCount == 256 * 1024 * 1024)
   }
 
+  @Test func msiCapabilityProgramsAndDeliversA64BitFixedMessage() throws {
+    let function = try DoryPCPCIConfigurationFunction(
+      address: .init(bus: 0, device: 5, function: 0),
+      vendorID: 0x1AF4,
+      deviceID: 0x1044,
+      classCode: 0x000200,
+      supportsMSI: true
+    )
+    let recorder = MSIDeliveryRecorder()
+    function.connectMSISink { address, data in
+      recorder.append(address: address, data: data)
+      return true
+    }
+
+    #expect(try function.readConfiguration(offset: 0x34, byteCount: 1) == [0x50])
+    #expect(try function.readConfiguration(offset: 0x50, byteCount: 4) == [0x05, 0, 0x80, 0])
+    try function.writeConfiguration(offset: 0x54, bytes: littleEndian(UInt32(0xFEE0_0000)))
+    try function.writeConfiguration(offset: 0x58, bytes: littleEndian(UInt32(0)))
+    try function.writeConfiguration(offset: 0x5C, bytes: [0x52, 0])
+    try function.writeConfiguration(offset: 0x52, bytes: [1, 0])
+
+    #expect(function.raiseMSI())
+    #expect(function.msiState?.enabled == true)
+    #expect(recorder.values == [.init(address: 0xFEE0_0000, data: 0x52)])
+  }
+
+  @Test func machineRoutesValidMSIMessagesAndRejectsInvalidDeliveryModes() throws {
+    let function = try DoryPCPCIConfigurationFunction(
+      address: .init(bus: 0, device: 6, function: 0),
+      vendorID: 0x1AF4,
+      deviceID: 0x1044,
+      classCode: 0x000200,
+      supportsMSI: true
+    )
+    let machine = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024,
+      pciFunctions: [function]
+    )
+    try function.writeConfiguration(offset: 0x54, bytes: littleEndian(UInt32(0xFEE0_0000)))
+    try function.writeConfiguration(offset: 0x5C, bytes: [0x61, 0])
+    try function.writeConfiguration(offset: 0x52, bytes: [1, 0])
+
+    #expect(function.raiseMSI())
+    #expect(machine.localAPIC.snapshot().interruptRequest.contains(0x61))
+
+    try function.writeConfiguration(offset: 0x5C, bytes: [0x62, 1])
+    #expect(!function.raiseMSI())
+    #expect(!machine.localAPIC.snapshot().interruptRequest.contains(0x62))
+  }
+
   private func read32(_ bytes: [UInt8]) -> UInt32 {
     bytes.enumerated().reduce(0) { $0 | UInt32($1.element) << UInt32($1.offset * 8) }
   }
 
   private func littleEndian(_ value: UInt32) -> [UInt8] {
     (0..<4).map { UInt8(truncatingIfNeeded: value >> UInt32($0 * 8)) }
+  }
+}
+
+private struct MSIDelivery: Sendable, Hashable {
+  let address: UInt64
+  let data: UInt16
+}
+
+private final class MSIDeliveryRecorder: @unchecked Sendable {
+  private let lock = NSLock()
+  private var storage: [MSIDelivery] = []
+
+  var values: [MSIDelivery] { lock.withLock { storage } }
+
+  func append(address: UInt64, data: UInt16) {
+    lock.withLock { storage.append(.init(address: address, data: data)) }
   }
 }
