@@ -56,3 +56,20 @@ embedded UEFI interactive shell. Console output is written to standard error;
 a successful run writes one canonical JSON receipt to standard output with the
 machine and firmware ABI identities, build identifier, firmware SHA-256, boot
 attempt count, variable-store generation, and final stop reason.
+
+To qualify an exact, private, read-only installer image through the removable
+VirtIO block path, add the media and a console marker owned by that image:
+
+```sh
+chmod 600 /absolute/path/to/installer.iso
+"$runner" \
+  --firmware-bundle /absolute/path/to/dory-armvirt-firmware \
+  --installer-media /absolute/path/to/installer.iso \
+  --expect "GNU GRUB" \
+  --timeout-sec 60
+```
+
+The resulting receipt also binds the installer byte count and SHA-256. This
+gate proves immutable-media admission, UEFI enumeration, and execution of the
+image's own AArch64 bootloader; distribution install and reboot qualification
+remain separate gates.

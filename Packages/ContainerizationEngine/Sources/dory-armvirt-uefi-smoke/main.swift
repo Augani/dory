@@ -1,3 +1,4 @@
+import CryptoKit
 import Darwin
 import DoryFirmware
 import DoryHV
@@ -13,8 +14,16 @@ import Foundation
 #else
   private struct Options {
     var firmwareBundle: String?
+    var installerMedia: String?
     var timeoutSeconds: UInt64 = 15
     var expectedConsoleText = "UEFI Interactive Shell"
+  }
+
+  private struct InstallerMedia {
+    let path: String
+    let byteCount: UInt64
+    let sha256: String
+    let device: DoryARMVirtUEFIBootDevice
   }
 
   private struct Receipt: Codable {
@@ -24,6 +33,8 @@ import Foundation
     let buildIdentifier: String
     let firmwareCodeSHA256: String
     let expectedConsoleText: String
+    let installerMediaByteCount: UInt64?
+    let installerMediaSHA256: String?
     let consoleByteCount: Int
     let bootAttempts: Int
     let variableStoreGeneration: UInt64
@@ -105,7 +116,15 @@ import Foundation
     while let argument = iterator.next() {
       switch argument {
       case "--firmware-bundle":
-        options.firmwareBundle = iterator.next()
+        guard let value = iterator.next() else {
+          fail("--firmware-bundle requires a path")
+        }
+        options.firmwareBundle = value
+      case "--installer-media":
+        guard let value = iterator.next() else {
+          fail("--installer-media requires a path")
+        }
+        options.installerMedia = value
       case "--timeout-sec":
         guard let value = iterator.next().flatMap(UInt64.init), (1...120).contains(value) else {
           fail("--timeout-sec must be within 1...120")
@@ -136,8 +155,11 @@ import Foundation
     }
   }
 
-  private func attachSystemDisk(_ backend: VirtioBlk, to machine: Machine) throws {
-    let slot = 0
+  private func attachBlockDevice(
+    _ backend: VirtioBlk,
+    slot: Int,
+    to machine: Machine
+  ) throws {
     let spi = GuestLayout.virtioFirstIRQ + UInt32(slot)
     let transport = VirtioMMIOTransport(
       baseAddress: GuestLayout.virtioBase + UInt64(slot) * GuestLayout.virtioSlotSize,
@@ -149,21 +171,58 @@ import Foundation
     try machine.attachVirtioSlot(transport, at: slot)
   }
 
+  private func admitInstallerMedia(at suppliedPath: String) throws -> InstallerMedia {
+    let path = URL(fileURLWithPath: suppliedPath).resolvingSymlinksInPath().path
+    var fileStatus = stat()
+    guard lstat(path, &fileStatus) == 0,
+      fileStatus.st_mode & S_IFMT == S_IFREG,
+      fileStatus.st_uid == geteuid(),
+      fileStatus.st_mode & 0o077 == 0,
+      fileStatus.st_size > 0,
+      fileStatus.st_size % 512 == 0,
+      UInt64(fileStatus.st_size) <= 32 * 1_024 * 1_024 * 1_024
+    else {
+      fail(
+        "--installer-media must name a private, owned, non-empty, 512-byte-aligned regular file no larger than 32 GiB"
+      )
+    }
+    let handle = try FileHandle(forReadingFrom: URL(fileURLWithPath: path))
+    defer { try? handle.close() }
+    var hasher = SHA256()
+    while let chunk = try handle.read(upToCount: 1 << 20), !chunk.isEmpty {
+      hasher.update(data: chunk)
+    }
+    let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    return InstallerMedia(
+      path: path,
+      byteCount: UInt64(fileStatus.st_size),
+      sha256: digest,
+      device: try DoryARMVirtUEFIBootDevice(
+        logicalID: "installer",
+        kind: .removableMedia,
+        virtioSlot: 12,
+        readOnly: true
+      )
+    )
+  }
+
   private func runBoot(
     artifacts: DoryVerifiedFirmwareArtifacts,
     variableStore: DoryUEFIVariableStoreFile,
     systemDiskPath: String,
     systemDevice: DoryARMVirtUEFIBootDevice,
+    installerMedia: InstallerMedia?,
     capture: ConsoleCapture,
     timeoutSeconds: UInt64,
     attempt: Int
   ) throws -> BootResult {
     let generation = try variableStore.load().snapshot.generation
+    let bootDevices = [systemDevice] + (installerMedia.map { [$0.device] } ?? [])
     let launchPlan = try DoryARMVirtUEFILaunchPlan(
       firmware: artifacts.manifest,
       variableStoreGeneration: generation,
-      bootDevices: [systemDevice],
-      bootOrder: [systemDevice.logicalID]
+      bootDevices: bootDevices,
+      bootOrder: (installerMedia.map { [$0.device.logicalID] } ?? []) + [systemDevice.logicalID]
     )
     let machine = try Machine(
       configuration: MachineConfiguration(
@@ -180,10 +239,24 @@ import Foundation
       }
     )
     machine.bus.attach(PL031(baseAddress: GuestLayout.rtcBase))
-    try attachSystemDisk(
+    try attachBlockDevice(
       VirtioBlk(path: systemDiskPath, identity: "dory-uefi-smoke-system"),
+      slot: systemDevice.virtioSlot,
       to: machine
     )
+    if let installerMedia {
+      try attachBlockDevice(
+        VirtioBlk(
+          path: installerMedia.path,
+          identity: "dory-uefi-smoke-installer",
+          readOnly: true,
+          queueCount: 1,
+          discard: false
+        ),
+        slot: installerMedia.device.virtioSlot,
+        to: machine
+      )
+    }
     try machine.loadBootPayload()
 
     let completion = RunnerCompletion()
@@ -250,6 +323,7 @@ import Foundation
       virtioSlot: 0,
       readOnly: false
     )
+    let installerMedia = try options.installerMedia.map(admitInstallerMedia)
     let capture = ConsoleCapture(expected: options.expectedConsoleText)
     let maximumBootAttempts = 4
     var finalResult: BootResult?
@@ -261,6 +335,7 @@ import Foundation
         variableStore: variableStore,
         systemDiskPath: systemDiskPath,
         systemDevice: systemDevice,
+        installerMedia: installerMedia,
         capture: capture,
         timeoutSeconds: options.timeoutSeconds,
         attempt: bootAttempts
@@ -288,6 +363,8 @@ import Foundation
       buildIdentifier: artifacts.manifest.buildIdentifier,
       firmwareCodeSHA256: artifacts.manifest.firmwareCodeSHA256,
       expectedConsoleText: options.expectedConsoleText,
+      installerMediaByteCount: installerMedia?.byteCount,
+      installerMediaSHA256: installerMedia?.sha256,
       consoleByteCount: capture.byteCount,
       bootAttempts: bootAttempts,
       variableStoreGeneration: generation,
