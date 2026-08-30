@@ -91,6 +91,10 @@ public enum DoryX86ShiftCount: Codable, Sendable, Hashable {
   case cl
 }
 
+public enum DoryX86AccumulatorArithmeticOperation: String, Codable, Sendable, Hashable {
+  case unsignedMultiply, signedMultiply, unsignedDivide, signedDivide
+}
+
 public enum DoryX86Condition: UInt8, Codable, Sendable, Hashable {
   case overflow = 0
   case notOverflow
@@ -116,6 +120,12 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
   case alu(DoryX86ALUOperation, destination: DoryX86Operand, source: DoryX86Operand)
   case unary(DoryX86UnaryOperation, operand: DoryX86Operand)
   case shift(DoryX86ShiftOperation, destination: DoryX86Operand, count: DoryX86ShiftCount)
+  case extendMove(destination: DoryX86Operand, source: DoryX86Operand, signed: Bool)
+  case conditionalMove(DoryX86Condition, destination: DoryX86Operand, source: DoryX86Operand)
+  case setCondition(DoryX86Condition, destination: DoryX86Operand)
+  case signedMultiply(destination: DoryX86Operand, lhs: DoryX86Operand, rhs: DoryX86Operand)
+  case accumulatorArithmetic(DoryX86AccumulatorArithmeticOperation, source: DoryX86Operand)
+  case signExtendAccumulator(width: DoryX86OperandWidth, intoHighHalf: Bool)
   case push(DoryX86Operand)
   case pop(DoryX86Operand)
   case call(relative: Int64)

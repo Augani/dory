@@ -260,4 +260,81 @@ import Testing
     }
     #expect(returnAddress == 0xA002)
   }
+
+  @Test func executesExtensionMultiplyAndConditionalMoves() throws {
+    // mov al,80; movsx rax,al; imul rax,rax,-2; cmp rax,100; sete bl; cmove rcx,rdx
+    let memory = DoryX86ByteArrayMemory(
+      baseAddress: 0xB000,
+      bytes: [
+        0xB0, 0x80,
+        0x48, 0x0F, 0xBE, 0xC0,
+        0x48, 0x6B, 0xC0, 0xFE,
+        0x48, 0x81, 0xF8, 0x00, 0x01, 0x00, 0x00,
+        0x0F, 0x94, 0xC3,
+        0x48, 0x0F, 0x44, 0xCA,
+      ] + .init(repeating: 0, count: 32)
+    )
+    let registers = DoryX86GeneralRegisters(rcx: 1, rdx: 0xCAFE)
+    var state = try DoryX86ArchitecturalState(registers: registers, rip: 0xB000)
+    for _ in 0..<6 { _ = interpreter.step(state: &state, memory: memory, mode: .long64) }
+    #expect(state.registers.rax == 0x100)
+    #expect(state.registers.rbx & 0xFF == 1)
+    #expect(state.registers.rcx == 0xCAFE)
+    #expect(state.rflags.contains(.zero))
+  }
+
+  @Test func multiplyAndDivideUseTheArchitecturalAccumulatorPairs() throws {
+    let byteMemory = DoryX86ByteArrayMemory(
+      baseAddress: 0xB100,
+      bytes: [0xF6, 0xF3, 0xF6, 0xE3] + .init(repeating: 0, count: 16)
+    )
+    let byteRegisters = DoryX86GeneralRegisters(rax: 0x100, rbx: 2)
+    var byteState = try DoryX86ArchitecturalState(
+      registers: byteRegisters,
+      rip: 0xB100
+    )
+    _ = interpreter.step(state: &byteState, memory: byteMemory, mode: .long64)
+    #expect(byteState.registers.rax & 0xFFFF == 0x80)
+    _ = interpreter.step(state: &byteState, memory: byteMemory, mode: .long64)
+    #expect(byteState.registers.rax & 0xFFFF == 0x100)
+    #expect(byteState.rflags.contains(.carry))
+    #expect(byteState.rflags.contains(.overflow))
+
+    let signedMemory = DoryX86ByteArrayMemory(
+      baseAddress: 0xB200,
+      bytes: [0x48, 0xF7, 0xFB] + .init(repeating: 0, count: 16)
+    )
+    let signedRegisters = DoryX86GeneralRegisters(
+      rax: UInt64(bitPattern: -10),
+      rdx: .max,
+      rbx: 3
+    )
+    var signedState = try DoryX86ArchitecturalState(
+      registers: signedRegisters,
+      rip: 0xB200
+    )
+    _ = interpreter.step(state: &signedState, memory: signedMemory, mode: .long64)
+    #expect(Int64(bitPattern: signedState.registers.rax) == -3)
+    #expect(Int64(bitPattern: signedState.registers.rdx) == -1)
+  }
+
+  @Test func divideErrorIsPreciseAndNeverTrapsTheHostRuntime() throws {
+    let memory = DoryX86ByteArrayMemory(
+      baseAddress: 0xB300,
+      bytes: [0xF6, 0xF3] + .init(repeating: 0, count: 16)
+    )
+    let registers = DoryX86GeneralRegisters(rax: 0x100, rbx: 0)
+    var state = try DoryX86ArchitecturalState(registers: registers, rip: 0xB300)
+    let result = interpreter.step(state: &state, memory: memory, mode: .long64)
+    #expect(
+      result
+        == .exception(
+          .init(
+            kind: .divideError,
+            vector: 0,
+            instructionPointer: 0xB300
+          )))
+    #expect(state.rip == 0xB300)
+    #expect(state.registers == registers)
+  }
 }

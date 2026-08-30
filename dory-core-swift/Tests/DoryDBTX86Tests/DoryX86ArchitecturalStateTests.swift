@@ -68,6 +68,7 @@ import Testing
     #expect(profile.supports(.syscall))
     #expect(profile.supports(.msr))
     #expect(profile.supports(.tsc))
+    #expect(profile.supports(.cmov))
     #expect(!profile.supports(.avx))
     #expect(!profile.supports(.avx2))
     #expect(profile.cpuid(leaf: 0).eax == 0xD)

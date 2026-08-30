@@ -2,6 +2,7 @@ import Foundation
 
 public struct DoryX86Exception: Error, Codable, Sendable, Hashable {
   public enum Kind: String, Codable, Sendable, Hashable {
+    case divideError
     case invalidOpcode
     case generalProtection
     case pageFault
@@ -172,6 +173,69 @@ public struct DoryX86Interpreter: Sendable {
           state: &state,
           memory: executionMemory
         )
+      case .extendMove(let destination, let source, let signed):
+        let value = try read(
+          source, instruction: instruction, state: state, memory: executionMemory)
+        let extended =
+          signed
+          ? UInt64(bitPattern: signExtendedInt64(value, width: operandWidth(source)))
+          : value
+        try write(
+          extended,
+          to: destination,
+          instruction: instruction,
+          state: &state,
+          memory: executionMemory
+        )
+      case .conditionalMove(let condition, let destination, let source):
+        let value = try read(
+          source, instruction: instruction, state: state, memory: executionMemory)
+        if evaluate(condition, flags: state.rflags) {
+          try write(
+            value,
+            to: destination,
+            instruction: instruction,
+            state: &state,
+            memory: executionMemory
+          )
+        }
+      case .setCondition(let condition, let destination):
+        try write(
+          evaluate(condition, flags: state.rflags) ? 1 : 0,
+          to: destination,
+          instruction: instruction,
+          state: &state,
+          memory: executionMemory
+        )
+      case .signedMultiply(let destination, let lhs, let rhs):
+        let left = try read(lhs, instruction: instruction, state: state, memory: executionMemory)
+        let right = try read(rhs, instruction: instruction, state: state, memory: executionMemory)
+        let width = operandWidth(destination)
+        let multiply = signedMultiply(left, right, width: width)
+        setFlag(.carry, multiply.overflow, in: &state.rflags)
+        setFlag(.overflow, multiply.overflow, in: &state.rflags)
+        try write(
+          multiply.low,
+          to: destination,
+          instruction: instruction,
+          state: &state,
+          memory: executionMemory
+        )
+      case .accumulatorArithmetic(let operation, let source):
+        let value = try read(
+          source, instruction: instruction, state: state, memory: executionMemory)
+        let succeeded = executeAccumulatorArithmetic(
+          operation,
+          source: value,
+          width: operandWidth(source),
+          state: &state
+        )
+        guard succeeded else {
+          return .exception(
+            .init(kind: .divideError, vector: 0, instructionPointer: originalRIP))
+        }
+      case .signExtendAccumulator(let width, let intoHighHalf):
+        signExtendAccumulator(width: width, intoHighHalf: intoHighHalf, state: &state)
       case .push(let operand):
         let value = try read(
           operand, instruction: instruction, state: state, memory: executionMemory)
@@ -877,6 +941,257 @@ public struct DoryX86Interpreter: Sendable {
     setFlag(.parity, (result & 0xff).nonzeroBitCount.isMultiple(of: 2), in: &flags)
     flags.remove(.auxiliaryCarry)
     flags.insert(.reservedOne)
+  }
+
+  private func signedMultiply(
+    _ lhs: UInt64,
+    _ rhs: UInt64,
+    width: DoryX86OperandWidth
+  ) -> (low: UInt64, overflow: Bool) {
+    let left = signExtendedInt64(lhs, width: width)
+    let right = signExtendedInt64(rhs, width: width)
+    if width == .quadword {
+      let product = left.multipliedFullWidth(by: right)
+      let expectedHigh: Int64 = product.low & (1 << 63) == 0 ? 0 : -1
+      return (product.low, product.high != expectedHigh)
+    }
+    let product = left * right
+    let low = UInt64(bitPattern: product) & mask(width)
+    return (low, signExtendedInt64(low, width: width) != product)
+  }
+
+  private func executeAccumulatorArithmetic(
+    _ operation: DoryX86AccumulatorArithmeticOperation,
+    source: UInt64,
+    width: DoryX86OperandWidth,
+    state: inout DoryX86ArchitecturalState
+  ) -> Bool {
+    switch operation {
+    case .unsignedMultiply:
+      let lhs = accumulatorLow(width: width, state: state)
+      let product: (high: UInt64, low: UInt64)
+      if width == .quadword {
+        product = lhs.multipliedFullWidth(by: source)
+      } else {
+        let full = lhs * (source & mask(width))
+        product = (full >> UInt64(width.rawValue), full & mask(width))
+      }
+      writeAccumulatorProduct(low: product.low, high: product.high, width: width, state: &state)
+      let overflow = product.high != 0
+      setFlag(.carry, overflow, in: &state.rflags)
+      setFlag(.overflow, overflow, in: &state.rflags)
+      return true
+    case .signedMultiply:
+      let lhs = signExtendedInt64(accumulatorLow(width: width, state: state), width: width)
+      let rhs = signExtendedInt64(source, width: width)
+      let high: UInt64
+      let low: UInt64
+      let overflow: Bool
+      if width == .quadword {
+        let product = lhs.multipliedFullWidth(by: rhs)
+        low = product.low
+        high = UInt64(bitPattern: product.high)
+        overflow = product.high != (product.low & (1 << 63) == 0 ? 0 : -1)
+      } else {
+        let product = lhs * rhs
+        low = UInt64(bitPattern: product) & mask(width)
+        high = UInt64(bitPattern: product >> Int64(width.rawValue)) & mask(width)
+        overflow = signExtendedInt64(low, width: width) != product
+      }
+      writeAccumulatorProduct(low: low, high: high, width: width, state: &state)
+      setFlag(.carry, overflow, in: &state.rflags)
+      setFlag(.overflow, overflow, in: &state.rflags)
+      return true
+    case .unsignedDivide:
+      return executeUnsignedDivide(source: source, width: width, state: &state)
+    case .signedDivide:
+      return executeSignedDivide(source: source, width: width, state: &state)
+    }
+  }
+
+  private func executeUnsignedDivide(
+    source: UInt64,
+    width: DoryX86OperandWidth,
+    state: inout DoryX86ArchitecturalState
+  ) -> Bool {
+    let divisor = source & mask(width)
+    guard divisor != 0 else { return false }
+    let low = accumulatorLow(width: width, state: state)
+    let high = accumulatorHigh(width: width, state: state)
+    let quotient: UInt64
+    let remainder: UInt64
+    if width == .quadword {
+      guard high < divisor else { return false }
+      let result = divisor.dividingFullWidth((high: high, low: low))
+      quotient = result.quotient
+      remainder = result.remainder
+    } else {
+      let dividend = (high << UInt64(width.rawValue)) | low
+      quotient = dividend / divisor
+      remainder = dividend % divisor
+      guard quotient <= mask(width) else { return false }
+    }
+    writeAccumulatorDivision(
+      quotient: quotient, remainder: remainder, width: width, state: &state)
+    return true
+  }
+
+  private func executeSignedDivide(
+    source: UInt64,
+    width: DoryX86OperandWidth,
+    state: inout DoryX86ArchitecturalState
+  ) -> Bool {
+    let divisor = signExtendedInt64(source, width: width)
+    guard divisor != 0 else { return false }
+    let quotient: Int64
+    let remainder: Int64
+    if width == .quadword {
+      guard
+        let result = signedDivide128(
+          high: accumulatorHigh(width: width, state: state),
+          low: accumulatorLow(width: width, state: state),
+          divisor: divisor
+        )
+      else { return false }
+      quotient = result.quotient
+      remainder = result.remainder
+    } else {
+      let bits = Int(width.rawValue)
+      let combined =
+        (accumulatorHigh(width: width, state: state) << UInt64(bits))
+        | accumulatorLow(width: width, state: state)
+      let dividend: Int64 =
+        switch width {
+        case .byte: Int64(Int16(bitPattern: UInt16(truncatingIfNeeded: combined)))
+        case .word: Int64(Int32(bitPattern: UInt32(truncatingIfNeeded: combined)))
+        case .doubleword: Int64(bitPattern: combined)
+        case .quadword: preconditionFailure()
+        }
+      let division = dividend.dividedReportingOverflow(by: divisor)
+      guard !division.overflow else { return false }
+      quotient = division.partialValue
+      remainder = dividend.remainderReportingOverflow(dividingBy: divisor).partialValue
+      let minimum = -(Int64(1) << Int64(bits - 1))
+      let maximum = (Int64(1) << Int64(bits - 1)) - 1
+      guard (minimum...maximum).contains(quotient) else { return false }
+    }
+    writeAccumulatorDivision(
+      quotient: UInt64(bitPattern: quotient),
+      remainder: UInt64(bitPattern: remainder),
+      width: width,
+      state: &state
+    )
+    return true
+  }
+
+  private func signedDivide128(
+    high: UInt64,
+    low: UInt64,
+    divisor: Int64
+  ) -> (quotient: Int64, remainder: Int64)? {
+    let dividendNegative = high & (1 << 63) != 0
+    let divisorNegative = divisor < 0
+    let magnitudeHigh: UInt64
+    let magnitudeLow: UInt64
+    if dividendNegative {
+      magnitudeLow = ~low &+ 1
+      magnitudeHigh = ~high &+ (magnitudeLow == 0 ? 1 : 0)
+    } else {
+      magnitudeHigh = high
+      magnitudeLow = low
+    }
+    let divisorBits = UInt64(bitPattern: divisor)
+    let divisorMagnitude = divisorNegative ? ~divisorBits &+ 1 : divisorBits
+    guard divisorMagnitude != 0, magnitudeHigh < divisorMagnitude else { return nil }
+    let result = divisorMagnitude.dividingFullWidth((high: magnitudeHigh, low: magnitudeLow))
+    let quotientNegative = dividendNegative != divisorNegative
+    let limit: UInt64 = quotientNegative ? 1 << 63 : UInt64(Int64.max)
+    guard result.quotient <= limit else { return nil }
+    let quotientBits = quotientNegative ? ~result.quotient &+ 1 : result.quotient
+    let remainderBits = dividendNegative ? ~result.remainder &+ 1 : result.remainder
+    return (Int64(bitPattern: quotientBits), Int64(bitPattern: remainderBits))
+  }
+
+  private func accumulatorLow(
+    width: DoryX86OperandWidth,
+    state: DoryX86ArchitecturalState
+  ) -> UInt64 {
+    state.registers.rax & mask(width)
+  }
+
+  private func accumulatorHigh(
+    width: DoryX86OperandWidth,
+    state: DoryX86ArchitecturalState
+  ) -> UInt64 {
+    if width == .byte { return (state.registers.rax >> 8) & 0xff }
+    return state.registers.rdx & mask(width)
+  }
+
+  private func writeAccumulatorProduct(
+    low: UInt64,
+    high: UInt64,
+    width: DoryX86OperandWidth,
+    state: inout DoryX86ArchitecturalState
+  ) {
+    writeAccumulatorDivision(quotient: low, remainder: high, width: width, state: &state)
+  }
+
+  private func writeAccumulatorDivision(
+    quotient: UInt64,
+    remainder: UInt64,
+    width: DoryX86OperandWidth,
+    state: inout DoryX86ArchitecturalState
+  ) {
+    switch width {
+    case .byte:
+      state.registers.rax =
+        (state.registers.rax & ~UInt64(0xffff))
+        | (quotient & 0xff)
+        | ((remainder & 0xff) << 8)
+    case .word:
+      state.registers.rax = (state.registers.rax & ~UInt64(0xffff)) | (quotient & 0xffff)
+      state.registers.rdx = (state.registers.rdx & ~UInt64(0xffff)) | (remainder & 0xffff)
+    case .doubleword:
+      state.registers.rax = quotient & 0xffff_ffff
+      state.registers.rdx = remainder & 0xffff_ffff
+    case .quadword:
+      state.registers.rax = quotient
+      state.registers.rdx = remainder
+    }
+  }
+
+  private func signExtendAccumulator(
+    width: DoryX86OperandWidth,
+    intoHighHalf: Bool,
+    state: inout DoryX86ArchitecturalState
+  ) {
+    if intoHighHalf {
+      let sign = accumulatorLow(width: width, state: state) & signBit(width) != 0
+      let high = sign ? mask(width) : 0
+      if width == .byte {
+        state.registers.rax = (state.registers.rax & ~UInt64(0xff00)) | (high << 8)
+      } else if width == .word {
+        state.registers.rdx = (state.registers.rdx & ~UInt64(0xffff)) | high
+      } else if width == .doubleword {
+        state.registers.rdx = high
+      } else {
+        state.registers.rdx = high
+      }
+      return
+    }
+    switch width {
+    case .byte:
+      break
+    case .word:
+      let value = UInt64(bitPattern: Int64(Int8(bitPattern: UInt8(state.registers.rax))))
+      state.registers.rax = (state.registers.rax & ~UInt64(0xffff)) | (value & 0xffff)
+    case .doubleword:
+      state.registers.rax = UInt64(
+        UInt32(bitPattern: Int32(Int16(bitPattern: UInt16(state.registers.rax)))))
+    case .quadword:
+      state.registers.rax = UInt64(
+        bitPattern: Int64(Int32(bitPattern: UInt32(state.registers.rax))))
+    }
   }
 
   private func signExtendedInt64(_ value: UInt64, width: DoryX86OperandWidth) -> Int64 {

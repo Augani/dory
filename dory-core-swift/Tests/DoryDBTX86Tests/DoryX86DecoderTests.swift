@@ -147,4 +147,42 @@ import Testing
         == .callIndirect(.register(.rax, width: .quadword))
     )
   }
+
+  @Test func decodesMultiplyExtensionAndConditionalDataFlow() throws {
+    #expect(
+      try decoder.decode([0x48, 0x0F, 0xBE, 0xC0], at: 0x9000, mode: .long64).operation
+        == .extendMove(
+          destination: .register(.rax, width: .quadword),
+          source: .register(.rax, width: .byte),
+          signed: true
+        )
+    )
+    #expect(
+      try decoder.decode([0x48, 0x6B, 0xC1, 0xFE], at: 0x9000, mode: .long64).operation
+        == .signedMultiply(
+          destination: .register(.rax, width: .quadword),
+          lhs: .register(.rcx, width: .quadword),
+          rhs: .immediate(UInt64(bitPattern: -2), width: .quadword)
+        )
+    )
+    #expect(
+      try decoder.decode([0x0F, 0x94, 0xC3], at: 0x9000, mode: .long64).operation
+        == .setCondition(.equal, destination: .register(.rbx, width: .byte))
+    )
+    #expect(
+      try decoder.decode([0x48, 0x0F, 0x44, 0xCA], at: 0x9000, mode: .long64).operation
+        == .conditionalMove(
+          .equal,
+          destination: .register(.rcx, width: .quadword),
+          source: .register(.rdx, width: .quadword)
+        )
+    )
+    #expect(
+      try decoder.decode([0x48, 0xF7, 0xFB], at: 0x9000, mode: .long64).operation
+        == .accumulatorArithmetic(
+          .signedDivide,
+          source: .register(.rbx, width: .quadword)
+        )
+    )
+  }
 }

@@ -90,6 +90,19 @@ public struct DoryX86Decoder: Sendable {
     case 0x58...0x5F:
       let register = register(Int(opcode - 0x58), extensionBit: prefixes.rex?.b == true)
       operation = .pop(.register(register, width: stackWidth(mode: mode, prefixes: prefixes)))
+    case 0x63:
+      guard mode == .long64 else {
+        throw DoryX86DecodeError.invalidEncoding(
+          address: address, detail: "MOVSXD requires 64-bit mode")
+      }
+      let operands = try decodeModRM(
+        cursor: &cursor, width: .doubleword, prefixes: prefixes, mode: mode)
+      let destinationWidth: DoryX86OperandWidth = prefixes.rex?.w == true ? .quadword : .doubleword
+      operation = .extendMove(
+        destination: resizedOperand(operands.reg, to: destinationWidth),
+        source: operands.rm,
+        signed: true
+      )
     case 0x68:
       let targetWidth = stackWidth(mode: mode, prefixes: prefixes)
       let encodedWidth: DoryX86OperandWidth = targetWidth == .word ? .word : .doubleword
@@ -102,6 +115,19 @@ public struct DoryX86Decoder: Sendable {
       let raw = try cursor.readUnsigned(byteCount: 1)
       operation = .push(
         .immediate(signExtend(raw, from: .byte, to: targetWidth), width: targetWidth)
+      )
+    case 0x69, 0x6B:
+      let operands = try decodeModRM(
+        cursor: &cursor, width: width, prefixes: prefixes, mode: mode)
+      let encodedWidth: DoryX86OperandWidth =
+        opcode == 0x6B
+        ? .byte
+        : (width == .quadword ? .doubleword : width)
+      let raw = try cursor.readUnsigned(byteCount: encodedWidth.byteCount)
+      operation = .signedMultiply(
+        destination: operands.reg,
+        lhs: operands.rm,
+        rhs: .immediate(signExtend(raw, from: encodedWidth, to: width), width: width)
       )
     case 0xB0...0xB7:
       operation = .move(
@@ -120,6 +146,10 @@ public struct DoryX86Decoder: Sendable {
         destination: .register(register, width: width),
         source: .immediate(immediate, width: width)
       )
+    case 0x98:
+      operation = .signExtendAccumulator(width: width, intoHighHalf: false)
+    case 0x99:
+      operation = .signExtendAccumulator(width: width, intoHighHalf: true)
     case 0x88, 0x8A, 0x89, 0x8B, 0x8D,
       0x00, 0x02, 0x01, 0x03, 0x08, 0x0A, 0x09, 0x0B,
       0x10, 0x12, 0x11, 0x13, 0x18, 0x1A, 0x19, 0x1B,
@@ -277,6 +307,14 @@ public struct DoryX86Decoder: Sendable {
         )
       case 2: operation = .unary(.bitwiseNot, operand: operands.rm)
       case 3: operation = .unary(.negate, operand: operands.rm)
+      case 4:
+        operation = .accumulatorArithmetic(.unsignedMultiply, source: operands.rm)
+      case 5:
+        operation = .accumulatorArithmetic(.signedMultiply, source: operands.rm)
+      case 6:
+        operation = .accumulatorArithmetic(.unsignedDivide, source: operands.rm)
+      case 7:
+        operation = .accumulatorArithmetic(.signedDivide, source: operands.rm)
       default:
         throw DoryX86DecodeError.invalidEncoding(
           address: address, detail: "unsupported F6/F7 group")
@@ -361,10 +399,42 @@ public struct DoryX86Decoder: Sendable {
         }
       case 0xA2:
         operation = .cpuid
+      case 0x40...0x4F:
+        let operands = try decodeModRM(
+          cursor: &cursor, width: width, prefixes: prefixes, mode: mode)
+        operation = .conditionalMove(
+          DoryX86Condition(rawValue: second - 0x40)!,
+          destination: operands.reg,
+          source: operands.rm
+        )
       case 0x80...0x8F:
         operation = .conditionalJump(
           DoryX86Condition(rawValue: second - 0x80)!,
           relative: Int64(try cursor.readSigned(byteCount: 4))
+        )
+      case 0x90...0x9F:
+        let operands = try decodeModRM(
+          cursor: &cursor, width: .byte, prefixes: prefixes, mode: mode)
+        operation = .setCondition(
+          DoryX86Condition(rawValue: second - 0x90)!,
+          destination: operands.rm
+        )
+      case 0xAF:
+        let operands = try decodeModRM(
+          cursor: &cursor, width: width, prefixes: prefixes, mode: mode)
+        operation = .signedMultiply(
+          destination: operands.reg,
+          lhs: operands.reg,
+          rhs: operands.rm
+        )
+      case 0xB6, 0xB7, 0xBE, 0xBF:
+        let sourceWidth: DoryX86OperandWidth = second == 0xB6 || second == 0xBE ? .byte : .word
+        let operands = try decodeModRM(
+          cursor: &cursor, width: sourceWidth, prefixes: prefixes, mode: mode)
+        operation = .extendMove(
+          destination: resizedOperand(operands.reg, to: width),
+          source: operands.rm,
+          signed: second == 0xBE || second == 0xBF
         )
       default:
         throw DoryX86DecodeError.unsupportedOpcode(
