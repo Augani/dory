@@ -14,6 +14,7 @@ let package = Package(
     .library(name: "DoryFirmware", targets: ["DoryFirmware"]),
     .library(name: "DoryNativeHVArm64", targets: ["DoryNativeHVArm64"]),
     .library(name: "DoryPhase0AQualification", targets: ["DoryPhase0AQualification"]),
+    .library(name: "DoryVZMacCompatibility", targets: ["DoryVZMacCompatibility"]),
     .library(name: "DoryVMContracts", targets: ["DoryVMContracts"]),
     .library(
       name: "DoryRendererWorkerWireContracts",
@@ -90,6 +91,10 @@ let package = Package(
     .target(
       name: "DoryVZMacSDKInventory",
       dependencies: []
+    ),
+    .target(
+      name: "DoryVZMacCompatibility",
+      dependencies: ["DoryVZMacSDKInventory"]
     ),
     .target(
       name: "DoryPhase0AHostNativeWorkload",
@@ -195,7 +200,7 @@ let package = Package(
     // missing camera or physical-USB declarations remain explicit stop gates.
     .executableTarget(
       name: "dory-vzmac-device-probe",
-      dependencies: ["DoryVZMacSDKInventory"],
+      dependencies: ["DoryVZMacCompatibility", "DoryVZMacSDKInventory"],
       path: "Sources/dory-vzmac-device-probe",
       linkerSettings: [.linkedFramework("Virtualization")]
     ),
@@ -267,6 +272,10 @@ let package = Package(
     .testTarget(
       name: "DoryVZMacSDKInventoryTests",
       dependencies: ["DoryVZMacSDKInventory"]
+    ),
+    .testTarget(
+      name: "DoryVZMacCompatibilityTests",
+      dependencies: ["DoryVZMacCompatibility"]
     ),
     .testTarget(
       name: "DoryVMContractsTests",

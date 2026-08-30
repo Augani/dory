@@ -12,6 +12,14 @@ bool dory_vzmac_physical_usb_declared(void) {
     return DORY_VZMAC_PHYSICAL_USB_DECLARED;
 }
 
+bool dory_vzmac_xhci_controller_declared(void) {
+    return DORY_VZMAC_XHCI_CONTROLLER_DECLARED;
+}
+
+bool dory_vzmac_virtual_usb_mass_storage_declared(void) {
+    return DORY_VZMAC_VIRTUAL_USB_MASS_STORAGE_DECLARED;
+}
+
 bool dory_vzmac_camera_injection_declared(void) {
     return DORY_VZMAC_CAMERA_INJECTION_DECLARED;
 }

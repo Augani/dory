@@ -1,4 +1,5 @@
 import Foundation
+import DoryVZMacCompatibility
 import DoryVZMacSDKInventory
 import Virtualization
 
@@ -30,6 +31,10 @@ private struct PublicSDKBoundary: Codable {
     var physicalUSBMinimumHostVersion: String?
     var physicalUSBAuthorityProcess: String?
     var physicalUSBRequiredEntitlements: [String]
+    var xhciControllerDeclared: Bool
+    var virtualUSBMassStorageDeclared: Bool
+    var virtualUSBMassStorageIsPhysicalPassthroughEquivalent: Bool
+    var ioUSBHostCaptureEntitlement: String
     var cameraInjectionDeclared: Bool
     var runtimeClassPresence: [String: Bool]
 }
@@ -42,6 +47,7 @@ private struct ProbeReceipt: Codable {
     var hostBuildVersion: String
     var constructedPublicDevices: ConstructedPublicDevices
     var publicSDKBoundary: PublicSDKBoundary
+    var resolvedHostCapabilities: DoryVZMacHostCapabilities
     var releaseGateClosed: Bool
     var blockers: [String]
 }
@@ -111,6 +117,11 @@ private func publicSDKBoundary() -> PublicSDKBoundary {
                 "com.apple.security.virtualization",
             ]
             : [],
+        xhciControllerDeclared: dory_vzmac_xhci_controller_declared(),
+        virtualUSBMassStorageDeclared:
+            dory_vzmac_virtual_usb_mass_storage_declared(),
+        virtualUSBMassStorageIsPhysicalPassthroughEquivalent: false,
+        ioUSBHostCaptureEntitlement: "com.apple.vm.device-access",
         cameraInjectionDeclared: cameraDeclared,
         runtimeClassPresence: runtimeClassPresence([
             "VZUSBPassthroughDevice",
@@ -123,6 +134,11 @@ private func publicSDKBoundary() -> PublicSDKBoundary {
 }
 
 private func runProbe() -> ProbeReceipt {
+    let resolvedHostCapabilities = DoryVZMacHostCapabilities.resolve(
+        hostArchitecture: hostArchitecture,
+        hostMajorVersion:
+            ProcessInfo.processInfo.operatingSystemVersion.majorVersion
+    )
     guard hostArchitecture == "arm64" else {
         return ProbeReceipt(
             schema: "dory.phase0a.vzmac-device-api-probe@2",
@@ -140,6 +156,7 @@ private func runProbe() -> ProbeReceipt {
                 xhciController: false
             ),
             publicSDKBoundary: publicSDKBoundary(),
+            resolvedHostCapabilities: resolvedHostCapabilities,
             releaseGateClosed: false,
             blockers: ["VZMac is available only on Apple-silicon hosts"]
         )
@@ -182,6 +199,9 @@ private func runProbe() -> ProbeReceipt {
         )
     } else {
         blockers.append("the compiling public SDK declares no VZ physical-USB passthrough type")
+        blockers.append(
+            "VZ USB mass storage is a virtual storage attachment, not an equivalent arbitrary physical-device path"
+        )
     }
     return ProbeReceipt(
         schema: "dory.phase0a.vzmac-device-api-probe@2",
@@ -201,6 +221,7 @@ private func runProbe() -> ProbeReceipt {
             xhciController: xhciController
         ),
         publicSDKBoundary: sdkBoundary,
+        resolvedHostCapabilities: resolvedHostCapabilities,
         releaseGateClosed: false,
         blockers: blockers
     )

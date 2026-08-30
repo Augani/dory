@@ -16,4 +16,9 @@ final class SDKInventoryTests: XCTestCase {
     func testCurrentPublicSDKHasNoVZCameraInjectionDeclaration() {
         XCTAssertFalse(dory_vzmac_camera_injection_declared())
     }
+
+    func testOlderSDKCompatiblePathIsVirtualUSBMassStorageOnly() {
+        XCTAssertTrue(dory_vzmac_xhci_controller_declared())
+        XCTAssertTrue(dory_vzmac_virtual_usb_mass_storage_declared())
+    }
 }
