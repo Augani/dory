@@ -68,6 +68,60 @@ import Testing
     #expect(state.rflags.contains(.interruptEnable))
   }
 
+  @Test func protectedModeInterruptSwitchesThroughTSSAndRestoresRingThree() throws {
+    let memory = DoryX86ByteArrayMemory(byteCount: 0x7000)
+    try write64(memory, 0x1008, 0x00CF_9A00_0000_FFFF)
+    try write64(memory, 0x1010, 0x00CF_9200_0000_FFFF)
+    try write64(memory, 0x1018, 0x00CF_FA00_0000_FFFF)
+    try write64(memory, 0x1020, 0x00CF_F200_0000_FFFF)
+    let gateTarget: UInt64 = 0x3100
+    let gate =
+      (gateTarget & 0xffff)
+      | UInt64(8) << 16
+      | UInt64(0xEE) << 40
+      | ((gateTarget >> 16) & 0xffff) << 48
+    try write64(memory, 0x2000 + 0x80 * 8, gate)
+    try memory.write(at: 0x3000, bytes: [0xCD, 0x80])
+    try memory.write(at: 0x3100, bytes: [0xCF])
+    try memory.write(at: 0x5004, bytes: [0, 0x40, 0, 0])
+    try memory.write(at: 0x5008, bytes: [0x10, 0])
+    var state = try DoryX86ArchitecturalState(
+      registers: .init(rsp: 0x4500),
+      rip: 0x3000,
+      rflags: [.reservedOne, .interruptEnable],
+      cs: .init(selector: 0x1B, attributes: 0xC0FA, limit: .max),
+      ss: .init(selector: 0x23, attributes: 0xC0F2, limit: .max),
+      tr: .init(selector: 0x28, attributes: 0x008B, limit: 0x67, base: 0x5000),
+      gdtr: .init(limit: 0x27, base: 0x1000),
+      idtr: .init(limit: 0x7ff, base: 0x2000)
+    )
+    state.control.cr0 |= 1
+    let interpreter = DoryX86Interpreter()
+
+    _ = interpreter.step(state: &state, memory: memory, mode: .protected32)
+    #expect(state.rip == 0x3100)
+    #expect(state.cs.selector == 8)
+    #expect(state.ss.selector == 0x10)
+    #expect(state.registers.rsp == 0x3fec)
+    #expect(
+      try memory.read(at: 0x3fec, byteCount: 20)
+        == [
+          2, 0x30, 0, 0,
+          0x1B, 0, 0, 0,
+          2, 2, 0, 0,
+          0, 0x45, 0, 0,
+          0x23, 0, 0, 0,
+        ]
+    )
+
+    _ = interpreter.step(state: &state, memory: memory, mode: .protected32)
+    #expect(state.rip == 0x3002)
+    #expect(state.cs.selector == 0x1B)
+    #expect(state.ss.selector == 0x23)
+    #expect(state.registers.rsp == 0x4500)
+    #expect(state.rflags.contains(.interruptEnable))
+  }
+
   @Test func softwareInterruptSwitchesPrivilegeStacksAndIRETRestoresUserState() throws {
     let memory = DoryX86ByteArrayMemory(byteCount: 0x10_000)
     try installSegments(memory)

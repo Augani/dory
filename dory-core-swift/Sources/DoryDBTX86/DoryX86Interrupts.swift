@@ -389,34 +389,52 @@ public struct DoryX86InterruptDelivery: Sendable {
       throw DoryX86InterruptDeliveryError.privilegeViolation(vector: vector)
     }
     let code = try readLegacySegment(selector: gate.selector, state: state, memory: memory)
+    let conforming = code.type & 4 != 0
+    let targetCPL = conforming ? currentCPL : code.descriptorPrivilegeLevel
     guard code.type & 8 != 0,
-      code.descriptorPrivilegeLevel == currentCPL,
+      code.descriptorPrivilegeLevel <= currentCPL,
       UInt64(gate.offset) <= UInt64(code.segment.limit)
     else {
       throw DoryX86InterruptDeliveryError.invalidCodeSegment(selector: gate.selector)
     }
 
-    let pointerWidth = state.ss.attributes & 0x4000 != 0 ? 32 : 16
+    let switchesPrivilege = targetCPL < currentCPL
+    let targetStack: UInt64
+    let targetStackSegment: DoryX86SegmentState
+    if switchesPrivilege {
+      (targetStack, targetStackSegment) = try readProtectedTaskStack(
+        privilege: targetCPL,
+        state: state,
+        memory: memory
+      )
+    } else {
+      targetStack = state.registers.rsp
+      targetStackSegment = state.ss
+    }
+    let pointerWidth = targetStackSegment.attributes & 0x4000 != 0 ? 32 : 16
     let pointerMask: UInt64 = pointerWidth == 32 ? 0xffff_ffff : 0xffff
-    let oldStack = state.registers.rsp & pointerMask
-    var values: [UInt64] = [
-      state.rflags.rawValue,
-      UInt64(state.cs.selector),
-      returnInstructionPointer ?? state.rip,
-    ]
+    var values: [UInt64] = []
+    if switchesPrivilege {
+      values.append(UInt64(state.ss.selector))
+      values.append(state.registers.rsp)
+    }
+    values.append(state.rflags.rawValue)
+    values.append(UInt64(state.cs.selector))
+    values.append(returnInstructionPointer ?? state.rip)
     if let errorCode { values.append(UInt64(errorCode)) }
     let finalStack = try writeProtectedFrame(
       values,
       width: gate.width,
-      stack: oldStack,
+      stack: targetStack & pointerMask,
       pointerMask: pointerMask,
-      segment: state.ss,
+      segment: targetStackSegment,
       memory: memory
     )
 
+    if switchesPrivilege { state.ss = targetStackSegment }
     writeProtectedStackPointer(finalStack, pointerWidth: pointerWidth, state: &state)
     state.cs = code.segment
-    state.cs.selector = (gate.selector & 0xfffc) | UInt16(currentCPL)
+    state.cs.selector = (gate.selector & 0xfffc) | UInt16(targetCPL)
     state.rip = UInt64(gate.offset)
     state.rflags.remove([.trap, .nestedTask, .resume])
     if gate.isInterruptGate { state.rflags.remove(.interruptEnable) }
@@ -441,7 +459,7 @@ public struct DoryX86InterruptDelivery: Sendable {
     let flagsValue = try read32(memory, state.ss.base &+ addresses[2])
     let targetCPL = UInt8(codeSelector & 3)
     let currentCPL = UInt8(state.cs.selector & 3)
-    guard targetCPL == currentCPL else {
+    guard targetCPL >= currentCPL else {
       throw DoryX86InterruptDeliveryError.invalidReturnFrame
     }
     let code = try readLegacySegment(selector: codeSelector, state: state, memory: memory)
@@ -458,8 +476,41 @@ public struct DoryX86InterruptDelivery: Sendable {
       throw DoryX86InterruptDeliveryError.invalidReturnFrame
     }
 
-    let nextStack = (stack &+ 12) & pointerMask
-    writeProtectedStackPointer(nextStack, pointerWidth: pointerWidth, state: &state)
+    if targetCPL > currentCPL {
+      let outerStackAddress = (stack &+ 12) & pointerMask
+      let outerSelectorAddress = (stack &+ 16) & pointerMask
+      guard outerStackAddress + 3 <= UInt64(state.ss.limit),
+        outerSelectorAddress + 3 <= UInt64(state.ss.limit)
+      else {
+        throw DoryX86InterruptDeliveryError.invalidReturnFrame
+      }
+      let outerStack = try read32(memory, state.ss.base &+ outerStackAddress)
+      let outerSelector = UInt16(
+        truncatingIfNeeded: try read32(memory, state.ss.base &+ outerSelectorAddress))
+      let stackSegment = try readLegacySegment(
+        selector: outerSelector,
+        state: state,
+        memory: memory
+      )
+      guard outerSelector & 3 == targetCPL,
+        stackSegment.descriptorPrivilegeLevel == targetCPL,
+        stackSegment.type & 8 == 0,
+        stackSegment.type & 2 != 0
+      else {
+        throw DoryX86InterruptDeliveryError.invalidReturnFrame
+      }
+      state.ss = stackSegment.segment
+      state.ss.selector = outerSelector
+      let outerPointerWidth = state.ss.attributes & 0x4000 != 0 ? 32 : 16
+      writeProtectedStackPointer(
+        UInt64(outerStack),
+        pointerWidth: outerPointerWidth,
+        state: &state
+      )
+    } else {
+      let nextStack = (stack &+ 12) & pointerMask
+      writeProtectedStackPointer(nextStack, pointerWidth: pointerWidth, state: &state)
+    }
     state.rip = UInt64(instructionPointer)
     state.cs = code.segment
     state.cs.selector = codeSelector
@@ -492,6 +543,34 @@ public struct DoryX86InterruptDelivery: Sendable {
       descriptorPrivilegeLevel: (attributes >> 5) & 3,
       isInterruptGate: type == 0x6 || type == 0xE
     )
+  }
+
+  private func readProtectedTaskStack(
+    privilege: UInt8,
+    state: DoryX86ArchitecturalState,
+    memory: any DoryX86Memory
+  ) throws -> (stack: UInt64, segment: DoryX86SegmentState) {
+    let taskType = UInt8(truncatingIfNeeded: state.tr.attributes) & 0x0f
+    let stackOffset = 4 + Int(privilege) * 8
+    let selectorOffset = stackOffset + 4
+    guard taskType == 0x9 || taskType == 0xB,
+      selectorOffset + 1 <= Int(state.tr.limit)
+    else {
+      throw DoryX86InterruptDeliveryError.invalidTaskState
+    }
+    let stack = try read32(memory, state.tr.base &+ UInt64(stackOffset))
+    let selector = try read16(memory, state.tr.base &+ UInt64(selectorOffset))
+    let segment = try readLegacySegment(selector: selector, state: state, memory: memory)
+    guard selector & 3 == privilege,
+      segment.descriptorPrivilegeLevel == privilege,
+      segment.type & 8 == 0,
+      segment.type & 2 != 0
+    else {
+      throw DoryX86InterruptDeliveryError.invalidTaskState
+    }
+    var loaded = segment.segment
+    loaded.selector = selector
+    return (UInt64(stack), loaded)
   }
 
   private func readLegacySegment(
