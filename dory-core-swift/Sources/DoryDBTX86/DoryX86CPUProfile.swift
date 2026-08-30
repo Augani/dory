@@ -71,7 +71,7 @@ public struct DoryX86CPUProfile: Codable, Sendable, Hashable {
   /// conformance tests land; the identifier is frozen at the Phase 4 exit gate, not before it.
   public static let compatibleV1 = Self(
     identifier: compatibleV1Identifier,
-    features: [.longMode],
+    features: [.tsc, .msr, .syscall, .executeDisable, .longMode, .invariantTSC],
     physicalAddressBits: 40,
     linearAddressBits: 48,
     virtualTSCFrequencyHz: 1_000_000_000

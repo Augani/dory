@@ -142,6 +142,70 @@ public struct DoryX86Interpreter: Sendable {
         state.registers.rbx = UInt64(result.ebx)
         state.registers.rcx = UInt64(result.ecx)
         state.registers.rdx = UInt64(result.edx)
+      case .readControlRegister(let index, let destination):
+        guard currentPrivilegeLevel(state) == 0,
+          let value = readControlRegister(index, state: state)
+        else {
+          return generalProtection(at: originalRIP)
+        }
+        state.registers[destination] = value
+      case .writeControlRegister(let index, let source):
+        guard currentPrivilegeLevel(state) == 0,
+          writeControlRegister(
+            index,
+            value: state.registers[source],
+            state: &state,
+            pagingUnit: pagingUnit
+          )
+        else {
+          return generalProtection(at: originalRIP)
+        }
+      case .invalidatePage(let operand):
+        guard currentPrivilegeLevel(state) == 0 else {
+          return generalProtection(at: originalRIP)
+        }
+        pagingUnit?.invalidate(
+          linearAddress: effectiveAddress(operand, instruction: instruction, state: state)
+        )
+      case .readModelSpecificRegister:
+        guard currentPrivilegeLevel(state) == 0,
+          let value = readModelSpecificRegister(
+            UInt32(truncatingIfNeeded: state.registers.rcx),
+            state: state
+          )
+        else {
+          return generalProtection(at: originalRIP)
+        }
+        state.registers.rax = UInt64(UInt32(truncatingIfNeeded: value))
+        state.registers.rdx = UInt64(UInt32(truncatingIfNeeded: value >> 32))
+      case .writeModelSpecificRegister:
+        let value =
+          UInt64(UInt32(truncatingIfNeeded: state.registers.rax))
+          | UInt64(UInt32(truncatingIfNeeded: state.registers.rdx)) << 32
+        guard currentPrivilegeLevel(state) == 0,
+          writeModelSpecificRegister(
+            UInt32(truncatingIfNeeded: state.registers.rcx),
+            value: value,
+            state: &state,
+            pagingUnit: pagingUnit
+          )
+        else {
+          return generalProtection(at: originalRIP)
+        }
+      case .readTimestampCounter(let includeAuxiliary):
+        guard currentPrivilegeLevel(state) == 0 || state.control.cr4 & (1 << 2) == 0 else {
+          return generalProtection(at: originalRIP)
+        }
+        state.registers.rax = UInt64(UInt32(truncatingIfNeeded: state.tsc))
+        state.registers.rdx = UInt64(UInt32(truncatingIfNeeded: state.tsc >> 32))
+        if includeAuxiliary { state.registers.rcx = UInt64(state.tscAux) }
+      case .swapGS:
+        guard currentPrivilegeLevel(state) == 0 else {
+          return generalProtection(at: originalRIP)
+        }
+        state.modelSpecific.gsBase = state.gs.base
+        swap(&state.modelSpecific.gsBase, &state.modelSpecific.kernelGSBase)
+        state.gs.base = state.modelSpecific.gsBase
       case .setInterruptsEnabled(let enabled):
         let currentPrivilege = UInt64(state.cs.selector & 3)
         let ioPrivilege = (state.rflags.rawValue >> 12) & 3
@@ -160,7 +224,42 @@ public struct DoryX86Interpreter: Sendable {
           state.rflags.remove(.interruptEnable)
         }
       case .syscall:
-        return .exception(.init(kind: .invalidOpcode, vector: 6, instructionPointer: originalRIP))
+        guard profile.supports(.syscall),
+          mode == .long64,
+          state.control.efer & 1 != 0,
+          DoryX86ArchitecturalState.isCanonical(state.modelSpecific.longStar)
+        else {
+          return .exception(.init(kind: .invalidOpcode, vector: 6, instructionPointer: originalRIP))
+        }
+        state.registers.rcx = nextRIP
+        state.registers.r11 = state.rflags.rawValue
+        state.rflags = DoryX86RFLAGS(
+          rawValue: (state.rflags.rawValue & ~state.modelSpecific.syscallFlagMask) | 2
+        )
+        let selector = UInt16(truncatingIfNeeded: state.modelSpecific.star >> 32) & 0xfffc
+        state.cs = .init(selector: selector, attributes: 0xA09B, limit: .max, base: 0)
+        state.ss = .init(selector: selector &+ 8, attributes: 0xC093, limit: .max, base: 0)
+        nextRIP = state.modelSpecific.longStar
+      case .sysret:
+        guard profile.supports(.syscall),
+          mode == .long64,
+          currentPrivilegeLevel(state) == 0,
+          state.control.efer & 1 != 0,
+          DoryX86ArchitecturalState.isCanonical(state.registers.rcx)
+        else {
+          return generalProtection(at: originalRIP)
+        }
+        let requestedFlags = DoryX86RFLAGS(
+          rawValue: (state.registers.r11 & DoryX86RFLAGS.architecturallyWritableMask) | 2
+        )
+        guard let validatedFlags = try? requestedFlags.validated() else {
+          return generalProtection(at: originalRIP)
+        }
+        state.rflags = validatedFlags
+        let selector = UInt16(truncatingIfNeeded: state.modelSpecific.star >> 48) & 0xfffc
+        state.cs = .init(selector: (selector &+ 16) | 3, attributes: 0xA0FB, limit: .max, base: 0)
+        state.ss = .init(selector: (selector &+ 8) | 3, attributes: 0xC0F3, limit: .max, base: 0)
+        nextRIP = state.registers.rcx
       }
       state.rip = nextRIP
       return .retired(instruction)
@@ -178,6 +277,184 @@ public struct DoryX86Interpreter: Sendable {
           errorCode: 0,
           instructionPointer: originalRIP
         ))
+    }
+  }
+
+  private func currentPrivilegeLevel(_ state: DoryX86ArchitecturalState) -> UInt8 {
+    UInt8(state.cs.selector & 3)
+  }
+
+  private func generalProtection(at instructionPointer: UInt64) -> DoryX86InterpreterResult {
+    .exception(
+      .init(
+        kind: .generalProtection,
+        vector: 13,
+        errorCode: 0,
+        instructionPointer: instructionPointer
+      )
+    )
+  }
+
+  private func readControlRegister(
+    _ index: UInt8,
+    state: DoryX86ArchitecturalState
+  ) -> UInt64? {
+    switch index {
+    case 0: state.control.cr0
+    case 2: state.control.cr2
+    case 3: state.control.cr3
+    case 4: state.control.cr4
+    case 8: state.control.cr8
+    default: nil
+    }
+  }
+
+  private func writeControlRegister(
+    _ index: UInt8,
+    value: UInt64,
+    state: inout DoryX86ArchitecturalState,
+    pagingUnit: DoryX86PagingUnit?
+  ) -> Bool {
+    switch index {
+    case 0:
+      let paging = value & (1 << 31) != 0
+      let protectedMode = value & 1 != 0
+      let cacheDisable = value & (1 << 30) != 0
+      let notWriteThrough = value & (1 << 29) != 0
+      guard value & (1 << 4) != 0,
+        !paging || protectedMode,
+        !notWriteThrough || cacheDisable
+      else { return false }
+      let wasPaging = state.control.cr0 & (1 << 31) != 0
+      if paging, !wasPaging, state.control.efer & (1 << 8) != 0 {
+        guard state.control.cr4 & (1 << 5) != 0 else { return false }
+        state.control.efer |= 1 << 10
+      } else if !paging {
+        state.control.efer &= ~(1 << 10)
+      }
+      state.control.cr0 = value
+      pagingUnit?.invalidateAll()
+      return true
+    case 2:
+      state.control.cr2 = value
+      return true
+    case 3:
+      let pcidEnabled = state.control.cr4 & (1 << 17) != 0
+      let allowedLowMask: UInt64 = pcidEnabled ? 0xfff : 0x18
+      let noFlush = value & (1 << 63) != 0
+      let addressMask = ((UInt64(1) << profile.physicalAddressBits) - 1) & ~0xfff
+      let storedValue = value & ~(1 << 63)
+      guard !noFlush || pcidEnabled,
+        storedValue & ~addressMask & ~allowedLowMask == 0,
+        storedValue & 0xfff & ~allowedLowMask == 0
+      else { return false }
+      state.control.cr3 = storedValue
+      if !noFlush { pagingUnit?.invalidateAll() }
+      return true
+    case 4:
+      let supportedMask: UInt64 =
+        (1 << 2) | (1 << 3) | (1 << 4) | (1 << 5) | (1 << 7) | (1 << 8)
+        | (1 << 17) | (1 << 20) | (1 << 21)
+      guard value & ~supportedMask == 0 else { return false }
+      state.control.cr4 = value
+      pagingUnit?.invalidateAll()
+      return true
+    case 8:
+      guard value <= 15 else { return false }
+      state.control.cr8 = value
+      return true
+    default:
+      return false
+    }
+  }
+
+  private func readModelSpecificRegister(
+    _ index: UInt32,
+    state: DoryX86ArchitecturalState
+  ) -> UInt64? {
+    switch index {
+    case 0x10: state.tsc
+    case 0x1B: state.modelSpecific.apicBase
+    case 0x174: state.modelSpecific.systemEnterCS
+    case 0x175: state.modelSpecific.systemEnterStackPointer
+    case 0x176: state.modelSpecific.systemEnterInstructionPointer
+    case 0x277: state.modelSpecific.pageAttributeTable
+    case 0xC000_0080: state.control.efer
+    case 0xC000_0081: state.modelSpecific.star
+    case 0xC000_0082: state.modelSpecific.longStar
+    case 0xC000_0083: state.modelSpecific.compatibilityStar
+    case 0xC000_0084: state.modelSpecific.syscallFlagMask
+    case 0xC000_0100: state.modelSpecific.fsBase
+    case 0xC000_0101: state.modelSpecific.gsBase
+    case 0xC000_0102: state.modelSpecific.kernelGSBase
+    case 0xC000_0103: UInt64(state.tscAux)
+    default: nil
+    }
+  }
+
+  private func writeModelSpecificRegister(
+    _ index: UInt32,
+    value: UInt64,
+    state: inout DoryX86ArchitecturalState,
+    pagingUnit: DoryX86PagingUnit?
+  ) -> Bool {
+    switch index {
+    case 0x10:
+      state.tsc = value
+    case 0x1B:
+      guard value & 0xfff & ~0x900 == 0 else { return false }
+      state.modelSpecific.apicBase = value
+    case 0x174:
+      state.modelSpecific.systemEnterCS = value & 0xffff
+    case 0x175:
+      state.modelSpecific.systemEnterStackPointer = value
+    case 0x176:
+      state.modelSpecific.systemEnterInstructionPointer = value
+    case 0x277:
+      guard validPageAttributeTable(value) else { return false }
+      state.modelSpecific.pageAttributeTable = value
+    case 0xC000_0080:
+      let writableMask: UInt64 = (1 << 0) | (1 << 8) | (1 << 11)
+      guard value & ~(writableMask | (1 << 10)) == 0,
+        value & (1 << 10) == state.control.efer & (1 << 10),
+        state.control.cr0 & (1 << 31) == 0
+          || value & (1 << 8) == state.control.efer & (1 << 8)
+      else { return false }
+      state.control.efer = (state.control.efer & (1 << 10)) | (value & writableMask)
+      pagingUnit?.invalidateAll()
+    case 0xC000_0081:
+      state.modelSpecific.star = value
+    case 0xC000_0082:
+      guard DoryX86ArchitecturalState.isCanonical(value) else { return false }
+      state.modelSpecific.longStar = value
+    case 0xC000_0083:
+      guard DoryX86ArchitecturalState.isCanonical(value) else { return false }
+      state.modelSpecific.compatibilityStar = value
+    case 0xC000_0084:
+      state.modelSpecific.syscallFlagMask = value & DoryX86RFLAGS.architecturallyWritableMask
+    case 0xC000_0100:
+      guard DoryX86ArchitecturalState.isCanonical(value) else { return false }
+      state.modelSpecific.fsBase = value
+      state.fs.base = value
+    case 0xC000_0101:
+      guard DoryX86ArchitecturalState.isCanonical(value) else { return false }
+      state.modelSpecific.gsBase = value
+      state.gs.base = value
+    case 0xC000_0102:
+      guard DoryX86ArchitecturalState.isCanonical(value) else { return false }
+      state.modelSpecific.kernelGSBase = value
+    case 0xC000_0103:
+      state.tscAux = UInt32(truncatingIfNeeded: value)
+    default:
+      return false
+    }
+    return true
+  }
+
+  private func validPageAttributeTable(_ value: UInt64) -> Bool {
+    (0..<8).allSatisfy { index in
+      let memoryType = UInt8(truncatingIfNeeded: value >> UInt64(index * 8))
+      return [0, 1, 4, 5, 6, 7].contains(memoryType)
     }
   }
 

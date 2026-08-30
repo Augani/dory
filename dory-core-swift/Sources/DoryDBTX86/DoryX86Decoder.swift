@@ -93,7 +93,8 @@ public struct DoryX86Decoder: Sendable {
         operation = .move(destination: operands.reg, source: operands.rm)
       case 0x8D:
         guard case .memory(let memory) = operands.rm else {
-          throw DoryX86DecodeError.invalidEncoding(address: address, detail: "LEA requires a memory source")
+          throw DoryX86DecodeError.invalidEncoding(
+            address: address, detail: "LEA requires a memory source")
         }
         operation = .loadEffectiveAddress(destination: operands.reg, source: memory)
       case 0x01: operation = .alu(.add, destination: operands.rm, source: operands.reg)
@@ -117,7 +118,8 @@ public struct DoryX86Decoder: Sendable {
       }
       let encodedWidth: DoryX86OperandWidth = width == .quadword ? .doubleword : width
       let raw = try cursor.readUnsigned(byteCount: encodedWidth.byteCount)
-      let immediate = width == .quadword
+      let immediate =
+        width == .quadword
         ? UInt64(bitPattern: Int64(Int32(truncatingIfNeeded: raw)))
         : raw
       operation = .move(
@@ -142,6 +144,48 @@ public struct DoryX86Decoder: Sendable {
       switch second {
       case 0x05:
         operation = .syscall
+      case 0x07:
+        operation = .sysret
+      case 0x20, 0x22:
+        let operands = try decodeControlRegisterModRM(cursor: &cursor, prefixes: prefixes)
+        operation =
+          second == 0x20
+          ? .readControlRegister(index: operands.control, destination: operands.general)
+          : .writeControlRegister(index: operands.control, source: operands.general)
+      case 0x30:
+        operation = .writeModelSpecificRegister
+      case 0x31:
+        operation = .readTimestampCounter(includeAuxiliary: false)
+      case 0x32:
+        operation = .readModelSpecificRegister
+      case 0x01:
+        if cursor.peek() == 0xF8 {
+          _ = try cursor.readByte()
+          guard mode == .long64 else {
+            throw DoryX86DecodeError.invalidEncoding(
+              address: address,
+              detail: "SWAPGS requires 64-bit mode"
+            )
+          }
+          operation = .swapGS
+        } else if cursor.peek() == 0xF9 {
+          _ = try cursor.readByte()
+          operation = .readTimestampCounter(includeAuxiliary: true)
+        } else {
+          let operands = try decodeModRM(
+            cursor: &cursor,
+            width: .quadword,
+            prefixes: prefixes,
+            mode: mode
+          )
+          guard operands.group == 7, case .memory(let memory) = operands.rm else {
+            throw DoryX86DecodeError.invalidEncoding(
+              address: address,
+              detail: "unsupported 0F 01 system instruction"
+            )
+          }
+          operation = .invalidatePage(memory)
+        }
       case 0xA2:
         operation = .cpuid
       case 0x80...0x8F:
@@ -165,6 +209,22 @@ public struct DoryX86Decoder: Sendable {
       prefixes: prefixes,
       operation: operation
     )
+  }
+
+  private func decodeControlRegisterModRM(
+    cursor: inout Cursor,
+    prefixes: DoryX86InstructionPrefixes
+  ) throws -> (control: UInt8, general: DoryX86GeneralRegister) {
+    let byte = try cursor.readByte()
+    guard byte >> 6 == 3 else {
+      throw DoryX86DecodeError.invalidEncoding(
+        address: cursor.address,
+        detail: "control-register MOV requires a register operand"
+      )
+    }
+    let control = ((byte >> 3) & 7) | (prefixes.rex?.r == true ? 8 : 0)
+    let general = register(Int(byte & 7), extensionBit: prefixes.rex?.b == true)
+    return (control, general)
   }
 
   private func operandWidth(
@@ -247,14 +307,15 @@ public struct DoryX86Decoder: Sendable {
     if modeBits == 1 { displacement = Int64(try cursor.readSigned(byteCount: 1)) }
     if modeBits == 2 { displacement = Int64(try cursor.readSigned(byteCount: 4)) }
     return ModRMOperands(
-      rm: .memory(.init(
-        base: base,
-        index: index,
-        scale: scale,
-        displacement: displacement,
-        ripRelative: ripRelative,
-        width: width
-      )),
+      rm: .memory(
+        .init(
+          base: base,
+          index: index,
+          scale: scale,
+          displacement: displacement,
+          ripRelative: ripRelative,
+          width: width
+        )),
       reg: registerOperand,
       group: regBits
     )
@@ -290,7 +351,8 @@ private struct Cursor {
     case 4: return Int64(Int32(bitPattern: UInt32(value)))
     case 8: return Int64(bitPattern: value)
     default:
-      throw DoryX86DecodeError.invalidEncoding(address: address, detail: "invalid signed immediate width")
+      throw DoryX86DecodeError.invalidEncoding(
+        address: address, detail: "invalid signed immediate width")
     }
   }
 }

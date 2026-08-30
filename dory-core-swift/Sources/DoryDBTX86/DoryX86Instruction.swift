@@ -106,7 +106,15 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
   case jump(relative: Int64)
   case conditionalJump(DoryX86Condition, relative: Int64)
   case cpuid
+  case readControlRegister(index: UInt8, destination: DoryX86GeneralRegister)
+  case writeControlRegister(index: UInt8, source: DoryX86GeneralRegister)
+  case invalidatePage(DoryX86MemoryOperand)
+  case readModelSpecificRegister
+  case writeModelSpecificRegister
+  case readTimestampCounter(includeAuxiliary: Bool)
+  case swapGS
   case syscall
+  case sysret
   case halt
   case setInterruptsEnabled(Bool)
   case noOperation
