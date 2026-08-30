@@ -448,6 +448,61 @@ import Testing
     #expect(state.floatingPoint.mxcsr == 0x1FA0)
   }
 
+  @Test func baselineSSEMovesAndBitwiseOperationsPreserveLegacyUpperLanes() throws {
+    var bytes = [UInt8](repeating: 0, count: 0x80)
+    bytes.replaceSubrange(0..<4, with: [0xF3, 0x0F, 0x10, 0xC1])
+    bytes.replaceSubrange(4..<12, with: [0xF3, 0x0F, 0x10, 0x05, 0x34, 0, 0, 0])
+    bytes.replaceSubrange(12..<16, with: [0x66, 0x0F, 0xEF, 0xC1])
+    bytes.replaceSubrange(16..<21, with: [0x66, 0x48, 0x0F, 0x6E, 0xC2])
+    bytes.replaceSubrange(21..<26, with: [0x66, 0x48, 0x0F, 0x7E, 0xC1])
+    bytes.replaceSubrange(0x40..<0x44, with: [0xF0, 0xF1, 0xF2, 0xF3])
+    let memory = DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: bytes)
+    var floatingPoint = try DoryX86FloatingPointState()
+    floatingPoint.ymm[0] = try .init(
+      bytes: .init(repeating: 0xAA, count: 32), expectedByteCount: 32)
+    floatingPoint.ymm[1] = try .init(bytes: Array(0..<32), expectedByteCount: 32)
+    let integer: UInt64 = 0x8877_6655_4433_2211
+    var state = try DoryX86ArchitecturalState(
+      registers: .init(rdx: integer),
+      rip: 0x1000,
+      cs: .init(selector: 0x38, attributes: 0xA09B, limit: .max),
+      floatingPoint: floatingPoint
+    )
+
+    guard case .retired = interpreter.step(state: &state, memory: memory, mode: .long64) else {
+      Issue.record("register MOVSS unexpectedly faulted")
+      return
+    }
+    #expect(state.floatingPoint.ymm[0].bytes == Array(0..<4) + Array(repeating: 0xAA, count: 28))
+
+    guard case .retired = interpreter.step(state: &state, memory: memory, mode: .long64) else {
+      Issue.record("memory MOVSS unexpectedly faulted")
+      return
+    }
+    #expect(
+      state.floatingPoint.ymm[0].bytes
+        == [0xF0, 0xF1, 0xF2, 0xF3] + Array(repeating: 0, count: 12)
+        + Array(repeating: 0xAA, count: 16)
+    )
+
+    guard case .retired = interpreter.step(state: &state, memory: memory, mode: .long64) else {
+      Issue.record("PXOR unexpectedly faulted")
+      return
+    }
+    #expect(state.floatingPoint.ymm[0].bytes[4..<16] == Array(4..<16)[...])
+    #expect(state.floatingPoint.ymm[0].bytes[16..<32] == Array(repeating: 0xAA, count: 16)[...])
+
+    guard case .retired = interpreter.step(state: &state, memory: memory, mode: .long64),
+      case .retired = interpreter.step(state: &state, memory: memory, mode: .long64)
+    else {
+      Issue.record("MOVQ integer transfer unexpectedly faulted")
+      return
+    }
+    #expect(state.registers.rcx == integer)
+    #expect(state.floatingPoint.ymm[0].bytes[8..<16] == Array(repeating: 0, count: 8)[...])
+    #expect(state.floatingPoint.ymm[0].bytes[16..<32] == Array(repeating: 0xAA, count: 16)[...])
+  }
+
   @Test func fxsaveRequiresSixteenByteAlignment() throws {
     let memory = DoryX86ByteArrayMemory(
       baseAddress: 0x1000,

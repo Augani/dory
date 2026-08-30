@@ -126,6 +126,16 @@ public enum DoryX86VectorOperand: Codable, Sendable, Hashable {
   case memory(DoryX86MemoryOperand)
 }
 
+public enum DoryX86VectorScalarUpperPolicy: String, Codable, Sendable, Hashable {
+  case preserve
+  case zero
+  case zeroOnMemorySource
+}
+
+public enum DoryX86VectorBitwiseOperation: String, Codable, Sendable, Hashable {
+  case and, andNot, or, xor
+}
+
 public enum DoryX86StringOperation: String, Codable, Sendable, Hashable {
   case move, compare, store, load, scan, input, output
 }
@@ -202,6 +212,19 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
     destination: DoryX86VectorOperand,
     source: DoryX86VectorOperand,
     requiresAlignment: Bool
+  )
+  case moveVectorScalar(
+    destination: DoryX86VectorOperand,
+    source: DoryX86VectorOperand,
+    byteCount: UInt8,
+    upperPolicy: DoryX86VectorScalarUpperPolicy
+  )
+  case moveIntegerToVector(destination: UInt8, source: DoryX86Operand)
+  case moveVectorToInteger(destination: DoryX86Operand, source: UInt8)
+  case vectorBitwise(
+    DoryX86VectorBitwiseOperation,
+    destination: UInt8,
+    source: DoryX86VectorOperand
   )
   case processorPause
   case string(DoryX86StringOperation, width: DoryX86OperandWidth)

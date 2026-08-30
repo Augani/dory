@@ -543,4 +543,37 @@ import Testing
         == .byteSwap(.register(.rcx, width: .quadword))
     )
   }
+
+  @Test func decodesBaselineSSEAndSSE2DataMovement() throws {
+    #expect(
+      try decoder.decode([0xF3, 0x0F, 0x10, 0xC1], at: 0x1000, mode: .long64).operation
+        == .moveVectorScalar(
+          destination: .register(0),
+          source: .register(1),
+          byteCount: 4,
+          upperPolicy: .zeroOnMemorySource
+        )
+    )
+    #expect(
+      try decoder.decode([0x0F, 0x28, 0xC1], at: 0x1000, mode: .long64).operation
+        == .moveVector128(
+          destination: .register(0), source: .register(1), requiresAlignment: true)
+    )
+    #expect(
+      try decoder.decode([0x66, 0x48, 0x0F, 0x6E, 0xC1], at: 0x1000, mode: .long64)
+        .operation
+        == .moveIntegerToVector(
+          destination: 0, source: .register(.rcx, width: .quadword))
+    )
+    #expect(
+      try decoder.decode([0x66, 0x48, 0x0F, 0x7E, 0xC1], at: 0x1000, mode: .long64)
+        .operation
+        == .moveVectorToInteger(
+          destination: .register(.rcx, width: .quadword), source: 0)
+    )
+    #expect(
+      try decoder.decode([0x66, 0x0F, 0xEF, 0xC1], at: 0x1000, mode: .long64).operation
+        == .vectorBitwise(.xor, destination: 0, source: .register(1))
+    )
+  }
 }

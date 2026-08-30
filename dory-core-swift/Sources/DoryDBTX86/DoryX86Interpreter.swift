@@ -611,8 +611,80 @@ public struct DoryX86Interpreter: Sendable {
           if requiresAlignment, address & 0xF != 0 {
             return generalProtection(at: originalRIP)
           }
+          try executionMemory.validateWrite(at: address, byteCount: 16)
           try executionMemory.write(at: address, bytes: bytes)
         }
+      case .moveVectorScalar(let destination, let source, let byteCount, let upperPolicy):
+        let count = Int(byteCount)
+        let bytes = try readVectorBytes(
+          source,
+          byteCount: count,
+          instruction: instruction,
+          state: state,
+          memory: executionMemory
+        )
+        switch destination {
+        case .register(let register):
+          var registerBytes = state.floatingPoint.ymm[Int(register)].bytes
+          let clearsUpper =
+            upperPolicy == .zero
+            || (upperPolicy == .zeroOnMemorySource && isVectorMemory(source))
+          if clearsUpper {
+            registerBytes.replaceSubrange(count..<16, with: repeatElement(0, count: 16 - count))
+          }
+          registerBytes.replaceSubrange(0..<count, with: bytes)
+          state.floatingPoint.ymm[Int(register)] = try .init(
+            bytes: registerBytes, expectedByteCount: 32)
+        case .memory(let memoryOperand):
+          try writeVectorBytes(
+            bytes,
+            to: memoryOperand,
+            instruction: instruction,
+            state: state,
+            memory: executionMemory
+          )
+        }
+      case .moveIntegerToVector(let destination, let source):
+        let width = operandWidth(source)
+        let value = try read(
+          source, instruction: instruction, state: state, memory: executionMemory)
+        var registerBytes = state.floatingPoint.ymm[Int(destination)].bytes
+        registerBytes.replaceSubrange(0..<16, with: repeatElement(0, count: 16))
+        registerBytes.replaceSubrange(0..<width.byteCount, with: littleEndian(value, width: width))
+        state.floatingPoint.ymm[Int(destination)] = try .init(
+          bytes: registerBytes, expectedByteCount: 32)
+      case .moveVectorToInteger(let destination, let source):
+        let width = operandWidth(destination)
+        let value = fromLittleEndian(
+          Array(state.floatingPoint.ymm[Int(source)].bytes.prefix(width.byteCount)))
+        try write(
+          value,
+          to: destination,
+          instruction: instruction,
+          state: &state,
+          memory: executionMemory
+        )
+      case .vectorBitwise(let operation, let destination, let source):
+        let rhs = try readVectorBytes(
+          source,
+          byteCount: 16,
+          instruction: instruction,
+          state: state,
+          memory: executionMemory
+        )
+        var registerBytes = state.floatingPoint.ymm[Int(destination)].bytes
+        for index in 0..<16 {
+          let lhs = registerBytes[index]
+          registerBytes[index] =
+            switch operation {
+            case .and: lhs & rhs[index]
+            case .andNot: ~lhs & rhs[index]
+            case .or: lhs | rhs[index]
+            case .xor: lhs ^ rhs[index]
+            }
+        }
+        state.floatingPoint.ymm[Int(destination)] = try .init(
+          bytes: registerBytes, expectedByteCount: 32)
       case .processorPause:
         break
       case .string(let operation, let width):
@@ -1324,6 +1396,55 @@ public struct DoryX86Interpreter: Sendable {
     for index in 0..<MemoryLayout<T>.size {
       bytes[offset + index] = UInt8(truncatingIfNeeded: value >> T(index * 8))
     }
+  }
+
+  private func readVectorBytes(
+    _ operand: DoryX86VectorOperand,
+    byteCount: Int,
+    instruction: DoryX86DecodedInstruction,
+    state: DoryX86ArchitecturalState,
+    memory: any DoryX86Memory
+  ) throws -> [UInt8] {
+    switch operand {
+    case .register(let register):
+      return Array(state.floatingPoint.ymm[Int(register)].bytes.prefix(byteCount))
+    case .memory(let memoryOperand):
+      try validateSegmentAccess(
+        memoryOperand,
+        byteCount: byteCount,
+        write: false,
+        instruction: instruction,
+        state: state
+      )
+      return try memory.read(
+        at: effectiveAddress(memoryOperand, instruction: instruction, state: state),
+        byteCount: byteCount
+      )
+    }
+  }
+
+  private func writeVectorBytes(
+    _ bytes: [UInt8],
+    to memoryOperand: DoryX86MemoryOperand,
+    instruction: DoryX86DecodedInstruction,
+    state: DoryX86ArchitecturalState,
+    memory: any DoryX86Memory
+  ) throws {
+    try validateSegmentAccess(
+      memoryOperand,
+      byteCount: bytes.count,
+      write: true,
+      instruction: instruction,
+      state: state
+    )
+    let address = effectiveAddress(memoryOperand, instruction: instruction, state: state)
+    try memory.validateWrite(at: address, byteCount: bytes.count)
+    try memory.write(at: address, bytes: bytes)
+  }
+
+  private func isVectorMemory(_ operand: DoryX86VectorOperand) -> Bool {
+    if case .memory = operand { return true }
+    return false
   }
 
   private func currentPrivilegeLevel(_ state: DoryX86ArchitecturalState) -> UInt8 {

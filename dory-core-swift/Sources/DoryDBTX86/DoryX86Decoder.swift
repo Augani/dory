@@ -633,6 +633,72 @@ public struct DoryX86Decoder: Sendable {
               address: address, detail: "unsupported 0F AE memory group")
           }
         }
+      case 0x10, 0x11, 0x28, 0x29:
+        let isLoad = second == 0x10 || second == 0x28
+        let aligned = second == 0x28 || second == 0x29
+        let scalarBytes: UInt8? =
+          switch (prefixes.repeatPrefix, prefixes.operandSizeOverride) {
+          case (0xF3, false): 4
+          case (0xF2, false): 8
+          case (nil, _): nil
+          default:
+            throw DoryX86DecodeError.invalidEncoding(
+              address: address, detail: "unsupported vector move mandatory prefix")
+          }
+        guard !aligned || scalarBytes == nil else {
+          throw DoryX86DecodeError.invalidEncoding(
+            address: address, detail: "aligned vector move does not have a scalar form")
+        }
+        let operands = try decodeModRM(
+          cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
+        let destination = vectorOperand(isLoad ? operands.reg : operands.rm)
+        let source = vectorOperand(isLoad ? operands.rm : operands.reg)
+        if let scalarBytes {
+          operation = .moveVectorScalar(
+            destination: destination,
+            source: source,
+            byteCount: scalarBytes,
+            upperPolicy: isLoad ? .zeroOnMemorySource : .preserve
+          )
+        } else {
+          operation = .moveVector128(
+            destination: destination,
+            source: source,
+            requiresAlignment: aligned
+          )
+        }
+      case 0x54...0x57, 0xDB, 0xDF, 0xEB, 0xEF:
+        let packedInteger = second == 0xDB || second == 0xDF || second == 0xEB || second == 0xEF
+        guard prefixes.repeatPrefix == nil,
+          !packedInteger || prefixes.operandSizeOverride
+        else {
+          throw DoryX86DecodeError.invalidEncoding(
+            address: address, detail: "unsupported vector bitwise mandatory prefix")
+        }
+        let operands = try decodeModRM(
+          cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
+        let bitwiseOperation: DoryX86VectorBitwiseOperation =
+          switch second {
+          case 0x54, 0xDB: .and
+          case 0x55, 0xDF: .andNot
+          case 0x56, 0xEB: .or
+          default: .xor
+          }
+        operation = .vectorBitwise(
+          bitwiseOperation,
+          destination: vectorRegister(operands.reg),
+          source: vectorOperand(operands.rm)
+        )
+      case 0x6E:
+        guard prefixes.operandSizeOverride, prefixes.repeatPrefix == nil else {
+          throw DoryX86DecodeError.invalidEncoding(
+            address: address, detail: "MOVD/MOVQ to XMM requires 66 prefix")
+        }
+        let integerWidth: DoryX86OperandWidth = prefixes.rex?.w == true ? .quadword : .doubleword
+        let operands = try decodeModRM(
+          cursor: &cursor, width: integerWidth, prefixes: prefixes, mode: mode)
+        operation = .moveIntegerToVector(
+          destination: vectorRegister(operands.reg), source: operands.rm)
       case 0x6F:
         let alignedVector = prefixes.operandSizeOverride && prefixes.repeatPrefix == nil
         let unalignedVector = prefixes.repeatPrefix == 0xF3 && !prefixes.operandSizeOverride
@@ -661,6 +727,36 @@ public struct DoryX86Decoder: Sendable {
           source: vectorOperand(operands.reg),
           requiresAlignment: alignedVector
         )
+      case 0x7E:
+        if prefixes.operandSizeOverride, prefixes.repeatPrefix == nil {
+          let integerWidth: DoryX86OperandWidth =
+            prefixes.rex?.w == true ? .quadword : .doubleword
+          let operands = try decodeModRM(
+            cursor: &cursor, width: integerWidth, prefixes: prefixes, mode: mode)
+          operation = .moveVectorToInteger(
+            destination: operands.rm, source: vectorRegister(operands.reg))
+        } else if prefixes.repeatPrefix == 0xF3, !prefixes.operandSizeOverride {
+          let operands = try decodeModRM(
+            cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
+          operation = .moveVectorScalar(
+            destination: vectorOperand(operands.reg),
+            source: vectorOperand(operands.rm),
+            byteCount: 8,
+            upperPolicy: .zero
+          )
+        } else {
+          throw DoryX86DecodeError.invalidEncoding(
+            address: address, detail: "unsupported 0F 7E mandatory prefix")
+        }
+      case 0xD6:
+        guard prefixes.operandSizeOverride, prefixes.repeatPrefix == nil else {
+          throw DoryX86DecodeError.invalidEncoding(
+            address: address, detail: "MOVQ from XMM requires 66 prefix")
+        }
+        let operands = try decodeModRM(
+          cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
+        operation = .moveVectorToInteger(
+          destination: operands.rm, source: vectorRegister(operands.reg))
       case 0xA3, 0xAB, 0xB3, 0xBB:
         let operands = try decodeModRM(
           cursor: &cursor, width: width, prefixes: prefixes, mode: mode)
@@ -905,6 +1001,13 @@ public struct DoryX86Decoder: Sendable {
     default:
       preconditionFailure("ModRM vector operand must be a register or memory")
     }
+  }
+
+  private func vectorRegister(_ operand: DoryX86Operand) -> UInt8 {
+    guard case .register(let register, _) = operand else {
+      preconditionFailure("ModRM reg operand must be a register")
+    }
+    return UInt8(DoryX86GeneralRegister.allCases.firstIndex(of: register)!)
   }
 
   private func signExtend(
