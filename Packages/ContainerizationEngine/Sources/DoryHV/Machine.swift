@@ -461,8 +461,6 @@ public final class Machine: @unchecked Sendable {
     }
 
     private func buildDeviceTree(initrdRange: Range<UInt64>?) throws -> [UInt8] {
-        let gicPhandle: UInt32 = 1
-        let clockPhandle: UInt32 = 2
         let virtualTimer = try Self.reservedIntid(HV_GIC_INT_EL1_VIRTUAL_TIMER)
         let physicalTimer = try Self.reservedIntid(HV_GIC_INT_EL1_PHYSICAL_TIMER)
         let hypTimer = try Self.reservedIntid(HV_GIC_INT_EL2_PHYSICAL_TIMER)
@@ -473,101 +471,23 @@ public final class Machine: @unchecked Sendable {
         )
         let distributorSize = try Self.gicDistributorSize()
         let redistributorSize = try Self.gicRedistributorRegionSize()
-
-        let fdt = FDTBuilder()
-        fdt.beginNode("")
-        fdt.property("compatible", string: "linux,dummy-virt")
-        fdt.property("#address-cells", cells: [2])
-        fdt.property("#size-cells", cells: [2])
-        fdt.property("interrupt-parent", cells: [gicPhandle])
-
-        fdt.beginNode("chosen")
-        fdt.property("bootargs", string: configuration.commandLine)
-        fdt.property("stdout-path", string: "/pl011@\(String(GuestLayout.uartBase, radix: 16))")
-        if let initrdRange {
-            fdt.property("linux,initrd-start", cells64: [initrdRange.lowerBound])
-            fdt.property("linux,initrd-end", cells64: [initrdRange.upperBound])
-        }
-        fdt.endNode()
-
-        fdt.beginNode("memory@\(String(GuestLayout.ramBase, radix: 16))")
-        fdt.property("device_type", string: "memory")
-        fdt.property("reg", cells64: [GuestLayout.ramBase, configuration.memoryBytes])
-        fdt.endNode()
-
-        fdt.beginNode("cpus")
-        fdt.property("#address-cells", cells: [1])
-        fdt.property("#size-cells", cells: [0])
-        for cpu in 0..<configuration.cpuCount {
-            fdt.beginNode("cpu@\(cpu)")
-            fdt.property("device_type", string: "cpu")
-            fdt.property("compatible", string: "arm,arm-v8")
-            fdt.property("enable-method", string: "psci")
-            fdt.property("reg", cells: [UInt32(cpu)])
-            fdt.endNode()
-        }
-        fdt.endNode()
-
-        fdt.beginNode("psci")
-        fdt.property("compatible", strings: ["arm,psci-1.0", "arm,psci-0.2"])
-        fdt.property("method", string: "smc")
-        fdt.endNode()
-
-        fdt.beginNode("intc@\(String(GuestLayout.gicDistributorBase, radix: 16))")
-        fdt.property("compatible", string: "arm,gic-v3")
-        fdt.property("#interrupt-cells", cells: [3])
-        fdt.property("#address-cells", cells: [2])
-        fdt.property("#size-cells", cells: [2])
-        fdt.emptyProperty("ranges")
-        fdt.emptyProperty("interrupt-controller")
-        // Advertise only the redistributors that exist (one per vCPU); the driver stops at the
-        // end of the region without needing the Last bit on the final frame.
-        let advertisedRedistributors = min(redistributorSize, redistributorMMIO.stride * UInt64(configuration.cpuCount))
-        fdt.property("reg", cells64: [
-            GuestLayout.gicDistributorBase, distributorSize,
-            GuestLayout.gicRedistributorBase, advertisedRedistributors,
-        ])
-        fdt.property("phandle", cells: [gicPhandle])
-        fdt.endNode()
-
-        fdt.beginNode("timer")
-        fdt.property("compatible", string: "arm,armv8-timer")
-        // Cells per interrupt: type (1 = PPI), number (intid - 16), flags (4 = level high).
-        fdt.property("interrupts", cells: [
-            1, DoryARMVirtV1ABI.securePhysicalTimerPPI, 4,
-            1, DoryARMVirtV1ABI.nonsecurePhysicalTimerPPI, 4,
-            1, DoryARMVirtV1ABI.virtualTimerPPI, 4,
-            1, DoryARMVirtV1ABI.hypervisorPhysicalTimerPPI, 4,
-        ])
-        fdt.endNode()
-
-        fdt.beginNode("apb-pclk")
-        fdt.property("compatible", string: "fixed-clock")
-        fdt.property("#clock-cells", cells: [0])
-        fdt.property("clock-frequency", cells: [24_000_000])
-        fdt.property("clock-output-names", string: "clk24mhz")
-        fdt.property("phandle", cells: [clockPhandle])
-        fdt.endNode()
-
-        fdt.beginNode("pl011@\(String(GuestLayout.uartBase, radix: 16))")
-        fdt.property("compatible", strings: ["arm,pl011", "arm,primecell"])
-        fdt.property("reg", cells64: [GuestLayout.uartBase, 0x1000])
-        fdt.property("interrupts", cells: [0, GuestLayout.uartIRQ, 4])
-        fdt.property("clocks", cells: [clockPhandle, clockPhandle])
-        fdt.property("clock-names", strings: ["uartclk", "apb_pclk"])
-        fdt.endNode()
-
-        fdt.beginNode("pl031@\(String(GuestLayout.rtcBase, radix: 16))")
-        fdt.property("compatible", strings: ["arm,pl031", "arm,primecell"])
-        fdt.property("reg", cells64: [GuestLayout.rtcBase, 0x1000])
-        fdt.property("clocks", cells: [clockPhandle])
-        fdt.property("clock-names", strings: ["apb_pclk"])
-        fdt.endNode()
-
-        VirtioMMIODeviceTree.appendNodes(for: attachedVirtioSlots, to: fdt)
-
-        fdt.endNode()
-        return fdt.finish()
+        return try DoryARMVirtV1DeviceTree.build(configuration: .init(
+            commandLine: configuration.commandLine,
+            memoryBytes: configuration.memoryBytes,
+            vCPUCount: configuration.cpuCount,
+            initrdRange: initrdRange,
+            gicDistributorBytes: distributorSize,
+            gicRedistributorRegionBytes: redistributorSize,
+            gicRedistributorStride: redistributorMMIO.stride,
+            virtioDevices: attachedVirtioSlots.map {
+                DoryARMVirtV1MMIODevice(
+                    slot: $0.slot,
+                    baseAddress: $0.baseAddress,
+                    byteCount: $0.size,
+                    spi: $0.interrupt
+                )
+            }
+        ))
     }
 
     public func attachConsole(_ uart: PL011) {
