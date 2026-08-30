@@ -34,6 +34,10 @@ let package = Package(
             targets: ["dory-armvirt-uefi-smoke"]
         ),
         .executable(
+            name: "dory-armvirt-timing-campaign",
+            targets: ["dory-armvirt-timing-campaign"]
+        ),
+        .executable(
             name: "dory-renderer-worker",
             targets: ["DoryRendererWorkerXPCService"]
         ),
@@ -161,6 +165,10 @@ let package = Package(
                 .linkedFramework("Hypervisor"),
                 .linkedFramework("IOKit"),
             ]
+        ),
+        .executableTarget(
+            name: "dory-armvirt-timing-campaign",
+            dependencies: ["DoryARMVirtQualification"]
         ),
         .executableTarget(
             name: "DoryRendererWorkerXPCService",

@@ -151,7 +151,7 @@ public enum DoryARMVirtTimingCampaign {
 
   private static func distribution(_ values: [UInt64]) -> DoryARMVirtTimingDistribution {
     let sorted = values.sorted()
-    let doubles = values.map(Double.init)
+    let doubles = values.map { Double($0) }
     let mean = doubles.reduce(0, +) / Double(doubles.count)
     let variance =
       doubles.reduce(0) { partial, value in

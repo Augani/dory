@@ -23,6 +23,11 @@ import Testing
     #expect(campaign.bootAttempts[0].distribution.medianNanoseconds == 5_000_000_000)
     #expect(campaign.bootAttempts[0].distribution.p95Nanoseconds == 9_000_000_000)
     #expect(campaign.bootAttempts[0].distribution.p99Nanoseconds == 9_000_000_000)
+    #expect(campaign.bootAttempts[0].distribution.meanNanoseconds == 5_000_000_000)
+    #expect(
+      campaign.bootAttempts[0].distribution.populationVarianceNanosecondsSquared
+        > 6.66e18
+    )
     #expect(campaign.qualification.medianNanoseconds == 5_500_000_000)
   }
 

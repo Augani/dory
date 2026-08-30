@@ -95,6 +95,20 @@ population variance separately for each semantic boot attempt and the complete
 qualification. This timing campaign is necessary performance evidence; it does
 not by itself qualify CPU, storage, network, display, energy, or release support.
 
+Build `dory-armvirt-timing-campaign`, collect at least nine schema-7 runner
+receipts in chronological order, and aggregate them without rewriting raw evidence:
+
+```sh
+dory-armvirt-timing-campaign \
+  --compatibility-matrix /absolute/path/to/compatibility-matrix.json \
+  --qualification-gate debian-installer-boot \
+  /absolute/path/to/receipt-01.json /absolute/path/to/receipt-02.json \
+  /absolute/path/to/receipt-03.json /absolute/path/to/receipt-04.json \
+  /absolute/path/to/receipt-05.json /absolute/path/to/receipt-06.json \
+  /absolute/path/to/receipt-07.json /absolute/path/to/receipt-08.json \
+  /absolute/path/to/receipt-09.json
+```
+
 To qualify an exact, private, read-only installer image through the removable
 VirtIO block path, add the media and a console marker owned by that image:
 
