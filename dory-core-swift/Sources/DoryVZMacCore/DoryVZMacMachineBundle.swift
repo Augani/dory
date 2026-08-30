@@ -8,6 +8,7 @@ public enum DoryVZMacMachineBundleError: Error, Sendable, Equatable, CustomStrin
     case invalidRestoreImage(String)
     case unsupportedRestoreImage(String)
     case missingSupportedConfiguration
+    case cloneRequiresStoppedMachine
     case restoreImageProvenanceMismatch(String)
     case invalidBundle(String)
     case invalidIdentity(String)
@@ -21,6 +22,8 @@ public enum DoryVZMacMachineBundleError: Error, Sendable, Equatable, CustomStrin
             "macOS restore image \(build) is not supported on this host"
         case .missingSupportedConfiguration:
             "the macOS restore image has no configuration supported by this host"
+        case .cloneRequiresStoppedMachine:
+            "VZMac cold clone requires an installed, stopped source machine"
         case .restoreImageProvenanceMismatch(let detail):
             "macOS restore image provenance mismatch: \(detail)"
         case .invalidBundle(let detail): "invalid VZMac machine bundle: \(detail)"
@@ -40,12 +43,19 @@ public enum DoryVZMacMachineInstallationState: String, Codable, Sendable, Equata
     case restoring
 }
 
+public enum DoryVZMacMachineOrigin: String, Codable, Sendable, Equatable {
+    case created
+    case cloned
+}
+
 public struct DoryVZMacMachineManifest: Codable, Sendable, Equatable {
-    public static let schema = "dory.vzmac-machine@2"
+    public static let schema = "dory.vzmac-machine@3"
 
     public let schema: String
     public let createdAt: String
     public let installationState: DoryVZMacMachineInstallationState
+    public let origin: DoryVZMacMachineOrigin
+    public let parentMachineIdentifierSHA256: String?
     public let restoreImageBuild: String
     public let restoreImageVersion: String
     public let restoreImageSourceURL: String
@@ -60,6 +70,8 @@ public struct DoryVZMacMachineManifest: Codable, Sendable, Equatable {
         schema: String = Self.schema,
         createdAt: String,
         installationState: DoryVZMacMachineInstallationState,
+        origin: DoryVZMacMachineOrigin,
+        parentMachineIdentifierSHA256: String?,
         restoreImageBuild: String,
         restoreImageVersion: String,
         restoreImageSourceURL: String,
@@ -73,6 +85,8 @@ public struct DoryVZMacMachineManifest: Codable, Sendable, Equatable {
         self.schema = schema
         self.createdAt = createdAt
         self.installationState = installationState
+        self.origin = origin
+        self.parentMachineIdentifierSHA256 = parentMachineIdentifierSHA256
         self.restoreImageBuild = restoreImageBuild
         self.restoreImageVersion = restoreImageVersion
         self.restoreImageSourceURL = restoreImageSourceURL
@@ -94,6 +108,14 @@ public struct DoryVZMacMachineManifest: Codable, Sendable, Equatable {
         guard !restoreImageBuild.isEmpty, !restoreImageVersion.isEmpty else {
             throw DoryVZMacMachineBundleError.invalidBundle("restore image identity is incomplete")
         }
+        switch (origin, parentMachineIdentifierSHA256) {
+        case (.created, nil):
+            break
+        case (.cloned, .some(let digest)) where isCanonicalSHA256(digest):
+            break
+        default:
+            throw DoryVZMacMachineBundleError.invalidBundle("machine lineage is invalid")
+        }
         guard let sourceURL = URL(string: restoreImageSourceURL),
               sourceURL.scheme == "https" || sourceURL.isFileURL,
               restoreImageBytes > 0 else {
@@ -102,7 +124,7 @@ public struct DoryVZMacMachineManifest: Codable, Sendable, Equatable {
             )
         }
         for digest in [restoreImageSHA256, hardwareModelSHA256, machineIdentifierSHA256] {
-            guard digest.count == 64, digest.allSatisfy({ $0.isHexDigit && !$0.isUppercase }) else {
+            guard isCanonicalSHA256(digest) else {
                 throw DoryVZMacMachineBundleError.invalidBundle("SHA-256 digest is not canonical")
             }
         }
@@ -207,6 +229,8 @@ public struct DoryVZMacMachineBundle: Sendable {
         let manifest = DoryVZMacMachineManifest(
             createdAt: ISO8601DateFormatter().string(from: Date()),
             installationState: .prepared,
+            origin: .created,
+            parentMachineIdentifierSHA256: nil,
             restoreImageBuild: restoreImage.buildVersion,
             restoreImageVersion: "\(version.majorVersion).\(version.minorVersion).\(version.patchVersion)",
             restoreImageSourceURL: (restoreImageSourceURL ?? restoreImageURL).absoluteString,
@@ -328,12 +352,74 @@ public struct DoryVZMacMachineBundle: Sendable {
         }
     }
 
+    public func clone(to destination: URL) throws -> Self {
+        guard manifest.installationState == .stopped else {
+            throw DoryVZMacMachineBundleError.cloneRequiresStoppedMachine
+        }
+        guard !FileManager.default.fileExists(atPath: destination.path) else {
+            throw DoryVZMacMachineBundleError.destinationExists(destination.path)
+        }
+        let parent = destination.deletingLastPathComponent()
+        let staging = parent.appendingPathComponent(
+            ".\(destination.lastPathComponent).cloning-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: false)
+        var committed = false
+        defer {
+            if !committed { try? FileManager.default.removeItem(at: staging) }
+        }
+        for (source, name) in [
+            (diskURL, Self.diskName),
+            (auxiliaryStorageURL, Self.auxiliaryStorageName),
+            (hardwareModelURL, Self.hardwareModelName),
+        ] {
+            try requireRegularFile(source, label: name)
+            try cloneFile(
+                from: source,
+                to: staging.appendingPathComponent(name)
+            )
+        }
+        let machineIdentifierData = VZMacMachineIdentifier().dataRepresentation
+        try machineIdentifierData.write(
+            to: staging.appendingPathComponent(Self.machineIdentifierName),
+            options: [.atomic]
+        )
+        let clonedManifest = DoryVZMacMachineManifest(
+            createdAt: ISO8601DateFormatter().string(from: Date()),
+            installationState: .stopped,
+            origin: .cloned,
+            parentMachineIdentifierSHA256: manifest.machineIdentifierSHA256,
+            restoreImageBuild: manifest.restoreImageBuild,
+            restoreImageVersion: manifest.restoreImageVersion,
+            restoreImageSourceURL: manifest.restoreImageSourceURL,
+            restoreImageBytes: manifest.restoreImageBytes,
+            restoreImageSHA256: manifest.restoreImageSHA256,
+            hardwareModelSHA256: manifest.hardwareModelSHA256,
+            machineIdentifierSHA256: sha256(of: machineIdentifierData),
+            macAddress: VZMACAddress.randomLocallyAdministered().string,
+            resources: manifest.resources
+        )
+        try clonedManifest.validate()
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        try encoder.encode(clonedManifest).write(
+            to: staging.appendingPathComponent(Self.manifestName),
+            options: [.atomic]
+        )
+        try FileManager.default.moveItem(at: staging, to: destination)
+        committed = true
+        return try Self.load(from: destination)
+    }
+
     public func updatingInstallationState(
         _ installationState: DoryVZMacMachineInstallationState
     ) throws -> Self {
         let updated = DoryVZMacMachineManifest(
             createdAt: manifest.createdAt,
             installationState: installationState,
+            origin: manifest.origin,
+            parentMachineIdentifierSHA256: manifest.parentMachineIdentifierSHA256,
             restoreImageBuild: manifest.restoreImageBuild,
             restoreImageVersion: manifest.restoreImageVersion,
             restoreImageSourceURL: manifest.restoreImageSourceURL,
@@ -350,6 +436,10 @@ public struct DoryVZMacMachineBundle: Sendable {
         try encoder.encode(updated).write(to: manifestURL, options: [.atomic])
         return try Self.load(from: rootURL)
     }
+}
+
+private func isCanonicalSHA256(_ digest: String) -> Bool {
+    digest.count == 64 && digest.allSatisfy({ $0.isHexDigit && !$0.isUppercase })
 }
 
 private func sha256(of data: Data) -> String {
@@ -377,6 +467,12 @@ private func createSparseFile(at url: URL, size: UInt64) throws {
     }
     guard fsync(descriptor) == 0 else {
         throw DoryVZMacMachineBundleError.filesystem("sync sparse disk", errno)
+    }
+}
+
+private func cloneFile(from source: URL, to destination: URL) throws {
+    guard clonefile(source.path, destination.path, 0) == 0 else {
+        throw DoryVZMacMachineBundleError.filesystem("clone \(source.lastPathComponent)", errno)
     }
 }
 

@@ -7,7 +7,7 @@ final class DoryVZMacMachineManifestTests: XCTestCase {
     }
 
     func testRejectsUnknownSchemaAndMalformedDigest() throws {
-        XCTAssertThrowsError(try manifest(schema: "dory.vzmac-machine@1").validate())
+        XCTAssertThrowsError(try manifest(schema: "dory.vzmac-machine@2").validate())
         XCTAssertThrowsError(try manifest(restoreDigest: String(repeating: "A", count: 64)).validate())
         XCTAssertThrowsError(try manifest(restoreDigest: "abc").validate())
     }
@@ -22,17 +22,48 @@ final class DoryVZMacMachineManifestTests: XCTestCase {
         XCTAssertThrowsError(try manifest(restoreBytes: 0).validate())
     }
 
+    func testRequiresConsistentCloneLineage() throws {
+        XCTAssertThrowsError(
+            try manifest(origin: .created, parentDigest: String(repeating: "d", count: 64)).validate()
+        )
+        XCTAssertThrowsError(try manifest(origin: .cloned, parentDigest: nil).validate())
+        try manifest(
+            origin: .cloned,
+            parentDigest: String(repeating: "d", count: 64)
+        ).validate()
+    }
+
+    func testColdCloneRejectsNonStoppedSource() throws {
+        let source = DoryVZMacMachineBundle(
+            rootURL: FileManager.default.temporaryDirectory,
+            manifest: try manifest()
+        )
+        XCTAssertThrowsError(
+            try source.clone(
+                to: FileManager.default.temporaryDirectory.appendingPathComponent(
+                    "dory-clone-\(UUID().uuidString)"
+                )
+            )
+        ) { error in
+            XCTAssertEqual(error as? DoryVZMacMachineBundleError, .cloneRequiresStoppedMachine)
+        }
+    }
+
     private func manifest(
         schema: String = DoryVZMacMachineManifest.schema,
         restoreDigest: String = String(repeating: "a", count: 64),
         sourceURL: String = "https://updates.cdn-apple.com/restore.ipsw",
         restoreBytes: UInt64 = 1,
+        origin: DoryVZMacMachineOrigin = .created,
+        parentDigest: String? = nil,
         macAddress: String = "02:11:22:33:44:55"
     ) throws -> DoryVZMacMachineManifest {
         DoryVZMacMachineManifest(
             schema: schema,
             createdAt: "2026-08-30T14:00:00Z",
             installationState: .prepared,
+            origin: origin,
+            parentMachineIdentifierSHA256: parentDigest,
             restoreImageBuild: "25A1",
             restoreImageVersion: "26.0.0",
             restoreImageSourceURL: sourceURL,

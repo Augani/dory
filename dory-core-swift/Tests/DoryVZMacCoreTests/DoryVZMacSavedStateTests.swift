@@ -64,6 +64,8 @@ final class DoryVZMacSavedStateTests: XCTestCase {
         DoryVZMacMachineManifest(
             createdAt: "2026-08-30T14:00:00Z",
             installationState: .suspended,
+            origin: .created,
+            parentMachineIdentifierSHA256: nil,
             restoreImageBuild: "25G83",
             restoreImageVersion: "26.6.2",
             restoreImageSourceURL: "https://updates.cdn-apple.com/restore.ipsw",

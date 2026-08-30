@@ -16,6 +16,7 @@ private enum Command {
     case install(ipsw: URL, machine: URL)
     case run(machine: URL, suspendOnExit: Bool)
     case resume(machine: URL)
+    case clone(machine: URL, destination: URL)
 }
 
 private enum CommandError: Error, CustomStringConvertible {
@@ -80,6 +81,14 @@ private func parseCommand(_ arguments: [String]) throws -> Command {
         let machine = URL(fileURLWithPath: try take("--machine"), isDirectory: true)
         guard values.isEmpty else { throw CommandError.usage(usage) }
         return .resume(machine: machine)
+    case "clone":
+        let machine = URL(fileURLWithPath: try take("--machine"), isDirectory: true)
+        let destination = URL(
+            fileURLWithPath: try take("--destination"),
+            isDirectory: true
+        )
+        guard values.isEmpty else { throw CommandError.usage(usage) }
+        return .clone(machine: machine, destination: destination)
     default:
         throw CommandError.usage(usage)
     }
@@ -92,6 +101,7 @@ Usage:
   dory-vzmac-qualification install --ipsw <file> --machine <bundle>
   dory-vzmac-qualification run --machine <bundle> [--suspend-on-exit]
   dory-vzmac-qualification resume --machine <bundle>
+  dory-vzmac-qualification clone --machine <bundle> --destination <bundle>
 """
 
 @MainActor
@@ -170,6 +180,14 @@ private final class QualificationAppDelegate: NSObject, NSApplicationDelegate,
             show(runtime: runtime, title: "Dory — Restoring macOS")
             try await runtime.restoreSuspendedState()
             window?.title = "Dory — macOS resumed"
+        case .clone(let machine, let destination):
+            let source = try DoryVZMacMachineBundle.load(from: machine)
+            let clone = try source.clone(to: destination)
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+            FileHandle.standardOutput.write(try encoder.encode(clone.manifest))
+            FileHandle.standardOutput.write(Data([0x0a]))
+            NSApp.terminate(nil)
         }
     }
 
