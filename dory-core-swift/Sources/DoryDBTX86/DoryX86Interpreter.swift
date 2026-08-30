@@ -101,16 +101,24 @@ public struct DoryX86Interpreter: Sendable {
       }
     let instruction: DoryX86DecodedInstruction
     do {
+      let maximumFetchByteCount = try instructionFetchByteCount(
+        state: state,
+        mode: mode,
+        instructionPointer: originalRIP
+      )
       instruction = try decodeInstruction(
         at: originalRIP,
         memoryAddress: instructionFetchAddress(state: state, mode: mode),
         memory: executionMemory,
-        mode: mode
+        mode: mode,
+        maximumByteCount: maximumFetchByteCount
       )
     } catch let error as DoryX86MemoryError {
       let fault = pageFault(for: error, instructionPointer: originalRIP)
       if fault.kind == .pageFault { state.control.cr2 = fault.linearAddress ?? 0 }
       return .exception(fault)
+    } catch let exception as DoryX86Exception {
+      return .exception(exception)
     } catch {
       return .exception(.init(kind: .invalidOpcode, vector: 6, instructionPointer: originalRIP))
     }
@@ -1173,9 +1181,10 @@ public struct DoryX86Interpreter: Sendable {
     at address: UInt64,
     memoryAddress: UInt64,
     memory: any DoryX86Memory,
-    mode: DoryX86ExecutionMode
+    mode: DoryX86ExecutionMode,
+    maximumByteCount: Int
   ) throws -> DoryX86DecodedInstruction {
-    for requestedByteCount in 1...15 {
+    for requestedByteCount in 1...maximumByteCount {
       let bytes = try memory.instructionBytes(
         at: memoryAddress, maximumCount: requestedByteCount)
       do {
@@ -1190,7 +1199,39 @@ public struct DoryX86Interpreter: Sendable {
         continue
       }
     }
+    if maximumByteCount < 15 {
+      throw DoryX86Exception(
+        kind: .generalProtection,
+        vector: 13,
+        errorCode: 0,
+        instructionPointer: address
+      )
+    }
     throw DoryX86DecodeError.instructionTooLong(address: address)
+  }
+
+  private func instructionFetchByteCount(
+    state: DoryX86ArchitecturalState,
+    mode: DoryX86ExecutionMode,
+    instructionPointer: UInt64
+  ) throws -> Int {
+    guard mode != .long64 else {
+      guard DoryX86ArchitecturalState.isCanonical(instructionPointer) else {
+        throw segmentProtection(at: instructionPointer)
+      }
+      return 15
+    }
+    let offset = instructionPointer & instructionPointerMask(mode)
+    if mode == .protected32 {
+      let access = UInt8(truncatingIfNeeded: state.cs.attributes)
+      guard access & 0x80 != 0, access & 0x10 != 0, access & 8 != 0 else {
+        throw segmentProtection(at: instructionPointer)
+      }
+    }
+    guard offset <= UInt64(state.cs.limit) else {
+      throw segmentProtection(at: instructionPointer)
+    }
+    return Int(min(UInt64(15), UInt64(state.cs.limit) - offset + 1))
   }
 
   private func instructionFetchAddress(

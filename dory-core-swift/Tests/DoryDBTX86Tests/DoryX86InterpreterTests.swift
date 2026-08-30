@@ -898,6 +898,37 @@ import Testing
     #expect(state.registers.rsp == 0x1234)
   }
 
+  @Test func instructionFetchEnforcesExecutableCSAndItsLimit() throws {
+    let memory = DoryX86ByteArrayMemory(
+      baseAddress: 0x100,
+      bytes: [0xB8, 1, 2, 3, 4] + .init(repeating: 0, count: 16)
+    )
+    var state = try DoryX86ArchitecturalState(
+      rip: 0x100,
+      cs: .init(selector: 8, attributes: 0xC09A, limit: 0x102)
+    )
+    state.control.cr0 |= 1
+
+    let crossedLimit = interpreter.step(
+      state: &state, memory: memory, mode: .protected32)
+    guard case .exception(let exception) = crossedLimit else {
+      Issue.record("cross-limit instruction fetch did not fault")
+      return
+    }
+    #expect(exception.kind == .generalProtection)
+    #expect(state.rip == 0x100)
+
+    state.cs.attributes = 0xC092
+    state.cs.limit = .max
+    let nonExecutable = interpreter.step(
+      state: &state, memory: memory, mode: .protected32)
+    guard case .exception(let exception) = nonExecutable else {
+      Issue.record("fetch through a data segment did not fault")
+      return
+    }
+    #expect(exception.kind == .generalProtection)
+  }
+
   private func readQuadword(_ memory: DoryX86ByteArrayMemory, at address: UInt64) -> UInt64 {
     try! memory.read(at: address, byteCount: 8).enumerated().reduce(0) {
       $0 | UInt64($1.element) << UInt64($1.offset * 8)
