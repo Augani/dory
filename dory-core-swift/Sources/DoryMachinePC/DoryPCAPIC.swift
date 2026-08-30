@@ -1,0 +1,309 @@
+import Foundation
+
+public enum DoryPCAPICError: Error, Sendable, Equatable {
+  case invalidVector(UInt8)
+  case invalidPin(Int)
+  case duplicateLocalAPICID(UInt32)
+  case sealed
+}
+
+public enum DoryPCLocalAPICTimerMode: String, Codable, Sendable, Hashable {
+  case oneShot
+  case periodic
+}
+
+public struct DoryPCLocalAPICTimerState: Codable, Sendable, Hashable {
+  public var vector: UInt8
+  public var masked: Bool
+  public var mode: DoryPCLocalAPICTimerMode
+  public var initialCount: UInt32
+  public var currentCount: UInt32
+
+  public init(
+    vector: UInt8 = 0x20,
+    masked: Bool = true,
+    mode: DoryPCLocalAPICTimerMode = .oneShot,
+    initialCount: UInt32 = 0,
+    currentCount: UInt32 = 0
+  ) {
+    self.vector = vector
+    self.masked = masked
+    self.mode = mode
+    self.initialCount = initialCount
+    self.currentCount = currentCount
+  }
+}
+
+public struct DoryPCLocalAPICSnapshot: Codable, Sendable, Hashable {
+  public let apicID: UInt32
+  public let softwareEnabled: Bool
+  public let spuriousVector: UInt8
+  public let taskPriority: UInt8
+  public let interruptRequest: Set<UInt8>
+  public let inService: Set<UInt8>
+  public let levelTriggered: Set<UInt8>
+  public let timer: DoryPCLocalAPICTimerState
+}
+
+/// Deterministic xAPIC priority and timer core. Register transports are deliberately separate so
+/// xAPIC MMIO and x2APIC MSRs share exactly the same interrupt state machine.
+public final class DoryPCLocalAPIC: @unchecked Sendable {
+  public let apicID: UInt32
+
+  private let lock = NSLock()
+  private var softwareEnabled = false
+  private var spuriousVector: UInt8 = 0xFF
+  private var taskPriority: UInt8 = 0
+  private var interruptRequest: Set<UInt8> = []
+  private var inService: Set<UInt8> = []
+  private var levelTriggered: Set<UInt8> = []
+  private var timer = DoryPCLocalAPICTimerState()
+
+  public init(apicID: UInt32) { self.apicID = apicID }
+
+  public func configureSpuriousVector(_ vector: UInt8, softwareEnabled: Bool) throws {
+    try validate(vector)
+    lock.withLock {
+      spuriousVector = vector
+      self.softwareEnabled = softwareEnabled
+    }
+  }
+
+  public func setTaskPriority(_ value: UInt8) {
+    lock.withLock { taskPriority = value }
+  }
+
+  public func inject(vector: UInt8, levelTriggered: Bool = false) throws {
+    try validate(vector)
+    lock.withLock { injectLocked(vector: vector, levelTriggered: levelTriggered) }
+  }
+
+  /// Selects and acknowledges the highest deliverable vector. Acknowledgement atomically moves
+  /// the vector from IRR to ISR; callers then perform architectural IDT delivery.
+  public func acknowledge(interruptsEnabled: Bool) -> UInt8? {
+    lock.withLock {
+      guard softwareEnabled, interruptsEnabled else { return nil }
+      let processorPriority = max(
+        taskPriority & 0xF0,
+        inService.max().map { $0 & 0xF0 } ?? 0
+      )
+      guard
+        let vector =
+          interruptRequest
+          .filter({ $0 & 0xF0 > processorPriority })
+          .max()
+      else { return nil }
+      interruptRequest.remove(vector)
+      inService.insert(vector)
+      return vector
+    }
+  }
+
+  /// Completes the highest-priority in-service interrupt and returns its vector for IOAPIC remote
+  /// IRR processing. Edge-triggered vectors require no controller follow-up.
+  public func endOfInterrupt() -> UInt8? {
+    lock.withLock {
+      guard let vector = inService.max() else { return nil }
+      inService.remove(vector)
+      return vector
+    }
+  }
+
+  public func configureTimer(
+    vector: UInt8,
+    masked: Bool,
+    mode: DoryPCLocalAPICTimerMode,
+    initialCount: UInt32
+  ) throws {
+    try validate(vector)
+    lock.withLock {
+      timer = .init(
+        vector: vector,
+        masked: masked,
+        mode: mode,
+        initialCount: initialCount,
+        currentCount: initialCount
+      )
+    }
+  }
+
+  /// Advances the already-divided APIC timer clock. Multiple expirations coalesce in the IRR bit,
+  /// matching the APIC's bounded pending representation.
+  public func advanceTimer(by ticks: UInt64) {
+    guard ticks > 0 else { return }
+    lock.withLock {
+      guard timer.currentCount > 0 else { return }
+      let current = UInt64(timer.currentCount)
+      guard ticks >= current else {
+        timer.currentCount -= UInt32(ticks)
+        return
+      }
+
+      if !timer.masked {
+        injectLocked(vector: timer.vector, levelTriggered: false)
+      }
+      switch timer.mode {
+      case .oneShot:
+        timer.currentCount = 0
+      case .periodic:
+        guard timer.initialCount > 0 else {
+          timer.currentCount = 0
+          return
+        }
+        let period = UInt64(timer.initialCount)
+        let ticksAfterFirstExpiry = ticks - current
+        let phase = ticksAfterFirstExpiry % period
+        timer.currentCount = phase == 0 ? timer.initialCount : UInt32(period - phase)
+      }
+    }
+  }
+
+  public func snapshot() -> DoryPCLocalAPICSnapshot {
+    lock.withLock {
+      .init(
+        apicID: apicID,
+        softwareEnabled: softwareEnabled,
+        spuriousVector: spuriousVector,
+        taskPriority: taskPriority,
+        interruptRequest: interruptRequest,
+        inService: inService,
+        levelTriggered: levelTriggered,
+        timer: timer
+      )
+    }
+  }
+
+  private func injectLocked(vector: UInt8, levelTriggered: Bool) {
+    interruptRequest.insert(vector)
+    if levelTriggered { self.levelTriggered.insert(vector) }
+  }
+
+  private func validate(_ vector: UInt8) throws {
+    guard vector >= 0x10 else { throw DoryPCAPICError.invalidVector(vector) }
+  }
+}
+
+public struct DoryPCIOAPICRoute: Codable, Sendable, Hashable {
+  public var vector: UInt8
+  public var destinationAPICID: UInt32
+  public var masked: Bool
+  public var levelTriggered: Bool
+  public var activeLow: Bool
+
+  public init(
+    vector: UInt8 = 0x20,
+    destinationAPICID: UInt32 = 0,
+    masked: Bool = true,
+    levelTriggered: Bool = false,
+    activeLow: Bool = false
+  ) {
+    self.vector = vector
+    self.destinationAPICID = destinationAPICID
+    self.masked = masked
+    self.levelTriggered = levelTriggered
+    self.activeLow = activeLow
+  }
+}
+
+/// DoryPC-v1 IOAPIC routing core with edge detection and level-triggered remote-IRR behavior.
+public final class DoryPCIOAPIC: @unchecked Sendable {
+  private struct PinState {
+    var route = DoryPCIOAPICRoute()
+    var asserted = false
+    var remoteIRR = false
+  }
+
+  public let pinCount: Int
+  private let lock = NSLock()
+  private var pins: [PinState]
+  private var localAPICs: [UInt32: DoryPCLocalAPIC] = [:]
+  private var isSealed = false
+
+  public init(pinCount: Int = 24) {
+    precondition(pinCount > 0)
+    self.pinCount = pinCount
+    pins = .init(repeating: .init(), count: pinCount)
+  }
+
+  public func attach(_ localAPIC: DoryPCLocalAPIC) throws {
+    try lock.withLock {
+      guard !isSealed else { throw DoryPCAPICError.sealed }
+      guard localAPICs[localAPIC.apicID] == nil else {
+        throw DoryPCAPICError.duplicateLocalAPICID(localAPIC.apicID)
+      }
+      localAPICs[localAPIC.apicID] = localAPIC
+    }
+  }
+
+  public func seal() { lock.withLock { isSealed = true } }
+
+  public func configure(pin: Int, route: DoryPCIOAPICRoute) throws {
+    try validate(pin: pin, vector: route.vector)
+    let delivery: (DoryPCLocalAPIC, UInt8)? = lock.withLock {
+      pins[pin].route = route
+      guard route.levelTriggered, !route.masked, pins[pin].asserted, !pins[pin].remoteIRR,
+        let target = localAPICs[route.destinationAPICID]
+      else { return nil }
+      pins[pin].remoteIRR = true
+      return (target, route.vector)
+    }
+    if let delivery {
+      try delivery.0.inject(vector: delivery.1, levelTriggered: true)
+    }
+  }
+
+  /// Sets the device's logical assertion state. Polarity is a guest-visible electrical property;
+  /// device cores use this logical API and therefore never duplicate active-low conversion.
+  public func setAsserted(_ asserted: Bool, pin: Int) throws {
+    guard pins.indices.contains(pin) else { throw DoryPCAPICError.invalidPin(pin) }
+    let delivery: (DoryPCLocalAPIC, UInt8, Bool)? = lock.withLock {
+      let previous = pins[pin].asserted
+      pins[pin].asserted = asserted
+      let route = pins[pin].route
+      guard !route.masked, let target = localAPICs[route.destinationAPICID] else { return nil }
+      if route.levelTriggered {
+        guard asserted, !pins[pin].remoteIRR else { return nil }
+        pins[pin].remoteIRR = true
+        return (target, route.vector, true)
+      }
+      guard asserted, !previous else { return nil }
+      return (target, route.vector, false)
+    }
+    if let delivery {
+      try delivery.0.inject(vector: delivery.1, levelTriggered: delivery.2)
+    }
+  }
+
+  /// Clears remote IRR for every matching level route and immediately re-pends any line that is
+  /// still asserted, preventing lost level interrupts.
+  public func endOfInterrupt(vector: UInt8, destinationAPICID: UInt32) throws {
+    let deliveries: [(DoryPCLocalAPIC, UInt8)] = lock.withLock {
+      var result: [(DoryPCLocalAPIC, UInt8)] = []
+      for index in pins.indices {
+        let route = pins[index].route
+        guard route.levelTriggered, pins[index].remoteIRR,
+          route.vector == vector, route.destinationAPICID == destinationAPICID
+        else { continue }
+        pins[index].remoteIRR = false
+        if pins[index].asserted, !route.masked, let target = localAPICs[destinationAPICID] {
+          pins[index].remoteIRR = true
+          result.append((target, vector))
+        }
+      }
+      return result
+    }
+    for delivery in deliveries {
+      try delivery.0.inject(vector: delivery.1, levelTriggered: true)
+    }
+  }
+
+  public func route(for pin: Int) throws -> DoryPCIOAPICRoute {
+    guard pins.indices.contains(pin) else { throw DoryPCAPICError.invalidPin(pin) }
+    return lock.withLock { pins[pin].route }
+  }
+
+  private func validate(pin: Int, vector: UInt8) throws {
+    guard pins.indices.contains(pin) else { throw DoryPCAPICError.invalidPin(pin) }
+    guard vector >= 0x10 else { throw DoryPCAPICError.invalidVector(vector) }
+  }
+}
