@@ -160,4 +160,43 @@ import Testing
       }
     #endif
   }
+
+  @Test func nativeUnaryArithmeticMatchesX86FlagsAndRegisterWidths() throws {
+    #if arch(arm64)
+      let cases: [([UInt8], UInt64, Bool)] = [
+        ([0x48, 0xFF, 0xC0], 0x7FFF_FFFF_FFFF_FFFF, false),
+        ([0x48, 0xFF, 0xC0], UInt64.max, true),
+        ([0x48, 0xFF, 0xC8], 0x8000_0000_0000_0000, false),
+        ([0x48, 0xFF, 0xC8], 0, true),
+        ([0x48, 0xF7, 0xD0], 0x0123_4567_89AB_CDEF, true),
+        ([0x48, 0xF7, 0xD8], 0, false),
+        ([0x48, 0xF7, 0xD8], 0x8000_0000_0000_0000, true),
+        ([0xFF, 0xC0], UInt64.max, true),
+        ([0xF7, 0xD8], 0x8000_0000, false),
+      ]
+      for (index, testCase) in cases.enumerated() {
+        let (bytes, rax, carry) = testCase
+        let address = UInt64(0x9000 + index * 0x10)
+        let memory = DoryX86ByteArrayMemory(baseAddress: address, bytes: bytes)
+        var flags: DoryX86RFLAGS = [
+          .reservedOne, .parity, .auxiliaryCarry, .zero, .sign, .overflow, .direction,
+        ]
+        if carry { flags.insert(.carry) }
+        let state = try DoryX86ArchitecturalState(
+          registers: .init(rax: rax),
+          rip: address,
+          rflags: flags,
+          cs: .init(selector: 0, attributes: 0xA09A, limit: .max)
+        )
+
+        let result = try DoryX86DifferentialHarness().compare(
+          bytes: bytes,
+          initialState: state,
+          memory: memory,
+          mode: .long64
+        )
+        #expect(result.agrees, "unary case \(index) diverged")
+      }
+    #endif
+  }
 }

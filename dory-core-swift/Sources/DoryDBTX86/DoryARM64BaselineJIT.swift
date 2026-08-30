@@ -106,6 +106,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
         writesDestination: writesDestination,
         into: &words
       )
+    case .unary(let operation, let operand):
+      return emitUnary(operation, operand: operand, into: &words)
     default:
       return false
     }
@@ -214,6 +216,58 @@ public struct DoryARM64BaselineEmitter: Sendable {
     words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, 12, 15, 31))
   }
 
+  private func emitUnary(
+    _ operation: DoryIRUnaryOperation,
+    operand: DoryIROperand,
+    into words: inout [UInt32]
+  ) -> Bool {
+    guard
+      case .register(let target) = operand,
+      target.bank == "x86.gpr",
+      target.index < 16,
+      target.width == .i32 || target.width == .i64,
+      load(target, into: 9, words: &words)
+    else { return false }
+    let is64Bit = target.width == .i64
+
+    switch operation {
+    case .increment, .decrement:
+      emitImmediate(1, register: 10, into: &words)
+      words.append(
+        encodeAddSubtractSetFlags(
+          add: operation == .increment,
+          is64Bit: is64Bit,
+          9,
+          10,
+          11
+        ))
+      words.append(encodeStore64(register: 11, base: 0, byteOffset: Int(target.index) * 8))
+      emitX86ArithmeticFlags(
+        subtraction: operation == .decrement,
+        includesAuxiliaryCarry: true,
+        updatesCarry: false,
+        resultRegister: 11,
+        into: &words
+      )
+    case .bitwiseNot:
+      emitImmediate(is64Bit ? UInt64.max : UInt64(UInt32.max), register: 10, into: &words)
+      words.append(encodeLogical(.xor, is64Bit: is64Bit, 9, 10, 11))
+      words.append(encodeStore64(register: 11, base: 0, byteOffset: Int(target.index) * 8))
+    case .negate:
+      words.append(encodeLogical(.or, left: 31, right: 9, destination: 10))
+      emitImmediate(0, register: 9, into: &words)
+      words.append(encodeAddSubtractSetFlags(add: false, is64Bit: is64Bit, 9, 10, 11))
+      words.append(encodeStore64(register: 11, base: 0, byteOffset: Int(target.index) * 8))
+      emitX86ArithmeticFlags(
+        subtraction: true,
+        includesAuxiliaryCarry: true,
+        resultRegister: 11,
+        into: &words
+      )
+    }
+    return true
+  }
+
   private func load(
     _ register: DoryIRRegister,
     into hostRegister: UInt32,
@@ -251,13 +305,18 @@ public struct DoryARM64BaselineEmitter: Sendable {
   private func emitX86ArithmeticFlags(
     subtraction: Bool,
     includesAuxiliaryCarry: Bool,
+    updatesCarry: Bool = true,
     resultRegister: UInt32,
     into words: inout [UInt32]
   ) {
     // Capture ARM NZCV before the flag-synthesis instructions. ARM C is the inverse of x86 CF
     // after subtraction, while addition uses it directly.
-    words.append(
-      encodeConditionalSet(register: 13, condition: subtraction ? .carryClear : .carrySet))
+    if updatesCarry {
+      words.append(
+        encodeConditionalSet(register: 13, condition: subtraction ? .carryClear : .carrySet))
+    } else {
+      emitImmediate(0, register: 13, into: &words)
+    }
     words.append(encodeConditionalSet(register: 14, condition: .equal))
     words.append(encodeLogical(.or, left: 13, right: 14, shiftAmount: 6, destination: 13))
     words.append(encodeConditionalSet(register: 14, condition: .minus))
@@ -307,7 +366,11 @@ public struct DoryARM64BaselineEmitter: Sendable {
     words.append(encodeLogical(.or, left: 13, right: 14, shiftAmount: 2, destination: 13))
 
     words.append(encodeLoad64(register: 12, base: 0, byteOffset: Self.rflagsOffset))
-    emitImmediate(~Self.arithmeticFlagMask, register: 15, into: &words)
+    let updatedFlagMask =
+      updatesCarry
+      ? Self.arithmeticFlagMask
+      : Self.arithmeticFlagMask & ~DoryX86RFLAGS.carry.rawValue
+    emitImmediate(~updatedFlagMask, register: 15, into: &words)
     words.append(encodeLogical(.and, left: 12, right: 15, destination: 12))
     words.append(encodeLogical(.or, left: 12, right: 13, destination: 12))
     emitImmediate(DoryX86RFLAGS.reservedOne.rawValue, register: 15, into: &words)
