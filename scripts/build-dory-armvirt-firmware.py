@@ -440,6 +440,8 @@ def package_bundle(
             str(binary_root / "dory-firmware-bundler"),
             "--firmware-code",
             str(firmware),
+            "--platform",
+            "dory-armvirt-v1",
             "--platform-configuration",
             str(configuration),
             "--toolchain-descriptor",
