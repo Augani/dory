@@ -31,6 +31,7 @@
 		D0D100000000000000000004 /* DoryRendererWorkerVirglBackend in Frameworks */ = {isa = PBXBuildFile; productRef = D0D700000000000000000003 /* DoryRendererWorkerVirglBackend */; };
 		D0F100000000000000000001 /* DoryCameraExtension.systemextension in Embed System Extensions */ = {isa = PBXBuildFile; fileRef = D0F200000000000000000002 /* DoryCameraExtension.systemextension */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		D0F100000000000000000002 /* DoryMacGuestCameraExtensionCore in Frameworks */ = {isa = PBXBuildFile; productRef = D0F700000000000000000001 /* DoryMacGuestCameraExtensionCore */; };
+		D0F100000000000000000003 /* DoryMacGuestCamera in Frameworks */ = {isa = PBXBuildFile; productRef = D0F700000000000000000002 /* DoryMacGuestCamera */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -303,6 +304,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				D0F100000000000000000003 /* DoryMacGuestCamera in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -519,6 +521,7 @@
 			);
 			name = DoryGuestTools;
 			packageProductDependencies = (
+				D0F700000000000000000002 /* DoryMacGuestCamera */,
 			);
 			productName = DoryGuestTools;
 			productReference = D0F200000000000000000001 /* DoryGuestTools.app */;
@@ -1715,6 +1718,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = AA00000000000000000000D1 /* XCLocalSwiftPackageReference "dory-core-swift" */;
 			productName = DoryMacGuestCameraExtensionCore;
+		};
+		D0F700000000000000000002 /* DoryMacGuestCamera */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA00000000000000000000D1 /* XCLocalSwiftPackageReference "dory-core-swift" */;
+			productName = DoryMacGuestCamera;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

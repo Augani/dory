@@ -1,7 +1,73 @@
+import AppKit
+import DoryMacGuestCamera
 import SwiftUI
 import SystemExtensions
 
 private let cameraExtensionIdentifier = "com.pythonxi.Dory.GuestTools.CameraExtension"
+
+@MainActor
+final class CameraPreviewController: ObservableObject {
+    @Published private(set) var image: NSImage?
+    @Published private(set) var status = "Test the direct Dory camera feed before installing the system camera."
+    @Published private(set) var isRunning = false
+
+    private var client: DoryMacGuestCameraClient?
+    private var streamTask: Task<Void, Never>?
+
+    func start() {
+        guard !isRunning else { return }
+        let client = DoryMacGuestCameraClient()
+        self.client = client
+        image = nil
+        status = "Connecting to the Mac host camera…"
+        isRunning = true
+        streamTask = Task.detached(priority: .userInitiated) { [weak self, client] in
+            do {
+                try client.connect()
+                await self?.didConnect(client)
+                while !Task.isCancelled {
+                    let frame = try client.nextFrame()
+                    await self?.publish(frame.jpeg, from: client)
+                }
+            } catch {
+                await self?.didStop(client, error: error)
+            }
+        }
+    }
+
+    func stop() {
+        guard let client else { return }
+        streamTask?.cancel()
+        client.stop()
+        streamTask = nil
+        self.client = nil
+        isRunning = false
+        status = image == nil ? "Camera test stopped." : "Direct camera feed verified."
+    }
+
+    private func didConnect(_ client: DoryMacGuestCameraClient) {
+        guard self.client === client else { return }
+        status = "Receiving the Mac host camera through Dory…"
+    }
+
+    private func publish(_ jpeg: Data, from client: DoryMacGuestCameraClient) {
+        guard self.client === client else { return }
+        guard let decoded = NSImage(data: jpeg) else {
+            status = "Dory received a camera frame that macOS could not decode."
+            return
+        }
+        image = decoded
+        status = "Direct camera feed is working. Install Dory Camera to expose it to other apps."
+    }
+
+    private func didStop(_ client: DoryMacGuestCameraClient, error: Error) {
+        guard self.client === client else { return }
+        streamTask = nil
+        self.client = nil
+        isRunning = false
+        status = "Camera feed stopped: \(String(describing: error))"
+    }
+}
 
 @MainActor
 final class CameraExtensionController: NSObject, ObservableObject, OSSystemExtensionRequestDelegate {
@@ -128,6 +194,7 @@ final class CameraExtensionController: NSObject, ObservableObject, OSSystemExten
 @main
 struct DoryGuestToolsApp: App {
     @StateObject private var cameraExtension = CameraExtensionController()
+    @StateObject private var cameraPreview = CameraPreviewController()
 
     var body: some Scene {
         WindowGroup {
@@ -136,6 +203,39 @@ struct DoryGuestToolsApp: App {
                     .font(.largeTitle.bold())
                 Text("Install Dory Camera so FaceTime, browsers, and other macOS apps in this virtual machine can use the Mac host camera.")
                     .fixedSize(horizontal: false, vertical: true)
+
+                GroupBox("Camera feed") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        ZStack {
+                            Color.black
+                            if let image = cameraPreview.image {
+                                Image(nsImage: image)
+                                    .resizable()
+                                    .scaledToFit()
+                            } else {
+                                Image(systemName: "video.slash")
+                                    .font(.system(size: 38))
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .frame(width: 480, height: 270)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                        Text(cameraPreview.status)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        HStack {
+                            Button("Test Camera Feed") { cameraPreview.start() }
+                                .buttonStyle(.borderedProminent)
+                                .disabled(cameraPreview.isRunning)
+                            Button("Stop Test") { cameraPreview.stop() }
+                                .disabled(!cameraPreview.isRunning)
+                        }
+                    }
+                    .padding(8)
+                }
+
+                Divider()
                 if !cameraExtension.isInstalledInApplications {
                     Label("Move this app to Applications first.", systemImage: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)
@@ -153,7 +253,7 @@ struct DoryGuestToolsApp: App {
                 }
             }
             .padding(28)
-            .frame(width: 520)
+            .frame(width: 560)
         }
         .windowResizability(.contentSize)
     }
