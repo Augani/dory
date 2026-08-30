@@ -127,13 +127,17 @@ import Testing
 
   @Test func addressDeviceConsumesInputContextAndPublishesOutputContext() throws {
     let xhci = try DoryPCXHCIController()
+    let usbDevice = DoryPCUSBRecordingDevice(
+      speed: .high,
+      queuedResults: [try .init(status: .success, payload: [0xAA, 0xBB, 0xCC])]
+    )
     let machine = try DoryPCDirectKernelMachine(
       memoryBytes: 2 * 1024 * 1024,
       pciFunctions: [xhci]
     )
     let bar = DoryPCV1ABI.xhciBARAddress
     try xhci.writeConfiguration(offset: 4, bytes: [2, 0])
-    try xhci.connect(port: 1, speed: .high)
+    try xhci.connect(port: 1, device: usbDevice)
     try machine.physicalMemory.write(
       at: 0x1000,
       bytes: littleEndian(UInt64(0x2000)) + littleEndian(UInt32(16)) + [0, 0, 0, 0]
@@ -181,6 +185,23 @@ import Testing
     #expect(try read32(machine, 0x2038) >> 24 == 1)
     #expect(try read32(machine, 0x203C) >> 24 == 1)
     #expect(try read32(machine, 0x6060) & 0x7 == 1)
+
+    try machine.physicalMemory.write(
+      at: 0x9000,
+      bytes: littleEndian(UInt64(0xA000)) + littleEndian(UInt32(4))
+        + littleEndian(UInt32(1 << 5 | 1 << 10 | 1))
+    )
+    try write32(machine, bar + 0x2004, 3)
+    #expect(try machine.physicalMemory.read(at: 0xA000, byteCount: 4) == [0xAA, 0xBB, 0xCC, 0])
+    #expect(usbDevice.transfers.count == 1)
+    #expect(usbDevice.transfers[0].type == .bulk)
+    #expect(usbDevice.transfers[0].direction == .in)
+    #expect(usbDevice.transfers[0].maximumResponseBytes == 4)
+    #expect(try read64(machine, 0x2040) == 0x9000)
+    #expect(try read32(machine, 0x2048) & 0xFF_FFFF == 1)
+    #expect(try read32(machine, 0x2048) >> 24 == 13)
+    #expect((try read32(machine, 0x204C) >> 10) & 0x3F == 32)
+    #expect((try read32(machine, 0x204C) >> 16) & 0x1F == 3)
   }
 
   @Test func authorizedDeviceCapabilityFollowsPortResetDetachAndControllerReset() throws {
