@@ -18,6 +18,7 @@ private enum Command {
     case resume(machine: URL, guestTools: URL?)
     case clone(machine: URL, destination: URL)
     case status(machine: URL)
+    case recover(machine: URL, discardSavedState: Bool)
 }
 
 private enum CommandError: Error, CustomStringConvertible {
@@ -100,6 +101,12 @@ private func parseCommand(_ arguments: [String]) throws -> Command {
         let machine = URL(fileURLWithPath: try take("--machine"), isDirectory: true)
         guard values.isEmpty else { throw CommandError.usage(usage) }
         return .status(machine: machine)
+    case "recover":
+        let machine = URL(fileURLWithPath: try take("--machine"), isDirectory: true)
+        let discardSavedState = values.contains("--discard-saved-state")
+        values.removeAll { $0 == "--discard-saved-state" }
+        guard values.isEmpty else { throw CommandError.usage(usage) }
+        return .recover(machine: machine, discardSavedState: discardSavedState)
     default:
         throw CommandError.usage(usage)
     }
@@ -114,6 +121,7 @@ Usage:
   dory-vzmac-qualification resume --machine <bundle> [--guest-tools <directory>]
   dory-vzmac-qualification clone --machine <bundle> --destination <bundle>
   dory-vzmac-qualification status --machine <bundle>
+  dory-vzmac-qualification recover --machine <bundle> [--discard-saved-state]
 """
 
 private struct MachineStatus: Codable {
@@ -244,6 +252,17 @@ private final class QualificationAppDelegate: NSObject, NSApplicationDelegate,
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
             FileHandle.standardOutput.write(try encoder.encode(receipt))
+            FileHandle.standardOutput.write(Data([0x0a]))
+            NSApp.terminate(nil)
+        case .recover(let machine, let discardSavedState):
+            let bundle = try DoryVZMacMachineBundle.load(from: machine)
+            let recovered = try DoryVZMacRecovery.recoverInterruptedOperation(
+                in: bundle,
+                discardSavedStateAfterInterruptedRestore: discardSavedState
+            )
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+            FileHandle.standardOutput.write(try encoder.encode(recovered.manifest))
             FileHandle.standardOutput.write(Data([0x0a]))
             NSApp.terminate(nil)
         }
