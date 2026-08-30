@@ -33,6 +33,12 @@ import Testing
     #expect(composed.blockDevices.map(\.blockDevice.storage.readOnly) == [false, true])
     #expect(try barAddress(composed.blockDevices[0]) == DoryPCV1ABI.systemDiskBARAddress)
     #expect(try barAddress(composed.blockDevices[1]) == DoryPCV1ABI.removableMediaBARAddress)
+    #expect(composed.displayDevice.pciAddress == DoryPCV1ABI.displayPCIAddress)
+    #expect(composed.keyboardDevice.pciAddress == DoryPCV1ABI.keyboardPCIAddress)
+    #expect(composed.soundDevice.pciAddress == DoryPCV1ABI.soundPCIAddress)
+    #expect(composed.xhciController.pciAddress == DoryPCV1ABI.xhciPCIAddress)
+    #expect(composed.networkDevice.pciAddress == DoryPCV1ABI.networkPCIAddress)
+    #expect(composed.entropyDevice.pciAddress == DoryPCV1ABI.entropyPCIAddress)
     #expect(try composed.machine.run(maximumInstructions: 1) == .instructionBudget(1))
   }
 

@@ -80,6 +80,8 @@ public enum DoryPCV1ABI {
   public static let tabletPCIAddress = DoryPCPCIAddress(bus: 0, device: 5, function: 0)
   public static let soundPCIAddress = DoryPCPCIAddress(bus: 0, device: 6, function: 0)
   public static let xhciPCIAddress = DoryPCPCIAddress(bus: 0, device: 7, function: 0)
+  public static let networkPCIAddress = DoryPCPCIAddress(bus: 0, device: 8, function: 0)
+  public static let entropyPCIAddress = DoryPCPCIAddress(bus: 0, device: 9, function: 0)
   public static let removableMediaPCIAddress = DoryPCPCIAddress(bus: 0, device: 12, function: 0)
   public static let systemDiskBARAddress = pcieMMIOBase
   public static let removableMediaBARAddress = pcieMMIOBase + 0x1000
@@ -89,6 +91,8 @@ public enum DoryPCV1ABI {
   public static let tabletBARAddress = pcieMMIOBase + 0x5000
   public static let soundBARAddress = pcieMMIOBase + 0x6000
   public static let xhciBARAddress = pcieMMIOBase + 0x8000
+  public static let networkBARAddress = pcieMMIOBase + 0xC000
+  public static let entropyBARAddress = pcieMMIOBase + 0xD000
 
   public static let regions: [DoryPCV1Region] = [
     fixedRegion(kind: .pvhHandoff, base: pvhStartInfo, byteCount: pvhHandoffBytes),
@@ -179,6 +183,8 @@ public enum DoryPCV1ABI {
     | VirtIO absolute tablet | `0000:00:05.0` | `0xd0005000` |
     | VirtIO sound | `0000:00:06.0` | `0xd0006000` |
     | xHCI USB controller | `0000:00:07.0` | `0xd0008000` |
+    | VirtIO network | `0000:00:08.0` | `0xd000c000` |
+    | VirtIO entropy | `0000:00:09.0` | `0xd000d000` |
 
     ## Boot contract
 

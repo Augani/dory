@@ -32,6 +32,14 @@ public final class DoryPCUEFIMachine: @unchecked Sendable {
   public let firmwareFlash: DoryPCFirmwareFlash
   public let variableBridge: DoryPCUEFIVariableBridgeMMIO
   public let blockDevices: [DoryPCVirtioBlockPCIDevice]
+  public let displayDevice: DoryPCVirtioGPUPCIDevice
+  public let keyboardDevice: DoryPCVirtioInputPCIDevice
+  public let pointerDevice: DoryPCVirtioInputPCIDevice
+  public let tabletDevice: DoryPCVirtioInputPCIDevice
+  public let soundDevice: DoryPCVirtioSoundPCIDevice
+  public let xhciController: DoryPCXHCIController
+  public let networkDevice: DoryPCVirtioNetworkPCIDevice
+  public let entropyDevice: DoryPCVirtioEntropyPCIDevice
   public let machine: DoryPCDirectKernelMachine
 
   public init(
@@ -42,6 +50,9 @@ public final class DoryPCUEFIMachine: @unchecked Sendable {
     memoryBytes: Int,
     processorCount: Int = 1,
     initialRTCDate: Date = Date(),
+    displaySink: (any DoryVirtioGPUDisplaySink)? = nil,
+    soundBackend: any DoryVirtioSoundBackend = DoryVirtioInMemorySoundBackend(),
+    networkBackend: any DoryVirtioNetworkBackend = DoryVirtioInMemoryNetworkBackend(),
     interpreter: DoryX86Interpreter = .init()
   ) throws {
     guard firmware.manifest.platform == .pcV1 else {
@@ -98,11 +109,61 @@ public final class DoryPCUEFIMachine: @unchecked Sendable {
     let variableBridge = try DoryPCUEFIVariableBridgeMMIO(
       service: .init(store: variableStore)
     )
+    let displayDevice = try DoryPCVirtioGPUPCIDevice(
+      address: DoryPCV1ABI.displayPCIAddress,
+      initialBARAddress: DoryPCV1ABI.displayBARAddress,
+      scanouts: [
+        .init(id: 0, rectangle: .init(x: 0, y: 0, width: 1_280, height: 800))
+      ],
+      displaySink: displaySink
+    )
+    let keyboardDevice = try DoryPCVirtioInputPCIDevice(
+      address: DoryPCV1ABI.keyboardPCIAddress,
+      initialBARAddress: DoryPCV1ABI.keyboardBARAddress,
+      descriptor: .keyboard()
+    )
+    let pointerDevice = try DoryPCVirtioInputPCIDevice(
+      address: DoryPCV1ABI.pointerPCIAddress,
+      initialBARAddress: DoryPCV1ABI.pointerBARAddress,
+      descriptor: .relativePointer()
+    )
+    let tabletDevice = try DoryPCVirtioInputPCIDevice(
+      address: DoryPCV1ABI.tabletPCIAddress,
+      initialBARAddress: DoryPCV1ABI.tabletBARAddress,
+      descriptor: .absolutePointer()
+    )
+    let soundDevice = try DoryPCVirtioSoundPCIDevice(
+      address: DoryPCV1ABI.soundPCIAddress,
+      initialBARAddress: DoryPCV1ABI.soundBARAddress,
+      backend: soundBackend
+    )
+    let xhciController = try DoryPCXHCIController()
+    let networkDevice = try DoryPCVirtioNetworkPCIDevice(
+      address: DoryPCV1ABI.networkPCIAddress,
+      initialBARAddress: DoryPCV1ABI.networkBARAddress,
+      backend: networkBackend,
+      macAddress: [0x02, 0x44, 0x4F, 0x52, 0x59, 0x01]
+    )
+    let entropyDevice = try DoryPCVirtioEntropyPCIDevice(
+      address: DoryPCV1ABI.entropyPCIAddress,
+      initialBARAddress: DoryPCV1ABI.entropyBARAddress
+    )
+    var pciFunctions: [any DoryPCPCIFunction] = blockDevices
+    pciFunctions += [
+      displayDevice,
+      keyboardDevice,
+      pointerDevice,
+      tabletDevice,
+      soundDevice,
+      xhciController,
+      networkDevice,
+      entropyDevice,
+    ]
     let machine = try DoryPCDirectKernelMachine(
       memoryBytes: memoryBytes,
       processorCount: processorCount,
       initialRTCDate: initialRTCDate,
-      pciFunctions: blockDevices,
+      pciFunctions: pciFunctions,
       platformMMIODevices: [firmwareFlash, variableBridge],
       interpreter: interpreter
     )
@@ -113,6 +174,14 @@ public final class DoryPCUEFIMachine: @unchecked Sendable {
     self.firmwareFlash = firmwareFlash
     self.variableBridge = variableBridge
     self.blockDevices = blockDevices
+    self.displayDevice = displayDevice
+    self.keyboardDevice = keyboardDevice
+    self.pointerDevice = pointerDevice
+    self.tabletDevice = tabletDevice
+    self.soundDevice = soundDevice
+    self.xhciController = xhciController
+    self.networkDevice = networkDevice
+    self.entropyDevice = entropyDevice
     self.machine = machine
   }
 
