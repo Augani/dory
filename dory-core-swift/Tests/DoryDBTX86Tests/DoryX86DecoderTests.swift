@@ -387,6 +387,35 @@ import Testing
     }
   }
 
+  @Test func decodesDoublePrecisionShifts() throws {
+    #expect(
+      try decoder.decode([0x48, 0x0F, 0xA4, 0xD0, 0x04], at: 0x690, mode: .long64)
+        .operation
+        == .doubleShift(
+          .left,
+          destination: .register(.rax, width: .quadword),
+          source: .register(.rdx, width: .quadword),
+          count: .immediate(4)
+        )
+    )
+    #expect(
+      try decoder.decode([0x0F, 0xAD, 0x10], at: 0x690, mode: .protected32).operation
+        == .doubleShift(
+          .right,
+          destination: .memory(
+            .init(
+              base: .rax,
+              width: .doubleword,
+              addressWidth: .doubleword,
+              segment: .ds,
+              ignoresLegacySegmentBase: false
+            )),
+          source: .register(.rdx, width: .doubleword),
+          count: .cl
+        )
+    )
+  }
+
   @Test func decodesScalarPortIOWithArchitecturalWidths() throws {
     #expect(
       try decoder.decode([0xE4, 0x60], at: 0x700, mode: .long64).operation

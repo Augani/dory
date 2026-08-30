@@ -579,6 +579,19 @@ public struct DoryX86Decoder: Sendable {
           default: .complement
           }
         operation = .bitTest(bitOperation, base: operands.rm, index: operands.reg)
+      case 0xA4, 0xA5, 0xAC, 0xAD:
+        let operands = try decodeModRM(
+          cursor: &cursor, width: width, prefixes: prefixes, mode: mode)
+        let count: DoryX86ShiftCount =
+          second == 0xA4 || second == 0xAC
+          ? .immediate(try cursor.readByte())
+          : .cl
+        operation = .doubleShift(
+          second == 0xA4 || second == 0xA5 ? .left : .right,
+          destination: operands.rm,
+          source: operands.reg,
+          count: count
+        )
       case 0x40...0x4F:
         let operands = try decodeModRM(
           cursor: &cursor, width: width, prefixes: prefixes, mode: mode)

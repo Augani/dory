@@ -231,6 +231,31 @@ public struct DoryX86Interpreter: Sendable {
           state: &state,
           memory: executionMemory
         )
+      case .doubleShift(let operation, let destination, let source, let countSource):
+        let destinationValue = try read(
+          destination, instruction: instruction, state: state, memory: executionMemory)
+        let sourceValue = try read(
+          source, instruction: instruction, state: state, memory: executionMemory)
+        let count: UInt8 =
+          switch countSource {
+          case .immediate(let value): value
+          case .cl: UInt8(truncatingIfNeeded: state.registers.rcx)
+          }
+        let result = executeDoubleShift(
+          operation,
+          destination: destinationValue,
+          source: sourceValue,
+          count: count,
+          width: operandWidth(destination),
+          flags: &state.rflags
+        )
+        try write(
+          result,
+          to: destination,
+          instruction: instruction,
+          state: &state,
+          memory: executionMemory
+        )
       case .extendMove(let destination, let source, let signed):
         let value = try read(
           source, instruction: instruction, state: state, memory: executionMemory)
@@ -2406,6 +2431,66 @@ public struct DoryX86Interpreter: Sendable {
     setFlag(.parity, (result & 0xff).nonzeroBitCount.isMultiple(of: 2), in: &flags)
     flags.remove(.auxiliaryCarry)
     flags.insert(.reservedOne)
+  }
+
+  private func executeDoubleShift(
+    _ operation: DoryX86DoubleShiftOperation,
+    destination: UInt64,
+    source: UInt64,
+    count rawCount: UInt8,
+    width: DoryX86OperandWidth,
+    flags: inout DoryX86RFLAGS
+  ) -> UInt64 {
+    let bitCount = Int(width.rawValue)
+    let countMask: UInt8 = width == .quadword ? 0x3f : 0x1f
+    let count = Int(rawCount & countMask)
+    let widthMask = mask(width)
+    let original = destination & widthMask
+    let shiftedIn = source & widthMask
+    guard count != 0 else { return original }
+
+    // Counts greater than the operand width are architecturally undefined for the
+    // 16-bit form. Keep that case deterministic without performing an invalid host shift.
+    guard count <= bitCount else {
+      flags.remove(.carry)
+      let result: UInt64 = 0
+      setShiftResultFlags(result, width: width, flags: &flags)
+      return result
+    }
+
+    let result: UInt64
+    switch operation {
+    case .left:
+      setFlag(
+        .carry,
+        original & (UInt64(1) << UInt64(bitCount - count)) != 0,
+        in: &flags
+      )
+      result = ((original << count) | (shiftedIn >> (bitCount - count))) & widthMask
+      if count == 1 {
+        setFlag(
+          .overflow,
+          (result & signBit(width) != 0) != flags.contains(.carry),
+          in: &flags
+        )
+      }
+    case .right:
+      setFlag(
+        .carry,
+        original & (UInt64(1) << UInt64(count - 1)) != 0,
+        in: &flags
+      )
+      result = (original >> count) | ((shiftedIn << (bitCount - count)) & widthMask)
+      if count == 1 {
+        setFlag(
+          .overflow,
+          (original & signBit(width) != 0) != (result & signBit(width) != 0),
+          in: &flags
+        )
+      }
+    }
+    setShiftResultFlags(result, width: width, flags: &flags)
+    return result
   }
 
   private func signedMultiply(

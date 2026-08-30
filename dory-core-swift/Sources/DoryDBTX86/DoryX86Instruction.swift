@@ -104,6 +104,10 @@ public enum DoryX86ShiftCount: Codable, Sendable, Hashable {
   case cl
 }
 
+public enum DoryX86DoubleShiftOperation: String, Codable, Sendable, Hashable {
+  case left, right
+}
+
 public enum DoryX86AccumulatorArithmeticOperation: String, Codable, Sendable, Hashable {
   case unsignedMultiply, signedMultiply, unsignedDivide, signedDivide
 }
@@ -161,6 +165,12 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
   case alu(DoryX86ALUOperation, destination: DoryX86Operand, source: DoryX86Operand)
   case unary(DoryX86UnaryOperation, operand: DoryX86Operand)
   case shift(DoryX86ShiftOperation, destination: DoryX86Operand, count: DoryX86ShiftCount)
+  case doubleShift(
+    DoryX86DoubleShiftOperation,
+    destination: DoryX86Operand,
+    source: DoryX86Operand,
+    count: DoryX86ShiftCount
+  )
   case extendMove(destination: DoryX86Operand, source: DoryX86Operand, signed: Bool)
   case conditionalMove(DoryX86Condition, destination: DoryX86Operand, source: DoryX86Operand)
   case setCondition(DoryX86Condition, destination: DoryX86Operand)

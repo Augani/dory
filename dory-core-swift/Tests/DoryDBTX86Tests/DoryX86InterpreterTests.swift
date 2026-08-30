@@ -922,6 +922,56 @@ import Testing
     )
   }
 
+  @Test func doublePrecisionShiftsMergeOperandsAndSetDefinedFlags() throws {
+    let memory = DoryX86ByteArrayMemory(
+      baseAddress: 0x100,
+      bytes: [
+        0x48, 0x0F, 0xA4, 0xD0, 0x04,  // shld rax,rdx,4
+        0x0F, 0xAD, 0xD0,  // shrd eax,edx,cl
+      ] + .init(repeating: 0, count: 16)
+    )
+    var state = try DoryX86ArchitecturalState(
+      registers: .init(
+        rax: 0x1234_5678_9ABC_DEF0,
+        rcx: 1,
+        rdx: 0xFEDC_BA98_7654_3210
+      ),
+      rip: 0x100,
+      rflags: [.reservedOne]
+    )
+
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    #expect(state.registers.rax == 0x2345_6789_ABCD_EF0F)
+    #expect(state.rflags.contains(.carry))
+    #expect(!state.rflags.contains(.zero))
+    #expect(!state.rflags.contains(.sign))
+    #expect(state.rflags.contains(.parity))
+
+    state.registers.rax = 0x8000_0001
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    #expect(state.registers.rax == 0x0000_0000_4000_0000)
+    #expect(state.rflags.contains(.carry))
+    #expect(state.rflags.contains(.overflow))
+  }
+
+  @Test func zeroCountDoubleShiftPreservesDestinationAndFlags() throws {
+    let memory = DoryX86ByteArrayMemory(
+      baseAddress: 0x180,
+      bytes: [0x48, 0x0F, 0xA5, 0xD0] + .init(repeating: 0, count: 16)
+    )
+    let originalFlags: DoryX86RFLAGS = [.reservedOne, .carry, .overflow, .zero]
+    var state = try DoryX86ArchitecturalState(
+      registers: .init(rax: 0x1234, rcx: 0, rdx: .max),
+      rip: 0x180,
+      rflags: originalFlags
+    )
+
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+
+    #expect(state.registers.rax == 0x1234)
+    #expect(state.rflags == originalFlags)
+  }
+
   @Test func instructionFetchEnforcesExecutableCSAndItsLimit() throws {
     let memory = DoryX86ByteArrayMemory(
       baseAddress: 0x100,
