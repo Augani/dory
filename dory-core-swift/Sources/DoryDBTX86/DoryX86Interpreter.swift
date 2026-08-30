@@ -106,6 +106,7 @@ public struct DoryX86Interpreter: Sendable {
         memory
       }
     let instruction: DoryX86DecodedInstruction
+    let originalCodeSegment = state.cs
     do {
       let maximumFetchByteCount = try instructionFetchByteCount(
         state: state,
@@ -505,6 +506,27 @@ public struct DoryX86Interpreter: Sendable {
         }
       case .memoryFence:
         executionMemory.synchronize()
+      case .waitForCoprocessor:
+        break
+      case .initializeFloatingPoint:
+        state.floatingPoint.x87 = .init(repeating: .x87Zero(), count: 8)
+        state.floatingPoint.x87ControlWord = 0x037F
+        state.floatingPoint.x87StatusWord = 0
+        state.floatingPoint.x87TagWord = 0xFFFF
+      case .loadX87ControlWord(let source):
+        state.floatingPoint.x87ControlWord = UInt16(
+          truncatingIfNeeded: try read(
+            source, instruction: instruction, state: state, memory: executionMemory)
+        )
+      case .loadMXCSR(let source):
+        let value = UInt32(
+          truncatingIfNeeded: try read(
+            source, instruction: instruction, state: state, memory: executionMemory)
+        )
+        guard value & ~state.floatingPoint.mxcsrMask == 0 else {
+          return generalProtection(at: originalRIP)
+        }
+        state.floatingPoint.mxcsr = value
       case .processorPause:
         break
       case .string(let operation, let width):
@@ -585,7 +607,8 @@ public struct DoryX86Interpreter: Sendable {
           value, to: operand, instruction: instruction, state: &state, memory: executionMemory)
       case .call(let relative):
         let returnWidth: DoryX86OperandWidth =
-          mode == .long64 ? .quadword : (mode == .real16 ? .word : .doubleword)
+          mode == .long64
+          ? .quadword : (mode == .real16 || mode == .protected16 ? .word : .doubleword)
         try pushStack(
           nextRIP,
           width: returnWidth,
@@ -610,7 +633,8 @@ public struct DoryX86Interpreter: Sendable {
         nextRIP = target
       case .return:
         let returnWidth: DoryX86OperandWidth =
-          mode == .long64 ? .quadword : (mode == .real16 ? .word : .doubleword)
+          mode == .long64
+          ? .quadword : (mode == .real16 || mode == .protected16 ? .word : .doubleword)
         nextRIP = try popStack(
           width: returnWidth,
           instruction: instruction,
@@ -740,7 +764,7 @@ public struct DoryX86Interpreter: Sendable {
           )
         else { return generalProtection(at: originalRIP) }
         state.cs = loaded
-        nextRIP = offset & instructionPointerMask(mode)
+        nextRIP = offset
       case .farCall(let offset, let selector, let width):
         guard
           let loaded = try loadSegment(
@@ -768,7 +792,7 @@ public struct DoryX86Interpreter: Sendable {
         )
         writeStringRegister(.rsp, value: returnStack, width: width, state: &state)
         state.cs = loaded
-        nextRIP = offset & instructionPointerMask(mode)
+        nextRIP = offset & mask(width)
       case .farReturn(let popBytes, let width):
         let stack = state.registers.rsp & mask(width)
         let returnAddress = stackAddress(stack, mode: mode, state: state)
@@ -792,7 +816,7 @@ public struct DoryX86Interpreter: Sendable {
           selectorStack &+ UInt64(width.byteCount) &+ UInt64(popBytes) & mask(width)
         writeStringRegister(.rsp, value: finalStack, width: width, state: &state)
         state.cs = loaded
-        nextRIP = target & instructionPointerMask(mode)
+        nextRIP = target & mask(width)
       case .machineStatusWord(let load, let operand):
         if load {
           guard currentPrivilegeLevel(state) == 0 else {
@@ -1014,7 +1038,17 @@ public struct DoryX86Interpreter: Sendable {
         state.ss = .init(selector: (selector &+ 8) | 3, attributes: 0xC0F3, limit: .max, base: 0)
         nextRIP = state.registers.rcx
       }
-      state.rip = nextRIP & instructionPointerMask(mode)
+      let finalMask: UInt64 =
+        if (mode == .protected16 || mode == .protected32), state.cs != originalCodeSegment {
+          if state.cs.attributes & 0x2000 != 0 {
+            0xffff_ffff
+          } else {
+            state.cs.attributes & 0x4000 == 0 ? 0xffff : 0xffff_ffff
+          }
+        } else {
+          instructionPointerMask(mode)
+        }
+      state.rip = nextRIP & finalMask
       return .retired(instruction)
     } catch let partial as DoryX86PartialMemoryFault {
       state.rip = originalRIP
@@ -1133,12 +1167,14 @@ public struct DoryX86Interpreter: Sendable {
   ) -> Bool {
     switch index {
     case 0:
-      let paging = value & (1 << 31) != 0
-      let protectedMode = value & 1 != 0
-      let cacheDisable = value & (1 << 30) != 0
-      let notWriteThrough = value & (1 << 29) != 0
-      guard value & (1 << 4) != 0,
-        !paging || protectedMode,
+      // CR0.ET has been architecturally fixed at one since the 486. A MOV to
+      // CR0 that supplies zero for ET succeeds and reads back as one.
+      let normalizedValue = value | (1 << 4)
+      let paging = normalizedValue & (1 << 31) != 0
+      let protectedMode = normalizedValue & 1 != 0
+      let cacheDisable = normalizedValue & (1 << 30) != 0
+      let notWriteThrough = normalizedValue & (1 << 29) != 0
+      guard !paging || protectedMode,
         !notWriteThrough || cacheDisable
       else { return false }
       let wasPaging = state.control.cr0 & (1 << 31) != 0
@@ -1148,7 +1184,7 @@ public struct DoryX86Interpreter: Sendable {
       } else if !paging {
         state.control.efer &= ~(1 << 10)
       }
-      state.control.cr0 = value
+      state.control.cr0 = normalizedValue
       pagingUnit?.invalidateAll()
       return true
     case 2:
@@ -1169,8 +1205,8 @@ public struct DoryX86Interpreter: Sendable {
       return true
     case 4:
       let supportedMask: UInt64 =
-        (1 << 2) | (1 << 3) | (1 << 4) | (1 << 5) | (1 << 7) | (1 << 8)
-        | (1 << 17) | (1 << 20) | (1 << 21)
+        (1 << 2) | (1 << 3) | (1 << 4) | (1 << 5) | (1 << 6) | (1 << 7) | (1 << 8)
+        | (1 << 9) | (1 << 10) | (1 << 17) | (1 << 20) | (1 << 21)
       guard value & ~supportedMask == 0 else { return false }
       state.control.cr4 = value
       pagingUnit?.invalidateAll()
@@ -1319,7 +1355,7 @@ public struct DoryX86Interpreter: Sendable {
       return 15
     }
     let offset = instructionPointer & instructionPointerMask(mode)
-    if mode == .protected32 {
+    if mode == .protected16 || mode == .protected32 {
       let access = UInt8(truncatingIfNeeded: state.cs.attributes)
       guard access & 0x80 != 0, access & 0x10 != 0, access & 8 != 0 else {
         throw segmentProtection(at: instructionPointer)
@@ -1337,6 +1373,7 @@ public struct DoryX86Interpreter: Sendable {
   ) -> UInt64 {
     switch mode {
     case .real16: state.cs.base &+ (state.rip & 0xffff)
+    case .protected16: state.cs.base &+ (state.rip & 0xffff)
     case .protected32: state.cs.base &+ (state.rip & 0xffff_ffff)
     case .long64: state.rip
     }
@@ -1345,6 +1382,7 @@ public struct DoryX86Interpreter: Sendable {
   private func instructionPointerMask(_ mode: DoryX86ExecutionMode) -> UInt64 {
     switch mode {
     case .real16: 0xffff
+    case .protected16: 0xffff
     case .protected32: 0xffff_ffff
     case .long64: .max
     }
@@ -1364,6 +1402,7 @@ public struct DoryX86Interpreter: Sendable {
   ) -> DoryX86OperandWidth {
     switch mode {
     case .real16: .word
+    case .protected16: state.ss.attributes & 0x4000 != 0 ? .doubleword : .word
     case .long64: .quadword
     case .protected32: state.ss.attributes & 0x4000 != 0 ? .doubleword : .word
     }
@@ -1973,8 +2012,9 @@ public struct DoryX86Interpreter: Sendable {
     instruction: DoryX86DecodedInstruction
   ) -> DoryX86OperandWidth {
     switch (mode, instruction.prefixes.addressSizeOverride) {
-    case (.real16, false), (.protected32, true): .word
-    case (.real16, true), (.protected32, false), (.long64, true): .doubleword
+    case (.real16, false), (.protected16, false), (.protected32, true): .word
+    case (.real16, true), (.protected16, true), (.protected32, false), (.long64, true):
+      .doubleword
     case (.long64, false): .quadword
     }
   }
@@ -2798,6 +2838,7 @@ public struct DoryX86Interpreter: Sendable {
   private func stackWidth(_ mode: DoryX86ExecutionMode) -> DoryX86OperandWidth {
     switch mode {
     case .real16: .word
+    case .protected16: .word
     case .protected32: .doubleword
     case .long64: .quadword
     }

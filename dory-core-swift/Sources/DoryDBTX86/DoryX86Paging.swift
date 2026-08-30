@@ -99,7 +99,8 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
     context: DoryX86PagingContext,
     physicalMemory: any DoryX86Memory
   ) throws -> DoryX86Translation {
-    guard isCanonical(linearAddress, bits: context.mode == .long64 ? 48 : 32) else {
+    let ia32eActive = context.control.efer & (1 << 10) != 0
+    guard isCanonical(linearAddress, bits: ia32eActive ? 48 : 32) else {
       throw DoryX86MemoryError.addressOverflow(address: linearAddress, byteCount: 1)
     }
     guard context.control.cr0 & (1 << 31) != 0 else {
@@ -138,7 +139,7 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
     }
 
     let translation: DoryX86Translation
-    if context.mode == .long64 {
+    if ia32eActive {
       translation = try walkIA32e(
         linearAddress: linearAddress,
         access: access,

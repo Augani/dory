@@ -151,6 +151,30 @@ import Testing
     }
   }
 
+  @Test func compatibilityModeUsesIA32ePageTablesOnceLongModeIsActive() throws {
+    let memory = DoryX86ByteArrayMemory(byteCount: 0x10_000)
+    let linear: UInt64 = 0x00C0_0123
+    try installFourLevelMapping(linear: linear, physicalPage: 0x8000, flags: 0x3, memory: memory)
+    let context = DoryX86PagingContext(
+      control: .init(
+        cr0: 0x8000_0011,
+        cr3: 0x1000,
+        cr4: 1 << 5,
+        efer: 1 << 10
+      ),
+      rflags: .reset,
+      currentPrivilegeLevel: 0,
+      mode: .protected32
+    )
+    let translated = try DoryX86PagingUnit().translate(
+      linearAddress: linear,
+      access: .instructionFetch,
+      context: context,
+      physicalMemory: memory
+    )
+    #expect(translated.physicalAddress == 0x8123)
+  }
+
   private func longModeContext(cpl: UInt8) -> DoryX86PagingContext {
     .init(control: longModeControl(), rflags: .reset, currentPrivilegeLevel: cpl, mode: .long64)
   }

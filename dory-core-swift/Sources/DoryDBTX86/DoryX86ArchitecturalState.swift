@@ -374,7 +374,7 @@ public struct DoryX86ArchitecturalState: Codable, Sendable, Hashable {
     rip: UInt64 = 0xfff0,
     rflags: DoryX86RFLAGS = .reset,
     cs: DoryX86SegmentState = .init(
-      selector: 0xf000, attributes: 0x0093, limit: 0xffff, base: 0xffff_0000),
+      selector: 0xf000, attributes: 0x009b, limit: 0xffff, base: 0xffff_0000),
     ds: DoryX86SegmentState = .init(attributes: 0x0093, limit: 0xffff),
     es: DoryX86SegmentState = .init(attributes: 0x0093, limit: 0xffff),
     fs: DoryX86SegmentState = .init(attributes: 0x0093, limit: 0xffff),

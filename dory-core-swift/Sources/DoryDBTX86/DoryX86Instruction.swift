@@ -2,6 +2,7 @@ import Foundation
 
 public enum DoryX86ExecutionMode: String, Codable, Sendable, Hashable {
   case real16
+  case protected16
   case protected32
   case long64
 }
@@ -185,6 +186,10 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
   case byteSwap(DoryX86Operand)
   case compareExchangePair(destination: DoryX86MemoryOperand, doubleQuadword: Bool)
   case memoryFence(DoryX86MemoryFence)
+  case waitForCoprocessor
+  case initializeFloatingPoint
+  case loadX87ControlWord(DoryX86Operand)
+  case loadMXCSR(DoryX86Operand)
   case processorPause
   case string(DoryX86StringOperation, width: DoryX86OperandWidth)
   case input(port: DoryX86IOPort, width: DoryX86OperandWidth)

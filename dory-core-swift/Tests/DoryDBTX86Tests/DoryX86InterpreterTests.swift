@@ -136,6 +136,163 @@ import Testing
     #expect(state.registers.rcx == 0xAABB_CCDD)
   }
 
+  @Test func writingCR0NormalizesTheFixedExtensionTypeBit() throws {
+    let memory = DoryX86ByteArrayMemory(
+      baseAddress: 0x5800,
+      bytes: [0x0F, 0x22, 0xC0] + .init(repeating: 0, count: 16)
+    )
+    var state = try DoryX86ArchitecturalState(
+      registers: .init(rax: 0x23),
+      rip: 0x5800,
+      cs: .init(selector: 0, attributes: 0x009B, limit: .max)
+    )
+    let result = interpreter.step(state: &state, memory: memory, mode: .real16)
+    guard case .retired = result else {
+      Issue.record("MOV CR0 unexpectedly faulted: \(result)")
+      return
+    }
+    #expect(state.control.cr0 == 0x33)
+  }
+
+  @Test func firmwareFarJumpLoadsAFlatProtectedModeCodeDescriptor() throws {
+    let base: UInt64 = 0xFFFF_FE80
+    var bytes = [UInt8](repeating: 0, count: 0x80)
+    bytes.replaceSubrange(
+      7..<15,
+      with: [0x66, 0xEA, 0x8F, 0xFE, 0xFF, 0xFF, 0x10, 0x00]
+    )
+    bytes.replaceSubrange(
+      0x40..<0x48,
+      with: [0xFF, 0xFF, 0x00, 0x00, 0x00, 0x9B, 0xCF, 0x00]
+    )
+    let memory = DoryX86ByteArrayMemory(baseAddress: base, bytes: bytes)
+    let decoded = try DoryX86Decoder().decode(
+      Array(bytes[7..<22]),
+      at: 0xFE87,
+      mode: .protected16
+    )
+    #expect(decoded.operation == .farJump(offset: 0xFFFF_FE8F, selector: 0x10))
+    var state = try DoryX86ArchitecturalState(
+      rip: 0xFE87,
+      cs: .init(selector: 0xF000, attributes: 0x009B, limit: 0xFFFF, base: 0xFFFF_0000),
+      gdtr: .init(limit: 0x3F, base: 0xFFFF_FEB0),
+      control: .init(cr0: 0x6000_0033)
+    )
+    let result = interpreter.step(state: &state, memory: memory, mode: .protected16)
+    guard case .retired = result else {
+      Issue.record("firmware far jump unexpectedly faulted: \(result)")
+      return
+    }
+    #expect(state.cs.selector == 0x10)
+    #expect(state.cs.base == 0)
+    #expect(state.cs.attributes == 0xC09B)
+    #expect(state.rip == 0xFFFF_FE8F)
+  }
+
+  @Test func compatibilityModeFarJumpPreservesFirmwareLongModeEntryPoint() throws {
+    var bytes = [UInt8](repeating: 0, count: 0x300)
+    bytes.replaceSubrange(
+      0x100..<0x107,
+      with: [0xEA, 0xF8, 0xF6, 0xFF, 0xFF, 0x38, 0x00]
+    )
+    bytes.replaceSubrange(
+      0x238..<0x240,
+      with: [0xFF, 0xFF, 0x00, 0x00, 0x00, 0x9B, 0xAF, 0x00]
+    )
+    let memory = DoryX86ByteArrayMemory(baseAddress: 0, bytes: bytes)
+    var state = try DoryX86ArchitecturalState(
+      rip: 0x100,
+      cs: .init(selector: 0x10, attributes: 0xC09B, limit: .max),
+      gdtr: .init(limit: 0x3F, base: 0x200),
+      control: .init(cr0: 0x8000_0033, cr4: 0x620, efer: 0xD00)
+    )
+    let result = interpreter.step(state: &state, memory: memory, mode: .protected32)
+    guard case .retired = result else {
+      Issue.record("long-mode far jump unexpectedly faulted: \(result)")
+      return
+    }
+    #expect(state.cs.selector == 0x38)
+    #expect(state.cs.attributes == 0xA09B)
+    #expect(state.rip == 0xFFFF_F6F8)
+  }
+
+  @Test func firmwareCanEnableMachineCheckAndOperatingSystemSIMDSupport() throws {
+    let memory = DoryX86ByteArrayMemory(
+      baseAddress: 0x5900,
+      bytes: [0x0F, 0x22, 0xE0] + .init(repeating: 0, count: 16)
+    )
+    var state = try DoryX86ArchitecturalState(
+      registers: .init(rax: 0x640),
+      rip: 0x5900,
+      cs: .init(selector: 0x10, attributes: 0xC09B, limit: .max)
+    )
+    let result = interpreter.step(state: &state, memory: memory, mode: .protected32)
+    guard case .retired = result else {
+      Issue.record("MOV CR4 unexpectedly faulted: \(result)")
+      return
+    }
+    #expect(state.control.cr4 == 0x640)
+  }
+
+  @Test func firmwareInitializesX87AndSIMDControlState() throws {
+    var bytes = [UInt8](repeating: 0, count: 0x30)
+    bytes.replaceSubrange(
+      0..<16,
+      with: [
+        0x9B,
+        0xDB, 0xE3,
+        0xD9, 0x2D, 0x17, 0x00, 0x00, 0x00,
+        0x0F, 0xAE, 0x15, 0x12, 0x00, 0x00, 0x00,
+      ]
+    )
+    bytes.replaceSubrange(0x20..<0x22, with: [0x7F, 0x02])
+    bytes.replaceSubrange(0x22..<0x26, with: [0x80, 0x1F, 0x00, 0x00])
+    let memory = DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: bytes)
+    var floatingPoint = try DoryX86FloatingPointState()
+    floatingPoint.x87ControlWord = 0
+    floatingPoint.x87StatusWord = 0xFFFF
+    floatingPoint.x87TagWord = 0
+    floatingPoint.mxcsr = 0
+    var state = try DoryX86ArchitecturalState(
+      rip: 0x1000,
+      cs: .init(selector: 0x38, attributes: 0xA09B, limit: .max),
+      floatingPoint: floatingPoint
+    )
+
+    for _ in 0..<4 {
+      let result = interpreter.step(state: &state, memory: memory, mode: .long64)
+      guard case .retired = result else {
+        Issue.record("floating-point initialization unexpectedly faulted: \(result)")
+        return
+      }
+    }
+
+    #expect(state.floatingPoint.x87ControlWord == 0x027F)
+    #expect(state.floatingPoint.x87StatusWord == 0)
+    #expect(state.floatingPoint.x87TagWord == 0xFFFF)
+    #expect(state.floatingPoint.mxcsr == 0x1F80)
+  }
+
+  @Test func byteExtendMoveUsesTheWideModRMDestinationRegister() throws {
+    var bytes = [UInt8](repeating: 0, count: 0x20)
+    bytes.replaceSubrange(0..<4, with: [0x0F, 0xB6, 0x71, 0x02])
+    bytes[0x12] = 0x0D
+    let memory = DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: bytes)
+    var state = try DoryX86ArchitecturalState(
+      registers: .init(rcx: 0x1010, rdx: 0x81_EE_70),
+      rip: 0x1000,
+      cs: .init(selector: 0x38, attributes: 0xA09B, limit: .max)
+    )
+
+    let result = interpreter.step(state: &state, memory: memory, mode: .long64)
+    guard case .retired = result else {
+      Issue.record("MOVZX unexpectedly faulted: \(result)")
+      return
+    }
+    #expect(state.registers.rsi == 0x0D)
+    #expect(state.registers.rdx == 0x81_EE_70)
+  }
+
   @Test func readsAndWritesOnlyTheDefinedMSRSurface() throws {
     let memory = DoryX86ByteArrayMemory(
       baseAddress: 0x6000,

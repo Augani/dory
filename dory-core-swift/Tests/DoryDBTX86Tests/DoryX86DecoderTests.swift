@@ -69,6 +69,17 @@ import Testing
     )
   }
 
+  @Test func decodesLegacyRegisterIncrementAndDecrementOutsideLongMode() throws {
+    #expect(
+      try decoder.decode([0x40], at: 0x200, mode: .protected32).operation
+        == .unary(.increment, operand: .register(.rax, width: .doubleword))
+    )
+    #expect(
+      try decoder.decode([0x4F], at: 0x201, mode: .protected16).operation
+        == .unary(.decrement, operand: .register(.rdi, width: .word))
+    )
+  }
+
   @Test func enforcesArchitecturalInstructionLengthAndRejectsUnknownOpcodes() throws {
     let prefixes = Array(repeating: UInt8(0x66), count: 15)
     #expect(throws: DoryX86DecodeError.instructionTooLong(address: 0x4000)) {

@@ -44,7 +44,7 @@ public struct DoryX86InterruptDelivery: Sendable {
       )
       return
     }
-    if mode == .protected32 {
+    if mode == .protected16 || mode == .protected32 {
       try deliverProtectedMode(
         vector: vector,
         source: source,
@@ -201,7 +201,7 @@ public struct DoryX86InterruptDelivery: Sendable {
       try interruptReturnRealMode(state: &state, memory: physicalMemory)
       return
     }
-    if mode == .protected32 {
+    if mode == .protected16 || mode == .protected32 {
       try interruptReturnProtectedMode(state: &state, memory: physicalMemory)
       return
     }

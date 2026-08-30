@@ -80,6 +80,8 @@ public struct DoryX86Decoder: Sendable {
       )
     case 0x9C:
       operation = .pushFlags(width: stackWidth(mode: mode, prefixes: prefixes))
+    case 0x9B:
+      operation = .waitForCoprocessor
     case 0x9D:
       operation = .popFlags(width: stackWidth(mode: mode, prefixes: prefixes))
     case 0x9E:
@@ -102,6 +104,16 @@ public struct DoryX86Decoder: Sendable {
       operation = .setDirection(false)
     case 0xFD:
       operation = .setDirection(true)
+    case 0x40...0x47:
+      operation = .unary(
+        .increment,
+        operand: .register(register(Int(opcode - 0x40), extensionBit: false), width: width)
+      )
+    case 0x48...0x4F:
+      operation = .unary(
+        .decrement,
+        operand: .register(register(Int(opcode - 0x48), extensionBit: false), width: width)
+      )
     case 0x50...0x57:
       let register = register(Int(opcode - 0x50), extensionBit: prefixes.rex?.b == true)
       operation = .push(.register(register, width: stackWidth(mode: mode, prefixes: prefixes)))
@@ -475,6 +487,20 @@ public struct DoryX86Decoder: Sendable {
         DoryX86Condition(rawValue: opcode - 0x70)!,
         relative: Int64(try cursor.readSigned(byteCount: 1))
       )
+    case 0xDB:
+      guard try cursor.readByte() == 0xE3 else {
+        throw DoryX86DecodeError.invalidEncoding(
+          address: address, detail: "unsupported DB x87 instruction")
+      }
+      operation = .initializeFloatingPoint
+    case 0xD9:
+      let operands = try decodeModRM(
+        cursor: &cursor, width: .word, prefixes: prefixes, mode: mode)
+      guard operands.group == 5, case .memory = operands.rm else {
+        throw DoryX86DecodeError.invalidEncoding(
+          address: address, detail: "unsupported D9 x87 instruction")
+      }
+      operation = .loadX87ControlWord(operands.rm)
     case 0x0F:
       let second = try cursor.readByte()
       switch second {
@@ -555,18 +581,28 @@ public struct DoryX86Decoder: Sendable {
       case 0xA2:
         operation = .cpuid
       case 0xAE:
-        let modRM = try cursor.readByte()
-        guard modRM >> 6 == 3, modRM & 7 == 0 else {
-          throw DoryX86DecodeError.invalidEncoding(
-            address: address, detail: "memory fence requires its fixed register encoding")
-        }
-        switch (modRM >> 3) & 7 {
-        case 5: operation = .memoryFence(.load)
-        case 6: operation = .memoryFence(.full)
-        case 7: operation = .memoryFence(.store)
-        default:
-          throw DoryX86DecodeError.invalidEncoding(
-            address: address, detail: "unsupported 0F AE group")
+        if let modRM = cursor.peek(), modRM >> 6 == 3 {
+          _ = try cursor.readByte()
+          guard modRM & 7 == 0 else {
+            throw DoryX86DecodeError.invalidEncoding(
+              address: address, detail: "memory fence requires its fixed register encoding")
+          }
+          switch (modRM >> 3) & 7 {
+          case 5: operation = .memoryFence(.load)
+          case 6: operation = .memoryFence(.full)
+          case 7: operation = .memoryFence(.store)
+          default:
+            throw DoryX86DecodeError.invalidEncoding(
+              address: address, detail: "unsupported 0F AE register group")
+          }
+        } else {
+          let operands = try decodeModRM(
+            cursor: &cursor, width: .doubleword, prefixes: prefixes, mode: mode)
+          guard operands.group == 2, case .memory = operands.rm else {
+            throw DoryX86DecodeError.invalidEncoding(
+              address: address, detail: "unsupported 0F AE memory group")
+          }
+          operation = .loadMXCSR(operands.rm)
         }
       case 0xA3, 0xAB, 0xB3, 0xBB:
         let operands = try decodeModRM(
@@ -638,7 +674,10 @@ public struct DoryX86Decoder: Sendable {
         let operands = try decodeModRM(
           cursor: &cursor, width: sourceWidth, prefixes: prefixes, mode: mode)
         operation = .extendMove(
-          destination: resizedOperand(operands.reg, to: width),
+          destination: .register(
+            register(Int(operands.group), extensionBit: prefixes.rex?.r == true),
+            width: width
+          ),
           source: operands.rm,
           signed: second == 0xBE || second == 0xBF
         )
@@ -759,8 +798,9 @@ public struct DoryX86Decoder: Sendable {
     prefixes: DoryX86InstructionPrefixes
   ) -> DoryX86OperandWidth {
     if mode == .long64, prefixes.rex?.w == true { return .quadword }
-    if prefixes.operandSizeOverride { return .word }
-    return mode == .real16 ? .word : .doubleword
+    let defaultsToWord = mode == .real16 || mode == .protected16
+    if prefixes.operandSizeOverride { return defaultsToWord ? .doubleword : .word }
+    return defaultsToWord ? .word : .doubleword
   }
 
   private func stackWidth(
@@ -776,8 +816,8 @@ public struct DoryX86Decoder: Sendable {
     prefixes: DoryX86InstructionPrefixes
   ) -> DoryX86OperandWidth {
     switch (mode, prefixes.operandSizeOverride) {
-    case (.real16, false): .word
-    case (.real16, true): .doubleword
+    case (.real16, false), (.protected16, false): .word
+    case (.real16, true), (.protected16, true): .doubleword
     case (_, false): .doubleword
     case (_, true): .word
     }
@@ -973,8 +1013,9 @@ public struct DoryX86Decoder: Sendable {
     prefixes: DoryX86InstructionPrefixes
   ) -> DoryX86OperandWidth {
     switch (mode, prefixes.addressSizeOverride) {
-    case (.real16, false), (.protected32, true): .word
-    case (.real16, true), (.protected32, false), (.long64, true): .doubleword
+    case (.real16, false), (.protected16, false), (.protected32, true): .word
+    case (.real16, true), (.protected16, true), (.protected32, false), (.long64, true):
+      .doubleword
     case (.long64, false): .quadword
     }
   }

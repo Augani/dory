@@ -360,7 +360,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         state.rip = 0
         state.cs = .init(
           selector: UInt16(vector) << 8,
-          attributes: 0x0093,
+          attributes: 0x009B,
           limit: 0xFFFF,
           base: UInt64(vector) << 12
         )
@@ -467,7 +467,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     if state.control.efer & (1 << 10) != 0, state.cs.attributes & 0x2000 != 0 {
       return .long64
     }
-    return .protected32
+    return state.cs.attributes & 0x4000 == 0 ? .protected16 : .protected32
   }
 }
 

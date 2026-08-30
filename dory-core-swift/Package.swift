@@ -90,6 +90,10 @@ let package = Package(
       name: "dory-firmware-bundler",
       targets: ["dory-firmware-bundler"]
     ),
+    .executable(
+      name: "dory-pc-uefi-smoke",
+      targets: ["dory-pc-uefi-smoke"]
+    ),
   ],
   targets: [
     .binaryTarget(name: "DoryFFI", path: "artifacts/DoryFFI.xcframework"),
@@ -355,6 +359,10 @@ let package = Package(
     .executableTarget(
       name: "dory-firmware-bundler",
       dependencies: ["DoryFirmware"]
+    ),
+    .executableTarget(
+      name: "dory-pc-uefi-smoke",
+      dependencies: ["DoryDBTX86", "DoryFirmware", "DoryMachinePC", "DoryVirtio"]
     ),
     .testTarget(
       name: "DoryCoreTests",
