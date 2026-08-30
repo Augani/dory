@@ -74,6 +74,28 @@ def configure_platform(name: str) -> None:
     TOOLCHAIN_LOCK_PATH = FIRMWARE_ROOT / "toolchain.lock.json"
 
 
+def verify_platform_contract() -> None:
+    if PLATFORM["platform"] != "dory-pc-v1":
+        return
+    configuration = PLATFORM_ROOT / "DoryPC.dsc"
+    try:
+        lines = configuration.read_text(encoding="utf-8").splitlines()
+    except OSError as error:
+        raise BuildFailure(f"cannot read {configuration}: {error}") from error
+    for line in lines:
+        binding = line.strip()
+        if binding.startswith("QemuFwCfgLib|") and not binding.endswith(
+            "/QemuFwCfgLibNull.inf"
+        ):
+            raise BuildFailure("DoryPC must bind the upstream fw_cfg interface to its null library")
+        if binding.startswith("QemuFwCfgS3Lib|") and not binding.endswith(
+            "/BaseQemuFwCfgS3LibNull.inf"
+        ):
+            raise BuildFailure("DoryPC must bind the upstream fw_cfg S3 interface to its null library")
+        if binding.startswith(("QemuBootOrderLib|", "QemuLoadImageLib|")):
+            raise BuildFailure("DoryPC must not bind a foreign machine boot or image policy")
+
+
 configure_platform("armvirt")
 
 
@@ -560,6 +582,7 @@ def publish(bundle: Path, destination: Path) -> None:
 def main() -> int:
     arguments = parse_arguments()
     configure_platform(arguments.platform)
+    verify_platform_contract()
     source_lock = load_json(SOURCE_LOCK_PATH)
     toolchain = load_json(TOOLCHAIN_LOCK_PATH)
     require_keys(
