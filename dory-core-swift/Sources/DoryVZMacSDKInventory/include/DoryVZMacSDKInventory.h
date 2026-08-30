@@ -31,6 +31,20 @@
 #define DORY_VZMAC_VIRTUAL_USB_MASS_STORAGE_DECLARED 0
 #endif
 
+#if __has_include(<Virtualization/VZVirtioSocketDevice.h>) && \
+    __has_include(<Virtualization/VZVirtioSocketDeviceConfiguration.h>)
+#define DORY_VZMAC_VIRTIO_SOCKET_DECLARED 1
+#else
+#define DORY_VZMAC_VIRTIO_SOCKET_DECLARED 0
+#endif
+
+#if __has_include(<Virtualization/VZCustomVirtioDevice.h>) && \
+    __has_include(<Virtualization/VZCustomVirtioDeviceConfiguration.h>)
+#define DORY_VZMAC_CUSTOM_VIRTIO_DECLARED 1
+#else
+#define DORY_VZMAC_CUSTOM_VIRTIO_DECLARED 0
+#endif
+
 #if __has_include(<Virtualization/VZCameraDeviceConfiguration.h>) || \
     __has_include(<Virtualization/VZMacCameraDeviceConfiguration.h>) || \
     __has_include(<Virtualization/VZVirtioCameraDeviceConfiguration.h>)
@@ -44,6 +58,8 @@ bool dory_vzmac_accessory_access_declared(void);
 bool dory_vzmac_physical_usb_declared(void);
 bool dory_vzmac_xhci_controller_declared(void);
 bool dory_vzmac_virtual_usb_mass_storage_declared(void);
+bool dory_vzmac_virtio_socket_declared(void);
+bool dory_vzmac_custom_virtio_declared(void);
 bool dory_vzmac_camera_injection_declared(void);
 
 #endif

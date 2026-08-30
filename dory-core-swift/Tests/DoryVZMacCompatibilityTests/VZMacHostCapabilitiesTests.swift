@@ -8,6 +8,8 @@ final class VZMacHostCapabilitiesTests: XCTestCase {
         physicalUSBDeclared: false,
         xhciControllerDeclared: true,
         virtualUSBMassStorageDeclared: true,
+        virtioSocketDeclared: true,
+        customVirtioDeclared: false,
         cameraInjectionDeclared: false
     )
     private let sdk27 = DoryVZMacSDKCapabilities(
@@ -16,6 +18,8 @@ final class VZMacHostCapabilitiesTests: XCTestCase {
         physicalUSBDeclared: true,
         xhciControllerDeclared: true,
         virtualUSBMassStorageDeclared: true,
+        virtioSocketDeclared: true,
+        customVirtioDeclared: true,
         cameraInjectionDeclared: false
     )
 
@@ -66,6 +70,38 @@ final class VZMacHostCapabilitiesTests: XCTestCase {
         XCTAssertEqual(result.removableStorage, .accessoryAccessPhysicalPassthrough)
         XCTAssertEqual(result.cameraInjection, .unavailable)
         XCTAssertFalse(result.blockers.contains(.compilingSDKLacksPhysicalUSB))
+    }
+
+    func testQualifiedGuestCameraBridgeBecomesTheCameraPath() {
+        let result = DoryVZMacHostCapabilities.resolve(
+            hostArchitecture: "arm64",
+            hostMajorVersion: 26,
+            sdk: sdk26,
+            cameraBridgeQualification: .init(
+                guestMajorVersion: 12,
+                guestMinorVersion: 3,
+                guestExtensionInstalledAndAuthorized: true,
+                releaseQualificationPassed: true
+            )
+        )
+        XCTAssertEqual(result.cameraInjection, .guestCoreMediaIOBridge)
+        XCTAssertFalse(result.blockers.contains(.guestCameraBridgeQualificationPending))
+    }
+
+    func testUnqualifiedGuestCameraBridgeRemainsUnavailable() {
+        let result = DoryVZMacHostCapabilities.resolve(
+            hostArchitecture: "arm64",
+            hostMajorVersion: 27,
+            sdk: sdk27,
+            cameraBridgeQualification: .init(
+                guestMajorVersion: 12,
+                guestMinorVersion: 2,
+                guestExtensionInstalledAndAuthorized: true,
+                releaseQualificationPassed: true
+            )
+        )
+        XCTAssertEqual(result.cameraInjection, .unavailable)
+        XCTAssertTrue(result.blockers.contains(.guestCameraBridgeQualificationPending))
     }
 
     func testOlderBuildRemainsSafeWhenRunOnMacOS27() {

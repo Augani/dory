@@ -7,6 +7,8 @@ public struct DoryVZMacSDKCapabilities: Equatable, Sendable {
     public var physicalUSBDeclared: Bool
     public var xhciControllerDeclared: Bool
     public var virtualUSBMassStorageDeclared: Bool
+    public var virtioSocketDeclared: Bool
+    public var customVirtioDeclared: Bool
     public var cameraInjectionDeclared: Bool
 
     public init(
@@ -15,6 +17,8 @@ public struct DoryVZMacSDKCapabilities: Equatable, Sendable {
         physicalUSBDeclared: Bool,
         xhciControllerDeclared: Bool,
         virtualUSBMassStorageDeclared: Bool,
+        virtioSocketDeclared: Bool,
+        customVirtioDeclared: Bool,
         cameraInjectionDeclared: Bool
     ) {
         self.maximumAllowed = maximumAllowed
@@ -22,6 +26,8 @@ public struct DoryVZMacSDKCapabilities: Equatable, Sendable {
         self.physicalUSBDeclared = physicalUSBDeclared
         self.xhciControllerDeclared = xhciControllerDeclared
         self.virtualUSBMassStorageDeclared = virtualUSBMassStorageDeclared
+        self.virtioSocketDeclared = virtioSocketDeclared
+        self.customVirtioDeclared = customVirtioDeclared
         self.cameraInjectionDeclared = cameraInjectionDeclared
     }
 
@@ -33,6 +39,8 @@ public struct DoryVZMacSDKCapabilities: Equatable, Sendable {
             xhciControllerDeclared: dory_vzmac_xhci_controller_declared(),
             virtualUSBMassStorageDeclared:
                 dory_vzmac_virtual_usb_mass_storage_declared(),
+            virtioSocketDeclared: dory_vzmac_virtio_socket_declared(),
+            customVirtioDeclared: dory_vzmac_custom_virtio_declared(),
             cameraInjectionDeclared: dory_vzmac_camera_injection_declared()
         )
     }
@@ -53,6 +61,34 @@ public enum DoryVZMacRemovableStoragePath: String, Codable, Equatable, Sendable 
 public enum DoryVZMacCameraInjectionPath: String, Codable, Equatable, Sendable {
     case unavailable
     case publicVirtualizationFramework
+    case guestCoreMediaIOBridge
+}
+
+public struct DoryVZMacCameraBridgeQualification: Codable, Equatable, Sendable {
+    public var guestMajorVersion: Int
+    public var guestMinorVersion: Int
+    public var guestExtensionInstalledAndAuthorized: Bool
+    public var releaseQualificationPassed: Bool
+
+    public init(
+        guestMajorVersion: Int,
+        guestMinorVersion: Int,
+        guestExtensionInstalledAndAuthorized: Bool,
+        releaseQualificationPassed: Bool
+    ) {
+        self.guestMajorVersion = guestMajorVersion
+        self.guestMinorVersion = guestMinorVersion
+        self.guestExtensionInstalledAndAuthorized = guestExtensionInstalledAndAuthorized
+        self.releaseQualificationPassed = releaseQualificationPassed
+    }
+
+    var isUsable: Bool {
+        let supportsCameraExtensions = guestMajorVersion > 12
+            || (guestMajorVersion == 12 && guestMinorVersion >= 3)
+        return supportsCameraExtensions
+            && guestExtensionInstalledAndAuthorized
+            && releaseQualificationPassed
+    }
 }
 
 public enum DoryVZMacHostCapabilityBlocker: String, Codable, Equatable, Sendable {
@@ -62,6 +98,7 @@ public enum DoryVZMacHostCapabilityBlocker: String, Codable, Equatable, Sendable
     case virtualUSBMassStorageRequiresMacOS15
     case compilingSDKLacksVirtualUSBMassStorage
     case publicCameraInjectionUnavailable
+    case guestCameraBridgeQualificationPending
 }
 
 public struct DoryVZMacHostCapabilities: Codable, Equatable, Sendable {
@@ -73,7 +110,8 @@ public struct DoryVZMacHostCapabilities: Codable, Equatable, Sendable {
     public static func resolve(
         hostArchitecture: String,
         hostMajorVersion: Int,
-        sdk: DoryVZMacSDKCapabilities = .compilingSDK
+        sdk: DoryVZMacSDKCapabilities = .compilingSDK,
+        cameraBridgeQualification: DoryVZMacCameraBridgeQualification? = nil
     ) -> Self {
         guard hostArchitecture == "arm64" else {
             return Self(
@@ -120,9 +158,13 @@ public struct DoryVZMacHostCapabilities: Codable, Equatable, Sendable {
         let cameraInjection: DoryVZMacCameraInjectionPath
         if sdk.cameraInjectionDeclared {
             cameraInjection = .publicVirtualizationFramework
+        } else if sdk.virtioSocketDeclared,
+                  cameraBridgeQualification?.isUsable == true {
+            cameraInjection = .guestCoreMediaIOBridge
         } else {
             cameraInjection = .unavailable
             blockers.append(.publicCameraInjectionUnavailable)
+            blockers.append(.guestCameraBridgeQualificationPending)
         }
         return Self(
             physicalUSB: physicalUSB,

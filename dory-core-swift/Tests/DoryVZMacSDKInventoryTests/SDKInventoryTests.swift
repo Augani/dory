@@ -20,5 +20,13 @@ final class SDKInventoryTests: XCTestCase {
     func testOlderSDKCompatiblePathIsVirtualUSBMassStorageOnly() {
         XCTAssertTrue(dory_vzmac_xhci_controller_declared())
         XCTAssertTrue(dory_vzmac_virtual_usb_mass_storage_declared())
+        XCTAssertTrue(dory_vzmac_virtio_socket_declared())
+    }
+
+    func testCustomVirtioFollowsCompilingSDKBoundary() {
+        XCTAssertEqual(
+            dory_vzmac_custom_virtio_declared(),
+            dory_vzmac_sdk_max_allowed() >= 270_000
+        )
     }
 }

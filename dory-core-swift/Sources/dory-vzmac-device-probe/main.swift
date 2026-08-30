@@ -35,7 +35,12 @@ private struct PublicSDKBoundary: Codable {
     var virtualUSBMassStorageDeclared: Bool
     var virtualUSBMassStorageIsPhysicalPassthroughEquivalent: Bool
     var ioUSBHostCaptureEntitlement: String
+    var virtioSocketDeclared: Bool
+    var customVirtioDeclared: Bool
+    var customVirtioGuestScope: String?
     var cameraInjectionDeclared: Bool
+    var cameraBridgeCandidate: String
+    var cameraBridgeMinimumGuestVersion: String
     var runtimeClassPresence: [String: Bool]
 }
 
@@ -122,7 +127,15 @@ private func publicSDKBoundary() -> PublicSDKBoundary {
             dory_vzmac_virtual_usb_mass_storage_declared(),
         virtualUSBMassStorageIsPhysicalPassthroughEquivalent: false,
         ioUSBHostCaptureEntitlement: "com.apple.vm.device-access",
+        virtioSocketDeclared: dory_vzmac_virtio_socket_declared(),
+        customVirtioDeclared: dory_vzmac_custom_virtio_declared(),
+        customVirtioGuestScope: dory_vzmac_custom_virtio_declared()
+            ? "Linux virtual machines"
+            : nil,
         cameraInjectionDeclared: cameraDeclared,
+        cameraBridgeCandidate:
+            "host AVFoundation capture -> VZ Virtio socket -> guest Core Media I/O camera extension",
+        cameraBridgeMinimumGuestVersion: "12.3",
         runtimeClassPresence: runtimeClassPresence([
             "VZUSBPassthroughDevice",
             "VZUSBPassthroughDeviceConfiguration",
@@ -190,7 +203,7 @@ private func runProbe() -> ProbeReceipt {
 
     let sdkBoundary = publicSDKBoundary()
     var blockers = [
-        "the compiling public SDK declares no VZ camera-injection type",
+        "the compiling public SDK declares no direct VZ camera-injection type; the guest Core Media I/O bridge still requires release qualification",
         "configuration construction is not a restore/install/runtime qualification",
     ]
     if sdkBoundary.physicalUSBPassthroughDeclared {
@@ -206,8 +219,8 @@ private func runProbe() -> ProbeReceipt {
     return ProbeReceipt(
         schema: "dory.phase0a.vzmac-device-api-probe@2",
         status: sdkBoundary.physicalUSBPassthroughDeclared
-            ? "BLOCKED_CAMERA_ABSENT_USB_RUNTIME_QUALIFICATION_PENDING"
-            : "BLOCKED_REQUIRED_PUBLIC_DEVICE_PATHS_ABSENT",
+            ? "BLOCKED_CAMERA_BRIDGE_AND_USB_RUNTIME_QUALIFICATION_PENDING"
+            : "BLOCKED_PHYSICAL_USB_API_ABSENT_CAMERA_BRIDGE_QUALIFICATION_PENDING",
         hostArchitecture: hostArchitecture,
         hostProductVersion: ProcessInfo.processInfo.operatingSystemVersionString,
         hostBuildVersion: operatingSystemBuildVersion(),
