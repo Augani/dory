@@ -10,6 +10,14 @@
     {
       "waitFor": "*Test this media & start Fedora-Workstation-Live",
       "send": "\u001b[A\n"
+    },
+    {
+      "waitFor": "localhost-live login:",
+      "send": "liveuser\n"
+    },
+    {
+      "waitFor": "[liveuser@localhost-live ~]$ ",
+      "send": "set -e -o pipefail; test \"$(systemctl is-active gdm)\" = active; test \"$(awk '/^ [0-9]+ / {count++} END {print count}' /proc/asound/cards)\" -eq 1; grep -q '^ 0 .*VirtIO SoundCard$' /proc/asound/cards; head -c 192000 /dev/zero | timeout 15 aplay -D hw:0,1 -t raw -c 2 -r 48000 -f S16_LE; timeout 15 arecord -D hw:0,1 -c 2 -r 48000 -f S16_LE -d 1 /tmp/dory-capture.wav; test \"$(stat -c %s /tmp/dory-capture.wav)\" -gt 192000; printf 'DORY_AUDIO_%s\\n' IO_READY\n"
     }
   ]
 }

@@ -24,6 +24,13 @@ public struct DoryARMVirtInputExpectation: Codable, Equatable, Sendable {
   public let pointerMinimumPublishedEventCount: UInt64
 }
 
+public struct DoryARMVirtAudioExpectation: Codable, Equatable, Sendable {
+  public let minimumCompletedPlaybackPeriodCount: UInt64
+  public let minimumCompletedCapturePeriodCount: UInt64
+  public let minimumPlaybackByteCount: UInt64
+  public let minimumCaptureByteCount: UInt64
+}
+
 public struct DoryARMVirtCompatibilityMedia: Codable, Equatable, Sendable {
   public let guestFamily: String
   public let guestVersion: String
@@ -56,12 +63,13 @@ public struct DoryARMVirtCompatibilityGate: Codable, Equatable, Sendable {
   public let gvproxySHA256: String?
   public let display: DoryARMVirtDisplayExpectation?
   public let input: DoryARMVirtInputExpectation?
+  public let audio: DoryARMVirtAudioExpectation?
   public let receipt: DoryARMVirtQualificationReceiptExpectation
 }
 
 public struct DoryARMVirtCompatibilityMatrix: Codable, Equatable, Sendable {
-  public static let currentSchemaVersion: UInt32 = 4
-  public static let identity = "dory.compatibility.armvirt@4"
+  public static let currentSchemaVersion: UInt32 = 5
+  public static let identity = "dory.compatibility.armvirt@5"
 
   public let schemaVersion: UInt32
   public let matrixIdentity: String
@@ -145,6 +153,16 @@ public struct DoryARMVirtCompatibilityMatrix: Codable, Equatable, Sendable {
           (1...1_000).contains(input.keyboardMinimumPublishedEventCount),
           (1...100).contains(input.pointerMinimumPublishedFrameCount),
           (1...1_000).contains(input.pointerMinimumPublishedEventCount)
+        else {
+          throw DoryARMVirtCompatibilityMatrixError.invalidGate(gate.gateID)
+        }
+      }
+      if let audio = gate.audio {
+        guard gate.kind == .desktopLiveBoot,
+          (1...10_000).contains(audio.minimumCompletedPlaybackPeriodCount),
+          (1...10_000).contains(audio.minimumCompletedCapturePeriodCount),
+          (1...(1 << 30)).contains(audio.minimumPlaybackByteCount),
+          (1...(1 << 30)).contains(audio.minimumCaptureByteCount)
         else {
           throw DoryARMVirtCompatibilityMatrixError.invalidGate(gate.gateID)
         }

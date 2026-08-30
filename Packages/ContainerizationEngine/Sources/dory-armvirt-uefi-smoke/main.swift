@@ -212,6 +212,239 @@ import IOKit.ps
     }
   }
 
+  private struct AudioQualificationHostSnapshot {
+    let configuredPlaybackStreamCount: UInt64
+    let configuredCaptureStreamCount: UInt64
+    let startedPlaybackStreamCount: UInt64
+    let startedCaptureStreamCount: UInt64
+    let playbackByteCount: UInt64
+    let captureByteCount: UInt64
+  }
+
+  private final class AudioQualificationHost: VirtioSoundHost, @unchecked Sendable {
+    private let lock = NSLock()
+    private let completionQueue = DispatchQueue(
+      label: "com.dory.armvirt-qualification.audio",
+      qos: .userInitiated
+    )
+    private var configuredPlaybackStreamCount: UInt64 = 0
+    private var configuredCaptureStreamCount: UInt64 = 0
+    private var startedPlaybackStreamCount: UInt64 = 0
+    private var startedCaptureStreamCount: UInt64 = 0
+    private var playbackByteCount: UInt64 = 0
+    private var captureByteCount: UInt64 = 0
+    private var nextPlaybackCompletionNanoseconds: UInt64 = 0
+    private var nextCaptureCompletionNanoseconds: UInt64 = 0
+    private var playbackGeneration: UInt64 = 0
+    private var captureGeneration: UInt64 = 0
+
+    func configure(
+      streamID _: Int,
+      direction: VirtioSoundDirection,
+      parameters _: VirtioSoundPCMParameters
+    ) -> Bool {
+      lock.lock()
+      if direction == .output {
+        configuredPlaybackStreamCount &+= 1
+        playbackGeneration &+= 1
+        nextPlaybackCompletionNanoseconds = DispatchTime.now().uptimeNanoseconds
+      } else {
+        configuredCaptureStreamCount &+= 1
+        captureGeneration &+= 1
+        nextCaptureCompletionNanoseconds = DispatchTime.now().uptimeNanoseconds
+      }
+      lock.unlock()
+      return true
+    }
+
+    func prepare(streamID _: Int, direction _: VirtioSoundDirection) -> Bool { true }
+
+    func start(streamID _: Int, direction: VirtioSoundDirection) -> Bool {
+      lock.lock()
+      if direction == .output {
+        startedPlaybackStreamCount &+= 1
+      } else {
+        startedCaptureStreamCount &+= 1
+      }
+      lock.unlock()
+      return true
+    }
+
+    func stop(streamID _: Int, direction _: VirtioSoundDirection) -> Bool { true }
+
+    func release(streamID _: Int, direction: VirtioSoundDirection) {
+      cancelScheduledCompletions(direction: direction)
+    }
+
+    func enqueuePlayback(
+      _ data: Data,
+      parameters: VirtioSoundPCMParameters,
+      completion: @escaping @Sendable (Bool, UInt32) -> Void
+    ) -> Bool {
+      lock.lock()
+      playbackByteCount &+= UInt64(data.count)
+      let playbackDeadline =
+        max(
+          DispatchTime.now().uptimeNanoseconds,
+          nextPlaybackCompletionNanoseconds
+        ) &+ Self.durationNanoseconds(byteCount: data.count, parameters: parameters)
+      nextPlaybackCompletionNanoseconds = playbackDeadline
+      let generation = playbackGeneration
+      lock.unlock()
+      completionQueue.asyncAfter(deadline: DispatchTime(uptimeNanoseconds: playbackDeadline)) {
+        [weak self] in
+        guard self?.isCurrentGeneration(generation, direction: .output) == true else { return }
+        completion(true, 0)
+      }
+      return true
+    }
+
+    func requestCapture(
+      byteCount: Int,
+      parameters: VirtioSoundPCMParameters,
+      completion: @escaping @Sendable (Data?, UInt32) -> Void
+    ) -> Bool {
+      lock.lock()
+      captureByteCount &+= UInt64(byteCount)
+      let captureDeadline =
+        max(
+          DispatchTime.now().uptimeNanoseconds,
+          nextCaptureCompletionNanoseconds
+        ) &+ Self.durationNanoseconds(byteCount: byteCount, parameters: parameters)
+      nextCaptureCompletionNanoseconds = captureDeadline
+      let generation = captureGeneration
+      lock.unlock()
+      completionQueue.asyncAfter(deadline: DispatchTime(uptimeNanoseconds: captureDeadline)) {
+        [weak self] in
+        guard self?.isCurrentGeneration(generation, direction: .input) == true else { return }
+        completion(Data(repeating: 0x5a, count: byteCount), 0)
+      }
+      return true
+    }
+
+    func reset() {
+      lock.lock()
+      playbackGeneration &+= 1
+      captureGeneration &+= 1
+      nextPlaybackCompletionNanoseconds = 0
+      nextCaptureCompletionNanoseconds = 0
+      lock.unlock()
+    }
+
+    private func cancelScheduledCompletions(direction: VirtioSoundDirection) {
+      lock.lock()
+      if direction == .output {
+        playbackGeneration &+= 1
+        nextPlaybackCompletionNanoseconds = 0
+      } else {
+        captureGeneration &+= 1
+        nextCaptureCompletionNanoseconds = 0
+      }
+      lock.unlock()
+    }
+
+    private func isCurrentGeneration(
+      _ generation: UInt64,
+      direction: VirtioSoundDirection
+    ) -> Bool {
+      lock.lock()
+      defer { lock.unlock() }
+      return direction == .output
+        ? generation == playbackGeneration
+        : generation == captureGeneration
+    }
+
+    private static func durationNanoseconds(
+      byteCount: Int,
+      parameters: VirtioSoundPCMParameters
+    ) -> UInt64 {
+      let frames = Double(byteCount) / Double(parameters.bytesPerFrame)
+      return UInt64(
+        max(
+          1_000_000,
+          min(250_000_000, Int((frames / parameters.sampleRate) * 1_000_000_000))
+        ))
+    }
+
+    var snapshot: AudioQualificationHostSnapshot {
+      lock.lock()
+      defer { lock.unlock() }
+      return AudioQualificationHostSnapshot(
+        configuredPlaybackStreamCount: configuredPlaybackStreamCount,
+        configuredCaptureStreamCount: configuredCaptureStreamCount,
+        startedPlaybackStreamCount: startedPlaybackStreamCount,
+        startedCaptureStreamCount: startedCaptureStreamCount,
+        playbackByteCount: playbackByteCount,
+        captureByteCount: captureByteCount
+      )
+    }
+  }
+
+  private struct AudioQualificationSnapshot {
+    let host: AudioQualificationHostSnapshot
+    let device: VirtioSoundStatistics
+  }
+
+  private final class AudioQualificationCapture: @unchecked Sendable {
+    let host: AudioQualificationHost
+    let sound: VirtioSound
+    private let diagnosticLock = NSLock()
+    private var emittedDiagnostic = false
+
+    init() {
+      let host = AudioQualificationHost()
+      self.host = host
+      sound = VirtioSound(host: host, enabledDirections: [.output, .input])
+    }
+
+    func satisfies(_ expectation: DoryARMVirtAudioExpectation) -> Bool {
+      let snapshot = self.snapshot
+      return snapshot.host.configuredPlaybackStreamCount >= 1
+        && snapshot.host.configuredCaptureStreamCount >= 1
+        && snapshot.host.startedPlaybackStreamCount >= 1
+        && snapshot.host.startedCaptureStreamCount >= 1
+        && snapshot.host.playbackByteCount >= expectation.minimumPlaybackByteCount
+        && snapshot.host.captureByteCount >= expectation.minimumCaptureByteCount
+        && snapshot.device.completedPlaybackPeriods
+          >= expectation.minimumCompletedPlaybackPeriodCount
+        && snapshot.device.completedCapturePeriods
+          >= expectation.minimumCompletedCapturePeriodCount
+        && Self.faultCount(snapshot.device) == 0
+    }
+
+    var snapshot: AudioQualificationSnapshot {
+      AudioQualificationSnapshot(host: host.snapshot, device: sound.statistics)
+    }
+
+    func emitDiagnosticOnce() {
+      diagnosticLock.lock()
+      guard !emittedDiagnostic else {
+        diagnosticLock.unlock()
+        return
+      }
+      emittedDiagnostic = true
+      diagnosticLock.unlock()
+      let snapshot = self.snapshot
+      let message = """
+        dory-armvirt-uefi-smoke: audio qualification configured=\(snapshot.host.configuredPlaybackStreamCount)/\(snapshot.host.configuredCaptureStreamCount) started=\(snapshot.host.startedPlaybackStreamCount)/\(snapshot.host.startedCaptureStreamCount) bytes=\(snapshot.host.playbackByteCount)/\(snapshot.host.captureByteCount) periods=\(snapshot.device.completedPlaybackPeriods)/\(snapshot.device.completedCapturePeriods) faults=\(Self.faultCount(snapshot.device)) invalid=\(snapshot.device.invalidControlChains)/\(snapshot.device.invalidEventChains)/\(snapshot.device.invalidPlaybackChains)/\(snapshot.device.invalidCaptureChains) timeout=\(snapshot.device.timedOutPeriods) late=\(snapshot.device.lateHostCompletions) backpressure=\(snapshot.device.backpressuredPeriods) queue=\(snapshot.device.queueFaults) publication=\(snapshot.device.publicationFaults) bounded=\(snapshot.device.boundedDrainStops)\n
+        """
+      FileHandle.standardError.write(Data(message.utf8))
+    }
+
+    static func faultCount(_ statistics: VirtioSoundStatistics) -> UInt64 {
+      statistics.invalidControlChains
+        &+ statistics.invalidEventChains
+        &+ statistics.invalidPlaybackChains
+        &+ statistics.invalidCaptureChains
+        &+ statistics.timedOutPeriods
+        &+ statistics.lateHostCompletions
+        &+ statistics.backpressuredPeriods
+        &+ statistics.queueFaults
+        &+ statistics.publicationFaults
+        &+ statistics.boundedDrainStops
+    }
+  }
+
   private final class RunnerCompletion: @unchecked Sendable {
     private let lock = NSLock()
     private let signal = DispatchSemaphore(value: 0)
@@ -544,6 +777,8 @@ import IOKit.ps
     displayCapture: DisplayQualificationCapture?,
     inputExpectation: DoryARMVirtInputExpectation?,
     inputCapture: InputQualificationCapture?,
+    audioExpectation: DoryARMVirtAudioExpectation?,
+    audioCapture: AudioQualificationCapture?,
     gvproxy: AdmittedGVProxy?,
     memoryBytes: UInt64,
     appliedInstallerMediaTransitionCount: Int,
@@ -597,9 +832,11 @@ import IOKit.ps
       to: machine
     )
     if let displayExpectation, let displayCapture {
-      guard let graphicsSlot = DoryARMVirtV1ABI.virtioSlots.first(where: {
-        $0.role == .graphics
-      }) else {
+      guard
+        let graphicsSlot = DoryARMVirtV1ABI.virtioSlots.first(where: {
+          $0.role == .graphics
+        })
+      else {
         throw VMError.invalidConfiguration("\(DoryARMVirtV1ABI.identity) has no graphics slot")
       }
       let scanoutSize = VirtioGPUScanoutSize(
@@ -617,15 +854,28 @@ import IOKit.ps
       )
     }
     if inputExpectation != nil, let inputCapture {
-      guard let keyboardSlot = DoryARMVirtV1ABI.virtioSlots.first(where: {
-        $0.role == .keyboard
-      }), let pointerSlot = DoryARMVirtV1ABI.virtioSlots.first(where: {
-        $0.role == .pointer
-      }) else {
+      guard
+        let keyboardSlot = DoryARMVirtV1ABI.virtioSlots.first(where: {
+          $0.role == .keyboard
+        }),
+        let pointerSlot = DoryARMVirtV1ABI.virtioSlots.first(where: {
+          $0.role == .pointer
+        })
+      else {
         throw VMError.invalidConfiguration("\(DoryARMVirtV1ABI.identity) has no input slots")
       }
       try attachVirtioDevice(inputCapture.keyboard, slot: keyboardSlot.index, to: machine)
       try attachVirtioDevice(inputCapture.pointer, slot: pointerSlot.index, to: machine)
+    }
+    if audioExpectation != nil, let audioCapture {
+      guard
+        let audioSlot = DoryARMVirtV1ABI.virtioSlots.first(where: {
+          $0.role == .audio
+        })
+      else {
+        throw VMError.invalidConfiguration("\(DoryARMVirtV1ABI.identity) has no audio slot")
+      }
+      try attachVirtioDevice(audioCapture.sound, slot: audioSlot.index, to: machine)
     }
     if let installerMedia {
       try attachVirtioDevice(
@@ -647,7 +897,9 @@ import IOKit.ps
       if let networkSidecar {
         stopSidecar(networkSidecar)
       }
-      networkPaths.forEach { unlink($0) }
+      for path in networkPaths {
+        unlink(path)
+      }
       if let networkSocketRoot {
         try? FileManager.default.removeItem(at: networkSocketRoot)
       }
@@ -667,7 +919,9 @@ import IOKit.ps
       let localPath = socketRoot.appendingPathComponent("vm.sock").path
       let apiPath = socketRoot.appendingPathComponent("api.sock").path
       networkPaths = [remotePath, localPath, apiPath]
-      networkPaths.forEach { unlink($0) }
+      for path in networkPaths {
+        unlink(path)
+      }
       let process = Process()
       process.executableURL = URL(fileURLWithPath: gvproxy.path)
       process.arguments = [
@@ -722,10 +976,15 @@ import IOKit.ps
         && capture.matched(afterByteOffset: consoleStartOffset)
         && consoleScript?.driver.isComplete != false
         && consoleScript?.driver.pendingHostAction == nil
-      if consoleMilestoneReached { inputCapture?.submitOnce() }
-      let matchedConsole = consoleMilestoneReached
+      if consoleMilestoneReached {
+        inputCapture?.submitOnce()
+        audioCapture?.emitDiagnosticOnce()
+      }
+      let matchedConsole =
+        consoleMilestoneReached
         && displayExpectation.map { displayCapture?.satisfies($0) == true } != false
         && inputExpectation.map { inputCapture?.satisfies($0) == true } != false
+        && audioExpectation.map { audioCapture?.satisfies($0) == true } != false
       if matchedConsole {
         return result(
           reason: try runner.stopAndWait(GuestStopReason.powerOff),
@@ -742,6 +1001,7 @@ import IOKit.ps
             && consoleScript?.driver.pendingHostAction == nil
             && displayExpectation.map { displayCapture?.satisfies($0) == true } != false
             && inputExpectation.map { inputCapture?.satisfies($0) == true } != false
+            && audioExpectation.map { audioCapture?.satisfies($0) == true } != false
         )
       }
     }
@@ -754,6 +1014,7 @@ import IOKit.ps
         && consoleScript?.driver.pendingHostAction == nil
         && displayExpectation.map { displayCapture?.satisfies($0) == true } != false
         && inputExpectation.map { inputCapture?.satisfies($0) == true } != false
+        && audioExpectation.map { audioCapture?.satisfies($0) == true } != false
     )
   }
 
@@ -840,6 +1101,7 @@ import IOKit.ps
       DisplayQualificationCapture()
     }
     let inputCapture = qualification?.gate.input.map { _ in InputQualificationCapture() }
+    let audioCapture = qualification?.gate.audio.map { _ in AudioQualificationCapture() }
     let maximumBootAttempts = 4
     var finalResult: BootResult?
     var bootAttempts = 0
@@ -866,6 +1128,8 @@ import IOKit.ps
         displayCapture: displayCapture,
         inputExpectation: qualification?.gate.input,
         inputCapture: inputCapture,
+        audioExpectation: qualification?.gate.audio,
+        audioCapture: audioCapture,
         gvproxy: gvproxy,
         memoryBytes: options.memoryBytes,
         appliedInstallerMediaTransitionCount: appliedInstallerMediaTransitionCount,
@@ -944,6 +1208,7 @@ import IOKit.ps
     let hostThermalStateAtEnd = thermalState(processInfo.thermalState)
     let displaySnapshot = displayCapture?.snapshot
     let inputSnapshot = inputCapture?.snapshot
+    let audioSnapshot = audioCapture?.snapshot
     let receipt = DoryARMVirtQualificationReceipt(
       machineABIIdentity: DoryARMVirtV1ABI.identity,
       firmwareABIIdentity: DoryARMVirtV1ABI.firmwareABIIdentity,
@@ -1007,6 +1272,15 @@ import IOKit.ps
       pointerInputPublishedEventCount: inputSnapshot?.pointer.publishedEvents,
       pointerInputDroppedFrameCount: inputSnapshot?.pointer.droppedFrames,
       pointerInputRejectedFrameCount: inputSnapshot?.pointer.rejectedFrames,
+      audioConfiguredPlaybackStreamCount: audioSnapshot?.host.configuredPlaybackStreamCount,
+      audioConfiguredCaptureStreamCount: audioSnapshot?.host.configuredCaptureStreamCount,
+      audioStartedPlaybackStreamCount: audioSnapshot?.host.startedPlaybackStreamCount,
+      audioStartedCaptureStreamCount: audioSnapshot?.host.startedCaptureStreamCount,
+      audioPlaybackByteCount: audioSnapshot?.host.playbackByteCount,
+      audioCaptureByteCount: audioSnapshot?.host.captureByteCount,
+      audioCompletedPlaybackPeriodCount: audioSnapshot?.device.completedPlaybackPeriods,
+      audioCompletedCapturePeriodCount: audioSnapshot?.device.completedCapturePeriods,
+      audioDeviceFaultCount: audioSnapshot.map { AudioQualificationCapture.faultCount($0.device) },
       consoleByteCount: capture.byteCount,
       bootAttempts: bootAttempts,
       timingClockIdentity: "dispatch-uptime-nanoseconds",

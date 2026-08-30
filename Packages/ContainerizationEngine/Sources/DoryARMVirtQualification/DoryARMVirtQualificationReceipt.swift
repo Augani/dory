@@ -2,7 +2,7 @@ import CryptoKit
 import Foundation
 
 public struct DoryARMVirtQualificationReceipt: Codable, Equatable, Sendable {
-  public static let currentSchemaVersion: UInt32 = 9
+  public static let currentSchemaVersion: UInt32 = 10
   public static let timingClockIdentity = "dispatch-uptime-nanoseconds"
 
   public let schemaVersion: UInt32
@@ -68,6 +68,15 @@ public struct DoryARMVirtQualificationReceipt: Codable, Equatable, Sendable {
   public let pointerInputPublishedEventCount: UInt64?
   public let pointerInputDroppedFrameCount: UInt64?
   public let pointerInputRejectedFrameCount: UInt64?
+  public let audioConfiguredPlaybackStreamCount: UInt64?
+  public let audioConfiguredCaptureStreamCount: UInt64?
+  public let audioStartedPlaybackStreamCount: UInt64?
+  public let audioStartedCaptureStreamCount: UInt64?
+  public let audioPlaybackByteCount: UInt64?
+  public let audioCaptureByteCount: UInt64?
+  public let audioCompletedPlaybackPeriodCount: UInt64?
+  public let audioCompletedCapturePeriodCount: UInt64?
+  public let audioDeviceFaultCount: UInt64?
   public let consoleByteCount: Int
   public let bootAttempts: Int
   public let timingClockIdentity: String
@@ -140,6 +149,15 @@ public struct DoryARMVirtQualificationReceipt: Codable, Equatable, Sendable {
     pointerInputPublishedEventCount: UInt64? = nil,
     pointerInputDroppedFrameCount: UInt64? = nil,
     pointerInputRejectedFrameCount: UInt64? = nil,
+    audioConfiguredPlaybackStreamCount: UInt64? = nil,
+    audioConfiguredCaptureStreamCount: UInt64? = nil,
+    audioStartedPlaybackStreamCount: UInt64? = nil,
+    audioStartedCaptureStreamCount: UInt64? = nil,
+    audioPlaybackByteCount: UInt64? = nil,
+    audioCaptureByteCount: UInt64? = nil,
+    audioCompletedPlaybackPeriodCount: UInt64? = nil,
+    audioCompletedCapturePeriodCount: UInt64? = nil,
+    audioDeviceFaultCount: UInt64? = nil,
     consoleByteCount: Int,
     bootAttempts: Int,
     timingClockIdentity: String = Self.timingClockIdentity,
@@ -211,6 +229,15 @@ public struct DoryARMVirtQualificationReceipt: Codable, Equatable, Sendable {
     self.pointerInputPublishedEventCount = pointerInputPublishedEventCount
     self.pointerInputDroppedFrameCount = pointerInputDroppedFrameCount
     self.pointerInputRejectedFrameCount = pointerInputRejectedFrameCount
+    self.audioConfiguredPlaybackStreamCount = audioConfiguredPlaybackStreamCount
+    self.audioConfiguredCaptureStreamCount = audioConfiguredCaptureStreamCount
+    self.audioStartedPlaybackStreamCount = audioStartedPlaybackStreamCount
+    self.audioStartedCaptureStreamCount = audioStartedCaptureStreamCount
+    self.audioPlaybackByteCount = audioPlaybackByteCount
+    self.audioCaptureByteCount = audioCaptureByteCount
+    self.audioCompletedPlaybackPeriodCount = audioCompletedPlaybackPeriodCount
+    self.audioCompletedCapturePeriodCount = audioCompletedCapturePeriodCount
+    self.audioDeviceFaultCount = audioDeviceFaultCount
     self.consoleByteCount = consoleByteCount
     self.bootAttempts = bootAttempts
     self.timingClockIdentity = timingClockIdentity
@@ -307,6 +334,7 @@ public enum DoryARMVirtQualificationReceiptVerifier {
     try validateSnapshot(receipt, gate: gate)
     try validateDisplay(receipt, gate: gate)
     try validateInput(receipt, gate: gate)
+    try validateAudio(receipt, gate: gate)
     try validateTimings(receipt)
     guard let qualificationStartedAt = timestamp(receipt.qualificationStartedAt),
       let qualificationCompletedAt = timestamp(receipt.qualificationCompletedAt),
@@ -413,6 +441,43 @@ public enum DoryARMVirtQualificationReceiptVerifier {
     }
   }
 
+  private static func validateAudio(
+    _ receipt: DoryARMVirtQualificationReceipt,
+    gate: DoryARMVirtCompatibilityGate
+  ) throws {
+    guard let audio = gate.audio else {
+      guard receipt.audioConfiguredPlaybackStreamCount == nil,
+        receipt.audioConfiguredCaptureStreamCount == nil,
+        receipt.audioStartedPlaybackStreamCount == nil,
+        receipt.audioStartedCaptureStreamCount == nil,
+        receipt.audioPlaybackByteCount == nil,
+        receipt.audioCaptureByteCount == nil,
+        receipt.audioCompletedPlaybackPeriodCount == nil,
+        receipt.audioCompletedCapturePeriodCount == nil,
+        receipt.audioDeviceFaultCount == nil
+      else {
+        throw DoryARMVirtQualificationReceiptError.invalidField("unexpectedAudio")
+      }
+      return
+    }
+    guard receipt.audioConfiguredPlaybackStreamCount.map({ $0 >= 1 }) == true,
+      receipt.audioConfiguredCaptureStreamCount.map({ $0 >= 1 }) == true,
+      receipt.audioStartedPlaybackStreamCount.map({ $0 >= 1 }) == true,
+      receipt.audioStartedCaptureStreamCount.map({ $0 >= 1 }) == true,
+      receipt.audioPlaybackByteCount.map({ $0 >= audio.minimumPlaybackByteCount }) == true,
+      receipt.audioCaptureByteCount.map({ $0 >= audio.minimumCaptureByteCount }) == true,
+      receipt.audioCompletedPlaybackPeriodCount.map({
+        $0 >= audio.minimumCompletedPlaybackPeriodCount
+      }) == true,
+      receipt.audioCompletedCapturePeriodCount.map({
+        $0 >= audio.minimumCompletedCapturePeriodCount
+      }) == true,
+      receipt.audioDeviceFaultCount == 0
+    else {
+      throw DoryARMVirtQualificationReceiptError.invalidField("audio")
+    }
+  }
+
   private static func validateSnapshot(
     _ receipt: DoryARMVirtQualificationReceipt,
     gate: DoryARMVirtCompatibilityGate
@@ -500,6 +565,11 @@ public enum DoryARMVirtQualificationReceiptVerifier {
     "keyboardInputRejectedFrameCount", "pointerInputSubmittedFrameCount",
     "pointerInputPublishedFrameCount", "pointerInputPublishedEventCount",
     "pointerInputDroppedFrameCount", "pointerInputRejectedFrameCount",
+    "audioConfiguredPlaybackStreamCount", "audioConfiguredCaptureStreamCount",
+    "audioStartedPlaybackStreamCount", "audioStartedCaptureStreamCount",
+    "audioPlaybackByteCount", "audioCaptureByteCount",
+    "audioCompletedPlaybackPeriodCount", "audioCompletedCapturePeriodCount",
+    "audioDeviceFaultCount",
   ]
   private static let requiredKeys: Set<String> = [
     "schemaVersion", "machineABIIdentity", "firmwareABIIdentity", "executionEngineIdentity",

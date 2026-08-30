@@ -5,7 +5,7 @@ import Testing
 @testable import DoryARMVirtQualification
 
 @Suite struct DoryARMVirtQualificationReceiptTests {
-  @Test func verifiesExactSchemaNineReceiptAgainstCheckedInMatrix() throws {
+  @Test func verifiesExactSchemaTenReceiptAgainstCheckedInMatrix() throws {
     let fixture = try Fixture()
     let receipt = fixture.receipt()
 
@@ -27,9 +27,9 @@ import Testing
     }
 
     object = try fixture.object(fixture.receipt())
-    object["schemaVersion"] = 8
+    object["schemaVersion"] = 9
     #expect(
-      throws: DoryARMVirtQualificationReceiptError.unsupportedSchemaVersion(8)
+      throws: DoryARMVirtQualificationReceiptError.unsupportedSchemaVersion(9)
     ) {
       try fixture.verify(object)
     }
@@ -151,6 +151,38 @@ import Testing
       try fixture.verify(object)
     }
   }
+
+  @Test func rejectsMissingOrFaultedDesktopAudioEvidence() throws {
+    let fixture = try Fixture(gateID: "fedora-workstation-live-boot")
+    var object = try fixture.object(fixture.receipt())
+    object.removeValue(forKey: "audioCompletedPlaybackPeriodCount")
+    #expect(throws: DoryARMVirtQualificationReceiptError.invalidField("audio")) {
+      try fixture.verify(object)
+    }
+
+    object = try fixture.object(fixture.receipt())
+    object["audioCaptureByteCount"] = 0
+    #expect(throws: DoryARMVirtQualificationReceiptError.invalidField("audio")) {
+      try fixture.verify(object)
+    }
+
+    object = try fixture.object(fixture.receipt())
+    object["audioDeviceFaultCount"] = 1
+    #expect(throws: DoryARMVirtQualificationReceiptError.invalidField("audio")) {
+      try fixture.verify(object)
+    }
+  }
+
+  @Test func rejectsAudioEvidenceForNonAudioGate() throws {
+    let fixture = try Fixture()
+    var object = try fixture.object(fixture.receipt())
+    object["audioPlaybackByteCount"] = 1
+    #expect(
+      throws: DoryARMVirtQualificationReceiptError.invalidField("unexpectedAudio")
+    ) {
+      try fixture.verify(object)
+    }
+  }
 }
 
 private struct Fixture {
@@ -248,6 +280,15 @@ private struct Fixture {
       pointerInputPublishedEventCount: gate.input?.pointerMinimumPublishedEventCount,
       pointerInputDroppedFrameCount: gate.input.map { _ in 0 },
       pointerInputRejectedFrameCount: gate.input.map { _ in 0 },
+      audioConfiguredPlaybackStreamCount: gate.audio.map { _ in 1 },
+      audioConfiguredCaptureStreamCount: gate.audio.map { _ in 1 },
+      audioStartedPlaybackStreamCount: gate.audio.map { _ in 1 },
+      audioStartedCaptureStreamCount: gate.audio.map { _ in 1 },
+      audioPlaybackByteCount: gate.audio?.minimumPlaybackByteCount,
+      audioCaptureByteCount: gate.audio?.minimumCaptureByteCount,
+      audioCompletedPlaybackPeriodCount: gate.audio?.minimumCompletedPlaybackPeriodCount,
+      audioCompletedCapturePeriodCount: gate.audio?.minimumCompletedCapturePeriodCount,
+      audioDeviceFaultCount: gate.audio.map { _ in 0 },
       consoleByteCount: 4_096,
       bootAttempts: gate.receipt.bootAttempts,
       bootDurationNanoseconds: [4_000_000_000],
