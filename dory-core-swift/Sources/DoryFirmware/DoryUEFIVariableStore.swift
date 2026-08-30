@@ -1,7 +1,7 @@
 import DoryMachineARMVirt
 import Foundation
 
-private struct DoryFirmwareAnyCodingKey: CodingKey {
+struct DoryFirmwareAnyCodingKey: CodingKey {
   let stringValue: String
   let intValue: Int? = nil
 
@@ -9,7 +9,7 @@ private struct DoryFirmwareAnyCodingKey: CodingKey {
   init?(intValue: Int) { return nil }
 }
 
-private func rejectUnknownFirmwareFields(
+func rejectUnknownFirmwareFields(
   from decoder: Decoder,
   allowed: Set<String>,
   type: String
