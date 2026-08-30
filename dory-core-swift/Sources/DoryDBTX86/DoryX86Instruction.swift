@@ -191,6 +191,7 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
   case loadX87ControlWord(DoryX86Operand)
   case loadMXCSR(DoryX86Operand)
   case storeMXCSR(DoryX86Operand)
+  case storeVector128(register: UInt8, destination: DoryX86MemoryOperand)
   case processorPause
   case string(DoryX86StringOperation, width: DoryX86OperandWidth)
   case input(port: DoryX86IOPort, width: DoryX86OperandWidth)

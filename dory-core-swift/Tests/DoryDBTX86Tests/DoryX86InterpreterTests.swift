@@ -235,7 +235,7 @@ import Testing
   }
 
   @Test func firmwareInitializesX87AndSIMDControlState() throws {
-    var bytes = [UInt8](repeating: 0, count: 0x30)
+    var bytes = [UInt8](repeating: 0, count: 0x50)
     bytes.replaceSubrange(
       0..<16,
       with: [
@@ -244,6 +244,7 @@ import Testing
         0xD9, 0x2D, 0x17, 0x00, 0x00, 0x00,
         0x0F, 0xAE, 0x15, 0x12, 0x00, 0x00, 0x00,
         0x0F, 0xAE, 0x1D, 0x10, 0x00, 0x00, 0x00,
+        0xF3, 0x0F, 0x7F, 0x35, 0x19, 0x00, 0x00, 0x00,
       ]
     )
     bytes.replaceSubrange(0x20..<0x22, with: [0x7F, 0x02])
@@ -254,13 +255,14 @@ import Testing
     floatingPoint.x87StatusWord = 0xFFFF
     floatingPoint.x87TagWord = 0
     floatingPoint.mxcsr = 0
+    floatingPoint.ymm[6] = try .init(bytes: Array(0..<32), expectedByteCount: 32)
     var state = try DoryX86ArchitecturalState(
       rip: 0x1000,
       cs: .init(selector: 0x38, attributes: 0xA09B, limit: .max),
       floatingPoint: floatingPoint
     )
 
-    for _ in 0..<5 {
+    for _ in 0..<6 {
       let result = interpreter.step(state: &state, memory: memory, mode: .long64)
       guard case .retired = result else {
         Issue.record("floating-point initialization unexpectedly faulted: \(result)")
@@ -273,6 +275,7 @@ import Testing
     #expect(state.floatingPoint.x87TagWord == 0xFFFF)
     #expect(state.floatingPoint.mxcsr == 0x1F80)
     #expect(try memory.read(at: 0x1027, byteCount: 4) == [0x80, 0x1F, 0, 0])
+    #expect(try memory.read(at: 0x1038, byteCount: 16) == Array(0..<16))
   }
 
   @Test func byteExtendMoveUsesTheWideModRMDestinationRegister() throws {
