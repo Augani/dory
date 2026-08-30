@@ -727,4 +727,23 @@ import Testing
           source: .register(1), popCount: 1, ordered: true, setIntegerFlags: true)
     )
   }
+
+  @Test func decodesX87ConstantsAndTranscendentals() throws {
+    #expect(
+      try decoder.decode([0xD9, 0xEB], at: 0x1000, mode: .long64).operation
+        == .x87Special(.loadPi)
+    )
+    #expect(
+      try decoder.decode([0xD9, 0xFF], at: 0x1000, mode: .long64).operation
+        == .x87Special(.cosine)
+    )
+    #expect(
+      try decoder.decode([0xD9, 0xFB], at: 0x1000, mode: .long64).operation
+        == .x87Special(.sineCosine)
+    )
+    #expect(
+      try decoder.decode([0xD9, 0xF3], at: 0x1000, mode: .long64).operation
+        == .x87Special(.arctangent)
+    )
+  }
 }

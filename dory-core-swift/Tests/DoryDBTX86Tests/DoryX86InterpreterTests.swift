@@ -438,6 +438,48 @@ import Testing
     #expect((state.floatingPoint.x87StatusWord >> 11) & 7 == 0)
   }
 
+  @Test func x87ConstantsAndTranscendentalsMaintainStackResults() throws {
+    var bytes = [UInt8](repeating: 0, count: 0x200)
+    bytes.replaceSubrange(
+      0..<31,
+      with: [
+        0xD9, 0xEB,
+        0xD9, 0xFF,
+        0xDD, 0x5B, 0x08,
+        0xD9, 0xE8,
+        0xD9, 0xFB,
+        0xDD, 0x5B, 0x10,
+        0xDD, 0x5B, 0x18,
+        0xD9, 0xE8,
+        0xD9, 0xF0,
+        0xDD, 0x5B, 0x20,
+        0xD9, 0xE8,
+        0xD9, 0xE8,
+        0xD9, 0xF3,
+        0xDD, 0x5B, 0x28,
+      ])
+    let memory = DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: bytes)
+    var state = try DoryX86ArchitecturalState(registers: .init(rbx: 0x1100), rip: 0x1000)
+    for _ in 0..<14 {
+      let result = interpreter.step(state: &state, memory: memory, mode: .long64)
+      guard case .retired = result else {
+        Issue.record("x87 special operation unexpectedly failed: \(result)")
+        return
+      }
+    }
+
+    func storedDouble(_ offset: UInt64) throws -> Double {
+      Double(
+        bitPattern: try memoryInteger(bytes: try memory.read(at: 0x1100 + offset, byteCount: 8)))
+    }
+    #expect(abs(try storedDouble(0x08) + 1) < 0.000_000_000_001)
+    #expect(abs(try storedDouble(0x10) - Foundation.cos(1)) < 0.000_000_000_001)
+    #expect(abs(try storedDouble(0x18) - Foundation.sin(1)) < 0.000_000_000_001)
+    #expect(try storedDouble(0x20) == 1)
+    #expect(abs(try storedDouble(0x28) - .pi / 4) < 0.000_000_000_001)
+    #expect(state.floatingPoint.x87TagWord == 0xFFFF)
+  }
+
   @Test func movdquLoadsLowVectorAndPreservesUpperVector() throws {
     var bytes = [UInt8](repeating: 0, count: 0x30)
     bytes.replaceSubrange(0..<8, with: [0xF3, 0x0F, 0x6F, 0x35, 0x08, 0, 0, 0])

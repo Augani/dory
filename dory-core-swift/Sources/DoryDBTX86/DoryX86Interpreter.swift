@@ -620,6 +620,8 @@ public struct DoryX86Interpreter: Sendable {
           }
         }
         for _ in 0..<popCount { popX87(state: &state.floatingPoint) }
+      case .x87Special(let operation):
+        executeX87Special(operation, state: &state.floatingPoint)
       case .storeX87StatusWord(let destination):
         try write(
           UInt64(state.floatingPoint.x87StatusWord),
@@ -1883,6 +1885,158 @@ public struct DoryX86Interpreter: Sendable {
       }
     } else if result.isInfinite, numerator.isFinite, denominator.isFinite {
       state.x87StatusWord |= 1 << 3
+    }
+  }
+
+  private func executeX87Special(
+    _ operation: DoryX87SpecialOperation,
+    state: inout DoryX86FloatingPointState
+  ) {
+    let x = readX87Register(0, state: state)
+    switch operation {
+    case .changeSign:
+      writeX87Register(0, value: -x, state: &state)
+    case .absolute:
+      writeX87Register(0, value: abs(x), state: &state)
+    case .test:
+      setX87ComparisonStatus(floatingComparison(x, 0), state: &state)
+    case .examine:
+      state.x87StatusWord &= ~UInt16(0x4700)
+      if x.sign == .minus { state.x87StatusWord |= 0x0200 }
+      if x.isNaN {
+        state.x87StatusWord |= 0x0100
+      } else if x.isInfinite {
+        state.x87StatusWord |= 0x0500
+      } else if x == 0 {
+        state.x87StatusWord |= 0x4000
+      } else if x.isSubnormal {
+        state.x87StatusWord |= 0x4400
+      } else {
+        state.x87StatusWord |= 0x0400
+      }
+    case .loadOne:
+      pushX87(1, state: &state)
+    case .loadLog2Ten:
+      pushX87(Foundation.log2(10), state: &state)
+    case .loadLog2E:
+      pushX87(Foundation.log2(M_E), state: &state)
+    case .loadPi:
+      pushX87(.pi, state: &state)
+    case .loadLog10Two:
+      pushX87(Foundation.log10(2), state: &state)
+    case .loadLnTwo:
+      pushX87(Foundation.log(2), state: &state)
+    case .loadZero:
+      pushX87(0, state: &state)
+    case .twoToXMinusOne:
+      writeX87Register(0, value: Foundation.pow(2, x) - 1, state: &state)
+    case .yLog2X:
+      let y = readX87Register(1, state: state)
+      writeX87Register(1, value: y * Foundation.log2(x), state: &state)
+      popX87(state: &state)
+    case .tangent:
+      guard x87TrigonometricArgumentIsInRange(x, state: &state) else { return }
+      writeX87Register(0, value: Foundation.tan(x), state: &state)
+      pushX87(1, state: &state)
+    case .arctangent:
+      let y = readX87Register(1, state: state)
+      writeX87Register(1, value: Foundation.atan2(y, x), state: &state)
+      popX87(state: &state)
+    case .extract:
+      let exponent = x == 0 ? -.infinity : Foundation.floor(Foundation.log2(abs(x)))
+      let significand = x == 0 ? x : x / Foundation.pow(2, exponent)
+      writeX87Register(0, value: significand, state: &state)
+      pushX87(exponent, state: &state)
+    case .partialRemainderNearest:
+      executeX87Remainder(nearest: true, state: &state)
+    case .decrementTop:
+      setX87Top((x87Top(state) + 7) & 7, state: &state)
+    case .incrementTop:
+      setX87Top((x87Top(state) + 1) & 7, state: &state)
+    case .partialRemainder:
+      executeX87Remainder(nearest: false, state: &state)
+    case .yLog2XPlusOne:
+      let y = readX87Register(1, state: state)
+      writeX87Register(1, value: y * Foundation.log2(x + 1), state: &state)
+      popX87(state: &state)
+    case .squareRoot:
+      if x < 0 { state.x87StatusWord |= 1 }
+      writeX87Register(0, value: Foundation.sqrt(x), state: &state)
+    case .sineCosine:
+      guard x87TrigonometricArgumentIsInRange(x, state: &state) else { return }
+      writeX87Register(0, value: Foundation.sin(x), state: &state)
+      pushX87(Foundation.cos(x), state: &state)
+    case .roundToInteger:
+      writeX87Register(0, value: x.rounded(x87RoundingRule(state)), state: &state)
+    case .scale:
+      let scale = readX87Register(1, state: state).rounded(.towardZero)
+      writeX87Register(0, value: x * Foundation.pow(2, scale), state: &state)
+    case .sine:
+      guard x87TrigonometricArgumentIsInRange(x, state: &state) else { return }
+      writeX87Register(0, value: Foundation.sin(x), state: &state)
+    case .cosine:
+      guard x87TrigonometricArgumentIsInRange(x, state: &state) else { return }
+      writeX87Register(0, value: Foundation.cos(x), state: &state)
+    }
+  }
+
+  private func x87RoundingRule(_ state: DoryX86FloatingPointState) -> FloatingPointRoundingRule {
+    switch (state.x87ControlWord >> 10) & 3 {
+    case 0: .toNearestOrEven
+    case 1: .down
+    case 2: .up
+    default: .towardZero
+    }
+  }
+
+  private func setX87ComparisonStatus(
+    _ relation: FloatingComparison,
+    state: inout DoryX86FloatingPointState
+  ) {
+    state.x87StatusWord &= ~UInt16(0x4500)
+    switch relation {
+    case .greater:
+      break
+    case .less:
+      state.x87StatusWord |= 0x0100
+    case .equal:
+      state.x87StatusWord |= 0x4000
+    case .unordered:
+      state.x87StatusWord |= 0x4500
+    }
+  }
+
+  private func x87TrigonometricArgumentIsInRange(
+    _ value: Double,
+    state: inout DoryX86FloatingPointState
+  ) -> Bool {
+    if value.isFinite, abs(value) < 9_223_372_036_854_775_808.0 {
+      state.x87StatusWord &= ~UInt16(0x0400)
+      return true
+    }
+    state.x87StatusWord |= 0x0400
+    return false
+  }
+
+  private func executeX87Remainder(
+    nearest: Bool,
+    state: inout DoryX86FloatingPointState
+  ) {
+    let dividend = readX87Register(0, state: state)
+    let divisor = readX87Register(1, state: state)
+    guard dividend.isFinite, divisor.isFinite, divisor != 0 else {
+      state.x87StatusWord |= 1
+      writeX87Register(0, value: .nan, state: &state)
+      return
+    }
+    let quotient = (dividend / divisor).rounded(nearest ? .toNearestOrEven : .towardZero)
+    writeX87Register(0, value: dividend - quotient * divisor, state: &state)
+    state.x87StatusWord &= ~UInt16(0x4700)
+    if quotient >= Double(Int64.min), quotient <= Double(Int64.max) {
+      let bits = UInt64(bitPattern: Int64(quotient))
+      if bits & 1 != 0 { state.x87StatusWord |= 0x0200 }
+      if bits & 2 != 0 { state.x87StatusWord |= 0x4000 }
+      if bits & 4 != 0 { state.x87StatusWord |= 0x0100 }
     }
   }
 

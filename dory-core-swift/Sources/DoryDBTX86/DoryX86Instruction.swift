@@ -193,6 +193,14 @@ public enum DoryX87BinaryOperation: String, Codable, Sendable, Hashable {
   case add, multiply, subtract, subtractReverse, divide, divideReverse
 }
 
+public enum DoryX87SpecialOperation: String, Codable, Sendable, Hashable {
+  case changeSign, absolute, test, examine
+  case loadOne, loadLog2Ten, loadLog2E, loadPi, loadLog10Two, loadLnTwo, loadZero
+  case twoToXMinusOne, yLog2X, tangent, arctangent, extract
+  case partialRemainderNearest, decrementTop, incrementTop, partialRemainder
+  case yLog2XPlusOne, squareRoot, sineCosine, roundToInteger, scale, sine, cosine
+}
+
 public enum DoryX86StringOperation: String, Codable, Sendable, Hashable {
   case move, compare, store, load, scan, input, output
 }
@@ -282,6 +290,7 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
     ordered: Bool,
     setIntegerFlags: Bool
   )
+  case x87Special(DoryX87SpecialOperation)
   case storeX87StatusWord(DoryX86Operand)
   case saveFloatingPointState(DoryX86MemoryOperand)
   case restoreFloatingPointState(DoryX86MemoryOperand)

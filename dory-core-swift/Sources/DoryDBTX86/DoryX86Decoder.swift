@@ -598,12 +598,46 @@ public struct DoryX86Decoder: Sendable {
             address: address, detail: "unsupported D9 x87 memory instruction")
         }
       case .register:
-        switch operands.group {
-        case 0: operation = .loadX87(.register(vectorRegister(operands.rm)))
-        case 1: operation = .exchangeX87(vectorRegister(operands.rm))
-        default:
-          throw DoryX86DecodeError.invalidEncoding(
-            address: address, detail: "unsupported D9 x87 register instruction")
+        if operands.group == 0 {
+          operation = .loadX87(.register(vectorRegister(operands.rm)))
+        } else if operands.group == 1 {
+          operation = .exchangeX87(vectorRegister(operands.rm))
+        } else {
+          let encoded = UInt8(0xC0 | operands.group << 3 | vectorRegister(operands.rm))
+          let special: DoryX87SpecialOperation =
+            switch encoded {
+            case 0xE0: .changeSign
+            case 0xE1: .absolute
+            case 0xE4: .test
+            case 0xE5: .examine
+            case 0xE8: .loadOne
+            case 0xE9: .loadLog2Ten
+            case 0xEA: .loadLog2E
+            case 0xEB: .loadPi
+            case 0xEC: .loadLog10Two
+            case 0xED: .loadLnTwo
+            case 0xEE: .loadZero
+            case 0xF0: .twoToXMinusOne
+            case 0xF1: .yLog2X
+            case 0xF2: .tangent
+            case 0xF3: .arctangent
+            case 0xF4: .extract
+            case 0xF5: .partialRemainderNearest
+            case 0xF6: .decrementTop
+            case 0xF7: .incrementTop
+            case 0xF8: .partialRemainder
+            case 0xF9: .yLog2XPlusOne
+            case 0xFA: .squareRoot
+            case 0xFB: .sineCosine
+            case 0xFC: .roundToInteger
+            case 0xFD: .scale
+            case 0xFE: .sine
+            case 0xFF: .cosine
+            default:
+              throw DoryX86DecodeError.invalidEncoding(
+                address: address, detail: "unsupported D9 x87 special instruction")
+            }
+          operation = .x87Special(special)
         }
       default:
         preconditionFailure("ModRM x87 operand must be register or memory")
