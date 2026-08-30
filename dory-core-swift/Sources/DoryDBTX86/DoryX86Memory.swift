@@ -6,7 +6,7 @@ public enum DoryX86MemoryAccessKind: String, Codable, Sendable, Hashable {
   case write
 }
 
-public enum DoryX86MemoryError: Error, Sendable, Equatable, CustomStringConvertible {
+public enum DoryX86MemoryError: Error, Codable, Sendable, Hashable, CustomStringConvertible {
   case unmapped(address: UInt64, byteCount: Int, access: DoryX86MemoryAccessKind)
   case addressOverflow(address: UInt64, byteCount: Int)
   case pageFault(address: UInt64, errorCode: UInt32)

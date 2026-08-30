@@ -34,7 +34,7 @@ public struct DoryX86Exception: Error, Codable, Sendable, Hashable {
   }
 }
 
-public enum DoryX86InterpreterResult: Sendable, Hashable {
+public enum DoryX86InterpreterResult: Codable, Sendable, Hashable {
   case retired(DoryX86DecodedInstruction)
   /// A restartable instruction made bounded progress and deliberately returned to the vCPU loop.
   case yielded(DoryX86DecodedInstruction)

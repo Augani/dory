@@ -64,8 +64,8 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
   private let lock = NSLock()
   private var entries: [TLBKey: TLBValue] = [:]
   private var generation: UInt64 = 0
-  private let physicalAddressBits: UInt8
-  private let maximumEntryCount: Int
+  public let physicalAddressBits: UInt8
+  public let maximumEntryCount: Int
 
   public init(physicalAddressBits: UInt8 = 40, maximumEntryCount: Int = 4_096) {
     precondition((32...52).contains(physicalAddressBits))
