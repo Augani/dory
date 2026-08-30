@@ -66,6 +66,7 @@ public struct DoryPCUSBTransfer: Sendable, Hashable {
 public enum DoryPCUSBTransferStatus: UInt8, Codable, Sendable, Hashable {
   case success
   case shortPacket
+  case notReady
   case stalled
   case transactionError
   case disconnected

@@ -530,6 +530,7 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
         )
       else { return }
       let result = device.perform(transfer)
+      if result.status == .notReady { return }
       let response = Array(result.payload.prefix(requestedBytes))
       if endpoint.direction == .in, !response.isEmpty {
         do {
@@ -625,6 +626,7 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
       )
     else { return }
     let result = device.perform(transfer)
+    if result.status == .notReady { return }
     let response = Array(result.payload.prefix(requestedBytes))
     if setup.direction == .in, !response.isEmpty {
       do {
@@ -656,6 +658,7 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
     switch status {
     case .success: shortResponse ? 13 : 1
     case .shortPacket: 13
+    case .notReady: 1
     case .stalled: 6
     case .transactionError: 4
     case .disconnected: 22
