@@ -70,6 +70,10 @@ public enum DoryPCV1ABI {
 
   public static let pciINTxFirstGSI: UInt8 = 16
   public static let pciINTxLineCount: UInt8 = 8
+  public static let systemDiskPCIAddress = DoryPCPCIAddress(bus: 0, device: 1, function: 0)
+  public static let removableMediaPCIAddress = DoryPCPCIAddress(bus: 0, device: 12, function: 0)
+  public static let systemDiskBARAddress = pcieMMIOBase
+  public static let removableMediaBARAddress = pcieMMIOBase + 0x1000
 
   public static let regions: [DoryPCV1Region] = [
     fixedRegion(kind: .pvhHandoff, base: pvhStartInfo, byteCount: pvhHandoffBytes),
@@ -143,6 +147,11 @@ public enum DoryPCV1ABI {
     ## Interrupt and PCI contract
 
     The IOAPIC exposes GSIs 0...23. PCI INTx uses level-triggered, active-low GSIs 16...23 with standard device/pin swizzling. MSI and MSI-X target the local APIC window. PCIe ECAM covers segment 0, buses 0...255. BAR MMIO is allocated from the frozen 256 MiB PCIe aperture.
+
+    | Boot device | PCI address | BAR 0 |
+    |---|---:|---:|
+    | System disk | `0000:00:01.0` | `0xd0000000` |
+    | Removable installer media | `0000:00:0c.0` | `0xd0001000` |
 
     ## Boot contract
 

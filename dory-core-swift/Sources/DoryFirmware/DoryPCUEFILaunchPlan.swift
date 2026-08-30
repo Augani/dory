@@ -7,8 +7,8 @@ public enum DoryPCUEFIBootDeviceKind: String, Codable, CaseIterable, Sendable, H
 }
 
 public struct DoryPCUEFIBootDevice: Codable, Sendable, Hashable, Comparable {
-  public static let systemDiskAddress = DoryPCPCIAddress(bus: 0, device: 1, function: 0)
-  public static let removableMediaAddress = DoryPCPCIAddress(bus: 0, device: 12, function: 0)
+  public static let systemDiskAddress = DoryPCV1ABI.systemDiskPCIAddress
+  public static let removableMediaAddress = DoryPCV1ABI.removableMediaPCIAddress
 
   public let logicalID: String
   public let kind: DoryPCUEFIBootDeviceKind

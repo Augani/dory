@@ -27,6 +27,11 @@ UEFI resets at `0xfffffff0`, uses firmware ABI `dory.edk2.pc@1`, and persists va
 
 The IOAPIC exposes GSIs 0...23. PCI INTx uses level-triggered, active-low GSIs 16...23 with standard device/pin swizzling. MSI and MSI-X target the local APIC window. PCIe ECAM covers segment 0, buses 0...255. BAR MMIO is allocated from the frozen 256 MiB PCIe aperture.
 
+| Boot device | PCI address | BAR 0 |
+|---|---:|---:|
+| System disk | `0000:00:01.0` | `0xd0000000` |
+| Removable installer media | `0000:00:0c.0` | `0xd0001000` |
+
 ## Boot contract
 
 Direct-kernel PVH remains an engineering and managed-image profile. Product installation starts at the UEFI reset vector, discovers ACPI/SMBIOS, boots removable media according to persistent UEFI boot variables, and then boots the installed system disk. Firmware code is immutable per launch; each VM owns an atomic variable store.

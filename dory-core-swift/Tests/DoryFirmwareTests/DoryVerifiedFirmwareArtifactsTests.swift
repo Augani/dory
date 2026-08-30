@@ -6,7 +6,7 @@ import Testing
 @Suite struct DoryVerifiedFirmwareArtifactsTests {
   @Test func admitsOnlyTheExactManifestArtifactSet() throws {
     let firmware = Data(repeating: 0xa5, count: 4_096)
-    let variables = Data(#"{"generation":1,"variables":[]}"#.utf8)
+    let variables = try DoryUEFIVariableStoreSnapshot().canonicalData()
     let sbom = Data(#"{"bomFormat":"CycloneDX","specVersion":"1.6"}"#.utf8)
     let manifest = try makeManifest(firmware: firmware, variables: variables, sbom: sbom)
 
@@ -19,6 +19,7 @@ import Testing
     #expect(verified.manifest == manifest)
     #expect(verified.firmwareCode == firmware)
     #expect(verified.variableStoreTemplate == variables)
+    #expect(verified.initialVariableStore.platform == .armVirtV1)
     #expect(verified.sbom == sbom)
 
     var substitutedSBOM = sbom
@@ -29,6 +30,27 @@ import Testing
         firmwareCode: firmware,
         variableStoreTemplate: variables,
         sbom: substitutedSBOM
+      )
+    }
+  }
+
+  @Test func rejectsAPlatformSubstitutedVariableTemplate() throws {
+    let firmware = Data(repeating: 0xa5, count: 4_096)
+    let variables = try DoryUEFIVariableStoreSnapshot(platform: .pcV1).canonicalData()
+    let sbom = Data(#"{"bomFormat":"CycloneDX","specVersion":"1.6"}"#.utf8)
+    let manifest = try makeManifest(firmware: firmware, variables: variables, sbom: sbom)
+
+    #expect(
+      throws: DoryVerifiedFirmwareArtifactsError.incompatibleVariableStorePlatform(
+        manifest: .armVirtV1,
+        variableStore: .pcV1
+      )
+    ) {
+      _ = try DoryVerifiedFirmwareArtifacts(
+        manifest: manifest,
+        firmwareCode: firmware,
+        variableStoreTemplate: variables,
+        sbom: sbom
       )
     }
   }
