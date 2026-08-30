@@ -667,6 +667,21 @@ public struct DoryX86Decoder: Sendable {
             requiresAlignment: aligned
           )
         }
+      case 0x2E, 0x2F:
+        guard prefixes.repeatPrefix == nil else {
+          throw DoryX86DecodeError.invalidEncoding(
+            address: address, detail: "scalar floating compare rejects repeat prefixes")
+        }
+        let format: DoryX86VectorFloatingFormat =
+          prefixes.operandSizeOverride ? .scalarDouble : .scalarSingle
+        let operands = try decodeModRM(
+          cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
+        operation = .vectorFloatingCompare(
+          format: format,
+          destination: vectorRegister(operands.reg),
+          source: vectorOperand(operands.rm),
+          quiet: second == 0x2E
+        )
       case 0x54...0x57, 0xDB, 0xDF, 0xEB, 0xEF:
         let packedInteger = second == 0xDB || second == 0xDF || second == 0xEB || second == 0xEF
         guard prefixes.repeatPrefix == nil,

@@ -257,6 +257,12 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
     destination: UInt8,
     source: DoryX86VectorOperand
   )
+  case vectorFloatingCompare(
+    format: DoryX86VectorFloatingFormat,
+    destination: UInt8,
+    source: DoryX86VectorOperand,
+    quiet: Bool
+  )
   case processorPause
   case string(DoryX86StringOperation, width: DoryX86OperandWidth)
   case input(port: DoryX86IOPort, width: DoryX86OperandWidth)

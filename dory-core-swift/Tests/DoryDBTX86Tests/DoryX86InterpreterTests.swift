@@ -628,6 +628,40 @@ import Testing
     #expect(state.floatingPoint.ymm[0].bytes[4..<8] == [0xFF, 0xFF, 0xFF, 0xFF][...])
   }
 
+  @Test func sseScalarComparisonsSetOnlyArchitecturalStatusFlags() throws {
+    let memory = DoryX86ByteArrayMemory(
+      baseAddress: 0x1000,
+      bytes: [0x0F, 0x2F, 0xC1, 0x66, 0x0F, 0x2E, 0xC1]
+        + .init(repeating: 0, count: 16)
+    )
+    var floatingPoint = try DoryX86FloatingPointState()
+    var lhs = [UInt8](repeating: 0, count: 32)
+    var rhs = [UInt8](repeating: 0, count: 32)
+    lhs.replaceSubrange(0..<4, with: littleEndian(UInt64(Float(-1).bitPattern)).prefix(4))
+    rhs.replaceSubrange(0..<4, with: littleEndian(UInt64(Float(2).bitPattern)).prefix(4))
+    floatingPoint.ymm[0] = try .init(bytes: lhs, expectedByteCount: 32)
+    floatingPoint.ymm[1] = try .init(bytes: rhs, expectedByteCount: 32)
+    var state = try DoryX86ArchitecturalState(
+      rip: 0x1000,
+      rflags: [.reservedOne, .overflow, .sign, .auxiliaryCarry],
+      floatingPoint: floatingPoint
+    )
+
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    #expect(state.rflags.contains(.carry))
+    #expect(!state.rflags.contains(.zero))
+    #expect(!state.rflags.contains(.overflow))
+    #expect(!state.rflags.contains(.sign))
+    #expect(!state.rflags.contains(.auxiliaryCarry))
+
+    lhs.replaceSubrange(0..<8, with: littleEndian(Double.nan.bitPattern))
+    rhs.replaceSubrange(0..<8, with: littleEndian(Double(2).bitPattern))
+    state.floatingPoint.ymm[0] = try .init(bytes: lhs, expectedByteCount: 32)
+    state.floatingPoint.ymm[1] = try .init(bytes: rhs, expectedByteCount: 32)
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    #expect(state.rflags.contains([.zero, .parity, .carry]))
+  }
+
   @Test func byteExtendMoveUsesTheWideModRMDestinationRegister() throws {
     var bytes = [UInt8](repeating: 0, count: 0x20)
     bytes.replaceSubrange(0..<4, with: [0x0F, 0xB6, 0x71, 0x02])

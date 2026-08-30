@@ -719,6 +719,39 @@ public struct DoryX86Interpreter: Sendable {
         )
         state.floatingPoint.ymm[Int(destination)] = try .init(
           bytes: registerBytes, expectedByteCount: 32)
+      case .vectorFloatingCompare(let format, let destination, let source, _):
+        let byteCount = format == .scalarDouble ? 8 : 4
+        let rhs = try readVectorBytes(
+          source,
+          byteCount: byteCount,
+          instruction: instruction,
+          state: state,
+          memory: executionMemory
+        )
+        let lhs = Array(state.floatingPoint.ymm[Int(destination)].bytes.prefix(byteCount))
+        let relation: FloatingComparison
+        if format == .scalarDouble {
+          relation = floatingComparison(
+            Double(bitPattern: fromLittleEndian(lhs)),
+            Double(bitPattern: fromLittleEndian(rhs))
+          )
+        } else {
+          relation = floatingComparison(
+            Float(bitPattern: UInt32(fromLittleEndian(lhs))),
+            Float(bitPattern: UInt32(fromLittleEndian(rhs)))
+          )
+        }
+        state.rflags.remove([.overflow, .sign, .auxiliaryCarry, .zero, .parity, .carry])
+        switch relation {
+        case .greater:
+          break
+        case .less:
+          state.rflags.insert(.carry)
+        case .equal:
+          state.rflags.insert(.zero)
+        case .unordered:
+          state.rflags.insert([.zero, .parity, .carry])
+        }
       case .processorPause:
         break
       case .string(let operation, let width):
@@ -1559,6 +1592,18 @@ public struct DoryX86Interpreter: Sendable {
         destination[offset + index] = UInt8(truncatingIfNeeded: result >> UInt64(index * 8))
       }
     }
+  }
+
+  private enum FloatingComparison {
+    case greater, less, equal, unordered
+  }
+
+  private func floatingComparison<T: BinaryFloatingPoint>(_ lhs: T, _ rhs: T) -> FloatingComparison
+  {
+    if lhs.isNaN || rhs.isNaN { return .unordered }
+    if lhs < rhs { return .less }
+    if lhs > rhs { return .greater }
+    return .equal
   }
 
   private func currentPrivilegeLevel(_ state: DoryX86ArchitecturalState) -> UInt8 {

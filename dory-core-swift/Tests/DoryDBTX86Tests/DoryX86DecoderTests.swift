@@ -590,5 +590,10 @@ import Testing
         == .vectorIntegerBinary(
           .greaterThan, laneWidth: .doubleword, destination: 0, source: .register(1))
     )
+    #expect(
+      try decoder.decode([0x66, 0x0F, 0x2E, 0xC1], at: 0x1000, mode: .long64).operation
+        == .vectorFloatingCompare(
+          format: .scalarDouble, destination: 0, source: .register(1), quiet: true)
+    )
   }
 }
