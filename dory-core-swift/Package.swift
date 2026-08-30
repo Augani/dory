@@ -45,6 +45,10 @@ let package = Package(
     .executable(name: "dory-jit-probe", targets: ["dory-jit-probe"]),
     .executable(name: "dory-vzmac-device-probe", targets: ["dory-vzmac-device-probe"]),
     .executable(
+      name: "dory-macos-camera-extension-service",
+      targets: ["dory-macos-camera-extension-service"]
+    ),
+    .executable(
       name: "dory-phase0a-host-probe",
       targets: ["dory-phase0a-host-probe"]
     ),
@@ -238,6 +242,11 @@ let package = Package(
       dependencies: ["DoryVZMacCompatibility", "DoryVZMacSDKInventory"],
       path: "Sources/dory-vzmac-device-probe",
       linkerSettings: [.linkedFramework("Virtualization")]
+    ),
+    .executableTarget(
+      name: "dory-macos-camera-extension-service",
+      dependencies: ["DoryMacGuestCameraExtensionCore"],
+      linkerSettings: [.linkedFramework("CoreMediaIO")]
     ),
     // Sanitized physical-host inventory for Phase 0A reference-candidate evidence. It records no
     // hardware serial number, platform UUID, user name, or path outside the root volume.

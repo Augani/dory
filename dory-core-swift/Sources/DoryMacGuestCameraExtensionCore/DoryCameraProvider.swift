@@ -220,10 +220,11 @@ public final class DoryCameraDeviceSource: NSObject,
                     sampleBufferOut: &sampleBuffer
                 )
                 if status == noErr, let sampleBuffer {
+                    let guestHostTime = timing.presentationTimeStamp.seconds * 1_000_000_000
                     streamSource.stream.send(
                         sampleBuffer,
                         discontinuity: [],
-                        hostTimeInNanoseconds: frame.hostPresentationTimeNanoseconds
+                        hostTimeInNanoseconds: UInt64(max(0, guestHostTime))
                     )
                 }
             } catch {
@@ -231,6 +232,13 @@ public final class DoryCameraDeviceSource: NSObject,
                 break
             }
         }
+        stateLock.lock()
+        if self.client === client && self.generation == generation {
+            self.client = nil
+            streamingClients = 0
+            self.generation &+= 1
+        }
+        stateLock.unlock()
         client.stop()
     }
 
