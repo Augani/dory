@@ -10,7 +10,15 @@ public enum DoryPCMachineError: Error, Sendable, Equatable {
 public enum DoryPCMachineStop: Sendable, Hashable {
   case halted(instructionCount: UInt64)
   case exception(DoryX86Exception, instructionCount: UInt64)
+  case tripleFault(instructionCount: UInt64)
   case instructionBudget(UInt64)
+}
+
+public enum DoryPCExceptionPolicy: Sendable, Hashable {
+  /// Debugger/conformance mode: expose the first precise CPU exception to the caller.
+  case stop
+  /// Product mode: enter the guest IDT, including architectural double/triple-fault escalation.
+  case deliver
 }
 
 /// Phase-4 uniprocessor direct-kernel machine. It deliberately exposes only the PVH boot and
@@ -90,7 +98,10 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
 
   public var state: DoryX86ArchitecturalState? { lock.withLock { loadedState } }
 
-  public func run(maximumInstructions: UInt64) throws -> DoryPCMachineStop {
+  public func run(
+    maximumInstructions: UInt64,
+    exceptionPolicy: DoryPCExceptionPolicy = .stop
+  ) throws -> DoryPCMachineStop {
     guard maximumInstructions > 0 else { return .instructionBudget(0) }
     return try lock.withLock {
       guard var state = loadedState else { throw DoryPCMachineError.notLoaded }
@@ -100,14 +111,19 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           interruptsEnabled: state.rflags.contains(.interruptEnable),
           externalPriority: UInt8(truncatingIfNeeded: state.control.cr8) << 4
         ) {
-          try DoryX86InterruptDelivery().deliver(
-            vector: vector,
-            source: .externalMaskable,
-            state: &state,
-            physicalMemory: physicalMemory,
-            pagingUnit: pagingUnit,
-            mode: executionMode(state)
-          )
+          do {
+            try DoryX86InterruptDelivery().deliver(
+              vector: vector,
+              source: .externalMaskable,
+              state: &state,
+              physicalMemory: physicalMemory,
+              pagingUnit: pagingUnit,
+              mode: executionMode(state)
+            )
+          } catch {
+            loadedState = state
+            return .tripleFault(instructionCount: completed)
+          }
         }
         let result = interpreter.step(
           state: &state,
@@ -121,9 +137,30 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         case .retired, .yielded:
           continue
         case .halted:
+          let apic = localAPIC.snapshot()
+          if state.rflags.contains(.interruptEnable), apic.softwareEnabled,
+            !apic.timer.masked, apic.timer.currentCount > 0
+          {
+            localAPIC.advanceTimer(by: UInt64(apic.timer.currentCount))
+            continue
+          }
           return .halted(instructionCount: completed + 1)
         case .exception(let exception):
-          return .exception(exception, instructionCount: completed)
+          guard exceptionPolicy == .deliver else {
+            return .exception(exception, instructionCount: completed)
+          }
+          do {
+            try DoryX86InterruptDelivery().deliverException(
+              exception,
+              state: &state,
+              physicalMemory: physicalMemory,
+              pagingUnit: pagingUnit,
+              mode: executionMode(state)
+            )
+          } catch {
+            loadedState = state
+            return .tripleFault(instructionCount: completed)
+          }
         }
       }
       return .instructionBudget(maximumInstructions)
