@@ -254,7 +254,7 @@ public struct DoryMachineConfigurationMigrationResult: Sendable, Equatable {
         }
 
         var environment = authoritativeLegacyConfiguration.environment
-        try applyBackendPreference(to: &environment)
+        try applyPlatform(to: &environment)
         try applyGraphicsPolicy(to: &environment)
         try applyGuestIdentityIntent(to: &environment)
         try applyClipboardPolicy(to: &environment)
@@ -304,25 +304,25 @@ public struct DoryMachineConfigurationMigrationResult: Sendable, Equatable {
         try DoryMachineConfigurationMigrationBridge.encodeLegacy(legacyConfiguration())
     }
 
-    private func applyBackendPreference(to environment: inout [String: String]) throws {
-        guard definition.backendPreference != baselineDefinition.backendPreference else { return }
+    private func applyPlatform(to environment: inout [String: String]) throws {
+        guard definition.platform != baselineDefinition.platform else { return }
         guard bootContract == .managedDirectKernel || bootContract == .efiInstalledDirectBoot,
               authoritativeLegacyConfiguration.displayMode == .desktop else {
             throw DoryMachineConfigurationMigrationError.unsupportedDefinitionChange(
-                "backendPreference"
+                "platform"
             )
         }
         let raw: String
-        switch (definition.backendPreference.mode, definition.backendPreference.backend) {
-        case (.automatic, nil):
+        switch definition.platform?.executionEngine {
+        case nil:
             raw = DoryDesktopVMMPreference.automatic.rawValue
-        case (.preferred, .doryHypervisor?):
+        case .nativeARM64?:
             raw = DoryDesktopVMMPreference.accelerated.rawValue
-        case (.preferred, .appleVirtualizationFramework?):
+        case .vzMac?:
             raw = DoryDesktopVMMPreference.compatible.rawValue
-        default:
+        case .x86ToARM64?:
             throw DoryMachineConfigurationMigrationError.unsupportedDefinitionChange(
-                "backendPreference"
+                "platform"
             )
         }
         environment[DoryDesktopVMMPreference.environmentKey] = raw
@@ -542,10 +542,9 @@ public enum DoryMachineConfigurationMigrationBridge {
         }
 
         let bootContract = try legacyBootContract(configuration, facts: facts)
-        let vmmPreference: DoryDesktopVMMPreference
         let graphicsPreference: DoryDesktopGraphicsPreference
         do {
-            vmmPreference = try DoryDesktopVMMPreference(environment: configuration.environment)
+            _ = try DoryDesktopVMMPreference(environment: configuration.environment)
         } catch {
             throw DoryMachineConfigurationMigrationError.invalidLegacyPreference(
                 DoryDesktopVMMPreference.environmentKey
@@ -687,15 +686,16 @@ public enum DoryMachineConfigurationMigrationBridge {
         )
         let acceleratedBoot = bootContract == .managedDirectKernel
             || bootContract == .efiInstalledDirectBoot
-        let backendPreference: DoryVMBackendPreference
-        if isDesktop, acceleratedBoot {
-            backendPreference = typedBackendPreference(vmmPreference)
-        } else {
-            backendPreference = DoryVMBackendPreference(
-                mode: .preferred,
-                backend: .appleVirtualizationFramework
+        let guest = DoryGuestPlatform(family: .linux, architecture: facts.guestArchitecture)
+        let translationConsent: DoryTranslationConsent =
+            facts.guestArchitecture == .x86_64 ? .explicit : .notRequired
+        let platform = try DoryVirtualizationPlatformResolver.resolve(
+            DoryVirtualizationResolutionRequest(
+                hostArchitecture: .arm64,
+                guest: guest,
+                translationConsent: translationConsent
             )
-        }
+        ).get().platform
         let graphics: DoryVMGraphicsPolicy
         if !isDesktop {
             graphics = DoryVMGraphicsPolicy(acceptableLevels: [.none])
@@ -711,10 +711,11 @@ public enum DoryMachineConfigurationMigrationBridge {
 
         let definition = DoryVirtualMachineDefinition(
             identity: DoryVirtualMachineIdentity(id: configuration.id, name: configuration.id),
-            guest: DoryGuestPlatform(family: .linux, architecture: facts.guestArchitecture),
+            guest: guest,
             workload: isDesktop ? .desktop : .server,
             boot: boot,
-            backendPreference: backendPreference,
+            platform: platform,
+            translationConsent: translationConsent,
             graphics: graphics,
             resources: DoryVMResourceRequest(
                 virtualCPUCount: UInt64(configuration.cpuCount),
@@ -843,22 +844,6 @@ public enum DoryMachineConfigurationMigrationBridge {
             )],
             order: ["system"]
         )
-    }
-
-    private static func typedBackendPreference(
-        _ preference: DoryDesktopVMMPreference
-    ) -> DoryVMBackendPreference {
-        switch preference {
-        case .automatic:
-            DoryVMBackendPreference()
-        case .accelerated:
-            DoryVMBackendPreference(mode: .preferred, backend: .doryHypervisor)
-        case .compatible:
-            DoryVMBackendPreference(
-                mode: .preferred,
-                backend: .appleVirtualizationFramework
-            )
-        }
     }
 
     private static func typedGraphicsPolicy(

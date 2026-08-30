@@ -1371,7 +1371,7 @@ struct MachineManagerResolvedPlanIntegrationTests {
         #expect(createdRecord.legacyConfigurationSHA256 == nil)
         #expect(createdRecord.legacyMigrationFactsSHA256 == nil)
         #expect(createdRecord.definition.guestIdentityIntent.account?.username == "developer")
-        #expect(createdRecord.definition.backendPreference.backend == .doryHypervisor)
+        #expect(createdRecord.definition.platform == .arm64LinuxV1)
         #expect(createdRecord.definition.boot.devices.first?.kind == .linuxKernel)
         #expect(created.typedSettings?.graphicsPreference == .virgl)
         #expect(createdRecord.definition.graphics.acceptableLevels == [.hostAcceleratedDisplay])

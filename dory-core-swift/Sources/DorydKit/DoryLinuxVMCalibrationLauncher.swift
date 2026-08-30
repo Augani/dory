@@ -700,10 +700,7 @@ public enum DoryLinuxVMCalibrationLauncher {
                 )],
                 order: ["system-kernel"]
             ),
-            backendPreference: DoryVMBackendPreference(
-                mode: .required,
-                backend: .doryHypervisor
-            ),
+            platform: .arm64LinuxV1,
             graphics: DoryVMGraphicsPolicy(
                 acceptableLevels: [.hardwareAccelerated3D]
             ),

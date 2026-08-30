@@ -86,28 +86,6 @@ public struct DoryVMBootConfiguration: Codable, Sendable, Equatable {
     }
 }
 
-public enum DoryVMBackendPreferenceMode: String, Codable, Sendable, CaseIterable {
-    case automatic
-    case preferred
-    case required
-}
-
-/// Backend intent, not a backend selection or availability claim.
-///
-/// The daemon must still negotiate this preference through its capability evaluator.
-public struct DoryVMBackendPreference: Codable, Sendable, Equatable {
-    public var mode: DoryVMBackendPreferenceMode
-    public var backend: DoryVirtualizationBackendIdentity?
-
-    public init(
-        mode: DoryVMBackendPreferenceMode = .automatic,
-        backend: DoryVirtualizationBackendIdentity? = nil
-    ) {
-        self.mode = mode
-        self.backend = backend
-    }
-}
-
 /// Ordered graphics contracts acceptable to the user, from most to least preferred.
 /// Runtime capability negotiation must select one exact entry or reject the definition.
 public struct DoryVMGraphicsPolicy: Codable, Sendable, Equatable {
@@ -431,7 +409,10 @@ public enum DoryVMDefinitionValidationCode: String, Codable, Sendable, CaseItera
     case multipleSystemBootDevices = "multiple-system-boot-devices"
     case bootMediaIncompatibleWithGuest = "boot-media-incompatible-with-guest"
     case guestMediaCannotBeBundled = "guest-media-cannot-be-bundled"
-    case backendPreferenceMalformed = "backend-preference-malformed"
+    case translationConsentRequired = "translation-consent-required"
+    case translationConsentUnexpected = "translation-consent-unexpected"
+    case platformCompositionInvalid = "platform-composition-invalid"
+    case platformCompositionMismatch = "platform-composition-mismatch"
     case emptyGraphicsPolicy = "empty-graphics-policy"
     case duplicateGraphicsLevel = "duplicate-graphics-level"
     case nonPositiveResource = "non-positive-resource"
@@ -487,8 +468,7 @@ public struct DoryVMDefinitionValidationIssue: Codable, Sendable, Equatable {
 /// This definition deliberately contains no runtime capability result, selected backend,
 /// passwords, tokens, host filesystem paths, or volatile process state.
 public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
-    public static let oldestSupportedSchemaVersion: UInt16 = 1
-    public static let currentSchemaVersion: UInt16 = 5
+    public static let currentSchemaVersion: UInt16 = 7
     public static let currentVirtualHardwareABIVersion: UInt16 = 1
 
     public var schemaVersion: UInt16
@@ -497,7 +477,9 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
     public var guest: DoryGuestPlatform
     public var workload: DoryVMWorkloadProfile
     public var boot: DoryVMBootConfiguration
-    public var backendPreference: DoryVMBackendPreference
+    /// Nil only before first boot. First boot pins the entire guest-visible composition.
+    public var platform: DoryVirtualizationPlatformComposition?
+    public var translationConsent: DoryTranslationConsent
     public var graphics: DoryVMGraphicsPolicy
     public var resources: DoryVMResourceRequest
     public var storage: [DoryVMStorageAttachment]
@@ -537,7 +519,8 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
         guest: DoryGuestPlatform,
         workload: DoryVMWorkloadProfile,
         boot: DoryVMBootConfiguration,
-        backendPreference: DoryVMBackendPreference = DoryVMBackendPreference(),
+        platform: DoryVirtualizationPlatformComposition? = nil,
+        translationConsent: DoryTranslationConsent = .notRequired,
         graphics: DoryVMGraphicsPolicy,
         resources: DoryVMResourceRequest,
         storage: [DoryVMStorageAttachment],
@@ -561,7 +544,8 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
         self.guest = guest
         self.workload = workload
         self.boot = boot
-        self.backendPreference = backendPreference
+        self.platform = platform
+        self.translationConsent = translationConsent
         self.graphics = graphics
         self.resources = resources
         self.storage = storage
@@ -588,14 +572,13 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
         case guest
         case workload
         case boot
-        case bootMedia
-        case backendPreference
+        case platform
+        case translationConsent
         case graphics
         case resources
         case storage
         case networkMode
         case portForwards
-        case display
         case displays
         case audio
         case camera
@@ -608,150 +591,17 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
         case lifecycle
     }
 
-    private struct LegacyBootMedia: Codable {
-        var role: DoryVMBootMediaRole
-        var kind: DoryBootMediaKind
-        var source: DoryBootMediaSource
-        var artifactID: String
-    }
-
-    private struct LegacyGraphics: Codable {
-        var desiredLevel: DoryGraphicsAccelerationLevel
-        var allowsFallback: Bool
-    }
-
-    private struct LegacyStorage: Codable {
-        var id: String
-        var role: DoryVMStorageRole
-        var artifactID: String
-        var capacityBytes: UInt64
-        var readOnly: Bool
-    }
-
-    private struct LegacyShare: Codable {
-        var id: String
-        var hostLocationID: String
-        var guestMountPath: String
-        var readOnly: Bool
-    }
-
-    private struct LegacyLifecycle: Codable {
-        var revision: UInt64
-        var createdAt: Date
-        var updatedAt: Date
-    }
-
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let persistedSchema = try container.decode(UInt16.self, forKey: .schemaVersion)
-        if persistedSchema == Self.oldestSupportedSchemaVersion {
-            let legacyBoot = try container.decode(LegacyBootMedia.self, forKey: .bootMedia)
-            let legacyGraphics = try container.decode(LegacyGraphics.self, forKey: .graphics)
-            let legacyStorage = try container.decode([LegacyStorage].self, forKey: .storage)
-            let legacyShares = try container.decode([LegacyShare].self, forKey: .shares)
-            let legacyLifecycle = try container.decode(LegacyLifecycle.self, forKey: .lifecycle)
-            let legacyWorkload = try container.decode(DoryVMWorkloadProfile.self, forKey: .workload)
-
-            schemaVersion = Self.currentSchemaVersion
-            virtualHardwareABIVersion = try container.decodeIfPresent(
-                UInt16.self,
-                forKey: .virtualHardwareABIVersion
-            ) ?? Self.currentVirtualHardwareABIVersion
-            identity = try container.decode(DoryVirtualMachineIdentity.self, forKey: .identity)
-            guest = try container.decode(DoryGuestPlatform.self, forKey: .guest)
-            workload = legacyWorkload == .installer ? .desktop : legacyWorkload
-            let deviceID = legacyBoot.role == .system ? "system" : "installer"
-            boot = DoryVMBootConfiguration(
-                phase: legacyBoot.role == .system ? .normal : .install,
-                devices: [DoryVMBootMediaReference(
-                    id: deviceID,
-                    role: legacyBoot.role,
-                    kind: legacyBoot.kind,
-                    source: legacyBoot.source,
-                    artifact: Self.migrateLegacyReference(
-                        legacyBoot.artifactID,
-                        defaultNamespace: "artifact"
-                    ),
-                    removable: legacyBoot.role != .system
-                )],
-                order: [deviceID]
-            )
-            backendPreference = try container.decode(
-                DoryVMBackendPreference.self,
-                forKey: .backendPreference
-            )
-            var levels = [legacyGraphics.desiredLevel]
-            if legacyGraphics.allowsFallback,
-               legacyGraphics.desiredLevel != .software,
-               legacyGraphics.desiredLevel != .none {
-                levels.append(.software)
-            }
-            graphics = DoryVMGraphicsPolicy(acceptableLevels: levels)
-            resources = try container.decode(DoryVMResourceRequest.self, forKey: .resources)
-            storage = legacyStorage.map { attachment in
-                DoryVMStorageAttachment(
-                    id: attachment.id,
-                    role: attachment.role,
-                    artifact: Self.migrateLegacyReference(
-                        attachment.artifactID,
-                        defaultNamespace: "artifact"
-                    ),
-                    capacityBytes: attachment.capacityBytes,
-                    readOnly: attachment.readOnly
-                )
-            }
-            networkMode = try container.decode(DoryVMNetworkMode.self, forKey: .networkMode)
-            portForwards = []
-            let legacyDisplay = try container.decode(
-                DoryVMDisplayConfiguration.self,
-                forKey: .display
-            )
-            displays = legacyDisplay.enabled ? [legacyDisplay] : []
-            audio = try container.decode(DoryVMAudioConfiguration.self, forKey: .audio)
-            camera = try container.decodeIfPresent(
-                DoryVMCameraConfiguration.self,
-                forKey: .camera
-            ) ?? DoryVMCameraConfiguration()
-            input = try container.decode(DoryVMInputConfiguration.self, forKey: .input)
-            shares = legacyShares.map { share in
-                DoryVMShare(
-                    id: share.id,
-                    hostLocation: Self.migrateLegacyReference(
-                        share.hostLocationID,
-                        defaultNamespace: "host-location"
-                    ),
-                    guestMountPath: share.guestMountPath,
-                    readOnly: share.readOnly
-                )
-            }
-            integrations = try container.decode(
-                [DoryVMGuestIntegration].self,
-                forKey: .integrations
-            )
-            guestIdentityIntent = .unspecified
-            clipboardPolicy = integrations.contains(.clipboard)
-                ? .legacyDesktop(.bidirectional) : .disabled
-            sandboxPolicy = nil
-            lifecycle = DoryVMLifecycleMetadata(
-                revision: legacyLifecycle.revision,
-                createdAt: legacyLifecycle.createdAt,
-                updatedAt: legacyLifecycle.updatedAt
-            )
-            return
-        }
-
-        guard (2...Self.currentSchemaVersion).contains(persistedSchema) else {
+        guard persistedSchema == Self.currentSchemaVersion else {
             throw DecodingError.dataCorruptedError(
                 forKey: .schemaVersion,
                 in: container,
                 debugDescription: "Unsupported VM definition schema \(persistedSchema)."
             )
         }
-        // Schema 2 is structurally migrated by the attachment decoder above. Its missing storage
-        // source becomes `.userProvided`. Sandbox policy is an optional schema-3 extension and
-        // explicit port forwards are an additive schema-4 extension. Schema 5 replaces the
-        // singular display field with an ordered, stable topology.
-        schemaVersion = Self.currentSchemaVersion
+        schemaVersion = persistedSchema
         virtualHardwareABIVersion = try container.decode(
             UInt16.self,
             forKey: .virtualHardwareABIVersion
@@ -760,44 +610,30 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
         guest = try container.decode(DoryGuestPlatform.self, forKey: .guest)
         workload = try container.decode(DoryVMWorkloadProfile.self, forKey: .workload)
         boot = try container.decode(DoryVMBootConfiguration.self, forKey: .boot)
-        backendPreference = try container.decode(DoryVMBackendPreference.self, forKey: .backendPreference)
+        platform = try container.decodeIfPresent(
+            DoryVirtualizationPlatformComposition.self,
+            forKey: .platform
+        )
+        translationConsent = try container.decode(
+            DoryTranslationConsent.self,
+            forKey: .translationConsent
+        )
         graphics = try container.decode(DoryVMGraphicsPolicy.self, forKey: .graphics)
         resources = try container.decode(DoryVMResourceRequest.self, forKey: .resources)
         storage = try container.decode([DoryVMStorageAttachment].self, forKey: .storage)
         networkMode = try container.decode(DoryVMNetworkMode.self, forKey: .networkMode)
-        portForwards = try container.decodeIfPresent(
-            [DoryVMPortForward].self,
-            forKey: .portForwards
-        ) ?? []
-        if persistedSchema >= 5 {
-            displays = try container.decode(
-                [DoryVMDisplayConfiguration].self,
-                forKey: .displays
-            )
-        } else {
-            let legacyDisplay = try container.decode(
-                DoryVMDisplayConfiguration.self,
-                forKey: .display
-            )
-            displays = legacyDisplay.enabled ? [legacyDisplay] : []
-        }
+        portForwards = try container.decode([DoryVMPortForward].self, forKey: .portForwards)
+        displays = try container.decode([DoryVMDisplayConfiguration].self, forKey: .displays)
         audio = try container.decode(DoryVMAudioConfiguration.self, forKey: .audio)
-        camera = try container.decodeIfPresent(
-            DoryVMCameraConfiguration.self,
-            forKey: .camera
-        ) ?? DoryVMCameraConfiguration()
+        camera = try container.decode(DoryVMCameraConfiguration.self, forKey: .camera)
         input = try container.decode(DoryVMInputConfiguration.self, forKey: .input)
         shares = try container.decode([DoryVMShare].self, forKey: .shares)
         integrations = try container.decode([DoryVMGuestIntegration].self, forKey: .integrations)
-        guestIdentityIntent = try container.decodeIfPresent(
+        guestIdentityIntent = try container.decode(
             DoryVMGuestIdentityIntent.self,
             forKey: .guestIdentityIntent
-        ) ?? .unspecified
-        clipboardPolicy = try container.decodeIfPresent(
-            DoryVMClipboardPolicy.self,
-            forKey: .clipboardPolicy
-        ) ?? (integrations.contains(.clipboard)
-            ? .legacyDesktop(.bidirectional) : .disabled)
+        )
+        clipboardPolicy = try container.decode(DoryVMClipboardPolicy.self, forKey: .clipboardPolicy)
         sandboxPolicy = try container.decodeIfPresent(
             DoryVMSandboxPolicy.self,
             forKey: .sandboxPolicy
@@ -813,7 +649,8 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
         try container.encode(guest, forKey: .guest)
         try container.encode(workload, forKey: .workload)
         try container.encode(boot, forKey: .boot)
-        try container.encode(backendPreference, forKey: .backendPreference)
+        try container.encodeIfPresent(platform, forKey: .platform)
+        try container.encode(translationConsent, forKey: .translationConsent)
         try container.encode(graphics, forKey: .graphics)
         try container.encode(resources, forKey: .resources)
         try container.encode(storage, forKey: .storage)
@@ -821,9 +658,7 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
         try container.encode(portForwards, forKey: .portForwards)
         try container.encode(displays, forKey: .displays)
         try container.encode(audio, forKey: .audio)
-        if camera.enabled {
-            try container.encode(camera, forKey: .camera)
-        }
+        try container.encode(camera, forKey: .camera)
         try container.encode(input, forKey: .input)
         try container.encode(shares, forKey: .shares)
         try container.encode(integrations, forKey: .integrations)
@@ -833,25 +668,8 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
         try container.encode(lifecycle, forKey: .lifecycle)
     }
 
-    private static func migrateLegacyReference(
-        _ value: String,
-        defaultNamespace: String
-    ) -> DoryVMResolverReference {
-        let parts = value.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
-        if parts.count == 2 {
-            let candidate = DoryVMResolverReference(
-                namespace: String(parts[0]).lowercased(),
-                identifier: String(parts[1])
-            )
-            if isSafeResolverReference(candidate) {
-                return candidate
-            }
-        }
-        return DoryVMResolverReference(namespace: defaultNamespace, identifier: value)
-    }
-
-    /// Returns deterministic issues in field order. Backend availability is intentionally absent;
-    /// pass the resulting intent through capability negotiation before launch.
+    /// Returns deterministic issues in field order. Component availability is intentionally absent;
+    /// pass the resulting intent through platform resolution before launch.
     public func validate() -> [DoryVMDefinitionValidationIssue] {
         var issues: [DoryVMDefinitionValidationIssue] = []
 
@@ -874,7 +692,7 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
         }
 
         validateBootMedia(into: &issues)
-        validateBackendPreference(into: &issues)
+        validatePlatform(into: &issues)
         validateGraphics(into: &issues)
         validateResources(into: &issues)
         validateStorage(into: &issues)
@@ -961,15 +779,26 @@ public struct DoryVirtualMachineDefinition: Codable, Sendable, Equatable {
         }
     }
 
-    private func validateBackendPreference(into issues: inout [DoryVMDefinitionValidationIssue]) {
-        let isWellFormed = switch backendPreference.mode {
-        case .automatic:
-            backendPreference.backend == nil
-        case .preferred, .required:
-            backendPreference.backend != nil
+    private func validatePlatform(into issues: inout [DoryVMDefinitionValidationIssue]) {
+        if guest.architecture == .x86_64, translationConsent != .explicit {
+            issues.append(issue(.translationConsentRequired, "translationConsent"))
+        } else if guest.architecture == .arm64, translationConsent != .notRequired {
+            issues.append(issue(.translationConsentUnexpected, "translationConsent"))
         }
-        if !isWellFormed {
-            issues.append(issue(.backendPreferenceMalformed, "backendPreference"))
+        guard let platform else { return }
+        guard platform.schemaVersion == DoryVirtualizationPlatformComposition.currentSchemaVersion else {
+            issues.append(issue(.platformCompositionInvalid, "platform.schemaVersion"))
+            return
+        }
+        let request = DoryVirtualizationResolutionRequest(
+            hostArchitecture: .arm64,
+            guest: guest,
+            translationConsent: translationConsent
+        )
+        guard case let .success(resolution) = DoryVirtualizationPlatformResolver.resolve(request),
+              resolution.platform == platform else {
+            issues.append(issue(.platformCompositionMismatch, "platform"))
+            return
         }
     }
 

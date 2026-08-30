@@ -93,6 +93,42 @@ public struct DoryVirtualizationPlatformComposition: Codable, Sendable, Equatabl
         self.deviceABI = deviceABI
         self.snapshotFormat = snapshotFormat
     }
+
+    public static let arm64LinuxV1 = DoryVirtualizationPlatformComposition(
+        executionEngine: .nativeARM64,
+        cpuProfile: .genericARM64V1,
+        machineModel: .armVirtV1,
+        firmwareABI: .armVirtV1,
+        deviceABI: .virtioV1,
+        snapshotFormat: .vmStateV1
+    )
+
+    public static let x86_64LinuxV1 = DoryVirtualizationPlatformComposition(
+        executionEngine: .x86ToARM64,
+        cpuProfile: .compatibleX8664V1,
+        machineModel: .pcV1,
+        firmwareABI: .pcV1,
+        deviceABI: .virtioV1,
+        snapshotFormat: .vmStateV1
+    )
+
+    public static let arm64MacOSV1 = DoryVirtualizationPlatformComposition(
+        executionEngine: .vzMac,
+        cpuProfile: .appleSiliconMacV1,
+        machineModel: .appleVZMacV1,
+        firmwareABI: .appleVZMacV1,
+        deviceABI: .appleVZMacV1,
+        snapshotFormat: .appleVZMacV1
+    )
+
+    public static let x86_64MacOSV1 = DoryVirtualizationPlatformComposition(
+        executionEngine: .x86ToARM64,
+        cpuProfile: .intelMacV1,
+        machineModel: .intelMacV1,
+        firmwareABI: .intelMacV1,
+        deviceABI: .intelMacV1,
+        snapshotFormat: .vmStateV1
+    )
 }
 
 public struct DoryVirtualizationResolutionRequest: Sendable, Equatable, Hashable {
@@ -197,50 +233,22 @@ public enum DoryVirtualizationPlatformResolver {
         switch (guest.family, guest.architecture) {
         case (.linux, .arm64):
             return (
-                DoryVirtualizationPlatformComposition(
-                    executionEngine: .nativeARM64,
-                    cpuProfile: .genericARM64V1,
-                    machineModel: .armVirtV1,
-                    firmwareABI: .armVirtV1,
-                    deviceABI: .virtioV1,
-                    snapshotFormat: .vmStateV1
-                ),
+                .arm64LinuxV1,
                 [.nativeARM64Engine, .armVirtFirmware]
             )
         case (.linux, .x86_64):
             return (
-                DoryVirtualizationPlatformComposition(
-                    executionEngine: .x86ToARM64,
-                    cpuProfile: .compatibleX8664V1,
-                    machineModel: .pcV1,
-                    firmwareABI: .pcV1,
-                    deviceABI: .virtioV1,
-                    snapshotFormat: .vmStateV1
-                ),
+                .x86_64LinuxV1,
                 [.x86ToARM64Translator, .pcFirmware]
             )
         case (.macOS, .arm64):
             return (
-                DoryVirtualizationPlatformComposition(
-                    executionEngine: .vzMac,
-                    cpuProfile: .appleSiliconMacV1,
-                    machineModel: .appleVZMacV1,
-                    firmwareABI: .appleVZMacV1,
-                    deviceABI: .appleVZMacV1,
-                    snapshotFormat: .appleVZMacV1
-                ),
+                .arm64MacOSV1,
                 []
             )
         case (.macOS, .x86_64):
             return (
-                DoryVirtualizationPlatformComposition(
-                    executionEngine: .x86ToARM64,
-                    cpuProfile: .intelMacV1,
-                    machineModel: .intelMacV1,
-                    firmwareABI: .intelMacV1,
-                    deviceABI: .intelMacV1,
-                    snapshotFormat: .vmStateV1
-                ),
+                .x86_64MacOSV1,
                 [.x86ToARM64Translator, .intelMacFirmware]
             )
         case (.windows, _):

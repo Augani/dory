@@ -5369,7 +5369,8 @@ public final class MachineManager: @unchecked Sendable {
             )
             var candidate = migration.definition
             candidate.lifecycle = nativeRecord.definition.lifecycle
-            candidate.backendPreference = nativeRecord.definition.backendPreference
+            candidate.platform = nativeRecord.definition.platform
+            candidate.translationConsent = nativeRecord.definition.translationConsent
             candidate.graphics = nativeRecord.definition.graphics
             candidate.guestIdentityIntent = nativeRecord.definition.guestIdentityIntent
             candidate.clipboardPolicy = nativeRecord.definition.clipboardPolicy
@@ -6585,7 +6586,8 @@ public final class MachineManager: @unchecked Sendable {
                 )
                 var candidate = migration.definition
                 candidate.lifecycle = record.definition.lifecycle
-                candidate.backendPreference = record.definition.backendPreference
+                candidate.platform = record.definition.platform
+                candidate.translationConsent = record.definition.translationConsent
                 candidate.graphics = record.definition.graphics
                 candidate.guestIdentityIntent = record.definition.guestIdentityIntent
                 candidate.clipboardPolicy = record.definition.clipboardPolicy
@@ -11844,7 +11846,8 @@ public final class MachineManager: @unchecked Sendable {
     ) -> Bool {
         var expected = compatibility
         expected.lifecycle = definition.lifecycle
-        expected.backendPreference = definition.backendPreference
+        expected.platform = definition.platform
+        expected.translationConsent = definition.translationConsent
         expected.graphics = definition.graphics
         expected.guestIdentityIntent = definition.guestIdentityIntent
         expected.clipboardPolicy = definition.clipboardPolicy

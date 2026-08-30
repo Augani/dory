@@ -310,9 +310,7 @@ private final class CompositionFixture: @unchecked Sendable {
                 )],
                 order: ["system"]
             ),
-            backendPreference: DoryVMBackendPreference(
-                mode: .required, backend: .doryHypervisor
-            ),
+            platform: .arm64LinuxV1,
             graphics: DoryVMGraphicsPolicy(acceptableLevels: [.none]),
             resources: resources,
             storage: [DoryVMStorageAttachment(

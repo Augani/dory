@@ -218,12 +218,12 @@ struct DoryMachineTypedWriteAuthorityTests {
         #expect(snapshot.runtimePreference == nil)
         #expect(snapshot.graphicsPreference == nil)
         #expect(snapshot.audioConfiguration == nil)
-        #expect(restored.backendPreference == migration.definition.backendPreference)
+        #expect(restored.platform == migration.definition.platform)
         #expect(restored.graphics == migration.definition.graphics)
         #expect(restored.clipboardPolicy == migration.definition.clipboardPolicy)
     }
 
-    @Test("portable EFI snapshot preserves the implicit VZ graphics recovery policy")
+    @Test("portable EFI snapshot preserves graphics policy on the resolved ARM platform")
     func portableEFISnapshotPreservesGraphicsPolicy() throws {
         let migration = try DoryMachineConfigurationMigrationBridge.migrate(
             DoryMachineConfiguration(
@@ -257,7 +257,7 @@ struct DoryMachineTypedWriteAuthorityTests {
         #expect(legacyDefinition.graphics.acceptableLevels == [
             .hostAcceleratedDisplay, .software,
         ])
-        #expect(snapshot.runtimePreference == .compatible)
+        #expect(snapshot.runtimePreference == .accelerated)
         #expect(snapshot.graphicsPreference == nil)
         #expect(restored.graphics == legacyDefinition.graphics)
     }

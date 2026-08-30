@@ -59,10 +59,7 @@ struct DoryMachineConfigurationMigrationTests {
         #expect(migrated.definition.boot.phase == .normal)
         #expect(migrated.definition.boot.devices[0].kind == .linuxKernel)
         #expect(migrated.definition.boot.devices[0].source == .bundledByDory)
-        #expect(migrated.definition.backendPreference == DoryVMBackendPreference(
-            mode: .preferred,
-            backend: .doryHypervisor
-        ))
+        #expect(migrated.definition.platform == .arm64LinuxV1)
         #expect(migrated.definition.graphics.acceptableLevels == [.hostAcceleratedDisplay])
         #expect(migrated.definition.audio.inputEnabled)
         #expect(migrated.definition.audio.outputEnabled)
@@ -236,7 +233,7 @@ struct DoryMachineConfigurationMigrationTests {
         #expect(migrated.definition.workload == .server)
         #expect(migrated.definition.display == .disabled)
         #expect(migrated.definition.graphics.acceptableLevels == [.none])
-        #expect(migrated.definition.backendPreference.backend == .appleVirtualizationFramework)
+        #expect(migrated.definition.platform == .arm64LinuxV1)
         #expect(!migrated.definition.audio.inputEnabled)
         #expect(!migrated.definition.audio.outputEnabled)
         #expect(!migrated.definition.input.keyboardEnabled)
@@ -337,7 +334,7 @@ struct DoryMachineConfigurationMigrationTests {
         #expect(migrated.definition.boot.devices[0].kind == .installerISO)
         #expect(migrated.definition.boot.devices[0].source == .userProvided)
         #expect(migrated.definition.boot.devices[0].removable)
-        #expect(migrated.definition.backendPreference.backend == .appleVirtualizationFramework)
+        #expect(migrated.definition.platform == .arm64LinuxV1)
         #expect(migrated.definition.graphics.acceptableLevels == [.software])
         #expect(migrated.artifactPath(for: migrated.definition.boot.devices[0].artifact)
             == legacy.installerISOPath)
@@ -366,7 +363,7 @@ struct DoryMachineConfigurationMigrationTests {
         #expect(firmware.definition.boot.devices[0].kind == .virtualDisk)
         #expect(firmware.definition.boot.devices[0].artifact
             == firmware.definition.storage[0].artifact)
-        #expect(firmware.definition.backendPreference.backend == .appleVirtualizationFramework)
+        #expect(firmware.definition.platform == .arm64LinuxV1)
         #expect(try firmware.legacyConfiguration() == legacy)
 
         let direct = try migrate(
@@ -378,7 +375,7 @@ struct DoryMachineConfigurationMigrationTests {
         #expect(direct.definition.boot.devices[0].kind == .installedLinuxBootBundle)
         #expect(direct.definition.boot.devices[0].artifact
             != direct.definition.storage[0].artifact)
-        #expect(direct.definition.backendPreference.backend == .doryHypervisor)
+        #expect(direct.definition.platform == .arm64LinuxV1)
         #expect(try direct.legacyConfiguration() == legacy)
     }
 
@@ -397,14 +394,11 @@ struct DoryMachineConfigurationMigrationTests {
             ]
         )
         var migrated = try migrate(legacy, capacity: 64 * gibibyte)
-        migrated.definition.backendPreference = DoryVMBackendPreference(
-            mode: .preferred,
-            backend: .appleVirtualizationFramework
-        )
+        migrated.definition.platform = nil
         migrated.definition.graphics = DoryVMGraphicsPolicy(acceptableLevels: [.software])
         let projected = try migrated.legacyConfiguration()
 
-        #expect(projected.environment[DoryDesktopVMMPreference.environmentKey] == "compatible")
+        #expect(projected.environment[DoryDesktopVMMPreference.environmentKey] == "auto")
         #expect(projected.environment[DoryDesktopGraphicsPreference.environmentKey] == "software")
         #expect(projected.environment[
             DoryDesktopGraphicsPreference.legacyClassicOnlyEnvironmentKey
@@ -441,13 +435,13 @@ struct DoryMachineConfigurationMigrationTests {
         }
 
         var migrated = try migrate(direct, capacity: 64 * gibibyte)
-        migrated.definition.backendPreference = DoryVMBackendPreference(
-            mode: .required,
-            backend: .doryHypervisor
-        )
-        #expect(throws: DoryMachineConfigurationMigrationError.unsupportedDefinitionChange(
-            "backendPreference"
-        )) {
+        migrated.definition.platform = .x86_64LinuxV1
+        #expect(throws: DoryMachineConfigurationMigrationError.invalidDefinition([
+            DoryVMDefinitionValidationIssue(
+                code: .platformCompositionMismatch,
+                field: "platform"
+            ),
+        ])) {
             try migrated.legacyConfiguration()
         }
 

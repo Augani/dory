@@ -7,7 +7,7 @@ struct DoryVirtualMachineDefinitionTests {
     private let gibibyte: UInt64 = 1_073_741_824
     private let nowMilliseconds: Int64 = 1_787_200_000_000
 
-    @Test("schema 5 round trips with stable resolver display and timestamp representations")
+    @Test("schema 7 round trips with pinned compositional platform identities")
     func currentRoundTrip() throws {
         let original = linuxDefinition()
         #expect(original.isValid)
@@ -19,7 +19,10 @@ struct DoryVirtualMachineDefinitionTests {
         #expect(decoded == original)
 
         let json = try #require(String(data: data, encoding: .utf8))
-        #expect(json.contains("\"schemaVersion\":5"))
+        #expect(json.contains("\"schemaVersion\":7"))
+        #expect(json.contains("\"executionEngine\":\"dory.native-hv.arm64@1\""))
+        #expect(json.contains("\"machineModel\":\"dory.armvirt@1\""))
+        #expect(json.contains("\"translationConsent\":\"not-required\""))
         #expect(json.contains("\"virtualHardwareABIVersion\":1"))
         #expect(json.contains("\"createdAtUnixMilliseconds\":1787200000000"))
         #expect(json.contains("\"namespace\":\"boot\""))
@@ -33,6 +36,8 @@ struct DoryVirtualMachineDefinitionTests {
         #expect(!json.contains("\"bootMedia\""))
         #expect(!json.contains("artifactID"))
         #expect(!json.contains("hostLocationID"))
+        #expect(!json.contains("backendPreference"))
+        #expect(!json.contains("qemu"))
     }
 
     @Test("camera intent is additive, durable, and requires a graphical desktop")
@@ -44,7 +49,7 @@ struct DoryVirtualMachineDefinitionTests {
         let defaultObject = try #require(
             JSONSerialization.jsonObject(with: defaultData) as? [String: Any]
         )
-        #expect(defaultObject["camera"] == nil)
+        #expect(defaultObject["camera"] != nil)
 
         definition.camera.enabled = true
         let enabledData = try JSONEncoder().encode(definition)
@@ -55,16 +60,6 @@ struct DoryVirtualMachineDefinitionTests {
         #expect(decoded.camera == DoryVMCameraConfiguration(enabled: true))
         #expect(decoded.isValid)
 
-        var historicalObject = try #require(
-            JSONSerialization.jsonObject(with: enabledData) as? [String: Any]
-        )
-        historicalObject.removeValue(forKey: "camera")
-        let historical = try JSONDecoder().decode(
-            DoryVirtualMachineDefinition.self,
-            from: JSONSerialization.data(withJSONObject: historicalObject)
-        )
-        #expect(!historical.camera.enabled)
-
         definition.displays = []
         #expect(has(
             .integrationRequiresDisplay,
@@ -73,39 +68,19 @@ struct DoryVirtualMachineDefinitionTests {
         ))
     }
 
-    @Test("schema 2 records migrate storage provenance and typed-intent defaults")
-    func additiveSchemaTwoMigration() throws {
+    @Test("pre-release schemas are rejected instead of migrated")
+    func rejectsObsoleteSchema() throws {
         let encoder = JSONEncoder()
         let data = try encoder.encode(linuxDefinition())
         var object = try #require(
             JSONSerialization.jsonObject(with: data) as? [String: Any]
         )
-        object.removeValue(forKey: "guestIdentityIntent")
-        object.removeValue(forKey: "clipboardPolicy")
-        object.removeValue(forKey: "portForwards")
-        var display = try #require(
-            (object.removeValue(forKey: "displays") as? [[String: Any]])?.first
-        )
-        display.removeValue(forKey: "id")
-        object["display"] = display
         object["schemaVersion"] = 2
-        var storage = try #require(object["storage"] as? [[String: Any]])
-        for index in storage.indices { storage[index].removeValue(forKey: "source") }
-        object["storage"] = storage
         let oldSchemaTwo = try JSONSerialization.data(withJSONObject: object)
 
-        let decoded = try JSONDecoder().decode(
-            DoryVirtualMachineDefinition.self,
-            from: oldSchemaTwo
-        )
-        #expect(decoded.guestIdentityIntent == .unspecified)
-        #expect(decoded.clipboardPolicy == .legacyDesktop(.bidirectional))
-        #expect(decoded.schemaVersion == DoryVirtualMachineDefinition.currentSchemaVersion)
-        #expect(decoded.portForwards.isEmpty)
-        #expect(decoded.storage.allSatisfy { $0.source == .userProvided })
-        #expect(decoded.display.backingScaleFactor == 2)
-        #expect(decoded.display.guestUIScaleFactor == 2)
-        #expect(decoded.isValid)
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode(DoryVirtualMachineDefinition.self, from: oldSchemaTwo)
+        }
     }
 
     @Test("disconnected networking is durable typed intent")
@@ -367,8 +342,8 @@ struct DoryVirtualMachineDefinitionTests {
         }
     }
 
-    @Test("oldest schema 1 golden JSON migrates deterministically")
-    func oldestSchemaMigration() throws {
+    @Test("schema 1 backend records fail closed")
+    func rejectsBackendSchema() throws {
         let golden = Data(#"""
         {
           "schemaVersion": 1,
@@ -396,27 +371,9 @@ struct DoryVirtualMachineDefinitionTests {
         }
         """#.utf8)
 
-        let migrated = try JSONDecoder().decode(DoryVirtualMachineDefinition.self, from: golden)
-        #expect(migrated.schemaVersion == DoryVirtualMachineDefinition.currentSchemaVersion)
-        #expect(migrated.portForwards.isEmpty)
-        #expect(migrated.virtualHardwareABIVersion == 1)
-        #expect(migrated.workload == .desktop)
-        #expect(migrated.boot.phase == .install)
-        #expect(migrated.boot.order == ["installer"])
-        #expect(migrated.boot.devices[0].artifact == reference("install", "ubuntu-24.04"))
-        #expect(migrated.graphics.acceptableLevels == [.hostAcceleratedDisplay, .software])
-        #expect(migrated.storage[0].source == .userProvided)
-        #expect(migrated.lifecycle.createdAtUnixMilliseconds == 1_700_000_000_000)
-        #expect(migrated.display.backingScaleFactor == 2)
-        #expect(migrated.display.guestUIScaleFactor == 2)
-        #expect(migrated.isValid)
-
-        let upgraded = try JSONEncoder().encode(migrated)
-        let upgradedJSON = try #require(String(data: upgraded, encoding: .utf8))
-        #expect(upgradedJSON.contains("\"schemaVersion\":5"))
-        #expect(upgradedJSON.contains("\"displays\""))
-        #expect(upgradedJSON.contains("createdAtUnixMilliseconds"))
-        #expect(!upgradedJSON.contains("\"bootMedia\""))
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode(DoryVirtualMachineDefinition.self, from: golden)
+        }
     }
 
     @Test("install and live phases are independent from desktop or server workload")
@@ -708,8 +665,8 @@ struct DoryVirtualMachineDefinitionTests {
         }
     }
 
-    @Test("graphics and backend preferences are explicit structural contracts")
-    func graphicsAndBackendPolicy() {
+    @Test("graphics and compositional platform are explicit structural contracts")
+    func graphicsAndPlatformPolicy() {
         var definition = linuxDefinition()
         definition.graphics = DoryVMGraphicsPolicy(acceptableLevels: [])
         #expect(has(.emptyGraphicsPolicy, "graphics.acceptableLevels", in: definition.validate()))
@@ -722,14 +679,14 @@ struct DoryVirtualMachineDefinitionTests {
         ))
 
         definition.graphics = DoryVMGraphicsPolicy(acceptableLevels: [.hardwareAccelerated3D])
-        definition.backendPreference = DoryVMBackendPreference(
-            mode: .required,
-            backend: .doryHypervisor
-        )
         #expect(definition.isValid)
 
-        definition.backendPreference = DoryVMBackendPreference(mode: .required, backend: nil)
-        #expect(has(.backendPreferenceMalformed, "backendPreference", in: definition.validate()))
+        definition.platform?.machineModel = .pcV1
+        #expect(has(.platformCompositionMismatch, "platform", in: definition.validate()))
+
+        definition.platform = nil
+        definition.guest.architecture = .x86_64
+        #expect(has(.translationConsentRequired, "translationConsent", in: definition.validate()))
     }
 
     @Test("dynamic display integration requires an enabled display")
@@ -810,10 +767,7 @@ struct DoryVirtualMachineDefinitionTests {
                 )],
                 order: ["system"]
             ),
-            backendPreference: DoryVMBackendPreference(
-                mode: .preferred,
-                backend: .doryHypervisor
-            ),
+            platform: .arm64LinuxV1,
             graphics: DoryVMGraphicsPolicy(acceptableLevels: [.hardwareAccelerated3D]),
             resources: resources(),
             storage: [DoryVMStorageAttachment(

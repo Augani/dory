@@ -130,14 +130,14 @@ public struct DoryMachineTypedSettingsSnapshot: Codable, Sendable, Equatable, Ha
         audioConfiguration = definition.audio
         cameraConfiguration = definition.camera
         clipboardPolicy = definition.clipboardPolicy
-        switch (definition.backendPreference.mode, definition.backendPreference.backend) {
-        case (.automatic, nil):
+        switch definition.platform?.executionEngine {
+        case nil:
             runtimePreference = .automatic
-        case (.preferred, .doryHypervisor?):
+        case .nativeARM64?:
             runtimePreference = .accelerated
-        case (.preferred, .appleVirtualizationFramework?):
+        case .vzMac?:
             runtimePreference = .compatible
-        default:
+        case .x86ToARM64?:
             throw DoryMachineTypedWriteAuthorityError.unsupportedByLegacyRuntime(
                 "desktopRuntimePreference"
             )
@@ -875,17 +875,35 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
         case .unchanged:
             break
         case .clear, .set(.automatic):
-            definition.backendPreference = DoryVMBackendPreference()
+            definition.platform = nil
         case .set(.accelerated):
-            definition.backendPreference = DoryVMBackendPreference(
-                mode: .preferred,
-                backend: .doryHypervisor
-            )
+            let resolution = try DoryVirtualizationPlatformResolver.resolve(
+                DoryVirtualizationResolutionRequest(
+                    hostArchitecture: .arm64,
+                    guest: definition.guest,
+                    translationConsent: definition.translationConsent
+                )
+            ).get()
+            guard resolution.platform.executionEngine == .nativeARM64 else {
+                throw DoryMachineTypedWriteAuthorityError.unsupportedByLegacyRuntime(
+                    "desktopRuntimePreference"
+                )
+            }
+            definition.platform = resolution.platform
         case .set(.compatible):
-            definition.backendPreference = DoryVMBackendPreference(
-                mode: .preferred,
-                backend: .appleVirtualizationFramework
-            )
+            let resolution = try DoryVirtualizationPlatformResolver.resolve(
+                DoryVirtualizationResolutionRequest(
+                    hostArchitecture: .arm64,
+                    guest: definition.guest,
+                    translationConsent: definition.translationConsent
+                )
+            ).get()
+            guard resolution.platform.executionEngine == .vzMac else {
+                throw DoryMachineTypedWriteAuthorityError.unsupportedByLegacyRuntime(
+                    "desktopRuntimePreference"
+                )
+            }
+            definition.platform = resolution.platform
         }
         switch graphicsPreference {
         case .unchanged:

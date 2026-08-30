@@ -659,9 +659,12 @@ public final class DoryDaemonVirtualMachinePlanningCoordinator: @unchecked Senda
         devices: DoryVirtualMachineDeviceCapabilityRequest,
         allowsExperimental: Bool
     ) -> DoryVirtualMachineBackendPlanRequest {
-        let preferences = definition.backendPreference.backend.map { [$0] }
-        let policy: DoryVirtualMachineBackendPreferencePolicy =
-            definition.backendPreference.mode == .required ? .required : .preferred
+        let preferences: [DoryVirtualizationBackendIdentity]? = switch definition.platform?.executionEngine {
+        case .nativeARM64?: [.doryHypervisor]
+        case .vzMac?: [.appleVirtualizationFramework]
+        case .x86ToARM64?: nil
+        case nil: nil
+        }
         return DoryVirtualMachineBackendPlanRequest(
             guest: definition.guest,
             bootMedia: media,
@@ -669,7 +672,7 @@ public final class DoryDaemonVirtualMachinePlanningCoordinator: @unchecked Senda
             devices: devices,
             virtualHardwareABIVersion: definition.virtualHardwareABIVersion,
             backendPreferences: preferences,
-            backendPreferencePolicy: policy,
+            backendPreferencePolicy: preferences == nil ? .preferred : .required,
             allowsExperimentalBackends: allowsExperimental
         )
     }
