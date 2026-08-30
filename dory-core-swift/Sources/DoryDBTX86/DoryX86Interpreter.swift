@@ -535,38 +535,50 @@ public struct DoryX86Interpreter: Sendable {
           state: &state,
           memory: executionMemory
         )
-      case .loadVector128(let register, let source):
-        precondition(state.floatingPoint.ymm.indices.contains(Int(register)))
-        try validateSegmentAccess(
-          source,
-          byteCount: 16,
-          write: false,
-          instruction: instruction,
-          state: state
-        )
-        let bytes = try executionMemory.read(
-          at: effectiveAddress(source, instruction: instruction, state: state),
-          byteCount: 16
-        )
-        var registerBytes = state.floatingPoint.ymm[Int(register)].bytes
-        registerBytes.replaceSubrange(0..<16, with: bytes)
-        state.floatingPoint.ymm[Int(register)] = try .init(
-          bytes: registerBytes,
-          expectedByteCount: 32
-        )
-      case .storeVector128(let register, let destination):
-        precondition(state.floatingPoint.ymm.indices.contains(Int(register)))
-        try validateSegmentAccess(
-          destination,
-          byteCount: 16,
-          write: true,
-          instruction: instruction,
-          state: state
-        )
-        try executionMemory.write(
-          at: effectiveAddress(destination, instruction: instruction, state: state),
-          bytes: Array(state.floatingPoint.ymm[Int(register)].bytes.prefix(16))
-        )
+      case .moveVector128(let destination, let source, let requiresAlignment):
+        let bytes: [UInt8]
+        switch source {
+        case .register(let register):
+          precondition(state.floatingPoint.ymm.indices.contains(Int(register)))
+          bytes = Array(state.floatingPoint.ymm[Int(register)].bytes.prefix(16))
+        case .memory(let memoryOperand):
+          try validateSegmentAccess(
+            memoryOperand,
+            byteCount: 16,
+            write: false,
+            instruction: instruction,
+            state: state
+          )
+          let address = effectiveAddress(memoryOperand, instruction: instruction, state: state)
+          if requiresAlignment, address & 0xF != 0 {
+            return generalProtection(at: originalRIP)
+          }
+          bytes = try executionMemory.read(at: address, byteCount: 16)
+        }
+
+        switch destination {
+        case .register(let register):
+          precondition(state.floatingPoint.ymm.indices.contains(Int(register)))
+          var registerBytes = state.floatingPoint.ymm[Int(register)].bytes
+          registerBytes.replaceSubrange(0..<16, with: bytes)
+          state.floatingPoint.ymm[Int(register)] = try .init(
+            bytes: registerBytes,
+            expectedByteCount: 32
+          )
+        case .memory(let memoryOperand):
+          try validateSegmentAccess(
+            memoryOperand,
+            byteCount: 16,
+            write: true,
+            instruction: instruction,
+            state: state
+          )
+          let address = effectiveAddress(memoryOperand, instruction: instruction, state: state)
+          if requiresAlignment, address & 0xF != 0 {
+            return generalProtection(at: originalRIP)
+          }
+          try executionMemory.write(at: address, bytes: bytes)
+        }
       case .processorPause:
         break
       case .string(let operation, let width):

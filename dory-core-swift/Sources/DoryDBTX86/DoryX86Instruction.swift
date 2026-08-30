@@ -121,6 +121,11 @@ public enum DoryX86MemoryFence: String, Codable, Sendable, Hashable {
   case load, store, full
 }
 
+public enum DoryX86VectorOperand: Codable, Sendable, Hashable {
+  case register(UInt8)
+  case memory(DoryX86MemoryOperand)
+}
+
 public enum DoryX86StringOperation: String, Codable, Sendable, Hashable {
   case move, compare, store, load, scan, input, output
 }
@@ -191,8 +196,11 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
   case loadX87ControlWord(DoryX86Operand)
   case loadMXCSR(DoryX86Operand)
   case storeMXCSR(DoryX86Operand)
-  case loadVector128(register: UInt8, source: DoryX86MemoryOperand)
-  case storeVector128(register: UInt8, destination: DoryX86MemoryOperand)
+  case moveVector128(
+    destination: DoryX86VectorOperand,
+    source: DoryX86VectorOperand,
+    requiresAlignment: Bool
+  )
   case processorPause
   case string(DoryX86StringOperation, width: DoryX86OperandWidth)
   case input(port: DoryX86IOPort, width: DoryX86OperandWidth)

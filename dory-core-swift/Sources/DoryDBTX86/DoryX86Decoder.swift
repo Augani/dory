@@ -626,38 +626,32 @@ public struct DoryX86Decoder: Sendable {
           operation = operands.group == 2 ? .loadMXCSR(operands.rm) : .storeMXCSR(operands.rm)
         }
       case 0x6F:
-        guard prefixes.repeatPrefix == 0xF3 else {
+        let alignedVector = prefixes.operandSizeOverride && prefixes.repeatPrefix == nil
+        let unalignedVector = prefixes.repeatPrefix == 0xF3 && !prefixes.operandSizeOverride
+        guard alignedVector || unalignedVector else {
           throw DoryX86DecodeError.invalidEncoding(
             address: address, detail: "unsupported 0F 6F mandatory prefix")
         }
         let operands = try decodeModRM(
           cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
-        guard case .memory(let source) = operands.rm,
-          case .register(let destination, _) = operands.reg
-        else {
-          throw DoryX86DecodeError.invalidEncoding(
-            address: address, detail: "MOVDQU load requires a memory source")
-        }
-        operation = .loadVector128(
-          register: UInt8(DoryX86GeneralRegister.allCases.firstIndex(of: destination)!),
-          source: source
+        operation = .moveVector128(
+          destination: vectorOperand(operands.reg),
+          source: vectorOperand(operands.rm),
+          requiresAlignment: alignedVector
         )
       case 0x7F:
-        guard prefixes.repeatPrefix == 0xF3 else {
+        let alignedVector = prefixes.operandSizeOverride && prefixes.repeatPrefix == nil
+        let unalignedVector = prefixes.repeatPrefix == 0xF3 && !prefixes.operandSizeOverride
+        guard alignedVector || unalignedVector else {
           throw DoryX86DecodeError.invalidEncoding(
             address: address, detail: "unsupported 0F 7F mandatory prefix")
         }
         let operands = try decodeModRM(
           cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
-        guard case .memory(let destination) = operands.rm,
-          case .register(let source, _) = operands.reg
-        else {
-          throw DoryX86DecodeError.invalidEncoding(
-            address: address, detail: "MOVDQU store requires a memory destination")
-        }
-        operation = .storeVector128(
-          register: UInt8(DoryX86GeneralRegister.allCases.firstIndex(of: source)!),
-          destination: destination
+        operation = .moveVector128(
+          destination: vectorOperand(operands.rm),
+          source: vectorOperand(operands.reg),
+          requiresAlignment: alignedVector
         )
       case 0xA3, 0xAB, 0xB3, 0xBB:
         let operands = try decodeModRM(
@@ -892,6 +886,17 @@ public struct DoryX86Decoder: Sendable {
       return .highByteRegister(DoryX86GeneralRegister.allCases[lowBits - 4])
     }
     return .register(register(lowBits, extensionBit: extensionBit), width: width)
+  }
+
+  private func vectorOperand(_ operand: DoryX86Operand) -> DoryX86VectorOperand {
+    switch operand {
+    case .register(let register, _):
+      .register(UInt8(DoryX86GeneralRegister.allCases.firstIndex(of: register)!))
+    case .memory(let memory):
+      .memory(memory)
+    default:
+      preconditionFailure("ModRM vector operand must be a register or memory")
+    }
   }
 
   private func signExtend(
