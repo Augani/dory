@@ -42,7 +42,7 @@
   #
   # Shell can be useful for debugging but should not be enabled for production
   #
-  DEFINE BUILD_SHELL             = TRUE
+  DEFINE BUILD_SHELL             = FALSE
 
   #
   # Network definition
@@ -653,15 +653,13 @@
   gEmbeddedTokenSpaceGuid.PcdMemoryTypeEfiRuntimeServicesData|0x100
 
   #
-  # TDX need 1G PageTable support
-  gEfiMdeModulePkgTokenSpaceGuid.PcdUse1GPageTable|TRUE
+  # Keep firmware page tables inside the frozen compatible-v1 CPU profile.
+  gEfiMdeModulePkgTokenSpaceGuid.PcdUse1GPageTable|FALSE
 
   #
   # Network Pcds
   #
 !include NetworkPkg/NetworkFixedPcds.dsc.inc
-
-  gEfiShellPkgTokenSpaceGuid.PcdShellFileOperationSize|0x20000
 
 !if $(SMM_REQUIRE) == TRUE
   gUefiCpuPkgTokenSpaceGuid.PcdCpuSmmStackSize|0x4000

@@ -118,6 +118,10 @@ def verify_platform_contract() -> None:
     contents = "\n".join(lines)
     if any(token in contents for token in forbidden_tokens):
         raise BuildFailure("DoryPC must not compile a confidential-guest execution path")
+    if "DEFINE BUILD_SHELL             = FALSE" not in contents:
+        raise BuildFailure("DoryPC production firmware must not embed the UEFI shell")
+    if "gEfiMdeModulePkgTokenSpaceGuid.PcdUse1GPageTable|FALSE" not in contents:
+        raise BuildFailure("DoryPC firmware must stay inside the compatible-v1 page-size profile")
 
 
 configure_platform("armvirt")
