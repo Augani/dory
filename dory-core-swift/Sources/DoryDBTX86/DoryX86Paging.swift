@@ -543,6 +543,24 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, @unchecked Sendable {
     }
   }
 
+  public func validateWrite(at address: UInt64, byteCount: Int) throws {
+    guard byteCount > 0 else { return }
+    var cursor = address
+    var remaining = byteCount
+    while remaining > 0 {
+      let translation = try pagingUnit.translate(
+        linearAddress: cursor,
+        access: .write,
+        context: context,
+        physicalMemory: physicalMemory
+      )
+      let count = min(Int(4_096 - (cursor & 0xfff)), remaining)
+      _ = try physicalMemory.read(at: translation.physicalAddress, byteCount: count)
+      cursor &+= UInt64(count)
+      remaining -= count
+    }
+  }
+
   private func readLinear(
     at address: UInt64,
     byteCount: Int,

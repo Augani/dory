@@ -206,6 +206,35 @@ public struct DoryX86Interpreter: Sendable {
         state.modelSpecific.gsBase = state.gs.base
         swap(&state.modelSpecific.gsBase, &state.modelSpecific.kernelGSBase)
         state.gs.base = state.modelSpecific.gsBase
+      case .softwareInterrupt(let vector):
+        do {
+          try DoryX86InterruptDelivery().deliver(
+            vector: vector,
+            source: .software,
+            returnInstructionPointer: nextRIP,
+            state: &state,
+            physicalMemory: memory,
+            pagingUnit: pagingUnit,
+            mode: mode
+          )
+          return .retired(instruction)
+        } catch {
+          state.rip = originalRIP
+          return generalProtection(at: originalRIP)
+        }
+      case .interruptReturn:
+        do {
+          try DoryX86InterruptDelivery().interruptReturn(
+            state: &state,
+            physicalMemory: memory,
+            pagingUnit: pagingUnit,
+            mode: mode
+          )
+          return .retired(instruction)
+        } catch {
+          state.rip = originalRIP
+          return generalProtection(at: originalRIP)
+        }
       case .setInterruptsEnabled(let enabled):
         let currentPrivilege = UInt64(state.cs.selector & 3)
         let ioPrivilege = (state.rflags.rawValue >> 12) & 3

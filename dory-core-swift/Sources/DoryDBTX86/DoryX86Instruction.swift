@@ -113,6 +113,8 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
   case writeModelSpecificRegister
   case readTimestampCounter(includeAuxiliary: Bool)
   case swapGS
+  case softwareInterrupt(vector: UInt8)
+  case interruptReturn
   case syscall
   case sysret
   case halt

@@ -130,6 +130,10 @@ public struct DoryX86Decoder: Sendable {
       operation = .call(relative: Int64(try cursor.readSigned(byteCount: 4)))
     case 0xC3:
       operation = .return
+    case 0xCF:
+      operation = .interruptReturn
+    case 0xCD:
+      operation = .softwareInterrupt(vector: try cursor.readByte())
     case 0xE9:
       operation = .jump(relative: Int64(try cursor.readSigned(byteCount: 4)))
     case 0xEB:
