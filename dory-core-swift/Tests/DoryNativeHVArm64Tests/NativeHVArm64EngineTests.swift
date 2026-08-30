@@ -1,10 +1,15 @@
 #if arch(arm64)
+  import DoryPhase0AHostNativeWorkload
   import Foundation
   import Testing
   @testable import DoryNativeHVArm64
 
   @Suite(.serialized)
   struct NativeHVArm64EngineTests {
+    @Test func hostNativeCounterLoopPreservesExactIterationCount() {
+      #expect(dory_phase0a_native_counter_loop(10_000) == 10_000)
+    }
+
     @Test func executesGuestAndCapturesArchitecturalState() throws {
       guard #available(macOS 15.0, *) else { return }
       guard ProcessInfo.processInfo.environment["DORY_RUN_NATIVE_HV_SMOKE"] == "1" else {

@@ -80,6 +80,10 @@ let package = Package(
       linkerSettings: [.linkedFramework("CoreGraphics")]
     ),
     .target(
+      name: "DoryPhase0AHostNativeWorkload",
+      dependencies: []
+    ),
+    .target(
       name: "DoryVMContracts",
       dependencies: []
     ),
@@ -202,6 +206,7 @@ let package = Package(
       dependencies: [
         "DoryExecutionContracts",
         "DoryNativeHVArm64",
+        "DoryPhase0AHostNativeWorkload",
         "DoryPhase0AQualification",
       ],
       linkerSettings: [.linkedFramework("Hypervisor")]
@@ -228,7 +233,11 @@ let package = Package(
     ),
     .testTarget(
       name: "DoryNativeHVArm64Tests",
-      dependencies: ["DoryExecutionContracts", "DoryNativeHVArm64"]
+      dependencies: [
+        "DoryExecutionContracts",
+        "DoryNativeHVArm64",
+        "DoryPhase0AHostNativeWorkload",
+      ]
     ),
     .testTarget(
       name: "DoryPhase0AQualificationTests",
