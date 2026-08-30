@@ -12,6 +12,7 @@ let package = Package(
     .library(name: "DoryExecutionContracts", targets: ["DoryExecutionContracts"]),
     .library(name: "DoryMachineARMVirt", targets: ["DoryMachineARMVirt"]),
     .library(name: "DoryFirmware", targets: ["DoryFirmware"]),
+    .library(name: "DoryCameraBridgeContracts", targets: ["DoryCameraBridgeContracts"]),
     .library(name: "DoryNativeHVArm64", targets: ["DoryNativeHVArm64"]),
     .library(name: "DoryPhase0AQualification", targets: ["DoryPhase0AQualification"]),
     .library(name: "DoryHostCamera", targets: ["DoryHostCamera"]),
@@ -88,6 +89,10 @@ let package = Package(
       name: "DoryPhase0AQualification",
       dependencies: [],
       linkerSettings: [.linkedFramework("CoreGraphics")]
+    ),
+    .target(
+      name: "DoryCameraBridgeContracts",
+      dependencies: []
     ),
     .target(
       name: "DoryHostCamera",
@@ -282,6 +287,10 @@ let package = Package(
     .testTarget(
       name: "DoryVZMacSDKInventoryTests",
       dependencies: ["DoryVZMacSDKInventory"]
+    ),
+    .testTarget(
+      name: "DoryCameraBridgeContractsTests",
+      dependencies: ["DoryCameraBridgeContracts"]
     ),
     .testTarget(
       name: "DoryHostCameraTests",
