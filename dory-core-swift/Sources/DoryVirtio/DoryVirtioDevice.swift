@@ -106,6 +106,10 @@ public final class DoryVirtioDeviceState: @unchecked Sendable {
     }
   }
 
+  public func configurationDidChange() {
+    lock.withLock { configurationGeneration &+= 1 }
+  }
+
   public func snapshot() -> DoryVirtioDeviceSnapshot {
     lock.withLock {
       .init(

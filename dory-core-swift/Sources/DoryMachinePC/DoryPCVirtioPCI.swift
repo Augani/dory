@@ -50,6 +50,7 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
   private var guestMemory: (any DoryVirtioGuestMemory)?
   private var queueProcessor:
     (@Sendable (UInt16, DoryVirtioDescriptorChain, any DoryVirtioGuestMemory) throws -> UInt32)?
+  private var queueCanProcess: @Sendable (UInt16) -> Bool = { _ in true }
   private let processingLocks: [NSLock]
 
   public init(
@@ -84,6 +85,7 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
 
   public func connectQueueProcessor(
     memory: any DoryVirtioGuestMemory,
+    canProcess: @escaping @Sendable (UInt16) -> Bool = { _ in true },
     processor:
       @escaping @Sendable (
         UInt16,
@@ -93,8 +95,15 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
   ) {
     lock.withLock {
       guestMemory = memory
+      queueCanProcess = canProcess
       queueProcessor = processor
     }
+  }
+
+  /// Rechecks a queue after host-side work becomes available, such as an inbound network frame.
+  public func processQueue(_ index: UInt16) {
+    guard Int(index) < queueCount else { return }
+    drain(queue: index)
   }
 
   public func queue(at index: UInt16) throws -> DoryVirtioSplitQueue {
@@ -139,6 +148,17 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
       return interruptSink
     }
     _ = sink?()
+  }
+
+  public func updateDeviceConfiguration(_ bytes: [UInt8], signalChange: Bool = true) {
+    let changed = lock.withLock {
+      guard deviceConfiguration != bytes else { return false }
+      deviceConfiguration = bytes
+      return true
+    }
+    guard changed else { return }
+    deviceState.configurationDidChange()
+    if signalChange { signalConfigurationChange() }
   }
 
   public func readBAR(offset: UInt64, byteCount: Int) throws -> [UInt8] {
@@ -194,17 +214,19 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
   private func drain(queue index: UInt16) {
     let snapshot = deviceState.snapshot()
     guard snapshot.status.contains(.driverOK) else { return }
-    let processing = lock.withLock { (guestMemory, queueProcessor) }
-    guard let memory = processing.0, let processor = processing.1 else { return }
+    let processing = lock.withLock { (guestMemory, queueCanProcess, queueProcessor) }
+    guard let memory = processing.0, let processor = processing.2 else { return }
     let processingLock = processingLocks[Int(index)]
     processingLock.lock()
     defer { processingLock.unlock() }
     do {
       let queue = try queue(at: index)
-      while let chain = try queue.popAvailable(
-        memory: memory,
-        allowIndirectDescriptors: snapshot.negotiatedFeatures.contains(.indirectDescriptors)
-      ) {
+      while processing.1(index),
+        let chain = try queue.popAvailable(
+          memory: memory,
+          allowIndirectDescriptors: snapshot.negotiatedFeatures.contains(.indirectDescriptors)
+        )
+      {
         let bytesWritten = try processor(index, chain, memory)
         memory.synchronize()
         let notify = try queue.complete(
@@ -419,6 +441,100 @@ public final class DoryPCVirtioEntropyPCIDevice: DoryPCPCIFunction, DoryPCPCIMSI
       guard queue == 0 else { throw DoryPCVirtioPCIError.invalidQueue(queue) }
       return try entropyDevice.process(chain, memory: memory)
     }
+  }
+
+  public func readConfiguration(offset: Int, byteCount: Int) throws -> [UInt8] {
+    try pciFunction.readConfiguration(offset: offset, byteCount: byteCount)
+  }
+
+  public func writeConfiguration(offset: Int, bytes: [UInt8]) throws {
+    try pciFunction.writeConfiguration(offset: offset, bytes: bytes)
+  }
+
+  public func connectMSISink(
+    _ sink: @escaping @Sendable (_ messageAddress: UInt64, _ messageData: UInt16) -> Bool
+  ) {
+    pciFunction.connectMSISink(sink)
+  }
+
+  public func readBAR(offset: UInt64, byteCount: Int) throws -> [UInt8] {
+    try pciFunction.readBAR(offset: offset, byteCount: byteCount)
+  }
+
+  public func writeBAR(offset: UInt64, bytes: [UInt8]) throws {
+    try pciFunction.writeBAR(offset: offset, bytes: bytes)
+  }
+}
+
+public final class DoryPCVirtioNetworkPCIDevice: DoryPCPCIFunction, DoryPCPCIMSIControllable,
+  DoryPCPCIBARMemoryDevice, DoryPCVirtioGuestMemoryConsumer, @unchecked Sendable
+{
+  public let pciFunction: DoryPCVirtioPCIFunction
+  public let networkDevice: DoryVirtioNetworkDevice
+
+  public var pciAddress: DoryPCPCIAddress { pciFunction.pciAddress }
+  public var configurationFunction: DoryPCPCIConfigurationFunction {
+    pciFunction.configurationFunction
+  }
+  public var barIndex: Int { pciFunction.barIndex }
+  public var transport: DoryPCVirtioPCITransport { pciFunction.transport }
+
+  public init(
+    address: DoryPCPCIAddress,
+    initialBARAddress: UInt64,
+    backend: any DoryVirtioNetworkBackend,
+    macAddress: [UInt8],
+    mtu: UInt16 = 1500,
+    maximumQueueSize: UInt16 = 256,
+    maximumPendingReceiveFrames: Int = 1024
+  ) throws {
+    networkDevice = try .init(
+      backend: backend,
+      macAddress: macAddress,
+      mtu: mtu,
+      maximumPendingReceiveFrames: maximumPendingReceiveFrames
+    )
+    pciFunction = try .init(
+      address: address,
+      virtioDeviceID: 1,
+      classCode: 0x020000,
+      initialBARAddress: initialBARAddress,
+      queueCount: 2,
+      maximumQueueSize: maximumQueueSize,
+      offeredFeatures: networkDevice.offeredFeatures.union([
+        .indirectDescriptors, .eventIndex,
+      ]),
+      deviceConfiguration: networkDevice.configuration
+    )
+    networkDevice.connectReceiveReadySink { [weak transport = pciFunction.transport] in
+      transport?.processQueue(DoryVirtioNetworkDevice.receiveQueue)
+    }
+  }
+
+  public func connectGuestMemory(_ memory: any DoryVirtioGuestMemory) {
+    transport.connectQueueProcessor(
+      memory: memory,
+      canProcess: { [networkDevice] queue in
+        queue != DoryVirtioNetworkDevice.receiveQueue || networkDevice.canReceive
+      },
+      processor: { [networkDevice] queue, chain, memory in
+        switch queue {
+        case DoryVirtioNetworkDevice.receiveQueue:
+          return try networkDevice.processReceive(chain, memory: memory)
+        case DoryVirtioNetworkDevice.transmitQueue:
+          return try networkDevice.processTransmit(chain, memory: memory)
+        default:
+          throw DoryPCVirtioPCIError.invalidQueue(queue)
+        }
+      }
+    )
+  }
+
+  @discardableResult
+  public func setLinkUp(_ isUp: Bool) -> Bool {
+    guard networkDevice.setLinkUp(isUp) else { return false }
+    transport.updateDeviceConfiguration(networkDevice.configuration)
+    return true
   }
 
   public func readConfiguration(offset: Int, byteCount: Int) throws -> [UInt8] {
