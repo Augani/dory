@@ -64,18 +64,55 @@ public struct DoryX86Decoder: Sendable {
     switch opcode {
     case 0x90:
       operation = .noOperation
+    case 0x9C:
+      operation = .pushFlags(width: stackWidth(mode: mode, prefixes: prefixes))
+    case 0x9D:
+      operation = .popFlags(width: stackWidth(mode: mode, prefixes: prefixes))
     case 0xF4:
       operation = .halt
+    case 0xF5:
+      operation = .complementCarry
+    case 0xF8:
+      operation = .setCarry(false)
+    case 0xF9:
+      operation = .setCarry(true)
     case 0xFA:
       operation = .setInterruptsEnabled(false)
     case 0xFB:
       operation = .setInterruptsEnabled(true)
+    case 0xFC:
+      operation = .setDirection(false)
+    case 0xFD:
+      operation = .setDirection(true)
     case 0x50...0x57:
       let register = register(Int(opcode - 0x50), extensionBit: prefixes.rex?.b == true)
       operation = .push(.register(register, width: stackWidth(mode: mode, prefixes: prefixes)))
     case 0x58...0x5F:
       let register = register(Int(opcode - 0x58), extensionBit: prefixes.rex?.b == true)
       operation = .pop(.register(register, width: stackWidth(mode: mode, prefixes: prefixes)))
+    case 0x68:
+      let targetWidth = stackWidth(mode: mode, prefixes: prefixes)
+      let encodedWidth: DoryX86OperandWidth = targetWidth == .word ? .word : .doubleword
+      let raw = try cursor.readUnsigned(byteCount: encodedWidth.byteCount)
+      operation = .push(
+        .immediate(signExtend(raw, from: encodedWidth, to: targetWidth), width: targetWidth)
+      )
+    case 0x6A:
+      let targetWidth = stackWidth(mode: mode, prefixes: prefixes)
+      let raw = try cursor.readUnsigned(byteCount: 1)
+      operation = .push(
+        .immediate(signExtend(raw, from: .byte, to: targetWidth), width: targetWidth)
+      )
+    case 0xB0...0xB7:
+      operation = .move(
+        destination: registerOperand(
+          Int(opcode - 0xB0),
+          extensionBit: prefixes.rex?.b == true,
+          width: .byte,
+          rexPresent: prefixes.rex != nil
+        ),
+        source: .immediate(try cursor.readUnsigned(byteCount: 1), width: .byte)
+      )
     case 0xB8...0xBF:
       let register = register(Int(opcode - 0xB8), extensionBit: prefixes.rex?.b == true)
       let immediate = try cursor.readUnsigned(byteCount: width.byteCount)
@@ -83,10 +120,24 @@ public struct DoryX86Decoder: Sendable {
         destination: .register(register, width: width),
         source: .immediate(immediate, width: width)
       )
-    case 0x89, 0x8B, 0x8D, 0x01, 0x03, 0x09, 0x0B, 0x21, 0x23,
-      0x29, 0x2B, 0x31, 0x33, 0x39, 0x3B, 0x85:
-      let operands = try decodeModRM(cursor: &cursor, width: width, prefixes: prefixes, mode: mode)
+    case 0x88, 0x8A, 0x89, 0x8B, 0x8D,
+      0x00, 0x02, 0x01, 0x03, 0x08, 0x0A, 0x09, 0x0B,
+      0x10, 0x12, 0x11, 0x13, 0x18, 0x1A, 0x19, 0x1B,
+      0x20, 0x22, 0x21, 0x23, 0x28, 0x2A, 0x29, 0x2B,
+      0x30, 0x32, 0x31, 0x33, 0x38, 0x3A, 0x39, 0x3B,
+      0x84, 0x85:
+      let operandWidth: DoryX86OperandWidth = opcode & 1 == 0 ? .byte : width
+      let operands = try decodeModRM(
+        cursor: &cursor,
+        width: operandWidth,
+        prefixes: prefixes,
+        mode: mode
+      )
       switch opcode {
+      case 0x88:
+        operation = .move(destination: operands.rm, source: operands.reg)
+      case 0x8A:
+        operation = .move(destination: operands.reg, source: operands.rm)
       case 0x89:
         operation = .move(destination: operands.rm, source: operands.reg)
       case 0x8B:
@@ -97,35 +148,153 @@ public struct DoryX86Decoder: Sendable {
             address: address, detail: "LEA requires a memory source")
         }
         operation = .loadEffectiveAddress(destination: operands.reg, source: memory)
-      case 0x01: operation = .alu(.add, destination: operands.rm, source: operands.reg)
-      case 0x03: operation = .alu(.add, destination: operands.reg, source: operands.rm)
-      case 0x09: operation = .alu(.or, destination: operands.rm, source: operands.reg)
-      case 0x0B: operation = .alu(.or, destination: operands.reg, source: operands.rm)
-      case 0x21: operation = .alu(.and, destination: operands.rm, source: operands.reg)
-      case 0x23: operation = .alu(.and, destination: operands.reg, source: operands.rm)
-      case 0x29: operation = .alu(.subtract, destination: operands.rm, source: operands.reg)
-      case 0x2B: operation = .alu(.subtract, destination: operands.reg, source: operands.rm)
-      case 0x31: operation = .alu(.xor, destination: operands.rm, source: operands.reg)
-      case 0x33: operation = .alu(.xor, destination: operands.reg, source: operands.rm)
-      case 0x39: operation = .alu(.compare, destination: operands.rm, source: operands.reg)
-      case 0x3B: operation = .alu(.compare, destination: operands.reg, source: operands.rm)
+      case 0x00, 0x01: operation = .alu(.add, destination: operands.rm, source: operands.reg)
+      case 0x02, 0x03: operation = .alu(.add, destination: operands.reg, source: operands.rm)
+      case 0x08, 0x09: operation = .alu(.or, destination: operands.rm, source: operands.reg)
+      case 0x0A, 0x0B: operation = .alu(.or, destination: operands.reg, source: operands.rm)
+      case 0x10, 0x11:
+        operation = .alu(.addWithCarry, destination: operands.rm, source: operands.reg)
+      case 0x12, 0x13:
+        operation = .alu(.addWithCarry, destination: operands.reg, source: operands.rm)
+      case 0x18, 0x19:
+        operation = .alu(.subtractWithBorrow, destination: operands.rm, source: operands.reg)
+      case 0x1A, 0x1B:
+        operation = .alu(.subtractWithBorrow, destination: operands.reg, source: operands.rm)
+      case 0x20, 0x21: operation = .alu(.and, destination: operands.rm, source: operands.reg)
+      case 0x22, 0x23: operation = .alu(.and, destination: operands.reg, source: operands.rm)
+      case 0x28, 0x29:
+        operation = .alu(.subtract, destination: operands.rm, source: operands.reg)
+      case 0x2A, 0x2B:
+        operation = .alu(.subtract, destination: operands.reg, source: operands.rm)
+      case 0x30, 0x31: operation = .alu(.xor, destination: operands.rm, source: operands.reg)
+      case 0x32, 0x33: operation = .alu(.xor, destination: operands.reg, source: operands.rm)
+      case 0x38, 0x39:
+        operation = .alu(.compare, destination: operands.rm, source: operands.reg)
+      case 0x3A, 0x3B:
+        operation = .alu(.compare, destination: operands.reg, source: operands.rm)
       default: operation = .alu(.test, destination: operands.rm, source: operands.reg)
       }
-    case 0xC7:
-      let operands = try decodeModRM(cursor: &cursor, width: width, prefixes: prefixes, mode: mode)
+    case 0x04, 0x05, 0x0C, 0x0D, 0x14, 0x15, 0x1C, 0x1D,
+      0x24, 0x25, 0x2C, 0x2D, 0x34, 0x35, 0x3C, 0x3D:
+      let operandWidth: DoryX86OperandWidth = opcode & 1 == 0 ? .byte : width
+      let aluOperation = try aluOperation(group: (opcode >> 3) & 7, address: address)
+      let encodedWidth: DoryX86OperandWidth = operandWidth == .quadword ? .doubleword : operandWidth
+      let raw = try cursor.readUnsigned(byteCount: encodedWidth.byteCount)
+      let value =
+        operandWidth == .quadword
+        ? signExtend(raw, from: encodedWidth, to: operandWidth)
+        : raw
+      operation = .alu(
+        aluOperation,
+        destination: .register(.rax, width: operandWidth),
+        source: .immediate(value, width: operandWidth)
+      )
+    case 0x80, 0x81, 0x83:
+      let operandWidth: DoryX86OperandWidth = opcode == 0x80 ? .byte : width
+      let operands = try decodeModRM(
+        cursor: &cursor, width: operandWidth, prefixes: prefixes, mode: mode)
+      let aluOperation = try aluOperation(group: operands.group, address: address)
+      let encodedWidth: DoryX86OperandWidth =
+        opcode == 0x83
+        ? .byte
+        : (operandWidth == .quadword ? .doubleword : operandWidth)
+      let raw = try cursor.readUnsigned(byteCount: encodedWidth.byteCount)
+      let value =
+        opcode == 0x83 || operandWidth == .quadword
+        ? signExtend(raw, from: encodedWidth, to: operandWidth)
+        : raw
+      operation = .alu(
+        aluOperation,
+        destination: operands.rm,
+        source: .immediate(value, width: operandWidth)
+      )
+    case 0xA8, 0xA9:
+      let operandWidth: DoryX86OperandWidth = opcode == 0xA8 ? .byte : width
+      let encodedWidth: DoryX86OperandWidth = operandWidth == .quadword ? .doubleword : operandWidth
+      let raw = try cursor.readUnsigned(byteCount: encodedWidth.byteCount)
+      let value =
+        operandWidth == .quadword
+        ? signExtend(raw, from: encodedWidth, to: operandWidth)
+        : raw
+      operation = .alu(
+        .test,
+        destination: .register(.rax, width: operandWidth),
+        source: .immediate(value, width: operandWidth)
+      )
+    case 0xC6, 0xC7:
+      let operandWidth: DoryX86OperandWidth = opcode == 0xC6 ? .byte : width
+      let operands = try decodeModRM(
+        cursor: &cursor, width: operandWidth, prefixes: prefixes, mode: mode)
       guard operands.group == 0 else {
-        throw DoryX86DecodeError.invalidEncoding(address: address, detail: "C7 group must be /0")
+        throw DoryX86DecodeError.invalidEncoding(
+          address: address, detail: "MOV immediate group must be /0")
       }
-      let encodedWidth: DoryX86OperandWidth = width == .quadword ? .doubleword : width
+      let encodedWidth: DoryX86OperandWidth = operandWidth == .quadword ? .doubleword : operandWidth
       let raw = try cursor.readUnsigned(byteCount: encodedWidth.byteCount)
       let immediate =
-        width == .quadword
-        ? UInt64(bitPattern: Int64(Int32(truncatingIfNeeded: raw)))
+        operandWidth == .quadword
+        ? signExtend(raw, from: encodedWidth, to: operandWidth)
         : raw
       operation = .move(
         destination: operands.rm,
-        source: .immediate(immediate, width: width)
+        source: .immediate(immediate, width: operandWidth)
       )
+    case 0xFE, 0xFF:
+      let operandWidth: DoryX86OperandWidth = opcode == 0xFE ? .byte : width
+      let operands = try decodeModRM(
+        cursor: &cursor, width: operandWidth, prefixes: prefixes, mode: mode)
+      let controlOperand =
+        mode == .long64
+        ? resizedOperand(operands.rm, to: .quadword)
+        : operands.rm
+      switch operands.group {
+      case 0: operation = .unary(.increment, operand: operands.rm)
+      case 1: operation = .unary(.decrement, operand: operands.rm)
+      case 2 where opcode == 0xFF: operation = .callIndirect(controlOperand)
+      case 4 where opcode == 0xFF: operation = .jumpIndirect(controlOperand)
+      case 6 where opcode == 0xFF: operation = .push(controlOperand)
+      default:
+        throw DoryX86DecodeError.invalidEncoding(
+          address: address, detail: "unsupported FE/FF group")
+      }
+    case 0xF6, 0xF7:
+      let operandWidth: DoryX86OperandWidth = opcode == 0xF6 ? .byte : width
+      let operands = try decodeModRM(
+        cursor: &cursor, width: operandWidth, prefixes: prefixes, mode: mode)
+      switch operands.group {
+      case 0:
+        let encodedWidth: DoryX86OperandWidth =
+          operandWidth == .quadword ? .doubleword : operandWidth
+        let raw = try cursor.readUnsigned(byteCount: encodedWidth.byteCount)
+        let value =
+          operandWidth == .quadword
+          ? signExtend(raw, from: encodedWidth, to: operandWidth)
+          : raw
+        operation = .alu(
+          .test,
+          destination: operands.rm,
+          source: .immediate(value, width: operandWidth)
+        )
+      case 2: operation = .unary(.bitwiseNot, operand: operands.rm)
+      case 3: operation = .unary(.negate, operand: operands.rm)
+      default:
+        throw DoryX86DecodeError.invalidEncoding(
+          address: address, detail: "unsupported F6/F7 group")
+      }
+    case 0xC0, 0xC1, 0xD0, 0xD1, 0xD2, 0xD3:
+      let operandWidth: DoryX86OperandWidth = opcode & 1 == 0 ? .byte : width
+      let operands = try decodeModRM(
+        cursor: &cursor, width: operandWidth, prefixes: prefixes, mode: mode)
+      let shiftOperation = try shiftOperation(group: operands.group, address: address)
+      let count: DoryX86ShiftCount
+      switch opcode {
+      case 0xC0, 0xC1: count = .immediate(try cursor.readByte())
+      case 0xD0, 0xD1: count = .immediate(1)
+      default: count = .cl
+      }
+      operation = .shift(shiftOperation, destination: operands.rm, count: count)
+    case 0xC9:
+      operation = .leave(width: stackWidth(mode: mode, prefixes: prefixes))
     case 0xE8:
       operation = .call(relative: Int64(try cursor.readSigned(byteCount: 4)))
     case 0xC3:
@@ -252,6 +421,84 @@ public struct DoryX86Decoder: Sendable {
     DoryX86GeneralRegister.allCases[lowBits | (extensionBit ? 8 : 0)]
   }
 
+  private func registerOperand(
+    _ lowBits: Int,
+    extensionBit: Bool,
+    width: DoryX86OperandWidth,
+    rexPresent: Bool
+  ) -> DoryX86Operand {
+    if width == .byte, !rexPresent, !extensionBit, (4...7).contains(lowBits) {
+      return .highByteRegister(DoryX86GeneralRegister.allCases[lowBits - 4])
+    }
+    return .register(register(lowBits, extensionBit: extensionBit), width: width)
+  }
+
+  private func signExtend(
+    _ value: UInt64,
+    from source: DoryX86OperandWidth,
+    to destination: DoryX86OperandWidth
+  ) -> UInt64 {
+    guard source.rawValue < destination.rawValue else { return value }
+    let signBit = UInt64(1) << UInt64(source.rawValue - 1)
+    let sourceMask = (UInt64(1) << UInt64(source.rawValue)) - 1
+    return value & signBit == 0 ? value & sourceMask : value | ~sourceMask
+  }
+
+  private func resizedOperand(
+    _ operand: DoryX86Operand,
+    to width: DoryX86OperandWidth
+  ) -> DoryX86Operand {
+    switch operand {
+    case .register(let register, _):
+      .register(register, width: width)
+    case .memory(let memory):
+      .memory(
+        .init(
+          base: memory.base,
+          index: memory.index,
+          scale: memory.scale,
+          displacement: memory.displacement,
+          ripRelative: memory.ripRelative,
+          width: width
+        ))
+    case .immediate(let value, _):
+      .immediate(value, width: width)
+    case .relative(let value, _):
+      .relative(value, width: width)
+    case .highByteRegister:
+      operand
+    }
+  }
+
+  private func aluOperation(group: UInt8, address: UInt64) throws -> DoryX86ALUOperation {
+    switch group {
+    case 0: .add
+    case 1: .or
+    case 2: .addWithCarry
+    case 3: .subtractWithBorrow
+    case 4: .and
+    case 5: .subtract
+    case 6: .xor
+    case 7: .compare
+    default:
+      throw DoryX86DecodeError.invalidEncoding(address: address, detail: "invalid ALU group")
+    }
+  }
+
+  private func shiftOperation(group: UInt8, address: UInt64) throws -> DoryX86ShiftOperation {
+    switch group {
+    case 0: .rotateLeft
+    case 1: .rotateRight
+    case 2: .rotateCarryLeft
+    case 3: .rotateCarryRight
+    case 4: .shiftLeft
+    case 5: .shiftRight
+    case 7: .arithmeticShiftRight
+    default:
+      throw DoryX86DecodeError.invalidEncoding(address: address, detail: "invalid shift group")
+    }
+  }
+
   private struct ModRMOperands {
     let rm: DoryX86Operand
     let reg: DoryX86Operand
@@ -268,12 +515,21 @@ public struct DoryX86Decoder: Sendable {
     let modeBits = byte >> 6
     let regBits = (byte >> 3) & 7
     let rmBits = byte & 7
-    let reg = register(Int(regBits), extensionBit: prefixes.rex?.r == true)
-    let registerOperand = DoryX86Operand.register(reg, width: width)
+    let regOperand = registerOperand(
+      Int(regBits),
+      extensionBit: prefixes.rex?.r == true,
+      width: width,
+      rexPresent: prefixes.rex != nil
+    )
     if modeBits == 3 {
       return ModRMOperands(
-        rm: .register(register(Int(rmBits), extensionBit: prefixes.rex?.b == true), width: width),
-        reg: registerOperand,
+        rm: registerOperand(
+          Int(rmBits),
+          extensionBit: prefixes.rex?.b == true,
+          width: width,
+          rexPresent: prefixes.rex != nil
+        ),
+        reg: regOperand,
         group: regBits
       )
     }
@@ -320,7 +576,7 @@ public struct DoryX86Decoder: Sendable {
           ripRelative: ripRelative,
           width: width
         )),
-      reg: registerOperand,
+      reg: regOperand,
       group: regBits
     )
   }

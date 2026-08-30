@@ -127,6 +127,51 @@ public struct DoryX86Interpreter: Sendable {
             result, to: destination, instruction: instruction, state: &state,
             memory: executionMemory)
         }
+      case .unary(let operation, let operand):
+        let value = try read(
+          operand, instruction: instruction, state: state, memory: executionMemory)
+        let width = operandWidth(operand)
+        let result: UInt64
+        switch operation {
+        case .increment:
+          let carry = state.rflags.contains(.carry)
+          result = executeALU(.add, lhs: value, rhs: 1, width: width, flags: &state.rflags)
+          setFlag(.carry, carry, in: &state.rflags)
+        case .decrement:
+          let carry = state.rflags.contains(.carry)
+          result = executeALU(
+            .subtract, lhs: value, rhs: 1, width: width, flags: &state.rflags)
+          setFlag(.carry, carry, in: &state.rflags)
+        case .bitwiseNot:
+          result = ~value & mask(width)
+        case .negate:
+          result = executeALU(
+            .subtract, lhs: 0, rhs: value, width: width, flags: &state.rflags)
+        }
+        try write(
+          result, to: operand, instruction: instruction, state: &state, memory: executionMemory)
+      case .shift(let operation, let destination, let countSource):
+        let value = try read(
+          destination, instruction: instruction, state: state, memory: executionMemory)
+        let count: UInt8 =
+          switch countSource {
+          case .immediate(let value): value
+          case .cl: UInt8(truncatingIfNeeded: state.registers.rcx)
+          }
+        let result = executeShift(
+          operation,
+          value: value,
+          count: count,
+          width: operandWidth(destination),
+          flags: &state.rflags
+        )
+        try write(
+          result,
+          to: destination,
+          instruction: instruction,
+          state: &state,
+          memory: executionMemory
+        )
       case .push(let operand):
         let value = try read(
           operand, instruction: instruction, state: state, memory: executionMemory)
@@ -147,6 +192,14 @@ public struct DoryX86Interpreter: Sendable {
         try executionMemory.write(
           at: state.registers.rsp, bytes: littleEndian(nextRIP, width: stackWidth))
         nextRIP = addRelative(nextRIP, relative)
+      case .callIndirect(let operand):
+        let target = try read(
+          operand, instruction: instruction, state: state, memory: executionMemory)
+        let width = stackWidth(mode)
+        state.registers.rsp &-= UInt64(width.byteCount)
+        try executionMemory.write(
+          at: state.registers.rsp, bytes: littleEndian(nextRIP, width: width))
+        nextRIP = target
       case .return:
         let stackWidth: DoryX86OperandWidth =
           mode == .long64 ? .quadword : (mode == .real16 ? .word : .doubleword)
@@ -155,6 +208,9 @@ public struct DoryX86Interpreter: Sendable {
         state.registers.rsp &+= UInt64(stackWidth.byteCount)
       case .jump(let relative):
         nextRIP = addRelative(nextRIP, relative)
+      case .jumpIndirect(let operand):
+        nextRIP = try read(
+          operand, instruction: instruction, state: state, memory: executionMemory)
       case .conditionalJump(let condition, let relative):
         if evaluate(condition, flags: state.rflags) { nextRIP = addRelative(nextRIP, relative) }
       case .cpuid:
@@ -259,6 +315,36 @@ public struct DoryX86Interpreter: Sendable {
           state.rip = originalRIP
           return generalProtection(at: originalRIP)
         }
+      case .pushFlags(let width):
+        state.registers.rsp &-= UInt64(width.byteCount)
+        try executionMemory.write(
+          at: state.registers.rsp,
+          bytes: littleEndian(state.rflags.rawValue, width: width)
+        )
+      case .popFlags(let width):
+        let raw = fromLittleEndian(
+          try executionMemory.read(at: state.registers.rsp, byteCount: width.byteCount))
+        var requested = DoryX86RFLAGS(
+          rawValue: (raw & DoryX86RFLAGS.architecturallyWritableMask) | 2)
+        if currentPrivilegeLevel(state) > UInt8((state.rflags.rawValue >> 12) & 3) {
+          setFlag(.interruptEnable, state.rflags.contains(.interruptEnable), in: &requested)
+        }
+        guard let validated = try? requested.validated() else {
+          return generalProtection(at: originalRIP)
+        }
+        state.rflags = validated
+        state.registers.rsp &+= UInt64(width.byteCount)
+      case .leave(let width):
+        state.registers.rsp = state.registers.rbp
+        state.registers.rbp = fromLittleEndian(
+          try executionMemory.read(at: state.registers.rsp, byteCount: width.byteCount))
+        state.registers.rsp &+= UInt64(width.byteCount)
+      case .setCarry(let enabled):
+        setFlag(.carry, enabled, in: &state.rflags)
+      case .complementCarry:
+        setFlag(.carry, !state.rflags.contains(.carry), in: &state.rflags)
+      case .setDirection(let enabled):
+        setFlag(.direction, enabled, in: &state.rflags)
       case .setInterruptsEnabled(let enabled):
         let currentPrivilege = UInt64(state.cs.selector & 3)
         let ioPrivilege = (state.rflags.rawValue >> 12) & 3
@@ -542,6 +628,8 @@ public struct DoryX86Interpreter: Sendable {
     switch operand {
     case .register(let register, let width):
       return state.registers[register] & mask(width)
+    case .highByteRegister(let register):
+      return (state.registers[register] >> 8) & 0xff
     case .memory(let operand):
       return fromLittleEndian(
         try memory.read(
@@ -574,6 +662,9 @@ public struct DoryX86Interpreter: Sendable {
       case .quadword:
         state.registers[register] = value
       }
+    case .highByteRegister(let register):
+      state.registers[register] =
+        (state.registers[register] & ~UInt64(0xff00)) | ((value & 0xff) << 8)
     case .memory(let target):
       try memory.write(
         at: effectiveAddress(target, instruction: instruction, state: state),
@@ -615,11 +706,46 @@ public struct DoryX86Interpreter: Sendable {
       setFlag(.carry, left > widthMask &- right, in: &flags)
       setFlag(.overflow, ((~(left ^ right) & (left ^ result)) & signBit(width)) != 0, in: &flags)
       setFlag(.auxiliaryCarry, ((left ^ right ^ result) & 0x10) != 0, in: &flags)
+    case .addWithCarry:
+      let carry = flags.contains(.carry) ? UInt64(1) : 0
+      let first = left.addingReportingOverflow(right)
+      let second = first.partialValue.addingReportingOverflow(carry)
+      result = second.partialValue & widthMask
+      setFlag(
+        .carry,
+        first.overflow || second.overflow || first.partialValue > widthMask
+          || second.partialValue > widthMask,
+        in: &flags
+      )
+      setFlag(
+        .overflow,
+        ((~(left ^ right) & (left ^ result)) & signBit(width)) != 0,
+        in: &flags
+      )
+      setFlag(
+        .auxiliaryCarry,
+        (left & 0xf) + (right & 0xf) + carry > 0xf,
+        in: &flags
+      )
     case .subtract, .compare:
       result = (left &- right) & widthMask
       setFlag(.carry, left < right, in: &flags)
       setFlag(.overflow, (((left ^ right) & (left ^ result)) & signBit(width)) != 0, in: &flags)
       setFlag(.auxiliaryCarry, ((left ^ right ^ result) & 0x10) != 0, in: &flags)
+    case .subtractWithBorrow:
+      let borrow = flags.contains(.carry) ? UInt64(1) : 0
+      result = (left &- right &- borrow) & widthMask
+      setFlag(.carry, left < right || (borrow == 1 && left == right), in: &flags)
+      setFlag(
+        .overflow,
+        (((left ^ right) & (left ^ result)) & signBit(width)) != 0,
+        in: &flags
+      )
+      setFlag(
+        .auxiliaryCarry,
+        (left & 0xf) < (right & 0xf) + borrow,
+        in: &flags
+      )
     case .and, .test:
       result = left & right
       clearLogicalArithmeticFlags(&flags)
@@ -635,6 +761,131 @@ public struct DoryX86Interpreter: Sendable {
     setFlag(.parity, (result & 0xff).nonzeroBitCount.isMultiple(of: 2), in: &flags)
     flags.insert(.reservedOne)
     return result
+  }
+
+  private func executeShift(
+    _ operation: DoryX86ShiftOperation,
+    value: UInt64,
+    count rawCount: UInt8,
+    width: DoryX86OperandWidth,
+    flags: inout DoryX86RFLAGS
+  ) -> UInt64 {
+    let bitCount = Int(width.rawValue)
+    let countMask: UInt8 = width == .quadword ? 0x3f : 0x1f
+    var count = Int(rawCount & countMask)
+    let widthMask = mask(width)
+    var result = value & widthMask
+    guard count != 0 else { return result }
+
+    switch operation {
+    case .rotateLeft:
+      count %= bitCount
+      guard count != 0 else { return result }
+      result = ((result << count) | (result >> (bitCount - count))) & widthMask
+      setFlag(.carry, result & 1 != 0, in: &flags)
+      if count == 1 {
+        setFlag(
+          .overflow,
+          (result & signBit(width) != 0) != flags.contains(.carry),
+          in: &flags
+        )
+      }
+    case .rotateRight:
+      count %= bitCount
+      guard count != 0 else { return result }
+      result = ((result >> count) | (result << (bitCount - count))) & widthMask
+      setFlag(.carry, result & signBit(width) != 0, in: &flags)
+      if count == 1 {
+        let topTwo = (result >> UInt64(bitCount - 2)) & 3
+        setFlag(.overflow, topTwo == 1 || topTwo == 2, in: &flags)
+      }
+    case .rotateCarryLeft:
+      count %= bitCount + 1
+      guard count != 0 else { return result }
+      for _ in 0..<count {
+        let outgoing = result & signBit(width) != 0
+        result = ((result << 1) | (flags.contains(.carry) ? 1 : 0)) & widthMask
+        setFlag(.carry, outgoing, in: &flags)
+      }
+      if count == 1 {
+        setFlag(
+          .overflow,
+          (result & signBit(width) != 0) != flags.contains(.carry),
+          in: &flags
+        )
+      }
+    case .rotateCarryRight:
+      count %= bitCount + 1
+      guard count != 0 else { return result }
+      for _ in 0..<count {
+        let outgoing = result & 1 != 0
+        result = (result >> 1) | (flags.contains(.carry) ? signBit(width) : 0)
+        setFlag(.carry, outgoing, in: &flags)
+      }
+      if count == 1 {
+        let topTwo = (result >> UInt64(bitCount - 2)) & 3
+        setFlag(.overflow, topTwo == 1 || topTwo == 2, in: &flags)
+      }
+    case .shiftLeft:
+      if count <= bitCount {
+        setFlag(.carry, result & (UInt64(1) << UInt64(bitCount - count)) != 0, in: &flags)
+      } else {
+        flags.remove(.carry)
+      }
+      result = count < bitCount ? (result << count) & widthMask : 0
+      if count == 1 {
+        setFlag(
+          .overflow,
+          (result & signBit(width) != 0) != flags.contains(.carry),
+          in: &flags
+        )
+      }
+      setShiftResultFlags(result, width: width, flags: &flags)
+    case .shiftRight:
+      if count <= bitCount {
+        setFlag(.carry, result & (UInt64(1) << UInt64(count - 1)) != 0, in: &flags)
+      } else {
+        flags.remove(.carry)
+      }
+      let originalSign = result & signBit(width) != 0
+      result = count < bitCount ? result >> count : 0
+      if count == 1 { setFlag(.overflow, originalSign, in: &flags) }
+      setShiftResultFlags(result, width: width, flags: &flags)
+    case .arithmeticShiftRight:
+      if count <= bitCount {
+        setFlag(.carry, result & (UInt64(1) << UInt64(count - 1)) != 0, in: &flags)
+      } else {
+        setFlag(.carry, result & signBit(width) != 0, in: &flags)
+      }
+      let signed = signExtendedInt64(result, width: width)
+      result =
+        UInt64(bitPattern: count < bitCount ? signed >> count : signed >> (bitCount - 1))
+        & widthMask
+      if count == 1 { flags.remove(.overflow) }
+      setShiftResultFlags(result, width: width, flags: &flags)
+    }
+    return result
+  }
+
+  private func setShiftResultFlags(
+    _ result: UInt64,
+    width: DoryX86OperandWidth,
+    flags: inout DoryX86RFLAGS
+  ) {
+    setFlag(.zero, result == 0, in: &flags)
+    setFlag(.sign, result & signBit(width) != 0, in: &flags)
+    setFlag(.parity, (result & 0xff).nonzeroBitCount.isMultiple(of: 2), in: &flags)
+    flags.remove(.auxiliaryCarry)
+    flags.insert(.reservedOne)
+  }
+
+  private func signExtendedInt64(_ value: UInt64, width: DoryX86OperandWidth) -> Int64 {
+    switch width {
+    case .byte: Int64(Int8(bitPattern: UInt8(truncatingIfNeeded: value)))
+    case .word: Int64(Int16(bitPattern: UInt16(truncatingIfNeeded: value)))
+    case .doubleword: Int64(Int32(bitPattern: UInt32(truncatingIfNeeded: value)))
+    case .quadword: Int64(bitPattern: value)
+    }
   }
 
   private func evaluate(_ condition: DoryX86Condition, flags: DoryX86RFLAGS) -> Bool {
@@ -666,7 +917,16 @@ public struct DoryX86Interpreter: Sendable {
   private func operandWidth(_ operand: DoryX86Operand) -> DoryX86OperandWidth {
     switch operand {
     case .register(_, let width), .immediate(_, let width), .relative(_, let width): width
+    case .highByteRegister: .byte
     case .memory(let memory): memory.width
+    }
+  }
+
+  private func stackWidth(_ mode: DoryX86ExecutionMode) -> DoryX86OperandWidth {
+    switch mode {
+    case .real16: .word
+    case .protected32: .doubleword
+    case .long64: .quadword
     }
   }
 

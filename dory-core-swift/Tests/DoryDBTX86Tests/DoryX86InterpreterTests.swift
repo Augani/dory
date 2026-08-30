@@ -204,4 +204,60 @@ import Testing
     #expect(state.cs.selector & 3 == 3)
     #expect(state.rflags.contains(.interruptEnable))
   }
+
+  @Test func executesByteLanesCarryArithmeticAndRotates() throws {
+    // mov ah,7f; mov spl,77; stc; adc al,0; rol ah,1
+    let memory = DoryX86ByteArrayMemory(
+      baseAddress: 0x9000,
+      bytes: [
+        0xB4, 0x7F,
+        0x40, 0xB4, 0x77,
+        0xF9,
+        0x14, 0x00,
+        0xD0, 0xC4,
+      ] + .init(repeating: 0, count: 32)
+    )
+    let registers = DoryX86GeneralRegisters(rax: 0x12FF, rsp: 0x1234)
+    var state = try DoryX86ArchitecturalState(registers: registers, rip: 0x9000)
+    for _ in 0..<5 { _ = interpreter.step(state: &state, memory: memory, mode: .long64) }
+    #expect(state.registers.rax & 0xFFFF == 0xFE00)
+    #expect(state.registers.rsp == 0x1277)
+    #expect(!state.rflags.contains(.carry))
+    #expect(state.rflags.contains(.overflow))
+  }
+
+  @Test func executesUnaryAndImmediateGroupsWithArchitecturalFlags() throws {
+    // mov al,7f; inc al; sbb al,1; neg al; sar al,1
+    let memory = DoryX86ByteArrayMemory(
+      baseAddress: 0x9200,
+      bytes: [
+        0xB0, 0x7F,
+        0xFE, 0xC0,
+        0x1C, 0x01,
+        0xF6, 0xD8,
+        0xD0, 0xF8,
+      ] + .init(repeating: 0, count: 32)
+    )
+    var state = try DoryX86ArchitecturalState(rip: 0x9200)
+    for _ in 0..<5 { _ = interpreter.step(state: &state, memory: memory, mode: .long64) }
+    #expect(state.registers.rax & 0xFF == 0xC0)
+    #expect(state.rflags.contains(.sign))
+    #expect(!state.rflags.contains(.zero))
+  }
+
+  @Test func indirectCallUsesTheLongModeStackWidth() throws {
+    let memory = DoryX86ByteArrayMemory(
+      baseAddress: 0xA000,
+      bytes: [0xFF, 0xD0] + .init(repeating: 0, count: 0x200)
+    )
+    let registers = DoryX86GeneralRegisters(rax: 0xA010, rsp: 0xA100)
+    var state = try DoryX86ArchitecturalState(registers: registers, rip: 0xA000)
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    #expect(state.rip == 0xA010)
+    #expect(state.registers.rsp == 0xA0F8)
+    let returnAddress = try memory.read(at: 0xA0F8, byteCount: 8).enumerated().reduce(0) {
+      $0 | UInt64($1.element) << UInt64($1.offset * 8)
+    }
+    #expect(returnAddress == 0xA002)
+  }
 }

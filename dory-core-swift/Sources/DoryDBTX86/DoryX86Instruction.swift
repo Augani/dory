@@ -67,13 +67,28 @@ public struct DoryX86MemoryOperand: Codable, Sendable, Hashable {
 
 public enum DoryX86Operand: Codable, Sendable, Hashable {
   case register(DoryX86GeneralRegister, width: DoryX86OperandWidth)
+  case highByteRegister(DoryX86GeneralRegister)
   case memory(DoryX86MemoryOperand)
   case immediate(UInt64, width: DoryX86OperandWidth)
   case relative(Int64, width: DoryX86OperandWidth)
 }
 
 public enum DoryX86ALUOperation: String, Codable, Sendable, Hashable {
-  case add, or, and, subtract, xor, compare, test
+  case add, addWithCarry, or, subtractWithBorrow, and, subtract, xor, compare, test
+}
+
+public enum DoryX86UnaryOperation: String, Codable, Sendable, Hashable {
+  case increment, decrement, bitwiseNot, negate
+}
+
+public enum DoryX86ShiftOperation: String, Codable, Sendable, Hashable {
+  case rotateLeft, rotateRight, rotateCarryLeft, rotateCarryRight
+  case shiftLeft, shiftRight, arithmeticShiftRight
+}
+
+public enum DoryX86ShiftCount: Codable, Sendable, Hashable {
+  case immediate(UInt8)
+  case cl
 }
 
 public enum DoryX86Condition: UInt8, Codable, Sendable, Hashable {
@@ -99,11 +114,15 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
   case move(destination: DoryX86Operand, source: DoryX86Operand)
   case loadEffectiveAddress(destination: DoryX86Operand, source: DoryX86MemoryOperand)
   case alu(DoryX86ALUOperation, destination: DoryX86Operand, source: DoryX86Operand)
+  case unary(DoryX86UnaryOperation, operand: DoryX86Operand)
+  case shift(DoryX86ShiftOperation, destination: DoryX86Operand, count: DoryX86ShiftCount)
   case push(DoryX86Operand)
   case pop(DoryX86Operand)
   case call(relative: Int64)
+  case callIndirect(DoryX86Operand)
   case `return`
   case jump(relative: Int64)
+  case jumpIndirect(DoryX86Operand)
   case conditionalJump(DoryX86Condition, relative: Int64)
   case cpuid
   case readControlRegister(index: UInt8, destination: DoryX86GeneralRegister)
@@ -115,6 +134,12 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
   case swapGS
   case softwareInterrupt(vector: UInt8)
   case interruptReturn
+  case pushFlags(width: DoryX86OperandWidth)
+  case popFlags(width: DoryX86OperandWidth)
+  case leave(width: DoryX86OperandWidth)
+  case setCarry(Bool)
+  case complementCarry
+  case setDirection(Bool)
   case syscall
   case sysret
   case halt

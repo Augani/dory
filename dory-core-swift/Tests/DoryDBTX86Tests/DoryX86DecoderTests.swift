@@ -110,4 +110,41 @@ import Testing
         == .swapGS
     )
   }
+
+  @Test func decodesByteRegistersImmediateGroupsAndIndirectControlFlow() throws {
+    #expect(
+      try decoder.decode([0xB4, 0x12], at: 0x8000, mode: .long64).operation
+        == .move(
+          destination: .highByteRegister(.rax),
+          source: .immediate(0x12, width: .byte)
+        )
+    )
+    #expect(
+      try decoder.decode([0x40, 0xB4, 0x12], at: 0x8000, mode: .long64).operation
+        == .move(
+          destination: .register(.rsp, width: .byte),
+          source: .immediate(0x12, width: .byte)
+        )
+    )
+    #expect(
+      try decoder.decode([0x48, 0x83, 0xD0, 0xFF], at: 0x8000, mode: .long64).operation
+        == .alu(
+          .addWithCarry,
+          destination: .register(.rax, width: .quadword),
+          source: .immediate(.max, width: .quadword)
+        )
+    )
+    #expect(
+      try decoder.decode([0x48, 0xC1, 0xE0, 4], at: 0x8000, mode: .long64).operation
+        == .shift(
+          .shiftLeft,
+          destination: .register(.rax, width: .quadword),
+          count: .immediate(4)
+        )
+    )
+    #expect(
+      try decoder.decode([0xFF, 0xD0], at: 0x8000, mode: .long64).operation
+        == .callIndirect(.register(.rax, width: .quadword))
+    )
+  }
 }
