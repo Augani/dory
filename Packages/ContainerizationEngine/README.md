@@ -19,6 +19,9 @@ The full process, storage, networking, and trust-boundary contract is documented
 - USB host discovery, bounded host-device access, a USB/IP bridge, and authenticated Dory Tools
   `usb-vhci@1` attach/detach. Linux camera sharing uses that same production path to expose the
   permission-aware Mac capture backend as a standard UVC device.
+- `dory-hv usb list` reports each exact interface tuple and its capture decision. Hubs, built-in
+  host devices, storage that has not passed an eject transaction, smart-card/security devices, and
+  host Bluetooth controllers are rejected before authorization or open.
 - The same Rust `DoryCore` guest handshake, multiplexing, protobuf, Docker dataplane, and half-close
   behavior used by doryd and the VZ fallback.
 

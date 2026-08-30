@@ -11,19 +11,90 @@ public struct HostUsbDeviceCandidate: Codable, Equatable, Sendable {
     public var productName: String?
     public var serialNumber: String?
     public var locationID: UInt32?
+    public var interfaces: [HostUsbInterfaceIdentity]
+    public var captureDecision: HostUsbCaptureDecision
 
     public init(
         descriptor: UsbipDeviceDescriptor,
         vendorName: String? = nil,
         productName: String? = nil,
         serialNumber: String? = nil,
-        locationID: UInt32? = nil
+        locationID: UInt32? = nil,
+        interfaces: [HostUsbInterfaceIdentity] = [],
+        captureDecision: HostUsbCaptureDecision = .allowed
     ) {
         self.descriptor = descriptor
         self.vendorName = vendorName
         self.productName = productName
         self.serialNumber = serialNumber
         self.locationID = locationID
+        self.interfaces = interfaces
+        self.captureDecision = captureDecision
+    }
+}
+
+public struct HostUsbInterfaceIdentity: Codable, Equatable, Hashable, Sendable {
+    public var number: UInt8
+    public var interfaceClass: UInt8
+    public var interfaceSubClass: UInt8
+    public var interfaceProtocol: UInt8
+
+    public init(
+        number: UInt8,
+        interfaceClass: UInt8,
+        interfaceSubClass: UInt8,
+        interfaceProtocol: UInt8
+    ) {
+        self.number = number
+        self.interfaceClass = interfaceClass
+        self.interfaceSubClass = interfaceSubClass
+        self.interfaceProtocol = interfaceProtocol
+    }
+}
+
+public enum HostUsbCaptureBlockReason: String, Codable, Equatable, Sendable {
+    case usbHub = "usb-hub"
+    case internalHostDevice = "internal-host-device"
+    case storageRequiresHostEject = "storage-requires-host-eject"
+    case hostSecurityDevice = "host-security-device"
+    case hostBluetoothController = "host-bluetooth-controller"
+}
+
+public struct HostUsbCaptureDecision: Codable, Equatable, Sendable {
+    public var allowed: Bool
+    public var blockReason: HostUsbCaptureBlockReason?
+
+    public static let allowed = HostUsbCaptureDecision(allowed: true, blockReason: nil)
+
+    public static func blocked(_ reason: HostUsbCaptureBlockReason) -> HostUsbCaptureDecision {
+        HostUsbCaptureDecision(allowed: false, blockReason: reason)
+    }
+}
+
+public enum HostUsbCapturePolicy: Sendable {
+    public static func evaluate(
+        descriptor: UsbipDeviceDescriptor,
+        interfaces: [HostUsbInterfaceIdentity],
+        builtIn: Bool
+    ) -> HostUsbCaptureDecision {
+        let identities = [(descriptor.deviceClass, descriptor.deviceSubClass, descriptor.deviceProtocol)]
+            + interfaces.map { ($0.interfaceClass, $0.interfaceSubClass, $0.interfaceProtocol) }
+        if identities.contains(where: { $0.0 == 0x09 }) {
+            return .blocked(.usbHub)
+        }
+        if builtIn {
+            return .blocked(.internalHostDevice)
+        }
+        if identities.contains(where: { $0.0 == 0x08 }) {
+            return .blocked(.storageRequiresHostEject)
+        }
+        if identities.contains(where: { $0.0 == 0x0b }) {
+            return .blocked(.hostSecurityDevice)
+        }
+        if identities.contains(where: { $0 == (0xe0, 0x01, 0x01) }) {
+            return .blocked(.hostBluetoothController)
+        }
+        return .allowed
     }
 }
 
@@ -39,6 +110,7 @@ public enum HostUsbOpenMode: Hashable, Sendable {
 
 public enum HostUsbOpenError: Error, Equatable, Sendable {
     case notFound(String)
+    case captureDenied(busID: String, reason: HostUsbCaptureBlockReason)
     case authorizationFailed(kern_return_t)
     case openDeviceFailed
 }
@@ -47,6 +119,12 @@ public enum HostUsbDeviceFactory: Sendable {
     public static func open(busID: String, mode: HostUsbOpenMode = .userAuthorized) throws -> HostUsbDevice {
         let (candidate, service) = try findService(busID: busID)
         defer { IOObjectRelease(service) }
+        guard candidate.captureDecision.allowed else {
+            throw HostUsbOpenError.captureDenied(
+                busID: busID,
+                reason: candidate.captureDecision.blockReason ?? .internalHostDevice
+            )
+        }
         let kr = IOServiceAuthorize(service, UInt32(kIOServiceInteractionAllowed))
         guard kr == KERN_SUCCESS else { throw HostUsbOpenError.authorizationFailed(kr) }
         guard let device = DoryIOUSBHostCreateDevice(service, options(for: mode), nil) else {
@@ -153,6 +231,16 @@ public enum HostUsbDiscovery: Sendable {
         let busNumber = busNumber(fromLocationID: locationID)
         let busID = properties["DoryBusID"] as? String ?? "\(busNumber)-\(deviceNumber)"
         let path = registryPath(for: service, fallbackBusID: busID)
+        let interfaces = interfaceIdentities(
+            for: service,
+            locationID: locationID,
+            vendorID: vendorID,
+            productID: productID
+        )
+        let declaredInterfaceCount = uint8(
+            properties,
+            keys: ["bNumInterfaces", "USB Interfaces"]
+        ) ?? 0
         let descriptor = UsbipDeviceDescriptor(
             path: path,
             busID: busID,
@@ -167,15 +255,95 @@ public enum HostUsbDiscovery: Sendable {
             deviceProtocol: uint8(properties, keys: ["bDeviceProtocol", "USB Device Protocol"]) ?? 0,
             configurationValue: uint8(properties, keys: ["bConfigurationValue", "CurrentConfiguration", "USB Current Configuration"]) ?? 1,
             configurationCount: uint8(properties, keys: ["bNumConfigurations", "USB Configurations"]) ?? 1,
-            interfaceCount: uint8(properties, keys: ["bNumInterfaces", "USB Interfaces"]) ?? 0
+            interfaceCount: interfaces.isEmpty
+                ? declaredInterfaceCount
+                : UInt8(clamping: interfaces.count)
+        )
+        let decision = HostUsbCapturePolicy.evaluate(
+            descriptor: descriptor,
+            interfaces: interfaces,
+            builtIn: bool(properties, keys: ["Built-In", "built-in", "Builtin"])
         )
         return HostUsbDeviceCandidate(
             descriptor: descriptor,
             vendorName: string(properties, keys: ["USB Vendor Name", "kUSBVendorString", "iManufacturer"]),
             productName: string(properties, keys: ["USB Product Name", "kUSBProductString", "iProduct"]),
             serialNumber: string(properties, keys: ["USB Serial Number", "kUSBSerialNumberString", "iSerialNumber"]),
-            locationID: locationID
+            locationID: locationID,
+            interfaces: interfaces,
+            captureDecision: decision
         )
+    }
+
+    private static func interfaceIdentities(
+        for deviceService: io_registry_entry_t,
+        locationID: UInt32?,
+        vendorID: UInt16,
+        productID: UInt16
+    ) -> [HostUsbInterfaceIdentity] {
+        guard deviceService != 0 else { return [] }
+        var iterator: io_iterator_t = 0
+        guard IORegistryEntryCreateIterator(
+            deviceService,
+            kIOServicePlane,
+            IOOptionBits(kIORegistryIterateRecursively),
+            &iterator
+        ) == KERN_SUCCESS else { return [] }
+        defer { IOObjectRelease(iterator) }
+
+        var result = [HostUsbInterfaceIdentity]()
+        while true {
+            let service = IOIteratorNext(iterator)
+            guard service != 0 else { break }
+            defer { IOObjectRelease(service) }
+            guard IOObjectConformsTo(service, "IOUSBHostInterface") != 0 else { continue }
+            var rawProperties: Unmanaged<CFMutableDictionary>?
+            guard IORegistryEntryCreateCFProperties(
+                service,
+                &rawProperties,
+                kCFAllocatorDefault,
+                0
+            ) == KERN_SUCCESS,
+            let properties = rawProperties?.takeRetainedValue() as? [String: Any],
+            belongsToDevice(
+                properties,
+                locationID: locationID,
+                vendorID: vendorID,
+                productID: productID
+            ),
+            let interfaceClass = uint8(properties, keys: ["bInterfaceClass"]),
+            let number = uint8(properties, keys: ["bInterfaceNumber"]) else { continue }
+            result.append(HostUsbInterfaceIdentity(
+                number: number,
+                interfaceClass: interfaceClass,
+                interfaceSubClass: uint8(properties, keys: ["bInterfaceSubClass"]) ?? 0,
+                interfaceProtocol: uint8(properties, keys: ["bInterfaceProtocol"]) ?? 0
+            ))
+        }
+        return Array(Set(result)).sorted { lhs, rhs in
+            if lhs.number != rhs.number { return lhs.number < rhs.number }
+            if lhs.interfaceClass != rhs.interfaceClass {
+                return lhs.interfaceClass < rhs.interfaceClass
+            }
+            if lhs.interfaceSubClass != rhs.interfaceSubClass {
+                return lhs.interfaceSubClass < rhs.interfaceSubClass
+            }
+            return lhs.interfaceProtocol < rhs.interfaceProtocol
+        }
+    }
+
+    private static func belongsToDevice(
+        _ properties: [String: Any],
+        locationID: UInt32?,
+        vendorID: UInt16,
+        productID: UInt16
+    ) -> Bool {
+        if let locationID {
+            return uint32(properties, keys: ["locationID", "LocationID", "USB LocationID"])
+                == locationID
+        }
+        return uint16(properties, keys: ["idVendor", "USB Vendor ID"]) == vendorID
+            && uint16(properties, keys: ["idProduct", "USB Product ID"]) == productID
     }
 
     private static func registryPath(for service: io_registry_entry_t, fallbackBusID: String) -> String {
@@ -222,6 +390,18 @@ public enum HostUsbDiscovery: Sendable {
             }
         }
         return nil
+    }
+
+    private static func bool(_ properties: [String: Any], keys: [String]) -> Bool {
+        for key in keys {
+            guard let raw = properties[key] else { continue }
+            if let value = raw as? Bool { return value }
+            if let value = raw as? NSNumber { return value.boolValue }
+            if let value = raw as? String {
+                return ["1", "true", "yes"].contains(value.lowercased())
+            }
+        }
+        return false
     }
 }
 

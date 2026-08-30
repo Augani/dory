@@ -49,6 +49,57 @@ struct HostUsbDeviceTests {
         #expect(candidate.descriptor.busID == "3-2")
         #expect(candidate.descriptor.vendorID == 0x1234)
         #expect(candidate.descriptor.productID == 0xabcd)
+        #expect(candidate.captureDecision == .allowed)
+    }
+
+    @Test func capturePolicyRefusesHostInfrastructureBeforeOpen() {
+        let externalHID = HostUsbInterfaceIdentity(
+            number: 0,
+            interfaceClass: 0x03,
+            interfaceSubClass: 0x01,
+            interfaceProtocol: 0x01
+        )
+        #expect(HostUsbCapturePolicy.evaluate(
+            descriptor: policyDescriptor(deviceClass: 0x09),
+            interfaces: [],
+            builtIn: false
+        ) == .blocked(.usbHub))
+        #expect(HostUsbCapturePolicy.evaluate(
+            descriptor: policyDescriptor(),
+            interfaces: [externalHID],
+            builtIn: true
+        ) == .blocked(.internalHostDevice))
+        #expect(HostUsbCapturePolicy.evaluate(
+            descriptor: policyDescriptor(),
+            interfaces: [policyInterface(class: 0x08)],
+            builtIn: false
+        ) == .blocked(.storageRequiresHostEject))
+        #expect(HostUsbCapturePolicy.evaluate(
+            descriptor: policyDescriptor(),
+            interfaces: [policyInterface(class: 0x0b)],
+            builtIn: false
+        ) == .blocked(.hostSecurityDevice))
+        #expect(HostUsbCapturePolicy.evaluate(
+            descriptor: policyDescriptor(),
+            interfaces: [policyInterface(class: 0xe0, subclass: 0x01, protocol: 0x01)],
+            builtIn: false
+        ) == .blocked(.hostBluetoothController))
+        #expect(HostUsbCapturePolicy.evaluate(
+            descriptor: policyDescriptor(),
+            interfaces: [externalHID],
+            builtIn: false
+        ) == .allowed)
+    }
+
+    @Test func discoverySurfacesBuiltInCaptureDenial() throws {
+        let candidate = try #require(HostUsbDiscovery.candidate(from: [
+            "DoryBusID": "1-9",
+            "idVendor": 0x05ac,
+            "idProduct": 0x1234,
+            "Built-In": true,
+        ]))
+
+        #expect(candidate.captureDecision == .blocked(.internalHostDevice))
     }
 
     @Test func controlSubmitParsesSetupPacketAndReturnsInPayload() throws {
@@ -179,6 +230,38 @@ struct HostUsbDeviceTests {
         #expect(backend.abortEndpoints.isEmpty)
         #expect(reply.status == -ENOENT)
     }
+}
+
+private func policyDescriptor(deviceClass: UInt8 = 0) -> UsbipDeviceDescriptor {
+    UsbipDeviceDescriptor(
+        path: "/io/usb/1-9",
+        busID: "1-9",
+        busNumber: 1,
+        deviceNumber: 9,
+        speed: 3,
+        vendorID: 0x1234,
+        productID: 0xabcd,
+        bcdDevice: 0x0100,
+        deviceClass: deviceClass,
+        deviceSubClass: 0,
+        deviceProtocol: 0,
+        configurationValue: 1,
+        configurationCount: 1,
+        interfaceCount: 1
+    )
+}
+
+private func policyInterface(
+    class interfaceClass: UInt8,
+    subclass: UInt8 = 0,
+    protocol interfaceProtocol: UInt8 = 0
+) -> HostUsbInterfaceIdentity {
+    HostUsbInterfaceIdentity(
+        number: 0,
+        interfaceClass: interfaceClass,
+        interfaceSubClass: subclass,
+        interfaceProtocol: interfaceProtocol
+    )
 }
 
 private final class RecordingHostUsbBackend: HostUsbBackend, @unchecked Sendable {
