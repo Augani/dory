@@ -108,6 +108,15 @@ public struct DoryX86Decoder: Sendable {
     case 0x58...0x5F:
       let register = register(Int(opcode - 0x58), extensionBit: prefixes.rex?.b == true)
       operation = .pop(.register(register, width: stackWidth(mode: mode, prefixes: prefixes)))
+    case 0x8F:
+      let targetWidth = stackWidth(mode: mode, prefixes: prefixes)
+      let operands = try decodeModRM(
+        cursor: &cursor, width: targetWidth, prefixes: prefixes, mode: mode)
+      guard operands.group == 0 else {
+        throw DoryX86DecodeError.invalidEncoding(
+          address: address, detail: "POP r/m group must be /0")
+      }
+      operation = .pop(operands.rm)
     case 0x63:
       guard mode == .long64 else {
         throw DoryX86DecodeError.invalidEncoding(

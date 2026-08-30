@@ -898,6 +898,30 @@ import Testing
     #expect(state.registers.rsp == 0x1234)
   }
 
+  @Test func memoryPopUsesThePostIncrementStackPointerForItsDestination() throws {
+    var bytes = [UInt8](repeating: 0, count: 0x300)
+    bytes.replaceSubrange(0x100..<0x103, with: [0x8F, 0x04, 0x24])
+    bytes.replaceSubrange(
+      0x200..<0x208,
+      with: [0x78, 0x56, 0x34, 0x12, 0, 0, 0, 0]
+    )
+    let memory = DoryX86ByteArrayMemory(bytes: bytes)
+    var state = try DoryX86ArchitecturalState(
+      registers: .init(rsp: 0x200),
+      rip: 0x100,
+      cs: .init(selector: 0, attributes: 0xA09A, limit: .max),
+      ss: .init(selector: 8, attributes: 0xC093, limit: .max)
+    )
+
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+
+    #expect(state.registers.rsp == 0x208)
+    #expect(
+      try memory.read(at: 0x208, byteCount: 8)
+        == [0x78, 0x56, 0x34, 0x12, 0, 0, 0, 0]
+    )
+  }
+
   @Test func instructionFetchEnforcesExecutableCSAndItsLimit() throws {
     let memory = DoryX86ByteArrayMemory(
       baseAddress: 0x100,

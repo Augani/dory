@@ -369,6 +369,24 @@ import Testing
     )
   }
 
+  @Test func decodesMemoryPopAndRejectsReservedGroupEncodings() throws {
+    #expect(
+      try decoder.decode([0x8F, 0x00], at: 0x680, mode: .long64).operation
+        == .pop(
+          .memory(
+            .init(
+              base: .rax,
+              width: .quadword,
+              addressWidth: .quadword,
+              segment: .ds,
+              ignoresLegacySegmentBase: true
+            )))
+    )
+    #expect(throws: DoryX86DecodeError.self) {
+      try decoder.decode([0x8F, 0xC8], at: 0x680, mode: .long64)
+    }
+  }
+
   @Test func decodesScalarPortIOWithArchitecturalWidths() throws {
     #expect(
       try decoder.decode([0xE4, 0x60], at: 0x700, mode: .long64).operation
