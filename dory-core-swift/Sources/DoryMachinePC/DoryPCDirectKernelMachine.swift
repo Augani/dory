@@ -31,6 +31,8 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   public let serial: DoryPCUART16550
   public let localAPIC: DoryPCLocalAPIC
   public let ioAPIC: DoryPCIOAPIC
+  public let legacyPIC: DoryPCPIC8259Pair
+  public let legacyPIT: DoryPCPIT8254
   public let pagingUnit: DoryX86PagingUnit
   public let interpreter: DoryX86Interpreter
   public let bootLayout: DoryPCPVHBootLayout
@@ -53,12 +55,21 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     memoryByteCount = memoryBytes
     ioBus = DoryPCPortIOBus()
     serial = DoryPCUART16550()
-    try ioBus.attach(serial)
-    ioBus.seal()
     localAPIC = DoryPCLocalAPIC(apicID: 0)
     ioAPIC = DoryPCIOAPIC()
     try ioAPIC.attach(localAPIC)
     ioAPIC.seal()
+    legacyPIC = DoryPCPIC8259Pair()
+    legacyPIT = DoryPCPIT8254 { [legacyPIC, ioAPIC] in
+      try? legacyPIC.raise(irq: 0)
+      try? ioAPIC.setAsserted(true, pin: 2)
+      try? ioAPIC.setAsserted(false, pin: 2)
+    }
+    try ioBus.attach(DoryPCPIC8259Port(pair: legacyPIC, slave: false))
+    try ioBus.attach(DoryPCPIC8259Port(pair: legacyPIC, slave: true))
+    try ioBus.attach(legacyPIT)
+    try ioBus.attach(serial)
+    ioBus.seal()
     try physicalMemory.attach(
       DoryPCLocalAPICMMIO(apic: localAPIC) { [ioAPIC] vector in
         try ioAPIC.endOfInterrupt(vector: vector, destinationAPICID: 0)
@@ -107,10 +118,14 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       guard var state = loadedState else { throw DoryPCMachineError.notLoaded }
       for completed in 0..<maximumInstructions {
         localAPIC.advanceTimer(by: 1)
-        if let vector = localAPIC.acknowledge(
-          interruptsEnabled: state.rflags.contains(.interruptEnable),
-          externalPriority: UInt8(truncatingIfNeeded: state.control.cr8) << 4
-        ) {
+        legacyPIT.advance(by: 1)
+        let interruptsEnabled = state.rflags.contains(.interruptEnable)
+        let vector =
+          localAPIC.acknowledge(
+            interruptsEnabled: interruptsEnabled,
+            externalPriority: UInt8(truncatingIfNeeded: state.control.cr8) << 4
+          ) ?? legacyPIC.acknowledge(interruptsEnabled: interruptsEnabled)
+        if let vector {
           do {
             try DoryX86InterruptDelivery().deliver(
               vector: vector,
@@ -138,11 +153,20 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           continue
         case .halted:
           let apic = localAPIC.snapshot()
-          if state.rflags.contains(.interruptEnable), apic.softwareEnabled,
-            !apic.timer.masked, apic.timer.currentCount > 0
-          {
-            localAPIC.advanceTimer(by: UInt64(apic.timer.currentCount))
-            continue
+          if state.rflags.contains(.interruptEnable) {
+            if apic.softwareEnabled, !apic.timer.masked, apic.timer.currentCount > 0 {
+              localAPIC.advanceTimer(by: UInt64(apic.timer.currentCount))
+              continue
+            }
+            let pit = legacyPIT.snapshot()
+            let picAcceptsTimer = legacyPIC.snapshot().masterMask & 1 == 0
+            let ioAPICAcceptsTimer =
+              ((try? ioAPIC.route(for: 2)).map { !$0.masked } ?? false)
+              && apic.softwareEnabled
+            if pit.armed, pit.current > 0, picAcceptsTimer || ioAPICAcceptsTimer {
+              legacyPIT.advance(by: UInt64(pit.current))
+              continue
+            }
           }
           return .halted(instructionCount: completed + 1)
         case .exception(let exception):

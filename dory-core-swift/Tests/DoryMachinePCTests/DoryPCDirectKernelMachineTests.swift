@@ -174,6 +174,51 @@ import Testing
     #expect(machine.serial.drainTransmittedBytes() == [UInt8(ascii: "T")])
   }
 
+  @Test func haltedCPUWakesForTheLegacyPITAndPIC() throws {
+    let layout = DoryPCPVHBootLayout(
+      startInfo: 0x90000,
+      commandLine: 0x91000,
+      modules: 0x92000,
+      memoryMap: 0x93000,
+      initrd: 0x180000
+    )
+    let machine = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024,
+      bootLayout: layout
+    )
+    var code = [UInt8](repeating: 0x90, count: 0x109)
+    code.replaceSubrange(
+      0..<16,
+      with: [
+        0x0F, 0x01, 0x1D, 0, 0, 8, 0,
+        0x0F, 0x01, 0x15, 6, 0, 8, 0,
+        0xFB, 0xF4,
+      ]
+    )
+    code.replaceSubrange(
+      0x100..<0x109,
+      with: [0xB0, UInt8(ascii: "P"), 0xBA, 0xF8, 0x03, 0, 0, 0xEE, 0xF4]
+    )
+    try machine.load(kernel: makeELF(code: code), commandLine: "x")
+    try installProtectedTables(machine: machine, vector: 0x20)
+
+    // Remap the master PIC to 0x20, preserve its cascade wiring, and unmask only IRQ0.
+    try machine.ioBus.write(port: 0x20, value: 0x11, width: .byte)
+    try machine.ioBus.write(port: 0x21, value: 0x20, width: .byte)
+    try machine.ioBus.write(port: 0x21, value: 0x04, width: .byte)
+    try machine.ioBus.write(port: 0x21, value: 0x01, width: .byte)
+    try machine.ioBus.write(port: 0x21, value: 0xFE, width: .byte)
+    // Channel 0, low/high byte, one-shot, count 5.
+    try machine.ioBus.write(port: 0x43, value: 0x30, width: .byte)
+    try machine.ioBus.write(port: 0x40, value: 5, width: .byte)
+    try machine.ioBus.write(port: 0x40, value: 0, width: .byte)
+
+    let stop = try machine.run(maximumInstructions: 16, exceptionPolicy: .deliver)
+
+    #expect(stop == .halted(instructionCount: 8))
+    #expect(machine.serial.drainTransmittedBytes() == [UInt8(ascii: "P")])
+  }
+
   private func installProtectedTables(
     machine: DoryPCDirectKernelMachine,
     vector: UInt8
