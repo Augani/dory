@@ -149,6 +149,19 @@ public struct DoryUEFIVariableStoreSnapshot: Codable, Sendable, Hashable {
     )
   }
 
+  /// Decodes only the canonical on-disk representation used by Dory firmware artifacts and
+  /// persistent variable stores. Semantically equivalent but differently encoded JSON is rejected.
+  public static func decodeCanonicalTemplate(
+    _ data: Data
+  ) throws -> DoryUEFIVariableStoreSnapshot {
+    try DoryUEFIVariableStoreFile.decodeCanonical(data, path: "variable-store-template")
+  }
+
+  /// Produces the exact bytes accepted by `decodeCanonicalTemplate`.
+  public func canonicalData() throws -> Data {
+    try DoryUEFIVariableStoreFile.canonicalData(self)
+  }
+
   private init(
     schemaVersion: UInt32,
     formatIdentity: String,

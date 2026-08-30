@@ -4,6 +4,18 @@ import Foundation
 import Testing
 
 @Suite struct DoryUEFIVariableStoreTests {
+  @Test func publicTemplateCodecAcceptsOnlyCanonicalBytes() throws {
+    let snapshot = try DoryUEFIVariableStoreSnapshot()
+    let canonical = try snapshot.canonicalData()
+    #expect(try DoryUEFIVariableStoreSnapshot.decodeCanonicalTemplate(canonical) == snapshot)
+
+    var noncanonical = canonical
+    noncanonical.insert(contentsOf: Data(" ".utf8), at: noncanonical.startIndex)
+    #expect(throws: DoryUEFIVariableStoreFileError.self) {
+      _ = try DoryUEFIVariableStoreSnapshot.decodeCanonicalTemplate(noncanonical)
+    }
+  }
+
   private let globalVendor = UUID(uuidString: "8be4df61-93ca-11d2-aa0d-00e098032b8c")!
 
   @Test func canonicalStoreRoundTripsAndPinsARMVirtIdentity() throws {
