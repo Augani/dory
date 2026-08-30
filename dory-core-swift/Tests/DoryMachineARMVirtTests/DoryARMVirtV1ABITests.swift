@@ -8,17 +8,33 @@ import Testing
     #expect(DoryARMVirtV1ABI.identity == "dory.armvirt@1")
     #expect(
       DoryARMVirtV1ABI.regions.map(\.kind) == [
+        .firmwareCode,
+        .firmwareVariables,
         .gicDistributor,
         .gicRedistributors,
         .uart,
         .rtc,
+        .powerController,
         .virtioMMIO,
+        .pcieECAM,
+        .pcieMMIO,
       ])
     for pair in zip(DoryARMVirtV1ABI.regions, DoryARMVirtV1ABI.regions.dropFirst()) {
       #expect(!pair.0.range.overlaps(pair.1.range))
       #expect(pair.0.range.base < pair.1.range.base)
     }
-    #expect(DoryARMVirtV1ABI.regions.last!.range.endExclusive.rawValue < DoryARMVirtV1ABI.ramBase)
+    #expect(DoryARMVirtV1ABI.regions.last!.range.endExclusive.rawValue <= DoryARMVirtV1ABI.ramBase)
+  }
+
+  @Test func bootAndFirmwareIdentitiesAreFrozen() {
+    #expect(DoryARMVirtV1BootProtocol.allCases == [.directLinux, .uefi])
+    #expect(DoryARMVirtV1ABI.directLinuxDeviceTreeRegister == 0)
+    #expect(DoryARMVirtV1ABI.uefiResetAddress == DoryARMVirtV1ABI.firmwareCodeBase)
+    #expect(DoryARMVirtV1ABI.firmwareABIIdentity == "dory.edk2.armvirt@1")
+    #expect(
+      DoryARMVirtV1ABI.variableStoreFormatIdentity
+        == "dory.uefi.variables.armvirt@1"
+    )
   }
 
   @Test func everyVirtioSlotHasExactAddressInterruptAndRole() {

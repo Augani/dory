@@ -1,11 +1,21 @@
 import DoryExecutionContracts
 
 public enum DoryARMVirtV1RegionKind: String, Codable, CaseIterable, Sendable, Hashable {
+  case firmwareCode
+  case firmwareVariables
   case gicDistributor
   case gicRedistributors
   case uart
   case rtc
+  case powerController
   case virtioMMIO
+  case pcieECAM
+  case pcieMMIO
+}
+
+public enum DoryARMVirtV1BootProtocol: String, Codable, CaseIterable, Sendable, Hashable {
+  case directLinux = "direct-linux"
+  case uefi
 }
 
 public struct DoryARMVirtV1Region: Codable, Sendable, Hashable {
@@ -65,6 +75,14 @@ public enum DoryARMVirtV1ABI {
   public static let minimumMemoryBytes: UInt64 = 1 << 30
   public static let maximumVCPUCount = 256
 
+  public static let firmwareCodeBase: UInt64 = 0x0000_0000
+  public static let firmwareCodeBytes: UInt64 = 0x0400_0000
+  public static let firmwareVariableBase: UInt64 = 0x0400_0000
+  public static let firmwareVariableBytes: UInt64 = 0x0400_0000
+  public static let firmwareABIIdentity = "dory.edk2.armvirt@1"
+  public static let variableStoreFormatIdentity = "dory.uefi.variables.armvirt@1"
+  public static let uefiResetAddress = firmwareCodeBase
+  public static let directLinuxDeviceTreeRegister: UInt8 = 0
   public static let gicDistributorBase: UInt64 = 0x0800_0000
   public static let gicDistributorReservedBytes: UInt64 = 0x0001_0000
   public static let gicRedistributorBase: UInt64 = 0x080a_0000
@@ -75,10 +93,16 @@ public enum DoryARMVirtV1ABI {
   public static let uartInterruptID: UInt32 = 32 + uartSPI
   public static let rtcBase: UInt64 = 0x0c09_0000
   public static let rtcBytes: UInt64 = 0x1000
+  public static let powerControllerBase: UInt64 = 0x0c0a_0000
+  public static let powerControllerBytes: UInt64 = 0x1000
   public static let virtioBase: UInt64 = 0x0c10_0000
   public static let virtioSlotBytes: UInt64 = 0x200
   public static let virtioSlotCount = 32
   public static let virtioFirstSPI: UInt32 = 16
+  public static let pcieECAMBase: UInt64 = 0x1000_0000
+  public static let pcieECAMBytes: UInt64 = 0x1000_0000
+  public static let pcieMMIOBase: UInt64 = 0x4000_0000
+  public static let pcieMMIOBytes: UInt64 = 0x4000_0000
   public static let ramBase: UInt64 = 0x8000_0000
   public static let dtbOffset: UInt64 = 256 << 20
   public static let initrdOffset: UInt64 = 320 << 20
@@ -91,6 +115,12 @@ public enum DoryARMVirtV1ABI {
   public static let hypervisorPhysicalTimerPPI: UInt32 = 10
 
   public static let regions: [DoryARMVirtV1Region] = [
+    fixedRegion(kind: .firmwareCode, base: firmwareCodeBase, byteCount: firmwareCodeBytes),
+    fixedRegion(
+      kind: .firmwareVariables,
+      base: firmwareVariableBase,
+      byteCount: firmwareVariableBytes
+    ),
     fixedRegion(
       kind: .gicDistributor,
       base: gicDistributorBase,
@@ -104,10 +134,17 @@ public enum DoryARMVirtV1ABI {
     fixedRegion(kind: .uart, base: uartBase, byteCount: uartBytes),
     fixedRegion(kind: .rtc, base: rtcBase, byteCount: rtcBytes),
     fixedRegion(
+      kind: .powerController,
+      base: powerControllerBase,
+      byteCount: powerControllerBytes
+    ),
+    fixedRegion(
       kind: .virtioMMIO,
       base: virtioBase,
       byteCount: UInt64(virtioSlotCount) * virtioSlotBytes
     ),
+    fixedRegion(kind: .pcieECAM, base: pcieECAMBase, byteCount: pcieECAMBytes),
+    fixedRegion(kind: .pcieMMIO, base: pcieMMIOBase, byteCount: pcieMMIOBytes),
   ]
 
   public static let virtioSlots: [DoryARMVirtV1VirtioSlot] = (0..<virtioSlotCount).map { index in
@@ -172,15 +209,20 @@ public enum DoryARMVirtV1ABI {
 
     | Region | Base | Reserved bytes |
     |---|---:|---:|
+    | Firmware code | `0x00000000` | `0x04000000` |
+    | Firmware variables | `0x04000000` | `0x04000000` |
     | GICv3 distributor | `0x08000000` | `0x00010000` |
     | GICv3 redistributors | `0x080a0000` | `0x02000000` |
     | PL011 UART | `0x0c000000` | `0x00001000` |
     | PL031 RTC | `0x0c090000` | `0x00001000` |
+    | Power/reset controller | `0x0c0a0000` | `0x00001000` |
     | VirtIO MMIO slots | `0x0c100000` | `0x00004000` |
+    | PCIe ECAM | `0x10000000` | `0x10000000` |
+    | PCIe MMIO | `0x40000000` | `0x40000000` |
     | RAM | `0x80000000` | `0x0000000b80000000` maximum before DAX |
     | DAX window | `0x0000000c00000000` | variable, admitted separately |
 
-    Direct boot places the FDT at RAM + `0x10000000` and initrd at RAM + `0x14000000`. The minimum RAM size is `0x40000000` bytes. The machine exposes 1...256 vCPUs subject to host admission.
+    Direct Linux boot places the FDT at RAM + `0x10000000`, passes its address in `x0`, and places the initrd at RAM + `0x14000000`. UEFI begins at `0x00000000`, uses firmware ABI `dory.edk2.armvirt@1`, and persists variables as `dory.uefi.variables.armvirt@1`. The minimum RAM size is `0x40000000` bytes. The machine exposes 1...256 vCPUs subject to host admission.
 
     ## Interrupt map
 
@@ -204,7 +246,7 @@ public enum DoryARMVirtV1ABI {
     | 30 | USB controller |
     | 31 | reserved; never allocatable in ABI v1 |
 
-    Firmware boot, ACPI, PCIe, and persistent variable storage are absent from this direct-boot ABI revision. They require a new compatible profile or machine ABI revision before exposure.
+    VirtIO MMIO is the compatibility transport. PCIe ECAM/MMIO, firmware flash, persistent variables, and power/reset addresses are frozen reservations in v1; exposing a device in one of those regions must preserve this map and the separately versioned firmware and device ABIs.
     """
 
   private static func fixedRegion(
