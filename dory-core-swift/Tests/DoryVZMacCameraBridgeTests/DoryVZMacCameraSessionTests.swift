@@ -66,7 +66,8 @@ final class DoryVZMacCameraSessionTests: XCTestCase {
         let completed = expectation(description: "failed host camera session stopped")
         let session = DoryVZMacCameraSession(
             ownedDescriptor: sockets[0],
-            frameProvider: { _, _, _ in
+            frameProvider: { _, _, timeout in
+                XCTAssertEqual(timeout, 10)
                 throw SimulatedCameraFailure.permissionDenied
             }
         )

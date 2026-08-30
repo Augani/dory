@@ -83,6 +83,8 @@ public final class DoryMacCameraBackend: NSObject,
     private var prepared = false
     private var cameraIdentity: DoryMacCameraIdentity?
     private var captureRunning = false
+    private var observedSampleBuffer = false
+    private var loggedEncodingFailure = false
     private var stopped = false
 
     public init(log: @escaping @Sendable (String) -> Void) {
@@ -179,10 +181,11 @@ public final class DoryMacCameraBackend: NSObject,
             throw DoryMacCameraError.unsupportedDimensions(width, height)
         }
         _ = try prepareAndAuthorize()
-        guard ensureCaptureRunning() else { throw DoryMacCameraError.startFailed }
-        let deadline = Date().addingTimeInterval(max(0.001, min(timeout, 2)))
+
+        // Register demand before startRunning(). Some cameras emit their first buffers while that
+        // blocking call is still returning; the delegate must not discard those cold-start frames.
         condition.lock()
-        guard captureRunning, !stopped else {
+        guard !stopped else {
             condition.unlock()
             throw DoryMacCameraError.startFailed
         }
@@ -193,15 +196,18 @@ public final class DoryMacCameraBackend: NSObject,
             deliveredGeneration = generation
         }
         waitingConsumers += 1
+        condition.unlock()
+
+        guard ensureCaptureRunning() else {
+            finishWaitingForFrame()
+            throw DoryMacCameraError.startFailed
+        }
+
+        let deadline = Date().addingTimeInterval(max(0.001, min(timeout, 15)))
+        condition.lock()
         defer {
-            waitingConsumers -= 1
-            idleGeneration &+= 1
-            let idleToken = idleGeneration
-            let shouldScheduleIdleRelease = waitingConsumers == 0 && !stopped
             condition.unlock()
-            if shouldScheduleIdleRelease {
-                scheduleIdleRelease(token: idleToken)
-            }
+            finishWaitingForFrame()
         }
         while !stopped, captureRunning, generation == deliveredGeneration {
             guard condition.wait(until: deadline) else {
@@ -244,10 +250,17 @@ public final class DoryMacCameraBackend: NSObject,
     ) {
         condition.lock()
         let shouldEncode = captureRunning && !stopped && waitingConsumers > 0
+        let shouldLogFirstSample = captureRunning && !stopped && !observedSampleBuffer
+        if shouldLogFirstSample { observedSampleBuffer = true }
         let targetWidth = requestedWidth
         let targetHeight = requestedHeight
         condition.unlock()
-        guard shouldEncode, let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
+        if shouldLogFirstSample {
+            log("Dory camera: host capture delivered its first sample buffer")
+        }
+        guard shouldEncode else { return }
+        guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
+            logEncodingFailureOnce("the first camera sample did not contain an image buffer")
             return
         }
         let image = Self.centerCroppedImage(
@@ -264,6 +277,7 @@ public final class DoryMacCameraBackend: NSObject,
                 ): 0.82,
             ]
         ), !jpeg.isEmpty, jpeg.count <= 1_280 * 720 * 2 else {
+            logEncodingFailureOnce("the camera sample could not be encoded as a bounded JPEG")
             return
         }
         condition.lock()
@@ -309,6 +323,8 @@ public final class DoryMacCameraBackend: NSObject,
             }
             latestJPEG = nil
             deliveredGeneration = generation
+            observedSampleBuffer = false
+            loggedEncodingFailure = false
             condition.unlock()
 
             session.startRunning()
@@ -350,6 +366,26 @@ public final class DoryMacCameraBackend: NSObject,
                 self.log("Dory camera: host capture released after guest stream idle")
             }
         }
+    }
+
+    private func finishWaitingForFrame() {
+        condition.lock()
+        waitingConsumers = max(0, waitingConsumers - 1)
+        idleGeneration &+= 1
+        let idleToken = idleGeneration
+        let shouldScheduleIdleRelease = waitingConsumers == 0 && !stopped
+        condition.unlock()
+        if shouldScheduleIdleRelease {
+            scheduleIdleRelease(token: idleToken)
+        }
+    }
+
+    private func logEncodingFailureOnce(_ detail: String) {
+        condition.lock()
+        let shouldLog = !loggedEncodingFailure
+        loggedEncodingFailure = true
+        condition.unlock()
+        if shouldLog { log("Dory camera: \(detail)") }
     }
 
     private static func requireAuthorization(timeout: TimeInterval) throws {

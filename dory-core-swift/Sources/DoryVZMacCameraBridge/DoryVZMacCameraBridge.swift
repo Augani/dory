@@ -180,12 +180,18 @@ struct DoryVZMacCameraSession: @unchecked Sendable {
         let interval = UInt64(1_000_000_000 / request.maximumFramesPerSecond)
         while !cancellation.isCancelled {
             let started = DispatchTime.now().uptimeNanoseconds
+            // AVCaptureSession.startRunning() may return before a cold camera has completed its
+            // exposure/format warm-up. Give only the first frame a qualification-sized window;
+            // steady-state reads remain tightly bounded so stale video is still dropped quickly.
+            let frameTimeout = sequence == 0
+                ? 10
+                : min(2, max(0.05, Double(interval) / 1_000_000_000 * 2))
             let jpeg: Data
             do {
                 jpeg = try frameProvider(
                     Int(request.widthPixels),
                     Int(request.heightPixels),
-                    min(2, max(0.05, Double(interval) / 1_000_000_000 * 2))
+                    frameTimeout
                 )
             } catch {
                 try writeError(
