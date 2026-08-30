@@ -5,7 +5,7 @@ import Testing
 @testable import DoryARMVirtQualification
 
 @Suite struct DoryARMVirtQualificationReceiptTests {
-  @Test func verifiesExactSchemaSixReceiptAgainstCheckedInMatrix() throws {
+  @Test func verifiesExactSchemaSevenReceiptAgainstCheckedInMatrix() throws {
     let fixture = try Fixture()
     let receipt = fixture.receipt()
 
@@ -27,9 +27,9 @@ import Testing
     }
 
     object = try fixture.object(fixture.receipt())
-    object["schemaVersion"] = 5
+    object["schemaVersion"] = 6
     #expect(
-      throws: DoryARMVirtQualificationReceiptError.unsupportedSchemaVersion(5)
+      throws: DoryARMVirtQualificationReceiptError.unsupportedSchemaVersion(6)
     ) {
       try fixture.verify(object)
     }
@@ -115,6 +115,16 @@ private struct Fixture {
       hostHardwareModel: "Mac14,10",
       hostOperatingSystemVersion: "Version 26.0",
       hostOperatingSystemBuild: "26A5421a",
+      hostBootSessionUUID: "D8A1C440-174D-4AE8-A564-A56EFB3DE487",
+      hostPhysicalMemoryByteCount: 16 << 30,
+      hostPowerSourceAtStart: "ac-power",
+      hostPowerSourceAtEnd: "ac-power",
+      hostLowPowerModeEnabledAtStart: false,
+      hostLowPowerModeEnabledAtEnd: false,
+      hostThermalStateAtStart: "nominal",
+      hostThermalStateAtEnd: "nominal",
+      qualificationStartedAt: "2026-08-30T08:00:00.000Z",
+      qualificationCompletedAt: "2026-08-30T08:00:05.000Z",
       guestFamily: media.guestFamily,
       guestVersion: media.guestVersion,
       guestBuild: media.guestBuild,

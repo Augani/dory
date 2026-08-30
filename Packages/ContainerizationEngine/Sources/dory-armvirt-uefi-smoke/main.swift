@@ -7,6 +7,7 @@ import DoryMachineARMVirt
 import DoryOperations
 import DorydKit
 import Foundation
+import IOKit.ps
 
 #if !arch(arm64)
   FileHandle.standardError.write(
@@ -376,6 +377,37 @@ import Foundation
     )
   }
 
+  private func hostPowerSource() -> String {
+    let snapshot = IOPSCopyPowerSourcesInfo().takeRetainedValue()
+    let sources = IOPSCopyPowerSourcesList(snapshot).takeRetainedValue() as [CFTypeRef]
+    for source in sources {
+      guard
+        let description = IOPSGetPowerSourceDescription(snapshot, source)?.takeUnretainedValue()
+          as? [String: Any],
+        let state = description[kIOPSPowerSourceStateKey] as? String
+      else { continue }
+      if state == kIOPSACPowerValue { return "ac-power" }
+      if state == kIOPSBatteryPowerValue { return "battery-power" }
+    }
+    return "unknown"
+  }
+
+  private func thermalState(_ state: ProcessInfo.ThermalState) -> String {
+    switch state {
+    case .nominal: "nominal"
+    case .fair: "fair"
+    case .serious: "serious"
+    case .critical: "critical"
+    @unknown default: "critical"
+    }
+  }
+
+  private func timestamp(_ date: Date) -> String {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return formatter.string(from: date)
+  }
+
   private func runnerSHA256() throws -> String {
     let path = URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL.path
     let data = try Data(contentsOf: URL(fileURLWithPath: path), options: .mappedIfSafe)
@@ -579,7 +611,12 @@ import Foundation
 
   do {
     let qualification = try admitQualificationGate(options: &options)
+    let qualificationStartedAt = timestamp(Date())
     let qualificationStarted = DispatchTime.now().uptimeNanoseconds
+    let processInfo = ProcessInfo.processInfo
+    let hostPowerSourceAtStart = hostPowerSource()
+    let hostLowPowerModeEnabledAtStart = processInfo.isLowPowerModeEnabled
+    let hostThermalStateAtStart = thermalState(processInfo.thermalState)
     let canonicalBundle = URL(fileURLWithPath: firmwareBundle).standardizedFileURL.path
     let artifacts = try DoryARMVirtFirmwareBundle(directory: canonicalBundle).loadVerified()
     let template = try DoryUEFIVariableStoreSnapshot.decodeCanonicalTemplate(
@@ -732,6 +769,10 @@ import Foundation
     let generation = try variableStore.load().snapshot.generation
     let qualificationDurationNanoseconds =
       DispatchTime.now().uptimeNanoseconds &- qualificationStarted
+    let qualificationCompletedAt = timestamp(Date())
+    let hostPowerSourceAtEnd = hostPowerSource()
+    let hostLowPowerModeEnabledAtEnd = processInfo.isLowPowerModeEnabled
+    let hostThermalStateAtEnd = thermalState(processInfo.thermalState)
     let receipt = DoryARMVirtQualificationReceipt(
       machineABIIdentity: DoryARMVirtV1ABI.identity,
       firmwareABIIdentity: DoryARMVirtV1ABI.firmwareABIIdentity,
@@ -742,6 +783,16 @@ import Foundation
       hostHardwareModel: systemString("hw.model"),
       hostOperatingSystemVersion: ProcessInfo.processInfo.operatingSystemVersionString,
       hostOperatingSystemBuild: systemString("kern.osversion"),
+      hostBootSessionUUID: systemString("kern.bootsessionuuid"),
+      hostPhysicalMemoryByteCount: processInfo.physicalMemory,
+      hostPowerSourceAtStart: hostPowerSourceAtStart,
+      hostPowerSourceAtEnd: hostPowerSourceAtEnd,
+      hostLowPowerModeEnabledAtStart: hostLowPowerModeEnabledAtStart,
+      hostLowPowerModeEnabledAtEnd: hostLowPowerModeEnabledAtEnd,
+      hostThermalStateAtStart: hostThermalStateAtStart,
+      hostThermalStateAtEnd: hostThermalStateAtEnd,
+      qualificationStartedAt: qualificationStartedAt,
+      qualificationCompletedAt: qualificationCompletedAt,
       guestFamily: consoleScript?.driver.qualificationTarget?.guestFamily,
       guestVersion: consoleScript?.driver.qualificationTarget?.guestVersion,
       guestBuild: consoleScript?.driver.qualificationTarget?.guestBuild,

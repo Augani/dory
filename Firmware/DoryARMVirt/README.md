@@ -27,7 +27,7 @@ The runner rejects a missing pair of matrix/gate options, a caller-supplied
 console script, media, fixture, or network-sidecar drift, guest-tuple mismatch, and any observed
 boot/transition/action receipt that differs from the selected gate.
 Before emitting a matrix-selected receipt, the runner decodes it through the
-shared schema-6 verifier, recomputes the matrix digest, and fails closed on
+shared schema-7 verifier, recomputes the matrix digest, and fails closed on
 unknown fields or any platform, host, guest, media, firmware, sidecar, resource,
 lifecycle, snapshot, or monotonic-timing mismatch.
 
@@ -82,9 +82,10 @@ embedded UEFI interactive shell. Console output is written to standard error;
 a successful run writes one canonical JSON receipt to standard output with the
 machine and firmware ABI identities, build identifier, firmware SHA-256, boot
 attempt count, each boot's monotonic duration, the total qualification duration,
-variable-store generation, and final stop reason. Receipt schema 6 identifies
+variable-store generation, and final stop reason. Receipt schema 7 identifies
 these measurements as Dispatch uptime nanoseconds so wall-clock adjustment cannot
-distort performance evidence.
+distort performance evidence, while also binding UTC start/end, host boot session,
+physical memory, power source, Low Power Mode, and thermal state at both boundaries.
 
 To qualify an exact, private, read-only installer image through the removable
 VirtIO block path, add the media and a console marker owned by that image:
@@ -132,7 +133,7 @@ chmod 600 /absolute/path/to/alpine-standard-aarch64.iso
 
 The runner accepts only an owned, private console document with bounded steps,
 wait markers, and inputs. It refuses a success marker present in guest input so
-terminal echo cannot forge qualification. Receipt schema 6 binds the exact host
+terminal echo cannot forge qualification. Receipt schema 7 binds the exact host
 model/OS build, guest family/version/build/architecture, execution engine, CPU,
 machine, firmware and device ABIs, runner SHA-256, memory and disk sizes,
 completed step count, console-document SHA-256, applied installer media

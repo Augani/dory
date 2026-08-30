@@ -2,7 +2,7 @@ import CryptoKit
 import Foundation
 
 public struct DoryARMVirtQualificationReceipt: Codable, Equatable, Sendable {
-  public static let currentSchemaVersion: UInt32 = 6
+  public static let currentSchemaVersion: UInt32 = 7
   public static let timingClockIdentity = "dispatch-uptime-nanoseconds"
 
   public let schemaVersion: UInt32
@@ -15,6 +15,16 @@ public struct DoryARMVirtQualificationReceipt: Codable, Equatable, Sendable {
   public let hostHardwareModel: String
   public let hostOperatingSystemVersion: String
   public let hostOperatingSystemBuild: String
+  public let hostBootSessionUUID: String
+  public let hostPhysicalMemoryByteCount: UInt64
+  public let hostPowerSourceAtStart: String
+  public let hostPowerSourceAtEnd: String
+  public let hostLowPowerModeEnabledAtStart: Bool
+  public let hostLowPowerModeEnabledAtEnd: Bool
+  public let hostThermalStateAtStart: String
+  public let hostThermalStateAtEnd: String
+  public let qualificationStartedAt: String
+  public let qualificationCompletedAt: String
   public let guestFamily: String?
   public let guestVersion: String?
   public let guestBuild: String?
@@ -60,6 +70,16 @@ public struct DoryARMVirtQualificationReceipt: Codable, Equatable, Sendable {
     hostHardwareModel: String,
     hostOperatingSystemVersion: String,
     hostOperatingSystemBuild: String,
+    hostBootSessionUUID: String,
+    hostPhysicalMemoryByteCount: UInt64,
+    hostPowerSourceAtStart: String,
+    hostPowerSourceAtEnd: String,
+    hostLowPowerModeEnabledAtStart: Bool,
+    hostLowPowerModeEnabledAtEnd: Bool,
+    hostThermalStateAtStart: String,
+    hostThermalStateAtEnd: String,
+    qualificationStartedAt: String,
+    qualificationCompletedAt: String,
     guestFamily: String?,
     guestVersion: String?,
     guestBuild: String?,
@@ -104,6 +124,16 @@ public struct DoryARMVirtQualificationReceipt: Codable, Equatable, Sendable {
     self.hostHardwareModel = hostHardwareModel
     self.hostOperatingSystemVersion = hostOperatingSystemVersion
     self.hostOperatingSystemBuild = hostOperatingSystemBuild
+    self.hostBootSessionUUID = hostBootSessionUUID
+    self.hostPhysicalMemoryByteCount = hostPhysicalMemoryByteCount
+    self.hostPowerSourceAtStart = hostPowerSourceAtStart
+    self.hostPowerSourceAtEnd = hostPowerSourceAtEnd
+    self.hostLowPowerModeEnabledAtStart = hostLowPowerModeEnabledAtStart
+    self.hostLowPowerModeEnabledAtEnd = hostLowPowerModeEnabledAtEnd
+    self.hostThermalStateAtStart = hostThermalStateAtStart
+    self.hostThermalStateAtEnd = hostThermalStateAtEnd
+    self.qualificationStartedAt = qualificationStartedAt
+    self.qualificationCompletedAt = qualificationCompletedAt
     self.guestFamily = guestFamily
     self.guestVersion = guestVersion
     self.guestBuild = guestBuild
@@ -225,9 +255,21 @@ public enum DoryARMVirtQualificationReceiptVerifier {
     }
     try validateSnapshot(receipt, gate: gate)
     try validateTimings(receipt)
+    guard let qualificationStartedAt = timestamp(receipt.qualificationStartedAt),
+      let qualificationCompletedAt = timestamp(receipt.qualificationCompletedAt),
+      qualificationStartedAt <= qualificationCompletedAt
+    else {
+      throw DoryARMVirtQualificationReceiptError.invalidField("qualificationWallClock")
+    }
     guard isBounded(receipt.hostHardwareModel),
       isBounded(receipt.hostOperatingSystemVersion),
       isBounded(receipt.hostOperatingSystemBuild),
+      UUID(uuidString: receipt.hostBootSessionUUID) != nil,
+      receipt.hostPhysicalMemoryByteCount >= 4 << 30,
+      powerSources.contains(receipt.hostPowerSourceAtStart),
+      powerSources.contains(receipt.hostPowerSourceAtEnd),
+      thermalStates.contains(receipt.hostThermalStateAtStart),
+      thermalStates.contains(receipt.hostThermalStateAtEnd),
       isBounded(receipt.buildIdentifier),
       isSHA256(receipt.runnerSHA256),
       isSHA256(receipt.firmwareCodeSHA256),
@@ -304,6 +346,15 @@ public enum DoryARMVirtQualificationReceiptVerifier {
       && value.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
   }
 
+  private static func timestamp(_ value: String) -> Date? {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return formatter.date(from: value)
+  }
+
+  private static let powerSources: Set<String> = ["ac-power", "battery-power", "unknown"]
+  private static let thermalStates: Set<String> = ["nominal", "fair", "serious", "critical"]
+
   private static let optionalKeys: Set<String> = [
     "guestFamily", "guestVersion", "guestBuild", "guestArchitecture",
     "compatibilityMatrixSHA256", "qualificationGateID", "installerMediaByteCount",
@@ -314,7 +365,11 @@ public enum DoryARMVirtQualificationReceiptVerifier {
   private static let requiredKeys: Set<String> = [
     "schemaVersion", "machineABIIdentity", "firmwareABIIdentity", "executionEngineIdentity",
     "cpuProfileIdentity", "deviceABIIdentity", "hostArchitecture", "hostHardwareModel",
-    "hostOperatingSystemVersion", "hostOperatingSystemBuild", "guestVCPUCount", "runnerSHA256",
+    "hostOperatingSystemVersion", "hostOperatingSystemBuild", "hostBootSessionUUID",
+    "hostPhysicalMemoryByteCount", "hostPowerSourceAtStart", "hostPowerSourceAtEnd",
+    "hostLowPowerModeEnabledAtStart", "hostLowPowerModeEnabledAtEnd", "hostThermalStateAtStart",
+    "hostThermalStateAtEnd", "qualificationStartedAt", "qualificationCompletedAt",
+    "guestVCPUCount", "runnerSHA256",
     "buildIdentifier", "firmwareCodeSHA256", "expectedConsoleText", "systemDiskByteCount",
     "memoryByteCount", "installerMediaTransitionCount", "installerMediaAttachedForFinalBoot",
     "coldSnapshotActionCount", "completedColdSnapshotActionCount", "consoleByteCount",

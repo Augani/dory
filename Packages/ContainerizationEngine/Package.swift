@@ -157,7 +157,10 @@ let package = Package(
                 .product(name: "DoryOperations", package: "dory-core-swift"),
                 .product(name: "DorydKit", package: "dory-core-swift"),
             ],
-            linkerSettings: [.linkedFramework("Hypervisor")]
+            linkerSettings: [
+                .linkedFramework("Hypervisor"),
+                .linkedFramework("IOKit"),
+            ]
         ),
         .executableTarget(
             name: "DoryRendererWorkerXPCService",
