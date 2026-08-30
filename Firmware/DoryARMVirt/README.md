@@ -217,3 +217,12 @@ dist-upgrade, and another clean UEFI reboot. Run it with
 an 8 GiB system disk, and a 600-second per-boot timeout. The qualifying receipt
 must report three boot attempts, one media transition, installer media absent
 for the final boot, and all 30 interaction steps complete.
+
+`fedora-44-installer-boot.json` is the third independent distribution-family
+cell. It admits the official Fedora Server 44 release-1.7 aarch64 netinst ISO
+unchanged, selects `Install Fedora 44` from the image's stock GRUB menu, boots
+the distribution kernel and initramfs, and requires Anaconda's serial UI to
+emit `Starting installer, one moment...`. The 1,257,783,296-byte image has
+SHA-256 `a93ebd0322cda5a439039710b727ac1899a06e1c11876cfdf7f27c25b8262cc3`;
+qualification requires that digest from Fedora's OpenPGP-verified release
+checksum file, not the web page alone.

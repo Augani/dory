@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "qualificationTarget": {
+    "guestFamily": "fedora",
+    "guestVersion": "44",
+    "guestBuild": "44-1.7",
+    "guestArchitecture": "arm64"
+  },
+  "steps": [
+    {
+      "waitFor": "Install Fedora 44",
+      "send": "\n"
+    }
+  ]
+}

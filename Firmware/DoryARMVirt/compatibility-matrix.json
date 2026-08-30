@@ -24,6 +24,16 @@
       "checksumURL": "https://cdimage.debian.org/debian-cd/current/arm64/iso-cd/SHA256SUMS",
       "byteCount": 735358976,
       "sha256": "ffa590beb3ae9158c354e00ebc4bf45421f4720bb3a8ddf2db3cbfc0374cf480"
+    },
+    "fedora-server-44-1.7-arm64": {
+      "guestFamily": "fedora",
+      "guestVersion": "44",
+      "guestBuild": "44-1.7",
+      "guestArchitecture": "arm64",
+      "sourceURL": "https://download.fedoraproject.org/pub/fedora/linux/releases/44/Server/aarch64/iso/Fedora-Server-netinst-aarch64-44-1.7.iso",
+      "checksumURL": "https://dl.fedoraproject.org/pub/fedora/linux/releases/44/Server/aarch64/iso/Fedora-Server-44-1.7-aarch64-CHECKSUM",
+      "byteCount": 1257783296,
+      "sha256": "a93ebd0322cda5a439039710b727ac1899a06e1c11876cfdf7f27c25b8262cc3"
     }
   },
   "gates": [
@@ -33,6 +43,7 @@
     {"gateID":"alpine-cold-snapshot","kind":"cold-snapshot","mediaID":"alpine-3.24.1-arm64","consoleScriptPath":"qualification/alpine-3.24-cold-snapshot.json","consoleScriptSHA256":"4280ec48402ccc4927f7325a60324184a4a82801148366054632871d9f4f687a","expectedConsoleText":"DORY_COLD_SNAPSHOT_RESTORED","memoryByteCount":4294967296,"systemDiskByteCount":4294967296,"timeoutSeconds":300,"gvproxySHA256":"56e0cde99ff2b589e467294145d66796ab4d990ae89a3633b0ef037dfcba03cd","receipt":{"bootAttempts":4,"consoleScriptStepCount":9,"installerMediaTransitionCount":1,"installerMediaAttachedForFinalBoot":false,"coldSnapshotActionCount":2}},
     {"gateID":"alpine-baseline-devices","kind":"baseline-devices","mediaID":"alpine-3.24.1-arm64","consoleScriptPath":"qualification/alpine-3.24-device-baseline.json","consoleScriptSHA256":"fb0812cac3e8b53ac4b5fc8bbe4d3ad65c5ba8ee8a3a3111d164257bf4d60889","expectedConsoleText":"DORY_DEVICE_BASELINE_READY","memoryByteCount":4294967296,"systemDiskByteCount":4294967296,"timeoutSeconds":300,"gvproxySHA256":"56e0cde99ff2b589e467294145d66796ab4d990ae89a3633b0ef037dfcba03cd","receipt":{"bootAttempts":2,"consoleScriptStepCount":5,"installerMediaTransitionCount":1,"installerMediaAttachedForFinalBoot":false,"coldSnapshotActionCount":0}},
     {"gateID":"debian-installer-boot","kind":"installer-boot","mediaID":"debian-13.6.0-arm64","consoleScriptPath":"qualification/debian-13.6-installer-boot.json","consoleScriptSHA256":"5dd666e523a09c2486016d70f96f43d0158cc77cdab09d8afcde7d9731e8bb08","expectedConsoleText":"Select a language","memoryByteCount":4294967296,"systemDiskByteCount":8589934592,"timeoutSeconds":180,"receipt":{"bootAttempts":1,"consoleScriptStepCount":1,"installerMediaTransitionCount":0,"installerMediaAttachedForFinalBoot":true,"coldSnapshotActionCount":0}},
+    {"gateID":"fedora-installer-boot","kind":"installer-boot","mediaID":"fedora-server-44-1.7-arm64","consoleScriptPath":"qualification/fedora-44-installer-boot.json","consoleScriptSHA256":"4006f28145cc8014bbe8e1e4a8bebec5f0880bead704f731f5358d4bf6fe7ef1","expectedConsoleText":"Starting installer, one moment...","memoryByteCount":4294967296,"systemDiskByteCount":8589934592,"timeoutSeconds":180,"receipt":{"bootAttempts":1,"consoleScriptStepCount":1,"installerMediaTransitionCount":0,"installerMediaAttachedForFinalBoot":true,"coldSnapshotActionCount":0}},
     {"gateID":"debian-update","kind":"guest-update","mediaID":"debian-13.6.0-arm64","consoleScriptPath":"qualification/debian-13.6-install.json","consoleScriptSHA256":"14d2949f9c34c8a8610be449c4d87742bc21aa09de4c8a8cb1a41583e9770eda","expectedConsoleText":"DORY_DEBIAN_UPDATED_READY","memoryByteCount":4294967296,"systemDiskByteCount":8589934592,"timeoutSeconds":600,"gvproxySHA256":"56e0cde99ff2b589e467294145d66796ab4d990ae89a3633b0ef037dfcba03cd","receipt":{"bootAttempts":3,"consoleScriptStepCount":30,"installerMediaTransitionCount":1,"installerMediaAttachedForFinalBoot":false,"coldSnapshotActionCount":0}}
   ]
 }
