@@ -565,6 +565,17 @@ jobs:
           echo "selected: $xcode_app"
           echo "DEVELOPER_DIR=$xcode_app/Contents/Developer" >> "$GITHUB_ENV"
 
+      - name: Bind VZMac paths to the selected final public SDK
+        env:
+          # The physical release Mac already carries the macOS 27 Command Line Tools SDK while
+          # the app build remains pinned to the independently qualified Xcode 26.6 toolchain.
+          DEVELOPER_DIR: /Library/Developer/CommandLineTools
+        run: |
+          test -d "$DEVELOPER_DIR/SDKs/MacOSX.sdk"
+          test "$(xcrun --sdk macosx --show-sdk-version | cut -d. -f1)" -ge 27
+          python3 .github/scripts/verify-vz-platform-sdk.py \
+            --output "$RUNNER_TEMP/dory-vz-platform-sdk.json"
+
       - name: Record and prove physical Apple-silicon host facts
         run: |
           facts="$RUNNER_TEMP/dory-arm64-host-facts.txt"
@@ -920,6 +931,7 @@ jobs:
           if-no-files-found: warn
           path: |
             ${{ runner.temp }}/dory-arm64-host-facts.txt
+            ${{ runner.temp }}/dory-vz-platform-sdk.json
             ${{ runner.temp }}/dory-jit-probe/evidence
             ${{ runner.temp }}/dory-release-direct-dmg/evidence
             ${{ runner.temp }}/dory-release-live-*
