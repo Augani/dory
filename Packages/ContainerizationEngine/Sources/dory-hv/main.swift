@@ -497,11 +497,10 @@ case "desktop":
     let systemDiskQueueCount = runtimeLaunchEnvelope.map {
         Int($0.executionResources.systemDiskQueueCount)
     } ?? 1
-    let bootPayload: MachineBootPayload
-    let effectiveRootDevice: String
-    let effectiveGenericGuest: Bool
+    let desktopBoot: DesktopMode.BootAuthority
     let resolvedSystemDiskLogicalID: DoryVirtualDeviceID?
-    var resolvedARMVirtResources: RuntimeLaunchEnvelope.ResolvedARMVirtResources?
+    let rendererBootstrapAuthority: RuntimeLaunchEnvelope.InheritedFileDescriptorSlot?
+    let exactManagedKernelSHA256: String?
     if let runtimeLaunchEnvelope {
         guard kernel == nil,
               initrd == nil,
@@ -512,52 +511,73 @@ case "desktop":
             fail("desktop resolved launch rejects pathname or split boot authority")
         }
         do {
-            let resources = try runtimeLaunchEnvelope.validatedResolvedARMVirtResources()
-            resolvedARMVirtResources = resources
-            guard let systemDiskLogicalID = resources.systemDisk.logicalDeviceID,
-                  let kernelSHA256 = resources.linuxKernel.contentSHA256 else {
-                fail("desktop resolved launch envelope lost required resource identity")
-            }
-            let initrdAuthority = try resources.linuxInitrd.map { slot in
-                guard let sha256 = slot.contentSHA256 else {
-                    throw VMError.invalidConfiguration(
-                        "resolved linuxInitrd is missing exact digest authority"
+            switch runtimeLaunchEnvelope.boot {
+            case .linuxDirect(let policy):
+                let resources = try runtimeLaunchEnvelope.validatedResolvedARMVirtResources()
+                guard let systemDiskLogicalID = resources.systemDisk.logicalDeviceID,
+                      let kernelSHA256 = resources.linuxKernel.contentSHA256 else {
+                    fail("desktop resolved launch envelope lost required resource identity")
+                }
+                let initrdAuthority = try resources.linuxInitrd.map { slot in
+                    guard let sha256 = slot.contentSHA256 else {
+                        throw VMError.invalidConfiguration(
+                            "resolved linuxInitrd is missing exact digest authority"
+                        )
+                    }
+                    return MachineInheritedImmutableBlob(
+                        name: RuntimeLaunchEnvelope.linuxInitrdSlotName,
+                        descriptor: slot.descriptor,
+                        byteCount: slot.byteCount,
+                        sha256: sha256,
+                        maximumByteCount: RuntimeLaunchEnvelope.maximumLinuxInitrdBytes
                     )
                 }
-                return MachineInheritedImmutableBlob(
-                    name: RuntimeLaunchEnvelope.linuxInitrdSlotName,
-                    descriptor: slot.descriptor,
-                    byteCount: slot.byteCount,
-                    sha256: sha256,
-                    maximumByteCount: RuntimeLaunchEnvelope.maximumLinuxInitrdBytes
+                let bootPayload = try MachineBootPayload.inheritedReadOnlyDescriptors(
+                    kernel: MachineInheritedImmutableBlob(
+                        name: RuntimeLaunchEnvelope.linuxKernelSlotName,
+                        descriptor: resources.linuxKernel.descriptor,
+                        byteCount: resources.linuxKernel.byteCount,
+                        sha256: kernelSHA256,
+                        maximumByteCount: RuntimeLaunchEnvelope.maximumLinuxKernelBytes
+                    ),
+                    initrd: initrdAuthority
                 )
+                desktopBoot = .linux(
+                    payload: bootPayload,
+                    rootDevice: policy.rootDevice,
+                    genericGuest: policy.genericGuest
+                )
+                resolvedSystemDiskLogicalID = systemDiskLogicalID
+                rendererBootstrapAuthority = resources.rendererBootstrap
+                exactManagedKernelSHA256 = resources.linuxKernel.contentSHA256
+            case .uefi:
+                let authority = try ARMVirtUEFIRuntimeAuthority.admit(
+                    envelope: runtimeLaunchEnvelope
+                )
+                guard let systemDiskLogicalID = authority.resources.systemDisk.logicalDeviceID else {
+                    fail("desktop UEFI launch envelope lost system-disk identity")
+                }
+                desktopBoot = .uefi(authority)
+                resolvedSystemDiskLogicalID = systemDiskLogicalID
+                rendererBootstrapAuthority = authority.resources.rendererBootstrap
+                exactManagedKernelSHA256 = nil
             }
-            bootPayload = try MachineBootPayload.inheritedReadOnlyDescriptors(
-                kernel: MachineInheritedImmutableBlob(
-                    name: RuntimeLaunchEnvelope.linuxKernelSlotName,
-                    descriptor: resources.linuxKernel.descriptor,
-                    byteCount: resources.linuxKernel.byteCount,
-                    sha256: kernelSHA256,
-                    maximumByteCount: RuntimeLaunchEnvelope.maximumLinuxKernelBytes
-                ),
-                initrd: initrdAuthority
-            )
-            effectiveRootDevice = runtimeLaunchEnvelope.linuxDirectBoot.rootDevice
-            effectiveGenericGuest = runtimeLaunchEnvelope.linuxDirectBoot.genericGuest
-            resolvedSystemDiskLogicalID = systemDiskLogicalID
         } catch {
             fail("desktop inherited boot authority is invalid: \(error)")
         }
     } else {
-        resolvedARMVirtResources = nil
         guard let kernel else { fail("desktop legacy launch requires --kernel") }
         if genericGuest, initrd == nil {
             fail("desktop --generic-guest requires --initrd")
         }
-        bootPayload = .legacyPaths(kernel: kernel, initrd: initrd)
-        effectiveRootDevice = rootDevice
-        effectiveGenericGuest = genericGuest
+        desktopBoot = .linux(
+            payload: .legacyPaths(kernel: kernel, initrd: initrd),
+            rootDevice: rootDevice,
+            genericGuest: genericGuest
+        )
         resolvedSystemDiskLogicalID = nil
+        rendererBootstrapAuthority = nil
+        exactManagedKernelSHA256 = nil
     }
     let rootDisk: DesktopMode.RootDiskBacking
     do {
@@ -586,9 +606,8 @@ case "desktop":
     do {
         rendererWorkerLaunch = try await DesktopRendererWorkerLaunch.prepare(
             resolvedGraphics: resolvedGraphics,
-            rendererBootstrapAuthority: resolvedARMVirtResources?.rendererBootstrap,
-            exactManagedKernelSHA256:
-                resolvedARMVirtResources?.linuxKernel.contentSHA256
+            rendererBootstrapAuthority: rendererBootstrapAuthority,
+            exactManagedKernelSHA256: exactManagedKernelSHA256
         )
     } catch {
         fail("desktop renderer-worker launch authority is invalid: \(error)")
@@ -599,10 +618,8 @@ case "desktop":
             machineID: machineID,
             operationID: operationID,
             stateDirectory: stateDirectory,
-            bootPayload: bootPayload,
+            boot: desktopBoot,
             rootDisk: rootDisk,
-            rootDevice: effectiveRootDevice,
-            genericGuest: effectiveGenericGuest,
             gvproxyPath: gvproxy,
             handoffSocketPath: handoffSocket,
             agentSocketPath: agentSocket,

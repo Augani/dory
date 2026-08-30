@@ -3,6 +3,7 @@ import DoryFirmware
 import DoryHV
 import DoryMachineARMVirt
 import DoryOperations
+import DoryVMContracts
 import Foundation
 
 /// Fully admitted UEFI authority retained by the runner after immutable descriptor consumption.
@@ -83,6 +84,55 @@ struct ARMVirtUEFIRuntimeAuthority {
             variableStore: variableStore,
             memoryBytes: memoryMB << 20,
             cpuCount: cpuCount
+        )
+    }
+
+    func installerDeviceRequest(
+        topology: DoryARMVirtV1Topology?
+    ) throws -> DoryARMVirtV1DeviceRequest? {
+        guard let installer = resources.installerMedia,
+              let logicalID = installer.logicalDeviceID else { return nil }
+        guard let binding = topology?.occupiedSlots.first(where: {
+            $0.logicalID == logicalID
+        }), binding.role == .auxiliaryBlock || binding.role == .removableStorage,
+              launchPlan.bootDevices.contains(where: {
+                $0.kind == .removableMedia
+                    && $0.logicalID == logicalID.rawValue
+                    && $0.virtioSlot == binding.mmioSlot
+              }) else {
+            throw VMError.invalidConfiguration(
+                "UEFI installer media is not bound to its frozen topology slot"
+            )
+        }
+        return DoryARMVirtV1DeviceRequest(logicalID: logicalID, role: binding.role)
+    }
+
+    func consumeInstallerBackend() throws -> VirtioBlk? {
+        guard let installer = resources.installerMedia else { return nil }
+        let descriptor = installer.descriptor
+        defer { Darwin.close(descriptor) }
+        let accessFlags = fcntl(descriptor, F_GETFL)
+        var status = stat()
+        guard accessFlags >= 0,
+              accessFlags & O_ACCMODE == O_RDONLY,
+              fstat(descriptor, &status) == 0,
+              status.st_mode & S_IFMT == S_IFREG,
+              status.st_uid == geteuid(),
+              status.st_nlink == 0,
+              status.st_mode & 0o077 == 0,
+              status.st_size > 0,
+              UInt64(status.st_size) == installer.byteCount,
+              installer.byteCount % 512 == 0 else {
+            throw VMError.invalidConfiguration(
+                "UEFI installer media is not the exact private read-only disk authority"
+            )
+        }
+        return try VirtioBlk(
+            fileDescriptor: descriptor,
+            identity: "dory-installer-media",
+            readOnly: true,
+            queueCount: 1,
+            discard: false
         )
     }
 

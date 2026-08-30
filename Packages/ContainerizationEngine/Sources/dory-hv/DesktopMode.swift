@@ -915,6 +915,29 @@ enum DesktopSignalEventRelay {
 }
 
 enum DesktopMode {
+    enum BootAuthority {
+        case linux(payload: MachineBootPayload, rootDevice: String, genericGuest: Bool)
+        case uefi(ARMVirtUEFIRuntimeAuthority)
+
+        var genericGuest: Bool {
+            switch self {
+            case .linux(_, _, let genericGuest): genericGuest
+            case .uefi: true
+            }
+        }
+
+        var rawHVAuthorityKind: RawHVVirtualHardwareBootAuthorityKind {
+            switch self {
+            case .linux(let payload, _, _):
+                switch payload {
+                case .legacyPaths: .legacyPaths
+                case .immutableBytes: .resolvedImmutableBytes
+                }
+            case .uefi: .verifiedUEFIArtifacts
+            }
+        }
+    }
+
     enum RootDiskBacking: Equatable {
         case legacyPath(String)
         case resolvedDescriptor(descriptor: Int32, capacityBytes: UInt64)
@@ -985,10 +1008,8 @@ enum DesktopMode {
         var machineID: String
         var operationID: UUID
         var stateDirectory: String
-        var bootPayload: MachineBootPayload
+        var boot: BootAuthority
         var rootDisk: RootDiskBacking
-        var rootDevice: String
-        var genericGuest: Bool
         var gvproxyPath: String
         var handoffSocketPath: String
         var agentSocketPath: String
@@ -1023,11 +1044,10 @@ enum DesktopMode {
             resolvedDevices?.directorySharing == false ? [] : shares
         }
 
+        var genericGuest: Bool { boot.genericGuest }
+
         var rawHVBootAuthorityKind: RawHVVirtualHardwareBootAuthorityKind {
-            switch bootPayload {
-            case .legacyPaths: .legacyPaths
-            case .immutableBytes: .resolvedImmutableBytes
-            }
+            boot.rawHVAuthorityKind
         }
     }
 
@@ -1260,6 +1280,15 @@ enum DesktopMode {
         )
 
         init(configuration: Configuration) throws {
+            let additionalBootDevices: [DoryARMVirtV1DeviceRequest]
+            switch configuration.boot {
+            case .linux:
+                additionalBootDevices = []
+            case .uefi(let authority):
+                additionalBootDevices = try authority.installerDeviceRequest(
+                    topology: configuration.armVirtTopology
+                ).map { [$0] } ?? []
+            }
             let virtualHardwareAttachmentMode = try RawHVVirtualHardwareAttachmentPlan.launchMode(
                 diskAuthority: configuration.rootDisk.virtualHardwareDiskAuthorityKind,
                 bootAuthority: configuration.rawHVBootAuthorityKind,
@@ -1268,7 +1297,8 @@ enum DesktopMode {
                 resolvedDevices: configuration.resolvedDevices,
                 resolvedPortForwards: configuration.resolvedPortForwards,
                 resolvedSystemDiskLogicalID: configuration.resolvedSystemDiskLogicalID,
-                directoryShareStableIDs: configuration.shares.map(\.tag)
+                directoryShareStableIDs: configuration.shares.map(\.tag),
+                additionalBootDevices: additionalBootDevices
             )
             self.configuration = configuration
             let deviceTelemetry = RawDeviceTelemetryRegistry(
@@ -1332,18 +1362,28 @@ enum DesktopMode {
                 environment: configuration.environment,
                 genericGuest: configuration.genericGuest
             )
-            let machine = try Machine(configuration: MachineConfiguration(
-                bootPayload: configuration.bootPayload,
-                commandLine: Self.kernelCommandLine(
-                    machineID: configuration.machineID,
-                    operationID: configuration.operationID,
-                    rootDevice: configuration.rootDevice,
-                    graphicsBackend: resolvedGraphics.backend,
-                    genericGuest: configuration.genericGuest
-                ),
-                memoryBytes: configuration.memoryMB << 20,
-                cpuCount: configuration.cpuCount
-            ))
+            let machineConfiguration: MachineConfiguration
+            switch configuration.boot {
+            case .linux(let bootPayload, let rootDevice, let genericGuest):
+                machineConfiguration = MachineConfiguration(
+                    bootPayload: bootPayload,
+                    commandLine: Self.kernelCommandLine(
+                        machineID: configuration.machineID,
+                        operationID: configuration.operationID,
+                        rootDevice: rootDevice,
+                        graphicsBackend: resolvedGraphics.backend,
+                        genericGuest: genericGuest
+                    ),
+                    memoryBytes: configuration.memoryMB << 20,
+                    cpuCount: configuration.cpuCount
+                )
+            case .uefi(let authority):
+                machineConfiguration = authority.machineConfiguration(
+                    memoryMB: configuration.memoryMB,
+                    cpuCount: configuration.cpuCount
+                )
+            }
+            let machine = try Machine(configuration: machineConfiguration)
             self.machine = machine
             self.machineRunner = RawHVMachineRunner(
                 machine: machine,
@@ -1633,6 +1673,13 @@ enum DesktopMode {
                 let rootDisk = try configuration.rootDisk.makeBackend(
                     queueCount: configuration.systemDiskQueueCount
                 )
+                let installerDisk: VirtioBlk?
+                switch configuration.boot {
+                case .linux:
+                    installerDisk = nil
+                case .uefi(let authority):
+                    installerDisk = try authority.consumeInstallerBackend()
+                }
                 let entropy = VirtioRng()
                 var backends: [any VirtioDeviceBackend] = [
                     rootDisk,
@@ -1649,6 +1696,9 @@ enum DesktopMode {
                 }
                 if let sound {
                     backends.append(sound)
+                }
+                if let installerDisk {
+                    backends.append(installerDisk)
                 }
                 let attachedShares = configuration.attachedShares
                 let rawShares = try attachedShares.map { share in
@@ -1780,6 +1830,13 @@ enum DesktopMode {
                         authorizedDevices: authorizedDevices,
                         backend: vsock
                     ))
+                    if let installerDisk,
+                       let installerRequest = additionalBootDevices.first {
+                        materialized.append(MaterializedVirtioBackend(
+                            request: installerRequest,
+                            backend: installerDisk
+                        ))
+                    }
                     if configuration.resolvedDevices?.keyboard == true {
                         materialized.append(try Self.singletonMaterialization(
                             role: .keyboard,

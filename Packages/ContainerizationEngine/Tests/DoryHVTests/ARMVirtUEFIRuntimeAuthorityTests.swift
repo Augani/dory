@@ -13,6 +13,7 @@ import Testing
         let firmware = Data(repeating: 0xa5, count: 4_096)
         let variableTemplate = try DoryUEFIVariableStoreSnapshot().canonicalData()
         let sbom = Data(#"{"bomFormat":"CycloneDX","specVersion":"1.6"}"#.utf8)
+        let installerMedia = Data(repeating: 0x5a, count: 1_024)
         let manifest = try makeManifest(
             firmware: firmware,
             variableTemplate: variableTemplate,
@@ -24,15 +25,22 @@ import Testing
             virtioSlot: 0,
             readOnly: false
         )
+        let installer = try DoryARMVirtUEFIBootDevice(
+            logicalID: "installer",
+            kind: .removableMedia,
+            virtioSlot: 12,
+            readOnly: true
+        )
         let launchPlan = try DoryARMVirtUEFILaunchPlan(
             firmware: manifest,
             variableStoreGeneration: 1,
-            bootDevices: [systemDisk],
-            bootOrder: [systemDisk.logicalID]
+            bootDevices: [systemDisk, installer],
+            bootOrder: [installer.logicalID, systemDisk.logicalID]
         )
         let firmwareDescriptor = try anonymousReadOnlyBlob(firmware)
         let templateDescriptor = try anonymousReadOnlyBlob(variableTemplate)
         let sbomDescriptor = try anonymousReadOnlyBlob(sbom)
+        let installerDescriptor = try anonymousReadOnlyBlob(installerMedia)
         let directory = temporaryDirectory()
         defer { try? FileManager.default.removeItem(atPath: directory) }
         try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: false)
@@ -65,7 +73,14 @@ import Testing
                 descriptor: sbomDescriptor,
                 data: sbom
             ),
-            installerMedia: nil,
+            installerMedia: .init(
+                name: RuntimeLaunchEnvelope.installerMediaSlotName,
+                descriptor: installerDescriptor,
+                access: .readOnly,
+                byteCount: UInt64(installerMedia.count),
+                contentSHA256: digest(installerMedia),
+                logicalDeviceID: try DoryVirtualDeviceID("installer")
+            ),
             variableStoreDirectory: .init(
                 name: RuntimeLaunchEnvelope.variableStoreDirectorySlotName,
                 descriptor: directoryDescriptor,
@@ -89,6 +104,15 @@ import Testing
         #expect(try authority.variableStore.load().snapshot.generation == 1)
         try authority.machineConfiguration(memoryMB: 1_024, cpuCount: 1)
             .validateDoryARMVirtV1()
+        let topology = try DoryARMVirtV1Topology(occupiedSlots: [
+            try .init(logicalID: "system", role: .systemDisk, mmioSlot: 0),
+            try .init(logicalID: "installer", role: .removableStorage, mmioSlot: 12),
+        ])
+        #expect(try authority.installerDeviceRequest(topology: topology)?.logicalID.rawValue
+            == "installer")
+        let installerBackend = try authority.consumeInstallerBackend()
+        #expect(installerBackend != nil)
+        #expect(fcntl(installerDescriptor, F_GETFD) == -1)
     }
 
     private func makeManifest(

@@ -4,6 +4,43 @@ import Testing
 @testable import dory_hv
 
 @Suite struct RawHVVirtualHardwareAttachmentPlanTests {
+    @Test func verifiedUEFIPreflightIncludesInstallerTopologyAuthority() throws {
+        let devices = resolvedDevices(directorySharing: false)
+        let diskID = try DoryVirtualDeviceID("uefi-system")
+        let installer = try DoryARMVirtV1DeviceRequest(
+            logicalID: "uefi-installer",
+            role: .removableStorage
+        )
+        let expected = try RawHVVirtualHardwareAttachmentPlan.expectedResolvedDevices(
+            systemDiskLogicalID: diskID,
+            resolvedDevices: devices,
+            networkStableID: try #require(devices.networkInterface).id,
+            directoryShareStableIDs: [],
+            additionalBootDevices: [installer]
+        )
+        let topology = try DoryARMVirtV1TopologyReconciler.reconcile(
+            requestedDevices: expected
+        )
+
+        let mode = try RawHVVirtualHardwareAttachmentPlan.launchMode(
+            diskAuthority: .resolvedDescriptor,
+            bootAuthority: .verifiedUEFIArtifacts,
+            topology: topology,
+            resolvedGraphics: .software,
+            resolvedDevices: devices,
+            resolvedPortForwards: [],
+            resolvedSystemDiskLogicalID: diskID,
+            directoryShareStableIDs: [],
+            additionalBootDevices: [installer]
+        )
+        guard case .resolved(let assignments) = mode else {
+            Issue.record("verified UEFI authority must produce resolved assignments")
+            return
+        }
+        #expect(assignments.contains { $0.request == installer })
+        #expect(assignments.first { $0.request == installer }?.mmioSlot == 12)
+    }
+
     @Test func assignmentsFollowAuthorizedSlotsNotMaterializationOrder() throws {
         let topology = try DoryARMVirtV1Topology(occupiedSlots: [
             try .init(logicalID: "system", role: .systemDisk, mmioSlot: 0),

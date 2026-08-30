@@ -17,6 +17,7 @@ enum RawHVVirtualHardwareDiskAuthorityKind: Equatable, Sendable {
 enum RawHVVirtualHardwareBootAuthorityKind: Equatable, Sendable {
     case legacyPaths
     case resolvedImmutableBytes
+    case verifiedUEFIArtifacts
 }
 
 enum RawHVVirtualHardwareAttachmentMode: Equatable, Sendable {
@@ -43,7 +44,8 @@ enum RawHVVirtualHardwareAttachmentPlan {
         resolvedDevices: DoryVirtualMachineDeviceCapabilityRequest?,
         resolvedPortForwards: [DoryVMPortForward]?,
         resolvedSystemDiskLogicalID: DoryVirtualDeviceID?,
-        directoryShareStableIDs: [String]
+        directoryShareStableIDs: [String],
+        additionalBootDevices: [DoryARMVirtV1DeviceRequest] = []
     ) throws -> RawHVVirtualHardwareAttachmentMode {
         if diskAuthority == .legacyPath,
            bootAuthority == .legacyPaths,
@@ -56,7 +58,8 @@ enum RawHVVirtualHardwareAttachmentPlan {
         }
 
         guard diskAuthority == .resolvedDescriptor,
-              bootAuthority == .resolvedImmutableBytes,
+              (bootAuthority == .resolvedImmutableBytes
+                || bootAuthority == .verifiedUEFIArtifacts),
               let topology,
               let resolvedGraphics,
               let resolvedDevices,
@@ -76,7 +79,8 @@ enum RawHVVirtualHardwareAttachmentPlan {
             systemDiskLogicalID: resolvedSystemDiskLogicalID,
             resolvedDevices: resolvedDevices,
             networkStableID: networkInterface.id,
-            directoryShareStableIDs: directoryShareStableIDs
+            directoryShareStableIDs: directoryShareStableIDs,
+            additionalBootDevices: additionalBootDevices
         )
         return .resolved(try assignments(
             topology: topology,
@@ -90,7 +94,8 @@ enum RawHVVirtualHardwareAttachmentPlan {
         systemDiskLogicalID: DoryVirtualDeviceID,
         resolvedDevices: DoryVirtualMachineDeviceCapabilityRequest,
         networkStableID: String,
-        directoryShareStableIDs: [String]
+        directoryShareStableIDs: [String],
+        additionalBootDevices: [DoryARMVirtV1DeviceRequest] = []
     ) throws -> [DoryARMVirtV1DeviceRequest] {
         var requests = [
             DoryARMVirtV1DeviceRequest(
@@ -129,6 +134,7 @@ enum RawHVVirtualHardwareAttachmentPlan {
                 role: .directoryShare
             ))
         }
+        requests.append(contentsOf: additionalBootDevices)
         return requests
     }
 
