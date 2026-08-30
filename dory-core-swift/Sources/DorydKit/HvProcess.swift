@@ -980,7 +980,7 @@ public final class HvProcess: @unchecked Sendable {
               }) else {
             throw ProcessError.descriptorEnvelopeMismatch
         }
-        _ = try envelope.validatedResolvedRawHVResources()
+        _ = try envelope.validatedResolvedARMVirtResources()
     }
 
     /// The Docker engine disk is a daemon-admitted supplemental resource, not part of the signed

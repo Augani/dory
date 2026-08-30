@@ -405,7 +405,7 @@ case "desktop":
                 fail("desktop --runtime-launch-envelope requires a value")
             }
             do {
-                runtimeLaunchEnvelope = try RuntimeLaunchEnvelope.decodeResolvedRawHVArgument(value)
+                runtimeLaunchEnvelope = try RuntimeLaunchEnvelope.decodeResolvedARMVirtArgument(value)
             } catch {
                 fail("invalid desktop runtime launch envelope: \(error)")
             }
@@ -501,7 +501,7 @@ case "desktop":
     let effectiveRootDevice: String
     let effectiveGenericGuest: Bool
     let resolvedSystemDiskLogicalID: DoryVirtualDeviceID?
-    var resolvedRawHVResources: RuntimeLaunchEnvelope.ResolvedRawHVResources?
+    var resolvedARMVirtResources: RuntimeLaunchEnvelope.ResolvedARMVirtResources?
     if let runtimeLaunchEnvelope {
         guard kernel == nil,
               initrd == nil,
@@ -512,8 +512,8 @@ case "desktop":
             fail("desktop resolved launch rejects pathname or split boot authority")
         }
         do {
-            let resources = try runtimeLaunchEnvelope.validatedResolvedRawHVResources()
-            resolvedRawHVResources = resources
+            let resources = try runtimeLaunchEnvelope.validatedResolvedARMVirtResources()
+            resolvedARMVirtResources = resources
             guard let systemDiskLogicalID = resources.systemDisk.logicalDeviceID,
                   let kernelSHA256 = resources.linuxKernel.contentSHA256 else {
                 fail("desktop resolved launch envelope lost required resource identity")
@@ -547,7 +547,7 @@ case "desktop":
             fail("desktop inherited boot authority is invalid: \(error)")
         }
     } else {
-        resolvedRawHVResources = nil
+        resolvedARMVirtResources = nil
         guard let kernel else { fail("desktop legacy launch requires --kernel") }
         if genericGuest, initrd == nil {
             fail("desktop --generic-guest requires --initrd")
@@ -584,9 +584,9 @@ case "desktop":
     do {
         rendererWorkerLaunch = try await DesktopRendererWorkerLaunch.prepare(
             resolvedGraphics: resolvedGraphics,
-            rendererBootstrapAuthority: resolvedRawHVResources?.rendererBootstrap,
+            rendererBootstrapAuthority: resolvedARMVirtResources?.rendererBootstrap,
             exactManagedKernelSHA256:
-                resolvedRawHVResources?.linuxKernel.contentSHA256
+                resolvedARMVirtResources?.linuxKernel.contentSHA256
         )
     } catch {
         fail("desktop renderer-worker launch authority is invalid: \(error)")

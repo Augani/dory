@@ -226,7 +226,7 @@ final class RuntimeBootAuthorityIntegrationTests: XCTestCase {
         let fixture = try makeRuntimeFixture()
         defer { try? FileManager.default.removeItem(atPath: fixture.root) }
         let resources = try fixture.lease.withBorrowedDescriptor { descriptor in
-            try MachineManager.admitResolvedRawHVResources(
+            try MachineManager.admitResolvedARMVirtResources(
                 machineDirectoryDescriptor: descriptor,
                 machineDirectoryGeneration: fixture.lease.generation,
                 expectedDiskCapacityBytes: UInt64(fixture.disk.count),
@@ -306,7 +306,7 @@ final class RuntimeBootAuthorityIntegrationTests: XCTestCase {
         let fixture = try makeRuntimeFixture()
         defer { try? FileManager.default.removeItem(atPath: fixture.root) }
         let resources = try fixture.lease.withBorrowedDescriptor { descriptor in
-            try MachineManager.admitResolvedRawHVResources(
+            try MachineManager.admitResolvedARMVirtResources(
                 machineDirectoryDescriptor: descriptor,
                 machineDirectoryGeneration: fixture.lease.generation,
                 expectedDiskCapacityBytes: UInt64(fixture.disk.count),
@@ -348,7 +348,7 @@ final class RuntimeBootAuthorityIntegrationTests: XCTestCase {
     ) throws -> RuntimeLaunchEnvelope {
         let topology = makeTopology()
         let initrd = try XCTUnwrap(boot.initrd)
-        let envelope = RuntimeLaunchEnvelope.resolvedRawHV(
+        let envelope = RuntimeLaunchEnvelope.resolvedARMVirt(
             machineID: "boot-authority-test",
             operationID: UUID(uuidString: "22222222-2222-2222-2222-222222222222")!,
             resolvedPlanSHA256: String(repeating: "a", count: 64),
@@ -371,7 +371,7 @@ final class RuntimeBootAuthorityIntegrationTests: XCTestCase {
             linuxInitrdByteCount: initrd.byteCount,
             linuxInitrdSHA256: initrd.sha256
         )
-        _ = try envelope.validatedResolvedRawHVResources()
+        _ = try envelope.validatedResolvedARMVirtResources()
         return envelope
     }
 

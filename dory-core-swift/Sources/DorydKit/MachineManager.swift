@@ -1086,7 +1086,7 @@ private struct DoryQualificationBootstrapLaunchPlan: Codable, Sendable {
     let definition: DoryVirtualMachineDefinition
     let devices: DoryVirtualMachineDeviceCapabilityRequest
     let topology: DoryARMVirtV1Topology
-    let executionResources: RuntimeLaunchEnvelope.RawHVExecutionResources
+    let executionResources: RuntimeLaunchEnvelope.ARMVirtExecutionResources
     let backendRuntimeBuildIdentifier: String
     let backendExecutableSHA256: String
     let managedBootArtifactSHA256: String
@@ -3546,12 +3546,12 @@ public final class MachineManager: @unchecked Sendable {
                       let expectedBootArtifactSHA256 =
                         resolvedPlan.bootMedia.media.artifactSHA256 else {
                     throw MachineManagerError.persistence(
-                        "resolved raw-HV launch is missing topology, boot digest, or admitted resources"
+                        "resolved DoryARMVirt-v1 launch is missing topology, boot digest, or admitted resources"
                     )
                 }
                 guard resolvedPlan.graphics == launchBinding.graphics else {
                     throw MachineManagerError.persistence(
-                        "resolved raw-HV launch graphics changed after plan revalidation"
+                        "resolved DoryARMVirt-v1 launch graphics changed after plan revalidation"
                     )
                 }
                 let rendererBootstrapRequest: RawHVRendererBootstrapRequest?
@@ -3578,10 +3578,10 @@ public final class MachineManager: @unchecked Sendable {
                 guard admittedMemoryBytes.isMultiple(of: bytesPerMiB),
                       admittedVirtualCPUCount <= UInt64(UInt16.max) else {
                     throw MachineManagerError.persistence(
-                        "resolved raw-HV compute resources cannot be represented by the runtime envelope"
+                        "resolved DoryARMVirt-v1 compute resources cannot be represented by the runtime envelope"
                     )
                 }
-                let executionResources = RuntimeLaunchEnvelope.RawHVExecutionResources.production(
+                let executionResources = RuntimeLaunchEnvelope.ARMVirtExecutionResources.production(
                     memoryMB: admittedMemoryBytes / bytesPerMiB,
                     virtualCPUCount: UInt16(admittedVirtualCPUCount)
                 )
@@ -3590,7 +3590,7 @@ public final class MachineManager: @unchecked Sendable {
                 }
                 guard systemDiskSlots.count == 1 else {
                     throw MachineManagerError.persistence(
-                        "resolved raw-HV launch requires one exact system-disk topology slot"
+                        "resolved DoryARMVirt-v1 launch requires one exact system-disk topology slot"
                     )
                 }
                 let managedMachineDirectory = machineStateDirectory(id: launchMachine.id)
@@ -3598,12 +3598,12 @@ public final class MachineManager: @unchecked Sendable {
                         == managedMachineDirectory + "/rootfs.ext4",
                       launchMachine.kernelPath == managedMachineDirectory + "/kernel" else {
                     throw MachineManagerError.persistence(
-                        "resolved raw-HV launch paths do not match managed machine storage"
+                        "resolved DoryARMVirt-v1 launch paths do not match managed machine storage"
                     )
                 }
                 guard let machineStateBroker else {
                     throw MachineManagerError.persistence(
-                        "resolved raw-HV launch requires trusted machine-state authority"
+                        "resolved DoryARMVirt-v1 launch requires trusted machine-state authority"
                     )
                 }
                 let machineDirectoryLease: DoryMachineDirectoryLease
@@ -3612,12 +3612,12 @@ public final class MachineManager: @unchecked Sendable {
                         .acquireMachineDirectoryLease(machineID: launchMachine.id)
                 } catch {
                     throw MachineManagerError.persistence(
-                        "resolved raw-HV machine-directory authority is unavailable: \(error)"
+                        "resolved DoryARMVirt-v1 machine-directory authority is unavailable: \(error)"
                     )
                 }
                 let admittedResources = try machineDirectoryLease.withBorrowedDescriptor {
                     machineDirectoryDescriptor in
-                    try Self.admitResolvedRawHVResources(
+                    try Self.admitResolvedARMVirtResources(
                         machineDirectoryDescriptor: machineDirectoryDescriptor,
                         machineDirectoryGeneration: machineDirectoryLease.generation,
                         expectedDiskCapacityBytes: admittedStorageBytes,
@@ -3634,7 +3634,7 @@ public final class MachineManager: @unchecked Sendable {
                         admittedResources.close()
                     }
                 }
-                let envelope = RuntimeLaunchEnvelope.resolvedRawHV(
+                let envelope = RuntimeLaunchEnvelope.resolvedARMVirt(
                     machineID: launchMachine.id,
                     operationID: operationID,
                     resolvedPlanSHA256: try Self.canonicalResolvedPlanSHA256(resolvedPlan),
@@ -3659,7 +3659,7 @@ public final class MachineManager: @unchecked Sendable {
                     rendererBootstrapSHA256:
                         admittedResources.rendererBootstrap?.sha256
                 )
-                _ = try envelope.validatedResolvedRawHVResources()
+                _ = try envelope.validatedResolvedARMVirtResources()
                 runtimeLaunchAuthority = RawHVRuntimeLaunchAuthority(
                     envelope: envelope,
                     inheritedFileDescriptors: [admittedResources.disk.authority]
@@ -3681,7 +3681,7 @@ public final class MachineManager: @unchecked Sendable {
                     _ = try machineDirectoryLease.revalidate()
                 } catch {
                     throw MachineManagerError.persistence(
-                        "resolved raw-HV machine-directory authority changed before spawn: \(error)"
+                        "resolved DoryARMVirt-v1 machine-directory authority changed before spawn: \(error)"
                     )
                 }
                 authorityTransferred = true
@@ -7723,7 +7723,7 @@ public final class MachineManager: @unchecked Sendable {
             definition: definition,
             resolvedDevices: devices
         )
-        let executionResources = RuntimeLaunchEnvelope.RawHVExecutionResources.production(
+        let executionResources = RuntimeLaunchEnvelope.ARMVirtExecutionResources.production(
             memoryMB: machine.memoryMB,
             virtualCPUCount: UInt16(machine.cpuCount)
         )
@@ -7772,7 +7772,7 @@ public final class MachineManager: @unchecked Sendable {
             )
         }
         let admitted = try lease.withBorrowedDescriptor { directory in
-            try Self.admitResolvedRawHVResources(
+            try Self.admitResolvedARMVirtResources(
                 machineDirectoryDescriptor: directory,
                 machineDirectoryGeneration: lease.generation,
                 expectedDiskCapacityBytes: UInt64(diskInfo.st_size),
@@ -7801,7 +7801,7 @@ public final class MachineManager: @unchecked Sendable {
                 "qualification bootstrap topology omitted the system disk"
             )
         }
-        let envelope = RuntimeLaunchEnvelope.resolvedRawHV(
+        let envelope = RuntimeLaunchEnvelope.resolvedARMVirt(
             machineID: machine.id,
             operationID: operationID,
             resolvedPlanSHA256: launchPlanSHA256,
@@ -7824,7 +7824,7 @@ public final class MachineManager: @unchecked Sendable {
             rendererBootstrapByteCount: admitted.rendererBootstrap?.byteCount,
             rendererBootstrapSHA256: admitted.rendererBootstrap?.sha256
         )
-        _ = try envelope.validatedResolvedRawHVResources()
+        _ = try envelope.validatedResolvedARMVirtResources()
         do {
             _ = try lease.revalidate()
         } catch {
@@ -7951,7 +7951,7 @@ public final class MachineManager: @unchecked Sendable {
 
     /// Admits the fixed system-disk and boot leaves through one already revalidated machine
     /// directory generation. No resolved RawHV resource is reopened from an absolute pathname.
-    static func admitResolvedRawHVResources(
+    static func admitResolvedARMVirtResources(
         machineDirectoryDescriptor: Int32,
         machineDirectoryGeneration: DoryTrustedDirectoryIdentity,
         expectedDiskCapacityBytes: UInt64,
@@ -8013,7 +8013,7 @@ public final class MachineManager: @unchecked Sendable {
     ) throws -> RawHVAdmittedSystemDisk {
         guard expectedCapacityBytes > 0 else {
             throw MachineManagerError.persistence(
-                "resolved raw-HV system-disk admission input is invalid"
+                "resolved DoryARMVirt-v1 system-disk admission input is invalid"
             )
         }
         try validateRawHVMachineDirectoryDescriptor(
@@ -8078,7 +8078,7 @@ public final class MachineManager: @unchecked Sendable {
         guard Self.isLowercaseSHA256(expectedArtifactSHA256),
               installerISOPath == nil else {
             throw MachineManagerError.persistence(
-                "resolved raw-HV boot admission input is invalid"
+                "resolved DoryARMVirt-v1 boot admission input is invalid"
             )
         }
         try validateRawHVMachineDirectoryDescriptor(
@@ -8232,7 +8232,7 @@ public final class MachineManager: @unchecked Sendable {
 
         default:
             throw MachineManagerError.persistence(
-                "resolved raw-HV boot media is not a Linux kernel or installed-Linux bundle"
+                "resolved DoryARMVirt-v1 boot media is not a Linux kernel or installed-Linux bundle"
             )
         }
     }
@@ -8331,7 +8331,7 @@ public final class MachineManager: @unchecked Sendable {
               UInt64(truncatingIfNeeded: info.st_dev) == generation.device,
               UInt64(truncatingIfNeeded: info.st_ino) == generation.inode else {
             throw MachineManagerError.persistence(
-                "resolved raw-HV machine-directory descriptor changed during admission"
+                "resolved DoryARMVirt-v1 machine-directory descriptor changed during admission"
             )
         }
     }
@@ -8343,7 +8343,7 @@ public final class MachineManager: @unchecked Sendable {
     ) throws -> Int32 {
         guard maximumByteCount > 0 else {
             throw MachineManagerError.persistence(
-                "resolved raw-HV boot artifact limit is invalid"
+                "resolved DoryARMVirt-v1 boot artifact limit is invalid"
             )
         }
         try validateRawHVMachineDirectoryDescriptor(
@@ -8769,7 +8769,7 @@ public final class MachineManager: @unchecked Sendable {
         guard configuration.passMachineArguments else {
             if runtimeLaunchEnvelope != nil {
                 throw MachineManagerError.persistence(
-                    "resolved raw-HV launch envelope cannot be omitted from helper arguments"
+                    "resolved DoryARMVirt-v1 launch envelope cannot be omitted from helper arguments"
                 )
             }
             return baseArguments
@@ -8818,7 +8818,7 @@ public final class MachineManager: @unchecked Sendable {
         } else {
             if resolvedLaunchBinding?.backend.identity == .doryHypervisor {
                 throw MachineManagerError.persistence(
-                    "resolved raw-HV launch cannot fall back to a rootfs pathname"
+                    "resolved DoryARMVirt-v1 launch cannot fall back to a rootfs pathname"
                 )
             }
             arguments.append(contentsOf: [

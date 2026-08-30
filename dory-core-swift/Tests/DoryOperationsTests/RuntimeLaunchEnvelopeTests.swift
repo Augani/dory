@@ -21,7 +21,7 @@ final class RuntimeLaunchEnvelopeTests: XCTestCase {
     func testCanonicalTwoSlotRoundTripUsesFixedAuthorityLayout() throws {
         let envelope = makeEnvelope()
         let decoded = try canonicalRoundTrip(envelope)
-        let resources = try decoded.validatedResolvedRawHVResources()
+        let resources = try decoded.validatedResolvedARMVirtResources()
 
         XCTAssertEqual(decoded.schemaVersion, RuntimeLaunchEnvelope.currentSchemaVersion)
         XCTAssertEqual(decoded.schemaVersion, 6)
@@ -61,7 +61,7 @@ final class RuntimeLaunchEnvelopeTests: XCTestCase {
             initrdDigest: Self.initrdDigest
         )
         let decoded = try canonicalRoundTrip(envelope)
-        let resources = try decoded.validatedResolvedRawHVResources()
+        let resources = try decoded.validatedResolvedARMVirtResources()
 
         XCTAssertEqual(decoded.inheritedFileDescriptors.map(\.name), [
             RuntimeLaunchEnvelope.systemDiskSlotName,
@@ -94,7 +94,7 @@ final class RuntimeLaunchEnvelopeTests: XCTestCase {
             rendererBootstrapDigest: Self.rendererBootstrapDigest
         )
         let decoded = try canonicalRoundTrip(envelope)
-        let resources = try decoded.validatedResolvedRawHVResources()
+        let resources = try decoded.validatedResolvedARMVirtResources()
 
         XCTAssertEqual(decoded.inheritedFileDescriptors.map(\.name), [
             RuntimeLaunchEnvelope.systemDiskSlotName,
@@ -150,7 +150,7 @@ final class RuntimeLaunchEnvelopeTests: XCTestCase {
             topologyDisk.logicalID.rawValue,
             RuntimeLaunchEnvelope.systemDiskSlotName
         )
-        XCTAssertNoThrow(try envelope.validatedResolvedRawHVResources())
+        XCTAssertNoThrow(try envelope.validatedResolvedARMVirtResources())
 
         assertValidationError(
             makeEnvelope(
@@ -194,7 +194,7 @@ final class RuntimeLaunchEnvelopeTests: XCTestCase {
 
         assertValidationError(
             replacingSlots(in: twoSlot, with: [disk]),
-            .invalidResolvedRawHVSlots
+            .invalidResolvedARMVirtSlots
         )
 
         let threeSlot = makeEnvelope(
@@ -213,7 +213,7 @@ final class RuntimeLaunchEnvelopeTests: XCTestCase {
                 in: threeSlot,
                 with: threeSlot.inheritedFileDescriptors + [extra]
             ),
-            .invalidResolvedRawHVSlots
+            .invalidResolvedARMVirtSlots
         )
 
         let duplicateName = RuntimeLaunchEnvelope.InheritedFileDescriptorSlot(
@@ -242,7 +242,7 @@ final class RuntimeLaunchEnvelopeTests: XCTestCase {
 
         assertValidationError(
             replacingSlots(in: twoSlot, with: [kernel, disk]),
-            .invalidResolvedRawHVSlots
+            .invalidResolvedARMVirtSlots
         )
     }
 
@@ -260,7 +260,7 @@ final class RuntimeLaunchEnvelopeTests: XCTestCase {
         )
         assertValidationError(
             replacingSlots(in: envelope, with: [disk, renamedKernel]),
-            .invalidResolvedRawHVSlots
+            .invalidResolvedARMVirtSlots
         )
 
         let wrongDiskDescriptor = RuntimeLaunchEnvelope.InheritedFileDescriptorSlot(
@@ -301,12 +301,12 @@ final class RuntimeLaunchEnvelopeTests: XCTestCase {
     }
 
     func testRequiresValidLowercasePlanAndBootBlobDigests() throws {
-        XCTAssertNoThrow(try makeEnvelope().validatedResolvedRawHVResources())
+        XCTAssertNoThrow(try makeEnvelope().validatedResolvedARMVirtResources())
         XCTAssertNoThrow(try makeEnvelope(
             genericGuest: true,
             initrdByteCount: Self.initrdByteCount,
             initrdDigest: Self.initrdDigest
-        ).validatedResolvedRawHVResources())
+        ).validatedResolvedARMVirtResources())
 
         assertValidationError(
             replacingPlanDigest(
@@ -334,27 +334,27 @@ final class RuntimeLaunchEnvelopeTests: XCTestCase {
 
     func testRejectsInvalidComputeAndSystemDiskQueueAuthority() {
         for executionResources in [
-            RuntimeLaunchEnvelope.RawHVExecutionResources(
+            RuntimeLaunchEnvelope.ARMVirtExecutionResources(
                 memoryMB: 1_023,
                 virtualCPUCount: 4,
                 systemDiskQueueCount: 4
             ),
-            RuntimeLaunchEnvelope.RawHVExecutionResources(
+            RuntimeLaunchEnvelope.ARMVirtExecutionResources(
                 memoryMB: 8_192,
                 virtualCPUCount: 0,
                 systemDiskQueueCount: 1
             ),
-            RuntimeLaunchEnvelope.RawHVExecutionResources(
+            RuntimeLaunchEnvelope.ARMVirtExecutionResources(
                 memoryMB: 8_192,
                 virtualCPUCount: 4,
                 systemDiskQueueCount: 0
             ),
-            RuntimeLaunchEnvelope.RawHVExecutionResources(
+            RuntimeLaunchEnvelope.ARMVirtExecutionResources(
                 memoryMB: 8_192,
                 virtualCPUCount: 4,
                 systemDiskQueueCount: 5
             ),
-            RuntimeLaunchEnvelope.RawHVExecutionResources(
+            RuntimeLaunchEnvelope.ARMVirtExecutionResources(
                 memoryMB: 8_192,
                 virtualCPUCount: 4,
                 systemDiskQueueCount: 4,
@@ -404,7 +404,7 @@ final class RuntimeLaunchEnvelopeTests: XCTestCase {
         )
         XCTAssertEqual(installedBundle.linuxDirectBoot.profile, .installedLinuxBundle)
         XCTAssertEqual(installedBundle.linuxDirectBoot.rootDevice, "/dev/vda2")
-        XCTAssertNoThrow(try installedBundle.validatedResolvedRawHVResources())
+        XCTAssertNoThrow(try installedBundle.validatedResolvedARMVirtResources())
 
         assertValidationError(
             makeEnvelope(rootDevice: "/dev/vda2"),
@@ -429,13 +429,13 @@ final class RuntimeLaunchEnvelopeTests: XCTestCase {
     }
 
     func testRejectsInvalidLinuxRootDevice() throws {
-        XCTAssertNoThrow(try makeEnvelope(rootDevice: "/dev/vda").validatedResolvedRawHVResources())
+        XCTAssertNoThrow(try makeEnvelope(rootDevice: "/dev/vda").validatedResolvedARMVirtResources())
         XCTAssertNoThrow(try makeEnvelope(
             rootDevice: "/dev/vdz123",
             genericGuest: true,
             initrdByteCount: Self.initrdByteCount,
             initrdDigest: Self.initrdDigest
-        ).validatedResolvedRawHVResources())
+        ).validatedResolvedARMVirtResources())
 
         for rootDevice in [
             "", "/dev/sda2", "/dev/vdA2", "/dev/vda0", "/dev/vda01", "/dev/vda-1",
@@ -472,7 +472,7 @@ final class RuntimeLaunchEnvelopeTests: XCTestCase {
 
         for value in [" \(canonical)", unknownRootJSON, unknownNestedJSON, pretty] {
             XCTAssertThrowsError(
-                try RuntimeLaunchEnvelope.decodeResolvedRawHVArgument(value)
+                try RuntimeLaunchEnvelope.decodeResolvedARMVirtArgument(value)
             ) { error in
                 XCTAssertEqual(error as? RuntimeLaunchEnvelopeError, .nonCanonicalEncoding)
             }
@@ -485,7 +485,7 @@ final class RuntimeLaunchEnvelopeTests: XCTestCase {
             count: RuntimeLaunchEnvelope.maximumEncodedArgumentBytes + 1
         )
         XCTAssertThrowsError(
-            try RuntimeLaunchEnvelope.decodeResolvedRawHVArgument(oversized)
+            try RuntimeLaunchEnvelope.decodeResolvedARMVirtArgument(oversized)
         ) { error in
             XCTAssertEqual(
                 error as? RuntimeLaunchEnvelopeError,
@@ -534,7 +534,7 @@ final class RuntimeLaunchEnvelopeTests: XCTestCase {
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         XCTAssertEqual(encoded.data(using: .utf8), try encoder.encode(envelope))
 
-        let decoded = try RuntimeLaunchEnvelope.decodeResolvedRawHVArgument(encoded)
+        let decoded = try RuntimeLaunchEnvelope.decodeResolvedARMVirtArgument(encoded)
         XCTAssertEqual(decoded, envelope)
         return decoded
     }
@@ -558,13 +558,13 @@ final class RuntimeLaunchEnvelopeTests: XCTestCase {
         graphics: DoryGraphicsAccelerationLevel = .software,
         rendererBootstrapByteCount: UInt64? = nil,
         rendererBootstrapDigest: String? = nil,
-        executionResources: RuntimeLaunchEnvelope.RawHVExecutionResources = .production(
+        executionResources: RuntimeLaunchEnvelope.ARMVirtExecutionResources = .production(
             memoryMB: 8_192,
             virtualCPUCount: 4
         )
     ) -> RuntimeLaunchEnvelope {
         let devices = makeDevices()
-        return RuntimeLaunchEnvelope.resolvedRawHV(
+        return RuntimeLaunchEnvelope.resolvedARMVirt(
             machineID: machineID,
             operationID: operationID,
             resolvedPlanSHA256: Self.planDigest,
@@ -739,7 +739,7 @@ final class RuntimeLaunchEnvelopeTests: XCTestCase {
         line: UInt = #line
     ) {
         XCTAssertThrowsError(
-            try envelope.validatedResolvedRawHVResources(),
+            try envelope.validatedResolvedARMVirtResources(),
             file: file,
             line: line
         ) { error in

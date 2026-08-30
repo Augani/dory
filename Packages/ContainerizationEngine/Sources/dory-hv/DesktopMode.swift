@@ -934,7 +934,7 @@ enum DesktopMode {
             case let (.some(path), nil) where !path.isEmpty:
                 return .legacyPath(path)
             case let (nil, .some(envelope)):
-                let slot = try envelope.validatedResolvedRawHVSystemDisk()
+                let slot = try envelope.validatedResolvedARMVirtSystemDisk()
                 guard fcntl(slot.descriptor, F_GETFD) >= 0 else {
                     throw VMError.invalidConfiguration(
                         "resolved systemDisk descriptor \(slot.descriptor) is not inherited"

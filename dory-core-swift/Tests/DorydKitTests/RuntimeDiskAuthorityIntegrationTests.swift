@@ -185,7 +185,7 @@ final class RuntimeDiskAuthorityIntegrationTests: XCTestCase {
             takingOwnershipOf: kernelDescriptor,
             childDescriptor: RuntimeLaunchEnvelope.linuxKernelDescriptor
         )
-        let envelope = RuntimeLaunchEnvelope.resolvedRawHV(
+        let envelope = RuntimeLaunchEnvelope.resolvedARMVirt(
             machineID: "authority-test",
             operationID: UUID(uuidString: "11111111-1111-1111-1111-111111111111")!,
             resolvedPlanSHA256: String(repeating: "a", count: 64),
@@ -206,7 +206,7 @@ final class RuntimeDiskAuthorityIntegrationTests: XCTestCase {
             linuxKernelByteCount: 1,
             linuxKernelSHA256: String(repeating: "0", count: 64)
         )
-        _ = try envelope.validatedResolvedRawHVResources()
+        _ = try envelope.validatedResolvedARMVirtResources()
         return (envelope, kernel)
     }
 

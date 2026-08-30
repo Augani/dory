@@ -89,7 +89,7 @@ public struct RuntimeLaunchEnvelope: Codable, Sendable, Equatable {
         }
     }
 
-    public struct ResolvedRawHVResources: Sendable, Equatable {
+    public struct ResolvedARMVirtResources: Sendable, Equatable {
         public let systemDisk: InheritedFileDescriptorSlot
         public let linuxKernel: InheritedFileDescriptorSlot
         public let linuxInitrd: InheritedFileDescriptorSlot?
@@ -98,12 +98,12 @@ public struct RuntimeLaunchEnvelope: Codable, Sendable, Equatable {
         public let rendererBootstrap: InheritedFileDescriptorSlot?
     }
 
-    /// Exact compute and storage-parallelism authority for one resolved RawHV launch.
+    /// Exact compute and storage-parallelism authority for one resolved DoryARMVirt-v1 launch.
     ///
     /// These values live in the canonical envelope rather than in ambient defaults or an
     /// independent command-line policy. The helper therefore cannot silently advertise a
     /// different block topology from the candidate-bound CPU and memory allocation.
-    public struct RawHVExecutionResources: Codable, Sendable, Equatable {
+    public struct ARMVirtExecutionResources: Codable, Sendable, Equatable {
         public static let minimumMemoryMB: UInt64 = 1_024
         public static let maximumMemoryMB: UInt64 = 16 * 1_024
         public static let minimumVirtualCPUCount: UInt16 = 1
@@ -169,7 +169,7 @@ public struct RuntimeLaunchEnvelope: Codable, Sendable, Equatable {
     public let graphics: DoryGraphicsAccelerationLevel
     public let devices: DoryVirtualMachineDeviceCapabilityRequest
     public let portForwards: [DoryVMPortForward]
-    public let executionResources: RawHVExecutionResources
+    public let executionResources: ARMVirtExecutionResources
     public let linuxDirectBoot: LinuxDirectBoot
     public let inheritedFileDescriptors: [InheritedFileDescriptorSlot]
 
@@ -187,7 +187,7 @@ public struct RuntimeLaunchEnvelope: Codable, Sendable, Equatable {
         graphics: DoryGraphicsAccelerationLevel,
         devices: DoryVirtualMachineDeviceCapabilityRequest,
         portForwards: [DoryVMPortForward],
-        executionResources: RawHVExecutionResources,
+        executionResources: ARMVirtExecutionResources,
         linuxDirectBoot: LinuxDirectBoot,
         inheritedFileDescriptors: [InheritedFileDescriptorSlot]
     ) {
@@ -209,7 +209,7 @@ public struct RuntimeLaunchEnvelope: Codable, Sendable, Equatable {
         self.inheritedFileDescriptors = inheritedFileDescriptors
     }
 
-    public static func resolvedRawHV(
+    public static func resolvedARMVirt(
         machineID: String,
         operationID: UUID,
         resolvedPlanSHA256: String,
@@ -220,7 +220,7 @@ public struct RuntimeLaunchEnvelope: Codable, Sendable, Equatable {
         graphics: DoryGraphicsAccelerationLevel,
         devices: DoryVirtualMachineDeviceCapabilityRequest,
         portForwards: [DoryVMPortForward],
-        executionResources: RawHVExecutionResources,
+        executionResources: ARMVirtExecutionResources,
         systemDiskCapacityBytes: UInt64,
         systemDiskLogicalID: DoryVirtualDeviceID,
         linuxRootDevice: String,
@@ -287,7 +287,7 @@ public struct RuntimeLaunchEnvelope: Codable, Sendable, Equatable {
         )
     }
 
-    public func validatedResolvedRawHVResources() throws -> ResolvedRawHVResources {
+    public func validatedResolvedARMVirtResources() throws -> ResolvedARMVirtResources {
         guard kind == .resolvedVirtualMachine else {
             throw RuntimeLaunchEnvelopeError.invalidKind
         }
@@ -399,7 +399,7 @@ public struct RuntimeLaunchEnvelope: Codable, Sendable, Equatable {
             expectedSlotNames.append(Self.rendererBootstrapSlotName)
         }
         guard inheritedFileDescriptors.map(\.name) == expectedSlotNames else {
-            throw RuntimeLaunchEnvelopeError.invalidResolvedRawHVSlots
+            throw RuntimeLaunchEnvelopeError.invalidResolvedARMVirtSlots
         }
         let systemDisk = inheritedFileDescriptors[0]
         let linuxKernel = inheritedFileDescriptors[1]
@@ -464,7 +464,7 @@ public struct RuntimeLaunchEnvelope: Codable, Sendable, Equatable {
                 throw RuntimeLaunchEnvelopeError.invalidLinuxDirectBoot
             }
         }
-        return ResolvedRawHVResources(
+        return ResolvedARMVirtResources(
             systemDisk: systemDisk,
             linuxKernel: linuxKernel,
             linuxInitrd: linuxInitrd,
@@ -472,12 +472,12 @@ public struct RuntimeLaunchEnvelope: Codable, Sendable, Equatable {
         )
     }
 
-    public func validatedResolvedRawHVSystemDisk() throws -> InheritedFileDescriptorSlot {
-        try validatedResolvedRawHVResources().systemDisk
+    public func validatedResolvedARMVirtSystemDisk() throws -> InheritedFileDescriptorSlot {
+        try validatedResolvedARMVirtResources().systemDisk
     }
 
     public func encodedArgument() throws -> String {
-        _ = try validatedResolvedRawHVResources()
+        _ = try validatedResolvedARMVirtResources()
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         let data = try encoder.encode(self)
@@ -490,7 +490,7 @@ public struct RuntimeLaunchEnvelope: Codable, Sendable, Equatable {
         return value
     }
 
-    public static func decodeResolvedRawHVArgument(_ value: String) throws -> Self {
+    public static func decodeResolvedARMVirtArgument(_ value: String) throws -> Self {
         guard let data = value.data(using: .utf8) else {
             throw RuntimeLaunchEnvelopeError.invalidEncoding
         }
@@ -498,7 +498,7 @@ public struct RuntimeLaunchEnvelope: Codable, Sendable, Equatable {
             throw RuntimeLaunchEnvelopeError.argumentTooLarge(data.count)
         }
         let envelope = try JSONDecoder().decode(Self.self, from: data)
-        _ = try envelope.validatedResolvedRawHVResources()
+        _ = try envelope.validatedResolvedARMVirtResources()
         // Unknown keys, duplicate-key spellings, whitespace, and alternate UUID/JSON forms are
         // not accepted at this authority boundary. Both sides consume one exact representation.
         guard try envelope.encodedArgument() == value else {
@@ -571,7 +571,7 @@ public enum RuntimeLaunchEnvelopeError: Error, CustomStringConvertible, Equatabl
     case invalidDescriptor(Int32)
     case duplicateDescriptor(Int32)
     case invalidCapacity(String)
-    case invalidResolvedRawHVSlots
+    case invalidResolvedARMVirtSlots
     case invalidSystemDiskAccess
     case invalidLinuxKernelAuthority
     case invalidLinuxInitrdAuthority
@@ -592,7 +592,7 @@ public enum RuntimeLaunchEnvelopeError: Error, CustomStringConvertible, Equatabl
         case .invalidPlatform(let platform):
             return "runtime launch envelope platform \(platform.machineModel.rawValue) is not Dory ARMVirt v1"
         case .invalidVirtualHardwareTopology:
-            return "runtime launch envelope virtual-hardware topology is not RawHV ARM64 ABI v1"
+            return "runtime launch envelope virtual-hardware topology is not DoryARMVirt-v1"
         case .invalidPlanSHA256:
             return "runtime launch envelope plan SHA-256 is invalid"
         case .invalidExecutionResources:
@@ -607,18 +607,18 @@ public enum RuntimeLaunchEnvelopeError: Error, CustomStringConvertible, Equatabl
             return "runtime launch envelope repeats descriptor \(descriptor)"
         case .invalidCapacity(let name):
             return "runtime launch envelope slot \(name) has no capacity"
-        case .invalidResolvedRawHVSlots:
-            return "resolved raw-HV launch requires ordered systemDisk, linuxKernel, and optional linuxInitrd descriptor slots"
+        case .invalidResolvedARMVirtSlots:
+            return "resolved DoryARMVirt-v1 launch requires ordered systemDisk, linuxKernel, and optional linuxInitrd descriptor slots"
         case .invalidSystemDiskAccess:
-            return "resolved raw-HV systemDisk must be read-write and bound to its topology identity"
+            return "resolved DoryARMVirt-v1 systemDisk must be read-write and bound to its topology identity"
         case .invalidLinuxKernelAuthority:
-            return "resolved raw-HV linuxKernel must be a bounded read-only exact-digest blob"
+            return "resolved DoryARMVirt-v1 linuxKernel must be a bounded read-only exact-digest blob"
         case .invalidLinuxInitrdAuthority:
-            return "resolved raw-HV linuxInitrd must be a bounded read-only exact-digest blob"
+            return "resolved DoryARMVirt-v1 linuxInitrd must be a bounded read-only exact-digest blob"
         case .invalidRendererBootstrapAuthority:
-            return "resolved raw-HV hardware-3D launch requires one exact renderer bootstrap blob"
+            return "resolved DoryARMVirt-v1 hardware-3D launch requires one exact renderer bootstrap blob"
         case .invalidLinuxDirectBoot:
-            return "resolved raw-HV direct-boot policy is invalid"
+            return "resolved DoryARMVirt-v1 direct-boot policy is invalid"
         case .invalidEncoding:
             return "runtime launch envelope is not valid UTF-8 JSON"
         case .argumentTooLarge(let byteCount):

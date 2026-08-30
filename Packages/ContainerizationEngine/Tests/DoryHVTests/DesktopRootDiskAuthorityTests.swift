@@ -70,7 +70,7 @@ import Testing
     }
 
     private func makeEnvelope(capacityBytes: UInt64) -> RuntimeLaunchEnvelope {
-        RuntimeLaunchEnvelope.resolvedRawHV(
+        RuntimeLaunchEnvelope.resolvedARMVirt(
             machineID: "desktop-authority-test",
             operationID: UUID(uuidString: "33333333-3333-3333-3333-333333333333")!,
             resolvedPlanSHA256: String(repeating: "c", count: 64),

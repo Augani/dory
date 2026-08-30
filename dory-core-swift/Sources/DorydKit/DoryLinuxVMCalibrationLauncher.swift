@@ -130,7 +130,7 @@ public enum DoryLinuxVMCalibrationLauncher {
         let definition: DoryVirtualMachineDefinition
         let devices: DoryVirtualMachineDeviceCapabilityRequest
         let topology: DoryARMVirtV1Topology
-        let executionResources: RuntimeLaunchEnvelope.RawHVExecutionResources
+        let executionResources: RuntimeLaunchEnvelope.ARMVirtExecutionResources
         let runnerExecutable: ArtifactRecord
         let rendererWorkerExecutable: ArtifactRecord
         let rendererCandidateInventorySHA256: String
@@ -345,7 +345,7 @@ public enum DoryLinuxVMCalibrationLauncher {
             )
         }
 
-        let executionResources = RuntimeLaunchEnvelope.RawHVExecutionResources.production(
+        let executionResources = RuntimeLaunchEnvelope.ARMVirtExecutionResources.production(
             memoryMB: configuration.memoryMB,
             virtualCPUCount: configuration.virtualCPUCount
         )
@@ -424,7 +424,7 @@ public enum DoryLinuxVMCalibrationLauncher {
         // The renderer bootstrap and envelope must bind the same operation/workspace identity.
         let exactResources: RawHVAdmittedRuntimeResources = try workroot
             .withBorrowedDescriptor { directory in
-                try MachineManager.admitResolvedRawHVResources(
+                try MachineManager.admitResolvedARMVirtResources(
                     machineDirectoryDescriptor: directory,
                     machineDirectoryGeneration: workroot.identity,
                     expectedDiskCapacityBytes: rootfs.byteCount,
@@ -451,7 +451,7 @@ public enum DoryLinuxVMCalibrationLauncher {
         })?.logicalID else {
             throw DoryLinuxVMCalibrationError.definitionRejected
         }
-        let envelope = RuntimeLaunchEnvelope.resolvedRawHV(
+        let envelope = RuntimeLaunchEnvelope.resolvedARMVirt(
             machineID: machineID,
             operationID: operationID,
             resolvedPlanSHA256: launchPlanSHA256,
@@ -475,7 +475,7 @@ public enum DoryLinuxVMCalibrationLauncher {
             rendererBootstrapByteCount: exactResources.rendererBootstrap?.byteCount,
             rendererBootstrapSHA256: exactResources.rendererBootstrap?.sha256
         )
-        _ = try envelope.validatedResolvedRawHVResources()
+        _ = try envelope.validatedResolvedARMVirtResources()
 
         let handoffPath = runtimeWorkrootPath + "/h.sock"
         let agentPath = runtimeWorkrootPath + "/a.sock"
@@ -644,15 +644,15 @@ public enum DoryLinuxVMCalibrationLauncher {
                 "\(field) must be a canonical lowercase SHA-256"
             )
         }
-        let memoryRange = RuntimeLaunchEnvelope.RawHVExecutionResources.minimumMemoryMB ...
-            RuntimeLaunchEnvelope.RawHVExecutionResources.maximumMemoryMB
+        let memoryRange = RuntimeLaunchEnvelope.ARMVirtExecutionResources.minimumMemoryMB ...
+            RuntimeLaunchEnvelope.ARMVirtExecutionResources.maximumMemoryMB
         guard memoryRange.contains(configuration.memoryMB) else {
             throw DoryLinuxVMCalibrationError.invalidConfiguration(
                 "memoryMB \(configuration.memoryMB) is outside \(memoryRange)"
             )
         }
-        let cpuRange = RuntimeLaunchEnvelope.RawHVExecutionResources.minimumVirtualCPUCount ...
-            RuntimeLaunchEnvelope.RawHVExecutionResources.maximumVirtualCPUCount
+        let cpuRange = RuntimeLaunchEnvelope.ARMVirtExecutionResources.minimumVirtualCPUCount ...
+            RuntimeLaunchEnvelope.ARMVirtExecutionResources.maximumVirtualCPUCount
         guard cpuRange.contains(configuration.virtualCPUCount) else {
             throw DoryLinuxVMCalibrationError.invalidConfiguration(
                 "virtualCPUCount \(configuration.virtualCPUCount) is outside \(cpuRange)"

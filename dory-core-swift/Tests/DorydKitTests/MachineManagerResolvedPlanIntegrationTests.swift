@@ -255,7 +255,7 @@ struct MachineManagerResolvedPlanIntegrationTests {
         }
     }
 
-    @Test("resolved raw-HV launch uses the runtime envelope as its sole device authority")
+    @Test("resolved DoryARMVirt-v1 launch uses the runtime envelope as its sole device authority")
     func resolvedLaunchUsesExactHelperArguments() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(
             "dory-resolved-arguments-\(UUID().uuidString)"
@@ -319,7 +319,7 @@ struct MachineManagerResolvedPlanIntegrationTests {
                 )
             }
             #expect(try value(after: "--operation-id") == started.activeOperationID)
-            let envelope = try RuntimeLaunchEnvelope.decodeResolvedRawHVArgument(
+            let envelope = try RuntimeLaunchEnvelope.decodeResolvedARMVirtArgument(
                 value(after: "--runtime-launch-envelope")
             )
             #expect(envelope.machineID == "dev")
@@ -345,8 +345,8 @@ struct MachineManagerResolvedPlanIntegrationTests {
         }
     }
 
-    @Test("resolved raw-HV rejects launch when trusted machine-state authority is absent")
-    func resolvedRawHVRequiresMachineStateBroker() throws {
+    @Test("resolved DoryARMVirt-v1 rejects launch when trusted machine-state authority is absent")
+    func resolvedARMVirtRequiresMachineStateBroker() throws {
         try withHarness(
             "missing-machine-state-broker",
             injectStateBroker: false
@@ -614,7 +614,7 @@ struct MachineManagerResolvedPlanIntegrationTests {
     }
 
     @Test("resolved RawHV readiness rejects a missing live graphics selection")
-    func resolvedRawHVReadinessRequiresGraphicsSelection() throws {
+    func resolvedARMVirtReadinessRequiresGraphicsSelection() throws {
         try withHarness(
             "resolved-graphics-receipt",
             requiresReadyHandoff: true,
@@ -1227,7 +1227,7 @@ struct MachineManagerResolvedPlanIntegrationTests {
         }
     }
 
-    @Test("resolved raw-HV cannot omit the immutable helper envelope")
+    @Test("resolved DoryARMVirt-v1 cannot omit the immutable helper envelope")
     func resolvedLaunchRejectsOmittedMachineArguments() throws {
         try withHarness(
             "missing-envelope",
