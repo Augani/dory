@@ -71,6 +71,14 @@ public enum DoryVZMacConfigurationBuilder {
 
         configuration.entropyDevices = [VZVirtioEntropyDeviceConfiguration()]
         configuration.socketDevices = [VZVirtioSocketDeviceConfiguration()]
+        let spiceAttachment = VZSpiceAgentPortAttachment()
+        spiceAttachment.sharesClipboard = true
+        let spicePort = VZVirtioConsolePortConfiguration()
+        spicePort.name = VZSpiceAgentPortAttachment.spiceAgentPortName
+        spicePort.attachment = spiceAttachment
+        let console = VZVirtioConsoleDeviceConfiguration()
+        console.ports[0] = spicePort
+        configuration.consoleDevices = [console]
         if #available(macOS 15.0, *) {
             configuration.usbControllers = [VZXHCIControllerConfiguration()]
         }
