@@ -14,8 +14,8 @@ private enum Command {
         diskBytes: UInt64
     )
     case install(ipsw: URL, machine: URL)
-    case run(machine: URL, suspendOnExit: Bool)
-    case resume(machine: URL)
+    case run(machine: URL, guestTools: URL?, suspendOnExit: Bool)
+    case resume(machine: URL, guestTools: URL?)
     case clone(machine: URL, destination: URL)
     case status(machine: URL)
 }
@@ -74,14 +74,20 @@ private func parseCommand(_ arguments: [String]) throws -> Command {
         return .install(ipsw: ipsw, machine: machine)
     case "run":
         let machine = URL(fileURLWithPath: try take("--machine"), isDirectory: true)
+        let guestTools = values.contains("--guest-tools")
+            ? URL(fileURLWithPath: try take("--guest-tools"), isDirectory: true)
+            : nil
         let suspendOnExit = values.contains("--suspend-on-exit")
         values.removeAll { $0 == "--suspend-on-exit" }
         guard values.isEmpty else { throw CommandError.usage(usage) }
-        return .run(machine: machine, suspendOnExit: suspendOnExit)
+        return .run(machine: machine, guestTools: guestTools, suspendOnExit: suspendOnExit)
     case "resume":
         let machine = URL(fileURLWithPath: try take("--machine"), isDirectory: true)
+        let guestTools = values.contains("--guest-tools")
+            ? URL(fileURLWithPath: try take("--guest-tools"), isDirectory: true)
+            : nil
         guard values.isEmpty else { throw CommandError.usage(usage) }
-        return .resume(machine: machine)
+        return .resume(machine: machine, guestTools: guestTools)
     case "clone":
         let machine = URL(fileURLWithPath: try take("--machine"), isDirectory: true)
         let destination = URL(
@@ -104,8 +110,8 @@ Usage:
   dory-vzmac-qualification latest
   dory-vzmac-qualification prepare --ipsw <file> [--source-url <https-url>] --machine <bundle> [--cpus N] [--memory-gib N] [--disk-gib N]
   dory-vzmac-qualification install --ipsw <file> --machine <bundle>
-  dory-vzmac-qualification run --machine <bundle> [--suspend-on-exit]
-  dory-vzmac-qualification resume --machine <bundle>
+  dory-vzmac-qualification run --machine <bundle> [--guest-tools <directory>] [--suspend-on-exit]
+  dory-vzmac-qualification resume --machine <bundle> [--guest-tools <directory>]
   dory-vzmac-qualification clone --machine <bundle> --destination <bundle>
   dory-vzmac-qualification status --machine <bundle>
 """
@@ -189,13 +195,13 @@ private final class QualificationAppDelegate: NSObject, NSApplicationDelegate,
                 self?.window?.title = "Dory — Installing macOS \(Int(fraction * 100))%"
             }
             window?.title = "Dory — macOS installation complete"
-        case .run(let machine, _):
-            let runtime = try makeRuntime(machine: machine)
+        case .run(let machine, let guestTools, _):
+            let runtime = try makeRuntime(machine: machine, guestTools: guestTools)
             show(runtime: runtime, title: "Dory — macOS")
             try await runtime.start()
             window?.title = "Dory — macOS running"
-        case .resume(let machine):
-            let runtime = try makeRuntime(machine: machine)
+        case .resume(let machine, let guestTools):
+            let runtime = try makeRuntime(machine: machine, guestTools: guestTools)
             show(runtime: runtime, title: "Dory — Restoring macOS")
             try await runtime.restoreSuspendedState()
             window?.title = "Dory — macOS resumed"
@@ -243,9 +249,12 @@ private final class QualificationAppDelegate: NSObject, NSApplicationDelegate,
         }
     }
 
-    private func makeRuntime(machine: URL) throws -> DoryVZMacRuntime {
+    private func makeRuntime(machine: URL, guestTools: URL? = nil) throws -> DoryVZMacRuntime {
         let bundle = try DoryVZMacMachineBundle.load(from: machine)
-        let runtime = try DoryVZMacRuntime(bundle: bundle) { message in
+        let shares = try guestTools.map {
+            [try DoryVZMacSharedDirectory(name: "Dory Guest Tools", url: $0, readOnly: true)]
+        } ?? []
+        let runtime = try DoryVZMacRuntime(bundle: bundle, sharedDirectories: shares) { message in
             FileHandle.standardError.write(Data("\(message)\n".utf8))
         }
         runtime.virtualMachine.delegate = self
@@ -290,7 +299,7 @@ private final class QualificationAppDelegate: NSObject, NSApplicationDelegate,
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let runtime, runtime.virtualMachine.state == .running else { return .terminateNow }
-        if case .run(_, let suspendOnExit) = command, suspendOnExit {
+        if case .run(_, _, let suspendOnExit) = command, suspendOnExit {
             awaitingTermination = true
             window?.title = "Dory — Suspending macOS"
             Task { @MainActor in

@@ -19,7 +19,8 @@ public enum DoryVZMacConfigurationError: Error, Sendable, CustomStringConvertibl
 
 public enum DoryVZMacConfigurationBuilder {
     public static func makeConfiguration(
-        for bundle: DoryVZMacMachineBundle
+        for bundle: DoryVZMacMachineBundle,
+        sharedDirectories: [DoryVZMacSharedDirectory] = []
     ) throws -> VZVirtualMachineConfiguration {
         let configuration = VZVirtualMachineConfiguration()
         configuration.bootLoader = VZMacOSBootLoader()
@@ -71,6 +72,23 @@ public enum DoryVZMacConfigurationBuilder {
 
         configuration.entropyDevices = [VZVirtioEntropyDeviceConfiguration()]
         configuration.socketDevices = [VZVirtioSocketDeviceConfiguration()]
+        if !sharedDirectories.isEmpty {
+            var directories = [String: VZSharedDirectory]()
+            for share in sharedDirectories {
+                guard directories[share.name] == nil else {
+                    throw DoryVZMacSharedDirectoryError.duplicateName(share.name)
+                }
+                directories[share.name] = VZSharedDirectory(
+                    url: share.url,
+                    readOnly: share.readOnly
+                )
+            }
+            let fileSystem = VZVirtioFileSystemDeviceConfiguration(
+                tag: VZVirtioFileSystemDeviceConfiguration.macOSGuestAutomountTag
+            )
+            fileSystem.share = VZMultipleDirectoryShare(directories: directories)
+            configuration.directorySharingDevices = [fileSystem]
+        }
         let spiceAttachment = VZSpiceAgentPortAttachment()
         spiceAttachment.sharesClipboard = true
         let spicePort = VZVirtioConsolePortConfiguration()
@@ -96,11 +114,15 @@ public final class DoryVZMacRuntime {
 
     public init(
         bundle: DoryVZMacMachineBundle,
+        sharedDirectories: [DoryVZMacSharedDirectory] = [],
         camera: DoryMacCameraBackend? = nil,
         log: @escaping @Sendable (String) -> Void = { _ in }
     ) throws {
         self.bundle = bundle
-        let configuration = try DoryVZMacConfigurationBuilder.makeConfiguration(for: bundle)
+        let configuration = try DoryVZMacConfigurationBuilder.makeConfiguration(
+            for: bundle,
+            sharedDirectories: sharedDirectories
+        )
         self.configuration = configuration
         virtualMachine = VZVirtualMachine(configuration: configuration)
         cameraBridge = DoryVZMacCameraBridge(
