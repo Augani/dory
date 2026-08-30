@@ -837,6 +837,67 @@ import Testing
     #expect(bus.events.isEmpty)
   }
 
+  @Test func realModeStackOperationsUseSSBaseAndSixteenBitSP() throws {
+    var bytes = [UInt8](repeating: 0, count: 0x400)
+    bytes.replaceSubrange(0x100..<0x102, with: [0x50, 0x5B])
+    let memory = DoryX86ByteArrayMemory(bytes: bytes)
+    var state = try DoryX86ArchitecturalState(
+      registers: .init(rax: 0x1234, rsp: 0xAAAA_0010),
+      rip: 0x100,
+      cs: .init(selector: 0, attributes: 0x93, limit: 0xffff),
+      ss: .init(selector: 0x20, attributes: 0x93, limit: 0xffff, base: 0x200)
+    )
+
+    _ = interpreter.step(state: &state, memory: memory, mode: .real16)
+    #expect(state.registers.rsp == 0xAAAA_000E)
+    #expect(try memory.read(at: 0x20E, byteCount: 2) == [0x34, 0x12])
+    _ = interpreter.step(state: &state, memory: memory, mode: .real16)
+    #expect(state.registers.rbx & 0xffff == 0x1234)
+    #expect(state.registers.rsp == 0xAAAA_0010)
+  }
+
+  @Test func stackLimitViolationsRaisePreciseStackSegmentFaults() throws {
+    let memory = DoryX86ByteArrayMemory(
+      baseAddress: 0x100,
+      bytes: [0x50] + .init(repeating: 0, count: 0x200)
+    )
+    var state = try DoryX86ArchitecturalState(
+      registers: .init(rax: 7, rsp: 1),
+      rip: 0x100,
+      cs: .init(selector: 0, attributes: 0x93, limit: 0xffff),
+      ss: .init(selector: 0x20, attributes: 0x93, limit: 0xff, base: 0x100)
+    )
+
+    let result = interpreter.step(state: &state, memory: memory, mode: .real16)
+    guard case .exception(let exception) = result else {
+      Issue.record("out-of-limit PUSH did not fault")
+      return
+    }
+    #expect(exception.kind == .stackSegment)
+    #expect(exception.vector == 12)
+    #expect(state.registers.rsp == 1)
+    #expect(state.rip == 0x100)
+  }
+
+  @Test func poppingRSPLeavesThePoppedValueAsTheFinalPointer() throws {
+    var bytes = [UInt8](repeating: 0, count: 0x300)
+    bytes[0x100] = 0x5C
+    bytes.replaceSubrange(
+      0x200..<0x208,
+      with: [0x34, 0x12, 0, 0, 0, 0, 0, 0]
+    )
+    let memory = DoryX86ByteArrayMemory(bytes: bytes)
+    var state = try DoryX86ArchitecturalState(
+      registers: .init(rsp: 0x200),
+      rip: 0x100,
+      cs: .init(selector: 0, attributes: 0xA09A, limit: .max),
+      ss: .init(selector: 8, attributes: 0xC093, limit: .max)
+    )
+
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    #expect(state.registers.rsp == 0x1234)
+  }
+
   private func readQuadword(_ memory: DoryX86ByteArrayMemory, at address: UInt64) -> UInt64 {
     try! memory.read(at: address, byteCount: 8).enumerated().reduce(0) {
       $0 | UInt64($1.element) << UInt64($1.offset * 8)

@@ -4,6 +4,7 @@ public struct DoryX86Exception: Error, Codable, Sendable, Hashable {
   public enum Kind: String, Codable, Sendable, Hashable {
     case divideError
     case invalidOpcode
+    case stackSegment
     case generalProtection
     case pageFault
   }
@@ -490,36 +491,60 @@ public struct DoryX86Interpreter: Sendable {
         let value = try read(
           operand, instruction: instruction, state: state, memory: executionMemory)
         let width = operandWidth(operand)
-        state.registers.rsp &-= UInt64(width.byteCount)
-        try executionMemory.write(at: state.registers.rsp, bytes: littleEndian(value, width: width))
+        try pushStack(
+          value,
+          width: width,
+          instruction: instruction,
+          mode: mode,
+          state: &state,
+          memory: executionMemory
+        )
       case .pop(let operand):
         let width = operandWidth(operand)
-        let value = fromLittleEndian(
-          try executionMemory.read(at: state.registers.rsp, byteCount: width.byteCount))
+        let value = try popStack(
+          width: width,
+          instruction: instruction,
+          mode: mode,
+          state: &state,
+          memory: executionMemory
+        )
         try write(
           value, to: operand, instruction: instruction, state: &state, memory: executionMemory)
-        state.registers.rsp &+= UInt64(width.byteCount)
       case .call(let relative):
-        let stackWidth: DoryX86OperandWidth =
+        let returnWidth: DoryX86OperandWidth =
           mode == .long64 ? .quadword : (mode == .real16 ? .word : .doubleword)
-        state.registers.rsp &-= UInt64(stackWidth.byteCount)
-        try executionMemory.write(
-          at: state.registers.rsp, bytes: littleEndian(nextRIP, width: stackWidth))
+        try pushStack(
+          nextRIP,
+          width: returnWidth,
+          instruction: instruction,
+          mode: mode,
+          state: &state,
+          memory: executionMemory
+        )
         nextRIP = addRelative(nextRIP, relative)
       case .callIndirect(let operand):
         let target = try read(
           operand, instruction: instruction, state: state, memory: executionMemory)
         let width = stackWidth(mode)
-        state.registers.rsp &-= UInt64(width.byteCount)
-        try executionMemory.write(
-          at: state.registers.rsp, bytes: littleEndian(nextRIP, width: width))
+        try pushStack(
+          nextRIP,
+          width: width,
+          instruction: instruction,
+          mode: mode,
+          state: &state,
+          memory: executionMemory
+        )
         nextRIP = target
       case .return:
-        let stackWidth: DoryX86OperandWidth =
+        let returnWidth: DoryX86OperandWidth =
           mode == .long64 ? .quadword : (mode == .real16 ? .word : .doubleword)
-        nextRIP = fromLittleEndian(
-          try executionMemory.read(at: state.registers.rsp, byteCount: stackWidth.byteCount))
-        state.registers.rsp &+= UInt64(stackWidth.byteCount)
+        nextRIP = try popStack(
+          width: returnWidth,
+          instruction: instruction,
+          mode: mode,
+          state: &state,
+          memory: executionMemory
+        )
       case .jump(let relative):
         nextRIP = addRelative(nextRIP, relative)
       case .jumpIndirect(let operand):
@@ -786,14 +811,23 @@ public struct DoryX86Interpreter: Sendable {
           return generalProtection(at: originalRIP)
         }
       case .pushFlags(let width):
-        state.registers.rsp &-= UInt64(width.byteCount)
-        try executionMemory.write(
-          at: state.registers.rsp,
-          bytes: littleEndian(state.rflags.rawValue, width: width)
+        try pushStack(
+          state.rflags.rawValue,
+          width: width,
+          instruction: instruction,
+          mode: mode,
+          state: &state,
+          memory: executionMemory
         )
       case .popFlags(let width):
-        let raw = fromLittleEndian(
-          try executionMemory.read(at: state.registers.rsp, byteCount: width.byteCount))
+        let stackRead = try readStack(
+          width: width,
+          instruction: instruction,
+          mode: mode,
+          state: state,
+          memory: executionMemory
+        )
+        let raw = stackRead.value
         var requested = DoryX86RFLAGS(
           rawValue: (raw & DoryX86RFLAGS.architecturallyWritableMask) | 2)
         if currentPrivilegeLevel(state) > UInt8((state.rflags.rawValue >> 12) & 3) {
@@ -803,12 +837,17 @@ public struct DoryX86Interpreter: Sendable {
           return generalProtection(at: originalRIP)
         }
         state.rflags = validated
-        state.registers.rsp &+= UInt64(width.byteCount)
+        writeStackPointer(stackRead.nextOffset, mode: mode, state: &state)
       case .leave(let width):
-        state.registers.rsp = state.registers.rbp
-        state.registers.rbp = fromLittleEndian(
-          try executionMemory.read(at: state.registers.rsp, byteCount: width.byteCount))
-        state.registers.rsp &+= UInt64(width.byteCount)
+        writeStackPointer(state.registers.rbp, mode: mode, state: &state)
+        let frame = try popStack(
+          width: width,
+          instruction: instruction,
+          mode: mode,
+          state: &state,
+          memory: executionMemory
+        )
+        writeStringRegister(.rbp, value: frame, width: width, state: &state)
       case .setCarry(let enabled):
         setFlag(.carry, enabled, in: &state.rflags)
       case .complementCarry:
@@ -899,6 +938,9 @@ public struct DoryX86Interpreter: Sendable {
       let fault = pageFault(for: error, instructionPointer: originalRIP)
       state.control.cr2 = fault.linearAddress ?? 0
       return .exception(fault)
+    } catch let exception as DoryX86Exception {
+      state.rip = originalRIP
+      return .exception(exception)
     } catch {
       state.rip = originalRIP
       return .exception(
@@ -1178,6 +1220,126 @@ public struct DoryX86Interpreter: Sendable {
     (mode == .long64 ? 0 : state.ss.base) &+ offset
   }
 
+  private func stackPointerWidth(
+    mode: DoryX86ExecutionMode,
+    state: DoryX86ArchitecturalState
+  ) -> DoryX86OperandWidth {
+    switch mode {
+    case .real16: .word
+    case .long64: .quadword
+    case .protected32: state.ss.attributes & 0x4000 != 0 ? .doubleword : .word
+    }
+  }
+
+  private func stackPointerOffset(
+    mode: DoryX86ExecutionMode,
+    state: DoryX86ArchitecturalState
+  ) -> UInt64 {
+    state.registers.rsp & mask(stackPointerWidth(mode: mode, state: state))
+  }
+
+  private func writeStackPointer(
+    _ value: UInt64,
+    mode: DoryX86ExecutionMode,
+    state: inout DoryX86ArchitecturalState
+  ) {
+    writeStringRegister(
+      .rsp,
+      value: value,
+      width: stackPointerWidth(mode: mode, state: state),
+      state: &state
+    )
+  }
+
+  private func pushStack(
+    _ value: UInt64,
+    width: DoryX86OperandWidth,
+    instruction: DoryX86DecodedInstruction,
+    mode: DoryX86ExecutionMode,
+    state: inout DoryX86ArchitecturalState,
+    memory: any DoryX86Memory
+  ) throws {
+    let pointerWidth = stackPointerWidth(mode: mode, state: state)
+    let nextOffset =
+      (stackPointerOffset(mode: mode, state: state) &- UInt64(width.byteCount))
+      & mask(pointerWidth)
+    try validateStackAccess(
+      offset: nextOffset,
+      byteCount: width.byteCount,
+      write: true,
+      instruction: instruction,
+      mode: mode,
+      state: state
+    )
+    let address = stackAddress(nextOffset, mode: mode, state: state)
+    try memory.validateWrite(at: address, byteCount: width.byteCount)
+    try memory.write(at: address, bytes: littleEndian(value, width: width))
+    writeStackPointer(nextOffset, mode: mode, state: &state)
+  }
+
+  private func readStack(
+    width: DoryX86OperandWidth,
+    instruction: DoryX86DecodedInstruction,
+    mode: DoryX86ExecutionMode,
+    state: DoryX86ArchitecturalState,
+    memory: any DoryX86Memory
+  ) throws -> (value: UInt64, nextOffset: UInt64) {
+    let offset = stackPointerOffset(mode: mode, state: state)
+    try validateStackAccess(
+      offset: offset,
+      byteCount: width.byteCount,
+      write: false,
+      instruction: instruction,
+      mode: mode,
+      state: state
+    )
+    let value = fromLittleEndian(
+      try memory.read(
+        at: stackAddress(offset, mode: mode, state: state),
+        byteCount: width.byteCount
+      ))
+    let nextOffset =
+      (offset &+ UInt64(width.byteCount)) & mask(stackPointerWidth(mode: mode, state: state))
+    return (value, nextOffset)
+  }
+
+  private func popStack(
+    width: DoryX86OperandWidth,
+    instruction: DoryX86DecodedInstruction,
+    mode: DoryX86ExecutionMode,
+    state: inout DoryX86ArchitecturalState,
+    memory: any DoryX86Memory
+  ) throws -> UInt64 {
+    let result = try readStack(
+      width: width,
+      instruction: instruction,
+      mode: mode,
+      state: state,
+      memory: memory
+    )
+    writeStackPointer(result.nextOffset, mode: mode, state: &state)
+    return result.value
+  }
+
+  private func validateStackAccess(
+    offset: UInt64,
+    byteCount: Int,
+    write: Bool,
+    instruction: DoryX86DecodedInstruction,
+    mode: DoryX86ExecutionMode,
+    state: DoryX86ArchitecturalState
+  ) throws {
+    guard mode != .long64 else { return }
+    try validateSegmentBounds(
+      state.ss,
+      offset: offset,
+      byteCount: byteCount,
+      write: write,
+      protectedMode: state.control.cr0 & 1 != 0,
+      fault: stackProtection(at: instruction.address)
+    )
+  }
+
   private func read(
     _ operand: DoryX86Operand,
     instruction: DoryX86DecodedInstruction,
@@ -1283,25 +1445,46 @@ public struct DoryX86Interpreter: Sendable {
       instruction: instruction,
       state: state
     )
+    let fault =
+      operand.segment == .ss
+      ? stackProtection(at: instruction.address)
+      : segmentProtection(at: instruction.address)
+    try validateSegmentBounds(
+      segment,
+      offset: offset,
+      byteCount: byteCount,
+      write: write,
+      protectedMode: state.control.cr0 & 1 != 0,
+      fault: fault
+    )
+  }
+
+  private func validateSegmentBounds(
+    _ segment: DoryX86SegmentState,
+    offset: UInt64,
+    byteCount: Int,
+    write: Bool,
+    protectedMode: Bool,
+    fault: DoryX86Exception
+  ) throws {
     let lastResult = offset.addingReportingOverflow(UInt64(max(0, byteCount - 1)))
-    guard !lastResult.overflow else { throw segmentProtection(at: instruction.address) }
-    let protectedMode = state.control.cr0 & 1 != 0
+    guard !lastResult.overflow else { throw fault }
     if protectedMode {
       let access = UInt8(truncatingIfNeeded: segment.attributes)
       let type = access & 0x0f
       let executable = type & 8 != 0
-      if write, executable || type & 2 == 0 { throw segmentProtection(at: instruction.address) }
-      if !write, executable, type & 2 == 0 { throw segmentProtection(at: instruction.address) }
+      if write, executable || type & 2 == 0 { throw fault }
+      if !write, executable, type & 2 == 0 { throw fault }
       if !executable, type & 4 != 0 {
         let maximum: UInt64 = segment.attributes & 0x4000 != 0 ? 0xffff_ffff : 0xffff
         guard offset > UInt64(segment.limit), lastResult.partialValue <= maximum else {
-          throw segmentProtection(at: instruction.address)
+          throw fault
         }
         return
       }
     }
     guard lastResult.partialValue <= UInt64(segment.limit) else {
-      throw segmentProtection(at: instruction.address)
+      throw fault
     }
   }
 
@@ -1309,6 +1492,15 @@ public struct DoryX86Interpreter: Sendable {
     .init(
       kind: .generalProtection,
       vector: 13,
+      errorCode: 0,
+      instructionPointer: instructionPointer
+    )
+  }
+
+  private func stackProtection(at instructionPointer: UInt64) -> DoryX86Exception {
+    .init(
+      kind: .stackSegment,
+      vector: 12,
       errorCode: 0,
       instructionPointer: instructionPointer
     )
