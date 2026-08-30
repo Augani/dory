@@ -773,6 +773,70 @@ import Testing
     #expect(bus.events == [.read(port: 0x60, width: .byte)])
   }
 
+  @Test func repeatStringPortIOTransfersDeviceBlocksRestartably() throws {
+    var bytes = [UInt8](repeating: 0, count: 0x500)
+    bytes.replaceSubrange(0x100..<0x105, with: [0xF3, 0x6C, 0xF3, 0x66, 0x6F])
+    bytes.replaceSubrange(0x300..<0x304, with: [0x34, 0x12, 0x78, 0x56])
+    let memory = DoryX86ByteArrayMemory(bytes: bytes)
+    let bus = RecordingIOBus(readValues: [0x1F0: 0x7A])
+    var state = try DoryX86ArchitecturalState(
+      registers: .init(rcx: 3, rdx: 0x1F0, rdi: 0x200),
+      rip: 0x100,
+      cs: .init(selector: 0, attributes: 0xC09A, limit: .max),
+      ds: .init(selector: 8, attributes: 0xC093, limit: .max),
+      es: .init(selector: 8, attributes: 0xC093, limit: .max)
+    )
+    state.control.cr0 |= 1
+
+    _ = interpreter.step(
+      state: &state, memory: memory, mode: .protected32, ioBus: bus)
+    #expect(try memory.read(at: 0x200, byteCount: 3) == [0x7A, 0x7A, 0x7A])
+    #expect(state.registers.rdi == 0x203)
+    #expect(state.registers.rcx == 0)
+
+    state.registers.rcx = 2
+    state.registers.rsi = 0x300
+    _ = interpreter.step(
+      state: &state, memory: memory, mode: .protected32, ioBus: bus)
+    #expect(state.registers.rsi == 0x304)
+    #expect(state.registers.rcx == 0)
+    #expect(
+      bus.events
+        == [
+          .read(port: 0x1F0, width: .byte),
+          .read(port: 0x1F0, width: .byte),
+          .read(port: 0x1F0, width: .byte),
+          .write(port: 0x1F0, value: 0x1234, width: .word),
+          .write(port: 0x1F0, value: 0x5678, width: .word),
+        ]
+    )
+  }
+
+  @Test func stringInputPreflightsMemoryBeforeConsumingDeviceData() throws {
+    let memory = DoryX86ByteArrayMemory(
+      baseAddress: 0x100,
+      bytes: [0x6C] + .init(repeating: 0, count: 15)
+    )
+    let bus = RecordingIOBus(readValues: [0x60: 0xAA])
+    var state = try DoryX86ArchitecturalState(
+      registers: .init(rdx: 0x60, rdi: 0x500),
+      rip: 0x100,
+      cs: .init(selector: 0, attributes: 0xC09A, limit: .max),
+      es: .init(selector: 8, attributes: 0xC093, limit: .max)
+    )
+    state.control.cr0 |= 1
+
+    let result = interpreter.step(
+      state: &state, memory: memory, mode: .protected32, ioBus: bus)
+    guard case .exception(let exception) = result else {
+      Issue.record("unmapped INS destination did not fault")
+      return
+    }
+    #expect(exception.kind == .pageFault)
+    #expect(state.registers.rdi == 0x500)
+    #expect(bus.events.isEmpty)
+  }
+
   private func readQuadword(_ memory: DoryX86ByteArrayMemory, at address: UInt64) -> UInt64 {
     try! memory.read(at: address, byteCount: 8).enumerated().reduce(0) {
       $0 | UInt64($1.element) << UInt64($1.offset * 8)

@@ -130,6 +130,10 @@ public struct DoryX86Decoder: Sendable {
       operation = .push(
         .immediate(signExtend(raw, from: .byte, to: targetWidth), width: targetWidth)
       )
+    case 0x6C...0x6F:
+      let ioWidth: DoryX86OperandWidth =
+        opcode & 1 == 0 ? .byte : ioOperandWidth(mode: mode, prefixes: prefixes)
+      operation = .string(opcode & 2 == 0 ? .input : .output, width: ioWidth)
     case 0x69, 0x6B:
       let operands = try decodeModRM(
         cursor: &cursor, width: width, prefixes: prefixes, mode: mode)

@@ -440,7 +440,8 @@ public struct DoryX86Interpreter: Sendable {
           instruction: instruction,
           mode: mode,
           state: &state,
-          memory: executionMemory
+          memory: executionMemory,
+          ioBus: ioBus
         )
         if !completed {
           state.rip = originalRIP
@@ -883,6 +884,16 @@ public struct DoryX86Interpreter: Sendable {
         commitsPartialProgress: true
       )
       return .exception(fault)
+    } catch is DoryX86PartialGeneralProtection {
+      state.rip = originalRIP
+      return .exception(
+        .init(
+          kind: .generalProtection,
+          vector: 13,
+          errorCode: 0,
+          instructionPointer: originalRIP,
+          commitsPartialProgress: true
+        ))
     } catch let error as DoryX86MemoryError {
       state.rip = originalRIP
       let fault = pageFault(for: error, instructionPointer: originalRIP)
@@ -1392,13 +1403,28 @@ public struct DoryX86Interpreter: Sendable {
     instruction: DoryX86DecodedInstruction,
     mode: DoryX86ExecutionMode,
     state: inout DoryX86ArchitecturalState,
-    memory: any DoryX86Memory
+    memory: any DoryX86Memory,
+    ioBus: (any DoryX86IOBus)?
   ) throws -> Bool {
     let addressWidth = stringAddressWidth(mode: mode, instruction: instruction)
     let repeated = instruction.prefixes.repeatPrefix != nil
     var remaining = repeated ? stringRegister(.rcx, width: addressWidth, state: state) : 1
     var completed: UInt64 = 0
     let iterationBudget: UInt64 = 4_096
+    let port = UInt16(truncatingIfNeeded: state.registers.rdx)
+    if operation == .input || operation == .output {
+      guard ioBus != nil,
+        try permitsPortIO(
+          port: port,
+          width: width,
+          mode: mode,
+          state: state,
+          memory: memory
+        )
+      else {
+        throw DoryX86IOBusError.unmappedPort(port, width: width)
+      }
+    }
 
     while remaining != 0 {
       do {
@@ -1413,12 +1439,54 @@ public struct DoryX86Interpreter: Sendable {
           mode: mode,
           state: state
         )
+        let sourceOperand = stringMemoryOperand(
+          source: true,
+          width: width,
+          addressWidth: addressWidth,
+          instruction: instruction,
+          mode: mode
+        )
+        let destinationOperand = stringMemoryOperand(
+          source: false,
+          width: width,
+          addressWidth: addressWidth,
+          instruction: instruction,
+          mode: mode
+        )
         switch operation {
         case .move:
+          try validateSegmentAccess(
+            sourceOperand,
+            byteCount: width.byteCount,
+            write: false,
+            instruction: instruction,
+            state: state
+          )
+          try validateSegmentAccess(
+            destinationOperand,
+            byteCount: width.byteCount,
+            write: true,
+            instruction: instruction,
+            state: state
+          )
           let bytes = try memory.read(at: sourceAddress, byteCount: width.byteCount)
           try memory.validateWrite(at: destinationAddress, byteCount: width.byteCount)
           try memory.write(at: destinationAddress, bytes: bytes)
         case .compare:
+          try validateSegmentAccess(
+            sourceOperand,
+            byteCount: width.byteCount,
+            write: false,
+            instruction: instruction,
+            state: state
+          )
+          try validateSegmentAccess(
+            destinationOperand,
+            byteCount: width.byteCount,
+            write: false,
+            instruction: instruction,
+            state: state
+          )
           let source = fromLittleEndian(
             try memory.read(at: sourceAddress, byteCount: width.byteCount))
           let destination = fromLittleEndian(
@@ -1431,16 +1499,37 @@ public struct DoryX86Interpreter: Sendable {
             flags: &state.rflags
           )
         case .store:
+          try validateSegmentAccess(
+            destinationOperand,
+            byteCount: width.byteCount,
+            write: true,
+            instruction: instruction,
+            state: state
+          )
           try memory.validateWrite(at: destinationAddress, byteCount: width.byteCount)
           try memory.write(
             at: destinationAddress,
             bytes: littleEndian(state.registers.rax, width: width)
           )
         case .load:
+          try validateSegmentAccess(
+            sourceOperand,
+            byteCount: width.byteCount,
+            write: false,
+            instruction: instruction,
+            state: state
+          )
           let value = fromLittleEndian(
             try memory.read(at: sourceAddress, byteCount: width.byteCount))
           writeStringRegister(.rax, value: value, width: width, state: &state)
         case .scan:
+          try validateSegmentAccess(
+            destinationOperand,
+            byteCount: width.byteCount,
+            write: false,
+            instruction: instruction,
+            state: state
+          )
           let destination = fromLittleEndian(
             try memory.read(at: destinationAddress, byteCount: width.byteCount))
           _ = executeALU(
@@ -1450,19 +1539,56 @@ public struct DoryX86Interpreter: Sendable {
             width: width,
             flags: &state.rflags
           )
+        case .input:
+          try validateSegmentAccess(
+            destinationOperand,
+            byteCount: width.byteCount,
+            write: true,
+            instruction: instruction,
+            state: state
+          )
+          try memory.validateWrite(at: destinationAddress, byteCount: width.byteCount)
+          guard let ioBus else {
+            throw DoryX86IOBusError.unmappedPort(port, width: width)
+          }
+          let value = UInt64(try ioBus.read(port: port, width: width))
+          try memory.write(at: destinationAddress, bytes: littleEndian(value, width: width))
+        case .output:
+          try validateSegmentAccess(
+            sourceOperand,
+            byteCount: width.byteCount,
+            write: false,
+            instruction: instruction,
+            state: state
+          )
+          let value = UInt32(
+            truncatingIfNeeded: fromLittleEndian(
+              try memory.read(at: sourceAddress, byteCount: width.byteCount)
+            ))
+          guard let ioBus else {
+            throw DoryX86IOBusError.unmappedPort(port, width: width)
+          }
+          try ioBus.write(port: port, value: value, width: width)
         }
       } catch let error as DoryX86MemoryError {
         if completed != 0 { throw DoryX86PartialMemoryFault(error: error) }
+        throw error
+      } catch {
+        if completed != 0 { throw DoryX86PartialGeneralProtection() }
         throw error
       }
 
       let delta = UInt64(width.byteCount)
       let decrement = state.rflags.contains(.direction)
-      if operation == .move || operation == .compare || operation == .load {
+      if operation == .move || operation == .compare || operation == .load
+        || operation == .output
+      {
         advanceStringRegister(
           .rsi, by: delta, decrement: decrement, width: addressWidth, state: &state)
       }
-      if operation == .move || operation == .compare || operation == .store || operation == .scan {
+      if operation == .move || operation == .compare || operation == .store || operation == .scan
+        || operation == .input
+      {
         advanceStringRegister(
           .rdi, by: delta, decrement: decrement, width: addressWidth, state: &state)
       }
@@ -1481,6 +1607,35 @@ public struct DoryX86Interpreter: Sendable {
       if repeated, remaining != 0, completed == iterationBudget { return false }
     }
     return true
+  }
+
+  private func stringMemoryOperand(
+    source: Bool,
+    width: DoryX86OperandWidth,
+    addressWidth: DoryX86OperandWidth,
+    instruction: DoryX86DecodedInstruction,
+    mode: DoryX86ExecutionMode
+  ) -> DoryX86MemoryOperand {
+    let segment: DoryX86SegmentRegister =
+      if source {
+        switch instruction.prefixes.segmentOverride {
+        case 0x2E: .cs
+        case 0x36: .ss
+        case 0x26: .es
+        case 0x64: .fs
+        case 0x65: .gs
+        default: .ds
+        }
+      } else {
+        .es
+      }
+    return .init(
+      base: source ? .rsi : .rdi,
+      width: width,
+      addressWidth: addressWidth,
+      segment: segment,
+      ignoresLegacySegmentBase: mode == .long64
+    )
   }
 
   private func stringAddressWidth(
@@ -2339,3 +2494,5 @@ private final class DoryX86AtomicGate: @unchecked Sendable {
 private struct DoryX86PartialMemoryFault: Error {
   let error: DoryX86MemoryError
 }
+
+private struct DoryX86PartialGeneralProtection: Error {}

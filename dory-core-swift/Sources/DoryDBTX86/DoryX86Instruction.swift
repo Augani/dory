@@ -117,7 +117,7 @@ public enum DoryX86MemoryFence: String, Codable, Sendable, Hashable {
 }
 
 public enum DoryX86StringOperation: String, Codable, Sendable, Hashable {
-  case move, compare, store, load, scan
+  case move, compare, store, load, scan, input, output
 }
 
 public enum DoryX86IOPort: Codable, Sendable, Hashable {

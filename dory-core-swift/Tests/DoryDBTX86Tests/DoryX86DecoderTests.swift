@@ -387,4 +387,15 @@ import Testing
         == .output(port: .immediate(0x80), width: .word)
     )
   }
+
+  @Test func decodesRepeatableStringPortIO() throws {
+    #expect(
+      try decoder.decode([0xF3, 0x6C], at: 0x800, mode: .protected32).operation
+        == .string(.input, width: .byte)
+    )
+    #expect(
+      try decoder.decode([0xF3, 0x66, 0x6F], at: 0x800, mode: .long64).operation
+        == .string(.output, width: .word)
+    )
+  }
 }
