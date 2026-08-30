@@ -47,6 +47,10 @@ let package = Package(
       targets: ["dory-phase0a-hv-calibration"]
     ),
     .executable(
+      name: "dory-phase0a-hv-throughput",
+      targets: ["dory-phase0a-hv-throughput"]
+    ),
+    .executable(
       name: "dory-firmware-bundler",
       targets: ["dory-firmware-bundler"]
     ),
@@ -186,6 +190,15 @@ let package = Package(
     ),
     .executableTarget(
       name: "dory-phase0a-hv-calibration",
+      dependencies: [
+        "DoryExecutionContracts",
+        "DoryNativeHVArm64",
+        "DoryPhase0AQualification",
+      ],
+      linkerSettings: [.linkedFramework("Hypervisor")]
+    ),
+    .executableTarget(
+      name: "dory-phase0a-hv-throughput",
       dependencies: [
         "DoryExecutionContracts",
         "DoryNativeHVArm64",

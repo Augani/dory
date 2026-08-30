@@ -19,6 +19,7 @@ struct MetricSummaryTests {
         #expect(summary.maximum == 40)
         #expect(summary.mean == 25)
         #expect(summary.variance == 125)
+        #expect(summary.coefficientOfVariation != nil)
     }
 
     @Test("empty, negative, and non-finite samples fail closed", arguments: [
@@ -40,5 +41,6 @@ struct MetricSummaryTests {
         #expect(summary.minimum == -2)
         #expect(summary.median == 1)
         #expect(summary.maximum == 4)
+        #expect(summary.coefficientOfVariation == nil)
     }
 }

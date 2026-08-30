@@ -9,18 +9,56 @@
 
   @available(macOS 15.0, *)
   public enum DoryNativeHVArm64MinimalHarness {
+    public static let counterLoopIterations: UInt64 = 10_000_000
+
     /// Executes the smoke program with the same architectural reset state and Hypervisor calls as
     /// the contract engine, while deliberately omitting its validation, ownership, and locking.
     public static func run() throws -> UInt64 {
+      try run(
+        program: [0xd280_0540, 0xd400_0002],
+        expectedHypercallNumber: 42,
+        expectedArguments: Array(repeating: 0, count: 7)
+      )
+    }
+
+    /// Executes 10,000,000 guest counter-loop iterations before the same hypercall exit. This is
+    /// the fixed Phase 0A sustained-vCPU calibration workload, not a configurable product route.
+    public static func runCounterLoop() throws -> UInt64 {
+      try run(
+        program: [
+          0xd292_d000,  // mov x0, #0x9680
+          0xf2a0_1300,  // movk x0, #0x98, lsl #16 => 10,000,000
+          0xd280_0001,  // mov x1, #0
+          0x9100_0421,  // add x1, x1, #1
+          0xf100_0400,  // subs x0, x0, #1
+          0x54ff_ffc1,  // b.ne -8
+          0xaa01_03e0,  // mov x0, x1
+          0xd400_0002,  // hvc #0
+        ],
+        expectedHypercallNumber: counterLoopIterations,
+        expectedArguments: [counterLoopIterations] + Array(repeating: 0, count: 6)
+      )
+    }
+
+    private static func run(
+      program: [UInt32],
+      expectedHypercallNumber: UInt64,
+      expectedArguments: [UInt64]
+    ) throws -> UInt64 {
+      precondition(
+        !program.isEmpty && program.count * MemoryLayout<UInt32>.size <= Int(getpagesize())
+      )
+      precondition(expectedArguments.count == 7)
       let pageSize = Int(getpagesize())
       let guestBase: UInt64 = 0x8000_0000
       let memory = UnsafeMutableRawPointer.allocate(byteCount: pageSize, alignment: pageSize)
       memory.initializeMemory(as: UInt8.self, repeating: 0, count: pageSize)
-      memory.storeBytes(of: UInt32(0xd280_0540).littleEndian, as: UInt32.self)
-      memory.advanced(by: 4).storeBytes(
-        of: UInt32(0xd400_0002).littleEndian,
-        as: UInt32.self
-      )
+      for (index, instruction) in program.enumerated() {
+        memory.advanced(by: index * MemoryLayout<UInt32>.size).storeBytes(
+          of: instruction.littleEndian,
+          as: UInt32.self
+        )
+      }
       defer { memory.deallocate() }
 
       try doryNativeHVCheck(hv_vm_create(nil), "hv_vm_create")
@@ -57,14 +95,14 @@
         throw DoryNativeHVArm64Error.unexpectedExitReason(exitPointer.pointee.reason.rawValue)
       }
       let number = try DoryARM64HypervisorRegisterBank.readGeneral(vcpu, index: 0)
-      guard number == 42 else {
+      guard number == expectedHypercallNumber else {
         throw DoryNativeHVArm64MinimalHarnessError.unexpectedRegister(number)
       }
       // Match the execution contract's hypercall exit materialization exactly: X0 is the call
       // number and X1...X7 are captured arguments even when this smoke workload leaves them zero.
       for index in 1...7 {
         let argument = try DoryARM64HypervisorRegisterBank.readGeneral(vcpu, index: index)
-        guard argument == 0 else {
+        guard argument == expectedArguments[index - 1] else {
           throw DoryNativeHVArm64MinimalHarnessError.unexpectedRegister(argument)
         }
       }

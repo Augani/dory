@@ -12,7 +12,7 @@ public struct Phase0AMetricSummary: Codable, Equatable, Sendable {
     public var maximum: Double
     public var mean: Double
     public var variance: Double
-    public var coefficientOfVariation: Double
+    public var coefficientOfVariation: Double?
 
     public init(samples: [Double], allowsNegativeValues: Bool = false) throws {
         guard
@@ -38,7 +38,9 @@ public struct Phase0AMetricSummary: Codable, Equatable, Sendable {
         self.maximum = ordered[ordered.count - 1]
         self.mean = mean
         self.variance = variance
-        self.coefficientOfVariation = mean == 0 ? 0 : variance.squareRoot() / mean
+        self.coefficientOfVariation = allowsNegativeValues
+            ? nil
+            : (mean == 0 ? 0 : variance.squareRoot() / mean)
     }
 
     /// R-7/NumPy-style linear interpolation at `p * (n - 1)`.

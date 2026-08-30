@@ -16,5 +16,15 @@
       #expect(receipt.programCounter == 0x8000_0008)
       #expect(receipt.dirtyPageCount == 1)
     }
+
+    @Test func minimalHarnessExecutesFixedCounterLoop() throws {
+      guard #available(macOS 15.0, *) else { return }
+      guard ProcessInfo.processInfo.environment["DORY_RUN_NATIVE_HV_SMOKE"] == "1" else {
+        return
+      }
+
+      let count = try DoryNativeHVArm64MinimalHarness.runCounterLoop()
+      #expect(count == DoryNativeHVArm64MinimalHarness.counterLoopIterations)
+    }
   }
 #endif
