@@ -5,8 +5,19 @@ private let cameraExtensionIdentifier = "com.pythonxi.Dory.GuestTools.CameraExte
 
 @MainActor
 final class CameraExtensionController: NSObject, ObservableObject, OSSystemExtensionRequestDelegate {
+    private enum PendingAction {
+        case install
+        case remove
+    }
+
     @Published private(set) var status = "Dory Camera is ready to install."
     @Published private(set) var isWorking = false
+    private var pendingAction: PendingAction?
+
+    override init() {
+        super.init()
+        refresh()
+    }
 
     var isInstalledInApplications: Bool {
         Bundle.main.bundleURL.deletingLastPathComponent().path == "/Applications"
@@ -18,6 +29,7 @@ final class CameraExtensionController: NSObject, ObservableObject, OSSystemExten
             return
         }
         isWorking = true
+        pendingAction = .install
         status = "Requesting Dory Camera activation…"
         let request = OSSystemExtensionRequest.activationRequest(
             forExtensionWithIdentifier: cameraExtensionIdentifier,
@@ -29,8 +41,19 @@ final class CameraExtensionController: NSObject, ObservableObject, OSSystemExten
 
     func uninstall() {
         isWorking = true
+        pendingAction = .remove
         status = "Requesting Dory Camera removal…"
         let request = OSSystemExtensionRequest.deactivationRequest(
+            forExtensionWithIdentifier: cameraExtensionIdentifier,
+            queue: .main
+        )
+        request.delegate = self
+        OSSystemExtensionManager.shared.submitRequest(request)
+    }
+
+    func refresh() {
+        status = "Checking Dory Camera…"
+        let request = OSSystemExtensionRequest.propertiesRequest(
             forExtensionWithIdentifier: cameraExtensionIdentifier,
             queue: .main
         )
@@ -58,16 +81,46 @@ final class CameraExtensionController: NSObject, ObservableObject, OSSystemExten
     ) {
         Task { @MainActor in
             isWorking = false
-            status = result == .willCompleteAfterReboot
-                ? "Restart macOS to finish updating Dory Camera."
-                : "Dory Camera is installed and available to camera apps."
+            let action = pendingAction
+            pendingAction = nil
+            if result == .willCompleteAfterReboot {
+                status = action == .remove
+                    ? "Restart macOS to finish removing Dory Camera."
+                    : "Restart macOS to finish updating Dory Camera."
+            } else {
+                status = action == .remove
+                    ? "Dory Camera was removed."
+                    : "Dory Camera is installed and available to camera apps."
+            }
         }
     }
 
     nonisolated func request(_ request: OSSystemExtensionRequest, didFailWithError error: Error) {
         Task { @MainActor in
             isWorking = false
+            pendingAction = nil
             status = "Dory Camera could not be changed: \(error.localizedDescription)"
+        }
+    }
+
+    nonisolated func request(
+        _ request: OSSystemExtensionRequest,
+        foundProperties properties: [OSSystemExtensionProperties]
+    ) {
+        Task { @MainActor in
+            guard let installed = properties.first else {
+                status = "Dory Camera is not installed."
+                return
+            }
+            if installed.isUninstalling {
+                status = "Dory Camera removal will finish after restart."
+            } else if installed.isAwaitingUserApproval {
+                status = "Approve Dory Camera in System Settings to finish installation."
+            } else if installed.isEnabled {
+                status = "Dory Camera \(installed.bundleShortVersion) is installed and enabled."
+            } else {
+                status = "Dory Camera is installed but not enabled."
+            }
         }
     }
 }
@@ -94,6 +147,8 @@ struct DoryGuestToolsApp: App {
                         .buttonStyle(.borderedProminent)
                         .disabled(cameraExtension.isWorking || !cameraExtension.isInstalledInApplications)
                     Button("Remove") { cameraExtension.uninstall() }
+                        .disabled(cameraExtension.isWorking)
+                    Button("Refresh") { cameraExtension.refresh() }
                         .disabled(cameraExtension.isWorking)
                 }
             }
