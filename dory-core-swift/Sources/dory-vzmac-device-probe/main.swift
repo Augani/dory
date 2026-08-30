@@ -1,5 +1,10 @@
 import Foundation
+import DoryVZMacSDKInventory
 import Virtualization
+
+#if canImport(AccessoryAccess)
+import AccessoryAccess
+#endif
 
 #if arch(arm64)
 private let hostArchitecture = "arm64"
@@ -18,7 +23,13 @@ private struct ConstructedPublicDevices: Codable {
 }
 
 private struct PublicSDKBoundary: Codable {
+    var sdkMaximumAllowed: Int32
+    var accessoryAccessDeclared: Bool
     var physicalUSBPassthroughDeclared: Bool
+    var physicalUSBConfigurationConstructorCompiled: Bool
+    var physicalUSBMinimumHostVersion: String?
+    var physicalUSBAuthorityProcess: String?
+    var physicalUSBRequiredEntitlements: [String]
     var cameraInjectionDeclared: Bool
     var runtimeClassPresence: [String: Bool]
 }
@@ -59,10 +70,62 @@ private func runtimeClassPresence(_ names: [String]) -> [String: Bool] {
     Dictionary(uniqueKeysWithValues: names.map { ($0, NSClassFromString($0) != nil) })
 }
 
+#if canImport(AccessoryAccess)
+@available(macOS 27.0, *)
+private func makePhysicalUSBConfiguration(
+    accessory: AAUSBAccessory
+) -> VZUSBPassthroughDeviceConfiguration {
+    VZUSBPassthroughDeviceConfiguration(device: accessory)
+}
+
+private func physicalUSBConfigurationConstructorCompiled() -> Bool {
+    guard #available(macOS 27.0, *) else { return false }
+    let witness: (AAUSBAccessory) -> VZUSBPassthroughDeviceConfiguration =
+        makePhysicalUSBConfiguration
+    _ = witness
+    return true
+}
+#else
+private func physicalUSBConfigurationConstructorCompiled() -> Bool {
+    false
+}
+#endif
+
+private func publicSDKBoundary() -> PublicSDKBoundary {
+    let accessoryAccessDeclared = dory_vzmac_accessory_access_declared()
+    let physicalUSBDeclared = dory_vzmac_physical_usb_declared()
+    let cameraDeclared = dory_vzmac_camera_injection_declared()
+    return PublicSDKBoundary(
+        sdkMaximumAllowed: dory_vzmac_sdk_max_allowed(),
+        accessoryAccessDeclared: accessoryAccessDeclared,
+        physicalUSBPassthroughDeclared: physicalUSBDeclared,
+        physicalUSBConfigurationConstructorCompiled:
+            physicalUSBConfigurationConstructorCompiled(),
+        physicalUSBMinimumHostVersion: physicalUSBDeclared ? "27.0" : nil,
+        physicalUSBAuthorityProcess: accessoryAccessDeclared
+            ? "ordinary Dock-visible application"
+            : nil,
+        physicalUSBRequiredEntitlements: accessoryAccessDeclared
+            ? [
+                "com.apple.developer.accessory-access.usb",
+                "com.apple.security.virtualization",
+            ]
+            : [],
+        cameraInjectionDeclared: cameraDeclared,
+        runtimeClassPresence: runtimeClassPresence([
+            "VZUSBPassthroughDevice",
+            "VZUSBPassthroughDeviceConfiguration",
+            "VZCameraDevice",
+            "VZCameraDeviceConfiguration",
+            "VZMacCameraDeviceConfiguration",
+        ])
+    )
+}
+
 private func runProbe() -> ProbeReceipt {
     guard hostArchitecture == "arm64" else {
         return ProbeReceipt(
-            schema: "dory.phase0a.vzmac-device-api-probe@1",
+            schema: "dory.phase0a.vzmac-device-api-probe@2",
             status: "BLOCKED_UNSUPPORTED_HOST",
             hostArchitecture: hostArchitecture,
             hostProductVersion: ProcessInfo.processInfo.operatingSystemVersionString,
@@ -76,11 +139,7 @@ private func runProbe() -> ProbeReceipt {
                 hostAudioOutput: false,
                 xhciController: false
             ),
-            publicSDKBoundary: .init(
-                physicalUSBPassthroughDeclared: false,
-                cameraInjectionDeclared: false,
-                runtimeClassPresence: [:]
-            ),
+            publicSDKBoundary: publicSDKBoundary(),
             releaseGateClosed: false,
             blockers: ["VZMac is available only on Apple-silicon hosts"]
         )
@@ -112,23 +171,23 @@ private func runProbe() -> ProbeReceipt {
         xhciController = false
     }
 
-    // These declarations are intentionally false in the Xcode 26.6/macOS 26.5 public SDK used
-    // to compile this target. Runtime symbol presence is diagnostic only: Dory never links or
-    // invokes an undeclared class.
-    let publicSDKBoundary = PublicSDKBoundary(
-        physicalUSBPassthroughDeclared: false,
-        cameraInjectionDeclared: false,
-        runtimeClassPresence: runtimeClassPresence([
-            "VZUSBPassthroughDevice",
-            "VZUSBPassthroughDeviceConfiguration",
-            "VZCameraDevice",
-            "VZCameraDeviceConfiguration",
-            "VZMacCameraDeviceConfiguration",
-        ])
-    )
+    let sdkBoundary = publicSDKBoundary()
+    var blockers = [
+        "the compiling public SDK declares no VZ camera-injection type",
+        "configuration construction is not a restore/install/runtime qualification",
+    ]
+    if sdkBoundary.physicalUSBPassthroughDeclared {
+        blockers.append(
+            "physical USB requires final-public-API confirmation, an entitled Dock-visible app, an authorized accessory, and runtime attach/detach qualification"
+        )
+    } else {
+        blockers.append("the compiling public SDK declares no VZ physical-USB passthrough type")
+    }
     return ProbeReceipt(
-        schema: "dory.phase0a.vzmac-device-api-probe@1",
-        status: "BLOCKED_REQUIRED_PUBLIC_DEVICE_PATHS_ABSENT",
+        schema: "dory.phase0a.vzmac-device-api-probe@2",
+        status: sdkBoundary.physicalUSBPassthroughDeclared
+            ? "BLOCKED_CAMERA_ABSENT_USB_RUNTIME_QUALIFICATION_PENDING"
+            : "BLOCKED_REQUIRED_PUBLIC_DEVICE_PATHS_ABSENT",
         hostArchitecture: hostArchitecture,
         hostProductVersion: ProcessInfo.processInfo.operatingSystemVersionString,
         hostBuildVersion: operatingSystemBuildVersion(),
@@ -141,13 +200,9 @@ private func runProbe() -> ProbeReceipt {
             hostAudioOutput: output.sink is VZHostAudioOutputStreamSink,
             xhciController: xhciController
         ),
-        publicSDKBoundary: publicSDKBoundary,
+        publicSDKBoundary: sdkBoundary,
         releaseGateClosed: false,
-        blockers: [
-            "the compiling public SDK declares no VZ physical-USB passthrough type",
-            "the compiling public SDK declares no VZ camera-injection type",
-            "configuration construction is not a restore/install/runtime qualification",
-        ]
+        blockers: blockers
     )
 }
 

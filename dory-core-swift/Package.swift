@@ -88,6 +88,10 @@ let package = Package(
       linkerSettings: [.linkedFramework("CoreGraphics")]
     ),
     .target(
+      name: "DoryVZMacSDKInventory",
+      dependencies: []
+    ),
+    .target(
       name: "DoryPhase0AHostNativeWorkload",
       dependencies: []
     ),
@@ -191,6 +195,7 @@ let package = Package(
     // missing camera or physical-USB declarations remain explicit stop gates.
     .executableTarget(
       name: "dory-vzmac-device-probe",
+      dependencies: ["DoryVZMacSDKInventory"],
       path: "Sources/dory-vzmac-device-probe",
       linkerSettings: [.linkedFramework("Virtualization")]
     ),
@@ -258,6 +263,10 @@ let package = Package(
     .testTarget(
       name: "DoryPhase0AQualificationTests",
       dependencies: ["DoryPhase0AQualification"]
+    ),
+    .testTarget(
+      name: "DoryVZMacSDKInventoryTests",
+      dependencies: ["DoryVZMacSDKInventory"]
     ),
     .testTarget(
       name: "DoryVMContractsTests",
