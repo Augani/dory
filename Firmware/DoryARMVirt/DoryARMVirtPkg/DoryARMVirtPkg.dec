@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: BSD-2-Clause-Patent
+
+[Defines]
+  DEC_SPECIFICATION = 0x00010005
+  PACKAGE_NAME      = DoryARMVirtPkg
+  PACKAGE_GUID      = 75a1d42f-7181-4a2d-9124-66eae724e744
+  PACKAGE_VERSION   = 1.0
+
+[Guids]
+  gDoryARMVirtTokenSpaceGuid = { 0x75a1d42f, 0x7181, 0x4a2d, { 0x91, 0x24, 0x66, 0xea, 0xe7, 0x24, 0xe7, 0x44 } }

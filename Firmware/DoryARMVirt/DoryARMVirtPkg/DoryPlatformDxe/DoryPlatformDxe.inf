@@ -1,0 +1,27 @@
+[Defines]
+  INF_VERSION    = 0x0001001B
+  BASE_NAME      = DoryPlatformDxe
+  FILE_GUID      = d3f9d852-1c2b-4ec5-bfe2-97a042f52682
+  MODULE_TYPE    = DXE_DRIVER
+  VERSION_STRING = 1.0
+  ENTRY_POINT    = DoryPlatformDxeEntryPoint
+
+[Sources]
+  DoryPlatformDxe.c
+
+[Packages]
+  DoryARMVirtPkg/DoryARMVirtPkg.dec
+  EmbeddedPkg/EmbeddedPkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+  MdePkg/MdePkg.dec
+
+[LibraryClasses]
+  UefiBootServicesTableLib
+  UefiDriverEntryPoint
+
+[Guids]
+  gEdkiiNvVarStoreFormattedGuid
+  gEdkiiPlatformHasDeviceTreeGuid
+
+[Depex]
+  TRUE

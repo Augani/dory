@@ -1,0 +1,41 @@
+[Defines]
+  INF_VERSION    = 0x0001001B
+  BASE_NAME      = DoryVirtMemInfoLib
+  FILE_GUID      = 55809193-8e5c-48ac-a78c-603ba6f48cb5
+  MODULE_TYPE    = BASE
+  VERSION_STRING = 1.0
+  LIBRARY_CLASS  = ArmVirtMemInfoLib|PEIM
+  CONSTRUCTOR    = DoryVirtMemInfoLibConstructor
+
+[Sources]
+  DoryVirtMemInfoLib.c
+
+[Packages]
+  ArmPkg/ArmPkg.dec
+  ArmVirtPkg/ArmVirtPkg.dec
+  DoryARMVirtPkg/DoryARMVirtPkg.dec
+  EmbeddedPkg/EmbeddedPkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+  MdePkg/MdePkg.dec
+  OvmfPkg/OvmfPkg.dec
+
+[LibraryClasses]
+  ArmLib
+  BaseLib
+  BaseMemoryLib
+  DebugLib
+  FdtLib
+  HobLib
+  MemoryAllocationLib
+  PcdLib
+
+[Guids]
+  gArmVirtSystemMemorySizeGuid
+
+[FixedPcd]
+  gArmTokenSpaceGuid.PcdFdBaseAddress
+  gArmTokenSpaceGuid.PcdFvBaseAddress
+  gArmTokenSpaceGuid.PcdSystemMemoryBase
+  gArmTokenSpaceGuid.PcdFdSize
+  gArmTokenSpaceGuid.PcdFvSize
+  gUefiOvmfPkgTokenSpaceGuid.PcdDeviceTreeInitialBaseAddress
