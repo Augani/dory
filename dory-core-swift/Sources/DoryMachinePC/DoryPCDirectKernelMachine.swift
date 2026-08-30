@@ -49,6 +49,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   public let bootLayout: DoryPCPVHBootLayout
   public let acpiLayout: DoryPCACPILayout
   public let smbios: DoryPCSMBIOSTables
+  public let platformMMIODevices: [any DoryPCMMIODevice]
   public let memoryByteCount: Int
   public let processorCount: Int
 
@@ -68,6 +69,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     smbiosIdentity: DoryPCSMBIOSIdentity = .init(),
     initialRTCDate: Date = Date(),
     pciFunctions: [any DoryPCPCIFunction] = [],
+    platformMMIODevices: [any DoryPCMMIODevice] = [],
     interpreter: DoryX86Interpreter = .init()
   ) throws {
     guard memoryBytes >= 1024 * 1024 else {
@@ -77,6 +79,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       throw DoryPCMachineError.invalidProcessorCount(processorCount)
     }
     self.processorCount = processorCount
+    self.platformMMIODevices = platformMMIODevices
     let sharedMemory = DoryX86ByteArrayMemory(byteCount: memoryBytes)
     memory = sharedMemory
     physicalMemories = (0..<processorCount).map {
@@ -173,6 +176,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       try bus.attach(hpet)
       try bus.attach(pciExpress)
       try bus.attach(pciBARWindow)
+      for device in platformMMIODevices { try bus.attach(device) }
       bus.seal()
     }
     pagingUnits = (0..<processorCount).map { _ in DoryX86PagingUnit() }
@@ -229,6 +233,32 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         throw error
       }
       loadedStates[0] = try bootImage.initialState(entryPoint: kernelImage.physicalEntryPoint)
+      for index in 1..<processorCount { loadedStates[index] = applicationProcessorResetState() }
+      haltedProcessors = [Bool](repeating: false, count: processorCount)
+    }
+  }
+
+  /// Installs firmware discovery tables and enters the architectural x86 reset state. Firmware
+  /// code must already be attached as an instruction-fetchable platform MMIO device.
+  public func loadUEFI() throws {
+    try lock.withLock {
+      guard !consumedPayload else { throw DoryPCMachineError.alreadyLoaded }
+      let acpi = try DoryPCACPIBuilder.build(
+        layout: acpiLayout,
+        processorCount: UInt8(processorCount)
+      )
+      _ = try physicalMemory.instructionBytes(
+        at: DoryPCV1ABI.uefiResetAddress,
+        maximumCount: 1
+      )
+      consumedPayload = true
+      do {
+        try acpi.install(into: memory)
+        try smbios.install(into: memory)
+      } catch {
+        throw error
+      }
+      loadedStates[0] = .reset()
       for index in 1..<processorCount { loadedStates[index] = applicationProcessorResetState() }
       haltedProcessors = [Bool](repeating: false, count: processorCount)
     }
