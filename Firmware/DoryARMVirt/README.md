@@ -7,8 +7,8 @@ under `patches/`.
 
 `compatibility-matrix.json` is the machine-readable Phase 2 qualification
 authority. It pins each guest media digest and provenance URL to one bounded
-console fixture, expected marker, resource envelope, gate kind, and exact
-receipt shape. Tests recompute every fixture digest and require its declared
+console fixture, expected marker, resource envelope, exact network-sidecar
+digest or required absence, gate kind, and exact receipt shape. Tests recompute every fixture digest and require its declared
 guest tuple to match the referenced media cell; a prose-only or stale filename
 cannot create a support claim.
 
@@ -24,7 +24,7 @@ lifecycle shape:
 ```
 
 The runner rejects a missing pair of matrix/gate options, a caller-supplied
-console script, media or fixture drift, guest-tuple mismatch, and any observed
+console script, media, fixture, or network-sidecar drift, guest-tuple mismatch, and any observed
 boot/transition/action receipt that differs from the selected gate.
 
 Build a four-file, atomically published firmware bundle:
@@ -128,7 +128,7 @@ chmod 600 /absolute/path/to/alpine-standard-aarch64.iso
 
 The runner accepts only an owned, private console document with bounded steps,
 wait markers, and inputs. It refuses a success marker present in guest input so
-terminal echo cannot forge qualification. Receipt schema 5 binds the exact host
+terminal echo cannot forge qualification. Receipt schema 6 binds the exact host
 model/OS build, guest family/version/build/architecture, execution engine, CPU,
 machine, firmware and device ABIs, runner SHA-256, memory and disk sizes,
 completed step count, console-document SHA-256, applied installer media

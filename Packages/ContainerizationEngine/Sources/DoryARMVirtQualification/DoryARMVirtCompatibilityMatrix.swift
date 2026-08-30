@@ -38,12 +38,13 @@ public struct DoryARMVirtCompatibilityGate: Codable, Equatable, Sendable {
   public let memoryByteCount: UInt64
   public let systemDiskByteCount: UInt64
   public let timeoutSeconds: UInt64
+  public let gvproxySHA256: String?
   public let receipt: DoryARMVirtQualificationReceiptExpectation
 }
 
 public struct DoryARMVirtCompatibilityMatrix: Codable, Equatable, Sendable {
-  public static let currentSchemaVersion: UInt32 = 1
-  public static let identity = "dory.compatibility.armvirt@1"
+  public static let currentSchemaVersion: UInt32 = 2
+  public static let identity = "dory.compatibility.armvirt@2"
 
   public let schemaVersion: UInt32
   public let matrixIdentity: String
@@ -95,6 +96,7 @@ public struct DoryARMVirtCompatibilityMatrix: Codable, Equatable, Sendable {
         gate.memoryByteCount.isMultiple(of: 16 << 10),
         gate.systemDiskByteCount >= 64 << 20, gate.systemDiskByteCount <= 64 << 30,
         gate.systemDiskByteCount.isMultiple(of: 512), (1...900).contains(gate.timeoutSeconds),
+        gate.gvproxySHA256.map(Self.isSHA256) ?? true,
         (1...4).contains(gate.receipt.bootAttempts),
         (1...128).contains(gate.receipt.consoleScriptStepCount),
         (0...2).contains(gate.receipt.installerMediaTransitionCount),

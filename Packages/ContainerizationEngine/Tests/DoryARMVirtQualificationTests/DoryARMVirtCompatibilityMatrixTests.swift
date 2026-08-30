@@ -23,6 +23,9 @@ import Testing
 
     #expect(matrix.gates.count == 7)
     #expect(try matrix.gate(id: "debian-update").receipt.bootAttempts == 3)
+    #expect(try matrix.gate(id: "debian-update").gvproxySHA256 != nil)
+    #expect(try matrix.gate(id: "debian-installer-boot").gvproxySHA256 == nil)
+    #expect(matrix.gates.filter { $0.gvproxySHA256 != nil }.count == 6)
     #expect(throws: DoryARMVirtCompatibilityMatrixError.gateUnavailable("missing")) {
       try matrix.gate(id: "missing")
     }

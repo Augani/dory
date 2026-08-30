@@ -669,9 +669,10 @@ import Foundation
         consoleScript?.driver.qualificationTarget?.guestBuild
           == qualification.media.guestBuild,
         consoleScript?.driver.qualificationTarget?.guestArchitecture
-          == qualification.media.guestArchitecture
+          == qualification.media.guestArchitecture,
+        gvproxy?.sha256 == qualification.gate.gvproxySHA256
       else {
-        fail("qualification gate media, fixture, or guest tuple does not match the matrix")
+        fail("qualification gate media, fixture, sidecar, or guest tuple does not match the matrix")
       }
     }
     if consoleScript?.driver.inputContains(options.expectedConsoleText) == true {
