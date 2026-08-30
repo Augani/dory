@@ -1,6 +1,7 @@
 import CryptoKit
 import DoryFirmware
 import DoryMachineARMVirt
+import DoryMachinePC
 import Foundation
 import Testing
 
@@ -49,6 +50,19 @@ import Testing
     }
   }
 
+  @Test func pcManifestPinsTheCompletePCFirmwareComposition() throws {
+    let fixture = Fixture()
+    let manifest = try fixture.manifest(platform: .pcV1)
+    let data = try JSONEncoder().encode(manifest)
+    let decoded = try JSONDecoder().decode(DoryFirmwareArtifactManifest.self, from: data)
+
+    #expect(decoded.platform == .pcV1)
+    #expect(decoded.firmwareABIIdentity == DoryPCV1ABI.firmwareABIIdentity)
+    #expect(decoded.machineABIIdentity == DoryPCV1ABI.identity)
+    #expect(decoded.variableStoreFormatIdentity == DoryPCV1ABI.variableStoreFormatIdentity)
+    #expect(decoded.variableBridgeIdentity == DoryPCV1ABI.variableBridgeIdentity)
+  }
+
   @Test func nonReproducibleOrUnpinnedBuildsAreRejected() throws {
     let fixture = Fixture()
     #expect(throws: DoryFirmwareManifestError.invalidSourceRevision("main")) {
@@ -85,10 +99,12 @@ import Testing
     var object = try #require(JSONSerialization.jsonObject(with: canonical) as? [String: Any])
     object["future"] = true
     let unknown = try JSONSerialization.data(withJSONObject: object)
-    #expect(throws: DoryFirmwareError.unknownFields(
-      type: "DoryFirmwareArtifactManifest",
-      fields: ["future"]
-    )) {
+    #expect(
+      throws: DoryFirmwareError.unknownFields(
+        type: "DoryFirmwareArtifactManifest",
+        fields: ["future"]
+      )
+    ) {
       _ = try JSONDecoder().decode(DoryFirmwareArtifactManifest.self, from: unknown)
     }
   }
@@ -99,9 +115,13 @@ private struct Fixture {
   let variables = Data(#"{"generation":1,"variables":[]}"#.utf8)
   let sbom = Data(#"{"bomFormat":"CycloneDX","specVersion":"1.6"}"#.utf8)
 
-  func manifest(reproducible: Bool = true) throws -> DoryFirmwareArtifactManifest {
+  func manifest(
+    platform: DoryFirmwarePlatform = .armVirtV1,
+    reproducible: Bool = true
+  ) throws -> DoryFirmwareArtifactManifest {
     try DoryFirmwareArtifactManifest(
-      buildIdentifier: "dory-armvirt-fw-test.1",
+      platform: platform,
+      buildIdentifier: "dory-fw-test.1",
       source: DoryFirmwareSourcePin(
         repository: "https://github.com/tianocore/edk2.git",
         revision: String(repeating: "a", count: 40)

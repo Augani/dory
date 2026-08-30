@@ -1,5 +1,6 @@
 import CryptoKit
 import DoryFirmware
+import DoryMachinePC
 import Foundation
 import Testing
 
@@ -56,9 +57,31 @@ import Testing
     )
   }
 
-  private func makeInput() throws -> DoryFirmwareBundleBuildInput {
+  @Test func buildsPCFirmwareBundleWithPCSBOMAuthority() throws {
+    let bundle = try DoryFirmwareBundleBuilder.build(makeInput(platform: .pcV1))
+
+    #expect(bundle.manifest.platform == .pcV1)
+    #expect(bundle.manifest.machineABIIdentity == DoryPCV1ABI.identity)
+    #expect(bundle.manifest.firmwareABIIdentity == DoryPCV1ABI.firmwareABIIdentity)
+
+    let sbom = try #require(JSONSerialization.jsonObject(with: bundle.sbom) as? [String: Any])
+    let metadata = try #require(sbom["metadata"] as? [String: Any])
+    let component = try #require(metadata["component"] as? [String: Any])
+    #expect(component["name"] as? String == "DoryPC")
+    let properties = try #require(component["properties"] as? [[String: String]])
+    #expect(
+      properties.contains([
+        "name": "dory:machine-abi",
+        "value": DoryPCV1ABI.identity,
+      ]))
+  }
+
+  private func makeInput(
+    platform: DoryFirmwarePlatform = .armVirtV1
+  ) throws -> DoryFirmwareBundleBuildInput {
     DoryFirmwareBundleBuildInput(
-      buildIdentifier: "dory-armvirt-202608",
+      platform: platform,
+      buildIdentifier: "dory-firmware-202608",
       source: try DoryFirmwareSourcePin(
         repository: "https://github.com/tianocore/edk2.git",
         revision: "2970e5699ba6267f3384ffab20f96647578aebc8"

@@ -4,6 +4,7 @@ import Foundation
 private enum BundlerError: Error, CustomStringConvertible {
   case usage(String)
   case invalidUnsignedInteger(name: String, value: String)
+  case invalidPlatform(String)
   case invalidSecureBootPolicy(String)
 
   var description: String {
@@ -11,6 +12,8 @@ private enum BundlerError: Error, CustomStringConvertible {
     case .usage(let message): message
     case .invalidUnsignedInteger(let name, let value):
       "invalid unsigned integer for \(name): \(value)"
+    case .invalidPlatform(let value):
+      "invalid platform: \(value)"
     case .invalidSecureBootPolicy(let value):
       "invalid secure-boot policy: \(value)"
     }
@@ -19,6 +22,7 @@ private enum BundlerError: Error, CustomStringConvertible {
 
 private struct Arguments {
   let firmwareCode: URL
+  let platform: DoryFirmwarePlatform
   let platformConfiguration: URL
   let toolchainDescriptor: URL
   let output: URL
@@ -42,7 +46,8 @@ private struct Arguments {
       index += 2
     }
     let required = [
-      "--firmware-code", "--platform-configuration", "--toolchain-descriptor", "--output",
+      "--firmware-code", "--platform", "--platform-configuration", "--toolchain-descriptor",
+      "--output",
       "--build-identifier", "--source-repository", "--source-revision", "--source-date-epoch",
       "--secure-boot-policy",
     ]
@@ -55,12 +60,18 @@ private struct Arguments {
         value: values["--source-date-epoch"] ?? ""
       )
     }
+    guard let platformText = values["--platform"],
+      let platform = DoryFirmwarePlatform(rawValue: platformText)
+    else {
+      throw BundlerError.invalidPlatform(values["--platform"] ?? "")
+    }
     guard let policyText = values["--secure-boot-policy"],
       let policy = DoryFirmwareSecureBootPolicy(rawValue: policyText)
     else {
       throw BundlerError.invalidSecureBootPolicy(values["--secure-boot-policy"] ?? "")
     }
     firmwareCode = URL(fileURLWithPath: values["--firmware-code"]!)
+    self.platform = platform
     platformConfiguration = URL(fileURLWithPath: values["--platform-configuration"]!)
     toolchainDescriptor = URL(fileURLWithPath: values["--toolchain-descriptor"]!)
     output = URL(fileURLWithPath: values["--output"]!)
@@ -75,6 +86,7 @@ private struct Arguments {
 do {
   let arguments = try Arguments(Array(CommandLine.arguments.dropFirst()))
   let input = DoryFirmwareBundleBuildInput(
+    platform: arguments.platform,
     buildIdentifier: arguments.buildIdentifier,
     source: try DoryFirmwareSourcePin(
       repository: arguments.sourceRepository,

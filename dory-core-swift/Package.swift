@@ -120,7 +120,7 @@ let package = Package(
     ),
     .target(
       name: "DoryFirmware",
-      dependencies: ["DoryMachineARMVirt"]
+      dependencies: ["DoryDBTX86", "DoryMachineARMVirt", "DoryMachinePC"]
     ),
     .target(
       name: "DoryNativeHVArm64",
@@ -382,7 +382,7 @@ let package = Package(
     ),
     .testTarget(
       name: "DoryFirmwareTests",
-      dependencies: ["DoryFirmware", "DoryMachineARMVirt"]
+      dependencies: ["DoryDBTX86", "DoryFirmware", "DoryMachineARMVirt", "DoryMachinePC"]
     ),
     .testTarget(
       name: "DoryNativeHVArm64Tests",

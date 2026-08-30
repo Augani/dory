@@ -9,6 +9,7 @@ public enum DoryFirmwareBundleLayout {
 }
 
 public struct DoryFirmwareBundleBuildInput: Sendable {
+  public let platform: DoryFirmwarePlatform
   public let buildIdentifier: String
   public let source: DoryFirmwareSourcePin
   public let sourceDateEpoch: UInt64
@@ -18,6 +19,7 @@ public struct DoryFirmwareBundleBuildInput: Sendable {
   public let secureBootPolicy: DoryFirmwareSecureBootPolicy
 
   public init(
+    platform: DoryFirmwarePlatform = .armVirtV1,
     buildIdentifier: String,
     source: DoryFirmwareSourcePin,
     sourceDateEpoch: UInt64,
@@ -26,6 +28,7 @@ public struct DoryFirmwareBundleBuildInput: Sendable {
     firmwareCode: Data,
     secureBootPolicy: DoryFirmwareSecureBootPolicy
   ) {
+    self.platform = platform
     self.buildIdentifier = buildIdentifier
     self.source = source
     self.sourceDateEpoch = sourceDateEpoch
@@ -100,12 +103,14 @@ public enum DoryFirmwareBundleBuilder {
         sourceDateEpoch: input.sourceDateEpoch,
         buildIdentifier: input.buildIdentifier,
         source: input.source,
+        platform: input.platform,
         platformConfigurationSHA256: platformDigest,
         toolchainSHA256: toolchainDigest,
         firmwareCodeSHA256: firmwareDigest
       )
     )
     let manifest = try DoryFirmwareArtifactManifest(
+      platform: input.platform,
       buildIdentifier: input.buildIdentifier,
       source: input.source,
       sourceDateEpoch: input.sourceDateEpoch,
@@ -151,6 +156,7 @@ private struct CycloneDXSBOM: Encodable {
     sourceDateEpoch: UInt64,
     buildIdentifier: String,
     source: DoryFirmwareSourcePin,
+    platform: DoryFirmwarePlatform,
     platformConfigurationSHA256: String,
     toolchainSHA256: String,
     firmwareCodeSHA256: String
@@ -161,13 +167,13 @@ private struct CycloneDXSBOM: Encodable {
       ),
       component: Component(
         type: "firmware",
-        name: "DoryARMVirt",
+        name: platform.sbomComponentName,
         version: buildIdentifier,
         hashes: [.init(alg: "SHA-256", content: firmwareCodeSHA256)],
         externalReferences: nil,
         properties: [
-          .init(name: "dory:firmware-abi", value: "dory.edk2.armvirt@1"),
-          .init(name: "dory:machine-abi", value: "dory.armvirt@1"),
+          .init(name: "dory:firmware-abi", value: platform.firmwareABIIdentity),
+          .init(name: "dory:machine-abi", value: platform.machineABIIdentity),
         ]
       )
     )
@@ -184,7 +190,7 @@ private struct CycloneDXSBOM: Encodable {
       ),
       Component(
         type: "data",
-        name: "DoryARMVirt platform configuration",
+        name: "\(platform.sbomComponentName) platform configuration",
         version: "1",
         hashes: [.init(alg: "SHA-256", content: platformConfigurationSHA256)],
         externalReferences: nil,

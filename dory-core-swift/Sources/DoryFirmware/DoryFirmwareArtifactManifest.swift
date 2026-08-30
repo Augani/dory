@@ -1,10 +1,72 @@
 import CryptoKit
 import DoryMachineARMVirt
+import DoryMachinePC
 import Foundation
 
 public enum DoryFirmwareSecureBootPolicy: String, Codable, CaseIterable, Sendable, Hashable {
   case disabled
   case userManagedKeys = "user-managed-keys"
+}
+
+public enum DoryFirmwarePlatform: String, Codable, CaseIterable, Sendable, Hashable {
+  case armVirtV1 = "dory-armvirt-v1"
+  case pcV1 = "dory-pc-v1"
+
+  public var machineABIIdentity: String {
+    switch self {
+    case .armVirtV1: DoryARMVirtV1ABI.identity
+    case .pcV1: DoryPCV1ABI.identity
+    }
+  }
+
+  public var firmwareABIIdentity: String {
+    switch self {
+    case .armVirtV1: DoryARMVirtV1ABI.firmwareABIIdentity
+    case .pcV1: DoryPCV1ABI.firmwareABIIdentity
+    }
+  }
+
+  public var variableStoreFormatIdentity: String {
+    switch self {
+    case .armVirtV1: DoryARMVirtV1ABI.variableStoreFormatIdentity
+    case .pcV1: DoryPCV1ABI.variableStoreFormatIdentity
+    }
+  }
+
+  public var variableBridgeIdentity: String {
+    switch self {
+    case .armVirtV1: "dory.uefi.variable-bridge.armvirt@1"
+    case .pcV1: DoryPCV1ABI.variableBridgeIdentity
+    }
+  }
+
+  public var maximumFirmwareCodeBytes: UInt64 {
+    switch self {
+    case .armVirtV1: DoryARMVirtV1ABI.firmwareCodeBytes
+    case .pcV1: DoryPCV1ABI.firmwareCodeBytes
+    }
+  }
+
+  public var sbomComponentName: String {
+    switch self {
+    case .armVirtV1: "DoryARMVirt"
+    case .pcV1: "DoryPC"
+    }
+  }
+
+  fileprivate static func resolve(
+    firmwareABIIdentity: String,
+    machineABIIdentity: String,
+    variableStoreFormatIdentity: String,
+    variableBridgeIdentity: String
+  ) -> Self? {
+    allCases.first {
+      $0.firmwareABIIdentity == firmwareABIIdentity
+        && $0.machineABIIdentity == machineABIIdentity
+        && $0.variableStoreFormatIdentity == variableStoreFormatIdentity
+        && $0.variableBridgeIdentity == variableBridgeIdentity
+    }
+  }
 }
 
 public struct DoryFirmwareSourcePin: Codable, Sendable, Hashable {
@@ -45,9 +107,10 @@ public struct DoryFirmwareSourcePin: Codable, Sendable, Hashable {
   }
 
   fileprivate static func isLowercaseHex(_ value: String, count: Int) -> Bool {
-    value.utf8.count == count && value.utf8.allSatisfy {
-      (48...57).contains($0) || (97...102).contains($0)
-    }
+    value.utf8.count == count
+      && value.utf8.allSatisfy {
+        (48...57).contains($0) || (97...102).contains($0)
+      }
   }
 }
 
@@ -74,6 +137,7 @@ public struct DoryFirmwareArtifactManifest: Codable, Sendable, Hashable {
   public let reproducible: Bool
 
   public init(
+    platform: DoryFirmwarePlatform = .armVirtV1,
     buildIdentifier: String,
     source: DoryFirmwareSourcePin,
     sourceDateEpoch: UInt64,
@@ -89,10 +153,10 @@ public struct DoryFirmwareArtifactManifest: Codable, Sendable, Hashable {
   ) throws {
     try self.init(
       schemaVersion: Self.schemaVersion,
-      firmwareABIIdentity: DoryARMVirtV1ABI.firmwareABIIdentity,
-      machineABIIdentity: DoryARMVirtV1ABI.identity,
-      variableStoreFormatIdentity: DoryARMVirtV1ABI.variableStoreFormatIdentity,
-      variableBridgeIdentity: Self.variableBridgeIdentity,
+      firmwareABIIdentity: platform.firmwareABIIdentity,
+      machineABIIdentity: platform.machineABIIdentity,
+      variableStoreFormatIdentity: platform.variableStoreFormatIdentity,
+      variableBridgeIdentity: platform.variableBridgeIdentity,
       buildIdentifier: buildIdentifier,
       source: source,
       sourceDateEpoch: sourceDateEpoch,
@@ -130,16 +194,18 @@ public struct DoryFirmwareArtifactManifest: Codable, Sendable, Hashable {
     guard schemaVersion == Self.schemaVersion else {
       throw DoryFirmwareManifestError.unsupportedSchemaVersion(schemaVersion)
     }
-    guard firmwareABIIdentity == DoryARMVirtV1ABI.firmwareABIIdentity else {
-      throw DoryFirmwareManifestError.incompatibleFirmwareABI(firmwareABIIdentity)
-    }
-    guard machineABIIdentity == DoryARMVirtV1ABI.identity else {
+    guard
+      let platform = DoryFirmwarePlatform.allCases.first(where: {
+        $0.firmwareABIIdentity == firmwareABIIdentity
+      })
+    else { throw DoryFirmwareManifestError.incompatibleFirmwareABI(firmwareABIIdentity) }
+    guard machineABIIdentity == platform.machineABIIdentity else {
       throw DoryFirmwareManifestError.incompatibleMachineABI(machineABIIdentity)
     }
-    guard variableStoreFormatIdentity == DoryARMVirtV1ABI.variableStoreFormatIdentity else {
+    guard variableStoreFormatIdentity == platform.variableStoreFormatIdentity else {
       throw DoryFirmwareManifestError.incompatibleVariableStore(variableStoreFormatIdentity)
     }
-    guard variableBridgeIdentity == Self.variableBridgeIdentity else {
+    guard variableBridgeIdentity == platform.variableBridgeIdentity else {
       throw DoryFirmwareManifestError.incompatibleVariableBridge(variableBridgeIdentity)
     }
     guard Self.isSafeBuildIdentifier(buildIdentifier) else {
@@ -158,7 +224,7 @@ public struct DoryFirmwareArtifactManifest: Codable, Sendable, Hashable {
       throw DoryFirmwareManifestError.invalidSHA256(name: name, value: digest)
     }
     guard firmwareCodeByteCount > 0,
-      firmwareCodeByteCount <= DoryARMVirtV1ABI.firmwareCodeBytes,
+      firmwareCodeByteCount <= platform.maximumFirmwareCodeBytes,
       firmwareCodeByteCount % 4_096 == 0
     else {
       throw DoryFirmwareManifestError.invalidArtifactSize(
@@ -219,6 +285,15 @@ public struct DoryFirmwareArtifactManifest: Codable, Sendable, Hashable {
     )
   }
 
+  public var platform: DoryFirmwarePlatform {
+    DoryFirmwarePlatform.resolve(
+      firmwareABIIdentity: firmwareABIIdentity,
+      machineABIIdentity: machineABIIdentity,
+      variableStoreFormatIdentity: variableStoreFormatIdentity,
+      variableBridgeIdentity: variableBridgeIdentity
+    )!
+  }
+
   private enum CodingKeys: String, CodingKey, CaseIterable {
     case schemaVersion, firmwareABIIdentity, machineABIIdentity
     case variableStoreFormatIdentity, variableBridgeIdentity, buildIdentifier, source
@@ -263,7 +338,8 @@ public struct DoryFirmwareArtifactManifest: Codable, Sendable, Hashable {
         forKey: .variableStoreTemplateByteCount
       ),
       sbomSHA256: container.decode(String.self, forKey: .sbomSHA256),
-      secureBootPolicy: container.decode(DoryFirmwareSecureBootPolicy.self, forKey: .secureBootPolicy),
+      secureBootPolicy: container.decode(
+        DoryFirmwareSecureBootPolicy.self, forKey: .secureBootPolicy),
       reproducible: container.decode(Bool.self, forKey: .reproducible)
     )
   }
@@ -293,10 +369,11 @@ public struct DoryFirmwareArtifactManifest: Codable, Sendable, Hashable {
 
   private static func isSafeBuildIdentifier(_ value: String) -> Bool {
     let bytes = Array(value.utf8)
-    return (1...128).contains(bytes.count) && bytes.allSatisfy {
-      (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0)
-        || $0 == 45 || $0 == 46 || $0 == 64 || $0 == 95
-    }
+    return (1...128).contains(bytes.count)
+      && bytes.allSatisfy {
+        (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0)
+          || $0 == 45 || $0 == 46 || $0 == 64 || $0 == 95
+      }
   }
 }
 
