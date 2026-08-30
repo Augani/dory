@@ -143,3 +143,13 @@ It reads 32 bytes from VirtIO RNG and binds the guest-visible MAC before
 emitting `DORY_DEVICE_BASELINE_READY`. This is the minimum generic-device gate;
 desktop display, input, sound, camera, USB, sharing, and clipboard remain
 separate physical/device-matrix qualifications.
+
+`debian-13.6-installer-boot.json` is the first independent distribution-family
+cell. It admits Debian's official `debian-13.6.0-arm64-netinst.iso` unchanged,
+selects the stock text installer from its own GRUB menu, and requires the
+installer's `Select a language` screen. The qualified image is 735,358,976
+bytes with SHA-256
+`ffa590beb3ae9158c354e00ebc4bf45421f4720bb3a8ddf2db3cbfc0374cf480`;
+the digest must match Debian's signed `SHA256SUMS` before the private local file
+is passed to the runner. Run this gate with
+`--expect "Select a language"` and an 8 GiB system disk.

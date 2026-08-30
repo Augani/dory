@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "steps": [
+    {
+      "waitFor": "*Install",
+      "send": "\n"
+    }
+  ]
+}
