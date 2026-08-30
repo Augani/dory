@@ -10,6 +10,7 @@ let package = Package(
   platforms: [.macOS(.v14)],
   products: [
     .library(name: "DoryExecutionContracts", targets: ["DoryExecutionContracts"]),
+    .library(name: "DoryMachineARMVirt", targets: ["DoryMachineARMVirt"]),
     .library(name: "DoryNativeHVArm64", targets: ["DoryNativeHVArm64"]),
     .library(name: "DoryVMContracts", targets: ["DoryVMContracts"]),
     .library(
@@ -40,6 +41,10 @@ let package = Package(
     .target(
       name: "DoryExecutionContracts",
       dependencies: []
+    ),
+    .target(
+      name: "DoryMachineARMVirt",
+      dependencies: ["DoryExecutionContracts"]
     ),
     .target(
       name: "DoryNativeHVArm64",
@@ -148,6 +153,10 @@ let package = Package(
     .testTarget(
       name: "DoryExecutionContractsTests",
       dependencies: ["DoryExecutionContracts"]
+    ),
+    .testTarget(
+      name: "DoryMachineARMVirtTests",
+      dependencies: ["DoryMachineARMVirt"]
     ),
     .testTarget(
       name: "DoryNativeHVArm64Tests",
