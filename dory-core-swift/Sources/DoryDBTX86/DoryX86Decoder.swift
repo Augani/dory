@@ -682,6 +682,37 @@ public struct DoryX86Decoder: Sendable {
           source: vectorOperand(operands.rm),
           quiet: second == 0x2E
         )
+      case 0x2A:
+        guard !prefixes.operandSizeOverride,
+          prefixes.repeatPrefix == 0xF2 || prefixes.repeatPrefix == 0xF3
+        else {
+          throw DoryX86DecodeError.invalidEncoding(
+            address: address, detail: "CVTSI2SS/CVTSI2SD requires F3 or F2 prefix")
+        }
+        let integerWidth: DoryX86OperandWidth = prefixes.rex?.w == true ? .quadword : .doubleword
+        let operands = try decodeModRM(
+          cursor: &cursor, width: integerWidth, prefixes: prefixes, mode: mode)
+        operation = .convertIntegerToScalarFloat(
+          format: prefixes.repeatPrefix == 0xF3 ? .scalarSingle : .scalarDouble,
+          destination: vectorRegister(operands.reg),
+          source: operands.rm
+        )
+      case 0x2C, 0x2D:
+        guard !prefixes.operandSizeOverride,
+          prefixes.repeatPrefix == 0xF2 || prefixes.repeatPrefix == 0xF3
+        else {
+          throw DoryX86DecodeError.invalidEncoding(
+            address: address, detail: "scalar floating integer conversion requires F3 or F2 prefix")
+        }
+        let integerWidth: DoryX86OperandWidth = prefixes.rex?.w == true ? .quadword : .doubleword
+        let operands = try decodeModRM(
+          cursor: &cursor, width: integerWidth, prefixes: prefixes, mode: mode)
+        operation = .convertScalarFloatToInteger(
+          format: prefixes.repeatPrefix == 0xF3 ? .scalarSingle : .scalarDouble,
+          destination: operands.reg,
+          source: vectorOperand(operands.rm),
+          truncate: second == 0x2C
+        )
       case 0x54...0x57, 0xDB, 0xDF, 0xEB, 0xEF:
         let packedInteger = second == 0xDB || second == 0xDF || second == 0xEB || second == 0xEF
         guard prefixes.repeatPrefix == nil,

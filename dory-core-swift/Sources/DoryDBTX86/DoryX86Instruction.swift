@@ -279,6 +279,17 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
     source: DoryX86VectorOperand,
     control: UInt8
   )
+  case convertIntegerToScalarFloat(
+    format: DoryX86VectorFloatingFormat,
+    destination: UInt8,
+    source: DoryX86Operand
+  )
+  case convertScalarFloatToInteger(
+    format: DoryX86VectorFloatingFormat,
+    destination: DoryX86Operand,
+    source: DoryX86VectorOperand,
+    truncate: Bool
+  )
   case processorPause
   case string(DoryX86StringOperation, width: DoryX86OperandWidth)
   case input(port: DoryX86IOPort, width: DoryX86OperandWidth)

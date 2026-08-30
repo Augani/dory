@@ -791,6 +791,53 @@ public struct DoryX86Interpreter: Sendable {
         )
         state.floatingPoint.ymm[Int(destination)] = try .init(
           bytes: registerBytes, expectedByteCount: 32)
+      case .convertIntegerToScalarFloat(let format, let destination, let source):
+        let width = operandWidth(source)
+        let raw = try read(
+          source, instruction: instruction, state: state, memory: executionMemory)
+        let integer = signExtendedInt64(raw, width: width)
+        var registerBytes = state.floatingPoint.ymm[Int(destination)].bytes
+        if format == .scalarSingle {
+          replaceLittleEndian(Float(integer).bitPattern, in: &registerBytes, at: 0)
+        } else {
+          replaceLittleEndian(Double(integer).bitPattern, in: &registerBytes, at: 0)
+        }
+        state.floatingPoint.ymm[Int(destination)] = try .init(
+          bytes: registerBytes, expectedByteCount: 32)
+      case .convertScalarFloatToInteger(
+        let format, let destination, let source, let truncate):
+        let byteCount = format == .scalarDouble ? 8 : 4
+        let bytes = try readVectorBytes(
+          source,
+          byteCount: byteCount,
+          instruction: instruction,
+          state: state,
+          memory: executionMemory
+        )
+        let width = operandWidth(destination)
+        let value: UInt64
+        if format == .scalarDouble {
+          value = floatingIntegerResult(
+            Double(bitPattern: fromLittleEndian(bytes)),
+            width: width,
+            truncate: truncate,
+            mxcsr: state.floatingPoint.mxcsr
+          )
+        } else {
+          value = floatingIntegerResult(
+            Float(bitPattern: UInt32(fromLittleEndian(bytes))),
+            width: width,
+            truncate: truncate,
+            mxcsr: state.floatingPoint.mxcsr
+          )
+        }
+        try write(
+          value,
+          to: destination,
+          instruction: instruction,
+          state: &state,
+          memory: executionMemory
+        )
       case .processorPause:
         break
       case .string(let operation, let width):
@@ -1669,6 +1716,38 @@ public struct DoryX86Interpreter: Sendable {
       return Array(lhs[lhsLane * 8..<lhsLane * 8 + 8])
         + Array(rhs[rhsLane * 8..<rhsLane * 8 + 8])
     }
+  }
+
+  private func floatingIntegerResult<T: BinaryFloatingPoint>(
+    _ value: T,
+    width: DoryX86OperandWidth,
+    truncate: Bool,
+    mxcsr: UInt32
+  ) -> UInt64 {
+    precondition(width == .doubleword || width == .quadword)
+    let rule: FloatingPointRoundingRule =
+      if truncate {
+        .towardZero
+      } else {
+        switch (mxcsr >> 13) & 3 {
+        case 0: .toNearestOrEven
+        case 1: .down
+        case 2: .up
+        default: .towardZero
+        }
+      }
+    let rounded = value.rounded(rule)
+    let roundedDouble = Double(rounded)
+    let lower = width == .doubleword ? -2_147_483_648.0 : -9_223_372_036_854_775_808.0
+    let upper = width == .doubleword ? 2_147_483_648.0 : 9_223_372_036_854_775_808.0
+    guard roundedDouble.isFinite, roundedDouble >= lower, roundedDouble < upper else {
+      return width == .doubleword ? 0x8000_0000 : 0x8000_0000_0000_0000
+    }
+    let signed = Int64(roundedDouble)
+    if width == .doubleword {
+      return UInt64(UInt32(bitPattern: Int32(truncatingIfNeeded: signed)))
+    }
+    return UInt64(bitPattern: signed)
   }
 
   private func currentPrivilegeLevel(_ state: DoryX86ArchitecturalState) -> UInt8 {

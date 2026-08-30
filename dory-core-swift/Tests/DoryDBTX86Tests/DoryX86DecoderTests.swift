@@ -605,5 +605,22 @@ import Testing
         == .vectorShuffle(
           format: .packedDoublewords, destination: 0, source: .register(1), control: 0x1B)
     )
+    #expect(
+      try decoder.decode([0xF2, 0x48, 0x0F, 0x2A, 0xC1], at: 0x1000, mode: .long64).operation
+        == .convertIntegerToScalarFloat(
+          format: .scalarDouble,
+          destination: 0,
+          source: .register(.rcx, width: .quadword)
+        )
+    )
+    #expect(
+      try decoder.decode([0xF3, 0x0F, 0x2C, 0xC1], at: 0x1000, mode: .long64).operation
+        == .convertScalarFloatToInteger(
+          format: .scalarSingle,
+          destination: .register(.rax, width: .doubleword),
+          source: .register(1),
+          truncate: true
+        )
+    )
   }
 }

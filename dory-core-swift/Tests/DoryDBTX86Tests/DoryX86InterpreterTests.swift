@@ -713,6 +713,41 @@ import Testing
     #expect(Array(state.floatingPoint.ymm[0].bytes[8..<16]) == Array(0x40..<0x48))
   }
 
+  @Test func sseScalarIntegerConversionsHonorWidthRoundingAndIndefiniteResults() throws {
+    let memory = DoryX86ByteArrayMemory(
+      baseAddress: 0x1000,
+      bytes: [
+        0xF2, 0x48, 0x0F, 0x2A, 0xC0,
+        0xF2, 0x48, 0x0F, 0x2C, 0xC8,
+        0xF3, 0x0F, 0x2D, 0xD0,
+        0xF3, 0x0F, 0x2D, 0xD8,
+        0xF2, 0x48, 0x0F, 0x2C, 0xD0,
+      ] + .init(repeating: 0, count: 16)
+    )
+    var state = try DoryX86ArchitecturalState(registers: .init(rax: 42), rip: 0x1000)
+
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    let doubleBits = try memoryInteger(bytes: Array(state.floatingPoint.ymm[0].bytes[0..<8]))
+    #expect(Double(bitPattern: doubleBits) == 42)
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    #expect(state.registers.rcx == 42)
+
+    var scalar = state.floatingPoint.ymm[0].bytes
+    scalar.replaceSubrange(0..<4, with: littleEndian(UInt64(Float(2.75).bitPattern)).prefix(4))
+    state.floatingPoint.ymm[0] = try .init(bytes: scalar, expectedByteCount: 32)
+    state.floatingPoint.mxcsr = (state.floatingPoint.mxcsr & ~(3 << 13)) | (1 << 13)
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    #expect(state.registers.rdx == 2)
+    state.floatingPoint.mxcsr = (state.floatingPoint.mxcsr & ~(3 << 13)) | (2 << 13)
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    #expect(state.registers.rbx == 3)
+
+    scalar.replaceSubrange(0..<8, with: littleEndian(Double.nan.bitPattern))
+    state.floatingPoint.ymm[0] = try .init(bytes: scalar, expectedByteCount: 32)
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    #expect(state.registers.rdx == 0x8000_0000_0000_0000)
+  }
+
   @Test func byteExtendMoveUsesTheWideModRMDestinationRegister() throws {
     var bytes = [UInt8](repeating: 0, count: 0x20)
     bytes.replaceSubrange(0..<4, with: [0x0F, 0xB6, 0x71, 0x02])
