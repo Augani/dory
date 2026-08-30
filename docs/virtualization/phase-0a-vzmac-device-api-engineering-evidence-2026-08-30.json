@@ -1,0 +1,54 @@
+{
+  "schema": "dory.phase0a.vzmac-device-api-engineering-evidence@1",
+  "verdict": "blocked-required-public-device-paths-absent",
+  "collectedAt": "2026-08-30T11:43:00Z",
+  "toolchain": {
+    "xcodeVersion": "26.6",
+    "xcodeBuild": "17F109",
+    "sdkVersion": "26.5"
+  },
+  "host": {
+    "architecture": "arm64",
+    "hardwareModel": "Mac14,10",
+    "productVersion": "27.0",
+    "buildVersion": "26A5421a"
+  },
+  "candidate": {
+    "sha256": "5f19855af341da7b8810341b1440bd48fc6082b0d32f8ef8c2823b5cd0101e26",
+    "sourceSHA256": "d737061d82a63a7ae8e52b712802d2bb4287e5ce8ca6dad66258cdc5fb7a86e1",
+    "runtimeReceiptSHA256": "3e74ba0e3d736bc7d32a002099e5af37689344d51199fc7402e49ae28ba6943a",
+    "hardenedRuntime": true,
+    "teamIdentifier": "864H636QW4",
+    "signingAuthority": "Developer ID Application: Augustus Otu (864H636QW4)",
+    "notarization": "not-submitted-engineering-probe"
+  },
+  "constructedPublicDevices": {
+    "configuredGuestDisplayCount": 1,
+    "macGraphicsDisplay": true,
+    "macKeyboard": true,
+    "macTrackpad": true,
+    "hostAudioInput": true,
+    "hostAudioOutput": true,
+    "xhciController": true
+  },
+  "publicSDKBoundary": {
+    "physicalUSBPassthroughDeclared": false,
+    "cameraInjectionDeclared": false,
+    "runtimeClassPresence": {
+      "VZUSBPassthroughDevice": true,
+      "VZUSBPassthroughDeviceConfiguration": true,
+      "VZCameraDevice": false,
+      "VZCameraDeviceConfiguration": false,
+      "VZMacCameraDeviceConfiguration": false
+    }
+  },
+  "releaseGateClosed": false,
+  "openRequirements": [
+    "final public camera path",
+    "final public physical-USB passthrough path",
+    "restore-image-backed running-guest data-flow qualification",
+    "TCC permission and revocation qualification",
+    "release signing and notarization",
+    "frozen minimum-host and physical-host matrix"
+  ]
+}

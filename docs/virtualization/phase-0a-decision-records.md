@@ -369,7 +369,10 @@ The following must remain visibly open until evidence is attached:
 2. Release-signed/notarized JIT entitlement and callback-allowlist proof (ADR-008).
 3. Release-signed VZMac graphics, input, audio, camera, and USB feasibility probes on every minimum
    host OS; SDK 27.0 still states that `VZMacGraphicsDeviceConfiguration.displays` supports at most
-   one display, while `VZUSBPassthroughDeviceConfiguration` is available from macOS 27.0.
+   one display, while `VZUSBPassthroughDeviceConfiguration` is available from macOS 27.0. The
+   2026-08-30 engineering probe built with Xcode 26.6/macOS SDK 26.5 constructs the documented
+   graphics, input, audio, and XHCI configurations but finds no public camera or physical-USB
+   declaration. Runtime-only USB class presence is not API authority, so this gate remains open.
 4. Frozen low/mid/high physical Apple-silicon lab inventory and baseline evidence (ADR-017).
 5. Named staffing, paired ownership, release authority, and regression-ledger approvers beyond role
    assignments in the program manifest.
