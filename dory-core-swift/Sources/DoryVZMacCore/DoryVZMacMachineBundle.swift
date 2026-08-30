@@ -361,6 +361,8 @@ public struct DoryVZMacMachineBundle: Sendable {
         guard !FileManager.default.fileExists(atPath: destination.path) else {
             throw DoryVZMacMachineBundleError.destinationExists(destination.path)
         }
+        let sourceLease = try DoryVZMacMachineLease(rootURL: rootURL)
+        defer { withExtendedLifetime(sourceLease) {} }
         let parent = destination.deletingLastPathComponent()
         let staging = parent.appendingPathComponent(
             ".\(destination.lastPathComponent).cloning-\(UUID().uuidString)",

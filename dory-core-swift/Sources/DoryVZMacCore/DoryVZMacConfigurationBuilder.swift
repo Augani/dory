@@ -108,6 +108,7 @@ public enum DoryVZMacConfigurationBuilder {
 @MainActor
 public final class DoryVZMacRuntime {
     public private(set) var bundle: DoryVZMacMachineBundle
+    private let machineLease: DoryVZMacMachineLease
     public let configuration: VZVirtualMachineConfiguration
     public let virtualMachine: VZVirtualMachine
     public let cameraBridge: DoryVZMacCameraBridge
@@ -119,6 +120,7 @@ public final class DoryVZMacRuntime {
         log: @escaping @Sendable (String) -> Void = { _ in }
     ) throws {
         self.bundle = bundle
+        machineLease = try DoryVZMacMachineLease(rootURL: bundle.rootURL)
         let configuration = try DoryVZMacConfigurationBuilder.makeConfiguration(
             for: bundle,
             sharedDirectories: sharedDirectories
