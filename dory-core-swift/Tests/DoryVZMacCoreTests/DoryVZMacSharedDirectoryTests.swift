@@ -28,4 +28,29 @@ final class DoryVZMacSharedDirectoryTests: XCTestCase {
             )
         )
     }
+
+    func testConfigurationFingerprintChangesWithSharePolicy() throws {
+        let readOnly = try DoryVZMacSharedDirectory(
+            name: "Dory Guest Tools",
+            url: FileManager.default.temporaryDirectory,
+            readOnly: true
+        )
+        let readWrite = try DoryVZMacSharedDirectory(
+            name: "Dory Guest Tools",
+            url: FileManager.default.temporaryDirectory,
+            readOnly: false
+        )
+        let first = try DoryVZMacConfigurationBuilder.fingerprint(
+            sharedDirectories: [readOnly]
+        )
+        XCTAssertEqual(first.count, 64)
+        XCTAssertEqual(
+            first,
+            try DoryVZMacConfigurationBuilder.fingerprint(sharedDirectories: [readOnly])
+        )
+        XCTAssertNotEqual(
+            first,
+            try DoryVZMacConfigurationBuilder.fingerprint(sharedDirectories: [readWrite])
+        )
+    }
 }

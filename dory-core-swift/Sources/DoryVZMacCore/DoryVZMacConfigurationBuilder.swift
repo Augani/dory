@@ -1,5 +1,6 @@
 import DoryHostCamera
 import DoryVZMacCameraBridge
+import CryptoKit
 import Foundation
 import Virtualization
 
@@ -18,6 +19,55 @@ public enum DoryVZMacConfigurationError: Error, Sendable, CustomStringConvertibl
 }
 
 public enum DoryVZMacConfigurationBuilder {
+    public static func fingerprint(
+        sharedDirectories: [DoryVZMacSharedDirectory] = []
+    ) throws -> String {
+        struct SharedDirectory: Codable {
+            let name: String
+            let path: String
+            let readOnly: Bool
+        }
+        struct Descriptor: Codable {
+            let schema: String
+            let display: String
+            let network: String
+            let audio: String
+            let input: String
+            let entropy: String
+            let cameraSocketPort: UInt32
+            let clipboard: String
+            let xhciEnabled: Bool
+            let sharedDirectories: [SharedDirectory]
+        }
+        let descriptor = Descriptor(
+            schema: "dory.vzmac-configuration@1",
+            display: "1920x1080@144ppi-auto-resize",
+            network: "virtio-nat",
+            audio: "virtio-host-input-output",
+            input: "mac-keyboard-trackpad",
+            entropy: "virtio",
+            cameraSocketPort: 1_030,
+            clipboard: "spice-bidirectional",
+            xhciEnabled: ProcessInfo.processInfo.isOperatingSystemAtLeast(
+                OperatingSystemVersion(majorVersion: 15, minorVersion: 0, patchVersion: 0)
+            ),
+            sharedDirectories: sharedDirectories
+                .sorted { $0.name < $1.name }
+                .map {
+                    SharedDirectory(
+                        name: $0.name,
+                        path: $0.url.path,
+                        readOnly: $0.readOnly
+                    )
+                }
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        return SHA256.hash(data: try encoder.encode(descriptor))
+            .map { String(format: "%02x", $0) }
+            .joined()
+    }
+
     public static func makeConfiguration(
         for bundle: DoryVZMacMachineBundle,
         sharedDirectories: [DoryVZMacSharedDirectory] = []
@@ -112,6 +162,7 @@ public final class DoryVZMacRuntime {
     public let configuration: VZVirtualMachineConfiguration
     public let virtualMachine: VZVirtualMachine
     public let cameraBridge: DoryVZMacCameraBridge
+    public let configurationSHA256: String
 
     public init(
         bundle: DoryVZMacMachineBundle,
@@ -126,6 +177,9 @@ public final class DoryVZMacRuntime {
             sharedDirectories: sharedDirectories
         )
         self.configuration = configuration
+        configurationSHA256 = try DoryVZMacConfigurationBuilder.fingerprint(
+            sharedDirectories: sharedDirectories
+        )
         virtualMachine = VZVirtualMachine(configuration: configuration)
         cameraBridge = DoryVZMacCameraBridge(
             camera: camera ?? DoryMacCameraBackend(log: log),
@@ -245,7 +299,11 @@ public final class DoryVZMacRuntime {
             )
             let stateURL = staging.appendingPathComponent(DoryVZMacSavedStateArtifact.stateName)
             try await virtualMachine.saveMachineStateTo(url: stateURL)
-            let receipt = try makeSavedStateReceipt(stateURL: stateURL, bundle: bundle)
+            let receipt = try makeSavedStateReceipt(
+                stateURL: stateURL,
+                bundle: bundle,
+                configurationSHA256: configurationSHA256
+            )
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
             try encoder.encode(receipt).write(
@@ -282,7 +340,8 @@ public final class DoryVZMacRuntime {
         }
         let artifact = try DoryVZMacSavedStateArtifact.load(
             from: bundle.suspendedStateURL,
-            for: bundle
+            for: bundle,
+            expectedConfigurationSHA256: configurationSHA256
         )
         bundle = try bundle.updatingInstallationState(.restoring)
         do {

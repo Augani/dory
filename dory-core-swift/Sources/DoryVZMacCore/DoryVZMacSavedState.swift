@@ -26,7 +26,7 @@ public enum DoryVZMacSavedStateError: Error, Sendable, Equatable, CustomStringCo
 }
 
 public struct DoryVZMacSavedStateReceipt: Codable, Sendable, Equatable {
-    public static let schema = "dory.vzmac-saved-state@1"
+    public static let schema = "dory.vzmac-saved-state@2"
 
     public let schema: String
     public let createdAt: String
@@ -35,6 +35,7 @@ public struct DoryVZMacSavedStateReceipt: Codable, Sendable, Equatable {
     public let hostBuildVersion: String
     public let hardwareModelSHA256: String
     public let machineIdentifierSHA256: String
+    public let configurationSHA256: String
     public let stateBytes: UInt64
     public let stateSHA256: String
 
@@ -46,6 +47,7 @@ public struct DoryVZMacSavedStateReceipt: Codable, Sendable, Equatable {
         hostBuildVersion: String,
         hardwareModelSHA256: String,
         machineIdentifierSHA256: String,
+        configurationSHA256: String,
         stateBytes: UInt64,
         stateSHA256: String
     ) {
@@ -56,6 +58,7 @@ public struct DoryVZMacSavedStateReceipt: Codable, Sendable, Equatable {
         self.hostBuildVersion = hostBuildVersion
         self.hardwareModelSHA256 = hardwareModelSHA256
         self.machineIdentifierSHA256 = machineIdentifierSHA256
+        self.configurationSHA256 = configurationSHA256
         self.stateBytes = stateBytes
         self.stateSHA256 = stateSHA256
     }
@@ -72,6 +75,7 @@ public struct DoryVZMacSavedStateReceipt: Codable, Sendable, Equatable {
             hostIdentifierSHA256,
             hardwareModelSHA256,
             machineIdentifierSHA256,
+            configurationSHA256,
             stateSHA256,
         ] {
             guard digest.count == 64,
@@ -97,7 +101,8 @@ public struct DoryVZMacSavedStateArtifact: Sendable {
 
     public static func load(
         from rootURL: URL,
-        for bundle: DoryVZMacMachineBundle
+        for bundle: DoryVZMacMachineBundle,
+        expectedConfigurationSHA256: String? = nil
     ) throws -> Self {
         try requireSavedStateDirectory(rootURL)
         let stateURL = rootURL.appendingPathComponent(Self.stateName)
@@ -127,6 +132,12 @@ public struct DoryVZMacSavedStateArtifact: Sendable {
               receipt.machineIdentifierSHA256 == bundle.manifest.machineIdentifierSHA256 else {
             throw DoryVZMacSavedStateError.machineIdentityMismatch
         }
+        if let expectedConfigurationSHA256,
+           receipt.configurationSHA256 != expectedConfigurationSHA256 {
+            throw DoryVZMacSavedStateError.invalidArtifact(
+                "runtime configuration differs from the saved state"
+            )
+        }
         let stateAttributes = try FileManager.default.attributesOfItem(atPath: stateURL.path)
         guard let stateBytes = stateAttributes[.size] as? NSNumber,
               stateBytes.uint64Value == receipt.stateBytes,
@@ -139,7 +150,8 @@ public struct DoryVZMacSavedStateArtifact: Sendable {
 
 func makeSavedStateReceipt(
     stateURL: URL,
-    bundle: DoryVZMacMachineBundle
+    bundle: DoryVZMacMachineBundle,
+    configurationSHA256: String
 ) throws -> DoryVZMacSavedStateReceipt {
     let attributes = try FileManager.default.attributesOfItem(atPath: stateURL.path)
     guard let stateBytes = attributes[.size] as? NSNumber, stateBytes.uint64Value > 0 else {
@@ -153,6 +165,7 @@ func makeSavedStateReceipt(
         hostBuildVersion: hostBuildVersion(),
         hardwareModelSHA256: bundle.manifest.hardwareModelSHA256,
         machineIdentifierSHA256: bundle.manifest.machineIdentifierSHA256,
+        configurationSHA256: configurationSHA256,
         stateBytes: stateBytes.uint64Value,
         stateSHA256: try savedStateSHA256(of: stateURL)
     )

@@ -20,15 +20,31 @@ final class DoryVZMacSavedStateTests: XCTestCase {
             rootURL: temporaryRoot,
             manifest: try manifest()
         )
-        let receipt = try makeSavedStateReceipt(stateURL: stateURL, bundle: bundle)
+        let configurationSHA256 = String(repeating: "d", count: 64)
+        let receipt = try makeSavedStateReceipt(
+            stateURL: stateURL,
+            bundle: bundle,
+            configurationSHA256: configurationSHA256
+        )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(receipt).write(
             to: artifactRoot.appendingPathComponent(DoryVZMacSavedStateArtifact.receiptName)
         )
 
-        let loaded = try DoryVZMacSavedStateArtifact.load(from: artifactRoot, for: bundle)
+        let loaded = try DoryVZMacSavedStateArtifact.load(
+            from: artifactRoot,
+            for: bundle,
+            expectedConfigurationSHA256: configurationSHA256
+        )
         XCTAssertEqual(loaded.receipt, receipt)
+        XCTAssertThrowsError(
+            try DoryVZMacSavedStateArtifact.load(
+                from: artifactRoot,
+                for: bundle,
+                expectedConfigurationSHA256: String(repeating: "e", count: 64)
+            )
+        )
 
         try Data("saved-state-b".utf8).write(to: stateURL)
         XCTAssertThrowsError(
@@ -39,7 +55,7 @@ final class DoryVZMacSavedStateTests: XCTestCase {
     func testReceiptRejectsUnknownSchemaAndEmptyState() throws {
         let valid = try receipt()
         try valid.validate()
-        XCTAssertThrowsError(try receipt(schema: "dory.vzmac-saved-state@2").validate())
+        XCTAssertThrowsError(try receipt(schema: "dory.vzmac-saved-state@1").validate())
         XCTAssertThrowsError(try receipt(stateBytes: 0).validate())
     }
 
@@ -55,6 +71,7 @@ final class DoryVZMacSavedStateTests: XCTestCase {
             hostBuildVersion: "26A5421a",
             hardwareModelSHA256: String(repeating: "b", count: 64),
             machineIdentifierSHA256: String(repeating: "c", count: 64),
+            configurationSHA256: String(repeating: "d", count: 64),
             stateBytes: stateBytes,
             stateSHA256: String(repeating: "d", count: 64)
         )
