@@ -446,6 +446,8 @@ public struct DoryX86Decoder: Sendable {
         relative: Int64(try cursor.readSigned(byteCount: width == .word ? 2 : 4)))
     case 0xC3:
       operation = .return
+    case 0xC2:
+      operation = .returnAndPop(UInt16(try cursor.readUnsigned(byteCount: 2)))
     case 0xCA, 0xCB:
       operation = .farReturn(
         popBytes: opcode == 0xCA ? UInt16(try cursor.readUnsigned(byteCount: 2)) : 0,
@@ -510,6 +512,8 @@ public struct DoryX86Decoder: Sendable {
         operation = .clearTaskSwitched
       case 0x07:
         operation = .sysret
+      case 0x08, 0x09:
+        operation = .invalidateCaches(writeBack: second == 0x09)
       case 0x00:
         let operands = try decodeModRM(
           cursor: &cursor, width: .word, prefixes: prefixes, mode: mode)
@@ -529,6 +533,12 @@ public struct DoryX86Decoder: Sendable {
           second == 0x20
           ? .readControlRegister(index: operands.control, destination: operands.general)
           : .writeControlRegister(index: operands.control, source: operands.general)
+      case 0x21, 0x23:
+        let operands = try decodeControlRegisterModRM(cursor: &cursor, prefixes: prefixes)
+        operation =
+          second == 0x21
+          ? .readDebugRegister(index: operands.control, destination: operands.general)
+          : .writeDebugRegister(index: operands.control, source: operands.general)
       case 0x30:
         operation = .writeModelSpecificRegister
       case 0x31:
@@ -536,7 +546,13 @@ public struct DoryX86Decoder: Sendable {
       case 0x32:
         operation = .readModelSpecificRegister
       case 0x01:
-        if cursor.peek() == 0xF8 {
+        if cursor.peek() == 0xD0 {
+          _ = try cursor.readByte()
+          operation = .readExtendedControlRegister
+        } else if cursor.peek() == 0xD1 {
+          _ = try cursor.readByte()
+          operation = .writeExtendedControlRegister
+        } else if cursor.peek() == 0xF8 {
           _ = try cursor.readByte()
           guard mode == .long64 else {
             throw DoryX86DecodeError.invalidEncoding(

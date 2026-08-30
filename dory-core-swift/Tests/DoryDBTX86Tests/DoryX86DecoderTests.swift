@@ -120,6 +120,37 @@ import Testing
       try decoder.decode([0x0F, 0x01, 0xF8], at: 0x7000, mode: .long64).operation
         == .swapGS
     )
+    #expect(
+      try decoder.decode([0x0F, 0x21, 0xC0], at: 0x7000, mode: .long64).operation
+        == .readDebugRegister(index: 0, destination: .rax)
+    )
+    #expect(
+      try decoder.decode([0x0F, 0x23, 0xFB], at: 0x7000, mode: .long64).operation
+        == .writeDebugRegister(index: 7, source: .rbx)
+    )
+    #expect(
+      try decoder.decode([0x0F, 0x01, 0xD0], at: 0x7000, mode: .long64).operation
+        == .readExtendedControlRegister
+    )
+    #expect(
+      try decoder.decode([0x0F, 0x01, 0xD1], at: 0x7000, mode: .long64).operation
+        == .writeExtendedControlRegister
+    )
+    #expect(
+      try decoder.decode([0x0F, 0x08], at: 0x7000, mode: .long64).operation
+        == .invalidateCaches(writeBack: false)
+    )
+    #expect(
+      try decoder.decode([0x0F, 0x09], at: 0x7000, mode: .long64).operation
+        == .invalidateCaches(writeBack: true)
+    )
+  }
+
+  @Test func decodesNearReturnWithStackCleanup() throws {
+    #expect(
+      try decoder.decode([0xC2, 0x34, 0x12], at: 0x7100, mode: .long64).operation
+        == .returnAndPop(0x1234)
+    )
   }
 
   @Test func decodesByteRegistersImmediateGroupsAndIndirectControlFlow() throws {

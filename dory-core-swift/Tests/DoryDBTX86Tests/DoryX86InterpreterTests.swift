@@ -57,6 +57,73 @@ import Testing
     #expect(state.rip == 0x2006)
   }
 
+  @Test func returnWithImmediateReleasesCallerArguments() throws {
+    let base: UInt64 = 0x2200
+    let memory = DoryX86ByteArrayMemory(
+      baseAddress: base,
+      bytes: [0xC2, 0x10, 0x00] + .init(repeating: 0, count: 0xFD)
+    )
+    try memory.write(
+      at: base + 0x80,
+      bytes: [0x20, 0x22, 0, 0, 0, 0, 0, 0]
+    )
+    var state = try DoryX86ArchitecturalState(
+      registers: .init(rsp: base + 0x80),
+      rip: base
+    )
+
+    let result = interpreter.step(state: &state, memory: memory, mode: .long64)
+    guard case .retired = result else {
+      Issue.record("RET imm16 unexpectedly faulted: \(result)")
+      return
+    }
+    #expect(state.rip == base + 0x20)
+    #expect(state.registers.rsp == base + 0x98)
+  }
+
+  @Test func executesDebugAndExtendedControlRegisterMaintenance() throws {
+    let profile = DoryX86CPUProfile(
+      identifier: "test.xsave",
+      features: [.xsave, .osxsave],
+      physicalAddressBits: 40,
+      linearAddressBits: 48,
+      virtualTSCFrequencyHz: 1_000_000_000
+    )
+    let interpreter = DoryX86Interpreter(profile: profile)
+    let memory = DoryX86ByteArrayMemory(
+      baseAddress: 0x2400,
+      bytes: [
+        0x0F, 0x23, 0xC0,  // mov dr0, rax
+        0x0F, 0x21, 0xC3,  // mov rbx, dr0
+        0x0F, 0x01, 0xD1,  // xsetbv
+        0x0F, 0x01, 0xD0,  // xgetbv
+        0x0F, 0x09,  // wbinvd
+      ] + .init(repeating: 0, count: 16)
+    )
+    var state = try DoryX86ArchitecturalState(
+      registers: .init(rax: 3),
+      rip: 0x2400,
+      control: .init(cr4: 1 << 18)
+    )
+
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    #expect(state.debug.dr0 == 3)
+    #expect(state.registers.rbx == 3)
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    #expect(state.control.xcr0 == 3)
+    state.registers.rax = 0
+    state.registers.rdx = 0
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    #expect(state.registers.rax == 3)
+    #expect(state.registers.rdx == 0)
+    let result = interpreter.step(state: &state, memory: memory, mode: .long64)
+    guard case .retired = result else {
+      Issue.record("WBINVD unexpectedly faulted: \(result)")
+      return
+    }
+  }
+
   @Test func cpuidCannotAdvertiseUnimplementedAVX() throws {
     let memory = DoryX86ByteArrayMemory(
       baseAddress: 0x3000, bytes: [0x0F, 0xA2] + .init(repeating: 0, count: 16))

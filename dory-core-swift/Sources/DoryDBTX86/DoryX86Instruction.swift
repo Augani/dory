@@ -216,6 +216,7 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
   case call(relative: Int64)
   case callIndirect(DoryX86Operand)
   case `return`
+  case returnAndPop(UInt16)
   case jump(relative: Int64)
   case jumpIndirect(DoryX86Operand)
   case conditionalJump(DoryX86Condition, relative: Int64)
@@ -223,6 +224,11 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
   case cpuid
   case readControlRegister(index: UInt8, destination: DoryX86GeneralRegister)
   case writeControlRegister(index: UInt8, source: DoryX86GeneralRegister)
+  case readDebugRegister(index: UInt8, destination: DoryX86GeneralRegister)
+  case writeDebugRegister(index: UInt8, source: DoryX86GeneralRegister)
+  case readExtendedControlRegister
+  case writeExtendedControlRegister
+  case invalidateCaches(writeBack: Bool)
   case invalidatePage(DoryX86MemoryOperand)
   case readModelSpecificRegister
   case writeModelSpecificRegister

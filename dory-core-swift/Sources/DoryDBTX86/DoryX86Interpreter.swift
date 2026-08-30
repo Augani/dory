@@ -682,6 +682,21 @@ public struct DoryX86Interpreter: Sendable {
           state: &state,
           memory: executionMemory
         )
+      case .returnAndPop(let popBytes):
+        let returnWidth: DoryX86OperandWidth =
+          mode == .long64
+          ? .quadword : (mode == .real16 || mode == .protected16 ? .word : .doubleword)
+        nextRIP = try popStack(
+          width: returnWidth,
+          instruction: instruction,
+          mode: mode,
+          state: &state,
+          memory: executionMemory
+        )
+        let adjustedStack =
+          (stackPointerOffset(mode: mode, state: state) &+ UInt64(popBytes))
+          & mask(stackPointerWidth(mode: mode, state: state))
+        writeStackPointer(adjustedStack, mode: mode, state: &state)
       case .jump(let relative):
         nextRIP = addRelative(nextRIP, relative)
       case .jumpIndirect(let operand):
@@ -737,6 +752,51 @@ public struct DoryX86Interpreter: Sendable {
         else {
           return generalProtection(at: originalRIP)
         }
+      case .readDebugRegister(let index, let destination):
+        guard currentPrivilegeLevel(state) == 0 else {
+          return generalProtection(at: originalRIP)
+        }
+        guard let value = readDebugRegister(index, state: state) else {
+          return invalidOpcode(at: originalRIP)
+        }
+        state.registers[destination] = value
+      case .writeDebugRegister(let index, let source):
+        guard currentPrivilegeLevel(state) == 0 else {
+          return generalProtection(at: originalRIP)
+        }
+        guard writeDebugRegister(index, value: state.registers[source], state: &state) else {
+          return invalidOpcode(at: originalRIP)
+        }
+      case .readExtendedControlRegister:
+        guard profile.supports(.xsave), state.control.cr4 & (1 << 18) != 0 else {
+          return invalidOpcode(at: originalRIP)
+        }
+        guard state.registers.rcx == 0 else { return generalProtection(at: originalRIP) }
+        state.registers.rax = UInt64(UInt32(truncatingIfNeeded: state.control.xcr0))
+        state.registers.rdx = UInt64(UInt32(truncatingIfNeeded: state.control.xcr0 >> 32))
+      case .writeExtendedControlRegister:
+        guard profile.supports(.xsave), state.control.cr4 & (1 << 18) != 0 else {
+          return invalidOpcode(at: originalRIP)
+        }
+        let value =
+          UInt64(UInt32(truncatingIfNeeded: state.registers.rax))
+          | UInt64(UInt32(truncatingIfNeeded: state.registers.rdx)) << 32
+        let supportedMask: UInt64 = profile.supports(.avx) ? 0x7 : 0x3
+        guard currentPrivilegeLevel(state) == 0,
+          state.registers.rcx == 0,
+          value & ~supportedMask == 0,
+          value & 1 == 1,
+          value & 4 == 0 || value & 2 != 0
+        else {
+          return generalProtection(at: originalRIP)
+        }
+        state.control.xcr0 = value
+      case .invalidateCaches:
+        guard currentPrivilegeLevel(state) == 0 else {
+          return generalProtection(at: originalRIP)
+        }
+      // The interpreter has no guest-visible data or instruction cache. Every load and store
+      // already observes coherent memory, so INVD/WBINVD complete after their privilege check.
       case .invalidatePage(let operand):
         guard currentPrivilegeLevel(state) == 0 else {
           return generalProtection(at: originalRIP)
@@ -1196,6 +1256,53 @@ public struct DoryX86Interpreter: Sendable {
     )
   }
 
+  private func invalidOpcode(at instructionPointer: UInt64) -> DoryX86InterpreterResult {
+    .exception(.init(kind: .invalidOpcode, vector: 6, instructionPointer: instructionPointer))
+  }
+
+  private func readDebugRegister(
+    _ index: UInt8,
+    state: DoryX86ArchitecturalState
+  ) -> UInt64? {
+    switch normalizedDebugRegister(index, state: state) {
+    case 0: state.debug.dr0
+    case 1: state.debug.dr1
+    case 2: state.debug.dr2
+    case 3: state.debug.dr3
+    case 6: state.debug.dr6
+    case 7: state.debug.dr7
+    default: nil
+    }
+  }
+
+  private func writeDebugRegister(
+    _ index: UInt8,
+    value: UInt64,
+    state: inout DoryX86ArchitecturalState
+  ) -> Bool {
+    switch normalizedDebugRegister(index, state: state) {
+    case 0: state.debug.dr0 = value
+    case 1: state.debug.dr1 = value
+    case 2: state.debug.dr2 = value
+    case 3: state.debug.dr3 = value
+    case 6: state.debug.dr6 = value
+    case 7: state.debug.dr7 = value | (1 << 10)
+    default: return false
+    }
+    return true
+  }
+
+  private func normalizedDebugRegister(
+    _ index: UInt8,
+    state: DoryX86ArchitecturalState
+  ) -> UInt8? {
+    if index == 4 || index == 5 {
+      guard state.control.cr4 & (1 << 3) == 0 else { return nil }
+      return index + 2
+    }
+    return index
+  }
+
   private func readControlRegister(
     _ index: UInt8,
     state: DoryX86ArchitecturalState
@@ -1255,9 +1362,10 @@ public struct DoryX86Interpreter: Sendable {
       if !noFlush { pagingUnit?.invalidateAll() }
       return true
     case 4:
-      let supportedMask: UInt64 =
+      var supportedMask: UInt64 =
         (1 << 2) | (1 << 3) | (1 << 4) | (1 << 5) | (1 << 6) | (1 << 7) | (1 << 8)
         | (1 << 9) | (1 << 10) | (1 << 17) | (1 << 20) | (1 << 21)
+      if profile.supports(.xsave) { supportedMask |= 1 << 18 }
       guard value & ~supportedMask == 0 else { return false }
       state.control.cr4 = value
       pagingUnit?.invalidateAll()
