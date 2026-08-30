@@ -87,4 +87,41 @@ import Testing
       }
     #endif
   }
+
+  @Test func nativeConditionalBranchesHonorEveryX86ConditionCode() throws {
+    #if arch(arm64)
+      let operands: [(UInt64, UInt64)] = [
+        (0, 0),
+        (0, 1),
+        (1, 0),
+        (0x7FFF_FFFF_FFFF_FFFF, UInt64.max),
+        (0x8000_0000_0000_0000, 1),
+        (0x103, 0x100),
+      ]
+      for rawCondition in UInt8(0)..<UInt8(16) {
+        let condition = DoryX86Condition(rawValue: rawCondition)!
+        for (caseIndex, operand) in operands.enumerated() {
+          let bytes: [UInt8] = [0x48, 0x39, 0xD8, 0x70 | condition.rawValue, 0x05]
+          let address = UInt64(0x5000 + Int(condition.rawValue) * 0x100 + caseIndex * 0x10)
+          let memory = DoryX86ByteArrayMemory(baseAddress: address, bytes: bytes)
+          let state = try DoryX86ArchitecturalState(
+            registers: .init(rax: operand.0, rbx: operand.1),
+            rip: address,
+            cs: .init(selector: 0, attributes: 0xA09A, limit: .max)
+          )
+
+          let result = try DoryX86DifferentialHarness().compare(
+            bytes: bytes,
+            initialState: state,
+            memory: memory,
+            mode: .long64
+          )
+          #expect(
+            result.agrees,
+            "condition \(condition) case \(caseIndex) diverged"
+          )
+        }
+      }
+    #endif
+  }
 }

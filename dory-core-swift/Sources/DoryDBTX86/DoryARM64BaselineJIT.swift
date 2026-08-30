@@ -321,12 +321,106 @@ public struct DoryARM64BaselineEmitter: Sendable {
         case .portIO: .portIO
         case .interpreter, .indirectControl, .instructionBudget: .interpreter
         }
-    case .conditional:
-      return nil
+    case .conditional(let condition, let taken, let notTaken):
+      guard emitX86Condition(condition, into: 10, words: &words) else { return nil }
+      emitImmediate(taken, register: 11, into: &words)
+      emitImmediate(notTaken, register: 12, into: &words)
+      words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, 10, 31, 31))
+      words.append(
+        encodeConditionalSelect(
+          destination: 9,
+          trueRegister: 11,
+          falseRegister: 12,
+          condition: .notEqual
+        ))
+      words.append(encodeStore64(register: 9, base: 0, byteOffset: Self.ripOffset))
+      return .dispatch
     }
     emitImmediate(target, register: 9, into: &words)
     words.append(encodeStore64(register: 9, base: 0, byteOffset: Self.ripOffset))
     return exit
+  }
+
+  private func emitX86Condition(
+    _ name: String,
+    into result: UInt32,
+    words: inout [UInt32]
+  ) -> Bool {
+    let prefix = "x86.condition."
+    guard name.hasPrefix(prefix),
+      let rawValue = UInt8(name.dropFirst(prefix.count)),
+      let condition = DoryX86Condition(rawValue: rawValue)
+    else { return false }
+
+    words.append(encodeLoad64(register: 9, base: 0, byteOffset: Self.rflagsOffset))
+    emitImmediate(1, register: 15, into: &words)
+    switch condition {
+    case .overflow:
+      emitFlag(DoryX86RFLAGS.overflow, from: 9, into: result, words: &words)
+    case .notOverflow:
+      emitFlag(DoryX86RFLAGS.overflow, from: 9, into: result, words: &words)
+      invertBoolean(result, words: &words)
+    case .below:
+      emitFlag(DoryX86RFLAGS.carry, from: 9, into: result, words: &words)
+    case .aboveOrEqual:
+      emitFlag(DoryX86RFLAGS.carry, from: 9, into: result, words: &words)
+      invertBoolean(result, words: &words)
+    case .equal:
+      emitFlag(DoryX86RFLAGS.zero, from: 9, into: result, words: &words)
+    case .notEqual:
+      emitFlag(DoryX86RFLAGS.zero, from: 9, into: result, words: &words)
+      invertBoolean(result, words: &words)
+    case .belowOrEqual, .above:
+      emitFlag(DoryX86RFLAGS.carry, from: 9, into: result, words: &words)
+      emitFlag(DoryX86RFLAGS.zero, from: 9, into: 11, words: &words)
+      words.append(encodeLogical(.or, left: result, right: 11, destination: result))
+      if condition == .above { invertBoolean(result, words: &words) }
+    case .sign:
+      emitFlag(DoryX86RFLAGS.sign, from: 9, into: result, words: &words)
+    case .notSign:
+      emitFlag(DoryX86RFLAGS.sign, from: 9, into: result, words: &words)
+      invertBoolean(result, words: &words)
+    case .parity:
+      emitFlag(DoryX86RFLAGS.parity, from: 9, into: result, words: &words)
+    case .notParity:
+      emitFlag(DoryX86RFLAGS.parity, from: 9, into: result, words: &words)
+      invertBoolean(result, words: &words)
+    case .less, .greaterOrEqual:
+      emitFlag(DoryX86RFLAGS.sign, from: 9, into: result, words: &words)
+      emitFlag(DoryX86RFLAGS.overflow, from: 9, into: 11, words: &words)
+      words.append(encodeLogical(.xor, left: result, right: 11, destination: result))
+      if condition == .greaterOrEqual { invertBoolean(result, words: &words) }
+    case .lessOrEqual, .greater:
+      emitFlag(DoryX86RFLAGS.zero, from: 9, into: result, words: &words)
+      emitFlag(DoryX86RFLAGS.sign, from: 9, into: 11, words: &words)
+      emitFlag(DoryX86RFLAGS.overflow, from: 9, into: 12, words: &words)
+      words.append(encodeLogical(.xor, left: 11, right: 12, destination: 11))
+      words.append(encodeLogical(.or, left: result, right: 11, destination: result))
+      if condition == .greater { invertBoolean(result, words: &words) }
+    }
+    return true
+  }
+
+  private func emitFlag(
+    _ flag: DoryX86RFLAGS,
+    from flagsRegister: UInt32,
+    into result: UInt32,
+    words: inout [UInt32]
+  ) {
+    words.append(
+      encodeLogical(
+        .or,
+        left: 31,
+        right: flagsRegister,
+        shiftAmount: UInt32(flag.rawValue.trailingZeroBitCount),
+        logicalRightShift: true,
+        destination: result
+      ))
+    words.append(encodeLogical(.and, left: result, right: 15, destination: result))
+  }
+
+  private func invertBoolean(_ register: UInt32, words: inout [UInt32]) {
+    words.append(encodeLogical(.xor, left: register, right: 15, destination: register))
   }
 
   private func emitImmediate(
@@ -451,6 +545,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
 
   private enum ARM64Condition: UInt32 {
     case equal = 0
+    case notEqual = 1
     case carrySet = 2
     case carryClear = 3
     case minus = 4
@@ -459,6 +554,16 @@ public struct DoryARM64BaselineEmitter: Sendable {
 
   private func encodeConditionalSet(register: UInt32, condition: ARM64Condition) -> UInt32 {
     0x9A9F_07E0 | ((condition.rawValue ^ 1) << 12) | register
+  }
+
+  private func encodeConditionalSelect(
+    destination: UInt32,
+    trueRegister: UInt32,
+    falseRegister: UInt32,
+    condition: ARM64Condition
+  ) -> UInt32 {
+    0x9A80_0000 | falseRegister << 16 | condition.rawValue << 12 | trueRegister << 5
+      | destination
   }
 }
 
