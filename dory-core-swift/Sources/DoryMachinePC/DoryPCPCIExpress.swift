@@ -142,6 +142,7 @@ public final class DoryPCPCIConfigurationFunction: DoryPCPCIMSIControllable, @un
     subsystemID: UInt16 = 0,
     interruptPin: UInt8 = 0,
     supportsMSI: Bool = false,
+    msiNextCapabilityOffset: UInt8 = 0,
     bars descriptors: [DoryPCPCIBARDescriptor] = []
   ) throws {
     pciAddress = address
@@ -161,7 +162,7 @@ public final class DoryPCPCIConfigurationFunction: DoryPCPCIMSIControllable, @un
       configuration[0x06] |= 1 << 4
       configuration[0x34] = 0x50
       configuration[0x50] = 0x05
-      configuration[0x51] = 0
+      configuration[0x51] = msiNextCapabilityOffset
       // One 64-bit message, no per-vector mask, one vector.
       put(UInt16(1 << 7), at: 0x52, in: &configuration)
     }

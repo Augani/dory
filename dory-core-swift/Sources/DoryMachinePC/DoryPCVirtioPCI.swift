@@ -1,0 +1,390 @@
+import DoryVirtio
+import Foundation
+
+public enum DoryPCVirtioPCIError: Error, Sendable, Equatable {
+  case invalidQueueCount(Int)
+  case invalidBARAccess(offset: UInt64, byteCount: Int, write: Bool)
+  case invalidQueue(UInt16)
+}
+
+public struct DoryPCVirtioPCIQueueSnapshot: Sendable, Hashable {
+  public let size: UInt16
+  public let enabled: Bool
+  public let msixVector: UInt16
+  public let notifyOffset: UInt16
+  public let descriptorAddress: UInt64
+  public let driverAddress: UInt64
+  public let deviceAddress: UInt64
+}
+
+/// VirtIO 1.x PCI common configuration and BAR regions shared by every Dory PCI device model.
+public final class DoryPCVirtioPCITransport: @unchecked Sendable {
+  private struct QueueRegisters {
+    var size: UInt16
+    var enabled = false
+    var msixVector: UInt16 = .max
+    let notifyOffset: UInt16
+    var descriptorAddress: UInt64 = 0
+    var driverAddress: UInt64 = 0
+    var deviceAddress: UInt64 = 0
+    let queue: DoryVirtioSplitQueue
+  }
+
+  public let deviceState: DoryVirtioDeviceState
+  public let queueCount: Int
+
+  private let lock = NSLock()
+  private var deviceFeatureSelect: UInt32 = 0
+  private var driverFeatureSelect: UInt32 = 0
+  private var configurationMSIXVector: UInt16 = .max
+  private var selectedQueue: UInt16 = 0
+  private var queues: [QueueRegisters]
+  private var isrStatus: UInt8 = 0
+  private var deviceConfiguration: [UInt8]
+  private var notifySink: (@Sendable (UInt16) -> Void)?
+  private var interruptSink: (@Sendable () -> Bool)?
+
+  public init(
+    queueCount: Int,
+    maximumQueueSize: UInt16 = 256,
+    offeredFeatures: DoryVirtioFeatures,
+    deviceConfiguration: [UInt8] = []
+  ) throws {
+    guard (1...65_535).contains(queueCount) else {
+      throw DoryPCVirtioPCIError.invalidQueueCount(queueCount)
+    }
+    self.queueCount = queueCount
+    deviceState = .init(offeredFeatures: offeredFeatures)
+    queues = (0..<queueCount).map {
+      .init(
+        size: maximumQueueSize,
+        notifyOffset: UInt16(truncatingIfNeeded: $0),
+        queue: .init(maximumSize: maximumQueueSize)
+      )
+    }
+    self.deviceConfiguration = deviceConfiguration
+  }
+
+  public func connectNotifySink(_ sink: @escaping @Sendable (UInt16) -> Void) {
+    lock.withLock { notifySink = sink }
+  }
+
+  public func connectInterruptSink(_ sink: @escaping @Sendable () -> Bool) {
+    lock.withLock { interruptSink = sink }
+  }
+
+  public func queue(at index: UInt16) throws -> DoryVirtioSplitQueue {
+    try lock.withLock {
+      guard queues.indices.contains(Int(index)) else {
+        throw DoryPCVirtioPCIError.invalidQueue(index)
+      }
+      return queues[Int(index)].queue
+    }
+  }
+
+  public func queueSnapshot(at index: UInt16) throws -> DoryPCVirtioPCIQueueSnapshot {
+    try lock.withLock {
+      guard queues.indices.contains(Int(index)) else {
+        throw DoryPCVirtioPCIError.invalidQueue(index)
+      }
+      let queue = queues[Int(index)]
+      return .init(
+        size: queue.size,
+        enabled: queue.enabled,
+        msixVector: queue.msixVector,
+        notifyOffset: queue.notifyOffset,
+        descriptorAddress: queue.descriptorAddress,
+        driverAddress: queue.driverAddress,
+        deviceAddress: queue.deviceAddress
+      )
+    }
+  }
+
+  @discardableResult
+  public func signalQueueInterrupt() -> Bool {
+    let sink = lock.withLock {
+      isrStatus |= 1
+      return interruptSink
+    }
+    return sink?() ?? false
+  }
+
+  public func signalConfigurationChange() {
+    let sink = lock.withLock {
+      isrStatus |= 2
+      return interruptSink
+    }
+    _ = sink?()
+  }
+
+  public func readBAR(offset: UInt64, byteCount: Int) throws -> [UInt8] {
+    try validate(offset: offset, byteCount: byteCount, write: false)
+    if offset < 0x40 {
+      let common = lock.withLock { commonConfigurationLocked() }
+      return Array(common[Int(offset)..<(Int(offset) + byteCount)])
+    }
+    if offset == 0x200, byteCount == 1 {
+      return [
+        lock.withLock {
+          let value = isrStatus
+          isrStatus = 0
+          return value
+        }
+      ]
+    }
+    if offset >= 0x300, offset + UInt64(byteCount) <= 0x300 + UInt64(deviceConfiguration.count) {
+      return lock.withLock {
+        Array(deviceConfiguration[Int(offset - 0x300)..<(Int(offset - 0x300) + byteCount)])
+      }
+    }
+    return [UInt8](repeating: 0, count: byteCount)
+  }
+
+  public func writeBAR(offset: UInt64, bytes: [UInt8]) throws {
+    try validate(offset: offset, byteCount: bytes.count, write: true)
+    if offset < 0x40 {
+      try writeCommon(offset: Int(offset), bytes: bytes)
+      return
+    }
+    if (0x100..<0x200).contains(offset) && (bytes.count == 2 || bytes.count == 4) {
+      let queue = UInt16(truncatingIfNeeded: uint64(bytes))
+      let expected = UInt16(truncatingIfNeeded: (offset - 0x100) / 4)
+      guard queue == expected, Int(queue) < queueCount else {
+        throw DoryPCVirtioPCIError.invalidQueue(queue)
+      }
+      let sink = lock.withLock { notifySink }
+      sink?(queue)
+      return
+    }
+    if offset >= 0x300, offset + UInt64(bytes.count) <= 0x300 + UInt64(deviceConfiguration.count) {
+      lock.withLock {
+        deviceConfiguration.replaceSubrange(
+          Int(offset - 0x300)..<(Int(offset - 0x300) + bytes.count),
+          with: bytes
+        )
+      }
+    }
+  }
+
+  private func writeCommon(offset: Int, bytes: [UInt8]) throws {
+    switch (offset, bytes.count) {
+    case (0x00, 4): lock.withLock { deviceFeatureSelect = uint32(bytes) }
+    case (0x08, 4): lock.withLock { driverFeatureSelect = uint32(bytes) }
+    case (0x0C, 4):
+      let page = lock.withLock { driverFeatureSelect }
+      deviceState.writeDriverFeatures(page: page, value: uint32(bytes))
+    case (0x10, 2): lock.withLock { configurationMSIXVector = uint16(bytes) }
+    case (0x14, 1):
+      let status = DoryVirtioDeviceStatus(rawValue: bytes[0])
+      deviceState.writeStatus(status)
+      if status.isEmpty {
+        lock.withLock {
+          configurationMSIXVector = .max
+          isrStatus = 0
+          for index in queues.indices {
+            queues[index].enabled = false
+            queues[index].msixVector = .max
+            queues[index].queue.reset()
+          }
+        }
+      }
+    case (0x16, 2): lock.withLock { selectedQueue = uint16(bytes) }
+    case (0x18, 2): try updateSelectedQueue { if !$0.enabled { $0.size = uint16(bytes) } }
+    case (0x1A, 2): try updateSelectedQueue { $0.msixVector = uint16(bytes) }
+    case (0x1C, 2):
+      let enable = uint16(bytes) & 1 != 0
+      try updateSelectedQueue { queue in
+        guard enable, !queue.enabled else { return }
+        do {
+          try queue.queue.configure(
+            size: queue.size,
+            descriptorAddress: queue.descriptorAddress,
+            driverAddress: queue.driverAddress,
+            deviceAddress: queue.deviceAddress,
+            enabled: true
+          )
+          queue.enabled = true
+        } catch {
+          deviceState.markDeviceNeedsReset()
+        }
+      }
+    case (0x20, 8):
+      try updateSelectedQueue { if !$0.enabled { $0.descriptorAddress = uint64(bytes) } }
+    case (0x28, 8): try updateSelectedQueue { if !$0.enabled { $0.driverAddress = uint64(bytes) } }
+    case (0x30, 8): try updateSelectedQueue { if !$0.enabled { $0.deviceAddress = uint64(bytes) } }
+    default: break
+    }
+  }
+
+  private func commonConfigurationLocked() -> [UInt8] {
+    var bytes = [UInt8](repeating: 0, count: 0x40)
+    put(deviceFeatureSelect, at: 0x00, in: &bytes)
+    put(deviceState.readDeviceFeatures(page: deviceFeatureSelect), at: 0x04, in: &bytes)
+    put(driverFeatureSelect, at: 0x08, in: &bytes)
+    put(configurationMSIXVector, at: 0x10, in: &bytes)
+    put(UInt16(queueCount), at: 0x12, in: &bytes)
+    bytes[0x14] = deviceState.snapshot().status.rawValue
+    bytes[0x15] = deviceState.snapshot().configurationGeneration
+    put(selectedQueue, at: 0x16, in: &bytes)
+    if queues.indices.contains(Int(selectedQueue)) {
+      let queue = queues[Int(selectedQueue)]
+      put(queue.size, at: 0x18, in: &bytes)
+      put(queue.msixVector, at: 0x1A, in: &bytes)
+      put(UInt16(queue.enabled ? 1 : 0), at: 0x1C, in: &bytes)
+      put(queue.notifyOffset, at: 0x1E, in: &bytes)
+      put(queue.descriptorAddress, at: 0x20, in: &bytes)
+      put(queue.driverAddress, at: 0x28, in: &bytes)
+      put(queue.deviceAddress, at: 0x30, in: &bytes)
+    }
+    return bytes
+  }
+
+  private func updateSelectedQueue(_ update: (inout QueueRegisters) -> Void) throws {
+    try lock.withLock {
+      guard queues.indices.contains(Int(selectedQueue)) else {
+        throw DoryPCVirtioPCIError.invalidQueue(selectedQueue)
+      }
+      update(&queues[Int(selectedQueue)])
+    }
+  }
+
+  private func validate(offset: UInt64, byteCount: Int, write: Bool) throws {
+    guard byteCount > 0, offset < 0x1000, UInt64(byteCount) <= 0x1000 - offset else {
+      throw DoryPCVirtioPCIError.invalidBARAccess(
+        offset: offset, byteCount: byteCount, write: write)
+    }
+  }
+}
+
+public final class DoryPCVirtioPCIFunction: DoryPCPCIFunction, DoryPCPCIMSIControllable,
+  DoryPCPCIBARMemoryDevice, @unchecked Sendable
+{
+  public let configurationFunction: DoryPCPCIConfigurationFunction
+  public let transport: DoryPCVirtioPCITransport
+  public let barIndex = 0
+  public var pciAddress: DoryPCPCIAddress { configurationFunction.pciAddress }
+
+  private let capabilities: [UInt8: UInt8]
+
+  public init(
+    address: DoryPCPCIAddress,
+    virtioDeviceID: UInt16,
+    classCode: UInt32,
+    initialBARAddress: UInt64,
+    queueCount: Int,
+    maximumQueueSize: UInt16 = 256,
+    offeredFeatures: DoryVirtioFeatures = [],
+    deviceConfiguration: [UInt8] = []
+  ) throws {
+    configurationFunction = try .init(
+      address: address,
+      vendorID: 0x1AF4,
+      deviceID: 0x1040 &+ virtioDeviceID,
+      classCode: classCode,
+      revisionID: 1,
+      subsystemVendorID: 0x1AF4,
+      subsystemID: virtioDeviceID,
+      supportsMSI: true,
+      msiNextCapabilityOffset: 0x60,
+      bars: [
+        .init(
+          index: 0,
+          kind: .memory32(prefetchable: false),
+          size: 0x1000,
+          address: initialBARAddress
+        )
+      ]
+    )
+    transport = try .init(
+      queueCount: queueCount,
+      maximumQueueSize: maximumQueueSize,
+      offeredFeatures: offeredFeatures,
+      deviceConfiguration: deviceConfiguration
+    )
+    capabilities = Self.makeCapabilities(deviceConfigurationLength: deviceConfiguration.count)
+    transport.connectInterruptSink { [configurationFunction] in
+      configurationFunction.raiseMSI()
+    }
+  }
+
+  public func readConfiguration(offset: Int, byteCount: Int) throws -> [UInt8] {
+    var bytes = try configurationFunction.readConfiguration(offset: offset, byteCount: byteCount)
+    for index in bytes.indices {
+      if let value = capabilities[UInt8(offset + index)] { bytes[index] = value }
+    }
+    return bytes
+  }
+
+  public func writeConfiguration(offset: Int, bytes: [UInt8]) throws {
+    try configurationFunction.writeConfiguration(offset: offset, bytes: bytes)
+  }
+
+  public func connectMSISink(
+    _ sink: @escaping @Sendable (_ messageAddress: UInt64, _ messageData: UInt16) -> Bool
+  ) {
+    configurationFunction.connectMSISink(sink)
+  }
+
+  public func readBAR(offset: UInt64, byteCount: Int) throws -> [UInt8] {
+    try transport.readBAR(offset: offset, byteCount: byteCount)
+  }
+
+  public func writeBAR(offset: UInt64, bytes: [UInt8]) throws {
+    try transport.writeBAR(offset: offset, bytes: bytes)
+  }
+
+  private static func makeCapabilities(deviceConfigurationLength: Int) -> [UInt8: UInt8] {
+    var result: [UInt8: UInt8] = [:]
+    addCapability(at: 0x60, next: 0x70, type: 1, offset: 0, length: 0x40, to: &result)
+    addCapability(
+      at: 0x70, next: 0x84, type: 2, offset: 0x100, length: 0x100, to: &result, notify: true)
+    addCapability(at: 0x84, next: 0x94, type: 3, offset: 0x200, length: 1, to: &result)
+    addCapability(
+      at: 0x94,
+      next: 0,
+      type: 4,
+      offset: 0x300,
+      length: UInt32(deviceConfigurationLength),
+      to: &result
+    )
+    return result
+  }
+
+  private static func addCapability(
+    at start: UInt8,
+    next: UInt8,
+    type: UInt8,
+    offset: UInt32,
+    length: UInt32,
+    to result: inout [UInt8: UInt8],
+    notify: Bool = false
+  ) {
+    var bytes: [UInt8] = [0x09, next, notify ? 20 : 16, type, 0, 0, 0, 0]
+    bytes += littleEndian(offset)
+    bytes += littleEndian(length)
+    if notify { bytes += littleEndian(UInt32(4)) }
+    for (index, byte) in bytes.enumerated() { result[start &+ UInt8(index)] = byte }
+  }
+}
+
+private func uint16(_ bytes: [UInt8]) -> UInt16 {
+  UInt16(bytes[0]) | UInt16(bytes[1]) << 8
+}
+
+private func uint32(_ bytes: [UInt8]) -> UInt32 {
+  (0..<4).reduce(0) { $0 | UInt32(bytes[$1]) << UInt32($1 * 8) }
+}
+
+private func uint64(_ bytes: [UInt8]) -> UInt64 {
+  bytes.enumerated().reduce(0) { $0 | UInt64($1.element) << UInt64($1.offset * 8) }
+}
+
+private func put<T: FixedWidthInteger>(_ value: T, at offset: Int, in bytes: inout [UInt8]) {
+  for index in 0..<MemoryLayout<T>.size {
+    bytes[offset + index] = UInt8(truncatingIfNeeded: value >> T(index * 8))
+  }
+}
+
+private func littleEndian<T: FixedWidthInteger>(_ value: T) -> [UInt8] {
+  (0..<MemoryLayout<T>.size).map { UInt8(truncatingIfNeeded: value >> T($0 * 8)) }
+}

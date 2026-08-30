@@ -108,7 +108,7 @@ let package = Package(
     ),
     .target(
       name: "DoryMachinePC",
-      dependencies: ["DoryDBTX86", "DoryExecutionContracts"]
+      dependencies: ["DoryDBTX86", "DoryExecutionContracts", "DoryVirtio"]
     ),
     .target(
       name: "DoryMachineARMVirt",
