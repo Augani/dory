@@ -685,6 +685,23 @@ public struct DoryX86Interpreter: Sendable {
         }
         state.floatingPoint.ymm[Int(destination)] = try .init(
           bytes: registerBytes, expectedByteCount: 32)
+      case .vectorFloatingBinary(let operation, let format, let destination, let source):
+        let rhs = try readVectorBytes(
+          source,
+          byteCount: 16,
+          instruction: instruction,
+          state: state,
+          memory: executionMemory
+        )
+        var registerBytes = state.floatingPoint.ymm[Int(destination)].bytes
+        executeVectorFloatingBinary(
+          operation,
+          format: format,
+          destination: &registerBytes,
+          source: rhs
+        )
+        state.floatingPoint.ymm[Int(destination)] = try .init(
+          bytes: registerBytes, expectedByteCount: 32)
       case .processorPause:
         break
       case .string(let operation, let width):
@@ -1445,6 +1462,61 @@ public struct DoryX86Interpreter: Sendable {
   private func isVectorMemory(_ operand: DoryX86VectorOperand) -> Bool {
     if case .memory = operand { return true }
     return false
+  }
+
+  private func executeVectorFloatingBinary(
+    _ operation: DoryX86VectorFloatingOperation,
+    format: DoryX86VectorFloatingFormat,
+    destination: inout [UInt8],
+    source: [UInt8]
+  ) {
+    switch format {
+    case .packedSingle, .scalarSingle:
+      let laneCount = format == .packedSingle ? 4 : 1
+      for lane in 0..<laneCount {
+        let offset = lane * 4
+        let lhsBits = UInt32(fromLittleEndian(Array(destination[offset..<offset + 4])))
+        let rhsBits = UInt32(fromLittleEndian(Array(source[offset..<offset + 4])))
+        let result = floatingResult(
+          operation,
+          lhs: Float(bitPattern: lhsBits),
+          rhs: Float(bitPattern: rhsBits)
+        )
+        replaceLittleEndian(result.bitPattern, in: &destination, at: offset)
+      }
+    case .packedDouble, .scalarDouble:
+      let laneCount = format == .packedDouble ? 2 : 1
+      for lane in 0..<laneCount {
+        let offset = lane * 8
+        let lhsBits = fromLittleEndian(Array(destination[offset..<offset + 8]))
+        let rhsBits = fromLittleEndian(Array(source[offset..<offset + 8]))
+        let result = floatingResult(
+          operation,
+          lhs: Double(bitPattern: lhsBits),
+          rhs: Double(bitPattern: rhsBits)
+        )
+        replaceLittleEndian(result.bitPattern, in: &destination, at: offset)
+      }
+    }
+  }
+
+  private func floatingResult<T: BinaryFloatingPoint>(
+    _ operation: DoryX86VectorFloatingOperation,
+    lhs: T,
+    rhs: T
+  ) -> T {
+    switch operation {
+    case .add: return lhs + rhs
+    case .multiply: return lhs * rhs
+    case .subtract: return lhs - rhs
+    case .divide: return lhs / rhs
+    case .minimum:
+      if lhs.isNaN || rhs.isNaN || lhs == rhs { return rhs }
+      return lhs < rhs ? lhs : rhs
+    case .maximum:
+      if lhs.isNaN || rhs.isNaN || lhs == rhs { return rhs }
+      return lhs > rhs ? lhs : rhs
+    }
   }
 
   private func currentPrivilegeLevel(_ state: DoryX86ArchitecturalState) -> UInt8 {

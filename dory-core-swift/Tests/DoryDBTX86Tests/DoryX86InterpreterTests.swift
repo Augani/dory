@@ -521,6 +521,56 @@ import Testing
     )
   }
 
+  @Test func sseFloatingArithmeticHandlesPackedAndScalarLanes() throws {
+    let memory = DoryX86ByteArrayMemory(
+      baseAddress: 0x1000,
+      bytes: [0xF3, 0x0F, 0x58, 0xC1, 0x66, 0x0F, 0x5E, 0xC1]
+        + .init(repeating: 0, count: 16)
+    )
+    var floatingPoint = try DoryX86FloatingPointState()
+    var lhs = [UInt8](repeating: 0xAA, count: 32)
+    var rhs = [UInt8](repeating: 0, count: 32)
+    lhs.replaceSubrange(0..<4, with: littleEndian(UInt64(Float(1.5).bitPattern)).prefix(4))
+    rhs.replaceSubrange(0..<4, with: littleEndian(UInt64(Float(2.25).bitPattern)).prefix(4))
+    floatingPoint.ymm[0] = try .init(bytes: lhs, expectedByteCount: 32)
+    floatingPoint.ymm[1] = try .init(bytes: rhs, expectedByteCount: 32)
+    var state = try DoryX86ArchitecturalState(
+      rip: 0x1000,
+      cs: .init(selector: 0x38, attributes: 0xA09B, limit: .max),
+      floatingPoint: floatingPoint
+    )
+
+    guard case .retired = interpreter.step(state: &state, memory: memory, mode: .long64) else {
+      Issue.record("ADDSS unexpectedly faulted")
+      return
+    }
+    let scalarBits = UInt32(
+      try memoryInteger(bytes: Array(state.floatingPoint.ymm[0].bytes.prefix(4))))
+    #expect(Float(bitPattern: scalarBits) == 3.75)
+    #expect(state.floatingPoint.ymm[0].bytes[4..<32] == Array(repeating: 0xAA, count: 28)[...])
+
+    var packedLHS = [UInt8](repeating: 0xAA, count: 32)
+    var packedRHS = [UInt8](repeating: 0, count: 32)
+    packedLHS.replaceSubrange(0..<8, with: littleEndian(Double(9).bitPattern))
+    packedLHS.replaceSubrange(8..<16, with: littleEndian(Double(-8).bitPattern))
+    packedRHS.replaceSubrange(0..<8, with: littleEndian(Double(3).bitPattern))
+    packedRHS.replaceSubrange(8..<16, with: littleEndian(Double(2).bitPattern))
+    state.floatingPoint.ymm[0] = try .init(bytes: packedLHS, expectedByteCount: 32)
+    state.floatingPoint.ymm[1] = try .init(bytes: packedRHS, expectedByteCount: 32)
+
+    guard case .retired = interpreter.step(state: &state, memory: memory, mode: .long64) else {
+      Issue.record("DIVPD unexpectedly faulted")
+      return
+    }
+    #expect(
+      Double(bitPattern: try memoryInteger(bytes: Array(state.floatingPoint.ymm[0].bytes[0..<8])))
+        == 3)
+    #expect(
+      Double(bitPattern: try memoryInteger(bytes: Array(state.floatingPoint.ymm[0].bytes[8..<16])))
+        == -4)
+    #expect(state.floatingPoint.ymm[0].bytes[16..<32] == Array(repeating: 0xAA, count: 16)[...])
+  }
+
   @Test func byteExtendMoveUsesTheWideModRMDestinationRegister() throws {
     var bytes = [UInt8](repeating: 0, count: 0x20)
     bytes.replaceSubrange(0..<4, with: [0x0F, 0xB6, 0x71, 0x02])
@@ -1544,6 +1594,10 @@ import Testing
 
   private func littleEndian(_ value: UInt64) -> [UInt8] {
     (0..<8).map { UInt8(truncatingIfNeeded: value >> UInt64($0 * 8)) }
+  }
+
+  private func memoryInteger(bytes: [UInt8]) throws -> UInt64 {
+    bytes.enumerated().reduce(0) { $0 | UInt64($1.element) << UInt64($1.offset * 8) }
   }
 }
 

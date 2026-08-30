@@ -689,6 +689,25 @@ public struct DoryX86Decoder: Sendable {
           destination: vectorRegister(operands.reg),
           source: vectorOperand(operands.rm)
         )
+      case 0x58, 0x59, 0x5C...0x5F:
+        let format = try vectorFloatingFormat(prefixes: prefixes, address: address)
+        let operands = try decodeModRM(
+          cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
+        let floatingOperation: DoryX86VectorFloatingOperation =
+          switch second {
+          case 0x58: .add
+          case 0x59: .multiply
+          case 0x5C: .subtract
+          case 0x5D: .minimum
+          case 0x5E: .divide
+          default: .maximum
+          }
+        operation = .vectorFloatingBinary(
+          floatingOperation,
+          format: format,
+          destination: vectorRegister(operands.reg),
+          source: vectorOperand(operands.rm)
+        )
       case 0x6E:
         guard prefixes.operandSizeOverride, prefixes.repeatPrefix == nil else {
           throw DoryX86DecodeError.invalidEncoding(
@@ -1008,6 +1027,21 @@ public struct DoryX86Decoder: Sendable {
       preconditionFailure("ModRM reg operand must be a register")
     }
     return UInt8(DoryX86GeneralRegister.allCases.firstIndex(of: register)!)
+  }
+
+  private func vectorFloatingFormat(
+    prefixes: DoryX86InstructionPrefixes,
+    address: UInt64
+  ) throws -> DoryX86VectorFloatingFormat {
+    switch (prefixes.repeatPrefix, prefixes.operandSizeOverride) {
+    case (nil, false): return .packedSingle
+    case (nil, true): return .packedDouble
+    case (0xF3, false): return .scalarSingle
+    case (0xF2, false): return .scalarDouble
+    default:
+      throw DoryX86DecodeError.invalidEncoding(
+        address: address, detail: "unsupported floating-point mandatory prefix")
+    }
   }
 
   private func signExtend(

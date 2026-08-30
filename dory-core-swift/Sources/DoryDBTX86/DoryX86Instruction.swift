@@ -136,6 +136,14 @@ public enum DoryX86VectorBitwiseOperation: String, Codable, Sendable, Hashable {
   case and, andNot, or, xor
 }
 
+public enum DoryX86VectorFloatingOperation: String, Codable, Sendable, Hashable {
+  case add, multiply, subtract, minimum, divide, maximum
+}
+
+public enum DoryX86VectorFloatingFormat: String, Codable, Sendable, Hashable {
+  case packedSingle, packedDouble, scalarSingle, scalarDouble
+}
+
 public enum DoryX86StringOperation: String, Codable, Sendable, Hashable {
   case move, compare, store, load, scan, input, output
 }
@@ -223,6 +231,12 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
   case moveVectorToInteger(destination: DoryX86Operand, source: UInt8)
   case vectorBitwise(
     DoryX86VectorBitwiseOperation,
+    destination: UInt8,
+    source: DoryX86VectorOperand
+  )
+  case vectorFloatingBinary(
+    DoryX86VectorFloatingOperation,
+    format: DoryX86VectorFloatingFormat,
     destination: UInt8,
     source: DoryX86VectorOperand
   )
