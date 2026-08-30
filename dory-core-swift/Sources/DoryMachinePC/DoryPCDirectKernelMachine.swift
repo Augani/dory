@@ -35,6 +35,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   public let legacyPIT: DoryPCPIT8254
   public let rtc: DoryPCRTC146818
   public let hpet: DoryPCHPET
+  public let pciExpress: DoryPCPCIExpressECAM
   public let pagingUnit: DoryX86PagingUnit
   public let interpreter: DoryX86Interpreter
   public let bootLayout: DoryPCPVHBootLayout
@@ -50,6 +51,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     bootLayout: DoryPCPVHBootLayout = .init(),
     acpiLayout: DoryPCACPILayout = .init(),
     initialRTCDate: Date = Date(),
+    pciFunctions: [any DoryPCPCIFunction] = [],
     interpreter: DoryX86Interpreter = .init()
   ) throws {
     guard memoryBytes >= 1024 * 1024 else {
@@ -83,6 +85,9 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       if asserted, route < 16 { try? legacyPIC.raise(irq: UInt8(route)) }
       try? ioAPIC.setAsserted(asserted, pin: route)
     }
+    pciExpress = DoryPCPCIExpressECAM()
+    for function in pciFunctions { try pciExpress.attach(function) }
+    pciExpress.seal()
     try ioBus.attach(DoryPCPIC8259Port(pair: legacyPIC, slave: false))
     try ioBus.attach(DoryPCPIC8259Port(pair: legacyPIC, slave: true))
     try ioBus.attach(legacyPIT)
@@ -95,6 +100,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       })
     try physicalMemory.attach(DoryPCIOAPICMMIO(ioAPIC: ioAPIC))
     try physicalMemory.attach(hpet)
+    try physicalMemory.attach(pciExpress)
     physicalMemory.seal()
     pagingUnit = DoryX86PagingUnit()
     self.interpreter = interpreter

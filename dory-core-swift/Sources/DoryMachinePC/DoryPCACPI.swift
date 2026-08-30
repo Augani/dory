@@ -6,17 +6,20 @@ public struct DoryPCACPILayout: Codable, Sendable, Hashable {
   public let xsdt: UInt64
   public let madt: UInt64
   public let hpet: UInt64
+  public let mcfg: UInt64
 
   public init(
     rsdp: UInt64 = 0x0009_E000,
     xsdt: UInt64 = 0x0009_E100,
     madt: UInt64 = 0x0009_E200,
-    hpet: UInt64 = 0x0009_E300
+    hpet: UInt64 = 0x0009_E300,
+    mcfg: UInt64 = 0x0009_E400
   ) {
     self.rsdp = rsdp
     self.xsdt = xsdt
     self.madt = madt
     self.hpet = hpet
+    self.mcfg = mcfg
   }
 }
 
@@ -31,10 +34,12 @@ public struct DoryPCACPITables: Sendable, Hashable {
   public let xsdt: [UInt8]
   public let madt: [UInt8]
   public let hpet: [UInt8]
+  public let mcfg: [UInt8]
 
   public func install(into memory: any DoryX86Memory) throws {
     let artifacts = [
       (layout.rsdp, rsdp), (layout.xsdt, xsdt), (layout.madt, madt), (layout.hpet, hpet),
+      (layout.mcfg, mcfg),
     ]
     do {
       for artifact in artifacts {
@@ -53,18 +58,20 @@ public enum DoryPCACPIBuilder {
   public static func build(layout: DoryPCACPILayout = .init()) throws -> DoryPCACPITables {
     let madt = makeMADT()
     let hpet = makeHPET()
-    let xsdt = makeXSDT(tableAddresses: [layout.madt, layout.hpet])
+    let mcfg = makeMCFG()
+    let xsdt = makeXSDT(tableAddresses: [layout.madt, layout.hpet, layout.mcfg])
     let rsdp = makeRSDP(xsdtAddress: layout.xsdt)
     let ranges = [
       layout.rsdp..<(layout.rsdp + UInt64(rsdp.count)),
       layout.xsdt..<(layout.xsdt + UInt64(xsdt.count)),
       layout.madt..<(layout.madt + UInt64(madt.count)),
       layout.hpet..<(layout.hpet + UInt64(hpet.count)),
+      layout.mcfg..<(layout.mcfg + UInt64(mcfg.count)),
     ].sorted { $0.lowerBound < $1.lowerBound }
     guard !zip(ranges, ranges.dropFirst()).contains(where: { $0.0.overlaps($0.1) }) else {
       throw DoryPCACPIError.overlappingTables
     }
-    return .init(layout: layout, rsdp: rsdp, xsdt: xsdt, madt: madt, hpet: hpet)
+    return .init(layout: layout, rsdp: rsdp, xsdt: xsdt, madt: madt, hpet: hpet, mcfg: mcfg)
   }
 
   private static func makeMADT() -> [UInt8] {
@@ -107,6 +114,15 @@ public enum DoryPCACPIBuilder {
     var body: [UInt8] = []
     for address in tableAddresses { append(address, to: &body) }
     return table(signature: "XSDT", revision: 1, body: body)
+  }
+
+  private static func makeMCFG() -> [UInt8] {
+    var body = [UInt8](repeating: 0, count: 8)
+    append(UInt64(0xE000_0000), to: &body)
+    append(UInt16(0), to: &body)
+    body += [0, 0xFF]
+    append(UInt32(0), to: &body)
+    return table(signature: "MCFG", revision: 1, body: body)
   }
 
   private static func makeRSDP(xsdtAddress: UInt64) -> [UInt8] {
