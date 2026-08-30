@@ -427,6 +427,105 @@ import Testing
     #expect(readQuadword(memory, at: 0xD080) == UInt64(iterations))
   }
 
+  @Test func repeatStringsHonorCountDirectionAndStopConditions() throws {
+    let program: [UInt8] = [
+      0xF3, 0xA4,  // rep movsb
+      0xF2, 0xAE,  // repne scasb
+      0xFD,  // std
+      0xF3, 0x66, 0xAB,  // rep stosw
+    ]
+    var bytes = program + [UInt8](repeating: 0, count: 0x200)
+    bytes.replaceSubrange(0x80..<0x84, with: [1, 2, 3, 4])
+    bytes.replaceSubrange(0xA0..<0xA4, with: [1, 2, 3, 4])
+    let memory = DoryX86ByteArrayMemory(baseAddress: 0xE000, bytes: bytes)
+    var state = try DoryX86ArchitecturalState(
+      registers: .init(rcx: 4, rsi: 0xE080, rdi: 0xE0A0),
+      rip: 0xE000
+    )
+
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    #expect(try memory.read(at: 0xE0A0, byteCount: 4) == [1, 2, 3, 4])
+    #expect(state.registers.rcx == 0)
+    #expect(state.registers.rsi == 0xE084)
+    #expect(state.registers.rdi == 0xE0A4)
+
+    state.registers.rax = 3
+    state.registers.rcx = 4
+    state.registers.rdi = 0xE0A0
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    #expect(state.registers.rcx == 1)
+    #expect(state.registers.rdi == 0xE0A3)
+    #expect(state.rflags.contains(.zero))
+
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    state.registers.rax = 0xBEEF
+    state.registers.rcx = 3
+    state.registers.rdi = 0xE0C4
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    #expect(try memory.read(at: 0xE0C0, byteCount: 6) == [0xEF, 0xBE, 0xEF, 0xBE, 0xEF, 0xBE])
+    #expect(state.registers.rdi == 0xE0BE)
+    #expect(state.registers.rcx == 0)
+  }
+
+  @Test func repeatStringFaultCommitsOnlyCompletedIterations() throws {
+    var bytes = [0xF3, 0xA4] + [UInt8](repeating: 0, count: 0x3E)
+    bytes[0x10] = 0x5A
+    bytes[0x11] = 0xA5
+    let memory = DoryX86ByteArrayMemory(baseAddress: 0xF000, bytes: bytes)
+    var state = try DoryX86ArchitecturalState(
+      registers: .init(rcx: 2, rsi: 0xF010, rdi: 0xF03F),
+      rip: 0xF000
+    )
+
+    let result = interpreter.step(state: &state, memory: memory, mode: .long64)
+    #expect(
+      result
+        == .exception(
+          .init(
+            kind: .pageFault,
+            vector: 14,
+            errorCode: 2,
+            instructionPointer: 0xF000,
+            linearAddress: 0xF040,
+            commitsPartialProgress: true
+          )))
+    #expect(state.rip == 0xF000)
+    #expect(state.registers.rcx == 1)
+    #expect(state.registers.rsi == 0xF011)
+    #expect(state.registers.rdi == 0xF040)
+    #expect(try memory.read(at: 0xF03F, byteCount: 1) == [0x5A])
+  }
+
+  @Test func longRepeatStringsYieldAtAnInterruptibleBoundary() throws {
+    let count: UInt64 = 4_097
+    var bytes = [0xF3, 0xA4] + [UInt8](repeating: 0, count: 0x3FFE)
+    for index in 0..<Int(count) { bytes[0x100 + index] = UInt8(truncatingIfNeeded: index) }
+    let memory = DoryX86ByteArrayMemory(baseAddress: 0x10_000, bytes: bytes)
+    var state = try DoryX86ArchitecturalState(
+      registers: .init(rcx: count, rsi: 0x10_100, rdi: 0x12_000),
+      rip: 0x10_000
+    )
+
+    let first = interpreter.step(state: &state, memory: memory, mode: .long64)
+    guard case .yielded = first else {
+      Issue.record("long REP MOVSB did not yield: \(first)")
+      return
+    }
+    #expect(state.rip == 0x10_000)
+    #expect(state.registers.rcx == 1)
+    #expect(state.registers.rsi == 0x11_100)
+    #expect(state.registers.rdi == 0x13_000)
+
+    let second = interpreter.step(state: &state, memory: memory, mode: .long64)
+    guard case .retired = second else {
+      Issue.record("final REP MOVSB iteration did not retire: \(second)")
+      return
+    }
+    #expect(state.registers.rcx == 0)
+    #expect(state.rip == 0x10_002)
+    #expect(try memory.read(at: 0x12_000, byteCount: Int(count)) == Array(bytes[0x100..<0x1101]))
+  }
+
   private func readQuadword(_ memory: DoryX86ByteArrayMemory, at address: UInt64) -> UInt64 {
     try! memory.read(at: address, byteCount: 8).enumerated().reduce(0) {
       $0 | UInt64($1.element) << UInt64($1.offset * 8)

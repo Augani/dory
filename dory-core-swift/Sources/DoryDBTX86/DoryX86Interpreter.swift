@@ -13,24 +13,30 @@ public struct DoryX86Exception: Error, Codable, Sendable, Hashable {
   public let errorCode: UInt32?
   public let instructionPointer: UInt64
   public let linearAddress: UInt64?
+  /// True only for restartable multi-iteration instructions whose completed iterations are visible.
+  public let commitsPartialProgress: Bool
 
   public init(
     kind: Kind,
     vector: UInt8,
     errorCode: UInt32? = nil,
     instructionPointer: UInt64,
-    linearAddress: UInt64? = nil
+    linearAddress: UInt64? = nil,
+    commitsPartialProgress: Bool = false
   ) {
     self.kind = kind
     self.vector = vector
     self.errorCode = errorCode
     self.instructionPointer = instructionPointer
     self.linearAddress = linearAddress
+    self.commitsPartialProgress = commitsPartialProgress
   }
 }
 
 public enum DoryX86InterpreterResult: Sendable, Hashable {
   case retired(DoryX86DecodedInstruction)
+  /// A restartable instruction made bounded progress and deliberately returned to the vCPU loop.
+  case yielded(DoryX86DecodedInstruction)
   case halted(DoryX86DecodedInstruction)
   case exception(DoryX86Exception)
 }
@@ -61,9 +67,10 @@ public struct DoryX86Interpreter: Sendable {
       pagingUnit: pagingUnit
     )
     switch result {
-    case .retired, .halted:
+    case .retired, .yielded, .halted:
       state = candidate
     case .exception(let exception):
+      if exception.commitsPartialProgress { state = candidate }
       if exception.kind == .pageFault {
         state.control.cr2 = exception.linearAddress ?? 0
       }
@@ -418,6 +425,19 @@ public struct DoryX86Interpreter: Sendable {
         executionMemory.synchronize()
       case .processorPause:
         break
+      case .string(let operation, let width):
+        let completed = try executeString(
+          operation,
+          width: width,
+          instruction: instruction,
+          mode: mode,
+          state: &state,
+          memory: executionMemory
+        )
+        if !completed {
+          state.rip = originalRIP
+          return .yielded(instruction)
+        }
       case .push(let operand):
         let value = try read(
           operand, instruction: instruction, state: state, memory: executionMemory)
@@ -648,6 +668,18 @@ public struct DoryX86Interpreter: Sendable {
       }
       state.rip = nextRIP
       return .retired(instruction)
+    } catch let partial as DoryX86PartialMemoryFault {
+      state.rip = originalRIP
+      let base = pageFault(for: partial.error, instructionPointer: originalRIP)
+      let fault = DoryX86Exception(
+        kind: base.kind,
+        vector: base.vector,
+        errorCode: base.errorCode,
+        instructionPointer: base.instructionPointer,
+        linearAddress: base.linearAddress,
+        commitsPartialProgress: true
+      )
+      return .exception(fault)
     } catch let error as DoryX86MemoryError {
       state.rip = originalRIP
       let fault = pageFault(for: error, instructionPointer: originalRIP)
@@ -1016,6 +1048,189 @@ public struct DoryX86Interpreter: Sendable {
     if operation != .test {
       try write(result, to: base, instruction: instruction, state: &state, memory: memory)
     }
+  }
+
+  private func executeString(
+    _ operation: DoryX86StringOperation,
+    width: DoryX86OperandWidth,
+    instruction: DoryX86DecodedInstruction,
+    mode: DoryX86ExecutionMode,
+    state: inout DoryX86ArchitecturalState,
+    memory: any DoryX86Memory
+  ) throws -> Bool {
+    let addressWidth = stringAddressWidth(mode: mode, instruction: instruction)
+    let repeated = instruction.prefixes.repeatPrefix != nil
+    var remaining = repeated ? stringRegister(.rcx, width: addressWidth, state: state) : 1
+    var completed: UInt64 = 0
+    let iterationBudget: UInt64 = 4_096
+
+    while remaining != 0 {
+      do {
+        let sourceAddress = stringSourceAddress(
+          addressWidth: addressWidth,
+          instruction: instruction,
+          mode: mode,
+          state: state
+        )
+        let destinationAddress = stringDestinationAddress(
+          addressWidth: addressWidth,
+          mode: mode,
+          state: state
+        )
+        switch operation {
+        case .move:
+          let bytes = try memory.read(at: sourceAddress, byteCount: width.byteCount)
+          try memory.validateWrite(at: destinationAddress, byteCount: width.byteCount)
+          try memory.write(at: destinationAddress, bytes: bytes)
+        case .compare:
+          let source = fromLittleEndian(
+            try memory.read(at: sourceAddress, byteCount: width.byteCount))
+          let destination = fromLittleEndian(
+            try memory.read(at: destinationAddress, byteCount: width.byteCount))
+          _ = executeALU(
+            .compare,
+            lhs: source,
+            rhs: destination,
+            width: width,
+            flags: &state.rflags
+          )
+        case .store:
+          try memory.validateWrite(at: destinationAddress, byteCount: width.byteCount)
+          try memory.write(
+            at: destinationAddress,
+            bytes: littleEndian(state.registers.rax, width: width)
+          )
+        case .load:
+          let value = fromLittleEndian(
+            try memory.read(at: sourceAddress, byteCount: width.byteCount))
+          writeStringRegister(.rax, value: value, width: width, state: &state)
+        case .scan:
+          let destination = fromLittleEndian(
+            try memory.read(at: destinationAddress, byteCount: width.byteCount))
+          _ = executeALU(
+            .compare,
+            lhs: state.registers.rax,
+            rhs: destination,
+            width: width,
+            flags: &state.rflags
+          )
+        }
+      } catch let error as DoryX86MemoryError {
+        if completed != 0 { throw DoryX86PartialMemoryFault(error: error) }
+        throw error
+      }
+
+      let delta = UInt64(width.byteCount)
+      let decrement = state.rflags.contains(.direction)
+      if operation == .move || operation == .compare || operation == .load {
+        advanceStringRegister(
+          .rsi, by: delta, decrement: decrement, width: addressWidth, state: &state)
+      }
+      if operation == .move || operation == .compare || operation == .store || operation == .scan {
+        advanceStringRegister(
+          .rdi, by: delta, decrement: decrement, width: addressWidth, state: &state)
+      }
+      completed &+= 1
+      if repeated {
+        remaining &-= 1
+        writeStringRegister(.rcx, value: remaining, width: addressWidth, state: &state)
+        if operation == .compare || operation == .scan {
+          let zero = state.rflags.contains(.zero)
+          if instruction.prefixes.repeatPrefix == 0xF3, !zero { break }
+          if instruction.prefixes.repeatPrefix == 0xF2, zero { break }
+        }
+      } else {
+        remaining = 0
+      }
+      if repeated, remaining != 0, completed == iterationBudget { return false }
+    }
+    return true
+  }
+
+  private func stringAddressWidth(
+    mode: DoryX86ExecutionMode,
+    instruction: DoryX86DecodedInstruction
+  ) -> DoryX86OperandWidth {
+    switch (mode, instruction.prefixes.addressSizeOverride) {
+    case (.real16, false), (.protected32, true): .word
+    case (.real16, true), (.protected32, false), (.long64, true): .doubleword
+    case (.long64, false): .quadword
+    }
+  }
+
+  private func stringSourceAddress(
+    addressWidth: DoryX86OperandWidth,
+    instruction: DoryX86DecodedInstruction,
+    mode: DoryX86ExecutionMode,
+    state: DoryX86ArchitecturalState
+  ) -> UInt64 {
+    let segment =
+      switch instruction.prefixes.segmentOverride {
+      case 0x2E: state.cs
+      case 0x36: state.ss
+      case 0x26: state.es
+      case 0x64: state.fs
+      case 0x65: state.gs
+      default: state.ds
+      }
+    let base: UInt64
+    if mode == .long64,
+      instruction.prefixes.segmentOverride != 0x64,
+      instruction.prefixes.segmentOverride != 0x65
+    {
+      base = 0
+    } else {
+      base = segment.base
+    }
+    return base &+ stringRegister(.rsi, width: addressWidth, state: state)
+  }
+
+  private func stringDestinationAddress(
+    addressWidth: DoryX86OperandWidth,
+    mode: DoryX86ExecutionMode,
+    state: DoryX86ArchitecturalState
+  ) -> UInt64 {
+    (mode == .long64 ? 0 : state.es.base)
+      &+ stringRegister(.rdi, width: addressWidth, state: state)
+  }
+
+  private func stringRegister(
+    _ register: DoryX86GeneralRegister,
+    width: DoryX86OperandWidth,
+    state: DoryX86ArchitecturalState
+  ) -> UInt64 {
+    state.registers[register] & mask(width)
+  }
+
+  private func writeStringRegister(
+    _ register: DoryX86GeneralRegister,
+    value: UInt64,
+    width: DoryX86OperandWidth,
+    state: inout DoryX86ArchitecturalState
+  ) {
+    switch width {
+    case .byte:
+      state.registers[register] = (state.registers[register] & ~UInt64(0xff)) | (value & 0xff)
+    case .word:
+      state.registers[register] =
+        (state.registers[register] & ~UInt64(0xffff)) | (value & 0xffff)
+    case .doubleword:
+      state.registers[register] = value & 0xffff_ffff
+    case .quadword:
+      state.registers[register] = value
+    }
+  }
+
+  private func advanceStringRegister(
+    _ register: DoryX86GeneralRegister,
+    by delta: UInt64,
+    decrement: Bool,
+    width: DoryX86OperandWidth,
+    state: inout DoryX86ArchitecturalState
+  ) {
+    let current = stringRegister(register, width: width, state: state)
+    let next = decrement ? current &- delta : current &+ delta
+    writeStringRegister(register, value: next & mask(width), width: width, state: &state)
   }
 
   private func executeCompareExchangePair(
@@ -1651,4 +1866,8 @@ private final class DoryX86AtomicGate: @unchecked Sendable {
     defer { lock.unlock() }
     return try operation(&state)
   }
+}
+
+private struct DoryX86PartialMemoryFault: Error {
+  let error: DoryX86MemoryError
 }

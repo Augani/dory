@@ -103,6 +103,10 @@ public enum DoryX86MemoryFence: String, Codable, Sendable, Hashable {
   case load, store, full
 }
 
+public enum DoryX86StringOperation: String, Codable, Sendable, Hashable {
+  case move, compare, store, load, scan
+}
+
 public enum DoryX86Condition: UInt8, Codable, Sendable, Hashable {
   case overflow = 0
   case notOverflow
@@ -141,6 +145,7 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
   case compareExchangePair(destination: DoryX86MemoryOperand, doubleQuadword: Bool)
   case memoryFence(DoryX86MemoryFence)
   case processorPause
+  case string(DoryX86StringOperation, width: DoryX86OperandWidth)
   case push(DoryX86Operand)
   case pop(DoryX86Operand)
   case call(relative: Int64)

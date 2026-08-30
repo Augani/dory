@@ -239,4 +239,18 @@ import Testing
         == .processorPause
     )
   }
+
+  @Test func decodesRepeatableStringInstructionsWithoutInventingOperands() throws {
+    let move = try decoder.decode([0xF3, 0xA4], at: 0xB000, mode: .long64)
+    #expect(move.prefixes.repeatPrefix == 0xF3)
+    #expect(move.operation == .string(.move, width: .byte))
+
+    let compare = try decoder.decode([0xF2, 0x66, 0xA7], at: 0xB000, mode: .long64)
+    #expect(compare.prefixes.repeatPrefix == 0xF2)
+    #expect(compare.operation == .string(.compare, width: .word))
+    #expect(
+      try decoder.decode([0x48, 0xAB], at: 0xB000, mode: .long64).operation
+        == .string(.store, width: .quadword)
+    )
+  }
 }

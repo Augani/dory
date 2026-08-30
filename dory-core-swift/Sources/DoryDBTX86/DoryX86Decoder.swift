@@ -267,6 +267,17 @@ public struct DoryX86Decoder: Sendable {
         destination: .register(.rax, width: operandWidth),
         source: .immediate(value, width: operandWidth)
       )
+    case 0xA4...0xA7, 0xAA...0xAF:
+      let elementWidth: DoryX86OperandWidth = opcode & 1 == 0 ? .byte : width
+      let stringOperation: DoryX86StringOperation =
+        switch opcode {
+        case 0xA4, 0xA5: .move
+        case 0xA6, 0xA7: .compare
+        case 0xAA, 0xAB: .store
+        case 0xAC, 0xAD: .load
+        default: .scan
+        }
+      operation = .string(stringOperation, width: elementWidth)
     case 0xC6, 0xC7:
       let operandWidth: DoryX86OperandWidth = opcode == 0xC6 ? .byte : width
       let operands = try decodeModRM(
