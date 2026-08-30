@@ -243,6 +243,7 @@ import Testing
         0xDB, 0xE3,
         0xD9, 0x2D, 0x17, 0x00, 0x00, 0x00,
         0x0F, 0xAE, 0x15, 0x12, 0x00, 0x00, 0x00,
+        0x0F, 0xAE, 0x1D, 0x10, 0x00, 0x00, 0x00,
       ]
     )
     bytes.replaceSubrange(0x20..<0x22, with: [0x7F, 0x02])
@@ -259,7 +260,7 @@ import Testing
       floatingPoint: floatingPoint
     )
 
-    for _ in 0..<4 {
+    for _ in 0..<5 {
       let result = interpreter.step(state: &state, memory: memory, mode: .long64)
       guard case .retired = result else {
         Issue.record("floating-point initialization unexpectedly faulted: \(result)")
@@ -271,6 +272,7 @@ import Testing
     #expect(state.floatingPoint.x87StatusWord == 0)
     #expect(state.floatingPoint.x87TagWord == 0xFFFF)
     #expect(state.floatingPoint.mxcsr == 0x1F80)
+    #expect(try memory.read(at: 0x1027, byteCount: 4) == [0x80, 0x1F, 0, 0])
   }
 
   @Test func byteExtendMoveUsesTheWideModRMDestinationRegister() throws {

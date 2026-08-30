@@ -598,11 +598,11 @@ public struct DoryX86Decoder: Sendable {
         } else {
           let operands = try decodeModRM(
             cursor: &cursor, width: .doubleword, prefixes: prefixes, mode: mode)
-          guard operands.group == 2, case .memory = operands.rm else {
+          guard operands.group == 2 || operands.group == 3, case .memory = operands.rm else {
             throw DoryX86DecodeError.invalidEncoding(
               address: address, detail: "unsupported 0F AE memory group")
           }
-          operation = .loadMXCSR(operands.rm)
+          operation = operands.group == 2 ? .loadMXCSR(operands.rm) : .storeMXCSR(operands.rm)
         }
       case 0xA3, 0xAB, 0xB3, 0xBB:
         let operands = try decodeModRM(

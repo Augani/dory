@@ -527,6 +527,14 @@ public struct DoryX86Interpreter: Sendable {
           return generalProtection(at: originalRIP)
         }
         state.floatingPoint.mxcsr = value
+      case .storeMXCSR(let destination):
+        try write(
+          UInt64(state.floatingPoint.mxcsr),
+          to: destination,
+          instruction: instruction,
+          state: &state,
+          memory: executionMemory
+        )
       case .processorPause:
         break
       case .string(let operation, let width):
@@ -1039,7 +1047,7 @@ public struct DoryX86Interpreter: Sendable {
         nextRIP = state.registers.rcx
       }
       let finalMask: UInt64 =
-        if (mode == .protected16 || mode == .protected32), state.cs != originalCodeSegment {
+        if mode == .protected16 || mode == .protected32, state.cs != originalCodeSegment {
           if state.cs.attributes & 0x2000 != 0 {
             0xffff_ffff
           } else {
