@@ -1,5 +1,11 @@
 {
   "schemaVersion": 1,
+  "qualificationTarget": {
+    "guestFamily": "alpine",
+    "guestVersion": "3.24.1",
+    "guestBuild": "3.24.1",
+    "guestArchitecture": "arm64"
+  },
   "steps": [
     {
       "waitFor": "localhost login:",

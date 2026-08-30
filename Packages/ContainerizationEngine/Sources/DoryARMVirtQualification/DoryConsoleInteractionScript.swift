@@ -10,6 +10,25 @@ public enum DoryConsoleAfterGuestStopAction: String, Codable, Equatable, Sendabl
   case restoreColdSnapshot = "restore-cold-snapshot"
 }
 
+public struct DoryConsoleQualificationTarget: Codable, Equatable, Sendable {
+  public let guestFamily: String
+  public let guestVersion: String
+  public let guestBuild: String
+  public let guestArchitecture: String
+
+  public init(
+    guestFamily: String,
+    guestVersion: String,
+    guestBuild: String,
+    guestArchitecture: String
+  ) {
+    self.guestFamily = guestFamily
+    self.guestVersion = guestVersion
+    self.guestBuild = guestBuild
+    self.guestArchitecture = guestArchitecture
+  }
+}
+
 public struct DoryConsoleInteractionStep: Codable, Equatable, Sendable {
   public let waitFor: String
   public let send: String
@@ -52,10 +71,16 @@ public struct DoryConsoleInteractionStep: Codable, Equatable, Sendable {
 
 public struct DoryConsoleInteractionScript: Codable, Equatable, Sendable {
   public let schemaVersion: UInt32
+  public let qualificationTarget: DoryConsoleQualificationTarget?
   public let steps: [DoryConsoleInteractionStep]
 
-  public init(schemaVersion: UInt32 = 1, steps: [DoryConsoleInteractionStep]) {
+  public init(
+    schemaVersion: UInt32 = 1,
+    qualificationTarget: DoryConsoleQualificationTarget? = nil,
+    steps: [DoryConsoleInteractionStep]
+  ) {
     self.schemaVersion = schemaVersion
+    self.qualificationTarget = qualificationTarget
     self.steps = steps
   }
 }
@@ -63,6 +88,7 @@ public struct DoryConsoleInteractionScript: Codable, Equatable, Sendable {
 public enum DoryConsoleInteractionScriptError: Error, Equatable, Sendable {
   case unsupportedSchemaVersion(UInt32)
   case invalidStepCount(Int)
+  case invalidQualificationTarget
   case invalidWaitMarker(step: Int)
   case invalidInput(step: Int)
   case inputBudgetExceeded
@@ -86,6 +112,7 @@ public final class DoryConsoleInteractionDriver {
   public private(set) var installerMediaState = DoryInstallerMediaState.attached
   public private(set) var installerMediaTransitionCount = 0
   public let hostActionCount: Int
+  public let qualificationTarget: DoryConsoleQualificationTarget?
   public private(set) var completedHostActionCount = 0
   public private(set) var pendingHostAction: DoryConsoleAfterGuestStopAction?
 
@@ -95,6 +122,16 @@ public final class DoryConsoleInteractionDriver {
     }
     guard (1...Self.maximumStepCount).contains(script.steps.count) else {
       throw DoryConsoleInteractionScriptError.invalidStepCount(script.steps.count)
+    }
+    if let target = script.qualificationTarget {
+      let fields = [
+        target.guestFamily, target.guestVersion, target.guestBuild, target.guestArchitecture,
+      ]
+      guard fields.allSatisfy({ !$0.isEmpty && $0.utf8.count <= 128 }),
+        target.guestArchitecture == "arm64"
+      else {
+        throw DoryConsoleInteractionScriptError.invalidQualificationTarget
+      }
     }
 
     var totalInputBytes = 0
@@ -140,6 +177,7 @@ public final class DoryConsoleInteractionDriver {
       }
     }
     steps = script.steps
+    qualificationTarget = script.qualificationTarget
     self.containsInstallerMediaTransition = containsInstallerMediaTransition
     hostActionCount = configuredHostActions.count
   }

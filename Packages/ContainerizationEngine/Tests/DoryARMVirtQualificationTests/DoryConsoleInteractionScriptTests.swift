@@ -67,6 +67,36 @@ import Testing
     #expect(script.steps == [DoryConsoleInteractionStep(waitFor: "# ", send: "id\n")])
   }
 
+  @Test func bindsAnExactARM64GuestTarget() throws {
+    let target = DoryConsoleQualificationTarget(
+      guestFamily: "debian",
+      guestVersion: "13.6.0",
+      guestBuild: "13.6.0",
+      guestArchitecture: "arm64"
+    )
+    let driver = try DoryConsoleInteractionDriver(
+      script: DoryConsoleInteractionScript(
+        qualificationTarget: target,
+        steps: [DoryConsoleInteractionStep(waitFor: "login:", send: "root\r")]
+      )
+    )
+
+    #expect(driver.qualificationTarget == target)
+    #expect(throws: DoryConsoleInteractionScriptError.invalidQualificationTarget) {
+      try DoryConsoleInteractionDriver(
+        script: DoryConsoleInteractionScript(
+          qualificationTarget: DoryConsoleQualificationTarget(
+            guestFamily: "debian",
+            guestVersion: "13.6.0",
+            guestBuild: "13.6.0",
+            guestArchitecture: "x86_64"
+          ),
+          steps: [DoryConsoleInteractionStep(waitFor: "login:", send: "root\r")]
+        )
+      )
+    }
+  }
+
   @Test func retainsCursorAndDetachAuthorityAcrossMultipleGuestResets() throws {
     let driver = try DoryConsoleInteractionDriver(
       script: DoryConsoleInteractionScript(steps: [

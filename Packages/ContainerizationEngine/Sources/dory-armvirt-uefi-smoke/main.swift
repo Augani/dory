@@ -4,6 +4,7 @@ import DoryARMVirtQualification
 import DoryFirmware
 import DoryHV
 import DoryMachineARMVirt
+import DoryOperations
 import DorydKit
 import Foundation
 
@@ -45,6 +46,19 @@ import Foundation
     let schemaVersion: UInt32
     let machineABIIdentity: String
     let firmwareABIIdentity: String
+    let executionEngineIdentity: String
+    let cpuProfileIdentity: String
+    let deviceABIIdentity: String
+    let hostArchitecture: String
+    let hostHardwareModel: String
+    let hostOperatingSystemVersion: String
+    let hostOperatingSystemBuild: String
+    let guestFamily: String?
+    let guestVersion: String?
+    let guestBuild: String?
+    let guestArchitecture: String?
+    let guestVCPUCount: Int
+    let runnerSHA256: String
     let buildIdentifier: String
     let firmwareCodeSHA256: String
     let expectedConsoleText: String
@@ -318,6 +332,25 @@ import Foundation
       kill(process.processIdentifier, SIGKILL)
     }
     process.waitUntilExit()
+  }
+
+  private func systemString(_ name: String) -> String {
+    var byteCount = 0
+    guard sysctlbyname(name, nil, &byteCount, nil, 0) == 0, byteCount > 1 else {
+      return "unknown"
+    }
+    var bytes = [CChar](repeating: 0, count: byteCount)
+    guard sysctlbyname(name, &bytes, &byteCount, nil, 0) == 0 else { return "unknown" }
+    return String(
+      decoding: bytes.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) },
+      as: UTF8.self
+    )
+  }
+
+  private func runnerSHA256() throws -> String {
+    let path = URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL.path
+    let data = try Data(contentsOf: URL(fileURLWithPath: path), options: .mappedIfSafe)
+    return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
   }
 
   private func runBoot(
@@ -623,9 +656,22 @@ import Foundation
     }
     let generation = try variableStore.load().snapshot.generation
     let receipt = Receipt(
-      schemaVersion: 4,
+      schemaVersion: 5,
       machineABIIdentity: DoryARMVirtV1ABI.identity,
       firmwareABIIdentity: DoryARMVirtV1ABI.firmwareABIIdentity,
+      executionEngineIdentity: DoryExecutionEngineIdentity.nativeARM64.rawValue,
+      cpuProfileIdentity: DoryCPUProfileIdentity.genericARM64V1.rawValue,
+      deviceABIIdentity: DoryDeviceABIIdentity.virtioV1.rawValue,
+      hostArchitecture: DoryHostArchitecture.arm64.rawValue,
+      hostHardwareModel: systemString("hw.model"),
+      hostOperatingSystemVersion: ProcessInfo.processInfo.operatingSystemVersionString,
+      hostOperatingSystemBuild: systemString("kern.osversion"),
+      guestFamily: consoleScript?.driver.qualificationTarget?.guestFamily,
+      guestVersion: consoleScript?.driver.qualificationTarget?.guestVersion,
+      guestBuild: consoleScript?.driver.qualificationTarget?.guestBuild,
+      guestArchitecture: consoleScript?.driver.qualificationTarget?.guestArchitecture,
+      guestVCPUCount: 1,
+      runnerSHA256: try runnerSHA256(),
       buildIdentifier: artifacts.manifest.buildIdentifier,
       firmwareCodeSHA256: artifacts.manifest.firmwareCodeSHA256,
       expectedConsoleText: options.expectedConsoleText,

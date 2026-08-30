@@ -154,6 +154,7 @@ let package = Package(
                 "DoryHV",
                 .product(name: "DoryFirmware", package: "dory-core-swift"),
                 .product(name: "DoryMachineARMVirt", package: "dory-core-swift"),
+                .product(name: "DoryOperations", package: "dory-core-swift"),
                 .product(name: "DorydKit", package: "dory-core-swift"),
             ],
             linkerSettings: [.linkedFramework("Hypervisor")]

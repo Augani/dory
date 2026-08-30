@@ -103,10 +103,12 @@ chmod 600 /absolute/path/to/alpine-standard-aarch64.iso
 
 The runner accepts only an owned, private console document with bounded steps,
 wait markers, and inputs. It refuses a success marker present in guest input so
-terminal echo cannot forge qualification. Receipt schema 4 binds memory and
-disk sizes, completed step count, console-document SHA-256, applied installer
-media transitions, final-boot media state, cold-snapshot actions and authority,
-and the admitted gvproxy SHA-256.
+terminal echo cannot forge qualification. Receipt schema 5 binds the exact host
+model/OS build, guest family/version/build/architecture, execution engine, CPU,
+machine, firmware and device ABIs, runner SHA-256, memory and disk sizes,
+completed step count, console-document SHA-256, applied installer media
+transitions, final-boot media state, cold-snapshot actions and authority, and
+the admitted gvproxy SHA-256.
 The documented install qualification
 succeeds only after a guest reset and a second UEFI boot with the installer
 absent.

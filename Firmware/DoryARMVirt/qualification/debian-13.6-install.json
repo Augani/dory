@@ -1,5 +1,11 @@
 {
   "schemaVersion": 1,
+  "qualificationTarget": {
+    "guestFamily": "debian",
+    "guestVersion": "13.6.0",
+    "guestBuild": "13.6.0",
+    "guestArchitecture": "arm64"
+  },
   "steps": [
     {
       "waitFor": "*Install",
