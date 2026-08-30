@@ -135,3 +135,11 @@ and performs a fourth UEFI boot. Run it with
 `--expect DORY_COLD_SNAPSHOT_RESTORED`; success requires all nine interaction
 steps, both host actions, the pre-snapshot sentinel present, and the
 post-snapshot sentinel absent.
+
+`alpine-3.24-device-baseline.json` installs from the same immutable media and
+proves that the installed stock kernel discovers the UEFI environment, system
+block device, DoryARMVirt-v1 entropy slot, platform RTC, and network interface.
+It reads 32 bytes from VirtIO RNG and binds the guest-visible MAC before
+emitting `DORY_DEVICE_BASELINE_READY`. This is the minimum generic-device gate;
+desktop display, input, sound, camera, USB, sharing, and clipboard remain
+separate physical/device-matrix qualifications.

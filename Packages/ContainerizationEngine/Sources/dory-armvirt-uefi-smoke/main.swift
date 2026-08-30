@@ -362,6 +362,15 @@ import Foundation
       slot: systemDevice.virtioSlot,
       to: machine
     )
+    guard let entropySlot = DoryARMVirtV1ABI.virtioSlots.first(where: { $0.role == .entropy })
+    else {
+      throw VMError.invalidConfiguration("\(DoryARMVirtV1ABI.identity) has no entropy slot")
+    }
+    try attachVirtioDevice(
+      VirtioRng(),
+      slot: entropySlot.index,
+      to: machine
+    )
     if let installerMedia {
       try attachVirtioDevice(
         VirtioBlk(

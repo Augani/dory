@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "steps": [
+    {
+      "waitFor": "localhost login:",
+      "send": "root\n"
+    },
+    {
+      "waitFor": "localhost:~#",
+      "send": "ip link set eth0 up && udhcpc -i eth0 -n -q && printf 'https://dl-cdn.alpinelinux.org/alpine/v3.24/main\\n' > /etc/apk/repositories && apk add --no-cache dosfstools e2fsprogs grub-efi sfdisk && ERASE_DISKS=/dev/vda setup-disk -m sys -s 0 /dev/vda\n"
+    },
+    {
+      "waitFor": "Installation is complete",
+      "send": "reboot\n",
+      "installerMediaAfterSend": "detached"
+    },
+    {
+      "waitFor": "localhost login:",
+      "send": "root\n"
+    },
+    {
+      "waitFor": "localhost:~#",
+      "send": "test -d /sys/firmware/efi && test -b /dev/vda && test -b /dev/vda2 && test -c /dev/hwrng && dd if=/dev/hwrng of=/tmp/dory-rng.bin bs=32 count=1 2>/dev/null && test \"$(wc -c < /tmp/dory-rng.bin)\" -eq 32 && test -c /dev/rtc0 && hwclock -r >/dev/null && ip link show eth0 >/dev/null && test \"$(cat /sys/class/net/eth0/address)\" = \"5a:94:ef:e4:0c:ee\" && printf 'DORY_%s\\n' DEVICE_BASELINE_READY\n"
+    }
+  ]
+}
