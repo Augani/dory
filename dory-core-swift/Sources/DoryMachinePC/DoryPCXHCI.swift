@@ -487,6 +487,17 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
         lock.withLock { slots[slotID]?.endpoints[dci] = endpoint }
         continue
       }
+      if endpoint.type == .control {
+        processControlTransfer(
+          slotID: slotID,
+          dci: dci,
+          endpoint: endpoint,
+          device: device,
+          memory: memory,
+          firstTRB: bytes
+        )
+        return
+      }
       guard trbType == 1 || trbType == 5 else {
         postTransferEvent(
           trbAddress: endpoint.dequeueAddress,
@@ -545,6 +556,100 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
         dci: dci
       )
     }
+  }
+
+  private func processControlTransfer(
+    slotID: UInt8,
+    dci: UInt8,
+    endpoint: Slot.Endpoint,
+    device: any DoryPCUSBDevice,
+    memory: any DoryVirtioGuestMemory,
+    firstTRB: [UInt8]
+  ) {
+    let setupControl = uint32(Array(firstTRB[12..<16]))
+    guard (setupControl >> 10) & 0x3F == 2, setupControl & (1 << 6) != 0,
+      let setup = try? DoryPCUSBSetupPacket(bytes: Array(firstTRB[0..<8]))
+    else {
+      postTransferEvent(
+        trbAddress: endpoint.dequeueAddress,
+        completionCode: 5,
+        residualBytes: 0,
+        slotID: slotID,
+        dci: dci
+      )
+      return
+    }
+    var nextAddress = endpoint.dequeueAddress + 16
+    guard let next = try? memory.read(at: nextAddress, byteCount: 16), next.count == 16 else {
+      return
+    }
+    var nextControl = uint32(Array(next[12..<16]))
+    guard nextControl & 1 == (endpoint.cycle ? 1 : 0) else { return }
+    var dataAddress: UInt64 = 0
+    var requestedBytes = 0
+    var payload: [UInt8] = []
+    if (nextControl >> 10) & 0x3F == 3 {
+      dataAddress = uint64(Array(next[0..<8]))
+      requestedBytes = Int(uint32(Array(next[8..<12])) & 0x1_FFFF)
+      let dataDirection: DoryPCUSBTransferDirection = nextControl & (1 << 16) != 0 ? .in : .out
+      guard dataDirection == setup.direction else {
+        postTransferEvent(
+          trbAddress: nextAddress,
+          completionCode: 5,
+          residualBytes: requestedBytes,
+          slotID: slotID,
+          dci: dci
+        )
+        return
+      }
+      if dataDirection == .out {
+        guard let bytes = try? memory.read(at: dataAddress, byteCount: requestedBytes),
+          bytes.count == requestedBytes
+        else { return }
+        payload = bytes
+      }
+      nextAddress += 16
+      guard let status = try? memory.read(at: nextAddress, byteCount: 16), status.count == 16
+      else { return }
+      nextControl = uint32(Array(status[12..<16]))
+    }
+    guard (nextControl >> 10) & 0x3F == 4,
+      nextControl & 1 == (endpoint.cycle ? 1 : 0),
+      let transfer = try? DoryPCUSBTransfer(
+        type: .control,
+        direction: setup.direction,
+        endpoint: 0,
+        setup: setup,
+        payload: payload,
+        maximumResponseBytes: setup.direction == .in ? requestedBytes : 0
+      )
+    else { return }
+    let result = device.perform(transfer)
+    let response = Array(result.payload.prefix(requestedBytes))
+    if setup.direction == .in, !response.isEmpty {
+      do {
+        try memory.validate(at: dataAddress, byteCount: response.count, deviceWillWrite: true)
+        try memory.write(at: dataAddress, bytes: response)
+        memory.synchronize()
+      } catch {
+        return
+      }
+    }
+    var updated = endpoint
+    updated.dequeueAddress = nextAddress + 16
+    lock.withLock { slots[slotID]?.endpoints[dci] = updated }
+    guard nextControl & (1 << 5) != 0 else { return }
+    let residual = setup.direction == .in ? requestedBytes - response.count : 0
+    postTransferEvent(
+      trbAddress: nextAddress,
+      completionCode: completionCode(
+        status: result.status,
+        shortResponse: setup.direction == .in && response.count < requestedBytes
+      ),
+      residualBytes: residual,
+      slotID: slotID,
+      dci: dci
+    )
   }
 
   private func completionCode(status: DoryPCUSBTransferStatus, shortResponse: Bool) -> UInt8 {

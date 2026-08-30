@@ -202,6 +202,31 @@ import Testing
     #expect(try read32(machine, 0x2048) >> 24 == 13)
     #expect((try read32(machine, 0x204C) >> 10) & 0x3F == 32)
     #expect((try read32(machine, 0x204C) >> 16) & 0x1F == 3)
+
+    usbDevice.enqueue(try .init(status: .success, payload: [1, 2, 3, 4]))
+    let setup = UInt64(0x80) | UInt64(6) << 8 | UInt64(1) << 24 | UInt64(4) << 48
+    try machine.physicalMemory.write(
+      at: 0x7000,
+      bytes: littleEndian(setup) + littleEndian(UInt32(8))
+        + littleEndian(UInt32(3 << 16 | 2 << 10 | 1 << 6 | 1))
+    )
+    try machine.physicalMemory.write(
+      at: 0x7010,
+      bytes: littleEndian(UInt64(0xB000)) + littleEndian(UInt32(4))
+        + littleEndian(UInt32(1 << 16 | 3 << 10 | 1))
+    )
+    try machine.physicalMemory.write(
+      at: 0x7020,
+      bytes: [UInt8](repeating: 0, count: 12)
+        + littleEndian(UInt32(1 << 5 | 4 << 10 | 1))
+    )
+    try write32(machine, bar + 0x2004, 1)
+    #expect(try machine.physicalMemory.read(at: 0xB000, byteCount: 4) == [1, 2, 3, 4])
+    #expect(usbDevice.transfers.count == 2)
+    #expect(usbDevice.transfers[1].type == .control)
+    #expect(usbDevice.transfers[1].setup?.request == 6)
+    #expect(try read64(machine, 0x2050) == 0x7020)
+    #expect(try read32(machine, 0x2058) >> 24 == 1)
   }
 
   @Test func authorizedDeviceCapabilityFollowsPortResetDetachAndControllerReset() throws {
