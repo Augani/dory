@@ -534,7 +534,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       let translatedMemory = translatedMemories[processor]
       translatedMemory.updateContext(.init(state: state, mode: mode))
       let guestRIP = state.rip
-      if let execution = try baselineJIT.execute(
+      if let execution = try baselineJIT.executeSummary(
           byteProvider: { maximumCount in
             // A speculative block fetch can cross an unmapped guest page even when the current
             // instruction itself is valid. Preserve the architectural path by declining JIT
@@ -552,12 +552,12 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           memory: translatedMemory
         )
       {
-        let count = UInt64(execution.block.guestInstructionCount)
+        let count = UInt64(execution.guestInstructionCount)
         switch execution.exitCode {
         case .dispatch:
-          return .init(result: .retired, instructionCount: count, jitTier: execution.block.tier)
+          return .init(result: .retired, instructionCount: count, jitTier: execution.tier)
         case .halt:
-          return .init(result: .halted, instructionCount: count, jitTier: execution.block.tier)
+          return .init(result: .halted, instructionCount: count, jitTier: execution.tier)
         case .interpreter, .system, .portIO:
           break
         }

@@ -1477,6 +1477,23 @@ public struct DoryARM64BaselineExecution: Sendable, Hashable {
   }
 }
 
+/// Allocation-free dispatch metadata for machine loops that do not need to retain compiled code.
+public struct DoryARM64ExecutionSummary: Sendable, Hashable {
+  public let guestInstructionCount: UInt32
+  public let tier: DoryARM64CompilationTier
+  public let exitCode: DoryJITExitCode
+
+  public init(
+    guestInstructionCount: UInt32,
+    tier: DoryARM64CompilationTier,
+    exitCode: DoryJITExitCode
+  ) {
+    self.guestInstructionCount = guestInstructionCount
+    self.tier = tier
+    self.exitCode = exitCode
+  }
+}
+
 /// Owns one bounded MAP_JIT region and dispatches exact, helper-free baseline blocks through it.
 /// Unsupported blocks never enter executable memory and return `nil` so the caller can execute
 /// the instruction at the unchanged guest RIP with the interpreter.
@@ -1490,16 +1507,33 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     let maximumInstructions: Int
   }
 
-  private struct ResidentBlock {
+  private final class ResidentBlock {
     let block: DoryARM64CompiledBlock
     let offset: Int
     let codeGeneration: UInt64
     let memoryCodeGeneration: UInt64?
+
+    init(
+      block: DoryARM64CompiledBlock,
+      offset: Int,
+      codeGeneration: UInt64,
+      memoryCodeGeneration: UInt64?
+    ) {
+      self.block = block
+      self.offset = offset
+      self.codeGeneration = codeGeneration
+      self.memoryCodeGeneration = memoryCodeGeneration
+    }
   }
 
   private struct RecentResidentBlock {
     let key: LookupKey
     let resident: ResidentBlock
+  }
+
+  private struct ResidentExecution {
+    let resident: ResidentBlock
+    let exitCode: DoryJITExitCode
   }
 
   public let maximumCodeBytes: Int
@@ -1590,8 +1624,65 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     state: inout DoryX86ArchitecturalState,
     memory: (any DoryX86Memory)? = nil
   ) throws -> DoryARM64BaselineExecution? {
+    guard
+      let execution = try executeResident(
+        byteProvider: byteProvider,
+        codeGenerationProvider: codeGenerationProvider,
+        at: guestStart,
+        mode: mode,
+        addressSpaceID: addressSpaceID,
+        maximumInstructions: maximumInstructions,
+        state: &state,
+        memory: memory
+      )
+    else { return nil }
+    return .init(block: execution.resident.block, exitCode: execution.exitCode)
+  }
+
+  /// Executes through the same validated resident-block path while returning only the fields a
+  /// machine dispatcher consumes. This avoids retaining and releasing compiled code arrays for
+  /// every guest block.
+  public func executeSummary(
+    byteProvider: (_ maximumCount: Int) throws -> [UInt8],
+    codeGenerationProvider: ((_ byteCount: Int) throws -> UInt64?)? = nil,
+    at guestStart: UInt64,
+    mode: DoryX86ExecutionMode,
+    addressSpaceID: UInt64,
+    maximumInstructions: Int,
+    state: inout DoryX86ArchitecturalState,
+    memory: (any DoryX86Memory)? = nil
+  ) throws -> DoryARM64ExecutionSummary? {
+    guard
+      let execution = try executeResident(
+        byteProvider: byteProvider,
+        codeGenerationProvider: codeGenerationProvider,
+        at: guestStart,
+        mode: mode,
+        addressSpaceID: addressSpaceID,
+        maximumInstructions: maximumInstructions,
+        state: &state,
+        memory: memory
+      )
+    else { return nil }
+    return .init(
+      guestInstructionCount: execution.resident.block.guestInstructionCount,
+      tier: execution.resident.block.tier,
+      exitCode: execution.exitCode
+    )
+  }
+
+  private func executeResident(
+    byteProvider: (_ maximumCount: Int) throws -> [UInt8],
+    codeGenerationProvider: ((_ byteCount: Int) throws -> UInt64?)?,
+    at guestStart: UInt64,
+    mode: DoryX86ExecutionMode,
+    addressSpaceID: UInt64,
+    maximumInstructions: Int,
+    state: inout DoryX86ArchitecturalState,
+    memory: (any DoryX86Memory)?
+  ) throws -> ResidentExecution? {
     guard maximumInstructions > 0 else { return nil }
-    return try lock.withLock {
+    return try lock.withLock { () -> ResidentExecution? in
       let key = LookupKey(
         guestStart: guestStart,
         addressSpaceID: addressSpaceID,
@@ -1656,10 +1747,10 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
         Self.populateExecutionContext(context, from: state)
         let exit = try region.execute(at: resident.offset, context: context, memory: memory)
         if exit == .interpreter, resident.block.requiresMemoryCallbacks {
-          return .init(block: resident.block, exitCode: exit)
+          return ResidentExecution(resident: resident, exitCode: exit)
         }
         Self.apply(context: context, to: &state)
-        return .init(block: resident.block, exitCode: exit)
+        return ResidentExecution(resident: resident, exitCode: exit)
       }
     }
   }
