@@ -1497,6 +1497,11 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     let memoryCodeGeneration: UInt64?
   }
 
+  private struct RecentResidentBlock {
+    let key: LookupKey
+    let resident: ResidentBlock
+  }
+
   public let maximumCodeBytes: Int
   private let lock = NSLock()
   private let decoder: DoryX86Decoder
@@ -1506,6 +1511,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   private let optimizer: DoryIROptimizer
   private let region: DoryJITExecutableRegion
   private var entries: [LookupKey: ResidentBlock] = [:]
+  private var recentEntries: [RecentResidentBlock?] = .init(repeating: nil, count: 256)
   private var nextOffset = 0
 
   public init(
@@ -1531,6 +1537,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   public func invalidateAll() {
     lock.withLock {
       entries.removeAll(keepingCapacity: true)
+      recentEntries = .init(repeating: nil, count: recentEntries.count)
       nextOffset = 0
     }
   }
@@ -1546,6 +1553,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
         return blockRange.overlaps(guestRange)
       }.map(\.key)
       for key in victims { entries.removeValue(forKey: key) }
+      recentEntries = .init(repeating: nil, count: recentEntries.count)
     }
   }
 
@@ -1593,7 +1601,9 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
         maximumInstructions: maximumInstructions
       )
       var resident: ResidentBlock
-      if let cached = entries[key], cached.block.guestInstructionCount <= maximumInstructions {
+      if let cached = lookupResident(for: key),
+        cached.block.guestInstructionCount <= maximumInstructions
+      {
         let byteCount = Int(cached.block.guestByteCount)
         let memoryGeneration = try codeGenerationProvider?(byteCount) ?? nil
         if let cachedMemoryGeneration = cached.memoryCodeGeneration,
@@ -1611,9 +1621,9 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
               codeGeneration: cached.codeGeneration,
               memoryCodeGeneration: memoryGeneration
             )
-            entries[key] = resident
+            publish(resident, for: key)
           } else {
-            entries.removeValue(forKey: key)
+            removeResident(for: key)
             guard let refreshed = try compileResident(
               key: key,
               bytes: byteProvider(maximumInstructions * 15),
@@ -1682,6 +1692,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     guard byteCount <= region.capacity else { return nil }
     if nextOffset > region.capacity - byteCount {
       entries.removeAll(keepingCapacity: true)
+      recentEntries = .init(repeating: nil, count: recentEntries.count)
       nextOffset = 0
     }
     let offset = nextOffset
@@ -1695,8 +1706,43 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       codeGeneration: Self.fingerprint(bytes: guestBytes, mode: mode),
       memoryCodeGeneration: memoryCodeGeneration
     )
-    entries[key] = resident
+    publish(resident, for: key)
     return resident
+  }
+
+  private func lookupResident(for key: LookupKey) -> ResidentBlock? {
+    let index = recentIndex(for: key)
+    if let recent = recentEntries[index], recent.key == key { return recent.resident }
+    guard let resident = entries[key] else { return nil }
+    recentEntries[index] = .init(key: key, resident: resident)
+    return resident
+  }
+
+  private func publish(_ resident: ResidentBlock, for key: LookupKey) {
+    entries[key] = resident
+    recentEntries[recentIndex(for: key)] = .init(key: key, resident: resident)
+  }
+
+  private func removeResident(for key: LookupKey) {
+    entries.removeValue(forKey: key)
+    let index = recentIndex(for: key)
+    if recentEntries[index]?.key == key { recentEntries[index] = nil }
+  }
+
+  private func recentIndex(for key: LookupKey) -> Int {
+    var value = key.guestStart
+    value ^= key.addressSpaceID &* 0x9e37_79b9_7f4a_7c15
+    value ^= UInt64(truncatingIfNeeded: key.maximumInstructions) &* 0xbf58_476d_1ce4_e5b9
+    value ^= UInt64(key.privilegeLevel) << 5
+    value ^= key.pagingEnabled ? 1 << 9 : 0
+    switch key.executionMode {
+    case .real16: value ^= 0x11
+    case .protected16: value ^= 0x22
+    case .protected32: value ^= 0x33
+    case .long64: value ^= 0x44
+    }
+    value ^= value >> 33
+    return Int(value & UInt64(recentEntries.count - 1))
   }
 
   private static func populateExecutionContext(
