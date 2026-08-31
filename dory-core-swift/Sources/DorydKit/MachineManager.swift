@@ -8084,12 +8084,6 @@ public final class MachineManager: @unchecked Sendable {
                 "resolved DoryPC-v1 hardware graphics requires the signed PC renderer admission path"
             )
         }
-        guard launchBinding.portForwards.isEmpty else {
-            throw MachineManagerError.persistence(
-                "resolved DoryPC-v1 port forwards require the PC gvproxy forwarding adapter"
-            )
-        }
-
         let storageUsages = resolvedPlan.launchArtifacts.flatMap { artifact in
             artifact.usages.compactMap { usage in
                 usage.kind == .storage ? (artifact, usage) : nil

@@ -1,4 +1,5 @@
 import Darwin
+import DoryCore
 import DoryHV
 import DoryOperations
 import DoryVirtio
@@ -29,6 +30,7 @@ final class DoryPCGVProxyNetworkBackend: DoryVirtioNetworkBackend, @unchecked Se
     private let configurationPath: String
     private let process: Process
     private let receiveSource: any DispatchSourceRead
+    private let portForwardReconciler: ResolvedPortForwardReconciler?
     private let receiveCompletion = DispatchSemaphore(value: 0)
     private let maximumFrameBytes: Int
     private var receiveSink: (@Sendable ([UInt8]) -> Void)?
@@ -38,7 +40,8 @@ final class DoryPCGVProxyNetworkBackend: DoryVirtioNetworkBackend, @unchecked Se
         gvproxyPath: String,
         stateDirectory: String,
         attachment: DoryVirtualMachineNetworkAttachmentMode,
-        interface: DoryVirtualMachineNetworkInterfaceCapabilityRequest
+        interface: DoryVirtualMachineNetworkInterfaceCapabilityRequest,
+        portForwards: [DoryVMPortForward]
     ) throws {
         guard attachment == .sharedNAT || attachment == .isolated else {
             throw DoryPCGVProxyNetworkError.invalidConfiguration(
@@ -47,6 +50,15 @@ final class DoryPCGVProxyNetworkBackend: DoryVirtioNetworkBackend, @unchecked Se
         }
         guard interface.isValid else {
             throw DoryPCGVProxyNetworkError.invalidConfiguration("network identity is invalid")
+        }
+        guard let resolvedPortForwards = PublishedPortForwardPlan.resolvedForwards(
+            portForwards,
+            guestIP: "192.168.127.2"
+        ), attachment == .sharedNAT
+            || !portForwards.contains(where: { $0.exposure == .lan }) else {
+            throw DoryPCGVProxyNetworkError.invalidConfiguration(
+                "resolved port-forward contract is invalid for the network attachment"
+            )
         }
         guard FileManager.default.isExecutableFile(atPath: gvproxyPath) else {
             throw DoryPCGVProxyNetworkError.invalidConfiguration("gvproxy is not executable")
@@ -77,15 +89,40 @@ final class DoryPCGVProxyNetworkBackend: DoryVirtioNetworkBackend, @unchecked Se
         child.standardOutput = FileHandle.standardError
         child.standardError = FileHandle.standardError
         try child.run()
+        var pendingDescriptor: Int32 = -1
+        var pendingReconciler: ResolvedPortForwardReconciler?
         do {
             try Self.waitForSocket(datapath, child: child)
-            let descriptor = try Self.connect(localPath: local, remotePath: datapath)
+            pendingDescriptor = try Self.connect(localPath: local, remotePath: datapath)
+            try Self.publishResolvedPortForwards(
+                resolvedPortForwards,
+                apiSocketPath: api
+            )
+            let reconciler = resolvedPortForwards.isEmpty ? nil
+                : ResolvedPortForwardReconciler(
+                    desired: resolvedPortForwards,
+                    apiSocketPath: api,
+                    log: { message in
+                        FileHandle.standardError.write(
+                            Data("dory-hv DoryPC network: \(message)\n".utf8)
+                        )
+                    }
+                )
+            pendingReconciler = reconciler
+            guard reconciler?.reconcileNow() != false else {
+                throw DoryPCGVProxyNetworkError.invalidConfiguration(
+                    "gvproxy did not retain the resolved port-forward registry"
+                )
+            }
+            reconciler?.start()
+            let descriptor = pendingDescriptor
             self.descriptor = descriptor
             localSocketPath = local
             datapathSocketPath = datapath
             apiSocketPath = api
             configurationPath = yaml
             process = child
+            portForwardReconciler = reconciler
             maximumFrameBytes = Int(interface.maximumTransmissionUnit) + 18
             let source = DispatchSource.makeReadSource(
                 fileDescriptor: descriptor,
@@ -101,7 +138,11 @@ final class DoryPCGVProxyNetworkBackend: DoryVirtioNetworkBackend, @unchecked Se
                 receiveCompletion.signal()
             }
             source.resume()
+            pendingDescriptor = -1
+            pendingReconciler = nil
         } catch {
+            pendingReconciler?.stop()
+            if pendingDescriptor >= 0 { Darwin.close(pendingDescriptor) }
             ChildProcessTerminator.terminateAndReap(child)
             for path in [local, datapath, api, yaml] { unlink(path) }
             throw error
@@ -142,6 +183,7 @@ final class DoryPCGVProxyNetworkBackend: DoryVirtioNetworkBackend, @unchecked Se
         guard shouldStop else { return }
         receiveSource.cancel()
         _ = receiveCompletion.wait(timeout: .now() + 2)
+        portForwardReconciler?.stop()
         ChildProcessTerminator.terminateAndReap(process)
         for path in [localSocketPath, datapathSocketPath, apiSocketPath, configurationPath] {
             unlink(path)
@@ -239,6 +281,63 @@ final class DoryPCGVProxyNetworkBackend: DoryVirtioNetworkBackend, @unchecked Se
         throw DoryPCGVProxyNetworkError.invalidConfiguration(
             "gvproxy did not publish its datapath before the deadline"
         )
+    }
+
+    private static func publishResolvedPortForwards(
+        _ forwards: Set<PublishedPortForward>,
+        apiSocketPath: String
+    ) throws {
+        for forward in forwards.sorted(by: portForwardOrder) {
+            let bodyData = try JSONSerialization.data(withJSONObject: [
+                "local": forward.localEndpoint,
+                "remote": forward.remoteEndpoint,
+                "protocol": forward.protocol.rawValue,
+            ])
+            guard let body = String(data: bodyData, encoding: .utf8) else {
+                throw DoryPCGVProxyNetworkError.invalidConfiguration(
+                    "could not encode a resolved gvproxy forward"
+                )
+            }
+            var published = false
+            for _ in 0..<100 {
+                let curl = Process()
+                curl.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
+                curl.arguments = [
+                    "--fail", "--silent", "--show-error",
+                    "--connect-timeout", "1", "--max-time", "1",
+                    "--unix-socket", apiSocketPath,
+                    "--request", "POST",
+                    "--data-binary", body,
+                    "http://gvproxy/services/forwarder/expose",
+                ]
+                curl.standardOutput = FileHandle.nullDevice
+                curl.standardError = FileHandle.nullDevice
+                if (try? curl.run()) != nil {
+                    curl.waitUntilExit()
+                    if curl.terminationStatus == 0 {
+                        published = true
+                        break
+                    }
+                }
+                usleep(20_000)
+            }
+            guard published else {
+                throw DoryPCGVProxyNetworkError.invalidConfiguration(
+                    "gvproxy could not publish \(forward.localEndpoint)/\(forward.protocol.rawValue)"
+                )
+            }
+        }
+    }
+
+    private static func portForwardOrder(
+        _ lhs: PublishedPortForward,
+        _ rhs: PublishedPortForward
+    ) -> Bool {
+        if lhs.protocol != rhs.protocol {
+            return lhs.protocol.rawValue < rhs.protocol.rawValue
+        }
+        if lhs.localHost != rhs.localHost { return lhs.localHost < rhs.localHost }
+        return lhs.localPort < rhs.localPort
     }
 
     private static func validateSocketPath(_ path: String) throws {

@@ -112,7 +112,6 @@ enum DoryPCMode {
             }
             let devices = envelope.devices
             guard devices.networkAttachment != .bridged,
-                  envelope.portForwards.isEmpty,
                   !devices.audioInput,
                   !devices.audioOutput,
                   !devices.cameraInput,
@@ -150,7 +149,8 @@ enum DoryPCMode {
                     gvproxyPath: configuration.gvproxyPath,
                     stateDirectory: configuration.stateDirectory,
                     attachment: devices.networkAttachment,
-                    interface: interface
+                    interface: interface,
+                    portForwards: envelope.portForwards
                 )
                 networkRuntime = connected
                 networkBackend = connected
