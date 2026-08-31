@@ -297,6 +297,10 @@ private func run() throws {
       )
     } ?? []
   let instructionBytes = (try? composed.machine.instructionBytes(maximumCount: 16)) ?? nil
+  let stackBytes =
+    state.flatMap {
+      (try? composed.machine.memoryBytes(atLinearAddress: $0.registers.rsp, maximumCount: 64)) ?? nil
+    }
   let payload: [String: Any] = [
     "cr0": state.map { hexadecimal($0.control.cr0) } ?? "unavailable",
     "cr3": state.map { hexadecimal($0.control.cr3) } ?? "unavailable",
@@ -326,6 +330,7 @@ private func run() throws {
     "variableStoreDirectory": ownsVariableDirectory ? "temporary" : variableDirectory.path,
     "pageTableTrace": pageTrace,
     "instructionBytes": instructionBytes.map(hexadecimalBytes) ?? "unmapped",
+    "stackBytes": stackBytes.map(hexadecimalBytes) ?? "unmapped",
     "rax": state.map { hexadecimal($0.registers.rax) } ?? "unavailable",
     "rbx": state.map { hexadecimal($0.registers.rbx) } ?? "unavailable",
     "rcx": state.map { hexadecimal($0.registers.rcx) } ?? "unavailable",

@@ -9,6 +9,10 @@ import Testing
     try machine.load(kernel: makeELF(code: [0x90, 0xF4]), commandLine: "x")
 
     #expect(try machine.instructionBytes(maximumCount: 2) == [0x90, 0xF4])
+    let entry = try #require(machine.state?.rip)
+    #expect(try machine.memoryBytes(atLinearAddress: entry, maximumCount: 2) == [0x90, 0xF4])
+    #expect(try machine.memoryBytes(atLinearAddress: entry, maximumCount: 0) == [])
+    #expect(try machine.memoryBytes(forProcessor: 1, atLinearAddress: entry, maximumCount: 1) == nil)
     #expect(try machine.run(maximumInstructions: 1) == .instructionBudget(1))
     #expect(try machine.instructionBytes(maximumCount: 1) == [0xF4])
     #expect(try machine.instructionBytes(maximumCount: 0) == [])

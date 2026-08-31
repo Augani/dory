@@ -368,6 +368,24 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     }
   }
 
+  /// Reads diagnostic data through the processor's current linear-address translation.
+  public func memoryBytes(
+    forProcessor index: Int = 0,
+    atLinearAddress address: UInt64,
+    maximumCount: Int
+  ) throws -> [UInt8]? {
+    guard maximumCount > 0 else { return [] }
+    return try lock.withLock {
+      guard loadedStates.indices.contains(index), let state = loadedStates[index] else { return nil }
+      let translatedMemory = DoryX86TranslatedMemory(
+        physicalMemory: physicalMemories[index],
+        pagingUnit: pagingUnits[index],
+        context: .init(state: state, mode: executionMode(state))
+      )
+      return try translatedMemory.read(at: address, byteCount: maximumCount)
+    }
+  }
+
   public func run(
     maximumInstructions: UInt64,
     exceptionPolicy: DoryPCExceptionPolicy = .stop
