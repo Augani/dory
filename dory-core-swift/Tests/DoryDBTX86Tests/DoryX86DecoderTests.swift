@@ -1006,5 +1006,28 @@ import Testing
     #expect(throws: DoryX86DecodeError.self) {
       try decoder.decode([0x66, 0x0F, 0xC3, 0x00], at: 0x1000, mode: .long64)
     }
+    #expect(
+      try decoder.decode([0x66, 0x45, 0x0F, 0xC5, 0xCA, 0x0B], at: 0x1000, mode: .long64)
+        .operation
+        == .extractPackedWord(
+          destination: .register(.r9, width: .doubleword),
+          source: 10,
+          index: 0x0B,
+          mmx: false
+        )
+    )
+    #expect(
+      try decoder.decode([0x0F, 0xC5, 0xC3, 0x06], at: 0x1000, mode: .long64)
+        .operation
+        == .extractPackedWord(
+          destination: .register(.rax, width: .doubleword),
+          source: 3,
+          index: 6,
+          mmx: true
+        )
+    )
+    #expect(throws: DoryX86DecodeError.self) {
+      try decoder.decode([0x66, 0x0F, 0xC5, 0x00, 0x00], at: 0x1000, mode: .long64)
+    }
   }
 }

@@ -1467,6 +1467,39 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
     )
   }
 
+  @Test func packedWordExtractionSelectsWrappedSSE2AndMMXLanes() throws {
+    let base: UInt64 = 0x1000
+    let memory = DoryX86ByteArrayMemory(
+      baseAddress: base,
+      bytes: [
+        0x66, 0x0F, 0xC5, 0xC1, 0x0B,
+        0x0F, 0xC5, 0xD3, 0x06,
+      ]
+    )
+    var floatingPoint = try DoryX86FloatingPointState()
+    floatingPoint.ymm[1] = try vectorRegister(
+      words: [0x1000, 0x2112, 0x3223, 0x4334, 0x5445, 0x6556, 0x7667, 0x8778]
+    )
+    floatingPoint.x87[3] = try .init(
+      bytes: [0x10, 0x11, 0x20, 0x22, 0x30, 0x33, 0x40, 0x44, 0, 0],
+      expectedByteCount: 10
+    )
+    let flags: DoryX86RFLAGS = [.reservedOne, .carry, .zero]
+    var state = try DoryX86ArchitecturalState(
+      registers: .init(rax: UInt64.max, rdx: UInt64.max),
+      rip: base,
+      rflags: flags,
+      floatingPoint: floatingPoint
+    )
+
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+
+    #expect(state.registers.rax == 0x4334)
+    #expect(state.registers.rdx == 0x3330)
+    #expect(state.rflags == flags)
+  }
+
   @Test func sse2PackedMultipliesProduceArchitecturalLaneResults() throws {
     let memory = DoryX86ByteArrayMemory(
       baseAddress: 0x1000,

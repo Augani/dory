@@ -363,6 +363,12 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
   )
   case moveIntegerToVector(destination: UInt8, source: DoryX86Operand)
   case moveVectorToInteger(destination: DoryX86Operand, source: UInt8)
+  case extractPackedWord(
+    destination: DoryX86Operand,
+    source: UInt8,
+    index: UInt8,
+    mmx: Bool
+  )
   case moveVectorMask(
     destination: DoryX86Operand,
     source: DoryX86VectorOperand,

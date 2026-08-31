@@ -1342,6 +1342,26 @@ public struct DoryX86Decoder: Sendable {
             address: address, detail: "MOVNTI requires a memory destination")
         }
         operation = .move(destination: operands.rm, source: operands.reg)
+      case 0xC5:
+        guard prefixes.repeatPrefix == nil, prefixes.rex?.w != true else {
+          throw DoryX86DecodeError.invalidEncoding(
+            address: address, detail: "PEXTRW rejects repeat and REX.W prefixes")
+        }
+        let operands = try decodeModRM(
+          cursor: &cursor, width: .doubleword, prefixes: prefixes, mode: mode)
+        guard case .register = operands.rm else {
+          throw DoryX86DecodeError.invalidEncoding(
+            address: address, detail: "PEXTRW requires a packed register source")
+        }
+        let mmx = !prefixes.operandSizeOverride
+        operation = .extractPackedWord(
+          destination: operands.reg,
+          source: mmx
+            ? try mmxRegister(operands.rm, address: address)
+            : vectorRegister(operands.rm),
+          index: try cursor.readByte(),
+          mmx: mmx
+        )
       case 0xE7:
         guard prefixes.operandSizeOverride, prefixes.repeatPrefix == nil else {
           throw DoryX86DecodeError.invalidEncoding(

@@ -1003,6 +1003,20 @@ public struct DoryX86Interpreter: Sendable {
           state: &state,
           memory: executionMemory
         )
+      case .extractPackedWord(let destination, let source, let encodedIndex, let mmx):
+        let bytes =
+          mmx
+          ? state.floatingPoint.x87[Int(source)].bytes
+          : state.floatingPoint.ymm[Int(source)].bytes
+        let laneCount: UInt8 = mmx ? 4 : 8
+        let offset = Int(encodedIndex % laneCount) * 2
+        try write(
+          fromLittleEndian(Array(bytes[offset..<(offset + 2)])),
+          to: destination,
+          instruction: instruction,
+          state: &state,
+          memory: executionMemory
+        )
       case .moveVectorMask(let destination, let source, let laneWidth, let vectorByteCount):
         let count = Int(vectorByteCount)
         let bytes =
