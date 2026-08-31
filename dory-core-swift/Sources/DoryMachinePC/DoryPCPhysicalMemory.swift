@@ -1,4 +1,5 @@
 import DoryDBTX86
+import DoryPlatformC
 import DoryVirtio
 import Foundation
 
@@ -42,12 +43,22 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory, 
     let device: any DoryPCMMIODevice
   }
 
+  private final class SealedMappings: @unchecked Sendable {
+    let values: [Mapping]
+
+    init(_ values: [Mapping]) {
+      self.values = values
+    }
+  }
+
   public let ram: DoryX86ByteArrayMemory
   private let mmioHoleStart: UInt64
   private let above4GRAMStart: UInt64
   private let lock = NSLock()
   private var mappings: [Mapping] = []
   private var isSealed = false
+  private var sealedMappings: SealedMappings?
+  private let hasPublishedSealedMappings: UnsafeMutablePointer<UInt8>
 
   public convenience init(ram: DoryX86ByteArrayMemory) {
     self.init(
@@ -67,6 +78,13 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory, 
     self.ram = ram
     self.mmioHoleStart = mmioHoleStart
     self.above4GRAMStart = above4GRAMStart
+    hasPublishedSealedMappings = .allocate(capacity: 1)
+    hasPublishedSealedMappings.initialize(to: 0)
+  }
+
+  deinit {
+    hasPublishedSealedMappings.deinitialize(count: 1)
+    hasPublishedSealedMappings.deallocate()
   }
 
   public func attach(_ device: any DoryPCMMIODevice) throws {
@@ -90,7 +108,17 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory, 
     }
   }
 
-  public func seal() { lock.withLock { isSealed = true } }
+  public func seal() {
+    lock.withLock {
+      guard !isSealed else { return }
+      sealedMappings = SealedMappings(mappings)
+      isSealed = true
+      // Machine execution starts only after sealing. Release/acquire publication makes the
+      // immutable routing table safe to read without taking the configuration lock on every
+      // translated RAM access.
+      dory_atomic_u8_store_release(hasPublishedSealedMappings, 1)
+    }
+  }
 
   public func instructionBytes(at address: UInt64, maximumCount: Int) throws -> [UInt8] {
     guard maximumCount > 0 else { return [] }
@@ -180,7 +208,7 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory, 
   }
 
   public func synchronize() {
-    let devices = lock.withLock { mappings.map(\.device) }
+    let devices = withMappings { $0.map(\.device) }
     ram.synchronize()
     for device in devices { device.synchronize() }
   }
@@ -236,12 +264,12 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory, 
       throw DoryX86MemoryError.unmapped(
         address: address, byteCount: byteCount, access: access)
     }
-    let mappingBoundary = lock.withLock {
-      (
-        startsInDevice: mappings.contains {
-          address >= $0.lowerBound && address < $0.upperBound
-        },
-        nextDevice: mappings.first { $0.lowerBound > address }?.lowerBound
+    let mappingBoundary = withMappings { mappings in
+      let index = insertionIndex(for: address, in: mappings)
+      let preceding = index > 0 ? mappings[index - 1] : nil
+      return (
+        startsInDevice: preceding.map { address < $0.upperBound } ?? false,
+        nextDevice: index < mappings.count ? mappings[index].lowerBound : nil
       )
     }
     guard !mappingBoundary.startsInDevice else {
@@ -270,12 +298,11 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory, 
     guard !overflow else {
       throw DoryX86MemoryError.addressOverflow(address: address, byteCount: byteCount)
     }
-    return try lock.withLock {
-      guard
-        let mapping = mappings.first(where: {
-          address >= $0.lowerBound && address < $0.upperBound
-        })
-      else { return nil }
+    return try withMappings { mappings in
+      let index = insertionIndex(for: address, in: mappings)
+      guard index > 0 else { return nil }
+      let mapping = mappings[index - 1]
+      guard address < mapping.upperBound else { return nil }
       guard upper <= mapping.upperBound else {
         throw DoryX86MemoryError.unmapped(
           address: address,
@@ -285,6 +312,31 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory, 
       }
       return (mapping.device, address - mapping.lowerBound)
     }
+  }
+
+  private func withMappings<Result>(
+    _ body: ([Mapping]) throws -> Result
+  ) rethrows -> Result {
+    if dory_atomic_u8_load_acquire(hasPublishedSealedMappings) != 0 {
+      // The release store in seal() publishes this immutable box before execution begins.
+      return try body(sealedMappings!.values)
+    }
+    return try lock.withLock { try body(mappings) }
+  }
+
+  /// Returns the first mapping whose lower bound is greater than `address`.
+  private func insertionIndex(for address: UInt64, in mappings: [Mapping]) -> Int {
+    var lower = 0
+    var upper = mappings.count
+    while lower < upper {
+      let middle = lower + (upper - lower) / 2
+      if mappings[middle].lowerBound <= address {
+        lower = middle + 1
+      } else {
+        upper = middle
+      }
+    }
+    return lower
   }
 }
 

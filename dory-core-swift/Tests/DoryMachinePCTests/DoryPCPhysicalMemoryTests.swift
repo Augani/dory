@@ -23,6 +23,32 @@ import Testing
     }
   }
 
+  @Test func routingRemainsExactAcrossSealedTablePublication() throws {
+    let ram = DoryX86ByteArrayMemory(byteCount: 0x4000)
+    let bus = DoryPCPhysicalMemoryBus(ram: ram)
+    let first = TestMMIODevice(baseAddress: 0x1000, byteCount: 0x100)
+    let second = TestMMIODevice(baseAddress: 0x3000, byteCount: 0x100)
+    try bus.attach(first)
+    try bus.attach(second)
+
+    try bus.writeScalar(at: 0x0800, value: 0x4433_2211, byteCount: 4)
+    try bus.write(at: 0x1010, bytes: [1, 2, 3, 4])
+    #expect(try bus.readScalar(at: 0x0800, byteCount: 4) == 0x4433_2211)
+    #expect(try bus.read(at: 0x1010, byteCount: 4) == [1, 2, 3, 4])
+
+    bus.seal()
+    try bus.writeScalar(at: 0x2000, value: 0x8877_6655_4433_2211, byteCount: 8)
+    try bus.write(at: 0x3020, bytes: [5, 6, 7, 8])
+    #expect(try bus.readScalar(at: 0x2000, byteCount: 8) == 0x8877_6655_4433_2211)
+    #expect(try bus.read(at: 0x3020, byteCount: 4) == [5, 6, 7, 8])
+    #expect(throws: DoryX86MemoryError.self) {
+      try bus.read(at: 0x0FFF, byteCount: 2)
+    }
+    #expect(throws: DoryX86MemoryError.self) {
+      try bus.read(at: 0x30FF, byteCount: 2)
+    }
+  }
+
   @Test func localAPICMMIOProgramsPrioritySpuriousVectorAndTimer() throws {
     let local = DoryPCLocalAPIC(apicID: 0)
     let mmio = DoryPCLocalAPICMMIO(apic: local)
@@ -165,5 +191,27 @@ import Testing
     #expect(throws: DoryX86MemoryError.self) {
       try bus.validateDMA(at: 0x1000, byteCount: 1, deviceWillWrite: true)
     }
+  }
+}
+
+private final class TestMMIODevice: DoryPCMMIODevice, @unchecked Sendable {
+  let baseAddress: UInt64
+  let byteCount: UInt64
+  private var storage: [UInt8]
+
+  init(baseAddress: UInt64, byteCount: UInt64) {
+    self.baseAddress = baseAddress
+    self.byteCount = byteCount
+    storage = Array(repeating: 0, count: Int(byteCount))
+  }
+
+  func read(offset: UInt64, byteCount: Int) throws -> [UInt8] {
+    let lower = Int(offset)
+    return Array(storage[lower..<(lower + byteCount)])
+  }
+
+  func write(offset: UInt64, bytes: [UInt8]) throws {
+    let lower = Int(offset)
+    storage.replaceSubrange(lower..<(lower + bytes.count), with: bytes)
   }
 }

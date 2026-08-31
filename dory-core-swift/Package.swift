@@ -112,12 +112,17 @@ let package = Package(
       publicHeadersPath: "include"
     ),
     .target(
+      name: "DoryPlatformC",
+      dependencies: [],
+      publicHeadersPath: "include"
+    ),
+    .target(
       name: "DoryDBTX86",
       dependencies: ["DoryExecutionContracts", "DoryJITRuntimeC"]
     ),
     .target(
       name: "DoryMachinePC",
-      dependencies: ["DoryDBTX86", "DoryExecutionContracts", "DoryVirtio"]
+      dependencies: ["DoryDBTX86", "DoryExecutionContracts", "DoryPlatformC", "DoryVirtio"]
     ),
     .target(
       name: "DoryMachineARMVirt",
