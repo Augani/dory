@@ -254,6 +254,13 @@ struct DesktopScanoutResourceIdentity: Hashable, Sendable {
             generation: metalUpdate.resourceGeneration
         )
     }
+
+    init(doryPCUpdate: DoryPCVirGLScanoutUpdate) {
+        self.init(
+            resourceID: doryPCUpdate.flush.resourceID,
+            generation: doryPCUpdate.rendererResourceGeneration
+        )
+    }
 }
 
 /// Pure presentation lifetime state. It remembers releases independently of the currently bound
@@ -1240,6 +1247,9 @@ class DesktopDisplayView: NSView {
     @discardableResult
     func present(_ update: VirtioGPUMetalScanoutUpdate) -> Bool { false }
 
+    @discardableResult
+    func present(_ update: DoryPCVirGLScanoutUpdate) -> Bool { false }
+
     func release(resourceID: UInt32, throughGeneration: UInt64) {}
     func disable() {}
     func drawableSurfaceDidChange() {}
@@ -1564,11 +1574,47 @@ class DesktopDisplayView: NSView {
     ]
 }
 
+private enum DesktopPendingMetalUpdate: @unchecked Sendable {
+    case rawHV(VirtioGPUMetalScanoutUpdate)
+    case doryPC(DoryPCVirGLScanoutUpdate)
+
+    var scanoutID: UInt32 {
+        switch self {
+        case .rawHV(let update): update.scanoutID
+        case .doryPC(let update): update.flush.scanoutID
+        }
+    }
+
+    var resourceID: UInt32 {
+        switch self {
+        case .rawHV(let update): update.resourceID
+        case .doryPC(let update): update.flush.resourceID
+        }
+    }
+
+    var resourceGeneration: UInt64 {
+        switch self {
+        case .rawHV(let update): update.resourceGeneration
+        case .doryPC(let update): update.rendererResourceGeneration
+        }
+    }
+
+    func rejectAndRetire() {
+        switch self {
+        case .rawHV(let update):
+            update.rejectHostSubmission()
+            update.presentation.discardWithoutPresentation()
+        case .doryPC(let update):
+            update.retire()
+        }
+    }
+}
+
 final class DesktopFrameMailbox: @unchecked Sendable {
     private let lock = NSLock()
     private let scanoutID: UInt32
     private let coalescer: DesktopScanoutFrameCoalescer
-    private var pendingMetalUpdate: VirtioGPUMetalScanoutUpdate?
+    private var pendingMetalUpdate: DesktopPendingMetalUpdate?
     /// Displaced authorities are retired synchronously by their producer callback rather than
     /// accumulated while AppKit is stalled. Delivery will not acknowledge any release until these
     /// bounded in-flight calls have returned.
@@ -1647,7 +1693,7 @@ final class DesktopFrameMailbox: @unchecked Sendable {
         }
         let displaced = pendingMetalUpdate
         if displaced != nil { discardOperationsInFlight += 1 }
-        pendingMetalUpdate = update
+        pendingMetalUpdate = .rawHV(update)
         disabled = false
         let shouldSchedule = !deliveryScheduled
         deliveryScheduled = true
@@ -1657,6 +1703,28 @@ final class DesktopFrameMailbox: @unchecked Sendable {
             logWorkerScanoutProgress(stage: "mailbox-delivery-scheduled")
             scheduleDelivery()
         }
+    }
+
+    /// DoryPC receives the same signed renderer lease, but its VirtIO-GPU transport owns guest
+    /// completion independently. The mailbox still owns the exact lease lifetime through Metal.
+    func submit(_ update: DoryPCVirGLScanoutUpdate) -> Bool {
+        logWorkerScanoutProgress(stage: "dorypc-mailbox-submit")
+        lock.lock()
+        guard update.flush.scanoutID == scanoutID else {
+            lock.unlock()
+            update.retire()
+            return false
+        }
+        let displaced = pendingMetalUpdate
+        if displaced != nil { discardOperationsInFlight += 1 }
+        pendingMetalUpdate = .doryPC(update)
+        disabled = false
+        let shouldSchedule = !deliveryScheduled
+        deliveryScheduled = true
+        lock.unlock()
+        if let displaced { retireDisplacedPresentation(displaced) }
+        if shouldSchedule { scheduleDelivery() }
+        return true
     }
 
     /// Drop presentation storage only when the guest destroys the corresponding virtio-gpu
@@ -1669,7 +1737,7 @@ final class DesktopFrameMailbox: @unchecked Sendable {
             resourceID: release.resourceID,
             throughGeneration: release.resourceGeneration
         )
-        let displacedMetal: VirtioGPUMetalScanoutUpdate?
+        let displacedMetal: DesktopPendingMetalUpdate?
         if let update = pendingMetalUpdate,
            update.resourceID == release.resourceID,
            update.resourceGeneration <= release.resourceGeneration {
@@ -1784,21 +1852,26 @@ final class DesktopFrameMailbox: @unchecked Sendable {
         }
         let presentedMetal: Bool
         if shouldDisable {
-            metalUpdate?.rejectHostSubmission()
-            metalUpdate?.presentation.discardWithoutPresentation()
+            metalUpdate?.rejectAndRetire()
             presentedMetal = false
         } else if let metalUpdate {
             logWorkerScanoutProgress(stage: "view-present-enter")
-            presentedMetal = view?.present(metalUpdate) == true
+            switch metalUpdate {
+            case .rawHV(let update):
+                presentedMetal = view?.present(update) == true
+                if presentedMetal {
+                    update.acceptHostSubmission()
+                } else {
+                    update.rejectHostSubmission()
+                    update.presentation.discardWithoutPresentation()
+                }
+            case .doryPC(let update):
+                presentedMetal = view?.present(update) == true
+                if !presentedMetal { update.retire() }
+            }
             logWorkerScanoutProgress(
                 stage: presentedMetal ? "view-present-accepted" : "view-present-rejected"
             )
-            if presentedMetal {
-                metalUpdate.acceptHostSubmission()
-            } else {
-                metalUpdate.rejectHostSubmission()
-                metalUpdate.presentation.discardWithoutPresentation()
-            }
         } else {
             presentedMetal = false
         }
@@ -1857,9 +1930,8 @@ final class DesktopFrameMailbox: @unchecked Sendable {
         return overflow ? UInt64.max : sum
     }
 
-    private func retireDisplacedPresentation(_ update: VirtioGPUMetalScanoutUpdate) {
-        update.rejectHostSubmission()
-        update.presentation.discardWithoutPresentation()
+    private func retireDisplacedPresentation(_ update: DesktopPendingMetalUpdate) {
+        update.rejectAndRetire()
         finishDisplacedRetirement()
     }
 
@@ -1964,6 +2036,53 @@ struct DesktopMetalScanoutGeometry: Equatable {
         self.dirtyRect = dirtyRect
         self.yOriginTop = presentation.yOriginTop
     }
+
+    init(update: DoryPCVirGLScanoutUpdate, expectedScanoutID: UInt32) throws {
+        let flush = update.flush
+        guard flush.scanoutID == expectedScanoutID,
+              flush.resourceID != 0,
+              update.rendererResourceGeneration != 0 else {
+            throw DesktopMetalScanoutLayoutError.identityMismatch
+        }
+        let sourceRect = VirtioGPURect(
+            x: flush.sourceRectangle.x,
+            y: flush.sourceRectangle.y,
+            width: flush.sourceRectangle.width,
+            height: flush.sourceRectangle.height
+        )
+        let dirtyRect = VirtioGPURect(
+            x: flush.damagedRectangle.x,
+            y: flush.damagedRectangle.y,
+            width: flush.damagedRectangle.width,
+            height: flush.damagedRectangle.height
+        )
+        guard DesktopMetalScanoutLayout.containsForCPU(
+                sourceRect,
+                width: update.width,
+                height: update.height
+              ),
+              DesktopMetalScanoutLayout.containsForCPU(
+                dirtyRect,
+                width: update.width,
+                height: update.height
+              ),
+              let width = Int(exactly: update.width),
+              let height = Int(exactly: update.height) else {
+            throw DesktopMetalScanoutLayoutError.invalidGeometry
+        }
+        let pixelFormat: MTLPixelFormat = switch update.pixelFormat {
+        case .bgra8Unorm: .bgra8Unorm
+        case .rgba8Unorm: .rgba8Unorm
+        }
+        self.resourceID = flush.resourceID
+        self.rendererResourceGeneration = update.rendererResourceGeneration
+        self.pixelFormat = pixelFormat
+        self.width = width
+        self.height = height
+        self.sourceRect = sourceRect
+        self.dirtyRect = dirtyRect
+        self.yOriginTop = update.yOriginTop
+    }
 }
 
 /// Revalidates the authenticated worker lease against the concrete host Metal device. The worker
@@ -2055,12 +2174,19 @@ struct DesktopMetalScanoutLayout: Equatable {
 
 private final class DesktopMetalWorkerLeaseRetirement: @unchecked Sendable {
     private let lock = NSLock()
-    private let presentation: VirtioGPUMetalScanoutPresentation
+    private let finish: @Sendable () -> Void
+    private let discard: @Sendable () -> Void
     private var presented = false
     private var retired = false
 
     init(presentation: VirtioGPUMetalScanoutPresentation) {
-        self.presentation = presentation
+        self.finish = { presentation.finishPresentation() }
+        self.discard = { presentation.discardWithoutPresentation() }
+    }
+
+    init(update: DoryPCVirGLScanoutUpdate) {
+        self.finish = { update.retire() }
+        self.discard = { update.retire() }
     }
 
     func markPresented() {
@@ -2081,11 +2207,7 @@ private final class DesktopMetalWorkerLeaseRetirement: @unchecked Sendable {
         }
         guard let outcome else { return }
         _ = munmap(pointer, length)
-        if outcome {
-            presentation.finishPresentation()
-        } else {
-            presentation.discardWithoutPresentation()
-        }
+        outcome ? finish() : discard()
     }
 
     /// A native shared texture has no CPU mapping to tear down. Its wrapper calls this only after
@@ -2097,11 +2219,7 @@ private final class DesktopMetalWorkerLeaseRetirement: @unchecked Sendable {
             return presented
         }
         guard let outcome else { return }
-        if outcome {
-            presentation.finishPresentation()
-        } else {
-            presentation.discardWithoutPresentation()
-        }
+        outcome ? finish() : discard()
     }
 }
 
@@ -2403,6 +2521,55 @@ final class DesktopMetalView: DesktopDisplayView {
         return true
     }
 
+    override func present(_ update: DoryPCVirGLScanoutUpdate) -> Bool {
+        logWorkerScanoutProgress(stage: "dorypc-view-present")
+        guard !deviceFailed else { return false }
+        let geometry: DesktopMetalScanoutGeometry
+        do {
+            geometry = try DesktopMetalScanoutGeometry(
+                update: update,
+                expectedScanoutID: scanoutID
+            )
+        } catch {
+            logWorkerScanoutRejection(stage: "dorypc-layout", detail: String(describing: error))
+            return false
+        }
+        let identity = DesktopScanoutResourceIdentity(doryPCUpdate: update)
+        guard resourceLifetime.accepts(identity) else { return false }
+        let workerScanout: DesktopMetalWorkerScanout
+        do {
+            workerScanout = try importScanout(update: update, geometry: geometry)
+        } catch {
+            logWorkerScanoutRejection(
+                stage: "dorypc-worker-metal-import",
+                detail: String(describing: error)
+            )
+            return false
+        }
+        guard resourceLifetime.bind(identity) else { return false }
+        scanoutSize = CGSize(
+            width: Int(geometry.sourceRect.width),
+            height: Int(geometry.sourceRect.height)
+        )
+        guard render(
+            texture: workerScanout.texture,
+            sourceRect: geometry.sourceRect,
+            backingWidth: update.width,
+            backingHeight: update.height,
+            yOriginTop: geometry.yOriginTop,
+            workerScanout: workerScanout,
+            completion: { [onWorkerPresentationCompleted] completed in
+                guard completed else { return }
+                onWorkerPresentationCompleted?(update.workerGeneration.rawValue)
+            }
+        ) else {
+            resourceLifetime.unbind()
+            return false
+        }
+        currentCPUTexture = nil
+        return true
+    }
+
     override func release(resourceID: UInt32, throughGeneration: UInt64) {
         if let texture = cpuTextures[resourceID],
            texture.identity.generation <= throughGeneration {
@@ -2604,6 +2771,100 @@ final class DesktopMetalView: DesktopDisplayView {
                     retirement: DesktopMetalWorkerLeaseRetirement(
                         presentation: update.presentation
                     ),
+                    retiresImportedTextureOnDeinit: true
+                )
+            }
+        }
+    }
+
+    private func importScanout(
+        update: DoryPCVirGLScanoutUpdate,
+        geometry: DesktopMetalScanoutGeometry
+    ) throws -> DesktopMetalWorkerScanout {
+        switch update.transport {
+        case .sharedMemory:
+            return try update.withSharedMemory { lease, descriptor in
+                let layout = try DesktopMetalScanoutLayout(
+                    lease: lease,
+                    geometry: geometry,
+                    minimumLinearTextureAlignment: device.minimumLinearTextureAlignment(
+                        for: geometry.pixelFormat
+                    ),
+                    pageSize: Int(getpagesize()),
+                    maximumBufferLength: device.maxBufferLength
+                )
+                var status = stat()
+                guard fstat(descriptor, &status) == 0,
+                      status.st_size >= 0,
+                      UInt64(status.st_size) == lease.declaredFileSize,
+                      (status.st_mode & S_IFMT) == S_IFREG
+                        || (status.st_mode & S_IFMT) == 0 else {
+                    throw DesktopMetalScanoutLayoutError.invalidGeometry
+                }
+                guard let mapping = mmap(
+                    nil,
+                    layout.mappedLength,
+                    PROT_READ,
+                    MAP_SHARED,
+                    descriptor,
+                    0
+                ), mapping != MAP_FAILED else {
+                    throw DesktopMetalScanoutLayoutError.invalidGeometry
+                }
+                let retirement = DesktopMetalWorkerLeaseRetirement(update: update)
+                guard let buffer = device.makeBuffer(
+                    bytesNoCopy: mapping,
+                    length: layout.mappedLength,
+                    options: [.storageModeShared, .hazardTrackingModeTracked],
+                    deallocator: { pointer, length in
+                        retirement.releaseMapping(pointer, length: length)
+                    }
+                ) else {
+                    retirement.releaseMapping(mapping, length: layout.mappedLength)
+                    throw DesktopMetalScanoutLayoutError.invalidGeometry
+                }
+                let textureDescriptor = MTLTextureDescriptor.texture2DDescriptor(
+                    pixelFormat: layout.pixelFormat,
+                    width: layout.width,
+                    height: layout.height,
+                    mipmapped: false
+                )
+                textureDescriptor.usage = [.shaderRead]
+                textureDescriptor.storageMode = .shared
+                guard let texture = buffer.makeTexture(
+                    descriptor: textureDescriptor,
+                    offset: layout.storageOffset,
+                    bytesPerRow: layout.stride
+                ) else {
+                    throw DesktopMetalScanoutLayoutError.metalAlignmentMismatch
+                }
+                return DesktopMetalWorkerScanout(
+                    texture: texture,
+                    buffer: buffer,
+                    retirement: retirement,
+                    retiresImportedTextureOnDeinit: false
+                )
+            }
+        case .sharedTexture:
+            return try update.withSharedTextureHandle { handle in
+                guard let texture = device.makeSharedTexture(handle: handle),
+                      texture.device === device,
+                      texture.textureType == .type2D,
+                      texture.pixelFormat == geometry.pixelFormat,
+                      texture.width == geometry.width,
+                      texture.height == geometry.height,
+                      texture.depth == 1,
+                      texture.arrayLength == 1,
+                      texture.mipmapLevelCount == 1,
+                      texture.sampleCount == 1,
+                      texture.storageMode == .private,
+                      texture.usage.contains(.shaderRead) else {
+                    throw DesktopMetalScanoutLayoutError.invalidGeometry
+                }
+                return DesktopMetalWorkerScanout(
+                    texture: texture,
+                    buffer: nil,
+                    retirement: DesktopMetalWorkerLeaseRetirement(update: update),
                     retiresImportedTextureOnDeinit: true
                 )
             }

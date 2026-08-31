@@ -15,6 +15,13 @@ public enum DoryPCVirGLRendererAuthorityError: Error, Sendable, Equatable {
 
 public final class DoryPCVirGLScanoutUpdate: @unchecked Sendable {
     public let flush: DoryVirtioGPUAcceleratedScanoutFlush
+    public let workerGeneration: DoryRendererWorkerGeneration
+    public let rendererResourceGeneration: UInt64
+    public let pixelFormat: DoryRendererScanoutPixelFormat
+    public let yOriginTop: Bool
+    public let width: UInt32
+    public let height: UInt32
+    public let transport: VirtioGPUMetalScanoutTransport
 
     private let lock = NSLock()
     private var scanout: DoryRendererWorkerScanoutAuthority?
@@ -26,6 +33,19 @@ public final class DoryPCVirGLScanoutUpdate: @unchecked Sendable {
         release: @escaping @Sendable (DoryRendererWorkerScanoutAuthority) -> Void
     ) {
         self.flush = flush
+        self.workerGeneration = scanout.workerGeneration
+        self.rendererResourceGeneration = scanout.resourceGeneration
+        self.pixelFormat = scanout.pixelFormat
+        self.width = scanout.width
+        self.height = scanout.height
+        switch scanout {
+        case .sharedMemory(let value):
+            self.yOriginTop = value.lease.yOriginTop
+            self.transport = .sharedMemory
+        case .sharedTexture(let value):
+            self.yOriginTop = value.lease.yOriginTop
+            self.transport = .sharedTexture
+        }
         self.scanout = scanout
         self.release = release
     }

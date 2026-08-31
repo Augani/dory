@@ -5,6 +5,7 @@ import Foundation
 import Metal
 import Testing
 @testable import DoryHV
+@testable import dory_hv
 
 @Suite struct DoryRendererWorkerBrokerTests {
     @Test func bootstrapTimeoutIsBoundedAndInvalidatesSilentWorker() async {
@@ -491,10 +492,14 @@ import Testing
             deviceGeneration: 11
         )
         let scanoutRecorder = DoryPCVirGLScanoutRecorder()
+        let scanoutMailbox = DesktopFrameMailbox(scanoutID: 0)
         let authority = try DoryPCVirGLRendererAuthority(
             lane: lane,
             deviceGeneration: 11,
-            scanoutSink: { scanoutRecorder.accept($0) }
+            scanoutSink: {
+                _ = scanoutRecorder.accept($0)
+                return scanoutMailbox.submit($0)
+            }
         )
 
         #expect(authority.capabilities.features == [
@@ -724,8 +729,24 @@ import Testing
         let update = try #require(scanoutRecorder.update)
         #expect(update.flush == flush)
         #expect(try update.withSharedMemory { lease, _ in lease } == scanoutLease)
+        let geometry = try DesktopMetalScanoutGeometry(update: update, expectedScanoutID: 0)
+        #expect(geometry.resourceID == 29)
+        #expect(geometry.rendererResourceGeneration == 41)
+        #expect(geometry.width == 4)
+        #expect(geometry.height == 2)
+        #expect(
+            try update.withSharedMemory { lease, _ in
+                try DesktopMetalScanoutLayout(
+                    lease: lease,
+                    geometry: geometry,
+                    minimumLinearTextureAlignment: 16,
+                    pageSize: Int(getpagesize()),
+                    maximumBufferLength: 1 << 20
+                )
+            }.stride == 16
+        )
 
-        update.retire()
+        scanoutMailbox.disable()
         #expect(await rendererEventually { fixture.channel.sendCount == 7 })
         let release = try fixture.channel.command(
             at: 6,
