@@ -51,6 +51,7 @@ public final class DoryPCUEFIMachine: @unchecked Sendable {
     processorCount: Int = 1,
     initialRTCDate: Date = Date(),
     displaySink: (any DoryVirtioGPUDisplaySink)? = nil,
+    gpuAccelerationAuthority: (any DoryVirtioGPUAccelerationAuthority)? = nil,
     soundBackend: any DoryVirtioSoundBackend = DoryVirtioInMemorySoundBackend(),
     networkBackend: any DoryVirtioNetworkBackend = DoryVirtioInMemoryNetworkBackend(),
     interpreter: DoryX86Interpreter = .init(),
@@ -117,7 +118,8 @@ public final class DoryPCUEFIMachine: @unchecked Sendable {
       scanouts: [
         .init(id: 0, rectangle: .init(x: 0, y: 0, width: 1_280, height: 800))
       ],
-      displaySink: displaySink
+      displaySink: displaySink,
+      accelerationAuthority: gpuAccelerationAuthority
     )
     let keyboardDevice = try DoryPCVirtioInputPCIDevice(
       address: DoryPCV1ABI.keyboardPCIAddress,

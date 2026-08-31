@@ -91,6 +91,36 @@ import Testing
     }
   }
 
+  @Test func installsAuthenticatedGPUAccelerationIntoThePCIBootMachine() throws {
+    let fixture = try PCUEFIMachineFixture()
+    defer { fixture.remove() }
+    let authority = try PCUEFIMachineGPUAuthority()
+    let composed = try DoryPCUEFIMachine(
+      plan: fixture.plan,
+      firmware: fixture.firmware,
+      variableStore: .init(file: fixture.store),
+      bootStorage: [
+        .init(
+          logicalID: "system-disk",
+          storage: DoryVirtioInMemoryBlockStorage(byteCount: 512)
+        ),
+        .init(
+          logicalID: "installer-iso",
+          storage: DoryVirtioInMemoryBlockStorage(byteCount: 512, readOnly: true)
+        ),
+      ],
+      memoryBytes: 2 * 1024 * 1024,
+      gpuAccelerationAuthority: authority
+    )
+
+    #expect(composed.displayDevice.gpuDevice.offeredFeatures.contains(.gpuVirgl))
+    #expect(
+      composed.displayDevice.gpuDevice.configuration[12..<16].enumerated().reduce(UInt32(0)) {
+        $0 | UInt32($1.element) << UInt32($1.offset * 8)
+      } == 1
+    )
+  }
+
   private func barAddress(_ device: DoryPCVirtioBlockPCIDevice) throws -> UInt64 {
     let bytes = try device.readConfiguration(offset: 0x10, byteCount: 4)
     return UInt64(
@@ -99,6 +129,21 @@ import Testing
       } & 0xffff_fff0
     )
   }
+}
+
+private final class PCUEFIMachineGPUAuthority: DoryVirtioGPUAccelerationAuthority,
+  @unchecked Sendable
+{
+  let capabilities: DoryVirtioGPUAccelerationCapabilities
+
+  init() throws {
+    capabilities = try .init(
+      features: [.gpuVirgl, .gpuResourceUUID, .gpuContextInit],
+      capsets: [.init(id: 2, maximumVersion: 2, data: [1, 2, 3, 4])]
+    )
+  }
+
+  func reset() {}
 }
 
 private final class PCUEFIMachineFixture {
