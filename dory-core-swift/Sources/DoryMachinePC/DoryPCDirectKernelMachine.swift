@@ -409,6 +409,10 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         if execution.instructionCount > 1 {
           advanceClocks(by: execution.instructionCount - 1)
         }
+        // The architectural TSC is a machine clock, not an interpreter side effect. Advancing it
+        // here keeps RDTSC deterministic and identical when a translated block retires several
+        // guest instructions at once.
+        state.tsc &+= execution.instructionCount
         loadedStates[processor] = state
         if let stop = powerStop(instructionCount: completed) { return stop }
         switch execution.result {

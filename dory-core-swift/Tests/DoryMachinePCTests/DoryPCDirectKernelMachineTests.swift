@@ -159,6 +159,31 @@ import Testing
     #endif
   }
 
+  @Test func guestTSCAdvancesIdenticallyAcrossExecutionTiers() throws {
+    #if arch(arm64)
+      let tiers: [DoryPCExecutionTier] = [.interpreter, .baselineJIT, .optimizingJIT]
+    #else
+      let tiers: [DoryPCExecutionTier] = [.interpreter]
+    #endif
+
+    for tier in tiers {
+      let machine = try DoryPCDirectKernelMachine(
+        memoryBytes: 2 * 1024 * 1024,
+        executionTier: tier,
+        baselineJITMaximumCodeBytes: 4096
+      )
+      // rdtsc; mov ebx,eax; nop; nop; rdtsc; sub eax,ebx; hlt
+      try machine.load(
+        kernel: makeELF(code: [0x0F, 0x31, 0x89, 0xC3, 0x90, 0x90, 0x0F, 0x31, 0x29, 0xD8, 0xF4]),
+        commandLine: "x"
+      )
+
+      #expect(try machine.run(maximumInstructions: 16) == .halted(instructionCount: 7))
+      #expect(machine.state?.registers.rax == 4)
+      #expect(machine.state?.tsc == 7)
+    }
+  }
+
   @Test func jitTiersFallBackToTheInterpreterForUnsupportedBlocks() throws {
     #if arch(arm64)
       for tier in [DoryPCExecutionTier.baselineJIT, .optimizingJIT] {
