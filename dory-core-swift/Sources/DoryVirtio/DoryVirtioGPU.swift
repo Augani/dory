@@ -128,6 +128,7 @@ public protocol DoryVirtioGPUAccelerationAuthority: AnyObject, Sendable {
     entries: [DoryVirtioGPUBackingEntry],
     memory: any DoryVirtioGuestMemory
   ) throws
+  func flushResource(_ scanouts: [DoryVirtioGPUAcceleratedScanoutFlush]) throws
   func unrefResource(resourceID: UInt32) throws
 }
 
@@ -214,6 +215,7 @@ public final class DoryVirtioGPUDevice: @unchecked Sendable {
   private struct RendererResource {
     let descriptor: DoryVirtioGPUResource3D
     var backing: [DoryVirtioGPUBackingEntry] = []
+    var latestTransfer: DoryVirtioGPUTransfer3D?
   }
 
   private struct ScanoutBinding {
@@ -652,6 +654,11 @@ public final class DoryVirtioGPUDevice: @unchecked Sendable {
       } catch {
         return response(.errorInvalidParameter, header: header)
       }
+      lock.withLock {
+        guard var resource = rendererResources[resourceID] else { return }
+        resource.latestTransfer = transfer
+        rendererResources[resourceID] = resource
+      }
       return response(.okNoData, header: header)
 
     case .submit3D:
@@ -686,7 +693,11 @@ public final class DoryVirtioGPUDevice: @unchecked Sendable {
         return response(.okNoData, header: header)
       }
       let bound = lock.withLock { () -> Bool in
-        guard let resource = resources[resourceID], contains(rectangle, in: resource) else {
+        if let resource = resources[resourceID] {
+          guard contains(rectangle, in: resource) else { return false }
+        } else if let resource = rendererResources[resourceID] {
+          guard contains(rectangle, in: resource.descriptor) else { return false }
+        } else {
           return false
         }
         bindings[scanoutID] = .init(resourceID: resourceID, rectangle: rectangle)
@@ -698,6 +709,36 @@ public final class DoryVirtioGPUDevice: @unchecked Sendable {
       guard request.count == 48 else { return response(.errorInvalidParameter, header: header) }
       let rectangle = readRectangle(request, 24)
       let resourceID = read32(request, 40)
+      if let accelerated = lock.withLock({ () -> [DoryVirtioGPUAcceleratedScanoutFlush]? in
+        guard let resource = rendererResources[resourceID],
+          contains(rectangle, in: resource.descriptor)
+        else { return nil }
+        let transfer = resource.latestTransfer
+        return bindings.compactMap { scanoutID, binding in
+          guard binding.resourceID == resourceID else { return nil }
+          return .init(
+            scanoutID: scanoutID,
+            resourceID: resourceID,
+            sourceRectangle: binding.rectangle,
+            damagedRectangle: rectangle,
+            resourceWidth: resource.descriptor.width,
+            resourceHeight: resource.descriptor.height,
+            virglFormat: resource.descriptor.format,
+            stride: transfer?.stride ?? 0,
+            storageOffset: transfer?.offset ?? 0
+          )
+        }
+      }) {
+        guard let accelerationAuthority else {
+          return response(.errorInvalidResource, header: header)
+        }
+        do {
+          if !accelerated.isEmpty { try accelerationAuthority.flushResource(accelerated) }
+        } catch {
+          return response(.errorInvalidParameter, header: header)
+        }
+        return response(.okNoData, header: header)
+      }
       let flush = lock.withLock {
         () -> (Response?, [DoryVirtioGPUFrame], (any DoryVirtioGPUDisplaySink)?) in
         guard let resource = resources[resourceID], contains(rectangle, in: resource) else {
@@ -797,6 +838,16 @@ public final class DoryVirtioGPUDevice: @unchecked Sendable {
       resources[resourceID] = updated
       return true
     }
+  }
+
+  private func contains(
+    _ rectangle: DoryVirtioGPURectangle,
+    in resource: DoryVirtioGPUResource3D
+  ) -> Bool {
+    let (endX, overflowX) = rectangle.x.addingReportingOverflow(rectangle.width)
+    let (endY, overflowY) = rectangle.y.addingReportingOverflow(rectangle.height)
+    return rectangle.width > 0 && rectangle.height > 0 && !overflowX && !overflowY
+      && endX <= resource.width && endY <= resource.height
   }
 
   private func readBacking(

@@ -101,6 +101,40 @@ public struct DoryVirtioGPUTransfer3D: Sendable, Hashable {
   }
 }
 
+public struct DoryVirtioGPUAcceleratedScanoutFlush: Sendable, Hashable {
+  public let scanoutID: UInt32
+  public let resourceID: UInt32
+  public let sourceRectangle: DoryVirtioGPURectangle
+  public let damagedRectangle: DoryVirtioGPURectangle
+  public let resourceWidth: UInt32
+  public let resourceHeight: UInt32
+  public let virglFormat: UInt32
+  public let stride: UInt32
+  public let storageOffset: UInt64
+
+  public init(
+    scanoutID: UInt32,
+    resourceID: UInt32,
+    sourceRectangle: DoryVirtioGPURectangle,
+    damagedRectangle: DoryVirtioGPURectangle,
+    resourceWidth: UInt32,
+    resourceHeight: UInt32,
+    virglFormat: UInt32,
+    stride: UInt32,
+    storageOffset: UInt64
+  ) {
+    self.scanoutID = scanoutID
+    self.resourceID = resourceID
+    self.sourceRectangle = sourceRectangle
+    self.damagedRectangle = damagedRectangle
+    self.resourceWidth = resourceWidth
+    self.resourceHeight = resourceHeight
+    self.virglFormat = virglFormat
+    self.stride = stride
+    self.storageOffset = storageOffset
+  }
+}
+
 public enum DoryVirtioGPUAccelerationError: Error, Sendable, Equatable {
   case unsupportedOperation
 }
@@ -147,6 +181,10 @@ extension DoryVirtioGPUAccelerationAuthority {
     entries: [DoryVirtioGPUBackingEntry],
     memory: any DoryVirtioGuestMemory
   ) throws {
+    throw DoryVirtioGPUAccelerationError.unsupportedOperation
+  }
+
+  public func flushResource(_ scanouts: [DoryVirtioGPUAcceleratedScanoutFlush]) throws {
     throw DoryVirtioGPUAccelerationError.unsupportedOperation
   }
 

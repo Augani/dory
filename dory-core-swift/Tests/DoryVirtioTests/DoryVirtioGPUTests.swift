@@ -138,6 +138,15 @@ import Testing
       + littleEndian(UInt64(0)) + [resourceID, 0, 256, 8_192].flatMap(littleEndian)
     #expect(read32(try command(device, bytes: transfer, memory: memory), 0) == 0x1100)
 
+    let scanoutRectangle = rect(x: 0, y: 0, width: 64, height: 32)
+    let bind =
+      header(0x0103) + scanoutRectangle + littleEndian(UInt32(0))
+      + littleEndian(resourceID)
+    #expect(read32(try command(device, bytes: bind, memory: memory), 0) == 0x1100)
+    let damage = rect(x: 8, y: 4, width: 16, height: 8)
+    let flush = header(0x0104) + damage + littleEndian(resourceID) + [0, 0, 0, 0]
+    #expect(read32(try command(device, bytes: flush, memory: memory), 0) == 0x1100)
+
     let detach = header(0x0203, contextID: contextID) + littleEndian(resourceID) + [0, 0, 0, 0]
     #expect(read32(try command(device, bytes: detach, memory: memory), 0) == 0x1100)
     #expect(
@@ -168,6 +177,7 @@ import Testing
         "resource-attach:17:23",
         "submit:17:4",
         "transfer:toHost:17:23",
+        "flush:1:0:23:64x32:8,4+16x8:256:0",
         "resource-detach:17:23",
         "backing-detach:23",
         "resource-unref:23",
@@ -359,6 +369,17 @@ private final class GPUAccelerationAuthority: DoryVirtioGPUAccelerationAuthority
     memory: any DoryVirtioGuestMemory
   ) {
     record("transfer:\(transfer.direction):\(transfer.contextID):\(transfer.resourceID)")
+  }
+
+  func flushResource(_ scanouts: [DoryVirtioGPUAcceleratedScanoutFlush]) {
+    let first = scanouts[0]
+    record(
+      "flush:\(scanouts.count):\(first.scanoutID):\(first.resourceID):"
+        + "\(first.resourceWidth)x\(first.resourceHeight):"
+        + "\(first.damagedRectangle.x),\(first.damagedRectangle.y)+"
+        + "\(first.damagedRectangle.width)x\(first.damagedRectangle.height):"
+        + "\(first.stride):\(first.storageOffset)"
+    )
   }
 
   func unrefResource(resourceID: UInt32) { record("resource-unref:\(resourceID)") }
