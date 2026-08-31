@@ -443,6 +443,11 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
     load: Bool,
     address: DoryX86MemoryOperand
   )
+  case inspectSegmentDescriptor(
+    accessRights: Bool,
+    destination: DoryX86Operand,
+    selector: DoryX86Operand
+  )
   case readSegment(DoryX86SegmentRegister, destination: DoryX86Operand)
   case writeSegment(DoryX86SegmentRegister, source: DoryX86Operand)
   case farJump(offset: UInt64, selector: UInt16)

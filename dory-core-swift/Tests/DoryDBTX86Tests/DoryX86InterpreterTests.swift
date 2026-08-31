@@ -2254,6 +2254,77 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
     #expect(try memory.read(at: 0x215, byteCount: 1) == [0x8B])
   }
 
+  @Test func segmentDescriptorInspectionAppliesTypePrivilegeAndLimitRules() throws {
+    var bytes = [UInt8](repeating: 0, count: 0x300)
+    bytes.replaceSubrange(0x100..<0x106, with: [0x0F, 0x02, 0xC1, 0x0F, 0x03, 0xD1])
+    // DPL 3 writable data descriptor, page-granular limit 0xABCDE.
+    bytes.replaceSubrange(0x208..<0x210, with: [0xDE, 0xBC, 0, 0, 0, 0xF2, 0xCA, 0])
+    // DPL 0 non-conforming code descriptor, deliberately invisible from CPL 3.
+    bytes.replaceSubrange(0x210..<0x218, with: [0xFF, 0, 0, 0, 0, 0x9A, 0, 0])
+    // DPL 0 conforming code descriptor remains visible from CPL 3.
+    bytes.replaceSubrange(0x218..<0x220, with: [0x34, 0x12, 0, 0, 0, 0x9C, 0, 0])
+    let memory = DoryX86ByteArrayMemory(bytes: bytes)
+    var state = try DoryX86ArchitecturalState(
+      registers: .init(rax: .max, rcx: 0x0B, rdx: .max),
+      rip: 0x100,
+      rflags: [.reservedOne, .carry],
+      cs: .init(selector: 3, attributes: 0xFA, limit: .max),
+      gdtr: .init(limit: 0x1F, base: 0x200)
+    )
+
+    _ = interpreter.step(state: &state, memory: memory, mode: .protected32)
+    #expect(state.registers.rax == 0x00C0_F200)
+    #expect(state.rflags.contains(.zero))
+    #expect(state.rflags.contains(.carry))
+
+    _ = interpreter.step(state: &state, memory: memory, mode: .protected32)
+    #expect(state.registers.rdx == 0xABCD_EFFF)
+    #expect(state.rflags.contains(.zero))
+
+    state.rip = 0x100
+    state.registers.rcx = 0x13
+    state.registers.rax = 0x5566_7788
+    _ = interpreter.step(state: &state, memory: memory, mode: .protected32)
+    #expect(state.registers.rax == 0x5566_7788)
+    #expect(!state.rflags.contains(.zero))
+
+    state.registers.rcx = 0x1B
+    state.rip = 0x100
+    _ = interpreter.step(state: &state, memory: memory, mode: .protected32)
+    #expect(state.registers.rax == 0x0000_9C00)
+    #expect(state.rflags.contains(.zero))
+  }
+
+  @Test func segmentDescriptorInspectionRejectsRealAndVirtual8086Modes() throws {
+    let memory = DoryX86ByteArrayMemory(bytes: [0x0F, 0x02, 0xC1])
+    var realState = try DoryX86ArchitecturalState(
+      registers: .init(rcx: 8),
+      rip: 0,
+      cs: .init(selector: 0, attributes: 0x9B, limit: 0xffff, base: 0)
+    )
+    guard case .exception(let realException) =
+      interpreter.step(state: &realState, memory: memory, mode: .real16)
+    else {
+      Issue.record("LAR did not reject real-address mode")
+      return
+    }
+    #expect(realException.kind == .invalidOpcode)
+
+    var virtualState = try DoryX86ArchitecturalState(
+      registers: .init(rcx: 8),
+      rip: 0,
+      rflags: [.reservedOne, .virtual8086],
+      cs: .init(selector: 3, attributes: 0xFA, limit: .max, base: 0)
+    )
+    guard case .exception(let virtualException) =
+      interpreter.step(state: &virtualState, memory: memory, mode: .protected32)
+    else {
+      Issue.record("LAR did not reject virtual-8086 mode")
+      return
+    }
+    #expect(virtualException.kind == .invalidOpcode)
+  }
+
   @Test func systemSegmentStoresExposeSelectorsAndHonorUMIP() throws {
     let memory = DoryX86ByteArrayMemory(
       baseAddress: 0x1_000,

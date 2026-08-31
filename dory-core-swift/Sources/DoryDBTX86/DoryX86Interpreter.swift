@@ -1568,6 +1568,43 @@ public struct DoryX86Interpreter: Sendable {
           try executionMemory.validateWrite(at: linearAddress, byteCount: byteCount)
           try executionMemory.write(at: linearAddress, bytes: bytes)
         }
+      case .inspectSegmentDescriptor(let accessRights, let destination, let source):
+        guard mode != .real16, !state.rflags.contains(.virtual8086) else {
+          return invalidOpcode(at: originalRIP)
+        }
+        let selector = UInt16(
+          truncatingIfNeeded: try read(
+            source, instruction: instruction, state: state, memory: executionMemory))
+        if let descriptor = try descriptorForInspection(
+          selector: selector,
+          accessRights: accessRights,
+          mode: mode,
+          state: state,
+          memory: executionMemory
+        ) {
+          let value: UInt64
+          if accessRights {
+            // Intel defines the returned access byte at bits 15:8 and the AVL/L/D/G flags at
+            // bits 23:20. Bits 19:16 are undefined; Dory deterministically returns zero.
+            value = (descriptor.raw >> 32) & 0x00F0_FF00
+          } else {
+            var limit = UInt64(descriptor.raw & 0xffff)
+            limit |= ((descriptor.raw >> 48) & 0x0f) << 16
+            if descriptor.raw & (1 << 55) != 0 { limit = (limit << 12) | 0xfff }
+            value = limit
+          }
+          try write(
+            value,
+            to: destination,
+            instruction: instruction,
+            state: &state,
+            memory: executionMemory
+          )
+          setFlag(.zero, true, in: &state.rflags)
+        } else {
+          // A rejected selector is a probe result, not a fault. The destination is unchanged.
+          setFlag(.zero, false, in: &state.rflags)
+        }
       case .readSegment(let segment, let destination):
         try write(
           UInt64(segmentState(segment, state: state).selector),
@@ -4313,6 +4350,62 @@ public struct DoryX86Interpreter: Sendable {
     if raw & (1 << 55) != 0 { limit = (limit << 12) | 0xfff }
     let attributes = UInt16(access) | UInt16((raw >> 48) & 0xf0) << 8
     return .init(selector: selector, attributes: attributes, limit: limit, base: base)
+  }
+
+  private struct InspectedDescriptor {
+    let raw: UInt64
+  }
+
+  private func descriptorForInspection(
+    selector: UInt16,
+    accessRights: Bool,
+    mode: DoryX86ExecutionMode,
+    state: DoryX86ArchitecturalState,
+    memory: any DoryX86Memory
+  ) throws -> InspectedDescriptor? {
+    guard selector & 0xfffc != 0 else { return nil }
+
+    let usesLDT = selector & 4 != 0
+    if usesLDT, state.ldtr.selector & 0xfffc == 0 { return nil }
+    let table =
+      usesLDT
+      ? DoryX86DescriptorTableState(
+        limit: UInt16(truncatingIfNeeded: state.ldtr.limit), base: state.ldtr.base)
+      : state.gdtr
+    let offset = UInt64(selector >> 3) * 8
+    guard offset + 7 <= UInt64(table.limit) else { return nil }
+
+    let bytes = try memory.read(at: table.base &+ offset, byteCount: 8)
+    let raw = bytes.enumerated().reduce(UInt64(0)) {
+      $0 | UInt64($1.element) << UInt64($1.offset * 8)
+    }
+    let access = UInt8(truncatingIfNeeded: raw >> 40)
+    let type = access & 0x0f
+    let codeOrData = access & 0x10 != 0
+    let validType: Bool
+    if codeOrData {
+      validType = true
+    } else if accessRights {
+      validType =
+        mode == .long64
+        ? [2, 9, 11, 12].contains(type)
+        : [1, 2, 3, 4, 5, 9, 11, 12].contains(type)
+    } else {
+      validType =
+        mode == .long64
+        ? [2, 9, 11].contains(type)
+        : [1, 2, 3, 9, 11].contains(type)
+    }
+    guard validType else { return nil }
+
+    let conformingCode = codeOrData && type & 0x0c == 0x0c
+    if !conformingCode {
+      let dpl = (access >> 5) & 3
+      let cpl = currentPrivilegeLevel(state)
+      let rpl = UInt8(selector & 3)
+      guard cpl <= dpl, rpl <= dpl else { return nil }
+    }
+    return .init(raw: raw)
   }
 
   private func loadSystemSegment(

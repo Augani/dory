@@ -411,6 +411,25 @@ import Testing
     )
   }
 
+  @Test func decodesSegmentDescriptorInspectionWidths() throws {
+    #expect(
+      try decoder.decode([0x0F, 0x02, 0xC1], at: 0x240, mode: .protected32).operation
+        == .inspectSegmentDescriptor(
+          accessRights: true,
+          destination: .register(.rax, width: .doubleword),
+          selector: .register(.rcx, width: .word)
+        )
+    )
+    #expect(
+      try decoder.decode([0x48, 0x0F, 0x03, 0x08], at: 0x240, mode: .long64).operation
+        == .inspectSegmentDescriptor(
+          accessRights: false,
+          destination: .register(.rcx, width: .quadword),
+          selector: .memory(.init(base: .rax, width: .word))
+        )
+    )
+  }
+
   @Test func decodesSegmentLoadsAndFarControlTransfer() throws {
     #expect(
       try decoder.decode([0x8E, 0xD8], at: 0x300, mode: .real16).operation

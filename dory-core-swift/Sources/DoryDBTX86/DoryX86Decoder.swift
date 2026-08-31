@@ -901,6 +901,18 @@ public struct DoryX86Decoder: Sendable {
             )
           }
         }
+      case 0x02, 0x03:
+        guard prefixes.repeatPrefix == nil else {
+          throw DoryX86DecodeError.invalidEncoding(
+            address: address, detail: "LAR and LSL do not accept repeat prefixes")
+        }
+        let operands = try decodeModRM(
+          cursor: &cursor, width: width, prefixes: prefixes, mode: mode)
+        operation = .inspectSegmentDescriptor(
+          accessRights: second == 0x02,
+          destination: operands.reg,
+          selector: resizedOperand(operands.rm, to: .word)
+        )
       case 0xA2:
         operation = .cpuid
       case 0xAE:
