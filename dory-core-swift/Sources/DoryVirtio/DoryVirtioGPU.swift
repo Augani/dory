@@ -70,6 +70,56 @@ public struct DoryVirtioGPUFrame: Sendable, Hashable {
   }
 }
 
+public struct DoryVirtioGPUCapset: Sendable, Hashable {
+  public let id: UInt32
+  public let maximumVersion: UInt32
+  public let data: [UInt8]
+
+  public init(id: UInt32, maximumVersion: UInt32, data: [UInt8]) {
+    self.id = id
+    self.maximumVersion = maximumVersion
+    self.data = data
+  }
+}
+
+public struct DoryVirtioGPUAccelerationCapabilities: Sendable, Hashable {
+  public static let maximumCapsetBytes = 1 * 1024 * 1024
+
+  public let features: DoryVirtioFeatures
+  public let capsets: [DoryVirtioGPUCapset]
+
+  public init(features: DoryVirtioFeatures, capsets: [DoryVirtioGPUCapset]) throws {
+    let allowedFeatures: DoryVirtioFeatures = [
+      .gpuVirgl, .gpuResourceUUID, .gpuResourceBlob, .gpuContextInit,
+    ]
+    guard !capsets.isEmpty,
+      capsets.count <= 16,
+      Set(capsets.map(\.id)).count == capsets.count,
+      capsets.allSatisfy({ $0.id != 0 && !$0.data.isEmpty }),
+      capsets.reduce(UInt64(0), { $0 + UInt64($1.data.count) }) <= UInt64(Self.maximumCapsetBytes),
+      allowedFeatures.isSuperset(of: features),
+      features.contains(.gpuVirgl)
+    else { throw DoryVirtioGPUError.invalidAccelerationCapabilities }
+    self.features = features
+    self.capsets = capsets
+  }
+}
+
+/// Generation-scoped renderer authority. Capability discovery is intentionally inseparable from
+/// the authority that will execute accelerated commands; a software-only device never advertises
+/// renderer features merely because renderer libraries happen to exist on the host.
+public protocol DoryVirtioGPUAccelerationAuthority: AnyObject, Sendable {
+  var capabilities: DoryVirtioGPUAccelerationCapabilities { get }
+  func reset()
+}
+
+extension DoryVirtioFeatures {
+  public static let gpuVirgl = Self(rawValue: 1 << 0)
+  public static let gpuResourceUUID = Self(rawValue: 1 << 2)
+  public static let gpuResourceBlob = Self(rawValue: 1 << 3)
+  public static let gpuContextInit = Self(rawValue: 1 << 4)
+}
+
 public protocol DoryVirtioGPUDisplaySink: AnyObject, Sendable {
   func present(_ frame: DoryVirtioGPUFrame)
 }
@@ -81,6 +131,7 @@ public enum DoryVirtioGPUError: Error, Sendable, Equatable {
   case invalidDescriptorDirection
   case requestTooLarge(UInt64)
   case guestAddressOverflow
+  case invalidAccelerationCapabilities
 }
 
 /// Transport-neutral VirtIO GPU 2D device. The core deliberately exposes only bounded software
@@ -98,6 +149,8 @@ public final class DoryVirtioGPUDevice: @unchecked Sendable {
     case transferToHost2D = 0x0105
     case resourceAttachBacking = 0x0106
     case resourceDetachBacking = 0x0107
+    case getCapsetInfo = 0x0108
+    case getCapset = 0x0109
     case updateCursor = 0x0300
     case moveCursor = 0x0301
   }
@@ -105,6 +158,8 @@ public final class DoryVirtioGPUDevice: @unchecked Sendable {
   private enum Response: UInt32 {
     case okNoData = 0x1100
     case okDisplayInfo = 0x1101
+    case okCapsetInfo = 0x1102
+    case okCapset = 0x1103
     case errorUnspecified = 0x1200
     case errorOutOfMemory = 0x1201
     case errorInvalidScanout = 0x1202
@@ -144,6 +199,7 @@ public final class DoryVirtioGPUDevice: @unchecked Sendable {
 
   private let lock = NSLock()
   private weak var displaySink: (any DoryVirtioGPUDisplaySink)?
+  private let accelerationAuthority: (any DoryVirtioGPUAccelerationAuthority)?
   private var resources: [UInt32: Resource] = [:]
   private var bindings: [UInt32: ScanoutBinding] = [:]
 
@@ -151,7 +207,8 @@ public final class DoryVirtioGPUDevice: @unchecked Sendable {
     scanouts: [DoryVirtioGPUScanout],
     maximumResourceBytes: UInt64 = 256 * 1024 * 1024,
     maximumBackingEntries: Int = 65_536,
-    displaySink: (any DoryVirtioGPUDisplaySink)? = nil
+    displaySink: (any DoryVirtioGPUDisplaySink)? = nil,
+    accelerationAuthority: (any DoryVirtioGPUAccelerationAuthority)? = nil
   ) throws {
     guard (1...16).contains(scanouts.count),
       Set(scanouts.map(\.id)).count == scanouts.count,
@@ -168,14 +225,18 @@ public final class DoryVirtioGPUDevice: @unchecked Sendable {
     self.maximumResourceBytes = max(4, maximumResourceBytes)
     self.maximumBackingEntries = max(1, maximumBackingEntries)
     self.displaySink = displaySink
+    self.accelerationAuthority = accelerationAuthority
   }
 
-  public var offeredFeatures: DoryVirtioFeatures { [] }
+  public var offeredFeatures: DoryVirtioFeatures {
+    accelerationAuthority?.capabilities.features ?? []
+  }
 
   /// `events_read`, `events_clear`, `num_scanouts`, `num_capsets`.
   public var configuration: [UInt8] {
     littleEndian(UInt32(0)) + littleEndian(UInt32(0))
-      + littleEndian(UInt32(scanouts.count)) + littleEndian(UInt32(0))
+      + littleEndian(UInt32(scanouts.count))
+      + littleEndian(UInt32(accelerationAuthority?.capabilities.capsets.count ?? 0))
   }
 
   public func connectDisplaySink(_ sink: (any DoryVirtioGPUDisplaySink)?) {
@@ -187,6 +248,7 @@ public final class DoryVirtioGPUDevice: @unchecked Sendable {
       resources.removeAll(keepingCapacity: true)
       bindings.removeAll(keepingCapacity: true)
     }
+    accelerationAuthority?.reset()
   }
 
   public func process(
@@ -250,6 +312,32 @@ public final class DoryVirtioGPUDevice: @unchecked Sendable {
         }
       }
       return result
+
+    case .getCapsetInfo:
+      guard request.count == 32,
+        let capabilities = accelerationAuthority?.capabilities
+      else { return response(.errorInvalidParameter, header: header) }
+      let index = Int(read32(request, 24))
+      guard capabilities.capsets.indices.contains(index) else {
+        return response(.errorInvalidParameter, header: header)
+      }
+      let capset = capabilities.capsets[index]
+      return response(.okCapsetInfo, header: header)
+        + littleEndian(capset.id)
+        + littleEndian(capset.maximumVersion)
+        + littleEndian(UInt32(capset.data.count))
+        + littleEndian(UInt32(0))
+
+    case .getCapset:
+      guard request.count == 32,
+        let capabilities = accelerationAuthority?.capabilities
+      else { return response(.errorInvalidParameter, header: header) }
+      let id = read32(request, 24)
+      let version = read32(request, 28)
+      guard let capset = capabilities.capsets.first(where: { $0.id == id }),
+        version <= capset.maximumVersion
+      else { return response(.errorInvalidParameter, header: header) }
+      return response(.okCapset, header: header) + capset.data
 
     case .resourceCreate2D:
       guard request.count == 40 else { return response(.errorInvalidParameter, header: header) }

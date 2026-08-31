@@ -6,6 +6,8 @@ import Testing
   @Test func publishesDisplayConfigurationAndDisplayInfo() throws {
     let device = try makeDevice()
     #expect(read32(device.configuration, 8) == 2)
+    #expect(read32(device.configuration, 12) == 0)
+    #expect(!device.offeredFeatures.contains(.gpuVirgl))
     let memory = GPUGuestMemory(byteCount: 0x5000)
     let response = try command(
       device,
@@ -19,6 +21,62 @@ import Testing
     #expect(read32(response, 24 + 16) == 1)
     #expect(read32(response, 48 + 8) == 1_920)
     #expect(read32(response, 48 + 12) == 1_080)
+  }
+
+  @Test func publishesOnlyRendererAuthenticatedFeaturesAndCapsets() throws {
+    let authority = try GPUAccelerationAuthority(
+      features: [.gpuVirgl, .gpuResourceBlob, .gpuContextInit],
+      capsets: [
+        .init(id: 2, maximumVersion: 2, data: [0x56, 0x49, 0x52, 0x47, 0x4C]),
+        .init(id: 4, maximumVersion: 0, data: [0x56, 0x45, 0x4E, 0x55, 0x53]),
+      ]
+    )
+    let device = try makeDevice(authority: authority)
+    let memory = GPUGuestMemory(byteCount: 0x5000)
+
+    #expect(device.offeredFeatures == authority.capabilities.features)
+    #expect(read32(device.configuration, 12) == 2)
+
+    let info = try command(
+      device,
+      bytes: header(0x0108) + littleEndian(UInt32(1)) + littleEndian(UInt32(0)),
+      responseBytes: 40,
+      memory: memory
+    )
+    #expect(read32(info, 0) == 0x1102)
+    #expect(read32(info, 24) == 4)
+    #expect(read32(info, 28) == 0)
+    #expect(read32(info, 32) == 5)
+
+    let capset = try command(
+      device,
+      bytes: header(0x0109) + littleEndian(UInt32(2)) + littleEndian(UInt32(2)),
+      responseBytes: 29,
+      memory: memory
+    )
+    #expect(read32(capset, 0) == 0x1103)
+    #expect(Array(capset.dropFirst(24)) == [0x56, 0x49, 0x52, 0x47, 0x4C])
+
+    device.reset()
+    #expect(authority.resetCount == 1)
+  }
+
+  @Test func rejectsUnboundedOrFeaturelessRendererCapabilities() {
+    #expect(throws: DoryVirtioGPUError.invalidAccelerationCapabilities) {
+      _ = try DoryVirtioGPUAccelerationCapabilities(
+        features: [.gpuResourceBlob],
+        capsets: [.init(id: 4, maximumVersion: 0, data: [1])]
+      )
+    }
+    #expect(throws: DoryVirtioGPUError.invalidAccelerationCapabilities) {
+      _ = try DoryVirtioGPUAccelerationCapabilities(
+        features: [.gpuVirgl],
+        capsets: [
+          .init(id: 2, maximumVersion: 2, data: [1]),
+          .init(id: 2, maximumVersion: 2, data: [2]),
+        ]
+      )
+    }
   }
 
   @Test func createsBacksTransfersBindsAndFlushesA2DResource() throws {
@@ -102,13 +160,17 @@ import Testing
     #expect(read32(try command(device, bytes: bind, memory: memory), 0) == 0x1202)
   }
 
-  private func makeDevice(sink: GPUDisplaySink? = nil) throws -> DoryVirtioGPUDevice {
+  private func makeDevice(
+    sink: GPUDisplaySink? = nil,
+    authority: GPUAccelerationAuthority? = nil
+  ) throws -> DoryVirtioGPUDevice {
     try .init(
       scanouts: [
         .init(id: 0, rectangle: .init(x: 0, y: 0, width: 800, height: 600)),
         .init(id: 1, rectangle: .init(x: 800, y: 0, width: 1_920, height: 1_080)),
       ],
-      displaySink: sink
+      displaySink: sink,
+      accelerationAuthority: authority
     )
   }
 
@@ -140,6 +202,21 @@ import Testing
   private func rect(x: UInt32, y: UInt32, width: UInt32, height: UInt32) -> [UInt8] {
     littleEndian(x) + littleEndian(y) + littleEndian(width) + littleEndian(height)
   }
+}
+
+private final class GPUAccelerationAuthority: DoryVirtioGPUAccelerationAuthority,
+  @unchecked Sendable
+{
+  let capabilities: DoryVirtioGPUAccelerationCapabilities
+  private let lock = NSLock()
+  private var resets = 0
+  var resetCount: Int { lock.withLock { resets } }
+
+  init(features: DoryVirtioFeatures, capsets: [DoryVirtioGPUCapset]) throws {
+    capabilities = try .init(features: features, capsets: capsets)
+  }
+
+  func reset() { lock.withLock { resets += 1 } }
 }
 
 private final class GPUDisplaySink: DoryVirtioGPUDisplaySink, @unchecked Sendable {

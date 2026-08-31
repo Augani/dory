@@ -616,13 +616,15 @@ public final class DoryPCVirtioGPUPCIDevice: DoryPCPCIFunction, DoryPCPCIMSICont
     initialBARAddress: UInt64,
     scanouts: [DoryVirtioGPUScanout],
     displaySink: (any DoryVirtioGPUDisplaySink)? = nil,
+    accelerationAuthority: (any DoryVirtioGPUAccelerationAuthority)? = nil,
     maximumQueueSize: UInt16 = 256,
     maximumResourceBytes: UInt64 = 256 * 1024 * 1024
   ) throws {
     gpuDevice = try .init(
       scanouts: scanouts,
       maximumResourceBytes: maximumResourceBytes,
-      displaySink: displaySink
+      displaySink: displaySink,
+      accelerationAuthority: accelerationAuthority
     )
     pciFunction = try .init(
       address: address,
