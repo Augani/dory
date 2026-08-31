@@ -571,6 +571,15 @@ public struct DoryX86Decoder: Sendable {
         case 0xDA where operands.group == 5 && register == 1:
           operation = .compareX87(
             source: .register(1), popCount: 2, ordered: false, setIntegerFlags: false)
+        case 0xDA where operands.group <= 3:
+          let condition: DoryX86Condition =
+            switch operands.group {
+            case 0: .below
+            case 1: .equal
+            case 2: .belowOrEqual
+            default: .parity
+            }
+          operation = .conditionalMoveX87(condition, source: register)
         default:
           throw DoryX86DecodeError.invalidEncoding(
             address: address, detail: "unsupported x87 register arithmetic instruction")
@@ -592,6 +601,8 @@ public struct DoryX86Decoder: Sendable {
           operation = .storeX87(
             destination: memory, format: .float32, pop: true, truncate: false)
         case 5: operation = .loadX87ControlWord(operands.rm)
+        case 4: operation = .loadX87Environment(memory)
+        case 6: operation = .storeX87Environment(memory)
         case 7: operation = .storeX87ControlWord(operands.rm)
         default:
           throw DoryX86DecodeError.invalidEncoding(
@@ -602,6 +613,8 @@ public struct DoryX86Decoder: Sendable {
           operation = .loadX87(.register(vectorRegister(operands.rm)))
         } else if operands.group == 1 {
           operation = .exchangeX87(vectorRegister(operands.rm))
+        } else if operands.group == 2, vectorRegister(operands.rm) == 0 {
+          operation = .noOperation
         } else {
           let encoded = UInt8(0xC0 | operands.group << 3 | vectorRegister(operands.rm))
           let special: DoryX87SpecialOperation =
@@ -646,7 +659,18 @@ public struct DoryX86Decoder: Sendable {
       let operands = try decodeModRM(
         cursor: &cursor, width: .word, prefixes: prefixes, mode: mode)
       if case .register = operands.rm {
-        if opcode == 0xDB, operands.group == 4, vectorRegister(operands.rm) == 3 {
+        if opcode == 0xDB, operands.group <= 3 {
+          let condition: DoryX86Condition =
+            switch operands.group {
+            case 0: .aboveOrEqual
+            case 1: .notEqual
+            case 2: .above
+            default: .notParity
+            }
+          operation = .conditionalMoveX87(condition, source: vectorRegister(operands.rm))
+        } else if opcode == 0xDB, operands.group == 4, vectorRegister(operands.rm) == 2 {
+          operation = .clearX87Exceptions
+        } else if opcode == 0xDB, operands.group == 4, vectorRegister(operands.rm) == 3 {
           operation = .initializeFloatingPoint
         } else if opcode == 0xDB, operands.group == 5 || operands.group == 6 {
           operation = .compareX87(
@@ -662,8 +686,18 @@ public struct DoryX86Decoder: Sendable {
             ordered: false,
             setIntegerFlags: false
           )
+        } else if opcode == 0xDD, operands.group == 0 {
+          operation = .freeX87(vectorRegister(operands.rm), pop: false)
+        } else if opcode == 0xDD, operands.group == 2 || operands.group == 3 {
+          operation = .moveX87(
+            destination: vectorRegister(operands.rm),
+            source: 0,
+            pop: operands.group == 3
+          )
         } else if opcode == 0xDF, operands.group == 4, vectorRegister(operands.rm) == 0 {
           operation = .storeX87StatusWord(.register(.rax, width: .word))
+        } else if opcode == 0xDF, operands.group == 0 {
+          operation = .freeX87(vectorRegister(operands.rm), pop: true)
         } else if opcode == 0xDF, operands.group == 5 || operands.group == 6 {
           operation = .compareX87(
             source: .register(vectorRegister(operands.rm)),
@@ -676,6 +710,14 @@ public struct DoryX86Decoder: Sendable {
             address: address, detail: "unsupported register x87 instruction")
         }
       } else if case .memory(let memory) = operands.rm {
+        if opcode == 0xDF, operands.group == 4 {
+          operation = .loadX87PackedBCD(memory)
+          break
+        }
+        if opcode == 0xDF, operands.group == 6 {
+          operation = .storeX87PackedBCD(memory, pop: true)
+          break
+        }
         let format: DoryX87MemoryFormat
         switch opcode {
         case 0xDB:

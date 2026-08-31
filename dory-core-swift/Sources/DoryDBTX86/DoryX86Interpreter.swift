@@ -622,6 +622,86 @@ public struct DoryX86Interpreter: Sendable {
         for _ in 0..<popCount { popX87(state: &state.floatingPoint) }
       case .x87Special(let operation):
         executeX87Special(operation, state: &state.floatingPoint)
+      case .loadX87Environment(let source):
+        let byteCount = mode == .real16 || mode == .protected16 ? 14 : 28
+        try validateSegmentAccess(
+          source,
+          byteCount: byteCount,
+          write: false,
+          instruction: instruction,
+          state: state
+        )
+        let bytes = try executionMemory.read(
+          at: effectiveAddress(source, instruction: instruction, state: state),
+          byteCount: byteCount
+        )
+        state.floatingPoint.x87ControlWord = UInt16(fromLittleEndian(Array(bytes[0..<2])))
+        state.floatingPoint.x87StatusWord = UInt16(fromLittleEndian(Array(bytes[2..<4])))
+        state.floatingPoint.x87TagWord = UInt16(fromLittleEndian(Array(bytes[4..<6])))
+      case .storeX87Environment(let destination):
+        let byteCount = mode == .real16 || mode == .protected16 ? 14 : 28
+        var bytes = [UInt8](repeating: 0, count: byteCount)
+        replaceLittleEndian(state.floatingPoint.x87ControlWord, in: &bytes, at: 0)
+        replaceLittleEndian(state.floatingPoint.x87StatusWord, in: &bytes, at: 2)
+        replaceLittleEndian(state.floatingPoint.x87TagWord, in: &bytes, at: 4)
+        try writeX87Memory(
+          bytes,
+          to: destination,
+          instruction: instruction,
+          state: state,
+          memory: executionMemory
+        )
+        state.floatingPoint.x87ControlWord |= 0x003F
+      case .loadX87PackedBCD(let source):
+        try validateSegmentAccess(
+          source,
+          byteCount: 10,
+          write: false,
+          instruction: instruction,
+          state: state
+        )
+        let bytes = try executionMemory.read(
+          at: effectiveAddress(source, instruction: instruction, state: state),
+          byteCount: 10
+        )
+        pushX87(decodeX87PackedBCD(bytes, state: &state.floatingPoint), state: &state.floatingPoint)
+      case .storeX87PackedBCD(let destination, let pop):
+        let bytes = encodeX87PackedBCD(
+          readX87Register(0, state: state.floatingPoint),
+          state: &state.floatingPoint
+        )
+        try writeX87Memory(
+          bytes,
+          to: destination,
+          instruction: instruction,
+          state: state,
+          memory: executionMemory
+        )
+        if pop { popX87(state: &state.floatingPoint) }
+      case .moveX87(let destination, let source, let pop):
+        writeX87Register(
+          destination,
+          value: readX87Register(source, state: state.floatingPoint),
+          state: &state.floatingPoint
+        )
+        if pop { popX87(state: &state.floatingPoint) }
+      case .freeX87(let register, let pop):
+        setX87Tag(
+          physicalX87Register(register, state: state.floatingPoint),
+          3,
+          state: &state.floatingPoint
+        )
+        if pop { popX87(state: &state.floatingPoint) }
+      case .conditionalMoveX87(let condition, let source):
+        if evaluate(condition, flags: state.rflags) {
+          writeX87Register(
+            0,
+            value: readX87Register(source, state: state.floatingPoint),
+            state: &state.floatingPoint
+          )
+        }
+      case .clearX87Exceptions:
+        state.floatingPoint.x87StatusWord &= 0x7F00
       case .storeX87StatusWord(let destination):
         try write(
           UInt64(state.floatingPoint.x87StatusWord),
@@ -2038,6 +2118,51 @@ public struct DoryX86Interpreter: Sendable {
       if bits & 2 != 0 { state.x87StatusWord |= 0x4000 }
       if bits & 4 != 0 { state.x87StatusWord |= 0x0100 }
     }
+  }
+
+  private func decodeX87PackedBCD(
+    _ bytes: [UInt8],
+    state: inout DoryX86FloatingPointState
+  ) -> Double {
+    precondition(bytes.count == 10)
+    var magnitude: UInt64 = 0
+    var place: UInt64 = 1
+    for byte in bytes.prefix(9) {
+      let low = byte & 0x0F
+      let high = byte >> 4
+      guard low <= 9, high <= 9 else {
+        state.x87StatusWord |= 1
+        return .nan
+      }
+      magnitude += UInt64(low) * place
+      place *= 10
+      magnitude += UInt64(high) * place
+      place *= 10
+    }
+    let value = Double(magnitude)
+    return bytes[9] & 0x80 == 0 ? value : -value
+  }
+
+  private func encodeX87PackedBCD(
+    _ value: Double,
+    state: inout DoryX86FloatingPointState
+  ) -> [UInt8] {
+    let rounded = value.rounded(x87RoundingRule(state))
+    guard rounded.isFinite, abs(rounded) < 1_000_000_000_000_000_000 else {
+      state.x87StatusWord |= 1
+      return [UInt8](repeating: 0, count: 9) + [0xC0]
+    }
+    var magnitude = UInt64(abs(rounded))
+    var bytes = [UInt8](repeating: 0, count: 10)
+    for index in 0..<9 {
+      let low = UInt8(magnitude % 10)
+      magnitude /= 10
+      let high = UInt8(magnitude % 10)
+      magnitude /= 10
+      bytes[index] = low | high << 4
+    }
+    if rounded.sign == .minus { bytes[9] = 0x80 }
+    return bytes
   }
 
   private func pushX87(_ value: Double, state: inout DoryX86FloatingPointState) {

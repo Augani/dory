@@ -746,4 +746,43 @@ import Testing
         == .x87Special(.arctangent)
     )
   }
+
+  @Test func decodesX87EnvironmentBCDConditionalMovesAndFree() throws {
+    #expect(
+      try decoder.decode([0xD9, 0x20], at: 0x1000, mode: .long64).operation
+        == .loadX87Environment(.init(base: .rax, width: .word))
+    )
+    #expect(
+      try decoder.decode([0xD9, 0x30], at: 0x1000, mode: .long64).operation
+        == .storeX87Environment(.init(base: .rax, width: .word))
+    )
+    #expect(
+      try decoder.decode([0xDF, 0x20], at: 0x1000, mode: .long64).operation
+        == .loadX87PackedBCD(.init(base: .rax, width: .word))
+    )
+    #expect(
+      try decoder.decode([0xDF, 0x30], at: 0x1000, mode: .long64).operation
+        == .storeX87PackedBCD(.init(base: .rax, width: .word), pop: true)
+    )
+    #expect(
+      try decoder.decode([0xDA, 0xC1], at: 0x1000, mode: .long64).operation
+        == .conditionalMoveX87(.below, source: 1)
+    )
+    #expect(
+      try decoder.decode([0xDB, 0xC1], at: 0x1000, mode: .long64).operation
+        == .conditionalMoveX87(.aboveOrEqual, source: 1)
+    )
+    #expect(
+      try decoder.decode([0xDD, 0xD1], at: 0x1000, mode: .long64).operation
+        == .moveX87(destination: 1, source: 0, pop: false)
+    )
+    #expect(
+      try decoder.decode([0xDF, 0xC1], at: 0x1000, mode: .long64).operation
+        == .freeX87(1, pop: true)
+    )
+    #expect(
+      try decoder.decode([0xDB, 0xE2], at: 0x1000, mode: .long64).operation
+        == .clearX87Exceptions
+    )
+  }
 }

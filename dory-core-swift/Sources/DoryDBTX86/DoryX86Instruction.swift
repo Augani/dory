@@ -291,6 +291,14 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
     setIntegerFlags: Bool
   )
   case x87Special(DoryX87SpecialOperation)
+  case loadX87Environment(DoryX86MemoryOperand)
+  case storeX87Environment(DoryX86MemoryOperand)
+  case loadX87PackedBCD(DoryX86MemoryOperand)
+  case storeX87PackedBCD(DoryX86MemoryOperand, pop: Bool)
+  case moveX87(destination: UInt8, source: UInt8, pop: Bool)
+  case freeX87(UInt8, pop: Bool)
+  case conditionalMoveX87(DoryX86Condition, source: UInt8)
+  case clearX87Exceptions
   case storeX87StatusWord(DoryX86Operand)
   case saveFloatingPointState(DoryX86MemoryOperand)
   case restoreFloatingPointState(DoryX86MemoryOperand)

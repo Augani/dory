@@ -480,6 +480,63 @@ import Testing
     #expect(state.floatingPoint.x87TagWord == 0xFFFF)
   }
 
+  @Test func x87EnvironmentBCDConditionalMovesAndFreeRoundTrip() throws {
+    var bytes = [UInt8](repeating: 0, count: 0x200)
+    bytes.replaceSubrange(
+      0..<27,
+      with: [
+        0xD9, 0x73, 0x20,
+        0xD9, 0x63, 0x20,
+        0xDF, 0x63, 0x40,
+        0xDF, 0x73, 0x50,
+        0xD9, 0x43, 0x60,
+        0xD9, 0x43, 0x64,
+        0xDA, 0xC1,
+        0xDD, 0x5B, 0x70,
+        0xDF, 0xC0,
+        0xDB, 0xE2,
+      ])
+    let packedBCD: [UInt8] = [0x78, 0x56, 0x34, 0x12, 0, 0, 0, 0, 0, 0x80]
+    bytes.replaceSubrange(0x140..<0x14A, with: packedBCD)
+    bytes.replaceSubrange(
+      0x160..<0x164,
+      with: littleEndian(UInt64(Float(1).bitPattern)).prefix(4)
+    )
+    bytes.replaceSubrange(
+      0x164..<0x168,
+      with: littleEndian(UInt64(Float(2).bitPattern)).prefix(4)
+    )
+    let memory = DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: bytes)
+    var floatingPoint = try DoryX86FloatingPointState()
+    floatingPoint.x87ControlWord = 0x027F
+    var state = try DoryX86ArchitecturalState(
+      registers: .init(rbx: 0x1100),
+      rip: 0x1000,
+      rflags: [.reservedOne, .carry],
+      floatingPoint: floatingPoint
+    )
+
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    #expect(try memory.read(at: 0x1120, byteCount: 6) == [0x7F, 0x02, 0, 0, 0xFF, 0xFF])
+    state.floatingPoint.x87ControlWord = 0
+    state.floatingPoint.x87StatusWord = 0xFFFF
+    state.floatingPoint.x87TagWord = 0
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    #expect(state.floatingPoint.x87ControlWord == 0x027F)
+    #expect(state.floatingPoint.x87StatusWord == 0)
+    #expect(state.floatingPoint.x87TagWord == 0xFFFF)
+
+    for _ in 0..<8 {
+      _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    }
+    #expect(try memory.read(at: 0x1150, byteCount: 10) == packedBCD)
+    let selected = Double(
+      bitPattern: try memoryInteger(bytes: try memory.read(at: 0x1170, byteCount: 8)))
+    #expect(selected == 1)
+    #expect(state.floatingPoint.x87TagWord == 0xFFFF)
+    #expect(state.floatingPoint.x87StatusWord & 0x00FF == 0)
+  }
+
   @Test func movdquLoadsLowVectorAndPreservesUpperVector() throws {
     var bytes = [UInt8](repeating: 0, count: 0x30)
     bytes.replaceSubrange(0..<8, with: [0xF3, 0x0F, 0x6F, 0x35, 0x08, 0, 0, 0])
