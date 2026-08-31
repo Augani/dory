@@ -392,6 +392,7 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
     destination: UInt8,
     count: DoryX86VectorShiftCount
   )
+  case vectorByteShift(left: Bool, destination: UInt8, count: UInt8)
   case vectorFloatingCompare(
     format: DoryX86VectorFloatingFormat,
     destination: UInt8,

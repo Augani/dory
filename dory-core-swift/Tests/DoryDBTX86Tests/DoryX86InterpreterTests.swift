@@ -1405,6 +1405,68 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
     #expect(Array(state.floatingPoint.ymm[3].bytes[0..<16]) == Array(repeating: 0, count: 16))
   }
 
+  @Test func sse2ByteShiftsAndStreamingStoresPreserveArchitecturalData() throws {
+    let base: UInt64 = 0x1000
+    let target = base + 0x100
+    let memory = DoryX86ByteArrayMemory(
+      baseAddress: base,
+      bytes: [
+        0x66, 0x0F, 0x73, 0xF8, 0x04,
+        0x66, 0x0F, 0x73, 0xD8, 0x02,
+        0x66, 0x0F, 0xE7, 0x00,
+        0x48, 0x0F, 0xC3, 0x48, 0x10,
+      ] + .init(repeating: 0, count: 0x200)
+    )
+    var floatingPoint = try DoryX86FloatingPointState()
+    floatingPoint.ymm[0] = try .init(bytes: Array(0..<32), expectedByteCount: 32)
+    let registers = DoryX86GeneralRegisters(
+      rax: target,
+      rcx: 0x1122_3344_5566_7788
+    )
+    let flags: DoryX86RFLAGS = [.reservedOne, .carry, .zero, .overflow]
+    var state = try DoryX86ArchitecturalState(
+      registers: registers,
+      rip: base,
+      rflags: flags,
+      floatingPoint: floatingPoint
+    )
+
+    for _ in 0..<4 {
+      guard case .retired = interpreter.step(state: &state, memory: memory, mode: .long64)
+      else {
+        Issue.record("advertised SSE2 instruction unexpectedly faulted")
+        return
+      }
+    }
+
+    let expectedLow128: [UInt8] = [0, 0] + Array(0..<12) + [0, 0]
+    #expect(Array(state.floatingPoint.ymm[0].bytes[0..<16]) == expectedLow128)
+    #expect(Array(state.floatingPoint.ymm[0].bytes[16..<32]) == Array(16..<32))
+    #expect(try memory.read(at: target, byteCount: 16) == expectedLow128)
+    #expect(
+      try memory.read(at: target + 0x10, byteCount: 8)
+        == [0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11]
+    )
+    #expect(state.registers == registers)
+    #expect(state.rflags == flags)
+
+    var saturated = state
+    saturated.rip = base
+    var saturatedBytes = saturated.floatingPoint.ymm[0].bytes
+    saturatedBytes.replaceSubrange(0..<16, with: Array(0..<16))
+    saturated.floatingPoint.ymm[0] = try .init(
+      bytes: saturatedBytes, expectedByteCount: 32)
+    let saturatingShift = DoryX86ByteArrayMemory(
+      baseAddress: base,
+      bytes: [0x66, 0x0F, 0x73, 0xF8, 0xFF]
+    )
+    _ = interpreter.step(state: &saturated, memory: saturatingShift, mode: .long64)
+    #expect(
+      Array(saturated.floatingPoint.ymm[0].bytes[0..<16])
+        == Array(repeating: 0, count: 16)
+    )
+  }
+
   @Test func sse2PackedMultipliesProduceArchitecturalLaneResults() throws {
     let memory = DoryX86ByteArrayMemory(
       baseAddress: 0x1000,

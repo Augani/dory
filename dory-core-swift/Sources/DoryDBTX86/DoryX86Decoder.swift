@@ -1264,6 +1264,17 @@ public struct DoryX86Decoder: Sendable {
           throw DoryX86DecodeError.invalidEncoding(
             address: address, detail: "packed integer immediate shift requires XMM destination")
         }
+        let immediate = try cursor.readByte()
+        if second == 0x73, prefixes.operandSizeOverride,
+          operands.group == 3 || operands.group == 7
+        {
+          operation = .vectorByteShift(
+            left: operands.group == 7,
+            destination: vectorRegister(operands.rm),
+            count: immediate
+          )
+          break
+        }
         let shiftOperation: DoryX86VectorShiftOperation
         switch operands.group {
         case 2: shiftOperation = .logicalRight
@@ -1279,7 +1290,6 @@ public struct DoryX86Decoder: Sendable {
           case 0x72: .doubleword
           default: .quadword
           }
-        let immediate = try cursor.readByte()
         if prefixes.operandSizeOverride {
           operation = .vectorIntegerShift(
             shiftOperation,
@@ -1318,6 +1328,36 @@ public struct DoryX86Decoder: Sendable {
             requiresAlignment: alignedVector
           )
         }
+      case 0xC3:
+        guard prefixes.repeatPrefix == nil, !prefixes.operandSizeOverride else {
+          throw DoryX86DecodeError.invalidEncoding(
+            address: address, detail: "MOVNTI rejects mandatory and operand-size prefixes")
+        }
+        let integerWidth: DoryX86OperandWidth =
+          prefixes.rex?.w == true ? .quadword : .doubleword
+        let operands = try decodeModRM(
+          cursor: &cursor, width: integerWidth, prefixes: prefixes, mode: mode)
+        guard case .memory = operands.rm else {
+          throw DoryX86DecodeError.invalidEncoding(
+            address: address, detail: "MOVNTI requires a memory destination")
+        }
+        operation = .move(destination: operands.rm, source: operands.reg)
+      case 0xE7:
+        guard prefixes.operandSizeOverride, prefixes.repeatPrefix == nil else {
+          throw DoryX86DecodeError.invalidEncoding(
+            address: address, detail: "MOVNTDQ requires the 66 prefix")
+        }
+        let operands = try decodeModRM(
+          cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
+        guard case .memory = operands.rm else {
+          throw DoryX86DecodeError.invalidEncoding(
+            address: address, detail: "MOVNTDQ requires a memory destination")
+        }
+        operation = .moveVector128(
+          destination: vectorOperand(operands.rm),
+          source: vectorOperand(operands.reg),
+          requiresAlignment: true
+        )
       case 0xD1...0xD3, 0xE1, 0xE2, 0xF1...0xF3:
         guard prefixes.repeatPrefix == nil else {
           throw DoryX86DecodeError.invalidEncoding(

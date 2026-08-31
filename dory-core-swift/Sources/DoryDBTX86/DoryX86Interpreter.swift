@@ -1114,6 +1114,20 @@ public struct DoryX86Interpreter: Sendable {
         )
         state.floatingPoint.ymm[Int(destination)] = try .init(
           bytes: registerBytes, expectedByteCount: 32)
+      case .vectorByteShift(let left, let destination, let encodedCount):
+        let count = min(Int(encodedCount), 16)
+        var registerBytes = state.floatingPoint.ymm[Int(destination)].bytes
+        let low128 = Array(registerBytes.prefix(16))
+        let zeros = Array(repeating: UInt8(0), count: count)
+        let shifted: [UInt8]
+        if left {
+          shifted = zeros + Array(low128.prefix(16 - count))
+        } else {
+          shifted = Array(low128.dropFirst(count)) + zeros
+        }
+        registerBytes.replaceSubrange(0..<16, with: shifted)
+        state.floatingPoint.ymm[Int(destination)] = try .init(
+          bytes: registerBytes, expectedByteCount: 32)
       case .vectorFloatingCompare(let format, let destination, let source, _):
         let byteCount = format == .scalarDouble ? 8 : 4
         let rhs = try readVectorBytes(

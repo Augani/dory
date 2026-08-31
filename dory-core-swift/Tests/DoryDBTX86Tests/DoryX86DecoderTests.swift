@@ -968,4 +968,43 @@ import Testing
         == .mmxBitwise(.xor, destination: 0, source: .register(1))
     )
   }
+
+  @Test func decodesAdvertisedSSE2StreamingStoresAndByteShifts() throws {
+    #expect(
+      try decoder.decode([0x66, 0x0F, 0x73, 0xF8, 0x08], at: 0x1000, mode: .long64)
+        .operation == .vectorByteShift(left: true, destination: 0, count: 8)
+    )
+    #expect(
+      try decoder.decode([0x66, 0x41, 0x0F, 0x73, 0xD9, 0x04], at: 0x1000, mode: .long64)
+        .operation == .vectorByteShift(left: false, destination: 9, count: 4)
+    )
+    #expect(
+      try decoder.decode([0x48, 0x0F, 0xC3, 0x47, 0x20], at: 0x1000, mode: .long64)
+        .operation
+        == .move(
+          destination: .memory(
+            .init(base: .rdi, displacement: 0x20, width: .quadword)
+          ),
+          source: .register(.rax, width: .quadword)
+        )
+    )
+    #expect(
+      try decoder.decode([0x66, 0x44, 0x0F, 0xE7, 0x10], at: 0x1000, mode: .long64)
+        .operation
+        == .moveVector128(
+          destination: .memory(.init(base: .rax, width: .quadword)),
+          source: .register(10),
+          requiresAlignment: true
+        )
+    )
+    #expect(throws: DoryX86DecodeError.self) {
+      try decoder.decode([0x0F, 0x73, 0xF8, 0x08], at: 0x1000, mode: .long64)
+    }
+    #expect(throws: DoryX86DecodeError.self) {
+      try decoder.decode([0x66, 0x0F, 0xE7, 0xC0], at: 0x1000, mode: .long64)
+    }
+    #expect(throws: DoryX86DecodeError.self) {
+      try decoder.decode([0x66, 0x0F, 0xC3, 0x00], at: 0x1000, mode: .long64)
+    }
+  }
 }
