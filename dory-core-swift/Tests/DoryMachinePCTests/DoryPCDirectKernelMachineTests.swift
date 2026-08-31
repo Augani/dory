@@ -188,6 +188,33 @@ import Testing
     }
   }
 
+  @Test func pitClockScalesIdenticallyAcrossExecutionTiers() throws {
+    #if arch(arm64)
+      let tiers: [DoryPCExecutionTier] = [.interpreter, .baselineJIT, .optimizingJIT]
+    #else
+      let tiers: [DoryPCExecutionTier] = [.interpreter]
+    #endif
+
+    for tier in tiers {
+      let machine = try DoryPCDirectKernelMachine(
+        memoryBytes: 2 * 1024 * 1024,
+        executionTier: tier,
+        baselineJITMaximumCodeBytes: 4096
+      )
+      try machine.load(
+        kernel: makeELF(code: [UInt8](repeating: 0x90, count: 128) + [0xF4]),
+        commandLine: "x"
+      )
+      // Channel 0, low/high byte, one-shot, count 1000.
+      try machine.ioBus.write(port: 0x43, value: 0x30, width: .byte)
+      try machine.ioBus.write(port: 0x40, value: 0xE8, width: .byte)
+      try machine.ioBus.write(port: 0x40, value: 0x03, width: .byte)
+
+      #expect(try machine.run(maximumInstructions: 100) == .instructionBudget(100))
+      #expect(machine.legacyPIT.snapshot().current == 989)
+    }
+  }
+
   @Test func jitTiersFallBackToTheInterpreterForUnsupportedBlocks() throws {
     #if arch(arm64)
       for tier in [DoryPCExecutionTier.baselineJIT, .optimizingJIT] {

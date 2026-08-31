@@ -892,9 +892,10 @@ public struct DoryARM64BaselineEmitter: Sendable {
       exit =
         switch reason {
         case .halt: .halt
+        case .instructionBudget: .dispatch
         case .system: .system
         case .portIO: .portIO
-        case .interpreter, .indirectControl, .instructionBudget: .interpreter
+        case .interpreter, .indirectControl: .interpreter
         }
     case .conditional(let condition, let taken, let notTaken):
       guard emitX86Condition(condition, into: 10, words: &words) else { return nil }

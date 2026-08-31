@@ -406,10 +406,11 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       while completed < maximumInstructions {
         if let stop = powerStop(instructionCount: completed) { return stop }
         applyProcessorEvents()
-        for apic in localAPICs { apic.advanceTimer(by: 1) }
-        legacyPIT.advance(by: 1)
-        rtc.advance(by: 1)
-        hpet.advance(by: 1)
+        // Every execution tier advances the same canonical 10 MHz machine clock. Routing the
+        // leading tick through the scaler is essential: advancing PIT/RTC by one native device
+        // tick here made interpreter dispatches over-clock both devices while multi-instruction
+        // JIT blocks scaled only their trailing ticks.
+        advanceClocks(by: 1)
         if let stop = deliverPendingInterrupts(instructionCount: completed) { return stop }
         guard let processor = nextRunnableProcessor() else {
           if advanceToNextInterrupt() { continue }
