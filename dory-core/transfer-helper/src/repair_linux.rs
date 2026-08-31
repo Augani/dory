@@ -434,3 +434,288 @@ fn filesystem_error(path: &Path, source: std::io::Error) -> TransferHelperError 
         source,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{make_fifo, permissions, try_set_xattr, write_file, TempRoot};
+    use crate::{hex_encode, DataExtent};
+    use sha2::{Digest, Sha256};
+    use std::fs;
+
+    fn limits() -> ManifestLimits {
+        ManifestLimits::default()
+    }
+
+    /// The archive transport reproduces names and bytes; modes, ownership, xattrs, and timestamps
+    /// are what `repair_volume` has to converge. `decorate` therefore only varies metadata.
+    fn build_volume(volume: &TempRoot, decorate: bool) {
+        fs::create_dir(volume.join("dir")).unwrap();
+        write_file(&volume.join("dir/file"), b"payload");
+        fs::hard_link(volume.join("dir/file"), volume.join("dir/link")).unwrap();
+        std::os::unix::fs::symlink("dir/file", volume.join("symlink")).unwrap();
+        make_fifo(&volume.join("pipe"));
+        if decorate {
+            fs::set_permissions(volume.join("dir"), permissions(0o750)).unwrap();
+            fs::set_permissions(volume.join("dir/file"), permissions(0o640)).unwrap();
+            fs::set_permissions(volume.join("pipe"), permissions(0o600)).unwrap();
+            let _ = try_set_xattr(&volume.join("dir/file"), "user.source", b"kept");
+        } else {
+            fs::set_permissions(volume.join("dir"), permissions(0o700)).unwrap();
+            fs::set_permissions(volume.join("dir/file"), permissions(0o600)).unwrap();
+            let _ = try_set_xattr(&volume.join("dir/file"), "user.stale", b"removed");
+        }
+    }
+
+    fn entry(path: &str, kind: ManifestEntryKind) -> ManifestEntry {
+        ManifestEntry {
+            path_hex: hex_encode(path.as_bytes()),
+            kind,
+            mode: 0o644,
+            uid: unsafe { libc::getuid() },
+            gid: unsafe { libc::getgid() },
+            size: 0,
+            mtime_seconds: 1,
+            mtime_nanoseconds: 2,
+            content_sha256: None,
+            link_target_hex: None,
+            hard_link_target_hex: None,
+            sparse_data_extents: None,
+            device_major: None,
+            device_minor: None,
+            xattrs: vec![],
+        }
+    }
+
+    fn root_entry() -> ManifestEntry {
+        let mut value = entry("", ManifestEntryKind::Directory);
+        value.mode = 0o755;
+        value
+    }
+
+    #[test]
+    fn repair_converges_the_target_onto_the_source_manifest() {
+        let source = TempRoot::new();
+        build_volume(&source, true);
+        let expected = crate::scan_volume(source.path(), limits()).unwrap();
+
+        let target = TempRoot::new();
+        build_volume(&target, false);
+        fs::set_permissions(target.path(), permissions(0o700)).unwrap();
+
+        let repaired = repair_volume(target.path(), &expected, limits()).unwrap();
+        assert_eq!(repaired, expected.normalized_target());
+        assert_eq!(
+            crate::scan_volume(target.path(), limits()).unwrap(),
+            expected
+        );
+        assert_eq!(
+            repaired.canonical_sha256(limits()).unwrap(),
+            expected.canonical_sha256(limits()).unwrap()
+        );
+    }
+
+    #[test]
+    fn repair_restores_sparse_holes_for_regular_files() {
+        let target = TempRoot::new();
+        let path = target.join("sparse");
+        write_file(&path, &vec![0_u8; 512 * 1024]);
+
+        let mut file = entry("sparse", ManifestEntryKind::RegularFile);
+        file.size = 512 * 1024;
+        file.content_sha256 = Some(hex_encode(&Sha256::digest(vec![0_u8; 512 * 1024])));
+        file.sparse_data_extents = Some(vec![]);
+        let manifest = VolumeManifest::new(root_entry(), vec![file]);
+
+        let repaired = repair_volume(target.path(), &manifest, limits()).unwrap();
+        let entry = &repaired.entries[0];
+        assert_eq!(entry.size, 512 * 1024);
+        assert_eq!(entry.sparse_data_extents.as_deref(), Some(&[][..]));
+        assert_eq!(fs::read(&path).unwrap(), vec![0_u8; 512 * 1024]);
+    }
+
+    #[test]
+    fn sockets_in_the_source_are_excluded_from_the_repaired_target() {
+        let source = TempRoot::new();
+        write_file(&source.join("file"), b"payload");
+        let listener = std::os::unix::net::UnixListener::bind(source.join("service.sock")).unwrap();
+        let manifest = crate::scan_volume(source.path(), limits()).unwrap();
+        drop(listener);
+        assert_eq!(manifest.socket_paths().len(), 1);
+
+        let target = TempRoot::new();
+        write_file(&target.join("file"), b"payload");
+
+        let repaired = repair_volume(target.path(), &manifest, limits()).unwrap();
+        assert_eq!(repaired.entries.len(), 1);
+        assert!(repaired.socket_paths().is_empty());
+    }
+
+    #[test]
+    fn device_nodes_are_refused_by_the_launch_policy() {
+        let target = TempRoot::new();
+        let mut device = entry("device", ManifestEntryKind::CharacterDevice);
+        device.device_major = Some(1);
+        device.device_minor = Some(3);
+        let manifest = VolumeManifest::new(root_entry(), vec![device]);
+
+        assert!(matches!(
+            repair_volume(target.path(), &manifest, limits()),
+            Err(TransferHelperError::Unsupported(_))
+        ));
+    }
+
+    #[test]
+    fn an_invalid_source_manifest_never_touches_the_target() {
+        let target = TempRoot::new();
+        let mut broken = root_entry();
+        broken.mtime_nanoseconds = 1_000_000_000;
+        let manifest = VolumeManifest::new(broken, vec![]);
+        assert!(matches!(
+            repair_volume(target.path(), &manifest, limits()),
+            Err(TransferHelperError::InvalidManifest(_))
+        ));
+    }
+
+    #[test]
+    fn transport_verification_rejects_missing_extra_and_altered_paths() {
+        let target = TempRoot::new();
+        write_file(&target.join("file"), b"payload");
+
+        let mut file = entry("file", ManifestEntryKind::RegularFile);
+        file.size = 7;
+        file.content_sha256 = Some(hex_encode(&Sha256::digest(b"payload")));
+        file.sparse_data_extents = Some(vec![DataExtent {
+            offset: 0,
+            length: 7,
+        }]);
+
+        let mut extra = entry("absent", ManifestEntryKind::Directory);
+        extra.mode = 0o755;
+        let too_many = VolumeManifest::new(root_entry(), vec![file.clone(), extra]);
+        assert!(matches!(
+            repair_volume(target.path(), &too_many, limits()),
+            Err(TransferHelperError::Verification(_))
+        ));
+
+        let mut renamed = file.clone();
+        renamed.path_hex = hex_encode(b"other");
+        let wrong_path = VolumeManifest::new(root_entry(), vec![renamed]);
+        assert!(matches!(
+            repair_volume(target.path(), &wrong_path, limits()),
+            Err(TransferHelperError::Verification(_))
+        ));
+
+        let mut wrong_kind = file.clone();
+        wrong_kind.kind = ManifestEntryKind::Fifo;
+        wrong_kind.size = 0;
+        wrong_kind.content_sha256 = None;
+        wrong_kind.sparse_data_extents = None;
+        let wrong_kind = VolumeManifest::new(root_entry(), vec![wrong_kind]);
+        assert!(matches!(
+            repair_volume(target.path(), &wrong_kind, limits()),
+            Err(TransferHelperError::Verification(_))
+        ));
+
+        let mut wrong_content = file;
+        wrong_content.content_sha256 = Some(hex_encode(&Sha256::digest(b"different")));
+        let wrong_content = VolumeManifest::new(root_entry(), vec![wrong_content]);
+        assert!(matches!(
+            repair_volume(target.path(), &wrong_content, limits()),
+            Err(TransferHelperError::Verification(_))
+        ));
+    }
+
+    #[test]
+    fn symbolic_and_hard_link_targets_are_verified_against_the_target() {
+        let target = TempRoot::new();
+        write_file(&target.join("file"), b"payload");
+        std::os::unix::fs::symlink("file", target.join("symlink")).unwrap();
+        fs::hard_link(target.join("file"), target.join("linked")).unwrap();
+
+        let observed = crate::scan_volume(target.path(), limits()).unwrap();
+        let mut drifted = observed.clone();
+        for entry in &mut drifted.entries {
+            match entry.kind {
+                ManifestEntryKind::SymbolicLink => {
+                    entry.link_target_hex = Some(hex_encode(b"other"));
+                    entry.size = 5;
+                }
+                ManifestEntryKind::HardLink => {
+                    entry.hard_link_target_hex = Some(hex_encode(b"absent"));
+                }
+                _ => {}
+            }
+        }
+        assert!(matches!(
+            verify_transport_content(&drifted, &observed),
+            Err(TransferHelperError::Verification(_))
+        ));
+        verify_transport_content(&observed, &observed).unwrap();
+    }
+
+    #[test]
+    fn manifest_paths_decode_byte_components_under_the_root() {
+        let root = Path::new("/volume");
+        assert_eq!(
+            manifest_path(root, &root_entry()).unwrap(),
+            Path::new("/volume")
+        );
+        let nested = entry("dir/file", ManifestEntryKind::Directory);
+        assert_eq!(
+            manifest_path(root, &nested).unwrap(),
+            Path::new("/volume/dir/file")
+        );
+        let mut invalid = nested;
+        invalid.path_hex = "abc".into();
+        assert!(matches!(
+            manifest_path(root, &invalid),
+            Err(TransferHelperError::InvalidManifest(_))
+        ));
+    }
+
+    #[test]
+    fn exact_mismatch_reports_the_first_differing_entry() {
+        let file = {
+            let mut value = entry("file", ManifestEntryKind::RegularFile);
+            value.size = 7;
+            value.content_sha256 = Some(hex_encode(&Sha256::digest(b"payload")));
+            value.sparse_data_extents = Some(vec![DataExtent {
+                offset: 0,
+                length: 7,
+            }]);
+            value
+        };
+        let expected = VolumeManifest::new(root_entry(), vec![file.clone()]);
+
+        let mut different_root = expected.clone();
+        different_root.root.mode = 0o700;
+        assert_eq!(
+            first_exact_mismatch(&expected, &different_root),
+            "target root metadata does not match the source manifest"
+        );
+
+        let mut different_entry = expected.clone();
+        different_entry.entries[0].mode = 0o600;
+        assert_eq!(
+            first_exact_mismatch(&expected, &different_entry),
+            format!("target differs at hex:{}", file.path_hex)
+        );
+
+        let empty = VolumeManifest::new(root_entry(), vec![]);
+        assert_eq!(
+            first_exact_mismatch(&expected, &empty),
+            "target entry count differs: expected 1, found 0"
+        );
+    }
+
+    #[test]
+    fn punching_a_zero_length_hole_is_a_no_op() {
+        let target = TempRoot::new();
+        let path = target.join("file");
+        write_file(&path, b"payload");
+        let file = fs::OpenOptions::new().write(true).open(&path).unwrap();
+        punch_hole(&file, 0, 0, &path).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"payload");
+    }
+}

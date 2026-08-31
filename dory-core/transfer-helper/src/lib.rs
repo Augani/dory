@@ -12,6 +12,9 @@ mod scan_linux;
 #[cfg(target_os = "linux")]
 mod repair_linux;
 
+#[cfg(all(test, target_os = "linux"))]
+mod test_support;
+
 pub use model::{
     DataExtent, ManifestEntry, ManifestEntryKind, ManifestLimits, VolumeManifest, XattrEntry,
 };
@@ -108,5 +111,50 @@ fn hex_nibble(value: u8) -> Option<u8> {
         b'0'..=b'9' => Some(value - b'0'),
         b'a'..=b'f' => Some(value - b'a' + 10),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hex_round_trips_every_byte_value() {
+        let bytes: Vec<u8> = (0..=255_u8).collect();
+        let encoded = hex_encode(&bytes);
+        assert_eq!(encoded.len(), 512);
+        assert!(encoded
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)));
+        assert_eq!(hex_decode(&encoded).unwrap(), bytes);
+        assert_eq!(hex_encode(&[]), "");
+        assert_eq!(hex_decode("").unwrap(), Vec::<u8>::new());
+    }
+
+    #[test]
+    fn hex_decode_rejects_odd_length_and_non_canonical_digits() {
+        for value in ["a", "abc", "4A", "ff0G", "ff 0"] {
+            assert!(
+                matches!(
+                    hex_decode(value),
+                    Err(TransferHelperError::InvalidManifest(_))
+                ),
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn errors_report_their_path_and_source() {
+        let error = TransferHelperError::Filesystem {
+            path: "hex:2f".into(),
+            source: std::io::Error::from(std::io::ErrorKind::NotFound),
+        };
+        let message = error.to_string();
+        assert!(message.contains("hex:2f"), "{message}");
+        assert!(std::error::Error::source(&error).is_some());
+        assert!(TransferHelperError::LinuxRequired
+            .to_string()
+            .contains("Linux"));
     }
 }

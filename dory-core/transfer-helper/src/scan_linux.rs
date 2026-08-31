@@ -460,3 +460,284 @@ fn path_display_lossless(path: &Path) -> String {
 fn _os_name_bytes(value: &OsStr) -> &[u8] {
     value.as_bytes()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{make_fifo, try_set_xattr, write_file, write_sparse_file, TempRoot};
+    use std::os::unix::ffi::OsStringExt;
+
+    fn scan(root: &Path) -> VolumeManifest {
+        scan_volume(root, ManifestLimits::default()).expect("scan volume")
+    }
+
+    fn entry<'a>(manifest: &'a VolumeManifest, path: &[u8]) -> &'a ManifestEntry {
+        let path_hex = hex_encode(path);
+        manifest
+            .entries
+            .iter()
+            .find(|entry| entry.path_hex == path_hex)
+            .unwrap_or_else(|| panic!("missing entry hex:{path_hex}"))
+    }
+
+    #[test]
+    fn scan_describes_every_supported_file_type_and_validates() {
+        let volume = TempRoot::new();
+        fs::create_dir(volume.join("dir")).unwrap();
+        write_file(&volume.join("dir/file"), b"payload");
+        std::os::unix::fs::symlink("dir/file", volume.join("link")).unwrap();
+        make_fifo(&volume.join("pipe"));
+        let binary_name = std::ffi::OsString::from_vec(b"non\xffutf8".to_vec());
+        write_file(&volume.path().join(binary_name), b"raw");
+
+        let manifest = scan(volume.path());
+        manifest.validate(ManifestLimits::default()).unwrap();
+
+        assert_eq!(manifest.root.path_hex, "");
+        assert_eq!(manifest.root.kind, ManifestEntryKind::Directory);
+        assert_eq!(manifest.entries.len(), 5);
+        assert!(manifest
+            .entries
+            .windows(2)
+            .all(|pair| pair[0].path_hex < pair[1].path_hex));
+
+        let directory = entry(&manifest, b"dir");
+        assert_eq!(directory.kind, ManifestEntryKind::Directory);
+        assert_eq!(directory.size, 0);
+        assert!(directory.content_sha256.is_none());
+
+        let file = entry(&manifest, b"dir/file");
+        assert_eq!(file.kind, ManifestEntryKind::RegularFile);
+        assert_eq!(file.size, 7);
+        assert_eq!(
+            file.content_sha256.as_deref(),
+            Some(hex_encode(&Sha256::digest(b"payload")).as_str())
+        );
+        assert_eq!(
+            file.sparse_data_extents.as_deref(),
+            Some(
+                &[DataExtent {
+                    offset: 0,
+                    length: 7
+                }][..]
+            )
+        );
+
+        let link = entry(&manifest, b"link");
+        assert_eq!(link.kind, ManifestEntryKind::SymbolicLink);
+        assert_eq!(
+            link.link_target_hex.as_deref(),
+            Some(hex_encode(b"dir/file").as_str())
+        );
+        assert_eq!(link.size, "dir/file".len() as u64);
+        assert!(link.content_sha256.is_none());
+
+        assert_eq!(entry(&manifest, b"pipe").kind, ManifestEntryKind::Fifo);
+        assert_eq!(
+            entry(&manifest, b"non\xffutf8").kind,
+            ManifestEntryKind::RegularFile
+        );
+    }
+
+    #[test]
+    fn multiply_linked_regular_files_collapse_into_one_canonical_inode() {
+        let volume = TempRoot::new();
+        write_file(&volume.join("aaa-original"), b"same inode");
+        fs::hard_link(volume.join("aaa-original"), volume.join("zzz-link")).unwrap();
+
+        let manifest = scan(volume.path());
+        manifest.validate(ManifestLimits::default()).unwrap();
+
+        let original = entry(&manifest, b"aaa-original");
+        assert_eq!(original.kind, ManifestEntryKind::RegularFile);
+        let link = entry(&manifest, b"zzz-link");
+        assert_eq!(link.kind, ManifestEntryKind::HardLink);
+        assert_eq!(
+            link.hard_link_target_hex.as_deref(),
+            Some(original.path_hex.as_str())
+        );
+        assert!(link.content_sha256.is_none());
+        assert!(link.sparse_data_extents.is_none());
+    }
+
+    #[test]
+    fn sockets_are_scanned_so_the_target_contract_can_exclude_them() {
+        let volume = TempRoot::new();
+        let _listener =
+            std::os::unix::net::UnixListener::bind(volume.join("service.sock")).unwrap();
+
+        let manifest = scan(volume.path());
+        manifest.validate(ManifestLimits::default()).unwrap();
+        assert_eq!(
+            entry(&manifest, b"service.sock").kind,
+            ManifestEntryKind::Socket
+        );
+        assert_eq!(manifest.socket_paths(), vec![hex_encode(b"service.sock")]);
+        assert!(manifest.normalized_target().entries.is_empty());
+    }
+
+    #[test]
+    fn sparse_regions_are_proven_as_data_extents() {
+        let volume = TempRoot::new();
+        let path = volume.join("sparse");
+        write_sparse_file(&path, 1024 * 1024, b"tail");
+
+        let manifest = scan(volume.path());
+        manifest.validate(ManifestLimits::default()).unwrap();
+        let file = entry(&manifest, b"sparse");
+        assert_eq!(file.size, 1024 * 1024 + 4);
+        let extents = file.sparse_data_extents.as_deref().unwrap();
+        assert!(!extents.is_empty());
+        assert!(extents
+            .iter()
+            .all(|extent| extent.offset + extent.length <= file.size));
+        assert_eq!(
+            extents.last().map(|extent| extent.offset + extent.length),
+            Some(file.size)
+        );
+
+        write_file(&volume.join("empty"), b"");
+        let manifest = scan(volume.path());
+        let empty = entry(&manifest, b"empty");
+        assert_eq!(empty.size, 0);
+        assert_eq!(empty.sparse_data_extents.as_deref(), Some(&[][..]));
+    }
+
+    #[test]
+    fn xattrs_are_recorded_in_sorted_hex_form() {
+        let volume = TempRoot::new();
+        let path = volume.join("file");
+        write_file(&path, b"payload");
+        if !try_set_xattr(&path, "user.zeta", b"\x00\xff")
+            || !try_set_xattr(&path, "user.alpha", b"first")
+        {
+            return;
+        }
+
+        let manifest = scan(volume.path());
+        manifest.validate(ManifestLimits::default()).unwrap();
+        let file = entry(&manifest, b"file");
+        assert_eq!(
+            file.xattrs,
+            vec![
+                XattrEntry {
+                    name_hex: hex_encode(b"user.alpha"),
+                    value_hex: hex_encode(b"first"),
+                },
+                XattrEntry {
+                    name_hex: hex_encode(b"user.zeta"),
+                    value_hex: hex_encode(b"\x00\xff"),
+                },
+            ]
+        );
+
+        let limits = ManifestLimits {
+            maximum_xattrs_per_entry: 1,
+            ..ManifestLimits::default()
+        };
+        assert!(matches!(
+            scan_volume(volume.path(), limits),
+            Err(TransferHelperError::Limit(_))
+        ));
+
+        let limits = ManifestLimits {
+            maximum_xattr_value_bytes: 1,
+            ..ManifestLimits::default()
+        };
+        assert!(matches!(
+            scan_volume(volume.path(), limits),
+            Err(TransferHelperError::Limit(_))
+        ));
+    }
+
+    #[test]
+    fn scan_fails_closed_on_a_non_directory_root_and_a_missing_root() {
+        let volume = TempRoot::new();
+        let file = volume.join("file");
+        write_file(&file, b"payload");
+        assert!(matches!(
+            scan_volume(&file, ManifestLimits::default()),
+            Err(TransferHelperError::InvalidManifest(_))
+        ));
+        assert!(matches!(
+            scan_volume(&volume.join("absent"), ManifestLimits::default()),
+            Err(TransferHelperError::Filesystem { .. })
+        ));
+    }
+
+    #[test]
+    fn entry_and_path_limits_stop_the_walk() {
+        let volume = TempRoot::new();
+        fs::create_dir(volume.join("nested")).unwrap();
+        write_file(&volume.join("nested/file"), b"payload");
+        write_file(&volume.join("other"), b"payload");
+
+        let limits = ManifestLimits {
+            maximum_entries: 2,
+            ..ManifestLimits::default()
+        };
+        assert!(matches!(
+            scan_volume(volume.path(), limits),
+            Err(TransferHelperError::Limit(_))
+        ));
+
+        let limits = ManifestLimits {
+            maximum_path_bytes: 6,
+            ..ManifestLimits::default()
+        };
+        assert!(matches!(
+            scan_volume(volume.path(), limits),
+            Err(TransferHelperError::Limit(_))
+        ));
+    }
+
+    #[test]
+    fn relative_paths_join_with_byte_semantics_and_reject_oversized_results() {
+        assert_eq!(join_relative(b"", b"child", 4096).unwrap(), b"child");
+        assert_eq!(
+            join_relative(b"parent", b"child", 4096).unwrap(),
+            b"parent/child"
+        );
+        assert_eq!(join_relative(b"a", b"b", 3).unwrap(), b"a/b");
+        assert!(matches!(
+            join_relative(b"a", b"b", 2),
+            Err(TransferHelperError::Limit(_))
+        ));
+        assert!(join_relative(b"a", b"b", usize::MAX).is_ok());
+    }
+
+    #[test]
+    fn drift_between_the_expected_and_observed_inode_is_reported() {
+        let volume = TempRoot::new();
+        let path = volume.join("file");
+        write_file(&path, b"payload");
+        let metadata = fs::symlink_metadata(&path).unwrap();
+        write_file(&path, b"a longer payload");
+        assert!(matches!(
+            hash_and_extents(&path, &metadata, b"file"),
+            Err(TransferHelperError::SourceDrift(_))
+        ));
+    }
+
+    #[test]
+    fn paths_are_reported_losslessly_as_hex() {
+        assert_eq!(display_path(b""), ".");
+        assert_eq!(display_path(b"a/b"), format!("hex:{}", hex_encode(b"a/b")));
+        assert!(matches!(
+            path_c_string(Path::new(OsStr::from_bytes(b"nul\0path"))),
+            Err(TransferHelperError::InvalidManifest(_))
+        ));
+        assert_eq!(
+            path_display_lossless(Path::new("ab")),
+            format!("hex:{}", hex_encode(b"ab"))
+        );
+    }
+
+    #[test]
+    fn unsupported_sparse_errors_become_an_unsupported_kind() {
+        let translated = sparse_error(std::io::Error::from_raw_os_error(libc::EINVAL));
+        assert_eq!(translated.kind(), std::io::ErrorKind::Unsupported);
+        let preserved = sparse_error(std::io::Error::from_raw_os_error(libc::EIO));
+        assert_eq!(preserved.raw_os_error(), Some(libc::EIO));
+    }
+}
