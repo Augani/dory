@@ -591,3 +591,56 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, @unchecked Sendable {
     return result
   }
 }
+
+extension DoryX86TranslatedMemory: DoryX86BulkMemory {
+  public func bulkCopyRAMSpan(at address: UInt64, maximumByteCount: Int) -> Int? {
+    // Linear eligibility depends on paging access kind, so callers must use the copy operation.
+    nil
+  }
+
+  public func copyForwardNonoverlapping(
+    from sourceAddress: UInt64,
+    to destinationAddress: UInt64,
+    maximumByteCount: Int
+  ) throws -> Int? {
+    guard maximumByteCount > 0,
+      let physicalMemory = physicalMemory as? any DoryX86BulkMemory
+    else { return maximumByteCount == 0 ? 0 : nil }
+    let source = try pagingUnit.translate(
+      linearAddress: sourceAddress,
+      access: .read,
+      context: context,
+      physicalMemory: physicalMemory
+    )
+    guard
+      let sourceSpan = physicalMemory.bulkCopyRAMSpan(
+        at: source.physicalAddress,
+        maximumByteCount: maximumByteCount
+      )
+    else { return nil }
+    let destination = try pagingUnit.translate(
+      linearAddress: destinationAddress,
+      access: .write,
+      context: context,
+      physicalMemory: physicalMemory
+    )
+    guard
+      let destinationSpan = physicalMemory.bulkCopyRAMSpan(
+        at: destination.physicalAddress,
+        maximumByteCount: maximumByteCount
+      )
+    else { return nil }
+    let count = min(
+      maximumByteCount,
+      sourceSpan,
+      destinationSpan,
+      Int(4_096 - (sourceAddress & 0xfff)),
+      Int(4_096 - (destinationAddress & 0xfff))
+    )
+    return try physicalMemory.copyForwardNonoverlapping(
+      from: source.physicalAddress,
+      to: destination.physicalAddress,
+      maximumByteCount: count
+    )
+  }
+}

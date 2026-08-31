@@ -103,6 +103,29 @@ import Testing
     #expect(state.control.cr2 == linearPage + 0x1000)
   }
 
+  @Test func bulkCopyRejectsDistinctLinearRangesThatAliasPhysicalRAM() throws {
+    let memory = DoryX86ByteArrayMemory(byteCount: 0x10_000)
+    let source: UInt64 = 0x0040_0100
+    let destination: UInt64 = 0x0040_1102
+    try installFourLevelMapping(
+      linear: source, physicalPage: 0x8000, flags: 0x7, memory: memory)
+    try installFourLevelMapping(
+      linear: destination, physicalPage: 0x8000, flags: 0x7, memory: memory)
+    let translated = DoryX86TranslatedMemory(
+      physicalMemory: memory,
+      pagingUnit: DoryX86PagingUnit(),
+      context: longModeContext(cpl: 3)
+    )
+
+    #expect(
+      try translated.copyForwardNonoverlapping(
+        from: source,
+        to: destination,
+        maximumByteCount: 4
+      ) == nil
+    )
+  }
+
   @Test func walksPAELargePagesAndLegacyPageTables() throws {
     let paeMemory = DoryX86ByteArrayMemory(byteCount: 0x10_000)
     try write64(paeMemory, 0x1000, 0x2000 | 0x7)

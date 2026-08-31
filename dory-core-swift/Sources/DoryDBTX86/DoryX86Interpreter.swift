@@ -3766,6 +3766,66 @@ public struct DoryX86Interpreter: Sendable {
       }
     }
 
+    if operation == .move,
+      repeated,
+      width == .byte,
+      addressWidth == .quadword,
+      !state.rflags.contains(.direction),
+      let bulkMemory = memory as? any DoryX86BulkMemory
+    {
+      let source = stringSourceAddress(
+        addressWidth: addressWidth,
+        instruction: instruction,
+        mode: mode,
+        state: state
+      )
+      let destination = stringDestinationAddress(
+        addressWidth: addressWidth,
+        mode: mode,
+        state: state
+      )
+      if forwardRangesDoNotOverlap(source: source, destination: destination, byteCount: remaining) {
+        while remaining != 0, completed < iterationBudget {
+          let sourceAddress = stringSourceAddress(
+            addressWidth: addressWidth,
+            instruction: instruction,
+            mode: mode,
+            state: state
+          )
+          let destinationAddress = stringDestinationAddress(
+            addressWidth: addressWidth,
+            mode: mode,
+            state: state
+          )
+          let maximumCount = Int(min(remaining, iterationBudget - completed))
+          do {
+            guard
+              let copied = try bulkMemory.copyForwardNonoverlapping(
+                from: sourceAddress,
+                to: destinationAddress,
+                maximumByteCount: maximumCount
+              ),
+              copied > 0
+            else { break }
+            precondition(copied <= maximumCount)
+            let delta = UInt64(copied)
+            advanceStringRegister(
+              .rsi, by: delta, decrement: false, width: addressWidth, state: &state)
+            advanceStringRegister(
+              .rdi, by: delta, decrement: false, width: addressWidth, state: &state)
+            completed &+= delta
+            remaining &-= delta
+            writeStringRegister(.rcx, value: remaining, width: addressWidth, state: &state)
+          } catch let error as DoryX86MemoryError {
+            if completed != 0 { throw DoryX86PartialMemoryFault(error: error) }
+            throw error
+          }
+        }
+        if remaining == 0 { return true }
+        if completed == iterationBudget { return false }
+      }
+    }
+
     while remaining != 0 {
       do {
         let sourceAddress = stringSourceAddress(
@@ -3947,6 +4007,18 @@ public struct DoryX86Interpreter: Sendable {
       if repeated, remaining != 0, completed == iterationBudget { return false }
     }
     return true
+  }
+
+  private func forwardRangesDoNotOverlap(
+    source: UInt64,
+    destination: UInt64,
+    byteCount: UInt64
+  ) -> Bool {
+    guard byteCount > 0 else { return true }
+    let sourceEnd = source.addingReportingOverflow(byteCount)
+    let destinationEnd = destination.addingReportingOverflow(byteCount)
+    guard !sourceEnd.overflow, !destinationEnd.overflow else { return false }
+    return sourceEnd.partialValue <= destination || destinationEnd.partialValue <= source
   }
 
   private func stringMemoryOperand(

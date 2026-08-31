@@ -168,6 +168,40 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, @unchecked Sendable {
   }
 }
 
+extension DoryPCPhysicalMemoryBus: DoryX86BulkMemory {
+  public func bulkCopyRAMSpan(at address: UInt64, maximumByteCount: Int) -> Int? {
+    guard maximumByteCount > 0 else { return 0 }
+    let mappedSpan: Int? = lock.withLock {
+      if mappings.contains(where: { address >= $0.lowerBound && address < $0.upperBound }) {
+        return nil
+      }
+      let nextDevice = mappings.first { $0.lowerBound > address }?.lowerBound ?? UInt64.max
+      return Int(min(UInt64(maximumByteCount), nextDevice - address))
+    }
+    guard let mappedSpan else { return nil }
+    return ram.bulkCopyRAMSpan(at: address, maximumByteCount: mappedSpan)
+  }
+
+  public func copyForwardNonoverlapping(
+    from sourceAddress: UInt64,
+    to destinationAddress: UInt64,
+    maximumByteCount: Int
+  ) throws -> Int? {
+    guard maximumByteCount > 0 else { return 0 }
+    guard
+      let sourceSpan = bulkCopyRAMSpan(
+        at: sourceAddress, maximumByteCount: maximumByteCount),
+      let destinationSpan = bulkCopyRAMSpan(
+        at: destinationAddress, maximumByteCount: maximumByteCount)
+    else { return nil }
+    return try ram.copyForwardNonoverlapping(
+      from: sourceAddress,
+      to: destinationAddress,
+      maximumByteCount: min(maximumByteCount, sourceSpan, destinationSpan)
+    )
+  }
+}
+
 extension DoryPCPhysicalMemoryBus: DoryVirtioGuestMemory {
   public func validate(at address: UInt64, byteCount: Int, deviceWillWrite: Bool) throws {
     try validateDMA(at: address, byteCount: byteCount, deviceWillWrite: deviceWillWrite)

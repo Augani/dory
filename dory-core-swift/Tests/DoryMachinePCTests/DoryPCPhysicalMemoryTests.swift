@@ -86,4 +86,27 @@ import Testing
       try bus.read(at: 0xFEE0_0001, byteCount: 4)
     }
   }
+
+  @Test func bulkStringCopiesStayInsideOrdinaryRAM() throws {
+    let ram = DoryX86ByteArrayMemory(byteCount: 0x1000)
+    let bus = DoryPCPhysicalMemoryBus(ram: ram)
+    let local = DoryPCLocalAPIC(apicID: 0)
+    try bus.attach(DoryPCLocalAPICMMIO(apic: local))
+    bus.seal()
+    try ram.write(at: 0x100, bytes: [1, 2, 3, 4])
+
+    #expect(
+      try bus.copyForwardNonoverlapping(
+        from: 0x100, to: 0x200, maximumByteCount: 4) == 4
+    )
+    #expect(try ram.read(at: 0x200, byteCount: 4) == [1, 2, 3, 4])
+    #expect(
+      try bus.copyForwardNonoverlapping(
+        from: 0xFEE0_0000, to: 0x200, maximumByteCount: 4) == nil
+    )
+    #expect(
+      try bus.copyForwardNonoverlapping(
+        from: 0x100, to: 0x102, maximumByteCount: 4) == nil
+    )
+  }
 }

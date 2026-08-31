@@ -4,6 +4,49 @@ import Testing
 
 @testable import DoryDBTX86
 
+private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable {
+  private let backing: DoryX86ByteArrayMemory
+  private let lock = NSLock()
+  private var _bulkCallCount = 0
+
+  init(baseAddress: UInt64, bytes: [UInt8]) {
+    backing = DoryX86ByteArrayMemory(baseAddress: baseAddress, bytes: bytes)
+  }
+
+  var bulkCallCount: Int { lock.withLock { _bulkCallCount } }
+
+  func instructionBytes(at address: UInt64, maximumCount: Int) throws -> [UInt8] {
+    try backing.instructionBytes(at: address, maximumCount: maximumCount)
+  }
+
+  func read(at address: UInt64, byteCount: Int) throws -> [UInt8] {
+    try backing.read(at: address, byteCount: byteCount)
+  }
+
+  func write(at address: UInt64, bytes: [UInt8]) throws {
+    try backing.write(at: address, bytes: bytes)
+  }
+
+  func synchronize() { backing.synchronize() }
+
+  func bulkCopyRAMSpan(at address: UInt64, maximumByteCount: Int) -> Int? {
+    backing.bulkCopyRAMSpan(at: address, maximumByteCount: maximumByteCount)
+  }
+
+  func copyForwardNonoverlapping(
+    from sourceAddress: UInt64,
+    to destinationAddress: UInt64,
+    maximumByteCount: Int
+  ) throws -> Int? {
+    lock.withLock { _bulkCallCount += 1 }
+    return try backing.copyForwardNonoverlapping(
+      from: sourceAddress,
+      to: destinationAddress,
+      maximumByteCount: maximumByteCount
+    )
+  }
+}
+
 @Suite struct DoryX86InterpreterTests {
   private let interpreter = DoryX86Interpreter()
 
@@ -1915,7 +1958,7 @@ import Testing
     let count: UInt64 = 4_097
     var bytes = [0xF3, 0xA4] + [UInt8](repeating: 0, count: 0x3FFE)
     for index in 0..<Int(count) { bytes[0x100 + index] = UInt8(truncatingIfNeeded: index) }
-    let memory = DoryX86ByteArrayMemory(baseAddress: 0x10_000, bytes: bytes)
+    let memory = BulkRecordingMemory(baseAddress: 0x10_000, bytes: bytes)
     var state = try DoryX86ArchitecturalState(
       registers: .init(rcx: count, rsi: 0x10_100, rdi: 0x12_000),
       rip: 0x10_000
@@ -1930,6 +1973,7 @@ import Testing
     #expect(state.registers.rcx == 1)
     #expect(state.registers.rsi == 0x11_100)
     #expect(state.registers.rdi == 0x13_000)
+    #expect(memory.bulkCallCount == 1)
 
     let second = interpreter.step(state: &state, memory: memory, mode: .long64)
     guard case .retired = second else {
@@ -1938,7 +1982,28 @@ import Testing
     }
     #expect(state.registers.rcx == 0)
     #expect(state.rip == 0x10_002)
+    #expect(memory.bulkCallCount == 2)
     #expect(try memory.read(at: 0x12_000, byteCount: Int(count)) == Array(bytes[0x100..<0x1101]))
+  }
+
+  @Test func overlappingRepeatMovePreservesSequentialX86Semantics() throws {
+    var bytes = [0xF3, 0xA4] + [UInt8](repeating: 0, count: 0x40)
+    bytes.replaceSubrange(0x20..<0x24, with: [1, 2, 3, 4])
+    let memory = DoryX86ByteArrayMemory(baseAddress: 0x14_000, bytes: bytes)
+    var state = try DoryX86ArchitecturalState(
+      registers: .init(rcx: 3, rsi: 0x14_020, rdi: 0x14_021),
+      rip: 0x14_000
+    )
+
+    guard case .retired = interpreter.step(state: &state, memory: memory, mode: .long64)
+    else {
+      Issue.record("overlapping REP MOVSB did not retire")
+      return
+    }
+    #expect(try memory.read(at: 0x14_020, byteCount: 4) == [1, 1, 1, 1])
+    #expect(state.registers.rcx == 0)
+    #expect(state.registers.rsi == 0x14_023)
+    #expect(state.registers.rdi == 0x14_024)
   }
 
   @Test func realModeFetchAndDataAccessUseSegmentBases() throws {

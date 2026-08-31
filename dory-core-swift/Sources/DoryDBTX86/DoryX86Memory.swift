@@ -35,6 +35,22 @@ public protocol DoryX86Memory: AnyObject, Sendable {
   func synchronize()
 }
 
+/// Optional exact fast path for forward, non-overlapping string copies. Implementations return
+/// `nil` before mutation when either starting address is not proven ordinary RAM or when the
+/// resolved backing ranges overlap. A positive result is a fully committed prefix, allowing the
+/// interpreter to expose precise REP progress before retrying the next page or mapping boundary
+/// through the architectural scalar path.
+public protocol DoryX86BulkMemory: DoryX86Memory {
+  /// Returns a positive prefix that is proven ordinary RAM without performing I/O or mutation.
+  func bulkCopyRAMSpan(at address: UInt64, maximumByteCount: Int) -> Int?
+
+  func copyForwardNonoverlapping(
+    from sourceAddress: UInt64,
+    to destinationAddress: UInt64,
+    maximumByteCount: Int
+  ) throws -> Int?
+}
+
 extension DoryX86Memory {
   public func validateWrite(at address: UInt64, byteCount: Int) throws {
     _ = try read(at: address, byteCount: byteCount)
@@ -124,5 +140,46 @@ public final class DoryX86ByteArrayMemory: DoryX86Memory, @unchecked Sendable {
       throw DoryX86MemoryError.unmapped(address: address, byteCount: byteCount, access: access)
     }
     return offset
+  }
+}
+
+extension DoryX86ByteArrayMemory: DoryX86BulkMemory {
+  public func bulkCopyRAMSpan(at address: UInt64, maximumByteCount: Int) -> Int? {
+    guard maximumByteCount > 0 else { return 0 }
+    return lock.withLock {
+      guard address >= baseAddress else { return nil }
+      let distance = address - baseAddress
+      guard distance < UInt64(storage.count), distance <= UInt64(Int.max) else { return nil }
+      return min(maximumByteCount, storage.count - Int(distance))
+    }
+  }
+
+  public func copyForwardNonoverlapping(
+    from sourceAddress: UInt64,
+    to destinationAddress: UInt64,
+    maximumByteCount: Int
+  ) throws -> Int? {
+    guard maximumByteCount > 0 else { return 0 }
+    return lock.withLock {
+      guard sourceAddress >= baseAddress, destinationAddress >= baseAddress else { return nil }
+      let sourceDistance = sourceAddress - baseAddress
+      let destinationDistance = destinationAddress - baseAddress
+      guard sourceDistance < UInt64(storage.count), destinationDistance < UInt64(storage.count),
+        sourceDistance <= UInt64(Int.max), destinationDistance <= UInt64(Int.max)
+      else { return nil }
+      let sourceOffset = Int(sourceDistance)
+      let destinationOffset = Int(destinationDistance)
+      let count = min(
+        maximumByteCount,
+        storage.count - sourceOffset,
+        storage.count - destinationOffset
+      )
+      guard count > 0 else { return nil }
+      guard sourceOffset + count <= destinationOffset || destinationOffset + count <= sourceOffset
+      else { return nil }
+      let bytes = Array(storage[sourceOffset..<(sourceOffset + count)])
+      storage.replaceSubrange(destinationOffset..<(destinationOffset + count), with: bytes)
+      return count
+    }
   }
 }
