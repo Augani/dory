@@ -79,6 +79,85 @@ import Testing
     }
   }
 
+  @Test func routesContextResourceSubmitAndTransferCommandsToRendererAuthority() throws {
+    let authority = try GPUAccelerationAuthority(
+      features: [.gpuVirgl, .gpuContextInit],
+      capsets: [.init(id: 2, maximumVersion: 2, data: [1, 2, 3])]
+    )
+    let device = try makeDevice(authority: authority)
+    let memory = GPUGuestMemory(byteCount: 0x20_000)
+    let contextID: UInt32 = 17
+    let resourceID: UInt32 = 23
+
+    var contextName = [UInt8](repeating: 0, count: 64)
+    contextName.replaceSubrange(0..<4, with: Array("mesa".utf8))
+    let createContext =
+      header(0x0200, contextID: contextID) + littleEndian(UInt32(4))
+      + littleEndian(UInt32(2)) + contextName
+    #expect(read32(try command(device, bytes: createContext, memory: memory), 0) == 0x1100)
+
+    let createResource =
+      header(0x0204)
+      + [resourceID, 2, 1, 2, 64, 32, 1, 1, 0, 0, 0, 0]
+      .flatMap(littleEndian)
+    #expect(read32(try command(device, bytes: createResource, memory: memory), 0) == 0x1100)
+
+    let attachBacking =
+      header(0x0106) + littleEndian(resourceID) + littleEndian(UInt32(1))
+      + littleEndian(UInt64(0x8000)) + littleEndian(UInt32(8_192)) + littleEndian(UInt32(0))
+    #expect(read32(try command(device, bytes: attachBacking, memory: memory), 0) == 0x1100)
+
+    let attach = header(0x0202, contextID: contextID) + littleEndian(resourceID) + [0, 0, 0, 0]
+    #expect(read32(try command(device, bytes: attach, memory: memory), 0) == 0x1100)
+
+    let submit =
+      header(0x0207, contextID: contextID) + littleEndian(UInt32(4))
+      + littleEndian(UInt32(0)) + [0xAA, 0xBB, 0xCC, 0xDD]
+    #expect(read32(try command(device, bytes: submit, memory: memory), 0) == 0x1100)
+
+    let transfer =
+      header(0x0205, contextID: contextID)
+      + [UInt32(0), 0, 0, 64, 32, 1].flatMap(littleEndian)
+      + littleEndian(UInt64(0)) + [resourceID, 0, 256, 8_192].flatMap(littleEndian)
+    #expect(read32(try command(device, bytes: transfer, memory: memory), 0) == 0x1100)
+
+    let detach = header(0x0203, contextID: contextID) + littleEndian(resourceID) + [0, 0, 0, 0]
+    #expect(read32(try command(device, bytes: detach, memory: memory), 0) == 0x1100)
+    #expect(
+      read32(
+        try command(
+          device,
+          bytes: header(0x0107) + littleEndian(resourceID) + [0, 0, 0, 0],
+          memory: memory
+        ), 0) == 0x1100)
+    #expect(
+      read32(
+        try command(
+          device,
+          bytes: header(0x0102) + littleEndian(resourceID) + [0, 0, 0, 0],
+          memory: memory
+        ), 0) == 0x1100)
+    #expect(
+      read32(
+        try command(device, bytes: header(0x0201, contextID: contextID), memory: memory),
+        0
+      ) == 0x1100)
+
+    #expect(
+      authority.operations == [
+        "context-create:17:2:mesa",
+        "resource-create:23:64x32",
+        "backing-attach:23:1",
+        "resource-attach:17:23",
+        "submit:17:4",
+        "transfer:toHost:17:23",
+        "resource-detach:17:23",
+        "backing-detach:23",
+        "resource-unref:23",
+        "context-destroy:17",
+      ])
+  }
+
   @Test func createsBacksTransfersBindsAndFlushesA2DResource() throws {
     let sink = GPUDisplaySink()
     let device = try makeDevice(sink: sink)
@@ -194,9 +273,14 @@ import Testing
     return try memory.read(at: 0x4000, byteCount: Int(written))
   }
 
-  private func header(_ command: UInt32, flags: UInt32 = 0, fence: UInt64 = 0) -> [UInt8] {
+  private func header(
+    _ command: UInt32,
+    flags: UInt32 = 0,
+    fence: UInt64 = 0,
+    contextID: UInt32 = 0
+  ) -> [UInt8] {
     littleEndian(command) + littleEndian(flags) + littleEndian(fence)
-      + littleEndian(UInt32(0)) + [0, 0, 0, 0]
+      + littleEndian(contextID) + [0, 0, 0, 0]
   }
 
   private func rect(x: UInt32, y: UInt32, width: UInt32, height: UInt32) -> [UInt8] {
@@ -210,13 +294,53 @@ private final class GPUAccelerationAuthority: DoryVirtioGPUAccelerationAuthority
   let capabilities: DoryVirtioGPUAccelerationCapabilities
   private let lock = NSLock()
   private var resets = 0
+  private var operationStorage: [String] = []
   var resetCount: Int { lock.withLock { resets } }
+  var operations: [String] { lock.withLock { operationStorage } }
 
   init(features: DoryVirtioFeatures, capsets: [DoryVirtioGPUCapset]) throws {
     capabilities = try .init(features: features, capsets: capsets)
   }
 
   func reset() { lock.withLock { resets += 1 } }
+
+  func createContext(id: UInt32, capsetID: UInt32, name: String) {
+    record("context-create:\(id):\(capsetID):\(name)")
+  }
+
+  func destroyContext(id: UInt32) { record("context-destroy:\(id)") }
+
+  func attachResource(contextID: UInt32, resourceID: UInt32) {
+    record("resource-attach:\(contextID):\(resourceID)")
+  }
+
+  func detachResource(contextID: UInt32, resourceID: UInt32) {
+    record("resource-detach:\(contextID):\(resourceID)")
+  }
+
+  func submit3D(contextID: UInt32, command: [UInt8]) {
+    record("submit:\(contextID):\(command.count)")
+  }
+
+  func createResource3D(_ resource: DoryVirtioGPUResource3D) {
+    record("resource-create:\(resource.resourceID):\(resource.width)x\(resource.height)")
+  }
+
+  func attachBacking(resourceID: UInt32, entries: [DoryVirtioGPUBackingEntry]) {
+    record("backing-attach:\(resourceID):\(entries.count)")
+  }
+
+  func detachBacking(resourceID: UInt32) { record("backing-detach:\(resourceID)") }
+
+  func transfer3D(_ transfer: DoryVirtioGPUTransfer3D, entries: [DoryVirtioGPUBackingEntry]) {
+    record("transfer:\(transfer.direction):\(transfer.contextID):\(transfer.resourceID)")
+  }
+
+  func unrefResource(resourceID: UInt32) { record("resource-unref:\(resourceID)") }
+
+  private func record(_ operation: String) {
+    lock.withLock { operationStorage.append(operation) }
+  }
 }
 
 private final class GPUDisplaySink: DoryVirtioGPUDisplaySink, @unchecked Sendable {

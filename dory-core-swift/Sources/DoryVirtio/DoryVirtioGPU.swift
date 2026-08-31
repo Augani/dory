@@ -111,6 +111,16 @@ public struct DoryVirtioGPUAccelerationCapabilities: Sendable, Hashable {
 public protocol DoryVirtioGPUAccelerationAuthority: AnyObject, Sendable {
   var capabilities: DoryVirtioGPUAccelerationCapabilities { get }
   func reset()
+  func createContext(id: UInt32, capsetID: UInt32, name: String) throws
+  func destroyContext(id: UInt32) throws
+  func attachResource(contextID: UInt32, resourceID: UInt32) throws
+  func detachResource(contextID: UInt32, resourceID: UInt32) throws
+  func submit3D(contextID: UInt32, command: [UInt8]) throws
+  func createResource3D(_ resource: DoryVirtioGPUResource3D) throws
+  func attachBacking(resourceID: UInt32, entries: [DoryVirtioGPUBackingEntry]) throws
+  func detachBacking(resourceID: UInt32) throws
+  func transfer3D(_ transfer: DoryVirtioGPUTransfer3D, entries: [DoryVirtioGPUBackingEntry]) throws
+  func unrefResource(resourceID: UInt32) throws
 }
 
 extension DoryVirtioFeatures {
@@ -151,6 +161,14 @@ public final class DoryVirtioGPUDevice: @unchecked Sendable {
     case resourceDetachBacking = 0x0107
     case getCapsetInfo = 0x0108
     case getCapset = 0x0109
+    case contextCreate = 0x0200
+    case contextDestroy = 0x0201
+    case contextAttachResource = 0x0202
+    case contextDetachResource = 0x0203
+    case resourceCreate3D = 0x0204
+    case transferToHost3D = 0x0205
+    case transferFromHost3D = 0x0206
+    case submit3D = 0x0207
     case updateCursor = 0x0300
     case moveCursor = 0x0301
   }
@@ -174,18 +192,18 @@ public final class DoryVirtioGPUDevice: @unchecked Sendable {
     let ringIndex: UInt8
   }
 
-  private struct BackingEntry: Sendable, Hashable {
-    let address: UInt64
-    let length: UInt32
-  }
-
   private struct Resource {
     let id: UInt32
     let format: DoryVirtioGPUFormat
     let width: UInt32
     let height: UInt32
-    var backing: [BackingEntry] = []
+    var backing: [DoryVirtioGPUBackingEntry] = []
     var pixels: [UInt8]
+  }
+
+  private struct RendererResource {
+    let descriptor: DoryVirtioGPUResource3D
+    var backing: [DoryVirtioGPUBackingEntry] = []
   }
 
   private struct ScanoutBinding {
@@ -201,6 +219,8 @@ public final class DoryVirtioGPUDevice: @unchecked Sendable {
   private weak var displaySink: (any DoryVirtioGPUDisplaySink)?
   private let accelerationAuthority: (any DoryVirtioGPUAccelerationAuthority)?
   private var resources: [UInt32: Resource] = [:]
+  private var rendererResources: [UInt32: RendererResource] = [:]
+  private var rendererContexts: Set<UInt32> = []
   private var bindings: [UInt32: ScanoutBinding] = [:]
 
   public init(
@@ -246,6 +266,8 @@ public final class DoryVirtioGPUDevice: @unchecked Sendable {
   public func reset() {
     lock.withLock {
       resources.removeAll(keepingCapacity: true)
+      rendererResources.removeAll(keepingCapacity: true)
+      rendererContexts.removeAll(keepingCapacity: true)
       bindings.removeAll(keepingCapacity: true)
     }
     accelerationAuthority?.reset()
@@ -350,7 +372,7 @@ public final class DoryVirtioGPUDevice: @unchecked Sendable {
         byteCount <= maximumResourceBytes
       else { return response(.errorInvalidParameter, header: header) }
       let inserted = lock.withLock { () -> Bool in
-        guard resources[id] == nil else { return false }
+        guard resources[id] == nil, rendererResources[id] == nil else { return false }
         resources[id] = Resource(
           id: id,
           format: format,
@@ -365,8 +387,19 @@ public final class DoryVirtioGPUDevice: @unchecked Sendable {
     case .resourceUnref:
       guard request.count == 32 else { return response(.errorInvalidParameter, header: header) }
       let id = read32(request, 24)
+      let rendererResource = lock.withLock { rendererResources[id] != nil }
+      if rendererResource {
+        do {
+          try accelerationAuthority?.unrefResource(resourceID: id)
+        } catch {
+          return response(.errorInvalidParameter, header: header)
+        }
+      }
       let removed = lock.withLock { () -> Bool in
-        guard resources.removeValue(forKey: id) != nil else { return false }
+        let removed =
+          resources.removeValue(forKey: id) != nil
+          || rendererResources.removeValue(forKey: id) != nil
+        guard removed else { return false }
         bindings = bindings.filter { $0.value.resourceID != id }
         return true
       }
@@ -379,7 +412,7 @@ public final class DoryVirtioGPUDevice: @unchecked Sendable {
       guard entryCount > 0, entryCount <= maximumBackingEntries,
         request.count == 32 + entryCount * 16
       else { return response(.errorInvalidParameter, header: header) }
-      var entries: [BackingEntry] = []
+      var entries: [DoryVirtioGPUBackingEntry] = []
       entries.reserveCapacity(entryCount)
       var total: UInt64 = 0
       for index in 0..<entryCount {
@@ -392,8 +425,25 @@ public final class DoryVirtioGPUDevice: @unchecked Sendable {
           updated <= maximumResourceBytes
         else { return response(.errorInvalidParameter, header: header) }
         try memory.validate(at: address, byteCount: Int(length), deviceWillWrite: false)
-        entries.append(.init(address: address, length: length))
+        entries.append(.init(guestAddress: address, length: length))
         total = updated
+      }
+      if lock.withLock({ rendererResources[id] != nil }) {
+        guard lock.withLock({ rendererResources[id]?.backing.isEmpty == true }) else {
+          return response(.errorInvalidResource, header: header)
+        }
+        do {
+          try accelerationAuthority?.attachBacking(resourceID: id, entries: entries)
+        } catch {
+          return response(.errorInvalidParameter, header: header)
+        }
+        let attached = lock.withLock { () -> Bool in
+          guard var resource = rendererResources[id] else { return false }
+          resource.backing = entries
+          rendererResources[id] = resource
+          return true
+        }
+        return response(attached ? .okNoData : .errorInvalidResource, header: header)
       }
       let attached = lock.withLock { () -> Bool in
         guard var resource = resources[id], resource.backing.isEmpty,
@@ -408,6 +458,20 @@ public final class DoryVirtioGPUDevice: @unchecked Sendable {
     case .resourceDetachBacking:
       guard request.count == 32 else { return response(.errorInvalidParameter, header: header) }
       let id = read32(request, 24)
+      if lock.withLock({ rendererResources[id] != nil }) {
+        do {
+          try accelerationAuthority?.detachBacking(resourceID: id)
+        } catch {
+          return response(.errorInvalidParameter, header: header)
+        }
+        let detached = lock.withLock { () -> Bool in
+          guard var resource = rendererResources[id] else { return false }
+          resource.backing = []
+          rendererResources[id] = resource
+          return true
+        }
+        return response(detached ? .okNoData : .errorInvalidResource, header: header)
+      }
       let detached = lock.withLock { () -> Bool in
         guard var resource = resources[id] else { return false }
         resource.backing = []
@@ -428,6 +492,153 @@ public final class DoryVirtioGPUDevice: @unchecked Sendable {
         memory: memory
       )
       return response(transferred ? .okNoData : .errorInvalidParameter, header: header)
+
+    case .contextCreate:
+      guard request.count == 96, header.contextID != 0,
+        let accelerationAuthority
+      else { return response(.errorInvalidParameter, header: header) }
+      let nameLength = Int(read32(request, 24))
+      let requestedCapset = read32(request, 28)
+      guard nameLength <= 64, requestedCapset & ~UInt32(0xFF) == 0,
+        let capsetID = resolvedCapsetID(
+          requestedCapset,
+          capabilities: accelerationAuthority.capabilities
+        ),
+        !lock.withLock({ rendererContexts.contains(header.contextID) })
+      else { return response(.errorInvalidParameter, header: header) }
+      let rawName = request[32..<(32 + nameLength)].prefix { $0 != 0 }
+      let name = rawName.isEmpty ? "virtio-gpu" : String(decoding: rawName, as: UTF8.self)
+      do {
+        try accelerationAuthority.createContext(
+          id: header.contextID,
+          capsetID: capsetID,
+          name: name
+        )
+      } catch {
+        return response(.errorInvalidParameter, header: header)
+      }
+      _ = lock.withLock { rendererContexts.insert(header.contextID) }
+      return response(.okNoData, header: header)
+
+    case .contextDestroy:
+      guard request.count == 24, header.contextID != 0,
+        let accelerationAuthority,
+        lock.withLock({ rendererContexts.contains(header.contextID) })
+      else { return response(.errorInvalidParameter, header: header) }
+      do {
+        try accelerationAuthority.destroyContext(id: header.contextID)
+      } catch {
+        return response(.errorInvalidParameter, header: header)
+      }
+      _ = lock.withLock { rendererContexts.remove(header.contextID) }
+      return response(.okNoData, header: header)
+
+    case .contextAttachResource, .contextDetachResource:
+      guard request.count == 32, header.contextID != 0,
+        let accelerationAuthority
+      else { return response(.errorInvalidParameter, header: header) }
+      let resourceID = read32(request, 24)
+      guard
+        lock.withLock({
+          rendererContexts.contains(header.contextID) && rendererResources[resourceID] != nil
+        })
+      else { return response(.errorInvalidResource, header: header) }
+      do {
+        if command == .contextAttachResource {
+          try accelerationAuthority.attachResource(
+            contextID: header.contextID,
+            resourceID: resourceID
+          )
+        } else {
+          try accelerationAuthority.detachResource(
+            contextID: header.contextID,
+            resourceID: resourceID
+          )
+        }
+      } catch {
+        return response(.errorInvalidParameter, header: header)
+      }
+      return response(.okNoData, header: header)
+
+    case .resourceCreate3D:
+      guard request.count == 72, accelerationAuthority != nil else {
+        return response(.errorInvalidParameter, header: header)
+      }
+      let resource = DoryVirtioGPUResource3D(
+        resourceID: read32(request, 24),
+        target: read32(request, 28),
+        format: read32(request, 32),
+        bind: read32(request, 36),
+        width: read32(request, 40),
+        height: read32(request, 44),
+        depth: read32(request, 48),
+        arraySize: read32(request, 52),
+        lastLevel: read32(request, 56),
+        samples: read32(request, 60),
+        flags: read32(request, 64)
+      )
+      guard valid(resource),
+        lock.withLock({
+          resources[resource.resourceID] == nil && rendererResources[resource.resourceID] == nil
+        })
+      else { return response(.errorInvalidParameter, header: header) }
+      do {
+        try accelerationAuthority?.createResource3D(resource)
+      } catch {
+        return response(.errorInvalidParameter, header: header)
+      }
+      lock.withLock { rendererResources[resource.resourceID] = .init(descriptor: resource) }
+      return response(.okNoData, header: header)
+
+    case .transferToHost3D, .transferFromHost3D:
+      guard request.count == 72, let accelerationAuthority else {
+        return response(.errorInvalidParameter, header: header)
+      }
+      let resourceID = read32(request, 56)
+      let transfer = DoryVirtioGPUTransfer3D(
+        direction: command == .transferToHost3D ? .toHost : .fromHost,
+        resourceID: resourceID,
+        contextID: header.contextID,
+        x: read32(request, 24),
+        y: read32(request, 28),
+        z: read32(request, 32),
+        width: read32(request, 36),
+        height: read32(request, 40),
+        depth: read32(request, 44),
+        offset: read64(request, 48),
+        level: read32(request, 60),
+        stride: read32(request, 64),
+        layerStride: read32(request, 68)
+      )
+      guard transfer.width > 0, transfer.height > 0, transfer.depth > 0,
+        let entries = lock.withLock({ rendererResources[resourceID]?.backing }),
+        header.contextID == 0 || lock.withLock({ rendererContexts.contains(header.contextID) })
+      else { return response(.errorInvalidResource, header: header) }
+      do {
+        try accelerationAuthority.transfer3D(transfer, entries: entries)
+      } catch {
+        return response(.errorInvalidParameter, header: header)
+      }
+      return response(.okNoData, header: header)
+
+    case .submit3D:
+      guard request.count >= 32, header.contextID != 0,
+        let accelerationAuthority,
+        lock.withLock({ rendererContexts.contains(header.contextID) })
+      else { return response(.errorInvalidParameter, header: header) }
+      let byteCount = Int(read32(request, 24))
+      guard byteCount > 0, byteCount.isMultiple(of: 4), request.count == 32 + byteCount else {
+        return response(.errorInvalidParameter, header: header)
+      }
+      do {
+        try accelerationAuthority.submit3D(
+          contextID: header.contextID,
+          command: Array(request[32...])
+        )
+      } catch {
+        return response(.errorInvalidParameter, header: header)
+      }
+      return response(.okNoData, header: header)
 
     case .setScanout:
       guard request.count == 48 else { return response(.errorInvalidParameter, header: header) }
@@ -556,7 +767,7 @@ public final class DoryVirtioGPUDevice: @unchecked Sendable {
   }
 
   private func readBacking(
-    _ entries: [BackingEntry],
+    _ entries: [DoryVirtioGPUBackingEntry],
     offset: UInt64,
     byteCount: Int,
     memory: any DoryVirtioGuestMemory
@@ -572,7 +783,7 @@ public final class DoryVirtioGPUDevice: @unchecked Sendable {
       }
       let available = UInt64(entry.length) - skip
       let count = min(remaining, Int(available))
-      let (address, overflow) = entry.address.addingReportingOverflow(skip)
+      let (address, overflow) = entry.guestAddress.addingReportingOverflow(skip)
       guard !overflow else { throw DoryVirtioGPUError.guestAddressOverflow }
       result += try memory.read(at: address, byteCount: count)
       remaining -= count
@@ -641,6 +852,30 @@ public final class DoryVirtioGPUDevice: @unchecked Sendable {
 
   private static func valid(width: UInt32, height: UInt32) -> Bool {
     width > 0 && height > 0 && width <= 16_384 && height <= 16_384
+  }
+
+  private func valid(_ resource: DoryVirtioGPUResource3D) -> Bool {
+    let widthIsValid =
+      resource.target == 0
+      ? resource.width > 0 && UInt64(resource.width) <= maximumResourceBytes
+      : resource.width > 0 && resource.width <= 16_384
+    return resource.resourceID != 0 && resource.format != 0 && widthIsValid
+      && (1...16_384).contains(resource.height)
+      && (1...16_384).contains(resource.depth)
+      && (1...16_384).contains(resource.arraySize)
+      && resource.lastLevel <= 31 && resource.samples <= 64
+  }
+
+  private func resolvedCapsetID(
+    _ requested: UInt32,
+    capabilities: DoryVirtioGPUAccelerationCapabilities
+  ) -> UInt32? {
+    let requestedID = requested & 0xFF
+    if requestedID != 0 {
+      return capabilities.capsets.contains(where: { $0.id == requestedID }) ? requestedID : nil
+    }
+    if capabilities.capsets.contains(where: { $0.id == 2 }) { return 2 }
+    return capabilities.capsets.count == 1 ? capabilities.capsets[0].id : nil
   }
 
   private func contains(_ rectangle: DoryVirtioGPURectangle, in resource: Resource) -> Bool {
