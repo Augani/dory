@@ -27,6 +27,10 @@ import Testing
     #expect(
       try bus.codeGeneration(at: DoryPCV1ABI.uefiResetAddress, byteCount: 16) == generation
     )
+    #expect(
+      try bus.readRestartableScalar(at: DoryPCV1ABI.uefiResetAddress, byteCount: 8)
+        == 0x0706_0504_0302_0100
+    )
     #expect(throws: DoryPCPhysicalMemoryError.self) {
       try bus.write(at: DoryPCV1ABI.uefiResetAddress, bytes: [0])
     }

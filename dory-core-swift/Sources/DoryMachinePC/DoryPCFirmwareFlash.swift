@@ -70,6 +70,30 @@ public final class DoryPCFirmwareFlash: DoryPCMMIODevice, @unchecked Sendable {
     return 0
   }
 
+  public func readRestartableScalar(offset: UInt64, byteCount: Int) throws -> UInt64? {
+    guard [1, 2, 4, 8].contains(byteCount), offset <= self.byteCount,
+      UInt64(byteCount) <= self.byteCount - offset
+    else {
+      throw DoryPCPhysicalMemoryError.unsupportedAccess(
+        offset: offset,
+        byteCount: byteCount,
+        write: false
+      )
+    }
+    var value: UInt64 = 0
+    for index in 0..<byteCount {
+      let flashOffset = offset + UInt64(index)
+      let byte: UInt8
+      if flashOffset >= imageOffset, flashOffset - imageOffset < UInt64(image.count) {
+        byte = image[Int(flashOffset - imageOffset)]
+      } else {
+        byte = 0xff
+      }
+      value |= UInt64(byte) << UInt64(index * 8)
+    }
+    return value
+  }
+
   public func write(offset: UInt64, bytes: [UInt8]) throws {
     throw DoryPCPhysicalMemoryError.unsupportedAccess(
       offset: offset,

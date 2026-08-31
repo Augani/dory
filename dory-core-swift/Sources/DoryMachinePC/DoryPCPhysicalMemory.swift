@@ -15,6 +15,7 @@ public protocol DoryPCMMIODevice: AnyObject, Sendable {
   var byteCount: UInt64 { get }
   var allowsInstructionFetch: Bool { get }
   func read(offset: UInt64, byteCount: Int) throws -> [UInt8]
+  func readRestartableScalar(offset: UInt64, byteCount: Int) throws -> UInt64?
   func codeGeneration(offset: UInt64, byteCount: Int) throws -> UInt64?
   func write(offset: UInt64, bytes: [UInt8]) throws
   func validateWrite(offset: UInt64, byteCount: Int) throws
@@ -27,6 +28,9 @@ extension DoryPCMMIODevice {
   /// Returns a stable token only when the device can prove that instruction bytes in the range
   /// have not changed. Mutable and side-effectful MMIO remains conservatively uncacheable.
   public func codeGeneration(offset: UInt64, byteCount: Int) throws -> UInt64? { nil }
+
+  /// Returns a scalar only when reading the range is side-effect free and safe to replay.
+  public func readRestartableScalar(offset: UInt64, byteCount: Int) throws -> UInt64? { nil }
 
   public func validateWrite(offset: UInt64, byteCount: Int) throws {
     guard byteCount > 0, offset <= self.byteCount, UInt64(byteCount) <= self.byteCount - offset
@@ -443,7 +447,12 @@ extension DoryPCPhysicalMemoryBus: DoryX86RestartableScalarMemory {
     if let resolved = try directRAMRoute(address: address, byteCount: byteCount) {
       return try ram.readScalar(at: resolved.backingAddress, byteCount: byteCount)
     }
-    if try resolve(address: address, byteCount: byteCount) != nil { return nil }
+    if let resolved = try resolve(address: address, byteCount: byteCount) {
+      return try resolved.device.readRestartableScalar(
+        offset: resolved.offset,
+        byteCount: byteCount
+      )
+    }
     let resolved = try resolveRAM(address: address, byteCount: byteCount, access: .read)
     return try ram.readScalar(at: resolved.backingAddress, byteCount: byteCount)
   }
