@@ -566,14 +566,16 @@ public struct DoryX86Interpreter: Sendable {
           state: state,
           memory: executionMemory
         )
-        let result: Double =
+        let rounding = x87Rounding(state.floatingPoint)
+        let precision = x87Precision(state.floatingPoint)
+        let result: DoryX86ExtendedFloat =
           switch operation {
-          case .add: lhs + rhs
-          case .multiply: lhs * rhs
-          case .subtract: lhs - rhs
-          case .subtractReverse: rhs - lhs
-          case .divide: lhs / rhs
-          case .divideReverse: rhs / lhs
+          case .add: lhs.adding(rhs, rounding: rounding, precision: precision)
+          case .multiply: lhs.multiplied(by: rhs, rounding: rounding, precision: precision)
+          case .subtract: lhs.subtracting(rhs, rounding: rounding, precision: precision)
+          case .subtractReverse: rhs.subtracting(lhs, rounding: rounding, precision: precision)
+          case .divide: lhs.divided(by: rhs, rounding: rounding, precision: precision)
+          case .divideReverse: rhs.divided(by: lhs, rounding: rounding, precision: precision)
           }
         updateX87ArithmeticStatus(
           operation: operation,
@@ -592,7 +594,7 @@ public struct DoryX86Interpreter: Sendable {
           state: state,
           memory: executionMemory
         )
-        let relation = floatingComparison(lhs, rhs)
+        let relation = x87FloatingComparison(lhs, rhs)
         if relation == .unordered, ordered { state.floatingPoint.x87StatusWord |= 1 }
         if setIntegerFlags {
           state.rflags.remove([.overflow, .sign, .zero, .auxiliaryCarry, .parity, .carry])
@@ -667,7 +669,7 @@ public struct DoryX86Interpreter: Sendable {
         pushX87(decodeX87PackedBCD(bytes, state: &state.floatingPoint), state: &state.floatingPoint)
       case .storeX87PackedBCD(let destination, let pop):
         let bytes = encodeX87PackedBCD(
-          readX87Register(0, state: state.floatingPoint),
+          readX87Register(0, state: state.floatingPoint).doubleValue,
           state: &state.floatingPoint
         )
         try writeX87Memory(
@@ -2065,7 +2067,7 @@ public struct DoryX86Interpreter: Sendable {
     instruction: DoryX86DecodedInstruction,
     state: DoryX86ArchitecturalState,
     memory: any DoryX86Memory
-  ) throws -> Double {
+  ) throws -> DoryX86ExtendedFloat {
     switch operand {
     case .register(let register):
       return readX87Register(register, state: state.floatingPoint)
@@ -2083,17 +2085,20 @@ public struct DoryX86Interpreter: Sendable {
       )
       switch format {
       case .float32:
-        return Double(Float(bitPattern: UInt32(fromLittleEndian(bytes))))
+        return DoryX86ExtendedFloat(
+          Double(Float(bitPattern: UInt32(fromLittleEndian(bytes)))))
       case .float64:
-        return Double(bitPattern: fromLittleEndian(bytes))
+        return DoryX86ExtendedFloat(Double(bitPattern: fromLittleEndian(bytes)))
       case .extended80:
-        return decodeX87Extended(bytes)
+        return DoryX86ExtendedFloat(bytes: bytes)
       case .signedInteger16:
-        return Double(Int16(bitPattern: UInt16(fromLittleEndian(bytes))))
+        return DoryX86ExtendedFloat(
+          Int64(Int16(bitPattern: UInt16(fromLittleEndian(bytes)))))
       case .signedInteger32:
-        return Double(Int32(bitPattern: UInt32(fromLittleEndian(bytes))))
+        return DoryX86ExtendedFloat(
+          Int64(Int32(bitPattern: UInt32(fromLittleEndian(bytes)))))
       case .signedInteger64:
-        return Double(Int64(bitPattern: fromLittleEndian(bytes)))
+        return DoryX86ExtendedFloat(Int64(bitPattern: fromLittleEndian(bytes)))
       }
     }
   }
@@ -2118,18 +2123,23 @@ public struct DoryX86Interpreter: Sendable {
   }
 
   private func storeX87Bytes(
-    _ value: Double,
+    _ value: DoryX86ExtendedFloat,
     format: DoryX87MemoryFormat,
     truncate: Bool,
     floatingPoint: inout DoryX86FloatingPointState
   ) -> [UInt8] {
     switch format {
     case .float32:
-      return Array(littleEndian(UInt64(Float(value).bitPattern), width: .doubleword))
+      return Array(
+        littleEndian(
+          UInt64(value.float32Bits(rounding: x87Rounding(floatingPoint))),
+          width: .doubleword
+        ))
     case .float64:
-      return littleEndian(value.bitPattern, width: .quadword)
+      return littleEndian(
+        value.float64Bits(rounding: x87Rounding(floatingPoint)), width: .quadword)
     case .extended80:
-      return encodeX87Extended(value)
+      return value.bytes(rounding: x87Rounding(floatingPoint))
     case .signedInteger16, .signedInteger32, .signedInteger64:
       let bitCount: Int =
         switch format {
@@ -2137,30 +2147,14 @@ public struct DoryX86Interpreter: Sendable {
         case .signedInteger32: 32
         default: 64
         }
-      let rule: FloatingPointRoundingRule =
-        if truncate {
-          .towardZero
-        } else {
-          switch (floatingPoint.x87ControlWord >> 10) & 3 {
-          case 0: .toNearestOrEven
-          case 1: .down
-          case 2: .up
-          default: .towardZero
-          }
-        }
-      let rounded = value.rounded(rule)
-      let lower = -Foundation.pow(2.0, Double(bitCount - 1))
-      let upper = Foundation.pow(2.0, Double(bitCount - 1))
-      let invalid = !rounded.isFinite || rounded < lower || rounded >= upper
-      if invalid { floatingPoint.x87StatusWord |= 1 }
-      let raw: UInt64
-      if invalid {
-        raw = UInt64(1) << UInt64(bitCount - 1)
-      } else {
-        raw = UInt64(bitPattern: Int64(rounded))
-      }
+      let raw = value.signedIntegerBits(
+        bitCount: bitCount,
+        rounding: truncate ? .towardZero : x87Rounding(floatingPoint)
+      )
+      if raw == nil { floatingPoint.x87StatusWord |= 1 }
+      let stored = raw ?? UInt64(1) << UInt64(bitCount - 1)
       return (0..<(bitCount / 8)).map {
-        UInt8(truncatingIfNeeded: raw >> UInt64($0 * 8))
+        UInt8(truncatingIfNeeded: stored >> UInt64($0 * 8))
       }
     }
   }
@@ -2190,10 +2184,26 @@ public struct DoryX86Interpreter: Sendable {
     state.x87TagWord = (state.x87TagWord & ~(UInt16(3) << shift)) | (tag & 3) << shift
   }
 
-  private func readX87Register(_ logical: UInt8, state: DoryX86FloatingPointState) -> Double {
+  private func readX87Register(
+    _ logical: UInt8,
+    state: DoryX86FloatingPointState
+  ) -> DoryX86ExtendedFloat {
     let physical = physicalX87Register(logical, state: state)
-    guard x87Tag(physical, state: state) != 3 else { return .nan }
-    return decodeX87Extended(state.x87[physical].bytes)
+    guard x87Tag(physical, state: state) != 3 else {
+      return DoryX86ExtendedFloat(Double.nan)
+    }
+    return DoryX86ExtendedFloat(bytes: state.x87[physical].bytes)
+  }
+
+  private func writeX87Register(
+    _ logical: UInt8,
+    value: DoryX86ExtendedFloat,
+    state: inout DoryX86FloatingPointState
+  ) {
+    let physical = physicalX87Register(logical, state: state)
+    state.x87[physical] = try! .init(bytes: value.bytes(), expectedByteCount: 10)
+    let tag: UInt16 = value.isZero ? 1 : (value.isFinite ? 0 : 2)
+    setX87Tag(physical, tag, state: &state)
   }
 
   private func writeX87Register(
@@ -2201,22 +2211,19 @@ public struct DoryX86Interpreter: Sendable {
     value: Double,
     state: inout DoryX86FloatingPointState
   ) {
-    let physical = physicalX87Register(logical, state: state)
-    state.x87[physical] = try! .init(bytes: encodeX87Extended(value), expectedByteCount: 10)
-    let tag: UInt16 = value == 0 ? 1 : (value.isFinite ? 0 : 2)
-    setX87Tag(physical, tag, state: &state)
+    writeX87Register(logical, value: DoryX86ExtendedFloat(value), state: &state)
   }
 
   private func updateX87ArithmeticStatus(
     operation: DoryX87BinaryOperation,
-    lhs: Double,
-    rhs: Double,
-    result: Double,
+    lhs: DoryX86ExtendedFloat,
+    rhs: DoryX86ExtendedFloat,
+    result: DoryX86ExtendedFloat,
     state: inout DoryX86FloatingPointState
   ) {
     if lhs.isNaN || rhs.isNaN { state.x87StatusWord |= 1 }
-    let numerator: Double
-    let denominator: Double
+    let numerator: DoryX86ExtendedFloat
+    let denominator: DoryX86ExtendedFloat
     switch operation {
     case .divide:
       (numerator, denominator) = (lhs, rhs)
@@ -2225,8 +2232,8 @@ public struct DoryX86Interpreter: Sendable {
     default:
       return
     }
-    if denominator == 0 {
-      if numerator == 0 || numerator.isNaN {
+    if denominator.isZero {
+      if numerator.isZero || numerator.isNaN {
         state.x87StatusWord |= 1
       } else if numerator.isFinite {
         state.x87StatusWord |= 1 << 2
@@ -2240,24 +2247,26 @@ public struct DoryX86Interpreter: Sendable {
     _ operation: DoryX87SpecialOperation,
     state: inout DoryX86FloatingPointState
   ) {
-    let x = readX87Register(0, state: state)
+    let extendedX = readX87Register(0, state: state)
+    let x = extendedX.doubleValue
     switch operation {
     case .changeSign:
-      writeX87Register(0, value: -x, state: &state)
+      writeX87Register(0, value: extendedX.negated(), state: &state)
     case .absolute:
-      writeX87Register(0, value: abs(x), state: &state)
+      writeX87Register(0, value: extendedX.absolute(), state: &state)
     case .test:
-      setX87ComparisonStatus(floatingComparison(x, 0), state: &state)
+      setX87ComparisonStatus(
+        x87FloatingComparison(extendedX, .zero), state: &state)
     case .examine:
       state.x87StatusWord &= ~UInt16(0x4700)
-      if x.sign == .minus { state.x87StatusWord |= 0x0200 }
-      if x.isNaN {
+      if extendedX.isNegative { state.x87StatusWord |= 0x0200 }
+      if extendedX.isNaN {
         state.x87StatusWord |= 0x0100
-      } else if x.isInfinite {
+      } else if extendedX.isInfinite {
         state.x87StatusWord |= 0x0500
-      } else if x == 0 {
+      } else if extendedX.isZero {
         state.x87StatusWord |= 0x4000
-      } else if x.isSubnormal {
+      } else if extendedX.isSubnormal {
         state.x87StatusWord |= 0x4400
       } else {
         state.x87StatusWord |= 0x0400
@@ -2279,7 +2288,7 @@ public struct DoryX86Interpreter: Sendable {
     case .twoToXMinusOne:
       writeX87Register(0, value: Foundation.pow(2, x) - 1, state: &state)
     case .yLog2X:
-      let y = readX87Register(1, state: state)
+      let y = readX87Register(1, state: state).doubleValue
       writeX87Register(1, value: y * Foundation.log2(x), state: &state)
       popX87(state: &state)
     case .tangent:
@@ -2287,7 +2296,7 @@ public struct DoryX86Interpreter: Sendable {
       writeX87Register(0, value: Foundation.tan(x), state: &state)
       pushX87(1, state: &state)
     case .arctangent:
-      let y = readX87Register(1, state: state)
+      let y = readX87Register(1, state: state).doubleValue
       writeX87Register(1, value: Foundation.atan2(y, x), state: &state)
       popX87(state: &state)
     case .extract:
@@ -2304,7 +2313,7 @@ public struct DoryX86Interpreter: Sendable {
     case .partialRemainder:
       executeX87Remainder(nearest: false, state: &state)
     case .yLog2XPlusOne:
-      let y = readX87Register(1, state: state)
+      let y = readX87Register(1, state: state).doubleValue
       writeX87Register(1, value: y * Foundation.log2(x + 1), state: &state)
       popX87(state: &state)
     case .squareRoot:
@@ -2315,10 +2324,22 @@ public struct DoryX86Interpreter: Sendable {
       writeX87Register(0, value: Foundation.sin(x), state: &state)
       pushX87(Foundation.cos(x), state: &state)
     case .roundToInteger:
-      writeX87Register(0, value: x.rounded(x87RoundingRule(state)), state: &state)
+      writeX87Register(
+        0,
+        value: extendedX.roundedToInteger(x87Rounding(state)),
+        state: &state
+      )
     case .scale:
-      let scale = readX87Register(1, state: state).rounded(.towardZero)
-      writeX87Register(0, value: x * Foundation.pow(2, scale), state: &state)
+      let scale = readX87Register(1, state: state).doubleValue.rounded(.towardZero)
+      if scale >= Double(Int.min), scale <= Double(Int.max) {
+        writeX87Register(
+          0,
+          value: extendedX.scaledByPowerOfTwo(Int(scale)),
+          state: &state
+        )
+      } else {
+        writeX87Register(0, value: x * Foundation.pow(2, scale), state: &state)
+      }
     case .sine:
       guard x87TrigonometricArgumentIsInRange(x, state: &state) else { return }
       writeX87Register(0, value: Foundation.sin(x), state: &state)
@@ -2334,6 +2355,35 @@ public struct DoryX86Interpreter: Sendable {
     case 1: .down
     case 2: .up
     default: .towardZero
+    }
+  }
+
+  private func x87Rounding(_ state: DoryX86FloatingPointState) -> DoryX86FloatingRounding {
+    switch (state.x87ControlWord >> 10) & 3 {
+    case 0: .nearestEven
+    case 1: .down
+    case 2: .up
+    default: .towardZero
+    }
+  }
+
+  private func x87Precision(_ state: DoryX86FloatingPointState) -> Int {
+    switch (state.x87ControlWord >> 8) & 3 {
+    case 0: 24
+    case 2: 53
+    default: 64
+    }
+  }
+
+  private func x87FloatingComparison(
+    _ lhs: DoryX86ExtendedFloat,
+    _ rhs: DoryX86ExtendedFloat
+  ) -> FloatingComparison {
+    guard let relation = lhs.compared(to: rhs) else { return .unordered }
+    switch relation {
+    case .orderedAscending: return .less
+    case .orderedDescending: return .greater
+    case .orderedSame: return .equal
     }
   }
 
@@ -2372,13 +2422,16 @@ public struct DoryX86Interpreter: Sendable {
   ) {
     let dividend = readX87Register(0, state: state)
     let divisor = readX87Register(1, state: state)
-    guard dividend.isFinite, divisor.isFinite, divisor != 0 else {
+    guard dividend.isFinite, divisor.isFinite, !divisor.isZero else {
       state.x87StatusWord |= 1
       writeX87Register(0, value: .nan, state: &state)
       return
     }
-    let quotient = (dividend / divisor).rounded(nearest ? .toNearestOrEven : .towardZero)
-    writeX87Register(0, value: dividend - quotient * divisor, state: &state)
+    let dividendDouble = dividend.doubleValue
+    let divisorDouble = divisor.doubleValue
+    let quotient =
+      (dividendDouble / divisorDouble).rounded(nearest ? .toNearestOrEven : .towardZero)
+    writeX87Register(0, value: dividendDouble - quotient * divisorDouble, state: &state)
     state.x87StatusWord &= ~UInt16(0x4700)
     if quotient >= Double(Int64.min), quotient <= Double(Int64.max) {
       let bits = UInt64(bitPattern: Int64(quotient))
@@ -2434,6 +2487,13 @@ public struct DoryX86Interpreter: Sendable {
   }
 
   private func pushX87(_ value: Double, state: inout DoryX86FloatingPointState) {
+    pushX87(DoryX86ExtendedFloat(value), state: &state)
+  }
+
+  private func pushX87(
+    _ value: DoryX86ExtendedFloat,
+    state: inout DoryX86FloatingPointState
+  ) {
     let top = (x87Top(state) + 7) & 7
     if x87Tag(top, state: state) != 3 {
       state.x87StatusWord |= 0x0241
@@ -2441,8 +2501,8 @@ public struct DoryX86Interpreter: Sendable {
       state.x87StatusWord &= ~UInt16(0x0200)
     }
     setX87Top(top, state: &state)
-    state.x87[top] = try! .init(bytes: encodeX87Extended(value), expectedByteCount: 10)
-    let tag: UInt16 = value == 0 ? 1 : (value.isFinite ? 0 : 2)
+    state.x87[top] = try! .init(bytes: value.bytes(), expectedByteCount: 10)
+    let tag: UInt16 = value.isZero ? 1 : (value.isFinite ? 0 : 2)
     setX87Tag(top, tag, state: &state)
   }
 
@@ -2450,52 +2510,6 @@ public struct DoryX86Interpreter: Sendable {
     let top = x87Top(state)
     setX87Tag(top, 3, state: &state)
     setX87Top((top + 1) & 7, state: &state)
-  }
-
-  private func decodeX87Extended(_ bytes: [UInt8]) -> Double {
-    precondition(bytes.count == 10)
-    let significand = fromLittleEndian(Array(bytes[0..<8]))
-    let signAndExponent = UInt16(bytes[8]) | UInt16(bytes[9]) << 8
-    let negative = signAndExponent & 0x8000 != 0
-    let exponent = Int(signAndExponent & 0x7FFF)
-    if exponent == 0, significand == 0 { return negative ? -0.0 : 0.0 }
-    if exponent == 0x7FFF {
-      if significand == 0x8000_0000_0000_0000 {
-        return negative ? -.infinity : .infinity
-      }
-      return .nan
-    }
-    let unbiased = exponent == 0 ? -16_382 : exponent - 16_383
-    let magnitude = Double(significand) * Foundation.pow(2.0, Double(unbiased - 63))
-    return negative ? -magnitude : magnitude
-  }
-
-  private func encodeX87Extended(_ value: Double) -> [UInt8] {
-    let bits = value.bitPattern
-    let sign = UInt16((bits >> 63) << 15)
-    let doubleExponent = Int((bits >> 52) & 0x7FF)
-    let fraction = bits & 0x000F_FFFF_FFFF_FFFF
-    let significand: UInt64
-    let exponent: UInt16
-    if doubleExponent == 0x7FF {
-      exponent = 0x7FFF
-      significand = fraction == 0 ? 0x8000_0000_0000_0000 : 0xC000_0000_0000_0000
-    } else if doubleExponent == 0, fraction == 0 {
-      exponent = 0
-      significand = 0
-    } else if doubleExponent == 0 {
-      let highestBit = 63 - fraction.leadingZeroBitCount
-      significand = fraction << UInt64(63 - highestBit)
-      exponent = UInt16(highestBit - 1_074 + 16_383)
-    } else {
-      significand = ((UInt64(1) << 52) | fraction) << 11
-      exponent = UInt16(doubleExponent - 1_023 + 16_383)
-    }
-    var bytes = littleEndian(significand, width: .quadword)
-    let signAndExponent = sign | exponent
-    bytes.append(UInt8(truncatingIfNeeded: signAndExponent))
-    bytes.append(UInt8(truncatingIfNeeded: signAndExponent >> 8))
-    return bytes
   }
 
   private func writeVectorBytes(

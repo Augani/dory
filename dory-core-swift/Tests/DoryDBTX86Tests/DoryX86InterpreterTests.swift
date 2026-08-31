@@ -438,6 +438,48 @@ import Testing
     #expect((state.floatingPoint.x87StatusWord >> 11) & 7 == 0)
   }
 
+  @Test func x87ExecutesBinary80PrecisionAndGuestDirectedNarrowing() throws {
+    var bytes = [UInt8](repeating: 0, count: 0x200)
+    bytes.replaceSubrange(
+      0..<16,
+      with: [
+        0xDB, 0x2B,
+        0xDB, 0x6B, 0x10,
+        0xDE, 0xC1,
+        0xDB, 0x7B, 0x20,
+        0xDB, 0x6B, 0x20,
+        0xDD, 0x5B, 0x30,
+      ])
+    let one = [UInt8](repeating: 0, count: 7) + [0x80, 0xFF, 0x3F]
+    let leastBitAtOne = [UInt8](repeating: 0, count: 7) + [0x80, 0xC0, 0x3F]
+    bytes.replaceSubrange(0x100..<0x10A, with: one)
+    bytes.replaceSubrange(0x110..<0x11A, with: leastBitAtOne)
+    let memory = DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: bytes)
+    var floatingPoint = try DoryX86FloatingPointState()
+    floatingPoint.x87ControlWord = 0x0B7F
+    var state = try DoryX86ArchitecturalState(
+      registers: .init(rbx: 0x1100),
+      rip: 0x1000,
+      floatingPoint: floatingPoint
+    )
+
+    for _ in 0..<6 {
+      let result = interpreter.step(state: &state, memory: memory, mode: .long64)
+      guard case .retired = result else {
+        Issue.record("binary80 x87 instruction unexpectedly failed: \(result)")
+        return
+      }
+    }
+
+    #expect(
+      try memory.read(at: 0x1120, byteCount: 10)
+        == [1, 0, 0, 0, 0, 0, 0, 0x80, 0xFF, 0x3F]
+    )
+    #expect(
+      try memoryInteger(bytes: try memory.read(at: 0x1130, byteCount: 8))
+        == 0x3FF0_0000_0000_0001)
+  }
+
   @Test func x87ConstantsAndTranscendentalsMaintainStackResults() throws {
     var bytes = [UInt8](repeating: 0, count: 0x200)
     bytes.replaceSubrange(

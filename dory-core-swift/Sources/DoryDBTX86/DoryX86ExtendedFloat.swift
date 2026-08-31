@@ -119,6 +119,7 @@ struct DoryX86ExtendedFloat: Sendable, Hashable {
     if case .nan = kind { return true }
     return false
   }
+  var isSubnormal: Bool { kind == .finite && significand != 0 && exponent < -16_382 }
 
   init(bytes: [UInt8]) {
     precondition(bytes.count == 10)
@@ -206,6 +207,20 @@ struct DoryX86ExtendedFloat: Sendable, Hashable {
       isNegative: negative,
       exponent: highestBit,
       significand: magnitude << UInt64(63 - highestBit)
+    )
+  }
+
+  init(unsigned value: UInt64, negative: Bool = false) {
+    guard value != 0 else {
+      self.init(kind: .finite, isNegative: negative, exponent: 0, significand: 0)
+      return
+    }
+    let highestBit = 63 - value.leadingZeroBitCount
+    self.init(
+      kind: .finite,
+      isNegative: negative,
+      exponent: highestBit,
+      significand: value << UInt64(63 - highestBit)
     )
   }
 
@@ -400,6 +415,63 @@ struct DoryX86ExtendedFloat: Sendable, Hashable {
     )
   }
 
+  func roundedToInteger(_ rounding: DoryX86FloatingRounding) -> Self {
+    guard kind == .finite, significand != 0, exponent < 63 else { return self }
+    let magnitude = Self.roundedShiftRight(
+      DoryX86WideUnsigned(significand),
+      by: 63 - exponent,
+      negative: isNegative,
+      rounding: rounding
+    )
+    return .init(unsigned: magnitude.low, negative: isNegative)
+  }
+
+  func scaledByPowerOfTwo(_ power: Int) -> Self {
+    guard kind == .finite, significand != 0 else { return self }
+    return .init(
+      kind: .finite,
+      isNegative: isNegative,
+      exponent: exponent + power,
+      significand: significand
+    )
+  }
+
+  func signedIntegerBits(
+    bitCount: Int,
+    rounding: DoryX86FloatingRounding
+  ) -> UInt64? {
+    precondition((1...64).contains(bitCount))
+    guard kind == .finite else { return nil }
+    guard significand != 0 else { return 0 }
+    let magnitude: DoryX86WideUnsigned
+    if exponent >= 63 {
+      magnitude = DoryX86WideUnsigned(significand) << (exponent - 63)
+    } else {
+      magnitude = Self.roundedShiftRight(
+        DoryX86WideUnsigned(significand),
+        by: 63 - exponent,
+        negative: isNegative,
+        rounding: rounding
+      )
+    }
+    let negativeLimit = DoryX86WideUnsigned(1) << (bitCount - 1)
+    let positiveLimit = negativeLimit - DoryX86WideUnsigned(1)
+    guard magnitude <= (isNegative ? negativeLimit : positiveLimit) else { return nil }
+    let raw = isNegative ? UInt64(0) &- magnitude.low : magnitude.low
+    if bitCount == 64 { return raw }
+    return raw & ((UInt64(1) << UInt64(bitCount)) - 1)
+  }
+
+  func float32Bits(rounding: DoryX86FloatingRounding = .nearestEven) -> UInt32 {
+    UInt32(
+      truncatingIfNeeded: binaryFormatBits(
+        exponentBits: 8, fractionBits: 23, bias: 127, rounding: rounding))
+  }
+
+  func float64Bits(rounding: DoryX86FloatingRounding = .nearestEven) -> UInt64 {
+    binaryFormatBits(exponentBits: 11, fractionBits: 52, bias: 1_023, rounding: rounding)
+  }
+
   func compared(to rhs: Self) -> ComparisonResult? {
     if isNaN || rhs.isNaN { return nil }
     if isZero, rhs.isZero { return .orderedSame }
@@ -417,14 +489,90 @@ struct DoryX86ExtendedFloat: Sendable, Hashable {
   }
 
   var doubleValue: Double {
+    Double(bitPattern: float64Bits())
+  }
+
+  private func binaryFormatBits(
+    exponentBits: Int,
+    fractionBits: Int,
+    bias: Int,
+    rounding: DoryX86FloatingRounding
+  ) -> UInt64 {
+    let sign = isNegative ? UInt64(1) << UInt64(exponentBits + fractionBits) : 0
+    let maximumExponentField = (UInt64(1) << UInt64(exponentBits)) - 1
     switch kind {
-    case .infinity: return isNegative ? -.infinity : .infinity
-    case .nan: return .nan
-    case .finite where significand == 0: return isNegative ? -0.0 : 0.0
+    case .infinity:
+      return sign | maximumExponentField << UInt64(fractionBits)
+    case .nan:
+      return sign | maximumExponentField << UInt64(fractionBits)
+        | UInt64(1) << UInt64(fractionBits - 1)
+    case .finite where significand == 0:
+      return sign
     case .finite:
-      let magnitude = Double(significand) * Foundation.pow(2, Double(exponent - 63))
-      return isNegative ? -magnitude : magnitude
+      break
     }
+
+    let maximumExponent = Int(maximumExponentField - 1) - bias
+    if exponent > maximumExponent {
+      return overflowBits(
+        sign: sign,
+        maximumExponentField: maximumExponentField,
+        fractionBits: fractionBits,
+        rounding: rounding
+      )
+    }
+    let minimumNormalExponent = 1 - bias
+    let precision = fractionBits + 1
+    if exponent >= minimumNormalExponent {
+      var rounded = Self.roundedShiftRight(
+        DoryX86WideUnsigned(significand),
+        by: 64 - precision,
+        negative: isNegative,
+        rounding: rounding
+      )
+      var resultExponent = exponent
+      if rounded >= DoryX86WideUnsigned(1) << precision {
+        rounded >>= 1
+        resultExponent += 1
+      }
+      if resultExponent > maximumExponent {
+        return overflowBits(
+          sign: sign,
+          maximumExponentField: maximumExponentField,
+          fractionBits: fractionBits,
+          rounding: rounding
+        )
+      }
+      let exponentField = UInt64(resultExponent + bias)
+      let fractionMask = (UInt64(1) << UInt64(fractionBits)) - 1
+      return sign | exponentField << UInt64(fractionBits) | rounded.low & fractionMask
+    }
+
+    let shift = 63 + minimumNormalExponent - fractionBits - exponent
+    let rounded = Self.roundedShiftRight(
+      DoryX86WideUnsigned(significand),
+      by: shift,
+      negative: isNegative,
+      rounding: rounding
+    )
+    if rounded >= DoryX86WideUnsigned(1) << fractionBits {
+      return sign | UInt64(1) << UInt64(fractionBits)
+    }
+    return sign | rounded.low
+  }
+
+  private func overflowBits(
+    sign: UInt64,
+    maximumExponentField: UInt64,
+    fractionBits: Int,
+    rounding: DoryX86FloatingRounding
+  ) -> UInt64 {
+    let infinity =
+      rounding == .nearestEven || rounding == .up && !isNegative
+      || rounding == .down && isNegative
+    if infinity { return sign | maximumExponentField << UInt64(fractionBits) }
+    let maximumFraction = (UInt64(1) << UInt64(fractionBits)) - 1
+    return sign | (maximumExponentField - 1) << UInt64(fractionBits) | maximumFraction
   }
 
   private static func nan() -> Self {
