@@ -280,6 +280,13 @@ import Testing
       try decoder.decode([0xF3, 0x90], at: 0xA000, mode: .long64).operation
         == .processorPause
     )
+    let multiByteNOP = try decoder.decode(
+      [0x66, 0x0F, 0x1F, 0x84, 0x00, 0, 0, 0, 0], at: 0xA000, mode: .long64)
+    #expect(multiByteNOP.operation == .noOperation)
+    #expect(multiByteNOP.length == 9)
+    #expect(throws: DoryX86DecodeError.self) {
+      try decoder.decode([0x0F, 0x1F, 0xC8], at: 0xA000, mode: .long64)
+    }
   }
 
   @Test func decodesRepeatableStringInstructionsWithoutInventingOperands() throws {

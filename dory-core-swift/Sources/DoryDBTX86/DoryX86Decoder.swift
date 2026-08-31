@@ -771,6 +771,14 @@ public struct DoryX86Decoder: Sendable {
     case 0x0F:
       let second = try cursor.readByte()
       switch second {
+      case 0x1F:
+        let operands = try decodeModRM(
+          cursor: &cursor, width: width, prefixes: prefixes, mode: mode)
+        guard operands.group == 0 else {
+          throw DoryX86DecodeError.invalidEncoding(
+            address: address, detail: "multi-byte NOP requires ModRM /0")
+        }
+        operation = .noOperation
       case 0x05:
         operation = .syscall
       case 0x06:
