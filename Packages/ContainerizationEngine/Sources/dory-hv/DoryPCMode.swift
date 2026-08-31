@@ -10,6 +10,17 @@ import DoryVMMKit
 import Foundation
 
 enum DoryPCMode {
+    /// A resolved device contract is launch authority, not a best-effort preference. Once a host
+    /// device is requested, construction or attachment failure must abort the launch instead of
+    /// publishing a VM whose actual device graph no longer matches its immutable envelope.
+    static func admitRequiredHostDevice<Device>(
+        requested: Bool,
+        make: () throws -> Device
+    ) throws -> Device? {
+        guard requested else { return nil }
+        return try make()
+    }
+
     struct Configuration {
         let envelope: DoryPCRuntimeLaunchEnvelope
         let authority: DoryPCUEFIRuntimeAuthority
@@ -494,23 +505,16 @@ enum DoryPCMode {
                 usbControlHandler = nil
                 usbControlServer = nil
             }
-            if devices.cameraInput {
-                do {
-                    let bridge = try DoryPCCameraBridge { message in
-                        FileHandle.standardError.write(
-                            Data("dory-hv DoryPC camera: \(message)\n".utf8)
-                        )
-                    }
-                    try bridge.attach(to: machine.xhciController)
-                    cameraBridge = bridge
-                } catch {
-                    cameraBridge = nil
+            cameraBridge = try DoryPCMode.admitRequiredHostDevice(
+                requested: devices.cameraInput
+            ) {
+                let bridge = try DoryPCCameraBridge { message in
                     FileHandle.standardError.write(
-                        Data("dory-hv DoryPC camera unavailable: \(error)\n".utf8)
+                        Data("dory-hv DoryPC camera: \(message)\n".utf8)
                     )
                 }
-            } else {
-                cameraBridge = nil
+                try bridge.attach(to: machine.xhciController)
+                return bridge
             }
             serialInput = try RawHVSerialConsoleInput(
                 socketPath: configuration.consoleSocketPath,

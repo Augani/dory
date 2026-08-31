@@ -10,6 +10,31 @@ import Testing
 @testable import dory_hv
 
 @Suite struct DoryPCDesktopAdapterTests {
+    @Test func requiredHostDeviceAdmissionNeverSilentlyDropsARequestedDevice() throws {
+        enum FixtureError: Error { case unavailable }
+
+        var disabledFactoryCalled = false
+        let disabled: String? = try DoryPCMode.admitRequiredHostDevice(
+            requested: false
+        ) {
+            disabledFactoryCalled = true
+            return "camera"
+        }
+        #expect(disabled == nil)
+        #expect(!disabledFactoryCalled)
+
+        let admitted: String? = try DoryPCMode.admitRequiredHostDevice(requested: true) {
+            "camera"
+        }
+        #expect(admitted == "camera")
+
+        #expect(throws: FixtureError.self) {
+            try DoryPCMode.admitRequiredHostDevice(requested: true) {
+                throw FixtureError.unavailable
+            } as String?
+        }
+    }
+
     @Test func physicalUSBLeaseSurvivesResetAndRevokesTheRootPort() async throws {
         let token = DoryUSBPhysicalIdentityToken(
             rawValue: String(repeating: "a", count: 64)
