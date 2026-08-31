@@ -296,10 +296,7 @@ private func run() throws {
         linearAddress: $0.cs.base &+ $0.rip
       )
     } ?? []
-  let physicalInstructionBytes: String =
-    state.flatMap {
-      try? composed.machine.memory.read(at: $0.cs.base &+ $0.rip, byteCount: 16)
-    }.map(hexadecimalBytes) ?? "unmapped"
+  let instructionBytes = (try? composed.machine.instructionBytes(maximumCount: 16)) ?? nil
   let payload: [String: Any] = [
     "cr0": state.map { hexadecimal($0.control.cr0) } ?? "unavailable",
     "cr3": state.map { hexadecimal($0.control.cr3) } ?? "unavailable",
@@ -328,7 +325,7 @@ private func run() throws {
     "installerMedia": arguments.installerMedia?.path ?? "none",
     "variableStoreDirectory": ownsVariableDirectory ? "temporary" : variableDirectory.path,
     "pageTableTrace": pageTrace,
-    "physicalInstructionBytes": physicalInstructionBytes,
+    "instructionBytes": instructionBytes.map(hexadecimalBytes) ?? "unmapped",
     "rax": state.map { hexadecimal($0.registers.rax) } ?? "unavailable",
     "rbx": state.map { hexadecimal($0.registers.rbx) } ?? "unavailable",
     "rcx": state.map { hexadecimal($0.registers.rcx) } ?? "unavailable",

@@ -346,6 +346,28 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     lock.withLock { loadedStates.indices.contains(index) ? loadedStates[index] : nil }
   }
 
+  /// Reads instruction bytes through the processor's current linear-address translation. This is
+  /// intended for precise diagnostics: callers must not treat `CS.base + RIP` as a physical
+  /// address once paging is active.
+  public func instructionBytes(
+    forProcessor index: Int = 0,
+    maximumCount: Int = 16
+  ) throws -> [UInt8]? {
+    guard maximumCount > 0 else { return [] }
+    return try lock.withLock {
+      guard loadedStates.indices.contains(index), let state = loadedStates[index] else { return nil }
+      let translatedMemory = DoryX86TranslatedMemory(
+        physicalMemory: physicalMemories[index],
+        pagingUnit: pagingUnits[index],
+        context: .init(state: state, mode: executionMode(state))
+      )
+      return try translatedMemory.instructionBytes(
+        at: state.cs.base &+ state.rip,
+        maximumCount: maximumCount
+      )
+    }
+  }
+
   public func run(
     maximumInstructions: UInt64,
     exceptionPolicy: DoryPCExceptionPolicy = .stop

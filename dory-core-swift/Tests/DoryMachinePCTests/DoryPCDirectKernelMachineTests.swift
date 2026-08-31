@@ -4,6 +4,17 @@ import Testing
 @testable import DoryMachinePC
 
 @Suite struct DoryPCDirectKernelMachineTests {
+  @Test func diagnosticInstructionBytesFollowTheLoadedProcessor() throws {
+    let machine = try DoryPCDirectKernelMachine(memoryBytes: 2 * 1024 * 1024)
+    try machine.load(kernel: makeELF(code: [0x90, 0xF4]), commandLine: "x")
+
+    #expect(try machine.instructionBytes(maximumCount: 2) == [0x90, 0xF4])
+    #expect(try machine.run(maximumInstructions: 1) == .instructionBudget(1))
+    #expect(try machine.instructionBytes(maximumCount: 1) == [0xF4])
+    #expect(try machine.instructionBytes(maximumCount: 0) == [])
+    #expect(try machine.instructionBytes(forProcessor: 1) == nil)
+  }
+
   @Test func entersPVHCodeWritesSerialAndHalts() throws {
     let layout = DoryPCPVHBootLayout(
       startInfo: 0x90000,
